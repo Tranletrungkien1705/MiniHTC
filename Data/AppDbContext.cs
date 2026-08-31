@@ -76,6 +76,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<OrderPartLine> OrderPartLines => Set<OrderPartLine>();
     public DbSet<OrderComplain> OrderComplains => Set<OrderComplain>();
     public DbSet<SupplierPayment> SupplierPayments => Set<SupplierPayment>();
+    public DbSet<ReqPartPrice> ReqPartPrices => Set<ReqPartPrice>();
+    public DbSet<ReqPartPriceLine> ReqPartPriceLines => Set<ReqPartPriceLine>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

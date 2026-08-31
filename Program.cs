@@ -1227,6 +1227,86 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
+app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, string? dms, string? tst) =>
+{
+    var q = db.ReqPartPrices.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dms)) q = q.Where(r => r.DMSStatus == dms);
+    if (!string.IsNullOrWhiteSpace(tst)) q = q.Where(r => r.TSTStatus == tst);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.ReqNo, r.DMSStatus, r.TSTStatus, r.CreatedAt, r.QuotedAt,
+        lines = db.ReqPartPriceLines.Count(l => l.OrgId == t.OrgId && l.ReqId == r.Id),
+        quotedTotal = db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id).Sum(l => (decimal?)(l.ReqQty * l.QuotedPrice)) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.ReqQty > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng PT (PartCode + ReqQty > 0)." });
+    var no = "RQ" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new ReqPartPrice { OrgId = t.OrgId, ReqNo = no, DMSStatus = "P", TSTStatus = "Pending" };
+    db.ReqPartPrices.Add(r); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.ReqPartPriceLines.Add(new ReqPartPriceLine { OrgId = t.OrgId, ReqId = r.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, ReqQty = l.ReqQty, QuotedPrice = 0 });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
+}).RequireAuthorization();
+
+app.MapGet("/api/reqpartprices/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var lines = await db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.ReqQty, l.QuotedPrice, lineTotal = l.ReqQty * l.QuotedPrice }).ToListAsync();
+    return Results.Ok(new { r.ReqNo, r.DMSStatus, r.TSTStatus, count = lines.Count, lines, quotedTotal = lines.Sum(x => x.lineTotal) });
+}).RequireAuthorization();
+
+// DMS gửi (P→A)
+app.MapPost("/api/reqpartprices/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.DMSStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi YC Mới tạo." });
+    r.DMSStatus = "A";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus });
+}).RequireAuthorization();
+
+// TST báo giá (điền QuotedPrice từng dòng) → TSTStatus Quoted
+app.MapPost("/api/reqpartprices/{no}/quote", async (string no, ReqQuoteDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.DMSStatus != "A") return Results.BadRequest(new { error = "DMS chưa gửi YC." });
+    if (r.TSTStatus == "Finished") return Results.BadRequest(new { error = "Đã hoàn tất." });
+    var quotes = (dto.Quotes ?? new()).ToDictionary(x => (x.PartCode ?? "").Trim().ToUpperInvariant(), x => x.QuotedPrice);
+    var lines = await db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id).ToListAsync();
+    int filled = 0;
+    foreach (var l in lines)
+        if (quotes.TryGetValue(l.PartCode, out var price)) { l.QuotedPrice = price; filled++; }
+    r.TSTStatus = "Quoted"; r.QuotedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqNo, tstStatus = r.TSTStatus, filled });
+}).RequireAuthorization();
+
+// DMS chấp nhận → Finished
+app.MapPost("/api/reqpartprices/{no}/finish", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.TSTStatus != "Quoted") return Results.BadRequest(new { error = "Chưa được báo giá (Quoted)." });
+    r.TSTStatus = "Finished"; r.DMSStatus = "F";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus, tstStatus = r.TSTStatus });
+}).RequireAuthorization();
+
 // ===== Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment) =====
 app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, string? status, string? supplier) =>
 {
@@ -2576,4 +2656,8 @@ record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLi
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content);
 record OrderComplainActDto(string? Resolution);
 record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate);
+record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty);
+record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines);
+record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
+record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record RegisterOrgDto(string Name);

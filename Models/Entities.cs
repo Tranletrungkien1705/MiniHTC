@@ -1053,6 +1053,31 @@ public sealed class SupplierPayment
     public DateTime? ApprovedAt { get; set; }
 }
 
+/// <summary>Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng, TCMotor DMSCarSv/TST):
+/// DMS xin TST báo giá PT. DMSStatus P→A→F; TSTStatus Pending(chờ)→Quoted(đã báo giá)→Finished.</summary>
+public sealed class ReqPartPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqNo { get; set; } = "";
+    public string DMSStatus { get; set; } = "P";       // P → A → F
+    public string TSTStatus { get; set; } = "Pending"; // Pending → Quoted → Finished
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? QuotedAt { get; set; }
+}
+
+/// <summary>Dòng PT xin báo giá (Req_PartPriceDtl): mã PT + SL yêu cầu + giá TST báo (điền sau).</summary>
+public sealed class ReqPartPriceLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal ReqQty { get; set; } = 1;
+    public decimal QuotedPrice { get; set; }           // TST điền
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
