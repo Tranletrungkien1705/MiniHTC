@@ -3392,6 +3392,102 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
     return Results.Ok(new { batchNo = no, sent, invalid, invalids, contentLength = content.Length });
 }).RequireAuthorization();
 
+// ===== Gửi email + log (EmailSend — port 1:1 FrmSendEmail, TCMotor) — tích hợp EmailTemplate + ServiceCustomer =====
+// Kiểm tra định dạng email cơ bản (giống ràng buộc gửi mail WinForm): có @ + tên miền có dấu chấm.
+static bool IsValidEmail(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return false;
+    var s = raw.Trim();
+    var at = s.IndexOf('@');
+    if (at <= 0 || at != s.LastIndexOf('@') || at == s.Length - 1) return false;
+    var dom = s.Substring(at + 1);
+    return dom.Contains('.') && !dom.StartsWith('.') && !dom.EndsWith('.') && !s.Contains(' ');
+}
+
+app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? email, string? status, string? batch) =>
+{
+    var q = db.EmailSends.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(email)) q = q.Where(x => x.Email.Contains(email!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
+    var items = await q.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.BatchNo, x.Email, x.EmailType, x.Subject, x.Status, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "Sent"), invalid = items.Count(i => i.Status == "Invalid"), items });
+}).RequireAuthorization();
+
+// Gửi email: tiêu đề/nội dung = emailType (mẫu) hoặc subject+body trực tiếp; người nhận = emails và/hoặc toAllCustomers.
+app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var subject = dto.Subject?.Trim() ?? "";
+    var body = dto.Body?.Trim() ?? "";
+    string? emailType = null;
+    if (!string.IsNullOrWhiteSpace(dto.EmailType))
+    {
+        emailType = dto.EmailType.Trim().ToUpperInvariant();
+        var tpl = await db.EmailTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TempType == emailType && x.FlagActive == "1");
+        if (tpl is null) return Results.BadRequest(new { error = $"Không tìm thấy mẫu email đang bật cho loại {emailType}." });
+        subject = tpl.TempSubject ?? ""; body = tpl.TempBody;
+    }
+    if (string.IsNullOrWhiteSpace(subject)) return Results.BadRequest(new { error = "Chưa có tiêu đề email (chọn mẫu hoặc nhập tiêu đề)." });
+    if (string.IsNullOrWhiteSpace(body)) return Results.BadRequest(new { error = "Chưa có nội dung email." });
+    var emails = new List<string>(dto.Emails ?? new());
+    if (dto.ToAllCustomers == true)
+    {
+        var custEmails = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && c.Email != null && c.Email != "").Select(c => c.Email!).ToListAsync();
+        emails.AddRange(custEmails);
+    }
+    if (emails.Count == 0) return Results.BadRequest(new { error = "Chưa có địa chỉ email nhận." });
+    var no = "EML" + DateTime.Now.ToString("yyMMddHHmmss");
+    int sent = 0, invalid = 0;
+    var invalids = new List<string>();
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var e in emails)
+    {
+        if (!IsValidEmail(e)) { invalid++; invalids.Add(e); db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = e ?? "", EmailType = emailType, Subject = subject, Body = body, Status = "Invalid" }); continue; }
+        var std = e.Trim();
+        if (!seen.Add(std)) continue; // bỏ trùng email trong lô
+        db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = std, EmailType = emailType, Subject = subject, Body = body, Status = "Sent" });
+        sent++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { batchNo = no, sent, invalid, invalids, subject });
+}).RequireAuthorization();
+
+// ===== Cấu hình gửi email tự động (EmailAutoConfig — port 1:1 FrmAutoSendConfig, TCMotor) =====
+app.MapGet("/api/emailautoconfigs", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.EmailAutoConfigs.Where(c => c.OrgId == t.OrgId).OrderBy(c => c.EmailType)
+        .Select(c => new { c.Id, c.EmailType, c.AutoTime, startDate = c.StartDate, endDate = c.EndDate, c.SendMode, c.Description, c.FlagActive }).ToListAsync();
+    return Results.Ok(new { items });
+}).RequireAuthorization();
+
+app.MapPost("/api/emailautoconfigs", async (EmailAutoConfigDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.EmailType ?? "").Trim().ToUpperInvariant();
+    if (type == "") return Results.BadRequest(new { error = "Thiếu loại email." });
+    var time = (dto.AutoTime ?? "").Trim();
+    // Validate giờ HH:mm (giống WinForm bắt buộc chọn giờ).
+    if (!System.Text.RegularExpressions.Regex.IsMatch(time, @"^([01]\d|2[0-3]):[0-5]\d$"))
+        return Results.BadRequest(new { error = "Giờ gửi không hợp lệ (định dạng HH:mm)." });
+    if (dto.StartDate.HasValue && dto.EndDate.HasValue && dto.EndDate < dto.StartDate)
+        return Results.BadRequest(new { error = "Ngày kết thúc phải sau ngày bắt đầu." });
+    var c = await db.EmailAutoConfigs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EmailType == type);
+    if (c is null) { c = new EmailAutoConfig { OrgId = t.OrgId, EmailType = type }; db.EmailAutoConfigs.Add(c); }
+    c.AutoTime = time; c.StartDate = dto.StartDate; c.EndDate = dto.EndDate;
+    c.SendMode = dto.SendMode; c.Description = dto.Description; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.EmailType, c.AutoTime });
+}).RequireAuthorization();
+
+app.MapPost("/api/emailautoconfigs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.EmailAutoConfigs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1"; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.FlagActive });
+}).RequireAuthorization();
+
 // ===== Mẫu email (EmailTemplate — port 1:1 FrmEmail_TempEmailCreate/List, TCMotor) =====
 app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -9066,6 +9162,8 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers);
+record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);
 record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);
 record ServiceCampaignPartDto(string PartCode, string? PartName, decimal PercentDiscount);
 record ServiceCampaignStatusDto(string Status);

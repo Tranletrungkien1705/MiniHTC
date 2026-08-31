@@ -2869,6 +2869,35 @@ public sealed class SmsAccountTx
 }
 
 /// <summary>Log gửi tin nhắn SMS (số ĐT/nội dung/trạng thái) — port 1:1 FrmSendSMS (TblSMS_Send, TCMotor).</summary>
+/// <summary>Log gửi email tới khách hàng dịch vụ — port 1:1 FrmSendEmail (Email_SendEmail, TCMotor).</summary>
+public sealed class EmailSend
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string? EmailType { get; set; }
+    public string Subject { get; set; } = "";
+    public string Body { get; set; } = "";
+    public string Status { get; set; } = "Sent";   // Sent | Invalid
+    public DateTime SendDate { get; set; } = DateTime.Now;
+}
+
+/// <summary>Cấu hình gửi email tự động theo giờ/loại — port 1:1 FrmAutoSendConfig (TblEmail_ConfigSendAuto, TCMotor).</summary>
+public sealed class EmailAutoConfig
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string EmailType { get; set; } = "";
+    public string AutoTime { get; set; } = "";     // "HH:mm"
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? SendMode { get; set; }
+    public string? Description { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class SmsSend
 {
     public long Id { get; set; }
