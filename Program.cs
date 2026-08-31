@@ -2819,6 +2819,36 @@ app.MapGet("/api/report/grtclaim", async (AppDbContext db, ITenantContext t, str
         issued = claims.Count(g => g.Status == "Issued"), byDealer, byStatus, byFlag, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo hợp đồng bán lẻ (port 1:1 báo cáo Dlr_Contract) — tái dùng DlrContract + DlrContractDetail =====
+app.MapGet("/api/report/dlrcontract", async (AppDbContext db, ITenantContext t, string? dealer, string? salesType, string? status, string? salesman, DateTime? from, DateTime? to) =>
+{
+    var q = db.DlrContracts.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(salesType)) q = q.Where(c => c.SalesType == salesType);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (!string.IsNullOrWhiteSpace(salesman)) q = q.Where(c => c.SalesManCode == salesman);
+    if (from is not null) q = q.Where(c => c.SignDate >= from.Value.Date);
+    if (to is not null) q = q.Where(c => c.SignDate < to.Value.Date.AddDays(1));
+    var cons = await q.ToListAsync();
+    var ids = cons.Select(c => c.Id).ToHashSet();
+    var dtlAgg = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && ids.Contains(l.ContractId))
+        .GroupBy(l => l.ContractId).Select(g => new { g.Key, qty = g.Sum(x => x.Qty), total = g.Sum(x => x.TotalAmountAfterVAT) }).ToListAsync();
+    var m = dtlAgg.ToDictionary(x => x.Key, x => (x.qty, x.total));
+    int Qty(long id) => m.TryGetValue(id, out var v) ? v.qty : 0;
+    decimal Total(long id) => m.TryGetValue(id, out var v) ? v.total : 0;
+    var byDealer = cons.GroupBy(c => string.IsNullOrEmpty(c.DealerCode) ? "(chưa rõ)" : c.DealerCode)
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), qty = g.Sum(c => Qty(c.Id)), amount = g.Sum(c => Total(c.Id)), active = g.Count(c => c.Status == "Active") }).OrderByDescending(x => x.amount).ToList();
+    var bySalesType = cons.GroupBy(c => string.IsNullOrEmpty(c.SalesType) ? "(chưa rõ)" : c.SalesType).Select(g => new { salesType = g.Key, count = g.Count(), qty = g.Sum(c => Qty(c.Id)), amount = g.Sum(c => Total(c.Id)) }).OrderByDescending(x => x.amount).ToList();
+    var bySalesman = cons.Where(c => !string.IsNullOrEmpty(c.SalesManCode)).GroupBy(c => c.SalesManCode).Select(g => new { salesManCode = g.Key, count = g.Count(), amount = g.Sum(c => Total(c.Id)) }).OrderByDescending(x => x.amount).ToList();
+    var detail = cons.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.Status,
+        qty = Qty(c.Id), amount = Total(c.Id), signDate = c.SignDate.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = cons.Count, totalQty = cons.Sum(c => Qty(c.Id)), totalAmount = cons.Sum(c => Total(c.Id)),
+        active = cons.Count(c => c.Status == "Active"), byDealer, bySalesType, bySalesman, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
