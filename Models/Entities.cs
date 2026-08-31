@@ -653,6 +653,24 @@ public sealed class SalesManViolate
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>NVBH đại lý (Mst_DlSalesMan — port 1:1 FrmMngSalesManHTC/FrmMngSalesManApproved, SalesDealer):
+/// NVBH tại đại lý; duyệt = cấp SMHyundaiCode (mã Hyundai). SMStatus: THUVIEC/CHINGTHUC/CTVIEN/NGHIVIEC.</summary>
+public sealed class DlSalesMan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SMCode { get; set; } = "";
+    public string SMName { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? SMHyundaiCode { get; set; }        // mã Hyundai cấp (có = đã duyệt)
+    public string SMStatus { get; set; } = "THUVIEC"; // THUVIEC/CHINGTHUC/CTVIEN/NGHIVIEC
+    public string? Sex { get; set; }                  // 0=Nam, 1=Nữ
+    public DateTime? DateOfBirth { get; set; }
+    public string? PhoneNo { get; set; }
+    public string? IdentityCardNo { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

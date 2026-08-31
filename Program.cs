@@ -1227,6 +1227,68 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== NVBH đại lý (Mst_DlSalesMan — port 1:1 FrmMngSalesManHTC/FrmMngSalesManApproved) =====
+string[] _smStatuses = { "THUVIEC", "CHINGTHUC", "CTVIEN", "NGHIVIEC" };
+app.MapGet("/api/dlsalesmen", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? approved) =>
+{
+    var q = db.DlSalesMen.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(s => s.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.SMStatus == status);
+    if (approved == "1") q = q.Where(s => s.SMHyundaiCode != null && s.SMHyundaiCode != "");
+    else if (approved == "0") q = q.Where(s => s.SMHyundaiCode == null || s.SMHyundaiCode == "");
+    var items = await q.OrderBy(s => s.SMCode).Take(500).Select(s => new
+    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.Sex, s.DateOfBirth, s.PhoneNo, s.IdentityCardNo }).ToListAsync();
+    return Results.Ok(new { count = items.Count, approved = items.Count(x => !string.IsNullOrEmpty(x.SMHyundaiCode)), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlsalesmen", async (DlSalesManDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SMCode) || string.IsNullOrWhiteSpace(dto.SMName))
+        return Results.BadRequest(new { error = "Cần SMCode và SMName." });
+    var code = dto.SMCode.Trim().ToUpperInvariant();
+    var s = await db.DlSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
+    if (s is null) { s = new DlSalesMan { OrgId = t.OrgId, SMCode = code }; db.DlSalesMen.Add(s); }
+    s.SMName = dto.SMName; s.DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    s.Sex = dto.Sex; s.DateOfBirth = dto.DateOfBirth; s.PhoneNo = dto.PhoneNo; s.IdentityCardNo = dto.IdentityCardNo;
+    if (!string.IsNullOrWhiteSpace(dto.SMStatus))
+    {
+        var st = dto.SMStatus.Trim().ToUpperInvariant();
+        if (!_smStatuses.Contains(st)) return Results.BadRequest(new { error = "SMStatus = THUVIEC|CHINGTHUC|CTVIEN|NGHIVIEC" });
+        s.SMStatus = st;
+    }
+    s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.SMCode, s.SMName, s.SMStatus, s.SMHyundaiCode });
+}).RequireAuthorization();
+
+// Duyệt = cấp mã Hyundai (FrmMngSalesManApproved)
+app.MapPost("/api/dlsalesmen/{code}/grant", async (string code, DlGrantDto dto, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var s = await db.DlSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
+    if (s is null) return Results.NotFound(new { code });
+    if (string.IsNullOrWhiteSpace(dto.SMHyundaiCode)) return Results.BadRequest(new { error = "Cần SMHyundaiCode để duyệt." });
+    if (!string.IsNullOrEmpty(s.SMHyundaiCode)) return Results.BadRequest(new { error = $"NV đã có mã Hyundai {s.SMHyundaiCode}." });
+    s.SMHyundaiCode = dto.SMHyundaiCode.Trim().ToUpperInvariant();
+    if (s.SMStatus == "THUVIEC") s.SMStatus = "CHINGTHUC";   // duyệt → chuyển chính thức
+    s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.SMCode, s.SMHyundaiCode, s.SMStatus });
+}).RequireAuthorization();
+
+// Đổi trạng thái làm việc (vd nghỉ việc)
+app.MapPost("/api/dlsalesmen/{code}/status", async (string code, DlStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var s = await db.DlSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
+    if (s is null) return Results.NotFound(new { code });
+    var st = (dto.SMStatus ?? "").Trim().ToUpperInvariant();
+    if (!_smStatuses.Contains(st)) return Results.BadRequest(new { error = "SMStatus = THUVIEC|CHINGTHUC|CTVIEN|NGHIVIEC" });
+    s.SMStatus = st; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.SMCode, s.SMStatus });
+}).RequireAuthorization();
+
 // ===== Vi phạm NVBH (HR_SalesManViolate — port 1:1 FrmCreateSalesManViolate/FrmMngSalesManViolate) =====
 app.MapGet("/api/smviolates", async (AppDbContext db, ITenantContext t, string? salesman, string? dealer, string? type) =>
 {
@@ -1696,4 +1758,7 @@ record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, L
 record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegisName, double MapLatitude, double MapLongitude, double Radius);
 record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
 record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? Remark);
+record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo);
+record DlGrantDto(string SMHyundaiCode);
+record DlStatusDto(string SMStatus);
 record RegisterOrgDto(string Name);
