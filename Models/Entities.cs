@@ -752,6 +752,54 @@ public sealed class TcgSalePrice
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv/Services):
+/// header lệnh sửa chữa xe tại xưởng dịch vụ. HasRO→InGarage→Repaired→CheckEnd→Paid→Finished.</summary>
+public sealed class RepairOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public string LicensePlate { get; set; } = "";     // biển số
+    public string? Vin { get; set; }
+    public string? CusName { get; set; }               // chủ xe
+    public string? Km { get; set; }                    // số km
+    public DateTime? CheckInDate { get; set; }         // khách tới
+    public DateTime? PlanedDeliveryDate { get; set; }  // dự kiến giao
+    public string? CusRequest { get; set; }            // yêu cầu KH
+    public string? CarStatus { get; set; }             // tình trạng tiếp nhận xe
+    public bool CusWaiting { get; set; }               // khách chờ
+    public string Status { get; set; } = "HasRO";      // HasRO→InGarage→Repaired→CheckEnd→Paid→Finished
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
+public sealed class RoServiceItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RoId { get; set; }
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+    public string? Cause { get; set; }                 // nguyên nhân
+    public string? Result { get; set; }                // kết quả
+    public string? Engineer { get; set; }              // kỹ thuật viên
+    public decimal Amount { get; set; }                // tiền công
+}
+
+/// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
+public sealed class RoPartItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RoId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Unit { get; set; }
+    public decimal NeedQty { get; set; } = 1;
+    public decimal UnitPrice { get; set; }
+    public string? Note { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

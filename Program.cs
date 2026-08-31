@@ -1227,6 +1227,78 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv) =====
+string[] _roFlow = { "HasRO", "InGarage", "Repaired", "CheckEnd", "Paid", "Finished" };
+app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
+{
+    var q = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.LicensePlate.Contains(plate.ToUpper()));
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status,
+        services = db.RoServiceItems.Count(s => s.OrgId == t.OrgId && s.RoId == r.Id),
+        parts = db.RoPartItems.Count(p => p.OrgId == t.OrgId && p.RoId == r.Id),
+        total = db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id).Sum(s => (decimal?)s.Amount) ?? 0
+              + (db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id).Sum(p => (decimal?)(p.NeedQty * p.UnitPrice)) ?? 0)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
+    var no = "RO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new RepairOrder
+    {
+        OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
+        CheckInDate = dto.CheckInDate ?? DateTime.Now, PlanedDeliveryDate = dto.PlanedDeliveryDate, CusRequest = dto.CusRequest,
+        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HasRO"
+    };
+    db.RepairOrders.Add(r); await db.SaveChangesAsync();
+    foreach (var s in dto.Services ?? new())
+        if (!string.IsNullOrWhiteSpace(s.SerCode))
+            db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = s.Amount });
+    foreach (var p in dto.Parts ?? new())
+        if (!string.IsNullOrWhiteSpace(p.PartCode))
+            db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = p.NeedQty <= 0 ? 1 : p.NeedQty, UnitPrice = p.UnitPrice, Note = p.Note });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.Amount }).ToListAsync();
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, lineTotal = p.NeedQty * p.UnitPrice, p.Note }).ToListAsync();
+    return Results.Ok(new
+    {
+        r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
+        services, parts,
+        total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
+    });
+}).RequireAuthorization();
+
+// Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
+app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var target = (dto.ToStatus ?? "").Trim();
+    var curIdx = Array.IndexOf(_roFlow, r.Status);
+    var tgtIdx = Array.IndexOf(_roFlow, target);
+    if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
+    if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}." });
+    r.Status = target;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Giá bán xe TCG theo spec (Mst_TCGCarSalePrice — port 1:1 FrmMstTCGCarSalePrice) =====
 app.MapGet("/api/tcgsaleprices", async (AppDbContext db, ITenantContext t, string? spec) =>
 {
@@ -1937,4 +2009,8 @@ record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal Pen
 record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
+record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount);
+record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note);
+record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts);
+record RoAdvanceDto(string ToStatus);
 record RegisterOrgDto(string Name);

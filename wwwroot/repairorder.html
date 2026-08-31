@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lệnh sửa chữa</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1080px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} h3{font-size:14px;margin:10px 0 4px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  #msg{font-size:13px} .stepper{font-size:12px} .stepper b{color:var(--accent)} .det{font-size:12px;opacity:.9}
+</style></head>
+<body>
+<h1>Lệnh sửa chữa (RO) <span class="muted">(port 1:1 FrmRepairOrder — TCMotor Ser_RO)</span></h1>
+<div class="muted stepper">Quy trình: HasRO → InGarage → Repaired → CheckEnd → Paid → Finished</div>
+<div class="card">
+  <b>Tạo lệnh sửa chữa</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="lp" placeholder="Biển số *" style="width:110px"><input id="vin" placeholder="VIN" style="width:120px">
+    <input id="cn" placeholder="Chủ xe" style="width:120px"><input id="km" placeholder="Số km" style="width:80px">
+    <input id="cr" placeholder="Yêu cầu KH" style="width:160px"><label class="muted"><input type="checkbox" id="cw"> Khách chờ</label>
+  </div>
+  <h3>Công việc dịch vụ</h3>
+  <table id="stbl"><thead><tr><th>Mã CV</th><th>Tên CV</th><th>Nguyên nhân</th><th>KTV</th><th class="n">Tiền công</th><th></th></tr></thead><tbody id="stb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addSer()">+ Công việc</button>
+  <h3>Phụ tùng</h3>
+  <table id="ptbl"><thead><tr><th>Mã PT</th><th>Tên PT</th><th>ĐVT</th><th class="n">SL</th><th class="n">Đơn giá</th><th></th></tr></thead><tbody id="ptb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addPart()">+ Phụ tùng</button>
+  <div class="bar" style="margin-top:10px"><span style="flex:1"></span><button class="primary" onclick="create()">Tạo RO</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="HasRO">Mới tạo</option><option value="InGarage">Vào xưởng</option><option value="Repaired">Sửa xong</option><option value="CheckEnd">Kiểm tra cuối</option><option value="Paid">Đã thanh toán</option><option value="Finished">Hoàn tất</option></select>
+  <input id="q" placeholder="Lọc biển số" oninput="load()" style="width:120px">
+</div>
+<table><thead><tr><th>Số RO</th><th>Biển số</th><th>Chủ xe</th><th>CV/PT</th><th class="n">Tổng tiền</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const FLOW=["HasRO","InGarage","Repaired","CheckEnd","Paid","Finished"];
+const LBL={HasRO:"Mới tạo",InGarage:"Vào xưởng",Repaired:"Sửa xong",CheckEnd:"Kiểm tra cuối",Paid:"Đã thanh toán",Finished:"Hoàn tất"};
+const n=x=>Number(x||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addSer(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="sc" style="width:80px"></td><td><input class="sn" style="width:120px"></td><td><input class="ca" style="width:120px"></td><td><input class="en" style="width:90px"></td><td class="n"><input class="am" type="number" style="width:90px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("stb").appendChild(tr); }
+function addPart(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="pc" style="width:80px"></td><td><input class="pn" style="width:120px"></td><td><input class="un" style="width:60px"></td><td class="n"><input class="qt" type="number" value="1" style="width:60px;text-align:right"></td><td class="n"><input class="up" type="number" style="width:90px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ptb").appendChild(tr); }
+async function create(){
+  const services=[...F("stb").querySelectorAll("tr")].map(tr=>({serCode:tr.querySelector(".sc").value,serName:tr.querySelector(".sn").value,cause:tr.querySelector(".ca").value,engineer:tr.querySelector(".en").value,amount:Number(tr.querySelector(".am").value||0)})).filter(s=>s.serCode);
+  const parts=[...F("ptb").querySelectorAll("tr")].map(tr=>({partCode:tr.querySelector(".pc").value,partName:tr.querySelector(".pn").value,unit:tr.querySelector(".un").value,needQty:Number(tr.querySelector(".qt").value||1),unitPrice:Number(tr.querySelector(".up").value||0)})).filter(p=>p.partCode);
+  const r=await fetch("/api/repairorders",{method:"POST",headers:H(),body:JSON.stringify({licensePlate:F("lp").value,vin:F("vin").value,cusName:F("cn").value,km:F("km").value,cusRequest:F("cr").value,cusWaiting:F("cw").checked,services,parts})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.rONo+"."); F("stb").innerHTML="";F("ptb").innerHTML="";addSer();addPart(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/repairorders?status=${F("fst").value}&plate=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(r=>{
+    const i=FLOW.indexOf(r.status); const next=i>=0&&i<FLOW.length-1?FLOW[i+1]:null;
+    const act=next?`<button class="sm" onclick="adv('${r.rONo}','${next}')">→ ${LBL[next]}</button>`:"";
+    return `<tr><td><b>${r.rONo}</b> <a href="#" class="det" onclick="detail('${r.rONo}');return false">chi tiết</a></td><td>${r.licensePlate}</td><td>${r.cusName||"—"}</td>
+      <td>${r.services}CV/${r.parts}PT</td><td class="n">${n(r.total)}</td>
+      <td><span class="pill">${LBL[r.status]||r.status}</span></td><td>${act}</td></tr><tr id="x-${r.rONo}"></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có RO.</td></tr>';
+}
+async function adv(no,to){ const r=await fetch(`/api/repairorders/${no}/advance`,{method:"POST",headers:H(),body:JSON.stringify({toStatus:to})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function detail(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/repairorders/${no}`,{headers:H()})).json();
+  const sv=(d.services||[]).map(s=>`CV ${s.serCode}${s.serName?" ("+s.serName+")":""} · công ${n(s.amount)}`).join(" &nbsp;|&nbsp; ")||"—";
+  const pa=(d.parts||[]).map(p=>`PT ${p.partCode} ×${p.needQty} = ${n(p.lineTotal)}`).join(" &nbsp;|&nbsp; ")||"—";
+  row.innerHTML=`<td colspan="7"><div class="det"><b>Công việc:</b> ${sv}<br><b>Phụ tùng:</b> ${pa}<br><b>Tổng:</b> ${n(d.total)}</div></td>`;
+}
+addSer(); addPart(); load();
+</script>
+</body></html>
