@@ -1227,6 +1227,48 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate) =====
+app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.GroupRepairs.Where(g => g.OrgId == t.OrgId).OrderBy(g => g.GroupRCode)
+        .Select(g => new { g.GroupRCode, g.GroupRName, g.Note, g.Status, engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRCode) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.GroupRCode) || string.IsNullOrWhiteSpace(dto.GroupRName))
+        return Results.BadRequest(new { error = "Cần GroupRCode và GroupRName." });
+    var code = dto.GroupRCode.Trim().ToUpperInvariant();
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == code);
+    if (g is null) { g = new GroupRepair { OrgId = t.OrgId, GroupRCode = code }; db.GroupRepairs.Add(g); }
+    g.GroupRName = dto.GroupRName; g.Note = dto.Note; g.Status = dto.Status ?? "1"; g.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GroupRCode, g.GroupRName });
+}).RequireAuthorization();
+
+// ===== Kỹ thuật viên (Ser_Engineer — port 1:1 FrmEngineerCreate) =====
+app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? group, string? q) =>
+{
+    var query = db.ServiceEngineers.Where(e => e.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(group)) query = query.Where(e => e.GroupRCode == group);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(e => e.EngineerName.Contains(q) || e.EngineerNo.Contains(q.ToUpper()));
+    var items = await query.OrderBy(e => e.EngineerNo).Take(500).Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.EngineerNo) || string.IsNullOrWhiteSpace(dto.EngineerName))
+        return Results.BadRequest(new { error = "Cần EngineerNo và EngineerName." });
+    var no = dto.EngineerNo.Trim().ToUpperInvariant();
+    var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
+    if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no }; db.ServiceEngineers.Add(e); }
+    e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.Status = dto.Status ?? "1"; e.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode });
+}).RequireAuthorization();
+
 // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
 app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, string? dms, string? tst) =>
 {
@@ -2660,4 +2702,6 @@ record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty);
 record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
+record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
+record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status);
 record RegisterOrgDto(string Name);

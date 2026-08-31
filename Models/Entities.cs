@@ -1078,6 +1078,33 @@ public sealed class ReqPartPriceLine
     public decimal QuotedPrice { get; set; }           // TST điền
 }
 
+/// <summary>Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate, TCMotor DMSCarSv/Admin):
+/// nhóm tổ sửa chữa (Đồng/Sơn/Máy/Điện...). Engineer thuộc 1 nhóm.</summary>
+public sealed class GroupRepair
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupRCode { get; set; } = "";
+    public string GroupRName { get; set; } = "";
+    public string? Note { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Kỹ thuật viên dịch vụ (Ser_Engineer — port 1:1 FrmEngineerCreate, TCMotor DMSCarSv/Admin):
+/// KTV thuộc 1 nhóm sửa chữa. RO service items tham chiếu KTV.</summary>
+public sealed class ServiceEngineer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string EngineerNo { get; set; } = "";
+    public string EngineerName { get; set; } = "";
+    public string? GroupRCode { get; set; }
+    public string? Note { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
