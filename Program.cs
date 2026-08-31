@@ -3230,6 +3230,50 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Xe khách trong hệ thống dịch vụ (ServiceCar — port 1:1 FrmCarInfo, TCMotor) =====
+app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string? q, string? model, string? active) =>
+{
+    var query = db.ServiceCars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.FrameNo.Contains(q!.ToUpper()) || (x.PlateNo != null && x.PlateNo.Contains(q!)) || (x.CusName != null && x.CusName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(model)) query = query.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.FrameNo).Take(500).Select(x => new
+    {
+        x.FrameNo, x.PlateNo, x.EngineNo, x.ModelCode, x.ColorCode, x.TradeMark, x.ProductYear, x.CurrentKm, x.CusName, x.CusMobile, x.FlagActive,
+        warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo số khung (VIN). Guard km không giảm (chỉ tăng hoặc giữ).
+app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.FrameNo)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
+    if (dto.CurrentKm < 0) return Results.BadRequest(new { error = "Số km không hợp lệ." });
+    var vin = dto.FrameNo.Trim().ToUpperInvariant();
+    var ex = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == vin);
+    if (ex is not null)
+    {
+        if (dto.CurrentKm < ex.CurrentKm) return Results.BadRequest(new { error = $"Số km mới ({dto.CurrentKm}) không được nhỏ hơn số km hiện tại ({ex.CurrentKm})." });
+        ex.PlateNo = dto.PlateNo; ex.EngineNo = dto.EngineNo; ex.ModelCode = dto.ModelCode; ex.ColorCode = dto.ColorCode; ex.TradeMark = dto.TradeMark; ex.ProductYear = dto.ProductYear; ex.CurrentKm = dto.CurrentKm; ex.WarrantyDate = dto.WarrantyDate; ex.CusName = dto.CusName; ex.CusMobile = dto.CusMobile; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.FrameNo, updated = true });
+    }
+    var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile, FlagActive = "1" };
+    db.ServiceCars.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.FrameNo, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db, ITenantContext t) =>
+{
+    vin = vin.Trim().ToUpperInvariant();
+    var x = await db.ServiceCars.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.FrameNo == vin);
+    if (x is null) return Results.NotFound(new { vin });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.FrameNo, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Danh mục phụ tùng dịch vụ (ServicePart — port 1:1 FrmPart/FrmPartSearch, TCMotor) =====
 app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active) =>
 {
@@ -8326,6 +8370,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
+record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);

@@ -2819,6 +2819,26 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Xe khách trong hệ thống dịch vụ (biển số/khung/máy/km/bảo hành) — port 1:1 FrmCarInfo (TblSerCar, TCMotor).</summary>
+public sealed class ServiceCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string FrameNo { get; set; } = "";   // VIN — khóa
+    public string? PlateNo { get; set; }
+    public string? EngineNo { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? TradeMark { get; set; }
+    public int? ProductYear { get; set; }
+    public decimal CurrentKm { get; set; }
+    public DateTime? WarrantyDate { get; set; }
+    public string? CusName { get; set; }
+    public string? CusMobile { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Danh mục phụ tùng dịch vụ (master lõi) — port 1:1 FrmPart (TblSerMSTPart, TCMotor).</summary>
 public sealed class ServicePart
 {
