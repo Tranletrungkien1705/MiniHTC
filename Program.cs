@@ -2763,6 +2763,34 @@ app.MapGet("/api/report/wholesale", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = deals.Count, totalAmount = deals.Sum(d => d.TotalAmount), confirmedAmount = deals.Where(d => d.Status == "Confirmed").Sum(d => d.TotalAmount), totalCars = deals.Sum(d => Cars(d.Id)), byBuyer, byStatus, bySalesman, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo yêu cầu bảo hiểm (port 1:1 báo cáo Ins_InsuranceReq) — tái dùng InsuranceReq + Dtl =====
+app.MapGet("/api/report/insurance", async (AppDbContext db, ITenantContext t, string? company, string? status, string? insType, DateTime? from, DateTime? to) =>
+{
+    var q = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(company)) q = q.Where(r => r.InsCompanyCode == company);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(insType)) q = q.Where(r => r.InsTypeCode == insType);
+    if (from is not null) q = q.Where(r => r.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(r => r.CreatedAt < to.Value.Date.AddDays(1));
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var dtlAgg = await db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && ids.Contains(c.InsuranceReqId))
+        .GroupBy(c => c.InsuranceReqId).Select(g => new { g.Key, cars = g.Count(), insAmount = g.Sum(x => x.InsAmount), fee = g.Sum(x => x.Price) }).ToListAsync();
+    var m = dtlAgg.ToDictionary(x => x.Key, x => (x.cars, x.insAmount, x.fee));
+    int Cars(long id) => m.TryGetValue(id, out var v) ? v.cars : 0;
+    decimal InsAmt(long id) => m.TryGetValue(id, out var v) ? v.insAmount : 0;
+    decimal Fee(long id) => m.TryGetValue(id, out var v) ? v.fee : 0;
+    var byCompany = reqs.GroupBy(r => string.IsNullOrEmpty(r.InsCompanyCode) ? "(chưa rõ)" : r.InsCompanyCode)
+        .Select(g => new { company = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)), insAmount = g.Sum(r => InsAmt(r.Id)), fee = g.Sum(r => Fee(r.Id)) }).OrderByDescending(x => x.insAmount).ToList();
+    var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var byType = reqs.GroupBy(r => string.IsNullOrEmpty(r.InsTypeCode) ? "(chưa rõ)" : r.InsTypeCode).Select(g => new { insType = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)) }).OrderByDescending(x => x.count).ToList();
+    var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, cars = Cars(r.Id), insAmount = InsAmt(r.Id), fee = Fee(r.Id), createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), totalInsAmount = reqs.Sum(r => InsAmt(r.Id)), totalFee = reqs.Sum(r => Fee(r.Id)), byCompany, byStatus, byType, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
