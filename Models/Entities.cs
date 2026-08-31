@@ -1463,6 +1463,34 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Master chính sách bán hàng (SPL_SalesPolicyMst) — port 1:1 FrmMstPolicy_New/Mng (2010.HTC/Sales). Chính sách hỗ trợ bán, dùng bởi duyệt SO. Header + dòng đại lý/năm SX/tiền hỗ trợ.</summary>
+public sealed class SalesPolicyMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SPSRCode { get; set; } = "";      // mã chính sách (auto)
+    public string SPNo { get; set; } = "";           // số hiệu văn bản
+    public string? SPSRType { get; set; }            // loại chính sách
+    public string? SPSRRoot { get; set; }
+    public string? FormBusinessSupportCode { get; set; } // hình thức hỗ trợ
+    public DateTime StartDate { get; set; }
+    public DateTime EndDate { get; set; }
+    public string FlagMstValid { get; set; } = "1"; // trạng thái hiệu lực
+    public string? Remark { get; set; }
+    public string? FilePath { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class SalesPolicyMstDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PolicyId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? YearOfManufacture { get; set; }
+    public decimal AmountSupport { get; set; }
+    public string? Remark { get; set; }
+}
+
 /// <summary>Phiếu bảo trì xe lưu kho bãi (StoF_Maintain) — port 1:1 FrmMaintenanceSlipList/Detail (2010.HTC/Maintenance). Bảo dưỡng xe thành phẩm lưu kho, theo VIN.</summary>
 public sealed class StoFMaintain
 {

@@ -1289,6 +1289,61 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Master chính sách bán hàng (SalesPolicyMst — port 1:1 FrmMstPolicy_New/Mng, 2010.HTC/Sales) =====
+app.MapGet("/api/salespolicies", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
+{
+    var q = db.SalesPolicyMsts.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.FlagMstValid == status);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(p => p.SPSRType == type);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.SPSRCode, p.SPNo, p.SPSRType, p.FormBusinessSupportCode, p.StartDate, p.EndDate, p.FlagMstValid, p.Remark,
+        lines = db.SalesPolicyMstDetails.Count(l => l.OrgId == t.OrgId && l.PolicyId == p.Id),
+        totalSupport = db.SalesPolicyMstDetails.Where(l => l.OrgId == t.OrgId && l.PolicyId == p.Id).Sum(l => (decimal?)l.AmountSupport) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salespolicies", async (SalesPolicyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SPNo)) return Results.BadRequest(new { error = "Chưa có thông tin số hiệu văn bản." });
+    if (dto.StartDate is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày áp dụng từ." });
+    if (dto.EndDate is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày áp dụng đến." });
+    if (dto.EndDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày áp dụng đến phải >= ngày áp dụng từ." });
+    var code = "SPSR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new SalesPolicyMst
+    {
+        OrgId = t.OrgId, SPSRCode = code, SPNo = dto.SPNo.Trim(), SPSRType = dto.SPSRType, SPSRRoot = dto.SPSRRoot,
+        FormBusinessSupportCode = dto.FormBusinessSupportCode, StartDate = dto.StartDate.Value, EndDate = dto.EndDate.Value,
+        FlagMstValid = dto.FlagMstValid == "0" ? "0" : "1", Remark = dto.Remark, FilePath = dto.FilePath
+    };
+    db.SalesPolicyMsts.Add(p); await db.SaveChangesAsync();
+    foreach (var l in (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.DealerCode) || x.AmountSupport != 0))
+        db.SalesPolicyMstDetails.Add(new SalesPolicyMstDetail { OrgId = t.OrgId, PolicyId = p.Id, DealerCode = l.DealerCode, YearOfManufacture = l.YearOfManufacture, AmountSupport = l.AmountSupport, Remark = l.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.SPSRCode, p.SPNo, details = (dto.Details ?? new()).Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/salespolicies/{code}/details", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var p = await db.SalesPolicyMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SPSRCode == code);
+    if (p is null) return Results.NotFound(new { code });
+    var lines = await db.SalesPolicyMstDetails.Where(l => l.OrgId == t.OrgId && l.PolicyId == p.Id)
+        .Select(l => new { l.DealerCode, l.YearOfManufacture, l.AmountSupport, l.Remark }).ToListAsync();
+    return Results.Ok(new { p.SPSRCode, p.SPNo, p.StartDate, p.EndDate, count = lines.Count, lines, total = lines.Sum(x => x.AmountSupport) });
+}).RequireAuthorization();
+
+app.MapPost("/api/salespolicies/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var p = await db.SalesPolicyMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SPSRCode == code);
+    if (p is null) return Results.NotFound(new { code });
+    p.FlagMstValid = p.FlagMstValid == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.SPSRCode, flagMstValid = p.FlagMstValid });
+}).RequireAuthorization();
+
 // ===== Phiếu bảo trì xe lưu kho bãi (StoFMaintain — port 1:1 FrmMaintenanceSlipList/Detail, 2010.HTC/Maintenance) =====
 app.MapGet("/api/stofmaintains", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
 {
@@ -3924,6 +3979,8 @@ record DlrContractDto(string? DealerCode, string DlrContractNoUser, string Sales
 record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);
 record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? UserCodeMtn, string? StorageCodeInit, string? StorageCodeCurrent, string? MtnStatusMain, string? Remark);
 record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
+record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
+record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record RegisterOrgDto(string Name);
