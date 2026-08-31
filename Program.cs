@@ -2916,6 +2916,31 @@ app.MapGet("/api/report/upgradeorder", async (AppDbContext db, ITenantContext t,
     return Results.Ok(new { total = recs.Count, totalQty = recs.Sum(o => o.TotalQty), approved = recs.Count(o => o.Status == "Approved"), byDealer, byMonth, byType, byPolicy, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo tiến độ sản xuất (port 1:1 báo cáo WO_Schedule) — tái dùng WoSchedule + WoScheduleLine =====
+app.MapGet("/api/report/production", async (AppDbContext db, ITenantContext t, string? model, string? status) =>
+{
+    var sq = db.WoSchedules.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) sq = sq.Where(s => s.Status == status);
+    var schedules = await sq.ToListAsync();
+    var ids = schedules.Select(s => s.Id).ToHashSet();
+    var lq = db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.WoScheduleId));
+    if (!string.IsNullOrWhiteSpace(model)) lq = lq.Where(l => l.ModelCode == model);
+    var lines = await lq.ToListAsync();
+    int Pct(int prod, int ord) => ord > 0 ? (int)Math.Round(prod * 100.0 / ord) : 0;
+    var byModel = lines.GroupBy(l => string.IsNullOrEmpty(l.ModelCode) ? "(chưa rõ)" : l.ModelCode)
+        .Select(g => { int ord = g.Sum(x => x.QtyOrder); int prod = g.Sum(x => x.QtyProduct); int rem = g.Sum(x => x.QtyRemain);
+            return new { modelCode = g.Key, qtyOrder = ord, qtyProduct = prod, qtyRemain = rem, completePct = Pct(prod, ord) }; })
+        .OrderByDescending(x => x.qtyRemain).ToList();
+    var totOrder = lines.Sum(l => l.QtyOrder); var totProduct = lines.Sum(l => l.QtyProduct); var totRemain = lines.Sum(l => l.QtyRemain);
+    var byStatus = schedules.GroupBy(s => s.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = lines.OrderByDescending(l => l.QtyRemain).Take(500).Select(l => new
+    {
+        l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain, completePct = Pct(l.QtyProduct, l.QtyOrder)
+    }).ToList();
+    return Results.Ok(new { schedules = schedules.Count, lines = lines.Count, totalOrder = totOrder, totalProduct = totProduct, totalRemain = totRemain,
+        overallPct = Pct(totProduct, totOrder), byModel, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
