@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Phí bảo hiểm</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:940px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n{text-align:right;font-variant-numeric:tabular-nums} .act{color:var(--accent);cursor:pointer} .r{color:#dc2626} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Phí bảo hiểm <span class="muted">(port 1:1 FrmMst_InsuranceFee — Mst_InsuranceFee)</span></h1>
+<div class="bar">
+  <input id="c" placeholder="Mã *" style="width:100px"><input id="co" placeholder="Cty BH" style="width:90px"><input id="ty" placeholder="Loại BH" style="width:90px">
+  <input id="ct" placeholder="Số HĐ" style="width:110px"><input id="fe" placeholder="Phí" style="width:110px"><input id="pc" placeholder="% " style="width:70px">
+  <button class="primary" onclick="save()">Lưu</button>
+  <span style="flex:1"></span><input id="q" placeholder="Tìm..." oninput="load()" style="width:110px"><span id="msg"></span>
+</div>
+<table><thead><tr><th>Mã</th><th>Cty BH</th><th>Loại</th><th>Số HĐ</th><th class="n">Phí</th><th class="n">%</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
+const fmt=n=>Number(n).toLocaleString('vi-VN');
+async function load(){ await token();
+  const d=await (await fetch("/api/insfees?q="+encodeURIComponent(F("q").value),{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(x=>`<tr><td><b>${x.code}</b></td><td>${x.insCompanyCode||""}</td><td>${x.insTypeCode||""}</td><td>${x.contractNo||""}</td>
+    <td class="n">${fmt(x.fee)}</td><td class="n">${x.percent}%</td>
+    <td><span class="act" onclick="edit('${x.code}','${x.insCompanyCode||''}','${x.insTypeCode||''}','${x.contractNo||''}','${x.fee}','${x.percent}')">Sửa</span>
+    <span class="act r" onclick="del('${x.code}')">Xoá</span></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có.</td></tr>';
+}
+function edit(c,co,ty,ct,fe,pc){ F("c").value=c;F("co").value=co;F("ty").value=ty;F("ct").value=ct;F("fe").value=fe;F("pc").value=pc; }
+async function save(){
+  const r=await fetch("/api/insfees",{method:"POST",headers:H(),body:JSON.stringify({code:F("c").value,insCompanyCode:F("co").value,insTypeCode:F("ty").value,contractNo:F("ct").value,fee:Number(F("fe").value||0),percent:Number(F("pc").value||0)})});
+  if(r.ok){ msg("Đã lưu.",true); ["c","co","ty","ct","fe","pc"].forEach(i=>F(i).value=""); load(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
+}
+async function del(c){ if(!confirm("Xoá "+c+"?"))return; const r=await fetch("/api/insfees/"+encodeURIComponent(c),{method:"DELETE",headers:H()});
+  if(r.ok){ msg("Đã xoá.",true); load(); } }
+load();
+</script>
+</body></html>

@@ -21,6 +21,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Bom> Boms => Set<Bom>();
     public DbSet<BomLine> BomLines => Set<BomLine>();
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();
+    public DbSet<InsuranceFee> InsuranceFees => Set<InsuranceFee>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

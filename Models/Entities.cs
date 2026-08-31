@@ -230,6 +230,21 @@ public sealed class WarrantyExtension
     public DateTime? ActivatedAt { get; set; }
 }
 
+/// <summary>Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee): hợp đồng + phí + tỷ lệ %.</summary>
+public sealed class InsuranceFee
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string? InsCompanyCode { get; set; }
+    public string? InsTypeCode { get; set; }
+    public string? ContractNo { get; set; }
+    public decimal Fee { get; set; }
+    public decimal Percent { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

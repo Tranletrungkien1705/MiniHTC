@@ -737,6 +737,37 @@ app.MapPost("/api/wexts/{code}/{action}", async (string code, string action, App
     return Results.Ok(new { w.Code, status = w.Status });
 }).RequireAuthorization();
 
+// ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
+app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var query = db.InsuranceFees.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.Code.Contains(q) || (x.ContractNo ?? "").Contains(q));
+    var items = await query.OrderBy(x => x.Code).Select(x => new
+    { x.Code, x.InsCompanyCode, x.InsTypeCode, x.ContractNo, x.Fee, x.Percent, x.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/insfees", async (InsFeeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Code)) return Results.BadRequest(new { error = "Cần Code." });
+    var code = dto.Code.Trim().ToUpperInvariant();
+    var x = await db.InsuranceFees.FirstOrDefaultAsync(y => y.OrgId == t.OrgId && y.Code == code);
+    if (x is null) { x = new InsuranceFee { OrgId = t.OrgId, Code = code }; db.InsuranceFees.Add(x); }
+    x.InsCompanyCode = dto.InsCompanyCode; x.InsTypeCode = dto.InsTypeCode; x.ContractNo = dto.ContractNo;
+    x.Fee = dto.Fee; x.Percent = dto.Percent; x.Status = dto.Status ?? "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.Code, x.Fee, x.Percent });
+}).RequireAuthorization();
+
+app.MapDelete("/api/insfees/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.InsuranceFees.FirstOrDefaultAsync(y => y.OrgId == t.OrgId && y.Code == code);
+    if (x is null) return Results.NotFound(new { code });
+    db.InsuranceFees.Remove(x); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -765,4 +796,5 @@ record PODto(string SupplierCode, string? Note, decimal Total);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
+record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, string? Status);
 record RegisterOrgDto(string Name);
