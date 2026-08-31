@@ -2647,6 +2647,42 @@ app.MapGet("/api/report/summary", async (AppDbContext db, ITenantContext t) =>
     return Results.Ok(summary);
 }).RequireAuthorization();
 
+// ===== Báo cáo tình trạng hiệu lực bảo lãnh (port 1:1 FrmBCTinhTrangHoSoHieuLucBaoLanh) — tái dùng BankGuarantee =====
+app.MapGet("/api/report/grtvalidity", async (AppDbContext db, ITenantContext t, string? bank, int? soonDays) =>
+{
+    var soon = soonDays is > 0 ? soonDays.Value : 30;   // ngưỡng "sắp hết hạn" (mặc định 30 ngày)
+    var q = db.BankGuarantees.Where(g => g.OrgId == t.OrgId && g.Status == "Approved" && g.FlagSettled != "1");
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(g => g.BankCode == bank);
+    var recs = await q.ToListAsync();
+    var today = DateTime.Today;
+    string Classify(BankGuarantee g)
+    {
+        if (g.DateExpired is null) return "NoDate";
+        var days = (g.DateExpired.Value.Date - today).Days;
+        if (days < 0) return "Expired";
+        if (days <= soon) return "ExpiringSoon";
+        return "Valid";
+    }
+    var detail = recs.OrderBy(g => g.DateExpired ?? DateTime.MaxValue).Take(500).Select(g => new
+    {
+        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.TotalAmount,
+        dateExpired = g.DateExpired != null ? g.DateExpired.Value.ToString("yyyy-MM-dd") : "",
+        daysLeft = g.DateExpired != null ? (int)(g.DateExpired.Value.Date - today).TotalDays : (int?)null,
+        validity = Classify(g)
+    }).ToList();
+    var byValidity = recs.GroupBy(Classify)
+        .Select(g => new { validity = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) }).ToList();
+    return Results.Ok(new
+    {
+        soonDays = soon,
+        total = recs.Count,
+        valid = recs.Count(g => Classify(g) == "Valid"),
+        expiringSoon = recs.Count(g => Classify(g) == "ExpiringSoon"),
+        expired = recs.Count(g => Classify(g) == "Expired"),
+        byValidity, detail
+    });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
