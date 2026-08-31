@@ -193,6 +193,25 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("ClaimRejectReason", "Lý do từ chối BH (FrmMst_ClaimRejectReason) [TCMotor]"),
     ("MaintenancePackage", "Gói bảo dưỡng (FrmMst_MaintenancePackage) [TCMotor]"),
     ("Currency", "Tiền tệ (FrmMst_Currency)"),
+    // ---- Bổ sung 2010.HTC + TCMotor ----
+    ("PriceType", "Loại giá (FrmMst_PriceType)"),
+    ("DeliveryMethod", "Phương thức giao (FrmMst_DeliveryMethod)"),
+    ("TransportRoute", "Tuyến vận tải (FrmMst_TransportRoute)"),
+    ("PortMaster", "Cảng (FrmMst_Port)"),
+    ("VesselMaster", "Tàu vận chuyển (FrmMst_Vessel)"),
+    ("PackingType", "Loại đóng gói (FrmMst_PackingType)"),
+    ("TaxRate", "Thuế suất (FrmMst_TaxRate)"),
+    ("FeeType", "Loại phí (FrmMst_FeeType)"),
+    ("AccountType", "Loại tài khoản (FrmMst_AccountType)"),
+    ("CostCenter", "Trung tâm chi phí (FrmMst_CostCenter)"),
+    ("Project", "Dự án (FrmMst_Project)"),
+    ("Budget", "Ngân sách (FrmMst_Budget)"),
+    ("ApprovalLevel", "Cấp phê duyệt (FrmMst_ApprovalLevel)"),
+    ("Holiday", "Ngày lễ (FrmMst_Holiday)"),
+    ("Shift", "Ca làm việc (FrmMst_Shift)"),
+    ("LeaveType", "Loại nghỉ phép (FrmMst_LeaveType)"),
+    ("NotifyTemplate", "Mẫu thông báo (FrmMst_NotifyTemplate)"),
+    ("PrintTemplate", "Mẫu in (FrmMst_PrintTemplate)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
