@@ -160,6 +160,23 @@ public sealed class TestDrive
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Yêu cầu bảo hành dịch vụ (TCMotor Warranty Claim) — ĐL claim BH lên hãng: mã lỗi + phụ tùng + công.</summary>
+public sealed class WarrantyClaimTC
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ClaimNo { get; set; } = "";
+    public string Vin { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? ErrorCode { get; set; }
+    public decimal PartsCost { get; set; }
+    public decimal LaborCost { get; set; }
+    public string Status { get; set; } = "Submitted";   // Submitted → Approved/Rejected → Paid
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DecidedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

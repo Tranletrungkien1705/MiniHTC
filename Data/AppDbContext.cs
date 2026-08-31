@@ -16,6 +16,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SysConfig> Configs => Set<SysConfig>();
     public DbSet<BusinessPlan> BusinessPlans => Set<BusinessPlan>();
     public DbSet<TestDrive> TestDrives => Set<TestDrive>();
+    public DbSet<WarrantyClaimTC> WarrantyClaims => Set<WarrantyClaimTC>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

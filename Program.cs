@@ -543,6 +543,38 @@ app.MapPost("/api/testdrives/{code}/{action}", async (string code, string action
     return Results.Ok(new { x.Code, status = x.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu bảo hành dịch vụ TCMotor (port 1:1 Warranty Claim) =====
+app.MapGet("/api/wclaims", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.WarrantyClaims.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    { c.ClaimNo, c.Vin, c.DealerCode, c.ErrorCode, c.PartsCost, c.LaborCost, total = c.PartsCost + c.LaborCost, c.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, approvedValue = items.Where(i => i.Status is "Approved" or "Paid").Sum(i => i.total), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/wclaims", async (WClaimDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    var no = "WC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new WarrantyClaimTC { OrgId = t.OrgId, ClaimNo = no, Vin = dto.Vin.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", ErrorCode = dto.ErrorCode, PartsCost = dto.PartsCost, LaborCost = dto.LaborCost, Status = "Submitted" };
+    db.WarrantyClaims.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.ClaimNo, c.Vin, total = c.PartsCost + c.LaborCost, status = c.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject" or "pay")) return Results.BadRequest(new { error = "action = approve|reject|pay" });
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.WarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ClaimNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (action == "approve") { if (c.Status != "Submitted") return Results.BadRequest(new { error = "Sai trạng thái." }); c.Status = "Approved"; c.DecidedAt = DateTime.Now; }
+    else if (action == "reject") { if (c.Status != "Submitted") return Results.BadRequest(new { error = "Sai trạng thái." }); c.Status = "Rejected"; c.DecidedAt = DateTime.Now; }
+    else { if (c.Status != "Approved") return Results.BadRequest(new { error = "Chưa duyệt." }); c.Status = "Paid"; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ClaimNo, status = c.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -566,4 +598,5 @@ record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
 record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
+record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record RegisterOrgDto(string Name);
