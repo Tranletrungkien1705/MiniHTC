@@ -1227,6 +1227,46 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Thư tín dụng (LC — port 1:1 FrmNewLC/FrmMngLC, DMSales.Foton) =====
+app.MapGet("/api/lcs", async (AppDbContext db, ITenantContext t, string? status, string? contract) =>
+{
+    var q = db.LettersOfCredit.Where(l => l.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(l => l.Status == status);
+    if (!string.IsNullOrWhiteSpace(contract)) q = q.Where(l => l.ContractNo.Contains(contract.ToUpper()));
+    var now = DateTime.Now;
+    var items = await q.OrderByDescending(l => l.Id).Take(500).Select(l => new
+    { l.LCNo, l.ContractNo, l.BankName, l.Amount, l.OpenDate, l.ExpiryDate, l.Status, expired = l.ExpiryDate != null && l.ExpiryDate < now && l.Status == "Open" }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalAmount = items.Sum(x => x.Amount), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/lcs", async (LcDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // guard đúng FrmNewLC: cần ContractNo, LCNo, BankName
+    if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Cần số hợp đồng (ContractNo)." });
+    if (string.IsNullOrWhiteSpace(dto.LCNo)) return Results.BadRequest(new { error = "Cần số LC (LCNo)." });
+    if (string.IsNullOrWhiteSpace(dto.BankName)) return Results.BadRequest(new { error = "Cần ngân hàng (BankName)." });
+    if (dto.ExpiryDate is DateTime ed && dto.OpenDate is DateTime od && ed < od)
+        return Results.BadRequest(new { error = "Ngày hết hạn phải ≥ ngày mở." });
+    var no = dto.LCNo.Trim().ToUpperInvariant();
+    var l = await db.LettersOfCredit.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LCNo == no);
+    if (l is null) { l = new LetterOfCredit { OrgId = t.OrgId, LCNo = no }; db.LettersOfCredit.Add(l); }
+    l.ContractNo = dto.ContractNo.Trim().ToUpperInvariant(); l.BankName = dto.BankName; l.Amount = dto.Amount;
+    l.OpenDate = dto.OpenDate; l.ExpiryDate = dto.ExpiryDate; l.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { l.LCNo, l.ContractNo, l.BankName, l.Amount });
+}).RequireAuthorization();
+
+app.MapPost("/api/lcs/{no}/close", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var l = await db.LettersOfCredit.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LCNo == no);
+    if (l is null) return Results.NotFound(new { no });
+    if (l.Status != "Open") return Results.BadRequest(new { error = "LC đã tất toán." });
+    l.Status = "Closed"; l.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { l.LCNo, status = l.Status });
+}).RequireAuthorization();
+
 // ===== Proforma Invoice nhập xe (Pi — port 1:1 FrmNewPI/FrmMngPI, DMSales.Foton) =====
 app.MapGet("/api/pis", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -2939,4 +2979,5 @@ record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, st
 record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, List<PiLineDto>? Lines);
+record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record RegisterOrgDto(string Name);

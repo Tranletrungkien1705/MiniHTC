@@ -1209,6 +1209,22 @@ public sealed class PiLine
     public decimal UnitPrice { get; set; }
 }
 
+/// <summary>Thư tín dụng nhập khẩu (LC — port 1:1 FrmNewLC/FrmMngLC, TCMotor DMSales.Foton):
+/// LC mở tại ngân hàng cho 1 hợp đồng nhập xe. Open(mở)→Closed(tất toán); cờ hết hạn.</summary>
+public sealed class LetterOfCredit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string LCNo { get; set; } = "";
+    public string ContractNo { get; set; } = "";       // số hợp đồng
+    public string BankName { get; set; } = "";          // ngân hàng mở LC
+    public decimal Amount { get; set; }
+    public DateTime? OpenDate { get; set; }
+    public DateTime? ExpiryDate { get; set; }
+    public string Status { get; set; } = "Open";        // Open → Closed
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

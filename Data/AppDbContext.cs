@@ -87,6 +87,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<POCommandLine> POCommandLines => Set<POCommandLine>();
     public DbSet<Pi> Pis => Set<Pi>();
     public DbSet<PiLine> PiLines => Set<PiLine>();
+    public DbSet<LetterOfCredit> LettersOfCredit => Set<LetterOfCredit>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
