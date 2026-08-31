@@ -3300,6 +3300,47 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Chi phí lưu kho theo kho + loại chi phí (InventoryCost — port 1:1 FrmMst_QuanLyChiPhiLuuKho, Admin/Product) =====
+app.MapGet("/api/inventorycosts", async (AppDbContext db, ITenantContext t, string? storage, string? costType, string? active) =>
+{
+    var q = db.InventoryCosts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(x => x.StorageCode == storage);
+    if (!string.IsNullOrWhiteSpace(costType)) q = q.Where(x => x.CostTypeCode == costType);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.CostTypeCode).Take(500)
+        .Select(x => new { x.StorageCode, x.StorageName, x.CostTypeCode, x.CostTypeName, x.UnitPrice, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo (kho + loại chi phí): mỗi cặp 1 đơn giá; nhập lại = cập nhật.
+app.MapPost("/api/inventorycosts", async (InventoryCostDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Chưa chọn kho." });
+    if (string.IsNullOrWhiteSpace(dto.CostTypeCode)) return Results.BadRequest(new { error = "Chưa chọn loại chi phí." });
+    if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không hợp lệ." });
+    var st = dto.StorageCode.Trim().ToUpperInvariant(); var ct = dto.CostTypeCode.Trim().ToUpperInvariant();
+    var ex = await db.InventoryCosts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == st && x.CostTypeCode == ct);
+    if (ex is not null)
+    {
+        ex.StorageName = dto.StorageName; ex.CostTypeName = dto.CostTypeName; ex.UnitPrice = dto.UnitPrice; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.StorageCode, ex.CostTypeCode, updated = true });
+    }
+    var r = new InventoryCost { OrgId = t.OrgId, StorageCode = st, StorageName = dto.StorageName, CostTypeCode = ct, CostTypeName = dto.CostTypeName, UnitPrice = dto.UnitPrice, FlagActive = "1" };
+    db.InventoryCosts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.StorageCode, r.CostTypeCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/inventorycosts/{storage}/{costType}/toggle", async (string storage, string costType, AppDbContext db, ITenantContext t) =>
+{
+    storage = storage.Trim().ToUpperInvariant(); costType = costType.Trim().ToUpperInvariant();
+    var x = await db.InventoryCosts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.StorageCode == storage && v.CostTypeCode == costType);
+    if (x is null) return Results.NotFound(new { storage, costType });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.StorageCode, x.CostTypeCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Đơn giá thiết bị GPS theo hợp đồng (GpsUnitPrice — port 1:1 FrmMst_UnitPriceGPS, Admin/Product) =====
 app.MapGet("/api/gpsunitprices", async (AppDbContext db, ITenantContext t, string? contract, string? active) =>
 {
@@ -7349,6 +7390,7 @@ record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, str
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
+record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);

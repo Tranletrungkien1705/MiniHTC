@@ -152,6 +152,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<BackOrder> BackOrders => Set<BackOrder>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<GpsUnitPrice> GpsUnitPrices => Set<GpsUnitPrice>();
+    public DbSet<InventoryCost> InventoryCosts => Set<InventoryCost>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
     public DbSet<CarOCN> CarOCNs => Set<CarOCN>();

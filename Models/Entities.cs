@@ -2805,6 +2805,20 @@ public sealed class GpsUnitPrice
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Chi phí lưu kho theo kho + loại chi phí — port 1:1 FrmMst_QuanLyChiPhiLuuKho (Tbl_Mst_InventoryCost).</summary>
+public sealed class InventoryCost
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StorageCode { get; set; } = "";
+    public string? StorageName { get; set; }
+    public string CostTypeCode { get; set; } = "";
+    public string? CostTypeName { get; set; }
+    public decimal UnitPrice { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
