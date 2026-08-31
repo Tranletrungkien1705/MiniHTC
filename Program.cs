@@ -2706,6 +2706,35 @@ app.MapGet("/api/report/payment", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { total = recs.Count, totalAmount = recs.Sum(p => p.TotalAmount), approvedAmount = recs.Where(p => p.PaymentStatus == "Approved").Sum(p => p.TotalAmount), byBank, byStatus, byFunds, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo hóa đơn VAT HTC (port 1:1 báo cáo VAT_HTCInvoice) — tái dùng VatInvoice + VatInvoiceCar =====
+app.MapGet("/api/report/vatinvoice", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? adjType, DateTime? from, DateTime? to) =>
+{
+    var q = db.VatInvoices.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(v => v.VatHTCStatus == status);
+    if (adjType == "adj") q = q.Where(v => v.InvoiceAdjType != "");
+    else if (adjType == "root") q = q.Where(v => v.InvoiceAdjType == "");
+    if (from is not null) q = q.Where(v => v.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(v => v.CreatedAt < to.Value.Date.AddDays(1));
+    var invs = await q.ToListAsync();
+    var ids = invs.Select(v => v.Id).ToHashSet();
+    var carAgg = await db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.VatInvoiceId))
+        .GroupBy(c => c.VatInvoiceId).Select(g => new { g.Key, cars = g.Count(), amount = g.Sum(x => x.HTCUnitPrice) }).ToListAsync();
+    var carMap = carAgg.ToDictionary(x => x.Key, x => (x.cars, x.amount));
+    int Cars(long id) => carMap.TryGetValue(id, out var v) ? v.cars : 0;
+    decimal Amt(long id) => carMap.TryGetValue(id, out var v) ? v.amount : 0;
+    var byDealer = invs.GroupBy(v => string.IsNullOrEmpty(v.DealerCode) ? "(chưa rõ)" : v.DealerCode)
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(v => Cars(v.Id)), amount = g.Sum(v => Amt(v.Id)) }).OrderByDescending(x => x.amount).ToList();
+    var byStatus = invs.GroupBy(v => v.VatHTCStatus).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = invs.OrderByDescending(v => v.Id).Take(500).Select(v => new
+    {
+        v.HTCInvoiceCode, v.HTCInvoiceNo, v.InvoiceIDCode, v.DealerCode, v.VAT, v.InvoiceAdjType, v.VatHTCStatus, v.OS_HDDT_InvoiceCode,
+        cars = Cars(v.Id), amount = Amt(v.Id), createdAt = v.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = invs.Count, totalCars = invs.Sum(v => Cars(v.Id)), totalAmount = invs.Sum(v => Amt(v.Id)),
+        issued = invs.Count(v => v.VatHTCStatus == "Issued"), deleted = invs.Count(v => v.VatHTCStatus == "Deleted"), byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
