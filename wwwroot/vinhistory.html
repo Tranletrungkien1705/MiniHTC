@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lịch sử GPS↔VIN</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,label{font:inherit} input{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .active{color:var(--warn)} .closed{color:var(--ok)}
+  .kpi{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 12px;margin-right:8px}
+</style></head>
+<body>
+<h1>Lịch sử gắn / gỡ GPS theo VIN <span class="muted">(port 1:1 FrmMngVinHistoryMap — Sto_StoTransactionGPS)</span></h1>
+<div class="bar">
+  <input id="vin" placeholder="Lọc VIN" oninput="load()" style="width:130px">
+  <input id="dv" placeholder="Lọc thiết bị" oninput="load()" style="width:130px">
+  <label><input type="checkbox" id="op" onchange="load()"> Chỉ đang gắn</label>
+  <span style="flex:1"></span><span class="kpi">Tổng GD: <b id="kt">0</b></span><span class="kpi">Đang gắn: <b id="ka">0</b></span>
+</div>
+<table><thead><tr><th>VIN</th><th>Thiết bị</th><th>Địa chỉ</th><th>Ngày gắn</th><th>Ngày gỡ</th><th>Trạng thái</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const dt=d=>d? new Date(d).toLocaleString("vi-VN"):"—";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+async function load(){ await token();
+  const d=await (await fetch(`/api/gpshistory?vin=${encodeURIComponent(F("vin").value)}&device=${encodeURIComponent(F("dv").value)}&open=${F("op").checked?"1":""}`,{headers:H()})).json();
+  F("kt").textContent=d.count; F("ka").textContent=d.active;
+  F("rows").innerHTML=(d.items||[]).map(x=>{
+    const on=!x.unMapDateTime;
+    return `<tr><td><b>${x.vin}</b></td><td>${x.gpsDvNo}</td><td class="muted">${x.vinAddress||"—"}</td>
+      <td>${dt(x.mapDateTime)}</td><td>${dt(x.unMapDateTime)}</td>
+      <td><span class="pill ${on?'active':'closed'}">${on?"Đang gắn":"Đã gỡ"}</span></td></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có lịch sử. (Gắn/gỡ ở trang gpsbalance.html)</td></tr>';
+}
+load();
+</script>
+</body></html>

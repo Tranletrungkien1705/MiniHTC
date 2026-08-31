@@ -1254,6 +1254,8 @@ app.MapPost("/api/gpsbalance/map", async (GpsMapDto dto, AppDbContext db, ITenan
     if (g is null) { g = new GpsBalance { OrgId = t.OrgId, GpsDvNo = dv }; db.GpsBalances.Add(g); }
     g.Vin = vin; g.DealerCode = dto.DealerCode; g.DealerName = dto.DealerName; g.Address = dto.Address; g.StorageCode = dto.StorageCode;
     g.MapVINDateTime = DateTime.Now; g.Status = "Mapped";
+    // ghi lịch sử (Sto_StoTransactionGPS): mở 1 giao dịch gắn mới
+    db.GpsTransactions.Add(new GpsTransaction { OrgId = t.OrgId, Vin = vin, GpsDvNo = dv, VINAddress = dto.Address, MapDateTime = DateTime.Now });
     await db.SaveChangesAsync();
     return Results.Ok(new { g.GpsDvNo, g.Vin, status = g.Status });
 }).RequireAuthorization();
@@ -1265,9 +1267,25 @@ app.MapPost("/api/gpsbalance/{device}/unmap", async (string device, AppDbContext
     var g = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == device);
     if (g is null) return Results.NotFound(new { device });
     if (g.Status != "Mapped") return Results.BadRequest(new { error = "Thiết bị chưa gắn VIN." });
+    // đóng giao dịch gắn đang mở (set UnMapDateTime) trước khi xoá VIN khỏi balance
+    var openTx = await db.GpsTransactions.Where(x => x.OrgId == t.OrgId && x.GpsDvNo == device && x.Vin == g.Vin && x.UnMapDateTime == null)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (openTx is not null) openTx.UnMapDateTime = DateTime.Now;
     g.Status = "Unmapped"; g.Vin = null; g.MapVINDateTime = null;
     await db.SaveChangesAsync();
     return Results.Ok(new { g.GpsDvNo, status = g.Status });
+}).RequireAuthorization();
+
+// ===== Lịch sử gắn/gỡ GPS theo VIN (Sto_StoTransactionGPS — port 1:1 FrmMngVinHistoryMap) =====
+app.MapGet("/api/gpshistory", async (AppDbContext db, ITenantContext t, string? vin, string? device, string? open) =>
+{
+    var q = db.GpsTransactions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(device)) q = q.Where(x => x.GpsDvNo.Contains(device.ToUpper()));
+    if (open == "1") q = q.Where(x => x.UnMapDateTime == null);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000)
+        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime }).ToListAsync();
+    return Results.Ok(new { count = items.Count, active = items.Count(i => i.UnMapDateTime == null), items });
 }).RequireAuthorization();
 
 // ===== Phiếu xuất kho thiết bị GPS (StoF_GPSOut — port 1:1 FrmStoF_GPSOut/FrmMngStoF_GPSOut) =====

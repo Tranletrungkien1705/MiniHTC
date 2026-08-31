@@ -621,6 +621,19 @@ public sealed class GpsBalance
     public string Status { get; set; } = "Unmapped"; // Mapped / Unmapped
 }
 
+/// <summary>Lịch sử gắn/gỡ GPS theo VIN (Sto_StoTransactionGPS — port 1:1 FrmMngVinHistoryMap, StoFGPS):
+/// mỗi lần gắn 1 thiết bị lên VIN = 1 dòng (MapDateTime); gỡ ra → set UnMapDateTime. Audit trail của GpsBalance.</summary>
+public sealed class GpsTransaction
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string GpsDvNo { get; set; } = "";
+    public string? VINAddress { get; set; }
+    public DateTime MapDateTime { get; set; } = DateTime.Now;
+    public DateTime? UnMapDateTime { get; set; }   // null = đang gắn
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
