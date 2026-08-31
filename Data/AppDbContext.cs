@@ -66,6 +66,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PartStockIn> PartStockIns => Set<PartStockIn>();
     public DbSet<PartStockInLine> PartStockInLines => Set<PartStockInLine>();
     public DbSet<PartStock> PartStocks => Set<PartStock>();
+    public DbSet<PartStockOut> PartStockOuts => Set<PartStockOut>();
+    public DbSet<PartStockOutLine> PartStockOutLines => Set<PartStockOutLine>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

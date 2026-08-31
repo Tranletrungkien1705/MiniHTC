@@ -1227,6 +1227,73 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate), TRỪ tồn PartStock =====
+app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
+{
+    var q = db.PartStockOuts.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+    if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
+    {
+        s.StockOutNo, s.StockOutDate, s.StockOutType, s.WarehouseCode, s.Reason, s.Status, s.PostedAt,
+        lines = db.PartStockOutLines.Count(l => l.OrgId == t.OrgId && l.StockOutId == s.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
+    var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new PartStockOut { OrgId = t.OrgId, StockOutNo = no, StockOutDate = dto.StockOutDate ?? DateTime.Now, StockOutType = dto.StockOutType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "Draft" };
+    db.PartStockOuts.Add(h); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity }).ToListAsync();
+    return Results.Ok(new { h.StockOutNo, h.WarehouseCode, h.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Ghi sổ: TRỪ tồn PartStock; guard tồn không đủ (kiểm TẤT CẢ dòng trước khi trừ)
+app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ ghi sổ phiếu Draft." });
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
+    // kiểm tồn đủ trước
+    foreach (var l in lines)
+    {
+        var loc = l.Location ?? "";
+        var stock = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
+        var onhand = stock?.OnHand ?? 0;
+        if (onhand < l.Quantity)
+            return Results.BadRequest(new { error = $"Tồn không đủ cho {l.PartCode}@{loc}: cần {l.Quantity}, còn {onhand}." });
+    }
+    // trừ tồn
+    foreach (var l in lines)
+    {
+        var loc = l.Location ?? "";
+        var stock = await db.PartStocks.FirstAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
+        stock.OnHand -= l.Quantity; stock.UpdatedAt = DateTime.Now;
+    }
+    h.Status = "Posted"; h.PostedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, postedLines = lines.Count });
+}).RequireAuthorization();
+
 // ===== Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate) + tồn kho PartStock =====
 app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
 {
@@ -2200,4 +2267,6 @@ record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? 
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);
+record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
+record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines);
 record RegisterOrgDto(string Name);

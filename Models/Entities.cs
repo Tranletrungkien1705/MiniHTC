@@ -888,6 +888,34 @@ public sealed class PartStock
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate, TCMotor DMSCarSv/Inventory):
+/// xuất phụ tùng khỏi kho. Draft → Posted (ghi sổ, TRỪ tồn PartStock, guard tồn không đủ).</summary>
+public sealed class PartStockOut
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockOutNo { get; set; } = "";
+    public DateTime StockOutDate { get; set; } = DateTime.Now;
+    public string? StockOutType { get; set; }
+    public string WarehouseCode { get; set; } = "";
+    public string? Reason { get; set; }
+    public string Status { get; set; } = "Draft";      // Draft → Posted
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? PostedAt { get; set; }
+}
+
+/// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>
+public sealed class PartStockOutLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StockOutId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Location { get; set; }
+    public decimal Quantity { get; set; } = 1;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
