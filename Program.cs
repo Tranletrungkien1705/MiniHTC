@@ -1716,6 +1716,20 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
     return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo });
 }).RequireAuthorization();
 
+// Cập nhật số chứng từ kế toán trên phiếu TT (port 1:1 FrmUpdateChungTuKT, Sales/Payment) — ghi old->new.
+app.MapPost("/api/bankpms/{no}/ctkt", async (string no, BankPmCtktDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.NewAccountingRecordNo)) return Results.BadRequest(new { error = "Chưa nhập số chứng từ kế toán mới." });
+    if (p.PaymentStatus != "Approved") return Results.BadRequest(new { error = "Chỉ cập nhật chứng từ trên phiếu đã duyệt." });
+    var oldNo = p.AccountingRecordNo;
+    p.AccountingRecordNo = dto.NewAccountingRecordNo.Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PaymentNo, oldAccountingRecordNo = oldNo, newAccountingRecordNo = p.AccountingRecordNo });
+}).RequireAuthorization();
+
 // ===== Hóa đơn VAT HTC (VatInvoice — port 1:1 FrmMngInvoice, cụm Bank) =====
 app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string? dealer, string? invNo, string? status, string? adjType) =>
 {
@@ -6036,6 +6050,7 @@ record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars);
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
 record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars);
+record BankPmCtktDto(string NewAccountingRecordNo);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
