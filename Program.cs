@@ -1289,6 +1289,71 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Thiết lập hóa đơn theo model (InvoiceSetup — port 1:1 FrmMst_InvoiceSetup, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/invoicesetups", async (AppDbContext db, ITenantContext t, string? active, string? model) =>
+{
+    var q = db.InvoiceSetups.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(s => s.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(s => s.ModelCode == model);
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new { s.ModelCode, s.FlagInvoiceHTMV, s.FlagInvoiceTCG, s.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoicesetups", async (InvoiceSetupDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
+    var md = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.InvoiceSetups.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.ModelCode == md);
+    if (ex is not null) { ex.FlagInvoiceHTMV = dto.FlagInvoiceHTMV == "1" ? "1" : "0"; ex.FlagInvoiceTCG = dto.FlagInvoiceTCG == "1" ? "1" : "0"; ex.FlagActive = "1"; await db.SaveChangesAsync(); return Results.Ok(new { ex.ModelCode, updated = true }); }
+    var s2 = new InvoiceSetup { OrgId = t.OrgId, ModelCode = md, FlagInvoiceHTMV = dto.FlagInvoiceHTMV == "1" ? "1" : "0", FlagInvoiceTCG = dto.FlagInvoiceTCG == "1" ? "1" : "0", FlagActive = "1" };
+    db.InvoiceSetups.Add(s2); await db.SaveChangesAsync();
+    return Results.Ok(new { s2.ModelCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoicesetups/{model}/toggle", async (string model, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant();
+    var s = await db.InvoiceSetups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model);
+    if (s is null) return Results.NotFound(new { model });
+    s.FlagActive = s.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.ModelCode, flagActive = s.FlagActive });
+}).RequireAuthorization();
+
+// ===== Ngưỡng tồn kho bán hàng (SalesInventoryThreshold — port 1:1 FrmMstSalesInventoryThreshold, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/salesinvthresholds", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
+{
+    var q = db.SalesInventoryThresholds.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
+    if (dto.NguongBH < 0) return Results.BadRequest(new { error = "Ngưỡng bán hàng không hợp lệ." });
+    var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.SalesInventoryThresholds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md);
+    if (ex is not null) { ex.NguongBH = dto.NguongBH; ex.FlagActive = "1"; await db.SaveChangesAsync(); return Results.Ok(new { ex.DealerCode, ex.ModelCode, ex.NguongBH, updated = true }); }
+    var x2 = new SalesInventoryThreshold { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, FlagActive = "1" };
+    db.SalesInventoryThresholds.Add(x2); await db.SaveChangesAsync();
+    return Results.Ok(new { x2.DealerCode, x2.ModelCode, x2.NguongBH, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesinvthresholds/{dealer}/{model}/toggle", async (string dealer, string model, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var x = await db.SalesInventoryThresholds.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dealer && v.ModelCode == model);
+    if (x is null) return Results.NotFound(new { dealer, model });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5272,6 +5337,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
+record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
