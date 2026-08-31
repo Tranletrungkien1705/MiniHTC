@@ -258,6 +258,32 @@ public sealed class Quota
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đề nghị thế chấp xe (RM_ReqMortgage — port 1:1 FrmNewRM_ReqMortgage/FrmMngRM_ReqMortgage):
+/// header đề nghị thế chấp lô xe cho ngân hàng. Pending(Mới tạo)→Approved(Đang thế chấp)→Finished(Đã giải chấp).</summary>
+public sealed class MortgageRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqRMNo { get; set; } = "";
+    public string BankCode { get; set; } = "";     // Mst_Bank.FlagMortageBank='1'
+    public string Status { get; set; } = "Pending"; // Pending → Approved → Finished (giải chấp)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+    public DateTime? FinishedAt { get; set; }
+}
+
+/// <summary>Dòng xe trong đề nghị thế chấp (RM_ReqMortgageDtl): 1 VIN + trạng thái dòng.</summary>
+public sealed class MortgageCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? EngineNo { get; set; }
+    public string DtlStatus { get; set; } = "Pending";  // Pending → Approved → Finished (theo header)
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

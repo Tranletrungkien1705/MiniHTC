@@ -737,6 +737,69 @@ app.MapPost("/api/wexts/{code}/{action}", async (string code, string action, App
     return Results.Ok(new { w.Code, status = w.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị thế chấp xe (RM_ReqMortgage — port 1:1 FrmNewRM_ReqMortgage/FrmMngRM_ReqMortgage) =====
+// Header + lô xe. Pending(Mới tạo) → Approved(Đang thế chấp) → Finished(Đã giải chấp).
+app.MapGet("/api/mortgages", async (AppDbContext db, ITenantContext t, string? status, string? bank) =>
+{
+    var q = db.MortgageRequests.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.Id, m.ReqRMNo, m.BankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
+        cars = db.MortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqId == m.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mortgages", async (MortgageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Cần BankCode (ngân hàng nhận thế chấp)." });
+    var vins = (dto.Vins ?? new List<string>()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).Distinct().ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var reqNo = "RM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var m = new MortgageRequest { OrgId = t.OrgId, ReqRMNo = reqNo, BankCode = dto.BankCode.Trim().ToUpperInvariant(), Status = "Pending" };
+    db.MortgageRequests.Add(m);
+    await db.SaveChangesAsync();
+    foreach (var v in vins)
+        db.MortgageCars.Add(new MortgageCar { OrgId = t.OrgId, ReqId = m.Id, Vin = v, DtlStatus = "Pending" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.ReqRMNo, m.BankCode, status = m.Status, cars = vins.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, ITenantContext t) =>
+{
+    reqNo = reqNo.Trim().ToUpperInvariant();
+    var m = await db.MortgageRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == reqNo);
+    if (m is null) return Results.NotFound(new { reqNo });
+    var cars = await db.MortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqId == m.Id)
+        .Select(c => new { c.Vin, c.ModelCode, c.EngineNo, c.DtlStatus }).ToListAsync();
+    return Results.Ok(new { m.ReqRMNo, m.BankCode, m.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/mortgages/{reqNo}/{action}", async (string reqNo, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "finish")) return Results.BadRequest(new { error = "action = approve|finish" });
+    reqNo = reqNo.Trim().ToUpperInvariant();
+    var m = await db.MortgageRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == reqNo);
+    if (m is null) return Results.NotFound(new { reqNo });
+    if (action == "approve")
+    {
+        if (m.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt được đề nghị Mới tạo." });
+        m.Status = "Approved"; m.ApprovedAt = DateTime.Now;
+    }
+    else // finish = giải chấp
+    {
+        if (m.Status != "Approved") return Results.BadRequest(new { error = "Chỉ giải chấp được đề nghị Đang thế chấp." });
+        m.Status = "Finished"; m.FinishedAt = DateTime.Now;
+    }
+    var newDtl = action == "approve" ? "Approved" : "Finished";
+    foreach (var c in await db.MortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqId == m.Id).ToListAsync())
+        c.DtlStatus = newDtl;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.ReqRMNo, status = m.Status });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -821,4 +884,5 @@ record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, string? Status);
 record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);
+record MortgageDto(string BankCode, List<string>? Vins);
 record RegisterOrgDto(string Name);

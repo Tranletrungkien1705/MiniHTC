@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thế chấp xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:940px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,textarea,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:64px;resize:vertical} button{cursor:pointer}
+  button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-Pending{color:var(--warn)} .p-Approved{color:var(--accent)} .p-Finished{color:var(--ok)}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.8}
+</style></head>
+<body>
+<h1>Đề nghị thế chấp xe <span class="muted">(port 1:1 FrmNewRM_ReqMortgage / FrmMngRM_ReqMortgage — RM_ReqMortgage)</span></h1>
+<div class="card">
+  <b>Tạo đề nghị mới</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="bank" placeholder="Mã ngân hàng nhận thế chấp *" style="width:230px">
+    <span style="flex:1"></span><button class="primary" onclick="create()">Tạo đề nghị</button><span id="msg"></span>
+  </div>
+  <textarea id="vins" placeholder="Danh sách VIN (mỗi dòng 1 VIN, hoặc cách nhau dấu phẩy)"></textarea>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả trạng thái</option><option value="Pending">Mới tạo</option><option value="Approved">Đang thế chấp</option><option value="Finished">Đã giải chấp</option></select>
+</div>
+<table><thead><tr><th>Số ĐN</th><th>Ngân hàng</th><th>Trạng thái</th><th>Số xe</th><th>Ngày tạo</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Pending:"Mới tạo",Approved:"Đang thế chấp",Finished:"Đã giải chấp"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function fmt(d){ return d? new Date(d).toLocaleString("vi-VN"):""; }
+async function load(){ await token();
+  const d=await (await fetch("/api/mortgages?status="+F("fst").value,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(m=>{
+    let act="";
+    if(m.status==="Pending") act=`<button class="sm" onclick="act('${m.reqRMNo}','approve')">Duyệt thế chấp</button>`;
+    else if(m.status==="Approved") act=`<button class="sm" onclick="act('${m.reqRMNo}','finish')">Giải chấp</button>`;
+    return `<tr><td><b>${m.reqRMNo}</b></td><td>${m.bankCode}</td>
+      <td><span class="pill p-${m.status}">${LBL[m.status]||m.status}</span></td>
+      <td>${m.cars} <a href="#" onclick="cars('${m.reqRMNo}');return false" class="cars">xem</a></td>
+      <td>${fmt(m.createdAt)}</td><td>${act}</td></tr>
+      <tr id="c-${m.reqRMNo}"></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có đề nghị.</td></tr>';
+}
+async function create(){
+  const vins=F("vins").value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
+  const r=await fetch("/api/mortgages",{method:"POST",headers:H(),body:JSON.stringify({bankCode:F("bank").value,vins})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.reqRMNo+" ("+j.cars+" xe)."); F("vins").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function act(no,a){
+  const r=await fetch(`/api/mortgages/${no}/${a}`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status));
+}
+async function cars(no){
+  const row=F("c-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/mortgages/${no}/cars`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="6"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b> · ${c.dtlStatus}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+load();
+</script>
+</body></html>
