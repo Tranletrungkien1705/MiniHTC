@@ -476,6 +476,29 @@ app.MapDelete("/api/configs/{key}", async (string key, AppDbContext db, ITenantC
     return Results.Ok(new { deleted = key });
 }).RequireAuthorization();
 
+// ===== Kế hoạch/chỉ tiêu KD (port 1:1 FrmMngBusinessPlan) =====
+app.MapGet("/api/plans", async (AppDbContext db, ITenantContext t, string? month, string? dealer) =>
+{
+    var q = db.BusinessPlans.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(p => p.Month == month);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    var rows = await q.OrderBy(p => p.Month).ThenBy(p => p.DealerCode).Take(500).Select(p => new
+    { p.DealerCode, p.ModelCode, p.Month, p.TargetQty, p.ActualQty, achieve = p.TargetQty == 0 ? 0 : Math.Round(p.ActualQty * 100.0 / p.TargetQty, 1) }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, totalTarget = rows.Sum(r => r.TargetQty), totalActual = rows.Sum(r => r.ActualQty), rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/plans", async (PlanDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode) || string.IsNullOrWhiteSpace(dto.Month))
+        return Results.BadRequest(new { error = "Cần DealerCode, ModelCode, Month (YYYYMM)." });
+    var dealer = dto.DealerCode.Trim().ToUpperInvariant(); var model = dto.ModelCode.Trim().ToUpperInvariant(); var month = dto.Month.Trim();
+    var p = await db.BusinessPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ModelCode == model && x.Month == month);
+    if (p is null) { p = new BusinessPlan { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model, Month = month }; db.BusinessPlans.Add(p); }
+    p.TargetQty = dto.TargetQty; if (dto.ActualQty.HasValue) p.ActualQty = dto.ActualQty.Value; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.DealerCode, p.ModelCode, p.Month, p.TargetQty, p.ActualQty });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -497,4 +520,5 @@ record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string Vin, string? DealerCode, string? Reason);
 record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
+record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
 record RegisterOrgDto(string Name);

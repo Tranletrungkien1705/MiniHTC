@@ -131,6 +131,19 @@ public sealed class SysConfig
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Kế hoạch/chỉ tiêu KD (FrmMngBusinessPlan) — chỉ tiêu bán theo đại lý/model/tháng.</summary>
+public sealed class BusinessPlan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string Month { get; set; } = "";      // YYYYMM
+    public int TargetQty { get; set; }
+    public int ActualQty { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

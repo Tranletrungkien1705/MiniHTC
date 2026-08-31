@@ -14,6 +14,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarRetrieve> CarRetrieves => Set<CarRetrieve>();
     public DbSet<CarCancel> CarCancels => Set<CarCancel>();
     public DbSet<SysConfig> Configs => Set<SysConfig>();
+    public DbSet<BusinessPlan> BusinessPlans => Set<BusinessPlan>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
