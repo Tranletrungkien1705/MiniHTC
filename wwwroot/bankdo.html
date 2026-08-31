@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Xác nhận nhận xe (NH)</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  button.ok{color:#fff;background:var(--ok);border-color:var(--ok)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Open{color:var(--warn)} .s-Confirmed{color:var(--ok)}
+  #msg{font-size:13px} .carrow input{width:100px}
+</style></head>
+<body>
+<h1>Xác nhận nhận xe (ngân hàng) <span class="muted">(port 1:1 FrmBankDO — lệnh xuất xe, cụm Bank)</span></h1>
+<div class="card">
+  <b>Tạo lệnh xuất (header + xe)</b>
+  <div class="bar" style="margin-top:10px"><div><label>Đại lý *</label><input id="dl" style="width:100px"></div><div><label>Số ĐH</label><input id="so" style="width:110px"></div></div>
+  <table style="margin-top:10px"><thead><tr><th>VIN</th><th>Mã xe</th><th>Số BLNH</th><th>Đặc tả</th><th>Màu</th><th></th></tr></thead><tbody id="carRows"></tbody></table>
+  <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRow()">+ Thêm xe</button><button class="primary" onclick="save()">Tạo lệnh</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:100px">
+  <input id="qn" placeholder="Lọc số DO/ĐH" oninput="load()" style="width:120px">
+  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Open">Chờ nhận</option><option value="Confirmed">Đã nhận đủ</option></select>
+</div>
+<div class="wrap"><table><thead><tr><th>Số DO</th><th>Đại lý</th><th>Số ĐH</th><th class="num">Đã nhận/Tổng</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="card" id="detCard" style="display:none">
+  <b>Chi tiết xe — <span id="detNo"></span></b> <button class="sm ok" id="btnAll" onclick="confirmAll()">Xác nhận tất cả</button>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Mã xe</th><th>Số BLNH</th><th>Đặc tả</th><th>Màu</th><th>TT nhận xe</th><th>Ghi chú</th><th></th></tr></thead>
+  <tbody id="detRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let CUR=null;
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addRow(){ const tr=document.createElement("tr"); tr.className="carrow";
+  tr.innerHTML=`<td><input class="c-vin"></td><td><input class="c-cid"></td><td><input class="c-grt"></td><td><input class="c-spec"></td><td><input class="c-col"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("carRows").appendChild(tr); }
+function collect(){ return [...document.querySelectorAll("#carRows tr")].map(tr=>({
+  vin:tr.querySelector(".c-vin").value, carId:tr.querySelector(".c-cid").value, bankGrtNo:tr.querySelector(".c-grt").value,
+  specCode:tr.querySelector(".c-spec").value, colorCode:tr.querySelector(".c-col").value})).filter(c=>c.vin.trim()); }
+async function save(){
+  const r=await fetch("/api/bankdos",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,soCode:F("so").value,cars:collect()})});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã tạo ${j.doNo} (${j.cars} xe)`); F("carRows").innerHTML=""; addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/bankdos?dealer=${F("qd").value}&doNo=${F("qn").value}&status=${F("qs").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr onclick="detail('${o.doNo}')"><td><b>${o.doNo}</b></td><td>${o.dealerCode}</td><td>${o.soCode||""}</td><td class="num">${o.confirmed}/${o.cars}</td><td><span class="pill s-${o.status}">${o.status==="Confirmed"?"Đã nhận đủ":"Chờ nhận"}</span></td><td><button class="sm" onclick="event.stopPropagation();detail('${o.doNo}')">Chi tiết</button></td></tr>`
+  ).join("")||'<tr><td colspan="6" class="muted">Chưa có lệnh xuất.</td></tr>';
+}
+async function detail(no){ CUR=no;
+  const d=await (await fetch(`/api/bankdos/${no}/cars`,{headers:H()})).json();
+  F("detCard").style.display=""; F("detNo").textContent=no;
+  F("btnAll").style.display=d.status==="Confirmed"?"none":"";
+  F("detRows").innerHTML=(d.cars||[]).map(c=>{
+    const done=c.confirmStatus==="1";
+    return `<tr><td><b>${c.vin}</b></td><td>${c.carId||""}</td><td>${c.bankGrtNo||""}</td><td>${c.specCode||""}</td><td>${c.colorCode||""}</td><td>${done?'<span class="pill s-Confirmed">Đã nhận</span>':'<span class="pill s-Open">Chưa nhận</span>'}</td><td>${c.confirmRemark||""}</td><td>${done?"":`<button class="sm ok" onclick="conf('${c.vin}')">Nhận</button>`}</td></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Không có xe.</td></tr>';
+}
+async function conf(vin){
+  const r=await fetch(`/api/bankdos/${CUR}/cars/${vin}/confirm`,{method:"POST",headers:H(),body:JSON.stringify({remark:"Đã nhận xe"})});
+  const j=await r.json(); if(r.ok){ msg(`${vin} đã nhận (còn ${j.remain})`); detail(CUR); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function confirmAll(){
+  const r=await fetch(`/api/bankdos/${CUR}/confirmall`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`Đã nhận tất cả (${j.confirmed} xe)`); detail(CUR); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+addRow(); load();
+</script>
+</body></html>

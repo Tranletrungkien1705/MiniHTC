@@ -1503,6 +1503,77 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppD
     return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled });
 }).RequireAuthorization();
 
+// ===== Lệnh xuất xe - NH xác nhận nhận xe (BankDeliveryOrder — port 1:1 FrmBankDO, cụm Bank) =====
+app.MapGet("/api/bankdos", async (AppDbContext db, ITenantContext t, string? dealer, string? doNo, string? status) =>
+{
+    var q = db.BankDeliveryOrders.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(d => d.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(doNo)) q = q.Where(d => d.DONo.Contains(doNo!) || d.SOCode.Contains(doNo!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.Status == status);
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
+    {
+        d.DONo, d.DealerCode, d.SOCode, d.Status, d.CreatedAt, d.ConfirmedAt,
+        cars = db.BankDoCars.Count(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id),
+        confirmed = db.BankDoCars.Count(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id && c.ConfirmStatus == "1")
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankdos", async (BankDoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên lệnh xuất." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "DO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var d2 = new BankDeliveryOrder { OrgId = t.OrgId, DONo = no, DealerCode = dto.DealerCode.Trim(), SOCode = dto.SOCode ?? "", Status = "Open" };
+    db.BankDeliveryOrders.Add(d2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.BankDoCars.Add(new BankDoCar { OrgId = t.OrgId, DeliveryOrderId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId ?? "", BankGrtNo = c.BankGrtNo ?? "", SpecCode = c.SpecCode ?? "", ColorCode = c.ColorCode ?? "", DeliveryExpectedDate = c.DeliveryExpectedDate, DeliveryOutDate = c.DeliveryOutDate, ConfirmStatus = "0" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d2.DONo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankdos/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.BankDeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DONo == no);
+    if (d is null) return Results.NotFound(new { no });
+    var cars = await db.BankDoCars.Where(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id)
+        .Select(c => new { c.VIN, c.CarId, c.BankGrtNo, c.SpecCode, c.ColorCode, c.DeliveryExpectedDate, c.DeliveryOutDate, c.ConfirmStatus, c.ConfirmRemark, c.ConfirmedAt }).ToListAsync();
+    return Results.Ok(new { d.DONo, d.DealerCode, d.SOCode, d.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// NH xác nhận nhận 1 xe; khi tất cả xe đã nhận -> header Confirmed.
+app.MapPost("/api/bankdos/{no}/cars/{vin}/confirm", async (string no, string vin, BankDoConfirmDto? body, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
+    var d = await db.BankDeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DONo == no);
+    if (d is null) return Results.NotFound(new { no });
+    var car = await db.BankDoCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id && c.VIN == vin);
+    if (car is null) return Results.NotFound(new { vin });
+    if (car.ConfirmStatus == "1") return Results.BadRequest(new { error = "Xe đã được xác nhận nhận." });
+    car.ConfirmStatus = "1"; car.ConfirmRemark = body?.Remark ?? ""; car.ConfirmedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    var remain = await db.BankDoCars.CountAsync(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id && c.ConfirmStatus != "1");
+    if (remain == 0 && d.Status == "Open") { d.Status = "Confirmed"; d.ConfirmedAt = DateTime.Now; await db.SaveChangesAsync(); }
+    return Results.Ok(new { car.VIN, confirmStatus = car.ConfirmStatus, doStatus = d.Status, remain });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankdos/{no}/confirmall", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.BankDeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DONo == no);
+    if (d is null) return Results.NotFound(new { no });
+    var pending = await db.BankDoCars.Where(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id && c.ConfirmStatus != "1").ToListAsync();
+    if (pending.Count == 0) return Results.BadRequest(new { error = "Không còn xe chờ xác nhận." });
+    foreach (var c in pending) { c.ConfirmStatus = "1"; c.ConfirmedAt = DateTime.Now; }
+    d.Status = "Confirmed"; d.ConfirmedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DONo, status = d.Status, confirmed = pending.Count });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5500,6 +5571,9 @@ record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagIn
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
 record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars);
+record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
+record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars);
+record BankDoConfirmDto(string? Remark);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

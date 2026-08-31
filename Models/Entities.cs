@@ -2307,6 +2307,37 @@ public sealed class BankGuaranteeDtl
     public DateTime? DateExpired { get; set; }
 }
 
+/// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>
+public sealed class BankDeliveryOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DONo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string SOCode { get; set; } = "";
+    public string Status { get; set; } = "Open";   // Open -> Confirmed (khi tat ca xe da nhan)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ConfirmedAt { get; set; }
+}
+
+/// <summary>Chi tiết xe trên lệnh xuất, NH xác nhận nhận (DoDetail.Confirm_Status) — port 1:1 FrmBankDO detail.</summary>
+public sealed class BankDoCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DeliveryOrderId { get; set; }
+    public string VIN { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string BankGrtNo { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public DateTime? DeliveryExpectedDate { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }
+    public string ConfirmStatus { get; set; } = "0";   // 0=chua nhan, 1=da nhan
+    public string ConfirmRemark { get; set; } = "";
+    public DateTime? ConfirmedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
