@@ -305,6 +305,26 @@ app.MapDelete("/api/salesmen/{code}", async (string code, AppDbContext db, ITena
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Báo cáo đại lý (port 1:1 kiểu FrmBC*/Rpt — read-only + lọc + tổng hợp) =====
+app.MapGet("/api/reports/dealers", async (AppDbContext db, ITenantContext t, string? province, string? status) =>
+{
+    var q = db.Dealers.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(province)) q = q.Where(d => d.ProvinceCode == province);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.Status == status);
+    var rows = await q.OrderBy(d => d.ProvinceCode).ThenBy(d => d.DealerCode)
+        .Select(d => new { d.DealerCode, d.DealerName, d.ProvinceCode, d.Phone, d.Status }).ToListAsync();
+    var byProvince = rows.GroupBy(r => r.ProvinceCode ?? "(chưa có)")
+        .Select(g => new { province = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    return Results.Ok(new
+    {
+        total = rows.Count,
+        active = rows.Count(r => r.Status == "1"),
+        inactive = rows.Count(r => r.Status != "1"),
+        byProvince,
+        rows
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });

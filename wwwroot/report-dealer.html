@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .kpis{display:flex;gap:12px;margin:12px 0;flex-wrap:wrap}
+  .kpi{border:1px solid var(--line);border-radius:12px;padding:12px 16px;min-width:120px}
+  .kpi .n{font-size:22px;font-weight:700} .kpi .l{font-size:12px;opacity:.6}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n{text-align:right}
+  h3{font-size:13px;opacity:.7;text-transform:uppercase;margin:18px 0 6px}
+</style></head>
+<body>
+<h1>Báo cáo đại lý <span class="muted">(port 1:1 kiểu FrmBC*/Rpt — read-only, lọc, tổng hợp)</span></h1>
+<div class="bar">
+  <label>Tỉnh:</label><input id="pv" placeholder="Mã tỉnh (trống=tất cả)" style="width:150px">
+  <label>Trạng thái:</label><select id="st"><option value="">Tất cả</option><option value="1">Hiệu lực</option><option value="0">Ngừng</option></select>
+  <button class="primary" onclick="run()">Chạy báo cáo</button>
+</div>
+<div class="kpis" id="kpis"></div>
+<h3>Tổng hợp theo tỉnh</h3>
+<table><thead><tr><th>Tỉnh</th><th class="n">Số đại lý</th></tr></thead><tbody id="byprov"></tbody></table>
+<h3>Chi tiết</h3>
+<table><thead><tr><th>Mã</th><th>Tên</th><th>Tỉnh</th><th>ĐT</th><th>TT</th></tr></thead><tbody id="rows"></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+async function run(){ await token();
+  const d=await (await fetch(`/api/reports/dealers?province=${encodeURIComponent(F("pv").value)}&status=${F("st").value}`,{headers:H()})).json();
+  F("kpis").innerHTML=[["Tổng",d.total],["Hiệu lực",d.active],["Ngừng",d.inactive]].map(([l,n])=>`<div class="kpi"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
+  F("byprov").innerHTML=(d.byProvince||[]).map(x=>`<tr><td>${x.province}</td><td class="n">${x.count}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">—</td></tr>';
+  F("rows").innerHTML=(d.rows||[]).map(x=>`<tr><td><b>${x.dealerCode}</b></td><td>${x.dealerName}</td><td>${x.provinceCode||""}</td><td>${x.phone||""}</td><td>${x.status==="1"?"✓":"✕"}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>';
+}
+run();
+</script>
+</body></html>
