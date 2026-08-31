@@ -178,6 +178,21 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("CarModelStd", "Model chuẩn (FrmMstCarModelStd) [TCMotor]"),
     ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng) [TCMotor]"),
     ("BOM", "Định mức vật tư BOM (FrmMstBOMMng) [TCMotor]"),
+    ("WorkGroup", "Nhóm công việc (FrmMst_GroupRepair) [TCMotor]"),
+    ("LaborRate", "Đơn giá công (FrmMst_LaborRate) [TCMotor]"),
+    ("SymptomCode", "Mã hiện tượng (FrmMst_Symptom) [TCMotor]"),
+    ("CauseCode", "Mã nguyên nhân (FrmMst_Cause) [TCMotor]"),
+    ("RepairType", "Loại sửa chữa (FrmMst_RepairType) [TCMotor]"),
+    ("ServiceType", "Loại dịch vụ (FrmMst_ServiceType) [TCMotor]"),
+    ("Campaign", "Chiến dịch (FrmMst_Campaign) [TCMotor]"),
+    ("VOCType", "Loại VOC/khiếu nại (FrmMst_VOCType) [TCMotor]"),
+    ("SkillLevel", "Bậc thợ (FrmMst_SkillLevel) [TCMotor]"),
+    ("Bay", "Khoang sửa chữa (FrmMst_Bay) [TCMotor]"),
+    ("ToolMaster", "Dụng cụ (FrmMst_Tool) [TCMotor]"),
+    ("PartCategory", "Nhóm phụ tùng (FrmMst_PartCategory) [TCMotor]"),
+    ("ClaimRejectReason", "Lý do từ chối BH (FrmMst_ClaimRejectReason) [TCMotor]"),
+    ("MaintenancePackage", "Gói bảo dưỡng (FrmMst_MaintenancePackage) [TCMotor]"),
+    ("Currency", "Tiền tệ (FrmMst_Currency)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
