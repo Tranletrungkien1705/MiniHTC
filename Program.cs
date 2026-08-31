@@ -1987,6 +1987,21 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
 }).RequireAuthorization();
 
+// Bảng theo dõi tiến độ RO (Ser_RO_Stage — port 1:1 FrmTrackingProcess): kanban theo trạng thái
+app.MapGet("/api/repairorders/board", async (AppDbContext db, ITenantContext t) =>
+{
+    var flow = new[] { "HasRO", "InGarage", "Repaired", "CheckEnd", "Paid", "Finished" };
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId).OrderByDescending(r => r.Id).Take(1000)
+        .Select(r => new { r.RONo, r.LicensePlate, r.CusName, r.Km, r.PlanedDeliveryDate, r.CusWaiting, r.Status }).ToListAsync();
+    var columns = flow.Select(st => new
+    {
+        status = st,
+        count = ros.Count(r => r.Status == st),
+        items = ros.Where(r => r.Status == st).Select(r => new { r.RONo, r.LicensePlate, r.CusName, r.Km, r.PlanedDeliveryDate, r.CusWaiting }).ToList()
+    }).ToList();
+    return Results.Ok(new { total = ros.Count, columns });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
