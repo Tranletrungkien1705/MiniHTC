@@ -2819,6 +2819,18 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tham số hệ thống PDI (key-value, vd DEAL.PDIHOUR) — port 1:1 FrmMst_ParamPDI (Tbl_Mst_ParamPDI).</summary>
+public sealed class ParamPdi
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ParamCode { get; set; } = "";   // PARAMCODE, vd DEAL.PDIHOUR
+    public string? ParamName { get; set; }
+    public string ParamValue { get; set; } = "";   // PARAMVALUE
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Danh sách email nhận cảnh báo theo loại nghiệp vụ — port 1:1 FrmMst_Warning_Email (Mst_EmailStaffWarning).</summary>
 public sealed class WarningEmail
 {

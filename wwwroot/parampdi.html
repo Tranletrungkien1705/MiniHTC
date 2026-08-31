@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Tham số PDI</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:880px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  button.del{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  code{background:#8882;padding:1px 5px;border-radius:4px;font-size:12px}
+  #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Tham số hệ thống PDI <span class="muted">(port 1:1 FrmMst_ParamPDI)</span></h1>
+<p class="muted">Cấu hình tham số key-value cho nghiệp vụ PDI (VD <code>DEAL.PDIHOUR</code> = số giờ PDI trước giao xe). Mỗi mã tham số 1 giá trị — nhập lại = cập nhật. Mã <code>DEAL.PDIHOUR</code> bắt buộc số nguyên.</p>
+<div class="card">
+  <h3 style="margin-top:0">Thêm / cập nhật tham số</h3>
+  <div class="row">
+    <div><label>Mã tham số</label><input id="fCode" style="width:160px" placeholder="DEAL.PDIHOUR"></div>
+    <div style="flex:1;min-width:140px"><label>Mô tả</label><input id="fName" style="width:100%"></div>
+    <div><label>Giá trị</label><input id="fVal" style="width:130px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Lọc theo mã</label><input id="qCode" style="width:160px" onkeydown="if(event.key==='Enter')load()"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã tham số</th><th>Mô tả</th><th>Giá trị</th><th>Cập nhật</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3000); }
+async function save(){ await token();
+  const body={ParamCode:F("fCode").value,ParamName:F("fName").value,ParamValue:F("fVal").value};
+  const r=await fetch("/api/parampdis",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.paramCode:"Đã thêm "+d.paramCode); F("fVal").value=""; load();
+}
+async function del(code){ await token(); if(!confirm("Xóa tham số "+code+"?")) return;
+  const r=await fetch("/api/parampdis/"+encodeURIComponent(code),{method:"DELETE",headers:H()});
+  if(!r.ok){ msg("Lỗi xóa"); return; } msg("Đã xóa "+code); load();
+}
+function edit(c,n,v){ F("fCode").value=c; F("fName").value=n; F("fVal").value=v; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/parampdis?code="+encodeURIComponent(F("qCode").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><code>${o.paramCode}</code></td><td>${esc(o.paramName)||""}</td><td><b>${esc(o.paramValue)}</b></td><td class="muted">${o.updatedAt}</td><td><button class="link" onclick='edit(${JSON.stringify(o.paramCode)},${JSON.stringify(o.paramName||"")},${JSON.stringify(o.paramValue)})'>Sửa</button><button class="link del" onclick="del('${o.paramCode}')">Xóa</button></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

@@ -144,7 +144,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("Qualification", "Trình độ (FrmMst_Qualification)"),
     ("PaymentTerm", "Điều khoản thanh toán (FrmMst_Dieu_Khoan_ThanhToan)"),
     ("DealerZone", "Vùng đại lý (FrmMst_DealerZone)"),
-    ("ParamPDI", "Tham số PDI (FrmMst_ParamPDI)"),
     ("CarSpecInvoice", "Cấu hình HĐ (FrmCarSpecInvoice)"),
     ("InvoiceSetup", "Thiết lập hóa đơn (FrmMst_InvoiceSetup)"),
     ("CarAllocationArea", "Phân bổ xe theo vùng (FrmMst_CarAllocationByArea)"),
@@ -3297,6 +3296,45 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Tham số hệ thống PDI (ParamPdi — port 1:1 FrmMst_ParamPDI, Admin/Dealer) =====
+app.MapGet("/api/parampdis", async (AppDbContext db, ITenantContext t, string? code) =>
+{
+    var q = db.ParamPdis.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(code)) q = q.Where(x => x.ParamCode.Contains(code!.ToUpper()));
+    var items = await q.OrderBy(x => x.ParamCode).Take(500)
+        .Select(x => new { x.ParamCode, x.ParamName, x.ParamValue, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã tham số. Riêng DEAL.PDIHOUR: giá trị PHẢI là số nguyên (giống guard WinForm).
+app.MapPost("/api/parampdis", async (ParamPdiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ParamCode)) return Results.BadRequest(new { error = "Chưa nhập mã tham số." });
+    var code = dto.ParamCode.Trim().ToUpperInvariant();
+    var val = (dto.ParamValue ?? "").Trim();
+    if (code == "DEAL.PDIHOUR" && (string.IsNullOrEmpty(val) || !int.TryParse(val, out _)))
+        return Results.BadRequest(new { error = "Số giờ PDI phải là số nguyên!" });
+    var ex = await db.ParamPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ParamCode == code);
+    if (ex is not null)
+    {
+        ex.ParamName = dto.ParamName; ex.ParamValue = val; ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.ParamCode, updated = true });
+    }
+    var r = new ParamPdi { OrgId = t.OrgId, ParamCode = code, ParamName = dto.ParamName, ParamValue = val };
+    db.ParamPdis.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ParamCode, updated = false });
+}).RequireAuthorization();
+
+app.MapDelete("/api/parampdis/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ParamPdis.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ParamCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    db.ParamPdis.Remove(x); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
 // ===== Danh sách email nhận cảnh báo (WarningEmail — port 1:1 FrmMst_Warning_Email, Admin/Product) =====
@@ -7472,6 +7510,7 @@ record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartD
 record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);
 record DelayTransportDto(string DealerCode, string? DealerName, string StorageCode, string? StorageName, int DelayDays);
 record WarningEmailDto(string WarningType, string? WarningName, string EmailList);
+record ParamPdiDto(string ParamCode, string? ParamName, string? ParamValue);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
