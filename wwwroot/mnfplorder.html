@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đặt hàng sản xuất</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1020px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Sent{color:var(--ok)}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ltbl td,#ltbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Đặt hàng sản xuất <span class="muted">(port 1:1 FrmDatHangSX — MnfPl_Order)</span></h1>
+<div class="card">
+  <b>Tạo đơn đặt hàng SX</b>
+  <div class="bar" style="margin:10px 0"><div><label>Loại đơn hàng *</label><input id="ot" placeholder="KH/Gấp" style="width:150px"></div><span style="flex:1"></span><button class="primary" onclick="create()">Lưu ĐH</button><span id="msg"></span></div>
+  <table id="ltbl"><thead><tr><th>Thứ tự SX *</th><th>Model *</th><th>Spec</th><th>Mô tả spec</th><th>Màu</th><th>SL *</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Thêm dòng</button>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Sent">Đã gửi</option></select><input id="q" placeholder="Lọc loại ĐH" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Số ĐH</th><th>Loại</th><th>Dòng</th><th>Tổng SL</th><th>Ngày tạo</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Draft:"Nháp",Sent:"Đã gửi"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="ix" type="number" style="width:65px"></td><td><input class="md" style="width:80px"></td><td><input class="sp" style="width:65px"></td><td><input class="sd" style="width:110px"></td><td><input class="cl" style="width:55px"></td><td><input class="qt" type="number" value="1" style="width:55px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr); }
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({mnfPlIdx:parseInt(tr.querySelector(".ix").value)||0,modelCode:tr.querySelector(".md").value,specCode:tr.querySelector(".sp").value,specDescription:tr.querySelector(".sd").value,colorCode:tr.querySelector(".cl").value,quantity:parseInt(tr.querySelector(".qt").value)||0})).filter(l=>l.modelCode);
+  const r=await fetch("/api/mnfplorders",{method:"POST",headers:H(),body:JSON.stringify({ordType:F("ot").value,lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.orderNo+" ("+j.lines+" dòng)."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/mnfplorders?status=${F("fst").value}&ordType=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.orderNo}')">Gửi</button>`:"";
+    return `<tr><td><b>${o.orderNo}</b> <a href="#" class="cars" onclick="lines('${o.orderNo}');return false">xem dòng</a></td><td>${o.ordType}</td><td>${o.lines}</td><td>${o.qty}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.orderNo}"></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có đơn đặt hàng SX.</td></tr>';
+}
+async function send(no){ const r=await fetch(`/api/mnfplorders/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/mnfplorders/${no}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="7"><div class="cars">${(d.lines||[]).map(l=>`#${l.mnfPlIdx} <b>${l.modelCode}</b>${l.specCode?"/"+l.specCode:""}${l.colorCode?" ("+l.colorCode+")":""} × ${l.quantity}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>

@@ -1463,6 +1463,52 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Đề nghị giải chấp (RD_ReqRedeem + Dtl) — port 1:1 FrmNewRedeem (2010.HTC/Sales/Redeem). Đại lý đề nghị giải chấp xe (release thế chấp) theo VIN.</summary>
+public sealed class ReqRedeem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqDMNo { get; set; } = "";
+    public string Status { get; set; } = "Draft";   // Draft → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DoneAt { get; set; }
+}
+public sealed class ReqRedeemDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqRedeemId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? CarId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? TypeDMReq { get; set; }       // loại đề nghị giải chấp
+    public string? BankCode { get; set; }        // ngân hàng bàn giao (không được HTC.HO)
+}
+
+/// <summary>Đặt hàng sản xuất (MnfPl_Order + Dtl) — port 1:1 FrmDatHangSX/FrmQLDatHangSX (2010.HTC/Sales/WorkOrder). Đơn đặt hàng sản xuất theo model/spec/màu/SL + thứ tự SX.</summary>
+public sealed class MnfPlOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderNo { get; set; } = "";
+    public string OrdType { get; set; } = "";     // loại đơn hàng
+    public string Status { get; set; } = "Draft"; // Draft → Sent
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+}
+public sealed class MnfPlOrderDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long MnfPlOrderId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? ColorCode { get; set; }
+    public int Quantity { get; set; } = 1;
+    public int MnfPlIdx { get; set; }            // thứ tự SX (> 0)
+}
+
 /// <summary>Thiết bị gắn trên xe (Mng_Device_Car) — port 1:1 FrmMng_Device_Car/_Upd (2010.HTC/Sales). Gán loại thiết bị + hóa đơn nhập cho VIN.</summary>
 public sealed class DeviceCar
 {

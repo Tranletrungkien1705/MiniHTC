@@ -1289,6 +1289,109 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị giải chấp (ReqRedeem — port 1:1 FrmNewRedeem, 2010.HTC/Sales/Redeem) =====
+app.MapGet("/api/reqredeems", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.ReqRedeems.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.ReqDMNo, r.Status, r.CreatedAt, r.DoneAt,
+        cars = db.ReqRedeemDtls.Count(c => c.OrgId == t.OrgId && c.ReqRedeemId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqredeems", async (ReqRedeemDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa tích chọn xe để tạo!" });
+    if (cars.Any(c => string.Equals(c.BankCode?.Trim(), "HTC.HO", StringComparison.OrdinalIgnoreCase)))
+        return Results.BadRequest(new { error = "Không được chọn ngân hàng bàn giao tài sản là HTC.HO!" });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "RDM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new ReqRedeem { OrgId = t.OrgId, ReqDMNo = no, Status = "Draft" };
+    db.ReqRedeems.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.ReqRedeemDtls.Add(new ReqRedeemDtl { OrgId = t.OrgId, ReqRedeemId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId, DealerCode = c.DealerCode, TypeDMReq = c.TypeDMReq, BankCode = c.BankCode });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqDMNo, cars = cars.Count, message = "Tạo đề nghị giải chấp thành công" });
+}).RequireAuthorization();
+
+app.MapGet("/api/reqredeems/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqRedeems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqDMNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.ReqRedeemDtls.Where(c => c.OrgId == t.OrgId && c.ReqRedeemId == r.Id)
+        .Select(c => new { c.VIN, c.CarId, c.DealerCode, c.TypeDMReq, c.BankCode }).ToListAsync();
+    return Results.Ok(new { r.ReqDMNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqredeems/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqRedeems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqDMNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
+    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqDMNo, status = r.Status });
+}).RequireAuthorization();
+
+// ===== Đặt hàng sản xuất (MnfPlOrder — port 1:1 FrmDatHangSX/FrmQLDatHangSX, 2010.HTC/Sales/WorkOrder) =====
+app.MapGet("/api/mnfplorders", async (AppDbContext db, ITenantContext t, string? status, string? ordType) =>
+{
+    var q = db.MnfPlOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
+    if (!string.IsNullOrWhiteSpace(ordType)) q = q.Where(o => o.OrdType == ordType);
+    var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.OrderNo, o.OrdType, o.Status, o.CreatedAt, o.SentAt,
+        lines = db.MnfPlOrderDtls.Count(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id),
+        qty = db.MnfPlOrderDtls.Where(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mnfplorders", async (MnfPlOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.OrdType)) return Results.BadRequest(new { error = "Cần loại đơn hàng." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Danh sách đặt hàng trống!" });
+    if (lines.Any(l => l.MnfPlIdx <= 0)) return Results.BadRequest(new { error = "Thứ tự SX phải > 0!" });
+    if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
+    var no = "MNF" + DateTime.Now.ToString("yyMMddHHmmss");
+    var o = new MnfPlOrder { OrgId = t.OrgId, OrderNo = no, OrdType = dto.OrdType.Trim(), Status = "Draft" };
+    db.MnfPlOrders.Add(o); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.MnfPlOrderDtls.Add(new MnfPlOrderDtl { OrgId = t.OrgId, MnfPlOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, ColorCode = l.ColorCode, Quantity = l.Quantity, MnfPlIdx = l.MnfPlIdx });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderNo, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/mnfplorders/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.MnfPlOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var lines = await db.MnfPlOrderDtls.Where(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id).OrderBy(l => l.MnfPlIdx)
+        .Select(l => new { l.MnfPlIdx, l.ModelCode, l.SpecCode, l.SpecDescription, l.ColorCode, l.Quantity }).ToListAsync();
+    return Results.Ok(new { o.OrderNo, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.Quantity) });
+}).RequireAuthorization();
+
+app.MapPost("/api/mnfplorders/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.MnfPlOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Đơn đã gửi." });
+    o.Status = "Sent"; o.SentAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderNo, status = o.Status });
+}).RequireAuthorization();
+
 // ===== Thiết bị gắn trên xe (DeviceCar — port 1:1 FrmMng_Device_Car/_Upd, 2010.HTC/Sales) =====
 app.MapGet("/api/devicecars", async (AppDbContext db, ITenantContext t, string? vin, string? deviceType) =>
 {
@@ -4119,6 +4222,10 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
+record ReqRedeemDto(List<ReqRedeemCarDto>? Cars);
+record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx);
+record MnfPlOrderDto(string OrdType, List<MnfPlOrderLineDto>? Lines);
 record TestCarRegisterCarDto(string VIN, string? ModelCode);
 record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
