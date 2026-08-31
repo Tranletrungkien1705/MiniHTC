@@ -1792,6 +1792,62 @@ app.MapPost("/api/vatinvoices/{code}/delete", async (string code, string? reason
     return Results.Ok(new { v.HTCInvoiceCode, status = v.VatHTCStatus, v.DeleteReason });
 }).RequireAuthorization();
 
+// ===== Công văn gia hạn bảo lãnh (GrtClaimExt — port 1:1 FrmMngGrtClaimPM, cụm Bank) =====
+app.MapGet("/api/grtclaimexts", async (AppDbContext db, ITenantContext t, string? dealer, string? no, string? sign) =>
+{
+    var q = db.GrtClaimExts.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(g => g.GrtClaimExtNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(sign)) q = q.Where(g => g.SignStatus == sign);
+    var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
+    {
+        g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.CreatedAt,
+        cars = db.GrtClaimExtCars.Count(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/grtclaimexts", async (GrtClaimExtDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe gia hạn bảo lãnh." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "CVGH" + DateTime.Now.ToString("yyMMddHHmmss");
+    var g2 = new GrtClaimExt { OrgId = t.OrgId, GrtClaimExtNo = no, DealerCode = dto.DealerCode.Trim(), NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt <= 0 ? 1 : dto.NumberOfGuaranteeExt, TotalCarNoStart = cars.Count, SignStatus = "P" };
+    db.GrtClaimExts.Add(g2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.GrtClaimExtCars.Add(new GrtClaimExtCar { OrgId = t.OrgId, GrtClaimExtId = g2.Id, CarId = c.CarId ?? "", VIN = c.VIN.Trim().ToUpperInvariant(), GuaranteeNo = c.GuaranteeNo ?? "", SignStatusDtl = "P" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g2.GrtClaimExtNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/grtclaimexts/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.GrtClaimExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimExtNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
+        .Select(c => new { c.CarId, c.VIN, c.GuaranteeNo, c.SignStatusDtl }).ToListAsync();
+    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.SignStatus, g.FileName, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// Ký công văn gia hạn (upload file đã ký). Guard idempotent theo FileName (đã ký thì không ký lại).
+app.MapPost("/api/grtclaimexts/{no}/sign", async (string no, GrtClaimExtSignDto body, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.GrtClaimExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimExtNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(body.FileName)) return Results.BadRequest(new { error = "Chưa có file ký." });
+    if (!string.IsNullOrWhiteSpace(g.FileName)) return Results.BadRequest(new { error = "Công văn đã được ký (đã có file), không ký lại." });
+    g.FileName = body.FileName.Trim(); g.SignDateTime = DateTime.Now; g.SignStatus = "S";
+    var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id).ToListAsync();
+    foreach (var c in cars) c.SignStatusDtl = "S";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GrtClaimExtNo, signStatus = g.SignStatus, g.FileName, signedCars = cars.Count });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5798,6 +5854,9 @@ record BankPmCarDto(string VIN, string? CarId, string? ModelCode, string? SpecCo
 record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentNo, string? BankCodeSend, string? BankAccountSend, string? BankAccountReceive, string? Funds, string? BankLending, string? Remark, List<BankPmCarDto>? Cars);
 record VatInvoiceCarDto(string VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? BrandName, string? CarType, string? InvoiceNoFactory, string? ProductionYear, decimal HTCUnitPrice, DateTime? CustomsClearanceDate);
 record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars);
+record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
+record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars);
+record GrtClaimExtSignDto(string FileName);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

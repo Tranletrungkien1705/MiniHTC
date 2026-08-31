@@ -2452,6 +2452,33 @@ public sealed class VatInvoiceCar
     public DateTime? CustomsClearanceDate { get; set; }
 }
 
+/// <summary>Công văn gia hạn bảo lãnh (Pmt_GrtClaimExt) — port 1:1 FrmMngGrtClaimPM. Header + ký.</summary>
+public sealed class GrtClaimExt
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GrtClaimExtNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public int NumberOfGuaranteeExt { get; set; }        // so lan gia han
+    public int TotalCarNoStart { get; set; }              // tong xe chua bat dau
+    public string SignStatus { get; set; } = "P";         // P=chua ky, S=da ky
+    public string FileName { get; set; } = "";            // file da ky (guard idempotent)
+    public DateTime? SignDateTime { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Chi tiết công văn gia hạn theo VIN (Pmt_GrtClaimExtDtl) — port 1:1 FrmMngGrtClaimPM detail.</summary>
+public sealed class GrtClaimExtCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long GrtClaimExtId { get; set; }
+    public string CarId { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string GuaranteeNo { get; set; } = "";
+    public string SignStatusDtl { get; set; } = "P";
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
