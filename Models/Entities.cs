@@ -508,6 +508,21 @@ public sealed class RetrieveReqCar
     public string DtlStatus { get; set; } = "Pending";
 }
 
+/// <summary>Trạng thái đóng thùng xe (Car_VIN packing — port 1:1 FrmUpdateVIN_TypeCB → CarVINUpdate_TypeCB, Phase2):
+/// mỗi VIN 1 dòng; cập nhật đã đóng thùng (TypeCB='1') + loại thùng + spec thực + số seri + ngày kiểm.</summary>
+public sealed class VinPacking
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string TypeCB { get; set; } = "0";        // '1' = đã đóng thùng
+    public string? LoaiThung { get; set; }           // loại thùng
+    public string? ActualSpec { get; set; }          // spec thực tế
+    public string? SerialNo { get; set; }
+    public DateTime? InspectionDate { get; set; }     // ngày kiểm định
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

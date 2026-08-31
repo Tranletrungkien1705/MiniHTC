@@ -1227,6 +1227,36 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Cập nhật trạng thái đóng thùng (CarVINUpdate_TypeCB — port 1:1 FrmUpdateVIN_TypeCB) =====
+app.MapGet("/api/vinpackings", async (AppDbContext db, ITenantContext t, string? vin, string? typeCB) =>
+{
+    var q = db.VinPackings.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(v => v.Vin.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(typeCB)) q = q.Where(v => v.TypeCB == typeCB);
+    var items = await q.OrderByDescending(v => v.Id).Take(500)
+        .Select(v => new { v.Vin, v.TypeCB, v.LoaiThung, v.ActualSpec, v.SerialNo, v.InspectionDate, v.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, packed = items.Count(x => x.TypeCB == "1"), items });
+}).RequireAuthorization();
+
+// Batch upsert như import Excel: mỗi VIN → set TypeCB='1' (đã đóng thùng) + LoaiThung/ActualSpec/SerialNo/InspectionDate
+app.MapPost("/api/vinpackings", async (VinPackingDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Items ?? new List<VinPackingRowDto>()).Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    int updated = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.Vin.Trim().ToUpperInvariant();
+        var v = await db.VinPackings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
+        if (v is null) { v = new VinPacking { OrgId = t.OrgId, Vin = vin }; db.VinPackings.Add(v); }
+        v.TypeCB = "1"; v.LoaiThung = r.LoaiThung; v.ActualSpec = r.ActualSpec; v.SerialNo = r.SerialNo;
+        v.InspectionDate = r.InspectionDate; v.UpdatedAt = DateTime.Now;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated });
+}).RequireAuthorization();
+
 // ===== Cập nhật VIN thật FVIN→RVIN (Sto_TranspPlanMapVinReal — port 1:1 FrmUpdateFVINToRVIN) =====
 // Map VIN kế hoạch (FVIN) sang VIN thật (RVIN) trên KH vận chuyển; batch như import Excel A1.
 app.MapPost("/api/transplans/mapvin", async (MapVinDto dto, AppDbContext db, ITenantContext t) =>
@@ -1411,4 +1441,6 @@ record RetrieveReqCarDto(string Vin, string? StorageCode);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars);
 record VinPairDto(string FVIN, string RVIN);
 record MapVinDto(List<VinPairDto>? Pairs);
+record VinPackingRowDto(string Vin, string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);
+record VinPackingDto(List<VinPackingRowDto>? Items);
 record RegisterOrgDto(string Name);
