@@ -3230,6 +3230,70 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Xuất kho phụ tùng dịch vụ (ServiceStockOut header-detail — port 1:1 FrmSerInventoryAccStockOut01, TCMotor) =====
+app.MapGet("/api/servicestockouts", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var query = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StockOutNo.Contains(q!) || (x.ReceiverCode != null && x.ReceiverCode.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.StockOutNo, x.ReceiverCode, x.TotalQty, x.Status,
+        stockOutDate = x.StockOutDate.HasValue ? x.StockOutDate.Value.ToString("yyyy-MM-dd") : "",
+        lines = db.ServiceStockOutLines.Count(l => l.OrgId == t.OrgId && l.ServiceStockOutId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicestockouts", async (ServiceStockOutDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
+    if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng xuất phải lớn hơn 0." });
+    var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new ServiceStockOut { OrgId = t.OrgId, StockOutNo = no, ReceiverCode = dto.ReceiverCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Status = "Draft" };
+    db.ServiceStockOuts.Add(h); await db.SaveChangesAsync();
+    decimal totalQty = 0m;
+    foreach (var l in lines)
+    {
+        totalQty += l.Quantity;
+        db.ServiceStockOutLines.Add(new ServiceStockOutLine { OrgId = t.OrgId, ServiceStockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity });
+    }
+    h.TotalQty = totalQty; await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, lines = lines.Count, totalQty });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicestockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity }).ToListAsync();
+    return Results.Ok(new { h.StockOutNo, h.Status, h.TotalQty, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Xác nhận xuất kho: kiểm tồn đủ TẤT CẢ dòng trước, rồi TRỪ TỒN ServicePart (all-or-nothing).
+app.MapPost("/api/servicestockouts/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status == "Confirmed") return Results.BadRequest(new { error = "Phiếu đã xác nhận." });
+    var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id).ToListAsync();
+    var parts = new List<(ServicePart part, decimal qty)>();
+    foreach (var l in lines)
+    {
+        var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
+        if (part is null) return Results.BadRequest(new { error = $"Phụ tùng {l.PartCode} không có trong danh mục." });
+        if (part.Quantity < l.Quantity) return Results.BadRequest(new { error = $"Phụ tùng {l.PartCode} không đủ tồn (cần {l.Quantity}, còn {part.Quantity})." });
+        parts.Add((part, l.Quantity));
+    }
+    foreach (var (part, qty) in parts) part.Quantity -= qty;
+    h.Status = "Confirmed"; await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, partsUpdated = parts.Count });
+}).RequireAuthorization();
+
 // ===== Nhập kho phụ tùng dịch vụ (ServiceStockIn header-detail — port 1:1 FrmSerInventoryAccStockIn, TCMotor) =====
 app.MapGet("/api/servicestockins", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -8477,6 +8541,8 @@ record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? 
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
+record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity);
+record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);

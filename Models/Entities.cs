@@ -2819,6 +2819,30 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phiếu xuất kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockOut01 (TblSerInvStockOut, TCMotor).</summary>
+public sealed class ServiceStockOut
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockOutNo { get; set; } = "";
+    public string? ReceiverCode { get; set; }
+    public DateTime? StockOutDate { get; set; }
+    public decimal TotalQty { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft -> Confirmed (trừ tồn)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng phiếu xuất kho phụ tùng (detail) — port 1:1 FrmSerInventoryAccStockOut01 grid, TCMotor.</summary>
+public sealed class ServiceStockOutLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceStockOutId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal Quantity { get; set; }
+}
+
 /// <summary>Phiếu nhập kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockIn (TblSerInvStockIn, TCMotor).</summary>
 public sealed class ServiceStockIn
 {
