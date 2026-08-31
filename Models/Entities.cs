@@ -2819,6 +2819,19 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Mẫu tin nhắn SMS theo loại nghiệp vụ (nội dung + trạng thái) — port 1:1 FrmSMSTemplate (TblSMS_Template, TCMotor).</summary>
+public sealed class SmsTemplate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SmsType { get; set; } = "";   // loại: MAINT/BIRTHDAY/PROMO/...
+    public string? SmsName { get; set; }
+    public string SmsBody { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Vị trí kho phụ tùng (mã/tên/loại/diện tích/chiều cao/kho) — port 1:1 FrmImportLocation (TblSerMstLocation, TCMotor).</summary>
 public sealed class PartLocation
 {

@@ -179,6 +179,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceModel> ServiceModels => Set<ServiceModel>();
     public DbSet<ServiceItemMst> ServiceItemMsts => Set<ServiceItemMst>();
     public DbSet<PartLocation> PartLocations => Set<PartLocation>();
+    public DbSet<SmsTemplate> SmsTemplates => Set<SmsTemplate>();
     public DbSet<ServiceStockOut> ServiceStockOuts => Set<ServiceStockOut>();
     public DbSet<ServiceStockOutLine> ServiceStockOutLines => Set<ServiceStockOutLine>();
     public DbSet<CusDebit> CusDebits => Set<CusDebit>();

@@ -3230,6 +3230,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Mẫu tin nhắn SMS (SmsTemplate — port 1:1 FrmSMSTemplate, TCMotor) =====
+app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.SmsTemplates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.SmsType.Contains(q!.ToUpper()) || (x.SmsName != null && x.SmsName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.SmsType).Take(500)
+        .Select(x => new { x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"), length = x.SmsBody.Length }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo loại SMS (mỗi loại 1 mẫu). Cảnh báo độ dài > 160 ký tự (SMS multipart) — vẫn cho lưu.
+app.MapPost("/api/smstemplates", async (SmsTemplateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SmsType)) return Results.BadRequest(new { error = "Chưa chọn loại SMS." });
+    if (string.IsNullOrWhiteSpace(dto.SmsBody)) return Results.BadRequest(new { error = "Chưa nhập nội dung SMS." });
+    var type = dto.SmsType.Trim().ToUpperInvariant();
+    var body = dto.SmsBody.Trim();
+    var ex = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == type);
+    if (ex is not null)
+    {
+        ex.SmsName = dto.SmsName; ex.SmsBody = body; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.SmsType, updated = true, length = body.Length, multipart = body.Length > 160 });
+    }
+    var r = new SmsTemplate { OrgId = t.OrgId, SmsType = type, SmsName = dto.SmsName, SmsBody = body, FlagActive = "1" };
+    db.SmsTemplates.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.SmsType, updated = false, length = body.Length, multipart = body.Length > 160 });
+}).RequireAuthorization();
+
+app.MapPost("/api/smstemplates/{type}/toggle", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    type = type.Trim().ToUpperInvariant();
+    var x = await db.SmsTemplates.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SmsType == type);
+    if (x is null) return Results.NotFound(new { type });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.SmsType, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Vị trí kho phụ tùng (PartLocation — port 1:1 FrmImportLocation, TCMotor) =====
 app.MapGet("/api/partlocations", async (AppDbContext db, ITenantContext t, string? q, string? stock, string? active) =>
 {
@@ -8821,6 +8861,7 @@ record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
+record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportDto(List<PartLocationImportRow>? Rows);
