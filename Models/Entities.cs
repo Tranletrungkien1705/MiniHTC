@@ -1463,6 +1463,50 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Đề nghị giao hồ sơ (RD_ReqInvoice + Dtl) — port 1:1 FrmNewRDInvoice (2010.HTC/Sales/Redeem). Đề nghị giao hồ sơ/hóa đơn cho lô VIN.</summary>
+public sealed class ReqInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqIVNo { get; set; } = "";
+    public string Status { get; set; } = "Draft"; // Draft → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DoneAt { get; set; }
+}
+public sealed class ReqInvoiceDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqInvoiceId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? HTCInvoiceNo { get; set; }
+    public string? InvoiceNoFactory { get; set; }
+    public string? TCGInvoiceNo { get; set; }
+}
+
+/// <summary>Hợp đồng đại lý (DC/DealerContract + Detail) — port 1:1 FrmNewDC/FrmMngDC (2010.HTC/Sales/Contract). HĐ đại lý mua xe: xe + đơn giá + tổng tiền + duyệt.</summary>
+public sealed class DealerContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerContractNo { get; set; } = "";
+    public string? DealerContractNoUser { get; set; }
+    public string DealerCode { get; set; } = "";
+    public DateTime? ContractDate { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft → Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+public sealed class DealerContractDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DealerContractId { get; set; }
+    public string CarId { get; set; } = "";
+    public decimal UnitPrice { get; set; }
+}
+
 /// <summary>Hợp đồng đại lý DMS40 (DMS40_CT_DealerContract) — port 1:1 FrmDMS40_CT_DealerContractHTC_New/FrmMngDMS40 (2010.HTC/Sales/DMS40). HĐ đại lý ký 2 bên: A=HTC, B=đại lý.</summary>
 public sealed class DmsDealerContract
 {

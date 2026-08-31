@@ -1289,6 +1289,111 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị giao hồ sơ (ReqInvoice — port 1:1 FrmNewRDInvoice, 2010.HTC/Sales/Redeem) =====
+app.MapGet("/api/reqinvoices", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.ReqInvoices.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.ReqIVNo, r.Status, r.CreatedAt, r.DoneAt,
+        cars = db.ReqInvoiceDtls.Count(c => c.OrgId == t.OrgId && c.ReqInvoiceId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqinvoices", async (ReqInvoiceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "RIV" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new ReqInvoice { OrgId = t.OrgId, ReqIVNo = no, Status = "Draft" };
+    db.ReqInvoices.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.ReqInvoiceDtls.Add(new ReqInvoiceDtl { OrgId = t.OrgId, ReqInvoiceId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), HTCInvoiceNo = c.HTCInvoiceNo, InvoiceNoFactory = c.InvoiceNoFactory, TCGInvoiceNo = c.TCGInvoiceNo });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqIVNo, cars = cars.Count, message = "Tạo đề nghị giao hồ sơ thành công" });
+}).RequireAuthorization();
+
+app.MapGet("/api/reqinvoices/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqIVNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.ReqInvoiceDtls.Where(c => c.OrgId == t.OrgId && c.ReqInvoiceId == r.Id)
+        .Select(c => new { c.VIN, c.HTCInvoiceNo, c.InvoiceNoFactory, c.TCGInvoiceNo }).ToListAsync();
+    return Results.Ok(new { r.ReqIVNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqinvoices/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqIVNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
+    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqIVNo, status = r.Status });
+}).RequireAuthorization();
+
+// ===== Hợp đồng đại lý (DealerContract/DC — port 1:1 FrmNewDC/FrmMngDC, 2010.HTC/Sales/Contract) =====
+app.MapGet("/api/dealercontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.DealerContracts.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.DealerContractNo, c.DealerContractNoUser, c.DealerCode, c.ContractDate, c.TotalAmount, c.Status, c.CreatedAt, c.ApprovedAt,
+        cars = db.DealerContractDetails.Count(l => l.OrgId == t.OrgId && l.DealerContractId == c.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercontracts", async (DealerContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 xe." });
+    var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+    var no = string.IsNullOrWhiteSpace(dto.DealerContractNo) ? "DC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.DealerContractNo.Trim();
+    if (await db.DealerContracts.AnyAsync(c => c.OrgId == t.OrgId && c.DealerContractNo == no))
+        return Results.BadRequest(new { error = $"Số HĐ {no} đã tồn tại!" });
+    var total = cars.Sum(c => c.UnitPrice);
+    var c2 = new DealerContract { OrgId = t.OrgId, DealerContractNo = no, DealerContractNoUser = dto.DealerContractNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, TotalAmount = total, Status = "Draft" };
+    db.DealerContracts.Add(c2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.DealerContractDetails.Add(new DealerContractDetail { OrgId = t.OrgId, DealerContractId = c2.Id, CarId = c.CarId.Trim().ToUpperInvariant(), UnitPrice = c.UnitPrice });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c2.DealerContractNo, cars = cars.Count, total });
+}).RequireAuthorization();
+
+app.MapGet("/api/dealercontracts/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var cars = await db.DealerContractDetails.Where(l => l.OrgId == t.OrgId && l.DealerContractId == c.Id)
+        .Select(l => new { l.CarId, l.UnitPrice }).ToListAsync();
+    return Results.Ok(new { c.DealerContractNo, c.DealerCode, c.TotalAmount, c.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercontracts/{no}/{action}", async (string no, string action, SoRejectDto? dto, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim();
+    var c = await db.DealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.Status != "Draft") return Results.BadRequest(new { error = "Hợp đồng đã xử lý." });
+    if (action == "approve") { c.Status = "Approved"; c.ApprovedAt = DateTime.Now; }
+    else c.Status = "Rejected";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DealerContractNo, status = c.Status });
+}).RequireAuthorization();
+
 // ===== Hợp đồng đại lý DMS40 ký 2 bên (DmsDealerContract — port 1:1 FrmDMS40_CT_DealerContractHTC_New, 2010.HTC/Sales/DMS40) =====
 app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -4521,6 +4626,10 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
+record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
+record DealerContractCarDto(string CarId, decimal UnitPrice);
+record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser, string DealerCode, DateTime? ContractDate, List<DealerContractCarDto>? Cars);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
 record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
