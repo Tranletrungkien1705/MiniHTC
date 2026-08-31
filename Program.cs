@@ -2995,6 +2995,32 @@ app.MapGet("/api/report/bankdo", async (AppDbContext db, ITenantContext t, strin
     return Results.Ok(new { total = dos.Count, totalCars = totCars, totalConfirmed = totConf, totalRemain = totCars - totConf, overallPct = Pct(totConf, totCars), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo yêu cầu vận chuyển (port 1:1 báo cáo TransportRequest) — tái dùng TransportRequest + TransportReqCar =====
+app.MapGet("/api/report/transport", async (AppDbContext db, ITenantContext t, string? transporter, string? dealer, string? status, DateTime? from, DateTime? to) =>
+{
+    var q = db.TransportRequests.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(transporter)) q = q.Where(r => r.TransporterCode == transporter);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (from is not null) q = q.Where(r => r.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(r => r.CreatedAt < to.Value.Date.AddDays(1));
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var carAgg = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.ReqId))
+        .GroupBy(c => c.ReqId).Select(g => new { g.Key, cars = g.Count() }).ToListAsync();
+    var m = carAgg.ToDictionary(x => x.Key, x => x.cars);
+    int Cars(long id) => m.TryGetValue(id, out var v) ? v : 0;
+    var byTransporter = reqs.GroupBy(r => string.IsNullOrEmpty(r.TransporterCode) ? "(chưa rõ)" : r.TransporterCode)
+        .Select(g => new { transporterCode = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)), approved = g.Count(r => r.Status == "Approved") }).OrderByDescending(x => x.cars).ToList();
+    var byDealer = reqs.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode).Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)) }).OrderByDescending(x => x.cars).ToList();
+    var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.TransContractNo, cars = Cars(r.Id), r.Status, createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), approved = reqs.Count(r => r.Status == "Approved"), byTransporter, byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
