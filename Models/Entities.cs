@@ -2713,6 +2713,22 @@ public sealed class DealPatchLog
     public DateTime PatchedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đẩy Sổ Bảo Hành lên hệ thống online (SBHOnline) — port 1:1 Frm_RePostSBHOnline.</summary>
+public sealed class SbhOnline
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string DealNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime? DeliveryDate { get; set; }
+    public string PostStatus { get; set; } = "Pending";   // Pending -> Posted (co the day lai)
+    public int PushCount { get; set; }
+    public DateTime? LastPushAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

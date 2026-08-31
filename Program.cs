@@ -2332,6 +2332,57 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Đẩy Sổ Bảo Hành online (SbhOnline — port 1:1 Frm_RePostSBHOnline, SalesDealer) =====
+app.MapGet("/api/sbhonline", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? status) =>
+{
+    var q = db.SbhOnlines.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(s => s.DealNo.Contains(dealNo!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(s => s.VIN.Contains(vin!.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.PostStatus == status);
+    var items = await q.OrderByDescending(s => s.Id).Take(500)
+        .Select(s => new { s.VIN, s.CarId, s.DealNo, s.DealerCode, s.DeliveryDate, s.PostStatus, s.PushCount, s.LastPushAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sbhonline", async (SbhOnlineDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
+    var vin = dto.VIN.Trim().ToUpperInvariant();
+    var ex = await db.SbhOnlines.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.VIN == vin);
+    if (ex is not null)
+    {
+        ex.CarId = dto.CarId ?? ""; ex.DealNo = dto.DealNo ?? ""; ex.DealerCode = dto.DealerCode ?? ""; ex.DeliveryDate = dto.DeliveryDate;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.VIN, updated = true });
+    }
+    var s2 = new SbhOnline { OrgId = t.OrgId, VIN = vin, CarId = dto.CarId ?? "", DealNo = dto.DealNo ?? "", DealerCode = dto.DealerCode ?? "", DeliveryDate = dto.DeliveryDate, PostStatus = "Pending" };
+    db.SbhOnlines.Add(s2); await db.SaveChangesAsync();
+    return Results.Ok(new { s2.VIN, updated = false });
+}).RequireAuthorization();
+
+// Đẩy / đẩy lại SBH lên online: Pending->Posted (hoặc Posted->Posted = đẩy lại), tăng PushCount.
+app.MapPost("/api/sbhonline/{vin}/push", async (string vin, AppDbContext db, ITenantContext t) =>
+{
+    vin = vin.Trim().ToUpperInvariant();
+    var s = await db.SbhOnlines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    if (s is null) return Results.NotFound(new { vin });
+    var wasRepush = s.PostStatus == "Posted";
+    s.PostStatus = "Posted"; s.PushCount += 1; s.LastPushAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.VIN, status = s.PostStatus, s.PushCount, rePush = wasRepush, message = "Đẩy thành công!" });
+}).RequireAuthorization();
+
+// Đẩy hàng loạt VIN đã chọn.
+app.MapPost("/api/sbhonline/pushbatch", async (SbhBatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var vins = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v != "").Distinct().ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn VIN để đẩy." });
+    var rows = await db.SbhOnlines.Where(s => s.OrgId == t.OrgId && vins.Contains(s.VIN)).ToListAsync();
+    foreach (var s in rows) { s.PostStatus = "Posted"; s.PushCount += 1; s.LastPushAt = DateTime.Now; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { pushed = rows.Count, message = "Đẩy thành công!" });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6359,6 +6410,8 @@ record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice);
 record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars);
 record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? DealDate, string? PlateNo, string? SalesType, string? WarrantyNo, string? CustomerCode, string? VerifyStatus);
 record DealPatchDto(string Field, string Value);
+record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate);
+record SbhBatchDto(List<string>? Vins);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
