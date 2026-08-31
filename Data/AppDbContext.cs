@@ -109,6 +109,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerDealDetail> DealerDealDetails => Set<DealerDealDetail>();
     public DbSet<DlrPdiRequest> DlrPdiRequests => Set<DlrPdiRequest>();
     public DbSet<DlrPdiRequestDetail> DlrPdiRequestDetails => Set<DlrPdiRequestDetail>();
+    public DbSet<DealerCustomer> DealerCustomers => Set<DealerCustomer>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

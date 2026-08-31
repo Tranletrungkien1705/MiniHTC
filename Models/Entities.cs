@@ -1463,6 +1463,29 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Khách hàng của đại lý (DealerCustomer) — port 1:1 FrmNewCustomer/FrmMngCustomer (DMSales.Foton/SalesDealer). Master KH cấp đại lý: loại KH, CMND, giới tính, DOB...</summary>
+public sealed class DealerCustomer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CustomerCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string CusTypeCode { get; set; } = "";     // loại khách hàng
+    public string? CusBaseCode { get; set; }          // KH gốc (mặc định KH)
+    public string FullName { get; set; } = "";
+    public string Address { get; set; } = "";
+    public string PhoneNo { get; set; } = "";
+    public string? Email { get; set; }
+    public string? TaxCode { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? DistrictCode { get; set; }
+    public string? IDCardNo { get; set; }
+    public string? IDCardType { get; set; }
+    public string? Gender { get; set; }
+    public DateTime? DateOfBirth { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Yêu cầu PDI của đại lý (Dlr_PDIRequest) — port 1:1 FrmNewDlr_PDIRequest (DMSales.Foton/SalesDealer). Đại lý gửi yêu cầu PDI cho danh sách xe/RO.</summary>
 public sealed class DlrPdiRequest
 {

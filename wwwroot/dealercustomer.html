@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Khách hàng đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;width:100%;box-sizing:border-box}
+  button{cursor:pointer;width:auto} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Khách hàng đại lý <span class="muted">(port 1:1 FrmNewCustomer — DealerCustomer)</span></h1>
+<div class="card">
+  <b>Tạo khách hàng</b>
+  <div class="grid" style="margin-top:10px">
+    <div><label>Mã KH (tự sinh nếu trống)</label><input id="code"></div>
+    <div><label>Mã đại lý</label><input id="dl"></div>
+    <div><label>Loại KH *</label><input id="ct" placeholder="CN/DN"></div>
+    <div><label>KH gốc</label><input id="cb" value="KH"></div>
+    <div><label>Họ tên *</label><input id="fn"></div>
+    <div><label>Địa chỉ *</label><input id="ad"></div>
+    <div><label>Số điện thoại *</label><input id="ph"></div>
+    <div><label>Email</label><input id="em"></div>
+    <div><label>Mã số thuế</label><input id="tx"></div>
+    <div><label>Tỉnh</label><input id="pv"></div>
+    <div><label>Huyện</label><input id="ds"></div>
+    <div><label>CMND/CCCD</label><input id="id"></div>
+    <div><label>Loại giấy tờ</label><input id="it"></div>
+    <div><label>Giới tính</label><select id="gd"><option value="">—</option><option value="M">Nam</option><option value="F">Nữ</option></select></div>
+    <div><label>Ngày sinh</label><input id="db" type="date"></div>
+  </div>
+  <div class="bar"><button class="primary" onclick="create()">Lưu KH</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Tìm tên/mã/SĐT" oninput="load()" style="width:160px"><input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Mã KH</th><th>Họ tên</th><th>Đại lý</th><th>Loại</th><th>SĐT</th><th>CMND</th><th>Địa chỉ</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const body={customerCode:F("code").value,dealerCode:F("dl").value,cusTypeCode:F("ct").value,cusBaseCode:F("cb").value,fullName:F("fn").value,address:F("ad").value,phoneNo:F("ph").value,email:F("em").value,taxCode:F("tx").value,provinceCode:F("pv").value,districtCode:F("ds").value,idCardNo:F("id").value,idCardType:F("it").value,gender:F("gd").value,dateOfBirth:F("db").value||null};
+  const r=await fetch("/api/dealercustomers",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.customerCode+" - "+j.fullName); ["code","fn","ad","ph","em","tx","id"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/dealercustomers?q=${F("q").value}&dealer=${F("qd").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.customerCode}</b></td><td>${o.fullName}</td><td>${o.dealerCode||""}</td><td>${o.cusTypeCode}</td><td>${o.phoneNo}</td><td>${o.idCardNo||""}</td><td>${o.address||""}</td></tr>`
+  ).join("")||'<tr><td colspan="7" class="muted">Chưa có khách hàng.</td></tr>';
+}
+load();
+</script>
+</body></html>

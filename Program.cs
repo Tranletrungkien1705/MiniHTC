@@ -1289,6 +1289,42 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Khách hàng đại lý (DealerCustomer — port 1:1 FrmNewCustomer/FrmMngCustomer, DMSales.Foton/SalesDealer) =====
+app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? type) =>
+{
+    var query = db.DealerCustomers.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(type)) query = query.Where(c => c.CusTypeCode == type);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.FullName.Contains(q) || c.CustomerCode.Contains(q) || (c.PhoneNo != null && c.PhoneNo.Contains(q)));
+    var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.CustomerCode, c.FullName, c.DealerCode, c.CusTypeCode, c.PhoneNo, c.Address, c.IDCardNo, c.Gender, c.ProvinceCode, c.CreatedAt
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusTypeCode)) return Results.BadRequest(new { error = "Hãy nhập loại khách hàng." });
+    if (string.IsNullOrWhiteSpace(dto.FullName)) return Results.BadRequest(new { error = "Hãy nhập Họ tên." });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Hãy nhập Địa chỉ." });
+    if (string.IsNullOrWhiteSpace(dto.PhoneNo)) return Results.BadRequest(new { error = "Hãy nhập Số điện thoại." });
+    if (!string.IsNullOrWhiteSpace(dto.IDCardNo) && dto.IDCardNo.Any(ch => !char.IsLetterOrDigit(ch)))
+        return Results.BadRequest(new { error = "IDCardNo không được nhập ký tự đặc biệt." });
+    var code = string.IsNullOrWhiteSpace(dto.CustomerCode) ? "DC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CustomerCode.Trim().ToUpperInvariant();
+    if (await db.DealerCustomers.AnyAsync(c => c.OrgId == t.OrgId && c.CustomerCode == code))
+        return Results.BadRequest(new { error = $"Mã KH {code} đã tồn tại!" });
+    var c = new DealerCustomer
+    {
+        OrgId = t.OrgId, CustomerCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), CusTypeCode = dto.CusTypeCode.Trim(),
+        CusBaseCode = dto.CusBaseCode ?? "KH", FullName = dto.FullName.Trim(), Address = dto.Address.Trim(), PhoneNo = dto.PhoneNo.Trim(),
+        Email = dto.Email, TaxCode = dto.TaxCode, ProvinceCode = dto.ProvinceCode, DistrictCode = dto.DistrictCode,
+        IDCardNo = dto.IDCardNo, IDCardType = dto.IDCardType, Gender = dto.Gender, DateOfBirth = dto.DateOfBirth
+    };
+    db.DealerCustomers.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.CustomerCode, c.FullName });
+}).RequireAuthorization();
+
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
 app.MapGet("/api/dealerdeals", async (AppDbContext db, ITenantContext t, string? dealer, string? salesType, string? buyer) =>
 {
@@ -3658,4 +3694,5 @@ record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeB
 record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
+record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);
 record RegisterOrgDto(string Name);
