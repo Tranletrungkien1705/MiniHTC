@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Sửa thông tin giao dịch</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1060px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Sửa thông tin giao dịch bán xe <span class="muted">(port 1:1 cụm FrmEditDeal_* — DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung)</span></h1>
+<p class="muted">Đăng ký GD rồi sửa từng trường; mỗi lần ghi log old→new. Gộp 6 màn sửa GD.</p>
+<div class="card">
+  <b>Đăng ký/cập nhật GD (upsert theo số GD)</b>
+  <div class="bar" style="margin-top:10px">
+    <div><label>Số GD *</label><input id="dn" style="width:120px"></div>
+    <div><label>VIN</label><input id="vin" style="width:120px"></div>
+    <div><label>Đại lý</label><input id="dl" style="width:80px"></div>
+    <div><label>Ngày GD</label><input id="dd" type="date" style="width:140px"></div>
+    <div><label>Biển số</label><input id="pl" style="width:90px"></div>
+    <div><label>Kiểu bán</label><input id="st" style="width:90px"></div>
+    <div><label>Số BH</label><input id="wn" style="width:90px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="bar">
+  <input id="qn" placeholder="Lọc số GD" oninput="load()" style="width:100px">
+  <input id="qv" placeholder="Lọc VIN" oninput="load()" style="width:120px">
+</div>
+<div class="wrap"><table><thead><tr><th>Số GD</th><th>VIN</th><th>ĐL</th><th>Ngày GD</th><th>Biển số</th><th>Kiểu bán</th><th>Số BH</th><th>KHGD</th><th>Kiểm chứng</th><th>Sửa nhanh</th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="card" id="hCard" style="display:none">
+  <b>Lịch sử sửa — <span id="hNo"></span></b>
+  <div class="wrap"><table><thead><tr><th>Trường</th><th>Cũ</th><th>Mới</th><th>Thời điểm</th></tr></thead><tbody id="hRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const FN={dealDate:"Ngày GD",plateNo:"Biển số",salesType:"Kiểu bán",warrantyNo:"Số BH",customerCode:"KHGD",verifyStatus:"Kiểm chứng"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){
+  const b={dealNo:F("dn").value,vin:F("vin").value,dealerCode:F("dl").value,dealDate:F("dd").value||null,plateNo:F("pl").value,salesType:F("st").value,warrantyNo:F("wn").value};
+  const r=await fetch("/api/deals/records",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg((j.updated?"Đã cập nhật ":"Đã thêm ")+j.dealNo); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/deals/records?dealNo=${F("qn").value}&vin=${F("qv").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.dealNo}</b></td><td>${o.vin||""}</td><td>${o.dealerCode||""}</td><td>${(o.dealDate||"").substring(0,10)}</td><td>${o.plateNo||""}</td><td>${o.salesType||""}</td><td>${o.warrantyNo||""}</td><td>${o.customerCode||""}</td><td>${o.verifyStatus||""}</td>
+    <td><button class="sm" onclick="patch('${o.dealNo}','dealDate')">Ngày</button> <button class="sm" onclick="patch('${o.dealNo}','plateNo')">Biển</button> <button class="sm" onclick="patch('${o.dealNo}','salesType')">Kiểu</button> <button class="sm" onclick="patch('${o.dealNo}','warrantyNo')">BH</button> <button class="sm" onclick="patch('${o.dealNo}','customerCode')">KHGD</button> <button class="sm" onclick="patch('${o.dealNo}','verifyStatus')">KC</button> <button class="sm" onclick="history('${o.dealNo}')">Sử</button></td></tr>`
+  ).join("")||'<tr><td colspan="10" class="muted">Chưa có GD.</td></tr>';
+}
+async function patch(no,field){
+  const val=prompt(`Giá trị mới cho "${FN[field]}" (GD ${no}):`); if(val===null) return;
+  const r=await fetch(`/api/deals/records/${no}/patch`,{method:"POST",headers:H(),body:JSON.stringify({field,value:val})});
+  const j=await r.json();
+  if(r.ok){ msg(`${no}: ${FN[field]} ${j.oldValue||"(rỗng)"} → ${j.newValue}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function history(no){
+  const d=await (await fetch(`/api/deals/records/${no}/history`,{headers:H()})).json();
+  F("hCard").style.display=""; F("hNo").textContent=no;
+  F("hRows").innerHTML=(d.logs||[]).map(l=>`<tr><td>${FN[l.field]||l.field}</td><td>${l.oldValue||"—"}</td><td><b>${l.newValue}</b></td><td>${(l.patchedAt||"").replace("T"," ").substring(0,19)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa sửa lần nào.</td></tr>';
+}
+load();
+</script>
+</body></html>

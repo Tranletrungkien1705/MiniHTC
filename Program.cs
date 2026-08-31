@@ -2269,6 +2269,69 @@ app.MapPost("/api/wholesaledeals/{no}/{action}", async (string no, string action
     return Results.Ok(new { d.DealNo, d.Status });
 }).RequireAuthorization();
 
+// ===== Sửa thông tin giao dịch bán xe (DealRecord — port 1:1 cụm FrmEditDeal_*: DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung) =====
+app.MapGet("/api/deals/records", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? dealer) =>
+{
+    var q = db.DealRecords.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(r => r.DealNo.Contains(dealNo!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(r => r.VIN.Contains(vin!.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    var items = await q.OrderByDescending(r => r.Id).Take(500)
+        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.DealDate, r.PlateNo, r.SalesType, r.WarrantyNo, r.CustomerCode, r.VerifyStatus, r.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/deals/records", async (DealRecordDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealNo)) return Results.BadRequest(new { error = "Chưa nhập số giao dịch." });
+    var no = dto.DealNo.Trim();
+    var ex = await db.DealRecords.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.DealNo == no);
+    if (ex is not null)
+    {
+        ex.VIN = (dto.VIN ?? "").Trim().ToUpperInvariant(); ex.DealerCode = dto.DealerCode ?? ""; ex.DealDate = dto.DealDate; ex.PlateNo = dto.PlateNo ?? ""; ex.SalesType = dto.SalesType ?? ""; ex.WarrantyNo = dto.WarrantyNo ?? ""; ex.CustomerCode = dto.CustomerCode ?? ""; ex.VerifyStatus = dto.VerifyStatus ?? ""; ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.DealNo, updated = true });
+    }
+    var r2 = new DealRecord { OrgId = t.OrgId, DealNo = no, VIN = (dto.VIN ?? "").Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", DealDate = dto.DealDate, PlateNo = dto.PlateNo ?? "", SalesType = dto.SalesType ?? "", WarrantyNo = dto.WarrantyNo ?? "", CustomerCode = dto.CustomerCode ?? "", VerifyStatus = dto.VerifyStatus ?? "" };
+    db.DealRecords.Add(r2); await db.SaveChangesAsync();
+    return Results.Ok(new { r2.DealNo, updated = false });
+}).RequireAuthorization();
+
+// Patch 1 field GD (audit old->new). field = dealDate|plateNo|salesType|warrantyNo|customerCode|verifyStatus.
+app.MapPost("/api/deals/records/{dealNo}/patch", async (string dealNo, DealPatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    dealNo = dealNo.Trim();
+    var r = await db.DealRecords.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == dealNo);
+    if (r is null) return Results.NotFound(new { dealNo });
+    var field = (dto.Field ?? "").Trim();
+    if (field is not ("dealDate" or "plateNo" or "salesType" or "warrantyNo" or "customerCode" or "verifyStatus")) return Results.BadRequest(new { error = "Field không hợp lệ (dealDate|plateNo|salesType|warrantyNo|customerCode|verifyStatus)." });
+    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+    string oldVal;
+    switch (field)
+    {
+        case "dealDate":
+            if (!DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày giao dịch không hợp lệ." });
+            oldVal = r.DealDate?.ToString("yyyy-MM-dd") ?? ""; r.DealDate = newDate; break;
+        case "plateNo": oldVal = r.PlateNo; r.PlateNo = dto.Value.Trim(); break;
+        case "salesType": oldVal = r.SalesType; r.SalesType = dto.Value.Trim(); break;
+        case "warrantyNo": oldVal = r.WarrantyNo; r.WarrantyNo = dto.Value.Trim(); break;
+        case "customerCode": oldVal = r.CustomerCode; r.CustomerCode = dto.Value.Trim(); break;
+        default: oldVal = r.VerifyStatus; r.VerifyStatus = dto.Value.Trim(); break;
+    }
+    r.UpdatedAt = DateTime.Now;
+    db.DealPatchLogs.Add(new DealPatchLog { OrgId = t.OrgId, DealRecordId = r.Id, DealNo = dealNo, Field = field, OldValue = oldVal, NewValue = dto.Value.Trim() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.DealNo, field, oldValue = oldVal, newValue = dto.Value.Trim() });
+}).RequireAuthorization();
+
+app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbContext db, ITenantContext t) =>
+{
+    dealNo = dealNo.Trim();
+    var logs = await db.DealPatchLogs.Where(l => l.OrgId == t.OrgId && l.DealNo == dealNo)
+        .OrderByDescending(l => l.Id).Take(200).Select(l => new { l.Field, l.OldValue, l.NewValue, l.PatchedAt }).ToListAsync();
+    return Results.Ok(new { dealNo, count = logs.Count, logs });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6294,6 +6357,8 @@ record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
 record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice);
 record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars);
+record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? DealDate, string? PlateNo, string? SalesType, string? WarrantyNo, string? CustomerCode, string? VerifyStatus);
+record DealPatchDto(string Field, string Value);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

@@ -2682,6 +2682,37 @@ public sealed class WholesaleDealCar
     public decimal UnitPrice { get; set; }
 }
 
+/// <summary>Bản ghi giao dịch bán xe để sửa field — port 1:1 cụm FrmEditDeal_* (DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung).</summary>
+public sealed class DealRecord
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime? DealDate { get; set; }        // ngay giao dich
+    public string PlateNo { get; set; } = "";       // bien so
+    public string SalesType { get; set; } = "";      // kieu ban
+    public string WarrantyNo { get; set; } = "";     // so bao hanh (SoBaoHanh)
+    public string CustomerCode { get; set; } = "";   // KH giao dich (KHGD)
+    public string VerifyStatus { get; set; } = "";   // kiem chung (KiemChung)
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Log patch field GD (audit old→new) — port 1:1 cụm FrmEditDeal_*.</summary>
+public sealed class DealPatchLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DealRecordId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string Field { get; set; } = "";
+    public string OldValue { get; set; } = "";
+    public string NewValue { get; set; } = "";
+    public DateTime PatchedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

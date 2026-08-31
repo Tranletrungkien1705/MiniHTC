@@ -142,6 +142,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<WoScheduleLine> WoScheduleLines => Set<WoScheduleLine>();
     public DbSet<WholesaleDeal> WholesaleDeals => Set<WholesaleDeal>();
     public DbSet<WholesaleDealCar> WholesaleDealCars => Set<WholesaleDealCar>();
+    public DbSet<DealRecord> DealRecords => Set<DealRecord>();
+    public DbSet<DealPatchLog> DealPatchLogs => Set<DealPatchLog>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
