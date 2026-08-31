@@ -1463,6 +1463,40 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Lượt khách thăm showroom (DLR_CtmVisit) — port 1:1 FrmCusVisit (DMSales.Foton/RetailContract). CRM: giới tính + độ tuổi + xe quan tâm.</summary>
+public sealed class CtmVisit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CusVisitCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string Gender { get; set; } = "";       // 0/1
+    public string RangeAge { get; set; } = "";      // độ tuổi
+    public string ModelCode { get; set; } = "";     // xe quan tâm
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Lượt khách lái thử (DLR_DriveTest) — port 1:1 FrmNewTestDriver (DMSales.Foton/RetailContract). CRM: xe lái thử + khách hàng + GPLX + ngày lái thử.</summary>
+public sealed class DriveTest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DriveTestCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string DriverTestType { get; set; } = ""; // HTC / dealer
+    public string? DrvTestPlateNo { get; set; }      // xe lái thử
+    public string TestModelCode { get; set; } = "";  // xe khách quan tâm
+    public DateTime DriveDate { get; set; }
+    public string? CustomerCode { get; set; }
+    public string CustomerName { get; set; } = "";
+    public string PhoneNo { get; set; } = "";
+    public string Address { get; set; } = "";
+    public string DriverLicenseNo { get; set; } = "";
+    public string? RangeAge { get; set; }
+    public string? Email { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Hợp đồng bán lẻ (DlrContract) — port 1:1 FrmNewRetailContract/FrmMngRetailContractHTC (DMSales.Foton/RetailContract). HĐ đại lý bán lẻ cho khách, gắn NVBH + kiểu bán + dòng model/SL/giá/VAT.</summary>
 public sealed class DlrContract
 {

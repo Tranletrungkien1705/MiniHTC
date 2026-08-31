@@ -112,6 +112,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerCustomer> DealerCustomers => Set<DealerCustomer>();
     public DbSet<DlrContract> DlrContracts => Set<DlrContract>();
     public DbSet<DlrContractDetail> DlrContractDetails => Set<DlrContractDetail>();
+    public DbSet<CtmVisit> CtmVisits => Set<CtmVisit>();
+    public DbSet<DriveTest> DriveTests => Set<DriveTest>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

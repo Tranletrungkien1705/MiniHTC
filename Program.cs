@@ -1289,6 +1289,62 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Lượt khách thăm showroom (CtmVisit — port 1:1 FrmCusVisit, DMSales.Foton/RetailContract) =====
+app.MapGet("/api/ctmvisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model) =>
+{
+    var q = db.CtmVisits.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(v => v.ModelCode == model);
+    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new { v.CusVisitCode, v.DealerCode, v.Gender, v.RangeAge, v.ModelCode, v.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/ctmvisits", async (CtmVisitDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Hãy chọn loại xe khách quan tâm." });
+    if (string.IsNullOrWhiteSpace(dto.Gender)) return Results.BadRequest(new { error = "Hãy chọn giới tính." });
+    if (string.IsNullOrWhiteSpace(dto.RangeAge)) return Results.BadRequest(new { error = "Hãy chọn độ tuổi." });
+    var code = "CV" + DateTime.Now.ToString("yyMMddHHmmssfff");
+    var v = new CtmVisit { OrgId = t.OrgId, CusVisitCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), Gender = dto.Gender.Trim(), RangeAge = dto.RangeAge.Trim(), ModelCode = dto.ModelCode.Trim() };
+    db.CtmVisits.Add(v); await db.SaveChangesAsync();
+    return Results.Ok(new { v.CusVisitCode, message = "Thêm mới lượt khách thăm showroom thành công" });
+}).RequireAuthorization();
+
+// ===== Lượt khách lái thử (DriveTest — port 1:1 FrmNewTestDriver, DMSales.Foton/RetailContract) =====
+app.MapGet("/api/drivetests", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? phone) =>
+{
+    var q = db.DriveTests.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(d => d.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(d => d.TestModelCode == model);
+    if (!string.IsNullOrWhiteSpace(phone)) q = q.Where(d => d.PhoneNo.Contains(phone));
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/drivetests", async (DriveTestDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DriverTestType)) return Results.BadRequest(new { error = "Phải chọn loại lái thử." });
+    if (string.IsNullOrWhiteSpace(dto.TestModelCode)) return Results.BadRequest(new { error = "Hãy chọn loại xe khách quan tâm." });
+    if (dto.DriveDate is null) return Results.BadRequest(new { error = "Hãy chọn Ngày lái thử." });
+    if (dto.DriveDate.Value.Date > DateTime.Now.Date) return Results.BadRequest(new { error = "Ngày lái thử phải nhỏ hơn hoặc là Ngày hiện tại." });
+    if (string.IsNullOrWhiteSpace(dto.PhoneNo)) return Results.BadRequest(new { error = "Hãy nhập Số điện thoại." });
+    if (!dto.PhoneNo.All(char.IsDigit)) return Results.BadRequest(new { error = "Số điện thoại chỉ được nhập số." });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Hãy nhập Địa chỉ." });
+    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "Hãy nhập Họ tên Khách hàng." });
+    if (string.IsNullOrWhiteSpace(dto.DriverLicenseNo)) return Results.BadRequest(new { error = "Phải nhập GPLX." });
+    if (dto.DriverLicenseNo.Any(ch => !char.IsLetterOrDigit(ch))) return Results.BadRequest(new { error = "GPLX không được nhập ký tự đặc biệt." });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    var code = "DT" + DateTime.Now.ToString("yyMMddHHmmssfff");
+    var d = new DriveTest
+    {
+        OrgId = t.OrgId, DriveTestCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), DriverTestType = dto.DriverTestType.Trim(),
+        DrvTestPlateNo = dto.DrvTestPlateNo, TestModelCode = dto.TestModelCode.Trim(), DriveDate = dto.DriveDate.Value, CustomerCode = dto.CustomerCode,
+        CustomerName = dto.CustomerName.Trim(), PhoneNo = dto.PhoneNo.Trim(), Address = dto.Address.Trim(), DriverLicenseNo = dto.DriverLicenseNo.Trim(), RangeAge = dto.RangeAge, Email = dto.Email
+    };
+    db.DriveTests.Add(d); await db.SaveChangesAsync();
+    return Results.Ok(new { d.DriveTestCode, message = "Thêm mới lượt khách lái thử xe thành công" });
+}).RequireAuthorization();
+
 // ===== Hợp đồng bán lẻ (DlrContract — port 1:1 FrmNewRetailContract/FrmMngRetailContractHTC, DMSales.Foton/RetailContract) =====
 app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? customer) =>
 {
@@ -3766,4 +3822,6 @@ record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
+record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
+record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record RegisterOrgDto(string Name);

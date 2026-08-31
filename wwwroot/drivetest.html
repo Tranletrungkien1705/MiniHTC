@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Khách lái thử</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box}
+  .grid input,.grid select{width:100%}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Lượt khách lái thử <span class="muted">(port 1:1 FrmNewTestDriver — DriveTest)</span></h1>
+<div class="card">
+  <b>Ghi nhận lượt lái thử</b>
+  <div class="grid" style="margin-top:10px">
+    <div><label>Mã đại lý</label><input id="dl"></div>
+    <div><label>Loại lái thử *</label><select id="tt"><option value="">—</option><option value="HTC">HTC</option><option value="DEALER">Đại lý</option></select></div>
+    <div><label>Xe lái thử (biển số)</label><input id="pl"></div>
+    <div><label>Xe quan tâm *</label><input id="md" placeholder="Model"></div>
+    <div><label>Ngày lái thử *</label><input id="dd" type="date"></div>
+    <div><label>Mã KH</label><input id="cc"></div>
+    <div><label>Họ tên KH *</label><input id="cn"></div>
+    <div><label>Số điện thoại *</label><input id="ph"></div>
+    <div><label>Địa chỉ *</label><input id="ad"></div>
+    <div><label>GPLX *</label><input id="gp"></div>
+    <div><label>Độ tuổi</label><input id="ra"></div>
+    <div><label>Email</label><input id="em"></div>
+  </div>
+  <div class="bar"><button class="primary" onclick="create()">Ghi nhận</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc SĐT" oninput="load()" style="width:130px"></div>
+<table><thead><tr><th>Mã lượt</th><th>Loại</th><th>Xe lái thử</th><th>Xe quan tâm</th><th>Ngày</th><th>KH</th><th>SĐT</th><th>GPLX</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const body={dealerCode:F("dl").value,driverTestType:F("tt").value,drvTestPlateNo:F("pl").value,testModelCode:F("md").value,driveDate:F("dd").value||null,customerCode:F("cc").value,customerName:F("cn").value,phoneNo:F("ph").value,address:F("ad").value,driverLicenseNo:F("gp").value,rangeAge:F("ra").value,email:F("em").value};
+  const r=await fetch("/api/drivetests",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  if(r.ok){ msg(j.message||"OK"); ["cn","ph","ad","gp","em"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/drivetests?phone=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.driveTestCode}</b></td><td>${o.driverTestType}</td><td>${o.drvTestPlateNo||""}</td><td>${o.testModelCode}</td><td>${day(o.driveDate)}</td><td>${o.customerName}</td><td>${o.phoneNo}</td><td>${o.driverLicenseNo}</td></tr>`
+  ).join("")||'<tr><td colspan="8" class="muted">Chưa có lượt lái thử.</td></tr>';
+}
+load();
+</script>
+</body></html>
