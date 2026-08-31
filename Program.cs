@@ -1289,6 +1289,59 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị giao dịch ngân hàng (BankingTrans — port 1:1 FrmDeNghiGDNganHang, 2010.HTC/Sales/Payment) =====
+string[] _bankTransTypes = { "GNTT", "BLLC", "PHLC" };
+app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string? status, string? bank, string? type) =>
+{
+    var q = db.BankingTranses.Where(b => b.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(b => b.Status == status);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.TransType == type);
+    var items = await q.OrderByDescending(b => b.Id).Take(500)
+        .Select(b => new { b.SoDeNghi, b.BankCode, b.TransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng." });
+    if (string.IsNullOrWhiteSpace(dto.TransType) || !_bankTransTypes.Contains(dto.TransType))
+        return Results.BadRequest(new { error = "Loại ĐN GD = GNTT | BLLC | PHLC." });
+    if (dto.AmountDisbursed <= 0) return Results.BadRequest(new { error = "Số tiền phải > 0." });
+    var no = "BKT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var b = new BankingTrans
+    {
+        OrgId = t.OrgId, SoDeNghi = no, BankCode = dto.BankCode.Trim().ToUpperInvariant(), TransType = dto.TransType.Trim(),
+        DisbursementDate = dto.DisbursementDate, AmountDisbursed = dto.AmountDisbursed, TotalAmount = dto.TotalAmount == 0 ? dto.AmountDisbursed : dto.TotalAmount, Remark = dto.Remark, Status = "Draft"
+    };
+    db.BankingTranses.Add(b); await db.SaveChangesAsync();
+    return Results.Ok(new { b.SoDeNghi, b.BankCode, b.TransType });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankingtrans/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    if (b.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã gửi." });
+    b.Status = "Sent"; b.SentAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.SoDeNghi, status = b.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankingtrans/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    if (b.Status != "Sent") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối đề nghị đã gửi." });
+    if (action == "approve") { b.Status = "Approved"; b.ApprovedAt = DateTime.Now; }
+    else b.Status = "Rejected";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.SoDeNghi, status = b.Status });
+}).RequireAuthorization();
+
 // ===== Biên bản giao xe (DlvMinutes — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes, 2010.HTC/Sales/DlvMinutes) =====
 app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? status, string? vin) =>
 {
@@ -4754,6 +4807,7 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
 record HtmvPdiDto(List<HtmvPdiCarDto>? Cars);

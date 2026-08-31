@@ -1463,6 +1463,24 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Đề nghị giao dịch ngân hàng (BankingTrans) — port 1:1 FrmDeNghiGDNganHang (2010.HTC/Sales/Payment). ĐN GD với ngân hàng: giải ngân GNTT / bảo lãnh LC / phát hành LC.</summary>
+public sealed class BankingTrans
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SoDeNghi { get; set; } = "";       // số đề nghị (auto)
+    public string BankCode { get; set; } = "";       // ngân hàng
+    public string TransType { get; set; } = "";       // loại ĐN GD: GNTT/BLLC/PHLC
+    public DateTime? DisbursementDate { get; set; }   // ngày giải ngân
+    public decimal AmountDisbursed { get; set; }      // số tiền giải ngân
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft";     // Draft → Sent → Approved / Rejected
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+    public DateTime? ApprovedAt { get; set; }
+}
+
 /// <summary>Biên bản giao xe (Sto_DlvMinutes) — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes (2010.HTC/Sales/DlvMinutes). BB giao/vận chuyển xe: VIN, tuyến đi-đến, ĐVVT + lái xe, ngày giao + checklist tình trạng xe (JSON ~25 mục OS/IS/SP/DA).</summary>
 public sealed class DlvMinutes
 {
