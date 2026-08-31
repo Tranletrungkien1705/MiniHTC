@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Sửa chi tiết PI</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  #msg{font-size:13px} #dtbl td,#dtbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Sửa chi tiết PI <span class="muted">(port 1:1 FrmUpdatePIDetail — PiLine, chỉ khi PI Nháp)</span></h1>
+<div class="card">
+  <div class="bar"><input id="pino" placeholder="Số PI (VD PI...)" style="width:180px"><button onclick="loadPi()">Nạp chi tiết</button><span id="st" class="muted"></span><span style="flex:1"></span><button class="primary" onclick="saveDetail()">Lưu chi tiết</button><span id="msg"></span></div>
+  <table id="dtbl" style="margin-top:10px"><thead><tr><th>Spec *</th><th>Model</th><th>Màu</th><th>Cảng</th><th>Nhà máy</th><th>WO</th><th>SL *</th><th>Đơn giá</th><th></th></tr></thead><tbody id="dtb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Thêm dòng</button>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function row(l){ const tr=document.createElement("tr"); l=l||{};
+  tr.innerHTML=`<td><input class="sp" style="width:80px" value="${l.specCode||""}"></td><td><input class="md" style="width:70px" value="${l.modelCode||""}"></td><td><input class="cl" style="width:55px" value="${l.colorCode||""}"></td><td><input class="po" style="width:55px" value="${l.portCode||""}"></td><td><input class="pl" style="width:60px" value="${l.plantCode||""}"></td><td><input class="wo" style="width:70px" value="${l.workOrderNo||""}"></td><td><input class="qt" type="number" style="width:55px" value="${l.quantity||1}"></td><td><input class="up" type="number" style="width:90px" value="${l.unitPrice||0}"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  return tr; }
+function addLine(){ F("dtb").appendChild(row()); }
+async function loadPi(){ await token(); F("dtb").innerHTML=""; msg("");
+  const no=F("pino").value.trim(); if(!no) return;
+  const r=await fetch(`/api/pis/${no}/lines`,{headers:H()});
+  if(!r.ok){ F("st").textContent="Không tìm thấy PI."; return; }
+  const d=await r.json(); F("st").textContent=`Trạng thái: ${d.status} · ${d.count} dòng`;
+  (d.lines||[]).forEach(l=>F("dtb").appendChild(row(l))); if((d.lines||[]).length===0) addLine();
+}
+async function saveDetail(){
+  const no=F("pino").value.trim(); if(!no){ msg("Nhập số PI."); return; }
+  const lines=[...F("dtb").querySelectorAll("tr")].map(tr=>({specCode:tr.querySelector(".sp").value,modelCode:tr.querySelector(".md").value,colorCode:tr.querySelector(".cl").value,portCode:tr.querySelector(".po").value,plantCode:tr.querySelector(".pl").value,workOrderNo:tr.querySelector(".wo").value,quantity:parseInt(tr.querySelector(".qt").value)||0,unitPrice:parseFloat(tr.querySelector(".up").value)||0})).filter(l=>l.specCode);
+  const r=await fetch(`/api/pis/${no}/detail`,{method:"POST",headers:H(),body:JSON.stringify(lines)});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã lưu ${j.lines} dòng (thay ${j.replaced} dòng cũ).`); loadPi(); } else msg("Lỗi: "+(j.error||r.status));
+}
+token();
+</script>
+</body></html>

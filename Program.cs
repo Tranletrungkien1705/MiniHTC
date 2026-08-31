@@ -1757,6 +1757,53 @@ app.MapPost("/api/pis/{no}/confirm", async (string no, AppDbContext db, ITenantC
     return Results.Ok(new { p.PiNo, status = p.Status });
 }).RequireAuthorization();
 
+// Sửa chi tiết PI (FrmUpdatePIDetail) — thay toàn bộ dòng chi tiết, chỉ khi PI còn Nháp
+app.MapPost("/api/pis/{no}/detail", async (string no, List<PiLineDto> lines, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.Pis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PiNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.Status != "Draft") return Results.BadRequest(new { error = "Chỉ sửa chi tiết PI Nháp." });
+    var rows = (lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng chi tiết (spec)." });
+    if (rows.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
+    var old = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).ToListAsync();
+    db.PiLines.RemoveRange(old);
+    foreach (var l in rows)
+        db.PiLines.Add(new PiLine { OrgId = t.OrgId, PiId = p.Id, SpecCode = l.SpecCode.Trim(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, WorkOrderNo = l.WorkOrderNo, Quantity = l.Quantity, UnitPrice = l.UnitPrice });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PiNo, lines = rows.Count, replaced = old.Count });
+}).RequireAuthorization();
+
+// ===== Cập nhật giá xe thực tế theo VIN (CarActualPrice — port 1:1 FrmUpdateCar, DMSales.Foton) =====
+app.MapGet("/api/caractualprices", async (AppDbContext db, ITenantContext t, string? car) =>
+{
+    var q = db.CarActualPrices.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(car)) q = q.Where(c => c.CarId.Contains(car.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(c => c.UpdatedAt).Take(500)
+        .Select(c => new { c.CarId, c.UnitPriceActual, c.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/caractualprices", async (List<CarPriceUpdateDto> dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto ?? new()).Where(d => !string.IsNullOrWhiteSpace(d.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Mã xe bắt buộc nhập." });
+    if (rows.Any(d => d.UnitPriceActual <= 0)) return Results.BadRequest(new { error = "Giá mới không hợp lệ (phải > 0)." });
+    var dupe = rows.GroupBy(d => d.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Mã xe {dupe.Key} bị trùng!" });
+    int inserted = 0, updated = 0;
+    foreach (var d in rows)
+    {
+        var car = d.CarId.Trim().ToUpperInvariant();
+        var ex = await db.CarActualPrices.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CarId == car);
+        if (ex is null) { db.CarActualPrices.Add(new CarActualPrice { OrgId = t.OrgId, CarId = car, UnitPriceActual = d.UnitPriceActual }); inserted++; }
+        else { ex.UnitPriceActual = d.UnitPriceActual; ex.UpdatedAt = DateTime.Now; updated++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, inserted, updated });
+}).RequireAuthorization();
+
 // ===== Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, DMSales.Foton) =====
 app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
 {
@@ -3432,4 +3479,5 @@ record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractTyp
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
 record SoRejectDto(string? Reason);
+record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
 record RegisterOrgDto(string Name);
