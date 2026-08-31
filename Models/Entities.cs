@@ -540,6 +540,31 @@ public sealed class GpsClaim
     public DateTime? ApprovedAt { get; set; }
 }
 
+/// <summary>Phiếu nhập kho thiết bị GPS (StoF_GPSIn — port 1:1 FrmStoF_GPSIn/FrmMngStoF_GPSIn, StoFGPS):
+/// nhập lô thiết bị GPS vào kho theo loại nhập + kho.</summary>
+public sealed class GpsIn
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SFGPSInNo { get; set; } = "";
+    public string? GpsInType { get; set; }        // loại nhập
+    public string StorageCode { get; set; } = ""; // kho GPS
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng thiết bị nhập (StoF_GPSInDtl): số thiết bị + số hộp + trạng thái map.</summary>
+public sealed class GpsInDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long InId { get; set; }
+    public string GpsDvNo { get; set; } = "";     // số thiết bị GPS
+    public string? GpsBoxNo { get; set; }         // số hộp
+    public string MapStatus { get; set; } = "0";  // '1' = đã gắn lên xe
+    public string? Remark { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

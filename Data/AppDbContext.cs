@@ -43,6 +43,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RetrieveReqCar> RetrieveReqCars => Set<RetrieveReqCar>();
     public DbSet<VinPacking> VinPackings => Set<VinPacking>();
     public DbSet<GpsClaim> GpsClaims => Set<GpsClaim>();
+    public DbSet<GpsIn> GpsIns => Set<GpsIn>();
+    public DbSet<GpsInDetail> GpsInDetails => Set<GpsInDetail>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

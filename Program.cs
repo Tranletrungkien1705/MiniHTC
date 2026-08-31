@@ -1227,6 +1227,46 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu nhập kho thiết bị GPS (StoF_GPSIn — port 1:1 FrmStoF_GPSIn/FrmMngStoF_GPSIn) =====
+app.MapGet("/api/gpsins", async (AppDbContext db, ITenantContext t, string? storage) =>
+{
+    var q = db.GpsIns.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(g => g.StorageCode == storage);
+    var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
+    {
+        g.SFGPSInNo, g.GpsInType, g.StorageCode, g.Remark, g.CreatedAt,
+        devices = db.GpsInDetails.Count(d => d.OrgId == t.OrgId && d.InId == g.Id),
+        mapped = db.GpsInDetails.Count(d => d.OrgId == t.OrgId && d.InId == g.Id && d.MapStatus == "1")
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsins", async (GpsInDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Cần StorageCode (kho GPS)." });
+    var devs = (dto.Devices ?? new List<GpsInDevDto>()).Where(d => !string.IsNullOrWhiteSpace(d.GpsDvNo)).ToList();
+    if (devs.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 thiết bị GPS." });
+    var dupe = devs.GroupBy(d => d.GpsDvNo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Thiết bị {dupe.Key} bị trùng!" });
+    var no = "GPSIN" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new GpsIn { OrgId = t.OrgId, SFGPSInNo = no, GpsInType = dto.GpsInType, StorageCode = dto.StorageCode.Trim().ToUpperInvariant(), Remark = dto.Remark };
+    db.GpsIns.Add(h); await db.SaveChangesAsync();
+    foreach (var d in devs)
+        db.GpsInDetails.Add(new GpsInDetail { OrgId = t.OrgId, InId = h.Id, GpsDvNo = d.GpsDvNo.Trim().ToUpperInvariant(), GpsBoxNo = d.GpsBoxNo, MapStatus = "0", Remark = d.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, devices = devs.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/gpsins/{no}/devices", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.GpsIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SFGPSInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var devices = await db.GpsInDetails.Where(d => d.OrgId == t.OrgId && d.InId == h.Id)
+        .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.Remark }).ToListAsync();
+    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, count = devices.Count, devices });
+}).RequireAuthorization();
+
 // ===== Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng) =====
 app.MapGet("/api/gpsclaims", async (AppDbContext db, ITenantContext t, string? claimStatus, string? device) =>
 {
@@ -1491,4 +1531,6 @@ record MapVinDto(List<VinPairDto>? Pairs);
 record VinPackingRowDto(string Vin, string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);
 record VinPackingDto(List<VinPackingRowDto>? Items);
 record GpsClaimDto(string GpsDvNo, string? BeforeFixRemark, string? Remark);
+record GpsInDevDto(string GpsDvNo, string? GpsBoxNo, string? Remark);
+record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsInDevDto>? Devices);
 record RegisterOrgDto(string Name);
