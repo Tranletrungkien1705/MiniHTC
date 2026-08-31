@@ -2537,6 +2537,38 @@ public sealed class ReqMortgageCar
     public DateTime? CODate { get; set; }
 }
 
+/// <summary>Yêu cầu chứng từ QC/xuất xưởng (QC_DocReq) — port 1:1 FrmMngQCDocReq (Sales/HTMV). Header.</summary>
+public sealed class QcDocReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DocReqNo { get; set; } = "";
+    public string CreateBy { get; set; } = "";
+    public string DocReqStatus { get; set; } = "Pending";   // Pending -> Approved / Cancel
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Chi tiết chứng từ QC theo VIN (QC_DocReqDtl) — port 1:1 FrmMngQCDocReq detail.</summary>
+public sealed class QcDocReqCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long QcDocReqId { get; set; }
+    public string OrderNo { get; set; } = "";       // Mv_OrderNo (so DH san xuat)
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public string VIN { get; set; } = "";           // Mv_VinReal
+    public string EngineNo { get; set; } = "";
+    public string OriginNo { get; set; } = "";       // so xuat xu
+    public string FGFormNo { get; set; } = "";       // so phieu xuat xuong
+    public string QCNo { get; set; } = "";           // so phieu QC
+    public string ClearanceFormNo { get; set; } = ""; // so phieu thong quan
+    public string DocDeliverTypeCode { get; set; } = "";
+    public string DtlStatus { get; set; } = "Pending";
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

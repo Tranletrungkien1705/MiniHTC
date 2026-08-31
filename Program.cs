@@ -1967,6 +1967,60 @@ app.MapPost("/api/reqmortgages/{no}/{action}", async (string no, string action, 
     return Results.Ok(new { r.ReqRMNo, r.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu chứng từ QC/xuất xưởng (QcDocReq — port 1:1 FrmMngQCDocReq, Sales/HTMV) =====
+app.MapGet("/api/qcdocreqs", async (AppDbContext db, ITenantContext t, string? no, string? status) =>
+{
+    var q = db.QcDocReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(r => r.DocReqNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.DocReqStatus == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.DocReqNo, r.CreateBy, r.DocReqStatus, r.CreatedAt, r.ApprovedAt,
+        cars = db.QcDocReqCars.Count(c => c.OrgId == t.OrgId && c.QcDocReqId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/qcdocreqs", async (QcDocReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe yêu cầu chứng từ." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "QCDR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r2 = new QcDocReq { OrgId = t.OrgId, DocReqNo = no, CreateBy = dto.CreateBy ?? "system", DocReqStatus = "Pending" };
+    db.QcDocReqs.Add(r2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.QcDocReqCars.Add(new QcDocReqCar { OrgId = t.OrgId, QcDocReqId = r2.Id, OrderNo = c.OrderNo ?? "", ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", ColorCode = c.ColorCode ?? "", VIN = c.VIN.Trim().ToUpperInvariant(), EngineNo = c.EngineNo ?? "", OriginNo = c.OriginNo ?? "", FGFormNo = c.FGFormNo ?? "", QCNo = c.QCNo ?? "", ClearanceFormNo = c.ClearanceFormNo ?? "", DocDeliverTypeCode = c.DocDeliverTypeCode ?? "", DtlStatus = "Pending" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r2.DocReqNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/qcdocreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.QcDocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.QcDocReqCars.Where(c => c.OrgId == t.OrgId && c.QcDocReqId == r.Id)
+        .Select(c => new { c.OrderNo, c.ModelCode, c.SpecCode, c.ColorCode, c.VIN, c.EngineNo, c.OriginNo, c.FGFormNo, c.QCNo, c.ClearanceFormNo, c.DtlStatus }).ToListAsync();
+    return Results.Ok(new { r.DocReqNo, r.DocReqStatus, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/qcdocreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "cancel")) return Results.BadRequest(new { error = "action = approve|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.QcDocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.DocReqStatus != "Pending") return Results.BadRequest(new { error = action == "approve" ? "Yêu cầu không ở trạng thái chờ duyệt." : "Không thể hủy yêu cầu này." });
+    r.DocReqStatus = action == "approve" ? "Approved" : "Cancel";
+    if (action == "approve") r.ApprovedAt = DateTime.Now;
+    var cars = await db.QcDocReqCars.Where(c => c.OrgId == t.OrgId && c.QcDocReqId == r.Id).ToListAsync();
+    foreach (var c in cars) c.DtlStatus = r.DocReqStatus;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.DocReqNo, status = r.DocReqStatus, cars = cars.Count });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5980,6 +6034,8 @@ record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal 
 record SupportPatchDto(string Field, string Value);
 record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars);
+record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
+record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
