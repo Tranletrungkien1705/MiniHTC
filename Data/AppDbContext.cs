@@ -152,5 +152,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<Area>().HasIndex(x => new { x.OrgId, x.AreaCode }).IsUnique();
         b.Entity<MasterItem>().HasIndex(x => new { x.OrgId, x.Category, x.Code }).IsUnique();
         b.Entity<Dealer>().HasIndex(x => new { x.OrgId, x.DealerCode }).IsUnique();
+        // Pin table name (DbSet "DlvMinutesSet" — tránh EF map nhầm tên khác với CREATE TABLE)
+        b.Entity<DlvMinutes>().ToTable("DlvMinutesSet");
     }
 }
