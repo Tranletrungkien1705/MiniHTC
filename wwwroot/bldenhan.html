@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — BL đến hạn thanh toán</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:18px;display:block} .box span{font-size:11px;opacity:.7}
+  .soon{color:var(--bad);font-weight:600} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Báo cáo bảo lãnh đến hạn thanh toán <span class="muted">(port 1:1 FrmBLDenHanThanhToan — Report)</span></h1>
+<p class="muted">Bảo lãnh đã duyệt, chưa tất toán, có ngày hết hạn trong khoảng chọn. Nguồn = màn Bảo lãnh ngân hàng.</p>
+<div class="bar">
+  <div><label>Ngày hết hạn từ *</label><input id="qf" type="date"></div>
+  <div><label>Đến (≤ hôm nay)</label><input id="qt" type="date"></div>
+  <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
+</div>
+<div class="kpi" id="kpi" style="margin:8px 0"></div>
+<div class="wrap"><table><thead><tr><th>Số BL</th><th>Đại lý</th><th>NH</th><th>Số BL NH</th><th class="num">Giá trị BL</th><th>Ngày hết hạn</th><th class="num">Còn (ngày)</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Chọn khoảng ngày rồi "Xem báo cáo".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function money(n){ return (n||0).toLocaleString("vi-VN"); }
+function msg(t){ F("msg").textContent=t; }
+async function run(){ await token(); msg("");
+  const r=await fetch(`/api/report/bldenhan?from=${F("qf").value}&to=${F("qt").value}`,{headers:H()});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  F("kpi").innerHTML=`<div class="box"><b>${d.total}</b><span>Số BL đến hạn</span></div><div class="box"><b>${money(d.totalAmount)}</b><span>Tổng giá trị</span></div>`+
+    (d.byBank||[]).map(b=>`<div class="box"><b>${b.count}</b><span>${b.bankCode}: ${money(b.totalAmount)}</span></div>`).join("");
+  F("rows").innerHTML=(d.detail||[]).map(o=>
+    `<tr><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode||""}</td><td>${o.bankCode||""}</td><td>${o.bankGuaranteeNo||""}</td><td class="num">${money(o.totalAmount)}</td><td>${o.dateExpired}</td><td class="num ${o.daysLeft<0?'soon':''}">${o.daysLeft}</td></tr>`
+  ).join("")||'<tr><td colspan="7" class="muted">Không có BL đến hạn trong khoảng.</td></tr>';
+}
+</script>
+</body></html>

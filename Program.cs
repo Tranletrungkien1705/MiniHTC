@@ -2541,6 +2541,28 @@ app.MapGet("/api/backorder/bydealer", async (AppDbContext db, ITenantContext t, 
     return Results.Ok(new { totalBackOrder = rows.Sum(x => x.backOrder), rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo bảo lãnh đến hạn thanh toán (port 1:1 FrmBLDenHanThanhToan) — tái dùng BankGuarantee =====
+app.MapGet("/api/report/bldenhan", async (AppDbContext db, ITenantContext t, DateTime? from, DateTime? to) =>
+{
+    if (from is null) return Results.BadRequest(new { error = "Phải chọn ngày báo cáo từ" });
+    var toDate = to ?? DateTime.Today;
+    if (toDate.Date > DateTime.Today) return Results.BadRequest(new { error = "Ngày kết thúc bảo lãnh đến không được lớn hơn ngày hiện tại!" });
+    var f = from.Value.Date; var e = toDate.Date.AddDays(1);
+    // BL đến hạn = ngày hết hạn (DateExpired) rơi vào [from, to], đã duyệt, chưa tất toán.
+    var recs = await db.BankGuarantees.Where(g => g.OrgId == t.OrgId && g.Status == "Approved" && g.FlagSettled != "1"
+                    && g.DateExpired != null && g.DateExpired >= f && g.DateExpired < e).ToListAsync();
+    var detail = recs.OrderBy(g => g.DateExpired).Select(g => new
+    {
+        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.TotalAmount,
+        dateExpired = g.DateExpired!.Value.ToString("yyyy-MM-dd"),
+        daysLeft = (int)(g.DateExpired!.Value.Date - DateTime.Today).TotalDays
+    }).ToList();
+    var byBank = recs.GroupBy(g => string.IsNullOrEmpty(g.BankCode) ? "(chưa rõ)" : g.BankCode)
+        .Select(g => new { bankCode = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) })
+        .OrderByDescending(x => x.totalAmount).ToList();
+    return Results.Ok(new { total = detail.Count, totalAmount = recs.Sum(g => g.TotalAmount), byBank, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
