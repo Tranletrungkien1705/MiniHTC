@@ -2440,13 +2440,23 @@ app.MapGet("/api/insurancereqs/{no}/cars", async (string no, AppDbContext db, IT
 
 app.MapPost("/api/insurancereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    if (action is not ("confirm" or "cancel" or "approve" or "reject")) return Results.BadRequest(new { error = "action = confirm|cancel|approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận Yêu cầu bảo hiểm này" : "Không thể hủy Yêu cầu bảo hiểm này" });
-    if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
-    else r.Status = "Cancelled";
+    // Sales-side: Draft -> Confirmed/Cancelled
+    if (action is "confirm" or "cancel")
+    {
+        if (r.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận Yêu cầu bảo hiểm này" : "Không thể hủy Yêu cầu bảo hiểm này" });
+        if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
+        else r.Status = "Cancelled";
+    }
+    // Insurer-side (FrmInsReq): review Confirmed (Đang xử lý) -> Approved (Phê duyệt) / Rejected (Từ chối)
+    else
+    {
+        if (r.Status != "Confirmed") return Results.BadRequest(new { error = "Chỉ duyệt được yêu cầu đang xử lý (đã gửi công ty bảo hiểm)." });
+        r.Status = action == "approve" ? "Approved" : "Rejected";
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.InsReqNo, status = r.Status });
 }).RequireAuthorization();

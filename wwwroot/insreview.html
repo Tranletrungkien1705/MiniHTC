@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Duyệt yêu cầu bảo hiểm</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.sm{padding:4px 9px;font-size:12px} button.ok{color:#fff;background:var(--ok);border-color:var(--ok)} button.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .s-Confirmed{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Draft,.s-Cancelled{opacity:.6}
+  tr.sel{background:var(--line)} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Duyệt yêu cầu bảo hiểm <span class="muted">(port 1:1 FrmInsReq — TERP.InsClient, phía công ty bảo hiểm)</span></h1>
+<p class="muted">Công ty BH xem YC đang xử lý (đã gửi) → Phê duyệt / Từ chối. Chi tiết xe hiện khi chọn dòng.</p>
+<div class="bar" style="margin:10px 0">
+  <div><label>Số YC BH</label><input id="qno" style="width:130px" oninput="load()"></div>
+  <div><label>Trạng thái</label><select id="qst" onchange="load()">
+    <option value="Confirmed">Đang xử lý (chờ duyệt)</option><option value="Approved">Phê duyệt</option><option value="Rejected">Từ chối</option>
+    <option value="Draft">Nháp</option><option value="Cancelled">Đã hủy</option><option value="">Tất cả</option></select></div>
+  <span id="msg"></span>
+</div>
+<div class="wrap"><table><thead><tr><th>Số YC BH</th><th>Hãng BH</th><th>Loại hình</th><th class="num">Số xe</th><th class="num">Tổng STBH</th><th>Ngày tạo</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="card" id="detCard" style="display:none">
+  <b>Chi tiết xe — <span id="detNo"></span></b>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Ngày vận tải</th><th class="num">STBH</th><th class="num">Số ngày</th><th>Nơi đi</th><th>Nơi đến</th><th class="num">Phí</th><th class="num">Tỉ lệ</th><th>Vận chuyển</th></tr></thead>
+  <tbody id="detRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const ST={Draft:"Nháp",Confirmed:"Đang xử lý",Approved:"Phê duyệt",Rejected:"Từ chối",Cancelled:"Đã hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function money(n){ return (n||0).toLocaleString("vi-VN"); }
+async function load(){ await token();
+  const d=await (await fetch(`/api/insurancereqs?status=${F("qst").value}`,{headers:H()})).json();
+  let items=(d.items||[]); const no=F("qno").value.trim().toUpperCase();
+  if(no) items=items.filter(o=>o.insReqNo.toUpperCase().includes(no));
+  F("rows").innerHTML=items.map(o=>{
+    const act=o.status==="Confirmed"?`<button class="sm ok" onclick="decide('${o.insReqNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.insReqNo}','reject')">Từ chối</button>`:"";
+    return `<tr onclick="detail('${o.insReqNo}')"><td><b>${o.insReqNo}</b></td><td>${o.insCompanyCode}</td><td>${o.insTypeCode}</td><td class="num">${o.cars}</td><td class="num">${money(o.totalAmount)}</td><td>${(o.createdAt||"").substring(0,10)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Không có yêu cầu.</td></tr>';
+}
+async function detail(no){
+  const d=await (await fetch(`/api/insurancereqs/${no}/cars`,{headers:H()})).json();
+  F("detCard").style.display=""; F("detNo").textContent=no;
+  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${(c.expectedStartDate||"").substring(0,10)}</td><td class="num">${money(c.insAmount)}</td><td class="num">${c.insuranceDay}</td><td>${c.locationFrom||""}</td><td>${c.locationTo||""}</td><td class="num">${money(c.price)}</td><td class="num">${c.rate}</td><td>${c.transporterCode||""}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
+}
+async function decide(no,act){ event.stopPropagation();
+  const r=await fetch(`/api/insurancereqs/${no}/${act}`,{method:"POST",headers:H()});
+  const j=await r.json();
+  if(r.ok){ msg(`${no}: ${ST[j.status]||j.status}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+load();
+</script>
+</body></html>
