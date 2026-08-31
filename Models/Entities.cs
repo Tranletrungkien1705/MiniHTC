@@ -2819,6 +2819,23 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Nhà cung cấp phụ tùng dịch vụ (mã/tên/liên hệ/địa chỉ) — port 1:1 FrmMstSupplierCreate (TblSerMstSupplier, TCMotor).</summary>
+public sealed class ServiceSupplier
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SupplierCode { get; set; } = "";
+    public string? SupplierName { get; set; }
+    public string? Phone { get; set; }
+    public string? Fax { get; set; }
+    public string? ContactName { get; set; }
+    public string? ContactPhone { get; set; }
+    public string? Address { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Thời hạn bảo hành theo model (BH đại lý/HTV, km giới hạn, kỳ lưu kho) — port 1:1 FrmMngMst_WarrantyPeriod (Tbl_Mst_WarrantyPeriod, TCMotor).</summary>
 public sealed class WarrantyPeriodMst
 {

@@ -150,7 +150,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
     // ---- TCMotor (2021.1) service/bảo hành (Frm chưa verify trong source TCMotor — giữ tạm) ----
-    ("Supplier", "Nhà cung cấp (FrmMstSupplierCreate) [TCMotor]"),
     ("MaintenanceLevel", "Cấp bảo dưỡng (FrmMstMaintenanceLevelMng) [TCMotor]"),
     ("ExtraWork", "Công việc phát sinh (FrmMstExtraWorkMng) [TCMotor]"),
     ("ExtraParts", "Phụ tùng phát sinh (FrmMstExtraPartsMng) [TCMotor]"),
@@ -3233,6 +3232,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Nhà cung cấp phụ tùng dịch vụ (ServiceSupplier — port 1:1 FrmMstSupplierCreate, TCMotor) =====
+app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? active) =>
+{
+    var query = db.ServiceSuppliers.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.SupplierCode.Contains(q!) || (x.SupplierName != null && x.SupplierName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.SupplierCode).Take(500)
+        .Select(x => new { x.SupplierCode, x.SupplierName, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.Address, x.DealerCode, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã nhà cung cấp.
+app.MapPost("/api/servicesuppliers", async (ServiceSupplierDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
+    if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp." });
+    var code = dto.SupplierCode.Trim().ToUpperInvariant();
+    var ex = await db.ServiceSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
+    if (ex is not null)
+    {
+        ex.SupplierName = dto.SupplierName; ex.Phone = dto.Phone; ex.Fax = dto.Fax; ex.ContactName = dto.ContactName; ex.ContactPhone = dto.ContactPhone; ex.Address = dto.Address; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.SupplierCode, updated = true });
+    }
+    var r = new ServiceSupplier { OrgId = t.OrgId, SupplierCode = code, SupplierName = dto.SupplierName, Phone = dto.Phone, Fax = dto.Fax, ContactName = dto.ContactName, ContactPhone = dto.ContactPhone, Address = dto.Address, DealerCode = dto.DealerCode, FlagActive = "1" };
+    db.ServiceSuppliers.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.SupplierCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicesuppliers/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ServiceSuppliers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SupplierCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.SupplierCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
 // ===== Thời hạn bảo hành theo model (WarrantyPeriodMst — port 1:1 FrmMngMst_WarrantyPeriod, TCMotor/Admin/Product) =====
@@ -7621,6 +7660,7 @@ record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode
 record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus);
 record StorageGlobalMapDto(string StorageCode, string ModelCode);
 record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod);
+record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
