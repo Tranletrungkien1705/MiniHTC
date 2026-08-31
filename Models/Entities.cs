@@ -91,6 +91,21 @@ public sealed class PdiRequest
     public DateTime? InspectedAt { get; set; }
 }
 
+/// <summary>Thu hồi xe (FrmMngCarRetrieve) — thu hồi xe từ đại lý (khác triệu hồi an toàn).</summary>
+public sealed class CarRetrieve
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string Vin { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? Reason { get; set; }
+    public string Status { get; set; } = "Requested";   // Requested → Approved → Retrieved (hoặc Rejected)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+    public DateTime? RetrievedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

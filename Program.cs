@@ -365,6 +365,39 @@ app.MapPost("/api/pdi/{code}/{action}", async (string code, string action, PdiRe
     return Results.Ok(new { p.Code, p.Vin, status = p.Status, p.Inspector, p.Result });
 }).RequireAuthorization();
 
+// ===== Thu hồi xe (port 1:1 FrmMngCarRetrieve) =====
+app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.CarRetrieves.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    { r.Code, r.Vin, r.DealerCode, r.Reason, r.Status, r.CreatedAt, r.ApprovedAt, r.RetrievedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    var code = "TH" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new CarRetrieve { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", Reason = dto.Reason, Status = "Requested" };
+    db.CarRetrieves.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.Code, r.Vin, status = r.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject" or "retrieve")) return Results.BadRequest(new { error = "action = approve|reject|retrieve" });
+    code = code.Trim().ToUpperInvariant();
+    var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (r is null) return Results.NotFound(new { code });
+    var now = DateTime.Now;
+    if (action == "approve") { if (r.Status != "Requested") return Results.BadRequest(new { error = "Sai trạng thái." }); r.Status = "Approved"; r.ApprovedAt = now; }
+    else if (action == "reject") { if (r.Status != "Requested") return Results.BadRequest(new { error = "Sai trạng thái." }); r.Status = "Rejected"; r.ApprovedAt = now; }
+    else { if (r.Status != "Approved") return Results.BadRequest(new { error = "Chưa duyệt." }); r.Status = "Retrieved"; r.RetrievedAt = now; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Code, r.Vin, status = r.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -383,4 +416,5 @@ record CustomerDto(string? CustomerCode, string CustomerName, string? Phone, str
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? Phone, string? Email, string? Status);
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
+record RetrieveDto(string Vin, string? DealerCode, string? Reason);
 record RegisterOrgDto(string Name);
