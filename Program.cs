@@ -4214,6 +4214,56 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Công nợ bảo hiểm + thu tiền (InsDebit — port 1:1 FrmInsDebitSearch/FrmInsPaymentCreate, TCMotor) =====
+app.MapGet("/api/insdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var query = db.InsDebits.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.DebitNo.Contains(q!) || (x.InsName != null && x.InsName.Contains(q!)) || (x.InsNo != null && x.InsNo.Contains(q!)) || (x.RONo != null && x.RONo.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.DebitNo, x.InsNo, x.InsName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
+        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
+}).RequireAuthorization();
+
+// Tạo công nợ bảo hiểm (hãng BH nợ tiền bồi thường theo RO). DebitAmount > 0.
+app.MapPost("/api/insdebits", async (InsDebitDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.DebitAmount <= 0) return Results.BadRequest(new { error = "Số tiền công nợ phải lớn hơn 0." });
+    var no = "ID" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new InsDebit { OrgId = t.OrgId, DebitNo = no, InsNo = dto.InsNo, InsName = dto.InsName, RONo = dto.RONo, DebitAmount = dto.DebitAmount, PaidAmount = 0, DebitDate = dto.DebitDate ?? DateTime.Now, Note = dto.Note, Status = "Open" };
+    db.InsDebits.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.DebitNo });
+}).RequireAuthorization();
+
+app.MapGet("/api/insdebits/{no}/payments", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var pays = await db.InsDebitPayments.Where(p => p.OrgId == t.OrgId && p.InsDebitId == h.Id).OrderBy(p => p.Id)
+        .Select(p => new { p.PaymentAmount, p.Note, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    return Results.Ok(new { h.DebitNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
+}).RequireAuthorization();
+
+// Thu tiền công nợ bảo hiểm (không vượt số dư; đủ tiền -> Paid).
+app.MapPost("/api/insdebits/{no}/payments", async (string no, InsDebitPaymentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
+    var balance = h.DebitAmount - h.PaidAmount;
+    if (dto.PaymentAmount > balance) return Results.BadRequest(new { error = $"Số tiền thu vượt số dư công nợ ({balance})." });
+    db.InsDebitPayments.Add(new InsDebitPayment { OrgId = t.OrgId, InsDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note });
+    h.PaidAmount += dto.PaymentAmount;
+    if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
+}).RequireAuthorization();
+
 // ===== Chia sẻ phụ tùng giữa đại lý (SharePart — port 1:1 FrmSharePart/ShareDealer, TCMotor) =====
 app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part, string? status) =>
 {
@@ -9211,6 +9261,8 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
+record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
 record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers);
 record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);

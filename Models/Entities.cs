@@ -3146,6 +3146,35 @@ public sealed class CusDebitPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Công nợ bảo hiểm (hãng BH nợ tiền bồi thường theo RO) — port 1:1 FrmInsDebitSearch (TblCusDebit type InsuranceDebit, TCMotor).</summary>
+public sealed class InsDebit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DebitNo { get; set; } = "";
+    public string? InsNo { get; set; }
+    public string? InsName { get; set; }
+    public string? RONo { get; set; }
+    public decimal DebitAmount { get; set; }
+    public decimal PaidAmount { get; set; }
+    public DateTime? DebitDate { get; set; }
+    public string? Note { get; set; }
+    public string Status { get; set; } = "Open"; // Open -> Paid
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Thu tiền trên công nợ bảo hiểm — port 1:1 FrmInsPaymentCreate (TblPayment, TCMotor).</summary>
+public sealed class InsDebitPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long InsDebitId { get; set; }
+    public decimal PaymentAmount { get; set; }
+    public DateTime? PayDate { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
 public sealed class SharePart
 {

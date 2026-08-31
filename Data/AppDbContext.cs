@@ -182,6 +182,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SmsTemplate> SmsTemplates => Set<SmsTemplate>();
     public DbSet<EmailTemplate> EmailTemplates => Set<EmailTemplate>();
     public DbSet<SmsSend> SmsSends => Set<SmsSend>();
+    public DbSet<InsDebit> InsDebits => Set<InsDebit>();
+    public DbSet<InsDebitPayment> InsDebitPayments => Set<InsDebitPayment>();
     public DbSet<SmsAutoConfig> SmsAutoConfigs => Set<SmsAutoConfig>();
     public DbSet<EmailSend> EmailSends => Set<EmailSend>();
     public DbSet<EmailAutoConfig> EmailAutoConfigs => Set<EmailAutoConfig>();
