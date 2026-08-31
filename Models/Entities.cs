@@ -2413,6 +2413,45 @@ public sealed class BankPaymentCar
     public string DlrCtrNo { get; set; } = "";
 }
 
+/// <summary>Hóa đơn VAT HTC (VAT_HTCInvoice) — port 1:1 FrmMngInvoice (cụm Bank). Header.</summary>
+public sealed class VatInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string HTCInvoiceCode { get; set; } = "";
+    public string HTCInvoiceNo { get; set; } = "";       // so HD (gan khi phat hanh)
+    public string InvoiceIDCode { get; set; } = "";       // ky hieu HD
+    public decimal VAT { get; set; } = 10;
+    public string DealerCode { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string SourceInvoiceName { get; set; } = "";   // nguon HD
+    public string OS_HDDT_InvoiceCode { get; set; } = "";  // ma HDDT
+    public string InvoiceAdjType { get; set; } = "";       // loai dieu chinh (rong=goc)
+    public string RootHTCInvoiceNo { get; set; } = "";     // HD goc (khi la HD dieu chinh)
+    public string VatHTCStatus { get; set; } = "Draft";    // Draft -> Issued -> Deleted
+    public string DeleteReason { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? HTCInvoiceDate { get; set; }
+}
+
+/// <summary>Chi tiết hóa đơn VAT theo VIN (VAT_HTCInvoiceDetail) — port 1:1 FrmMngInvoice detail.</summary>
+public sealed class VatInvoiceCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long VatInvoiceId { get; set; }
+    public string VIN { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string EngineNo { get; set; } = "";
+    public string BrandName { get; set; } = "";
+    public string CarType { get; set; } = "";
+    public string InvoiceNoFactory { get; set; } = "";
+    public string ProductionYear { get; set; } = "";
+    public decimal HTCUnitPrice { get; set; }
+    public DateTime? CustomsClearanceDate { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -124,6 +124,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<BankTmCar> BankTmCars => Set<BankTmCar>();
     public DbSet<BankPayment> BankPayments => Set<BankPayment>();
     public DbSet<BankPaymentCar> BankPaymentCars => Set<BankPaymentCar>();
+    public DbSet<VatInvoice> VatInvoices => Set<VatInvoice>();
+    public DbSet<VatInvoiceCar> VatInvoiceCars => Set<VatInvoiceCar>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
