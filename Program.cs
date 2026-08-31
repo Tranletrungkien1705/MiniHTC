@@ -1227,6 +1227,60 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice) =====
+app.MapGet("/api/serviceinvoices", async (AppDbContext db, ITenantContext t, string? status, string? ro) =>
+{
+    var q = db.ServiceInvoices.Where(i => i.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(i => i.Status == status);
+    if (!string.IsNullOrWhiteSpace(ro)) q = q.Where(i => i.RONo.Contains(ro.ToUpper()));
+    var items = await q.OrderByDescending(i => i.Id).Take(500).Select(i => new
+    { i.InvoiceNo, i.RONo, i.SubTotal, i.VatPercent, i.VatAmount, i.DiscountAmount, i.TotalAmount, i.PaymentType, i.Status, i.PaidAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalRevenue = items.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount), items });
+}).RequireAuthorization();
+
+// Lập hóa đơn từ RO: kéo Σ tiền công + Σ (SL×đơn giá PT), áp VAT + chiết khấu
+app.MapPost("/api/serviceinvoices", async (ServiceInvoiceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RONo)) return Results.BadRequest(new { error = "Cần RONo." });
+    var roNo = dto.RONo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { error = $"Không tìm thấy RO {roNo}." });
+    if (ro.Status is "HasRO" or "InGarage") return Results.BadRequest(new { error = "RO chưa sửa xong, chưa lập hóa đơn được." });
+    if (await db.ServiceInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == roNo && x.Status == "Paid"))
+        return Results.BadRequest(new { error = "RO đã có hóa đơn thanh toán." });
+    var svcTotal = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == ro.Id).SumAsync(s => (decimal?)s.Amount) ?? 0;
+    var partTotal = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == ro.Id).SumAsync(p => (decimal?)(p.NeedQty * p.UnitPrice)) ?? 0;
+    var subTotal = svcTotal + partTotal;
+    var vatPercent = dto.VatPercent < 0 ? 0 : dto.VatPercent;
+    var discount = dto.DiscountAmount < 0 ? 0 : dto.DiscountAmount;
+    var vatAmount = Math.Round(subTotal * vatPercent / 100m, 0);
+    var total = subTotal + vatAmount - discount;
+    if (total < 0) total = 0;
+    var no = "INV" + DateTime.Now.ToString("yyMMddHHmmss");
+    var inv = new ServiceInvoice
+    {
+        OrgId = t.OrgId, InvoiceNo = no, RONo = roNo, SubTotal = subTotal, VatPercent = vatPercent, VatAmount = vatAmount,
+        DiscountAmount = discount, TotalAmount = total, PaymentType = dto.PaymentType, Status = "Draft"
+    };
+    db.ServiceInvoices.Add(inv); await db.SaveChangesAsync();
+    return Results.Ok(new { inv.InvoiceNo, inv.RONo, inv.SubTotal, inv.VatAmount, inv.DiscountAmount, inv.TotalAmount, status = inv.Status });
+}).RequireAuthorization();
+
+// Thanh toán → Paid; nếu RO đang CheckEnd thì đẩy sang Paid (tích hợp workflow RO)
+app.MapPost("/api/serviceinvoices/{no}/pay", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var inv = await db.ServiceInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InvoiceNo == no);
+    if (inv is null) return Results.NotFound(new { no });
+    if (inv.Status != "Draft") return Results.BadRequest(new { error = "Hóa đơn đã thanh toán." });
+    inv.Status = "Paid"; inv.PaidAt = DateTime.Now;
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == inv.RONo);
+    string? roAdvanced = null;
+    if (ro is not null && ro.Status == "CheckEnd") { ro.Status = "Paid"; roAdvanced = "Paid"; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { inv.InvoiceNo, status = inv.Status, roAdvancedTo = roAdvanced });
+}).RequireAuthorization();
+
 // ===== Chiến dịch dịch vụ (Ser_Campaign — port 1:1 FrmCampaignCreate) =====
 app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? active) =>
 {
@@ -2775,4 +2829,5 @@ record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status);
 record CampaignContactDto(string? PlateNo, string? CusName, string? Address);
 record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
+record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType);
 record RegisterOrgDto(string Name);

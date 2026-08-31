@@ -1132,6 +1132,25 @@ public sealed class CampaignContact
     public string ContactStatus { get; set; } = "Pending";  // Pending → Contacted
 }
 
+/// <summary>Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice, TCMotor DMSCarSv/Services):
+/// hóa đơn thu tiền cho 1 RO. SubTotal(công+PT) + VAT − chiết khấu = TotalAmount. Draft→Paid (đẩy RO sang Paid).</summary>
+public sealed class ServiceInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InvoiceNo { get; set; } = "";
+    public string RONo { get; set; } = "";
+    public decimal SubTotal { get; set; }              // Σ tiền công + Σ (SL×đơn giá PT)
+    public decimal VatPercent { get; set; } = 10;
+    public decimal VatAmount { get; set; }
+    public decimal DiscountAmount { get; set; }
+    public decimal TotalAmount { get; set; }           // SubTotal + VAT − chiết khấu
+    public string? PaymentType { get; set; }           // Tiền mặt/Chuyển khoản/Thẻ
+    public string Status { get; set; } = "Draft";      // Draft → Paid
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? PaidAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
