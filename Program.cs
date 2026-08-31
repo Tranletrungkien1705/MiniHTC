@@ -2896,6 +2896,26 @@ app.MapGet("/api/report/mortgage", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { total = recs.Count, active = recs.Count(m => m.FlagActive == "1"), released = recs.Count(m => m.FlagActive != "1"), byBank, byDealer, byGrtType, byRange, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo đơn hàng nâng cấp (port 1:1 báo cáo Upgrade Order) — tái dùng UpgradeOrder =====
+app.MapGet("/api/report/upgradeorder", async (AppDbContext db, ITenantContext t, string? dealer, string? month, string? type, string? status) =>
+{
+    var q = db.UpgradeOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(o => o.OrderMonth == month);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(o => o.OrderType == type);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
+    var recs = await q.ToListAsync();
+    var byDealer = recs.GroupBy(o => string.IsNullOrEmpty(o.DealerCode) ? "(chưa rõ)" : o.DealerCode)
+        .Select(g => new { dealerCode = g.Key, orders = g.Count(), qty = g.Sum(x => x.TotalQty), approved = g.Count(x => x.Status == "Approved") }).OrderByDescending(x => x.qty).ToList();
+    var byMonth = recs.GroupBy(o => string.IsNullOrEmpty(o.OrderMonth) ? "(chưa rõ)" : o.OrderMonth)
+        .Select(g => new { month = g.Key, orders = g.Count(), qty = g.Sum(x => x.TotalQty) }).OrderBy(x => x.month).ToList();
+    var byType = recs.GroupBy(o => string.IsNullOrEmpty(o.OrderType) ? "(chưa rõ)" : o.OrderType).Select(g => new { orderType = g.Key, orders = g.Count(), qty = g.Sum(x => x.TotalQty) }).OrderByDescending(x => x.qty).ToList();
+    var byPolicy = recs.GroupBy(o => string.IsNullOrEmpty(o.OrderPolicy) ? "(chưa rõ)" : o.OrderPolicy).Select(g => new { policy = g.Key, orders = g.Count(), qty = g.Sum(x => x.TotalQty) }).OrderByDescending(x => x.qty).ToList();
+    var byStatus = recs.GroupBy(o => o.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = recs.OrderByDescending(o => o.Id).Take(500).Select(o => new { o.OrderNo, o.DealerCode, o.OrderMonth, o.OrderType, o.OrderPolicy, o.TotalQty, o.Status }).ToList();
+    return Results.Ok(new { total = recs.Count, totalQty = recs.Sum(o => o.TotalQty), approved = recs.Count(o => o.Status == "Approved"), byDealer, byMonth, byType, byPolicy, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
