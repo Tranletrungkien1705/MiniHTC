@@ -2883,6 +2883,20 @@ public sealed class EmailSend
     public DateTime SendDate { get; set; } = DateTime.Now;
 }
 
+/// <summary>Cấu hình gửi SMS tự động theo giờ/loại + ngày hiệu lực — port 1:1 FrmSMSSetAutoSend (TblSMS_ConfigSendAuto, TCMotor).</summary>
+public sealed class SmsAutoConfig
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SmsType { get; set; } = "";      // Normal | Other | Advertise ...
+    public string AutoTime { get; set; } = "";     // "HH:mm"
+    public DateTime? EffectDate { get; set; }
+    public string? SendMode { get; set; }
+    public string? Description { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Cấu hình gửi email tự động theo giờ/loại — port 1:1 FrmAutoSendConfig (TblEmail_ConfigSendAuto, TCMotor).</summary>
 public sealed class EmailAutoConfig
 {

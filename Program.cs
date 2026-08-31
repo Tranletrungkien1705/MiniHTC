@@ -3488,6 +3488,55 @@ app.MapPost("/api/emailautoconfigs/{id}/toggle", async (long id, AppDbContext db
     return Results.Ok(new { c.Id, c.FlagActive });
 }).RequireAuthorization();
 
+// ===== Cấu hình gửi SMS tự động (SmsAutoConfig — port 1:1 FrmSMSSetAutoSend, TCMotor) =====
+app.MapGet("/api/smsautoconfigs", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.SmsAutoConfigs.Where(c => c.OrgId == t.OrgId).OrderBy(c => c.SmsType)
+        .Select(c => new { c.Id, c.SmsType, c.AutoTime, effectDate = c.EffectDate, c.SendMode, c.Description, c.FlagActive }).ToListAsync();
+    return Results.Ok(new { items });
+}).RequireAuthorization();
+
+app.MapPost("/api/smsautoconfigs", async (SmsAutoConfigDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.SmsType ?? "").Trim().ToUpperInvariant();
+    if (type == "") return Results.BadRequest(new { error = "Thiếu loại SMS." });
+    var time = (dto.AutoTime ?? "").Trim();
+    if (!System.Text.RegularExpressions.Regex.IsMatch(time, @"^([01]\d|2[0-3]):[0-5]\d$"))
+        return Results.BadRequest(new { error = "Giờ gửi không hợp lệ (định dạng HH:mm)." });
+    // Ngày hiệu lực (giống WinForm bắt buộc chọn ngày) không được ở quá khứ.
+    if (dto.EffectDate.HasValue && dto.EffectDate.Value.Date < DateTime.Today)
+        return Results.BadRequest(new { error = "Ngày hiệu lực không được ở quá khứ." });
+    var c = await db.SmsAutoConfigs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == type);
+    if (c is null) { c = new SmsAutoConfig { OrgId = t.OrgId, SmsType = type }; db.SmsAutoConfigs.Add(c); }
+    c.AutoTime = time; c.EffectDate = dto.EffectDate; c.SendMode = dto.SendMode; c.Description = dto.Description; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.SmsType, c.AutoTime });
+}).RequireAuthorization();
+
+app.MapPost("/api/smsautoconfigs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.SmsAutoConfigs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1"; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.FlagActive });
+}).RequireAuthorization();
+
+// ===== Báo cáo gửi email (report tái-dùng EmailSend — port 1:1 FrmEmail_Report, TCMotor) =====
+// Lọc theo khoảng ngày + trạng thái + loại; trả chi tiết + tổng hợp theo loại & trạng thái.
+app.MapGet("/api/report/emailsends", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? status, string? type) =>
+{
+    var q = db.EmailSends.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) q = q.Where(x => x.SendDate >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.SendDate < toDate.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(x => x.EmailType == type!.ToUpperInvariant());
+    var rows = await q.OrderByDescending(x => x.Id).Take(1000)
+        .Select(x => new { x.BatchNo, x.Email, x.EmailType, x.Subject, x.Status, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    var byType = rows.GroupBy(r => r.EmailType ?? "(không mẫu)").Select(g => new { emailType = g.Key, total = g.Count(), sent = g.Count(x => x.Status == "Sent"), invalid = g.Count(x => x.Status == "Invalid") }).OrderByDescending(x => x.total).ToList();
+    return Results.Ok(new { total = rows.Count, sent = rows.Count(r => r.Status == "Sent"), invalid = rows.Count(r => r.Status == "Invalid"), byType, rows });
+}).RequireAuthorization();
+
 // ===== Mẫu email (EmailTemplate — port 1:1 FrmEmail_TempEmailCreate/List, TCMotor) =====
 app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -9162,6 +9211,7 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
 record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers);
 record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);
 record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);

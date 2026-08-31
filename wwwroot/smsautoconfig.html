@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Tự động SMS & Báo cáo email</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Sent{color:var(--ok)} .s-Invalid{color:var(--bad)}
+  .msg{font-size:13px;margin-left:6px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:20px;display:block}
+</style></head>
+<body>
+<h1>Tự động SMS & Báo cáo email <span class="muted">(port 1:1 FrmSMSSetAutoSend + FrmEmail_Report — TCMotor)</span></h1>
+
+<div class="card"><h3 style="margin-top:0">Cấu hình gửi SMS tự động</h3>
+  <div class="row">
+    <div><label>Loại SMS *</label><select id="cType"><option>NORMAL</option><option>OTHER</option><option>ADVERTISE</option></select></div>
+    <div><label>Giờ gửi (HH:mm) *</label><input id="cTime" style="width:100px" placeholder="08:00"></div>
+    <div><label>Ngày hiệu lực</label><input id="cEffect" type="date"></div>
+    <div><label>Chế độ</label><input id="cMode" style="width:120px" placeholder="Daily"></div>
+    <div style="flex:1"><label>Mô tả</label><input id="cDesc" style="width:100%"></div>
+    <button class="primary" onclick="saveCfg()">Lưu</button><span id="msg" class="msg"></span>
+  </div>
+  <div class="wrap"><table><thead><tr><th>Loại</th><th>Giờ</th><th>Ngày HL</th><th>Chế độ</th><th>Mô tả</th><th>TT</th><th></th></tr></thead>
+  <tbody id="cfgRows"><tr><td colspan="7" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+  <div class="row" style="margin-top:6px"><button onclick="loadCfg()">Xem cấu hình</button></div>
+</div>
+
+<div class="card"><h3 style="margin-top:0">Báo cáo gửi email</h3>
+  <div class="row">
+    <div><label>Từ ngày</label><input id="rFrom" type="date"></div>
+    <div><label>Đến ngày</label><input id="rTo" type="date"></div>
+    <div><label>Trạng thái</label><select id="rStatus"><option value="">(tất cả)</option><option value="Sent">Đã gửi</option><option value="Invalid">Sai email</option></select></div>
+    <div><label>Loại</label><input id="rType" style="width:120px" placeholder="MAINT"></div>
+    <button class="primary" onclick="report()">Xem báo cáo</button><span id="msg2" class="msg"></span>
+  </div>
+  <div class="grid2" id="kpis" style="margin-top:10px"></div>
+  <h3>Tổng hợp theo loại</h3>
+  <div class="wrap"><table><thead><tr><th>Loại</th><th class="num">Tổng</th><th class="num">Đã gửi</th><th class="num">Sai</th></tr></thead><tbody id="sumRows"><tr><td colspan="4" class="muted">—</td></tr></tbody></table></div>
+  <h3>Chi tiết</h3>
+  <div class="wrap"><table><thead><tr><th>Lô</th><th>Email</th><th>Loại</th><th>Tiêu đề</th><th>TT</th><th>Thời gian</th></tr></thead><tbody id="detRows"><tr><td colspan="6" class="muted">—</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const D=s=>s?String(s).substring(0,10):"";
+const ST={Sent:"Đã gửi",Invalid:"Sai email"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
+async function saveCfg(){ await token();
+  const body={SmsType:F("cType").value,AutoTime:F("cTime").value,EffectDate:F("cEffect").value||null,SendMode:F("cMode").value,Description:F("cDesc").value};
+  const r=await fetch("/api/smsautoconfigs",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
+  m("msg","Đã lưu "+d.smsType+" @ "+d.autoTime); loadCfg();
+}
+async function toggleCfg(id){ await token(); await fetch("/api/smsautoconfigs/"+id+"/toggle",{method:"POST",headers:H()}); loadCfg(); }
+async function loadCfg(){ await token();
+  const r=await fetch("/api/smsautoconfigs",{headers:H()}); const d=await r.json();
+  F("cfgRows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.smsType)}</b></td><td>${esc(o.autoTime)}</td><td>${D(o.effectDate)}</td><td>${esc(o.sendMode)}</td><td>${esc(o.description)}</td><td>${o.flagActive==="1"?"Bật":"Tắt"}</td><td><button class="link" onclick="toggleCfg(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có cấu hình.</td></tr>';
+}
+async function report(){ await token();
+  const p=new URLSearchParams(); if(F("rFrom").value)p.set("fromDate",F("rFrom").value); if(F("rTo").value)p.set("toDate",F("rTo").value);
+  if(F("rStatus").value)p.set("status",F("rStatus").value); if(F("rType").value)p.set("type",F("rType").value);
+  const r=await fetch("/api/report/emailsends?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`<div class="kpi"><b>${d.total}</b><span class="muted">Tổng email</span></div><div class="kpi"><b style="color:var(--ok)">${d.sent}</b><span class="muted">Đã gửi</span></div><div class="kpi"><b style="color:var(--bad)">${d.invalid}</b><span class="muted">Sai email</span></div>`;
+  F("sumRows").innerHTML=(d.byType||[]).map(o=>`<tr><td>${esc(o.emailType)}</td><td class="num">${o.total}</td><td class="num">${o.sent}</td><td class="num">${o.invalid}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Không có dữ liệu.</td></tr>';
+  F("detRows").innerHTML=(d.rows||[]).map(o=>`<tr><td>${esc(o.batchNo)}</td><td>${esc(o.email)}</td><td>${esc(o.emailType)}</td><td>${esc(o.subject)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${esc(o.sendDate)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>
