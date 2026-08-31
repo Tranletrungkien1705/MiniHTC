@@ -164,6 +164,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ExtraWorkMst> ExtraWorkMsts => Set<ExtraWorkMst>();
     public DbSet<ExtraPartMst> ExtraPartMsts => Set<ExtraPartMst>();
     public DbSet<MaintenanceLevelMst> MaintenanceLevelMsts => Set<MaintenanceLevelMst>();
+    public DbSet<Cavity> Cavities => Set<Cavity>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
     public DbSet<CarOCN> CarOCNs => Set<CarOCN>();

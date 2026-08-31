@@ -3230,6 +3230,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
+app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
+{
+    var query = db.Cavities.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.CavityNo.Contains(q!) || (x.CavityName != null && x.CavityName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(compartment)) query = query.Where(x => x.CompartmentType == compartment);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.CavityNo).Take(500)
+        .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartWorkTime, x.FinishWorkTime, x.Note, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã khoang.
+app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "Chưa nhập mã khoang." });
+    if (string.IsNullOrWhiteSpace(dto.CavityName)) return Results.BadRequest(new { error = "Chưa nhập tên khoang." });
+    var code = dto.CavityNo.Trim().ToUpperInvariant();
+    var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code);
+    if (ex is not null)
+    {
+        ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartWorkTime = dto.StartWorkTime; ex.FinishWorkTime = dto.FinishWorkTime; ex.Note = dto.Note; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.CavityNo, updated = true });
+    }
+    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1" };
+    db.Cavities.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.CavityNo, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/cavities/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.Cavities.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.CavityNo == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.CavityNo, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Cấp bảo dưỡng theo mốc km (MaintenanceLevelMst — port 1:1 FrmMstMaintenanceLevelMng, TCMotor) =====
 app.MapGet("/api/maintenancelevels", async (AppDbContext db, ITenantContext t, string? active) =>
 {
@@ -7784,6 +7824,7 @@ record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Pho
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
+record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);

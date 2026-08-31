@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Khoang sửa chữa</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#0891b2;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Khoang sửa chữa (bay) <span class="muted">(port 1:1 FrmCavityCreate — TCMotor)</span></h1>
+<p class="muted">Khai báo các khoang/bay sửa chữa của trạm dịch vụ: mã, tên, loại khoang, giờ làm việc (bắt đầu/kết thúc ca). Dùng để phân công lệnh sửa chữa (RO) theo khoang. Mỗi mã 1 bản ghi — nhập lại = cập nhật.</p>
+<div class="card">
+  <h3 style="margin-top:0">Thêm / cập nhật khoang</h3>
+  <div class="row">
+    <div><label>Mã khoang *</label><input id="fNo" style="width:110px" placeholder="BAY01"></div>
+    <div style="flex:1;min-width:140px"><label>Tên khoang *</label><input id="fName" style="width:100%"></div>
+    <div><label>Loại khoang</label><input id="fType" style="width:110px" placeholder="Chung"></div>
+    <div><label>Giờ bắt đầu</label><input id="fStart" type="time" style="width:120px"></div>
+    <div><label>Giờ kết thúc</label><input id="fFinish" type="time" style="width:120px"></div>
+    <div style="flex:1;min-width:120px"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Tìm mã/tên</label><input id="qQ" style="width:180px" onkeydown="if(event.key==='Enter')load()"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên khoang</th><th>Loại</th><th>Giờ làm việc</th><th>Ghi chú</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+async function save(){ await token();
+  const body={CavityNo:F("fNo").value,CavityName:F("fName").value,CompartmentType:F("fType").value,StartWorkTime:F("fStart").value,FinishWorkTime:F("fFinish").value,Note:F("fNote").value};
+  const r=await fetch("/api/cavities",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.cavityNo:"Đã thêm "+d.cavityNo); load();
+}
+async function toggle(c){ await token();
+  const r=await fetch("/api/cavities/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fNo").value=o.cavityNo;F("fName").value=o.cavityName||"";F("fType").value=o.compartmentType||"";F("fStart").value=o.startWorkTime||"";F("fFinish").value=o.finishWorkTime||"";F("fNote").value=o.note||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/cavities?q="+encodeURIComponent(F("qQ").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.cavityNo}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.compartmentType)}</td><td>${(o.startWorkTime||"")+(o.finishWorkTime?" - "+o.finishWorkTime:"")}</td><td>${esc(o.note)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.cavityNo}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

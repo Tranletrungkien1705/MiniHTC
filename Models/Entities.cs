@@ -2819,6 +2819,21 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Khoang sửa chữa (bay) — mã/tên/loại khoang/giờ làm việc — port 1:1 FrmCavityCreate (Ser_Cavity, TCMotor).</summary>
+public sealed class Cavity
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CavityNo { get; set; } = "";
+    public string? CavityName { get; set; }
+    public string? CompartmentType { get; set; }   // loại khoang (Tbl_Mst_Compartment)
+    public string? StartWorkTime { get; set; }      // giờ bắt đầu ca
+    public string? FinishWorkTime { get; set; }     // giờ kết thúc ca
+    public string? Note { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Cấp bảo dưỡng theo mốc km (KM → số lần BD) — port 1:1 FrmMstMaintenanceLevelMng (TCMotor).</summary>
 public sealed class MaintenanceLevelMst
 {
