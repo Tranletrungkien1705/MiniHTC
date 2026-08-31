@@ -3230,6 +3230,56 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Nhóm phụ tùng phân cấp (PartGroup — port 1:1 FrmPartGroup, TCMotor) =====
+app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? q, string? parent, string? active) =>
+{
+    var query = db.PartGroups.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.GroupCode.Contains(q!.ToUpper()) || (x.GroupName != null && x.GroupName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(parent)) query = query.Where(x => x.ParentCode == parent);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var all = await query.OrderBy(x => x.OrderId).ThenBy(x => x.GroupCode).Take(1000).ToListAsync();
+    var nameMap = await db.PartGroups.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.GroupCode, x => x.GroupName);
+    var items = all.Select(x => new
+    {
+        x.GroupCode, x.GroupName, x.ParentCode,
+        parentName = !string.IsNullOrEmpty(x.ParentCode) && nameMap.TryGetValue(x.ParentCode, out var pn) ? pn : null,
+        x.OrderId, x.FlagActive
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã nhóm (guard: nhóm cha phải tồn tại + không tự trỏ chính nó).
+app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.GroupCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhóm." });
+    if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
+    var code = dto.GroupCode.Trim().ToUpperInvariant();
+    var parent = string.IsNullOrWhiteSpace(dto.ParentCode) ? null : dto.ParentCode.Trim().ToUpperInvariant();
+    if (parent == code) return Results.BadRequest(new { error = "Nhóm cha không được trùng chính nó." });
+    if (parent != null && !await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.GroupCode == parent))
+        return Results.BadRequest(new { error = $"Nhóm cha {parent} không tồn tại." });
+    var ex = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
+    if (ex is not null)
+    {
+        ex.GroupName = dto.GroupName; ex.ParentCode = parent; ex.OrderId = dto.OrderId; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.GroupCode, updated = true });
+    }
+    var r = new PartGroup { OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentCode = parent, OrderId = dto.OrderId, FlagActive = "1" };
+    db.PartGroups.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.GroupCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.PartGroups.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.GroupCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.GroupCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Công nợ khách hàng dịch vụ + thu tiền (CusDebit — port 1:1 FrmCusDebitCreate/FrmCusPaymentCreate, TCMotor) =====
 app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -8232,6 +8282,7 @@ record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
+record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
