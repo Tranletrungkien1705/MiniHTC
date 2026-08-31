@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Điểm nhận xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Địa điểm nhận xe của đại lý <span class="muted">(port 1:1 FrmMst_PointRegis — Mst_PointRegis, geofence)</span></h1>
+<div class="bar">
+  <input id="code" placeholder="Mã điểm *" style="width:100px"><input id="dl" placeholder="Đại lý *" style="width:100px">
+  <input id="name" placeholder="Tên điểm" style="width:180px">
+  <input id="lat" type="number" step="any" placeholder="Vĩ độ (lat)" style="width:120px;text-align:right">
+  <input id="lng" type="number" step="any" placeholder="Kinh độ (lng)" style="width:120px;text-align:right">
+  <input id="rad" type="number" placeholder="Bán kính (m)" style="width:110px;text-align:right">
+  <button class="primary" onclick="save()">Lưu</button>
+</div>
+<div class="bar"><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"><span style="flex:1"></span><span id="msg"></span></div>
+<table><thead><tr><th>Mã điểm</th><th>Đại lý</th><th>Tên điểm</th><th class="n">Vĩ độ</th><th class="n">Kinh độ</th><th class="n">Bán kính</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){
+  const b={pointRegisCode:F("code").value,dealerCode:F("dl").value,pointRegisName:F("name").value,mapLatitude:Number(F("lat").value||0),mapLongitude:Number(F("lng").value||0),radius:Number(F("rad").value||0)};
+  const r=await fetch("/api/pointregis",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu điểm "+j.pointRegisCode+"."); F("code").value="";F("name").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch("/api/pointregis?dealer="+encodeURIComponent(F("q").value),{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(p=>`<tr><td><b>${p.pointRegisCode}</b></td><td>${p.dealerCode}</td><td>${p.pointRegisName||"—"}</td>
+    <td class="n">${p.mapLatitude}</td><td class="n">${p.mapLongitude}</td><td class="n">${p.radius}</td>
+    <td><a href="https://maps.google.com/?q=${p.mapLatitude},${p.mapLongitude}" target="_blank" rel="noopener">bản đồ ↗</a></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có điểm.</td></tr>';
+}
+load();
+</script>
+</body></html>

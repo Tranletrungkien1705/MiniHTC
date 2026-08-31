@@ -565,6 +565,46 @@ public sealed class GpsInDetail
     public string? Remark { get; set; }
 }
 
+/// <summary>Phiếu xuất kho thiết bị GPS (StoF_GPSOut — port 1:1 FrmStoF_GPSOut/FrmMngStoF_GPSOut, StoFGPS):
+/// xuất lô thiết bị GPS khỏi kho (để gắn lên xe) cho người nhận.</summary>
+public sealed class GpsOut
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SFGPSOutNo { get; set; } = "";
+    public string StorageCode { get; set; } = "";
+    public string? UserCodeReceived { get; set; }   // người nhận
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng thiết bị xuất (StoF_GPSOutDtl): số thiết bị + số hộp + trạng thái map.</summary>
+public sealed class GpsOutDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long OutId { get; set; }
+    public string GpsDvNo { get; set; } = "";
+    public string? GpsBoxNo { get; set; }
+    public string MapStatus { get; set; } = "0";
+    public string? Remark { get; set; }
+}
+
+/// <summary>Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis, StoFGPS):
+/// geofence điểm giao/nhận xe: toạ độ + bán kính, để đối chiếu GPS xe giao đúng địa điểm.</summary>
+public sealed class PointRegis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PointRegisCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string PointRegisName { get; set; } = "";
+    public double MapLatitude { get; set; }
+    public double MapLongitude { get; set; }
+    public double Radius { get; set; }               // bán kính (m)
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

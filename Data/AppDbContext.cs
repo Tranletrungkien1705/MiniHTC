@@ -45,6 +45,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<GpsClaim> GpsClaims => Set<GpsClaim>();
     public DbSet<GpsIn> GpsIns => Set<GpsIn>();
     public DbSet<GpsInDetail> GpsInDetails => Set<GpsInDetail>();
+    public DbSet<GpsOut> GpsOuts => Set<GpsOut>();
+    public DbSet<GpsOutDetail> GpsOutDetails => Set<GpsOutDetail>();
+    public DbSet<PointRegis> PointRegises => Set<PointRegis>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
