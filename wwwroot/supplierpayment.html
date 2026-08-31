@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thanh toán NCC</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-A{color:var(--ok)}
+  .kpi{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 12px;margin-right:8px} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Thanh toán nhà cung cấp <span class="muted">(port 1:1 FrmSer_SupplierPayment — Ser_SupplierPayment)</span></h1>
+<div class="bar">
+  <input id="sp" placeholder="Nhà cung cấp *" style="width:130px"><input id="op" placeholder="Số đơn đặt (OP... đã HT)" style="width:180px">
+  <input id="am" type="number" placeholder="Số tiền (trống=tổng đơn)" style="width:170px;text-align:right"><input id="pd" type="date" title="Ngày TT">
+  <button class="primary" onclick="save()">Tạo phiếu TT</button><span id="msg"></span>
+</div>
+<div class="bar">
+  <span class="kpi">Tổng TT: <b id="kt" class="n">0</b></span><span class="kpi">Đã duyệt: <b id="ka" class="n">0</b></span>
+  <span style="flex:1"></span><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Mới tạo</option><option value="A">Đã duyệt</option></select><input id="q" placeholder="Lọc NCC" oninput="load()" style="width:100px">
+</div>
+<table><thead><tr><th>Số phiếu</th><th>NCC</th><th>Đơn đặt</th><th class="n">Số tiền</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={P:"Mới tạo",A:"Đã duyệt"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){
+  const b={supplierCode:F("sp").value,orderPartNo:F("op").value,amount:Number(F("am").value||0),paymentDate:F("pd").value||null};
+  const r=await fetch("/api/supplierpayments",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.paymentNo+" ("+n(j.amount)+"đ)."); F("op").value="";F("am").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/supplierpayments?status=${F("fst").value}&supplier=${F("q").value}`,{headers:H()})).json();
+  F("kt").textContent=n(d.total); F("ka").textContent=n(d.approved);
+  F("rows").innerHTML=(d.items||[]).map(p=>{
+    let act=p.status==="P"?`<button class="sm" onclick="approve('${p.paymentNo}')">Duyệt</button>`:"";
+    return `<tr><td><b>${p.paymentNo}</b></td><td>${p.supplierCode}</td><td>${p.orderPartNo||"—"}</td><td class="n">${n(p.amount)}</td>
+      <td><span class="pill p-${p.status}">${LBL[p.status]||p.status}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có phiếu TT.</td></tr>';
+}
+async function approve(no){ const r=await fetch(`/api/supplierpayments/${no}/approve`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+load();
+</script>
+</body></html>

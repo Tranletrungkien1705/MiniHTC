@@ -1037,6 +1037,22 @@ public sealed class OrderComplain
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment, TCMotor DMSCarSv/TST):
+/// thanh toán cho đơn đặt PT đã hoàn thành. SupplierPaymentStatus: P(Mới tạo)→A(Đã duyệt).</summary>
+public sealed class SupplierPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentNo { get; set; } = "";
+    public string SupplierCode { get; set; } = "";
+    public string? OrderPartNo { get; set; }           // đơn đặt PT liên quan
+    public decimal Amount { get; set; }
+    public DateTime? PaymentDate { get; set; }
+    public string Status { get; set; } = "P";          // P → A
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

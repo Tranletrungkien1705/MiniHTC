@@ -1227,6 +1227,50 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment) =====
+app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, string? status, string? supplier) =>
+{
+    var q = db.SupplierPayments.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(supplier)) q = q.Where(p => p.SupplierCode == supplier);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, total = items.Sum(x => x.Amount), approved = items.Where(x => x.Status == "A").Sum(x => x.Amount), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Cần SupplierCode." });
+    decimal amount = dto.Amount;
+    string? orderNo = null;
+    if (!string.IsNullOrWhiteSpace(dto.OrderPartNo))
+    {
+        orderNo = dto.OrderPartNo.Trim().ToUpperInvariant();
+        var order = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == orderNo);
+        if (order is null) return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt {orderNo}." });
+        if (order.OrderPartStatus != "Finished") return Results.BadRequest(new { error = "Chỉ thanh toán đơn đã Hoàn thành." });
+        // amount mặc định = tổng đơn nếu không nhập
+        if (amount <= 0)
+            amount = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == order.Id).SumAsync(l => (decimal?)(l.OrderQty * l.Price)) ?? 0;
+    }
+    if (amount <= 0) return Results.BadRequest(new { error = "Cần số tiền > 0." });
+    var no = "SP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new SupplierPayment { OrgId = t.OrgId, PaymentNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), OrderPartNo = orderNo, Amount = amount, PaymentDate = dto.PaymentDate ?? DateTime.Now, Status = "P" };
+    db.SupplierPayments.Add(p); await db.SaveChangesAsync();
+    return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.Amount, status = p.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.SupplierPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt phiếu Mới tạo." });
+    p.Status = "A"; p.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PaymentNo, status = p.Status });
+}).RequireAuthorization();
+
 // ===== Khiếu nại đơn đặt phụ tùng (Ser_OrderComplain — port 1:1 FrmSer_OrderComplain/Mng) =====
 app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, string? dms, string? tst, string? order) =>
 {
@@ -2531,4 +2575,5 @@ record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, dec
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content);
 record OrderComplainActDto(string? Resolution);
+record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate);
 record RegisterOrgDto(string Name);
