@@ -312,6 +312,24 @@ public sealed class PmtLine
     public decimal AmountCurrent { get; set; }        // chi kỳ này
 }
 
+/// <summary>Bảo lãnh / thư tín dụng ngân hàng (Guarantee — port 1:1 FrmNewGrt/FrmMngGrt + FrmEditGrtExpiredDate/EndDate):
+/// bảo lãnh NH cho lô xe nhập. GrtType: BL(Bảo lãnh)/LCTC(LC trả chậm)/LCUP(LC Upas)/EPLC. Pending→Approved.</summary>
+public sealed class Guarantee
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GrtNo { get; set; } = "";          // số nội bộ (GetGrtNo)
+    public string? BankGrtNo { get; set; }           // số bảo lãnh do NH cấp
+    public string BankCode { get; set; } = "";
+    public string GrtType { get; set; } = "BL";      // BL/LCTC/LCUP/EPLC
+    public decimal GrtValue { get; set; }            // giá trị bảo lãnh
+    public DateTime GrtDate { get; set; } = DateTime.Now;    // ngày phát hành
+    public DateTime? DateExpired { get; set; }       // ngày hết hạn
+    public string Status { get; set; } = "Pending";  // Pending → Approved
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

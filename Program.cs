@@ -857,6 +857,61 @@ app.MapPost("/api/pms/{pmNo}/{action}", async (string pmNo, string action, AppDb
     return Results.Ok(new { p.PMNo, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Bảo lãnh / LC ngân hàng (Guarantee — port 1:1 FrmNewGrt/FrmMngGrt + FrmEditGrtExpiredDate) =====
+app.MapGet("/api/grts", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
+{
+    var q = db.Guarantees.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(g => g.Status == status);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(g => g.GrtType == type);
+    var now = DateTime.Now;
+    var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
+    {
+        g.GrtNo, g.BankGrtNo, g.BankCode, g.GrtType, g.GrtValue, g.GrtDate, g.DateExpired, g.Status,
+        expired = g.DateExpired != null && g.DateExpired < now
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalValue = items.Sum(x => x.GrtValue), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/grts", async (GrtDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Cần BankCode (ngân hàng bảo lãnh)." });
+    if (dto.GrtValue <= 0) return Results.BadRequest(new { error = "Giá trị bảo lãnh phải > 0." });
+    var type = string.IsNullOrWhiteSpace(dto.GrtType) ? "BL" : dto.GrtType.Trim().ToUpperInvariant();
+    if (type is not ("BL" or "LCTC" or "LCUP" or "EPLC")) return Results.BadRequest(new { error = "GrtType = BL|LCTC|LCUP|EPLC" });
+    var grtNo = "GRT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var g = new Guarantee
+    {
+        OrgId = t.OrgId, GrtNo = grtNo, BankGrtNo = dto.BankGrtNo, BankCode = dto.BankCode.Trim().ToUpperInvariant(),
+        GrtType = type, GrtValue = dto.GrtValue,
+        GrtDate = dto.GrtDate ?? DateTime.Now, DateExpired = dto.DateExpired, Status = "Pending"
+    };
+    db.Guarantees.Add(g); await db.SaveChangesAsync();
+    return Results.Ok(new { g.GrtNo, g.BankCode, g.GrtType, g.GrtValue, status = g.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/grts/{grtNo}/approve", async (string grtNo, AppDbContext db, ITenantContext t) =>
+{
+    grtNo = grtNo.Trim().ToUpperInvariant();
+    var g = await db.Guarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtNo == grtNo);
+    if (g is null) return Results.NotFound(new { grtNo });
+    if (g.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt bảo lãnh Mới tạo." });
+    g.Status = "Approved"; g.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GrtNo, status = g.Status });
+}).RequireAuthorization();
+
+// Sửa ngày hết hạn (FrmEditGrtExpiredDate / FrmEditGrtEndDate)
+app.MapPost("/api/grts/{grtNo}/expiry", async (string grtNo, GrtExpiryDto dto, AppDbContext db, ITenantContext t) =>
+{
+    grtNo = grtNo.Trim().ToUpperInvariant();
+    var g = await db.Guarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtNo == grtNo);
+    if (g is null) return Results.NotFound(new { grtNo });
+    if (dto.DateExpired is null) return Results.BadRequest(new { error = "Cần DateExpired." });
+    g.DateExpired = dto.DateExpired;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GrtNo, g.DateExpired });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -944,4 +999,6 @@ record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int
 record MortgageDto(string BankCode, List<string>? Vins);
 record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
 record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
+record GrtDto(string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
+record GrtExpiryDto(DateTime? DateExpired);
 record RegisterOrgDto(string Name);
