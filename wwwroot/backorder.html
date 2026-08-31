@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo back-order</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.tab{border-radius:999px} button.tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .bo{color:var(--warn);font-weight:600} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Báo cáo đơn hàng chưa giao (back-order) <span class="muted">(port 1:1 FrmBackOrderByModel / FrmBackOrderByDealer)</span></h1>
+<div class="card">
+  <b>Đăng ký dòng đặt hàng (nguồn báo cáo)</b>
+  <div class="bar" style="margin-top:10px">
+    <div><label>Đại lý *</label><input id="dl" style="width:90px"></div>
+    <div><label>Tên ĐL</label><input id="dn" style="width:120px"></div>
+    <div><label>Model *</label><input id="md" style="width:90px"></div>
+    <div><label>Đặc tả</label><input id="sd" style="width:110px"></div>
+    <div><label>SL đặt *</label><input id="qo" type="number" style="width:80px" value="10"></div>
+    <div><label>SL đã giao</label><input id="qd" type="number" style="width:80px" value="0"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="bar">
+  <button class="tab on" id="tab-m" onclick="setTab('model')">Theo Model</button>
+  <button class="tab" id="tab-d" onclick="setTab('dealer')">Theo Đại lý</button>
+  <input id="flt" placeholder="Lọc" oninput="load()" style="width:110px">
+  <span class="muted" id="tot"></span>
+</div>
+<div class="wrap"><table><thead id="head"></thead><tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let TAB="model";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){ await token();
+  const b={dealerCode:F("dl").value,dealerName:F("dn").value,modelCode:F("md").value,specDesc:F("sd").value,qtyOrder:+F("qo").value||0,qtyDelivered:+F("qd").value||0};
+  const r=await fetch("/api/backorder",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã lưu ${j.modelCode}/${j.dealerCode} (back-order ${j.backOrder})`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+function setTab(t){ TAB=t; F("tab-m").classList.toggle("on",t==="model"); F("tab-d").classList.toggle("on",t==="dealer"); load(); }
+async function load(){ await token();
+  const flt=F("flt").value;
+  const url= TAB==="model" ? `/api/backorder/bymodel?dealer=${flt}` : `/api/backorder/bydealer?model=${flt}`;
+  const d=await (await fetch(url,{headers:H()})).json();
+  F("tot").textContent=`Tổng back-order: ${d.totalBackOrder}`;
+  if(TAB==="model"){
+    F("head").innerHTML='<tr><th>Model</th><th>Đặc tả</th><th class="num">SL đặt</th><th class="num">SL giao</th><th class="num">Back-order</th></tr>';
+    F("rows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${o.modelCode}</b></td><td>${o.specDesc||""}</td><td class="num">${o.qtyOrder}</td><td class="num">${o.qtyDelivered}</td><td class="num bo">${o.backOrder}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>';
+  } else {
+    F("head").innerHTML='<tr><th>Đại lý</th><th>Tên ĐL</th><th class="num">SL đặt</th><th class="num">SL giao</th><th class="num">Back-order</th></tr>';
+    F("rows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${o.dealerCode}</b></td><td>${o.dealerName||""}</td><td class="num">${o.qtyOrder}</td><td class="num">${o.qtyDelivered}</td><td class="num bo">${o.backOrder}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>';
+  }
+}
+load();
+</script>
+</body></html>

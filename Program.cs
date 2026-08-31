@@ -2505,6 +2505,42 @@ app.MapGet("/api/hmcreport", async (AppDbContext db, ITenantContext t, DateTime?
     return Results.Ok(new { total = rows.Count, byDelivery, bySalesType, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo back-order / đơn hàng chưa giao (BackOrder — port 1:1 FrmBackOrderByModel + FrmBackOrderByDealer) =====
+app.MapPost("/api/backorder", async (BackOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập đại lý." });
+    if (dto.QtyOrder <= 0) return Results.BadRequest(new { error = "Số lượng đặt phải > 0." });
+    var deliv = Math.Max(0, Math.Min(dto.QtyDelivered, dto.QtyOrder));
+    var b = new BackOrder { OrgId = t.OrgId, DealerCode = dto.DealerCode.Trim(), DealerName = dto.DealerName ?? "", ModelCode = dto.ModelCode.Trim(), SpecDesc = dto.SpecDesc ?? "", QtyOrder = dto.QtyOrder, QtyDelivered = deliv };
+    db.BackOrders.Add(b); await db.SaveChangesAsync();
+    return Results.Ok(new { b.ModelCode, b.DealerCode, backOrder = b.QtyOrder - b.QtyDelivered });
+}).RequireAuthorization();
+
+// Báo cáo back-order theo MODEL (gom theo model/spec).
+app.MapGet("/api/backorder/bymodel", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    var q = db.BackOrders.Where(b => b.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(b => b.DealerCode == dealer);
+    var recs = await q.ToListAsync();
+    var rows = recs.GroupBy(b => new { b.ModelCode, b.SpecDesc })
+        .Select(g => new { modelCode = g.Key.ModelCode, specDesc = g.Key.SpecDesc, qtyOrder = g.Sum(x => x.QtyOrder), qtyDelivered = g.Sum(x => x.QtyDelivered), backOrder = g.Sum(x => x.QtyOrder - x.QtyDelivered) })
+        .Where(x => true).OrderByDescending(x => x.backOrder).ToList();
+    return Results.Ok(new { totalBackOrder = rows.Sum(x => x.backOrder), rows });
+}).RequireAuthorization();
+
+// Báo cáo back-order theo ĐẠI LÝ (gom theo đại lý).
+app.MapGet("/api/backorder/bydealer", async (AppDbContext db, ITenantContext t, string? model) =>
+{
+    var q = db.BackOrders.Where(b => b.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(b => b.ModelCode == model);
+    var recs = await q.ToListAsync();
+    var rows = recs.GroupBy(b => new { b.DealerCode, b.DealerName })
+        .Select(g => new { dealerCode = g.Key.DealerCode, dealerName = g.Key.DealerName, qtyOrder = g.Sum(x => x.QtyOrder), qtyDelivered = g.Sum(x => x.QtyDelivered), backOrder = g.Sum(x => x.QtyOrder - x.QtyDelivered) })
+        .OrderByDescending(x => x.backOrder).ToList();
+    return Results.Ok(new { totalBackOrder = rows.Sum(x => x.backOrder), rows });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6540,6 +6576,7 @@ record TranspDlvCarDto(string VIN, string? ModelCode);
 record TranspDlvDto(string TransporterCode, string? DealerCode, List<TranspDlvCarDto>? Cars);
 record TranspConfirmDto(string? Remark);
 record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
+record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

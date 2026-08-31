@@ -2779,6 +2779,20 @@ public sealed class HmcSalesRecord
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đơn hàng chưa giao / back-order (ReportBackOrder) — port 1:1 FrmBackOrderByModel + FrmBackOrderByDealer.</summary>
+public sealed class BackOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string DealerName { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string SpecDesc { get; set; } = "";
+    public int QtyOrder { get; set; }         // SL da dat
+    public int QtyDelivered { get; set; }      // SL da giao
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

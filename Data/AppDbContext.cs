@@ -149,6 +149,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<TranspDlvConfirm> TranspDlvConfirms => Set<TranspDlvConfirm>();
     public DbSet<TranspDlvConfirmCar> TranspDlvConfirmCars => Set<TranspDlvConfirmCar>();
     public DbSet<HmcSalesRecord> HmcSalesRecords => Set<HmcSalesRecord>();
+    public DbSet<BackOrder> BackOrders => Set<BackOrder>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
