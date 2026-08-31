@@ -692,6 +692,39 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Gia hạn bảo hành (port 1:1 FrmMstWarrantyExtension — TCMotor) =====
+app.MapGet("/api/wexts", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.WarrantyExts.Where(w => w.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(w => w.Status == status);
+    var items = await q.OrderByDescending(w => w.Id).Take(500).Select(w => new
+    { w.Code, w.Vin, w.ItemCode, w.ExtraMonths, w.Fee, w.Status, w.ActivatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/wexts", async (WExtDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin) || dto.ExtraMonths <= 0)
+        return Results.BadRequest(new { error = "Cần Vin và ExtraMonths > 0." });
+    var code = "WE" + DateTime.Now.ToString("yyMMddHHmmss");
+    var w = new WarrantyExtension { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), ItemCode = dto.ItemCode, ExtraMonths = dto.ExtraMonths, Fee = dto.Fee, Status = "Requested" };
+    db.WarrantyExts.Add(w); await db.SaveChangesAsync();
+    return Results.Ok(new { w.Code, w.Vin, w.ExtraMonths, w.Fee, status = w.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/wexts/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("pay" or "activate" or "cancel")) return Results.BadRequest(new { error = "action = pay|activate|cancel" });
+    code = code.Trim().ToUpperInvariant();
+    var w = await db.WarrantyExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (w is null) return Results.NotFound(new { code });
+    if (action == "pay") { if (w.Status != "Requested") return Results.BadRequest(new { error = "Sai trạng thái." }); w.Status = "Paid"; }
+    else if (action == "activate") { if (w.Status != "Paid") return Results.BadRequest(new { error = "Chưa thanh toán." }); w.Status = "Activated"; w.ActivatedAt = DateTime.Now; }
+    else { if (w.Status == "Activated") return Results.BadRequest(new { error = "Đã kích hoạt." }); w.Status = "Cancelled"; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { w.Code, status = w.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -719,4 +752,5 @@ record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal Part
 record PODto(string SupplierCode, string? Note, decimal Total);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
+record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record RegisterOrgDto(string Name);

@@ -215,6 +215,21 @@ public sealed class BomLine
     public decimal Qty { get; set; } = 1;
 }
 
+/// <summary>Gia hạn bảo hành (FrmMstWarrantyExtension — TCMotor): mua thêm thời hạn BH cho xe.</summary>
+public sealed class WarrantyExtension
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string Vin { get; set; } = "";
+    public string? ItemCode { get; set; }   // hạng mục gia hạn
+    public int ExtraMonths { get; set; }
+    public decimal Fee { get; set; }
+    public string Status { get; set; } = "Requested";  // Requested → Paid → Activated (hoặc Cancelled)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ActivatedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
