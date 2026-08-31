@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Tờ khai hải quan</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select,label{font:inherit} input,button,select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Open{color:var(--warn)} .p-Cleared{color:var(--ok)}
+  #msg{font-size:13px} .det{font-size:12px;opacity:.85} #ptbl td,#ptbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Tờ khai hải quan (xe nhập Foton) <span class="muted">(port 1:1 FrmNewTKHQ — Tkhq)</span></h1>
+<div class="card">
+  <b>Mở tờ khai</b>
+  <div class="bar" style="margin:10px 0"><input id="dn" placeholder="Số TKHQ *" style="width:130px"><input id="ct" placeholder="Số hợp đồng *" style="width:130px"><input id="pc" placeholder="Cảng" style="width:80px">
+    <label class="muted">Ngày mở <input id="od" type="date"></label><input id="rm" placeholder="Ghi chú" style="width:140px">
+    <span style="flex:1"></span><button class="primary" onclick="create()">Mở TK</button><span id="msg"></span></div>
+  <div class="muted">Packing list:</div>
+  <table id="ptbl"><thead><tr><th>Số PL</th><th>Ngày tàu chạy</th><th></th></tr></thead><tbody id="ptb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addPL()">+ Packing List</button>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Open">Đang mở</option><option value="Cleared">Đã thông quan</option></select><input id="q" placeholder="Lọc HĐ" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Số TKHQ</th><th>Hợp đồng</th><th>Cảng</th><th>Ngày mở</th><th>Số PL</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Open:"Đang mở",Cleared:"Đã thông quan"}; const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"—";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addPL(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="pl" style="width:120px"></td><td><input class="sd" type="date"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ptb").appendChild(tr); }
+async function create(){
+  const pls=[...F("ptb").querySelectorAll("tr")].map(tr=>({packingListNo:tr.querySelector(".pl").value,shippingDateEnd:tr.querySelector(".sd").value||null})).filter(p=>p.packingListNo);
+  const r=await fetch("/api/tkhqs",{method:"POST",headers:H(),body:JSON.stringify({declarationNo:F("dn").value,contractNo:F("ct").value,portCode:F("pc").value,openDate:F("od").value||null,remark:F("rm").value,pLs:pls})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã mở "+j.declarationNo+" ("+j.pls+" PL)."); F("dn").value="";F("ptb").innerHTML="";addPL(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/tkhqs?status=${F("fst").value}&contract=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(k=>{
+    let act=k.status==="Open"?`<button class="sm" onclick="clear_('${k.declarationNo}')">Thông quan</button>`:"";
+    return `<tr><td><b>${k.declarationNo}</b> <a href="#" class="det" onclick="pls('${k.declarationNo}');return false">xem PL</a></td><td>${k.contractNo}</td><td>${k.portCode||"—"}</td>
+      <td>${day(k.openDate)}</td><td>${k.pls}</td><td><span class="pill p-${k.status}">${LBL[k.status]||k.status}</span></td><td>${act}</td></tr><tr id="x-${k.declarationNo}"></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có TKHQ.</td></tr>';
+}
+async function clear_(no){ const r=await fetch(`/api/tkhqs/${no}/clear`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function pls(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/tkhqs/${no}/pls`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="7"><div class="det">${(d.pls||[]).map(p=>`PL <b>${p.packingListNo}</b>${p.shippingDateEnd?" · "+day(p.shippingDateEnd):""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addPL(); load();
+</script>
+</body></html>

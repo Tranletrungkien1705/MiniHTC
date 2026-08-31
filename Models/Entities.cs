@@ -1225,6 +1225,32 @@ public sealed class LetterOfCredit
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tờ khai hải quan (Tkhq — port 1:1 FrmNewTKHQ/FrmMngTKHQ, TCMotor DMSales.Foton):
+/// tờ khai HQ cho lô xe nhập theo hợp đồng, mở tại 1 cảng, gồm nhiều packing list. Open→Cleared(thông quan).</summary>
+public sealed class Tkhq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeclarationNo { get; set; } = "";     // số TKHQ
+    public string ContractNo { get; set; } = "";
+    public string? PortCode { get; set; }
+    public DateTime? OpenDate { get; set; }             // ngày mở tờ khai
+    public string? Remark { get; set; }
+    public string Status { get; set; } = "Open";        // Open → Cleared (thông quan)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ClearedAt { get; set; }
+}
+
+/// <summary>Packing list trong TKHQ (Tkhq_PL): số PL + ngày tàu chạy cuối.</summary>
+public sealed class TkhqPL
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TkhqId { get; set; }
+    public string PackingListNo { get; set; } = "";
+    public DateTime? ShippingDateEnd { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

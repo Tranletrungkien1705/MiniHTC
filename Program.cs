@@ -1227,6 +1227,57 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Tờ khai hải quan (Tkhq — port 1:1 FrmNewTKHQ/FrmMngTKHQ, DMSales.Foton) =====
+app.MapGet("/api/tkhqs", async (AppDbContext db, ITenantContext t, string? status, string? contract) =>
+{
+    var q = db.Tkhqs.Where(k => k.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(k => k.Status == status);
+    if (!string.IsNullOrWhiteSpace(contract)) q = q.Where(k => k.ContractNo.Contains(contract.ToUpper()));
+    var items = await q.OrderByDescending(k => k.Id).Take(500).Select(k => new
+    {
+        k.DeclarationNo, k.ContractNo, k.PortCode, k.OpenDate, k.Remark, k.Status, k.ClearedAt,
+        pls = db.TkhqPLs.Count(p => p.OrgId == t.OrgId && p.TkhqId == k.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/tkhqs", async (TkhqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DeclarationNo)) return Results.BadRequest(new { error = "Cần số TKHQ (DeclarationNo)." });
+    if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Cần số hợp đồng (ContractNo)." });
+    var no = dto.DeclarationNo.Trim().ToUpperInvariant();
+    if (await db.Tkhqs.AnyAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no))
+        return Results.BadRequest(new { error = $"Số TKHQ {no} đã tồn tại." });
+    var k = new Tkhq { OrgId = t.OrgId, DeclarationNo = no, ContractNo = dto.ContractNo.Trim().ToUpperInvariant(), PortCode = dto.PortCode, OpenDate = dto.OpenDate, Remark = dto.Remark, Status = "Open" };
+    db.Tkhqs.Add(k); await db.SaveChangesAsync();
+    foreach (var p in dto.PLs ?? new())
+        if (!string.IsNullOrWhiteSpace(p.PackingListNo))
+            db.TkhqPLs.Add(new TkhqPL { OrgId = t.OrgId, TkhqId = k.Id, PackingListNo = p.PackingListNo.Trim().ToUpperInvariant(), ShippingDateEnd = p.ShippingDateEnd });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { k.DeclarationNo, k.ContractNo, pls = (dto.PLs ?? new()).Count, status = k.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/tkhqs/{no}/pls", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var k = await db.Tkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
+    if (k is null) return Results.NotFound(new { no });
+    var pls = await db.TkhqPLs.Where(p => p.OrgId == t.OrgId && p.TkhqId == k.Id)
+        .Select(p => new { p.PackingListNo, p.ShippingDateEnd }).ToListAsync();
+    return Results.Ok(new { k.DeclarationNo, k.Status, count = pls.Count, pls });
+}).RequireAuthorization();
+
+app.MapPost("/api/tkhqs/{no}/clear", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var k = await db.Tkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
+    if (k is null) return Results.NotFound(new { no });
+    if (k.Status != "Open") return Results.BadRequest(new { error = "TKHQ đã thông quan." });
+    k.Status = "Cleared"; k.ClearedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { k.DeclarationNo, status = k.Status });
+}).RequireAuthorization();
+
 // ===== Thư tín dụng (LC — port 1:1 FrmNewLC/FrmMngLC, DMSales.Foton) =====
 app.MapGet("/api/lcs", async (AppDbContext db, ITenantContext t, string? status, string? contract) =>
 {
@@ -2980,4 +3031,6 @@ record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
+record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
+record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);
 record RegisterOrgDto(string Name);
