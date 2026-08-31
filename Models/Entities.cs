@@ -353,6 +353,33 @@ public sealed class InvoiceLine
     public DateTime? InvoiceDate { get; set; }
 }
 
+/// <summary>Biên bản bàn giao theo hối phiếu NH (Car_BankBillMinutes — port 1:1 FrmTaoBBBGTheoHoiPhieu/FrmQuanLyBBBGTheoHoiPhieu):
+/// bàn giao lô xe cho ngân hàng theo hối phiếu/LC. Created → Received (nhận hối phiếu).</summary>
+public sealed class BankBillMinutes
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BankBillMnNo { get; set; } = "";      // số BBBG
+    public string BankCode { get; set; } = "";
+    public DateTime? BankBillDate { get; set; }         // ngày hối phiếu
+    public DateTime? BankBillReciveDate { get; set; }   // ngày nhận hối phiếu
+    public string Status { get; set; } = "Created";     // Created → Received
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng xe trong BBBG (Car_BankBillMinutesDtl): VIN + LC/bảo lãnh + số tiền claim.</summary>
+public sealed class BankBillCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long BillId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? EngineNo { get; set; }
+    public string? LCNo { get; set; }                   // số bảo lãnh/LC (BankGuaranteeNo)
+    public string? GuaranteeBankCode { get; set; }
+    public decimal ClaimAmount { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

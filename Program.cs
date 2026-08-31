@@ -954,6 +954,59 @@ app.MapDelete("/api/invoicelists/{code}", async (string code, AppDbContext db, I
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Biên bản bàn giao theo hối phiếu NH (Car_BankBillMinutes — port 1:1 FrmTaoBBBG/FrmQuanLyBBBG) =====
+app.MapGet("/api/bankbills", async (AppDbContext db, ITenantContext t, string? status, string? bank) =>
+{
+    var q = db.BankBillMinutes.Where(b => b.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(b => b.Status == status);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
+    var items = await q.OrderByDescending(b => b.Id).Take(500).Select(b => new
+    {
+        b.BankBillMnNo, b.BankCode, b.BankBillDate, b.BankBillReciveDate, b.Status, b.CreatedDateTime,
+        cars = db.BankBillCars.Count(c => c.OrgId == t.OrgId && c.BillId == b.Id),
+        claimTotal = db.BankBillCars.Where(c => c.OrgId == t.OrgId && c.BillId == b.Id).Sum(c => (decimal?)c.ClaimAmount) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankbills", async (BankBillDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Cần BankCode." });
+    var cars = (dto.Cars ?? new List<BankBillCarDto>()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    // check trùng VIN trong lô (port đúng "VIN bị trùng!" của FrmTaoBBBG)
+    var dupe = cars.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "BBBG" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new BankBillMinutes { OrgId = t.OrgId, BankBillMnNo = no, BankCode = dto.BankCode.Trim().ToUpperInvariant(), BankBillDate = dto.BankBillDate, Status = "Created" };
+    db.BankBillMinutes.Add(h); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.BankBillCars.Add(new BankBillCar { OrgId = t.OrgId, BillId = h.Id, Vin = c.Vin.Trim().ToUpperInvariant(), EngineNo = c.EngineNo, LCNo = c.LCNo, GuaranteeBankCode = c.GuaranteeBankCode, ClaimAmount = c.ClaimAmount });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.BankBillMnNo, h.BankCode, cars = cars.Count, status = h.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankbills/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.BankBillMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankBillMnNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.BankBillCars.Where(c => c.OrgId == t.OrgId && c.BillId == h.Id)
+        .Select(c => new { c.Vin, c.EngineNo, c.LCNo, c.GuaranteeBankCode, c.ClaimAmount }).ToListAsync();
+    return Results.Ok(new { h.BankBillMnNo, h.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankbills/{no}/receive", async (string no, BankBillReceiveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.BankBillMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankBillMnNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "Created") return Results.BadRequest(new { error = "Chỉ ghi nhận hối phiếu cho BBBG Mới tạo." });
+    h.Status = "Received"; h.BankBillReciveDate = dto.BankBillReciveDate ?? DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.BankBillMnNo, status = h.Status, h.BankBillReciveDate });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1045,4 +1098,7 @@ record GrtDto(string BankCode, string? BankGrtNo, string? GrtType, decimal GrtVa
 record GrtExpiryDto(DateTime? DateExpired);
 record InvoiceLineDto(string? CarId, string? DealerCode, string InvoiceNo, string Vin, DateTime? InvoiceDate);
 record InvoiceListDto(List<InvoiceLineDto>? Lines);
+record BankBillCarDto(string Vin, string? EngineNo, string? LCNo, string? GuaranteeBankCode, decimal ClaimAmount);
+record BankBillDto(string BankCode, DateTime? BankBillDate, List<BankBillCarDto>? Cars);
+record BankBillReceiveDto(DateTime? BankBillReciveDate);
 record RegisterOrgDto(string Name);

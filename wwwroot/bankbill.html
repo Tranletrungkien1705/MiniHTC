@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — BBBG hối phiếu</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-Created{color:var(--warn)} .p-Received{color:var(--ok)} #msg{font-size:13px} .cars{font-size:12px;opacity:.85}
+  #ctbl td,#ctbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Biên bản bàn giao theo hối phiếu <span class="muted">(port 1:1 FrmTaoBBBG / FrmQuanLyBBBG — Car_BankBillMinutes)</span></h1>
+<div class="card">
+  <b>Tạo BBBG mới</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="bank" placeholder="Ngân hàng *" style="width:120px">
+    <label class="muted">Ngày hối phiếu <input id="bbd" type="date"></label>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu BBBG</button><span id="msg"></span>
+  </div>
+  <table id="ctbl"><thead><tr><th>VIN *</th><th>Số máy</th><th>Số LC/BL</th><th>NH bảo lãnh</th><th class="n">Claim</th><th></th></tr></thead>
+  <tbody id="ctb"></tbody></table>
+  <button class="sm" style="margin-top:8px" onclick="addCar()">+ Thêm xe</button>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Created">Mới tạo</option><option value="Received">Đã nhận hối phiếu</option></select>
+</div>
+<table><thead><tr><th>Số BBBG</th><th>NH</th><th>Ngày HP</th><th>Số xe</th><th class="n">Tổng claim</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Created:"Mới tạo",Received:"Đã nhận hối phiếu"};
+const n=x=>Number(x||0).toLocaleString("vi-VN");
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"—";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addCar(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="vin" style="width:130px"></td><td><input class="eng" style="width:90px"></td>
+    <td><input class="lc" style="width:100px"></td><td><input class="gb" style="width:90px"></td>
+    <td class="n"><input class="cl" type="number" style="width:100px;text-align:right"></td>
+    <td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ctb").appendChild(tr);
+}
+async function create(){
+  const cars=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,engineNo:tr.querySelector(".eng").value,lcNo:tr.querySelector(".lc").value,guaranteeBankCode:tr.querySelector(".gb").value,claimAmount:Number(tr.querySelector(".cl").value||0)})).filter(c=>c.vin);
+  const r=await fetch("/api/bankbills",{method:"POST",headers:H(),body:JSON.stringify({bankCode:F("bank").value,bankBillDate:F("bbd").value||null,cars})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.bankBillMnNo+" ("+j.cars+" xe)."); F("ctb").innerHTML="";addCar(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch("/api/bankbills?status="+F("fst").value,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(b=>{
+    let act=b.status==="Created"?`<button class="sm" onclick="recv('${b.bankBillMnNo}')">Nhận HP</button>`:"";
+    return `<tr><td><b>${b.bankBillMnNo}</b> <a href="#" class="cars" onclick="cars('${b.bankBillMnNo}');return false">xem xe</a></td>
+      <td>${b.bankCode}</td><td>${day(b.bankBillDate)}</td><td>${b.cars}</td><td class="n">${n(b.claimTotal)}</td>
+      <td><span class="pill p-${b.status}">${LBL[b.status]||b.status}</span></td><td>${act}</td></tr><tr id="c-${b.bankBillMnNo}"></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có BBBG.</td></tr>';
+}
+async function recv(no){ const r=await fetch(`/api/bankbills/${no}/receive`,{method:"POST",headers:H(),body:JSON.stringify({})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function cars(no){
+  const row=F("c-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/bankbills/${no}/cars`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="7"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b>${c.lcNo?" · LC "+c.lcNo:""}${c.claimAmount?" · claim "+n(c.claimAmount):""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addCar(); load();
+</script>
+</body></html>
