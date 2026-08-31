@@ -2819,6 +2819,21 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Thời hạn bảo hành theo model (BH đại lý/HTV, km giới hạn, kỳ lưu kho) — port 1:1 FrmMngMst_WarrantyPeriod (Tbl_Mst_WarrantyPeriod, TCMotor).</summary>
+public sealed class WarrantyPeriodMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? ModelName { get; set; }
+    public int DealerWarrantyPeriod { get; set; }   // tháng — BH tại đại lý
+    public int HtcvWarrantyPeriod { get; set; }      // tháng — BH hãng (HTV)
+    public int LimitedWarrantyKM { get; set; }        // số km giới hạn BH
+    public int StoragePeriod { get; set; }            // tháng — kỳ lưu kho tối đa
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Kho ảo ↔ model được phép chứa — port 1:1 FrmMst_StorageGlobal (Tbl_Mst_StorageGlobal).</summary>
 public sealed class StorageGlobalMap
 {

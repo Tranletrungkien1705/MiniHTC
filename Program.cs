@@ -151,7 +151,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
     // ---- TCMotor (2021.1) service/bảo hành (Frm chưa verify trong source TCMotor — giữ tạm) ----
     ("Supplier", "Nhà cung cấp (FrmMstSupplierCreate) [TCMotor]"),
-    ("WarrantyPeriod", "Thời hạn bảo hành (FrmMngMst_WarrantyPeriod) [TCMotor]"),
     ("MaintenanceLevel", "Cấp bảo dưỡng (FrmMstMaintenanceLevelMng) [TCMotor]"),
     ("ExtraWork", "Công việc phát sinh (FrmMstExtraWorkMng) [TCMotor]"),
     ("ExtraParts", "Phụ tùng phát sinh (FrmMstExtraPartsMng) [TCMotor]"),
@@ -3234,6 +3233,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Thời hạn bảo hành theo model (WarrantyPeriodMst — port 1:1 FrmMngMst_WarrantyPeriod, TCMotor/Admin/Product) =====
+app.MapGet("/api/warrantyperiods", async (AppDbContext db, ITenantContext t, string? model, string? active) =>
+{
+    var q = db.WarrantyPeriodMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode.Contains(model!.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderBy(x => x.ModelCode).Take(500)
+        .Select(x => new { x.ModelCode, x.ModelName, x.DealerWarrantyPeriod, x.HtcvWarrantyPeriod, x.LimitedWarrantyKM, x.StoragePeriod, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo model (mỗi model 1 cấu hình thời hạn bảo hành).
+app.MapPost("/api/warrantyperiods", async (WarrantyPeriodDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (dto.DealerWarrantyPeriod < 0 || dto.HtcvWarrantyPeriod < 0 || dto.LimitedWarrantyKM < 0 || dto.StoragePeriod < 0)
+        return Results.BadRequest(new { error = "Giá trị thời hạn/số km không hợp lệ." });
+    var md = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.WarrantyPeriodMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == md);
+    if (ex is not null)
+    {
+        ex.ModelName = dto.ModelName; ex.DealerWarrantyPeriod = dto.DealerWarrantyPeriod; ex.HtcvWarrantyPeriod = dto.HtcvWarrantyPeriod; ex.LimitedWarrantyKM = dto.LimitedWarrantyKM; ex.StoragePeriod = dto.StoragePeriod; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.ModelCode, updated = true });
+    }
+    var r = new WarrantyPeriodMst { OrgId = t.OrgId, ModelCode = md, ModelName = dto.ModelName, DealerWarrantyPeriod = dto.DealerWarrantyPeriod, HtcvWarrantyPeriod = dto.HtcvWarrantyPeriod, LimitedWarrantyKM = dto.LimitedWarrantyKM, StoragePeriod = dto.StoragePeriod, FlagActive = "1" };
+    db.WarrantyPeriodMsts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ModelCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyperiods/{model}/toggle", async (string model, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant();
+    var x = await db.WarrantyPeriodMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == model);
+    if (x is null) return Results.NotFound(new { model });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.ModelCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
 // ===== Kho ảo ↔ model được phép chứa (StorageGlobalMap — port 1:1 FrmMst_StorageGlobal, Admin/Dealer) =====
@@ -7581,6 +7620,7 @@ record ParamPdiDto(string ParamCode, string? ParamName, string? ParamValue);
 record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode, string? ModelName, decimal AmplitudeOrdMax, decimal AmplitudePlanMax);
 record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus);
 record StorageGlobalMapDto(string StorageCode, string ModelCode);
+record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
