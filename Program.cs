@@ -1227,6 +1227,28 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Cập nhật VIN thật FVIN→RVIN (Sto_TranspPlanMapVinReal — port 1:1 FrmUpdateFVINToRVIN) =====
+// Map VIN kế hoạch (FVIN) sang VIN thật (RVIN) trên KH vận chuyển; batch như import Excel A1.
+app.MapPost("/api/transplans/mapvin", async (MapVinDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var pairs = (dto.Pairs ?? new List<VinPairDto>())
+        .Where(p => !string.IsNullOrWhiteSpace(p.FVIN) && !string.IsNullOrWhiteSpace(p.RVIN)).ToList();
+    if (pairs.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 cặp FVIN/RVIN." });
+    var results = new List<object>();
+    int mapped = 0;
+    foreach (var p in pairs)
+    {
+        var fv = p.FVIN.Trim().ToUpperInvariant();
+        var rv = p.RVIN.Trim().ToUpperInvariant();
+        var plan = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == fv);
+        if (plan is null) { results.Add(new { fvin = fv, rvin = rv, ok = false, warning = $"VIN kế hoạch {fv} không tồn tại (không map được carId)." }); continue; }
+        plan.Vin = rv; mapped++;
+        results.Add(new { fvin = fv, rvin = rv, ok = true });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = pairs.Count, mapped, results });
+}).RequireAuthorization();
+
 // ===== Yêu cầu vận chuyển thu hồi xe (StoTranspReq — port 1:1 FrmNewRetrieveTransReq/FrmMngRetrieveTransReq) =====
 app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -1387,4 +1409,6 @@ record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate);
 record RetrieveReqCarDto(string Vin, string? StorageCode);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars);
+record VinPairDto(string FVIN, string RVIN);
+record MapVinDto(List<VinPairDto>? Pairs);
 record RegisterOrgDto(string Name);
