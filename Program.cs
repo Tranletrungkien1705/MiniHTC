@@ -1289,6 +1289,78 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Ngân hàng đại lý (DealerBank — port 1:1 FrmDealerBank, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/dealerbanks", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? active) =>
+{
+    var q = db.DealerBanks.Where(b => b.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(b => b.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(b => b.FlagActive == active);
+    var items = await q.OrderByDescending(b => b.Id).Take(500)
+        .Select(b => new { b.BankCode, b.DealerCode, b.BankBranchCode, b.CreditContractNo, b.CreditContractDate, b.CreditAmount, b.FlagBankGrt, b.FlagBankPmt, b.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerbanks", async (DealerBankDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa nhập mã ngân hàng." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    var bk = dto.BankCode.Trim().ToUpperInvariant(); var dl = dto.DealerCode.Trim().ToUpperInvariant();
+    if (await db.DealerBanks.AnyAsync(b => b.OrgId == t.OrgId && b.BankCode == bk && b.DealerCode == dl))
+        return Results.BadRequest(new { error = $"Ngân hàng {bk} của đại lý {dl} đã tồn tại!" });
+    var b = new DealerBank
+    {
+        OrgId = t.OrgId, BankCode = bk, DealerCode = dl, BankBranchCode = dto.BankBranchCode, CreditContractNo = dto.CreditContractNo, CreditContractDate = dto.CreditContractDate,
+        CreditAmount = dto.CreditAmount, FlagBankGrt = dto.FlagBankGrt == "1" ? "1" : "0", FlagBankPmt = dto.FlagBankPmt == "1" ? "1" : "0", FlagActive = "1"
+    };
+    db.DealerBanks.Add(b); await db.SaveChangesAsync();
+    return Results.Ok(new { b.BankCode, b.DealerCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerbanks/{dealer}/{bank}/toggle", async (string dealer, string bank, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant(); bank = bank.Trim().ToUpperInvariant();
+    var b = await db.DealerBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.BankCode == bank);
+    if (b is null) return Results.NotFound(new { dealer, bank });
+    b.FlagActive = b.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.BankCode, b.DealerCode, flagActive = b.FlagActive });
+}).RequireAuthorization();
+
+// ===== Ngưỡng tồn kho đại lý (DealerInventoryThreshold — port 1:1 FrmMst_DealerInventoryThreshold, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/dealerinvthresholds", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
+{
+    var q = db.DealerInventoryThresholds.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.Qty, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerinvthresholds", async (DealerInvThresholdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
+    if (dto.Qty < 0) return Results.BadRequest(new { error = "Số lượng ngưỡng không hợp lệ." });
+    var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.DealerInventoryThresholds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md);
+    if (ex is not null) { ex.Qty = dto.Qty; ex.FlagActive = "1"; await db.SaveChangesAsync(); return Results.Ok(new { ex.DealerCode, ex.ModelCode, ex.Qty, updated = true }); }
+    var x2 = new DealerInventoryThreshold { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, Qty = dto.Qty, FlagActive = "1" };
+    db.DealerInventoryThresholds.Add(x2); await db.SaveChangesAsync();
+    return Results.Ok(new { x2.DealerCode, x2.ModelCode, x2.Qty, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerinvthresholds/{dealer}/{model}/toggle", async (string dealer, string model, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var x = await db.DealerInventoryThresholds.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dealer && v.ModelCode == model);
+    if (x is null) return Results.NotFound(new { dealer, model });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Vùng đại lý (DealerZone — port 1:1 FrmMst_DealerZone, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/dealerzones", async (AppDbContext db, ITenantContext t, string? zone, string? dealer, string? active) =>
 {
@@ -5066,6 +5138,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);
+record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode);
 record PaymentTermDto(DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo, string? ModelCode, string? SpecCode, string? FlagDepositPmt, decimal DepositPercent, decimal GuaranteePercent, int GuaranteeDays, int DepositDutyEndDays, int GuaranteeEndDays, int DepositDealDateDays);
 record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance);

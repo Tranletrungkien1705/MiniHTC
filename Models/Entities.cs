@@ -1463,6 +1463,35 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Ngân hàng đại lý (Mst_DealerBank) — port 1:1 FrmDealerBank (2010.HTC/Admin/Product). Tài khoản/hạn mức NH của đại lý + cờ NH bảo lãnh/thanh toán.</summary>
+public sealed class DealerBank
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BankCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? BankBranchCode { get; set; }
+    public string? CreditContractNo { get; set; }
+    public DateTime? CreditContractDate { get; set; }
+    public decimal CreditAmount { get; set; }        // hạn mức tín dụng
+    public string FlagBankGrt { get; set; } = "0";   // NH bảo lãnh
+    public string FlagBankPmt { get; set; } = "0";   // NH thanh toán
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Ngưỡng tồn kho đại lý (Mst_DealerInventoryThreshold) — port 1:1 FrmMst_DealerInventoryThreshold (2010.HTC/Admin/Product). Ngưỡng SL tồn theo đại lý + model.</summary>
+public sealed class DealerInventoryThreshold
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public int Qty { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Vùng đại lý (Mst_DealerZone) — port 1:1 FrmMst_DealerZone (2010.HTC/Admin/Product). Gán đại lý vào vùng.</summary>
 public sealed class DealerZone
 {
