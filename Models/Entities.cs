@@ -2599,6 +2599,37 @@ public sealed class UpgradeOrderLine
     public decimal DiscountAmount { get; set; }
 }
 
+/// <summary>Tính chi phí tài chính / chiết khấu TT (DMS40_FnExp_Calc_FnExp_PmDc) — port 1:1 FrmDMS40_2019_FnExp_Calc. Header.</summary>
+public sealed class FnExpCalc
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CaNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public decimal FnExpPercent { get; set; }         // lai suat CPTC (%/nam)
+    public decimal TotalFnExp { get; set; }            // tong chi phi tai chinh (tinh)
+    public string Status { get; set; } = "Draft";      // Draft -> Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Dòng tính chi phí tài chính theo xe (DMS40_FnExp_Calc_FnExp_PmDcDtl) — port 1:1 FrmDMS40_2019_FnExp_Calc detail.</summary>
+public sealed class FnExpCalcLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long FnExpCalcId { get; set; }
+    public string CarId { get; set; } = "";
+    public string SOCode { get; set; } = "";
+    public decimal FnDepositAmount { get; set; }       // tien coc
+    public int FnDepositCountDate { get; set; }         // so ngay tinh cho coc
+    public decimal FnGrtAmount { get; set; }            // tien bao lanh
+    public int FnGrtCountDate { get; set; }             // so ngay tinh cho BL
+    public decimal FnTotalAmount { get; set; }          // chi phi TC dong (tinh)
+    public decimal PDAmount { get; set; }               // chiet khau TT
+    public int TermActual { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

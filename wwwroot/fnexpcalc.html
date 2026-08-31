@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Tính chi phí tài chính</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1080px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  button.ok{color:#fff;background:var(--ok);border-color:var(--ok)} button.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Rejected{color:var(--bad)}
+  #msg{font-size:13px} .lrow input{width:90px}
+</style></head>
+<body>
+<h1>Tính chi phí tài chính / chiết khấu TT <span class="muted">(port 1:1 FrmDMS40_2019_FnExp_Calc — Sales/Upgrade2019)</span></h1>
+<p class="muted">CP tài chính 1 dòng = (tiền cọc×số ngày + tiền BL×số ngày) × lãi suất%/năm ÷ 365.</p>
+<div class="card">
+  <b>Tạo bảng tính (header + dòng xe)</b>
+  <div class="bar" style="margin-top:10px"><div><label>Đại lý *</label><input id="dl" style="width:100px"></div><div><label>Lãi suất CPTC (%/năm) *</label><input id="rate" type="number" step="0.01" style="width:130px" value="12"></div></div>
+  <table style="margin-top:10px"><thead><tr><th>Mã xe</th><th>Số ĐH</th><th class="num">Tiền cọc</th><th class="num">Ngày cọc</th><th class="num">Tiền BL</th><th class="num">Ngày BL</th><th class="num">Chiết khấu TT</th><th></th></tr></thead><tbody id="lRows"></tbody></table>
+  <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRow()">+ Thêm xe</button><button class="primary" onclick="save()">Tính & lưu</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:100px">
+  <input id="qn" placeholder="Lọc số CA" oninput="load()" style="width:120px">
+  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Draft">Chờ duyệt</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select>
+</div>
+<div class="wrap"><table><thead><tr><th>Số CA</th><th>Đại lý</th><th class="num">Lãi suất %</th><th class="num">Tổng CP tài chính</th><th class="num">Số xe</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="card" id="detCard" style="display:none">
+  <b>Chi tiết — <span id="detNo"></span></b>
+  <div class="wrap"><table><thead><tr><th>Mã xe</th><th>Số ĐH</th><th class="num">Tiền cọc</th><th class="num">Ngày cọc</th><th class="num">Tiền BL</th><th class="num">Ngày BL</th><th class="num">CP tài chính</th><th class="num">Chiết khấu TT</th></tr></thead><tbody id="detRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const ST={Draft:"Chờ duyệt",Approved:"Đã duyệt",Rejected:"Từ chối"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function money(n){ return (n||0).toLocaleString("vi-VN"); }
+function addRow(){ const tr=document.createElement("tr"); tr.className="lrow";
+  tr.innerHTML=`<td><input class="c-id"></td><td><input class="c-so"></td><td class="num"><input class="c-da" type="number"></td><td class="num"><input class="c-dd" type="number"></td><td class="num"><input class="c-ga" type="number"></td><td class="num"><input class="c-gd" type="number"></td><td class="num"><input class="c-pd" type="number"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("lRows").appendChild(tr); }
+function collect(){ return [...document.querySelectorAll("#lRows tr")].map(tr=>({
+  carId:tr.querySelector(".c-id").value, sOCode:tr.querySelector(".c-so").value,
+  fnDepositAmount:+tr.querySelector(".c-da").value||0, fnDepositCountDate:+tr.querySelector(".c-dd").value||0,
+  fnGrtAmount:+tr.querySelector(".c-ga").value||0, fnGrtCountDate:+tr.querySelector(".c-gd").value||0,
+  pDAmount:+tr.querySelector(".c-pd").value||0, termActual:0})).filter(l=>l.carId.trim()); }
+async function save(){
+  const b={dealerCode:F("dl").value,fnExpPercent:+F("rate").value||0,lines:collect()};
+  const r=await fetch("/api/fnexpcalcs",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã tạo ${j.caNo} (${j.lines} xe, tổng CPTC ${money(j.totalFnExp)})`); F("lRows").innerHTML=""; addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/fnexpcalcs?dealer=${F("qd").value}&caNo=${F("qn").value}&status=${F("qs").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    const act=o.status==="Draft"?`<button class="sm ok" onclick="decide('${o.caNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.caNo}','reject')">Từ chối</button>`:"";
+    return `<tr onclick="detail('${o.caNo}')"><td><b>${o.caNo}</b></td><td>${o.dealerCode}</td><td class="num">${o.fnExpPercent}</td><td class="num">${money(o.totalFnExp)}</td><td class="num">${o.lines}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td onclick="event.stopPropagation()">${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có bảng tính.</td></tr>';
+}
+async function detail(no){
+  const d=await (await fetch(`/api/fnexpcalcs/${no}/lines`,{headers:H()})).json();
+  F("detCard").style.display=""; F("detNo").textContent=no;
+  F("detRows").innerHTML=(d.lines||[]).map(l=>`<tr><td><b>${l.carId}</b></td><td>${l.sOCode||""}</td><td class="num">${money(l.fnDepositAmount)}</td><td class="num">${l.fnDepositCountDate}</td><td class="num">${money(l.fnGrtAmount)}</td><td class="num">${l.fnGrtCountDate}</td><td class="num"><b>${money(l.fnTotalAmount)}</b></td><td class="num">${money(l.pDAmount)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có dòng.</td></tr>';
+}
+async function decide(no,act){
+  const r=await fetch(`/api/fnexpcalcs/${no}/${act}`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`${no}: ${ST[j.status]||j.status}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+addRow(); load();
+</script>
+</body></html>

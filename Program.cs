@@ -2090,6 +2090,66 @@ app.MapPost("/api/upgradeorders/{no}/{action}", async (string no, string action,
     return Results.Ok(new { o.OrderNo, o.Status });
 }).RequireAuthorization();
 
+// ===== Tính chi phí tài chính / chiết khấu TT (FnExpCalc — port 1:1 FrmDMS40_2019_FnExp_Calc, Sales/Upgrade2019) =====
+app.MapGet("/api/fnexpcalcs", async (AppDbContext db, ITenantContext t, string? dealer, string? caNo, string? status) =>
+{
+    var q = db.FnExpCalcs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(caNo)) q = q.Where(c => c.CaNo.Contains(caNo!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, c.Status, c.CreatedAt, c.ApprovedAt,
+        lines = db.FnExpCalcLines.Count(l => l.OrgId == t.OrgId && l.FnExpCalcId == c.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/fnexpcalcs", async (FnExpCalcDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (dto.FnExpPercent <= 0) return Results.BadRequest(new { error = "Lãi suất CPTC phải > 0." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.CarId)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có xe để tính chi phí tài chính." });
+    var rate = dto.FnExpPercent;
+    // Chi phi TC 1 dong = (coc*ngayCoc + BL*ngayBL) * laiSuat%/nam / 365, lam tron dong.
+    decimal CalcLine(FnExpCalcLineDto l) => Math.Round((l.FnDepositAmount * l.FnDepositCountDate + l.FnGrtAmount * l.FnGrtCountDate) * (rate / 100m) / 365m, 0);
+    var ca = "CA" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c2 = new FnExpCalc { OrgId = t.OrgId, CaNo = ca, DealerCode = dto.DealerCode.Trim(), FnExpPercent = rate, Status = "Draft" };
+    db.FnExpCalcs.Add(c2); await db.SaveChangesAsync();
+    decimal total = 0;
+    foreach (var l in lines)
+    {
+        var fn = CalcLine(l); total += fn;
+        db.FnExpCalcLines.Add(new FnExpCalcLine { OrgId = t.OrgId, FnExpCalcId = c2.Id, CarId = l.CarId.Trim(), SOCode = l.SOCode ?? "", FnDepositAmount = l.FnDepositAmount, FnDepositCountDate = l.FnDepositCountDate, FnGrtAmount = l.FnGrtAmount, FnGrtCountDate = l.FnGrtCountDate, FnTotalAmount = fn, PDAmount = l.PDAmount, TermActual = l.TermActual });
+    }
+    c2.TotalFnExp = total; await db.SaveChangesAsync();
+    return Results.Ok(new { c2.CaNo, lines = lines.Count, totalFnExp = total });
+}).RequireAuthorization();
+
+app.MapGet("/api/fnexpcalcs/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.FnExpCalcs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CaNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var lines = await db.FnExpCalcLines.Where(l => l.OrgId == t.OrgId && l.FnExpCalcId == c.Id)
+        .Select(l => new { l.CarId, l.SOCode, l.FnDepositAmount, l.FnDepositCountDate, l.FnGrtAmount, l.FnGrtCountDate, l.FnTotalAmount, l.PDAmount, l.TermActual }).ToListAsync();
+    return Results.Ok(new { c.CaNo, c.FnExpPercent, c.TotalFnExp, c.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.FnExpCalcs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CaNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.Status != "Draft") return Results.BadRequest(new { error = "Bảng tính không ở trạng thái chờ duyệt." });
+    c.Status = action == "approve" ? "Approved" : "Rejected";
+    if (action == "approve") c.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CaNo, c.Status });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6108,6 +6168,8 @@ record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars);
 record BankPmCtktDto(string NewAccountingRecordNo);
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
+record FnExpCalcLineDto(string CarId, string? SOCode, decimal FnDepositAmount, int FnDepositCountDate, decimal FnGrtAmount, int FnGrtCountDate, decimal PDAmount, int TermActual);
+record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineDto>? Lines);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
