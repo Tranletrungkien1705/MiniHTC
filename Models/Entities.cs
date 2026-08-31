@@ -1463,6 +1463,34 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Điều kiện tự động tạo DO (Mst_DOATCondition + Dtl) — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto (2010.HTC/Sales). Config auto-gen lệnh giao xe: % cọc, % hoàn thành ĐK, danh sách model.</summary>
+public sealed class DOATCondition
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DOATConditionCode { get; set; } = "";
+    public DateTime EffDateStart { get; set; }
+    public DateTime EffDateEnd { get; set; }
+    public string FlagCQEndDate { get; set; } = "0";
+    public string FlagTaxPaymentDate { get; set; } = "0";
+    public string FlagPtmCoc { get; set; } = "0";       // dùng đk % thanh toán cọc
+    public decimal PtmCocFrom { get; set; }
+    public decimal PtmCocTo { get; set; }
+    public string FlagDutyComplete { get; set; } = "0"; // dùng đk % hoàn thành giao xe
+    public decimal DutyCompleteFrom { get; set; }
+    public decimal DutyCompleteTo { get; set; }
+    public string FlagModel { get; set; } = "0";        // giới hạn theo danh sách model
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class DOATConditionModel
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DOATConditionId { get; set; }
+    public string ModelCode { get; set; } = "";
+}
+
 /// <summary>Đề nghị giao dịch ngân hàng (BankingTrans) — port 1:1 FrmDeNghiGDNganHang (2010.HTC/Sales/Payment). ĐN GD với ngân hàng: giải ngân GNTT / bảo lãnh LC / phát hành LC.</summary>
 public sealed class BankingTrans
 {

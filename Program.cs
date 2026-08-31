@@ -1289,6 +1289,77 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Điều kiện tự động tạo DO (DOATCondition — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto, 2010.HTC/Sales) =====
+app.MapGet("/api/doatconditions", async (AppDbContext db, ITenantContext t, string? active) =>
+{
+    var q = db.DOATConditions.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(c => c.FlagActive == active);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.DOATConditionCode, c.EffDateStart, c.EffDateEnd, c.FlagCQEndDate, c.FlagTaxPaymentDate, c.FlagPtmCoc, c.PtmCocFrom, c.PtmCocTo,
+        c.FlagDutyComplete, c.DutyCompleteFrom, c.DutyCompleteTo, c.FlagModel, c.FlagActive, c.CreatedAt,
+        models = db.DOATConditionModels.Count(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.EffDateStart is null) return Results.BadRequest(new { error = "Vui lòng chọn Ngày hiệu lực từ!" });
+    if (dto.EffDateEnd is null) return Results.BadRequest(new { error = "Vui lòng chọn Ngày hiệu lực đến!" });
+    if (dto.EffDateEnd < dto.EffDateStart) return Results.BadRequest(new { error = "Ngày hiệu lực đến phải >= ngày hiệu lực từ." });
+    var flagPtm = dto.FlagPtmCoc == "1"; var flagDuty = dto.FlagDutyComplete == "1"; var flagModel = dto.FlagModel == "1";
+    if (flagPtm)
+    {
+        if (dto.PtmCocFrom < 0 || dto.PtmCocFrom > 100 || dto.PtmCocTo < 0 || dto.PtmCocTo > 100)
+            return Results.BadRequest(new { error = "Vui lòng nhập giá trị từ 0 - 100!" });
+        if (dto.PtmCocTo < dto.PtmCocFrom) return Results.BadRequest(new { error = "% thanh toán cọc đến phải >= từ." });
+    }
+    if (flagDuty)
+    {
+        if (dto.DutyCompleteFrom < 0 || dto.DutyCompleteFrom > 100 || dto.DutyCompleteTo < 0 || dto.DutyCompleteTo > 100)
+            return Results.BadRequest(new { error = "Vui lòng nhập giá trị từ 0 - 100!" });
+        if (flagPtm && dto.DutyCompleteFrom < dto.PtmCocFrom)
+            return Results.BadRequest(new { error = "Vui lòng nhập giá trị từ 0 - 100 và lớn hơn hoặc bằng % thanh toán cọc từ!" });
+    }
+    var models = (dto.Models ?? new()).Where(m => !string.IsNullOrWhiteSpace(m)).Distinct().ToList();
+    if (flagModel && models.Count == 0) return Results.BadRequest(new { error = "Vui lòng chọn danh sách model!" });
+    var no = "DOAT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new DOATCondition
+    {
+        OrgId = t.OrgId, DOATConditionCode = no, EffDateStart = dto.EffDateStart.Value, EffDateEnd = dto.EffDateEnd.Value,
+        FlagCQEndDate = dto.FlagCQEndDate == "1" ? "1" : "0", FlagTaxPaymentDate = dto.FlagTaxPaymentDate == "1" ? "1" : "0",
+        FlagPtmCoc = flagPtm ? "1" : "0", PtmCocFrom = dto.PtmCocFrom, PtmCocTo = dto.PtmCocTo,
+        FlagDutyComplete = flagDuty ? "1" : "0", DutyCompleteFrom = dto.DutyCompleteFrom, DutyCompleteTo = dto.DutyCompleteTo,
+        FlagModel = flagModel ? "1" : "0", FlagActive = "1"
+    };
+    db.DOATConditions.Add(c); await db.SaveChangesAsync();
+    if (flagModel)
+        foreach (var m in models)
+            db.DOATConditionModels.Add(new DOATConditionModel { OrgId = t.OrgId, DOATConditionId = c.Id, ModelCode = m.Trim().ToUpperInvariant() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DOATConditionCode, models = flagModel ? models.Count : 0, message = "Thiết lập thành công!" });
+}).RequireAuthorization();
+
+app.MapGet("/api/doatconditions/{code}/models", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var c = await db.DOATConditions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == code);
+    if (c is null) return Results.NotFound(new { code });
+    var models = await db.DOATConditionModels.Where(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id).Select(m => m.ModelCode).ToListAsync();
+    return Results.Ok(new { c.DOATConditionCode, count = models.Count, models });
+}).RequireAuthorization();
+
+app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var c = await db.DOATConditions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == code);
+    if (c is null) return Results.NotFound(new { code });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DOATConditionCode, flagActive = c.FlagActive });
+}).RequireAuthorization();
+
 // ===== Đề nghị giao dịch ngân hàng (BankingTrans — port 1:1 FrmDeNghiGDNganHang, 2010.HTC/Sales/Payment) =====
 string[] _bankTransTypes = { "GNTT", "BLLC", "PHLC" };
 app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string? status, string? bank, string? type) =>
@@ -4807,6 +4878,7 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
 record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
