@@ -3230,6 +3230,42 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Chia sẻ phụ tùng giữa đại lý (SharePart — port 1:1 FrmSharePart/ShareDealer, TCMotor) =====
+app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part, string? status) =>
+{
+    var query = db.ShareParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode.Contains(part!.ToUpper()) || (x.PartName != null && x.PartName.Contains(part!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.ShareNo, x.DealerCode, x.PartCode, x.PartName, x.Unit, x.InStock, x.QuantityShare, x.Remark, x.Status, createdAt = x.CreatedAt.ToString("yyyy-MM-dd") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Đăng chia sẻ 1 phụ tùng (SL chia sẻ không vượt tồn).
+app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa chọn phụ tùng." });
+    if (dto.QuantityShare <= 0) return Results.BadRequest(new { error = "Số lượng chia sẻ phải lớn hơn 0." });
+    if (dto.QuantityShare > dto.InStock) return Results.BadRequest(new { error = "Số lượng chia sẻ không được vượt quá tồn kho." });
+    var no = "SP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new SharePart { OrgId = t.OrgId, ShareNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName, Unit = dto.Unit, InStock = dto.InStock, QuantityShare = dto.QuantityShare, Remark = dto.Remark, Status = "Open" };
+    db.ShareParts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ShareNo, r.PartCode });
+}).RequireAuthorization();
+
+// Đóng tin chia sẻ (Open -> Closed).
+app.MapPost("/api/shareparts/{no}/close", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var x = await db.ShareParts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ShareNo == no);
+    if (x is null) return Results.NotFound(new { no });
+    if (x.Status == "Closed") return Results.BadRequest(new { error = "Tin chia sẻ đã đóng." });
+    x.Status = "Closed"; await db.SaveChangesAsync();
+    return Results.Ok(new { x.ShareNo, status = x.Status });
+}).RequireAuthorization();
+
 // ===== Thông báo kỹ thuật (Bulletin — port 1:1 FrmBulletinHTCCreate/Modify/Search, TCMotor) =====
 app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q, string? part, string? active) =>
 {
@@ -8145,6 +8181,7 @@ record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFact
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment);
+record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
 record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);

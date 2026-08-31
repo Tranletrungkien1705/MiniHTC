@@ -2819,6 +2819,23 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
+public sealed class SharePart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ShareNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Unit { get; set; }
+    public decimal InStock { get; set; }        // INSTOCKQUANTITY: tồn hiện tại
+    public decimal QuantityShare { get; set; }  // SL sẵn sàng chia sẻ
+    public string? Remark { get; set; }
+    public string Status { get; set; } = "Open"; // Open -> Closed
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Thông báo kỹ thuật (bulletin) — số/nội dung/PT-DV liên quan/hết hạn/file — port 1:1 FrmBulletinHTCCreate (Tbl_Blt_Bulletin, TCMotor).</summary>
 public sealed class Bulletin
 {
