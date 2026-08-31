@@ -1289,6 +1289,73 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Phân bổ xe theo vùng (CarAllocationByArea — port 1:1 FrmMst_CarAllocationByArea, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/carallocations", async (AppDbContext db, ITenantContext t, string? model, string? active) =>
+{
+    var q = db.CarAllocationByAreas.Where(a => a.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(a => a.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.ModelCode, a.SpecCode, a.MBPercent, a.MTPercent, a.MNPercent, a.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carallocations", async (CarAllocationDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Mã Model không được để trống!" });
+    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Mã Spec không được để trống!" });
+    if (dto.MBPercent < 0 || dto.MTPercent < 0 || dto.MNPercent < 0) return Results.BadRequest(new { error = "Tỷ lệ không hợp lệ." });
+    if (dto.MBPercent + dto.MTPercent + dto.MNPercent != 100) return Results.BadRequest(new { error = "Tổng tỷ lệ 3 miền phải = 100%!" });
+    var md = dto.ModelCode.Trim().ToUpperInvariant(); var sp = dto.SpecCode.Trim().ToUpperInvariant();
+    var ex = await db.CarAllocationByAreas.FirstOrDefaultAsync(a => a.OrgId == t.OrgId && a.ModelCode == md && a.SpecCode == sp);
+    if (ex is not null) { ex.MBPercent = dto.MBPercent; ex.MTPercent = dto.MTPercent; ex.MNPercent = dto.MNPercent; ex.FlagActive = "1"; await db.SaveChangesAsync(); return Results.Ok(new { ex.ModelCode, ex.SpecCode, updated = true }); }
+    var a2 = new CarAllocationByArea { OrgId = t.OrgId, ModelCode = md, SpecCode = sp, MBPercent = dto.MBPercent, MTPercent = dto.MTPercent, MNPercent = dto.MNPercent, FlagActive = "1" };
+    db.CarAllocationByAreas.Add(a2); await db.SaveChangesAsync();
+    return Results.Ok(new { a2.ModelCode, a2.SpecCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/carallocations/{model}/{spec}/toggle", async (string model, string spec, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant(); spec = spec.Trim().ToUpperInvariant();
+    var a = await db.CarAllocationByAreas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.SpecCode == spec);
+    if (a is null) return Results.NotFound(new { model, spec });
+    a.FlagActive = a.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.ModelCode, a.SpecCode, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Mã OCN xe (CarOCN — port 1:1 FrmCarOCN, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/carocns", async (AppDbContext db, ITenantContext t, string? model, string? active, string? q) =>
+{
+    var query = db.CarOCNs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(c => c.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.OCNCode.Contains(q) || (c.OCNDesc != null && c.OCNDesc.Contains(q)));
+    var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.OCNCode, c.ModelCode, c.OCNDesc, c.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carocns", async (CarOCNDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.OCNCode)) return Results.BadRequest(new { error = "Chưa nhập mã OCN." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
+    var oc = dto.OCNCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
+    if (await db.CarOCNs.AnyAsync(c => c.OrgId == t.OrgId && c.OCNCode == oc && c.ModelCode == md))
+        return Results.BadRequest(new { error = $"OCN {oc} của model {md} đã tồn tại!" });
+    var c = new CarOCN { OrgId = t.OrgId, OCNCode = oc, ModelCode = md, OCNDesc = dto.OCNDesc, FlagActive = "1" };
+    db.CarOCNs.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.OCNCode, c.ModelCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/carocns/{model}/{code}/toggle", async (string model, string code, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant(); code = code.Trim().ToUpperInvariant();
+    var c = await db.CarOCNs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.OCNCode == code);
+    if (c is null) return Results.NotFound(new { model, code });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.OCNCode, c.ModelCode, flagActive = c.FlagActive });
+}).RequireAuthorization();
+
 // ===== Ngân hàng đại lý (DealerBank — port 1:1 FrmDealerBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/dealerbanks", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? active) =>
 {
@@ -5138,6 +5205,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
+record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
 record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode);

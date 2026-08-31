@@ -113,6 +113,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DlrContract> DlrContracts => Set<DlrContract>();
     public DbSet<DlrContractDetail> DlrContractDetails => Set<DlrContractDetail>();
     public DbSet<CarDriverTest> CarDriverTests => Set<CarDriverTest>();
+    public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
+    public DbSet<CarOCN> CarOCNs => Set<CarOCN>();
     public DbSet<DealerBank> DealerBanks => Set<DealerBank>();
     public DbSet<DealerInventoryThreshold> DealerInventoryThresholds => Set<DealerInventoryThreshold>();
     public DbSet<DealerZone> DealerZones => Set<DealerZone>();

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Mã OCN xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-1{color:var(--ok)} .p-0{color:#dc2626}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Mã OCN xe <span class="muted">(port 1:1 FrmCarOCN — Mst_CarOCN)</span></h1>
+<div class="card">
+  <b>Thêm mã OCN</b>
+  <div class="bar" style="margin-top:10px"><div><label>Mã OCN *</label><input id="oc" style="width:120px"></div><div><label>Model *</label><input id="md" style="width:110px"></div><div><label>Mô tả</label><input id="ds" style="width:180px"></div><button class="primary" onclick="create()">Lưu</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Tìm mã/mô tả" oninput="load()" style="width:150px"><input id="qm" placeholder="Lọc model" oninput="load()" style="width:100px"><select id="fa" onchange="load()"><option value="">Tất cả</option><option value="1">Hoạt động</option><option value="0">Ngừng</option></select></div>
+<table><thead><tr><th>Mã OCN</th><th>Model</th><th>Mô tả</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const r=await fetch("/api/carocns",{method:"POST",headers:H(),body:JSON.stringify({oCNCode:F("oc").value,modelCode:F("md").value,oCNDesc:F("ds").value})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.oCNCode+"/"+j.modelCode); ["oc","md","ds"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/carocns?q=${F("q").value}&model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.oCNCode}</b></td><td>${o.modelCode}</td><td>${o.oCNDesc||""}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.modelCode}','${o.oCNCode}')">Đổi TT</button></td></tr>`
+  ).join("")||'<tr><td colspan="5" class="muted">Chưa có OCN.</td></tr>';
+}
+async function toggle(md,oc){ const r=await fetch(`/api/carocns/${md}/${oc}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+load();
+</script>
+</body></html>

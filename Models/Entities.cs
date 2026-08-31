@@ -1463,6 +1463,32 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Phân bổ xe theo vùng (Mst_CarAllocationByArea) — port 1:1 FrmMst_CarAllocationByArea (2010.HTC/Admin/Product). Tỷ lệ phân bổ theo model/spec cho 3 miền (tổng = 100%).</summary>
+public sealed class CarAllocationByArea
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public decimal MBPercent { get; set; }   // % Miền Bắc
+    public decimal MTPercent { get; set; }   // % Miền Trung
+    public decimal MNPercent { get; set; }   // % Miền Nam
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Mã OCN xe (Mst_CarOCN) — port 1:1 FrmCarOCN (2010.HTC/Admin/Product). OCN theo model.</summary>
+public sealed class CarOCN
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OCNCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? OCNDesc { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Ngân hàng đại lý (Mst_DealerBank) — port 1:1 FrmDealerBank (2010.HTC/Admin/Product). Tài khoản/hạn mức NH của đại lý + cờ NH bảo lãnh/thanh toán.</summary>
 public sealed class DealerBank
 {
