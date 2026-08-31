@@ -1463,6 +1463,22 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Hợp đồng đại lý DMS40 (DMS40_CT_DealerContract) — port 1:1 FrmDMS40_CT_DealerContractHTC_New/FrmMngDMS40 (2010.HTC/Sales/DMS40). HĐ đại lý ký 2 bên: A=HTC, B=đại lý.</summary>
+public sealed class DmsDealerContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrCtrNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime? ContractDate { get; set; }
+    public string DlrSignStatus { get; set; } = "P";  // ký bên B (đại lý): P chờ / S đã ký
+    public string HTCSignStatus { get; set; } = "P";  // ký bên A (HTC): P / S
+    public string DlrCtrStatus { get; set; } = "Draft"; // Draft → Signed / Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DlrApprDTime { get; set; }
+    public DateTime? HTCAppr2DTime { get; set; }
+}
+
 /// <summary>Công văn bảo lãnh/claim đại lý (GrtClaim + Detail) — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim (2010.HTC/Sales/GrtClaim). Công văn bảo lãnh lô xe theo đại lý + phép nhận.</summary>
 public sealed class GrtClaim
 {

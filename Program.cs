@@ -1289,6 +1289,63 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Hợp đồng đại lý DMS40 ký 2 bên (DmsDealerContract — port 1:1 FrmDMS40_CT_DealerContractHTC_New, 2010.HTC/Sales/DMS40) =====
+app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.DmsDealerContracts.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.DlrCtrStatus == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    var items = await q.OrderByDescending(c => c.Id).Take(500)
+        .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dmsdealercontracts", async (DmsDealerContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    if (dto.ContractDate is null) return Results.BadRequest(new { error = "Cần ngày hợp đồng." });
+    var no = string.IsNullOrWhiteSpace(dto.DlrCtrNo) ? "DLC40" + DateTime.Now.ToString("yyMMddHHmmss") : dto.DlrCtrNo.Trim();
+    if (await db.DmsDealerContracts.AnyAsync(c => c.OrgId == t.OrgId && c.DlrCtrNo == no))
+        return Results.BadRequest(new { error = $"Số hợp đồng {no} đã tồn tại!" });
+    var c = new DmsDealerContract { OrgId = t.OrgId, DlrCtrNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, DlrSignStatus = "P", HTCSignStatus = "P", DlrCtrStatus = "Draft" };
+    db.DmsDealerContracts.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, c.DealerCode });
+}).RequireAuthorization();
+
+// Ký hợp đồng: side = dealer (bên B) / htc (bên A). Khi cả 2 bên ký → Signed
+app.MapPost("/api/dmsdealercontracts/{no}/sign/{side}", async (string no, string side, AppDbContext db, ITenantContext t) =>
+{
+    if (side is not ("dealer" or "htc")) return Results.BadRequest(new { error = "side = dealer|htc" });
+    no = no.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.DlrCtrStatus == "Cancelled") return Results.BadRequest(new { error = "Trạng thái hợp đồng không hợp lệ!" });
+    if (side == "dealer")
+    {
+        if (c.DlrSignStatus == "S") return Results.BadRequest(new { error = "Bên B (đại lý) đã ký." });
+        c.DlrSignStatus = "S"; c.DlrApprDTime = DateTime.Now;
+    }
+    else
+    {
+        if (c.HTCSignStatus == "S") return Results.BadRequest(new { error = "Bên A (HTC) đã ký." });
+        c.HTCSignStatus = "S"; c.HTCAppr2DTime = DateTime.Now;
+    }
+    if (c.DlrSignStatus == "S" && c.HTCSignStatus == "S") c.DlrCtrStatus = "Signed";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.HTCSignStatus, status = c.DlrCtrStatus });
+}).RequireAuthorization();
+
+app.MapPost("/api/dmsdealercontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.DlrCtrStatus == "Signed") return Results.BadRequest(new { error = "HĐ đã ký đủ 2 bên, không hủy được." });
+    c.DlrCtrStatus = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, status = c.DlrCtrStatus });
+}).RequireAuthorization();
+
 // ===== Công văn bảo lãnh/claim (GrtClaim — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim, 2010.HTC/Sales/GrtClaim) =====
 app.MapGet("/api/grtclaims", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -4464,6 +4521,7 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
 record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
 record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);
