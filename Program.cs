@@ -1574,6 +1574,83 @@ app.MapPost("/api/bankdos/{no}/confirmall", async (string no, AppDbContext db, I
     return Results.Ok(new { d.DONo, status = d.Status, confirmed = pending.Count });
 }).RequireAuthorization();
 
+// ===== Biên bản vận chuyển (BankTransportMinute — port 1:1 FrmBankTransportMinutes, cụm Bank) =====
+app.MapGet("/api/banktms", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? tmNo, string? status) =>
+{
+    var q = db.BankTransportMinutes.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank || m.BankCodeMonitor == bank);
+    if (!string.IsNullOrWhiteSpace(tmNo)) q = q.Where(m => m.TransportMinutesNo.Contains(tmNo!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.TransportMinutesNo, m.DealerCode, m.BankCode, m.BankCodeMonitor, m.Status, m.DLApprDateTime, m.HTCAppr2DateTime, m.CreatedAt,
+        cars = db.BankTmCars.Count(c => c.OrgId == t.OrgId && c.TransportMinuteId == m.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/banktms", async (BankTmDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên biên bản." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "BBVC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var m2 = new BankTransportMinute { OrgId = t.OrgId, TransportMinutesNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode ?? "", BankCodeMonitor = dto.BankCodeMonitor ?? "", Status = "Draft" };
+    db.BankTransportMinutes.Add(m2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.BankTmCars.Add(new BankTmCar { OrgId = t.OrgId, TransportMinuteId = m2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId ?? "", EngineNo = c.EngineNo ?? "", SOCode = c.SOCode ?? "", GuaranteeNo = c.GuaranteeNo ?? "", DlrCtrNo = c.DlrCtrNo ?? "", ColorCode = c.ColorCode ?? "" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m2.TransportMinutesNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/banktms/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.BankTransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var cars = await db.BankTmCars.Where(c => c.OrgId == t.OrgId && c.TransportMinuteId == m.Id)
+        .Select(c => new { c.VIN, c.CarId, c.EngineNo, c.SOCode, c.GuaranteeNo, c.DlrCtrNo, c.ColorCode }).ToListAsync();
+    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.Status, m.DLApprDateTime, m.HTCAppr2DateTime, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// Ký kép: ĐL ký (dealer) + HTC ký (htc); đủ 2 chữ ký -> Approved (Đã ký).
+app.MapPost("/api/banktms/{no}/sign/{side}", async (string no, string side, AppDbContext db, ITenantContext t) =>
+{
+    if (side is not ("dealer" or "htc")) return Results.BadRequest(new { error = "side = dealer|htc" });
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.BankTransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.Status == "Cancel") return Results.BadRequest(new { error = "Biên bản đã hủy." });
+    if (m.Status == "Approved") return Results.BadRequest(new { error = "Biên bản đã ký đủ." });
+    if (side == "dealer")
+    {
+        if (m.DLApprDateTime != null) return Results.BadRequest(new { error = "Đại lý đã ký." });
+        m.DLApprDateTime = DateTime.Now;
+    }
+    else
+    {
+        if (m.HTCAppr2DateTime != null) return Results.BadRequest(new { error = "HTC đã ký." });
+        m.HTCAppr2DateTime = DateTime.Now;
+    }
+    if (m.DLApprDateTime != null && m.HTCAppr2DateTime != null) m.Status = "Approved";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.TransportMinutesNo, m.Status, dlSigned = m.DLApprDateTime != null, htcSigned = m.HTCAppr2DateTime != null });
+}).RequireAuthorization();
+
+app.MapPost("/api/banktms/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.BankTransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.Status == "Approved") return Results.BadRequest(new { error = "Không thể hủy biên bản đã ký đủ." });
+    m.Status = "Cancel";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.TransportMinutesNo, m.Status });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5574,6 +5651,8 @@ record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, s
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
 record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars);
 record BankDoConfirmDto(string? Remark);
+record BankTmCarDto(string VIN, string? CarId, string? EngineNo, string? SOCode, string? GuaranteeNo, string? DlrCtrNo, string? ColorCode);
+record BankTmDto(string DealerCode, string? BankCode, string? BankCodeMonitor, List<BankTmCarDto>? Cars);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

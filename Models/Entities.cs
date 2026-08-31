@@ -2338,6 +2338,36 @@ public sealed class BankDoCar
     public DateTime? ConfirmedAt { get; set; }
 }
 
+/// <summary>Biên bản vận chuyển xe (TransportMinutes) — port 1:1 FrmBankTransportMinutes. Dual-sign ĐL + HTC.</summary>
+public sealed class BankTransportMinute
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TransportMinutesNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string BankCodeMonitor { get; set; } = "";   // NH giam sat
+    public string Status { get; set; } = "Draft";        // Draft -> Approved (Da ky) / Cancel (Da huy)
+    public DateTime? DLApprDateTime { get; set; }         // DL ky
+    public DateTime? HTCAppr2DateTime { get; set; }       // HTC ky
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Chi tiết xe trên biên bản vận chuyển — port 1:1 FrmBankTransportMinutes detail.</summary>
+public sealed class BankTmCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TransportMinuteId { get; set; }
+    public string VIN { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string EngineNo { get; set; } = "";
+    public string SOCode { get; set; } = "";
+    public string GuaranteeNo { get; set; } = "";
+    public string DlrCtrNo { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
