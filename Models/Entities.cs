@@ -971,6 +971,29 @@ public sealed class CustomerCare
     public DateTime? ContactedAt { get; set; }
 }
 
+/// <summary>Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo, TCMotor DMSCarSv/Customer):
+/// customer master dịch vụ (cá nhân/tổ chức) + người liên hệ. CustomerCar/Care tham chiếu theo CusCode.</summary>
+public sealed class ServiceCustomer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CusCode { get; set; } = "";
+    public string CusName { get; set; } = "";
+    public string? CusTypeID { get; set; }             // loại KH (cá nhân/tổ chức)
+    public string? Address { get; set; }
+    public string? Mobile { get; set; }
+    public string? Tel { get; set; }
+    public string? Email { get; set; }
+    public string? TaxCode { get; set; }
+    public string? Sex { get; set; }                   // True=nam, False=nữ (theo gốc)
+    public DateTime? DOB { get; set; }
+    public string? ContName { get; set; }              // người liên hệ (tổ chức)
+    public string? ContMobile { get; set; }
+    public string? ContTel { get; set; }
+    public string? ContEmail { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

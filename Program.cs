@@ -1227,6 +1227,32 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo) =====
+app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var query = db.ServiceCustomers.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q))
+        query = query.Where(c => c.CusName.Contains(q) || c.CusCode.Contains(q.ToUpper())
+            || (c.Mobile != null && c.Mobile.Contains(q)) || (c.Tel != null && c.Tel.Contains(q)) || (c.TaxCode != null && c.TaxCode.Contains(q)));
+    var items = await query.OrderBy(c => c.CusName).Take(500).Select(c => new
+    { c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode, c.Sex, c.DOB, c.ContName, c.ContMobile }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
+    if (string.IsNullOrWhiteSpace(dto.Mobile) && string.IsNullOrWhiteSpace(dto.Tel)) return Results.BadRequest(new { error = "Cần SĐT di động hoặc cố định." });
+    var code = string.IsNullOrWhiteSpace(dto.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusCode.Trim().ToUpperInvariant();
+    var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
+    if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); }
+    c.CusName = dto.CusName; c.CusTypeID = dto.CusTypeID; c.Address = dto.Address; c.Mobile = dto.Mobile; c.Tel = dto.Tel;
+    c.Email = dto.Email; c.TaxCode = dto.TaxCode; c.Sex = dto.Sex; c.DOB = dto.DOB;
+    c.ContName = dto.ContName; c.ContMobile = dto.ContMobile; c.ContTel = dto.ContTel; c.ContEmail = dto.ContEmail; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CusCode, c.CusName });
+}).RequireAuthorization();
+
 // ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
 string[] _careTypes = { "CARE24H", "CARE72H", "DOB", "MAINT" };
 app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
@@ -2384,4 +2410,5 @@ record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VA
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);
+record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record RegisterOrgDto(string Name);
