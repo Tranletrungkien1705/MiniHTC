@@ -1227,6 +1227,34 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate) =====
+app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? part, string? onDate) =>
+{
+    var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(part)) q = q.Where(p => p.PartCode.Contains(part.ToUpper()));
+    var items = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
+    { p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status }).ToListAsync();
+    object? applicable = null;
+    if (!string.IsNullOrWhiteSpace(part) && DateTime.TryParse(onDate, out var od))
+        applicable = items.Where(x => x.PartCode == part.Trim().ToUpperInvariant() && x.EffectiveDate <= od)
+            .OrderByDescending(x => x.EffectiveDate).FirstOrDefault();
+    return Results.Ok(new { count = items.Count, applicable, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Cần PartCode." });
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
+    var code = dto.PartCode.Trim().ToUpperInvariant();
+    var ed = dto.EffectiveDate.Value.Date;
+    var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == ed);
+    if (p is null) { p = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = ed }; db.PartPrices.Add(p); }
+    p.PartName = dto.PartName; p.Price = dto.Price; p.VAT = dto.VAT; p.PriceVAT = Math.Round(dto.Price * (1 + dto.VAT / 100m), 2);
+    p.Status = dto.Status ?? "1"; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
+}).RequireAuthorization();
+
 // ===== Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate), TRỪ tồn PartStock =====
 app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
 {
@@ -2269,4 +2297,5 @@ record StockInLineDto(string PartCode, string? PartName, string? Location, decim
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);
 record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines);
+record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record RegisterOrgDto(string Name);

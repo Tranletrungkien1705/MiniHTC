@@ -916,6 +916,22 @@ public sealed class PartStockOutLine
     public decimal Quantity { get; set; } = 1;
 }
 
+/// <summary>Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate, TCMotor DMSCarSv/Inventory):
+/// giá bán (PriceOut) theo mã PT + ngày hiệu lực. Giá áp dụng = bản mới nhất ≤ ngày. PriceVAT = Price*(1+VAT/100).</summary>
+public sealed class PartPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal Price { get; set; }               // giá bán (PriceOut)
+    public decimal VAT { get; set; } = 10;
+    public decimal PriceVAT { get; set; }
+    public DateTime EffectiveDate { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
