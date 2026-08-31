@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo chi phí tài chính</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:16px;display:block} .box span{font-size:11px;opacity:.7}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Rejected{color:#dc2626}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Báo cáo chi phí tài chính <span class="muted">(port 1:1 báo cáo DMS40_FnExp_Calc — Report)</span></h1>
+<p class="muted">Tổng hợp chi phí tài chính (CPTC) theo đại lý / trạng thái. Nguồn = màn Tính chi phí tài chính.</p>
+<div class="bar">
+  <div><label>Đại lý</label><input id="qd" style="width:90px"></div>
+  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="Draft">Chờ duyệt</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select></div>
+  <div><label>Từ ngày</label><input id="qf" type="date"></div>
+  <div><label>Đến</label><input id="qt" type="date"></div>
+  <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
+</div>
+<div class="kpi" id="kpi" style="margin:8px 0"></div>
+<h3>Theo đại lý</h3>
+<div class="wrap"><table><thead><tr><th>Đại lý</th><th class="num">Số bảng tính</th><th class="num">Số xe</th><th class="num">Lãi suất TB %</th><th class="num">Tổng CPTC</th><th class="num">Chiết khấu TT</th></tr></thead><tbody id="dRows"></tbody></table></div>
+<h3>Chi tiết bảng tính</h3>
+<div class="wrap"><table><thead><tr><th>Số CA</th><th>Đại lý</th><th class="num">Lãi suất %</th><th class="num">Số xe</th><th class="num">CPTC</th><th class="num">Chiết khấu</th><th>Trạng thái</th><th>Ngày</th></tr></thead><tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const ST={Draft:"Chờ duyệt",Approved:"Đã duyệt",Rejected:"Từ chối"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function money(n){ return (n||0).toLocaleString("vi-VN"); }
+function msg(t){ F("msg").textContent=t; }
+async function run(){ await token(); msg("");
+  const r=await fetch(`/api/report/fnexp?dealer=${F("qd").value}&status=${F("qs").value}&from=${F("qf").value}&to=${F("qt").value}`,{headers:H()});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  F("kpi").innerHTML=`<div class="box"><b>${d.total}</b><span>Số bảng tính</span></div><div class="box"><b>${money(d.totalFnExp)}</b><span>Tổng CPTC</span></div><div class="box"><b>${money(d.totalPd)}</b><span>Chiết khấu TT</span></div><div class="box"><b>${d.approved}</b><span>Đã duyệt</span></div>`;
+  F("dRows").innerHTML=(d.byDealer||[]).map(o=>`<tr><td><b>${o.dealerCode}</b></td><td class="num">${o.count}</td><td class="num">${o.cars}</td><td class="num">${o.avgRate}</td><td class="num">${money(o.fnExp)}</td><td class="num">${money(o.pd)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">—</td></tr>';
+  F("rows").innerHTML=(d.detail||[]).map(o=>`<tr><td><b>${o.caNo}</b></td><td>${o.dealerCode||""}</td><td class="num">${o.fnExpPercent}</td><td class="num">${o.cars}</td><td class="num">${money(o.totalFnExp)}</td><td class="num">${money(o.pd)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.createdAt}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

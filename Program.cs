@@ -2941,6 +2941,33 @@ app.MapGet("/api/report/production", async (AppDbContext db, ITenantContext t, s
         overallPct = Pct(totProduct, totOrder), byModel, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo chi phí tài chính (port 1:1 báo cáo DMS40_FnExp_Calc) — tái dùng FnExpCalc + FnExpCalcLine =====
+app.MapGet("/api/report/fnexp", async (AppDbContext db, ITenantContext t, string? dealer, string? status, DateTime? from, DateTime? to) =>
+{
+    var q = db.FnExpCalcs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (from is not null) q = q.Where(c => c.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(c => c.CreatedAt < to.Value.Date.AddDays(1));
+    var recs = await q.ToListAsync();
+    var ids = recs.Select(c => c.Id).ToHashSet();
+    var lineCount = await db.FnExpCalcLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.FnExpCalcId))
+        .GroupBy(l => l.FnExpCalcId).Select(g => new { g.Key, cars = g.Count(), pd = g.Sum(x => x.PDAmount) }).ToListAsync();
+    var m = lineCount.ToDictionary(x => x.Key, x => (x.cars, x.pd));
+    int Cars(long id) => m.TryGetValue(id, out var v) ? v.cars : 0;
+    decimal Pd(long id) => m.TryGetValue(id, out var v) ? v.pd : 0;
+    var byDealer = recs.GroupBy(c => string.IsNullOrEmpty(c.DealerCode) ? "(chưa rõ)" : c.DealerCode)
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(c => Cars(c.Id)), fnExp = g.Sum(c => c.TotalFnExp), pd = g.Sum(c => Pd(c.Id)),
+            avgRate = g.Any() ? Math.Round(g.Average(c => c.FnExpPercent), 2) : 0 }).OrderByDescending(x => x.fnExp).ToList();
+    var byStatus = recs.GroupBy(c => c.Status).Select(g => new { status = g.Key, count = g.Count(), fnExp = g.Sum(x => x.TotalFnExp) }).OrderByDescending(x => x.count).ToList();
+    var detail = recs.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, cars = Cars(c.Id), pd = Pd(c.Id), c.Status, createdAt = c.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = recs.Count, totalFnExp = recs.Sum(c => c.TotalFnExp), totalPd = recs.Sum(c => Pd(c.Id)),
+        approved = recs.Count(c => c.Status == "Approved"), byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
