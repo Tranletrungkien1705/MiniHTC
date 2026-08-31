@@ -160,7 +160,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("ExpenseType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
     ("Training", "Khóa đào tạo (FrmMst_TrainingMng)"),
     ("SalesManCert", "Chứng chỉ NVBH (FrmMst_SalesManCertificateMng)"),
-    ("StorageGlobal", "Kho ảo (FrmMst_StorageGlobal)"),
     ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
     // ---- TCMotor (2021.1) service/bảo hành ----
@@ -3294,6 +3293,54 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Kho ảo ↔ model được phép chứa (StorageGlobalMap — port 1:1 FrmMst_StorageGlobal, Admin/Dealer) =====
+app.MapGet("/api/storageglobalmaps", async (AppDbContext db, ITenantContext t, string? storage, string? model, string? active) =>
+{
+    var q = db.StorageGlobalMaps.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(x => x.StorageCode == storage);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.ModelCode).Take(500)
+        .Select(x => new { x.StorageCode, x.ModelCode, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Gán 1 model vào kho ảo (mỗi cặp kho+model 1 dòng; đã có = kích hoạt lại).
+app.MapPost("/api/storageglobalmaps", async (StorageGlobalMapDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Chưa chọn kho ảo." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    var st = dto.StorageCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.StorageGlobalMaps.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == st && x.ModelCode == md);
+    if (ex is not null)
+    {
+        ex.FlagActive = "1"; await db.SaveChangesAsync();
+        return Results.Ok(new { ex.StorageCode, ex.ModelCode, updated = true });
+    }
+    var r = new StorageGlobalMap { OrgId = t.OrgId, StorageCode = st, ModelCode = md, FlagActive = "1" };
+    db.StorageGlobalMaps.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.StorageCode, r.ModelCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/storageglobalmaps/{storage}/{model}/toggle", async (string storage, string model, AppDbContext db, ITenantContext t) =>
+{
+    storage = storage.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var x = await db.StorageGlobalMaps.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.StorageCode == storage && v.ModelCode == model);
+    if (x is null) return Results.NotFound(new { storage, model });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.StorageCode, x.ModelCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
+app.MapDelete("/api/storageglobalmaps/{storage}/{model}", async (string storage, string model, AppDbContext db, ITenantContext t) =>
+{
+    storage = storage.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var x = await db.StorageGlobalMaps.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.StorageCode == storage && v.ModelCode == model);
+    if (x is null) return Results.NotFound(new { storage, model });
+    db.StorageGlobalMaps.Remove(x); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = storage + "/" + model });
 }).RequireAuthorization();
 
 // ===== Ký tự VIN → năm sản xuất (VinProductionYear — port 1:1 FrmMst_VINProductionYear_Actual, Admin/Product) =====
@@ -7592,6 +7639,7 @@ record WarningEmailDto(string WarningType, string? WarningName, string EmailList
 record ParamPdiDto(string ParamCode, string? ParamName, string? ParamValue);
 record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode, string? ModelName, decimal AmplitudeOrdMax, decimal AmplitudePlanMax);
 record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus);
+record StorageGlobalMapDto(string StorageCode, string ModelCode);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);

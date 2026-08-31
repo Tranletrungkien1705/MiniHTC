@@ -158,6 +158,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ParamPdi> ParamPdis => Set<ParamPdi>();
     public DbSet<OrderAmplitude> OrderAmplitudes => Set<OrderAmplitude>();
     public DbSet<VinProductionYear> VinProductionYears => Set<VinProductionYear>();
+    public DbSet<StorageGlobalMap> StorageGlobalMaps => Set<StorageGlobalMap>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
     public DbSet<CarOCN> CarOCNs => Set<CarOCN>();

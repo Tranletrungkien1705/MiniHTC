@@ -2819,6 +2819,17 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Kho ảo ↔ model được phép chứa — port 1:1 FrmMst_StorageGlobal (Tbl_Mst_StorageGlobal).</summary>
+public sealed class StorageGlobalMap
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StorageCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Ký tự VIN → năm sản xuất thực tế + trạng thái lắp ráp — port 1:1 FrmMst_VINProductionYear_Actual (Tbl_Mst_VINProductionYear_Actual).</summary>
 public sealed class VinProductionYear
 {
