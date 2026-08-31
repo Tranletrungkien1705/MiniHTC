@@ -1227,6 +1227,58 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu tiếp nhận xe dịch vụ (Ser_ReceptionF — port 1:1 FrmSerReceptionFMng) =====
+app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
+{
+    var q = db.Receptions.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.PlateNo.Contains(plate.ToUpper()));
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    { r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest, r.RONO, r.Status, r.CreatedAt, r.DeliveredAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Cần biển số (PlateNo)." });
+    var no = "RCP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new Reception
+    {
+        OrgId = t.OrgId, ReceptionFNo = no, PlateNo = dto.PlateNo.Trim().ToUpperInvariant(), ModelName = dto.ModelName,
+        CusName = dto.CusName, CusAddress = dto.CusAddress, CusPhoneNo = dto.CusPhoneNo, CusRequest = dto.CusRequest, Status = "Pending"
+    };
+    db.Receptions.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFNo, r.PlateNo, status = r.Status });
+}).RequireAuthorization();
+
+// Gắn RO (kiểm tra RO tồn tại — tích hợp RepairOrder)
+app.MapPost("/api/receptions/{no}/linkro", async (string no, ReceptionLinkDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.RONO)) return Results.BadRequest(new { error = "Cần RONO." });
+    var roNo = dto.RONO.Trim().ToUpperInvariant();
+    var roExists = await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (!roExists) return Results.BadRequest(new { error = $"Không tìm thấy RO {roNo}." });
+    r.RONO = roNo;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFNo, r.RONO });
+}).RequireAuthorization();
+
+// Giao xe (Approved) — cần đã gắn RO
+app.MapPost("/api/receptions/{no}/deliver", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ giao xe cho phiếu Tiếp nhận." });
+    if (string.IsNullOrWhiteSpace(r.RONO)) return Results.BadRequest(new { error = "Chưa gắn RO, không thể giao xe." });
+    r.Status = "Approved"; r.DeliveredAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
 app.MapGet("/api/stockreqs", async (AppDbContext db, ITenantContext t, string? status, string? ro) =>
 {
@@ -2075,4 +2127,6 @@ record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string?
 record RoAdvanceDto(string ToStatus);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines);
+record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
+record ReceptionLinkDto(string RONO);
 record RegisterOrgDto(string Name);

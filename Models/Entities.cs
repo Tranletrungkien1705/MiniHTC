@@ -826,6 +826,25 @@ public sealed class StockReqLine
     public string? Unit { get; set; }
 }
 
+/// <summary>Phiếu tiếp nhận xe dịch vụ (Ser_ReceptionF — port 1:1 FrmSerReceptionFMng, TCMotor DMSCarSv):
+/// front-desk tiếp nhận xe khách, có thể gắn RO. Pending(Tiếp nhận) → Approved(Giao xe).</summary>
+public sealed class Reception
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    public string PlateNo { get; set; } = "";          // biển số
+    public string? ModelName { get; set; }
+    public string? CusName { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusPhoneNo { get; set; }
+    public string? CusRequest { get; set; }
+    public string? RONO { get; set; }                  // RO liên kết (nếu đã lập lệnh)
+    public string Status { get; set; } = "Pending";    // Pending(Tiếp nhận) → Approved(Giao xe)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DeliveredAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

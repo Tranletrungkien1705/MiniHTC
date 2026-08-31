@@ -62,6 +62,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RoPartItem> RoPartItems => Set<RoPartItem>();
     public DbSet<StockReq> StockReqs => Set<StockReq>();
     public DbSet<StockReqLine> StockReqLines => Set<StockReqLine>();
+    public DbSet<Reception> Receptions => Set<Reception>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
