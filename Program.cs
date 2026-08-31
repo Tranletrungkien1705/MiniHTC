@@ -1289,6 +1289,85 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị nhận xe/PDI (HtmvPdi — port 1:1 FrmNewPDI, 2010.HTC/Sales/HTMV) =====
+app.MapGet("/api/htmvpdis", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.HtmvPdis.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.PDINo, r.Status, r.CreatedAt, r.DoneAt,
+        cars = db.HtmvPdiDtls.Count(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/htmvpdis", async (HtmvPdiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "PDI" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new HtmvPdi { OrgId = t.OrgId, PDINo = no, Status = "Draft" };
+    db.HtmvPdis.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.HtmvPdiDtls.Add(new HtmvPdiDtl { OrgId = t.OrgId, HtmvPdiId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ColorCode = c.ColorCode, SpecCode = c.SpecCode, LCTemp = c.LCTemp, RefNo = c.RefNo, ProductionMonth = c.ProductionMonth, EngineNo = c.EngineNo });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.PDINo, cars = cars.Count, message = "Tạo đề nghị nhận xe thành công" });
+}).RequireAuthorization();
+
+app.MapGet("/api/htmvpdis/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.HtmvPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PDINo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
+        .Select(c => new { c.VIN, c.ColorCode, c.SpecCode, c.LCTemp, c.RefNo, c.ProductionMonth, c.EngineNo }).ToListAsync();
+    return Results.Ok(new { r.PDINo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/htmvpdis/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.HtmvPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PDINo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
+    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.PDINo, status = r.Status });
+}).RequireAuthorization();
+
+// ===== Xe nhập kho PDI (StoragePdiVin — port 1:1 FrmStoragePDI, 2010.HTC/Sales/HTMV) =====
+app.MapGet("/api/storagepdivins", async (AppDbContext db, ITenantContext t, string? vin, string? model, string? active) =>
+{
+    var q = db.StoragePdiVins.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN.Contains(vin.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(c => c.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(c => c.FlagActive == active);
+    var items = await q.OrderByDescending(c => c.Id).Take(500)
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/storagepdivins", async (List<StoragePdiVinDto> dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    var dupe = rows.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    int inserted = 0, updated = 0;
+    foreach (var c in rows)
+    {
+        var vin = c.VIN.Trim().ToUpperInvariant();
+        var ex = await db.StoragePdiVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark }); inserted++; }
+        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.UpdatedAt = DateTime.Now; updated++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
+}).RequireAuthorization();
+
 // ===== Đề nghị giao hồ sơ (ReqInvoice — port 1:1 FrmNewRDInvoice, 2010.HTC/Sales/Redeem) =====
 app.MapGet("/api/reqinvoices", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -4626,6 +4705,9 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
+record HtmvPdiDto(List<HtmvPdiCarDto>? Cars);
+record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark);
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
 record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
 record DealerContractCarDto(string CarId, decimal UnitPrice);

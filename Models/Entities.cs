@@ -1463,6 +1463,49 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Đề nghị nhận xe/PDI (HTMV_PDI + Dtl) — port 1:1 FrmNewPDI (2010.HTC/Sales/HTMV). Đề nghị nhận xe để PDI theo VIN.</summary>
+public sealed class HtmvPdi
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PDINo { get; set; } = "";
+    public string Status { get; set; } = "Draft"; // Draft → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DoneAt { get; set; }
+}
+public sealed class HtmvPdiDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long HtmvPdiId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ColorCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? LCTemp { get; set; }
+    public string? RefNo { get; set; }
+    public string? ProductionMonth { get; set; }
+    public string? EngineNo { get; set; }
+}
+
+/// <summary>Xe nhập kho PDI (PDI_VIN) — port 1:1 FrmStoragePDI (2010.HTC/Sales/HTMV). Xe tại kho PDI: model/spec/màu + số chìa/AVN/ắc quy.</summary>
+public sealed class StoragePdiVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? OrderNoMMS { get; set; }
+    public string? EngineNo { get; set; }
+    public string? KeyNo { get; set; }          // số chìa khóa
+    public string? AVNSerialNo { get; set; }    // serial màn hình AVN
+    public string? BatteryNo { get; set; }      // số ắc quy
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Đề nghị giao hồ sơ (RD_ReqInvoice + Dtl) — port 1:1 FrmNewRDInvoice (2010.HTC/Sales/Redeem). Đề nghị giao hồ sơ/hóa đơn cho lô VIN.</summary>
 public sealed class ReqInvoice
 {

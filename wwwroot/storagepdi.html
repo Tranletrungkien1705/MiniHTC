@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Xe nhập kho PDI</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1120px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} #ctbl td,#ctbl th{padding:4px 6px} #msg{font-size:13px}
+  .wrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Xe nhập kho PDI <span class="muted">(port 1:1 FrmStoragePDI — PDI_VIN)</span></h1>
+<div class="card">
+  <b>Nhập/cập nhật xe PDI (batch, upsert theo VIN)</b> <span class="muted">— số chìa / AVN / ắc quy</span>
+  <div class="bar" style="margin:10px 0"><span style="flex:1"></span><button class="primary" onclick="save()">Lưu</button><span id="msg"></span></div>
+  <div class="wrap"><table id="ctbl"><thead><tr><th>VIN *</th><th>Model</th><th>Spec</th><th>Màu</th><th>Order MMS</th><th>Số máy</th><th>Số chìa</th><th>AVN serial</th><th>Số ắc quy</th><th>Ghi chú</th><th></th></tr></thead><tbody id="ctb"></tbody></table></div>
+  <button class="sm" style="margin-top:6px" onclick="addRow()">+ Thêm xe</button>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc VIN" oninput="load()" style="width:140px"></div>
+<div class="wrap"><table><thead><tr><th>VIN</th><th>Model</th><th>Số máy</th><th>Số chìa</th><th>AVN serial</th><th>Số ắc quy</th><th>Cập nhật</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const dt=d=>d? new Date(d).toLocaleString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addRow(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="vin" style="width:110px"></td><td><input class="md" style="width:60px"></td><td><input class="sp" style="width:55px"></td><td><input class="cl" style="width:50px"></td><td><input class="om" style="width:80px"></td><td><input class="en" style="width:80px"></td><td><input class="kn" style="width:70px"></td><td><input class="av" style="width:80px"></td><td><input class="bt" style="width:70px"></td><td><input class="rm" style="width:80px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ctb").appendChild(tr); }
+async function save(){
+  const rows=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,modelCode:tr.querySelector(".md").value,specCode:tr.querySelector(".sp").value,colorCode:tr.querySelector(".cl").value,orderNoMMS:tr.querySelector(".om").value,engineNo:tr.querySelector(".en").value,keyNo:tr.querySelector(".kn").value,aVNSerialNo:tr.querySelector(".av").value,batteryNo:tr.querySelector(".bt").value,remark:tr.querySelector(".rm").value,flagActive:"1"})).filter(r=>r.vin);
+  const r=await fetch("/api/storagepdivins",{method:"POST",headers:H(),body:JSON.stringify(rows)});
+  const j=await r.json();
+  if(r.ok){ msg(`${j.message} (thêm ${j.inserted}, sửa ${j.updated}).`); F("ctb").innerHTML="";addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/storagepdivins?vin=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.vin}</b></td><td>${o.modelCode||""}</td><td>${o.engineNo||""}</td><td>${o.keyNo||""}</td><td>${o.aVNSerialNo||""}</td><td>${o.batteryNo||""}</td><td>${dt(o.updatedAt)}</td></tr>`
+  ).join("")||'<tr><td colspan="7" class="muted">Chưa có xe PDI.</td></tr>';
+}
+addRow(); load();
+</script>
+</body></html>
