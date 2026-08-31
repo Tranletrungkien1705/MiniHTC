@@ -3071,6 +3071,34 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo xác nhận giao xe vận chuyển (port 1:1 báo cáo TranspDlvConfirm) — tái dùng TranspDlvConfirm + Car =====
+app.MapGet("/api/report/transpdlv", async (AppDbContext db, ITenantContext t, string? transporter, string? dealer, string? status) =>
+{
+    var q = db.TranspDlvConfirms.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(transporter)) q = q.Where(r => r.TransporterCode == transporter);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.ConfirmStatus == status);
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var cars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.TranspDlvConfirmId)).ToListAsync();
+    var carByReq = cars.GroupBy(c => c.TranspDlvConfirmId).ToDictionary(g => g.Key, g => g.Count());
+    var byTransporter = reqs.GroupBy(r => string.IsNullOrEmpty(r.TransporterCode) ? "(chưa rõ)" : r.TransporterCode)
+        .Select(g => new { transporter = g.Key, minutes = g.Count(), confirmed = g.Count(x => x.ConfirmStatus == "Confirmed"), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
+        .OrderByDescending(x => x.cars).ToList();
+    var byDealer = reqs.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
+        .Select(g => new { dealerCode = g.Key, minutes = g.Count(), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
+        .OrderByDescending(x => x.cars).ToList();
+    var byStatus = reqs.GroupBy(r => r.ConfirmStatus).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.DlvMinutesNo, r.TransporterCode, r.DealerCode, r.ConfirmStatus,
+        cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0,
+        confirmDate = r.ConfirmDate.HasValue ? r.ConfirmDate.Value.ToString("yyyy-MM-dd") : "",
+        createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = cars.Count, confirmed = reqs.Count(r => r.ConfirmStatus == "Confirmed"), byTransporter, byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Báo cáo yêu cầu QC/giao hồ sơ xe (port 1:1 báo cáo QcDocReq) — tái dùng QcDocReq + QcDocReqCar =====
 app.MapGet("/api/report/qcdocreq", async (AppDbContext db, ITenantContext t, string? model, string? deliverType, string? status) =>
 {
