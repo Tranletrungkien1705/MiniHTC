@@ -1289,6 +1289,99 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Hợp đồng ngoại (ForeignContract/CO — port 1:1 FrmNewCO/FrmMngCO, DMSales.Foton) =====
+app.MapGet("/api/foreigncontracts", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var query = db.ForeignContracts.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.ContractNo.Contains(q));
+    var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.ContractNo, c.CreatedAt,
+        lines = db.ForeignContractLines.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/foreigncontracts", async (ForeignContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Cần số hợp đồng ngoại." });
+    var no = dto.ContractNo.Trim();
+    if (await db.ForeignContracts.AnyAsync(c => c.OrgId == t.OrgId && c.ContractNo == no))
+        return Results.BadRequest(new { error = $"Số hợp đồng {no} đã tồn tại!" });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.LcTemp)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa chọn LC_Temp nào." });
+    var dupe = lines.GroupBy(l => (l.RefNo?.Trim() ?? "") + "|" + l.LcTemp.Trim()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = "Dòng LC_Temp bị trùng!" });
+    var c = new ForeignContract { OrgId = t.OrgId, ContractNo = no };
+    db.ForeignContracts.Add(c); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.ForeignContractLines.Add(new ForeignContractLine { OrgId = t.OrgId, ContractId = c.Id, RefNo = l.RefNo?.Trim() ?? "", LcTemp = l.LcTemp.Trim() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ContractNo, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/foreigncontracts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.ForeignContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var lines = await db.ForeignContractLines.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
+        .Select(l => new { l.RefNo, l.LcTemp }).ToListAsync();
+    return Results.Ok(new { c.ContractNo, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// ===== Đề nghị giấy tờ xe (CarDocRequest/DR — port 1:1 FrmNewDR/FrmMngDR, DMSales.Foton) =====
+app.MapGet("/api/cardocrequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var query = db.CarDocRequests.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(r => r.DealerCode == dealer);
+    var items = await query.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.RequestNo, r.DealerCode, r.ReceivedPerson, r.ReceivedAddress, r.Status, r.CreatedAt, r.DoneAt,
+        cars = db.CarDocRequestCars.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cardocrequests", async (CarDocRequestDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ReceivedPerson)) return Results.BadRequest(new { error = "Cần người nhận." });
+    if (string.IsNullOrWhiteSpace(dto.ReceivedAddress)) return Results.BadRequest(new { error = "Cần địa chỉ nhận." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 xe." });
+    var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+    var no = "DR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "Draft" };
+    db.CarDocRequests.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RequestNo, r.ReceivedPerson, cars = cars.Count, status = r.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && c.RequestId == r.Id)
+        .Select(c => new { c.CarId, c.Remark, c.DeliveryStartDate }).ToListAsync();
+    return Results.Ok(new { r.RequestNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/cardocrequests/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
+    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RequestNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Lệnh giao xe cho đại lý (DeliveryOrder — port 1:1 FrmNewDO/FrmMngDO, DMSales.Foton) =====
 app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -3150,4 +3243,8 @@ record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, str
 record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars);
 record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars);
+record ForeignContractLineDto(string? RefNo, string LcTemp);
+record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
+record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);
+record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars);
 record RegisterOrgDto(string Name);

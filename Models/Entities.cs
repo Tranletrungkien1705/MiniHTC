@@ -1304,6 +1304,46 @@ public sealed class DocReqCar
     public decimal AmountTotal { get; set; }
 }
 
+/// <summary>Hợp đồng ngoại (CO) — port 1:1 FrmNewCO/FrmMngCO (DMSales.Foton). Gom nhiều dòng LC_Temp của PI vào 1 số hợp đồng ngoại.</summary>
+public sealed class ForeignContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractNo { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class ForeignContractLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ContractId { get; set; }
+    public string RefNo { get; set; } = "";
+    public string LcTemp { get; set; } = "";
+}
+
+/// <summary>Đề nghị giấy tờ xe (DR / CDR) — port 1:1 FrmNewDR/FrmMngDR (DMSales.Foton). Yêu cầu làm giấy tờ cho lô xe, giao tới người/địa chỉ nhận.</summary>
+public sealed class CarDocRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RequestNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string ReceivedPerson { get; set; } = "";
+    public string ReceivedAddress { get; set; } = "";
+    public string Status { get; set; } = "Draft"; // Draft → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DoneAt { get; set; }
+}
+public sealed class CarDocRequestCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RequestId { get; set; }
+    public string CarId { get; set; } = "";   // VIN/CarId
+    public string? Remark { get; set; }
+    public DateTime? DeliveryStartDate { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
