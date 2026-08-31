@@ -192,6 +192,29 @@ public sealed class SupplierPO
     public DateTime? ReceivedAt { get; set; }
 }
 
+/// <summary>Định mức BOM bảo dưỡng (FrmMstBOMMng — TCMotor): header theo model+cấp BD.</summary>
+public sealed class Bom
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BomCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? MaintLevel { get; set; }   // cấp bảo dưỡng (1000km/5000km...)
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng BOM: 1 phụ tùng + số lượng định mức.</summary>
+public sealed class BomLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long BomId { get; set; }
+    public string PartSku { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal Qty { get; set; } = 1;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — BOM bảo dưỡng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} h3{font-size:13px;text-transform:uppercase;opacity:.6;margin:18px 0 6px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:12px 0;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .act{color:var(--accent);cursor:pointer} .r{color:#dc2626} #msg{font-size:13px}
+  tr.sel{background:rgba(37,99,235,.08)}
+</style></head>
+<body>
+<h1>BOM định mức bảo dưỡng <span class="muted">(header-detail, port 1:1 FrmMstBOMMng — TCMotor)</span></h1>
+<div class="bar">
+  <input id="bc" placeholder="Mã BOM *" style="width:110px"><input id="mc" placeholder="Model *" style="width:100px"><input id="ml" placeholder="Cấp BD (1000km...)" style="width:130px">
+  <button class="primary" onclick="saveBom()">Lưu BOM</button><span id="msg"></span>
+</div>
+<h3>Danh sách BOM (click để xem dòng)</h3>
+<table><thead><tr><th>Mã</th><th>Model</th><th>Cấp BD</th><th>Số dòng</th></tr></thead><tbody id="boms"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
+<h3>Dòng phụ tùng của BOM: <span id="cur" class="muted">(chọn 1 BOM)</span></h3>
+<div class="bar">
+  <input id="ps" placeholder="SKU phụ tùng" style="width:130px"><input id="pn" placeholder="Tên PT" style="width:180px"><input id="qt" placeholder="SL" value="1" style="width:60px">
+  <button class="primary" onclick="addLine()">Thêm dòng</button>
+</div>
+<table><thead><tr><th>SKU</th><th>Tên</th><th>SL</th><th></th></tr></thead><tbody id="lines"><tr><td colspan="4" class="muted">—</td></tr></tbody></table>
+<script>
+let TOKEN=null, CUR=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
+async function loadBoms(){ await token();
+  const d=await (await fetch("/api/boms",{headers:H()})).json();
+  F("boms").innerHTML=(d.items||[]).map(b=>`<tr onclick="pick('${b.bomCode}')" style="cursor:pointer" class="${b.bomCode===CUR?'sel':''}">
+    <td><b>${b.bomCode}</b></td><td>${b.modelCode}</td><td>${b.maintLevel||""}</td><td>${b.lines}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có BOM.</td></tr>';
+}
+async function saveBom(){
+  const r=await fetch("/api/boms",{method:"POST",headers:H(),body:JSON.stringify({bomCode:F("bc").value,modelCode:F("mc").value,maintLevel:F("ml").value})});
+  if(r.ok){ msg("Đã lưu BOM.",true); loadBoms(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
+}
+async function pick(c){ CUR=c; F("cur").textContent=c; loadBoms(); loadLines(); }
+async function loadLines(){ if(!CUR){ return; } await token();
+  const d=await (await fetch(`/api/boms/${CUR}/lines`,{headers:H()})).json();
+  F("lines").innerHTML=(d.lines||[]).map(l=>`<tr><td><b>${l.partSku}</b></td><td>${l.partName||""}</td><td>${l.qty}</td>
+    <td><span class="act r" onclick="delLine(${l.id})">Xoá</span></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dòng.</td></tr>';
+}
+async function addLine(){ if(!CUR){ msg("Chọn BOM trước.",false); return; }
+  const r=await fetch(`/api/boms/${CUR}/lines`,{method:"POST",headers:H(),body:JSON.stringify({partSku:F("ps").value,partName:F("pn").value,qty:Number(F("qt").value||1)})});
+  if(r.ok){ msg("Đã thêm dòng.",true); F("ps").value="";F("pn").value=""; loadLines(); loadBoms(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
+}
+async function delLine(id){ const r=await fetch("/api/boms/lines/"+id,{method:"DELETE",headers:H()});
+  if(r.ok){ loadLines(); loadBoms(); } }
+loadBoms();
+</script>
+</body></html>

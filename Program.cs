@@ -608,6 +608,56 @@ app.MapPost("/api/pos/{no}/{action}", async (string no, string action, AppDbCont
     return Results.Ok(new { p.PoNo, status = p.Status });
 }).RequireAuthorization();
 
+// ===== BOM định mức bảo dưỡng (header-detail, port 1:1 FrmMstBOMMng — TCMotor) =====
+app.MapGet("/api/boms", async (AppDbContext db, ITenantContext t, string? model) =>
+{
+    var q = db.Boms.Where(b => b.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(b => b.ModelCode.Contains(model));
+    var items = await q.OrderBy(b => b.BomCode).Select(b => new
+    { b.BomCode, b.ModelCode, b.MaintLevel, b.Status, lines = db.BomLines.Count(l => l.OrgId == t.OrgId && l.BomId == b.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.BomCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "Cần BomCode và ModelCode." });
+    var code = dto.BomCode.Trim().ToUpperInvariant();
+    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
+    if (b is null) { b = new Bom { OrgId = t.OrgId, BomCode = code }; db.Boms.Add(b); }
+    b.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); b.MaintLevel = dto.MaintLevel; b.Status = dto.Status ?? "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.BomCode, b.ModelCode, b.MaintLevel });
+}).RequireAuthorization();
+
+app.MapGet("/api/boms/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
+    if (b is null) return Results.NotFound(new { code });
+    var lines = await db.BomLines.Where(l => l.OrgId == t.OrgId && l.BomId == b.Id).Select(l => new { l.Id, l.PartSku, l.PartName, l.Qty }).ToListAsync();
+    return Results.Ok(new { bom = b.BomCode, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/boms/{code}/lines", async (string code, BomLineDto dto, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
+    if (b is null) return Results.NotFound(new { code });
+    if (string.IsNullOrWhiteSpace(dto.PartSku)) return Results.BadRequest(new { error = "Cần PartSku." });
+    db.BomLines.Add(new BomLine { OrgId = t.OrgId, BomId = b.Id, PartSku = dto.PartSku.Trim().ToUpperInvariant(), PartName = dto.PartName, Qty = dto.Qty <= 0 ? 1 : dto.Qty });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { bom = code, dto.PartSku, dto.Qty });
+}).RequireAuthorization();
+
+app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var l = await db.BomLines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (l is null) return Results.NotFound(new { id });
+    db.BomLines.Remove(l); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -633,4 +683,6 @@ record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty,
 record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);
+record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
+record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record RegisterOrgDto(string Name);
