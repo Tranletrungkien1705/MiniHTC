@@ -11,3 +11,15 @@ public sealed class Area
     public string Status { get; set; } = "1";   // 1=hiệu lực, 0=ngừng (cờ 2010.HTC)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
+public sealed class MasterItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Category { get; set; } = "";   // 1 category = 1 màn Frm gốc
+    public string Code { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
