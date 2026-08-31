@@ -3230,6 +3230,48 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Thông báo kỹ thuật (Bulletin — port 1:1 FrmBulletinHTCCreate/Modify/Search, TCMotor) =====
+app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q, string? part, string? active) =>
+{
+    var query = db.Bulletins.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.BulletinNo.Contains(q!) || (x.Remark != null && x.Remark.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode == part);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.BulletinNo, x.Remark, x.PartCode, x.PartName, x.SerCode, x.SerName, x.FileNameAttachment, x.FlagActive,
+        dateExpired = x.DateExpired.HasValue ? x.DateExpired.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo số thông báo (số trống = auto-gen).
+app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Remark)) return Results.BadRequest(new { error = "Chưa nhập nội dung thông báo." });
+    var no = string.IsNullOrWhiteSpace(dto.BulletinNo) ? "BLT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.BulletinNo.Trim().ToUpperInvariant();
+    var ex = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
+    if (ex is not null)
+    {
+        ex.Remark = dto.Remark; ex.PartCode = dto.PartCode; ex.PartName = dto.PartName; ex.SerCode = dto.SerCode; ex.SerName = dto.SerName; ex.DateExpired = dto.DateExpired; ex.FileNameAttachment = dto.FileNameAttachment; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.BulletinNo, updated = true });
+    }
+    var r = new Bulletin { OrgId = t.OrgId, BulletinNo = no, Remark = dto.Remark, PartCode = dto.PartCode, PartName = dto.PartName, SerCode = dto.SerCode, SerName = dto.SerName, DateExpired = dto.DateExpired, FileNameAttachment = dto.FileNameAttachment, FlagActive = "1" };
+    db.Bulletins.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.BulletinNo, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/bulletins/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var x = await db.Bulletins.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.BulletinNo == no);
+    if (x is null) return Results.NotFound(new { no });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.BulletinNo, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Báo giá phụ tùng dịch vụ (PartQuote header-detail — port 1:1 FrmPartQuotation/Search, TCMotor) =====
 app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -8102,6 +8144,7 @@ record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, s
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
+record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
 record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);

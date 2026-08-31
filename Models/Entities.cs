@@ -2819,6 +2819,23 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Thông báo kỹ thuật (bulletin) — số/nội dung/PT-DV liên quan/hết hạn/file — port 1:1 FrmBulletinHTCCreate (Tbl_Blt_Bulletin, TCMotor).</summary>
+public sealed class Bulletin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BulletinNo { get; set; } = "";
+    public string? Remark { get; set; }
+    public string? PartCode { get; set; }
+    public string? PartName { get; set; }
+    public string? SerCode { get; set; }
+    public string? SerName { get; set; }
+    public DateTime? DateExpired { get; set; }
+    public string? FileNameAttachment { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Báo giá phụ tùng dịch vụ (header) — port 1:1 FrmPartQuotation (TblSerInvQuote, TCMotor).</summary>
 public sealed class PartQuote
 {

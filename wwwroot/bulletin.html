@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thông báo kỹ thuật</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#0891b2;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box;width:100%}
+  textarea{min-height:56px;resize:vertical} button{cursor:pointer;width:auto} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:8px 0} #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Thông báo kỹ thuật (Bulletin) <span class="muted">(port 1:1 FrmBulletinHTCCreate — TCMotor)</span></h1>
+<p class="muted">Ban hành thông báo kỹ thuật cho hệ thống đại lý: nội dung, phụ tùng/dịch vụ liên quan, ngày hết hiệu lực, tên file đính kèm. Số TB trống = tự sinh.</p>
+<div class="card"><h3 style="margin-top:0">Thêm / cập nhật thông báo</h3>
+  <div class="grid">
+    <div><label>Số TB</label><input id="fNo" placeholder="(auto)"></div>
+    <div><label>Mã PT</label><input id="fPartCode"></div>
+    <div><label>Tên PT</label><input id="fPartName"></div>
+    <div><label>Mã DV</label><input id="fSerCode"></div>
+    <div><label>Tên DV</label><input id="fSerName"></div>
+    <div><label>Ngày hết hạn</label><input id="fExp" type="date"></div>
+    <div><label>File đính kèm</label><input id="fFile" placeholder="tb_kythuat.pdf"></div>
+  </div>
+  <div style="margin-top:8px"><label>Nội dung *</label><textarea id="fRemark"></textarea></div>
+  <div style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><span id="msg"></span></div>
+</div>
+<div class="bar">
+  <div><label>Tìm số/nội dung</label><input id="qQ" style="width:180px" onkeydown="if(event.key==='Enter')load()"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Số TB</th><th>Nội dung</th><th>PT/DV</th><th>Hết hạn</th><th>File</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+async function save(){ await token();
+  const body={BulletinNo:F("fNo").value,Remark:F("fRemark").value,PartCode:F("fPartCode").value,PartName:F("fPartName").value,SerCode:F("fSerCode").value,SerName:F("fSerName").value,DateExpired:F("fExp").value||null,FileNameAttachment:F("fFile").value};
+  const r=await fetch("/api/bulletins",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.bulletinNo:"Đã thêm "+d.bulletinNo); F("fNo").value="";F("fRemark").value=""; load();
+}
+async function toggle(no){ await token();
+  const r=await fetch("/api/bulletins/"+encodeURIComponent(no)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fNo").value=o.bulletinNo;F("fRemark").value=o.remark||"";F("fPartCode").value=o.partCode||"";F("fPartName").value=o.partName||"";F("fSerCode").value=o.serCode||"";F("fSerName").value=o.serName||"";F("fExp").value=o.dateExpired||"";F("fFile").value=o.fileNameAttachment||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/bulletins?q="+encodeURIComponent(F("qQ").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.bulletinNo}</b></td><td>${esc(o.remark)}</td><td>${esc(o.partCode)||""}${o.serCode?" / "+esc(o.serCode):""}</td><td>${o.dateExpired||""}</td><td>${esc(o.fileNameAttachment)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.bulletinNo}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có thông báo.</td></tr>';
+}
+</script>
+</body></html>
