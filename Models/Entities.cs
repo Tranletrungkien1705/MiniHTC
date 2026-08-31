@@ -2819,6 +2819,22 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Danh mục dịch vụ/công (master: mã/tên/giá vốn/giá bán/model/VAT) — port 1:1 FrmService/FrmImportService (TblSerMSTService, TCMotor).</summary>
+public sealed class ServiceItemMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+    public decimal Cost { get; set; }
+    public decimal Price { get; set; }
+    public string? Model { get; set; }
+    public decimal Vat { get; set; }
+    public string? Note { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Danh mục model xe dịch vụ (mã/tên/nhãn hiệu/mã SX) — port 1:1 FrmModel/FrmImportModel (TblModel, TCMotor).</summary>
 public sealed class ServiceModel
 {

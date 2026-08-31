@@ -3230,6 +3230,70 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Danh mục dịch vụ/công (ServiceItemMst — port 1:1 FrmService/FrmImportService, TCMotor) =====
+app.MapGet("/api/serviceitems", async (AppDbContext db, ITenantContext t, string? q, string? model, string? active) =>
+{
+    var query = db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.SerCode.Contains(q!.ToUpper()) || (x.SerName != null && x.SerName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(model)) query = query.Where(x => x.Model == model);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.SerCode).Take(500)
+        .Select(x => new { x.SerCode, x.SerName, x.Cost, x.Price, x.Model, x.Vat, x.Note, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Chưa nhập mã dịch vụ." });
+    if (string.IsNullOrWhiteSpace(dto.SerName)) return Results.BadRequest(new { error = "Chưa nhập tên dịch vụ." });
+    if (dto.Price < 0 || dto.Cost < 0 || dto.Vat < 0) return Results.BadRequest(new { error = "Giá/vốn/VAT không hợp lệ." });
+    var code = dto.SerCode.Trim().ToUpperInvariant();
+    var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
+    if (ex is not null)
+    {
+        ex.SerName = dto.SerName; ex.Cost = dto.Cost; ex.Price = dto.Price; ex.Model = dto.Model; ex.Vat = dto.Vat; ex.Note = dto.Note; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.SerCode, updated = true });
+    }
+    var r = new ServiceItemMst { OrgId = t.OrgId, SerCode = code, SerName = dto.SerName, Cost = dto.Cost, Price = dto.Price, Model = dto.Model, Vat = dto.Vat, Note = dto.Note, FlagActive = "1" };
+    db.ServiceItemMsts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.SerCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/serviceitems/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ServiceItemMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SerCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.SerCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
+// Nhập dịch vụ hàng loạt từ Excel (port 1:1 FrmImportService).
+app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    var seen = new HashSet<string>();
+    int created = 0, updated = 0;
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i]; var line = i + 1;
+        var code = (r.SerCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã dịch vụ." }); continue; }
+        if (string.IsNullOrWhiteSpace(r.SerName)) { errors.Add(new { line, code, error = "Thiếu tên dịch vụ." }); continue; }
+        if (r.Price < 0 || r.Cost < 0) { errors.Add(new { line, code, error = "Giá/vốn không hợp lệ." }); continue; }
+        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã dịch vụ bị trùng trong file nhập." }); continue; }
+        var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
+        if (ex is not null) { ex.SerName = r.SerName; ex.Cost = r.Cost; ex.Price = r.Price; ex.Model = r.Model; ex.Vat = r.Vat; ex.Note = r.Note; ex.FlagActive = "1"; updated++; }
+        else { db.ServiceItemMsts.Add(new ServiceItemMst { OrgId = t.OrgId, SerCode = code, SerName = r.SerName, Cost = r.Cost, Price = r.Price, Model = r.Model, Vat = r.Vat, Note = r.Note, FlagActive = "1" }); created++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+}).RequireAuthorization();
+
 // ===== Danh mục model xe dịch vụ (ServiceModel — port 1:1 FrmModel/FrmImportModel, TCMotor) =====
 app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, string? q, string? trade, string? active) =>
 {
@@ -8670,6 +8734,9 @@ record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<Ser
 record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
+record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
+record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
+record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);

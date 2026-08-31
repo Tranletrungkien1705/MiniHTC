@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Danh mục dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#0d9488;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:90px;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:13px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  code{background:#8882;padding:1px 5px;border-radius:4px} #msg,#msg2{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Danh mục dịch vụ / công <span class="muted">(port 1:1 FrmService + FrmImportService — TCMotor)</span></h1>
+<p class="muted">Khai báo hạng mục dịch vụ/công sửa chữa: mã, tên, giá vốn, giá bán, model áp dụng, VAT. Nhập lẻ hoặc nhập hàng loạt từ Excel.</p>
+<div class="card"><h3 style="margin-top:0">Thêm / cập nhật dịch vụ</h3>
+  <div class="row">
+    <div><label>Mã DV *</label><input id="fCode" style="width:100px"></div>
+    <div style="flex:1;min-width:130px"><label>Tên DV *</label><input id="fName" style="width:100%"></div>
+    <div><label>Giá vốn</label><input id="fCost" type="number" style="width:110px"></div>
+    <div><label>Giá bán</label><input id="fPrice" type="number" style="width:110px"></div>
+    <div><label>Model</label><input id="fModel" style="width:90px"></div>
+    <div><label>VAT%</label><input id="fVat" type="number" style="width:70px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="card"><h3 style="margin-top:0">Nhập hàng loạt (Excel)</h3>
+  <label>Dán: <code>Mã | Tên | Giá vốn | Giá bán | Model | VAT</code></label>
+  <textarea id="ta" placeholder="SV01&#9;Thay dau may&#9;50000&#9;100000&#9;ACCENT&#9;10&#10;SV02&#9;Ve sinh khoang may&#9;80000&#9;150000&#9;&#9;10"></textarea>
+  <div style="margin-top:8px"><button class="primary" onclick="doImport()">Nhập hàng loạt</button><span id="msg2"></span></div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Tìm mã/tên</label><input id="qQ" style="width:160px" onkeydown="if(event.key==='Enter')load()"></div>
+  <div><label>Lọc model</label><input id="qModel" style="width:100px"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Giá vốn</th><th class="num">Giá bán</th><th>Model</th><th class="num">VAT%</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+function msg2(t){ F("msg2").textContent=t; setTimeout(()=>{if(F("msg2").textContent===t)F("msg2").textContent="";},4000); }
+async function save(){ await token();
+  const body={SerCode:F("fCode").value,SerName:F("fName").value,Cost:+F("fCost").value||0,Price:+F("fPrice").value||0,Model:F("fModel").value,Vat:+F("fVat").value||0};
+  const r=await fetch("/api/serviceitems",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.serCode:"Đã thêm "+d.serCode); F("fCode").value="";F("fName").value=""; load();
+}
+async function doImport(){ await token();
+  const rows=F("ta").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{const c=l.split(/\t|,/).map(s=>s.trim());return {SerCode:c[0]||"",SerName:c[1]||"",Cost:+c[2]||0,Price:+c[3]||0,Model:c[4]||"",Vat:+c[5]||0};});
+  if(!rows.length){ msg2("Chưa có dữ liệu"); return; }
+  const r=await fetch("/api/serviceitems/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ msg2("Lỗi: "+(d.error||r.status)); return; }
+  msg2(`Xong: +${d.created} mới / ${d.updated} cập nhật / ${d.errorCount} lỗi`+(d.errorCount?" ("+d.errors.map(e=>"dòng "+e.line+": "+e.error).join("; ")+")":"")); load();
+}
+async function toggle(c){ await token();
+  const r=await fetch("/api/serviceitems/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fCode").value=o.serCode;F("fName").value=o.serName||"";F("fCost").value=o.cost;F("fPrice").value=o.price;F("fModel").value=o.model||"";F("fVat").value=o.vat; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/serviceitems?q="+encodeURIComponent(F("qQ").value)+"&model="+encodeURIComponent(F("qModel").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.serCode}</b></td><td>${esc(o.serName)}</td><td class="num">${M(o.cost)}</td><td class="num">${M(o.price)}</td><td>${esc(o.model)}</td><td class="num">${o.vat}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.serCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dịch vụ.</td></tr>';
+}
+</script>
+</body></html>
