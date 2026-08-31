@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Danh mục phụ tùng dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#0d9488;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1060px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box;width:100%}
+  button{cursor:pointer;width:auto} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:16px;display:block} .box span{font-size:11px;opacity:.7}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5} .low{color:var(--bad);font-weight:600}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:8px 0} #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Danh mục phụ tùng dịch vụ <span class="muted">(port 1:1 FrmPart — TCMotor)</span></h1>
+<p class="muted">Master phụ tùng cho trạm dịch vụ: mã/tên, đơn giá, giá vốn, vị trí kho, tồn hiện tại + tồn tối thiểu (cảnh báo dưới định mức), nhóm, model. Mỗi mã 1 bản ghi — nhập lại = cập nhật.</p>
+<div class="card"><h3 style="margin-top:0">Thêm / cập nhật phụ tùng</h3>
+  <div class="grid">
+    <div><label>Mã PT *</label><input id="fCode"></div>
+    <div><label>Tên PT *</label><input id="fName"></div>
+    <div><label>Tên tiếng Anh</label><input id="fEng"></div>
+    <div><label>ĐVT</label><input id="fUnit"></div>
+    <div><label>Đơn giá</label><input id="fPrice" type="number"></div>
+    <div><label>Giá vốn</label><input id="fCost" type="number"></div>
+    <div><label>Vị trí kho</label><input id="fLoc"></div>
+    <div><label>Tồn</label><input id="fQty" type="number"></div>
+    <div><label>Tồn tối thiểu</label><input id="fMin" type="number"></div>
+    <div><label>Nhóm</label><input id="fGroup"></div>
+    <div><label>Model</label><input id="fModel"></div>
+    <div><label>Ghi chú</label><input id="fNote"></div>
+  </div>
+  <div style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><span id="msg"></span></div>
+</div>
+<div class="kpi" id="kpi"></div>
+<div class="bar">
+  <div><label>Tìm mã/tên</label><input id="qQ" style="width:170px" onkeydown="if(event.key==='Enter')load()"></div>
+  <div><label>Lọc nhóm</label><input id="qGroup" style="width:110px"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>ĐVT</th><th class="num">Đơn giá</th><th class="num">Tồn</th><th class="num">Tối thiểu</th><th>Nhóm</th><th>Vị trí</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+function nv(id){ return +F(id).value||0; }
+async function save(){ await token();
+  const body={PartCode:F("fCode").value,PartName:F("fName").value,EngName:F("fEng").value,Unit:F("fUnit").value,Price:nv("fPrice"),Cost:nv("fCost"),Location:F("fLoc").value,Quantity:nv("fQty"),MinQuantity:nv("fMin"),PartGroupCode:F("fGroup").value,Model:F("fModel").value,Note:F("fNote").value};
+  const r=await fetch("/api/serviceparts",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.partCode:"Đã thêm "+d.partCode); F("fCode").value="";F("fName").value=""; load();
+}
+async function toggle(c){ await token();
+  const r=await fetch("/api/serviceparts/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fCode").value=o.partCode;F("fName").value=o.partName||"";F("fEng").value=o.engName||"";F("fUnit").value=o.unit||"";F("fPrice").value=o.price;F("fCost").value=o.cost;F("fLoc").value=o.location||"";F("fQty").value=o.quantity;F("fMin").value=o.minQuantity;F("fGroup").value=o.partGroupCode||"";F("fModel").value=o.model||"";F("fNote").value=o.note||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/serviceparts?q="+encodeURIComponent(F("qQ").value)+"&group="+encodeURIComponent(F("qGroup").value),{headers:H()});
+  const d=await r.json();
+  F("kpi").innerHTML=`<div class="box"><b>${d.count}</b><span>Số phụ tùng</span></div><div class="box"><b class="${d.lowStockCount?'low':''}">${d.lowStockCount}</b><span>Dưới định mức</span></div>`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.partCode}</b></td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num">${M(o.price)}</td><td class="num ${o.lowStock?'low':''}">${o.quantity}</td><td class="num">${o.minQuantity}</td><td>${esc(o.partGroupCode)}</td><td>${esc(o.location)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.partCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="10" class="muted">Chưa có phụ tùng.</td></tr>';
+}
+</script>
+</body></html>

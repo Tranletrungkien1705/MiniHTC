@@ -2819,6 +2819,27 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Danh mục phụ tùng dịch vụ (master lõi) — port 1:1 FrmPart (TblSerMSTPart, TCMotor).</summary>
+public sealed class ServicePart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }    // VieName
+    public string? EngName { get; set; }
+    public string? Unit { get; set; }
+    public decimal Price { get; set; }
+    public decimal Cost { get; set; }
+    public string? Location { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal MinQuantity { get; set; }
+    public string? PartGroupCode { get; set; }
+    public string? Model { get; set; }
+    public string? Note { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nhóm phụ tùng phân cấp (cha-con) — port 1:1 FrmPartGroup (TblSerMSTPartGroup, TCMotor).</summary>
 public sealed class PartGroup
 {

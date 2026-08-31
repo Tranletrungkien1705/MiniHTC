@@ -171,6 +171,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Bulletin> Bulletins => Set<Bulletin>();
     public DbSet<SharePart> ShareParts => Set<SharePart>();
     public DbSet<PartGroup> PartGroups => Set<PartGroup>();
+    public DbSet<ServicePart> ServiceParts => Set<ServicePart>();
     public DbSet<CusDebit> CusDebits => Set<CusDebit>();
     public DbSet<CusDebitPayment> CusDebitPayments => Set<CusDebitPayment>();
     public DbSet<PartQuote> PartQuotes => Set<PartQuote>();

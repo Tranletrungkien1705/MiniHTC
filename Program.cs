@@ -3230,6 +3230,48 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Danh mục phụ tùng dịch vụ (ServicePart — port 1:1 FrmPart/FrmPartSearch, TCMotor) =====
+app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active) =>
+{
+    var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!.ToUpper()) || (x.PartName != null && x.PartName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(group)) query = query.Where(x => x.PartGroupCode == group);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.PartCode).Take(500)
+        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location, x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive,
+            lowStock = x.Quantity < x.MinQuantity }).ToListAsync();
+    return Results.Ok(new { count = items.Count, lowStockCount = items.Count(i => i.lowStock), items });
+}).RequireAuthorization();
+
+// Upsert theo mã phụ tùng.
+app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
+    if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa nhập tên phụ tùng." });
+    if (dto.Price < 0 || dto.Cost < 0) return Results.BadRequest(new { error = "Giá/chi phí không hợp lệ." });
+    var code = dto.PartCode.Trim().ToUpperInvariant();
+    var ex = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
+    if (ex is not null)
+    {
+        ex.PartName = dto.PartName; ex.EngName = dto.EngName; ex.Unit = dto.Unit; ex.Price = dto.Price; ex.Cost = dto.Cost; ex.Location = dto.Location; ex.Quantity = dto.Quantity; ex.MinQuantity = dto.MinQuantity; ex.PartGroupCode = dto.PartGroupCode; ex.Model = dto.Model; ex.Note = dto.Note; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.PartCode, updated = true });
+    }
+    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1" };
+    db.ServiceParts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.PartCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ServiceParts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.PartCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.PartCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Nhóm phụ tùng phân cấp (PartGroup — port 1:1 FrmPartGroup, TCMotor) =====
 app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? q, string? parent, string? active) =>
 {
@@ -8283,6 +8325,7 @@ record InsContractDto(string? InContractNo, string? InContractCode, string InsNo
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
+record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
