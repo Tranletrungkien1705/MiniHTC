@@ -407,6 +407,23 @@ public sealed class TransportReqCar
     public string? StorageCode { get; set; }
 }
 
+/// <summary>Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2):
+/// ma trận phí tỉnh/huyện From→To + nhà VC + model → giá phí + số ngày dự kiến.</summary>
+public sealed class TranspFee
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ProvinceCodeFrom { get; set; } = "";
+    public string ProvinceCodeTo { get; set; } = "";
+    public string? DistrictCodeFrom { get; set; }
+    public string? DistrictCodeTo { get; set; }
+    public string TransporterCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public decimal ValFee { get; set; }
+    public int ExpectedDays { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

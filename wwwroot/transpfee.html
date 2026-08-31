@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Phí vận chuyển</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Phí vận chuyển theo tuyến <span class="muted">(port 1:1 FrmNewTranspFee / FrmMngTranspFee — Mst_TranspFee)</span></h1>
+<div class="bar">
+  <input id="pf" placeholder="Tỉnh From *" style="width:90px"><input id="df" placeholder="Huyện From" style="width:90px">
+  <input id="pt" placeholder="Tỉnh To *" style="width:90px"><input id="dt" placeholder="Huyện To" style="width:90px">
+  <input id="tp" placeholder="Nhà VC *" style="width:90px"><input id="md" placeholder="Model *" style="width:90px">
+  <input id="fee" type="number" placeholder="Phí" style="width:100px;text-align:right"><input id="days" type="number" placeholder="Ngày" style="width:70px;text-align:right">
+  <button class="primary" onclick="save()">Lưu</button>
+</div>
+<div class="bar">
+  <input id="qtp" placeholder="Lọc nhà VC" oninput="load()" style="width:110px"><input id="qmd" placeholder="Lọc model" oninput="load()" style="width:110px">
+  <span style="flex:1"></span><span id="msg"></span>
+</div>
+<table><thead><tr><th>Tỉnh From</th><th>Huyện</th><th>Tỉnh To</th><th>Huyện</th><th>Nhà VC</th><th>Model</th><th class="n">Phí</th><th class="n">Ngày</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const n=x=>Number(x||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){
+  const b={provinceCodeFrom:F("pf").value,districtCodeFrom:F("df").value,provinceCodeTo:F("pt").value,districtCodeTo:F("dt").value,transporterCode:F("tp").value,modelCode:F("md").value,valFee:Number(F("fee").value||0),expectedDays:Number(F("days").value||0)};
+  const r=await fetch("/api/transpfees",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu tuyến "+j.provinceCodeFrom+"→"+j.provinceCodeTo+"."); F("fee").value="";F("days").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/transpfees?transporter=${F("qtp").value}&model=${F("qmd").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(f=>`<tr><td><b>${f.provinceCodeFrom}</b></td><td>${f.districtCodeFrom||"—"}</td>
+    <td><b>${f.provinceCodeTo}</b></td><td>${f.districtCodeTo||"—"}</td><td>${f.transporterCode}</td><td>${f.modelCode}</td>
+    <td class="n">${n(f.valFee)}</td><td class="n">${f.expectedDays}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có tuyến phí.</td></tr>';
+}
+load();
+</script>
+</body></html>

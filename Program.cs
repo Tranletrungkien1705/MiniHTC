@@ -1064,6 +1064,36 @@ app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, App
     return Results.Ok(new { r.TranspReqNo, status = r.Status });
 }).RequireAuthorization();
 
+// ===== Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2) =====
+app.MapGet("/api/transpfees", async (AppDbContext db, ITenantContext t, string? transporter, string? model) =>
+{
+    var q = db.TranspFees.Where(f => f.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(transporter)) q = q.Where(f => f.TransporterCode == transporter);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(f => f.ModelCode == model);
+    var items = await q.OrderBy(f => f.ProvinceCodeFrom).ThenBy(f => f.ProvinceCodeTo).Take(1000).Select(f => new
+    {
+        f.ProvinceCodeFrom, f.ProvinceCodeTo, f.DistrictCodeFrom, f.DistrictCodeTo, f.TransporterCode, f.ModelCode, f.ValFee, f.ExpectedDays
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/transpfees", async (TranspFeeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCodeFrom) || string.IsNullOrWhiteSpace(dto.ProvinceCodeTo)
+        || string.IsNullOrWhiteSpace(dto.TransporterCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "Cần tỉnh From/To + nhà VC + model." });
+    string pf = dto.ProvinceCodeFrom.Trim().ToUpperInvariant(), pt = dto.ProvinceCodeTo.Trim().ToUpperInvariant(),
+           tr = dto.TransporterCode.Trim().ToUpperInvariant(), md = dto.ModelCode.Trim().ToUpperInvariant(),
+           df = (dto.DistrictCodeFrom ?? "").Trim().ToUpperInvariant(), dt2 = (dto.DistrictCodeTo ?? "").Trim().ToUpperInvariant();
+    // upsert theo khoá tuyến đầy đủ (tỉnh+huyện From/To + NVC + model)
+    var f = await db.TranspFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ProvinceCodeFrom == pf && x.ProvinceCodeTo == pt
+        && (x.DistrictCodeFrom ?? "") == df && (x.DistrictCodeTo ?? "") == dt2 && x.TransporterCode == tr && x.ModelCode == md);
+    if (f is null) { f = new TranspFee { OrgId = t.OrgId, ProvinceCodeFrom = pf, ProvinceCodeTo = pt, DistrictCodeFrom = df, DistrictCodeTo = dt2, TransporterCode = tr, ModelCode = md }; db.TranspFees.Add(f); }
+    f.ValFee = dto.ValFee; f.ExpectedDays = dto.ExpectedDays; f.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { f.ProvinceCodeFrom, f.ProvinceCodeTo, f.TransporterCode, f.ModelCode, f.ValFee, f.ExpectedDays });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1160,4 +1190,5 @@ record BankBillDto(string BankCode, DateTime? BankBillDate, List<BankBillCarDto>
 record BankBillReceiveDto(DateTime? BankBillReciveDate);
 record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode);
 record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
+record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
 record RegisterOrgDto(string Name);
