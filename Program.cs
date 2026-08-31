@@ -1289,6 +1289,57 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
+app.MapGet("/api/dealerdeals", async (AppDbContext db, ITenantContext t, string? dealer, string? salesType, string? buyer) =>
+{
+    var q = db.DealerDeals.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(d => d.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(salesType)) q = q.Where(d => d.SalesType == salesType);
+    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(d => d.CustomerCodeBuyer == buyer);
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
+    {
+        d.DealNo, d.DealNoUser, d.DealerCode, d.CustomerCodeBuyer, d.SalesType, d.FlagPDI, d.DealDate,
+        cars = db.DealerDealDetails.Count(c => c.OrgId == t.OrgId && c.DealId == d.Id),
+        total = db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).Sum(c => (decimal?)c.PriceAFVAT) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerdeals", async (DealerDealDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.CustomerCodeBuyer)) return Results.BadRequest(new { error = "Cần khách hàng người mua." });
+    if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "Chưa chọn kiểu bán lẻ." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
+    var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+    var flagPdi = dto.FlagPDI == "0" ? "0" : "1";
+    if (flagPdi == "0" && string.IsNullOrWhiteSpace(dto.ReasonNotPDI)) return Results.BadRequest(new { error = "Không PDI phải nhập lý do." });
+    var no = "DL" + DateTime.Now.ToString("yyMMddHHmmss");
+    var d = new DealerDeal
+    {
+        OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        CustomerCodeBuyer = dto.CustomerCodeBuyer.Trim().ToUpperInvariant(), CustomerCodeDriver = dto.CustomerCodeDriver, CustomerCodeHolder = dto.CustomerCodeHolder,
+        DlrContractNo = dto.DlrContractNo, SalesType = dto.SalesType.Trim(), FlagPDI = flagPdi, ReasonNotPDI = dto.ReasonNotPDI
+    };
+    db.DealerDeals.Add(d); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.DealerDealDetails.Add(new DealerDealDetail { OrgId = t.OrgId, DealId = d.Id, CarId = c.CarId.Trim().ToUpperInvariant(), CusInvoiceNo = c.CusInvoiceNo, CusInvoiceDate = c.CusInvoiceDate, PriceAFVAT = c.PriceAFVAT });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { no });
+    var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
+        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT }).ToListAsync();
+    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
+}).RequireAuthorization();
+
 // ===== Chi tiết tờ khai hải quan (CtTkhq/CT_TKHQ — port 1:1 FrmNewCT_TKHQ, DMSales.Foton) =====
 app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? port) =>
 {
@@ -3526,4 +3577,6 @@ record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
 record SoRejectDto(string? Reason);
 record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
+record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);
+record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
 record RegisterOrgDto(string Name);

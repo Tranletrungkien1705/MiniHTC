@@ -1431,6 +1431,35 @@ public sealed class SalesOrderLine
     public DateTime? ApprovedDate { get; set; }
 }
 
+/// <summary>Giao dịch bán lẻ của đại lý (DealerDeal) — port 1:1 FrmNewDeal/FrmMngDeal (DMSales.Foton/SalesDealer). Đại lý bán xe cho khách: 3 vai trò KH (mua/lái/đứng tên), kiểu bán lẻ, cờ PDI.</summary>
+public sealed class DealerDeal
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string? DealNoUser { get; set; }            // số HĐ bán lẻ user
+    public string DealerCode { get; set; } = "";
+    public string CustomerCodeBuyer { get; set; } = "";  // người mua
+    public string? CustomerCodeDriver { get; set; }      // người lái
+    public string? CustomerCodeHolder { get; set; }      // người đứng tên
+    public string? DlrContractNo { get; set; }
+    public string SalesType { get; set; } = "";          // kiểu bán lẻ
+    public string FlagPDI { get; set; } = "1";           // 1 = có PDI, 0 = không
+    public string? ReasonNotPDI { get; set; }
+    public DateTime DealDate { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class DealerDealDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DealId { get; set; }
+    public string CarId { get; set; } = "";              // VIN/CarID
+    public string? CusInvoiceNo { get; set; }            // số hóa đơn khách
+    public DateTime? CusInvoiceDate { get; set; }
+    public decimal PriceAFVAT { get; set; }              // giá sau VAT
+}
+
 /// <summary>Giá xe thực tế theo VIN (UpdateCarPrice) — port 1:1 FrmUpdateCar (DMSales.Foton). Cập nhật đơn giá thực tế cho từng xe (batch).</summary>
 public sealed class CarActualPrice
 {
