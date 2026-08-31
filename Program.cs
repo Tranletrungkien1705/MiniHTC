@@ -224,6 +224,7 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("WorkflowStep", "Bước quy trình (FrmMst_WorkflowStep)"),
     ("ReasonCode", "Mã lý do chung (FrmMst_ReasonCode)"),
     ("UomMaster", "Đơn vị tính (FrmMst_UOM)"),
+    ("CostType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
