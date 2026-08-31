@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo phụ tùng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} tfoot td{font-weight:700;border-top:2px solid var(--line)} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+  .low{color:var(--bad);font-weight:700}
+</style></head>
+<body>
+<h1>Báo cáo phụ tùng dịch vụ <span class="muted">(port 1:1 FrmReportPartMinQuantity/TopProfit/TopRotate — TCMotor)</span></h1>
+<div class="tabs">
+  <div class="tab on" id="tA" onclick="tab('A')">Dưới định mức</div>
+  <div class="tab" id="tB" onclick="tab('B')">Top lãi cao</div>
+  <div class="tab" id="tC" onclick="tab('C')">Top luân chuyển</div>
+</div>
+
+<div id="paneA">
+  <div class="row"><button class="primary" onclick="repA()">Xem</button></div>
+  <div class="grid2" id="aKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th>ĐVT</th><th class="num">Tồn</th><th class="num">Định mức</th><th class="num">Thiếu</th><th>Vị trí</th></tr></thead>
+  <tbody id="aRows"><tr><td colspan="7" class="muted">Nhấn "Xem".</td></tr></tbody>
+  <tfoot id="aFoot"></tfoot></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="row"><div><label>Top N</label><input id="bTop" type="number" value="20" style="width:80px"></div><button class="primary" onclick="repB()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th class="num">Giá bán</th><th class="num">Giá vốn</th><th class="num">Lãi/ĐV</th><th class="num">% Lãi</th></tr></thead>
+  <tbody id="bRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneC" style="display:none">
+  <div class="row"><div><label>Top N</label><input id="cTop" type="number" value="20" style="width:80px"></div><button class="primary" onclick="repC()">Xem</button></div>
+  <div class="grid2" id="cKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th class="num">Tổng xuất</th><th class="num">Số lần xuất</th></tr></thead>
+  <tbody id="cRows"><tr><td colspan="4" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+  <p class="muted">Chỉ tính phiếu xuất kho đã duyệt (Confirmed).</p>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function tab(x){ ["A","B","C"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function repA(){ await token();
+  const r=await fetch("/api/report/part-minquantity",{headers:H()}); const d=await r.json();
+  F("aKpi").innerHTML=`<div class="kpi"><b style="color:var(--bad)">${d.count}</b><span class="muted">Mã dưới định mức</span></div><div class="kpi"><b>${M(d.totalShortage)}</b><span class="muted">Tổng thiếu</span></div>`;
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num low">${M(o.quantity)}</td><td class="num">${M(o.minQuantity)}</td><td class="num low">${M(o.shortage)}</td><td>${esc(o.location)}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có PT dưới định mức.</td></tr>';
+  F("aFoot").innerHTML=(d.rows&&d.rows.length)?`<tr><td colspan="5">TỔNG THIẾU</td><td class="num">${M(d.totalShortage)}</td><td></td></tr>`:"";
+}
+async function repB(){ await token();
+  const r=await fetch("/api/report/part-topprofit?top="+(+F("bTop").value||20),{headers:H()}); const d=await r.json();
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td class="num">${M(o.price)}</td><td class="num">${M(o.cost)}</td><td class="num" style="color:var(--ok)">${M(o.unitProfit)}</td><td class="num">${o.marginPct==null?"—":o.marginPct+"%"}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có dữ liệu.</td></tr>';
+}
+async function repC(){ await token();
+  const r=await fetch("/api/report/part-toprotate?top="+(+F("cTop").value||20),{headers:H()}); const d=await r.json();
+  F("cKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Mã đã xuất</span></div><div class="kpi"><b>${M(d.totalOut)}</b><span class="muted">Tổng SL xuất</span></div>`;
+  F("cRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td class="num">${M(o.totalOut)}</td><td class="num">${o.timesOut}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có phiếu xuất đã duyệt.</td></tr>';
+}
+</script>
+</body></html>

@@ -4214,6 +4214,39 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Báo cáo phụ tùng (report tái-dùng ServicePart + ServiceStockOut — port 1:1 FrmReportPartMinQuantity/TopProfit/TopRotate, TCMotor) =====
+// Phụ tùng dưới định mức tồn (Quantity < MinQuantity) — cần đặt hàng bổ sung.
+app.MapGet("/api/report/part-minquantity", async (AppDbContext db, ITenantContext t) =>
+{
+    var rows = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.Quantity < x.MinQuantity)
+        .OrderBy(x => x.Quantity - x.MinQuantity)
+        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Quantity, x.MinQuantity, shortage = x.MinQuantity - x.Quantity, x.Location, x.PartGroupCode }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, totalShortage = rows.Sum(r => r.shortage), rows });
+}).RequireAuthorization();
+
+// Top phụ tùng lãi cao: lợi nhuận đơn vị = giá bán - giá vốn, và % lãi trên giá vốn.
+app.MapGet("/api/report/part-topprofit", async (AppDbContext db, ITenantContext t, int? top) =>
+{
+    var n = top is > 0 and <= 200 ? top.Value : 20;
+    var rows = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.Price > 0)
+        .Select(x => new { x.PartCode, x.PartName, x.Price, x.Cost, unitProfit = x.Price - x.Cost,
+            marginPct = x.Cost > 0 ? Math.Round((x.Price - x.Cost) / x.Cost * 100, 1) : (decimal?)null })
+        .OrderByDescending(x => x.unitProfit).Take(n).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+// Top phụ tùng luân chuyển: tổng số lượng đã xuất kho (chỉ phiếu đã duyệt) theo mã PT.
+app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext t, int? top) =>
+{
+    var n = top is > 0 and <= 200 ? top.Value : 20;
+    var confirmedIds = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed").Select(o => o.Id);
+    var rows = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && confirmedIds.Contains(l.ServiceStockOutId))
+        .GroupBy(l => new { l.PartCode, l.PartName })
+        .Select(g => new { g.Key.PartCode, g.Key.PartName, totalOut = g.Sum(x => x.Quantity), timesOut = g.Count() })
+        .OrderByDescending(x => x.totalOut).Take(n).ToListAsync();
+    return Results.Ok(new { count = rows.Count, totalOut = rows.Sum(r => r.totalOut), rows });
+}).RequireAuthorization();
+
 // ===== Lịch hẹn dịch vụ + bảng khoang/bay (ServiceAppointment — port 1:1 FrmAppList + FrmShowCavityStatus, TCMotor) =====
 app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status, DateTime? date) =>
 {
