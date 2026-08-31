@@ -7280,6 +7280,30 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     return Results.Ok(new { c.CusCode, c.CusName });
 }).RequireAuthorization();
 
+// Nhập khách hàng hàng loạt từ Excel (port 1:1 FrmImportCustomer) — tái dùng ServiceCustomer.
+app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    var seen = new HashSet<string>();
+    int created = 0, updated = 0;
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i]; var line = i + 1;
+        if (string.IsNullOrWhiteSpace(r.CusName)) { errors.Add(new { line, error = "Thiếu tên khách hàng." }); continue; }
+        if (string.IsNullOrWhiteSpace(r.Mobile) && string.IsNullOrWhiteSpace(r.Tel)) { errors.Add(new { line, name = r.CusName, error = "Cần SĐT di động hoặc cố định." }); continue; }
+        var code = string.IsNullOrWhiteSpace(r.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + line : r.CusCode.Trim().ToUpperInvariant();
+        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã khách hàng bị trùng trong file nhập." }); continue; }
+        var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
+        if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); created++; }
+        else updated++;
+        c.CusName = r.CusName; c.Mobile = r.Mobile; c.Tel = r.Tel; c.Address = r.Address; c.Email = r.Email; c.UpdatedAt = DateTime.Now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+}).RequireAuthorization();
+
 // ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
 string[] _careTypes = { "CARE24H", "CARE72H", "DOB", "MAINT" };
 app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
@@ -8574,6 +8598,8 @@ record ServicePartDto(string PartCode, string? PartName, string? EngName, string
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile);
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
+record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email);
+record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
