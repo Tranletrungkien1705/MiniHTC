@@ -1463,6 +1463,49 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Yêu cầu đóng thùng (Sto_CBReq + Detail) — port 1:1 FrmNewCBReq (2010.HTC/Sales/Purchase). Đóng thùng lô xe xuất khẩu theo VIN, kho đi→kho đến + loại đóng thùng.</summary>
+public sealed class CBReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CBReqNo { get; set; } = "";
+    public string Status { get; set; } = "Draft"; // Draft → Confirmed / Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ConfirmedAt { get; set; }
+}
+public sealed class CBReqDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long CBReqId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? StorageCodeFrom { get; set; }
+    public string StorageCodeTo { get; set; } = "";
+    public string? TypeCB { get; set; }
+    public string? Remark { get; set; }
+}
+
+/// <summary>Sắp xếp/chuyển kho (Sto_StorageRearrange + Detail) — port 1:1 FrmNewSC (2010.HTC/Sales/Purchase). Chuyển vị trí lưu kho lô xe theo VIN, kho hiện tại→kho đến.</summary>
+public sealed class StorageRearrange
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SCNo { get; set; } = "";
+    public string Status { get; set; } = "Draft"; // Draft → Confirmed / Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ConfirmedAt { get; set; }
+}
+public sealed class StorageRearrangeDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StorageRearrangeId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? StorageCodeFrom { get; set; }
+    public string StorageCodeTo { get; set; } = "";
+    public string? Remark { get; set; }
+}
+
 /// <summary>Đề nghị bảo hiểm (Ins_InsuranceReq + Dtl) — port 1:1 FrmNewInsuranceReq (2010.HTC/Sales/Purchase). Đề nghị mua bảo hiểm cho lô VIN theo hãng + loại hình.</summary>
 public sealed class InsuranceReq
 {

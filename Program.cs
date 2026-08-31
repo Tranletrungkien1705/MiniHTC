@@ -1289,6 +1289,110 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu đóng thùng (CBReq — port 1:1 FrmNewCBReq, 2010.HTC/Sales/Purchase) =====
+app.MapGet("/api/cbreqs", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.CBReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.CBReqNo, r.Status, r.CreatedAt, r.ConfirmedAt,
+        cars = db.CBReqDetails.Count(c => c.OrgId == t.OrgId && c.CBReqId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cbreqs", async (CBReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    if (cars.Any(c => string.IsNullOrWhiteSpace(c.StorageCodeTo))) return Results.BadRequest(new { error = "Mã kho đến không được để trống." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "CB" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new CBReq { OrgId = t.OrgId, CBReqNo = no, Status = "Draft" };
+    db.CBReqs.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.CBReqDetails.Add(new CBReqDetail { OrgId = t.OrgId, CBReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), TypeCB = c.TypeCB, Remark = c.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.CBReqNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/cbreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.CBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.CBReqDetails.Where(c => c.OrgId == t.OrgId && c.CBReqId == r.Id)
+        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.TypeCB, c.Remark }).ToListAsync();
+    return Results.Ok(new { r.CBReqNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.CBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận Yêu cầu đóng thùng này" : "Không thể hủy Yêu cầu đóng thùng này" });
+    if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
+    else r.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.CBReqNo, status = r.Status });
+}).RequireAuthorization();
+
+// ===== Sắp xếp/chuyển kho (StorageRearrange/SC — port 1:1 FrmNewSC, 2010.HTC/Sales/Purchase) =====
+app.MapGet("/api/storagerearranges", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.StorageRearranges.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.SCNo, r.Status, r.CreatedAt, r.ConfirmedAt,
+        cars = db.StorageRearrangeDetails.Count(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/storagerearranges", async (StorageRearrangeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    if (cars.Any(c => string.IsNullOrWhiteSpace(c.StorageCodeTo))) return Results.BadRequest(new { error = "Mã kho đến không được để trống." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "SC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new StorageRearrange { OrgId = t.OrgId, SCNo = no, Status = "Draft" };
+    db.StorageRearranges.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.StorageRearrangeDetails.Add(new StorageRearrangeDetail { OrgId = t.OrgId, StorageRearrangeId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), Remark = c.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.SCNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.StorageRearrangeDetails.Where(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
+        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark }).ToListAsync();
+    return Results.Ok(new { r.SCNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/storagerearranges/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Không thể xử lý Yêu cầu chuyển kho này" });
+    if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
+    else r.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.SCNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Đề nghị bảo hiểm (InsuranceReq — port 1:1 FrmNewInsuranceReq, 2010.HTC/Sales/Purchase) =====
 app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, string? status, string? company) =>
 {
@@ -4305,6 +4409,10 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);
+record CBReqDto(List<CBReqCarDto>? Cars);
+record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
+record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars);
 record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
 record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars);
 record CarLocationDto(string VIN, string? LocationOld, string Location);
