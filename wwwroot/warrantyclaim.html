@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đề nghị bảo hành</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706;--info:#0891b2}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1060px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .s-Pending{color:var(--warn)} .s-Sent{color:var(--info)} .s-Confirmed{color:var(--accent)} .s-Accepted{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Reverted{color:var(--warn)}
+  .msg{font-size:13px;margin-left:6px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-top:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+</style></head>
+<body>
+<h1>Đề nghị bảo hành dịch vụ <span class="muted">(port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved — TCMotor)</span></h1>
+<p class="muted">Đại lý gửi đề nghị bảo hành theo RO → HTC xem xét → duyệt. Vòng đời: Chưa gửi → Chờ xem xét → Chờ duyệt → Chấp thuận/Từ chối; HTC hoàn trả để sửa.</p>
+
+<div class="card"><h3 style="margin-top:0">Tạo đề nghị (đại lý)</h3>
+  <div class="row">
+    <div><label>Mã đại lý</label><input id="fDealer" style="width:100px"></div>
+    <div><label>Số RO</label><input id="fRO" style="width:110px"></div>
+    <div><label>Số khung VIN</label><input id="fVin" style="width:140px"></div>
+    <div><label>Biển số</label><input id="fPlate" style="width:110px"></div>
+    <div><label>Loại BH</label><input id="fType" style="width:100px"></div>
+    <div><label>Mã PT</label><input id="fPart" style="width:100px"></div>
+    <div><label>Số tiền</label><input id="fAmount" type="number" style="width:120px" value="0"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><div style="flex:1"><label>Mô tả lỗi/bảo hành</label><input id="fDesc" style="width:100%"></div>
+  <button class="primary" onclick="create2()">Tạo (Chưa gửi)</button><span id="msg" class="msg"></span></div>
+</div>
+
+<div class="row" style="margin:8px 0">
+  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="Pending">Chưa gửi</option><option value="Sent">Chờ xem xét</option><option value="Confirmed">Chờ duyệt</option><option value="Accepted">Chấp thuận</option><option value="Rejected">Từ chối</option><option value="Reverted">Hoàn trả</option></select></div>
+  <div><label>Biển số</label><input id="qPlate" style="width:110px"></div>
+  <div><label>VIN</label><input id="qVin" style="width:120px"></div>
+  <button onclick="load()">Xem</button>
+</div>
+<div class="grid2" id="kpis"></div>
+<div class="wrap"><table><thead><tr><th>Số ĐN</th><th>Đại lý</th><th>RO</th><th>VIN</th><th>Biển số</th><th>Loại</th><th class="num">Tiền</th><th>Trạng thái</th><th>Ghi chú HTC</th><th>Thao tác</th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={Pending:"Chưa gửi",Sent:"Chờ xem xét",Confirmed:"Chờ duyệt",Accepted:"Chấp thuận",Rejected:"Từ chối",Reverted:"Hoàn trả"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
+async function create2(){ await token();
+  const body={DealerCode:F("fDealer").value,RONo:F("fRO").value,Vin:F("fVin").value,PlateNo:F("fPlate").value,WarrantyType:F("fType").value,PartCode:F("fPart").value,Description:F("fDesc").value,Amount:+F("fAmount").value||0};
+  const r=await fetch("/api/warrantyclaims",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
+  m("msg","Đã tạo "+d.claimNo); load();
+}
+async function act(id,action){ await token();
+  let note=null;
+  if(action==="reject"||action==="revert"){ note=prompt("Lý do "+(action==="reject"?"từ chối":"hoàn trả")+":"); if(!note) return; }
+  const r=await fetch("/api/warrantyclaims/"+id+"/action",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Action:action,Note:note})});
+  const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
+}
+function acts(o){ let h="";
+  if(o.status==="Pending"||o.status==="Reverted") h+=`<button class="link" onclick="act(${o.id},'submit')">Gửi</button>`;
+  if(o.status==="Sent") h+=`<button class="link" onclick="act(${o.id},'review')">Tiếp nhận</button>`;
+  if(o.status==="Confirmed") h+=`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button>`;
+  if(o.status==="Sent"||o.status==="Confirmed") h+=`<button class="link" onclick="act(${o.id},'reject')">Từ chối</button><button class="link" onclick="act(${o.id},'revert')">Hoàn trả</button>`;
+  return h; }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("qStatus").value)p.set("status",F("qStatus").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qVin").value)p.set("vin",F("qVin").value);
+  const r=await fetch("/api/warrantyclaims?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Tổng ĐN</span></div><div class="kpi"><b style="color:var(--warn)">${d.pending}</b><span class="muted">Chưa gửi</span></div><div class="kpi"><b style="color:var(--info)">${d.sent}</b><span class="muted">Chờ xem xét</span></div><div class="kpi"><b style="color:var(--ok)">${d.accepted}</b><span class="muted">Chấp thuận</span></div><div class="kpi"><b>${M(d.totalAmount)}</b><span class="muted">Tổng tiền</span></div>`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.claimNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.rONo)}</td><td>${esc(o.vin)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.warrantyType)}</td><td class="num">${M(o.amount)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${esc(o.htcNote)}</td><td>${acts(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có đề nghị.</td></tr>';
+}
+</script>
+</body></html>

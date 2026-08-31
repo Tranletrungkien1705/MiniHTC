@@ -952,6 +952,27 @@ public sealed class CustomerCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
+public sealed class ServiceWarrantyClaim
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ClaimNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? RONo { get; set; }
+    public string? Vin { get; set; }
+    public string? PlateNo { get; set; }
+    public string? WarrantyType { get; set; }
+    public string? PartCode { get; set; }
+    public string? Description { get; set; }
+    public decimal Amount { get; set; }
+    // Pending(Chưa gửi) -> Sent(Chờ xem xét) -> Confirmed(Chờ duyệt) -> Accepted/Rejected; Reverted(HTC hoàn trả) quay lại đại lý.
+    public string Status { get; set; } = "Pending";
+    public string? HtcNote { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare — port 1:1 FrmCustomerCare, TCMotor DMSCarSv/Customer):
 /// CRM follow-up. CareType: CARE24H/CARE72H/DOB(sinh nhật)/MAINT(nhắc bảo dưỡng). Pending→Contacted→Closed.</summary>
 public sealed class CustomerCare

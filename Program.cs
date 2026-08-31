@@ -4214,6 +4214,64 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị bảo hành dịch vụ (ServiceWarrantyClaim — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved, TCMotor) =====
+app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? vin, string? dealer) =>
+{
+    var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin != null && x.Vin.Contains(vin!));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HtcNote
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
+        pending = items.Count(i => i.Status == "Pending"), sent = items.Count(i => i.Status == "Sent"),
+        accepted = items.Count(i => i.Status == "Accepted"), rejected = items.Count(i => i.Status == "Rejected"), items });
+}).RequireAuthorization();
+
+// Đại lý tạo đề nghị bảo hành (theo RO). Amount >= 0; cần VIN hoặc biển số.
+app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.PlateNo))
+        return Results.BadRequest(new { error = "Cần số khung (VIN) hoặc biển số." });
+    if (dto.Amount < 0) return Results.BadRequest(new { error = "Số tiền bảo hành không được âm." });
+    var no = "WC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new ServiceWarrantyClaim { OrgId = t.OrgId, ClaimNo = no, DealerCode = dto.DealerCode, RONo = dto.RONo,
+        Vin = dto.Vin, PlateNo = dto.PlateNo, WarrantyType = dto.WarrantyType, PartCode = dto.PartCode, Description = dto.Description,
+        Amount = dto.Amount, Status = "Pending" };
+    db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.ClaimNo, c.Status });
+}).RequireAuthorization();
+
+// Chuyển trạng thái theo máy trạng thái duyệt bảo hành (submit/review/approve/reject/revert).
+app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var act = (dto.Action ?? "").Trim().ToLowerInvariant();
+    // (action, các trạng thái nguồn hợp lệ, trạng thái đích)
+    (string[] from, string to) rule = act switch
+    {
+        "submit"  => (new[] { "Pending", "Reverted" }, "Sent"),
+        "review"  => (new[] { "Sent" }, "Confirmed"),
+        "approve" => (new[] { "Confirmed" }, "Accepted"),
+        "reject"  => (new[] { "Sent", "Confirmed" }, "Rejected"),
+        "revert"  => (new[] { "Sent", "Confirmed" }, "Reverted"),
+        _ => (Array.Empty<string>(), "")
+    };
+    if (rule.to == "") return Results.BadRequest(new { error = "Hành động không hợp lệ." });
+    if (!rule.from.Contains(c.Status)) return Results.BadRequest(new { error = $"Không thể '{act}' khi đang ở trạng thái {c.Status}." });
+    if ((act == "reject" || act == "revert") && string.IsNullOrWhiteSpace(dto.Note))
+        return Results.BadRequest(new { error = "Từ chối/hoàn trả phải ghi lý do." });
+    c.Status = rule.to;
+    if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
+    c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.Status });
+}).RequireAuthorization();
+
 // ===== Báo cáo nhập-xuất-tồn + thẻ kho (report tái-dùng ServiceStockIn/Out — port 1:1 FrmReportInOutStock + FrmReportCardStock, TCMotor) =====
 // Nhập-xuất-tồn theo mã PT: tổng nhập (phiếu Confirmed), tổng xuất (phiếu Confirmed), tồn hiện tại (ServicePart.Quantity).
 app.MapGet("/api/report/stock-inout", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
@@ -9472,6 +9530,8 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
+record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note);
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
