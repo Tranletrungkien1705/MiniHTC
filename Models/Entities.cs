@@ -2819,6 +2819,18 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Ký tự VIN → năm sản xuất thực tế + trạng thái lắp ráp — port 1:1 FrmMst_VINProductionYear_Actual (Tbl_Mst_VINProductionYear_Actual).</summary>
+public sealed class VinProductionYear
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VinChar { get; set; } = "";        // VINCHARACTERS: ký tự VIN đại diện năm (vị trí 10)
+    public string ProductionYear { get; set; } = ""; // PRODUCTIONYEAR: năm SX
+    public string? AssemblyStatus { get; set; }       // ASSEMBLYSTATUS: CKD/CBU...
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Biên độ tỉ lệ đặt hàng/kế hoạch theo đại lý + model — port 1:1 FrmMstTiLeDatHangKeHoach (Tbl_Mst_AmplitudeApprOrd).</summary>
 public sealed class OrderAmplitude
 {

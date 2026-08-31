@@ -161,7 +161,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("Training", "Khóa đào tạo (FrmMst_TrainingMng)"),
     ("SalesManCert", "Chứng chỉ NVBH (FrmMst_SalesManCertificateMng)"),
     ("StorageGlobal", "Kho ảo (FrmMst_StorageGlobal)"),
-    ("ProductionYear", "Năm SX VIN (FrmMst_VINProductionYear_Actual)"),
     ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
     // ---- TCMotor (2021.1) service/bảo hành ----
@@ -3295,6 +3294,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Ký tự VIN → năm sản xuất (VinProductionYear — port 1:1 FrmMst_VINProductionYear_Actual, Admin/Product) =====
+app.MapGet("/api/vinproductionyears", async (AppDbContext db, ITenantContext t, string? vinChar, string? year, string? active) =>
+{
+    var q = db.VinProductionYears.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vinChar)) q = q.Where(x => x.VinChar == vinChar!.ToUpper());
+    if (!string.IsNullOrWhiteSpace(year)) q = q.Where(x => x.ProductionYear == year);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderBy(x => x.VinChar).Take(500)
+        .Select(x => new { x.VinChar, x.ProductionYear, x.AssemblyStatus, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo ký tự VIN + trạng thái lắp ráp (cùng 1 ký tự có thể khác năm theo CKD/CBU).
+app.MapPost("/api/vinproductionyears", async (VinProductionYearDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VinChar)) return Results.BadRequest(new { error = "Chưa nhập ký tự VIN." });
+    if (string.IsNullOrWhiteSpace(dto.ProductionYear)) return Results.BadRequest(new { error = "Chưa nhập năm sản xuất." });
+    var vc = dto.VinChar.Trim().ToUpperInvariant(); var asm = (dto.AssemblyStatus ?? "").Trim().ToUpperInvariant();
+    var ex = await db.VinProductionYears.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VinChar == vc && (x.AssemblyStatus ?? "") == asm);
+    if (ex is not null)
+    {
+        ex.ProductionYear = dto.ProductionYear.Trim(); ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.VinChar, ex.AssemblyStatus, updated = true });
+    }
+    var r = new VinProductionYear { OrgId = t.OrgId, VinChar = vc, ProductionYear = dto.ProductionYear.Trim(), AssemblyStatus = asm, FlagActive = "1" };
+    db.VinProductionYears.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.VinChar, r.AssemblyStatus, updated = false });
+}).RequireAuthorization();
+
+app.MapDelete("/api/vinproductionyears/{vinChar}/{asm}", async (string vinChar, string asm, AppDbContext db, ITenantContext t) =>
+{
+    vinChar = vinChar.Trim().ToUpperInvariant(); asm = asm.Trim().ToUpperInvariant();
+    if (asm == "-") asm = "";
+    var x = await db.VinProductionYears.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.VinChar == vinChar && (v.AssemblyStatus ?? "") == asm);
+    if (x is null) return Results.NotFound(new { vinChar, asm });
+    db.VinProductionYears.Remove(x); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = vinChar });
 }).RequireAuthorization();
 
 // ===== Biên độ tỉ lệ đặt hàng/kế hoạch (OrderAmplitude — port 1:1 FrmMstTiLeDatHangKeHoach, Admin/Product) =====
@@ -7552,6 +7591,7 @@ record DelayTransportDto(string DealerCode, string? DealerName, string StorageCo
 record WarningEmailDto(string WarningType, string? WarningName, string EmailList);
 record ParamPdiDto(string ParamCode, string? ParamName, string? ParamValue);
 record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode, string? ModelName, decimal AmplitudeOrdMax, decimal AmplitudePlanMax);
+record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
