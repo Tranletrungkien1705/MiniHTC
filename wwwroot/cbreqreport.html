@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo chuyển kho</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:18px;display:block} .box span{font-size:11px;opacity:.7}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px} @media(max-width:640px){.cols{grid-template-columns:1fr}}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Confirmed{color:var(--ok)} .s-Cancelled{color:var(--bad)}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Báo cáo chuyển kho xe <span class="muted">(port 1:1 báo cáo CBReq — Report)</span></h1>
+<p class="muted">Tổng hợp yêu cầu chuyển kho theo tuyến kho (đi→đến) / loại chuyển / trạng thái. Nguồn = màn Chuyển kho.</p>
+<div class="bar">
+  <div><label>Kho đi</label><input id="qff" style="width:90px"></div>
+  <div><label>Kho đến</label><input id="qtt" style="width:90px"></div>
+  <div><label>Loại chuyển</label><input id="qy" style="width:80px"></div>
+  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Confirmed">Đã xác nhận</option><option value="Cancelled">Đã hủy</option></select></div>
+  <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
+</div>
+<div class="kpi" id="kpi" style="margin:8px 0"></div>
+<div class="cols">
+  <div><h3>Theo tuyến kho</h3><div class="wrap"><table><thead><tr><th>Tuyến (đi→đến)</th><th class="num">Số xe</th></tr></thead><tbody id="rRows"></tbody></table></div></div>
+  <div><h3>Theo loại chuyển</h3><div class="wrap"><table><thead><tr><th>Loại</th><th class="num">Số xe</th></tr></thead><tbody id="yRows"></tbody></table></div></div>
+</div>
+<h3>Chi tiết yêu cầu</h3>
+<div class="wrap"><table><thead><tr><th>Số YC</th><th class="num">Số xe</th><th>Trạng thái</th><th>Ngày</th></tr></thead><tbody id="rows"><tr><td colspan="4" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const ST={Draft:"Nháp",Confirmed:"Đã xác nhận",Cancelled:"Đã hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function msg(t){ F("msg").textContent=t; }
+async function run(){ await token(); msg("");
+  const r=await fetch(`/api/report/cbreq?storageFrom=${F("qff").value}&storageTo=${F("qtt").value}&typeCB=${F("qy").value}&status=${F("qs").value}`,{headers:H()});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  F("kpi").innerHTML=`<div class="box"><b>${d.total}</b><span>Số YC</span></div><div class="box"><b>${d.totalCars}</b><span>Số xe</span></div><div class="box"><b>${d.confirmed}</b><span>Đã xác nhận</span></div>`;
+  F("rRows").innerHTML=(d.byRoute||[]).map(o=>`<tr><td><b>${o.route}</b></td><td class="num">${o.cars}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">—</td></tr>';
+  F("yRows").innerHTML=(d.byType||[]).map(o=>`<tr><td>${o.typeCB}</td><td class="num">${o.cars}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">—</td></tr>';
+  F("rows").innerHTML=(d.detail||[]).map(o=>`<tr><td><b>${o.cBReqNo}</b></td><td class="num">${o.cars}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.createdAt}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

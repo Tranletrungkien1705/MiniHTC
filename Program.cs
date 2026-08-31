@@ -3071,6 +3071,32 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo chuyển kho xe (port 1:1 báo cáo CBReq) — tái dùng CBReq + CBReqDetail =====
+app.MapGet("/api/report/cbreq", async (AppDbContext db, ITenantContext t, string? storageFrom, string? storageTo, string? typeCB, string? status) =>
+{
+    var q = db.CBReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var lq = db.CBReqDetails.Where(l => l.OrgId == t.OrgId && ids.Contains(l.CBReqId));
+    if (!string.IsNullOrWhiteSpace(storageFrom)) lq = lq.Where(l => l.StorageCodeFrom == storageFrom);
+    if (!string.IsNullOrWhiteSpace(storageTo)) lq = lq.Where(l => l.StorageCodeTo == storageTo);
+    if (!string.IsNullOrWhiteSpace(typeCB)) lq = lq.Where(l => l.TypeCB == typeCB);
+    var lines = await lq.ToListAsync();
+    var byRoute = lines.GroupBy(l => new { From = string.IsNullOrEmpty(l.StorageCodeFrom) ? "(chưa rõ)" : l.StorageCodeFrom, To = string.IsNullOrEmpty(l.StorageCodeTo) ? "(chưa rõ)" : l.StorageCodeTo })
+        .Select(g => new { route = g.Key.From + " → " + g.Key.To, cars = g.Count() }).OrderByDescending(x => x.cars).ToList();
+    var byType = lines.GroupBy(l => string.IsNullOrEmpty(l.TypeCB) ? "(chưa rõ)" : l.TypeCB).Select(g => new { typeCB = g.Key, cars = g.Count() }).OrderByDescending(x => x.cars).ToList();
+    var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    // cars per req
+    var carByReq = lines.GroupBy(l => l.CBReqId).ToDictionary(g => g.Key, g => g.Count());
+    var detail = reqs.Where(r => carByReq.ContainsKey(r.Id) || string.IsNullOrEmpty(storageFrom + storageTo + typeCB))
+        .OrderByDescending(r => r.Id).Take(500).Select(r => new
+        {
+            r.CBReqNo, r.Status, cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0, createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+        }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = lines.Count, confirmed = reqs.Count(r => r.Status == "Confirmed"), byRoute, byType, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
