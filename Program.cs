@@ -1848,6 +1848,71 @@ app.MapPost("/api/grtclaimexts/{no}/sign", async (string no, GrtClaimExtSignDto 
     return Results.Ok(new { g.GrtClaimExtNo, signStatus = g.SignStatus, g.FileName, signedCars = cars.Count });
 }).RequireAuthorization();
 
+// ===== Hỗ trợ sửa dữ liệu theo VIN (SupportRecord — port 1:1 cụm Support: giá/ngày giao/mã NVBH/mã NH) =====
+app.MapGet("/api/support/records", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? dealer) =>
+{
+    var q = db.SupportRecords.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(r => r.DealNo.Contains(dealNo!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(r => r.VIN.Contains(vin!.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    var items = await q.OrderByDescending(r => r.Id).Take(500)
+        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.Price, r.DeliveryDate, r.SalesManCode, r.BankCode, r.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/support/records", async (SupportRecordDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
+    var vin = dto.VIN.Trim().ToUpperInvariant();
+    var ex = await db.SupportRecords.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.VIN == vin);
+    if (ex is not null)
+    {
+        ex.DealNo = dto.DealNo ?? ""; ex.DealerCode = dto.DealerCode ?? ""; ex.Price = dto.Price; ex.DeliveryDate = dto.DeliveryDate; ex.SalesManCode = dto.SalesManCode ?? ""; ex.BankCode = dto.BankCode ?? ""; ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.VIN, updated = true });
+    }
+    var r2 = new SupportRecord { OrgId = t.OrgId, DealNo = dto.DealNo ?? "", VIN = vin, DealerCode = dto.DealerCode ?? "", Price = dto.Price, DeliveryDate = dto.DeliveryDate, SalesManCode = dto.SalesManCode ?? "", BankCode = dto.BankCode ?? "" };
+    db.SupportRecords.Add(r2); await db.SaveChangesAsync();
+    return Results.Ok(new { r2.VIN, updated = false });
+}).RequireAuthorization();
+
+// Patch 1 field (audit old->new). field = price|deliveryDate|salesManCode|bankCode.
+app.MapPost("/api/support/records/{vin}/patch", async (string vin, SupportPatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    vin = vin.Trim().ToUpperInvariant();
+    var r = await db.SupportRecords.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    if (r is null) return Results.NotFound(new { vin });
+    var field = (dto.Field ?? "").Trim();
+    if (field is not ("price" or "deliveryDate" or "salesManCode" or "bankCode")) return Results.BadRequest(new { error = "Field không hợp lệ (price|deliveryDate|salesManCode|bankCode)." });
+    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+    string oldVal;
+    switch (field)
+    {
+        case "price":
+            if (!decimal.TryParse(dto.Value, out var newPrice) || newPrice < 0) return Results.BadRequest(new { error = "Giá không hợp lệ." });
+            oldVal = r.Price.ToString(); r.Price = newPrice; break;
+        case "deliveryDate":
+            if (!DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày giao không hợp lệ." });
+            oldVal = r.DeliveryDate?.ToString("yyyy-MM-dd") ?? ""; r.DeliveryDate = newDate; break;
+        case "salesManCode":
+            oldVal = r.SalesManCode; r.SalesManCode = dto.Value.Trim(); break;
+        default: // bankCode
+            oldVal = r.BankCode; r.BankCode = dto.Value.Trim(); break;
+    }
+    r.UpdatedAt = DateTime.Now;
+    db.SupportPatchLogs.Add(new SupportPatchLog { OrgId = t.OrgId, SupportRecordId = r.Id, VIN = vin, Field = field, OldValue = oldVal, NewValue = dto.Value.Trim() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.VIN, field, oldValue = oldVal, newValue = dto.Value.Trim() });
+}).RequireAuthorization();
+
+app.MapGet("/api/support/records/{vin}/history", async (string vin, AppDbContext db, ITenantContext t) =>
+{
+    vin = vin.Trim().ToUpperInvariant();
+    var logs = await db.SupportPatchLogs.Where(l => l.OrgId == t.OrgId && l.VIN == vin)
+        .OrderByDescending(l => l.Id).Take(200).Select(l => new { l.Field, l.OldValue, l.NewValue, l.PatchedAt }).ToListAsync();
+    return Results.Ok(new { vin, count = logs.Count, logs });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5857,6 +5922,8 @@ record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, strin
 record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
 record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars);
 record GrtClaimExtSignDto(string FileName);
+record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal Price, DateTime? DeliveryDate, string? SalesManCode, string? BankCode);
+record SupportPatchDto(string Field, string Value);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

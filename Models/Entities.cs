@@ -2479,6 +2479,35 @@ public sealed class GrtClaimExtCar
     public string SignStatusDtl { get; set; } = "P";
 }
 
+/// <summary>Bản ghi hỗ trợ sửa dữ liệu (Deal/HĐ theo VIN) — port 1:1 cụm Support (FrmSupportUpdatePrice/CarDeliveryDate/SMCode/BankCode).</summary>
+public sealed class SupportRecord
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public decimal Price { get; set; }
+    public DateTime? DeliveryDate { get; set; }
+    public string SalesManCode { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Log patch từng field (audit old→new) — port 1:1 cụm Support (bulk field-fix).</summary>
+public sealed class SupportPatchLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SupportRecordId { get; set; }
+    public string VIN { get; set; } = "";
+    public string Field { get; set; } = "";      // price/deliveryDate/salesManCode/bankCode
+    public string OldValue { get; set; } = "";
+    public string NewValue { get; set; } = "";
+    public DateTime PatchedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
