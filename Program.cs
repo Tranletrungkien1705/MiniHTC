@@ -1227,6 +1227,36 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar) =====
+app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string? plate, string? vin, string? cus) =>
+{
+    var q = db.CustomerCars.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo.Contains(plate.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(cus)) q = q.Where(c => (c.CusName != null && c.CusName.Contains(cus)) || (c.CusPhone != null && c.CusPhone.Contains(cus)));
+    var items = await q.OrderBy(c => c.PlateNo).Take(500).Select(c => new
+    { c.Vin, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, c.CusCode, c.CusName, c.CusPhone, c.SaleDate }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.PlateNo))
+        return Results.BadRequest(new { error = "Cần VIN hoặc biển số." });
+    var vin = (dto.Vin ?? "").Trim().ToUpperInvariant();
+    var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
+    // upsert theo VIN nếu có, ngược lại theo biển số
+    CustomerCar? c = null;
+    if (vin.Length > 0) c = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
+    if (c is null && plate.Length > 0) c = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == "" && x.PlateNo == plate);
+    if (c is null) { c = new CustomerCar { OrgId = t.OrgId, Vin = vin, PlateNo = plate }; db.CustomerCars.Add(c); }
+    else { if (vin.Length > 0) c.Vin = vin; if (plate.Length > 0) c.PlateNo = plate; }
+    c.FrameNo = dto.FrameNo; c.EngineNo = dto.EngineNo; c.ModelCode = dto.ModelCode; c.ColorCode = dto.ColorCode; c.PlateColorCode = dto.PlateColorCode;
+    c.CusCode = dto.CusCode; c.CusName = dto.CusName; c.CusPhone = dto.CusPhone; c.SaleDate = dto.SaleDate; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Vin, c.PlateNo, c.CusName });
+}).RequireAuthorization();
+
 // ===== Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate) =====
 app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? part, string? onDate) =>
 {
@@ -2298,4 +2328,5 @@ record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCo
 record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
+record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record RegisterOrgDto(string Name);

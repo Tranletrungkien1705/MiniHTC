@@ -932,6 +932,26 @@ public sealed class PartPrice
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar, TCMotor DMSCarSv/Customer):
+/// registry xe dịch vụ, gắn khách↔xe (VIN/biển số/số máy/số khung/model/màu). Reception/RO tham chiếu.</summary>
+public sealed class CustomerCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string PlateNo { get; set; } = "";          // biển số
+    public string? FrameNo { get; set; }               // số khung
+    public string? EngineNo { get; set; }              // số máy
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? PlateColorCode { get; set; }        // màu biển (trắng/vàng/xanh)
+    public string? CusCode { get; set; }
+    public string? CusName { get; set; }
+    public string? CusPhone { get; set; }
+    public DateTime? SaleDate { get; set; }            // ngày bán xe
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
