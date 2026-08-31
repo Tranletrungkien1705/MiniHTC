@@ -2819,6 +2819,30 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Nhóm khách hàng dịch vụ (header) — port 1:1 FrmCustomerGroupCreate (Tbl_SerCustomerGroup, TCMotor).</summary>
+public sealed class CustomerGroup
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupNo { get; set; } = "";
+    public string? GroupName { get; set; }
+    public string? Description { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Khách hàng thành viên nhóm (detail) — port 1:1 FrmCustomerGroupCreate grid, TCMotor.</summary>
+public sealed class CustomerGroupMember
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long CustomerGroupId { get; set; }
+    public string CusId { get; set; } = "";
+    public string? CusName { get; set; }
+    public string? Mobile { get; set; }
+    public string? Address { get; set; }
+}
+
 /// <summary>Khoang sửa chữa (bay) — mã/tên/loại khoang/giờ làm việc — port 1:1 FrmCavityCreate (Ser_Cavity, TCMotor).</summary>
 public sealed class Cavity
 {

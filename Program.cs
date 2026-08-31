@@ -3230,6 +3230,84 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Nhóm khách hàng dịch vụ (CustomerGroup header-detail — port 1:1 FrmCustomerGroupCreate/Search, TCMotor) =====
+app.MapGet("/api/customergroups", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.CustomerGroups.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.GroupNo.Contains(q!) || (x.GroupName != null && x.GroupName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.GroupNo, x.GroupName, x.Description, x.FlagActive,
+        members = db.CustomerGroupMembers.Count(m => m.OrgId == t.OrgId && m.CustomerGroupId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo/cập nhật nhóm (upsert theo GroupNo; GroupNo trống = tạo mới auto-gen).
+app.MapPost("/api/customergroups", async (CustomerGroupDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
+    var no = string.IsNullOrWhiteSpace(dto.GroupNo) ? "CG" + DateTime.Now.ToString("yyMMddHHmmss") : dto.GroupNo.Trim().ToUpperInvariant();
+    var ex = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
+    if (ex is not null)
+    {
+        ex.GroupName = dto.GroupName; ex.Description = dto.Description; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.GroupNo, updated = true });
+    }
+    var g = new CustomerGroup { OrgId = t.OrgId, GroupNo = no, GroupName = dto.GroupName, Description = dto.Description, FlagActive = "1" };
+    db.CustomerGroups.Add(g); await db.SaveChangesAsync();
+    return Results.Ok(new { g.GroupNo, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/customergroups/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    g.FlagActive = g.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GroupNo, flagActive = g.FlagActive });
+}).RequireAuthorization();
+
+// Danh sách khách hàng thành viên nhóm.
+app.MapGet("/api/customergroups/{no}/members", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var members = await db.CustomerGroupMembers.Where(m => m.OrgId == t.OrgId && m.CustomerGroupId == g.Id)
+        .OrderBy(m => m.CusId).Select(m => new { m.CusId, m.CusName, m.Mobile, m.Address }).ToListAsync();
+    return Results.Ok(new { g.GroupNo, g.GroupName, count = members.Count, members });
+}).RequireAuthorization();
+
+// Thêm khách hàng vào nhóm (không trùng CusId trong nhóm).
+app.MapPost("/api/customergroups/{no}/members", async (string no, CustomerGroupMemberDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.CusId)) return Results.BadRequest(new { error = "Chưa nhập mã khách hàng." });
+    var cus = dto.CusId.Trim();
+    if (await db.CustomerGroupMembers.AnyAsync(m => m.OrgId == t.OrgId && m.CustomerGroupId == g.Id && m.CusId == cus))
+        return Results.BadRequest(new { error = $"Khách hàng {cus} đã có trong nhóm!" });
+    db.CustomerGroupMembers.Add(new CustomerGroupMember { OrgId = t.OrgId, CustomerGroupId = g.Id, CusId = cus, CusName = dto.CusName, Mobile = dto.Mobile, Address = dto.Address });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GroupNo, added = cus });
+}).RequireAuthorization();
+
+app.MapDelete("/api/customergroups/{no}/members/{cusId}", async (string no, string cusId, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant(); cusId = cusId.Trim();
+    var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var m = await db.CustomerGroupMembers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CustomerGroupId == g.Id && x.CusId == cusId);
+    if (m is null) return Results.NotFound(new { cusId });
+    db.CustomerGroupMembers.Remove(m); await db.SaveChangesAsync();
+    return Results.Ok(new { removed = cusId });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -7825,6 +7903,8 @@ record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPric
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
+record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
+record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Nhóm khách hàng dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--bad:#dc2626;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px} button.del{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px} @media(max-width:720px){.cols{grid-template-columns:1fr}}
+  #msg,#msg2{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Nhóm khách hàng dịch vụ <span class="muted">(port 1:1 FrmCustomerGroupCreate — TCMotor)</span></h1>
+<p class="muted">Tạo nhóm khách hàng để chăm sóc/khuyến mãi theo nhóm, và gán khách hàng vào nhóm. Chọn 1 nhóm để xem/thêm thành viên.</p>
+<div class="cols">
+  <div>
+    <div class="card"><h3 style="margin-top:0">Tạo / cập nhật nhóm</h3>
+      <div class="row">
+        <div><label>Mã nhóm</label><input id="fNo" style="width:120px" placeholder="(auto)"></div>
+        <div style="flex:1;min-width:130px"><label>Tên nhóm *</label><input id="fName" style="width:100%"></div>
+      </div>
+      <div style="margin-top:8px"><label>Mô tả</label><input id="fDesc" style="width:100%"></div>
+      <div style="margin-top:8px"><button class="primary" onclick="saveGroup()">Lưu nhóm</button><span id="msg"></span></div>
+    </div>
+    <div class="row" style="margin:4px 0"><button onclick="loadGroups()">Xem danh sách nhóm</button></div>
+    <div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>SL</th><th>TT</th><th></th></tr></thead>
+    <tbody id="grows"><tr><td colspan="5" class="muted">Nhấn "Xem danh sách nhóm".</td></tr></tbody></table></div>
+  </div>
+  <div>
+    <div class="card"><h3 style="margin-top:0">Thành viên nhóm <span id="selGroup" class="muted"></span></h3>
+      <div class="row">
+        <div><label>Mã KH *</label><input id="mId" style="width:100px"></div>
+        <div style="flex:1;min-width:120px"><label>Tên KH</label><input id="mName" style="width:100%"></div>
+        <div><label>Điện thoại</label><input id="mMobile" style="width:110px"></div>
+        <button class="primary" onclick="addMember()">Thêm</button><span id="msg2"></span>
+      </div>
+    </div>
+    <div class="wrap"><table><thead><tr><th>Mã KH</th><th>Tên</th><th>Điện thoại</th><th></th></tr></thead>
+    <tbody id="mrows"><tr><td colspan="4" class="muted">Chọn 1 nhóm bên trái.</td></tr></tbody></table></div>
+  </div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let CUR=null;
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+function msg2(t){ F("msg2").textContent=t; setTimeout(()=>{if(F("msg2").textContent===t)F("msg2").textContent="";},2500); }
+async function saveGroup(){ await token();
+  const body={GroupNo:F("fNo").value,GroupName:F("fName").value,Description:F("fDesc").value};
+  const r=await fetch("/api/customergroups",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.groupNo:"Đã tạo "+d.groupNo); F("fNo").value="";F("fName").value="";F("fDesc").value=""; loadGroups();
+}
+async function toggleGroup(no){ await token();
+  const r=await fetch("/api/customergroups/"+encodeURIComponent(no)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } loadGroups();
+}
+async function loadGroups(){ await token();
+  const r=await fetch("/api/customergroups",{headers:H()}); const d=await r.json();
+  F("grows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.groupNo}</b></td><td>${esc(o.groupName)}</td><td>${o.members}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick="selectGroup('${o.groupNo}','${esc(o.groupName)}')">Chọn</button><button class="link" onclick="toggleGroup('${o.groupNo}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có nhóm.</td></tr>';
+}
+async function selectGroup(no,name){ CUR=no; F("selGroup").textContent="— "+no+" ("+name+")"; loadMembers(); }
+async function addMember(){ if(!CUR){ msg2("Chọn nhóm trước"); return; } await token();
+  const body={CusId:F("mId").value,CusName:F("mName").value,Mobile:F("mMobile").value};
+  const r=await fetch("/api/customergroups/"+encodeURIComponent(CUR)+"/members",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg2("Lỗi: "+(d.error||r.status)); return; }
+  msg2("Đã thêm "+d.added); F("mId").value="";F("mName").value="";F("mMobile").value=""; loadMembers(); loadGroups();
+}
+async function delMember(cid){ await token();
+  const r=await fetch("/api/customergroups/"+encodeURIComponent(CUR)+"/members/"+encodeURIComponent(cid),{method:"DELETE",headers:H()});
+  if(!r.ok){ msg2("Lỗi"); return; } loadMembers(); loadGroups();
+}
+async function loadMembers(){ if(!CUR) return; await token();
+  const r=await fetch("/api/customergroups/"+encodeURIComponent(CUR)+"/members",{headers:H()}); const d=await r.json();
+  F("mrows").innerHTML=(d.members||[]).map(o=>`<tr><td><b>${o.cusId}</b></td><td>${esc(o.cusName)}</td><td>${esc(o.mobile)}</td><td><button class="link del" onclick="delMember('${o.cusId}')">Xóa</button></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Nhóm chưa có thành viên.</td></tr>';
+}
+</script>
+</body></html>
