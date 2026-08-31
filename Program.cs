@@ -3230,6 +3230,54 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Tài khoản SMS trả trước + sổ giao dịch (SmsAccount — port 1:1 FrmSMSAccountMng, TCMotor) =====
+app.MapGet("/api/smsaccounts", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.SmsAccounts.Where(a => a.OrgId == t.OrgId).OrderBy(a => a.AccountName)
+        .Select(a => new { a.AccountName, a.Balance, txCount = db.SmsAccountTxs.Count(x => x.OrgId == t.OrgId && x.SmsAccountId == a.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalBalance = items.Sum(i => i.Balance), items });
+}).RequireAuthorization();
+
+// Tạo tài khoản SMS (số dư khởi tạo tùy chọn, ghi giao dịch nạp nếu >0).
+app.MapPost("/api/smsaccounts", async (SmsAccountDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.AccountName)) return Results.BadRequest(new { error = "Chưa nhập tên tài khoản." });
+    var name = dto.AccountName.Trim();
+    if (await db.SmsAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountName == name))
+        return Results.BadRequest(new { error = $"Tài khoản {name} đã tồn tại." });
+    var init = dto.InitBalance < 0 ? 0 : dto.InitBalance;
+    var a2 = new SmsAccount { OrgId = t.OrgId, AccountName = name, Balance = init };
+    db.SmsAccounts.Add(a2); await db.SaveChangesAsync();
+    if (init > 0) db.SmsAccountTxs.Add(new SmsAccountTx { OrgId = t.OrgId, SmsAccountId = a2.Id, TRefType = "Topup", Value = init, BalanceAfter = init, Note = "Số dư khởi tạo" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a2.AccountName, a2.Balance });
+}).RequireAuthorization();
+
+// Nạp/trừ số dư (TRefType = Topup|Deduct). Trừ không được vượt số dư.
+app.MapPost("/api/smsaccounts/{name}/tx", async (string name, SmsAccountTxDto dto, AppDbContext db, ITenantContext t) =>
+{
+    name = name.Trim();
+    var a = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountName == name);
+    if (a is null) return Results.NotFound(new { name });
+    if (dto.Value <= 0) return Results.BadRequest(new { error = "Giá trị phải lớn hơn 0." });
+    var type = dto.TRefType == "Deduct" ? "Deduct" : "Topup";
+    if (type == "Deduct" && dto.Value > a.Balance) return Results.BadRequest(new { error = $"Số dư không đủ (còn {a.Balance})." });
+    a.Balance += type == "Topup" ? dto.Value : -dto.Value;
+    db.SmsAccountTxs.Add(new SmsAccountTx { OrgId = t.OrgId, SmsAccountId = a.Id, TRefType = type, Value = dto.Value, BalanceAfter = a.Balance, Note = dto.Note });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.AccountName, type, a.Balance });
+}).RequireAuthorization();
+
+app.MapGet("/api/smsaccounts/{name}/transactions", async (string name, AppDbContext db, ITenantContext t) =>
+{
+    name = name.Trim();
+    var a = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountName == name);
+    if (a is null) return Results.NotFound(new { name });
+    var txs = await db.SmsAccountTxs.Where(x => x.OrgId == t.OrgId && x.SmsAccountId == a.Id).OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.TRefType, x.Value, x.BalanceAfter, x.Note, createdDTime = x.CreatedDTime.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { a.AccountName, a.Balance, count = txs.Count, transactions = txs });
+}).RequireAuthorization();
+
 // ===== Gửi SMS + log (SmsSend — port 1:1 FrmSendSMS, TCMotor) — tích hợp SmsTemplate + ServiceCustomer =====
 // Chuẩn hóa SĐT VN (giống CUtilsSMS.StdPhoneNo): giữ chữ số, chấp nhận 0xxxxxxxxx (10 số) hoặc +84/84xxxxxxxxx.
 static string? StdPhoneVn(string? raw)
@@ -8961,6 +9009,8 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record SmsAccountDto(string AccountName, decimal InitBalance);
+record SmsAccountTxDto(string TRefType, decimal Value, string? Note);
 record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportDto(List<PartLocationImportRow>? Rows);

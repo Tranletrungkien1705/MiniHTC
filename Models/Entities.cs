@@ -2819,6 +2819,29 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tài khoản SMS trả trước (số dư) — port 1:1 FrmSMSAccountMng (TblSMS_Account, TCMotor).</summary>
+public sealed class SmsAccount
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AccountName { get; set; } = "";
+    public decimal Balance { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Giao dịch tài khoản SMS (nạp/trừ) — port 1:1 FrmSMSAccountMng ledger (Acc_Transaction, TCMotor).</summary>
+public sealed class SmsAccountTx
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SmsAccountId { get; set; }
+    public string TRefType { get; set; } = "";   // Topup | Deduct
+    public decimal Value { get; set; }
+    public decimal BalanceAfter { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedDTime { get; set; } = DateTime.Now;
+}
+
 /// <summary>Log gửi tin nhắn SMS (số ĐT/nội dung/trạng thái) — port 1:1 FrmSendSMS (TblSMS_Send, TCMotor).</summary>
 public sealed class SmsSend
 {
