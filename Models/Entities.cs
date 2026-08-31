@@ -1463,6 +1463,35 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Lịch sử đổi màu xe (Rpt_CarColorChangeHistory) — port 1:1 FrmChange_CarColor (2010.HTC/Sales). Đổi màu xe theo VIN, lưu màu cũ → màu mới.</summary>
+public sealed class CarColorChange
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CarId { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string ColorCodeOld { get; set; } = "";
+    public string ColorCodeNew { get; set; } = "";
+    public DateTime ChangedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Hợp đồng nguyên tắc (Rpt_PrincipleContract) — port 1:1 FrmPrincipleContractNew/FrmMngPrincipleContract (2010.HTC/Sales). HĐ nguyên tắc đại lý: ngân hàng, người đại diện, thời hạn.</summary>
+public sealed class PrincipleContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string PrincipleContractNo { get; set; } = "";
+    public string BankInfo { get; set; } = "";
+    public DateTime PrincipleContractDate { get; set; }
+    public DateTime PrincipleContractExpectedDate { get; set; }
+    public string Representative { get; set; } = "";
+    public string JobTitle { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master chính sách bán hàng (SPL_SalesPolicyMst) — port 1:1 FrmMstPolicy_New/Mng (2010.HTC/Sales). Chính sách hỗ trợ bán, dùng bởi duyệt SO. Header + dòng đại lý/năm SX/tiền hỗ trợ.</summary>
 public sealed class SalesPolicyMst
 {

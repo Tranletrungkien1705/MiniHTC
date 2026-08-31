@@ -1289,6 +1289,59 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Đổi màu xe (CarColorChange — port 1:1 FrmChange_CarColor, 2010.HTC/Sales) =====
+app.MapGet("/api/carcolorchanges", async (AppDbContext db, ITenantContext t, string? car, string? dealer) =>
+{
+    var q = db.CarColorChanges.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(car)) q = q.Where(c => c.CarId.Contains(car.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.CarId, c.DealerCode, c.ModelCode, c.SpecCode, c.ColorCodeOld, c.ColorCodeNew, c.ChangedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carcolorchanges", async (List<CarColorChangeDto> dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
+    if (rows.Any(c => string.IsNullOrWhiteSpace(c.ColorCodeNew))) return Results.BadRequest(new { error = "Chưa nhập màu mới." });
+    var same = rows.FirstOrDefault(c => string.Equals(c.ColorCodeOld?.Trim(), c.ColorCodeNew.Trim(), StringComparison.OrdinalIgnoreCase));
+    if (same != null) return Results.BadRequest(new { error = $"Xe {same.CarId} nhập thông tin màu mới trùng với màu cũ!" });
+    var dupe = rows.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+    foreach (var c in rows)
+        db.CarColorChanges.Add(new CarColorChange { OrgId = t.OrgId, CarId = c.CarId.Trim().ToUpperInvariant(), DealerCode = c.DealerCode, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCodeOld = c.ColorCodeOld ?? "", ColorCodeNew = c.ColorCodeNew.Trim() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { changed = rows.Count, message = "Lưu sửa màu thành công!" });
+}).RequireAuthorization();
+
+// ===== Hợp đồng nguyên tắc (PrincipleContract — port 1:1 FrmPrincipleContractNew/Mng, 2010.HTC/Sales) =====
+app.MapGet("/api/principlecontracts", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    var q = db.PrincipleContracts.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new { p.PrincipleContractNo, p.DealerCode, p.BankInfo, p.PrincipleContractDate, p.PrincipleContractExpectedDate, p.Representative, p.JobTitle }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/principlecontracts", async (PrincipleContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Mã đại lý không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.PrincipleContractNo)) return Results.BadRequest(new { error = "Số HĐ nguyên tắc không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.BankInfo)) return Results.BadRequest(new { error = "Thông tin ngân hàng không được để trống." });
+    if (dto.PrincipleContractDate is null) return Results.BadRequest(new { error = "Ngày HĐ nguyên tắc không được để trống." });
+    if (dto.PrincipleContractExpectedDate is null) return Results.BadRequest(new { error = "Ngày kết thúc HĐ không được để trống." });
+    if (dto.PrincipleContractDate > dto.PrincipleContractExpectedDate) return Results.BadRequest(new { error = "Ngày HĐ không được lớn hơn ngày kết thúc HĐ." });
+    if (string.IsNullOrWhiteSpace(dto.Representative)) return Results.BadRequest(new { error = "Người đại diện không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.JobTitle)) return Results.BadRequest(new { error = "Chức danh không được để trống." });
+    var p = new PrincipleContract
+    {
+        OrgId = t.OrgId, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), PrincipleContractNo = dto.PrincipleContractNo.Trim(), BankInfo = dto.BankInfo.Trim(),
+        PrincipleContractDate = dto.PrincipleContractDate.Value, PrincipleContractExpectedDate = dto.PrincipleContractExpectedDate.Value, Representative = dto.Representative.Trim(), JobTitle = dto.JobTitle.Trim()
+    };
+    db.PrincipleContracts.Add(p); await db.SaveChangesAsync();
+    return Results.Ok(new { p.PrincipleContractNo, p.DealerCode });
+}).RequireAuthorization();
+
 // ===== Master chính sách bán hàng (SalesPolicyMst — port 1:1 FrmMstPolicy_New/Mng, 2010.HTC/Sales) =====
 app.MapGet("/api/salespolicies", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
 {
@@ -3981,6 +4034,8 @@ record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? 
 record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
 record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
+record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
+record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record RegisterOrgDto(string Name);
