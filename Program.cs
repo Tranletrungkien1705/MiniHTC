@@ -3071,6 +3071,27 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo đẩy sổ bảo hành online (port 1:1 báo cáo SbhOnline) — tái dùng SbhOnline =====
+app.MapGet("/api/report/sbhonline", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
+{
+    var q = db.SbhOnlines.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.PostStatus == status);
+    var rows = await q.ToListAsync();
+    var byDealer = rows.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
+        .Select(g => new { dealerCode = g.Key, cars = g.Count(), posted = g.Count(x => x.PostStatus == "Posted"), pending = g.Count(x => x.PostStatus != "Posted"), pushes = g.Sum(x => x.PushCount) })
+        .OrderByDescending(x => x.cars).ToList();
+    var byStatus = rows.GroupBy(r => r.PostStatus).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var retry = rows.Count(r => r.PushCount > 1);
+    var detail = rows.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.VIN, r.DealNo, r.DealerCode, r.PostStatus, r.PushCount,
+        deliveryDate = r.DeliveryDate.HasValue ? r.DeliveryDate.Value.ToString("yyyy-MM-dd") : "",
+        lastPushAt = r.LastPushAt.HasValue ? r.LastPushAt.Value.ToString("yyyy-MM-dd HH:mm") : ""
+    }).ToList();
+    return Results.Ok(new { total = rows.Count, posted = rows.Count(r => r.PostStatus == "Posted"), pending = rows.Count(r => r.PostStatus != "Posted"), totalPushes = rows.Sum(r => r.PushCount), retry, byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Báo cáo yêu cầu thế chấp xe (port 1:1 báo cáo ReqMortgage) — tái dùng ReqMortgage + ReqMortgageCar =====
 app.MapGet("/api/report/reqmortgage", async (AppDbContext db, ITenantContext t, string? mortageBank, string? dealer, string? status) =>
 {

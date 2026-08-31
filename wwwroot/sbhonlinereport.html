@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo đẩy sổ bảo hành online</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1020px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:18px;display:block} .box span{font-size:11px;opacity:.7}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Pending{color:var(--warn)} .s-Posted{color:var(--ok)}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Báo cáo đẩy sổ bảo hành online <span class="muted">(port 1:1 báo cáo SbhOnline — Report)</span></h1>
+<p class="muted">Tổng hợp tình trạng đẩy sổ bảo hành điện tử lên hệ thống HMC theo đại lý / trạng thái đẩy + số lần đẩy lại. Nguồn = màn Đẩy SBH online.</p>
+<div class="bar">
+  <div><label>Đại lý</label><input id="qd" style="width:90px"></div>
+  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="Pending">Chờ đẩy</option><option value="Posted">Đã đẩy</option></select></div>
+  <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
+</div>
+<div class="kpi" id="kpi" style="margin:8px 0"></div>
+<h3>Theo đại lý</h3>
+<div class="wrap"><table><thead><tr><th>Đại lý</th><th class="num">Số xe</th><th class="num">Đã đẩy</th><th class="num">Chờ đẩy</th><th class="num">Tổng lần đẩy</th></tr></thead><tbody id="dRows"></tbody></table></div>
+<h3>Chi tiết xe</h3>
+<div class="wrap"><table><thead><tr><th>VIN</th><th>Số deal</th><th>Đại lý</th><th>Trạng thái</th><th class="num">Số lần đẩy</th><th>Ngày giao</th><th>Đẩy gần nhất</th></tr></thead><tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const ST={Pending:"Chờ đẩy",Posted:"Đã đẩy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function msg(t){ F("msg").textContent=t; }
+async function run(){ await token(); msg("");
+  const r=await fetch(`/api/report/sbhonline?dealer=${F("qd").value}&status=${F("qs").value}`,{headers:H()});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  F("kpi").innerHTML=`<div class="box"><b>${d.total}</b><span>Số xe</span></div><div class="box"><b>${d.posted}</b><span>Đã đẩy</span></div><div class="box"><b>${d.pending}</b><span>Chờ đẩy</span></div><div class="box"><b>${d.totalPushes}</b><span>Tổng lần đẩy</span></div><div class="box"><b>${d.retry}</b><span>Xe đẩy lại</span></div>`;
+  F("dRows").innerHTML=(d.byDealer||[]).map(o=>`<tr><td><b>${o.dealerCode}</b></td><td class="num">${o.cars}</td><td class="num">${o.posted}</td><td class="num">${o.pending}</td><td class="num">${o.pushes}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">—</td></tr>';
+  F("rows").innerHTML=(d.detail||[]).map(o=>`<tr><td><b>${o.vin}</b></td><td>${o.dealNo||""}</td><td>${o.dealerCode||""}</td><td><span class="pill s-${o.postStatus}">${ST[o.postStatus]||o.postStatus}</span></td><td class="num">${o.pushCount}</td><td>${o.deliveryDate||""}</td><td>${o.lastPushAt||""}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>
