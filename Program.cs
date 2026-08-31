@@ -1227,6 +1227,60 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Chiến dịch dịch vụ (Ser_Campaign — port 1:1 FrmCampaignCreate) =====
+app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? active) =>
+{
+    var q = db.Campaigns.Where(c => c.OrgId == t.OrgId);
+    var now = DateTime.Now;
+    if (active == "1") q = q.Where(c => c.StartDate <= now && (c.FinishDate == null || c.FinishDate >= now));
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.Content, c.Status,
+        contacts = db.CampaignContacts.Count(x => x.OrgId == t.OrgId && x.CampaignId == c.Id),
+        contacted = db.CampaignContacts.Count(x => x.OrgId == t.OrgId && x.CampaignId == c.Id && x.ContactStatus == "Contacted"),
+        running = c.StartDate <= now && (c.FinishDate == null || c.FinishDate >= now)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CamNo) || string.IsNullOrWhiteSpace(dto.CamName))
+        return Results.BadRequest(new { error = "Cần CamNo và CamName." });
+    if (dto.StartDate is null) return Results.BadRequest(new { error = "Cần StartDate." });
+    if (dto.FinishDate is DateTime fd && fd < dto.StartDate.Value)
+        return Results.BadRequest(new { error = "Ngày kết thúc phải ≥ ngày bắt đầu." });   // guard gốc FrmCampaignCreate
+    var no = dto.CamNo.Trim().ToUpperInvariant();
+    if (await db.Campaigns.AnyAsync(x => x.OrgId == t.OrgId && x.CamNo == no))
+        return Results.BadRequest(new { error = $"Mã chiến dịch {no} đã tồn tại." });
+    var c = new Campaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, StartDate = dto.StartDate.Value, FinishDate = dto.FinishDate, Content = dto.Content, Status = "1" };
+    db.Campaigns.Add(c); await db.SaveChangesAsync();
+    foreach (var ct in dto.Contacts ?? new())
+        if (!string.IsNullOrWhiteSpace(ct.PlateNo) || !string.IsNullOrWhiteSpace(ct.CusName))
+            db.CampaignContacts.Add(new CampaignContact { OrgId = t.OrgId, CampaignId = c.Id, PlateNo = ct.PlateNo, CusName = ct.CusName, Address = ct.Address, ContactStatus = "Pending" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CamNo, c.CamName, contacts = (dto.Contacts ?? new()).Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/campaigns/{no}/contacts", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var contacts = await db.CampaignContacts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id)
+        .Select(x => new { x.Id, x.PlateNo, x.CusName, x.Address, x.ContactStatus }).ToListAsync();
+    return Results.Ok(new { c.CamNo, count = contacts.Count, contacts });
+}).RequireAuthorization();
+
+app.MapPost("/api/campaigns/contacts/{id:long}/contacted", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var ct = await db.CampaignContacts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (ct is null) return Results.NotFound(new { id });
+    ct.ContactStatus = "Contacted";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { ct.Id, status = ct.ContactStatus });
+}).RequireAuthorization();
+
 // ===== Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate) =====
 app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t) =>
 {
@@ -2704,4 +2758,6 @@ record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status);
+record CampaignContactDto(string? PlateNo, string? CusName, string? Address);
+record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
 record RegisterOrgDto(string Name);

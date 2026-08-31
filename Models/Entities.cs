@@ -1105,6 +1105,33 @@ public sealed class ServiceEngineer
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Chiến dịch dịch vụ/marketing (Ser_Campaign — port 1:1 FrmCampaignCreate, TCMotor DMSCarSv/Admin):
+/// chiến dịch chăm sóc/khuyến mãi có thời hạn (StartDate ≤ FinishDate) + danh sách xe/khách liên hệ.</summary>
+public sealed class Campaign
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string CamName { get; set; } = "";
+    public DateTime StartDate { get; set; }
+    public DateTime? FinishDate { get; set; }
+    public string? Content { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Liên hệ trong chiến dịch (Ser_CamContact): xe/khách trong danh sách chiến dịch + trạng thái liên hệ.</summary>
+public sealed class CampaignContact
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long CampaignId { get; set; }
+    public string? PlateNo { get; set; }
+    public string? CusName { get; set; }
+    public string? Address { get; set; }
+    public string ContactStatus { get; set; } = "Pending";  // Pending → Contacted
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

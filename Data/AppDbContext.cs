@@ -80,6 +80,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ReqPartPriceLine> ReqPartPriceLines => Set<ReqPartPriceLine>();
     public DbSet<GroupRepair> GroupRepairs => Set<GroupRepair>();
     public DbSet<ServiceEngineer> ServiceEngineers => Set<ServiceEngineer>();
+    public DbSet<Campaign> Campaigns => Set<Campaign>();
+    public DbSet<CampaignContact> CampaignContacts => Set<CampaignContact>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
