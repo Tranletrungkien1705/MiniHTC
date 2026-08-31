@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Xuất kho PT (RO)</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select,label{font:inherit} input,button,select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Issued{color:var(--ok)}
+  #msg{font-size:13px} .det{font-size:12px;opacity:.85} #ltbl td,#ltbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Phiếu xuất kho phụ tùng cho RO <span class="muted">(port 1:1 FrmROStockRequisition — Ser_RO_StockRequisition)</span></h1>
+<div class="card">
+  <b>Tạo phiếu xuất</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="ro" placeholder="Số RO (VD RO2608...) *" style="width:180px">
+    <label class="muted"><input type="checkbox" id="fr" checked> Tự kéo phụ tùng từ RO</label>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Tạo phiếu</button><span id="msg"></span>
+  </div>
+  <div class="muted">Hoặc thêm dòng thủ công:</div>
+  <table id="ltbl"><thead><tr><th>Mã PT</th><th>Tên PT</th><th>Vị trí</th><th>SL</th><th>ĐVT</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Dòng PT</button>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Issued">Đã xuất</option></select>
+  <input id="q" placeholder="Lọc RO" oninput="load()" style="width:120px">
+</div>
+<table><thead><tr><th>Số phiếu</th><th>RO</th><th>Số dòng PT</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Draft:"Nháp",Issued:"Đã xuất"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="pc" style="width:90px"></td><td><input class="pn" style="width:130px"></td><td><input class="lo" style="width:80px"></td><td><input class="qt" type="number" value="1" style="width:60px"></td><td><input class="un" style="width:60px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr); }
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({partCode:tr.querySelector(".pc").value,partName:tr.querySelector(".pn").value,location:tr.querySelector(".lo").value,quantity:Number(tr.querySelector(".qt").value||1),unit:tr.querySelector(".un").value})).filter(l=>l.partCode);
+  const r=await fetch("/api/stockreqs",{method:"POST",headers:H(),body:JSON.stringify({rONo:F("ro").value,fromRO:F("fr").checked,lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.reqNo+" ("+j.lines+" dòng PT)."); F("ltb").innerHTML=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/stockreqs?status=${F("fst").value}&ro=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(s=>{
+    let act=s.status==="Draft"?`<button class="sm" onclick="issue('${s.reqNo}')">Xuất kho</button>`:"";
+    return `<tr><td><b>${s.reqNo}</b> <a href="#" class="det" onclick="lines('${s.reqNo}');return false">xem</a></td><td>${s.rONo}</td><td>${s.lines}</td>
+      <td><span class="pill p-${s.status}">${LBL[s.status]||s.status}</span></td><td>${act}</td></tr><tr id="x-${s.reqNo}"></tr>`;
+  }).join("")||'<tr><td colspan="5" class="muted">Chưa có phiếu.</td></tr>';
+}
+async function issue(no){ const r=await fetch(`/api/stockreqs/${no}/issue`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/stockreqs/${encodeURIComponent(no)}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="5"><div class="det">${(d.lines||[]).map(l=>`${l.partCode}${l.partName?" ("+l.partName+")":""} ×${l.quantity}${l.unit?" "+l.unit:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>

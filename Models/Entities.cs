@@ -800,6 +800,32 @@ public sealed class RoPartItem
     public string? Note { get; set; }
 }
 
+/// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):
+/// gắn với 1 lệnh sửa chữa, xuất phụ tùng từ kho. Draft → Issued (đã xuất).</summary>
+public sealed class StockReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqNo { get; set; } = "";            // PX-...
+    public string RONo { get; set; } = "";             // lệnh sửa chữa liên quan
+    public string Status { get; set; } = "Draft";      // Draft → Issued
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? IssuedAt { get; set; }
+}
+
+/// <summary>Dòng phụ tùng phiếu xuất (Ser_RO_StockRequisitionDtl): mã PT + vị trí + SL + ĐVT.</summary>
+public sealed class StockReqLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Location { get; set; }              // vị trí kho
+    public decimal Quantity { get; set; } = 1;
+    public string? Unit { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

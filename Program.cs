@@ -1227,6 +1227,66 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
+app.MapGet("/api/stockreqs", async (AppDbContext db, ITenantContext t, string? status, string? ro) =>
+{
+    var q = db.StockReqs.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+    if (!string.IsNullOrWhiteSpace(ro)) q = q.Where(s => s.RONo.Contains(ro.ToUpper()));
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
+    {
+        s.ReqNo, s.RONo, s.Status, s.CreatedAt, s.IssuedAt,
+        lines = db.StockReqLines.Count(l => l.OrgId == t.OrgId && l.ReqId == s.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo phiếu; nếu FromRO=true tự kéo phụ tùng của RO (tích hợp thật với RepairOrder)
+app.MapPost("/api/stockreqs", async (StockReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RONo)) return Results.BadRequest(new { error = "Cần RONo." });
+    var roNo = dto.RONo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { error = $"Không tìm thấy RO {roNo}." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    List<StockReqLine> pulled = new();
+    if (dto.FromRO)
+    {
+        var roParts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == ro.Id).ToListAsync();
+        pulled = roParts.Select(p => new StockReqLine { OrgId = t.OrgId, PartCode = p.PartCode, PartName = p.PartName, Quantity = p.NeedQty, Unit = p.Unit }).ToList();
+    }
+    if (lines.Count == 0 && pulled.Count == 0) return Results.BadRequest(new { error = "Không có dòng phụ tùng (đặt fromRO=true để kéo từ RO, hoặc gửi lines)." });
+    var no = "PX-" + roNo;
+    var h = new StockReq { OrgId = t.OrgId, ReqNo = no, RONo = roNo, Status = "Draft" };
+    db.StockReqs.Add(h); await db.SaveChangesAsync();
+    foreach (var l in pulled) { l.ReqId = h.Id; db.StockReqLines.Add(l); }
+    foreach (var l in lines)
+        db.StockReqLines.Add(new StockReqLine { OrgId = t.OrgId, ReqId = h.Id, PartCode = l.PartCode.Trim(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity <= 0 ? 1 : l.Quantity, Unit = l.Unit });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.ReqNo, h.RONo, lines = pulled.Count + lines.Count, status = h.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/stockreqs/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.StockReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo.ToUpper() == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.StockReqLines.Where(l => l.OrgId == t.OrgId && l.ReqId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Unit }).ToListAsync();
+    return Results.Ok(new { h.ReqNo, h.RONo, h.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockreqs/{no}/issue", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.StockReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo.ToUpper() == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ xuất được phiếu Draft." });
+    h.Status = "Issued"; h.IssuedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.ReqNo, status = h.Status });
+}).RequireAuthorization();
+
 // ===== Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv) =====
 string[] _roFlow = { "HasRO", "InGarage", "Repaired", "CheckEnd", "Paid", "Finished" };
 app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
@@ -2013,4 +2073,6 @@ record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engi
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note);
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts);
 record RoAdvanceDto(string ToStatus);
+record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
+record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines);
 record RegisterOrgDto(string Name);
