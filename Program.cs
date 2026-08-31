@@ -1289,6 +1289,89 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Đề nghị bảo hiểm (InsuranceReq — port 1:1 FrmNewInsuranceReq, 2010.HTC/Sales/Purchase) =====
+app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, string? status, string? company) =>
+{
+    var q = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(company)) q = q.Where(r => r.InsCompanyCode == company);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt,
+        cars = db.InsuranceReqDtls.Count(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id),
+        totalAmount = db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id).Sum(c => (decimal?)c.InsAmount) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancereqs", async (InsuranceReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.InsCompanyCode)) return Results.BadRequest(new { error = "Phải chọn hãng bảo hiểm." });
+    if (string.IsNullOrWhiteSpace(dto.InsTypeCode)) return Results.BadRequest(new { error = "Phải chọn loại hình bảo hiểm." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "INS" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new InsuranceReq { OrgId = t.OrgId, InsReqNo = no, InsCompanyCode = dto.InsCompanyCode.Trim(), InsTypeCode = dto.InsTypeCode.Trim(), Status = "Draft" };
+    db.InsuranceReqs.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.InsuranceReqDtls.Add(new InsuranceReqDtl { OrgId = t.OrgId, InsuranceReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ExpectedStartDate = c.ExpectedStartDate, InsAmount = c.InsAmount, InsuranceDay = c.InsuranceDay, LocationFrom = c.LocationFrom, LocationTo = c.LocationTo, Price = c.Price, Rate = c.Rate, TransporterCode = c.TransporterCode, Remark = c.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.InsReqNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/insurancereqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id)
+        .Select(c => new { c.VIN, c.ExpectedStartDate, c.InsAmount, c.InsuranceDay, c.LocationFrom, c.LocationTo, c.Price, c.Rate, c.TransporterCode }).ToListAsync();
+    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận Yêu cầu bảo hiểm này" : "Không thể hủy Yêu cầu bảo hiểm này" });
+    if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
+    else r.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.InsReqNo, status = r.Status });
+}).RequireAuthorization();
+
+// ===== Cập nhật vị trí xe trong bãi (CarLocation — port 1:1 FrmLocationCar, 2010.HTC/Sales/Logistic) =====
+app.MapGet("/api/carlocations", async (AppDbContext db, ITenantContext t, string? vin) =>
+{
+    var q = db.CarLocations.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN.Contains(vin.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.VIN, c.LocationOld, c.Location, c.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carlocations", async (List<CarLocationDto> dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu." });
+    if (rows.Any(c => string.IsNullOrWhiteSpace(c.Location))) return Results.BadRequest(new { error = "Chưa nhập vị trí mới." });
+    var dupe = rows.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    int inserted = 0, updated = 0;
+    foreach (var c in rows)
+    {
+        var vin = c.VIN.Trim().ToUpperInvariant();
+        var ex = await db.CarLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (ex is null) { db.CarLocations.Add(new CarLocation { OrgId = t.OrgId, VIN = vin, LocationOld = c.LocationOld, Location = c.Location.Trim() }); inserted++; }
+        else { ex.LocationOld = ex.Location; ex.Location = c.Location.Trim(); ex.UpdatedAt = DateTime.Now; updated++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, inserted, updated, message = "Đã cập nhật vị trí thành công" });
+}).RequireAuthorization();
+
 // ===== Đề nghị giải chấp (ReqRedeem — port 1:1 FrmNewRedeem, 2010.HTC/Sales/Redeem) =====
 app.MapGet("/api/reqredeems", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -4222,6 +4305,9 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
+record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars);
+record CarLocationDto(string VIN, string? LocationOld, string Location);
 record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
 record ReqRedeemDto(List<ReqRedeemCarDto>? Cars);
 record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx);

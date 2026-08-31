@@ -1463,6 +1463,46 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Đề nghị bảo hiểm (Ins_InsuranceReq + Dtl) — port 1:1 FrmNewInsuranceReq (2010.HTC/Sales/Purchase). Đề nghị mua bảo hiểm cho lô VIN theo hãng + loại hình.</summary>
+public sealed class InsuranceReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InsReqNo { get; set; } = "";
+    public string InsCompanyCode { get; set; } = "";  // hãng BH
+    public string InsTypeCode { get; set; } = "";      // loại hình BH
+    public string Status { get; set; } = "Draft";      // Draft → Confirmed / Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ConfirmedAt { get; set; }
+}
+public sealed class InsuranceReqDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long InsuranceReqId { get; set; }
+    public string VIN { get; set; } = "";
+    public DateTime? ExpectedStartDate { get; set; }
+    public decimal InsAmount { get; set; }
+    public int InsuranceDay { get; set; }
+    public string? LocationFrom { get; set; }
+    public string? LocationTo { get; set; }
+    public decimal Price { get; set; }
+    public decimal Rate { get; set; }
+    public string? TransporterCode { get; set; }
+    public string? Remark { get; set; }
+}
+
+/// <summary>Cập nhật vị trí xe trong bãi (Vin.Location) — port 1:1 FrmLocationCar (2010.HTC/Sales/Logistic). Cập nhật vị trí lưu bãi theo VIN.</summary>
+public sealed class CarLocation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? LocationOld { get; set; }
+    public string Location { get; set; } = "";   // vị trí mới
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Đề nghị giải chấp (RD_ReqRedeem + Dtl) — port 1:1 FrmNewRedeem (2010.HTC/Sales/Redeem). Đại lý đề nghị giải chấp xe (release thế chấp) theo VIN.</summary>
 public sealed class ReqRedeem
 {
