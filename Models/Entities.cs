@@ -106,6 +106,20 @@ public sealed class CarRetrieve
     public DateTime? RetrievedAt { get; set; }
 }
 
+/// <summary>Hủy xe (FrmMngCarCancel) — hủy đơn/xe theo lý do, có duyệt.</summary>
+public sealed class CarCancel
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string Vin { get; set; } = "";
+    public string? CancelTypeCode { get; set; }
+    public string? Reason { get; set; }
+    public string Status { get; set; } = "Requested";   // Requested → Approved → Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

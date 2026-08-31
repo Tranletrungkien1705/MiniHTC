@@ -153,6 +153,12 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("TiLeDatHang", "Tỉ lệ đặt hàng KH (FrmMstTiLeDatHangKeHoach)"),
     ("Nation", "Quốc gia (FrmNation)"),
     ("Ward", "Phường/Xã (FrmWard)"),
+    ("Gender", "Giới tính (FrmMst_Gender)"),
+    ("Religion", "Tôn giáo (FrmMst_Religion)"),
+    ("CarStatus", "Trạng thái xe (FrmMst_CarStatus)"),
+    ("ContractType", "Loại hợp đồng (FrmMst_ContractType)"),
+    ("PromotionType", "Loại khuyến mãi (FrmMst_PromotionType)"),
+    ("DocType", "Loại tài liệu (FrmMst_DocType)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
@@ -403,6 +409,37 @@ app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action,
     return Results.Ok(new { r.Code, r.Vin, status = r.Status });
 }).RequireAuthorization();
 
+// ===== Hủy xe (port 1:1 FrmMngCarCancel) =====
+app.MapGet("/api/cancels", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.CarCancels.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    { c.Code, c.Vin, c.CancelTypeCode, c.Reason, c.Status, c.CreatedAt, c.ApprovedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    var code = "HX" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new CarCancel { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), CancelTypeCode = dto.CancelTypeCode, Reason = dto.Reason, Status = "Requested" };
+    db.CarCancels.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.Code, c.Vin, status = c.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/cancels/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    code = code.Trim().ToUpperInvariant();
+    var c = await db.CarCancels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (c is null) return Results.NotFound(new { code });
+    if (c.Status != "Requested") return Results.BadRequest(new { error = "Đã xử lý." });
+    c.Status = action == "approve" ? "Approved" : "Rejected"; c.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Code, c.Vin, status = c.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -422,4 +459,5 @@ record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string Vin, string? DealerCode, string? Reason);
+record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
 record RegisterOrgDto(string Name);
