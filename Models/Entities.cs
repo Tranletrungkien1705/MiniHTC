@@ -2819,6 +2819,19 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Danh sách email nhận cảnh báo theo loại nghiệp vụ — port 1:1 FrmMst_Warning_Email (Mst_EmailStaffWarning).</summary>
+public sealed class WarningEmail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string WarningType { get; set; } = "";   // EMAILSWKEY: vd SALEMANCREATE
+    public string? WarningName { get; set; }
+    public string EmailList { get; set; } = "";      // EMAILSWVALUE: danh sách email cách nhau ; hoặc ,
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Hạn mức số ngày trễ vận tải theo đại lý + kho — port 1:1 FrmMst_QuanLyHanMucDoTreVanTai (Tbl_Mst_DelayTransports).</summary>
 public sealed class DelayTransport
 {

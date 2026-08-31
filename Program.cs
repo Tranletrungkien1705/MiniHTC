@@ -3299,6 +3299,45 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Danh sách email nhận cảnh báo (WarningEmail — port 1:1 FrmMst_Warning_Email, Admin/Product) =====
+app.MapGet("/api/warningemails", async (AppDbContext db, ITenantContext t, string? type, string? active) =>
+{
+    var q = db.WarningEmails.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(x => x.WarningType.Contains(type!.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderBy(x => x.WarningType).Take(500)
+        .Select(x => new { x.WarningType, x.WarningName, x.EmailList, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo loại cảnh báo (Mst_EmailStaffWarning_Update): mỗi loại 1 danh sách email; nhập lại = cập nhật.
+app.MapPost("/api/warningemails", async (WarningEmailDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.WarningType)) return Results.BadRequest(new { error = "Chưa chọn loại cảnh báo." });
+    if (string.IsNullOrWhiteSpace(dto.EmailList)) return Results.BadRequest(new { error = "Vui lòng nhập danh sách email!" });
+    var type = dto.WarningType.Trim().ToUpperInvariant();
+    var ex = await db.WarningEmails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarningType == type);
+    if (ex is not null)
+    {
+        ex.WarningName = dto.WarningName; ex.EmailList = dto.EmailList.Trim(); ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.WarningType, updated = true });
+    }
+    var r = new WarningEmail { OrgId = t.OrgId, WarningType = type, WarningName = dto.WarningName, EmailList = dto.EmailList.Trim(), FlagActive = "1" };
+    db.WarningEmails.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.WarningType, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/warningemails/{type}/toggle", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    type = type.Trim().ToUpperInvariant();
+    var x = await db.WarningEmails.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.WarningType == type);
+    if (x is null) return Results.NotFound(new { type });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.WarningType, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Hạn mức số ngày trễ vận tải (DelayTransport — port 1:1 FrmMst_QuanLyHanMucDoTreVanTai, Admin/Product) =====
 app.MapGet("/api/delaytransports", async (AppDbContext db, ITenantContext t, string? dealer, string? storage, string? active) =>
 {
@@ -7432,6 +7471,7 @@ record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, s
 record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
 record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);
 record DelayTransportDto(string DealerCode, string? DealerName, string StorageCode, string? StorageName, int DelayDays);
+record WarningEmailDto(string WarningType, string? WarningName, string EmailList);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
