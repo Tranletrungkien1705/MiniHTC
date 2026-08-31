@@ -1344,6 +1344,28 @@ public sealed class CarDocRequestCar
     public DateTime? DeliveryStartDate { get; set; }
 }
 
+/// <summary>Packing List (PL) — port 1:1 FrmNewPL/FrmMngPL (DMSales.Foton). Danh sách đóng gói lô xe lên tàu theo LC, cảng, ngày lên tàu/đến cảng.</summary>
+public sealed class PackingList
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PLNo { get; set; } = "";
+    public string LcNo { get; set; } = "";
+    public string? PortCode { get; set; }
+    public string? PLType { get; set; }
+    public DateTime ShippingDateStart { get; set; }        // ngày lên tàu
+    public DateTime ShippingDateEndExpected { get; set; }  // ngày DK đến cảng
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class PackingListVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PLId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? CrateType { get; set; }   // loại thùng (LoaiThung)
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

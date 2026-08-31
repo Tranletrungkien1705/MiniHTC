@@ -1289,6 +1289,48 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Packing List (PackingList/PL — port 1:1 FrmNewPL/FrmMngPL, DMSales.Foton) =====
+app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string? lc, string? port) =>
+{
+    var query = db.PackingLists.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(lc)) query = query.Where(p => p.LcNo == lc);
+    if (!string.IsNullOrWhiteSpace(port)) query = query.Where(p => p.PortCode == port);
+    var items = await query.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.ShippingDateStart, p.ShippingDateEndExpected, p.CreatedAt,
+        vins = db.PackingListVins.Count(v => v.OrgId == t.OrgId && v.PLId == p.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.LcNo)) return Results.BadRequest(new { error = "Cần số LC." });
+    if (dto.ShippingDateStart is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày lên tàu." });
+    if (dto.ShippingDateEndExpected is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày DK đến cảng." });
+    var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v.Vin)).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "VIN trong danh sách không được trống!" });
+    var dupe = vins.GroupBy(v => v.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "PL" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new PackingList { OrgId = t.OrgId, PLNo = no, LcNo = dto.LcNo.Trim(), PortCode = dto.PortCode, PLType = dto.PLType, ShippingDateStart = dto.ShippingDateStart.Value, ShippingDateEndExpected = dto.ShippingDateEndExpected.Value };
+    db.PackingLists.Add(p); await db.SaveChangesAsync();
+    foreach (var v in vins)
+        db.PackingListVins.Add(new PackingListVin { OrgId = t.OrgId, PLId = p.Id, Vin = v.Vin.Trim().ToUpperInvariant(), CrateType = v.CrateType });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PLNo, p.LcNo, vins = vins.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/packinglists/{no}/vins", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.PackingLists.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PLNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    var vins = await db.PackingListVins.Where(v => v.OrgId == t.OrgId && v.PLId == p.Id)
+        .Select(v => new { v.Vin, v.CrateType }).ToListAsync();
+    return Results.Ok(new { p.PLNo, p.LcNo, count = vins.Count, vins });
+}).RequireAuthorization();
+
 // ===== Hợp đồng ngoại (ForeignContract/CO — port 1:1 FrmNewCO/FrmMngCO, DMSales.Foton) =====
 app.MapGet("/api/foreigncontracts", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -3247,4 +3289,6 @@ record ForeignContractLineDto(string? RefNo, string LcTemp);
 record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
 record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars);
+record PackingListVinDto(string Vin, string? CrateType);
+record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins);
 record RegisterOrgDto(string Name);

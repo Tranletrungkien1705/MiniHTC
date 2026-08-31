@@ -98,6 +98,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ForeignContractLine> ForeignContractLines => Set<ForeignContractLine>();
     public DbSet<CarDocRequest> CarDocRequests => Set<CarDocRequest>();
     public DbSet<CarDocRequestCar> CarDocRequestCars => Set<CarDocRequestCar>();
+    public DbSet<PackingList> PackingLists => Set<PackingList>();
+    public DbSet<PackingListVin> PackingListVins => Set<PackingListVin>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

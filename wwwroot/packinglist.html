@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Packing List</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #vtbl td,#vtbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Packing List (đóng gói lô xe lên tàu) <span class="muted">(port 1:1 FrmNewPL — PackingList)</span></h1>
+<div class="card">
+  <b>Tạo Packing List</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Số LC *</label><input id="lc" style="width:120px"></div>
+    <div><label>Cảng</label><input id="port" style="width:90px"></div>
+    <div><label>Loại PL</label><input id="ptype" style="width:90px"></div>
+    <div><label>Ngày lên tàu *</label><input id="ds" type="date"></div>
+    <div><label>Ngày ĐK đến cảng *</label><input id="de" type="date"></div>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu PL</button><span id="msg"></span>
+  </div>
+  <table id="vtbl"><thead><tr><th>VIN *</th><th>Loại thùng</th><th></th></tr></thead><tbody id="vtb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addVin()">+ Thêm VIN</button>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc số LC" oninput="load()" style="width:130px"></div>
+<table><thead><tr><th>Số PL</th><th>LC</th><th>Cảng</th><th>Số VIN</th><th>Ngày lên tàu</th><th>ĐK đến cảng</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addVin(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="vin" style="width:150px"></td><td><input class="ct" style="width:110px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("vtb").appendChild(tr); }
+async function create(){
+  const vins=[...F("vtb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,crateType:tr.querySelector(".ct").value})).filter(v=>v.vin);
+  const r=await fetch("/api/packinglists",{method:"POST",headers:H(),body:JSON.stringify({lcNo:F("lc").value,portCode:F("port").value,plType:F("ptype").value,shippingDateStart:F("ds").value||null,shippingDateEndExpected:F("de").value||null,vins})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.plNo+" ("+j.vins+" VIN)."); F("vtb").innerHTML="";addVin(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/packinglists?lc=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.plNo}</b> <a href="#" class="cars" onclick="vins('${o.plNo}');return false">xem VIN</a></td><td>${o.lcNo}</td><td>${o.portCode||""}</td><td>${o.vins}</td><td>${day(o.shippingDateStart)}</td><td>${day(o.shippingDateEndExpected)}</td></tr><tr id="x-${o.plNo}"></tr>`
+  ).join("")||'<tr><td colspan="6" class="muted">Chưa có Packing List.</td></tr>';
+}
+async function vins(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/packinglists/${no}/vins`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="6"><div class="cars">${(d.vins||[]).map(v=>`VIN <b>${v.vin}</b>${v.crateType?" · thùng "+v.crateType:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addVin(); load();
+</script>
+</body></html>
