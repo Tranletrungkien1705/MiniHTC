@@ -1463,6 +1463,29 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Công văn bảo lãnh/claim đại lý (GrtClaim + Detail) — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim (2010.HTC/Sales/GrtClaim). Công văn bảo lãnh lô xe theo đại lý + phép nhận.</summary>
+public sealed class GrtClaim
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GrtClaimNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime? ContractDate { get; set; }
+    public string FlagisHTC { get; set; } = "";   // phép nhận: HTC / DL
+    public string Status { get; set; } = "Draft"; // Draft → Issued (phát hành) / Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? IssuedAt { get; set; }
+}
+public sealed class GrtClaimDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long GrtClaimId { get; set; }
+    public string VIN { get; set; } = "";
+    public decimal UnitPrice { get; set; }
+    public string? BankCode { get; set; }
+}
+
 /// <summary>Yêu cầu đóng thùng (Sto_CBReq + Detail) — port 1:1 FrmNewCBReq (2010.HTC/Sales/Purchase). Đóng thùng lô xe xuất khẩu theo VIN, kho đi→kho đến + loại đóng thùng.</summary>
 public sealed class CBReq
 {

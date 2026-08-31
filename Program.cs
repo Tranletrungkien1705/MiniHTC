@@ -1289,6 +1289,61 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Công văn bảo lãnh/claim (GrtClaim — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim, 2010.HTC/Sales/GrtClaim) =====
+app.MapGet("/api/grtclaims", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.GrtClaims.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.GrtClaimNo, r.DealerCode, r.ContractDate, r.FlagisHTC, r.Status, r.CreatedAt, r.IssuedAt,
+        cars = db.GrtClaimDetails.Count(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id),
+        total = db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id).Sum(c => (decimal?)c.UnitPrice) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/grtclaims", async (GrtClaimDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.FlagisHTC)) return Results.BadRequest(new { error = "Chưa chọn phép nhận!" });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có chi tiết xe để tạo công văn." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "GRT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new GrtClaim { OrgId = t.OrgId, GrtClaimNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, FlagisHTC = dto.FlagisHTC.Trim(), Status = "Draft" };
+    db.GrtClaims.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.GrtClaimDetails.Add(new GrtClaimDetail { OrgId = t.OrgId, GrtClaimId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), UnitPrice = c.UnitPrice, BankCode = c.BankCode });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.GrtClaimNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/grtclaims/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id)
+        .Select(c => new { c.VIN, c.UnitPrice, c.BankCode }).ToListAsync();
+    return Results.Ok(new { r.GrtClaimNo, r.DealerCode, r.FlagisHTC, r.Status, count = cars.Count, cars, total = cars.Sum(x => x.UnitPrice) });
+}).RequireAuthorization();
+
+app.MapPost("/api/grtclaims/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("issue" or "cancel")) return Results.BadRequest(new { error = "action = issue|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Công văn đã xử lý." });
+    if (action == "issue") { r.Status = "Issued"; r.IssuedAt = DateTime.Now; }
+    else r.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.GrtClaimNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Yêu cầu đóng thùng (CBReq — port 1:1 FrmNewCBReq, 2010.HTC/Sales/Purchase) =====
 app.MapGet("/api/cbreqs", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -4409,6 +4464,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
+record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
 record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);
 record CBReqDto(List<CBReqCarDto>? Cars);
 record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
