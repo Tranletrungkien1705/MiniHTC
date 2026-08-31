@@ -1251,6 +1251,32 @@ public sealed class TkhqPL
     public DateTime? ShippingDateEnd { get; set; }
 }
 
+/// <summary>Lệnh giao xe cho đại lý (DeliveryOrder — port 1:1 FrmNewDO/FrmMngDO, TCMotor DMSales.Foton):
+/// giao lô xe từ kho tới đại lý. Draft(Nháp)→Delivered(Đã giao).</summary>
+public sealed class DeliveryOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DoNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";      // Draft → Delivered
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DeliveredAt { get; set; }
+}
+
+/// <summary>Dòng xe trong DO (DoDetail): VIN + model + màu + kho + ngày giao dự kiến.</summary>
+public sealed class DeliveryOrderCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DoId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? StorageCode { get; set; }
+    public DateTime? DeliveryExpectDate { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

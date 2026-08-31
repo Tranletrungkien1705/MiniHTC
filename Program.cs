@@ -1227,6 +1227,57 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Lệnh giao xe cho đại lý (DeliveryOrder — port 1:1 FrmNewDO/FrmMngDO, DMSales.Foton) =====
+app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.DeliveryOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
+    var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.DeliveredAt,
+        cars = db.DeliveryOrderCars.Count(c => c.OrgId == t.OrgId && c.DoId == o.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
+    var vins = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "DO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    db.DeliveryOrders.Add(o); await db.SaveChangesAsync();
+    foreach (var c in vins)
+        db.DeliveryOrderCars.Add(new DeliveryOrderCar { OrgId = t.OrgId, DoId = o.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, StorageCode = c.StorageCode, DeliveryExpectDate = c.DeliveryExpectDate });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.DoNo, o.DealerCode, cars = vins.Count, status = o.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate }).ToListAsync();
+    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/deliveryorders/{no}/deliver", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ giao lệnh Nháp." });
+    o.Status = "Delivered"; o.DeliveredAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.DoNo, status = o.Status });
+}).RequireAuthorization();
+
 // ===== Tờ khai hải quan (Tkhq — port 1:1 FrmNewTKHQ/FrmMngTKHQ, DMSales.Foton) =====
 app.MapGet("/api/tkhqs", async (AppDbContext db, ITenantContext t, string? status, string? contract) =>
 {
@@ -3033,4 +3084,6 @@ record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, Lis
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
 record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);
+record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate);
+record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars);
 record RegisterOrgDto(string Name);
