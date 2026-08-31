@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo bán hàng đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin:12px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:17px;display:block} .box span{font-size:11px;opacity:.7}
+  #msg{font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+</style></head>
+<body>
+<h1>Báo cáo bán hàng đại lý <span class="muted">(port 1:1 FrmBanHangDL — Report)</span></h1>
+<p class="muted">Tổng hợp đơn hàng bán (SalesOrder) theo đại lý: số ĐH, SL đặt/duyệt, giá trị. Nguồn = màn Đơn hàng bán xe.</p>
+<div class="bar">
+  <div><label>Đại lý</label><input id="qd" style="width:90px"></div>
+  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Sent">Đã gửi</option><option value="Approved1">Duyệt cấp 1</option><option value="Approved2">Duyệt cấp 2</option><option value="Rejected">Từ chối</option></select></div>
+  <div><label>Loại ĐH</label><select id="qo"><option value="">Tất cả</option><option value="Plan">Kế hoạch</option><option value="UnPlan">Ngoài KH</option></select></div>
+  <div><label>Từ ngày</label><input id="qf" type="date"></div>
+  <div><label>Đến</label><input id="qt" type="date"></div>
+  <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
+</div>
+<div class="kpi" id="kpi" style="margin:8px 0"></div>
+<h3>Theo đại lý</h3>
+<div class="wrap"><table><thead><tr><th>Đại lý</th><th class="num">Số ĐH</th><th class="num">SL đặt</th><th class="num">SL duyệt</th><th class="num">Giá trị</th></tr></thead><tbody id="dRows"></tbody></table></div>
+<h3>Chi tiết đơn hàng</h3>
+<div class="wrap"><table><thead><tr><th>Số ĐH</th><th>Đại lý</th><th>Loại</th><th>TT thanh toán</th><th>Trạng thái</th><th>Ngày tạo</th><th class="num">SL đặt</th><th class="num">SL duyệt</th><th class="num">Giá trị</th></tr></thead><tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const ST={Draft:"Nháp",Sent:"Đã gửi",Approved1:"Duyệt 1",Approved2:"Duyệt 2",Rejected:"Từ chối"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function money(n){ return (n||0).toLocaleString("vi-VN"); }
+function msg(t){ F("msg").textContent=t; }
+async function run(){ await token(); msg("");
+  const r=await fetch(`/api/report/salesbydealer?dealer=${F("qd").value}&status=${F("qs").value}&orderType=${F("qo").value}&from=${F("qf").value}&to=${F("qt").value}`,{headers:H()});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  F("kpi").innerHTML=`<div class="box"><b>${d.totalOrders}</b><span>Số ĐH</span></div><div class="box"><b>${d.totalReqQty}</b><span>Tổng SL đặt</span></div><div class="box"><b>${money(d.totalAmount)}</b><span>Tổng giá trị</span></div>`+
+    (d.byStatus||[]).map(s=>`<div class="box"><b>${s.count}</b><span>${ST[s.status]||s.status}</span></div>`).join("");
+  F("dRows").innerHTML=(d.byDealer||[]).map(o=>`<tr><td><b>${o.dealerCode}</b></td><td class="num">${o.orders}</td><td class="num">${o.reqQty}</td><td class="num">${o.appQty}</td><td class="num">${money(o.amount)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">—</td></tr>';
+  F("rows").innerHTML=(d.detail||[]).map(o=>`<tr><td><b>${o.soCode}</b></td><td>${o.dealerCode||""}</td><td>${o.orderType||""}</td><td>${o.payType||""}</td><td>${ST[o.status]||o.status}</td><td>${o.createdAt}</td><td class="num">${o.reqQty}</td><td class="num">${o.appQty}</td><td class="num">${money(o.amount)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

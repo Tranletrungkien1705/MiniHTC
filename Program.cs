@@ -2589,6 +2589,34 @@ app.MapGet("/api/report/guarantee", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = recs.Count, totalDebit = recs.Sum(Debit), totalAmount = recs.Sum(g => g.TotalAmount), byBank, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo bán hàng đại lý (port 1:1 FrmBanHangDL) — tái dùng SalesOrder + SalesOrderLine =====
+app.MapGet("/api/report/salesbydealer", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? orderType, DateTime? from, DateTime? to) =>
+{
+    var q = db.SalesOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
+    if (!string.IsNullOrWhiteSpace(orderType)) q = q.Where(o => o.OrderType == orderType);
+    if (from is not null) q = q.Where(o => o.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(o => o.CreatedAt < to.Value.Date.AddDays(1));
+    var orders = await q.ToListAsync();
+    var ids = orders.Select(o => o.Id).ToHashSet();
+    var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.SalesOrderId)).ToListAsync();
+    var lineByOrder = lines.GroupBy(l => l.SalesOrderId).ToDictionary(g => g.Key, g => g.ToList());
+    int ReqQty(long oid) => lineByOrder.TryGetValue(oid, out var ls) ? ls.Sum(x => x.RequestedQuantity) : 0;
+    int AppQty(long oid) => lineByOrder.TryGetValue(oid, out var ls) ? ls.Sum(x => x.ApprovedQuantity ?? 0) : 0;
+    decimal Amount(long oid) => lineByOrder.TryGetValue(oid, out var ls) ? ls.Sum(x => x.UnitPrice * x.RequestedQuantity) : 0;
+    var byDealer = orders.GroupBy(o => string.IsNullOrEmpty(o.DealerCode) ? "(chưa rõ)" : o.DealerCode)
+        .Select(g => new { dealerCode = g.Key, orders = g.Count(), reqQty = g.Sum(o => ReqQty(o.Id)), appQty = g.Sum(o => AppQty(o.Id)), amount = g.Sum(o => Amount(o.Id)) })
+        .OrderByDescending(x => x.amount).ToList();
+    var byStatus = orders.GroupBy(o => o.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = orders.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.SoCode, o.DealerCode, o.OrderType, o.PayType, o.Status, createdAt = o.CreatedAt.ToString("yyyy-MM-dd"),
+        reqQty = ReqQty(o.Id), appQty = AppQty(o.Id), amount = Amount(o.Id)
+    }).ToList();
+    return Results.Ok(new { totalOrders = orders.Count, totalReqQty = orders.Sum(o => ReqQty(o.Id)), totalAmount = orders.Sum(o => Amount(o.Id)), byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
