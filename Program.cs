@@ -1289,6 +1289,89 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Thiết bị gắn trên xe (DeviceCar — port 1:1 FrmMng_Device_Car/_Upd, 2010.HTC/Sales) =====
+app.MapGet("/api/devicecars", async (AppDbContext db, ITenantContext t, string? vin, string? deviceType) =>
+{
+    var q = db.DeviceCars.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN.Contains(vin.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(deviceType)) q = q.Where(c => c.DeviceTypeCode == deviceType);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.DeviceTypeCode, c.InputInvoiceNo, c.InputInvoiceDate, c.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/devicecars", async (List<DeviceCarDto> dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
+    if (rows.Any(c => string.IsNullOrWhiteSpace(c.DeviceTypeCode))) return Results.BadRequest(new { error = "Chưa nhập loại thiết bị." });
+    var dupe = rows.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    int inserted = 0, updated = 0;
+    foreach (var c in rows)
+    {
+        var vin = c.VIN.Trim().ToUpperInvariant();
+        var ex = await db.DeviceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (ex is null) { db.DeviceCars.Add(new DeviceCar { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(), InputInvoiceNo = c.InputInvoiceNo, InputInvoiceDate = c.InputInvoiceDate }); inserted++; }
+        else { ex.DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(); ex.InputInvoiceNo = c.InputInvoiceNo; ex.InputInvoiceDate = c.InputInvoiceDate; ex.UpdatedAt = DateTime.Now; updated++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
+}).RequireAuthorization();
+
+// ===== Đăng ký xe trưng bày/test (TestCarRegister — port 1:1 FrmMngRegister_TestCar, 2010.HTC/Sales) =====
+app.MapGet("/api/testcarregisters", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.TestCarRegisters.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.TestCarCode, r.DealerCode, r.Status, r.CreatedAt, r.ApprovedAt, r.RejectReason,
+        cars = db.TestCarRegisterCars.Count(c => c.OrgId == t.OrgId && c.TestCarRegisterId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/testcarregisters", async (TestCarRegisterDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "TC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new TestCarRegister { OrgId = t.OrgId, TestCarCode = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    db.TestCarRegisters.Add(r); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.TestCarRegisterCars.Add(new TestCarRegisterCar { OrgId = t.OrgId, TestCarRegisterId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, StatusDtl = "P" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.TestCarCode, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/testcarregisters/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.TestCarRegisters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.TestCarRegisterCars.Where(c => c.OrgId == t.OrgId && c.TestCarRegisterId == r.Id)
+        .Select(c => new { c.VIN, c.ModelCode, c.StatusDtl }).ToListAsync();
+    return Results.Ok(new { r.TestCarCode, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/testcarregisters/{no}/{action}", async (string no, string action, SoRejectDto? dto, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.TestCarRegisters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối đơn Nháp." });
+    var cars = await db.TestCarRegisterCars.Where(c => c.OrgId == t.OrgId && c.TestCarRegisterId == r.Id).ToListAsync();
+    if (action == "approve") { r.Status = "Approved"; r.ApprovedAt = DateTime.Now; foreach (var c in cars) c.StatusDtl = "A"; }
+    else { r.Status = "Rejected"; r.RejectReason = dto?.Reason; foreach (var c in cars) c.StatusDtl = "R"; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.TestCarCode, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Đổi màu xe (CarColorChange — port 1:1 FrmChange_CarColor, 2010.HTC/Sales) =====
 app.MapGet("/api/carcolorchanges", async (AppDbContext db, ITenantContext t, string? car, string? dealer) =>
 {
@@ -4035,6 +4118,9 @@ record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
 record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
+record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record TestCarRegisterCarDto(string VIN, string? ModelCode);
+record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);

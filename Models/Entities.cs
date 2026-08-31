@@ -1463,6 +1463,43 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Thiết bị gắn trên xe (Mng_Device_Car) — port 1:1 FrmMng_Device_Car/_Upd (2010.HTC/Sales). Gán loại thiết bị + hóa đơn nhập cho VIN.</summary>
+public sealed class DeviceCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string DeviceTypeCode { get; set; } = "";  // loại thiết bị
+    public string? InputInvoiceNo { get; set; }
+    public DateTime? InputInvoiceDate { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Đăng ký xe trưng bày/test (Car_TestCar + Dtl) — port 1:1 FrmMngRegister_TestCar (2010.HTC/Sales). Đại lý đăng ký lô xe làm xe trưng bày, có duyệt.</summary>
+public sealed class TestCarRegister
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TestCarCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";   // Draft → Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+    public string? RejectReason { get; set; }
+}
+public sealed class TestCarRegisterCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TestCarRegisterId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string StatusDtl { get; set; } = "P";
+}
+
 /// <summary>Lịch sử đổi màu xe (Rpt_CarColorChangeHistory) — port 1:1 FrmChange_CarColor (2010.HTC/Sales). Đổi màu xe theo VIN, lưu màu cũ → màu mới.</summary>
 public sealed class CarColorChange
 {
