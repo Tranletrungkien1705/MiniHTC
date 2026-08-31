@@ -3230,6 +3230,56 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Công nợ khách hàng dịch vụ + thu tiền (CusDebit — port 1:1 FrmCusDebitCreate/FrmCusPaymentCreate, TCMotor) =====
+app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var query = db.CusDebits.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.DebitNo.Contains(q!) || (x.CusName != null && x.CusName.Contains(q!)) || (x.RONo != null && x.RONo.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.DebitNo, x.CusId, x.CusName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
+        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
+}).RequireAuthorization();
+
+// Tạo công nợ (theo RO/khách). DebitAmount > 0.
+app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.DebitAmount <= 0) return Results.BadRequest(new { error = "Số tiền công nợ phải lớn hơn 0." });
+    var no = "CD" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new CusDebit { OrgId = t.OrgId, DebitNo = no, CusId = dto.CusId, CusName = dto.CusName, RONo = dto.RONo, DebitAmount = dto.DebitAmount, PaidAmount = 0, DebitDate = dto.DebitDate ?? DateTime.Now, Note = dto.Note, Status = "Open" };
+    db.CusDebits.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.DebitNo });
+}).RequireAuthorization();
+
+app.MapGet("/api/cusdebits/{no}/payments", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var pays = await db.CusDebitPayments.Where(p => p.OrgId == t.OrgId && p.CusDebitId == h.Id).OrderBy(p => p.Id)
+        .Select(p => new { p.PaymentAmount, p.Note, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    return Results.Ok(new { h.DebitNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
+}).RequireAuthorization();
+
+// Thu tiền công nợ (không vượt số dư; đủ tiền -> Paid).
+app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
+    var balance = h.DebitAmount - h.PaidAmount;
+    if (dto.PaymentAmount > balance) return Results.BadRequest(new { error = $"Số tiền thu vượt số dư công nợ ({balance})." });
+    db.CusDebitPayments.Add(new CusDebitPayment { OrgId = t.OrgId, CusDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note });
+    h.PaidAmount += dto.PaymentAmount;
+    if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
+}).RequireAuthorization();
+
 // ===== Chia sẻ phụ tùng giữa đại lý (SharePart — port 1:1 FrmSharePart/ShareDealer, TCMotor) =====
 app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part, string? status) =>
 {
@@ -8182,6 +8232,8 @@ record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
+record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
+record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
 record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
