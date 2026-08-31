@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Danh mục model xe dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#7c3aed;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:90px;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:13px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  code{background:#8882;padding:1px 5px;border-radius:4px} #msg,#msg2{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Danh mục model xe dịch vụ <span class="muted">(port 1:1 FrmModel + FrmImportModel — TCMotor)</span></h1>
+<p class="muted">Khai báo model xe cho hệ thống dịch vụ: mã, tên, nhãn hiệu, mã sản xuất, đại lý. Có thể nhập từng dòng hoặc nhập hàng loạt (Excel).</p>
+<div class="card"><h3 style="margin-top:0">Thêm / cập nhật model</h3>
+  <div class="row">
+    <div><label>Mã model *</label><input id="fCode" style="width:110px"></div>
+    <div style="flex:1;min-width:130px"><label>Tên model *</label><input id="fName" style="width:100%"></div>
+    <div><label>Nhãn hiệu</label><input id="fTrade" style="width:100px"></div>
+    <div><label>Mã SX</label><input id="fProd" style="width:100px"></div>
+    <div><label>Đại lý</label><input id="fDealer" style="width:100px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="card"><h3 style="margin-top:0">Nhập hàng loạt (Excel)</h3>
+  <label>Dán: <code>Mã | Tên | Nhãn hiệu | Mã SX | Đại lý</code></label>
+  <textarea id="ta" placeholder="ACCENT&#9;Hyundai Accent&#9;HYUNDAI&#9;PC01&#9;DL01&#10;TUCSON&#9;Hyundai Tucson&#9;HYUNDAI&#9;PC02&#9;DL01"></textarea>
+  <div style="margin-top:8px"><button class="primary" onclick="doImport()">Nhập hàng loạt</button><span id="msg2"></span></div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Tìm mã/tên</label><input id="qQ" style="width:160px" onkeydown="if(event.key==='Enter')load()"></div>
+  <div><label>Lọc nhãn hiệu</label><input id="qTrade" style="width:110px"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>Nhãn hiệu</th><th>Mã SX</th><th>Đại lý</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+function msg2(t){ F("msg2").textContent=t; setTimeout(()=>{if(F("msg2").textContent===t)F("msg2").textContent="";},3000); }
+async function save(){ await token();
+  const body={ModelCode:F("fCode").value,ModelName:F("fName").value,TradeMarkCode:F("fTrade").value,ProductionCode:F("fProd").value,DealerCode:F("fDealer").value};
+  const r=await fetch("/api/servicemodels",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.modelCode:"Đã thêm "+d.modelCode); F("fCode").value="";F("fName").value=""; load();
+}
+async function doImport(){ await token();
+  const rows=F("ta").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{const c=l.split(/\t|,/).map(s=>s.trim());return {ModelCode:c[0]||"",ModelName:c[1]||"",TradeMarkCode:c[2]||"",ProductionCode:c[3]||"",DealerCode:c[4]||""};});
+  if(!rows.length){ msg2("Chưa có dữ liệu"); return; }
+  const r=await fetch("/api/servicemodels/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ msg2("Lỗi: "+(d.error||r.status)); return; }
+  msg2(`Xong: +${d.created} mới / ${d.updated} cập nhật / ${d.errorCount} lỗi`+(d.errorCount?" ("+d.errors.map(e=>"dòng "+e.line+": "+e.error).join("; ")+")":"")); load();
+}
+async function toggle(c){ await token();
+  const r=await fetch("/api/servicemodels/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fCode").value=o.modelCode;F("fName").value=o.modelName||"";F("fTrade").value=o.tradeMarkCode||"";F("fProd").value=o.productionCode||"";F("fDealer").value=o.dealerCode||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/servicemodels?q="+encodeURIComponent(F("qQ").value)+"&trade="+encodeURIComponent(F("qTrade").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.modelCode}</b></td><td>${esc(o.modelName)}</td><td>${esc(o.tradeMarkCode)}</td><td>${esc(o.productionCode)}</td><td>${esc(o.dealerCode)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.modelCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có model.</td></tr>';
+}
+</script>
+</body></html>

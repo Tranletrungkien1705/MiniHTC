@@ -3230,6 +3230,68 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Danh mục model xe dịch vụ (ServiceModel — port 1:1 FrmModel/FrmImportModel, TCMotor) =====
+app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, string? q, string? trade, string? active) =>
+{
+    var query = db.ServiceModels.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ModelCode.Contains(q!.ToUpper()) || (x.ModelName != null && x.ModelName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(trade)) query = query.Where(x => x.TradeMarkCode == trade);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.ModelCode).Take(500)
+        .Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập mã model." });
+    if (string.IsNullOrWhiteSpace(dto.ModelName)) return Results.BadRequest(new { error = "Chưa nhập tên model." });
+    var code = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
+    if (ex is not null)
+    {
+        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.ModelCode, updated = true });
+    }
+    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1" };
+    db.ServiceModels.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ModelCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ServiceModels.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.ModelCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
+// Nhập model hàng loạt từ Excel (port 1:1 FrmImportModel) — cùng entity.
+app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    var seen = new HashSet<string>();
+    int created = 0, updated = 0;
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i]; var line = i + 1;
+        var code = (r.ModelCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã model." }); continue; }
+        if (string.IsNullOrWhiteSpace(r.ModelName)) { errors.Add(new { line, code, error = "Thiếu tên model." }); continue; }
+        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã model bị trùng trong file nhập." }); continue; }
+        var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
+        if (ex is not null) { ex.ModelName = r.ModelName; ex.TradeMarkCode = r.TradeMarkCode; ex.ProductionCode = r.ProductionCode; ex.DealerCode = r.DealerCode; ex.FlagActive = "1"; updated++; }
+        else { db.ServiceModels.Add(new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = r.ModelName, TradeMarkCode = r.TradeMarkCode, ProductionCode = r.ProductionCode, DealerCode = r.DealerCode, FlagActive = "1" }); created++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+}).RequireAuthorization();
+
 // ===== Xuất kho phụ tùng dịch vụ (ServiceStockOut header-detail — port 1:1 FrmSerInventoryAccStockOut01, TCMotor) =====
 app.MapGet("/api/servicestockouts", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -8605,6 +8667,9 @@ record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines);
+record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
+record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
+record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
