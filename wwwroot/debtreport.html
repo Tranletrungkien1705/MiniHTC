@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo công nợ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} tfoot td{font-weight:700;border-top:2px solid var(--line)} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .t-Customer{color:var(--accent)} .t-Insurance{color:var(--warn)}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+</style></head>
+<body>
+<h1>Báo cáo công nợ dịch vụ <span class="muted">(port 1:1 FrmReportTotalCusDebit/InsDebit/ReceivableDebit + SerPaymentGet — TCMotor)</span></h1>
+<div class="tabs">
+  <div class="tab on" id="tA" onclick="tab('A')">Phải thu (KH + BH)</div>
+  <div class="tab" id="tB" onclick="tab('B')">Tổng nợ khách hàng</div>
+  <div class="tab" id="tC" onclick="tab('C')">Lịch sử thu tiền</div>
+</div>
+
+<div id="paneA">
+  <div class="row"><div><label>Loại</label><select id="aType"><option value="">Tất cả</option><option value="Customer">Khách hàng</option><option value="Insurance">Bảo hiểm</option></select></div><button class="primary" onclick="repA()">Xem</button></div>
+  <div class="grid2" id="aKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Loại</th><th>Mã</th><th>Tên</th><th class="num">Nợ</th><th class="num">Đã thu</th><th class="num">Còn nợ</th></tr></thead>
+  <tbody id="aRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody>
+  <tfoot id="aFoot"></tfoot></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="row"><button class="primary" onclick="repB()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Mã KH</th><th>Tên</th><th class="num">Số món</th><th class="num">PS tăng</th><th class="num">PS giảm</th><th class="num">Cuối kỳ</th></tr></thead>
+  <tbody id="bRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody>
+  <tfoot id="bFoot"></tfoot></table></div>
+</div>
+
+<div id="paneC" style="display:none">
+  <div class="row"><div><label>Từ ngày</label><input id="cFrom" type="date"></div><div><label>Đến ngày</label><input id="cTo" type="date"></div><button class="primary" onclick="repC()">Xem</button></div>
+  <div class="grid2" id="cKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Số nợ</th><th>Người trả</th><th>Loại</th><th class="num">Số tiền</th><th>Ngày</th><th>Ghi chú</th></tr></thead>
+  <tbody id="cRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const TT={Customer:"Khách hàng",Insurance:"Bảo hiểm"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function tab(x){ ["A","B","C"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function repA(){ await token();
+  const r=await fetch("/api/report/receivable-debt?debtorType="+F("aType").value,{headers:H()}); const d=await r.json();
+  F("aKpi").innerHTML=`<div class="kpi"><b style="color:var(--accent)">${M(d.totalCustomer)}</b><span class="muted">Còn nợ KH</span></div><div class="kpi"><b style="color:var(--warn)">${M(d.totalInsurance)}</b><span class="muted">Còn nợ BH</span></div><div class="kpi"><b>${M(d.grandTotal)}</b><span class="muted">Tổng phải thu</span></div>`;
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><span class="pill t-${o.debtorType}">${TT[o.debtorType]||o.debtorType}</span></td><td>${esc(o.code)}</td><td>${esc(o.name)}</td><td class="num">${M(o.debit)}</td><td class="num">${M(o.paid)}</td><td class="num">${M(o.balance)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có dữ liệu.</td></tr>';
+  F("aFoot").innerHTML=(d.rows&&d.rows.length)?`<tr><td colspan="5">TỔNG PHẢI THU</td><td class="num">${M(d.grandTotal)}</td></tr>`:"";
+}
+async function repB(){ await token();
+  const r=await fetch("/api/report/cusdebit-total",{headers:H()}); const d=await r.json();
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td>${esc(o.code)}</td><td>${esc(o.name)}</td><td class="num">${o.count}</td><td class="num">${M(o.increase)}</td><td class="num">${M(o.decrease)}</td><td class="num">${M(o.closing)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có dữ liệu.</td></tr>';
+  F("bFoot").innerHTML=(d.rows&&d.rows.length)?`<tr><td colspan="3">TỔNG</td><td class="num">${M(d.totalIncrease)}</td><td class="num">${M(d.totalDecrease)}</td><td class="num">${M(d.totalClosing)}</td></tr>`:"";
+}
+async function repC(){ await token();
+  const p=new URLSearchParams(); if(F("cFrom").value)p.set("fromDate",F("cFrom").value); if(F("cTo").value)p.set("toDate",F("cTo").value);
+  const r=await fetch("/api/report/service-payments?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("cKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Số lần thu</span></div><div class="kpi"><b style="color:var(--ok)">${M(d.total)}</b><span class="muted">Tổng thu</span></div>`;
+  F("cRows").innerHTML=(d.rows||[]).map(o=>`<tr><td>${esc(o.debitNo)}</td><td>${esc(o.payer)}</td><td><span class="pill t-${o.payerType}">${TT[o.payerType]||o.payerType}</span></td><td class="num">${M(o.paymentAmount)}</td><td>${esc(o.payDate)}</td><td>${esc(o.note)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

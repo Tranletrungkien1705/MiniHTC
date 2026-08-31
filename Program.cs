@@ -4264,6 +4264,48 @@ app.MapPost("/api/insdebits/{no}/payments", async (string no, InsDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Báo cáo công nợ (report tái-dùng CusDebit + InsDebit — port 1:1 FrmReportTotalCusDebit/InsDebit/ReceivableDebit + FrmReportSerPaymentGet, TCMotor) =====
+// Tổng công nợ phải thu: gộp dư nợ khách hàng + hãng bảo hiểm (mỗi bên 1 nhóm), có tổng cộng.
+app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext t, string? debtorType) =>
+{
+    var cus = await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.DebitAmount > x.PaidAmount)
+        .GroupBy(x => new { x.CusId, x.CusName })
+        .Select(g => new { debtorType = "Customer", code = g.Key.CusId, name = g.Key.CusName, debit = g.Sum(x => x.DebitAmount), paid = g.Sum(x => x.PaidAmount), balance = g.Sum(x => x.DebitAmount - x.PaidAmount) }).ToListAsync();
+    var ins = await db.InsDebits.Where(x => x.OrgId == t.OrgId && x.DebitAmount > x.PaidAmount)
+        .GroupBy(x => new { x.InsNo, x.InsName })
+        .Select(g => new { debtorType = "Insurance", code = g.Key.InsNo, name = g.Key.InsName, debit = g.Sum(x => x.DebitAmount), paid = g.Sum(x => x.PaidAmount), balance = g.Sum(x => x.DebitAmount - x.PaidAmount) }).ToListAsync();
+    var all = cus.Concat(ins).ToList();
+    if (!string.IsNullOrWhiteSpace(debtorType)) all = all.Where(r => r.debtorType == debtorType).ToList();
+    all = all.OrderByDescending(r => r.balance).ToList();
+    return Results.Ok(new { totalCustomer = cus.Sum(r => r.balance), totalInsurance = ins.Sum(r => r.balance), grandTotal = all.Sum(r => r.balance), rows = all });
+}).RequireAuthorization();
+
+// Báo cáo tổng công nợ khách hàng: đầu kỳ 0, phát sinh tăng = tổng nợ, phát sinh giảm = tổng thu, cuối kỳ = dư nợ.
+app.MapGet("/api/report/cusdebit-total", async (AppDbContext db, ITenantContext t) =>
+{
+    var rows = await db.CusDebits.Where(x => x.OrgId == t.OrgId)
+        .GroupBy(x => new { x.CusId, x.CusName })
+        .Select(g => new { code = g.Key.CusId, name = g.Key.CusName, increase = g.Sum(x => x.DebitAmount), decrease = g.Sum(x => x.PaidAmount), closing = g.Sum(x => x.DebitAmount - x.PaidAmount), count = g.Count() })
+        .OrderByDescending(r => r.closing).ToListAsync();
+    return Results.Ok(new { totalIncrease = rows.Sum(r => r.increase), totalDecrease = rows.Sum(r => r.decrease), totalClosing = rows.Sum(r => r.closing), rows });
+}).RequireAuthorization();
+
+// Báo cáo lịch sử thu tiền dịch vụ: gộp thu tiền khách hàng + bảo hiểm theo ngày.
+app.MapGet("/api/report/service-payments", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var cusPay = await (from p in db.CusDebitPayments.Where(x => x.OrgId == t.OrgId)
+                        join h in db.CusDebits.Where(x => x.OrgId == t.OrgId) on p.CusDebitId equals h.Id
+                        select new { p.PaymentAmount, p.PayDate, debitNo = h.DebitNo, payer = h.CusName, payerType = "Customer", p.Note }).ToListAsync();
+    var insPay = await (from p in db.InsDebitPayments.Where(x => x.OrgId == t.OrgId)
+                        join h in db.InsDebits.Where(x => x.OrgId == t.OrgId) on p.InsDebitId equals h.Id
+                        select new { p.PaymentAmount, p.PayDate, debitNo = h.DebitNo, payer = h.InsName, payerType = "Insurance", p.Note }).ToListAsync();
+    var all = cusPay.Concat(insPay);
+    if (fromDate.HasValue) all = all.Where(x => x.PayDate.HasValue && x.PayDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) all = all.Where(x => x.PayDate.HasValue && x.PayDate.Value.Date <= toDate.Value.Date);
+    var rows = all.OrderByDescending(x => x.PayDate).Select(x => new { x.debitNo, x.payer, x.payerType, x.PaymentAmount, payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "", x.Note }).ToList();
+    return Results.Ok(new { count = rows.Count, total = rows.Sum(r => r.PaymentAmount), rows });
+}).RequireAuthorization();
+
 // ===== Chia sẻ phụ tùng giữa đại lý (SharePart — port 1:1 FrmSharePart/ShareDealer, TCMotor) =====
 app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part, string? status) =>
 {
