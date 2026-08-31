@@ -1227,6 +1227,56 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, DMSales.Foton) =====
+app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+{
+    var q = db.POCommands.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(o => o.OrderMonth == month);
+    var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.PoCmdCode, o.OrderMonth, o.Status, o.CreatedAt, o.SentAt,
+        lines = db.POCommandLines.Count(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id),
+        totalQty = db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.OrderMonth)) return Results.BadRequest(new { error = "Cần OrderMonth (YYYYMM)." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
+    var no = "POC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var o = new POCommand { OrgId = t.OrgId, PoCmdCode = no, OrderMonth = dto.OrderMonth.Trim(), Status = "Draft" };
+    db.POCommands.Add(o); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.POCommandLines.Add(new POCommandLine { OrgId = t.OrgId, PoCmdId = o.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), SpecDesc = l.SpecDesc, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, Quantity = l.Quantity });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), status = o.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/pocommands/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.POCommands.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    var lines = await db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id)
+        .Select(l => new { l.SpecCode, l.SpecDesc, l.ColorCode, l.PortCode, l.PlantCode, l.Quantity }).ToListAsync();
+    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.Status, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
+}).RequireAuthorization();
+
+app.MapPost("/api/pocommands/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.POCommands.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ gửi hãng lệnh Nháp." });
+    o.Status = "Sent"; o.SentAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.PoCmdCode, status = o.Status });
+}).RequireAuthorization();
+
 // ===== Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice) =====
 app.MapGet("/api/serviceinvoices", async (AppDbContext db, ITenantContext t, string? status, string? ro) =>
 {
@@ -2830,4 +2880,6 @@ record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, s
 record CampaignContactDto(string? PlateNo, string? CusName, string? Address);
 record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
 record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType);
+record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity);
+record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines);
 record RegisterOrgDto(string Name);

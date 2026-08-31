@@ -83,6 +83,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Campaign> Campaigns => Set<Campaign>();
     public DbSet<CampaignContact> CampaignContacts => Set<CampaignContact>();
     public DbSet<ServiceInvoice> ServiceInvoices => Set<ServiceInvoice>();
+    public DbSet<POCommand> POCommands => Set<POCommand>();
+    public DbSet<POCommandLine> POCommandLines => Set<POCommandLine>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

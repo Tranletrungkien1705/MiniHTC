@@ -1151,6 +1151,33 @@ public sealed class ServiceInvoice
     public DateTime? PaidAt { get; set; }
 }
 
+/// <summary>Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, TCMotor DMSales.Foton):
+/// đơn đặt xe tải Foton lên hãng theo tháng. Draft(Nháp)→Sent(Đã gửi hãng).</summary>
+public sealed class POCommand
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PoCmdCode { get; set; } = "";
+    public string OrderMonth { get; set; } = "";       // YYYYMM tháng đặt hàng
+    public string Status { get; set; } = "Draft";      // Draft → Sent
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+}
+
+/// <summary>Dòng lệnh đặt (POCommandDetail): spec + màu + SL + cảng + nhà máy.</summary>
+public sealed class POCommandLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PoCmdId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? SpecDesc { get; set; }
+    public string? ColorCode { get; set; }
+    public string? PortCode { get; set; }              // cảng nhận
+    public string? PlantCode { get; set; }             // nhà máy sản xuất
+    public int Quantity { get; set; } = 1;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

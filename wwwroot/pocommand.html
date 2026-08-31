@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lệnh đặt xe hãng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Sent{color:var(--ok)}
+  #msg{font-size:13px} .det{font-size:12px;opacity:.85}
+</style></head>
+<body>
+<h1>Lệnh đặt xe từ nhà máy (Foton) <span class="muted">(port 1:1 FrmNewHMCOrder — POCommand)</span></h1>
+<div class="card">
+  <b>Tạo lệnh đặt</b>
+  <div class="bar" style="margin:10px 0"><input id="om" placeholder="Tháng đặt (YYYYMM) *" style="width:150px"><span style="flex:1"></span><button class="primary" onclick="create()">Lưu lệnh</button><span id="msg"></span></div>
+  <table id="ltbl"><thead><tr><th>Spec *</th><th>Mô tả</th><th>Màu</th><th>Cảng</th><th>Nhà máy</th><th class="n">SL</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Dòng xe</button>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Sent">Đã gửi hãng</option></select><input id="q" placeholder="Lọc tháng" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Mã lệnh</th><th>Tháng</th><th>Dòng</th><th class="n">Tổng SL</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Draft:"Nháp",Sent:"Đã gửi hãng"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="sc" style="width:90px"></td><td><input class="sd" style="width:110px"></td><td><input class="cl" style="width:60px"></td><td><input class="pc" style="width:70px"></td><td><input class="pl" style="width:70px"></td><td class="n"><input class="qt" type="number" value="1" style="width:60px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr); }
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({specCode:tr.querySelector(".sc").value,specDesc:tr.querySelector(".sd").value,colorCode:tr.querySelector(".cl").value,portCode:tr.querySelector(".pc").value,plantCode:tr.querySelector(".pl").value,quantity:Number(tr.querySelector(".qt").value||0)})).filter(l=>l.specCode&&l.quantity>0);
+  const r=await fetch("/api/pocommands",{method:"POST",headers:H(),body:JSON.stringify({orderMonth:F("om").value,lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.poCmdCode+" ("+j.totalQty+" xe)."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/pocommands?status=${F("fst").value}&month=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.poCmdCode}')">Gửi hãng</button>`:"";
+    return `<tr><td><b>${o.poCmdCode}</b> <a href="#" class="det" onclick="lines('${o.poCmdCode}');return false">xem</a></td><td>${o.orderMonth}</td><td>${o.lines}</td>
+      <td class="n">${n(o.totalQty)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.poCmdCode}"></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có lệnh.</td></tr>';
+}
+async function send(no){ const r=await fetch(`/api/pocommands/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/pocommands/${no}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="6"><div class="det">${(d.lines||[]).map(l=>`${l.specCode}${l.colorCode?"/"+l.colorCode:""} ×${l.quantity}${l.portCode?" @"+l.portCode:""}`).join(" &nbsp;|&nbsp; ")||"—"} &nbsp;<b>Tổng: ${n(d.totalQty)} xe</b></div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>
