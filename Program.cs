@@ -3278,6 +3278,63 @@ app.MapGet("/api/smsaccounts/{name}/transactions", async (string name, AppDbCont
     return Results.Ok(new { a.AccountName, a.Balance, count = txs.Count, transactions = txs });
 }).RequireAuthorization();
 
+// ===== Chiến dịch marketing dịch vụ (ServiceCampaign — port 1:1 FrmSer_CampaignMarketing, TCMotor) =====
+// Header (tên/mô tả/điều kiện đại lý) + phụ tùng giảm giá (%). Workflow: Draft -> Active -> Closed.
+app.MapGet("/api/servicecampaigns", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.ServiceCampaigns.Where(c => c.OrgId == t.OrgId).OrderByDescending(c => c.Id)
+        .Select(c => new { c.Id, c.CamNo, c.CamName, c.CamDesc, c.ConditionDealer, startDate = c.StartDate, endDate = c.EndDate, c.Status,
+            partCount = db.ServiceCampaignParts.Count(p => p.OrgId == t.OrgId && p.ServiceCampaignId == c.Id) }).ToListAsync();
+    return Results.Ok(new { items });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicecampaigns", async (ServiceCampaignDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.CamNo ?? "").Trim();
+    if (no == "") return Results.BadRequest(new { error = "Thiếu số chiến dịch (CamNo)." });
+    if (await db.ServiceCampaigns.AnyAsync(c => c.OrgId == t.OrgId && c.CamNo == no))
+        return Results.BadRequest(new { error = "Số chiến dịch đã tồn tại: " + no });
+    var parts = (dto.Parts ?? new List<ServiceCampaignPartDto>());
+    // Guard: mã PT trùng trong 1 chiến dịch + % hợp lệ (0..100).
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var p in parts)
+    {
+        var pc = (p.PartCode ?? "").Trim();
+        if (pc == "") return Results.BadRequest(new { error = "Có dòng phụ tùng thiếu mã." });
+        if (!seen.Add(pc)) return Results.BadRequest(new { error = "Mã phụ tùng trùng trong chiến dịch: " + pc });
+        if (p.PercentDiscount < 0 || p.PercentDiscount > 100) return Results.BadRequest(new { error = "% giảm không hợp lệ cho " + pc });
+    }
+    var c2 = new ServiceCampaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, CamDesc = dto.CamDesc,
+        ConditionDealer = dto.ConditionDealer, StartDate = dto.StartDate, EndDate = dto.EndDate, Status = "Draft" };
+    db.ServiceCampaigns.Add(c2); await db.SaveChangesAsync();
+    foreach (var p in parts)
+        db.ServiceCampaignParts.Add(new ServiceCampaignPart { OrgId = t.OrgId, ServiceCampaignId = c2.Id,
+            PartCode = (p.PartCode ?? "").Trim(), PartName = p.PartName, PercentDiscount = p.PercentDiscount });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c2.Id, c2.CamNo, c2.Status, partCount = parts.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicecampaigns/{id}/parts", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceCampaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var parts = await db.ServiceCampaignParts.Where(p => p.OrgId == t.OrgId && p.ServiceCampaignId == id)
+        .OrderBy(p => p.PartCode).Select(p => new { p.PartCode, p.PartName, p.PercentDiscount }).ToListAsync();
+    return Results.Ok(new { c.CamNo, c.CamName, c.Status, parts });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicecampaigns/{id}/status", async (long id, ServiceCampaignStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceCampaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var s = (dto.Status ?? "").Trim();
+    if (s != "Draft" && s != "Active" && s != "Closed") return Results.BadRequest(new { error = "Trạng thái không hợp lệ." });
+    if (s == "Active" && !await db.ServiceCampaignParts.AnyAsync(p => p.OrgId == t.OrgId && p.ServiceCampaignId == id))
+        return Results.BadRequest(new { error = "Chiến dịch chưa có phụ tùng, không thể kích hoạt." });
+    c.Status = s; await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.Status });
+}).RequireAuthorization();
+
 // ===== Gửi SMS + log (SmsSend — port 1:1 FrmSendSMS, TCMotor) — tích hợp SmsTemplate + ServiceCustomer =====
 // Chuẩn hóa SĐT VN (giống CUtilsSMS.StdPhoneNo): giữ chữ số, chấp nhận 0xxxxxxxxx (10 số) hoặc +84/84xxxxxxxxx.
 static string? StdPhoneVn(string? raw)
@@ -9009,6 +9066,9 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);
+record ServiceCampaignPartDto(string PartCode, string? PartName, decimal PercentDiscount);
+record ServiceCampaignStatusDto(string Status);
 record SmsAccountDto(string AccountName, decimal InitBalance);
 record SmsAccountTxDto(string TRefType, decimal Value, string? Note);
 record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);

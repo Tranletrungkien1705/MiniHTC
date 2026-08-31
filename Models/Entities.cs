@@ -2819,6 +2819,32 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).</summary>
+public sealed class ServiceCampaign
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string? CamName { get; set; }
+    public string? CamDesc { get; set; }
+    public string? ConditionDealer { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft -> Active -> Closed
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Phụ tùng giảm giá trong chiến dịch (detail: mã PT + % giảm) — port 1:1 FrmSer_CampaignMarketing grid, TCMotor.</summary>
+public sealed class ServiceCampaignPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceCampaignId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal PercentDiscount { get; set; }
+}
+
 /// <summary>Tài khoản SMS trả trước (số dư) — port 1:1 FrmSMSAccountMng (TblSMS_Account, TCMotor).</summary>
 public sealed class SmsAccount
 {

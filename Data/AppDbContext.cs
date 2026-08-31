@@ -182,6 +182,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SmsTemplate> SmsTemplates => Set<SmsTemplate>();
     public DbSet<EmailTemplate> EmailTemplates => Set<EmailTemplate>();
     public DbSet<SmsSend> SmsSends => Set<SmsSend>();
+    public DbSet<ServiceCampaign> ServiceCampaigns => Set<ServiceCampaign>();
+    public DbSet<ServiceCampaignPart> ServiceCampaignParts => Set<ServiceCampaignPart>();
     public DbSet<SmsAccount> SmsAccounts => Set<SmsAccount>();
     public DbSet<SmsAccountTx> SmsAccountTxs => Set<SmsAccountTx>();
     public DbSet<ServiceStockOut> ServiceStockOuts => Set<ServiceStockOut>();

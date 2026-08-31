@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Chiến dịch marketing DV</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Active{color:var(--ok)} .s-Closed{opacity:.6}
+  #msg,#msg2{font-size:13px;margin-left:6px} textarea{width:100%;min-height:48px}
+</style></head>
+<body>
+<h1>Chiến dịch marketing dịch vụ <span class="muted">(port 1:1 FrmSer_CampaignMarketing — TCMotor)</span></h1>
+<p class="muted">Header (tên/mô tả/điều kiện đại lý) + danh sách phụ tùng giảm giá (%). Vòng đời: Nháp → Kích hoạt → Đóng.</p>
+<div class="card"><h3 style="margin-top:0">Tạo chiến dịch</h3>
+  <div class="row">
+    <div><label>Số CD *</label><input id="fNo" style="width:120px"></div>
+    <div><label>Tên chiến dịch</label><input id="fName" style="width:220px"></div>
+    <div><label>Điều kiện đại lý</label><input id="fDealer" style="width:160px"></div>
+    <div><label>Từ ngày</label><input id="fStart" type="date"></div>
+    <div><label>Đến ngày</label><input id="fEnd" type="date"></div>
+  </div>
+  <div style="margin-top:8px"><label>Mô tả</label><textarea id="fDesc"></textarea></div>
+  <h3>Phụ tùng giảm giá (dán từ Excel: MãPT [tab] TênPT [tab] %Giảm — mỗi dòng 1 PT)</h3>
+  <textarea id="fParts" placeholder="PT001&#9;Lọc dầu&#9;10&#10;PT002&#9;Bugi&#9;5"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="create2()">Tạo chiến dịch</button><span id="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><button onclick="load()">Xem chiến dịch</button></div>
+<div class="wrap"><table><thead><tr><th>Số CD</th><th>Tên</th><th>ĐK Đại lý</th><th class="num">Số PT</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Nhấn "Xem chiến dịch".</td></tr></tbody></table></div>
+<div class="card" id="pCard" style="display:none"><h3 style="margin-top:0">Phụ tùng <span id="pName" class="muted"></span></h3>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th class="num">% Giảm</th></tr></thead><tbody id="pRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={Draft:"Nháp",Active:"Kích hoạt",Closed:"Đóng"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3000); }
+function parseParts(){ return F("fParts").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{
+    const c=l.split(/\t|,/).map(x=>x.trim()); return {PartCode:c[0]||"",PartName:c[1]||"",PercentDiscount:+(c[2]||0)||0}; }); }
+async function create2(){ await token();
+  const body={CamNo:F("fNo").value,CamName:F("fName").value,CamDesc:F("fDesc").value,ConditionDealer:F("fDealer").value,
+    StartDate:F("fStart").value||null,EndDate:F("fEnd").value||null,Parts:parseParts()};
+  const r=await fetch("/api/servicecampaigns",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg("Đã tạo "+d.camNo+" ("+d.partCount+" PT)"); F("fNo").value="";F("fName").value="";F("fParts").value="";F("fDesc").value=""; load();
+}
+async function setStatus(id,s){ await token();
+  const r=await fetch("/api/servicecampaigns/"+id+"/status",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Status:s})});
+  const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
+}
+async function parts(id,no){ await token();
+  const r=await fetch("/api/servicecampaigns/"+id+"/parts",{headers:H()}); const d=await r.json();
+  F("pCard").style.display="block"; F("pName").textContent="— "+no;
+  F("pRows").innerHTML=(d.parts||[]).map(p=>`<tr><td><b>${esc(p.partCode)}</b></td><td>${esc(p.partName)}</td><td class="num">${M(p.percentDiscount)}%</td></tr>`).join("")||'<tr><td colspan="3" class="muted">Chưa có phụ tùng.</td></tr>';
+}
+function act(o){ let h=`<button class="link" onclick="parts(${o.id},'${o.camNo}')">Xem PT</button>`;
+  if(o.status==="Draft") h+=`<button class="link" onclick="setStatus(${o.id},'Active')">Kích hoạt</button>`;
+  if(o.status==="Active") h+=`<button class="link" onclick="setStatus(${o.id},'Closed')">Đóng</button>`;
+  return h; }
+async function load(){ await token();
+  const r=await fetch("/api/servicecampaigns",{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.camNo)}</b></td><td>${esc(o.camName)}</td><td>${esc(o.conditionDealer)}</td><td class="num">${o.partCount}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có chiến dịch.</td></tr>';
+}
+</script>
+</body></html>
