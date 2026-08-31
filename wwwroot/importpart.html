@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Nhập phụ tùng hàng loạt</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  textarea,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:130px;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:13px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:18px;display:block} .box span{font-size:11px;opacity:.7}
+  .err{color:var(--bad)} .ok{color:var(--ok)} code{background:#8882;padding:1px 5px;border-radius:4px}
+  #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Nhập phụ tùng hàng loạt <span class="muted">(port 1:1 FrmImportPart — TCMotor)</span></h1>
+<p class="muted">Dán dữ liệu phụ tùng từ Excel (mỗi dòng 1 phụ tùng, các cột cách nhau bằng Tab hoặc dấu phẩy) theo thứ tự: <code>Mã PT | Tên PT | ĐVT | Giá bán | Tồn tối thiểu</code>. Hệ thống upsert vào danh mục phụ tùng; báo trùng mã trong file.</p>
+<div class="card">
+  <label>Dữ liệu dán (Mã, Tên, ĐVT, Giá, Tồn tối thiểu)</label>
+  <textarea id="ta" placeholder="P100&#9;Loc dau Accent&#9;Cai&#9;120000&#9;5&#10;P101&#9;Loc gio Accent&#9;Cai&#9;80000&#9;3"></textarea>
+  <div style="margin-top:8px"><button onclick="preview()">Xem trước</button> <button class="primary" onclick="doImport()">Nhập vào hệ thống</button><span id="msg"></span></div>
+</div>
+<div class="kpi" id="kpi"></div>
+<div class="wrap"><table><thead><tr><th>#</th><th>Mã</th><th>Tên</th><th>ĐVT</th><th class="num">Giá</th><th class="num">Tồn tối thiểu</th><th>Kết quả</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Dán dữ liệu rồi "Xem trước".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3000); }
+function parseRows(){
+  return F("ta").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{
+    const c=l.split(/\t|,/).map(s=>s.trim());
+    return {PartCode:c[0]||"",PartName:c[1]||"",Unit:c[2]||"",Price:parseFloat(c[3]||"0")||0,MinQuantity:parseFloat(c[4]||"0")||0};
+  });
+}
+function preview(){ const rows=parseRows();
+  F("rows").innerHTML=rows.map((o,i)=>`<tr><td>${i+1}</td><td><b>${esc(o.PartCode)}</b></td><td>${esc(o.PartName)}</td><td>${esc(o.Unit)}</td><td class="num">${M(o.Price)}</td><td class="num">${o.MinQuantity}</td><td class="muted">chưa nhập</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có dòng.</td></tr>';
+  F("kpi").innerHTML=`<div class="box"><b>${rows.length}</b><span>Dòng sẽ nhập</span></div>`;
+}
+async function doImport(){ await token(); const rows=parseRows();
+  if(!rows.length){ msg("Chưa có dữ liệu"); return; }
+  const r=await fetch("/api/serviceparts/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  F("kpi").innerHTML=`<div class="box"><b>${d.total}</b><span>Tổng dòng</span></div><div class="box"><b class="ok">${d.created}</b><span>Tạo mới</span></div><div class="box"><b class="ok">${d.updated}</b><span>Cập nhật</span></div><div class="box"><b class="${d.errorCount?'err':''}">${d.errorCount}</b><span>Lỗi</span></div>`;
+  const errMap={}; (d.errors||[]).forEach(e=>errMap[e.line]=e.error);
+  F("rows").innerHTML=rows.map((o,i)=>{ const ln=i+1; const e=errMap[ln]; return `<tr><td>${ln}</td><td><b>${esc(o.PartCode)}</b></td><td>${esc(o.PartName)}</td><td>${esc(o.Unit)}</td><td class="num">${M(o.Price)}</td><td class="num">${o.MinQuantity}</td><td class="${e?'err':'ok'}">${e?esc(e):'OK'}</td></tr>`; }).join("");
+  msg(`Xong: +${d.created} mới / ${d.updated} cập nhật / ${d.errorCount} lỗi`);
+}
+</script>
+</body></html>

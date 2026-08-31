@@ -3397,6 +3397,40 @@ app.MapPost("/api/servicepartoos/{no}/fulfill", async (string no, ServicePartFul
     return Results.Ok(new { x.OONo, qtyFulfilled = x.QtyFulfilled, remaining = x.QtyNeeded - x.QtyFulfilled, status = x.Status });
 }).RequireAuthorization();
 
+// ===== Nhập phụ tùng hàng loạt từ Excel (port 1:1 FrmImportPart, TCMotor) — tái dùng ServicePart =====
+app.MapPost("/api/serviceparts/import", async (ServicePartImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    // Phát hiện trùng mã trong lô nhập (giống guard MSG_WARNING_DUPLICATE_PARTCODE).
+    var seen = new HashSet<string>();
+    int created = 0, updated = 0;
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i];
+        var line = i + 1;
+        var code = (r.PartCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã phụ tùng." }); continue; }
+        if (string.IsNullOrWhiteSpace(r.PartName)) { errors.Add(new { line, code, error = "Thiếu tên phụ tùng." }); continue; }
+        if (r.Price < 0 || r.MinQuantity < 0) { errors.Add(new { line, code, error = "Giá/tồn tối thiểu không hợp lệ." }); continue; }
+        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã phụ tùng bị trùng trong file nhập." }); continue; }
+        var ex = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code);
+        if (ex is not null)
+        {
+            ex.PartName = r.PartName; ex.Unit = r.Unit; ex.Price = r.Price; ex.MinQuantity = r.MinQuantity; ex.FlagActive = "1";
+            updated++;
+        }
+        else
+        {
+            db.ServiceParts.Add(new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = r.PartName, Unit = r.Unit, Price = r.Price, MinQuantity = r.MinQuantity, FlagActive = "1" });
+            created++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+}).RequireAuthorization();
+
 // ===== Xe khách trong hệ thống dịch vụ (ServiceCar — port 1:1 FrmCarInfo, TCMotor) =====
 app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string? q, string? model, string? active) =>
 {
@@ -8538,6 +8572,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile);
+record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
+record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
