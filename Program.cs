@@ -3047,6 +3047,30 @@ app.MapGet("/api/report/mnfplorder", async (AppDbContext db, ITenantContext t, s
     return Results.Ok(new { orders = orders.Count, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), sent = orders.Count(o => o.Status == "Sent"), byModel, byType, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo đề nghị giao tài liệu (ĐNGT) (port 1:1 báo cáo CarDocRequest) — tái dùng CarDocRequest + CarDocRequestCar =====
+app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, string? dealer, string? status, DateTime? from, DateTime? to) =>
+{
+    var q = db.CarDocRequests.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (from is not null) q = q.Where(r => r.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(r => r.CreatedAt < to.Value.Date.AddDays(1));
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var carAgg = await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.RequestId))
+        .GroupBy(c => c.RequestId).Select(g => new { g.Key, cars = g.Count() }).ToListAsync();
+    var m = carAgg.ToDictionary(x => x.Key, x => x.cars);
+    int Cars(long id) => m.TryGetValue(id, out var v) ? v : 0;
+    var byDealer = reqs.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)), done = g.Count(r => r.Status == "Done"), rejected = g.Count(r => r.Status == "Rejected") }).OrderByDescending(x => x.cars).ToList();
+    var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.RequestNo, r.DealerCode, r.ReceivedPerson, cars = Cars(r.Id), r.Status, r.RejectReason, createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
