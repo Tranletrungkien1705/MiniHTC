@@ -167,6 +167,17 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("ProductionYear", "Năm SX VIN (FrmMst_VINProductionYear_Actual)"),
     ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
+    // ---- TCMotor (2021.1) service/bảo hành ----
+    ("Supplier", "Nhà cung cấp (FrmMstSupplierCreate) [TCMotor]"),
+    ("WarrantyPeriod", "Thời hạn bảo hành (FrmMngMst_WarrantyPeriod) [TCMotor]"),
+    ("MaintenanceLevel", "Cấp bảo dưỡng (FrmMstMaintenanceLevelMng) [TCMotor]"),
+    ("ExtraWork", "Công việc phát sinh (FrmMstExtraWorkMng) [TCMotor]"),
+    ("ExtraParts", "Phụ tùng phát sinh (FrmMstExtraPartsMng) [TCMotor]"),
+    ("WarrantyImageType", "Loại ảnh bảo hành (FrmMstWarrantyImageTypeMng) [TCMotor]"),
+    ("ErrorCode", "Mã lỗi chẩn đoán (FrmMstComplaint...ErrorCodeMng) [TCMotor]"),
+    ("CarModelStd", "Model chuẩn (FrmMstCarModelStd) [TCMotor]"),
+    ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng) [TCMotor]"),
+    ("BOM", "Định mức vật tư BOM (FrmMstBOMMng) [TCMotor]"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
