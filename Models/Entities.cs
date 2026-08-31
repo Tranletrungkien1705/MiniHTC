@@ -1394,9 +1394,18 @@ public sealed class SalesOrder
     public string OrderType { get; set; } = "Plan";     // Plan (kế hoạch) / UnPlan (ngoài KH)
     public string? PayType { get; set; }                 // VONDAILY / BAOLANH / LC
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";        // Draft → Sent
+    public string Status { get; set; } = "Draft";        // Draft → Sent → Approved1 → Approved2 / Rejected
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }
+    // Duyệt (FrmOrderApprove) — cấp 1 nhập chính sách bán/tháng dự kiến/tháng SX/ngày giao; cấp 2 duyệt cuối
+    public string? SalesPolicy { get; set; }
+    public DateTime? ExpectedMonth { get; set; }
+    public DateTime? ProductionMonth { get; set; }
+    public DateTime? LatestDeliveryDate { get; set; }
+    public DateTime? Approved1At { get; set; }
+    public DateTime? Approved2At { get; set; }
+    public string? RejectReason { get; set; }
+    public DateTime? RejectedAt { get; set; }
 }
 public sealed class SalesOrderLine
 {
@@ -1411,6 +1420,8 @@ public sealed class SalesOrderLine
     public DateTime? RequestedDate { get; set; }
     public decimal UnitPrice { get; set; }
     public string? RemarkDL { get; set; }
+    public int? ApprovedQuantity { get; set; }   // SL duyệt (cấp 1)
+    public DateTime? ApprovedDate { get; set; }
 }
 
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>

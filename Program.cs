@@ -1340,6 +1340,7 @@ app.MapGet("/api/salesorders", async (AppDbContext db, ITenantContext t, string?
     var items = await query.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.SoCode, o.OrderType, o.PayType, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
+        o.SalesPolicy, o.ExpectedMonth, o.LatestDeliveryDate, o.Approved1At, o.Approved2At, o.RejectReason,
         lines = db.SalesOrderLines.Count(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id),
         qty = db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id).Sum(l => (int?)l.RequestedQuantity) ?? 0
     }).ToListAsync();
@@ -1369,7 +1370,7 @@ app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITe
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL }).ToListAsync();
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate }).ToListAsync();
     return Results.Ok(new { o.SoCode, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
 }).RequireAuthorization();
 
@@ -1380,6 +1381,46 @@ app.MapPost("/api/salesorders/{no}/send", async (string no, AppDbContext db, ITe
     if (o is null) return Results.NotFound(new { no });
     if (o.Status != "Draft") return Results.BadRequest(new { error = "Đơn đã gửi." });
     o.Status = "Sent"; o.SentAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.SoCode, status = o.Status });
+}).RequireAuthorization();
+
+// Duyệt cấp 1 (FrmOrderApprove): chính sách bán + tháng dự kiến/SX/ngày giao + SL duyệt từng dòng; mọi dòng phải có năm SX
+app.MapPost("/api/salesorders/{no}/approve1", async (string no, SoApprove1Dto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Sent") return Results.BadRequest(new { error = "Đơn phải ở trạng thái Đã gửi mới duyệt cấp 1." });
+    var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id).ToListAsync();
+    if (lines.Any(l => string.IsNullOrWhiteSpace(l.YearProduction)))
+        return Results.BadRequest(new { error = "Có bản ghi chưa chọn năm sản xuất?" });
+    o.SalesPolicy = dto.SalesPolicy; o.ExpectedMonth = dto.ExpectedMonth; o.ProductionMonth = dto.ProductionMonth; o.LatestDeliveryDate = dto.LatestDeliveryDate;
+    foreach (var l in lines) { l.ApprovedQuantity = l.RequestedQuantity; l.ApprovedDate = dto.ExpectedMonth ?? DateTime.Now; }
+    o.Status = "Approved1"; o.Approved1At = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.SoCode, status = o.Status });
+}).RequireAuthorization();
+
+// Duyệt cấp 2 (duyệt cuối)
+app.MapPost("/api/salesorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Approved1") return Results.BadRequest(new { error = "Đơn phải duyệt cấp 1 trước." });
+    o.Status = "Approved2"; o.Approved2At = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.SoCode, status = o.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesorders/{no}/reject", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status is not ("Sent" or "Approved1")) return Results.BadRequest(new { error = "Chỉ từ chối đơn đang chờ duyệt." });
+    o.Status = "Rejected"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { o.SoCode, status = o.Status });
 }).RequireAuthorization();
@@ -3389,4 +3430,6 @@ record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? S
 record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
 record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL);
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
+record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
+record SoRejectDto(string? Reason);
 record RegisterOrgDto(string Name);
