@@ -1150,6 +1150,83 @@ app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, 
     return Results.Ok(new { m.TransportMinutesNo, status = m.Status });
 }).RequireAuthorization();
 
+// ===== Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2) =====
+app.MapGet("/api/holidays", async (AppDbContext db, ITenantContext t, int? year) =>
+{
+    var q = db.Holidays.Where(h => h.OrgId == t.OrgId);
+    if (year is int y) q = q.Where(h => h.HolidayDate.Year == y);
+    var items = await q.OrderBy(h => h.HolidayDate).Take(500).Select(h => new { date = h.HolidayDate, h.IsHoliday, h.Description }).ToListAsync();
+    return Results.Ok(new { count = items.Count, holidays = items.Count(x => x.IsHoliday), items });
+}).RequireAuthorization();
+
+// Toggle 1 ngày (FrmMngHoliday.toggleDay → UpdateHoliday)
+app.MapPost("/api/holidays/toggle", async (HolidayDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Date is null) return Results.BadRequest(new { error = "Cần Date." });
+    var d = dto.Date.Value.Date;
+    var h = await db.Holidays.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HolidayDate == d);
+    if (h is null) { h = new Holiday { OrgId = t.OrgId, HolidayDate = d }; db.Holidays.Add(h); }
+    h.IsHoliday = dto.IsHoliday; h.Description = dto.Description;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { date = h.HolidayDate, h.IsHoliday });
+}).RequireAuthorization();
+
+// Reset năm: sinh cuối tuần = nghỉ (FrmCreateHoliday.ResetHolidayForYear, arrDayOfWeek)
+app.MapPost("/api/holidays/reset", async (HolidayResetDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Year is not int y || y < 2000 || y > 2100) return Results.BadRequest(new { error = "Year không hợp lệ." });
+    var weekend = (dto.WeekendDays is { Count: > 0 } wd ? wd : new List<int> { 0, 6 }).ToHashSet(); // 0=CN,6=T7
+    db.Holidays.RemoveRange(db.Holidays.Where(h => h.OrgId == t.OrgId && h.HolidayDate.Year == y));
+    await db.SaveChangesAsync();
+    int holidayCount = 0;
+    for (var d = new DateTime(y, 1, 1); d.Year == y; d = d.AddDays(1))
+    {
+        bool isH = weekend.Contains((int)d.DayOfWeek);
+        db.Holidays.Add(new Holiday { OrgId = t.OrgId, HolidayDate = d, IsHoliday = isH, Description = isH ? "Cuối tuần" : null });
+        if (isH) holidayCount++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { year = y, days = DateTime.IsLeapYear(y) ? 366 : 365, holidays = holidayCount });
+}).RequireAuthorization();
+
+// ===== Kế hoạch vận chuyển xe từ kho (Sto_TranspPlan — port 1:1 FrmMngPlanTransport/FrmListPlanTransport) =====
+app.MapGet("/api/transplans", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.TransportPlans.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    { p.VINPlan, p.Vin, p.ModelCode, p.DealerCode, p.StorageCode, p.FProvinceCode, p.TProvinceCode, p.TransporterCode, p.ExpectedDate, p.Status, p.ApprovedDate }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/transplans", async (TransPlanDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VINPlan) || string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "Cần VINPlan, DealerCode và ModelCode." });
+    var vp = dto.VINPlan.Trim().ToUpperInvariant();
+    var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vp);
+    if (p is null) { p = new TransportPlan { OrgId = t.OrgId, VINPlan = vp, Status = "Pending" }; db.TransportPlans.Add(p); }
+    else if (p.Status == "Finished") return Results.BadRequest(new { error = "KH đã duyệt, không sửa được." });
+    p.Vin = dto.Vin; p.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); p.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+    p.StorageCode = dto.StorageCode; p.FProvinceCode = dto.FProvinceCode; p.TProvinceCode = dto.TProvinceCode;
+    p.TransporterCode = dto.TransporterCode; p.ExpectedDate = dto.ExpectedDate;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, status = p.Status });
+}).RequireAuthorization();
+
+// Duyệt KH (StoTranspPlanApproved → Finished)
+app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbContext db, ITenantContext t) =>
+{
+    vinPlan = vinPlan.Trim().ToUpperInvariant();
+    var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vinPlan);
+    if (p is null) return Results.NotFound(new { vinPlan });
+    if (p.Status == "Finished") return Results.BadRequest(new { error = "KH đã duyệt." });
+    p.Status = "Finished"; p.ApprovedDate = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.VINPlan, status = p.Status });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1249,4 +1326,7 @@ record TransReqDto(string DealerCode, string TransporterCode, string? TransContr
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars);
+record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
+record HolidayResetDto(int? Year, List<int>? WeekendDays);
+record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate);
 record RegisterOrgDto(string Name);

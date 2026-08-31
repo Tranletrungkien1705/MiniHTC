@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lịch nghỉ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--off:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .off{color:var(--off);font-weight:600} #msg{font-size:13px}
+  .kpi{display:inline-block;border:1px solid var(--line);border-radius:12px;padding:8px 12px;margin-right:8px}
+</style></head>
+<body>
+<h1>Lịch ngày làm việc / nghỉ <span class="muted">(port 1:1 FrmCreateHoliday / FrmMngHoliday — Holiday)</span></h1>
+<div class="bar">
+  <input id="year" type="number" value="2026" style="width:90px">
+  <button class="primary" onclick="reset_()">Tạo lịch năm (cuối tuần = nghỉ)</button>
+  <button onclick="load()">Xem</button>
+  <span style="flex:1"></span><span id="msg"></span>
+</div>
+<div class="bar"><span class="kpi">Số ngày: <b id="kd">0</b></span><span class="kpi">Ngày nghỉ: <b id="kh">0</b></span>
+  <span style="flex:1"></span>
+  <input id="td" type="date"><button class="sm" onclick="toggle(true)">Đánh dấu nghỉ</button><button class="sm" onclick="toggle(false)">Đánh dấu làm</button>
+</div>
+<table><thead><tr><th>Ngày</th><th>Thứ</th><th>Trạng thái</th><th>Ghi chú</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Chọn năm rồi bấm Xem.</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const DOW=["CN","T2","T3","T4","T5","T6","T7"];
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function reset_(){ await token();
+  if(!confirm("Tạo lại lịch năm "+F("year").value+"? (xóa dữ liệu năm này)")) return;
+  const r=await fetch("/api/holidays/reset",{method:"POST",headers:H(),body:JSON.stringify({year:Number(F("year").value)})});
+  const j=await r.json(); if(r.ok){ msg("Đã tạo "+j.days+" ngày, "+j.holidays+" ngày nghỉ."); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function toggle(isH){ await token();
+  if(!F("td").value){ msg("Chọn ngày."); return; }
+  const r=await fetch("/api/holidays/toggle",{method:"POST",headers:H(),body:JSON.stringify({date:F("td").value,isHoliday:isH})});
+  if(r.ok){ msg("Đã cập nhật "+F("td").value+"."); load(); } else msg("Lỗi cập nhật.");
+}
+async function load(){ await token();
+  const d=await (await fetch("/api/holidays?year="+F("year").value,{headers:H()})).json();
+  F("kd").textContent=d.count; F("kh").textContent=d.holidays;
+  const shown=(d.items||[]).filter(x=>x.isHoliday); // chỉ liệt kê ngày nghỉ cho gọn
+  F("rows").innerHTML=shown.map(x=>{ const dt=new Date(x.date);
+    return `<tr><td>${dt.toLocaleDateString("vi-VN")}</td><td>${DOW[dt.getDay()]}</td>
+      <td class="off">Nghỉ</td><td class="muted">${x.description||""}</td>
+      <td><button class="sm" onclick="F('td').value='${x.date.slice(0,10)}';toggle(false)">→ Làm</button></td></tr>`;
+  }).join("")||'<tr><td colspan="5" class="muted">Năm này chưa có ngày nghỉ.</td></tr>';
+}
+</script>
+</body></html>

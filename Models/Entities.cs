@@ -451,6 +451,37 @@ public sealed class TransportMinutesCar
     public string DtlStatus { get; set; } = "Pending";  // theo header
 }
 
+/// <summary>Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2):
+/// mỗi ngày 1 cờ IsHoliday. Reset năm sinh cuối tuần = nghỉ; toggle từng ngày.</summary>
+public sealed class Holiday
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public DateTime HolidayDate { get; set; }   // 1 dòng / ngày
+    public bool IsHoliday { get; set; }
+    public string? Description { get; set; }
+}
+
+/// <summary>Kế hoạch vận chuyển xe từ kho (Sto_TranspPlan — port 1:1 FrmMngPlanTransport/FrmListPlanTransport, Phase2):
+/// dòng KH chuyển xe kho→đại lý. Pending → Finished (khi duyệt StoTranspPlanApproved).</summary>
+public sealed class TransportPlan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? CarId { get; set; }
+    public string VINPlan { get; set; } = "";        // VIN kế hoạch (khoá duyệt)
+    public string? Vin { get; set; }                 // VIN thực (khi đã gán)
+    public string ModelCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? StorageCode { get; set; }
+    public string? FProvinceCode { get; set; }       // từ tỉnh
+    public string? TProvinceCode { get; set; }       // đến tỉnh
+    public string? TransporterCode { get; set; }
+    public DateTime? ExpectedDate { get; set; }
+    public string Status { get; set; } = "Pending";  // Pending → Finished
+    public DateTime? ApprovedDate { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
