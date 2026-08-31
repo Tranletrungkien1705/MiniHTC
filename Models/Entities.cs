@@ -634,6 +634,25 @@ public sealed class GpsTransaction
     public DateTime? UnMapDateTime { get; set; }   // null = đang gắn
 }
 
+/// <summary>Vi phạm của nhân viên bán hàng (HR_SalesManViolate — port 1:1 FrmCreateSalesManViolate/FrmMngSalesManViolate, SalesDealer):
+/// ghi nhận kỷ luật NVBH theo loại vi phạm + thời hạn. ViolateNumber tự tăng theo từng NV (lần vi phạm thứ n).</summary>
+public sealed class SalesManViolate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SalesManCode { get; set; } = "";
+    public string? SalesManName { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ViolateTypeId { get; set; } = "";       // loại vi phạm (Mst_ViolateType)
+    public int ViolateNumber { get; set; }                // lần vi phạm thứ n (auto +1 theo NV)
+    public DateTime? ViolateDateStart { get; set; }
+    public DateTime? ViolateDateEnd { get; set; }
+    public string? IdentityCardNo { get; set; }
+    public string? PhoneNo { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

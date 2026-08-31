@@ -1227,6 +1227,37 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Vi phạm NVBH (HR_SalesManViolate — port 1:1 FrmCreateSalesManViolate/FrmMngSalesManViolate) =====
+app.MapGet("/api/smviolates", async (AppDbContext db, ITenantContext t, string? salesman, string? dealer, string? type) =>
+{
+    var q = db.SalesManViolates.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(salesman)) q = q.Where(v => v.SalesManCode == salesman);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(v => v.ViolateTypeId == type);
+    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new
+    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.Remark, v.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/smviolates", async (SmViolateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SalesManCode) || string.IsNullOrWhiteSpace(dto.ViolateTypeId))
+        return Results.BadRequest(new { error = "Cần SalesManCode và ViolateTypeId." });
+    var sm = dto.SalesManCode.Trim().ToUpperInvariant();
+    // ViolateNumber = lần vi phạm thứ n của NV này (auto +1 như FrmCreateSalesManViolate)
+    var lastNo = await db.SalesManViolates.Where(v => v.OrgId == t.OrgId && v.SalesManCode == sm)
+        .Select(v => (int?)v.ViolateNumber).MaxAsync() ?? 0;
+    var v = new SalesManViolate
+    {
+        OrgId = t.OrgId, SalesManCode = sm, SalesManName = dto.SalesManName, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
+        ViolateTypeId = dto.ViolateTypeId.Trim().ToUpperInvariant(), ViolateNumber = lastNo + 1,
+        ViolateDateStart = dto.ViolateDateStart, ViolateDateEnd = dto.ViolateDateEnd,
+        IdentityCardNo = dto.IdentityCardNo, PhoneNo = dto.PhoneNo, Remark = dto.Remark
+    };
+    db.SalesManViolates.Add(v); await db.SaveChangesAsync();
+    return Results.Ok(new { v.SalesManCode, v.ViolateTypeId, v.ViolateNumber });
+}).RequireAuthorization();
+
 // ===== Tồn/gán thiết bị GPS ↔ VIN (Sto_StoBalanceGPS — port 1:1 FrmMngSto_StoBalanceGPS + FrmUnmapThietBi) =====
 app.MapGet("/api/gpsbalance", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? vin, string? device) =>
 {
@@ -1664,4 +1695,5 @@ record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsI
 record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, List<GpsInDevDto>? Devices);
 record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegisName, double MapLatitude, double MapLongitude, double Radius);
 record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
+record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? Remark);
 record RegisterOrgDto(string Name);

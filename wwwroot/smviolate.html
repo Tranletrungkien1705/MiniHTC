@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Vi phạm NVBH</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right}
+  .num{font-weight:700;color:var(--warn)} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Vi phạm nhân viên bán hàng <span class="muted">(port 1:1 FrmCreateSalesManViolate / FrmMngSalesManViolate — HR_SalesManViolate)</span></h1>
+<div class="bar">
+  <input id="sm" placeholder="Mã NVBH *" style="width:100px"><input id="nm" placeholder="Tên NV" style="width:130px">
+  <input id="dl" placeholder="Đại lý" style="width:90px"><input id="ty" placeholder="Loại vi phạm *" style="width:120px">
+  <input id="ds" type="date" title="Từ ngày"><input id="de" type="date" title="Đến ngày">
+  <input id="rm" placeholder="Ghi chú" style="width:150px">
+  <button class="primary" onclick="save()">Ghi vi phạm</button>
+</div>
+<div class="bar"><input id="qsm" placeholder="Lọc NVBH" oninput="load()" style="width:110px"><input id="qdl" placeholder="Lọc đại lý" oninput="load()" style="width:110px"><span style="flex:1"></span><span id="msg"></span></div>
+<table><thead><tr><th>NVBH</th><th>Tên</th><th>Đại lý</th><th>Loại VP</th><th class="n">Lần thứ</th><th>Từ</th><th>Đến</th><th>Ghi chú</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"—";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){
+  const b={salesManCode:F("sm").value,salesManName:F("nm").value,dealerCode:F("dl").value,violateTypeId:F("ty").value,violateDateStart:F("ds").value||null,violateDateEnd:F("de").value||null,remark:F("rm").value};
+  const r=await fetch("/api/smviolates",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã ghi vi phạm "+j.salesManCode+" (lần thứ "+j.violateNumber+")."); F("ty").value="";F("rm").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/smviolates?salesman=${F("qsm").value}&dealer=${F("qdl").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(v=>`<tr><td><b>${v.salesManCode}</b></td><td>${v.salesManName||"—"}</td><td>${v.dealerCode||"—"}</td>
+    <td>${v.violateTypeId}</td><td class="n num">${v.violateNumber}</td><td>${day(v.violateDateStart)}</td><td>${day(v.violateDateEnd)}</td>
+    <td class="muted">${v.remark||""}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có vi phạm.</td></tr>';
+}
+load();
+</script>
+</body></html>
