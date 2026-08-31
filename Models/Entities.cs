@@ -2630,6 +2630,32 @@ public sealed class FnExpCalcLine
     public int TermActual { get; set; }
 }
 
+/// <summary>Lịch sản xuất / ETA xe nhập (WO_Schedule) — port 1:1 FrmImportETAMng + FrmImportETAInDetail. Header.</summary>
+public sealed class WoSchedule
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ScheduleNo { get; set; } = "";
+    public string CreatedBy { get; set; } = "";
+    public string Status { get; set; } = "Open";      // Open -> Closed (khi het SL con lai)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng lịch SX theo model/spec/màu (WO_ScheduleDetail) — port 1:1 FrmImportETAMng detail.</summary>
+public sealed class WoScheduleLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long WoScheduleId { get; set; }
+    public string WorkOrderNo { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public int QtyOrder { get; set; }        // SL dat hang
+    public int QtyProduct { get; set; }       // SL da san xuat
+    public int QtyRemain { get; set; }        // SL con lai (= QtyOrder - QtyProduct)
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

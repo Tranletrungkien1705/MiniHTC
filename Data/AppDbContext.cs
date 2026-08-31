@@ -138,6 +138,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<UpgradeOrderLine> UpgradeOrderLines => Set<UpgradeOrderLine>();
     public DbSet<FnExpCalc> FnExpCalcs => Set<FnExpCalc>();
     public DbSet<FnExpCalcLine> FnExpCalcLines => Set<FnExpCalcLine>();
+    public DbSet<WoSchedule> WoSchedules => Set<WoSchedule>();
+    public DbSet<WoScheduleLine> WoScheduleLines => Set<WoScheduleLine>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();

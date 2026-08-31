@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lịch sản xuất / ETA</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px} button.ok{color:#fff;background:var(--ok);border-color:var(--ok)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Open{color:var(--warn)} .s-Closed{color:var(--ok)}
+  #msg{font-size:13px} .lrow input{width:90px} .bar-mini{height:6px;border-radius:3px;background:var(--line);overflow:hidden;min-width:60px}
+  .bar-mini>i{display:block;height:100%;background:var(--ok)}
+</style></head>
+<body>
+<h1>Lịch sản xuất / ETA xe nhập <span class="muted">(port 1:1 FrmImportETAMng — WO_Schedule, Sales/WorkOrder)</span></h1>
+<div class="card">
+  <b>Tạo lịch (header + dòng lệnh SX)</b>
+  <div class="bar" style="margin-top:10px"><div><label>Người tạo</label><input id="cb" style="width:120px" value="admin"></div></div>
+  <table style="margin-top:10px"><thead><tr><th>Số lệnh SX</th><th>Model</th><th>Đặc tả</th><th>Màu</th><th class="num">SL đặt</th><th class="num">SL đã SX</th><th></th></tr></thead><tbody id="lRows"></tbody></table>
+  <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRow()">+ Thêm dòng</button><button class="primary" onclick="save()">Tạo lịch</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <input id="qn" placeholder="Lọc số lịch" oninput="load()" style="width:130px">
+  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Open">Đang SX</option><option value="Closed">Hoàn thành</option></select>
+</div>
+<div class="wrap"><table><thead><tr><th>Số lịch</th><th>Người tạo</th><th>Ngày tạo</th><th class="num">Số dòng</th><th class="num">Đã SX/Đặt</th><th>Tiến độ</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="card" id="detCard" style="display:none">
+  <b>Chi tiết lệnh SX — <span id="detNo"></span></b>
+  <div class="wrap"><table><thead><tr><th>Số lệnh SX</th><th>Model</th><th>Đặc tả</th><th>Màu</th><th class="num">SL đặt</th><th class="num">SL đã SX</th><th class="num">SL còn lại</th><th>Ghi nhận SX</th></tr></thead><tbody id="detRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let CUR=null;
+const ST={Open:"Đang SX",Closed:"Hoàn thành"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addRow(){ const tr=document.createElement("tr"); tr.className="lrow";
+  tr.innerHTML=`<td><input class="c-wo"></td><td><input class="c-md"></td><td><input class="c-sp"></td><td><input class="c-cl"></td><td class="num"><input class="c-qo" type="number" value="10"></td><td class="num"><input class="c-qp" type="number" value="0"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("lRows").appendChild(tr); }
+function collect(){ return [...document.querySelectorAll("#lRows tr")].map(tr=>({
+  workOrderNo:tr.querySelector(".c-wo").value, modelCode:tr.querySelector(".c-md").value, specCode:tr.querySelector(".c-sp").value,
+  colorCode:tr.querySelector(".c-cl").value, qtyOrder:+tr.querySelector(".c-qo").value||0, qtyProduct:+tr.querySelector(".c-qp").value||0})).filter(l=>l.workOrderNo.trim()); }
+async function save(){
+  const r=await fetch("/api/woschedules",{method:"POST",headers:H(),body:JSON.stringify({createdBy:F("cb").value,lines:collect()})});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã tạo ${j.scheduleNo} (${j.lines} dòng, ${ST[j.status]||j.status})`); F("lRows").innerHTML=""; addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+function pct(p,o){ return o>0?Math.round(p*100/o):0; }
+async function load(){ await token();
+  const d=await (await fetch(`/api/woschedules?no=${F("qn").value}&status=${F("qs").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    const p=pct(o.totalProduct,o.totalOrder);
+    return `<tr onclick="detail('${o.scheduleNo}')"><td><b>${o.scheduleNo}</b></td><td>${o.createdBy||""}</td><td>${(o.createdAt||"").substring(0,10)}</td><td class="num">${o.lines}</td><td class="num">${o.totalProduct}/${o.totalOrder}</td><td><div class="bar-mini"><i style="width:${p}%"></i></div></td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td><button class="sm" onclick="event.stopPropagation();detail('${o.scheduleNo}')">Chi tiết</button></td></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Chưa có lịch.</td></tr>';
+}
+async function detail(no){ CUR=no;
+  const d=await (await fetch(`/api/woschedules/${no}/lines`,{headers:H()})).json();
+  F("detCard").style.display=""; F("detNo").textContent=no;
+  F("detRows").innerHTML=(d.lines||[]).map(l=>{
+    const done=l.qtyRemain<=0;
+    return `<tr><td><b>${l.workOrderNo}</b></td><td>${l.modelCode||""}</td><td>${l.specCode||""}</td><td>${l.colorCode||""}</td><td class="num">${l.qtyOrder}</td><td class="num">${l.qtyProduct}</td><td class="num">${l.qtyRemain}</td><td>${done?'<span class="pill s-Closed">Đủ</span>':`<input type="number" id="p_${l.workOrderNo}" style="width:70px" placeholder="SL"> <button class="sm ok" onclick="produce('${l.workOrderNo}')">Ghi nhận</button>`}</td></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Không có dòng.</td></tr>';
+}
+async function produce(wo){
+  const q=+F("p_"+wo).value||0; if(q<=0){ msg("Nhập SL sản xuất > 0"); return; }
+  const r=await fetch(`/api/woschedules/${CUR}/lines/${wo}/produce`,{method:"POST",headers:H(),body:JSON.stringify({qty:q})});
+  const j=await r.json();
+  if(r.ok){ msg(`${wo}: đã SX ${j.qtyProduct}, còn ${j.qtyRemain} (${ST[j.scheduleStatus]||j.scheduleStatus})`); detail(CUR); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+addRow(); load();
+</script>
+</body></html>

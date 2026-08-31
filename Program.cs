@@ -2150,6 +2150,70 @@ app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, Ap
     return Results.Ok(new { c.CaNo, c.Status });
 }).RequireAuthorization();
 
+// ===== Lịch sản xuất / ETA xe nhập (WoSchedule — port 1:1 FrmImportETAMng, Sales/WorkOrder) =====
+app.MapGet("/api/woschedules", async (AppDbContext db, ITenantContext t, string? no, string? createdBy, string? status) =>
+{
+    var q = db.WoSchedules.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(s => s.ScheduleNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(createdBy)) q = q.Where(s => s.CreatedBy == createdBy);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
+    {
+        s.ScheduleNo, s.CreatedBy, s.Status, s.CreatedAt,
+        lines = db.WoScheduleLines.Count(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id),
+        totalOrder = db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id).Sum(l => (int?)l.QtyOrder) ?? 0,
+        totalProduct = db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id).Sum(l => (int?)l.QtyProduct) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/woschedules", async (WoScheduleDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.WorkOrderNo) && l.QtyOrder > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lịch sản xuất trống hoặc số lượng đặt hàng <= 0." });
+    var dupe = lines.GroupBy(l => l.WorkOrderNo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Số lệnh SX {dupe.Key} bị trùng!" });
+    var no = "WOS" + DateTime.Now.ToString("yyMMddHHmmss");
+    var s2 = new WoSchedule { OrgId = t.OrgId, ScheduleNo = no, CreatedBy = dto.CreatedBy ?? "system", Status = "Open" };
+    db.WoSchedules.Add(s2); await db.SaveChangesAsync();
+    foreach (var l in lines)
+    {
+        var prod = Math.Max(0, Math.Min(l.QtyProduct, l.QtyOrder));
+        db.WoScheduleLines.Add(new WoScheduleLine { OrgId = t.OrgId, WoScheduleId = s2.Id, WorkOrderNo = l.WorkOrderNo.Trim(), ModelCode = l.ModelCode ?? "", SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "", QtyOrder = l.QtyOrder, QtyProduct = prod, QtyRemain = l.QtyOrder - prod });
+    }
+    await db.SaveChangesAsync();
+    // Neu tat ca dong da du SL -> Closed
+    if (!await db.WoScheduleLines.AnyAsync(l => l.OrgId == t.OrgId && l.WoScheduleId == s2.Id && l.QtyRemain > 0)) { s2.Status = "Closed"; await db.SaveChangesAsync(); }
+    return Results.Ok(new { s2.ScheduleNo, lines = lines.Count, status = s2.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/woschedules/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var s = await db.WoSchedules.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ScheduleNo == no);
+    if (s is null) return Results.NotFound(new { no });
+    var lines = await db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id)
+        .Select(l => new { l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain }).ToListAsync();
+    return Results.Ok(new { s.ScheduleNo, s.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Cap nhat SL da san xuat (ghi nhan tien do); khi het SL con lai toan lich -> Closed.
+app.MapPost("/api/woschedules/{no}/lines/{workOrderNo}/produce", async (string no, string workOrderNo, WoProduceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var s = await db.WoSchedules.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ScheduleNo == no);
+    if (s is null) return Results.NotFound(new { no });
+    var line = await db.WoScheduleLines.FirstOrDefaultAsync(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id && l.WorkOrderNo == workOrderNo.Trim());
+    if (line is null) return Results.NotFound(new { workOrderNo });
+    if (dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng sản xuất phải > 0." });
+    if (line.QtyProduct + dto.Qty > line.QtyOrder) return Results.BadRequest(new { error = $"Vượt số lượng đặt hàng (đặt {line.QtyOrder}, đã SX {line.QtyProduct})." });
+    line.QtyProduct += dto.Qty; line.QtyRemain = line.QtyOrder - line.QtyProduct;
+    await db.SaveChangesAsync();
+    var remain = await db.WoScheduleLines.AnyAsync(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id && l.QtyRemain > 0);
+    if (!remain && s.Status == "Open") { s.Status = "Closed"; await db.SaveChangesAsync(); }
+    return Results.Ok(new { line.WorkOrderNo, line.QtyProduct, line.QtyRemain, scheduleStatus = s.Status });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6170,6 +6234,9 @@ record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
 record FnExpCalcLineDto(string CarId, string? SOCode, decimal FnDepositAmount, int FnDepositCountDate, decimal FnGrtAmount, int FnGrtCountDate, decimal PDAmount, int TermActual);
 record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineDto>? Lines);
+record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct);
+record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
+record WoProduceDto(int Qty);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
