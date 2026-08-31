@@ -482,6 +482,32 @@ public sealed class TransportPlan
     public DateTime? ApprovedDate { get; set; }
 }
 
+/// <summary>Yêu cầu vận chuyển thu hồi xe (StoTranspReq/retrieve — port 1:1 FrmNewRetrieveTransReq/FrmMngRetrieveTransReq, Phase2):
+/// yêu cầu chở xe thu hồi từ đại lý về kho. Pending(Đang xử lý)→Approved(Phê duyệt)/Rejected(Từ chối).</summary>
+public sealed class RetrieveRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TranspReqNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string TransporterCode { get; set; } = "";
+    public string? Reason { get; set; }               // lý do thu hồi
+    public string Status { get; set; } = "Pending";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DecidedAt { get; set; }
+}
+
+/// <summary>Dòng xe trong YC thu hồi (StoTranspReqDtl): VIN + kho nhận về.</summary>
+public sealed class RetrieveReqCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? StorageCode { get; set; }
+    public string DtlStatus { get; set; } = "Pending";
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

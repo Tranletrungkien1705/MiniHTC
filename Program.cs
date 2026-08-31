@@ -1227,6 +1227,62 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu vận chuyển thu hồi xe (StoTranspReq — port 1:1 FrmNewRetrieveTransReq/FrmMngRetrieveTransReq) =====
+app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt,
+        cars = db.RetrieveReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/retrievereqs", async (RetrieveReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
+        return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode." });
+    var vins = (dto.Cars ?? new List<RetrieveReqCarDto>()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "RTR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new RetrieveRequest { OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "Pending" };
+    db.RetrieveRequests.Add(r); await db.SaveChangesAsync();
+    foreach (var c in vins)
+        db.RetrieveReqCars.Add(new RetrieveReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), StorageCode = c.StorageCode, DtlStatus = "Pending" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, status = r.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/retrievereqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RetrieveRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.RetrieveReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
+        .Select(c => new { c.Vin, c.StorageCode, c.DtlStatus }).ToListAsync();
+    return Results.Ok(new { r.TranspReqNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/retrievereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RetrieveRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối yêu cầu Đang xử lý." });
+    r.Status = action == "approve" ? "Approved" : "Rejected"; r.DecidedAt = DateTime.Now;
+    var dtl = r.Status;
+    foreach (var c in await db.RetrieveReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id).ToListAsync())
+        c.DtlStatus = dtl;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.TranspReqNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1329,4 +1385,6 @@ record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDt
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate);
+record RetrieveReqCarDto(string Vin, string? StorageCode);
+record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars);
 record RegisterOrgDto(string Name);
