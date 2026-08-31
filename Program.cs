@@ -1354,6 +1354,81 @@ app.MapPost("/api/salesinvthresholds/{dealer}/{model}/toggle", async (string dea
     return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== Xe thế chấp tại ngân hàng (BankCarMortage — port 1:1 FrmBankCarMortage + FrmDeliveryPlan, cụm Bank) =====
+// Màn 1: tra cứu list xe đang thế chấp (dealer/bank/vin/socode/ngày giao tài sản).
+app.MapGet("/api/bankmortages", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? vin, string? soCode, string? guaranteeType, string? active) =>
+{
+    var q = db.BankCarMortages.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank || m.MortageBankCode == bank);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(m => m.VIN.Contains(vin!));
+    if (!string.IsNullOrWhiteSpace(soCode)) q = q.Where(m => m.SOCode == soCode);
+    if (!string.IsNullOrWhiteSpace(guaranteeType)) q = q.Where(m => m.GuaranteeType == guaranteeType);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(m => m.FlagActive == active);
+    var items = await q.OrderByDescending(m => m.Id).Take(500)
+        .Select(m => new { m.VIN, m.CarId, m.SOCode, m.DealerCode, m.BankCode, m.MortageBankCode, m.ModelCode, m.SpecCode, m.GuaranteeType, m.DeliveryRangeType, m.MortageStartDate, m.DlvStartDate, m.DlvEndDate, m.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Đăng ký/cập nhật xe thế chấp (upsert theo VIN).
+app.MapPost("/api/bankmortages", async (BankMortageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
+    if (string.IsNullOrWhiteSpace(dto.MortageBankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng nhận thế chấp." });
+    var gt = dto.GuaranteeType == "1" ? "1" : "0";
+    var range = dto.DeliveryRangeType is "DlvThisWeek" or "DlvNextWeek" ? dto.DeliveryRangeType : "DlvImmediate";
+    var vin = dto.VIN.Trim().ToUpperInvariant();
+    var ex = await db.BankCarMortages.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.VIN == vin);
+    if (ex is not null)
+    {
+        ex.CarId = dto.CarId ?? ""; ex.SOCode = dto.SOCode ?? ""; ex.DealerCode = dto.DealerCode ?? "";
+        ex.BankCode = dto.BankCode ?? ""; ex.MortageBankCode = dto.MortageBankCode; ex.ModelCode = dto.ModelCode ?? ""; ex.SpecCode = dto.SpecCode ?? "";
+        ex.GuaranteeType = gt; ex.DeliveryRangeType = range;
+        ex.MortageStartDate = dto.MortageStartDate; ex.DlvStartDate = dto.DlvStartDate; ex.DlvEndDate = dto.DlvEndDate; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.VIN, updated = true });
+    }
+    var m2 = new BankCarMortage
+    {
+        OrgId = t.OrgId, VIN = vin, CarId = dto.CarId ?? "", SOCode = dto.SOCode ?? "", DealerCode = dto.DealerCode ?? "",
+        BankCode = dto.BankCode ?? "", MortageBankCode = dto.MortageBankCode, ModelCode = dto.ModelCode ?? "", SpecCode = dto.SpecCode ?? "",
+        GuaranteeType = gt, DeliveryRangeType = range, MortageStartDate = dto.MortageStartDate, DlvStartDate = dto.DlvStartDate, DlvEndDate = dto.DlvEndDate, FlagActive = "1"
+    };
+    db.BankCarMortages.Add(m2); await db.SaveChangesAsync();
+    return Results.Ok(new { m2.VIN, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankmortages/{vin}/toggle", async (string vin, AppDbContext db, ITenantContext t) =>
+{
+    vin = vin.Trim().ToUpperInvariant();
+    var m = await db.BankCarMortages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    if (m is null) return Results.NotFound(new { vin });
+    m.FlagActive = m.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.VIN, flagActive = m.FlagActive });
+}).RequireAuthorization();
+
+// Màn 2: Kế hoạch giao xe (FrmDeliveryPlan) — pivot đếm xe theo khoảng giao × model, lọc dealer/bank/loại BL.
+app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? guaranteeType) =>
+{
+    var q = db.BankCarMortages.Where(m => m.OrgId == t.OrgId && m.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank || m.MortageBankCode == bank);
+    if (!string.IsNullOrWhiteSpace(guaranteeType)) q = q.Where(m => m.GuaranteeType == guaranteeType);
+    var rows = await q.Select(m => new { m.ModelCode, m.DeliveryRangeType }).ToListAsync();
+    var pivot = rows.GroupBy(r => r.ModelCode)
+        .Select(g => new
+        {
+            modelCode = string.IsNullOrEmpty(g.Key) ? "(chưa rõ)" : g.Key,
+            giaoNgay = g.Count(x => x.DeliveryRangeType == "DlvImmediate"),
+            trongTuan = g.Count(x => x.DeliveryRangeType == "DlvThisWeek"),
+            tuanToi = g.Count(x => x.DeliveryRangeType == "DlvNextWeek"),
+            total = g.Count()
+        })
+        .OrderByDescending(x => x.total).ToList();
+    return Results.Ok(new { total = rows.Count, byRange = new[] { new { key = "Giao ngay", value = rows.Count(r => r.DeliveryRangeType == "DlvImmediate") }, new { key = "Trong tuần", value = rows.Count(r => r.DeliveryRangeType == "DlvThisWeek") }, new { key = "Tuần tới", value = rows.Count(r => r.DeliveryRangeType == "DlvNextWeek") } }, pivot });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5338,6 +5413,7 @@ record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? F
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
+record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

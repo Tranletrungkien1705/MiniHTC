@@ -2246,6 +2246,28 @@ public sealed class CarActualPrice
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Xe đang thế chấp tại ngân hàng — port 1:1 FrmBankCarMortage + FrmDeliveryPlan (cụm Bank).</summary>
+public sealed class BankCarMortage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string SOCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string BankCode { get; set; } = "";          // NH bao lanh/giam sat
+    public string MortageBankCode { get; set; } = "";   // NH nhan the chap
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string GuaranteeType { get; set; } = "0";    // 0=BL NH giam sat, 1=BL NH phat hanh
+    public string DeliveryRangeType { get; set; } = "DlvImmediate"; // DlvImmediate/DlvThisWeek/DlvNextWeek
+    public DateTime? MortageStartDate { get; set; }
+    public DateTime? DlvStartDate { get; set; }
+    public DateTime? DlvEndDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
