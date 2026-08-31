@@ -4247,6 +4247,40 @@ app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { count = rows.Count, totalOut = rows.Sum(r => r.totalOut), rows });
 }).RequireAuthorization();
 
+// Top phụ tùng doanh thu: doanh thu = SL xuất (phiếu Confirmed) × giá bán hiện tại của PT, lọc khoảng ngày xuất.
+app.MapGet("/api/report/part-toprevenue", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
+{
+    var n = top is > 0 and <= 200 ? top.Value : 20;
+    var outs = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
+    if (fromDate.HasValue) outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date <= toDate.Value.Date);
+    var outIds = outs.Select(o => o.Id);
+    var qtyByPart = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.ServiceStockOutId))
+        .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Unit, p.Price }).ToListAsync();
+    var priceMap = parts.ToDictionary(p => p.PartCode, p => p);
+    var rows = qtyByPart.Select(q => {
+        priceMap.TryGetValue(q.partCode, out var p);
+        var price = p?.Price ?? 0m;
+        return new { q.partCode, partName = p?.PartName, unit = p?.Unit, qtyOut = q.qty, price, revenue = q.qty * price };
+    }).OrderByDescending(x => x.revenue).Take(n).ToList();
+    return Results.Ok(new { count = rows.Count, totalRevenue = rows.Sum(r => r.revenue), rows });
+}).RequireAuthorization();
+
+// Biến động giá phụ tùng: từ các phiếu nhập kho — số lần giá khác nhau, giá thấp nhất/cao nhất theo mã PT.
+app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantContext t) =>
+{
+    var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId)
+        .Select(l => new { l.PartCode, l.PartName, l.Price }).ToListAsync();
+    var rows = lines.GroupBy(l => l.PartCode).Select(g => new
+    {
+        partCode = g.Key, partName = g.Select(x => x.PartName).FirstOrDefault(x => x != null),
+        countPrice = g.Select(x => x.Price).Distinct().Count(), minPrice = g.Min(x => x.Price), maxPrice = g.Max(x => x.Price),
+        variation = g.Max(x => x.Price) - g.Min(x => x.Price)
+    }).Where(r => r.countPrice > 1).OrderByDescending(r => r.variation).ToList();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
 // ===== Lịch hẹn dịch vụ + bảng khoang/bay (ServiceAppointment — port 1:1 FrmAppList + FrmShowCavityStatus, TCMotor) =====
 app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status, DateTime? date) =>
 {

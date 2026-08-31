@@ -21,6 +21,8 @@
   <div class="tab on" id="tA" onclick="tab('A')">Dưới định mức</div>
   <div class="tab" id="tB" onclick="tab('B')">Top lãi cao</div>
   <div class="tab" id="tC" onclick="tab('C')">Top luân chuyển</div>
+  <div class="tab" id="tD" onclick="tab('D')">Top doanh thu</div>
+  <div class="tab" id="tE" onclick="tab('E')">Biến động giá</div>
 </div>
 
 <div id="paneA">
@@ -45,6 +47,22 @@
   <p class="muted">Chỉ tính phiếu xuất kho đã duyệt (Confirmed).</p>
 </div>
 
+<div id="paneD" style="display:none">
+  <div class="row"><div><label>Từ ngày</label><input id="dFrom" type="date"></div><div><label>Đến ngày</label><input id="dTo" type="date"></div><div><label>Top N</label><input id="dTop" type="number" value="20" style="width:80px"></div><button class="primary" onclick="repD()">Xem</button></div>
+  <div class="grid2" id="dKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th>ĐVT</th><th class="num">SL xuất</th><th class="num">Giá bán</th><th class="num">Doanh thu</th></tr></thead>
+  <tbody id="dRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody>
+  <tfoot id="dFoot"></tfoot></table></div>
+  <p class="muted">Doanh thu = SL xuất (phiếu Confirmed) × giá bán hiện tại.</p>
+</div>
+
+<div id="paneE" style="display:none">
+  <div class="row"><button class="primary" onclick="repE()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th class="num">Số mức giá</th><th class="num">Giá thấp nhất</th><th class="num">Giá cao nhất</th><th class="num">Biến động</th></tr></thead>
+  <tbody id="eRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+  <p class="muted">Tính từ giá trên các phiếu nhập kho; chỉ hiện PT có ≥2 mức giá khác nhau.</p>
+</div>
+
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
@@ -53,7 +71,7 @@ async function token(){ if(TOKEN) return TOKEN;
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
   TOKEN=(await r.json()).access_token; return TOKEN; }
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
-function tab(x){ ["A","B","C"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+function tab(x){ ["A","B","C","D","E"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
 async function repA(){ await token();
   const r=await fetch("/api/report/part-minquantity",{headers:H()}); const d=await r.json();
   F("aKpi").innerHTML=`<div class="kpi"><b style="color:var(--bad)">${d.count}</b><span class="muted">Mã dưới định mức</span></div><div class="kpi"><b>${M(d.totalShortage)}</b><span class="muted">Tổng thiếu</span></div>`;
@@ -68,6 +86,17 @@ async function repC(){ await token();
   const r=await fetch("/api/report/part-toprotate?top="+(+F("cTop").value||20),{headers:H()}); const d=await r.json();
   F("cKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Mã đã xuất</span></div><div class="kpi"><b>${M(d.totalOut)}</b><span class="muted">Tổng SL xuất</span></div>`;
   F("cRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td class="num">${M(o.totalOut)}</td><td class="num">${o.timesOut}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có phiếu xuất đã duyệt.</td></tr>';
+}
+async function repD(){ await token();
+  const p=new URLSearchParams(); if(F("dFrom").value)p.set("fromDate",F("dFrom").value); if(F("dTo").value)p.set("toDate",F("dTo").value); p.set("top",+F("dTop").value||20);
+  const r=await fetch("/api/report/part-toprevenue?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("dKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Mã có doanh thu</span></div><div class="kpi"><b style="color:var(--ok)">${M(d.totalRevenue)}</b><span class="muted">Tổng doanh thu</span></div>`;
+  F("dRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num">${M(o.qtyOut)}</td><td class="num">${M(o.price)}</td><td class="num" style="color:var(--ok)">${M(o.revenue)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có dữ liệu.</td></tr>';
+  F("dFoot").innerHTML=(d.rows&&d.rows.length)?`<tr><td colspan="5">TỔNG DOANH THU</td><td class="num">${M(d.totalRevenue)}</td></tr>`:"";
+}
+async function repE(){ await token();
+  const r=await fetch("/api/report/part-variationprice",{headers:H()}); const d=await r.json();
+  F("eRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td class="num">${o.countPrice}</td><td class="num">${M(o.minPrice)}</td><td class="num">${M(o.maxPrice)}</td><td class="num" style="color:var(--warn)">${M(o.variation)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có PT nào đổi giá.</td></tr>';
 }
 </script>
 </body></html>
