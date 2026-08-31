@@ -1289,6 +1289,73 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
+{
+    var q = db.BankAccounts.Where(a => a.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(a => a.BankCode == bank);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(a => a.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AccountNo, a.AccountName, a.BankCode, a.DealerCode, a.FlagAccGrtClaim, a.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankaccounts", async (BankAccountDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.AccountNo)) return Results.BadRequest(new { error = "Số tài khoản không được trống!" });
+    var acc = dto.AccountNo.Trim();
+    if (await db.BankAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountNo == acc))
+        return Results.BadRequest(new { error = $"Số tài khoản {acc} đã tồn tại!" });
+    var a2 = new BankAccount { OrgId = t.OrgId, AccountNo = acc, AccountName = dto.AccountName, BankCode = dto.BankCode, DealerCode = dto.DealerCode, FlagAccGrtClaim = dto.FlagAccGrtClaim == "1" ? "1" : "0", FlagActive = "1" };
+    db.BankAccounts.Add(a2); await db.SaveChangesAsync();
+    return Results.Ok(new { a2.AccountNo });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db, ITenantContext t) =>
+{
+    acc = acc.Trim();
+    var a = await db.BankAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountNo == acc);
+    if (a is null) return Results.NotFound(new { acc });
+    a.FlagActive = a.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Số hiệu hóa đơn (InvoiceID — port 1:1 FrmInvoiceID_HTC/HTCLD/TCG, 2010.HTC/Admin/Product) =====
+string[] _invIdTypes = { "HTC", "HTCLD", "TCG" };
+app.MapGet("/api/invoiceids", async (AppDbContext db, ITenantContext t, string? type, string? active) =>
+{
+    var q = db.InvoiceIDs.Where(i => i.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(i => i.InvoiceIDType == type);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(i => i.FlagActive == active);
+    var items = await q.OrderByDescending(i => i.Id).Take(500).Select(i => new { i.InvoiceIDCode, i.InvoiceIDType, i.EffectiveDate, i.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoiceids", async (InvoiceIDDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.InvoiceIDType) || !_invIdTypes.Contains(dto.InvoiceIDType))
+        return Results.BadRequest(new { error = "Loại HĐ = HTC | HTCLD | TCG." });
+    if (string.IsNullOrWhiteSpace(dto.InvoiceIDCode)) return Results.BadRequest(new { error = $"Số hiệu hóa đơn {dto.InvoiceIDType} bắt buộc nhập" });
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Ngày hiệu lực bắt buộc nhập" });
+    var code = dto.InvoiceIDCode.Trim();
+    if (await db.InvoiceIDs.AnyAsync(i => i.OrgId == t.OrgId && i.InvoiceIDType == dto.InvoiceIDType && i.InvoiceIDCode == code))
+        return Results.BadRequest(new { error = $"Số hiệu {code} loại {dto.InvoiceIDType} đã tồn tại!" });
+    var i2 = new InvoiceID { OrgId = t.OrgId, InvoiceIDCode = code, InvoiceIDType = dto.InvoiceIDType, EffectiveDate = dto.EffectiveDate.Value, FlagActive = "1" };
+    db.InvoiceIDs.Add(i2); await db.SaveChangesAsync();
+    return Results.Ok(new { i2.InvoiceIDCode, i2.InvoiceIDType, message = "Đã thêm mới thành công" });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoiceids/{type}/{code}/toggle", async (string type, string code, AppDbContext db, ITenantContext t) =>
+{
+    type = type.Trim().ToUpperInvariant(); code = code.Trim();
+    var i = await db.InvoiceIDs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InvoiceIDType == type && x.InvoiceIDCode == code);
+    if (i is null) return Results.NotFound(new { type, code });
+    i.FlagActive = i.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { i.InvoiceIDCode, i.InvoiceIDType, flagActive = i.FlagActive });
+}).RequireAuthorization();
+
 // ===== Phân bổ xe theo vùng (CarAllocationByArea — port 1:1 FrmMst_CarAllocationByArea, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/carallocations", async (AppDbContext db, ITenantContext t, string? model, string? active) =>
 {
@@ -5205,6 +5272,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
+record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
 record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);

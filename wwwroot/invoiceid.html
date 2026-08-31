@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Số hiệu hóa đơn</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-1{color:var(--ok)} .p-0{color:#dc2626}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Số hiệu hóa đơn <span class="muted">(port 1:1 FrmInvoiceID_HTC/HTCLD/TCG — Mst_InvoiceID)</span></h1>
+<div class="card">
+  <b>Thêm số hiệu HĐ</b>
+  <div class="bar" style="margin-top:10px"><div><label>Loại HĐ *</label><select id="tp"><option value="HTC">HTC</option><option value="HTCLD">HTCLD</option><option value="TCG">TCG</option></select></div><div><label>Số hiệu HĐ *</label><input id="cd" style="width:160px"></div><div><label>Ngày hiệu lực *</label><input id="ed" type="date"></div><button class="primary" onclick="create()">Lưu</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><select id="ft" onchange="load()"><option value="">Tất cả loại</option><option value="HTC">HTC</option><option value="HTCLD">HTCLD</option><option value="TCG">TCG</option></select><select id="fa" onchange="load()"><option value="">Tất cả</option><option value="1">Hoạt động</option><option value="0">Ngừng</option></select></div>
+<table><thead><tr><th>Loại</th><th>Số hiệu HĐ</th><th>Ngày hiệu lực</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const r=await fetch("/api/invoiceids",{method:"POST",headers:H(),body:JSON.stringify({invoiceIDCode:F("cd").value,invoiceIDType:F("tp").value,effectiveDate:F("ed").value||null})});
+  const j=await r.json();
+  if(r.ok){ msg(j.message+" ("+j.invoiceIDType+"/"+j.invoiceIDCode+")"); F("cd").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/invoiceids?type=${F("ft").value}&active=${F("fa").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.invoiceIDType}</b></td><td>${o.invoiceIDCode}</td><td>${day(o.effectiveDate)}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.invoiceIDType}','${o.invoiceIDCode}')">Đổi TT</button></td></tr>`
+  ).join("")||'<tr><td colspan="5" class="muted">Chưa có số hiệu.</td></tr>';
+}
+async function toggle(tp,cd){ const r=await fetch(`/api/invoiceids/${tp}/${cd}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+load();
+</script>
+</body></html>

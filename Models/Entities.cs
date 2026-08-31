@@ -1463,6 +1463,32 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Tài khoản ngân hàng (Mst_BankAccount) — port 1:1 FrmMstAccountBank (2010.HTC/Admin/Product). TK NH của HTC/đại lý, cờ TK dùng cho GrtClaim.</summary>
+public sealed class BankAccount
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AccountNo { get; set; } = "";
+    public string? AccountName { get; set; }
+    public string? BankCode { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagAccGrtClaim { get; set; } = "0";
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Số hiệu hóa đơn (Mst_InvoiceID) — port 1:1 FrmInvoiceID_HTC/HTCLD/TCG (2010.HTC/Admin/Product). Đăng ký số hiệu HĐ theo loại (HTC/HTCLD/TCG) + ngày hiệu lực.</summary>
+public sealed class InvoiceID
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InvoiceIDCode { get; set; } = "";
+    public string InvoiceIDType { get; set; } = "";   // HTC / HTCLD / TCG
+    public DateTime EffectiveDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Phân bổ xe theo vùng (Mst_CarAllocationByArea) — port 1:1 FrmMst_CarAllocationByArea (2010.HTC/Admin/Product). Tỷ lệ phân bổ theo model/spec cho 3 miền (tổng = 100%).</summary>
 public sealed class CarAllocationByArea
 {
