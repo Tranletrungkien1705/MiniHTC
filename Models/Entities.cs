@@ -2656,6 +2656,32 @@ public sealed class WoScheduleLine
     public int QtyRemain { get; set; }        // SL con lai (= QtyOrder - QtyProduct)
 }
 
+/// <summary>Giao dịch bán buôn xe ĐL→ĐL (Deal To Dealer) — port 1:1 FrmNewDealToDealer. Header.</summary>
+public sealed class WholesaleDeal
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string DealNoUser { get; set; } = "";       // so GD nguoi dung (bat buoc)
+    public string BuyerDealerCode { get; set; } = "";   // dai ly mua
+    public string SalesManCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";       // Draft -> Confirmed / Cancelled
+    public decimal TotalAmount { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ConfirmedAt { get; set; }
+}
+
+/// <summary>Xe trên giao dịch bán buôn ĐL→ĐL — port 1:1 FrmNewDealToDealer detail.</summary>
+public sealed class WholesaleDealCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long WholesaleDealId { get; set; }
+    public string VIN { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public decimal UnitPrice { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

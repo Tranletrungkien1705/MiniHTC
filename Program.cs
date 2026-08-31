@@ -2214,6 +2214,61 @@ app.MapPost("/api/woschedules/{no}/lines/{workOrderNo}/produce", async (string n
     return Results.Ok(new { line.WorkOrderNo, line.QtyProduct, line.QtyRemain, scheduleStatus = s.Status });
 }).RequireAuthorization();
 
+// ===== Giao dịch bán buôn xe ĐL→ĐL (WholesaleDeal — port 1:1 FrmNewDealToDealer, SalesDealer) =====
+app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, string? buyer, string? no, string? status) =>
+{
+    var q = db.WholesaleDeals.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(d => d.BuyerDealerCode == buyer);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(d => d.DealNo.Contains(no!) || d.DealNoUser.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.Status == status);
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
+    {
+        d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.SalesManCode, d.Status, d.TotalAmount, d.CreatedAt, d.ConfirmedAt,
+        cars = db.WholesaleDealCars.Count(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealNoUser)) return Results.BadRequest(new { error = "Phải nhập số giao dịch người dùng" });
+    if (string.IsNullOrWhiteSpace(dto.BuyerDealerCode)) return Results.BadRequest(new { error = "Hãy chọn đại lý mua" });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe giao dịch" });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "DTD" + DateTime.Now.ToString("yyMMddHHmmss");
+    var d2 = new WholesaleDeal { OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser.Trim(), BuyerDealerCode = dto.BuyerDealerCode.Trim(), SalesManCode = dto.SalesManCode ?? "", Status = "Draft", TotalAmount = cars.Sum(c => c.UnitPrice) };
+    db.WholesaleDeals.Add(d2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.WholesaleDealCars.Add(new WholesaleDealCar { OrgId = t.OrgId, WholesaleDealId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", UnitPrice = c.UnitPrice });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d2.DealNo, cars = cars.Count, totalAmount = d2.TotalAmount });
+}).RequireAuthorization();
+
+app.MapGet("/api/wholesaledeals/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.WholesaleDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { no });
+    var cars = await db.WholesaleDealCars.Where(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
+        .Select(c => new { c.VIN, c.ModelCode, c.UnitPrice }).ToListAsync();
+    return Results.Ok(new { d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.Status, d.TotalAmount, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/wholesaledeals/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.WholesaleDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { no });
+    if (d.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận giao dịch này." : "Không thể hủy giao dịch này." });
+    d.Status = action == "confirm" ? "Confirmed" : "Cancelled";
+    if (action == "confirm") d.ConfirmedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DealNo, d.Status });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6237,6 +6292,8 @@ record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineD
 record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct);
 record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
+record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice);
+record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
