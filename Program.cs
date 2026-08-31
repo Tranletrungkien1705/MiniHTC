@@ -3230,6 +3230,69 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Nhập kho phụ tùng dịch vụ (ServiceStockIn header-detail — port 1:1 FrmSerInventoryAccStockIn, TCMotor) =====
+app.MapGet("/api/servicestockins", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var query = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StockInNo.Contains(q!) || (x.SupplierCode != null && x.SupplierCode.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.StockInNo, x.SupplierCode, x.TotalAmount, x.Status,
+        stockInDate = x.StockInDate.HasValue ? x.StockInDate.Value.ToString("yyyy-MM-dd") : "",
+        lines = db.ServiceStockInLines.Count(l => l.OrgId == t.OrgId && l.ServiceStockInId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo phiếu nhập (header + dòng; tính Amount=Qty*Price + tổng).
+app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
+    if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng nhập phải lớn hơn 0." });
+    var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new ServiceStockIn { OrgId = t.OrgId, StockInNo = no, SupplierCode = dto.SupplierCode, StockInDate = dto.StockInDate ?? DateTime.Now, Status = "Draft" };
+    db.ServiceStockIns.Add(h); await db.SaveChangesAsync();
+    decimal total = 0m;
+    foreach (var l in lines)
+    {
+        var amount = l.Quantity * l.Price; total += amount;
+        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Amount = amount });
+    }
+    h.TotalAmount = total; await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, lines = lines.Count, totalAmount = total });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Amount }).ToListAsync();
+    return Results.Ok(new { h.StockInNo, h.Status, h.TotalAmount, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Xác nhận nhập kho: Draft->Confirmed + CỘNG TỒN vào ServicePart (tích hợp thật).
+app.MapPost("/api/servicestockins/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status == "Confirmed") return Results.BadRequest(new { error = "Phiếu đã xác nhận." });
+    var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id).ToListAsync();
+    int updated = 0;
+    foreach (var l in lines)
+    {
+        var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
+        if (part is not null) { part.Quantity += l.Quantity; updated++; }
+        else { db.ServiceParts.Add(new ServicePart { OrgId = t.OrgId, PartCode = l.PartCode, PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, FlagActive = "1" }); updated++; }
+    }
+    h.Status = "Confirmed"; await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status, partsUpdated = updated });
+}).RequireAuthorization();
+
 // ===== Phụ tùng nợ/chờ giao theo xe (ServicePartOO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor) =====
 app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, string? part, string? plate, string? status) =>
 {
@@ -8412,6 +8475,8 @@ record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note);
+record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price);
+record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);

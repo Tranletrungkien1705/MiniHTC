@@ -2819,6 +2819,32 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phiếu nhập kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockIn (TblSerInvStockIn, TCMotor).</summary>
+public sealed class ServiceStockIn
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockInNo { get; set; } = "";
+    public string? SupplierCode { get; set; }
+    public DateTime? StockInDate { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft -> Confirmed (cộng tồn)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng phiếu nhập kho phụ tùng (detail) — port 1:1 FrmSerInventoryAccStockIn grid, TCMotor.</summary>
+public sealed class ServiceStockInLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceStockInId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal Price { get; set; }
+    public decimal Amount { get; set; }
+}
+
 /// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).</summary>
 public sealed class ServicePartOO
 {
