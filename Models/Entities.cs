@@ -1366,6 +1366,53 @@ public sealed class PackingListVin
     public string? CrateType { get; set; }   // loại thùng (LoaiThung)
 }
 
+/// <summary>Chi tiết tờ khai hải quan (CT_TKHQ) — port 1:1 FrmNewCT_TKHQ (DMSales.Foton). Tờ khai HQ khai trực tiếp lô VIN (khác Tkhq theo packing-list).</summary>
+public sealed class CtTkhq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeclarationNo { get; set; } = "";
+    public DateTime OpenDate { get; set; }       // ngày mở tờ khai
+    public string? PortCode { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class CtTkhqVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long CtTkhqId { get; set; }
+    public string Vin { get; set; } = "";
+}
+
+/// <summary>Đơn đặt hàng (Sales Order — So) — port 1:1 FrmOrder (DMSales.Foton). Đại lý gửi đơn đặt xe: loại kế hoạch/ngoài KH, hình thức thanh toán, dòng model/số lượng.</summary>
+public sealed class SalesOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SoCode { get; set; } = "";
+    public string OrderType { get; set; } = "Plan";     // Plan (kế hoạch) / UnPlan (ngoài KH)
+    public string? PayType { get; set; }                 // VONDAILY / BAOLANH / LC
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";        // Draft → Sent
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+}
+public sealed class SalesOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SalesOrderId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ContractType { get; set; }
+    public string? YearProduction { get; set; }
+    public int RequestedQuantity { get; set; }
+    public DateTime? RequestedDate { get; set; }
+    public decimal UnitPrice { get; set; }
+    public string? RemarkDL { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -1289,6 +1289,101 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Chi tiết tờ khai hải quan (CtTkhq/CT_TKHQ — port 1:1 FrmNewCT_TKHQ, DMSales.Foton) =====
+app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? port) =>
+{
+    var query = db.CtTkhqs.Where(k => k.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(port)) query = query.Where(k => k.PortCode == port);
+    var items = await query.OrderByDescending(k => k.Id).Take(500).Select(k => new
+    {
+        k.DeclarationNo, k.OpenDate, k.PortCode, k.Remark, k.CreatedAt,
+        vins = db.CtTkhqVins.Count(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cttkhqs", async (CtTkhqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DeclarationNo)) return Results.BadRequest(new { error = "Cần số tờ khai." });
+    if (dto.OpenDate is null) return Results.BadRequest(new { error = "Cần ngày mở tờ khai." });
+    var no = dto.DeclarationNo.Trim();
+    if (await db.CtTkhqs.AnyAsync(k => k.OrgId == t.OrgId && k.DeclarationNo == no))
+        return Results.BadRequest(new { error = $"Số tờ khai {no} đã tồn tại!" });
+    var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v)).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    var dupe = vins.GroupBy(v => v.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var k = new CtTkhq { OrgId = t.OrgId, DeclarationNo = no, OpenDate = dto.OpenDate.Value, PortCode = dto.PortCode, Remark = dto.Remark };
+    db.CtTkhqs.Add(k); await db.SaveChangesAsync();
+    foreach (var v in vins)
+        db.CtTkhqVins.Add(new CtTkhqVin { OrgId = t.OrgId, CtTkhqId = k.Id, Vin = v.Trim().ToUpperInvariant() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { k.DeclarationNo, vins = vins.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/cttkhqs/{no}/vins", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var k = await db.CtTkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
+    if (k is null) return Results.NotFound(new { no });
+    var vins = await db.CtTkhqVins.Where(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id).Select(v => v.Vin).ToListAsync();
+    return Results.Ok(new { k.DeclarationNo, count = vins.Count, vins });
+}).RequireAuthorization();
+
+// ===== Đơn đặt hàng (SalesOrder/So — port 1:1 FrmOrder, DMSales.Foton) =====
+app.MapGet("/api/salesorders", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? type) =>
+{
+    var query = db.SalesOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(o => o.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(type)) query = query.Where(o => o.OrderType == type);
+    var items = await query.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.SoCode, o.OrderType, o.PayType, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
+        lines = db.SalesOrderLines.Count(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id),
+        qty = db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id).Sum(l => (int?)l.RequestedQuantity) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần đại lý." });
+    var type = (dto.OrderType ?? "Plan").Trim();
+    if (type is not ("Plan" or "UnPlan")) return Results.BadRequest(new { error = "Loại đơn = Plan | UnPlan." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng model." });
+    if (lines.Any(l => l.RequestedQuantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
+    var no = (type == "Plan" ? "SOP" : "SOU") + DateTime.Now.ToString("yyMMddHHmmss");
+    var o = new SalesOrder { OrgId = t.OrgId, SoCode = no, OrderType = type, PayType = dto.PayType, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    db.SalesOrders.Add(o); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.SoCode, o.OrderType, lines = lines.Count, status = o.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id)
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL }).ToListAsync();
+    return Results.Ok(new { o.SoCode, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesorders/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Đơn đã gửi." });
+    o.Status = "Sent"; o.SentAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.SoCode, status = o.Status });
+}).RequireAuthorization();
+
 // ===== Packing List (PackingList/PL — port 1:1 FrmNewPL/FrmMngPL, DMSales.Foton) =====
 app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string? lc, string? port) =>
 {
@@ -3291,4 +3386,7 @@ record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStart
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars);
 record PackingListVinDto(string Vin, string? CrateType);
 record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins);
+record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
+record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL);
+record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
 record RegisterOrgDto(string Name);

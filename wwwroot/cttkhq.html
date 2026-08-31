@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Chi tiết tờ khai HQ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #vtbl td,#vtbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Chi tiết tờ khai hải quan <span class="muted">(port 1:1 FrmNewCT_TKHQ — CtTkhq)</span></h1>
+<div class="card">
+  <b>Tạo tờ khai HQ</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Số tờ khai *</label><input id="dno" style="width:150px"></div>
+    <div><label>Ngày mở *</label><input id="od" type="date"></div>
+    <div><label>Cảng</label><input id="port" style="width:90px"></div>
+    <div><label>Ghi chú</label><input id="rm" style="width:180px"></div>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu TK</button><span id="msg"></span>
+  </div>
+  <table id="vtbl"><thead><tr><th>VIN *</th><th></th></tr></thead><tbody id="vtb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addVin()">+ Thêm VIN</button>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc cảng" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Số tờ khai</th><th>Ngày mở</th><th>Cảng</th><th>Số VIN</th><th>Ghi chú</th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addVin(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="vin" style="width:160px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("vtb").appendChild(tr); }
+async function create(){
+  const vins=[...F("vtb").querySelectorAll(".vin")].map(i=>i.value).filter(v=>v);
+  const r=await fetch("/api/cttkhqs",{method:"POST",headers:H(),body:JSON.stringify({declarationNo:F("dno").value,openDate:F("od").value||null,portCode:F("port").value,remark:F("rm").value,vins})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.declarationNo+" ("+j.vins+" VIN)."); F("vtb").innerHTML="";addVin(); F("dno").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/cttkhqs?port=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.declarationNo}</b> <a href="#" class="cars" onclick="vins('${o.declarationNo}');return false">xem VIN</a></td><td>${day(o.openDate)}</td><td>${o.portCode||""}</td><td>${o.vins}</td><td>${o.remark||""}</td></tr><tr id="x-${o.declarationNo}"></tr>`
+  ).join("")||'<tr><td colspan="5" class="muted">Chưa có tờ khai.</td></tr>';
+}
+async function vins(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/cttkhqs/${no}/vins`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="5"><div class="cars">${(d.vins||[]).map(v=>`<b>${v}</b>`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addVin(); load();
+</script>
+</body></html>
