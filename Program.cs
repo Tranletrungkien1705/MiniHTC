@@ -149,15 +149,12 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("SalesManCert", "Chứng chỉ NVBH (FrmMst_SalesManCertificateMng)"),
     ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
-    // ---- TCMotor (2021.1) service/bảo hành (Frm chưa verify trong source TCMotor — giữ tạm) ----
+    // ---- TCMotor (2021.1) master code/name ĐÃ verify Ser_MST (giữ dạng catalog) ----
     ("MaintenanceLevel", "Cấp bảo dưỡng (FrmMstMaintenanceLevelMng) [TCMotor]"),
-    ("ExtraWork", "Công việc phát sinh (FrmMstExtraWorkMng) [TCMotor]"),
-    ("ExtraParts", "Phụ tùng phát sinh (FrmMstExtraPartsMng) [TCMotor]"),
-    ("WarrantyImageType", "Loại ảnh bảo hành (FrmMstWarrantyImageTypeMng) [TCMotor]"),
+    ("WarrantyImageType", "Loại ảnh bảo hành (FrmMstWarrantyImageTypeMng: ROWPTCODE/NAME) [TCMotor]"),
     ("CarModelStd", "Model chuẩn (FrmMstCarModelStd) [TCMotor]"),
-    ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng) [TCMotor]"),
-    ("BOM", "Định mức vật tư BOM (FrmMstBOMMng) [TCMotor]"),
-    // (đã gỡ ~38 generic bịa + 15 TCMotor bịa [FrmMst_ServiceType/Bay/Tool/Symptom/Cause/LaborRate...] — Frm KHÔNG tồn tại, không phải màn 1:1 thật)
+    ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng: WRTRENECATE) [TCMotor]"),
+    // (BOM đã port dedicated /api/boms — bỏ stub dup; ExtraWork/ExtraParts có cột giá/VAT → port dedicated; gỡ ~38 generic bịa + 15 TCMotor bịa)
     ("CostType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
 };
 
@@ -3232,6 +3229,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Công việc phát sinh (ExtraWorkMst — port 1:1 FrmMstExtraWorkMng, TCMotor) =====
+app.MapGet("/api/extraworks", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.ExtraWorkMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ExtraWorkCode.Contains(q!) || (x.ExtraWorkName != null && x.ExtraWorkName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.ExtraWorkCode).Take(500)
+        .Select(x => new { x.ExtraWorkCode, x.ExtraWorkName, x.MaxPrice, x.Vat, x.Remark, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã công việc phát sinh.
+app.MapPost("/api/extraworks", async (ExtraWorkDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ExtraWorkCode)) return Results.BadRequest(new { error = "Chưa nhập mã công việc." });
+    if (string.IsNullOrWhiteSpace(dto.ExtraWorkName)) return Results.BadRequest(new { error = "Chưa nhập tên công việc." });
+    if (dto.MaxPrice < 0 || dto.Vat < 0) return Results.BadRequest(new { error = "Giá tối đa/VAT không hợp lệ." });
+    var code = dto.ExtraWorkCode.Trim().ToUpperInvariant();
+    var ex = await db.ExtraWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ExtraWorkCode == code);
+    if (ex is not null)
+    {
+        ex.ExtraWorkName = dto.ExtraWorkName; ex.MaxPrice = dto.MaxPrice; ex.Vat = dto.Vat; ex.Remark = dto.Remark; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.ExtraWorkCode, updated = true });
+    }
+    var r = new ExtraWorkMst { OrgId = t.OrgId, ExtraWorkCode = code, ExtraWorkName = dto.ExtraWorkName, MaxPrice = dto.MaxPrice, Vat = dto.Vat, Remark = dto.Remark, FlagActive = "1" };
+    db.ExtraWorkMsts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ExtraWorkCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/extraworks/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ExtraWorkMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ExtraWorkCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.ExtraWorkCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
 // ===== Nhà cung cấp phụ tùng dịch vụ (ServiceSupplier — port 1:1 FrmMstSupplierCreate, TCMotor) =====
@@ -7661,6 +7698,7 @@ record VinProductionYearDto(string VinChar, string ProductionYear, string? Assem
 record StorageGlobalMapDto(string StorageCode, string ModelCode);
 record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod);
 record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
+record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
