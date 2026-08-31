@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Nhập xuất tồn & thẻ kho</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} tfoot td{font-weight:700;border-top:2px solid var(--line)} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+</style></head>
+<body>
+<h1>Nhập-xuất-tồn & thẻ kho phụ tùng <span class="muted">(port 1:1 FrmReportInOutStock + FrmReportCardStock — TCMotor)</span></h1>
+<div class="tabs"><div class="tab on" id="tA" onclick="tab('A')">Nhập-xuất-tồn</div><div class="tab" id="tB" onclick="tab('B')">Thẻ kho</div></div>
+
+<div id="paneA">
+  <div class="row"><div><label>Từ ngày</label><input id="aFrom" type="date"></div><div><label>Đến ngày</label><input id="aTo" type="date"></div><button class="primary" onclick="repA()">Xem</button></div>
+  <div class="grid2" id="aKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th>ĐVT</th><th class="num">Tổng nhập</th><th class="num">Tổng xuất</th><th class="num">Tồn hiện tại</th></tr></thead>
+  <tbody id="aRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody>
+  <tfoot id="aFoot"></tfoot></table></div>
+  <p class="muted">Chỉ tính phiếu nhập/xuất đã duyệt (Confirmed).</p>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="row"><div><label>Mã phụ tùng *</label><input id="bCode" style="width:150px" placeholder="P001"></div><button class="primary" onclick="repB()">Xem thẻ kho</button><span id="bMsg" class="muted"></span></div>
+  <div class="grid2" id="bKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Chứng từ</th><th>Ngày</th><th class="num">Nhập</th><th class="num">Xuất</th><th class="num">Tồn lũy kế</th></tr></thead>
+  <tbody id="bRows"><tr><td colspan="5" class="muted">Nhập mã PT rồi "Xem thẻ kho".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function repA(){ await token();
+  const p=new URLSearchParams(); if(F("aFrom").value)p.set("fromDate",F("aFrom").value); if(F("aTo").value)p.set("toDate",F("aTo").value);
+  const r=await fetch("/api/report/stock-inout?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("aKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Mã có biến động</span></div><div class="kpi"><b style="color:var(--ok)">${M(d.sumIn)}</b><span class="muted">Tổng nhập</span></div><div class="kpi"><b style="color:var(--warn)">${M(d.sumOut)}</b><span class="muted">Tổng xuất</span></div>`;
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num" style="color:var(--ok)">${M(o.totalIn)}</td><td class="num" style="color:var(--warn)">${M(o.totalOut)}</td><td class="num">${M(o.current)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có biến động.</td></tr>';
+  F("aFoot").innerHTML=(d.rows&&d.rows.length)?`<tr><td colspan="3">TỔNG</td><td class="num">${M(d.sumIn)}</td><td class="num">${M(d.sumOut)}</td><td></td></tr>`:"";
+}
+async function repB(){ await token();
+  const code=F("bCode").value.trim(); if(!code){ F("bMsg").textContent="Cần mã PT."; return; } F("bMsg").textContent="";
+  const r=await fetch("/api/report/stock-card?partCode="+encodeURIComponent(code),{headers:H()}); const d=await r.json();
+  if(!r.ok){ F("bMsg").textContent=d.error||r.status; return; }
+  F("bKpi").innerHTML=`<div class="kpi"><b style="color:var(--ok)">${M(d.totalIn)}</b><span class="muted">Tổng nhập</span></div><div class="kpi"><b style="color:var(--warn)">${M(d.totalOut)}</b><span class="muted">Tổng xuất</span></div><div class="kpi"><b>${M(d.closing)}</b><span class="muted">Tồn cuối</span></div>`;
+  F("bRows").innerHTML=(d.ledger||[]).map(o=>`<tr><td>${esc(o.docNo)}</td><td>${esc(o.date)}</td><td class="num">${o.inQty?M(o.inQty):""}</td><td class="num">${o.outQty?M(o.outQty):""}</td><td class="num"><b>${M(o.balance)}</b></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có phát sinh cho mã này.</td></tr>';
+}
+</script>
+</body></html>

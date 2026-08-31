@@ -4214,6 +4214,49 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Báo cáo nhập-xuất-tồn + thẻ kho (report tái-dùng ServiceStockIn/Out — port 1:1 FrmReportInOutStock + FrmReportCardStock, TCMotor) =====
+// Nhập-xuất-tồn theo mã PT: tổng nhập (phiếu Confirmed), tổng xuất (phiếu Confirmed), tồn hiện tại (ServicePart.Quantity).
+app.MapGet("/api/report/stock-inout", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var ins = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
+    var outs = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
+    if (fromDate.HasValue) { ins = ins.Where(o => o.StockInDate.HasValue && o.StockInDate.Value.Date >= fromDate.Value.Date); outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date >= fromDate.Value.Date); }
+    if (toDate.HasValue) { ins = ins.Where(o => o.StockInDate.HasValue && o.StockInDate.Value.Date <= toDate.Value.Date); outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date <= toDate.Value.Date); }
+    var inIds = ins.Select(o => o.Id); var outIds = outs.Select(o => o.Id);
+    var inByPart = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && inIds.Contains(l.ServiceStockInId))
+        .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
+    var outByPart = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.ServiceStockOutId))
+        .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Unit, p.Quantity }).ToListAsync();
+    var inMap = inByPart.ToDictionary(x => x.partCode, x => x.qty);
+    var outMap = outByPart.ToDictionary(x => x.partCode, x => x.qty);
+    var codes = parts.Select(p => p.PartCode).Union(inMap.Keys).Union(outMap.Keys).Distinct();
+    var pMap = parts.ToDictionary(p => p.PartCode, p => p);
+    var rows = codes.Select(c => {
+        pMap.TryGetValue(c, out var p);
+        var tin = inMap.TryGetValue(c, out var vi) ? vi : 0m;
+        var tout = outMap.TryGetValue(c, out var vo) ? vo : 0m;
+        return new { partCode = c, partName = p?.PartName, unit = p?.Unit, totalIn = tin, totalOut = tout, current = p?.Quantity ?? 0m };
+    }).Where(r => r.totalIn != 0 || r.totalOut != 0).OrderBy(r => r.partCode).ToList();
+    return Results.Ok(new { count = rows.Count, sumIn = rows.Sum(r => r.totalIn), sumOut = rows.Sum(r => r.totalOut), rows });
+}).RequireAuthorization();
+
+// Thẻ kho 1 mã PT: sổ nhập/xuất theo thời gian + tồn lũy kế (chỉ phiếu Confirmed).
+app.MapGet("/api/report/stock-card", async (AppDbContext db, ITenantContext t, string partCode) =>
+{
+    var code = (partCode ?? "").Trim();
+    if (code == "") return Results.BadRequest(new { error = "Cần mã phụ tùng." });
+    var inMoves = await (from l in db.ServiceStockInLines.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
+                         join h in db.ServiceStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed") on l.ServiceStockInId equals h.Id
+                         select new { docNo = h.StockInNo, date = h.StockInDate, inQty = l.Quantity, outQty = 0m }).ToListAsync();
+    var outMoves = await (from l in db.ServiceStockOutLines.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
+                          join h in db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed") on l.ServiceStockOutId equals h.Id
+                          select new { docNo = h.StockOutNo, date = h.StockOutDate, inQty = 0m, outQty = l.Quantity }).ToListAsync();
+    var moves = inMoves.Concat(outMoves).OrderBy(m => m.date ?? DateTime.MaxValue).ThenBy(m => m.docNo).ToList();
+    decimal bal = 0; var ledger = moves.Select(m => { bal += m.inQty - m.outQty; return new { m.docNo, date = m.date.HasValue ? m.date.Value.ToString("yyyy-MM-dd") : "", m.inQty, m.outQty, balance = bal }; }).ToList();
+    return Results.Ok(new { partCode = code, totalIn = moves.Sum(m => m.inQty), totalOut = moves.Sum(m => m.outQty), closing = bal, ledger });
+}).RequireAuthorization();
+
 // ===== Báo cáo phụ tùng (report tái-dùng ServicePart + ServiceStockOut — port 1:1 FrmReportPartMinQuantity/TopProfit/TopRotate, TCMotor) =====
 // Phụ tùng dưới định mức tồn (Quantity < MinQuantity) — cần đặt hàng bổ sung.
 app.MapGet("/api/report/part-minquantity", async (AppDbContext db, ITenantContext t) =>
