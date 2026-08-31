@@ -2617,6 +2617,36 @@ app.MapGet("/api/report/salesbydealer", async (AppDbContext db, ITenantContext t
     return Results.Ok(new { totalOrders = orders.Count, totalReqQty = orders.Sum(o => ReqQty(o.Id)), totalAmount = orders.Sum(o => Amount(o.Id)), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo tổng hợp (port 1:1 FrmBaoCaoTongHop) — dashboard gộp các entity chính, tái dùng =====
+app.MapGet("/api/report/summary", async (AppDbContext db, ITenantContext t) =>
+{
+    var org = t.OrgId;
+    // Đơn hàng bán
+    var so = await db.SalesOrders.Where(o => o.OrgId == org).Select(o => o.Status).ToListAsync();
+    var soLineAmt = await db.SalesOrderLines.Where(l => l.OrgId == org).SumAsync(l => (decimal?)(l.UnitPrice * l.RequestedQuantity)) ?? 0;
+    // Bán buôn ĐL->ĐL
+    var ws = await db.WholesaleDeals.Where(w => w.OrgId == org).Select(w => new { w.Status, w.TotalAmount }).ToListAsync();
+    // Bảo lãnh ngân hàng
+    var grt = await db.BankGuarantees.Where(g => g.OrgId == org).Select(g => new { g.Status, g.FlagSettled, g.TotalAmount }).ToListAsync();
+    // Phiếu thanh toán
+    var pm = await db.BankPayments.Where(p => p.OrgId == org).Select(p => new { p.PaymentStatus, p.TotalAmount }).ToListAsync();
+    // Hợp đồng đại lý bán lẻ
+    var dc = await db.DlrContracts.Where(c => c.OrgId == org).CountAsync();
+    // Back-order
+    var bo = await db.BackOrders.Where(b => b.OrgId == org).Select(b => new { b.QtyOrder, b.QtyDelivered }).ToListAsync();
+
+    var summary = new
+    {
+        salesOrders = new { count = so.Count, byStatus = so.GroupBy(s => s).Select(g => new { status = g.Key, count = g.Count() }).ToList(), totalAmount = soLineAmt },
+        wholesaleDeals = new { count = ws.Count, confirmed = ws.Count(w => w.Status == "Confirmed"), totalAmount = ws.Sum(w => w.TotalAmount) },
+        guarantees = new { count = grt.Count, approved = grt.Count(g => g.Status == "Approved"), debit = grt.Where(g => g.Status == "Approved" && g.FlagSettled != "1").Sum(g => g.TotalAmount), settled = grt.Count(g => g.FlagSettled == "1") },
+        payments = new { count = pm.Count, approved = pm.Count(p => p.PaymentStatus == "Approved"), totalAmount = pm.Sum(p => p.TotalAmount) },
+        dealerContracts = new { count = dc },
+        backOrder = new { totalOrder = bo.Sum(b => b.QtyOrder), totalDelivered = bo.Sum(b => b.QtyDelivered), backOrder = bo.Sum(b => b.QtyOrder - b.QtyDelivered) }
+    };
+    return Results.Ok(summary);
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {

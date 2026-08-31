@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo tổng hợp</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  h3{font-size:15px;margin:16px 0 6px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .box{border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .box b{font-size:22px;display:block;font-variant-numeric:tabular-nums} .box span{font-size:12px;opacity:.7}
+  .box.big b{font-size:18px}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Báo cáo tổng hợp <span class="muted">(port 1:1 FrmBaoCaoTongHop — Report, dashboard fleet)</span></h1>
+<p class="muted">Tổng hợp nhanh các nghiệp vụ chính: đơn hàng bán, bán buôn, bảo lãnh, thanh toán, hợp đồng, back-order. <span id="msg"></span></p>
+<div id="body"></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function money(n){ return (n||0).toLocaleString("vi-VN"); }
+function sec(title,boxes){ return `<h3>${title}</h3><div class="grid">`+boxes.map(b=>`<div class="box ${b.big?'big':''}"><b>${b.v}</b><span>${b.l}</span></div>`).join("")+`</div>`; }
+async function load(){ await token();
+  const r=await fetch("/api/report/summary",{headers:H()}); const d=await r.json();
+  if(!r.ok){ F("msg").textContent="Lỗi: "+(d.error||r.status); return; }
+  let h="";
+  h+=sec("Đơn hàng bán (SalesOrder)",[{v:d.salesOrders.count,l:"Số ĐH"},{v:money(d.salesOrders.totalAmount),l:"Tổng giá trị",big:1},
+     ...(d.salesOrders.byStatus||[]).map(s=>({v:s.count,l:s.status}))]);
+  h+=sec("Bán buôn ĐL→ĐL",[{v:d.wholesaleDeals.count,l:"Số GD"},{v:d.wholesaleDeals.confirmed,l:"Đã xác nhận"},{v:money(d.wholesaleDeals.totalAmount),l:"Tổng tiền",big:1}]);
+  h+=sec("Bảo lãnh ngân hàng",[{v:d.guarantees.count,l:"Số BL"},{v:d.guarantees.approved,l:"Đã duyệt"},{v:d.guarantees.settled,l:"Đã tất toán"},{v:money(d.guarantees.debit),l:"Dư nợ",big:1}]);
+  h+=sec("Phiếu thanh toán",[{v:d.payments.count,l:"Số phiếu"},{v:d.payments.approved,l:"Đã duyệt"},{v:money(d.payments.totalAmount),l:"Tổng tiền",big:1}]);
+  h+=sec("Hợp đồng & Back-order",[{v:d.dealerContracts.count,l:"HĐ đại lý"},{v:d.backOrder.totalOrder,l:"SL đặt"},{v:d.backOrder.totalDelivered,l:"SL giao"},{v:d.backOrder.backOrder,l:"Back-order"}]);
+  F("body").innerHTML=h;
+}
+load();
+</script>
+</body></html>
