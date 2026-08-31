@@ -689,6 +689,22 @@ public sealed class CarMaintenance
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Xe trong kho bảo dưỡng gia hạn (StoF_MaintainMain — port 1:1 FrmMaintenanceWarehouse, Maintenance):
+/// theo dõi xe vào/ra bảo dưỡng gia hạn. MtnExtStatusMain: NG(chưa)→IN(đang BD gia hạn)→OUT(xong ra kho).</summary>
+public sealed class MaintainExt
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? StorageCode { get; set; }
+    public DateTime? MtnExtStartDTime { get; set; }   // vào BD gia hạn (MtnExtIn)
+    public DateTime? MtnExtEndDTime { get; set; }     // ra khỏi BD gia hạn (MtnExtOut)
+    public string? MtnExtRemark { get; set; }
+    public string MtnExtStatusMain { get; set; } = "NG"; // NG / IN / OUT
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

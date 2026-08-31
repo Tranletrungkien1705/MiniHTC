@@ -1227,6 +1227,56 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Xe kho bảo dưỡng gia hạn (StoF_MaintainMain — port 1:1 FrmMaintenanceWarehouse) =====
+app.MapGet("/api/maintext", async (AppDbContext db, ITenantContext t, string? status, string? storage) =>
+{
+    var q = db.MaintainExts.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.MtnExtStatusMain == status);
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(m => m.StorageCode == storage);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    { m.Vin, m.ModelCode, m.StorageCode, m.MtnExtStartDTime, m.MtnExtEndDTime, m.MtnExtRemark, m.MtnExtStatusMain }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        inProgress = items.Count(x => x.MtnExtStatusMain == "IN"),
+        done = items.Count(x => x.MtnExtStatusMain == "OUT"),
+        items
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintext", async (MaintExtDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    var vin = dto.Vin.Trim().ToUpperInvariant();
+    var m = await db.MaintainExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
+    if (m is null) { m = new MaintainExt { OrgId = t.OrgId, Vin = vin, MtnExtStatusMain = "NG" }; db.MaintainExts.Add(m); }
+    m.ModelCode = dto.ModelCode; m.StorageCode = dto.StorageCode; m.MtnExtRemark = dto.MtnExtRemark; m.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.Vin, status = m.MtnExtStatusMain });
+}).RequireAuthorization();
+
+// Vào (MtnExtIn) / Ra (MtnExtOut) bảo dưỡng gia hạn
+app.MapPost("/api/maintext/{vin}/{action}", async (string vin, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("in" or "out")) return Results.BadRequest(new { error = "action = in|out" });
+    vin = vin.Trim().ToUpperInvariant();
+    var m = await db.MaintainExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
+    if (m is null) return Results.NotFound(new { vin });
+    if (action == "in")
+    {
+        if (m.MtnExtStatusMain == "IN") return Results.BadRequest(new { error = "Xe đang trong BD gia hạn." });
+        m.MtnExtStatusMain = "IN"; m.MtnExtStartDTime = DateTime.Now; m.MtnExtEndDTime = null;
+    }
+    else // out
+    {
+        if (m.MtnExtStatusMain != "IN") return Results.BadRequest(new { error = "Xe chưa vào BD gia hạn (IN)." });
+        m.MtnExtStatusMain = "OUT"; m.MtnExtEndDTime = DateTime.Now;
+    }
+    m.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.Vin, status = m.MtnExtStatusMain, m.MtnExtStartDTime, m.MtnExtEndDTime });
+}).RequireAuthorization();
+
 // ===== Bảo dưỡng xe tồn kho theo kỳ (VIN_MaintainPeriodHist — port 1:1 FrmMaintenanceHistory) =====
 app.MapGet("/api/carmaintenances", async (AppDbContext db, ITenantContext t, string? vin, string? type, string? storage) =>
 {
@@ -1794,4 +1844,5 @@ record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? S
 record DlGrantDto(string SMHyundaiCode);
 record DlStatusDto(string SMStatus);
 record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
+record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark);
 record RegisterOrgDto(string Name);
