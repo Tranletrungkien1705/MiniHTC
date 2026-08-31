@@ -1277,6 +1277,33 @@ public sealed class DeliveryOrderCar
     public DateTime? DeliveryExpectDate { get; set; }
 }
 
+/// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):
+/// đề nghị làm hồ sơ đăng ký cho lô xe đã giao. Draft→Submitted(đã nộp)→Done(hoàn tất).</summary>
+public sealed class DocReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DocReqNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";      // Draft → Submitted → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SubmittedAt { get; set; }
+    public DateTime? DoneAt { get; set; }
+}
+
+/// <summary>Dòng xe làm hồ sơ (Car_DocReqDtl): VIN + model + màu + số máy + tiền.</summary>
+public sealed class DocReqCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DocReqId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? EngineNo { get; set; }
+    public decimal AmountTotal { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -92,6 +92,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<TkhqPL> TkhqPLs => Set<TkhqPL>();
     public DbSet<DeliveryOrder> DeliveryOrders => Set<DeliveryOrder>();
     public DbSet<DeliveryOrderCar> DeliveryOrderCars => Set<DeliveryOrderCar>();
+    public DbSet<DocReq> DocReqs => Set<DocReq>();
+    public DbSet<DocReqCar> DocReqCars => Set<DocReqCar>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
