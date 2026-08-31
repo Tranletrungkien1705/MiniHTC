@@ -4272,6 +4272,50 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== File đính kèm đề nghị bảo hành (WarrantyAttachment — port 1:1 FrmROAttachment, TCMotor) =====
+app.MapGet("/api/warrantyclaims/{id}/attachments", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var files = await db.WarrantyAttachments.Where(a => a.OrgId == t.OrgId && a.ServiceWarrantyClaimId == id).OrderBy(a => a.Id)
+        .Select(a => new { a.Id, a.FileName, a.FileNote, createdAt = a.CreatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { c.ClaimNo, count = files.Count, files });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyclaims/{id}/attachments", async (long id, WarrantyAttachmentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var fn = (dto.FileName ?? "").Trim();
+    if (fn == "") return Results.BadRequest(new { error = "Cần tên file đính kèm." });
+    var a = new WarrantyAttachment { OrgId = t.OrgId, ServiceWarrantyClaimId = id, FileName = fn, FileNote = dto.FileNote };
+    db.WarrantyAttachments.Add(a); await db.SaveChangesAsync();
+    return Results.Ok(new { a.Id, a.FileName });
+}).RequireAuthorization();
+
+app.MapDelete("/api/warrantyclaims/{id}/attachments/{attId}", async (long id, long attId, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.WarrantyAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ServiceWarrantyClaimId == id && x.Id == attId);
+    if (a is null) return Results.NotFound(new { attId });
+    db.WarrantyAttachments.Remove(a); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = attId });
+}).RequireAuthorization();
+
+// Báo cáo bảo hành chấp thuận theo đại lý (tháng): tổng hợp ĐN đã Accepted, gộp theo đại lý + tổng tiền.
+app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext t, string? month) =>
+{
+    var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status == "Accepted");
+    if (!string.IsNullOrWhiteSpace(month) && DateTime.TryParse(month + "-01", out var m0))
+    {
+        var m1 = m0.AddMonths(1);
+        q = q.Where(x => x.UpdatedAt >= m0 && x.UpdatedAt < m1);
+    }
+    var rows = await q.GroupBy(x => x.DealerCode)
+        .Select(g => new { dealerCode = g.Key ?? "(không rõ)", claims = g.Count(), totalAmount = g.Sum(x => x.Amount) })
+        .OrderByDescending(x => x.totalAmount).ToListAsync();
+    return Results.Ok(new { count = rows.Count, grandTotal = rows.Sum(r => r.totalAmount), rows });
+}).RequireAuthorization();
+
 // ===== Báo cáo nhập-xuất-tồn + thẻ kho (report tái-dùng ServiceStockIn/Out — port 1:1 FrmReportInOutStock + FrmReportCardStock, TCMotor) =====
 // Nhập-xuất-tồn theo mã PT: tổng nhập (phiếu Confirmed), tổng xuất (phiếu Confirmed), tồn hiện tại (ServicePart.Quantity).
 app.MapGet("/api/report/stock-inout", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
@@ -9531,6 +9575,7 @@ record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
+record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note);
 record AppointmentStatusDto(string Status);

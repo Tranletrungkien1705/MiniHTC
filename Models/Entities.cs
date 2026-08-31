@@ -952,6 +952,17 @@ public sealed class CustomerCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>File đính kèm đề nghị bảo hành (ảnh/chứng từ theo ĐN) — port 1:1 FrmROAttachment (Ser_ROAttachment, TCMotor).</summary>
+public sealed class WarrantyAttachment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceWarrantyClaimId { get; set; }
+    public string FileName { get; set; } = "";
+    public string? FileNote { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
 public sealed class ServiceWarrantyClaim
 {
