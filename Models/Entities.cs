@@ -2729,6 +2729,18 @@ public sealed class SbhOnline
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đồng bộ VIN↔GPS từ file (DMSVIN sync) — port 1:1 FrmDongBoVIN. 1 dòng = 1 map VIN-GPS.</summary>
+public sealed class GpsVinSync
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string GpsId { get; set; } = "";
+    public DateTime MapTime { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

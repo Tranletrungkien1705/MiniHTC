@@ -2383,6 +2383,43 @@ app.MapPost("/api/sbhonline/pushbatch", async (SbhBatchDto dto, AppDbContext db,
     return Results.Ok(new { pushed = rows.Count, message = "Đẩy thành công!" });
 }).RequireAuthorization();
 
+// ===== Đồng bộ VIN↔GPS từ file (GpsVinSync — port 1:1 FrmDongBoVIN, StoFGPS) =====
+app.MapGet("/api/gpsvinsync", async (AppDbContext db, ITenantContext t, string? vin, string? gpsId, string? batch) =>
+{
+    var q = db.GpsVinSyncs.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(s => s.VIN.Contains(vin!.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(gpsId)) q = q.Where(s => s.GpsId.Contains(gpsId!));
+    if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(s => s.BatchNo == batch);
+    var items = await q.OrderByDescending(s => s.Id).Take(500)
+        .Select(s => new { s.BatchNo, s.VIN, s.GpsId, s.MapTime, s.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Đồng bộ 1 lô VIN-GPS (validate từng dòng + phát hiện trùng trong file).
+app.MapPost("/api/gpsvinsync", async (GpsVinSyncDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "File Excel import không có dữ liệu!" });
+    var seen = new HashSet<string>();
+    var parsed = new List<(string vin, string gps, DateTime mt)>();
+    foreach (var r in rows)
+    {
+        if (string.IsNullOrWhiteSpace(r.VIN)) return Results.BadRequest(new { error = "VIN không được trống!" });
+        if (string.IsNullOrWhiteSpace(r.GpsId)) return Results.BadRequest(new { error = "GPS ID không được trống!" });
+        if (string.IsNullOrWhiteSpace(r.MapTime)) return Results.BadRequest(new { error = "Thời điểm map không được trống!" });
+        if (!DateTime.TryParse(r.MapTime, out var mt)) return Results.BadRequest(new { error = "Thời điểm map không phải kiểu ngày tháng!" });
+        var vin = r.VIN.Trim().ToUpperInvariant(); var gps = r.GpsId.Trim();
+        var key = vin + "|" + gps;
+        if (!seen.Add(key)) return Results.BadRequest(new { error = $"VIN: '{vin}' - GPS ID: '{gps}' bị lặp trong file excel!" });
+        parsed.Add((vin, gps, mt));
+    }
+    var batchNo = "SYNC" + DateTime.Now.ToString("yyMMddHHmmss");
+    foreach (var (vin, gps, mt) in parsed)
+        db.GpsVinSyncs.Add(new GpsVinSync { OrgId = t.OrgId, BatchNo = batchNo, VIN = vin, GpsId = gps, MapTime = mt });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { batchNo, synced = parsed.Count, message = "Đồng bộ thành công!" });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6412,6 +6449,8 @@ record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? D
 record DealPatchDto(string Field, string Value);
 record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate);
 record SbhBatchDto(List<string>? Vins);
+record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
+record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
