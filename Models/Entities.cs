@@ -177,6 +177,21 @@ public sealed class WarrantyClaimTC
     public DateTime? DecidedAt { get; set; }
 }
 
+/// <summary>Đơn đặt hàng nhà cung cấp (TCMotor Supplier PO) — OEM mua phụ tùng từ NCC.</summary>
+public sealed class SupplierPO
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PoNo { get; set; } = "";
+    public string SupplierCode { get; set; } = "";
+    public string? Note { get; set; }
+    public decimal Total { get; set; }
+    public string Status { get; set; } = "Draft";   // Draft → Sent → Received (hoặc Cancelled)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+    public DateTime? ReceivedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

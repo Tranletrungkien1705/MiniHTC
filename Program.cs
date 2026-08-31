@@ -575,6 +575,39 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// ===== Đơn đặt hàng NCC (port 1:1 Supplier PO — TCMotor) =====
+app.MapGet("/api/pos", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.SupplierPOs.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    { p.PoNo, p.SupplierCode, p.Note, p.Total, p.Status, p.CreatedAt, p.SentAt, p.ReceivedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pos", async (PODto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Cần SupplierCode." });
+    var no = "PO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new SupplierPO { OrgId = t.OrgId, PoNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), Note = dto.Note, Total = dto.Total, Status = "Draft" };
+    db.SupplierPOs.Add(p); await db.SaveChangesAsync();
+    return Results.Ok(new { p.PoNo, p.SupplierCode, p.Total, status = p.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/pos/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("send" or "receive" or "cancel")) return Results.BadRequest(new { error = "action = send|receive|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.SupplierPOs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    var now = DateTime.Now;
+    if (action == "send") { if (p.Status != "Draft") return Results.BadRequest(new { error = "Sai trạng thái." }); p.Status = "Sent"; p.SentAt = now; }
+    else if (action == "receive") { if (p.Status != "Sent") return Results.BadRequest(new { error = "Chưa gửi." }); p.Status = "Received"; p.ReceivedAt = now; }
+    else { if (p.Status == "Received") return Results.BadRequest(new { error = "Đã nhận." }); p.Status = "Cancelled"; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PoNo, status = p.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -599,4 +632,5 @@ record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
 record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
+record PODto(string SupplierCode, string? Note, decimal Total);
 record RegisterOrgDto(string Name);
