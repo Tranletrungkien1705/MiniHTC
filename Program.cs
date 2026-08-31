@@ -1227,6 +1227,62 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Khiếu nại đơn đặt phụ tùng (Ser_OrderComplain — port 1:1 FrmSer_OrderComplain/Mng) =====
+app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, string? dms, string? tst, string? order) =>
+{
+    var q = db.OrderComplains.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dms)) q = q.Where(c => c.DMSStatus == dms);
+    if (!string.IsNullOrWhiteSpace(tst)) q = q.Where(c => c.TSTStatus == tst);
+    if (!string.IsNullOrWhiteSpace(order)) q = q.Where(c => c.OrderPartNo.Contains(order.ToUpper()));
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    { c.ComplainNo, c.OrderPartNo, c.ComplainType, c.Content, c.DMSStatus, c.TSTStatus, c.Resolution, c.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.OrderPartNo)) return Results.BadRequest(new { error = "Cần OrderPartNo." });
+    var orderNo = dto.OrderPartNo.Trim().ToUpperInvariant();
+    var exists = await db.OrderParts.AnyAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == orderNo);
+    if (!exists) return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt {orderNo}." });
+    var no = "CMP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new OrderComplain { OrgId = t.OrgId, ComplainNo = no, OrderPartNo = orderNo, ComplainType = dto.ComplainType, Content = dto.Content, DMSStatus = "P", TSTStatus = "" };
+    db.OrderComplains.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.ComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus });
+}).RequireAuthorization();
+
+// DMS gửi (P→A); TST tiếp nhận/xử lý/giải quyết
+app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action, OrderComplainActDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("send" or "receive" or "process" or "resolve")) return Results.BadRequest(new { error = "action = send|receive|process|resolve" });
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.OrderComplains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (action == "send")
+    {
+        if (c.DMSStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi khiếu nại Mới tạo." });
+        c.DMSStatus = "A";
+    }
+    else if (action == "receive")
+    {
+        if (c.DMSStatus != "A") return Results.BadRequest(new { error = "DMS chưa gửi khiếu nại." });
+        if (c.TSTStatus != "") return Results.BadRequest(new { error = "Đã tiếp nhận." });
+        c.TSTStatus = "Processing";
+    }
+    else if (action == "process")
+    {
+        if (c.TSTStatus != "Processing") return Results.BadRequest(new { error = "Chưa tiếp nhận (Processing)." });
+        c.TSTStatus = "Pending";
+    }
+    else // resolve
+    {
+        if (c.TSTStatus != "Pending") return Results.BadRequest(new { error = "Chưa đang xử lý (Pending)." });
+        c.TSTStatus = "Resolved"; c.Resolution = dto.Resolution;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ComplainNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus });
+}).RequireAuthorization();
+
 // ===== Đơn đặt phụ tùng từ NCC (Ser_Order_Part — port 1:1 FrmSer_Order_Part) =====
 app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? status, string? supplier) =>
 {
@@ -2473,4 +2529,6 @@ record CareContactDto(string? Result);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
+record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content);
+record OrderComplainActDto(string? Resolution);
 record RegisterOrgDto(string Name);

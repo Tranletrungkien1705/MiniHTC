@@ -1021,6 +1021,22 @@ public sealed class OrderPartLine
     public decimal Price { get; set; }
 }
 
+/// <summary>Khiếu nại đơn đặt phụ tùng (Ser_OrderComplain — port 1:1 FrmSer_OrderComplain/FrmSer_OrderComplainMng, TCMotor DMSCarSv/TST):
+/// KN 2 chiều. DMSStatus: P(Mới tạo)→A(Đã gửi). TSTStatus: ''→Processing(Chờ duyệt)→Pending(Đang xử lý)→Resolved(Đã xử lý).</summary>
+public sealed class OrderComplain
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ComplainNo { get; set; } = "";
+    public string OrderPartNo { get; set; } = "";       // đơn đặt PT liên quan
+    public string? ComplainType { get; set; }
+    public string? Content { get; set; }
+    public string DMSStatus { get; set; } = "P";        // P → A (bên DMS đại lý)
+    public string TSTStatus { get; set; } = "";         // '' → Processing → Pending → Resolved (bên TST)
+    public string? Resolution { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
