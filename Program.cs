@@ -1703,6 +1703,52 @@ app.MapPost("/api/dmsdealercontracts/{no}/cancel", async (string no, AppDbContex
     return Results.Ok(new { c.DlrCtrNo, status = c.DlrCtrStatus });
 }).RequireAuthorization();
 
+// Biên bản hủy hợp đồng đại lý (FrmDMS40_DlrCtr_CancelMinutes) — tạo BB hủy + set HĐ Cancelled
+app.MapGet("/api/dmscancelminutes", async (AppDbContext db, ITenantContext t, string? dlrCtrNo) =>
+{
+    var q = db.DmsCancelMinutesSet.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(m => m.DlrCtrNo == dlrCtrNo);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelMinutesNo, m.DlrCtrNo, m.Remark, m.FlagIsDelete, m.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dmscancelminutes", async (DmsCancelMinutesDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DlrCtrNo)) return Results.BadRequest(new { error = "Cần số hợp đồng." });
+    var dlr = dto.DlrCtrNo.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == dlr);
+    if (c is null) return Results.BadRequest(new { error = $"Không tìm thấy HĐ {dlr}." });
+    var seq = await db.DmsCancelMinutesSet.CountAsync(m => m.OrgId == t.OrgId && m.DlrCtrNo == dlr) + 1;
+    var no = dlr + "." + seq;
+    var m = new DmsCancelMinutes { OrgId = t.OrgId, CancelMinutesNo = no, DlrCtrNo = dlr, Remark = dto.Remark, FlagIsDelete = dto.FlagIsDelete == "1" ? "1" : "0" };
+    db.DmsCancelMinutesSet.Add(m);
+    c.DlrCtrStatus = "Cancelled";   // hủy HĐ
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.CancelMinutesNo, m.DlrCtrNo, message = "Tạo biên bản hủy hợp đồng thành công!" });
+}).RequireAuthorization();
+
+// Hủy NH phát hành bảo lãnh MD (FrmDMS40_DlrCtr_CancelBankMD)
+app.MapGet("/api/dmscancelbankmd", async (AppDbContext db, ITenantContext t, string? dlrCtrNo) =>
+{
+    var q = db.DmsCancelBankMDs.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(m => m.DlrCtrNo == dlrCtrNo);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelBankMDNo, m.DlrCtrNo, m.BankCodeMD, m.Remark, m.FlagIsDelete, m.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dmscancelbankmd", async (DmsCancelBankMDDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DlrCtrNo)) return Results.BadRequest(new { error = "Cần số hợp đồng." });
+    var dlr = dto.DlrCtrNo.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == dlr);
+    if (c is null) return Results.BadRequest(new { error = $"Không tìm thấy HĐ {dlr}." });
+    var seq = await db.DmsCancelBankMDs.CountAsync(m => m.OrgId == t.OrgId && m.DlrCtrNo == dlr) + 1;
+    var no = dlr + "." + seq;
+    var m = new DmsCancelBankMD { OrgId = t.OrgId, CancelBankMDNo = no, DlrCtrNo = dlr, BankCodeMD = dto.BankCodeMD, Remark = dto.Remark, FlagIsDelete = dto.FlagIsDelete == "1" ? "1" : "0" };
+    db.DmsCancelBankMDs.Add(m); await db.SaveChangesAsync();
+    return Results.Ok(new { m.CancelBankMDNo, m.DlrCtrNo, message = "Tạo hủy ngân hàng phát hành bảo lãnh thành công!" });
+}).RequireAuthorization();
+
 // ===== Công văn bảo lãnh/claim (GrtClaim — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim, 2010.HTC/Sales/GrtClaim) =====
 app.MapGet("/api/grtclaims", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -4889,6 +4935,8 @@ record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
 record DealerContractCarDto(string CarId, decimal UnitPrice);
 record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser, string DealerCode, DateTime? ContractDate, List<DealerContractCarDto>? Cars);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate);
+record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
+record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
 record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
 record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);

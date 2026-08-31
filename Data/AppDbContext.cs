@@ -125,6 +125,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerContract> DealerContracts => Set<DealerContract>();
     public DbSet<DealerContractDetail> DealerContractDetails => Set<DealerContractDetail>();
     public DbSet<DmsDealerContract> DmsDealerContracts => Set<DmsDealerContract>();
+    public DbSet<DmsCancelMinutes> DmsCancelMinutesSet => Set<DmsCancelMinutes>();
+    public DbSet<DmsCancelBankMD> DmsCancelBankMDs => Set<DmsCancelBankMD>();
     public DbSet<GrtClaim> GrtClaims => Set<GrtClaim>();
     public DbSet<GrtClaimDetail> GrtClaimDetails => Set<GrtClaimDetail>();
     public DbSet<CBReq> CBReqs => Set<CBReq>();

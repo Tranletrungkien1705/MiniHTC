@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Hủy HĐ đại lý DMS40</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} h2{font-size:15px;margin:0 0 6px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .msg{font-size:13px}
+</style></head>
+<body>
+<h1>Hủy hợp đồng đại lý DMS40 <span class="muted">(port 1:1 FrmDMS40_DlrCtr_CancelMinutes/CancelBankMD)</span></h1>
+
+<div class="card">
+  <h2>Biên bản hủy hợp đồng (CancelMinutes)</h2>
+  <div class="bar" style="margin-top:8px">
+    <div><label>Số HĐ (DlrCtrNo) *</label><input id="m_no" style="width:160px"></div>
+    <div><label>Ghi chú</label><input id="m_rm" style="width:200px"></div>
+    <div class="muted" style="align-self:center"><input type="checkbox" id="m_del"> Đánh dấu xóa</div>
+    <button class="primary" onclick="createMinutes()">Tạo BB hủy HĐ</button><span id="m_msg" class="msg"></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Hủy NH phát hành bảo lãnh MD (CancelBankMD)</h2>
+  <div class="bar" style="margin-top:8px">
+    <div><label>Số HĐ (DlrCtrNo) *</label><input id="b_no" style="width:160px"></div>
+    <div><label>Mã NH bảo lãnh MD</label><input id="b_bk" style="width:110px"></div>
+    <div><label>Ghi chú</label><input id="b_rm" style="width:160px"></div>
+    <button class="primary" onclick="createBankMD()">Tạo hủy NH</button><span id="b_msg" class="msg"></span>
+  </div>
+</div>
+
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc theo số HĐ" oninput="load()" style="width:180px"></div>
+<div class="card">
+  <h2>Danh sách BB hủy HĐ</h2>
+  <table><thead><tr><th>Số BB</th><th>Số HĐ</th><th>Ghi chú</th><th>Xóa</th><th>Ngày</th></tr></thead><tbody id="mrows"><tr><td colspan="5" class="muted">…</td></tr></tbody></table>
+</div>
+<div class="card">
+  <h2>Danh sách hủy NH bảo lãnh</h2>
+  <table><thead><tr><th>Số BB</th><th>Số HĐ</th><th>NH MD</th><th>Ghi chú</th><th>Ngày</th></tr></thead><tbody id="brows"><tr><td colspan="5" class="muted">…</td></tr></tbody></table>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+async function createMinutes(){
+  const r=await fetch("/api/dmscancelminutes",{method:"POST",headers:H(),body:JSON.stringify({dlrCtrNo:F("m_no").value,remark:F("m_rm").value,flagIsDelete:F("m_del").checked?"1":"0"})});
+  const j=await r.json(); F("m_msg").textContent=r.ok?(j.message+" ("+j.cancelMinutesNo+")"):"Lỗi: "+(j.error||r.status); if(r.ok){F("m_no").value="";F("m_rm").value="";load();}
+}
+async function createBankMD(){
+  const r=await fetch("/api/dmscancelbankmd",{method:"POST",headers:H(),body:JSON.stringify({dlrCtrNo:F("b_no").value,bankCodeMD:F("b_bk").value,remark:F("b_rm").value,flagIsDelete:"0"})});
+  const j=await r.json(); F("b_msg").textContent=r.ok?(j.message+" ("+j.cancelBankMDNo+")"):"Lỗi: "+(j.error||r.status); if(r.ok){F("b_no").value="";F("b_rm").value="";load();}
+}
+async function load(){ await token(); const q=F("q").value;
+  const m=await (await fetch(`/api/dmscancelminutes?dlrCtrNo=${q}`,{headers:H()})).json();
+  F("mrows").innerHTML=(m.items||[]).map(o=>`<tr><td><b>${o.cancelMinutesNo}</b></td><td>${o.dlrCtrNo}</td><td>${o.remark||""}</td><td>${o.flagIsDelete==="1"?"✓":""}</td><td>${day(o.createdAt)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có.</td></tr>';
+  const b=await (await fetch(`/api/dmscancelbankmd?dlrCtrNo=${q}`,{headers:H()})).json();
+  F("brows").innerHTML=(b.items||[]).map(o=>`<tr><td><b>${o.cancelBankMDNo}</b></td><td>${o.dlrCtrNo}</td><td>${o.bankCodeMD||""}</td><td>${o.remark||""}</td><td>${day(o.createdAt)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có.</td></tr>';
+}
+load();
+</script>
+</body></html>

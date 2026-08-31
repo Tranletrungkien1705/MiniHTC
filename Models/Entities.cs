@@ -1617,6 +1617,31 @@ public sealed class DealerContractDetail
     public decimal UnitPrice { get; set; }
 }
 
+/// <summary>Biên bản hủy hợp đồng đại lý DMS40 (DMS40_DlrCtr_CancelMinutes) — port 1:1 FrmDMS40_DlrCtr_CancelMinutes (2010.HTC/Sales/DMS40). Hủy HĐ đại lý theo DlrCtrNo.</summary>
+public sealed class DmsCancelMinutes
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CancelMinutesNo { get; set; } = "";
+    public string DlrCtrNo { get; set; } = "";
+    public string? Remark { get; set; }
+    public string FlagIsDelete { get; set; } = "0";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Hủy NH phát hành bảo lãnh MD của HĐ đại lý DMS40 (DMS40_DlrCtr_CancelBankMD) — port 1:1 FrmDMS40_DlrCtr_CancelBankMD (2010.HTC/Sales/DMS40).</summary>
+public sealed class DmsCancelBankMD
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CancelBankMDNo { get; set; } = "";
+    public string DlrCtrNo { get; set; } = "";
+    public string? BankCodeMD { get; set; }
+    public string? Remark { get; set; }
+    public string FlagIsDelete { get; set; } = "0";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Hợp đồng đại lý DMS40 (DMS40_CT_DealerContract) — port 1:1 FrmDMS40_CT_DealerContractHTC_New/FrmMngDMS40 (2010.HTC/Sales/DMS40). HĐ đại lý ký 2 bên: A=HTC, B=đại lý.</summary>
 public sealed class DmsDealerContract
 {
