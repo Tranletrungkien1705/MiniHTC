@@ -2420,6 +2420,59 @@ app.MapPost("/api/gpsvinsync", async (GpsVinSyncDto dto, AppDbContext db, ITenan
     return Results.Ok(new { batchNo, synced = parsed.Count, message = "Đồng bộ thành công!" });
 }).RequireAuthorization();
 
+// ===== Nhà vận chuyển xác nhận biên bản giao nhận (TranspDlvConfirm — port 1:1 FrmMngDlvMinutes, TERP.TranspClient) =====
+app.MapGet("/api/transpdlv", async (AppDbContext db, ITenantContext t, string? transporter, string? no, string? status) =>
+{
+    var q = db.TranspDlvConfirms.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(transporter)) q = q.Where(m => m.TransporterCode == transporter);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(m => m.DlvMinutesNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.ConfirmStatus == status);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, m.CreatedAt,
+        cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/transpdlv", async (TranspDlvDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.TransporterCode)) return Results.BadRequest(new { error = "Chưa chọn đơn vị vận tải." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên biên bản giao nhận." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "BBGN" + DateTime.Now.ToString("yyMMddHHmmss");
+    var m2 = new TranspDlvConfirm { OrgId = t.OrgId, DlvMinutesNo = no, TransporterCode = dto.TransporterCode.Trim(), DealerCode = dto.DealerCode ?? "", ConfirmStatus = "Pending" };
+    db.TranspDlvConfirms.Add(m2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.TranspDlvConfirmCars.Add(new TranspDlvConfirmCar { OrgId = t.OrgId, TranspDlvConfirmId = m2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m2.DlvMinutesNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/transpdlv/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var cars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+        .Select(c => new { c.VIN, c.ModelCode }).ToListAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// Nhà vận chuyển xác nhận giao nhận: Pending -> Confirmed (lưu ghi chú + ngày xác nhận).
+app.MapPost("/api/transpdlv/{no}/confirm", async (string no, TranspConfirmDto? body, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.ConfirmStatus == "Confirmed") return Results.BadRequest(new { error = "Biên bản đã được xác nhận." });
+    m.ConfirmStatus = "Confirmed"; m.Remark = body?.Remark ?? ""; m.ConfirmDate = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, status = m.ConfirmStatus });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6451,6 +6504,9 @@ record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCod
 record SbhBatchDto(List<string>? Vins);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
+record TranspDlvCarDto(string VIN, string? ModelCode);
+record TranspDlvDto(string TransporterCode, string? DealerCode, List<TranspDlvCarDto>? Cars);
+record TranspConfirmDto(string? Remark);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

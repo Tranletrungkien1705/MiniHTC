@@ -2741,6 +2741,30 @@ public sealed class GpsVinSync
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Nhà vận chuyển xác nhận biên bản giao nhận (StoDlvMinutes confirm) — port 1:1 FrmMngDlvMinutes (TERP.TranspClient). Header.</summary>
+public sealed class TranspDlvConfirm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlvMinutesNo { get; set; } = "";
+    public string TransporterCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string ConfirmStatus { get; set; } = "Pending";   // Pending -> Confirmed
+    public string Remark { get; set; } = "";
+    public DateTime? ConfirmDate { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Xe trên biên bản giao nhận vận chuyển — port 1:1 FrmMngDlvMinutes detail.</summary>
+public sealed class TranspDlvConfirmCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TranspDlvConfirmId { get; set; }
+    public string VIN { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
