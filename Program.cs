@@ -2735,6 +2735,34 @@ app.MapGet("/api/report/vatinvoice", async (AppDbContext db, ITenantContext t, s
         issued = invs.Count(v => v.VatHTCStatus == "Issued"), deleted = invs.Count(v => v.VatHTCStatus == "Deleted"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo bán buôn ĐL→ĐL (port 1:1 báo cáo Deal To Dealer) — tái dùng WholesaleDeal + Car =====
+app.MapGet("/api/report/wholesale", async (AppDbContext db, ITenantContext t, string? buyer, string? status, string? salesman, DateTime? from, DateTime? to) =>
+{
+    var q = db.WholesaleDeals.Where(w => w.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(w => w.BuyerDealerCode == buyer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(w => w.Status == status);
+    if (!string.IsNullOrWhiteSpace(salesman)) q = q.Where(w => w.SalesManCode == salesman);
+    if (from is not null) q = q.Where(w => w.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(w => w.CreatedAt < to.Value.Date.AddDays(1));
+    var deals = await q.ToListAsync();
+    var ids = deals.Select(d => d.Id).ToHashSet();
+    var carCount = await db.WholesaleDealCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.WholesaleDealId))
+        .GroupBy(c => c.WholesaleDealId).Select(g => new { g.Key, cars = g.Count() }).ToListAsync();
+    var carMap = carCount.ToDictionary(x => x.Key, x => x.cars);
+    int Cars(long id) => carMap.TryGetValue(id, out var v) ? v : 0;
+    var byBuyer = deals.GroupBy(d => string.IsNullOrEmpty(d.BuyerDealerCode) ? "(chưa rõ)" : d.BuyerDealerCode)
+        .Select(g => new { buyerDealerCode = g.Key, count = g.Count(), cars = g.Sum(d => Cars(d.Id)), amount = g.Sum(d => d.TotalAmount), confirmed = g.Count(d => d.Status == "Confirmed") })
+        .OrderByDescending(x => x.amount).ToList();
+    var byStatus = deals.GroupBy(d => d.Status).Select(g => new { status = g.Key, count = g.Count(), amount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.count).ToList();
+    var bySalesman = deals.Where(d => !string.IsNullOrEmpty(d.SalesManCode)).GroupBy(d => d.SalesManCode)
+        .Select(g => new { salesManCode = g.Key, count = g.Count(), amount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.amount).ToList();
+    var detail = deals.OrderByDescending(d => d.Id).Take(500).Select(d => new
+    {
+        d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.SalesManCode, d.Status, d.TotalAmount, cars = Cars(d.Id), createdAt = d.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = deals.Count, totalAmount = deals.Sum(d => d.TotalAmount), confirmedAmount = deals.Where(d => d.Status == "Confirmed").Sum(d => d.TotalAmount), totalCars = deals.Sum(d => Cars(d.Id)), byBuyer, byStatus, bySalesman, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
