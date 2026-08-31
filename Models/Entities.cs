@@ -61,6 +61,21 @@ public sealed class Customer
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Nhân viên bán hàng (Mst_SalesMan) — port 1:1 FrmCreateSalesMan.</summary>
+public sealed class SalesMan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SalesManCode { get; set; } = "";
+    public string SalesManName { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? DepartmentCode { get; set; }
+    public string? Phone { get; set; }
+    public string? Email { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
