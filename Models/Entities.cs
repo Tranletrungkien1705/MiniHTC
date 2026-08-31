@@ -2819,6 +2819,20 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phụ tùng phát sinh (mã/tên/ĐVT/giá/SL tối đa) — port 1:1 FrmMstExtraPartsMng (Tbl_Mst_Extra_Parts_Mng, TCMotor).</summary>
+public sealed class ExtraPartMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }    // VieName
+    public string? Unit { get; set; }
+    public decimal Price { get; set; }
+    public int MaxQuantity { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Công việc phát sinh (mã/tên/giá tối đa/VAT) — port 1:1 FrmMstExtraWorkMng (Tbl_Mst_Extra_Work_Mng, TCMotor).</summary>
 public sealed class ExtraWorkMst
 {

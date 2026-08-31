@@ -3231,6 +3231,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Phụ tùng phát sinh (ExtraPartMst — port 1:1 FrmMstExtraPartsMng, TCMotor) =====
+app.MapGet("/api/extraparts", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.ExtraPartMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!) || (x.PartName != null && x.PartName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.PartCode).Take(500)
+        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Price, x.MaxQuantity, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã phụ tùng phát sinh.
+app.MapPost("/api/extraparts", async (ExtraPartDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
+    if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa nhập tên phụ tùng." });
+    if (dto.Price < 0 || dto.MaxQuantity < 0) return Results.BadRequest(new { error = "Giá/SL tối đa không hợp lệ." });
+    var code = dto.PartCode.Trim().ToUpperInvariant();
+    var ex = await db.ExtraPartMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
+    if (ex is not null)
+    {
+        ex.PartName = dto.PartName; ex.Unit = dto.Unit; ex.Price = dto.Price; ex.MaxQuantity = dto.MaxQuantity; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.PartCode, updated = true });
+    }
+    var r = new ExtraPartMst { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, Unit = dto.Unit, Price = dto.Price, MaxQuantity = dto.MaxQuantity, FlagActive = "1" };
+    db.ExtraPartMsts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.PartCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/extraparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ExtraPartMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.PartCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.PartCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Công việc phát sinh (ExtraWorkMst — port 1:1 FrmMstExtraWorkMng, TCMotor) =====
 app.MapGet("/api/extraworks", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -7699,6 +7739,7 @@ record StorageGlobalMapDto(string StorageCode, string ModelCode);
 record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod);
 record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
+record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
