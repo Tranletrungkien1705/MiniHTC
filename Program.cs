@@ -2563,6 +2563,32 @@ app.MapGet("/api/report/bldenhan", async (AppDbContext db, ITenantContext t, Dat
     return Results.Ok(new { total = detail.Count, totalAmount = recs.Sum(g => g.TotalAmount), byBank, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo dư nợ bảo lãnh (port 1:1 FrmBaocaoBaolanh) — tái dùng BankGuarantee, gom theo NH + trạng thái =====
+app.MapGet("/api/report/guarantee", async (AppDbContext db, ITenantContext t, string? grtNo, DateTime? openFrom, DateTime? openTo, string? bank) =>
+{
+    var q = db.BankGuarantees.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(grtNo)) q = q.Where(g => g.GuaranteeNo.Contains(grtNo!) || g.BankGuaranteeNo.Contains(grtNo!));
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(g => g.BankCode == bank);
+    if (openFrom is not null) q = q.Where(g => g.DateOpen != null && g.DateOpen >= openFrom.Value.Date);
+    if (openTo is not null) q = q.Where(g => g.DateOpen != null && g.DateOpen < openTo.Value.Date.AddDays(1));
+    var recs = await q.ToListAsync();
+    // Dư nợ BL = tổng giá trị BL đã duyệt, CHƯA tất toán.
+    decimal Debit(BankGuarantee g) => g.Status == "Approved" && g.FlagSettled != "1" ? g.TotalAmount : 0;
+    var byBank = recs.GroupBy(g => string.IsNullOrEmpty(g.BankCode) ? "(chưa rõ)" : g.BankCode)
+        .Select(g => new { bankCode = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount), debit = g.Sum(Debit), settled = g.Count(x => x.FlagSettled == "1") })
+        .OrderByDescending(x => x.debit).ToList();
+    var byStatus = recs.GroupBy(g => g.Status)
+        .Select(g => new { status = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) })
+        .OrderByDescending(x => x.count).ToList();
+    var detail = recs.OrderByDescending(g => g.DateOpen).Take(500).Select(g => new
+    {
+        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.TotalAmount, g.Status, g.FlagSettled,
+        dateOpen = g.DateOpen != null ? g.DateOpen.Value.ToString("yyyy-MM-dd") : "",
+        debit = Debit(g)
+    }).ToList();
+    return Results.Ok(new { total = recs.Count, totalDebit = recs.Sum(Debit), totalAmount = recs.Sum(g => g.TotalAmount), byBank, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
