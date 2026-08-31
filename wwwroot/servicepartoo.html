@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Phụ tùng nợ / chờ giao</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#b45309;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:16px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:16px;display:block} .box span{font-size:11px;opacity:.7}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Open{color:var(--warn)} .s-Fulfilled{color:var(--ok)}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:8px 0} #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Phụ tùng nợ / chờ giao <span class="muted">(port 1:1 FrmNewSerPartOO/FrmMngSerPartOO — TCMotor)</span></h1>
+<p class="muted">Ghi nhận phụ tùng còn thiếu/nợ theo xe (chưa đủ để hoàn tất sửa chữa) và giao dần khi có hàng. Đủ số lượng → hoàn tất.</p>
+<div class="card"><h3 style="margin-top:0">Tạo phiếu nợ phụ tùng</h3>
+  <div class="row">
+    <div><label>Mã PT *</label><input id="fPart" style="width:110px"></div>
+    <div style="flex:1;min-width:130px"><label>Tên PT</label><input id="fName" style="width:100%"></div>
+    <div><label>Biển số xe *</label><input id="fPlate" style="width:120px"></div>
+    <div><label>SL nợ *</label><input id="fQty" type="number" style="width:90px"></div>
+    <div style="flex:1;min-width:120px"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
+    <button class="primary" onclick="save()">Tạo</button><span id="msg"></span>
+  </div>
+</div>
+<div class="kpi" id="kpi"></div>
+<div class="bar">
+  <div><label>Tìm PT</label><input id="qPart" style="width:130px" onkeydown="if(event.key==='Enter')load()"></div>
+  <div><label>Biển số</label><input id="qPlate" style="width:110px"></div>
+  <div><label>Trạng thái</label><select id="qStatus" style="padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit"><option value="">Tất cả</option><option value="Open">Còn nợ</option><option value="Fulfilled">Đã đủ</option></select></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Số phiếu</th><th>PT</th><th>Biển số</th><th class="num">SL nợ</th><th class="num">Đã giao</th><th class="num">Còn thiếu</th><th>Trạng thái</th><th>Giao</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const ST={Open:"Còn nợ",Fulfilled:"Đã đủ"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+async function save(){ await token();
+  const body={PartCode:F("fPart").value,PartName:F("fName").value,PlateNo:F("fPlate").value,QtyNeeded:+F("fQty").value||0,Note:F("fNote").value};
+  const r=await fetch("/api/servicepartoos",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg("Đã tạo "+d.ooNo); F("fQty").value=""; load();
+}
+async function fulfill(no){ await token();
+  const q=prompt("Số lượng giao cho phiếu "+no+":"); if(!q) return;
+  const r=await fetch("/api/servicepartoos/"+encodeURIComponent(no)+"/fulfill",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Qty:+q||0})});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg("Đã giao, còn "+d.remaining); load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/servicepartoos?part="+encodeURIComponent(F("qPart").value)+"&plate="+encodeURIComponent(F("qPlate").value)+"&status="+F("qStatus").value,{headers:H()});
+  const d=await r.json();
+  F("kpi").innerHTML=`<div class="box"><b>${d.count}</b><span>Số phiếu</span></div><div class="box"><b>${d.openCount}</b><span>Còn nợ</span></div>`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.ooNo}</b></td><td>${esc(o.partCode)}${o.partName?" — "+esc(o.partName):""}</td><td>${esc(o.plateNo)}</td><td class="num">${o.qtyNeeded}</td><td class="num">${o.qtyFulfilled}</td><td class="num">${o.remaining}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.status==='Open'?`<button class="link" onclick="fulfill('${o.ooNo}')">Giao</button>`:''}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có phiếu.</td></tr>';
+}
+</script>
+</body></html>

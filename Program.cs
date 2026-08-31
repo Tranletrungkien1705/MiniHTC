@@ -3230,6 +3230,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Phụ tùng nợ/chờ giao theo xe (ServicePartOO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor) =====
+app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, string? part, string? plate, string? status) =>
+{
+    var query = db.ServicePartOOs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode.Contains(part!.ToUpper()) || (x.PartName != null && x.PartName.Contains(part!)));
+    if (!string.IsNullOrWhiteSpace(plate)) query = query.Where(x => x.PlateNo == plate);
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.OONo, x.PartCode, x.PartName, x.PlateNo, x.QtyNeeded, x.QtyFulfilled, remaining = x.QtyNeeded - x.QtyFulfilled, x.Note, x.Status, createdAt = x.CreatedAt.ToString("yyyy-MM-dd") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, openCount = items.Count(i => i.Status == "Open"), items });
+}).RequireAuthorization();
+
+// Tạo phiếu nợ phụ tùng (SL nợ > 0).
+app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
+    if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số xe." });
+    if (dto.QtyNeeded <= 0) return Results.BadRequest(new { error = "Số lượng nợ phải lớn hơn 0." });
+    var no = "OO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new ServicePartOO { OrgId = t.OrgId, OONo = no, PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName, PlateNo = dto.PlateNo.Trim(), QtyNeeded = dto.QtyNeeded, QtyFulfilled = 0, Note = dto.Note, Status = "Open" };
+    db.ServicePartOOs.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.OONo });
+}).RequireAuthorization();
+
+// Giao phụ tùng (cấn trừ SL nợ; không vượt SL còn thiếu; đủ -> Fulfilled).
+app.MapPost("/api/servicepartoos/{no}/fulfill", async (string no, ServicePartFulfillDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var x = await db.ServicePartOOs.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.OONo == no);
+    if (x is null) return Results.NotFound(new { no });
+    if (x.Status == "Fulfilled") return Results.BadRequest(new { error = "Phiếu đã giao đủ." });
+    if (dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng giao phải lớn hơn 0." });
+    var remaining = x.QtyNeeded - x.QtyFulfilled;
+    if (dto.Qty > remaining) return Results.BadRequest(new { error = $"Số lượng giao vượt số còn thiếu ({remaining})." });
+    x.QtyFulfilled += dto.Qty;
+    if (x.QtyFulfilled >= x.QtyNeeded) x.Status = "Fulfilled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.OONo, qtyFulfilled = x.QtyFulfilled, remaining = x.QtyNeeded - x.QtyFulfilled, status = x.Status });
+}).RequireAuthorization();
+
 // ===== Xe khách trong hệ thống dịch vụ (ServiceCar — port 1:1 FrmCarInfo, TCMotor) =====
 app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string? q, string? model, string? active) =>
 {
@@ -8371,6 +8411,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile);
+record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note);
+record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);

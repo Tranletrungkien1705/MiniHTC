@@ -173,6 +173,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PartGroup> PartGroups => Set<PartGroup>();
     public DbSet<ServicePart> ServiceParts => Set<ServicePart>();
     public DbSet<ServiceCar> ServiceCars => Set<ServiceCar>();
+    public DbSet<ServicePartOO> ServicePartOOs => Set<ServicePartOO>();
     public DbSet<CusDebit> CusDebits => Set<CusDebit>();
     public DbSet<CusDebitPayment> CusDebitPayments => Set<CusDebitPayment>();
     public DbSet<PartQuote> PartQuotes => Set<PartQuote>();

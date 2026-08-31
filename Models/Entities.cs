@@ -2819,6 +2819,22 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).</summary>
+public sealed class ServicePartOO
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OONo { get; set; } = "";
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? PlateNo { get; set; }
+    public decimal QtyNeeded { get; set; }
+    public decimal QtyFulfilled { get; set; }
+    public string? Note { get; set; }
+    public string Status { get; set; } = "Open"; // Open -> Fulfilled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Xe khách trong hệ thống dịch vụ (biển số/khung/máy/km/bảo hành) — port 1:1 FrmCarInfo (TblSerCar, TCMotor).</summary>
 public sealed class ServiceCar
 {
