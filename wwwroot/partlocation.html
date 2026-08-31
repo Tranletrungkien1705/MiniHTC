@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Vị trí kho & tồn phụ tùng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#b45309;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:80px;box-sizing:border-box;font-family:ui-monospace,monospace;font-size:13px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  code{background:#8882;padding:1px 5px;border-radius:4px} #msg,#msg2,#msg3{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Vị trí kho & tồn phụ tùng <span class="muted">(port 1:1 FrmImportLocation + FrmImportInventory — TCMotor)</span></h1>
+<p class="muted">Quản lý vị trí kho phụ tùng và cập nhật tồn kho + vị trí cho phụ tùng hàng loạt (tồn tích hợp với Danh mục phụ tùng).</p>
+<div class="card"><h3 style="margin-top:0">Thêm / cập nhật vị trí</h3>
+  <div class="row">
+    <div><label>Mã vị trí *</label><input id="fCode" style="width:100px"></div>
+    <div style="flex:1;min-width:130px"><label>Tên vị trí *</label><input id="fName" style="width:100%"></div>
+    <div><label>Loại</label><input id="fType" style="width:90px"></div>
+    <div><label>Diện tích</label><input id="fSurf" type="number" style="width:90px"></div>
+    <div><label>Chiều cao</label><input id="fHi" type="number" style="width:90px"></div>
+    <div><label>Kho</label><input id="fStock" style="width:80px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="card"><h3 style="margin-top:0">Nhập vị trí hàng loạt</h3>
+  <label>Dán: <code>Mã | Tên | Loại | Diện tích | Chiều cao | Kho</code></label>
+  <textarea id="taLoc" placeholder="A01&#9;Ke A tang 1&#9;Ke&#9;2&#9;1.5&#9;K1&#10;A02&#9;Ke A tang 2&#9;Ke&#9;2&#9;1.5&#9;K1"></textarea>
+  <div style="margin-top:8px"><button class="primary" onclick="importLoc()">Nhập vị trí</button><span id="msg2"></span></div>
+</div>
+<div class="card"><h3 style="margin-top:0">Nhập tồn kho + vị trí phụ tùng (Inventory)</h3>
+  <label>Dán: <code>Mã PT | Mã vị trí | Số tồn</code> (cập nhật tồn + vị trí phụ tùng đã có)</label>
+  <textarea id="taInv" placeholder="P001&#9;A01&#9;100&#10;P002&#9;A02&#9;50"></textarea>
+  <div style="margin-top:8px"><button class="primary" onclick="importInv()">Cập nhật tồn</button><span id="msg3"></span></div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Tìm vị trí</label><input id="qQ" style="width:150px" onkeydown="if(event.key==='Enter')load()"></div>
+  <button onclick="load()">Xem danh sách vị trí</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>Loại</th><th class="num">DT</th><th class="num">CC</th><th>Kho</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem danh sách vị trí".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function M(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},4000); }
+async function save(){ await token();
+  const body={LocationCode:F("fCode").value,LocationName:F("fName").value,LocationType:F("fType").value,LocationSurface:+F("fSurf").value||0,LocationHeight:+F("fHi").value||0,StockNo:F("fStock").value};
+  const r=await fetch("/api/partlocations",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ M("msg","Lỗi: "+(d.error||r.status)); return; }
+  M("msg",d.updated?"Đã cập nhật "+d.locationCode:"Đã thêm "+d.locationCode); F("fCode").value="";F("fName").value=""; load();
+}
+async function importLoc(){ await token();
+  const rows=F("taLoc").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{const c=l.split(/\t|,/).map(s=>s.trim());return {LocationCode:c[0]||"",LocationName:c[1]||"",LocationType:c[2]||"",LocationSurface:+c[3]||0,LocationHeight:+c[4]||0,StockNo:c[5]||""};});
+  if(!rows.length){ M("msg2","Chưa có dữ liệu"); return; }
+  const r=await fetch("/api/partlocations/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ M("msg2","Lỗi: "+(d.error||r.status)); return; }
+  M("msg2",`Xong: +${d.created} mới / ${d.updated} cập nhật / ${d.errorCount} lỗi`); load();
+}
+async function importInv(){ await token();
+  const rows=F("taInv").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{const c=l.split(/\t|,/).map(s=>s.trim());return {PartCode:c[0]||"",LocationCode:c[1]||"",Quantity:+c[2]||0};});
+  if(!rows.length){ M("msg3","Chưa có dữ liệu"); return; }
+  const r=await fetch("/api/serviceparts/inventory-import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ M("msg3","Lỗi: "+(d.error||r.status)); return; }
+  M("msg3",`Cập nhật ${d.updatedParts} PT / ${d.errorCount} lỗi`+(d.errorCount?" ("+d.errors.map(e=>"dòng "+e.line+": "+e.error).join("; ")+")":""));
+}
+async function toggle(c){ await token();
+  const r=await fetch("/api/partlocations/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ M("msg","Lỗi"); return; } load();
+}
+function edit(o){ F("fCode").value=o.locationCode;F("fName").value=o.locationName||"";F("fType").value=o.locationType||"";F("fSurf").value=o.locationSurface;F("fHi").value=o.locationHeight;F("fStock").value=o.stockNo||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/partlocations?q="+encodeURIComponent(F("qQ").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.locationCode}</b></td><td>${esc(o.locationName)}</td><td>${esc(o.locationType)}</td><td class="num">${o.locationSurface}</td><td class="num">${o.locationHeight}</td><td>${esc(o.stockNo)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.locationCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có vị trí.</td></tr>';
+}
+</script>
+</body></html>

@@ -3230,6 +3230,90 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Vị trí kho phụ tùng (PartLocation — port 1:1 FrmImportLocation, TCMotor) =====
+app.MapGet("/api/partlocations", async (AppDbContext db, ITenantContext t, string? q, string? stock, string? active) =>
+{
+    var query = db.PartLocations.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.LocationCode.Contains(q!.ToUpper()) || (x.LocationName != null && x.LocationName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(stock)) query = query.Where(x => x.StockNo == stock);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.LocationCode).Take(500)
+        .Select(x => new { x.LocationCode, x.LocationName, x.LocationType, x.LocationSurface, x.LocationHeight, x.StockNo, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.LocationCode)) return Results.BadRequest(new { error = "Chưa nhập mã vị trí." });
+    if (string.IsNullOrWhiteSpace(dto.LocationName)) return Results.BadRequest(new { error = "Chưa nhập tên vị trí." });
+    var code = dto.LocationCode.Trim().ToUpperInvariant();
+    var ex = await db.PartLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == code);
+    if (ex is not null)
+    {
+        ex.LocationName = dto.LocationName; ex.LocationType = dto.LocationType; ex.LocationSurface = dto.LocationSurface; ex.LocationHeight = dto.LocationHeight; ex.StockNo = dto.StockNo; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.LocationCode, updated = true });
+    }
+    var r = new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = dto.LocationName, LocationType = dto.LocationType, LocationSurface = dto.LocationSurface, LocationHeight = dto.LocationHeight, StockNo = dto.StockNo, FlagActive = "1" };
+    db.PartLocations.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.LocationCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/partlocations/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.PartLocations.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.LocationCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.LocationCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/partlocations/import", async (PartLocationImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    var seen = new HashSet<string>();
+    int created = 0, updated = 0;
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i]; var line = i + 1;
+        var code = (r.LocationCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã vị trí." }); continue; }
+        if (string.IsNullOrWhiteSpace(r.LocationName)) { errors.Add(new { line, code, error = "Thiếu tên vị trí." }); continue; }
+        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã vị trí bị trùng trong file nhập." }); continue; }
+        var ex = await db.PartLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == code);
+        if (ex is not null) { ex.LocationName = r.LocationName; ex.LocationType = r.LocationType; ex.LocationSurface = r.LocationSurface; ex.LocationHeight = r.LocationHeight; ex.StockNo = r.StockNo; ex.FlagActive = "1"; updated++; }
+        else { db.PartLocations.Add(new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = r.LocationName, LocationType = r.LocationType, LocationSurface = r.LocationSurface, LocationHeight = r.LocationHeight, StockNo = r.StockNo, FlagActive = "1" }); created++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+}).RequireAuthorization();
+
+// Nhập tồn kho + vị trí phụ tùng hàng loạt (port 1:1 FrmImportInventory) — set ServicePart.Quantity + Location.
+app.MapPost("/api/serviceparts/inventory-import", async (InventoryImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    int updatedParts = 0;
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i]; var line = i + 1;
+        var code = (r.PartCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã phụ tùng." }); continue; }
+        if (r.Quantity < 0) { errors.Add(new { line, code, error = "Tồn kho không hợp lệ." }); continue; }
+        var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code);
+        if (part is null) { errors.Add(new { line, code, error = "Phụ tùng không có trong danh mục." }); continue; }
+        part.Quantity = r.Quantity;
+        if (!string.IsNullOrWhiteSpace(r.LocationCode)) part.Location = r.LocationCode.Trim().ToUpperInvariant();
+        updatedParts++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, updatedParts, errorCount = errors.Count, errors });
+}).RequireAuthorization();
+
 // ===== Danh mục dịch vụ/công (ServiceItemMst — port 1:1 FrmService/FrmImportService, TCMotor) =====
 app.MapGet("/api/serviceitems", async (AppDbContext db, ITenantContext t, string? q, string? model, string? active) =>
 {
@@ -8737,6 +8821,11 @@ record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
+record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
+record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
+record PartLocationImportDto(List<PartLocationImportRow>? Rows);
+record InventoryImportRow(string? PartCode, string? LocationCode, decimal Quantity);
+record InventoryImportDto(List<InventoryImportRow>? Rows);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);

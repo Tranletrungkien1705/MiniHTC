@@ -2819,6 +2819,21 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Vị trí kho phụ tùng (mã/tên/loại/diện tích/chiều cao/kho) — port 1:1 FrmImportLocation (TblSerMstLocation, TCMotor).</summary>
+public sealed class PartLocation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string LocationCode { get; set; } = "";
+    public string? LocationName { get; set; }
+    public string? LocationType { get; set; }
+    public decimal LocationSurface { get; set; }
+    public decimal LocationHeight { get; set; }
+    public string? StockNo { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Danh mục dịch vụ/công (master: mã/tên/giá vốn/giá bán/model/VAT) — port 1:1 FrmService/FrmImportService (TblSerMSTService, TCMotor).</summary>
 public sealed class ServiceItemMst
 {
