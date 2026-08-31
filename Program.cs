@@ -2849,6 +2849,30 @@ app.MapGet("/api/report/dlrcontract", async (AppDbContext db, ITenantContext t, 
         active = cons.Count(c => c.Status == "Active"), byDealer, bySalesType, bySalesman, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo CRM: lượt khách thăm & lái thử (port 1:1 báo cáo CtmVisit/DriveTest) — tái dùng CtmVisit + DriveTest =====
+app.MapGet("/api/report/crm", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
+{
+    var vq = db.CtmVisits.Where(v => v.OrgId == t.OrgId);
+    var dq = db.DriveTests.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) { vq = vq.Where(v => v.DealerCode == dealer); dq = dq.Where(d => d.DealerCode == dealer); }
+    if (!string.IsNullOrWhiteSpace(model)) { vq = vq.Where(v => v.ModelCode == model); dq = dq.Where(d => d.TestModelCode == model); }
+    if (from is not null) dq = dq.Where(d => d.DriveDate >= from.Value.Date);
+    if (to is not null) dq = dq.Where(d => d.DriveDate < to.Value.Date.AddDays(1));
+    var visits = await vq.ToListAsync();
+    var drives = await dq.ToListAsync();
+    string GenderLabel(string g) => g == "1" ? "Nữ" : g == "0" ? "Nam" : "(chưa rõ)";
+    var visitByDealer = visits.GroupBy(v => string.IsNullOrEmpty(v.DealerCode) ? "(chưa rõ)" : v.DealerCode).Select(g => new { dealerCode = g.Key, visits = g.Count() }).OrderByDescending(x => x.visits).ToList();
+    var visitByGender = visits.GroupBy(v => GenderLabel(v.Gender)).Select(g => new { gender = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var visitByAge = visits.GroupBy(v => string.IsNullOrEmpty(v.RangeAge) ? "(chưa rõ)" : v.RangeAge).Select(g => new { rangeAge = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var visitByModel = visits.GroupBy(v => string.IsNullOrEmpty(v.ModelCode) ? "(chưa rõ)" : v.ModelCode).Select(g => new { modelCode = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var driveByModel = drives.GroupBy(d => string.IsNullOrEmpty(d.TestModelCode) ? "(chưa rõ)" : d.TestModelCode).Select(g => new { modelCode = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var driveByType = drives.GroupBy(d => string.IsNullOrEmpty(d.DriverTestType) ? "(chưa rõ)" : d.DriverTestType).Select(g => new { driveType = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    // Tỉ lệ chuyển đổi thăm -> lái thử
+    var convRate = visits.Count > 0 ? Math.Round(drives.Count * 100.0 / visits.Count, 1) : 0;
+    return Results.Ok(new { totalVisits = visits.Count, totalDrives = drives.Count, conversionRatePct = convRate,
+        visitByDealer, visitByGender, visitByAge, visitByModel, driveByModel, driveByType });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
