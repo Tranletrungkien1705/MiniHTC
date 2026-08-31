@@ -120,6 +120,17 @@ public sealed class CarCancel
     public DateTime? ApprovedAt { get; set; }
 }
 
+/// <summary>Cấu hình hệ thống (key-value) — port 1:1 các FrmMngConfig*/Setup của 2010.HTC.</summary>
+public sealed class SysConfig
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ConfigKey { get; set; } = "";
+    public string ConfigValue { get; set; } = "";
+    public string? Description { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

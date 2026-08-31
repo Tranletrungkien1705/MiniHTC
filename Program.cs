@@ -440,6 +440,34 @@ app.MapPost("/api/cancels/{code}/{action}", async (string code, string action, A
     return Results.Ok(new { c.Code, c.Vin, status = c.Status });
 }).RequireAuthorization();
 
+// ===== Cấu hình hệ thống (port 1:1 FrmMngConfig*/Setup) =====
+app.MapGet("/api/configs", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var query = db.Configs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.ConfigKey.Contains(q));
+    var items = await query.OrderBy(c => c.ConfigKey).Select(c => new { c.ConfigKey, c.ConfigValue, c.Description, c.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/configs", async (ConfigDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ConfigKey)) return Results.BadRequest(new { error = "Cần ConfigKey." });
+    var key = dto.ConfigKey.Trim();
+    var c = await db.Configs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ConfigKey == key);
+    if (c is null) { c = new SysConfig { OrgId = t.OrgId, ConfigKey = key }; db.Configs.Add(c); }
+    c.ConfigValue = dto.ConfigValue ?? ""; c.Description = dto.Description; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ConfigKey, c.ConfigValue });
+}).RequireAuthorization();
+
+app.MapDelete("/api/configs/{key}", async (string key, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.Configs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ConfigKey == key);
+    if (c is null) return Results.NotFound(new { key });
+    db.Configs.Remove(c); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = key });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -460,4 +488,5 @@ record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string Vin, string? DealerCode, string? Reason);
 record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
+record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record RegisterOrgDto(string Name);
