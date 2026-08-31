@@ -149,7 +149,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("CarAllocationArea", "Phân bổ xe theo vùng (FrmMst_CarAllocationByArea)"),
     ("SalesInvThreshold", "Ngưỡng tồn kho bán (FrmMstSalesInventoryThreshold)"),
     ("DealerInvThreshold", "Ngưỡng tồn ĐL (FrmMst_DealerInventoryThreshold)"),
-    ("TiLeDatHang", "Tỉ lệ đặt hàng KH (FrmMstTiLeDatHangKeHoach)"),
     ("Nation", "Quốc gia (FrmNation)"),
     ("Ward", "Phường/Xã (FrmWard)"),
     ("Gender", "Giới tính (FrmMst_Gender)"),
@@ -3296,6 +3295,47 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Biên độ tỉ lệ đặt hàng/kế hoạch (OrderAmplitude — port 1:1 FrmMstTiLeDatHangKeHoach, Admin/Product) =====
+app.MapGet("/api/orderamplitudes", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
+{
+    var q = db.OrderAmplitudes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500)
+        .Select(x => new { x.DealerCode, x.DealerName, x.ModelCode, x.ModelName, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo (đại lý + model): mỗi cặp 1 biên độ; nhập lại = cập nhật.
+app.MapPost("/api/orderamplitudes", async (OrderAmplitudeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (dto.AmplitudeOrdMax < 0 || dto.AmplitudePlanMax < 0) return Results.BadRequest(new { error = "Biên độ không hợp lệ." });
+    var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
+    var ex = await db.OrderAmplitudes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md);
+    if (ex is not null)
+    {
+        ex.DealerName = dto.DealerName; ex.ModelName = dto.ModelName; ex.AmplitudeOrdMax = dto.AmplitudeOrdMax; ex.AmplitudePlanMax = dto.AmplitudePlanMax; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.DealerCode, ex.ModelCode, updated = true });
+    }
+    var r = new OrderAmplitude { OrgId = t.OrgId, DealerCode = dl, DealerName = dto.DealerName, ModelCode = md, ModelName = dto.ModelName, AmplitudeOrdMax = dto.AmplitudeOrdMax, AmplitudePlanMax = dto.AmplitudePlanMax, FlagActive = "1" };
+    db.OrderAmplitudes.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.DealerCode, r.ModelCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/orderamplitudes/{dealer}/{model}/toggle", async (string dealer, string model, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var x = await db.OrderAmplitudes.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dealer && v.ModelCode == model);
+    if (x is null) return Results.NotFound(new { dealer, model });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
 // ===== Tham số hệ thống PDI (ParamPdi — port 1:1 FrmMst_ParamPDI, Admin/Dealer) =====
@@ -7511,6 +7551,7 @@ record InventoryCostDto(string StorageCode, string? StorageName, string CostType
 record DelayTransportDto(string DealerCode, string? DealerName, string StorageCode, string? StorageName, int DelayDays);
 record WarningEmailDto(string WarningType, string? WarningName, string EmailList);
 record ParamPdiDto(string ParamCode, string? ParamName, string? ParamValue);
+record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode, string? ModelName, decimal AmplitudeOrdMax, decimal AmplitudePlanMax);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);

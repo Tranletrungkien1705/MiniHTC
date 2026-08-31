@@ -156,6 +156,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DelayTransport> DelayTransports => Set<DelayTransport>();
     public DbSet<WarningEmail> WarningEmails => Set<WarningEmail>();
     public DbSet<ParamPdi> ParamPdis => Set<ParamPdi>();
+    public DbSet<OrderAmplitude> OrderAmplitudes => Set<OrderAmplitude>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
     public DbSet<CarOCN> CarOCNs => Set<CarOCN>();
