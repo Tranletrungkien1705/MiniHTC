@@ -1463,6 +1463,36 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Quy cách xe (Mst_CarSpec) — port 1:1 FrmCarSpec (2010.HTC/Admin/Product). Master spec: model/std-opt/grade/OCN/số chỗ/spec gốc.</summary>
+public sealed class CarSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? StdOptCode { get; set; }
+    public string? GradeCode { get; set; }
+    public string? OCNCode { get; set; }
+    public string? SpecDesc { get; set; }
+    public string? RootSpec { get; set; }
+    public int? NumberOfSeats { get; set; }
+    public string FlagAmbulance { get; set; } = "0";
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Giá màn hình AVN (Mst_UnitPriceAVN) — port 1:1 FrmMst_AVNPrice (2010.HTC/Admin/Product). Đơn giá màn hình AVN theo mã + ngày hiệu lực.</summary>
+public sealed class AVNPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AVNCode { get; set; } = "";
+    public decimal UnitPriceAVN { get; set; }
+    public DateTime? EffDateTime { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Điều kiện tự động tạo DO (Mst_DOATCondition + Dtl) — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto (2010.HTC/Sales). Config auto-gen lệnh giao xe: % cọc, % hoàn thành ĐK, danh sách model.</summary>
 public sealed class DOATCondition
 {

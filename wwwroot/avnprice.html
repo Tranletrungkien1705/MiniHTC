@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Giá màn hình AVN</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-1{color:var(--ok)} .p-0{color:#dc2626}
+  #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Giá màn hình AVN <span class="muted">(port 1:1 FrmMst_AVNPrice — Mst_UnitPriceAVN)</span></h1>
+<div class="card">
+  <b>Thêm giá AVN</b>
+  <div class="bar" style="margin-top:10px">
+    <div><label>Mã AVN *</label><input id="ac" style="width:130px"></div>
+    <div><label>Đơn giá (có VAT) *</label><input id="pr" type="number" style="width:150px"></div>
+    <div><label>Ngày hiệu lực</label><input id="ed" type="date"></div>
+    <button class="primary" onclick="create()">Lưu giá</button><span id="msg"></span>
+  </div>
+</div>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc mã AVN" oninput="load()" style="width:130px"><select id="fa" onchange="load()"><option value="">Tất cả</option><option value="1">Hoạt động</option><option value="0">Ngừng</option></select></div>
+<table><thead><tr><th>Mã AVN</th><th class="num">Đơn giá</th><th>Ngày hiệu lực</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const r=await fetch("/api/avnprices",{method:"POST",headers:H(),body:JSON.stringify({aVNCode:F("ac").value,unitPriceAVN:parseFloat(F("pr").value)||0,effDateTime:F("ed").value||null})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.aVNCode); F("ac").value="";F("pr").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/avnprices?code=${F("q").value}&active=${F("fa").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.aVNCode}</b></td><td class="num">${money(o.unitPriceAVN)}</td><td>${day(o.effDateTime)}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.aVNCode}')">Đổi TT</button></td></tr>`
+  ).join("")||'<tr><td colspan="5" class="muted">Chưa có giá AVN.</td></tr>';
+}
+async function toggle(c){ const r=await fetch(`/api/avnprices/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+load();
+</script>
+</body></html>

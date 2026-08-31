@@ -1289,6 +1289,72 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Quy cách xe (CarSpec — port 1:1 FrmCarSpec, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/carspecs", async (AppDbContext db, ITenantContext t, string? model, string? active, string? q) =>
+{
+    var query = db.CarSpecs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(c => c.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.SpecCode.Contains(q) || (c.SpecDesc != null && c.SpecDesc.Contains(q)));
+    var items = await query.OrderByDescending(c => c.Id).Take(500)
+        .Select(c => new { c.SpecCode, c.ModelCode, c.StdOptCode, c.GradeCode, c.OCNCode, c.SpecDesc, c.RootSpec, c.NumberOfSeats, c.FlagAmbulance, c.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carspecs", async (CarSpecDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Chưa nhập mã Spec." });
+    var code = dto.SpecCode.Trim().ToUpperInvariant();
+    if (await db.CarSpecs.AnyAsync(c => c.OrgId == t.OrgId && c.SpecCode == code))
+        return Results.BadRequest(new { error = $"Mã Spec {code} đã tồn tại!" });
+    var c = new CarSpec
+    {
+        OrgId = t.OrgId, SpecCode = code, ModelCode = dto.ModelCode, StdOptCode = dto.StdOptCode, GradeCode = dto.GradeCode, OCNCode = dto.OCNCode,
+        SpecDesc = dto.SpecDesc, RootSpec = dto.RootSpec, NumberOfSeats = dto.NumberOfSeats, FlagAmbulance = dto.FlagAmbulance == "1" ? "1" : "0", FlagActive = "1"
+    };
+    db.CarSpecs.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.SpecCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/carspecs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var c = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == code);
+    if (c is null) return Results.NotFound(new { code });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.SpecCode, flagActive = c.FlagActive });
+}).RequireAuthorization();
+
+// ===== Giá màn hình AVN (AVNPrice — port 1:1 FrmMst_AVNPrice, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/avnprices", async (AppDbContext db, ITenantContext t, string? active, string? code) =>
+{
+    var q = db.AVNPrices.Where(a => a.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(code)) q = q.Where(a => a.AVNCode.Contains(code.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AVNCode, a.UnitPriceAVN, a.EffDateTime, a.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/avnprices", async (AVNPriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.AVNCode)) return Results.BadRequest(new { error = "Chưa nhập mã AVN." });
+    if (dto.UnitPriceAVN <= 0) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
+    var a = new AVNPrice { OrgId = t.OrgId, AVNCode = dto.AVNCode.Trim().ToUpperInvariant(), UnitPriceAVN = dto.UnitPriceAVN, EffDateTime = dto.EffDateTime, FlagActive = "1" };
+    db.AVNPrices.Add(a); await db.SaveChangesAsync();
+    return Results.Ok(new { a.AVNCode, a.UnitPriceAVN });
+}).RequireAuthorization();
+
+app.MapPost("/api/avnprices/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var a = await db.AVNPrices.Where(x => x.OrgId == t.OrgId && x.AVNCode == code).OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (a is null) return Results.NotFound(new { code });
+    a.FlagActive = a.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.AVNCode, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
 // ===== Điều kiện tự động tạo DO (DOATCondition — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto, 2010.HTC/Sales) =====
 app.MapGet("/api/doatconditions", async (AppDbContext db, ITenantContext t, string? active) =>
 {
@@ -4924,6 +4990,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance);
+record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
 record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
