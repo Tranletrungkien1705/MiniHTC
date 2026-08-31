@@ -2791,6 +2791,34 @@ app.MapGet("/api/report/insurance", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), totalInsAmount = reqs.Sum(r => InsAmt(r.Id)), totalFee = reqs.Sum(r => Fee(r.Id)), byCompany, byStatus, byType, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo công văn bảo lãnh/claim đại lý (port 1:1 báo cáo GrtClaim) — tái dùng GrtClaim + GrtClaimDetail =====
+app.MapGet("/api/report/grtclaim", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? flag, DateTime? from, DateTime? to) =>
+{
+    var q = db.GrtClaims.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(g => g.Status == status);
+    if (!string.IsNullOrWhiteSpace(flag)) q = q.Where(g => g.FlagisHTC == flag);
+    if (from is not null) q = q.Where(g => g.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(g => g.CreatedAt < to.Value.Date.AddDays(1));
+    var claims = await q.ToListAsync();
+    var ids = claims.Select(c => c.Id).ToHashSet();
+    var dtlAgg = await db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && ids.Contains(c.GrtClaimId))
+        .GroupBy(c => c.GrtClaimId).Select(g => new { g.Key, cars = g.Count(), amount = g.Sum(x => x.UnitPrice) }).ToListAsync();
+    var m = dtlAgg.ToDictionary(x => x.Key, x => (x.cars, x.amount));
+    int Cars(long id) => m.TryGetValue(id, out var v) ? v.cars : 0;
+    decimal Amt(long id) => m.TryGetValue(id, out var v) ? v.amount : 0;
+    var byDealer = claims.GroupBy(g => string.IsNullOrEmpty(g.DealerCode) ? "(chưa rõ)" : g.DealerCode)
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(c => Cars(c.Id)), amount = g.Sum(c => Amt(c.Id)), issued = g.Count(c => c.Status == "Issued") }).OrderByDescending(x => x.amount).ToList();
+    var byStatus = claims.GroupBy(g => g.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var byFlag = claims.GroupBy(g => string.IsNullOrEmpty(g.FlagisHTC) ? "(chưa rõ)" : g.FlagisHTC).Select(g => new { flag = g.Key, count = g.Count(), cars = g.Sum(c => Cars(c.Id)) }).OrderByDescending(x => x.count).ToList();
+    var detail = claims.OrderByDescending(g => g.Id).Take(500).Select(g => new
+    {
+        g.GrtClaimNo, g.DealerCode, g.FlagisHTC, g.Status, cars = Cars(g.Id), amount = Amt(g.Id), createdAt = g.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = claims.Count, totalCars = claims.Sum(g => Cars(g.Id)), totalAmount = claims.Sum(g => Amt(g.Id)),
+        issued = claims.Count(g => g.Status == "Issued"), byDealer, byStatus, byFlag, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
