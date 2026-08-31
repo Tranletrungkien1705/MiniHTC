@@ -2035,6 +2035,61 @@ app.MapPost("/api/qcdocreqs/{no}/{action}", async (string no, string action, App
     return Results.Ok(new { r.DocReqNo, status = r.DocReqStatus, cars = cars.Count });
 }).RequireAuthorization();
 
+// ===== Đơn hàng nâng cấp (UpgradeOrder — port 1:1 FrmUpgradeOrder + FrmUpgradeMngOrderHtc, Sales/Upgrade) =====
+app.MapGet("/api/upgradeorders", async (AppDbContext db, ITenantContext t, string? dealer, string? month, string? type, string? status) =>
+{
+    var q = db.UpgradeOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(o => o.OrderMonth == month);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(o => o.OrderType == type);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
+    var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.OrderNo, o.DealerCode, o.OrderMonth, o.OrderType, o.OrderPolicy, o.TotalQty, o.Status, o.CreatedAt, o.ApprovedAt,
+        lines = db.UpgradeOrderLines.Count(l => l.OrgId == t.OrgId && l.UpgradeOrderId == o.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/upgradeorders", async (UpgradeOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.OrderType)) return Results.BadRequest(new { error = "Chưa chọn loại đơn hàng!" });
+    if (string.IsNullOrWhiteSpace(dto.OrderPolicy)) return Results.BadRequest(new { error = "Chưa chọn chính sách đơn hàng!" });
+    if (string.IsNullOrWhiteSpace(dto.OrderMonth)) return Results.BadRequest(new { error = "Chưa nhập tháng đơn hàng!" });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode) && l.Quantity > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lưới đơn hàng trống!" });
+    var no = "UPO" + DateTime.Now.ToString("yyMMddHHmmss");
+    var o2 = new UpgradeOrder { OrgId = t.OrgId, OrderNo = no, DealerCode = dto.DealerCode ?? "", OrderMonth = dto.OrderMonth.Trim(), OrderType = dto.OrderType.Trim(), OrderPolicy = dto.OrderPolicy.Trim(), Status = "Draft", TotalQty = lines.Sum(l => l.Quantity) };
+    db.UpgradeOrders.Add(o2); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.UpgradeOrderLines.Add(new UpgradeOrderLine { OrgId = t.OrgId, UpgradeOrderId = o2.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "", Quantity = l.Quantity, PromotionModel = l.PromotionModel ?? "", DiscountAmount = l.DiscountAmount });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o2.OrderNo, lines = lines.Count, totalQty = o2.TotalQty });
+}).RequireAuthorization();
+
+app.MapGet("/api/upgradeorders/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.UpgradeOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var lines = await db.UpgradeOrderLines.Where(l => l.OrgId == t.OrgId && l.UpgradeOrderId == o.Id)
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Quantity, l.PromotionModel, l.DiscountAmount }).ToListAsync();
+    return Results.Ok(new { o.OrderNo, o.OrderMonth, o.OrderType, o.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/upgradeorders/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.UpgradeOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Đơn hàng không ở trạng thái chờ duyệt." });
+    o.Status = action == "approve" ? "Approved" : "Rejected";
+    if (action == "approve") o.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderNo, o.Status });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6051,6 +6106,8 @@ record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? Mort
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
 record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars);
 record BankPmCtktDto(string NewAccountingRecordNo);
+record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
+record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

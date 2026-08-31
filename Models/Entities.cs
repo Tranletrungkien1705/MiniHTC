@@ -2569,6 +2569,36 @@ public sealed class QcDocReqCar
     public string DtlStatus { get; set; } = "Pending";
 }
 
+/// <summary>Đơn hàng nâng cấp (Upgrade Order) — port 1:1 FrmUpgradeOrder + FrmUpgradeMngOrderHtc. Header.</summary>
+public sealed class UpgradeOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string OrderMonth { get; set; } = "";      // thang DH (yyyy-MM)
+    public string OrderType { get; set; } = "";        // loai DH
+    public string OrderPolicy { get; set; } = "";      // chinh sach DH
+    public int TotalQty { get; set; }
+    public string Status { get; set; } = "Draft";      // Draft -> Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Dòng đơn hàng nâng cấp (Upgrade Order Detail) — port 1:1 FrmUpgradeOrder detail.</summary>
+public sealed class UpgradeOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long UpgradeOrderId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public int Quantity { get; set; }
+    public string PromotionModel { get; set; } = "";
+    public decimal DiscountAmount { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

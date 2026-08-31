@@ -134,6 +134,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ReqMortgageCar> ReqMortgageCars => Set<ReqMortgageCar>();
     public DbSet<QcDocReq> QcDocReqs => Set<QcDocReq>();
     public DbSet<QcDocReqCar> QcDocReqCars => Set<QcDocReqCar>();
+    public DbSet<UpgradeOrder> UpgradeOrders => Set<UpgradeOrder>();
+    public DbSet<UpgradeOrderLine> UpgradeOrderLines => Set<UpgradeOrderLine>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();
