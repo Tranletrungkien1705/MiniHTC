@@ -424,6 +424,33 @@ public sealed class TranspFee
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Biên bản vận chuyển / giao nhận (TransportMinutes — port 1:1 FrmNewTransportMinutes/FrmMngTransportMinutes, Phase2):
+/// biên bản giao nhận lô xe do nhà VC chuyển tới đại lý. Pending(Đang xử lý)→Approved(Phê duyệt)/Rejected(Từ chối).</summary>
+public sealed class TransportMinutes
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TransportMinutesNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string TransporterCode { get; set; } = "";
+    public string Status { get; set; } = "Pending";   // Pending → Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DecidedAt { get; set; }
+}
+
+/// <summary>Dòng xe trong BB vận chuyển (TransportMinutesDetail): VIN + DO + màu + trạng thái dòng.</summary>
+public sealed class TransportMinutesCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long MinutesId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? DoNo { get; set; }
+    public string? ColorCode { get; set; }
+    public string? EngineNo { get; set; }
+    public string DtlStatus { get; set; } = "Pending";  // theo header
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

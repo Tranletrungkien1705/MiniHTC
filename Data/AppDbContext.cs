@@ -35,6 +35,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<TransportRequest> TransportRequests => Set<TransportRequest>();
     public DbSet<TransportReqCar> TransportReqCars => Set<TransportReqCar>();
     public DbSet<TranspFee> TranspFees => Set<TranspFee>();
+    public DbSet<TransportMinutes> TransportMinutes => Set<TransportMinutes>();
+    public DbSet<TransportMinutesCar> TransportMinutesCars => Set<TransportMinutesCar>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

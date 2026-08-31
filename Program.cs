@@ -1094,6 +1094,62 @@ app.MapPost("/api/transpfees", async (TranspFeeDto dto, AppDbContext db, ITenant
     return Results.Ok(new { f.ProvinceCodeFrom, f.ProvinceCodeTo, f.TransporterCode, f.ModelCode, f.ValFee, f.ExpectedDays });
 }).RequireAuthorization();
 
+// ===== Biên bản vận chuyển / giao nhận (TransportMinutes — port 1:1 FrmNewTransportMinutes/FrmMngTransportMinutes) =====
+app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.TransportMinutes.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.TransportMinutesNo, m.DealerCode, m.TransporterCode, m.Status, m.CreatedAt, m.DecidedAt,
+        cars = db.TransportMinutesCars.Count(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/transminutes", async (TransMinDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
+        return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode." });
+    var vins = (dto.Cars ?? new List<TransMinCarDto>()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "TM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var m = new TransportMinutes { OrgId = t.OrgId, TransportMinutesNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Status = "Pending" };
+    db.TransportMinutes.Add(m); await db.SaveChangesAsync();
+    foreach (var c in vins)
+        db.TransportMinutesCars.Add(new TransportMinutesCar { OrgId = t.OrgId, MinutesId = m.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, EngineNo = c.EngineNo, DtlStatus = "Pending" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, cars = vins.Count, status = m.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var cars = await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
+        .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.EngineNo, c.DtlStatus }).ToListAsync();
+    return Results.Ok(new { m.TransportMinutesNo, m.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối biên bản Đang xử lý." });
+    m.Status = action == "approve" ? "Approved" : "Rejected"; m.DecidedAt = DateTime.Now;
+    var dtl = m.Status;
+    foreach (var c in await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync())
+        c.DtlStatus = dtl;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.TransportMinutesNo, status = m.Status });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1191,4 +1247,6 @@ record BankBillReceiveDto(DateTime? BankBillReciveDate);
 record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode);
 record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
+record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo);
+record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars);
 record RegisterOrgDto(string Name);
