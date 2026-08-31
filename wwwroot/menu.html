@@ -1,33 +1,49 @@
 <!doctype html>
 <html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MiniHTC — Menu</title>
+<title>MiniHTC — Cổng quản trị</title>
 <style>
   :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
-  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:820px;margin:32px auto;padding:0 16px;line-height:1.5}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:32px auto;padding:0 16px;line-height:1.5}
   h1{font-size:22px} .muted{opacity:.65;font-size:13px;margin-bottom:20px}
   .grp{margin:18px 0} .grp h3{font-size:13px;text-transform:uppercase;opacity:.6;margin:0 0 8px}
-  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
   a.card{display:block;padding:14px 16px;border:1px solid var(--line);border-radius:12px;text-decoration:none;color:inherit}
-  a.card:hover{border-color:var(--accent)} a.card b{color:var(--accent)}
-  .cnt{font-size:12px;opacity:.6}
+  a.card:hover{border-color:var(--accent)} a.card b{color:var(--accent)} .cnt{font-size:12px;opacity:.6}
 </style></head>
 <body>
 <h1>idocNet HTC — Cổng quản trị</h1>
-<div class="muted">Port 1:1 từ 2010.HTC (WinForm) → web .NET8 + SSO. Điều hướng các màn đã port.</div>
+<div class="muted">Port 1:1 từ 2010.HTC (WinForm) → web .NET8 + SSO. <span id="stat"></span></div>
 <div class="grp"><h3>Danh mục / Master</h3>
 <div class="cards">
   <a class="card" href="/"><b>Quản lý Khu vực</b><div class="cnt">FrmArea — Mst_Area</div></a>
-  <a class="card" href="/masters.html"><b>Danh mục hệ thống</b><div class="cnt" id="mc">27 danh mục master</div></a>
+  <a class="card" href="/masters.html"><b>Danh mục hệ thống</b><div class="cnt" id="mc">danh mục master</div></a>
   <a class="card" href="/dealer.html"><b>Quản lý Đại lý</b><div class="cnt">FrmDealer — Mst_Dealer</div></a>
+  <a class="card" href="/customer.html"><b>Quản lý Khách hàng</b><div class="cnt">FrmCustomerBase</div></a>
+  <a class="card" href="/salesman.html"><b>Nhân viên bán hàng</b><div class="cnt">FrmCreateSalesMan</div></a>
+  <a class="card" href="/carprice.html"><b>Bảng giá xe</b><div class="cnt">FrmCarPrice</div></a>
 </div></div>
-<div class="grp"><h3>Đang port tiếp</h3>
-<div class="cards"><a class="card" style="opacity:.5" href="#"><b>Giá xe / Đơn hàng / Kho…</b><div class="cnt">grind tự động qua job</div></a></div></div>
+<div class="grp"><h3>Nghiệp vụ</h3>
+<div class="cards">
+  <a class="card" href="/pdi.html"><b>PDI — Kiểm tra trước giao</b><div class="cnt">FrmMngDlr_PDIRequest</div></a>
+  <a class="card" href="/retrieve.html"><b>Thu hồi xe</b><div class="cnt">FrmMngCarRetrieve</div></a>
+</div></div>
+<div class="grp"><h3>Báo cáo</h3>
+<div class="cards">
+  <a class="card" href="/report-dealer.html"><b>Báo cáo đại lý</b><div class="cnt">FrmBC* / Rpt*</div></a>
+</div></div>
+<div class="grp"><h3>Nghiệp vụ nâng cao (ở app fleet khác)</h3>
+<div class="cards">
+  <a class="card" href="https://minivehicle.onrender.com" target="_blank"><b>Vòng đời xe / VIN</b><div class="cnt">MiniVehicle</div></a>
+  <a class="card" href="https://minisales.onrender.com" target="_blank"><b>Hợp đồng bán xe</b><div class="cnt">MiniSales</div></a>
+  <a class="card" href="https://minigate-pasj.onrender.com/bi.html" target="_blank"><b>BI Dashboard</b><div class="cnt">MiniGate</div></a>
+</div></div>
 <script>
 (async()=>{ try{
   const t=await (await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"})).json();
   const d=await (await fetch("/api/master-categories",{headers:{"Authorization":"Bearer "+t.access_token,"X-Api-Key":"demo-htc"}})).json();
   document.getElementById("mc").textContent=(d.count||0)+" danh mục master";
+  document.getElementById("stat").textContent="Đã port "+((d.count||0)+8)+"+ màn.";
 }catch(e){} })();
 </script>
 </body></html>

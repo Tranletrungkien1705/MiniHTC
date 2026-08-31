@@ -148,6 +148,11 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("CarSpecInvoice", "Cấu hình HĐ (FrmCarSpecInvoice)"),
     ("InvoiceSetup", "Thiết lập hóa đơn (FrmMst_InvoiceSetup)"),
     ("CarAllocationArea", "Phân bổ xe theo vùng (FrmMst_CarAllocationByArea)"),
+    ("SalesInvThreshold", "Ngưỡng tồn kho bán (FrmMstSalesInventoryThreshold)"),
+    ("DealerInvThreshold", "Ngưỡng tồn ĐL (FrmMst_DealerInventoryThreshold)"),
+    ("TiLeDatHang", "Tỉ lệ đặt hàng KH (FrmMstTiLeDatHangKeHoach)"),
+    ("Nation", "Quốc gia (FrmNation)"),
+    ("Ward", "Phường/Xã (FrmWard)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
