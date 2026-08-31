@@ -1227,6 +1227,53 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng) =====
+app.MapGet("/api/gpsclaims", async (AppDbContext db, ITenantContext t, string? claimStatus, string? device) =>
+{
+    var q = db.GpsClaims.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(claimStatus)) q = q.Where(g => g.ClaimStatus == claimStatus);
+    if (!string.IsNullOrWhiteSpace(device)) q = q.Where(g => g.GpsDvNo.Contains(device.ToUpper()));
+    var items = await q.OrderByDescending(g => g.Id).Take(500)
+        .Select(g => new { g.GpsClaimNo, g.GpsDvNo, g.BeforeFixRemark, g.Remark, g.ClaimStatus, g.ReceivedStatus, g.FixStatus, g.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsclaims", async (GpsClaimDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.GpsDvNo)) return Results.BadRequest(new { error = "Cần số thiết bị GPS (GpsDvNo)." });
+    var no = "GPSC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var g = new GpsClaim { OrgId = t.OrgId, GpsClaimNo = no, GpsDvNo = dto.GpsDvNo.Trim().ToUpperInvariant(), BeforeFixRemark = dto.BeforeFixRemark, Remark = dto.Remark, ClaimStatus = "Pending" };
+    db.GpsClaims.Add(g); await db.SaveChangesAsync();
+    return Results.Ok(new { g.GpsClaimNo, g.GpsDvNo, claimStatus = g.ClaimStatus });
+}).RequireAuthorization();
+
+// Chuyển trạng thái: approve (Claim→Approved), receive (Received→Progress), finish (Received→Finished + Fix→Finished)
+app.MapPost("/api/gpsclaims/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "receive" or "finish")) return Results.BadRequest(new { error = "action = approve|receive|finish" });
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.GpsClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsClaimNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    if (action == "approve")
+    {
+        if (g.ClaimStatus != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt claim Mới tạo." });
+        g.ClaimStatus = "Approved"; g.ApprovedAt = DateTime.Now;
+    }
+    else if (action == "receive")
+    {
+        if (g.ClaimStatus != "Approved") return Results.BadRequest(new { error = "Chưa duyệt claim." });
+        if (g.ReceivedStatus == "Finished") return Results.BadRequest(new { error = "Đã hoàn tất." });
+        g.ReceivedStatus = "Progress";
+    }
+    else // finish
+    {
+        if (g.ReceivedStatus != "Progress") return Results.BadRequest(new { error = "Chưa nhận thiết bị (Progress)." });
+        g.ReceivedStatus = "Finished"; g.FixStatus = "Finished";
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GpsClaimNo, g.ClaimStatus, g.ReceivedStatus, g.FixStatus });
+}).RequireAuthorization();
+
 // ===== Cập nhật trạng thái đóng thùng (CarVINUpdate_TypeCB — port 1:1 FrmUpdateVIN_TypeCB) =====
 app.MapGet("/api/vinpackings", async (AppDbContext db, ITenantContext t, string? vin, string? typeCB) =>
 {
@@ -1443,4 +1490,5 @@ record VinPairDto(string FVIN, string RVIN);
 record MapVinDto(List<VinPairDto>? Pairs);
 record VinPackingRowDto(string Vin, string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);
 record VinPackingDto(List<VinPackingRowDto>? Items);
+record GpsClaimDto(string GpsDvNo, string? BeforeFixRemark, string? Remark);
 record RegisterOrgDto(string Name);

@@ -523,6 +523,23 @@ public sealed class VinPacking
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng, StoFGPS):
+/// 3 chiều trạng thái. Claim: Pending→Approved; Received: ''→Progress→Finished (nhận TB về sửa); Fix: ''→Finished.</summary>
+public sealed class GpsClaim
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GpsClaimNo { get; set; } = "";
+    public string GpsDvNo { get; set; } = "";            // số thiết bị GPS
+    public string? BeforeFixRemark { get; set; }         // tình trạng trước sửa
+    public string? Remark { get; set; }
+    public string ClaimStatus { get; set; } = "Pending"; // Pending → Approved
+    public string ReceivedStatus { get; set; } = "";     // '' → Progress → Finished
+    public string FixStatus { get; set; } = "";          // '' → Finished
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
