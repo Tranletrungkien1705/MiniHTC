@@ -1289,6 +1289,82 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Vùng đại lý (DealerZone — port 1:1 FrmMst_DealerZone, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/dealerzones", async (AppDbContext db, ITenantContext t, string? zone, string? dealer, string? active) =>
+{
+    var q = db.DealerZones.Where(z => z.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(zone)) q = q.Where(z => z.ZoneCode == zone);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(z => z.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(z => z.FlagActive == active);
+    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new { z.DealerCode, z.ZoneCode, z.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerzones", async (DealerZoneDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.ZoneCode)) return Results.BadRequest(new { error = "Chưa nhập mã vùng." });
+    var dl = dto.DealerCode.Trim().ToUpperInvariant(); var zn = dto.ZoneCode.Trim().ToUpperInvariant();
+    if (await db.DealerZones.AnyAsync(z => z.OrgId == t.OrgId && z.DealerCode == dl && z.ZoneCode == zn))
+        return Results.BadRequest(new { error = $"Đại lý {dl} đã ở vùng {zn}!" });
+    var z = new DealerZone { OrgId = t.OrgId, DealerCode = dl, ZoneCode = zn, FlagActive = "1" };
+    db.DealerZones.Add(z); await db.SaveChangesAsync();
+    return Results.Ok(new { z.DealerCode, z.ZoneCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerzones/{dealer}/{zone}/toggle", async (string dealer, string zone, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant(); zone = zone.Trim().ToUpperInvariant();
+    var z = await db.DealerZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ZoneCode == zone);
+    if (z is null) return Results.NotFound(new { dealer, zone });
+    z.FlagActive = z.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { z.DealerCode, z.ZoneCode, flagActive = z.FlagActive });
+}).RequireAuthorization();
+
+// ===== Điều khoản thanh toán (PaymentTerm — port 1:1 FrmMst_Dieu_Khoan_ThanhToan, 2010.HTC/Admin/Product) =====
+app.MapGet("/api/paymentterms", async (AppDbContext db, ITenantContext t, string? active, string? model) =>
+{
+    var q = db.PaymentTerms.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(p => p.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(p => p.ModelCode == model);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.PMTermNo, p.EffectiveDateFrom, p.EffectiveDateTo, p.ModelCode, p.SpecCode, p.FlagDepositPmt, p.DepositPercent, p.GuaranteePercent,
+        p.GuaranteeDays, p.DepositDutyEndDays, p.GuaranteeEndDays, p.DepositDealDateDays, p.FlagActive
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentterms", async (PaymentTermDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.EffectiveDateFrom is null) return Results.BadRequest(new { error = "Chưa chọn ngày hiệu lực từ." });
+    if (dto.EffectiveDateTo is null) return Results.BadRequest(new { error = "Chưa chọn ngày hiệu lực đến." });
+    if (dto.EffectiveDateTo < dto.EffectiveDateFrom) return Results.BadRequest(new { error = "Ngày hiệu lực đến phải >= từ." });
+    if (dto.DepositPercent < 0 || dto.DepositPercent > 100 || dto.GuaranteePercent < 0 || dto.GuaranteePercent > 100)
+        return Results.BadRequest(new { error = "% cọc / % bảo lãnh phải trong 0 - 100." });
+    var no = "PMT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new PaymentTerm
+    {
+        OrgId = t.OrgId, PMTermNo = no, EffectiveDateFrom = dto.EffectiveDateFrom.Value, EffectiveDateTo = dto.EffectiveDateTo.Value,
+        ModelCode = dto.ModelCode, SpecCode = dto.SpecCode, FlagDepositPmt = dto.FlagDepositPmt == "1" ? "1" : "0", DepositPercent = dto.DepositPercent,
+        GuaranteePercent = dto.GuaranteePercent, GuaranteeDays = dto.GuaranteeDays, DepositDutyEndDays = dto.DepositDutyEndDays,
+        GuaranteeEndDays = dto.GuaranteeEndDays, DepositDealDateDays = dto.DepositDealDateDays, FlagActive = "1"
+    };
+    db.PaymentTerms.Add(p); await db.SaveChangesAsync();
+    return Results.Ok(new { p.PMTermNo });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentterms/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.PaymentTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMTermNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    p.FlagActive = p.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PMTermNo, flagActive = p.FlagActive });
+}).RequireAuthorization();
+
 // ===== Quy cách xe (CarSpec — port 1:1 FrmCarSpec, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/carspecs", async (AppDbContext db, ITenantContext t, string? model, string? active, string? q) =>
 {
@@ -4990,6 +5066,8 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record DealerZoneDto(string DealerCode, string ZoneCode);
+record PaymentTermDto(DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo, string? ModelCode, string? SpecCode, string? FlagDepositPmt, decimal DepositPercent, decimal GuaranteePercent, int GuaranteeDays, int DepositDutyEndDays, int GuaranteeEndDays, int DepositDealDateDays);
 record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance);
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);

@@ -1463,6 +1463,38 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Vùng đại lý (Mst_DealerZone) — port 1:1 FrmMst_DealerZone (2010.HTC/Admin/Product). Gán đại lý vào vùng.</summary>
+public sealed class DealerZone
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ZoneCode { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Điều khoản thanh toán (Mst_PaymentTerm) — port 1:1 FrmMst_Dieu_Khoan_ThanhToan (2010.HTC/Admin/Product). ĐK thanh toán theo model/spec: % cọc, % bảo lãnh, số ngày.</summary>
+public sealed class PaymentTerm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PMTermNo { get; set; } = "";
+    public DateTime EffectiveDateFrom { get; set; }
+    public DateTime EffectiveDateTo { get; set; }
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string FlagDepositPmt { get; set; } = "0";
+    public decimal DepositPercent { get; set; }
+    public decimal GuaranteePercent { get; set; }
+    public int GuaranteeDays { get; set; }
+    public int DepositDutyEndDays { get; set; }
+    public int GuaranteeEndDays { get; set; }
+    public int DepositDealDateDays { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Quy cách xe (Mst_CarSpec) — port 1:1 FrmCarSpec (2010.HTC/Admin/Product). Master spec: model/std-opt/grade/OCN/số chỗ/spec gốc.</summary>
 public sealed class CarSpec
 {

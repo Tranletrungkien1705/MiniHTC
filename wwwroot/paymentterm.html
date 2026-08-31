@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Điều khoản thanh toán</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1120px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box}
+  .grid input{width:100%}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-1{color:var(--ok)} .p-0{color:#dc2626}
+  #msg{font-size:13px} .wrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Điều khoản thanh toán <span class="muted">(port 1:1 FrmMst_Dieu_Khoan_ThanhToan — Mst_PaymentTerm)</span></h1>
+<div class="card">
+  <b>Thêm điều khoản</b>
+  <div class="grid" style="margin-top:10px">
+    <div><label>Hiệu lực từ *</label><input id="ef" type="date"></div>
+    <div><label>Hiệu lực đến *</label><input id="et" type="date"></div>
+    <div><label>Model</label><input id="md"></div>
+    <div><label>Spec</label><input id="sp"></div>
+    <div><label>% cọc</label><input id="dp" type="number"></div>
+    <div><label>% bảo lãnh</label><input id="gp" type="number"></div>
+    <div><label>Số ngày BL</label><input id="gd" type="number"></div>
+    <div><label>Ngày hết duty cọc</label><input id="dd" type="number"></div>
+    <div><label>Ngày hết BL</label><input id="ge" type="number"></div>
+    <div><label>Ngày cọc theo DealDate</label><input id="dl" type="number"></div>
+    <div class="muted" style="align-self:center"><input type="checkbox" id="fdp"> Có TT cọc</div>
+  </div>
+  <div class="bar"><button class="primary" onclick="create()">Lưu ĐK</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><input id="qm" placeholder="Lọc model" oninput="load()" style="width:110px"><select id="fa" onchange="load()"><option value="">Tất cả</option><option value="1">Hoạt động</option><option value="0">Ngừng</option></select></div>
+<div class="wrap"><table><thead><tr><th>Mã ĐK</th><th>Hiệu lực</th><th>Model/Spec</th><th>% cọc</th><th>% BL</th><th>Ngày BL</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const body={effectiveDateFrom:F("ef").value||null,effectiveDateTo:F("et").value||null,modelCode:F("md").value,specCode:F("sp").value,flagDepositPmt:F("fdp").checked?"1":"0",depositPercent:parseFloat(F("dp").value)||0,guaranteePercent:parseFloat(F("gp").value)||0,guaranteeDays:parseInt(F("gd").value)||0,depositDutyEndDays:parseInt(F("dd").value)||0,guaranteeEndDays:parseInt(F("ge").value)||0,depositDealDateDays:parseInt(F("dl").value)||0};
+  const r=await fetch("/api/paymentterms",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.pMTermNo); ["md","sp","dp","gp","gd","dd","ge","dl"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/paymentterms?model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>
+    `<tr><td><b>${o.pMTermNo}</b></td><td>${day(o.effectiveDateFrom)}–${day(o.effectiveDateTo)}</td><td>${o.modelCode||"—"}${o.specCode?"/"+o.specCode:""}</td><td>${o.depositPercent}%</td><td>${o.guaranteePercent}%</td><td>${o.guaranteeDays}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.pMTermNo}')">Đổi TT</button></td></tr>`
+  ).join("")||'<tr><td colspan="8" class="muted">Chưa có điều khoản.</td></tr>';
+}
+async function toggle(c){ const r=await fetch(`/api/paymentterms/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+load();
+</script>
+</body></html>
