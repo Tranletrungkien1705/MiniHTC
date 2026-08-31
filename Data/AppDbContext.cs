@@ -85,6 +85,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceInvoice> ServiceInvoices => Set<ServiceInvoice>();
     public DbSet<POCommand> POCommands => Set<POCommand>();
     public DbSet<POCommandLine> POCommandLines => Set<POCommandLine>();
+    public DbSet<Pi> Pis => Set<Pi>();
+    public DbSet<PiLine> PiLines => Set<PiLine>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

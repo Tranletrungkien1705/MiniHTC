@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — PI nhập xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1060px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select,label{font:inherit} input,button,select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Confirmed{color:var(--ok)}
+  #msg{font-size:13px} .det{font-size:12px;opacity:.85}
+</style></head>
+<body>
+<h1>Proforma Invoice nhập xe (Foton) <span class="muted">(port 1:1 FrmNewPI — Pi)</span></h1>
+<div class="card">
+  <b>Tạo PI</b> <span class="muted">(tháng dự kiến về = tháng SX + 1)</span>
+  <div class="bar" style="margin:10px 0"><input id="rf" placeholder="Số tham chiếu" style="width:130px">
+    <label class="muted">Tháng SX <input id="pm" type="month"></label><label class="muted">Tháng đặt <input id="om" type="month"></label>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu PI</button><span id="msg"></span></div>
+  <table id="ltbl"><thead><tr><th>Spec *</th><th>Model</th><th>Màu</th><th>Cảng</th><th>Nhà máy</th><th>WO</th><th class="n">SL</th><th class="n">Đơn giá</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Dòng xe</button>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Confirmed">Đã xác nhận</option></select></div>
+<table><thead><tr><th>Số PI</th><th>Tham chiếu</th><th>SX / DK về</th><th>Dòng</th><th class="n">SL</th><th class="n">Trị giá</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Draft:"Nháp",Confirmed:"Đã xác nhận"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
+const mon=d=>d? new Date(d).toLocaleDateString("vi-VN",{month:"2-digit",year:"numeric"}):"—";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="sc" style="width:80px"></td><td><input class="md" style="width:80px"></td><td><input class="cl" style="width:55px"></td><td><input class="pc" style="width:55px"></td><td><input class="pl" style="width:55px"></td><td><input class="wo" style="width:70px"></td><td class="n"><input class="qt" type="number" value="1" style="width:55px;text-align:right"></td><td class="n"><input class="up" type="number" style="width:90px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr); }
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({specCode:tr.querySelector(".sc").value,modelCode:tr.querySelector(".md").value,colorCode:tr.querySelector(".cl").value,portCode:tr.querySelector(".pc").value,plantCode:tr.querySelector(".pl").value,workOrderNo:tr.querySelector(".wo").value,quantity:Number(tr.querySelector(".qt").value||0),unitPrice:Number(tr.querySelector(".up").value||0)})).filter(l=>l.specCode&&l.quantity>0);
+  const pm=F("pm").value?F("pm").value+"-01":null, om=F("om").value?F("om").value+"-01":null;
+  const r=await fetch("/api/pis",{method:"POST",headers:H(),body:JSON.stringify({refNo:F("rf").value,productionMonth:pm,orderMonth:om,lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.piNo+" ("+j.totalQty+" xe, DK về "+mon(j.expectedMonth)+")."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch("/api/pis?status="+F("fst").value,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(p=>{
+    let act=p.status==="Draft"?`<button class="sm" onclick="confirm_('${p.piNo}')">Xác nhận</button>`:"";
+    return `<tr><td><b>${p.piNo}</b> <a href="#" class="det" onclick="lines('${p.piNo}');return false">xem</a></td><td>${p.refNo||"—"}</td>
+      <td>${mon(p.productionMonth)} → ${mon(p.expectedMonth)}</td><td>${p.lines}</td><td class="n">${n(p.totalQty)}</td><td class="n">${n(p.totalAmount)}</td>
+      <td><span class="pill p-${p.status}">${LBL[p.status]||p.status}</span></td><td>${act}</td></tr><tr id="x-${p.piNo}"></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Chưa có PI.</td></tr>';
+}
+async function confirm_(no){ const r=await fetch(`/api/pis/${no}/confirm`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/pis/${no}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="8"><div class="det">${(d.lines||[]).map(l=>`${l.specCode}${l.colorCode?"/"+l.colorCode:""} ×${l.quantity} @${n(l.unitPrice)} = ${n(l.lineTotal)}`).join(" &nbsp;|&nbsp; ")||"—"} &nbsp;<b>${n(d.totalQty)} xe / ${n(d.totalAmount)}</b></div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>

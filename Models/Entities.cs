@@ -1178,6 +1178,37 @@ public sealed class POCommandLine
     public int Quantity { get; set; } = 1;
 }
 
+/// <summary>Proforma Invoice nhập xe (Pi — port 1:1 FrmNewPI/FrmMngPI, TCMotor DMSales.Foton):
+/// PI lô xe nhập từ hãng. ExpectedMonth = ProductionMonth + 1 tháng (tự tính). Draft→Confirmed.</summary>
+public sealed class Pi
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PiNo { get; set; } = "";
+    public string? RefNo { get; set; }
+    public DateTime ProductionMonth { get; set; }      // tháng sản xuất
+    public DateTime? OrderMonth { get; set; }          // tháng đặt
+    public DateTime ExpectedMonth { get; set; }        // = ProductionMonth + 1 tháng
+    public string Status { get; set; } = "Draft";      // Draft → Confirmed
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng PI (PiDetail): spec/model/màu + cảng/nhà máy + WO + SL + đơn giá.</summary>
+public sealed class PiLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PiId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? PortCode { get; set; }
+    public string? PlantCode { get; set; }
+    public string? WorkOrderNo { get; set; }
+    public int Quantity { get; set; } = 1;
+    public decimal UnitPrice { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -1227,6 +1227,61 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Proforma Invoice nhập xe (Pi — port 1:1 FrmNewPI/FrmMngPI, DMSales.Foton) =====
+app.MapGet("/api/pis", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.Pis.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.PiNo, p.RefNo, p.ProductionMonth, p.OrderMonth, p.ExpectedMonth, p.Status,
+        lines = db.PiLines.Count(l => l.OrgId == t.OrgId && l.PiId == p.Id),
+        totalQty = db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).Sum(l => (int?)l.Quantity) ?? 0,
+        totalAmount = db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).Sum(l => (decimal?)(l.Quantity * l.UnitPrice)) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pis", async (PiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.ProductionMonth is null) return Results.BadRequest(new { error = "Cần ProductionMonth." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
+    var no = "PI" + DateTime.Now.ToString("yyMMddHHmmss");
+    var prod = dto.ProductionMonth.Value;
+    var p = new Pi
+    {
+        OrgId = t.OrgId, PiNo = no, RefNo = dto.RefNo, ProductionMonth = prod, OrderMonth = dto.OrderMonth,
+        ExpectedMonth = prod.AddMonths(1), Status = "Draft"   // ExpectedMonth = SX + 1 tháng (đúng FrmNewPI)
+    };
+    db.Pis.Add(p); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.PiLines.Add(new PiLine { OrgId = t.OrgId, PiId = p.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, WorkOrderNo = l.WorkOrderNo, Quantity = l.Quantity, UnitPrice = l.UnitPrice });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PiNo, p.ProductionMonth, p.ExpectedMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), status = p.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/pis/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.Pis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PiNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    var lines = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id)
+        .Select(l => new { l.SpecCode, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.WorkOrderNo, l.Quantity, l.UnitPrice, lineTotal = l.Quantity * l.UnitPrice }).ToListAsync();
+    return Results.Ok(new { p.PiNo, p.Status, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity), totalAmount = lines.Sum(x => x.lineTotal) });
+}).RequireAuthorization();
+
+app.MapPost("/api/pis/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.Pis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PiNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.Status != "Draft") return Results.BadRequest(new { error = "Chỉ xác nhận PI Nháp." });
+    p.Status = "Confirmed";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PiNo, status = p.Status });
+}).RequireAuthorization();
+
 // ===== Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, DMSales.Foton) =====
 app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
 {
@@ -2882,4 +2937,6 @@ record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? 
 record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType);
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity);
 record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines);
+record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);
+record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, List<PiLineDto>? Lines);
 record RegisterOrgDto(string Name);
