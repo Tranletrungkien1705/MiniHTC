@@ -1227,6 +1227,66 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Đơn đặt phụ tùng từ NCC (Ser_Order_Part — port 1:1 FrmSer_Order_Part) =====
+app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? status, string? supplier) =>
+{
+    var q = db.OrderParts.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.OrderPartStatus == status);
+    if (!string.IsNullOrWhiteSpace(supplier)) q = q.Where(o => o.SupplierCode == supplier);
+    var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.OrderPartNo, o.SupplierCode, o.WarehouseCode, o.OrderPartStatus, o.CreatedAt, o.SentAt, o.FinishedAt,
+        lines = db.OrderPartLines.Count(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id),
+        total = db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).Sum(l => (decimal?)(l.OrderQty * l.Price)) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Cần SupplierCode (nhà cung cấp)." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.OrderQty > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + OrderQty > 0)." });
+    var no = "OP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var o = new OrderPart { OrgId = t.OrgId, OrderPartNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), WarehouseCode = dto.WarehouseCode, OrderPartStatus = "Pending" };
+    db.OrderParts.Add(o); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.OrderPartLines.Add(new OrderPartLine { OrgId = t.OrgId, OrderPartId = o.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, OrderQty = l.OrderQty, Price = l.Price });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, lines = lines.Count, status = o.OrderPartStatus });
+}).RequireAuthorization();
+
+app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.OrderQty, l.Price, lineTotal = l.OrderQty * l.Price }).ToListAsync();
+    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, count = lines.Count, lines, total = lines.Sum(x => x.lineTotal) });
+}).RequireAuthorization();
+
+// Gửi NCC (approve) / Hoàn thành (finish) — tiến đúng chuỗi Pending→Approved→Finished
+app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "finish")) return Results.BadRequest(new { error = "action = approve|finish" });
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (action == "approve")
+    {
+        if (o.OrderPartStatus != "Pending") return Results.BadRequest(new { error = "Chỉ gửi NCC đơn Mới tạo." });
+        o.OrderPartStatus = "Approved"; o.SentAt = DateTime.Now;
+    }
+    else
+    {
+        if (o.OrderPartStatus != "Approved") return Results.BadRequest(new { error = "Chỉ hoàn thành đơn Đã gửi NCC." });
+        o.OrderPartStatus = "Finished"; o.FinishedAt = DateTime.Now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderPartNo, status = o.OrderPartStatus });
+}).RequireAuthorization();
+
 // ===== Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo) =====
 app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -2411,4 +2471,6 @@ record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? Eng
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
+record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
+record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
 record RegisterOrgDto(string Name);

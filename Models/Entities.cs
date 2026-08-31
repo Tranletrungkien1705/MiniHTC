@@ -994,6 +994,33 @@ public sealed class ServiceCustomer
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đơn đặt phụ tùng từ NCC (Ser_Order_Part — port 1:1 FrmSer_Order_Part, TCMotor DMSCarSv/TST):
+/// đơn mua phụ tùng gửi nhà cung cấp. OrderPartStatus: Pending(Mới tạo)→Approved(Đã gửi NCC)→Finished(Hoàn thành).</summary>
+public sealed class OrderPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderPartNo { get; set; } = "";
+    public string SupplierCode { get; set; } = "";
+    public string? WarehouseCode { get; set; }
+    public string OrderPartStatus { get; set; } = "Pending"; // Pending → Approved → Finished
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+    public DateTime? FinishedAt { get; set; }
+}
+
+/// <summary>Dòng phụ tùng đặt (Ser_Order_Part_Dtl): mã PT + SL đặt + đơn giá.</summary>
+public sealed class OrderPartLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long OrderPartId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal OrderQty { get; set; } = 1;
+    public decimal Price { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
