@@ -2819,6 +2819,20 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Hạn mức số ngày trễ vận tải theo đại lý + kho — port 1:1 FrmMst_QuanLyHanMucDoTreVanTai (Tbl_Mst_DelayTransports).</summary>
+public sealed class DelayTransport
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string? DealerName { get; set; }
+    public string StorageCode { get; set; } = "";
+    public string? StorageName { get; set; }
+    public int DelayDays { get; set; }   // DelayTransport: hạn mức số ngày trễ cho phép
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
