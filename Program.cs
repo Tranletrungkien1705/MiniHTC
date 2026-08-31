@@ -1007,6 +1007,63 @@ app.MapPost("/api/bankbills/{no}/receive", async (string no, BankBillReceiveDto 
     return Results.Ok(new { h.BankBillMnNo, status = h.Status, h.BankBillReciveDate });
 }).RequireAuthorization();
 
+// ===== Yêu cầu vận chuyển xe (TransportRequest — port 1:1 FrmNewTransportRequest/FrmMngTransportRequest, Phase2) =====
+app.MapGet("/api/transreqs", async (AppDbContext db, ITenantContext t, string? status, string? transporter) =>
+{
+    var q = db.TransportRequests.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(transporter)) q = q.Where(r => r.TransporterCode == transporter);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.TransContractNo, r.Status, r.CreatedAt, r.DecidedAt,
+        cars = db.TransportReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/transreqs", async (TransReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
+        return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode." });
+    var vins = (dto.Cars ?? new List<TransReqCarDto>()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "TR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new TransportRequest
+    {
+        OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), TransContractNo = dto.TransContractNo, Status = "Pending"
+    };
+    db.TransportRequests.Add(r); await db.SaveChangesAsync();
+    foreach (var c in vins)
+        db.TransportReqCars.Add(new TransportReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, StorageCode = c.StorageCode });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, status = r.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/transreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
+        .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.StorageCode }).ToListAsync();
+    return Results.Ok(new { r.TranspReqNo, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối yêu cầu Đang xử lý." });
+    r.Status = action == "approve" ? "Approved" : "Rejected"; r.DecidedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.TranspReqNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1101,4 +1158,6 @@ record InvoiceListDto(List<InvoiceLineDto>? Lines);
 record BankBillCarDto(string Vin, string? EngineNo, string? LCNo, string? GuaranteeBankCode, decimal ClaimAmount);
 record BankBillDto(string BankCode, DateTime? BankBillDate, List<BankBillCarDto>? Cars);
 record BankBillReceiveDto(DateTime? BankBillReciveDate);
+record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode);
+record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
 record RegisterOrgDto(string Name);

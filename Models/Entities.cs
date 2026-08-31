@@ -380,6 +380,33 @@ public sealed class BankBillCar
     public decimal ClaimAmount { get; set; }
 }
 
+/// <summary>Yêu cầu vận chuyển xe (TransportRequest — port 1:1 FrmNewTransportRequest/FrmMngTransportRequest, Phase2):
+/// đại lý + nhà vận chuyển + lô xe cần chở. Pending(Đang xử lý)→Approved(Phê duyệt)/Rejected(Từ chối).</summary>
+public sealed class TransportRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TranspReqNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string TransporterCode { get; set; } = "";
+    public string? TransContractNo { get; set; }
+    public string Status { get; set; } = "Pending";   // Pending → Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DecidedAt { get; set; }
+}
+
+/// <summary>Dòng xe trong YC vận chuyển (TranspReqDtl): VIN + DO + màu + kho.</summary>
+public sealed class TransportReqCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? DoNo { get; set; }
+    public string? ColorCode { get; set; }
+    public string? StorageCode { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
