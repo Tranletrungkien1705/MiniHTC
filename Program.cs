@@ -212,6 +212,18 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("LeaveType", "Loại nghỉ phép (FrmMst_LeaveType)"),
     ("NotifyTemplate", "Mẫu thông báo (FrmMst_NotifyTemplate)"),
     ("PrintTemplate", "Mẫu in (FrmMst_PrintTemplate)"),
+    ("EmailTemplate", "Mẫu email (FrmMst_EmailTemplate)"),
+    ("SmsTemplate", "Mẫu SMS (FrmMst_SmsTemplate)"),
+    ("Menu", "Menu chức năng (FrmMst_Menu)"),
+    ("Role2", "Nhóm quyền (FrmMst_Role)"),
+    ("ReportType", "Loại báo cáo (FrmMst_ReportType)"),
+    ("DashboardWidget", "Widget dashboard (FrmMst_DashboardWidget)"),
+    ("Language", "Ngôn ngữ (FrmMst_Language)"),
+    ("TimeZoneMaster", "Múi giờ (FrmMst_TimeZone)"),
+    ("NumberSeries", "Dải số chứng từ (FrmMst_NumberSeries)"),
+    ("WorkflowStep", "Bước quy trình (FrmMst_WorkflowStep)"),
+    ("ReasonCode", "Mã lý do chung (FrmMst_ReasonCode)"),
+    ("UomMaster", "Đơn vị tính (FrmMst_UOM)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
