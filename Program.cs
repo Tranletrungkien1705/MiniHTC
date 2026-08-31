@@ -166,6 +166,39 @@ app.MapDelete("/api/master/{cat}/{code}", async (string cat, string code, AppDbC
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Đại lý (Mst_Dealer) — port 1:1 FrmDealer =====
+app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var query = db.Dealers.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(d => d.DealerCode.Contains(q) || d.DealerName.Contains(q));
+    var items = await query.OrderBy(d => d.DealerCode).Select(d => new
+    { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode, d.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.DealerName))
+        return Results.BadRequest(new { error = "Cần DealerCode và DealerName." });
+    var code = dto.DealerCode.Trim().ToUpperInvariant();
+    var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
+    if (d is null) { d = new Dealer { OrgId = t.OrgId, DealerCode = code }; db.Dealers.Add(d); }
+    d.DealerName = dto.DealerName.Trim(); d.BUCode = dto.BUCode; d.ProvinceCode = dto.ProvinceCode;
+    d.Address = dto.Address; d.Phone = dto.Phone; d.Fax = dto.Fax; d.Email = dto.Email; d.TaxCode = dto.TaxCode;
+    d.Status = dto.Status ?? "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DealerCode, d.DealerName, d.Status });
+}).RequireAuthorization();
+
+app.MapDelete("/api/dealers/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
+    if (d is null) return Results.NotFound(new { code });
+    db.Dealers.Remove(d); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -178,4 +211,5 @@ app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? Status);
 record MasterDto(string Code, string Name, string? Status);
+record DealerDto(string DealerCode, string DealerName, string? BUCode, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode, string? Status);
 record RegisterOrgDto(string Name);

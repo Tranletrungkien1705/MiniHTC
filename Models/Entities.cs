@@ -12,6 +12,24 @@ public sealed class Area
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đại lý (Mst_Dealer) — port 1:1 FrmDealer (2010.HTC/Admin/Dealer).</summary>
+public sealed class Dealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string DealerName { get; set; } = "";
+    public string? BUCode { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? Address { get; set; }
+    public string? Phone { get; set; }
+    public string? Fax { get; set; }
+    public string? Email { get; set; }
+    public string? TaxCode { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

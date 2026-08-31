@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Quản lý Đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  *{box-sizing:border-box} body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1080px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;width:100%}
+  button{cursor:pointer;width:auto} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .bar{display:flex;gap:8px;align-items:center;margin:10px 0}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .act{color:var(--accent);cursor:pointer;margin-right:8px} .err{color:#dc2626} .ok{color:#16a34a}
+  #msg{min-height:18px;font-size:13px} .tblwrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Quản lý Đại lý <span class="muted">(port 1:1 FrmDealer — Mst_Dealer)</span></h1>
+<div class="grid">
+  <input id="c" placeholder="Mã đại lý *"><input id="n" placeholder="Tên đại lý *" style="grid-column:span 2"><input id="bu" placeholder="BUCode">
+  <input id="pv" placeholder="Tỉnh"><input id="addr" placeholder="Địa chỉ" style="grid-column:span 2"><input id="ph" placeholder="Điện thoại">
+  <input id="fx" placeholder="Fax"><input id="em" placeholder="Email"><input id="tx" placeholder="Mã số thuế">
+  <select id="st"><option value="1">Hiệu lực</option><option value="0">Ngừng</option></select>
+</div>
+<div class="bar"><button class="primary" onclick="save()">Lưu</button><input id="q" placeholder="Tìm mã/tên..." oninput="load()" style="width:auto;flex:1" onclick="event.stopPropagation()"><span id="msg"></span></div>
+<div class="tblwrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>BU</th><th>Tỉnh</th><th>ĐT</th><th>Email</th><th>MST</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t,ok){ const m=document.getElementById("msg"); m.textContent=t; m.className=ok?"ok":"err"; }
+const F=id=>document.getElementById(id);
+async function load(){ await token();
+  const d=await (await fetch("/api/dealers?q="+encodeURIComponent(F("q").value),{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(x=>`<tr>
+    <td><b>${x.dealerCode}</b></td><td>${x.dealerName}</td><td>${x.buCode||""}</td><td>${x.provinceCode||""}</td>
+    <td>${x.phone||""}</td><td>${x.email||""}</td><td>${x.taxCode||""}</td><td>${x.status==="1"?"✓":"✕"}</td>
+    <td><span class="act" onclick='fill(${JSON.stringify(x)})'>Sửa</span><span class="act err" onclick="del('${x.dealerCode}')">Xoá</span></td></tr>`).join("")
+    || '<tr><td colspan="9" class="muted">Chưa có đại lý.</td></tr>';
+}
+function fill(x){ F("c").value=x.dealerCode;F("n").value=x.dealerName;F("bu").value=x.buCode||"";F("pv").value=x.provinceCode||"";
+  F("addr").value=x.address||"";F("ph").value=x.phone||"";F("fx").value=x.fax||"";F("em").value=x.email||"";F("tx").value=x.taxCode||"";F("st").value=x.status; }
+async function save(){
+  const body=JSON.stringify({dealerCode:F("c").value,dealerName:F("n").value,buCode:F("bu").value,provinceCode:F("pv").value,
+    address:F("addr").value,phone:F("ph").value,fax:F("fx").value,email:F("em").value,taxCode:F("tx").value,status:F("st").value});
+  const r=await fetch("/api/dealers",{method:"POST",headers:H(),body});
+  if(r.ok){ msg("Đã lưu.",true); ["c","n","bu","pv","addr","ph","fx","em","tx"].forEach(i=>F(i).value=""); load(); }
+  else msg("Lỗi: "+((await r.json()).error||r.status),false);
+}
+async function del(c){ if(!confirm("Xoá đại lý "+c+"?"))return;
+  const r=await fetch("/api/dealers/"+encodeURIComponent(c),{method:"DELETE",headers:H()});
+  if(r.ok){ msg("Đã xoá "+c,true); load(); } else msg("Không xoá được.",false); }
+load();
+</script>
+</body></html>
