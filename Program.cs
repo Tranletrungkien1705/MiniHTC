@@ -2873,6 +2873,29 @@ app.MapGet("/api/report/crm", async (AppDbContext db, ITenantContext t, string? 
         visitByDealer, visitByGender, visitByAge, visitByModel, driveByModel, driveByType });
 }).RequireAuthorization();
 
+// ===== Báo cáo xe đang thế chấp (port 1:1 báo cáo BankCarMortage) — tái dùng BankCarMortage =====
+app.MapGet("/api/report/mortgage", async (AppDbContext db, ITenantContext t, string? mortageBank, string? dealer, string? guaranteeType, string? active) =>
+{
+    var q = db.BankCarMortages.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(mortageBank)) q = q.Where(m => m.MortageBankCode == mortageBank);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(guaranteeType)) q = q.Where(m => m.GuaranteeType == guaranteeType);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(m => m.FlagActive == active);
+    var recs = await q.ToListAsync();
+    var byBank = recs.GroupBy(m => string.IsNullOrEmpty(m.MortageBankCode) ? "(chưa rõ)" : m.MortageBankCode)
+        .Select(g => new { mortageBank = g.Key, count = g.Count(), active = g.Count(x => x.FlagActive == "1"), released = g.Count(x => x.FlagActive != "1") }).OrderByDescending(x => x.count).ToList();
+    var byDealer = recs.GroupBy(m => string.IsNullOrEmpty(m.DealerCode) ? "(chưa rõ)" : m.DealerCode).Select(g => new { dealerCode = g.Key, count = g.Count(), active = g.Count(x => x.FlagActive == "1") }).OrderByDescending(x => x.count).ToList();
+    string GtLabel(string g) => g == "1" ? "NH phát hành" : "NH giám sát";
+    var byGrtType = recs.GroupBy(m => GtLabel(m.GuaranteeType)).Select(g => new { guaranteeType = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    string RangeLabel(string r) => r switch { "DlvThisWeek" => "Trong tuần", "DlvNextWeek" => "Tuần tới", _ => "Giao ngay" };
+    var byRange = recs.Where(m => m.FlagActive == "1").GroupBy(m => RangeLabel(m.DeliveryRangeType)).Select(g => new { range = g.Key, count = g.Count() }).ToList();
+    var detail = recs.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.VIN, m.DealerCode, m.MortageBankCode, m.BankCode, m.ModelCode, guaranteeType = GtLabel(m.GuaranteeType), deliveryRange = RangeLabel(m.DeliveryRangeType), m.FlagActive
+    }).ToList();
+    return Results.Ok(new { total = recs.Count, active = recs.Count(m => m.FlagActive == "1"), released = recs.Count(m => m.FlagActive != "1"), byBank, byDealer, byGrtType, byRange, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
