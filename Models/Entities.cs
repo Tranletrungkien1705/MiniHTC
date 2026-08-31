@@ -1463,6 +1463,30 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Master xe lái thử (Mst_CarDriverTest) — port 1:1 FrmMstCarDriverTestHTC/Dealer (DMSales.Foton/RetailContract). Xe dùng cho lái thử, biển số/VIN/model + hỗ trợ.</summary>
+public sealed class CarDriverTest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DrvTestPlateNo { get; set; } = "";  // biển số (unique)
+    public string DealerCode { get; set; } = "";
+    public string? DrvTestVIN { get; set; }
+    public string? DrvTestEngineNo { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? CarDrvTestGPS { get; set; }
+    public decimal Price { get; set; }
+    public decimal AmountSupport1 { get; set; }
+    public DateTime? DateSupport1 { get; set; }
+    public decimal AmountSupport2 { get; set; }
+    public DateTime? DateSupport2 { get; set; }
+    public string? ClaimNoSupport { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lượt khách thăm showroom (DLR_CtmVisit) — port 1:1 FrmCusVisit (DMSales.Foton/RetailContract). CRM: giới tính + độ tuổi + xe quan tâm.</summary>
 public sealed class CtmVisit
 {

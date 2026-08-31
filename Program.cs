@@ -1289,6 +1289,52 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Master xe lái thử (CarDriverTest — port 1:1 FrmMstCarDriverTestHTC/Dealer, DMSales.Foton/RetailContract) =====
+app.MapGet("/api/cardrivertests", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
+{
+    var q = db.CarDriverTests.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(c => c.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(c => c.FlagActive == active);
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.DrvTestPlateNo, c.DealerCode, c.DrvTestVIN, c.DrvTestEngineNo, c.ModelCode, c.SpecCode, c.ColorCode, c.FlagActive,
+        c.Price, c.AmountSupport1, c.DateSupport1, c.AmountSupport2, c.DateSupport2, c.ClaimNoSupport, c.Remark, c.CarDrvTestGPS
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cardrivertests", async (CarDriverTestDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DrvTestPlateNo)) return Results.BadRequest(new { error = "Biển số không hợp lệ." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập Model." });
+    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Chưa nhập Spec." });
+    if (string.IsNullOrWhiteSpace(dto.ColorCode)) return Results.BadRequest(new { error = "Chưa nhập Màu." });
+    if (dto.DateSupport1 is not null && dto.DateSupport2 is not null && dto.DateSupport2 <= dto.DateSupport1)
+        return Results.BadRequest(new { error = "Ngày hỗ trợ đợt 2 phải lớn hơn Ngày hỗ trợ đợt 1." });
+    var plate = dto.DrvTestPlateNo.Trim().ToUpperInvariant();
+    if (await db.CarDriverTests.AnyAsync(c => c.OrgId == t.OrgId && c.DrvTestPlateNo == plate))
+        return Results.BadRequest(new { error = $"Biển số {plate} đã tồn tại (trùng)!" });
+    var c = new CarDriverTest
+    {
+        OrgId = t.OrgId, DrvTestPlateNo = plate, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), DrvTestVIN = dto.DrvTestVIN, DrvTestEngineNo = dto.DrvTestEngineNo,
+        ModelCode = dto.ModelCode.Trim(), SpecCode = dto.SpecCode.Trim(), ColorCode = dto.ColorCode.Trim(), Remark = dto.Remark, FlagActive = dto.FlagActive == "0" ? "0" : "1",
+        CarDrvTestGPS = dto.CarDrvTestGPS, Price = dto.Price, AmountSupport1 = dto.AmountSupport1, DateSupport1 = dto.DateSupport1, AmountSupport2 = dto.AmountSupport2, DateSupport2 = dto.DateSupport2, ClaimNoSupport = dto.ClaimNoSupport
+    };
+    db.CarDriverTests.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.DrvTestPlateNo, message = "Thêm mới thành công" });
+}).RequireAuthorization();
+
+app.MapPost("/api/cardrivertests/{plate}/toggle", async (string plate, AppDbContext db, ITenantContext t) =>
+{
+    plate = plate.Trim().ToUpperInvariant();
+    var c = await db.CarDriverTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DrvTestPlateNo == plate);
+    if (c is null) return Results.NotFound(new { plate });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DrvTestPlateNo, flagActive = c.FlagActive });
+}).RequireAuthorization();
+
 // ===== Lượt khách thăm showroom (CtmVisit — port 1:1 FrmCusVisit, DMSales.Foton/RetailContract) =====
 app.MapGet("/api/ctmvisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model) =>
 {
@@ -3822,6 +3868,7 @@ record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
+record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record RegisterOrgDto(string Name);
