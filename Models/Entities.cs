@@ -2819,6 +2819,19 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Loại khách hàng dịch vụ (hệ số giá, cá nhân/tổ chức) — port 1:1 FrmCusTypeCreate (Ser_CusType, TCMotor).</summary>
+public sealed class CustomerType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CusTypeCode { get; set; } = "";
+    public string? CusTypeName { get; set; }
+    public decimal CusFactor { get; set; }        // hệ số giá dịch vụ
+    public string CusPersonType { get; set; } = "Personal"; // Personal | Organization
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nhóm khách hàng dịch vụ (header) — port 1:1 FrmCustomerGroupCreate (Tbl_SerCustomerGroup, TCMotor).</summary>
 public sealed class CustomerGroup
 {

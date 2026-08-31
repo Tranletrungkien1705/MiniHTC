@@ -3230,6 +3230,48 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Loại khách hàng dịch vụ (CustomerType — port 1:1 FrmCusTypeCreate/Search, TCMotor) =====
+string[] _cusPersonTypes = { "Personal", "Organization" };
+app.MapGet("/api/customertypes", async (AppDbContext db, ITenantContext t, string? q, string? personType, string? active) =>
+{
+    var query = db.CustomerTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.CusTypeCode.Contains(q!) || (x.CusTypeName != null && x.CusTypeName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(personType)) query = query.Where(x => x.CusPersonType == personType);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.CusTypeCode).Take(500)
+        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã loại KH (GroupNo/mã trống = auto-gen).
+app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusTypeName)) return Results.BadRequest(new { error = "Chưa nhập tên loại khách hàng." });
+    if (dto.CusFactor < 0) return Results.BadRequest(new { error = "Hệ số giá không hợp lệ." });
+    var person = _cusPersonTypes.Contains(dto.CusPersonType) ? dto.CusPersonType! : "Personal";
+    var code = string.IsNullOrWhiteSpace(dto.CusTypeCode) ? "CT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusTypeCode.Trim().ToUpperInvariant();
+    var ex = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == code);
+    if (ex is not null)
+    {
+        ex.CusTypeName = dto.CusTypeName; ex.CusFactor = dto.CusFactor; ex.CusPersonType = person; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.CusTypeCode, updated = true });
+    }
+    var r = new CustomerType { OrgId = t.OrgId, CusTypeCode = code, CusTypeName = dto.CusTypeName, CusFactor = dto.CusFactor, CusPersonType = person, FlagActive = "1" };
+    db.CustomerTypes.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.CusTypeCode, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/customertypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.CustomerTypes.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.CusTypeCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.CusTypeCode, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Nhóm khách hàng dịch vụ (CustomerGroup header-detail — port 1:1 FrmCustomerGroupCreate/Search, TCMotor) =====
 app.MapGet("/api/customergroups", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -7903,6 +7945,7 @@ record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPric
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
+record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
