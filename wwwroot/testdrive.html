@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lái thử xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:940px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .pill{font-size:12px;padding:1px 8px;border-radius:99px;border:1px solid var(--line)}
+  .act{color:var(--accent);cursor:pointer;margin-right:8px} .r{color:#dc2626} #msg{font-size:13px}
+</style></head>
+<body>
+<h1>Lái thử xe <span class="muted">(port 1:1 FrmMstCarDriverTest — TCMotor)</span></h1>
+<div class="bar">
+  <input id="cn" placeholder="Tên KH *" style="width:150px"><input id="ph" placeholder="ĐT" style="width:110px"><input id="md" placeholder="Model *" style="width:100px">
+  <input id="dl" placeholder="Đại lý" style="width:90px"><input id="dt" type="datetime-local" style="width:190px">
+  <button class="primary" onclick="create()">Đăng ký lái thử</button><span id="msg"></span>
+</div>
+<table><thead><tr><th>Mã</th><th>Khách</th><th>ĐT</th><th>Model</th><th>Lịch</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
+const badge=s=>({Booked:"Đã đặt",Done:"Hoàn tất",Cancelled:"Đã hủy"}[s]||s);
+async function load(){ await token();
+  const d=await (await fetch("/api/testdrives",{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(x=>{
+    let a=x.status==="Booked"?`<span class="act" onclick="act('${x.code}','done')">Hoàn tất</span><span class="act r" onclick="act('${x.code}','cancel')">Hủy</span>`:"";
+    return `<tr><td><b>${x.code}</b></td><td>${x.customerName}</td><td>${x.phone||""}</td><td>${x.modelCode}</td>
+      <td>${new Date(x.scheduledAt).toLocaleString('vi-VN')}</td><td><span class="pill">${badge(x.status)}</span></td><td>${a}</td></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có đăng ký lái thử.</td></tr>';
+}
+async function create(){
+  const r=await fetch("/api/testdrives",{method:"POST",headers:H(),body:JSON.stringify({customerName:F("cn").value,phone:F("ph").value,modelCode:F("md").value,dealerCode:F("dl").value,scheduledAt:F("dt").value})});
+  if(r.ok){ msg("Đã đăng ký.",true); F("cn").value="";F("ph").value=""; load(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
+}
+async function act(code,a){ const r=await fetch(`/api/testdrives/${code}/${a}`,{method:"POST",headers:H()});
+  if(r.ok){ msg("OK",true); load(); } else msg("Lỗi",false); }
+load();
+</script>
+</body></html>

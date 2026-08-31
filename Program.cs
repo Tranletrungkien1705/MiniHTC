@@ -510,6 +510,39 @@ app.MapPost("/api/plans", async (PlanDto dto, AppDbContext db, ITenantContext t)
     return Results.Ok(new { p.DealerCode, p.ModelCode, p.Month, p.TargetQty, p.ActualQty });
 }).RequireAuthorization();
 
+// ===== Lái thử xe (port 1:1 FrmMstCarDriverTest — TCMotor) =====
+app.MapGet("/api/testdrives", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.TestDrives.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.Code, x.CustomerName, x.Phone, x.ModelCode, x.DealerCode, x.ScheduledAt, x.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/testdrives", async (TestDriveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CustomerName) || string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "Cần CustomerName và ModelCode." });
+    if (dto.ScheduledAt == default) return Results.BadRequest(new { error = "Cần ScheduledAt." });
+    var code = "TD" + DateTime.Now.ToString("yyMMddHHmmss");
+    var x = new TestDrive { OrgId = t.OrgId, Code = code, CustomerName = dto.CustomerName.Trim(), Phone = dto.Phone ?? "", ModelCode = dto.ModelCode.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode, ScheduledAt = dto.ScheduledAt, Status = "Booked" };
+    db.TestDrives.Add(x); await db.SaveChangesAsync();
+    return Results.Ok(new { x.Code, x.CustomerName, x.ModelCode, status = x.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/testdrives/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("done" or "cancel")) return Results.BadRequest(new { error = "action = done|cancel" });
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.TestDrives.FirstOrDefaultAsync(y => y.OrgId == t.OrgId && y.Code == code);
+    if (x is null) return Results.NotFound(new { code });
+    if (x.Status != "Booked") return Results.BadRequest(new { error = "Đã xử lý." });
+    x.Status = action == "done" ? "Done" : "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.Code, status = x.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -532,4 +565,5 @@ record RetrieveDto(string Vin, string? DealerCode, string? Reason);
 record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
+record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
 record RegisterOrgDto(string Name);

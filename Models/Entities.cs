@@ -144,6 +144,22 @@ public sealed class BusinessPlan
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Lái thử xe (FrmMstCarDriverTest — TCMotor): khách đăng ký lái thử → xác nhận → hoàn tất.</summary>
+public sealed class TestDrive
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string CustomerName { get; set; } = "";
+    public string Phone { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public DateTime ScheduledAt { get; set; }
+    public string Status { get; set; } = "Booked";   // Booked → Done → Cancelled
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
