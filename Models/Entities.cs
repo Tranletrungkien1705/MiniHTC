@@ -2819,6 +2819,21 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>
+public sealed class EmailTemplate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TempType { get; set; } = "";   // loại email
+    public string? TempName { get; set; }
+    public string? TempSubject { get; set; }
+    public string TempBody { get; set; } = "";
+    public string? FileAttachment { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Mẫu tin nhắn SMS theo loại nghiệp vụ (nội dung + trạng thái) — port 1:1 FrmSMSTemplate (TblSMS_Template, TCMotor).</summary>
 public sealed class SmsTemplate
 {

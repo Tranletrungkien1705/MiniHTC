@@ -3230,6 +3230,46 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Mẫu email (EmailTemplate — port 1:1 FrmEmail_TempEmailCreate/List, TCMotor) =====
+app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.EmailTemplates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.TempType.Contains(q!.ToUpper()) || (x.TempSubject != null && x.TempSubject.Contains(q!)) || (x.TempName != null && x.TempName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.TempType).Take(500)
+        .Select(x => new { x.TempType, x.TempName, x.TempSubject, x.TempBody, x.FileAttachment, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo loại email (tiêu đề bắt buộc — giống guard txtTempSubject WinForm).
+app.MapPost("/api/emailtemplates", async (EmailTemplateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.TempType)) return Results.BadRequest(new { error = "Chưa chọn loại email." });
+    if (string.IsNullOrWhiteSpace(dto.TempSubject)) return Results.BadRequest(new { error = "Chưa nhập tiêu đề email." });
+    if (string.IsNullOrWhiteSpace(dto.TempBody)) return Results.BadRequest(new { error = "Chưa nhập nội dung email." });
+    var type = dto.TempType.Trim().ToUpperInvariant();
+    var ex = await db.EmailTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TempType == type);
+    if (ex is not null)
+    {
+        ex.TempName = dto.TempName; ex.TempSubject = dto.TempSubject; ex.TempBody = dto.TempBody; ex.FileAttachment = dto.FileAttachment; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.TempType, updated = true });
+    }
+    var r = new EmailTemplate { OrgId = t.OrgId, TempType = type, TempName = dto.TempName, TempSubject = dto.TempSubject, TempBody = dto.TempBody, FileAttachment = dto.FileAttachment, FlagActive = "1" };
+    db.EmailTemplates.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.TempType, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/emailtemplates/{type}/toggle", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    type = type.Trim().ToUpperInvariant();
+    var x = await db.EmailTemplates.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.TempType == type);
+    if (x is null) return Results.NotFound(new { type });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.TempType, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Mẫu tin nhắn SMS (SmsTemplate — port 1:1 FrmSMSTemplate, TCMotor) =====
 app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -8862,6 +8902,7 @@ record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Pri
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
+record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportDto(List<PartLocationImportRow>? Rows);

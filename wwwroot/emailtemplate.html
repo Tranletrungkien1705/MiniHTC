@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Mẫu email</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#0891b2;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:940px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:100px;box-sizing:border-box}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Mẫu email <span class="muted">(port 1:1 FrmEmail_TempEmailCreate — TCMotor)</span></h1>
+<p class="muted">Soạn mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm). Mỗi loại 1 mẫu — nhập lại = cập nhật. Tiêu đề bắt buộc.</p>
+<div class="card"><h3 style="margin-top:0">Thêm / cập nhật mẫu email</h3>
+  <div class="row" style="margin-bottom:8px">
+    <div><label>Loại email *</label><input id="fType" style="width:140px" placeholder="MAINT"></div>
+    <div style="flex:1;min-width:150px"><label>Tên mô tả</label><input id="fName" style="width:100%"></div>
+    <div><label>File đính kèm</label><input id="fFile" style="width:150px" placeholder="mau.pdf"></div>
+  </div>
+  <label>Tiêu đề *</label><input id="fSubject" style="width:100%;box-sizing:border-box">
+  <label style="margin-top:8px">Nội dung *</label>
+  <textarea id="fBody"></textarea>
+  <div style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><span id="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><div><label>Tìm loại/tiêu đề</label><input id="qQ" style="width:170px" onkeydown="if(event.key==='Enter')load()"></div><button onclick="load()">Xem danh sách</button></div>
+<div class="wrap"><table><thead><tr><th>Loại</th><th>Tiêu đề</th><th>Nội dung</th><th>File</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3000); }
+async function save(){ await token();
+  const body={TempType:F("fType").value,TempName:F("fName").value,TempSubject:F("fSubject").value,TempBody:F("fBody").value,FileAttachment:F("fFile").value};
+  const r=await fetch("/api/emailtemplates",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.tempType:"Đã thêm "+d.tempType); F("fType").value="";F("fSubject").value="";F("fBody").value=""; load();
+}
+async function toggle(ty){ await token();
+  const r=await fetch("/api/emailtemplates/"+encodeURIComponent(ty)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fType").value=o.tempType;F("fName").value=o.tempName||"";F("fSubject").value=o.tempSubject||"";F("fBody").value=o.tempBody;F("fFile").value=o.fileAttachment||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/emailtemplates?q="+encodeURIComponent(F("qQ").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.tempType}</b></td><td>${esc(o.tempSubject)}</td><td>${esc((o.tempBody||"").slice(0,60))}${(o.tempBody||"").length>60?"…":""}</td><td>${esc(o.fileAttachment)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.tempType}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có mẫu.</td></tr>';
+}
+</script>
+</body></html>
