@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Cấp bảo dưỡng theo mốc km</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#7c3aed;--bad:#dc2626;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:860px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px} button.del{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Cấp bảo dưỡng theo mốc km <span class="muted">(port 1:1 FrmMstMaintenanceLevelMng — TCMotor)</span></h1>
+<p class="muted">Khai báo các mốc số km bảo dưỡng định kỳ và số lần/cấp bảo dưỡng tương ứng (VD: 5.000 km, 10.000 km…). Mỗi mốc km 1 bản ghi — nhập lại = cập nhật.</p>
+<div class="card">
+  <h3 style="margin-top:0">Thêm / cập nhật mốc</h3>
+  <div class="row">
+    <div><label>Mốc km *</label><input id="fKm" type="number" step="1000" style="width:130px" placeholder="5000"></div>
+    <div><label>Số lần/cấp BD</label><input id="fCount" type="number" style="width:120px"></div>
+    <div style="flex:1;min-width:150px"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0"><button onclick="load()">Xem danh sách</button></div>
+<div class="wrap"><table><thead><tr><th class="num">Mốc km</th><th class="num">Số lần/cấp BD</th><th>Ghi chú</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+async function save(){ await token();
+  const body={Km:parseInt(F("fKm").value||"0",10),MaintenanceCount:parseInt(F("fCount").value||"0",10),Note:F("fNote").value};
+  const r=await fetch("/api/maintenancelevels",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật mốc "+M(d.km):"Đã thêm mốc "+M(d.km)); F("fKm").value="";F("fCount").value="";F("fNote").value=""; load();
+}
+async function toggle(km){ await token();
+  const r=await fetch("/api/maintenancelevels/"+km+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+async function del(km){ await token(); if(!confirm("Xóa mốc "+M(km)+" km?")) return;
+  const r=await fetch("/api/maintenancelevels/"+km,{method:"DELETE",headers:H()});
+  if(!r.ok){ msg("Lỗi xóa"); return; } msg("Đã xóa"); load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/maintenancelevels",{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td class="num"><b>${M(o.km)}</b></td><td class="num">${o.maintenanceCount}</td><td>${esc(o.note)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick="toggle(${o.km})">Bật/Tắt</button><button class="link del" onclick="del(${o.km})">Xóa</button></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

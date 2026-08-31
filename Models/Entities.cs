@@ -2819,6 +2819,18 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Cấp bảo dưỡng theo mốc km (KM → số lần BD) — port 1:1 FrmMstMaintenanceLevelMng (TCMotor).</summary>
+public sealed class MaintenanceLevelMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public int Km { get; set; }              // KM: mốc km bảo dưỡng
+    public int MaintenanceCount { get; set; } // MAINTANCES: số lần/cấp bảo dưỡng tại mốc
+    public string? Note { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Phụ tùng phát sinh (mã/tên/ĐVT/giá/SL tối đa) — port 1:1 FrmMstExtraPartsMng (Tbl_Mst_Extra_Parts_Mng, TCMotor).</summary>
 public sealed class ExtraPartMst
 {

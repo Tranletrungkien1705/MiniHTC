@@ -150,7 +150,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
     ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
     // ---- TCMotor (2021.1) master code/name ĐÃ verify Ser_MST (giữ dạng catalog) ----
-    ("MaintenanceLevel", "Cấp bảo dưỡng (FrmMstMaintenanceLevelMng) [TCMotor]"),
     ("WarrantyImageType", "Loại ảnh bảo hành (FrmMstWarrantyImageTypeMng: ROWPTCODE/NAME) [TCMotor]"),
     ("CarModelStd", "Model chuẩn (FrmMstCarModelStd) [TCMotor]"),
     ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng: WRTRENECATE) [TCMotor]"),
@@ -3229,6 +3228,50 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     a.FlagActive = a.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+}).RequireAuthorization();
+
+// ===== Cấp bảo dưỡng theo mốc km (MaintenanceLevelMst — port 1:1 FrmMstMaintenanceLevelMng, TCMotor) =====
+app.MapGet("/api/maintenancelevels", async (AppDbContext db, ITenantContext t, string? active) =>
+{
+    var query = db.MaintenanceLevelMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.Km).Take(500)
+        .Select(x => new { x.Km, x.MaintenanceCount, x.Note, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mốc km (mỗi mốc km 1 cấp bảo dưỡng).
+app.MapPost("/api/maintenancelevels", async (MaintenanceLevelDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Km <= 0) return Results.BadRequest(new { error = "Mốc km phải lớn hơn 0." });
+    if (dto.MaintenanceCount < 0) return Results.BadRequest(new { error = "Số lần bảo dưỡng không hợp lệ." });
+    var ex = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Km == dto.Km);
+    if (ex is not null)
+    {
+        ex.MaintenanceCount = dto.MaintenanceCount; ex.Note = dto.Note; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.Km, updated = true });
+    }
+    var r = new MaintenanceLevelMst { OrgId = t.OrgId, Km = dto.Km, MaintenanceCount = dto.MaintenanceCount, Note = dto.Note, FlagActive = "1" };
+    db.MaintenanceLevelMsts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.Km, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintenancelevels/{km:int}/toggle", async (int km, AppDbContext db, ITenantContext t) =>
+{
+    var x = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.Km == km);
+    if (x is null) return Results.NotFound(new { km });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.Km, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
+app.MapDelete("/api/maintenancelevels/{km:int}", async (int km, AppDbContext db, ITenantContext t) =>
+{
+    var x = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.Km == km);
+    if (x is null) return Results.NotFound(new { km });
+    db.MaintenanceLevelMsts.Remove(x); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = km });
 }).RequireAuthorization();
 
 // ===== Phụ tùng phát sinh (ExtraPartMst — port 1:1 FrmMstExtraPartsMng, TCMotor) =====
@@ -7740,6 +7783,7 @@ record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarranty
 record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
+record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
