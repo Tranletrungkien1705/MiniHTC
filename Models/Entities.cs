@@ -2268,6 +2268,45 @@ public sealed class BankCarMortage
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Bảo lãnh ngân hàng (Pmt_Guarantee) — port 1:1 FrmBankGrt (cụm Bank). Header.</summary>
+public sealed class BankGuarantee
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GuaranteeNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string BankGuaranteeNo { get; set; } = "";   // so BL do NH cap
+    public string GuaranteeType { get; set; } = "0";     // 0=NH giam sat, 1=NH phat hanh
+    public int Term { get; set; }                         // ky han (thang)
+    public DateTime? DateOpen { get; set; }
+    public DateTime? DateExpired { get; set; }
+    public DateTime? DateEnd { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft";        // Draft -> Approved / Rejected
+    public string FlagSettled { get; set; } = "0";        // 1 = da tat toan
+    public string Remark { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+    public DateTime? SettledAt { get; set; }
+}
+
+/// <summary>Chi tiết bảo lãnh theo VIN (Pmt_GuaranteeDetail) — port 1:1 FrmBankGrt detail.</summary>
+public sealed class BankGuaranteeDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long GuaranteeId { get; set; }
+    public string VIN { get; set; } = "";
+    public decimal GrtValue { get; set; }
+    public decimal GrtPercent { get; set; }
+    public decimal DiscountValue { get; set; }
+    public decimal DiscountPercent { get; set; }
+    public DateTime? DateStart { get; set; }
+    public DateTime? DateWarning { get; set; }
+    public DateTime? DateExpired { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -116,6 +116,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<InvoiceSetup> InvoiceSetups => Set<InvoiceSetup>();
     public DbSet<SalesInventoryThreshold> SalesInventoryThresholds => Set<SalesInventoryThreshold>();
     public DbSet<BankCarMortage> BankCarMortages => Set<BankCarMortage>();
+    public DbSet<BankGuarantee> BankGuarantees => Set<BankGuarantee>();
+    public DbSet<BankGuaranteeDtl> BankGuaranteeDtls => Set<BankGuaranteeDtl>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();
     public DbSet<CarAllocationByArea> CarAllocationByAreas => Set<CarAllocationByArea>();

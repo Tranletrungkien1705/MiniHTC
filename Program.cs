@@ -1429,6 +1429,80 @@ app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantCont
     return Results.Ok(new { total = rows.Count, byRange = new[] { new { key = "Giao ngay", value = rows.Count(r => r.DeliveryRangeType == "DlvImmediate") }, new { key = "Trong tuần", value = rows.Count(r => r.DeliveryRangeType == "DlvThisWeek") }, new { key = "Tuần tới", value = rows.Count(r => r.DeliveryRangeType == "DlvNextWeek") } }, pivot });
 }).RequireAuthorization();
 
+// ===== Bảo lãnh ngân hàng (BankGuarantee — port 1:1 FrmBankGrt, cụm Bank/TERP.BankClient) =====
+app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? grtNo, string? status, string? type, string? settled) =>
+{
+    var q = db.BankGuarantees.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(g => g.BankCode == bank);
+    if (!string.IsNullOrWhiteSpace(grtNo)) q = q.Where(g => g.GuaranteeNo.Contains(grtNo!) || g.BankGuaranteeNo.Contains(grtNo!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(g => g.Status == status);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(g => g.GuaranteeType == type);
+    if (!string.IsNullOrWhiteSpace(settled)) q = q.Where(g => g.FlagSettled == settled);
+    var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
+    {
+        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
+        cars = db.BankGuaranteeDtls.Count(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng bảo lãnh." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có chi tiết xe bảo lãnh." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var gtype = dto.GuaranteeType == "1" ? "1" : "0";
+    var no = "BLNH" + DateTime.Now.ToString("yyMMddHHmmss");
+    var g2 = new BankGuarantee
+    {
+        OrgId = t.OrgId, GuaranteeNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode.Trim(),
+        BankGuaranteeNo = dto.BankGuaranteeNo ?? "", GuaranteeType = gtype, Term = dto.Term,
+        DateOpen = dto.DateOpen, DateExpired = dto.DateExpired, DateEnd = dto.DateEnd, Remark = dto.Remark ?? "",
+        Status = "Draft", FlagSettled = "0", TotalAmount = cars.Sum(c => c.GrtValue)
+    };
+    db.BankGuarantees.Add(g2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), GrtValue = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired }).ToListAsync();
+    return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.Status, g.FlagSettled, g.TotalAmount, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject" or "settle")) return Results.BadRequest(new { error = "action = approve|reject|settle" });
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    if (action is "approve" or "reject")
+    {
+        if (g.Status != "Draft") return Results.BadRequest(new { error = "Bảo lãnh không ở trạng thái chờ duyệt." });
+        if (action == "approve") { g.Status = "Approved"; g.ApprovedAt = DateTime.Now; }
+        else g.Status = "Rejected";
+    }
+    else // settle = tất toán
+    {
+        if (g.Status != "Approved") return Results.BadRequest(new { error = "Chỉ tất toán bảo lãnh đã duyệt." });
+        if (g.FlagSettled == "1") return Results.BadRequest(new { error = "Bảo lãnh đã tất toán." });
+        g.FlagSettled = "1"; g.SettledAt = DateTime.Now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5424,6 +5498,8 @@ record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, st
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
+record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
+record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
