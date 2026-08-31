@@ -2765,6 +2765,20 @@ public sealed class TranspDlvConfirmCar
     public string ModelCode { get; set; } = "";
 }
 
+/// <summary>Bản ghi bán hàng cho báo cáo HMC (ReportHMC) — port 1:1 FrmHMCReport.</summary>
+public sealed class HmcSalesRecord
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public DateTime TransactionDate { get; set; }
+    public string DeliveryType { get; set; } = "";     // loai giao xe
+    public string SalesType { get; set; } = "";         // loai ban (2 ky tu -> N/O)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

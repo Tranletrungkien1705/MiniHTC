@@ -2473,6 +2473,38 @@ app.MapPost("/api/transpdlv/{no}/confirm", async (string no, TranspConfirmDto? b
     return Results.Ok(new { m.DlvMinutesNo, status = m.ConfirmStatus });
 }).RequireAuthorization();
 
+// ===== Báo cáo bán hàng HMC (HmcSalesRecord — port 1:1 FrmHMCReport, SalesDealer) =====
+app.MapPost("/api/hmcsales", async (HmcSalesDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
+    if (dto.TransactionDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày giao dịch." });
+    var r = new HmcSalesRecord { OrgId = t.OrgId, VIN = dto.VIN.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", ModelCode = dto.ModelCode ?? "", TransactionDate = dto.TransactionDate.Value, DeliveryType = dto.DeliveryType ?? "", SalesType = dto.SalesType ?? "" };
+    db.HmcSalesRecords.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.VIN });
+}).RequireAuthorization();
+
+// Báo cáo HMC theo khoảng ngày: dòng theo VIN (ngày yyyyMMdd, loại giao, loại bán tách N/O) + tổng hợp.
+app.MapGet("/api/hmcreport", async (AppDbContext db, ITenantContext t, DateTime? from, DateTime? to, string? dealer) =>
+{
+    var q = db.HmcSalesRecords.Where(r => r.OrgId == t.OrgId);
+    if (from is not null) q = q.Where(r => r.TransactionDate >= from.Value.Date);
+    if (to is not null) q = q.Where(r => r.TransactionDate < to.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    var recs = await q.OrderBy(r => r.TransactionDate).Take(2000).ToListAsync();
+    var rows = recs.Select(r => new
+    {
+        transactionDate = r.TransactionDate.ToString("yyyyMMdd"),
+        r.VIN, r.DealerCode, r.ModelCode, r.DeliveryType, r.SalesType,
+        n = r.SalesType.Length >= 1 ? r.SalesType.Substring(0, 1) : "",   // ký tự 1 (field N)
+        o = r.SalesType.Length >= 2 ? r.SalesType.Substring(1, 1) : ""    // ký tự 2 (field O)
+    }).ToList();
+    var byDelivery = recs.GroupBy(r => string.IsNullOrEmpty(r.DeliveryType) ? "(chưa rõ)" : r.DeliveryType)
+        .Select(g => new { deliveryType = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var bySalesType = recs.GroupBy(r => string.IsNullOrEmpty(r.SalesType) ? "(chưa rõ)" : r.SalesType)
+        .Select(g => new { salesType = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    return Results.Ok(new { total = rows.Count, byDelivery, bySalesType, rows });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -6507,6 +6539,7 @@ record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
 record TranspDlvCarDto(string VIN, string? ModelCode);
 record TranspDlvDto(string TransporterCode, string? DealerCode, List<TranspDlvCarDto>? Cars);
 record TranspConfirmDto(string? Remark);
+record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
