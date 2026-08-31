@@ -245,6 +245,19 @@ public sealed class InsuranceFee
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Hạn mức phân bổ xe (Mst_Quota — port 1:1 FrmMngQuota): số lượng xe theo đại lý/model/kỳ.</summary>
+public sealed class Quota
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string Period { get; set; } = "";   // YYYYMM
+    public int Qty { get; set; }
+    public int UsedQty { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

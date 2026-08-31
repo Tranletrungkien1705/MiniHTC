@@ -768,6 +768,29 @@ app.MapDelete("/api/insfees/{code}", async (string code, AppDbContext db, ITenan
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Hạn mức phân bổ xe (Mst_Quota — port 1:1 FrmMngQuota) =====
+app.MapGet("/api/quotas", async (AppDbContext db, ITenantContext t, string? period, string? dealer) =>
+{
+    var q = db.Quotas.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(period)) q = q.Where(x => x.Period == period);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var rows = await q.OrderBy(x => x.Period).ThenBy(x => x.DealerCode).Take(500).Select(x => new
+    { x.DealerCode, x.ModelCode, x.Period, x.Qty, x.UsedQty, remain = x.Qty - x.UsedQty }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, totalQty = rows.Sum(r => r.Qty), totalUsed = rows.Sum(r => r.UsedQty), rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/quotas", async (QuotaDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode) || string.IsNullOrWhiteSpace(dto.Period))
+        return Results.BadRequest(new { error = "Cần DealerCode, ModelCode, Period." });
+    var dealer = dto.DealerCode.Trim().ToUpperInvariant(); var model = dto.ModelCode.Trim().ToUpperInvariant(); var period = dto.Period.Trim();
+    var x = await db.Quotas.FirstOrDefaultAsync(y => y.OrgId == t.OrgId && y.DealerCode == dealer && y.ModelCode == model && y.Period == period);
+    if (x is null) { x = new Quota { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model, Period = period }; db.Quotas.Add(x); }
+    x.Qty = dto.Qty; if (dto.UsedQty.HasValue) x.UsedQty = dto.UsedQty.Value; x.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.DealerCode, x.ModelCode, x.Period, x.Qty, remain = x.Qty - x.UsedQty });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -797,4 +820,5 @@ record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Stat
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, string? Status);
+record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);
 record RegisterOrgDto(string Name);
