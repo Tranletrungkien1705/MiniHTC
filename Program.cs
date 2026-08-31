@@ -3071,6 +3071,50 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo hồ sơ hỗ trợ bán hàng (port 1:1 báo cáo SupportRecord) — tái dùng SupportRecord =====
+app.MapGet("/api/report/support", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? salesMan) =>
+{
+    var q = db.SupportRecords.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(r => r.BankCode == bank);
+    if (!string.IsNullOrWhiteSpace(salesMan)) q = q.Where(r => r.SalesManCode == salesMan);
+    var rows = await q.ToListAsync();
+    var byDealer = rows.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
+        .Select(g => new { dealerCode = g.Key, cars = g.Count(), amount = g.Sum(x => x.Price) }).OrderByDescending(x => x.amount).ToList();
+    var byBank = rows.GroupBy(r => string.IsNullOrEmpty(r.BankCode) ? "(không vay)" : r.BankCode)
+        .Select(g => new { bankCode = g.Key, cars = g.Count(), amount = g.Sum(x => x.Price) }).OrderByDescending(x => x.cars).ToList();
+    var bySalesMan = rows.GroupBy(r => string.IsNullOrEmpty(r.SalesManCode) ? "(chưa rõ)" : r.SalesManCode)
+        .Select(g => new { salesManCode = g.Key, cars = g.Count(), amount = g.Sum(x => x.Price) }).OrderByDescending(x => x.cars).ToList();
+    var detail = rows.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.DealNo, r.VIN, r.DealerCode, r.SalesManCode, r.BankCode, price = r.Price,
+        deliveryDate = r.DeliveryDate.HasValue ? r.DeliveryDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToList();
+    return Results.Ok(new { total = rows.Count, totalAmount = rows.Sum(r => r.Price), withLoan = rows.Count(r => !string.IsNullOrEmpty(r.BankCode)), byDealer, byBank, bySalesMan, detail });
+}).RequireAuthorization();
+
+// ===== Báo cáo giao dịch bán xe (port 1:1 báo cáo DealRecord) — tái dùng DealRecord =====
+app.MapGet("/api/report/deal", async (AppDbContext db, ITenantContext t, string? dealer, string? salesType, string? verify) =>
+{
+    var q = db.DealRecords.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(salesType)) q = q.Where(r => r.SalesType == salesType);
+    if (!string.IsNullOrWhiteSpace(verify)) q = q.Where(r => r.VerifyStatus == verify);
+    var rows = await q.ToListAsync();
+    var byDealer = rows.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
+        .Select(g => new { dealerCode = g.Key, deals = g.Count(), verified = g.Count(x => x.VerifyStatus == "Verified") }).OrderByDescending(x => x.deals).ToList();
+    var bySalesType = rows.GroupBy(r => string.IsNullOrEmpty(r.SalesType) ? "(chưa rõ)" : r.SalesType)
+        .Select(g => new { salesType = g.Key, deals = g.Count() }).OrderByDescending(x => x.deals).ToList();
+    var byVerify = rows.GroupBy(r => string.IsNullOrEmpty(r.VerifyStatus) ? "(chưa KC)" : r.VerifyStatus)
+        .Select(g => new { verify = g.Key, deals = g.Count() }).OrderByDescending(x => x.deals).ToList();
+    var detail = rows.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.DealNo, r.VIN, r.DealerCode, r.PlateNo, r.SalesType, r.WarrantyNo, r.CustomerCode, r.VerifyStatus,
+        dealDate = r.DealDate.HasValue ? r.DealDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToList();
+    return Results.Ok(new { total = rows.Count, verified = rows.Count(r => r.VerifyStatus == "Verified"), byDealer, bySalesType, byVerify, detail });
+}).RequireAuthorization();
+
 // ===== Báo cáo đẩy sổ bảo hành online (port 1:1 báo cáo SbhOnline) — tái dùng SbhOnline =====
 app.MapGet("/api/report/sbhonline", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
 {
