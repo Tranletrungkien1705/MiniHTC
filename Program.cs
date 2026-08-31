@@ -3071,6 +3071,34 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo yêu cầu thế chấp xe (port 1:1 báo cáo ReqMortgage) — tái dùng ReqMortgage + ReqMortgageCar =====
+app.MapGet("/api/report/reqmortgage", async (AppDbContext db, ITenantContext t, string? mortageBank, string? dealer, string? status) =>
+{
+    var q = db.ReqMortgages.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(mortageBank)) q = q.Where(r => r.MortageBankCode == mortageBank);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var cars = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.ReqMortgageId)).ToListAsync();
+    var carByReq = cars.GroupBy(c => c.ReqMortgageId).ToDictionary(g => g.Key, g => g.Count());
+    var byBank = reqs.GroupBy(r => string.IsNullOrEmpty(r.MortageBankCode) ? "(chưa rõ)" : r.MortageBankCode)
+        .Select(g => new { mortageBank = g.Key, reqs = g.Count(), approved = g.Count(x => x.Status == "Approved"), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
+        .OrderByDescending(x => x.cars).ToList();
+    var byDealer = reqs.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
+        .Select(g => new { dealerCode = g.Key, reqs = g.Count(), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
+        .OrderByDescending(x => x.cars).ToList();
+    var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.ReqRMNo, r.MortageBankCode, r.DealerCode, r.Status,
+        cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0,
+        mortageDate = r.MortageDate.HasValue ? r.MortageDate.Value.ToString("yyyy-MM-dd") : "",
+        createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = cars.Count, approved = reqs.Count(r => r.Status == "Approved"), byBank, byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Báo cáo xác nhận giao xe vận chuyển (port 1:1 báo cáo TranspDlvConfirm) — tái dùng TranspDlvConfirm + Car =====
 app.MapGet("/api/report/transpdlv", async (AppDbContext db, ITenantContext t, string? transporter, string? dealer, string? status) =>
 {
