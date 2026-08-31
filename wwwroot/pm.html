@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Phiếu chi</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-Pending{color:var(--warn)} .p-Approved{color:var(--ok)} .p-Rejected{color:var(--bad)}
+  #msg{font-size:13px} .lines{font-size:12px;opacity:.85}
+  #ltbl td,#ltbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Phiếu chi / thanh toán <span class="muted">(port 1:1 FrmNewPM / FrmMngPM — Pmt_Payment)</span></h1>
+<div class="card">
+  <b>Tạo phiếu chi mới</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="dl" placeholder="Đại lý *" style="width:110px">
+    <input id="bs" placeholder="TK chuyển" style="width:130px">
+    <input id="br" placeholder="TK nhận" style="width:130px">
+    <span style="flex:1"></span><b id="tot" class="n">0</b>
+  </div>
+  <table id="ltbl"><thead><tr><th>Chứng từ (RefNo)</th><th class="n">Lũy kế</th><th class="n">Chi kỳ này</th><th class="n">Tổng</th><th></th></tr></thead>
+  <tbody id="ltb"></tbody></table>
+  <div class="bar" style="margin-top:10px">
+    <button class="sm" onclick="addLine()">+ Thêm dòng</button>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Tạo phiếu</button><span id="msg"></span>
+  </div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Pending">Chờ duyệt</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select>
+  <span style="flex:1"></span><span class="muted">Tổng chi (lọc): <b id="sumall" class="n">0</b></span>
+</div>
+<table><thead><tr><th>Số PC</th><th>Đại lý</th><th class="n">Số tiền</th><th>Trạng thái</th><th>Ngày</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Pending:"Chờ duyệt",Approved:"Đã duyệt",Rejected:"Từ chối"};
+const n=x=>Number(x||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function fmt(d){ return d? new Date(d).toLocaleString("vi-VN"):""; }
+function addLine(ref,acc,cur){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="ref" value="${ref||''}" style="width:130px"></td>
+    <td class="n"><input class="acc" type="number" value="${acc||0}" style="width:90px;text-align:right" oninput="recalc()"></td>
+    <td class="n"><input class="cur" type="number" value="${cur||0}" style="width:90px;text-align:right" oninput="recalc()"></td>
+    <td class="n tot">0</td><td><button class="sm" onclick="this.closest('tr').remove();recalc()">×</button></td>`;
+  F("ltb").appendChild(tr); recalc();
+}
+function recalc(){
+  let sum=0;
+  F("ltb").querySelectorAll("tr").forEach(tr=>{
+    const a=Number(tr.querySelector(".acc").value||0), c=Number(tr.querySelector(".cur").value||0);
+    tr.querySelector(".tot").textContent=n(a+c); sum+=c;
+  });
+  F("tot").textContent=n(sum);
+}
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({refNo:tr.querySelector(".ref").value,amountAccum:Number(tr.querySelector(".acc").value||0),amountCurrent:Number(tr.querySelector(".cur").value||0)})).filter(l=>l.refNo&&l.amountCurrent>0);
+  const r=await fetch("/api/pms",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,bankAccountSend:F("bs").value,bankAccountReceive:F("br").value,lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.pmNo+" ("+n(j.total)+"đ)."); F("ltb").innerHTML="";addLine();recalc(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch("/api/pms?status="+F("fst").value,{headers:H()})).json();
+  F("sumall").textContent=n(d.total);
+  F("rows").innerHTML=(d.items||[]).map(p=>{
+    let act=p.status==="Pending"?`<button class="sm" onclick="act('${p.pmNo}','approve')">Duyệt</button> <button class="sm" onclick="act('${p.pmNo}','reject')">Từ chối</button>`:"";
+    return `<tr><td><b>${p.pmNo}</b> <a href="#" class="lines" onclick="lines('${p.pmNo}');return false">${p.lines} dòng</a></td>
+      <td>${p.dealerCode}</td><td class="n">${n(p.totalAmount)}</td>
+      <td><span class="pill p-${p.status}">${LBL[p.status]||p.status}</span></td>
+      <td>${fmt(p.createdAt)}</td><td>${act}</td></tr><tr id="l-${p.pmNo}"></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có phiếu.</td></tr>';
+}
+async function act(no,a){ const r=await fetch(`/api/pms/${no}/${a}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("l-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/pms/${no}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="6"><div class="lines">${(d.lines||[]).map(l=>`${l.refNo}: lũy kế ${n(l.amountAccum)} + kỳ này <b>${n(l.amountCurrent)}</b> = ${n(l.amountTotal)}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>

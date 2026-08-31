@@ -25,6 +25,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Quota> Quotas => Set<Quota>();
     public DbSet<MortgageRequest> MortgageRequests => Set<MortgageRequest>();
     public DbSet<MortgageCar> MortgageCars => Set<MortgageCar>();
+    public DbSet<PmtVoucher> PmtVouchers => Set<PmtVoucher>();
+    public DbSet<PmtLine> PmtLines => Set<PmtLine>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

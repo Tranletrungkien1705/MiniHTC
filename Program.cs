@@ -800,6 +800,63 @@ app.MapPost("/api/mortgages/{reqNo}/{action}", async (string reqNo, string actio
     return Results.Ok(new { m.ReqRMNo, status = m.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu chi / thanh toán (Pmt_Payment — port 1:1 FrmNewPM/FrmMngPM) =====
+// Header + dòng chi. TotalAmount = Σ AmountCurrent; AmountTotal(dòng) = AmountAccum + AmountCurrent. Pending → Approved/Rejected.
+app.MapGet("/api/pms", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.PmtVouchers.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.PMNo, p.DealerCode, p.BankAccountSend, p.BankAccountReceive, p.TotalAmount, p.Status, p.CreatedAt, p.DecidedAt,
+        lines = db.PmtLines.Count(l => l.OrgId == t.OrgId && l.VoucherId == p.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, total = items.Sum(x => x.TotalAmount), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pms", async (PmDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
+    var lines = (dto.Lines ?? new List<PmLineDto>()).Where(l => !string.IsNullOrWhiteSpace(l.RefNo) && l.AmountCurrent > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng chi (RefNo + AmountCurrent > 0)." });
+    var pmNo = "PM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new PmtVoucher
+    {
+        OrgId = t.OrgId, PMNo = pmNo, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        BankAccountSend = dto.BankAccountSend, BankAccountReceive = dto.BankAccountReceive,
+        TotalAmount = lines.Sum(l => l.AmountCurrent), Status = "Pending"
+    };
+    db.PmtVouchers.Add(p);
+    await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.PmtLines.Add(new PmtLine { OrgId = t.OrgId, VoucherId = p.Id, RefNo = l.RefNo.Trim().ToUpperInvariant(), AmountAccum = l.AmountAccum, AmountCurrent = l.AmountCurrent });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PMNo, p.DealerCode, total = p.TotalAmount, lines = lines.Count, status = p.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/pms/{pmNo}/lines", async (string pmNo, AppDbContext db, ITenantContext t) =>
+{
+    pmNo = pmNo.Trim().ToUpperInvariant();
+    var p = await db.PmtVouchers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMNo == pmNo);
+    if (p is null) return Results.NotFound(new { pmNo });
+    var lines = await db.PmtLines.Where(l => l.OrgId == t.OrgId && l.VoucherId == p.Id)
+        .Select(l => new { l.RefNo, l.AmountAccum, l.AmountCurrent, amountTotal = l.AmountAccum + l.AmountCurrent }).ToListAsync();
+    return Results.Ok(new { p.PMNo, p.DealerCode, p.TotalAmount, p.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/pms/{pmNo}/{action}", async (string pmNo, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    pmNo = pmNo.Trim().ToUpperInvariant();
+    var p = await db.PmtVouchers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMNo == pmNo);
+    if (p is null) return Results.NotFound(new { pmNo });
+    if (p.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối phiếu Chờ duyệt." });
+    p.Status = action == "approve" ? "Approved" : "Rejected"; p.DecidedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PMNo, status = p.Status });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -885,4 +942,6 @@ record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, string? Status);
 record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);
 record MortgageDto(string BankCode, List<string>? Vins);
+record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
+record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
 record RegisterOrgDto(string Name);

@@ -284,6 +284,34 @@ public sealed class MortgageCar
     public string DtlStatus { get; set; } = "Pending";  // Pending → Approved → Finished (theo header)
 }
 
+/// <summary>Phiếu chi / thanh toán (Pmt_Payment — port 1:1 FrmNewPM/FrmMngPM):
+/// header phiếu chi cho đại lý qua chuyển khoản. Pending → Approved / Rejected.</summary>
+public sealed class PmtVoucher
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PMNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? BankAccountSend { get; set; }     // TK chuyển
+    public string? BankAccountReceive { get; set; }  // TK nhận
+    public decimal TotalAmount { get; set; }          // = Σ AmountCurrent các dòng
+    public string Status { get; set; } = "Pending";   // Pending → Approved / Rejected
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DecidedAt { get; set; }
+}
+
+/// <summary>Dòng phiếu chi (PMDetail): 1 chứng từ tham chiếu + lũy kế + chi kỳ này.
+/// AmountTotal = AmountAccum + AmountCurrent (port đúng công thức FrmNewPM).</summary>
+public sealed class PmtLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long VoucherId { get; set; }
+    public string RefNo { get; set; } = "";           // số HĐ/VIN được chi
+    public decimal AmountAccum { get; set; }          // lũy kế đã chi trước đó
+    public decimal AmountCurrent { get; set; }        // chi kỳ này
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
