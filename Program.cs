@@ -159,6 +159,14 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("ContractType", "Loại hợp đồng (FrmMst_ContractType)"),
     ("PromotionType", "Loại khuyến mãi (FrmMst_PromotionType)"),
     ("DocType", "Loại tài liệu (FrmMst_DocType)"),
+    ("ExpenseType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
+    ("Training", "Khóa đào tạo (FrmMst_TrainingMng)"),
+    ("SalesManCert", "Chứng chỉ NVBH (FrmMst_SalesManCertificateMng)"),
+    ("StorageGlobal", "Kho ảo (FrmMst_StorageGlobal)"),
+    ("TransportDelay", "Hạn mức trễ vận tải (FrmMst_QuanLyHanMucDoTreVanTai)"),
+    ("ProductionYear", "Năm SX VIN (FrmMst_VINProductionYear_Actual)"),
+    ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
+    ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
