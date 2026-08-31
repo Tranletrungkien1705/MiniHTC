@@ -1289,6 +1289,75 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Hợp đồng bán lẻ (DlrContract — port 1:1 FrmNewRetailContract/FrmMngRetailContractHTC, DMSales.Foton/RetailContract) =====
+app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? customer) =>
+{
+    var q = db.DlrContracts.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(customer)) q = q.Where(c => c.CustomerCode == customer || c.CustomerName.Contains(customer));
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
+        lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
+        total = db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id).Sum(l => (decimal?)l.TotalAmountAfterVAT) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) return Results.BadRequest(new { error = "Phải nhập số hợp đồng người dùng." });
+    if (string.IsNullOrWhiteSpace(dto.SalesManCode)) return Results.BadRequest(new { error = "Hãy chọn nhân viên bán hàng." });
+    if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "Phải chọn kiểu bán lẻ." });
+    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "Hãy chọn khách hàng." });
+    if (string.IsNullOrWhiteSpace(dto.IDCardNo)) return Results.BadRequest(new { error = "Khách hàng chưa có Số giấy tờ tùy thân." });
+    if (string.IsNullOrWhiteSpace(dto.IDCardType)) return Results.BadRequest(new { error = "Khách hàng chưa có Loại giấy tờ tùy thân." });
+    if (dto.DateOfBirth is null) return Results.BadRequest(new { error = "Khách hàng chưa có Ngày sinh nhật/ thành lập Công ty." });
+    if (dto.SignDate is null) return Results.BadRequest(new { error = "Chưa chọn Ngày ký HĐ." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng model." });
+    if (lines.Any(l => l.Qty <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
+    var no = "DLC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new DlrContract
+    {
+        OrgId = t.OrgId, DlrContractNo = no, DlrContractNoUser = dto.DlrContractNoUser.Trim(), DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
+        SalesManCode = dto.SalesManCode.Trim(), SalesType = dto.SalesType.Trim(), CustomerCode = (dto.CustomerCode ?? "").Trim().ToUpperInvariant(),
+        CustomerName = dto.CustomerName.Trim(), IDCardNo = dto.IDCardNo.Trim(), IDCardType = dto.IDCardType.Trim(), DateOfBirth = dto.DateOfBirth.Value,
+        SignDate = dto.SignDate.Value, BankCode = dto.BankCode
+    };
+    db.DlrContracts.Add(c); await db.SaveChangesAsync();
+    foreach (var l in lines)
+    {
+        var amountVat = l.Price * l.Qty * l.VAT / 100m;
+        var totalAfter = l.Price * l.Qty + amountVat;
+        db.DlrContractDetails.Add(new DlrContractDetail { OrgId = t.OrgId, ContractId = c.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ColorCode = l.ColorCode, Qty = l.Qty, DlvExpectedDate = l.DlvExpectedDate, Price = l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var lines = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate, l.Price, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT }).ToListAsync();
+    return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SignDate, c.Status, count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.Status != "Active") return Results.BadRequest(new { error = "HĐ không ở trạng thái hiệu lực." });
+    c.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrContractNo, status = c.Status });
+}).RequireAuthorization();
+
 // ===== Khách hàng đại lý (DealerCustomer — port 1:1 FrmNewCustomer/FrmMngCustomer, DMSales.Foton/SalesDealer) =====
 app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? type) =>
 {
@@ -3695,4 +3764,6 @@ record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNo
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);
+record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
+record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 record RegisterOrgDto(string Name);

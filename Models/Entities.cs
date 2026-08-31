@@ -1463,6 +1463,43 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Hợp đồng bán lẻ (DlrContract) — port 1:1 FrmNewRetailContract/FrmMngRetailContractHTC (DMSales.Foton/RetailContract). HĐ đại lý bán lẻ cho khách, gắn NVBH + kiểu bán + dòng model/SL/giá/VAT.</summary>
+public sealed class DlrContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrContractNo { get; set; } = "";
+    public string DlrContractNoUser { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string SalesManCode { get; set; } = "";
+    public string SalesType { get; set; } = "";
+    public string CustomerCode { get; set; } = "";
+    public string CustomerName { get; set; } = "";
+    public string IDCardNo { get; set; } = "";
+    public string IDCardType { get; set; } = "";
+    public DateTime DateOfBirth { get; set; }
+    public DateTime SignDate { get; set; }         // ngày ký HĐ
+    public DateTime ContractDate { get; set; } = DateTime.Now;
+    public string? BankCode { get; set; }
+    public string Status { get; set; } = "Active"; // Active → Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+public sealed class DlrContractDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ContractId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public int Qty { get; set; } = 1;
+    public DateTime? DlvExpectedDate { get; set; }
+    public decimal Price { get; set; }
+    public decimal VAT { get; set; } = 10;
+    public decimal AmountVAT { get; set; }
+    public decimal TotalAmountAfterVAT { get; set; }
+}
+
 /// <summary>Khách hàng của đại lý (DealerCustomer) — port 1:1 FrmNewCustomer/FrmMngCustomer (DMSales.Foton/SalesDealer). Master KH cấp đại lý: loại KH, CMND, giới tính, DOB...</summary>
 public sealed class DealerCustomer
 {

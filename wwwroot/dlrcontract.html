@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Hợp đồng bán lẻ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1120px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box}
+  .grid input,.grid select{width:100%}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Active{color:var(--ok)} .p-Cancelled{color:#dc2626}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ltbl td,#ltbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Hợp đồng bán lẻ <span class="muted">(port 1:1 FrmNewRetailContract — DlrContract)</span></h1>
+<div class="card">
+  <b>Tạo hợp đồng bán lẻ</b>
+  <div class="grid" style="margin-top:10px">
+    <div><label>Số HĐ user *</label><input id="cu"></div>
+    <div><label>Mã đại lý</label><input id="dl"></div>
+    <div><label>NVBH *</label><input id="sm"></div>
+    <div><label>Kiểu bán lẻ *</label><input id="st" placeholder="RETAIL"></div>
+    <div><label>Mã KH</label><input id="cc"></div>
+    <div><label>Tên KH *</label><input id="cn"></div>
+    <div><label>Số giấy tờ *</label><input id="idn"></div>
+    <div><label>Loại giấy tờ *</label><input id="idt" placeholder="CMND/CCCD"></div>
+    <div><label>Ngày sinh *</label><input id="db" type="date"></div>
+    <div><label>Ngày ký HĐ *</label><input id="sd" type="date"></div>
+    <div><label>Ngân hàng</label><input id="bk"></div>
+  </div>
+  <table id="ltbl" style="margin-top:12px"><thead><tr><th>Model *</th><th>Spec</th><th>Màu</th><th>SL *</th><th>Ngày giao DK</th><th>Đơn giá</th><th>VAT%</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
+  <div class="bar"><button class="sm" onclick="addLine()">+ Thêm dòng</button><span style="flex:1"></span><button class="primary" onclick="create()">Lưu HĐ bán lẻ</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Active">Hiệu lực</option><option value="Cancelled">Đã hủy</option></select><input id="q" placeholder="Lọc KH" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Số HĐ</th><th>HĐ user</th><th>Đại lý</th><th>NVBH</th><th>KH</th><th>Ngày ký</th><th>Dòng</th><th class="num">Tổng (sau VAT)</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):""; const LBL={Active:"Hiệu lực",Cancelled:"Đã hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="md" style="width:80px"></td><td><input class="sp" style="width:65px"></td><td><input class="cl" style="width:55px"></td><td><input class="qt" type="number" value="1" style="width:55px"></td><td><input class="dd" type="date"></td><td><input class="pr" type="number" style="width:100px"></td><td><input class="vt" type="number" value="10" style="width:55px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr); }
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({modelCode:tr.querySelector(".md").value,specCode:tr.querySelector(".sp").value,colorCode:tr.querySelector(".cl").value,qty:parseInt(tr.querySelector(".qt").value)||0,dlvExpectedDate:tr.querySelector(".dd").value||null,price:parseFloat(tr.querySelector(".pr").value)||0,vat:parseFloat(tr.querySelector(".vt").value)||0})).filter(l=>l.modelCode);
+  const body={dealerCode:F("dl").value,dlrContractNoUser:F("cu").value,salesManCode:F("sm").value,salesType:F("st").value,customerCode:F("cc").value,customerName:F("cn").value,iDCardNo:F("idn").value,iDCardType:F("idt").value,dateOfBirth:F("db").value||null,signDate:F("sd").value||null,bankCode:F("bk").value,lines};
+  const r=await fetch("/api/dlrcontracts",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.dlrContractNo+" ("+j.lines+" dòng)."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/dlrcontracts?status=${F("fst").value}&customer=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=o.status==="Active"?`<button class="sm" onclick="cancel('${o.dlrContractNo}')">Hủy</button>`:"";
+    return `<tr><td><b>${o.dlrContractNo}</b> <a href="#" class="cars" onclick="lines('${o.dlrContractNo}');return false">xem dòng</a></td><td>${o.dlrContractNoUser}</td><td>${o.dealerCode||""}</td><td>${o.salesManCode}</td><td>${o.customerName}</td><td>${day(o.signDate)}</td><td>${o.lines}</td><td class="num">${money(o.total)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.dlrContractNo}"></tr>`;
+  }).join("")||'<tr><td colspan="10" class="muted">Chưa có hợp đồng.</td></tr>';
+}
+async function cancel(no){ const r=await fetch(`/api/dlrcontracts/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/dlrcontracts/${no}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="10"><div class="cars">${(d.lines||[]).map(l=>`<b>${l.modelCode}</b>${l.colorCode?"/"+l.colorCode:""} × ${l.qty} @ ${money(l.price)} +VAT${l.vat}% = ${money(l.totalAmountAfterVAT)}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>
