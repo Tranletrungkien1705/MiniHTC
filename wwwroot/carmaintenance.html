@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Bảo dưỡng xe kho</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right}
+  .num{font-weight:700;color:var(--accent)} .due{color:var(--warn);font-weight:600} #msg{font-size:13px}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+</style></head>
+<body>
+<h1>Bảo dưỡng xe tồn kho theo kỳ <span class="muted">(port 1:1 FrmMaintenanceHistory — VIN_MaintainPeriodHist)</span></h1>
+<div class="bar">
+  <input id="vin" placeholder="VIN *" style="width:130px"><input id="st" placeholder="Kho" style="width:90px"><input id="md" placeholder="Model" style="width:90px">
+  <select id="ty"><option value="MAINTAINANCE">Bảo dưỡng thường</option><option value="EXT">Gia hạn</option></select>
+  <input id="dt" type="date" title="Ngày BD"><input id="cy" type="number" placeholder="Chu kỳ ngày" style="width:110px" value="90">
+  <input id="rm" placeholder="Ghi chú" style="width:130px">
+  <button class="primary" onclick="save()">Ghi bảo dưỡng</button><span id="msg"></span>
+</div>
+<div class="bar">
+  <input id="qv" placeholder="Lọc VIN" oninput="load()" style="width:130px">
+  <select id="qt" onchange="load()"><option value="">Cả 2 loại</option><option value="MAINTAINANCE">Thường</option><option value="EXT">Gia hạn</option></select>
+</div>
+<table><thead><tr><th>VIN</th><th>Kho</th><th>Model</th><th>Loại</th><th class="n">Lần thứ</th><th>Ngày BD</th><th>BD kế</th><th>Ghi chú</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const TY={MAINTAINANCE:"Thường",EXT:"Gia hạn"};
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"—";
+function due(d){ return d && new Date(d) < new Date(); }
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function save(){
+  const b={vin:F("vin").value,storageCode:F("st").value,modelCode:F("md").value,mtnType:F("ty").value,mtnDate:F("dt").value||null,cycleDays:Number(F("cy").value||90),remark:F("rm").value};
+  const r=await fetch("/api/carmaintenances",{method:"POST",headers:H(),body:JSON.stringify(b)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã ghi BD "+j.vin+" (lần "+j.mtnTimes+", kế "+day(j.mtnNextDate)+")."); F("rm").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/carmaintenances?vin=${encodeURIComponent(F("qv").value)}&type=${F("qt").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(m=>`<tr><td><b>${m.vin}</b></td><td>${m.storageCode||"—"}</td><td>${m.modelCode||"—"}</td>
+    <td><span class="pill">${TY[m.mtnType]||m.mtnType}</span></td><td class="n num">${m.mtnTimes}</td><td>${day(m.mtnDate)}</td>
+    <td class="${due(m.mtnNextDate)?'due':''}">${day(m.mtnNextDate)}${due(m.mtnNextDate)?" ⚠":""}</td><td class="muted">${m.remark||""}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có lịch sử bảo dưỡng.</td></tr>';
+}
+load();
+</script>
+</body></html>

@@ -671,6 +671,24 @@ public sealed class DlSalesMan
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Lịch sử bảo dưỡng xe tồn kho theo kỳ (VIN_MaintainPeriodHist — port 1:1 FrmMaintenanceHistory, Maintenance):
+/// mỗi lần bảo dưỡng xe kho = 1 dòng; MtnTimes tự tăng theo VIN+loại; MtnNextDate = lần này + chu kỳ.</summary>
+public sealed class CarMaintenance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? StorageCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string MtnType { get; set; } = "MAINTAINANCE";  // MAINTAINANCE (thường) / EXT (gia hạn)
+    public int MtnTimes { get; set; }                       // lần bảo dưỡng thứ n (theo VIN+loại)
+    public DateTime MtnDate { get; set; } = DateTime.Now;   // ngày bảo dưỡng lần này
+    public DateTime? MtnNextDate { get; set; }              // ngày bảo dưỡng kế
+    public string? UserCode { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

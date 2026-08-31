@@ -1227,6 +1227,38 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Bảo dưỡng xe tồn kho theo kỳ (VIN_MaintainPeriodHist — port 1:1 FrmMaintenanceHistory) =====
+app.MapGet("/api/carmaintenances", async (AppDbContext db, ITenantContext t, string? vin, string? type, string? storage) =>
+{
+    var q = db.CarMaintenances.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(m => m.Vin.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(m => m.MtnType == type);
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(m => m.StorageCode == storage);
+    var items = await q.OrderByDescending(m => m.Id).Take(1000).Select(m => new
+    { m.Vin, m.StorageCode, m.ModelCode, m.MtnType, m.MtnTimes, m.MtnDate, m.MtnNextDate, m.UserCode, m.Remark }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Ghi 1 lần bảo dưỡng; MtnTimes = lần thứ n theo VIN+loại; MtnNextDate = MtnDate + chu kỳ (mặc định 90 ngày)
+app.MapPost("/api/carmaintenances", async (CarMtnDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    var type = string.IsNullOrWhiteSpace(dto.MtnType) ? "MAINTAINANCE" : dto.MtnType.Trim().ToUpperInvariant();
+    if (type is not ("MAINTAINANCE" or "EXT")) return Results.BadRequest(new { error = "MtnType = MAINTAINANCE|EXT" });
+    var vin = dto.Vin.Trim().ToUpperInvariant();
+    var lastTimes = await db.CarMaintenances.Where(m => m.OrgId == t.OrgId && m.Vin == vin && m.MtnType == type)
+        .Select(m => (int?)m.MtnTimes).MaxAsync() ?? 0;
+    var mtnDate = dto.MtnDate ?? DateTime.Now;
+    int cycle = dto.CycleDays is int c && c > 0 ? c : 90;
+    var m = new CarMaintenance
+    {
+        OrgId = t.OrgId, Vin = vin, StorageCode = dto.StorageCode, ModelCode = dto.ModelCode, MtnType = type,
+        MtnTimes = lastTimes + 1, MtnDate = mtnDate, MtnNextDate = mtnDate.AddDays(cycle), UserCode = dto.UserCode, Remark = dto.Remark
+    };
+    db.CarMaintenances.Add(m); await db.SaveChangesAsync();
+    return Results.Ok(new { m.Vin, m.MtnType, m.MtnTimes, m.MtnDate, m.MtnNextDate });
+}).RequireAuthorization();
+
 // ===== NVBH đại lý (Mst_DlSalesMan — port 1:1 FrmMngSalesManHTC/FrmMngSalesManApproved) =====
 string[] _smStatuses = { "THUVIEC", "CHINGTHUC", "CTVIEN", "NGHIVIEC" };
 app.MapGet("/api/dlsalesmen", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? approved) =>
@@ -1761,4 +1793,5 @@ record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCod
 record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo);
 record DlGrantDto(string SMHyundaiCode);
 record DlStatusDto(string SMStatus);
+record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
 record RegisterOrgDto(string Name);
