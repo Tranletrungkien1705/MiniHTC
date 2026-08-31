@@ -3299,6 +3299,48 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Đơn giá thiết bị GPS theo hợp đồng (GpsUnitPrice — port 1:1 FrmMst_UnitPriceGPS, Admin/Product) =====
+app.MapGet("/api/gpsunitprices", async (AppDbContext db, ITenantContext t, string? contract, string? active) =>
+{
+    var q = db.GpsUnitPrices.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(contract)) q = q.Where(x => x.ContractNo.Contains(contract!));
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.ContractNo, x.UnitPrice, x.FlagActive,
+        effStartDate = x.EffStartDate.HasValue ? x.EffStartDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo số hợp đồng (mỗi hợp đồng 1 đơn giá; nhập lại = cập nhật đơn giá + ngày hiệu lực).
+app.MapPost("/api/gpsunitprices", async (GpsUnitPriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng." });
+    if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không hợp lệ." });
+    var no = dto.ContractNo.Trim();
+    var ex = await db.GpsUnitPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
+    if (ex is not null)
+    {
+        ex.UnitPrice = dto.UnitPrice; ex.EffStartDate = dto.EffStartDate; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.ContractNo, updated = true });
+    }
+    var r = new GpsUnitPrice { OrgId = t.OrgId, ContractNo = no, UnitPrice = dto.UnitPrice, EffStartDate = dto.EffStartDate, FlagActive = "1" };
+    db.GpsUnitPrices.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.ContractNo, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsunitprices/{contract}/toggle", async (string contract, AppDbContext db, ITenantContext t) =>
+{
+    contract = contract.Trim();
+    var x = await db.GpsUnitPrices.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ContractNo == contract);
+    if (x is null) return Results.NotFound(new { contract });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.ContractNo, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Số hiệu hóa đơn (InvoiceID — port 1:1 FrmInvoiceID_HTC/HTCLD/TCG, 2010.HTC/Admin/Product) =====
 string[] _invIdTypes = { "HTC", "HTCLD", "TCG" };
 app.MapGet("/api/invoiceids", async (AppDbContext db, ITenantContext t, string? type, string? active) =>
@@ -7305,6 +7347,7 @@ record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? 
 record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
+record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);

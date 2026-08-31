@@ -2793,6 +2793,18 @@ public sealed class BackOrder
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đơn giá thiết bị GPS theo hợp đồng — port 1:1 FrmMst_UnitPriceGPS (Mst_UnitPriceGPS).</summary>
+public sealed class GpsUnitPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractNo { get; set; } = "";
+    public decimal UnitPrice { get; set; }
+    public DateTime? EffStartDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
