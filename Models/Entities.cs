@@ -721,6 +721,25 @@ public sealed class Discount
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Giá thiết bị/phụ kiện theo spec xe (Mst_DevicePrice_Spec — port 1:1 FrmMst_DevicePrice_Spec, Admin/Product):
+/// giá thiết bị gắn theo spec + VAT + ngày hiệu lực. PriceVAT = Price * (1 + VAT/100).</summary>
+public sealed class DevicePrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? SpecDescription { get; set; }
+    public string? DeviceTypeCode { get; set; }
+    public string DeviceCode { get; set; } = "";
+    public string? DeviceName { get; set; }
+    public decimal Price { get; set; }
+    public decimal VAT { get; set; } = 10;
+    public decimal PriceVAT { get; set; }            // = Price * (1 + VAT/100)
+    public DateTime? EffectiveDate { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

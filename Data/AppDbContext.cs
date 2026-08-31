@@ -55,6 +55,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarMaintenance> CarMaintenances => Set<CarMaintenance>();
     public DbSet<MaintainExt> MaintainExts => Set<MaintainExt>();
     public DbSet<Discount> Discounts => Set<Discount>();
+    public DbSet<DevicePrice> DevicePrices => Set<DevicePrice>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

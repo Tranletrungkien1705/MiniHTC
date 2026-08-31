@@ -1227,6 +1227,34 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Giá thiết bị theo spec (Mst_DevicePrice_Spec — port 1:1 FrmMst_DevicePrice_Spec) =====
+app.MapGet("/api/deviceprices", async (AppDbContext db, ITenantContext t, string? spec, string? device) =>
+{
+    var q = db.DevicePrices.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(d => d.SpecCode == spec);
+    if (!string.IsNullOrWhiteSpace(device)) q = q.Where(d => d.DeviceCode.Contains(device.ToUpper()));
+    var items = await q.OrderBy(d => d.SpecCode).ThenBy(d => d.DeviceCode).Take(1000).Select(d => new
+    { d.SpecCode, d.SpecDescription, d.DeviceTypeCode, d.DeviceCode, d.DeviceName, d.Price, d.VAT, d.PriceVAT, d.EffectiveDate, d.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/deviceprices", async (DevicePriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SpecCode) || string.IsNullOrWhiteSpace(dto.DeviceCode))
+        return Results.BadRequest(new { error = "Cần SpecCode và DeviceCode." });
+    var spec = dto.SpecCode.Trim().ToUpperInvariant();
+    var dev = dto.DeviceCode.Trim().ToUpperInvariant();
+    var ed = dto.EffectiveDate?.Date;
+    // upsert theo (spec + device + ngày hiệu lực)
+    var d = await db.DevicePrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.DeviceCode == dev && x.EffectiveDate == ed);
+    if (d is null) { d = new DevicePrice { OrgId = t.OrgId, SpecCode = spec, DeviceCode = dev, EffectiveDate = ed }; db.DevicePrices.Add(d); }
+    d.SpecDescription = dto.SpecDescription; d.DeviceTypeCode = dto.DeviceTypeCode; d.DeviceName = dto.DeviceName;
+    d.Price = dto.Price; d.VAT = dto.VAT; d.PriceVAT = Math.Round(dto.Price * (1 + dto.VAT / 100m), 2);   // tính PriceVAT
+    d.Status = dto.Status ?? "1"; d.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.SpecCode, d.DeviceCode, d.Price, d.VAT, d.PriceVAT });
+}).RequireAuthorization();
+
 // ===== Biểu chiết khấu/phạt theo ngày hiệu lực (Mst_Discount — port 1:1 FrmDiscount) =====
 app.MapGet("/api/discounts", async (AppDbContext db, ITenantContext t, string? onDate) =>
 {
@@ -1871,4 +1899,5 @@ record DlStatusDto(string SMStatus);
 record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
 record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark);
 record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status);
+record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record RegisterOrgDto(string Name);
