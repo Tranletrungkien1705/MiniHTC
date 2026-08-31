@@ -1259,9 +1259,14 @@ public sealed class DeliveryOrder
     public Guid OrgId { get; set; }
     public string DoNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";      // Draft → Delivered
+    public string Status { get; set; } = "Draft";      // Draft → Approved1 → Approved2 → Delivered / Rejected
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DeliveredAt { get; set; }
+    // Duyệt lệnh giao (FrmApproveDO) — duyệt 2 cấp trước khi giao
+    public DateTime? Approved1At { get; set; }
+    public DateTime? Approved2At { get; set; }
+    public string? RejectReason { get; set; }
+    public DateTime? RejectedAt { get; set; }
 }
 
 /// <summary>Dòng xe trong DO (DoDetail): VIN + model + màu + kho + ngày giao dự kiến.</summary>
@@ -1330,9 +1335,11 @@ public sealed class CarDocRequest
     public string DealerCode { get; set; } = "";
     public string ReceivedPerson { get; set; } = "";
     public string ReceivedAddress { get; set; } = "";
-    public string Status { get; set; } = "Draft"; // Draft → Done
+    public string Status { get; set; } = "Draft"; // Draft → Done(duyệt) / Rejected(từ chối)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DoneAt { get; set; }
+    public string? RejectReason { get; set; }     // FrmDRApproved — từ chối
+    public DateTime? RejectedAt { get; set; }
 }
 public sealed class CarDocRequestCar
 {

@@ -119,6 +119,14 @@ public static class Seeder
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"RejectedAt\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"ApprovedQuantity\" integer NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                // FrmApproveDO — thêm cột duyệt vào DeliveryOrders đã tồn tại (INSERT DO không side-effect)
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"Approved1At\" timestamp NULL",
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"Approved2At\" timestamp NULL",
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"RejectReason\" text NULL",
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"RejectedAt\" timestamp NULL",
+                // FrmDRApproved — thêm cột từ chối vào CarDocRequests đã tồn tại
+                "ALTER TABLE public.\"CarDocRequests\" ADD COLUMN IF NOT EXISTS \"RejectReason\" text NULL",
+                "ALTER TABLE public.\"CarDocRequests\" ADD COLUMN IF NOT EXISTS \"RejectedAt\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

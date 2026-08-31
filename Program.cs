@@ -1560,6 +1560,18 @@ app.MapPost("/api/cardocrequests/{no}/complete", async (string no, AppDbContext 
     return Results.Ok(new { r.RequestNo, status = r.Status });
 }).RequireAuthorization();
 
+// Từ chối đề nghị giấy tờ xe (FrmDRApproved)
+app.MapPost("/api/cardocrequests/{no}/reject", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = "Chỉ từ chối đề nghị đang chờ." });
+    r.Status = "Rejected"; r.RejectReason = dto.Reason; r.RejectedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RequestNo, status = r.Status });
+}).RequireAuthorization();
+
 // ===== Lệnh giao xe cho đại lý (DeliveryOrder — port 1:1 FrmNewDO/FrmMngDO, DMSales.Foton) =====
 app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -1568,7 +1580,7 @@ app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
-        o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.DeliveredAt,
+        o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.DeliveredAt, o.Approved1At, o.Approved2At, o.RejectReason,
         cars = db.DeliveryOrderCars.Count(c => c.OrgId == t.OrgId && c.DoId == o.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -1605,8 +1617,42 @@ app.MapPost("/api/deliveryorders/{no}/deliver", async (string no, AppDbContext d
     no = no.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ giao lệnh Nháp." });
+    if (o.Status is not ("Draft" or "Approved2")) return Results.BadRequest(new { error = "Chỉ giao lệnh Nháp hoặc đã duyệt cấp 2." });
     o.Status = "Delivered"; o.DeliveredAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.DoNo, status = o.Status });
+}).RequireAuthorization();
+
+// Duyệt lệnh giao xe (FrmApproveDO) — 2 cấp trước khi giao; từ chối có lý do
+app.MapPost("/api/deliveryorders/{no}/approve1", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 lệnh Nháp." });
+    o.Status = "Approved1"; o.Approved1At = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.DoNo, status = o.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/deliveryorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status != "Approved1") return Results.BadRequest(new { error = "Lệnh phải duyệt cấp 1 trước." });
+    o.Status = "Approved2"; o.Approved2At = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.DoNo, status = o.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/deliveryorders/{no}/reject", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    if (o.Status is not ("Draft" or "Approved1")) return Results.BadRequest(new { error = "Chỉ từ chối lệnh đang chờ duyệt." });
+    o.Status = "Rejected"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { o.DoNo, status = o.Status });
 }).RequireAuthorization();
