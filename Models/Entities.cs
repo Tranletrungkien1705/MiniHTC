@@ -740,6 +740,18 @@ public sealed class DevicePrice
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Giá bán xe TCG theo spec (Mst_TCGCarSalePrice — port 1:1 FrmMstTCGCarSalePrice, Admin/Product):
+/// đơn giá bán xe cho TCG (tài chính) theo mã spec. Upsert theo SpecCode.</summary>
+public sealed class TcgSalePrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public decimal UnitPrice { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

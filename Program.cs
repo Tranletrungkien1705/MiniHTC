@@ -1227,6 +1227,41 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Giá bán xe TCG theo spec (Mst_TCGCarSalePrice — port 1:1 FrmMstTCGCarSalePrice) =====
+app.MapGet("/api/tcgsaleprices", async (AppDbContext db, ITenantContext t, string? spec) =>
+{
+    var q = db.TcgSalePrices.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(p => p.SpecCode.Contains(spec.ToUpper()));
+    var items = await q.OrderBy(p => p.SpecCode).Take(1000).Select(p => new { p.SpecCode, p.UnitPrice, p.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/tcgsaleprices", async (TcgPriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Cần SpecCode." });
+    var spec = dto.SpecCode.Trim().ToUpperInvariant();
+    var p = await db.TcgSalePrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec);
+    if (p is null) { p = new TcgSalePrice { OrgId = t.OrgId, SpecCode = spec }; db.TcgSalePrices.Add(p); }
+    p.UnitPrice = dto.UnitPrice; p.Status = dto.Status ?? "1"; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.SpecCode, p.UnitPrice, p.Status });
+}).RequireAuthorization();
+
+// Điều chỉnh hạn mức (FrmAdjustQuota — bản WinForm là STUB rỗng; implement thật: cộng/trừ delta vào Qty của Quota)
+app.MapPost("/api/quotas/adjust", async (QuotaAdjustDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode) || string.IsNullOrWhiteSpace(dto.Period))
+        return Results.BadRequest(new { error = "Cần DealerCode, ModelCode và Period." });
+    var q = await db.Quotas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dto.DealerCode.Trim().ToUpperInvariant() && x.ModelCode == dto.ModelCode.Trim().ToUpperInvariant() && x.Period == dto.Period.Trim());
+    if (q is null) return Results.NotFound(new { error = "Chưa có hạn mức để điều chỉnh." });
+    var newQty = q.Qty + dto.DeltaQty;
+    if (newQty < q.UsedQty) return Results.BadRequest(new { error = $"Hạn mức mới ({newQty}) < đã dùng ({q.UsedQty})." });
+    q.Qty = newQty; q.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { q.DealerCode, q.ModelCode, q.Period, q.Qty, q.UsedQty, remain = q.Qty - q.UsedQty });
+}).RequireAuthorization();
+
 // ===== Giá thiết bị theo spec (Mst_DevicePrice_Spec — port 1:1 FrmMst_DevicePrice_Spec) =====
 app.MapGet("/api/deviceprices", async (AppDbContext db, ITenantContext t, string? spec, string? device) =>
 {
@@ -1900,4 +1935,6 @@ record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? Mtn
 record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark);
 record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status);
 record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
+record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
+record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
 record RegisterOrgDto(string Name);
