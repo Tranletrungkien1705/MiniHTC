@@ -168,6 +168,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CustomerType> CustomerTypes => Set<CustomerType>();
     public DbSet<DealerServiceOption> DealerServiceOptions => Set<DealerServiceOption>();
     public DbSet<InsContract> InsContracts => Set<InsContract>();
+    public DbSet<PartQuote> PartQuotes => Set<PartQuote>();
+    public DbSet<PartQuoteLine> PartQuoteLines => Set<PartQuoteLine>();
     public DbSet<CustomerGroup> CustomerGroups => Set<CustomerGroup>();
     public DbSet<CustomerGroupMember> CustomerGroupMembers => Set<CustomerGroupMember>();
     public DbSet<InvoiceID> InvoiceIDs => Set<InvoiceID>();

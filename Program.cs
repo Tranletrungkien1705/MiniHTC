@@ -3230,6 +3230,71 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Báo giá phụ tùng dịch vụ (PartQuote header-detail — port 1:1 FrmPartQuotation/Search, TCMotor) =====
+app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var query = db.PartQuotes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.QuoteNo.Contains(q!) || (x.CusName != null && x.CusName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.QuoteNo, x.CusId, x.CusName, x.Mobile, x.ReceiveName, x.PaymentMethod, x.TotalAmount, x.Status,
+        createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
+        lines = db.PartQuoteLines.Count(l => l.OrgId == t.OrgId && l.PartQuoteId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo báo giá (header + dòng phụ tùng; tính Amount=Qty*Price*(1+VAT/100) + tổng).
+app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
+    if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải lớn hơn 0." });
+    var no = "PQ" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new PartQuote { OrgId = t.OrgId, QuoteNo = no, CusId = dto.CusId, CusName = dto.CusName, Mobile = dto.Mobile, ReceiveName = dto.ReceiveName, PaymentMethod = dto.PaymentMethod, Remark = dto.Remark, Status = "Draft" };
+    db.PartQuotes.Add(h); await db.SaveChangesAsync();
+    decimal total = 0m;
+    foreach (var l in lines)
+    {
+        var amount = l.Quantity * l.UnitPrice * (1 + l.Vat / 100m);
+        total += amount;
+        db.PartQuoteLines.Add(new PartQuoteLine { OrgId = t.OrgId, PartQuoteId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Unit = l.Unit, Quantity = l.Quantity, UnitPrice = l.UnitPrice, Vat = l.Vat, Amount = amount });
+    }
+    h.TotalAmount = total;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.QuoteNo, lines = lines.Count, totalAmount = total });
+}).RequireAuthorization();
+
+app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.PartQuoteLines.Where(l => l.OrgId == t.OrgId && l.PartQuoteId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Amount }).ToListAsync();
+    return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Chuyển trạng thái báo giá: Draft->Sent->Approved (hoặc cancel).
+app.MapPost("/api/partquotes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    string next = action switch
+    {
+        "send" => h.Status == "Draft" ? "Sent" : "",
+        "approve" => h.Status == "Sent" ? "Approved" : "",
+        "cancel" => h.Status != "Approved" ? "Cancelled" : "",
+        _ => "?"
+    };
+    if (next == "?") return Results.BadRequest(new { error = "action = send|approve|cancel" });
+    if (next == "") return Results.BadRequest(new { error = $"Không thể {action} khi đang ở trạng thái {h.Status}." });
+    h.Status = next; await db.SaveChangesAsync();
+    return Results.Ok(new { h.QuoteNo, status = h.Status });
+}).RequireAuthorization();
+
 // ===== Hợp đồng bảo hiểm dịch vụ (InsContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor) =====
 app.MapGet("/api/inscontracts", async (AppDbContext db, ITenantContext t, string? q, string? ins, string? active) =>
 {
@@ -8037,6 +8102,8 @@ record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, s
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
+record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
+record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

@@ -2819,6 +2819,38 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Báo giá phụ tùng dịch vụ (header) — port 1:1 FrmPartQuotation (TblSerInvQuote, TCMotor).</summary>
+public sealed class PartQuote
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string QuoteNo { get; set; } = "";
+    public string? CusId { get; set; }
+    public string? CusName { get; set; }
+    public string? Mobile { get; set; }
+    public string? ReceiveName { get; set; }
+    public string? PaymentMethod { get; set; }
+    public string? Remark { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string Status { get; set; } = "Draft";   // Draft -> Sent -> Approved / Cancelled
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng báo giá phụ tùng (detail) — port 1:1 FrmPartQuotation grid, TCMotor.</summary>
+public sealed class PartQuoteLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PartQuoteId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Unit { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal UnitPrice { get; set; }
+    public decimal Vat { get; set; }
+    public decimal Amount { get; set; }
+}
+
 /// <summary>Hợp đồng bảo hiểm dịch vụ (NĐ bảo hiểm/hạn mức/hiệu lực) — port 1:1 FrmInsuranceContractCreate (Tbl_Ser_InsuranceContract, TCMotor).</summary>
 public sealed class InsContract
 {
