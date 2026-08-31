@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Yêu cầu PDI đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Done{color:var(--ok)}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Yêu cầu PDI của đại lý <span class="muted">(port 1:1 FrmNewDlr_PDIRequest — DlrPdiRequest)</span></h1>
+<div class="card">
+  <b>Tạo yêu cầu PDI</b>
+  <div class="bar" style="margin:10px 0"><input id="dl" placeholder="Mã đại lý *" style="width:120px"><span style="flex:1"></span><button class="primary" onclick="create()">Lưu YC</button><span id="msg"></span></div>
+  <table id="ctbl"><thead><tr><th>Số RO *</th><th>Ngày tạo RO</th><th>TT RO</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addRow()">+ Thêm xe/RO</button>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Done">Hoàn tất</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
+<table><thead><tr><th>Số YC PDI</th><th>Đại lý</th><th>Số xe</th><th>Ngày tạo</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Draft:"Nháp",Done:"Hoàn tất"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; const dd=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addRow(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="ro" style="width:130px"></td><td><input class="dt" type="date"></td><td><input class="st" style="width:90px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ctb").appendChild(tr); }
+async function create(){
+  const items=[...F("ctb").querySelectorAll("tr")].map(tr=>({roNo:tr.querySelector(".ro").value,roCreatedDate:tr.querySelector(".dt").value||null,roStatus:tr.querySelector(".st").value})).filter(i=>i.roNo);
+  const r=await fetch("/api/dlrpdirequests",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,items})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.dlrPdiReqNo+" ("+j.cars+" xe)."); F("ctb").innerHTML="";addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/dlrpdirequests?status=${F("fst").value}&dealer=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=o.status==="Draft"?`<button class="sm" onclick="done('${o.dlrPdiReqNo}')">Hoàn tất</button>`:"";
+    return `<tr><td><b>${o.dlrPdiReqNo}</b> <a href="#" class="cars" onclick="cars('${o.dlrPdiReqNo}');return false">xem RO</a></td><td>${o.dealerCode}</td><td>${o.cars}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.dlrPdiReqNo}"></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có yêu cầu PDI.</td></tr>';
+}
+async function done(no){ const r=await fetch(`/api/dlrpdirequests/${no}/complete`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function cars(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/dlrpdirequests/${no}/cars`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="6"><div class="cars">${(d.cars||[]).map(c=>`RO <b>${c.roNo}</b>${c.roCreatedDate?" · "+dd(c.roCreatedDate):""}${c.roStatus?" · "+c.roStatus:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addRow(); load();
+</script>
+</body></html>

@@ -1448,6 +1448,9 @@ public sealed class DealerDeal
     public string? ReasonNotPDI { get; set; }
     public DateTime DealDate { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // FrmNewDealToDealer — chuyển xe sang đại lý khác: buyer là 1 đại lý, SalesType F7
+    public string? DealerCodeBuyer { get; set; }
+    public string? SalesManCode { get; set; }
 }
 public sealed class DealerDealDetail
 {
@@ -1458,6 +1461,27 @@ public sealed class DealerDealDetail
     public string? CusInvoiceNo { get; set; }            // số hóa đơn khách
     public DateTime? CusInvoiceDate { get; set; }
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
+}
+
+/// <summary>Yêu cầu PDI của đại lý (Dlr_PDIRequest) — port 1:1 FrmNewDlr_PDIRequest (DMSales.Foton/SalesDealer). Đại lý gửi yêu cầu PDI cho danh sách xe/RO.</summary>
+public sealed class DlrPdiRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrPdiReqNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";   // Draft → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DoneAt { get; set; }
+}
+public sealed class DlrPdiRequestDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DlrPdiReqId { get; set; }
+    public string RONo { get; set; } = "";
+    public DateTime? ROCreatedDate { get; set; }
+    public string? ROStatus { get; set; }
 }
 
 /// <summary>Giá xe thực tế theo VIN (UpdateCarPrice) — port 1:1 FrmUpdateCar (DMSales.Foton). Cập nhật đơn giá thực tế cho từng xe (batch).</summary>

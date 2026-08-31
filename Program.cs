@@ -1340,6 +1340,82 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
 }).RequireAuthorization();
 
+// Chuyển xe sang đại lý khác (FrmNewDealToDealer) — DealerDeal buyer là đại lý, SalesType F7
+app.MapPost("/api/dealerdeals/todealer", async (DealToDealerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý gửi." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCodeBuyer)) return Results.BadRequest(new { error = "Vui lòng chọn đại lý nhận." });
+    if (string.IsNullOrWhiteSpace(dto.DealNoUser)) return Results.BadRequest(new { error = "Cần số HĐ bán lẻ user." });
+    if (string.Equals(dto.DealerCode.Trim(), dto.DealerCodeBuyer.Trim(), StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "Đại lý gửi và nhận không được trùng." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
+    var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+    var no = "DD" + DateTime.Now.ToString("yyMMddHHmmss");
+    var d = new DealerDeal
+    {
+        OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        DealerCodeBuyer = dto.DealerCodeBuyer.Trim().ToUpperInvariant(), SalesManCode = dto.SalesManCode, SalesType = "F7", CustomerCodeBuyer = "", FlagPDI = "1"
+    };
+    db.DealerDeals.Add(d); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.DealerDealDetails.Add(new DealerDealDetail { OrgId = t.OrgId, DealId = d.Id, CarId = c.CarId.Trim().ToUpperInvariant(), PriceAFVAT = c.PriceAFVAT });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DealNo, from = d.DealerCode, to = d.DealerCodeBuyer, salesType = d.SalesType, cars = cars.Count });
+}).RequireAuthorization();
+
+// ===== Yêu cầu PDI của đại lý (DlrPdiRequest — port 1:1 FrmNewDlr_PDIRequest, DMSales.Foton/SalesDealer) =====
+app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.DlrPdiRequests.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.DoneAt,
+        cars = db.DlrPdiRequestDetails.Count(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    var ros = (dto.Items ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.RONo)).ToList();
+    if (ros.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 xe/RO." });
+    var dupe = ros.GroupBy(r => r.RONo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"RO {dupe.Key} bị trùng!" });
+    var no = "PDIR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new DlrPdiRequest { OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    db.DlrPdiRequests.Add(p); await db.SaveChangesAsync();
+    foreach (var r in ros)
+        db.DlrPdiRequestDetails.Add(new DlrPdiRequestDetail { OrgId = t.OrgId, DlrPdiReqId = p.Id, RONo = r.RONo.Trim().ToUpperInvariant(), ROCreatedDate = r.ROCreatedDate, ROStatus = r.ROStatus });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.DlrPdiReqNo, cars = ros.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/dlrpdirequests/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    var cars = await db.DlrPdiRequestDetails.Where(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
+        .Select(c => new { c.RONo, c.ROCreatedDate, c.ROStatus }).ToListAsync();
+    return Results.Ok(new { p.DlrPdiReqNo, p.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrpdirequests/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.Status != "Draft") return Results.BadRequest(new { error = "Yêu cầu đã hoàn tất." });
+    p.Status = "Done"; p.DoneAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.DlrPdiReqNo, status = p.Status });
+}).RequireAuthorization();
+
 // ===== Chi tiết tờ khai hải quan (CtTkhq/CT_TKHQ — port 1:1 FrmNewCT_TKHQ, DMSales.Foton) =====
 app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? port) =>
 {
@@ -3579,4 +3655,7 @@ record SoRejectDto(string? Reason);
 record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
 record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);
 record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
+record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
+record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
+record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record RegisterOrgDto(string Name);
