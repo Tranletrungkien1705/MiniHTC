@@ -2683,6 +2683,29 @@ app.MapGet("/api/report/grtvalidity", async (AppDbContext db, ITenantContext t, 
     });
 }).RequireAuthorization();
 
+// ===== Báo cáo phiếu thanh toán ngân hàng (port 1:1 báo cáo Pmt_PM) — tái dùng BankPayment =====
+app.MapGet("/api/report/payment", async (AppDbContext db, ITenantContext t, string? bank, string? status, string? dealer, DateTime? from, DateTime? to) =>
+{
+    var q = db.BankPayments.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(p => p.BankCodeReceive == bank || p.BankCodeSend == bank);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.PaymentStatus == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    if (from is not null) q = q.Where(p => p.CreatedAt >= from.Value.Date);
+    if (to is not null) q = q.Where(p => p.CreatedAt < to.Value.Date.AddDays(1));
+    var recs = await q.ToListAsync();
+    var byBank = recs.GroupBy(p => string.IsNullOrEmpty(p.BankCodeReceive) ? "(chưa rõ)" : p.BankCodeReceive)
+        .Select(g => new { bankCode = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount), approved = g.Count(x => x.PaymentStatus == "Approved") })
+        .OrderByDescending(x => x.totalAmount).ToList();
+    var byStatus = recs.GroupBy(p => p.PaymentStatus).Select(g => new { status = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.count).ToList();
+    var byFunds = recs.GroupBy(p => string.IsNullOrEmpty(p.Funds) ? "(chưa rõ)" : p.Funds).Select(g => new { funds = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.totalAmount).ToList();
+    var detail = recs.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo,
+        createdAt = p.CreatedAt.ToString("yyyy-MM-dd")
+    }).ToList();
+    return Results.Ok(new { total = recs.Count, totalAmount = recs.Sum(p => p.TotalAmount), approvedAmount = recs.Where(p => p.PaymentStatus == "Approved").Sum(p => p.TotalAmount), byBank, byStatus, byFunds, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
