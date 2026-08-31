@@ -2968,6 +2968,33 @@ app.MapGet("/api/report/fnexp", async (AppDbContext db, ITenantContext t, string
         approved = recs.Count(c => c.Status == "Approved"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo tiến độ nhận xe trên lệnh xuất (port 1:1 báo cáo BankDO) — tái dùng BankDeliveryOrder + BankDoCar =====
+app.MapGet("/api/report/bankdo", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
+{
+    var q = db.BankDeliveryOrders.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(d => d.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.Status == status);
+    var dos = await q.ToListAsync();
+    var ids = dos.Select(d => d.Id).ToHashSet();
+    var carAgg = await db.BankDoCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.DeliveryOrderId))
+        .GroupBy(c => c.DeliveryOrderId).Select(g => new { g.Key, cars = g.Count(), confirmed = g.Count(x => x.ConfirmStatus == "1") }).ToListAsync();
+    var m = carAgg.ToDictionary(x => x.Key, x => (x.cars, x.confirmed));
+    int Cars(long id) => m.TryGetValue(id, out var v) ? v.cars : 0;
+    int Confirmed(long id) => m.TryGetValue(id, out var v) ? v.confirmed : 0;
+    int Pct(int c, int tot) => tot > 0 ? (int)Math.Round(c * 100.0 / tot) : 0;
+    var byDealer = dos.GroupBy(d => string.IsNullOrEmpty(d.DealerCode) ? "(chưa rõ)" : d.DealerCode)
+        .Select(g => { int cars = g.Sum(d => Cars(d.Id)); int conf = g.Sum(d => Confirmed(d.Id));
+            return new { dealerCode = g.Key, orders = g.Count(), cars, confirmed = conf, remain = cars - conf, confirmedPct = Pct(conf, cars) }; })
+        .OrderByDescending(x => x.remain).ToList();
+    var byStatus = dos.GroupBy(d => d.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var totCars = dos.Sum(d => Cars(d.Id)); var totConf = dos.Sum(d => Confirmed(d.Id));
+    var detail = dos.OrderByDescending(d => d.Id).Take(500).Select(d => new
+    {
+        d.DONo, d.DealerCode, d.SOCode, d.Status, cars = Cars(d.Id), confirmed = Confirmed(d.Id), remain = Cars(d.Id) - Confirmed(d.Id), confirmedPct = Pct(Confirmed(d.Id), Cars(d.Id))
+    }).ToList();
+    return Results.Ok(new { total = dos.Count, totalCars = totCars, totalConfirmed = totConf, totalRemain = totCars - totConf, overallPct = Pct(totConf, totCars), byDealer, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
