@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lịch hẹn dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Booked{color:var(--accent)} .s-Arrived{color:var(--warn)} .s-Done{color:var(--ok)} .s-Cancelled{color:var(--bad);text-decoration:line-through}
+  .msg{font-size:13px;margin-left:6px}
+  .tabs{display:flex;gap:6px;margin:10px 0} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .bays{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px}
+  .bay{border:1px solid var(--line);border-radius:10px;padding:10px} .bay h4{margin:0 0 6px;font-size:13px}
+  .slot{font-size:12px;border-top:1px dashed var(--line);padding:4px 0}
+</style></head>
+<body>
+<h1>Lịch hẹn dịch vụ <span class="muted">(port 1:1 FrmAppList + FrmShowCavityStatus — TCMotor)</span></h1>
+<div class="tabs"><div class="tab on" id="t1" onclick="tab(1)">Lịch hẹn</div><div class="tab" id="t2" onclick="tab(2)">Bảng khoang/bay</div></div>
+
+<div id="pane1">
+<div class="card"><h3 style="margin-top:0">Đặt lịch hẹn</h3>
+  <div class="row">
+    <div><label>Khoang/bay</label><input id="fCav" style="width:110px" placeholder="Bay 1"></div>
+    <div><label>Biển số</label><input id="fPlate" style="width:110px"></div>
+    <div><label>Khách hàng</label><input id="fCus" style="width:150px"></div>
+    <div><label>Điện thoại</label><input id="fMob" style="width:120px"></div>
+    <div><label>Model</label><input id="fModel" style="width:110px"></div>
+    <div><label>Loại hẹn</label><input id="fType" style="width:100px" placeholder="BD"></div>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <div><label>Từ (giờ) *</label><input id="fFrom" type="datetime-local"></div>
+    <div><label>Đến (giờ) *</label><input id="fTo" type="datetime-local"></div>
+    <div style="flex:1"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
+    <button class="primary" onclick="book()">Đặt lịch</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Ngày</label><input id="qDate" type="date"></div>
+  <div><label>Biển số</label><input id="qPlate" style="width:110px"></div>
+  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="Booked">Đã đặt</option><option value="Arrived">Đã đến</option><option value="Done">Xong</option><option value="Cancelled">Hủy</option></select></div>
+  <button onclick="load()">Xem lịch</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Số hẹn</th><th>Khoang</th><th>Biển số</th><th>KH</th><th>Model</th><th>Từ</th><th>Đến</th><th>TT</th><th>Thao tác</th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Xem lịch".</td></tr></tbody></table></div>
+</div>
+
+<div id="pane2" style="display:none">
+  <div class="row"><div><label>Ngày</label><input id="bDate" type="date"></div><button class="primary" onclick="board()">Xem bảng</button><span id="msg2" class="msg"></span></div>
+  <div class="bays" id="bays"></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={Booked:"Đã đặt",Arrived:"Đã đến",Done:"Xong",Cancelled:"Hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
+function tab(n){ F("pane1").style.display=n===1?"block":"none"; F("pane2").style.display=n===2?"block":"none"; F("t1").className="tab"+(n===1?" on":""); F("t2").className="tab"+(n===2?" on":""); }
+async function book(){ await token();
+  if(!F("fFrom").value||!F("fTo").value){ m("msg","Cần giờ bắt đầu và kết thúc."); return; }
+  const body={CavityName:F("fCav").value,PlateNo:F("fPlate").value,CusName:F("fCus").value,Mobile:F("fMob").value,ModelName:F("fModel").value,AppType:F("fType").value,AppFrom:F("fFrom").value,AppTo:F("fTo").value,Note:F("fNote").value};
+  const r=await fetch("/api/appointments",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
+  m("msg","Đã đặt "+d.appNo); load();
+}
+async function setStatus(id,s){ await token();
+  const r=await fetch("/api/appointments/"+id+"/status",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Status:s})});
+  const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
+}
+function act(o){ let h="";
+  if(o.status==="Booked") h+=`<button class="link" onclick="setStatus(${o.id},'Arrived')">Đến</button>`;
+  if(o.status==="Arrived") h+=`<button class="link" onclick="setStatus(${o.id},'Done')">Xong</button>`;
+  if(o.status!=="Done"&&o.status!=="Cancelled") h+=`<button class="link" onclick="setStatus(${o.id},'Cancelled')">Hủy</button>`;
+  return h; }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("qDate").value)p.set("date",F("qDate").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qStatus").value)p.set("status",F("qStatus").value);
+  const r=await fetch("/api/appointments?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có lịch hẹn.</td></tr>';
+}
+async function board(){ await token();
+  const p=new URLSearchParams(); if(F("bDate").value)p.set("date",F("bDate").value);
+  const r=await fetch("/api/appointments/cavity-board?"+p.toString(),{headers:H()}); const d=await r.json();
+  m("msg2",`${d.date}: ${d.totalCavity} khoang, ${d.totalApp} lịch`);
+  F("bays").innerHTML=(d.board||[]).map(b=>`<div class="bay"><h4>${esc(b.cavityName)}</h4>${(b.appointments||[]).map(a=>`<div class="slot"><b>${esc(a.appFrom)}-${esc(a.appTo)}</b> ${esc(a.plateNo)} <span class="pill s-${a.status}">${ST[a.status]||a.status}</span><br><span class="muted">${esc(a.cusName)} · ${esc(a.modelName)}</span></div>`).join("")||'<div class="slot muted">Trống</div>'}</div>`).join("")||'<div class="muted">Chưa có khoang nào (khai báo ở Danh mục khoang).</div>';
+}
+</script>
+</body></html>

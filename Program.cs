@@ -4214,6 +4214,65 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Lịch hẹn dịch vụ + bảng khoang/bay (ServiceAppointment — port 1:1 FrmAppList + FrmShowCavityStatus, TCMotor) =====
+app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status, DateTime? date) =>
+{
+    var q = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (date.HasValue) { var d0 = date.Value.Date; var d1 = d0.AddDays(1); q = q.Where(x => x.AppFrom >= d0 && x.AppFrom < d1); }
+    var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
+    {
+        x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
+        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Đặt lịch hẹn. Guard: giờ kết thúc > bắt đầu; không trùng khoang cùng lúc (bay không được đặt chồng giờ).
+app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.AppTo <= dto.AppFrom) return Results.BadRequest(new { error = "Giờ kết thúc phải sau giờ bắt đầu." });
+    var cavity = (dto.CavityName ?? "").Trim();
+    if (cavity != "")
+    {
+        // Kiểm tra khoang có tồn tại trong danh mục Cavity (nếu đã khai báo).
+        var hasCavityMaster = await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId);
+        if (hasCavityMaster && !await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId && c.CavityName == cavity))
+            return Results.BadRequest(new { error = "Khoang/bay không có trong danh mục: " + cavity });
+        // Chống đặt chồng giờ cùng 1 khoang (bỏ qua lệnh đã hủy).
+        var overlap = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity && x.Status != "Cancelled"
+            && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
+        if (overlap) return Results.BadRequest(new { error = "Khoang " + cavity + " đã có lịch trùng khung giờ." });
+    }
+    var no = "APP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
+        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked" };
+    db.ServiceAppointments.Add(a); await db.SaveChangesAsync();
+    return Results.Ok(new { a.Id, a.AppNo, a.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (a is null) return Results.NotFound(new { id });
+    var s = (dto.Status ?? "").Trim();
+    if (s != "Booked" && s != "Arrived" && s != "Done" && s != "Cancelled") return Results.BadRequest(new { error = "Trạng thái không hợp lệ." });
+    a.Status = s; await db.SaveChangesAsync();
+    return Results.Ok(new { a.Id, a.Status });
+}).RequireAuthorization();
+
+// Bảng trạng thái khoang/bay theo ngày: mỗi khoang trong danh mục + lịch hẹn còn hiệu lực (Booked/Arrived) của khoang đó.
+app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantContext t, DateTime? date) =>
+{
+    var d0 = (date ?? DateTime.Today).Date; var d1 = d0.AddDays(1);
+    var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1").OrderBy(c => c.CavityName).Select(c => c.CavityName).ToListAsync();
+    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null && x.Status != "Cancelled" && x.AppFrom >= d0 && x.AppFrom < d1)
+        .OrderBy(x => x.AppFrom).Select(x => new { x.CavityName, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.Status, appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm") }).ToListAsync();
+    var board = cavities.Select(cv => new { cavityName = cv, appointments = apps.Where(a => a.CavityName == cv).ToList() }).ToList();
+    return Results.Ok(new { date = d0.ToString("yyyy-MM-dd"), totalCavity = cavities.Count, totalApp = apps.Count, board });
+}).RequireAuthorization();
+
 // ===== Công nợ bảo hiểm + thu tiền (InsDebit — port 1:1 FrmInsDebitSearch/FrmInsPaymentCreate, TCMotor) =====
 app.MapGet("/api/insdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -9303,6 +9362,8 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note);
+record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);

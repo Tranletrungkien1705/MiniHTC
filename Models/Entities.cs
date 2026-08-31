@@ -3146,6 +3146,25 @@ public sealed class CusDebitPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Lịch hẹn dịch vụ (đặt xe vào khoang/bay theo giờ) — port 1:1 FrmAppList + FrmShowCavityStatus (TblSerAppRO, TCMotor).</summary>
+public sealed class ServiceAppointment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppNo { get; set; } = "";
+    public string? CavityName { get; set; }        // khoang/bay sửa chữa
+    public string? PlateNo { get; set; }
+    public string? CusName { get; set; }
+    public string? Mobile { get; set; }
+    public string? ModelName { get; set; }
+    public string? AppType { get; set; }           // loại hẹn (BD/SC...)
+    public DateTime AppFrom { get; set; }
+    public DateTime AppTo { get; set; }
+    public string Status { get; set; } = "Booked"; // Booked -> Arrived -> Done / Cancelled
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Công nợ bảo hiểm (hãng BH nợ tiền bồi thường theo RO) — port 1:1 FrmInsDebitSearch (TblCusDebit type InsuranceDebit, TCMotor).</summary>
 public sealed class InsDebit
 {
