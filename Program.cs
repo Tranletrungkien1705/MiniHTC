@@ -1289,6 +1289,59 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu bảo trì xe lưu kho bãi (StoFMaintain — port 1:1 FrmMaintenanceSlipList/Detail, 2010.HTC/Maintenance) =====
+app.MapGet("/api/stofmaintains", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
+{
+    var q = db.StoFMaintains.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(m => m.MtnType == type);
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.SfMtnNo, m.MtnType, m.Status, m.CreatedAt, m.DoneAt,
+        cars = db.StoFMaintainMains.Count(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/stofmaintains", async (StoFMaintainDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.MtnType)) return Results.BadRequest(new { error = "Cần loại bảo trì." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "SFM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var m = new StoFMaintain { OrgId = t.OrgId, SfMtnNo = no, MtnType = dto.MtnType.Trim(), Status = "Draft" };
+    db.StoFMaintains.Add(m); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.StoFMaintainMains.Add(new StoFMaintainMain { OrgId = t.OrgId, StoFMaintainId = m.Id, VIN = c.VIN.Trim().ToUpperInvariant(), MtnTp = c.MtnTp, ModelCode = c.ModelCode, UserCodeMtn = c.UserCodeMtn, StorageCodeInit = c.StorageCodeInit, StorageCodeCurrent = c.StorageCodeCurrent, MtnStatusMain = c.MtnStatusMain ?? "P", Remark = c.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.SfMtnNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/stofmaintains/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.StoFMaintains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var cars = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id)
+        .Select(c => new { c.VIN, c.MtnTp, c.ModelCode, c.UserCodeMtn, c.StorageCodeInit, c.StorageCodeCurrent, c.MtnStatusMain, c.Remark }).ToListAsync();
+    return Results.Ok(new { m.SfMtnNo, m.MtnType, m.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/stofmaintains/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.StoFMaintains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.Status != "Draft") return Results.BadRequest(new { error = "Phiếu đã hoàn tất." });
+    m.Status = "Done"; m.DoneAt = DateTime.Now;
+    var mains = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id).ToListAsync();
+    foreach (var c in mains) c.MtnStatusMain = "C";  // hoàn tất bảo trì
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.SfMtnNo, status = m.Status });
+}).RequireAuthorization();
+
 // ===== Master xe lái thử (CarDriverTest — port 1:1 FrmMstCarDriverTestHTC/Dealer, DMSales.Foton/RetailContract) =====
 app.MapGet("/api/cardrivertests", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
 {
@@ -3869,6 +3922,8 @@ record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTyp
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);
+record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? UserCodeMtn, string? StorageCodeInit, string? StorageCodeCurrent, string? MtnStatusMain, string? Remark);
+record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record RegisterOrgDto(string Name);

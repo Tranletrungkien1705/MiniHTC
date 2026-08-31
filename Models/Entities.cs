@@ -1463,6 +1463,32 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Phiếu bảo trì xe lưu kho bãi (StoF_Maintain) — port 1:1 FrmMaintenanceSlipList/Detail (2010.HTC/Maintenance). Bảo dưỡng xe thành phẩm lưu kho, theo VIN.</summary>
+public sealed class StoFMaintain
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SfMtnNo { get; set; } = "";       // số phiếu bảo trì
+    public string MtnType { get; set; } = "";        // loại bảo trì (Mst_MaintainType)
+    public string Status { get; set; } = "Draft";    // Draft → Done
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? DoneAt { get; set; }
+}
+public sealed class StoFMaintainMain
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StoFMaintainId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? MtnTp { get; set; }               // loại BT dòng
+    public string? ModelCode { get; set; }
+    public string? UserCodeMtn { get; set; }         // người bảo trì
+    public string? StorageCodeInit { get; set; }     // kho ban đầu
+    public string? StorageCodeCurrent { get; set; }  // kho hiện tại
+    public string? MtnStatusMain { get; set; }       // trạng thái bảo trì
+    public string? Remark { get; set; }
+}
+
 /// <summary>Master xe lái thử (Mst_CarDriverTest) — port 1:1 FrmMstCarDriverTestHTC/Dealer (DMSales.Foton/RetailContract). Xe dùng cho lái thử, biển số/VIN/model + hỗ trợ.</summary>
 public sealed class CarDriverTest
 {
