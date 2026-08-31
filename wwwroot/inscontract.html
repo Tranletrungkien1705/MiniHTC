@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Hợp đồng bảo hiểm dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#b45309;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;width:100%;box-sizing:border-box}
+  button{cursor:pointer;width:auto} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .on{color:var(--ok)} .off{opacity:.5}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:8px 0} #msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Hợp đồng bảo hiểm dịch vụ <span class="muted">(port 1:1 FrmInsuranceContractCreate — TCMotor)</span></h1>
+<p class="muted">Quản lý hợp đồng bảo hiểm giữa trạm dịch vụ và nhà bảo hiểm: số HĐ, nhà bảo hiểm, hiệu lực, hạn mức chi trả, hình thức thanh toán. Số HĐ trống = tự sinh. Nhập lại số HĐ = cập nhật.</p>
+<div class="card">
+  <h3 style="margin-top:0">Thêm / cập nhật hợp đồng</h3>
+  <div class="grid">
+    <div><label>Số HĐ</label><input id="fNo" placeholder="(auto)"></div>
+    <div><label>Mã NĐ bảo hiểm *</label><input id="fIns" placeholder="BAOVIET"></div>
+    <div><label>Tên NĐ bảo hiểm</label><input id="fInsName"></div>
+    <div><label>Ngày hiệu lực</label><input id="fStart" type="date"></div>
+    <div><label>Ngày hết hạn</label><input id="fFinish" type="date"></div>
+    <div><label>Hạn mức chi trả (VND)</label><input id="fLimit" type="number" step="1000000"></div>
+    <div><label>Hình thức TT</label><input id="fType" placeholder="Chuyen khoan"></div>
+  </div>
+  <div style="margin-top:10px"><button class="primary" onclick="save()">Lưu</button><span id="msg"></span></div>
+</div>
+<div class="bar">
+  <div><label>Tìm số HĐ/tên NĐ</label><input id="qQ" style="width:170px" onkeydown="if(event.key==='Enter')load()"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Số HĐ</th><th>NĐ bảo hiểm</th><th>Hiệu lực</th><th>Hết hạn</th><th class="num">Hạn mức</th><th>HT TT</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
+async function save(){ await token();
+  const body={InContractNo:F("fNo").value,InsNo:F("fIns").value,InsName:F("fInsName").value,StartDate:F("fStart").value||null,FinishDate:F("fFinish").value||null,PaymentLimit:parseFloat(F("fLimit").value||"0"),TypePayment:F("fType").value};
+  const r=await fetch("/api/inscontracts",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg(d.updated?"Đã cập nhật "+d.inContractNo:"Đã thêm "+d.inContractNo); F("fNo").value=""; load();
+}
+async function toggle(no){ await token();
+  const r=await fetch("/api/inscontracts/"+encodeURIComponent(no)+"/toggle",{method:"POST",headers:H()});
+  if(!r.ok){ msg("Lỗi"); return; } load();
+}
+function edit(o){ F("fNo").value=o.inContractNo;F("fIns").value=o.insNo||"";F("fInsName").value=o.insName||"";F("fStart").value=o.startDate||"";F("fFinish").value=o.finishDate||"";F("fLimit").value=o.paymentLimit;F("fType").value=o.typePayment||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const r=await fetch("/api/inscontracts?q="+encodeURIComponent(F("qQ").value),{headers:H()});
+  const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.inContractNo}</b></td><td>${esc(o.insName)||esc(o.insNo)}</td><td>${o.startDate||""}</td><td>${o.finishDate||""}</td><td class="num">${M(o.paymentLimit)}</td><td>${esc(o.typePayment)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.inContractNo}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

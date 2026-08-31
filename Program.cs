@@ -3230,6 +3230,52 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Hợp đồng bảo hiểm dịch vụ (InsContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor) =====
+app.MapGet("/api/inscontracts", async (AppDbContext db, ITenantContext t, string? q, string? ins, string? active) =>
+{
+    var query = db.InsContracts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.InContractNo.Contains(q!) || (x.InsName != null && x.InsName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(ins)) query = query.Where(x => x.InsNo == ins);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.InContractNo, x.InContractCode, x.InsNo, x.InsName, x.PaymentLimit, x.TypePayment, x.FlagActive,
+        startDate = x.StartDate.HasValue ? x.StartDate.Value.ToString("yyyy-MM-dd") : "",
+        finishDate = x.FinishDate.HasValue ? x.FinishDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo/cập nhật HĐ bảo hiểm (số HĐ trống = auto-gen). Guard ngày hết hạn >= ngày hiệu lực.
+app.MapPost("/api/inscontracts", async (InsContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.InsNo)) return Results.BadRequest(new { error = "Chưa chọn nhà bảo hiểm." });
+    if (dto.PaymentLimit < 0) return Results.BadRequest(new { error = "Hạn mức chi trả không hợp lệ." });
+    if (dto.StartDate.HasValue && dto.FinishDate.HasValue && dto.FinishDate < dto.StartDate)
+        return Results.BadRequest(new { error = "Ngày hết hạn phải sau ngày hiệu lực." });
+    var no = string.IsNullOrWhiteSpace(dto.InContractNo) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.InContractNo.Trim().ToUpperInvariant();
+    var ex = await db.InsContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractNo == no);
+    if (ex is not null)
+    {
+        ex.InContractCode = dto.InContractCode; ex.InsNo = dto.InsNo; ex.InsName = dto.InsName; ex.StartDate = dto.StartDate; ex.FinishDate = dto.FinishDate; ex.PaymentLimit = dto.PaymentLimit; ex.TypePayment = dto.TypePayment; ex.FlagActive = "1";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.InContractNo, updated = true });
+    }
+    var r = new InsContract { OrgId = t.OrgId, InContractNo = no, InContractCode = dto.InContractCode, InsNo = dto.InsNo, InsName = dto.InsName, StartDate = dto.StartDate, FinishDate = dto.FinishDate, PaymentLimit = dto.PaymentLimit, TypePayment = dto.TypePayment, FlagActive = "1" };
+    db.InsContracts.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.InContractNo, updated = false });
+}).RequireAuthorization();
+
+app.MapPost("/api/inscontracts/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var x = await db.InsContracts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.InContractNo == no);
+    if (x is null) return Results.NotFound(new { no });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.InContractNo, flagActive = x.FlagActive });
+}).RequireAuthorization();
+
 // ===== Tham số cấu hình dịch vụ theo đại lý (DealerServiceOption — port 1:1 FrmDealerServiceOptional, TCMotor) =====
 // Catalog SerParamCode: 5 toggle auth + 6 giá trị số (profit rate / đơn giá công).
 var DealerServiceOptCatalog = new (string Code, string Label, string Type, string Default)[]
@@ -7990,6 +8036,7 @@ record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
+record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

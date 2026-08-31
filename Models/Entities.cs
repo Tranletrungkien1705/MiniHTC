@@ -2819,6 +2819,23 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Hợp đồng bảo hiểm dịch vụ (NĐ bảo hiểm/hạn mức/hiệu lực) — port 1:1 FrmInsuranceContractCreate (Tbl_Ser_InsuranceContract, TCMotor).</summary>
+public sealed class InsContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InContractNo { get; set; } = "";
+    public string? InContractCode { get; set; }
+    public string? InsNo { get; set; }       // mã nhà bảo hiểm
+    public string? InsName { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? FinishDate { get; set; }
+    public decimal PaymentLimit { get; set; }
+    public string? TypePayment { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Tham số cấu hình dịch vụ theo đại lý (ParamCode→ParamValue) — port 1:1 FrmDealerServiceOptional (Ser_Param, TCMotor).</summary>
 public sealed class DealerServiceOption
 {
