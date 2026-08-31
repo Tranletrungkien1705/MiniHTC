@@ -3021,6 +3021,32 @@ app.MapGet("/api/report/transport", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), approved = reqs.Count(r => r.Status == "Approved"), byTransporter, byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo đơn đặt hàng sản xuất (port 1:1 báo cáo MnfPl_Order) — tái dùng MnfPlOrder + MnfPlOrderDtl =====
+app.MapGet("/api/report/mnfplorder", async (AppDbContext db, ITenantContext t, string? ordType, string? model, string? status) =>
+{
+    var oq = db.MnfPlOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(ordType)) oq = oq.Where(o => o.OrdType == ordType);
+    if (!string.IsNullOrWhiteSpace(status)) oq = oq.Where(o => o.Status == status);
+    var orders = await oq.ToListAsync();
+    var ids = orders.Select(o => o.Id).ToHashSet();
+    var lq = db.MnfPlOrderDtls.Where(l => l.OrgId == t.OrgId && ids.Contains(l.MnfPlOrderId));
+    if (!string.IsNullOrWhiteSpace(model)) lq = lq.Where(l => l.ModelCode == model);
+    var lines = await lq.ToListAsync();
+    var byModel = lines.GroupBy(l => string.IsNullOrEmpty(l.ModelCode) ? "(chưa rõ)" : l.ModelCode)
+        .Select(g => new { modelCode = g.Key, lines = g.Count(), qty = g.Sum(x => x.Quantity) }).OrderByDescending(x => x.qty).ToList();
+    var byType = orders.GroupBy(o => string.IsNullOrEmpty(o.OrdType) ? "(chưa rõ)" : o.OrdType).Select(g => new { ordType = g.Key, orders = g.Count() }).OrderByDescending(x => x.orders).ToList();
+    var byStatus = orders.GroupBy(o => o.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    // group line qty per order
+    var qtyByOrder = lines.GroupBy(l => l.MnfPlOrderId).ToDictionary(g => g.Key, g => (lines: g.Count(), qty: g.Sum(x => x.Quantity)));
+    var detail = orders.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.OrderNo, o.OrdType, o.Status,
+        lines = qtyByOrder.TryGetValue(o.Id, out var v) ? v.lines : 0,
+        qty = qtyByOrder.TryGetValue(o.Id, out var v2) ? v2.qty : 0
+    }).ToList();
+    return Results.Ok(new { orders = orders.Count, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), sent = orders.Count(o => o.Status == "Sent"), byModel, byType, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
