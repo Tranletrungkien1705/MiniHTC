@@ -1227,6 +1227,75 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate) + tồn kho PartStock =====
+app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
+{
+    var q = db.PartStockIns.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+    if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
+    {
+        s.StockInNo, s.StockInDate, s.StockInType, s.WarehouseCode, s.Staff, s.Status, s.PostedAt,
+        lines = db.PartStockInLines.Count(l => l.OrgId == t.OrgId && l.StockInId == s.Id),
+        total = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)(l.Quantity * l.Price)) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
+    var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "Draft" };
+    db.PartStockIns.Add(h); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.VAT, lineTotal = l.Quantity * l.Price }).ToListAsync();
+    return Results.Ok(new { h.StockInNo, h.WarehouseCode, h.Status, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Ghi sổ: tăng tồn PartStock (integration thật)
+app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ ghi sổ phiếu Draft." });
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
+    foreach (var l in lines)
+    {
+        var loc = l.Location ?? "";
+        var stock = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
+        if (stock is null) { stock = new PartStock { OrgId = t.OrgId, WarehouseCode = h.WarehouseCode, PartCode = l.PartCode, PartName = l.PartName, Location = l.Location, OnHand = 0 }; db.PartStocks.Add(stock); }
+        stock.OnHand += l.Quantity; stock.PartName = l.PartName ?? stock.PartName; stock.UpdatedAt = DateTime.Now;
+    }
+    h.Status = "Posted"; h.PostedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status, postedLines = lines.Count });
+}).RequireAuthorization();
+
+// Tồn kho phụ tùng (Ser_Inv_PartStock — báo cáo tồn, đọc bởi FrmPartStockSearch/ReportStockBalance)
+app.MapGet("/api/partstock", async (AppDbContext db, ITenantContext t, string? warehouse, string? part) =>
+{
+    var q = db.PartStocks.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
+    if (!string.IsNullOrWhiteSpace(part)) q = q.Where(s => s.PartCode.Contains(part.ToUpper()));
+    var items = await q.OrderBy(s => s.PartCode).Take(1000).Select(s => new { s.WarehouseCode, s.PartCode, s.PartName, s.Location, s.OnHand }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // ===== Phiếu tiếp nhận xe dịch vụ (Ser_ReceptionF — port 1:1 FrmSerReceptionFMng) =====
 app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
 {
@@ -2129,4 +2198,6 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines);
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
 record ReceptionLinkDto(string RONO);
+record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
+record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);
 record RegisterOrgDto(string Name);

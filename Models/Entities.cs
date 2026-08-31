@@ -845,6 +845,49 @@ public sealed class Reception
     public DateTime? DeliveredAt { get; set; }
 }
 
+/// <summary>Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate, TCMotor DMSCarSv/Inventory):
+/// nhập phụ tùng vào kho. Draft → Posted (ghi sổ, tăng tồn PartStock).</summary>
+public sealed class PartStockIn
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockInNo { get; set; } = "";
+    public DateTime StockInDate { get; set; } = DateTime.Now;
+    public string? StockInType { get; set; }
+    public string WarehouseCode { get; set; } = "";
+    public string? Staff { get; set; }
+    public string Status { get; set; } = "Draft";      // Draft → Posted
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? PostedAt { get; set; }
+}
+
+/// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
+public sealed class PartStockInLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StockInId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Location { get; set; }
+    public decimal Quantity { get; set; } = 1;
+    public decimal Price { get; set; }
+    public decimal VAT { get; set; }
+}
+
+/// <summary>Tồn kho phụ tùng (Ser_Inv_PartStock): số tồn theo kho + mã PT + vị trí. Cập nhật khi Post phiếu nhập/xuất.</summary>
+public sealed class PartStock
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string WarehouseCode { get; set; } = "";
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Location { get; set; }
+    public decimal OnHand { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

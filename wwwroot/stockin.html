@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Nhập kho PT</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} h3{font-size:14px;margin:8px 0 4px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Posted{color:var(--ok)}
+  #msg{font-size:13px} .det{font-size:12px;opacity:.85}
+  .tabs button{margin-right:6px} .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+</style></head>
+<body>
+<h1>Nhập kho phụ tùng <span class="muted">(port 1:1 FrmStockInCreate — Ser_Inv_StockIn + tồn PartStock)</span></h1>
+<div class="tabs" style="margin:8px 0"><button id="t1" class="on" onclick="tab(1)">Phiếu nhập</button><button id="t2" onclick="tab(2)">Tồn kho</button></div>
+
+<div id="pane1">
+<div class="card">
+  <b>Tạo phiếu nhập</b>
+  <div class="bar" style="margin:10px 0"><input id="wh" placeholder="Kho *" style="width:100px"><input id="ty" placeholder="Loại nhập" style="width:110px"><input id="sf" placeholder="Nhân viên" style="width:110px">
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu phiếu</button><span id="msg"></span></div>
+  <table id="ltbl"><thead><tr><th>Mã PT</th><th>Tên PT</th><th>Vị trí</th><th class="n">SL</th><th class="n">Đơn giá</th><th class="n">VAT%</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
+  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Dòng PT</button>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Posted">Đã ghi sổ</option></select><input id="q" placeholder="Lọc kho" oninput="load()" style="width:100px"></div>
+<table><thead><tr><th>Số phiếu</th><th>Kho</th><th>Dòng</th><th class="n">Tổng tiền</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+</div>
+
+<div id="pane2" style="display:none">
+<div class="bar" style="margin:10px 0"><input id="sw" placeholder="Lọc kho" oninput="loadStock()" style="width:100px"><input id="sp" placeholder="Lọc PT" oninput="loadStock()" style="width:100px"></div>
+<table><thead><tr><th>Kho</th><th>Mã PT</th><th>Tên PT</th><th>Vị trí</th><th class="n">Tồn</th></tr></thead>
+<tbody id="stkrows"><tr><td colspan="5" class="muted">—</td></tr></tbody></table>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Draft:"Nháp",Posted:"Đã ghi sổ"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function tab(k){ F("pane1").style.display=k===1?"block":"none"; F("pane2").style.display=k===2?"block":"none"; F("t1").className=k===1?"on":""; F("t2").className=k===2?"on":""; if(k===2) loadStock(); }
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="pc" style="width:90px"></td><td><input class="pn" style="width:120px"></td><td><input class="lo" style="width:70px"></td><td class="n"><input class="qt" type="number" value="1" style="width:60px;text-align:right"></td><td class="n"><input class="pr" type="number" style="width:90px;text-align:right"></td><td class="n"><input class="vt" type="number" value="10" style="width:60px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr); }
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({partCode:tr.querySelector(".pc").value,partName:tr.querySelector(".pn").value,location:tr.querySelector(".lo").value,quantity:Number(tr.querySelector(".qt").value||0),price:Number(tr.querySelector(".pr").value||0),vat:Number(tr.querySelector(".vt").value||0)})).filter(l=>l.partCode&&l.quantity>0);
+  const r=await fetch("/api/stockins",{method:"POST",headers:H(),body:JSON.stringify({warehouseCode:F("wh").value,stockInType:F("ty").value,staff:F("sf").value,lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.stockInNo+" ("+j.lines+" dòng)."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/stockins?status=${F("fst").value}&warehouse=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(s=>{
+    let act=s.status==="Draft"?`<button class="sm" onclick="post('${s.stockInNo}')">Ghi sổ (tăng tồn)</button>`:"";
+    return `<tr><td><b>${s.stockInNo}</b> <a href="#" class="det" onclick="lines('${s.stockInNo}');return false">xem</a></td><td>${s.warehouseCode}</td><td>${s.lines}</td>
+      <td class="n">${n(s.total)}</td><td><span class="pill p-${s.status}">${LBL[s.status]||s.status}</span></td><td>${act}</td></tr><tr id="x-${s.stockInNo}"></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có phiếu.</td></tr>';
+}
+async function post(no){ const r=await fetch(`/api/stockins/${no}/post`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok){ msg("Đã ghi sổ, tăng tồn "+j.postedLines+" PT."); load(); } else msg("Lỗi: "+(j.error||r.status)); }
+async function lines(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/stockins/${no}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="6"><div class="det">${(d.lines||[]).map(l=>`${l.partCode} ×${l.quantity} @${n(l.price)} = ${n(l.lineTotal)}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+async function loadStock(){ await token();
+  const d=await (await fetch(`/api/partstock?warehouse=${F("sw").value}&part=${encodeURIComponent(F("sp").value)}`,{headers:H()})).json();
+  F("stkrows").innerHTML=(d.items||[]).map(s=>`<tr><td>${s.warehouseCode}</td><td><b>${s.partCode}</b></td><td>${s.partName||"—"}</td><td>${s.location||"—"}</td><td class="n"><b>${n(s.onHand)}</b></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có tồn. (Ghi sổ phiếu nhập để tăng tồn)</td></tr>';
+}
+addLine(); load();
+</script>
+</body></html>
