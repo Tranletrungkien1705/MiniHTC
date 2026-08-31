@@ -76,6 +76,21 @@ public sealed class SalesMan
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Yêu cầu kiểm tra trước giao xe PDI (Pre-Delivery Inspection) — port 1:1 FrmMngDlr_PDIRequest.</summary>
+public sealed class PdiRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string Vin { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Requested";   // Requested → Inspecting → Passed/Failed
+    public string? Inspector { get; set; }
+    public string? Result { get; set; }                  // ghi chú kết quả / lỗi
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? InspectedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

@@ -10,6 +10,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarPrice> CarPrices => Set<CarPrice>();
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<SalesMan> SalesMen => Set<SalesMan>();
+    public DbSet<PdiRequest> PdiRequests => Set<PdiRequest>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

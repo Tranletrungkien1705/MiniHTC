@@ -333,6 +333,38 @@ app.MapGet("/api/reports/dealers", async (AppDbContext db, ITenantContext t, str
     });
 }).RequireAuthorization();
 
+// ===== PDI - Kiểm tra trước giao xe (port 1:1 FrmMngDlr_PDIRequest) =====
+app.MapGet("/api/pdi", async (AppDbContext db, ITenantContext t, string? status, string? vin) =>
+{
+    var q = db.PdiRequests.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(vin)) { var v = vin.Trim().ToUpperInvariant(); q = q.Where(p => p.Vin == v); }
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    { p.Code, p.Vin, p.DealerCode, p.Status, p.Inspector, p.Result, p.CreatedAt, p.InspectedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pdi", async (PdiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    var code = "PDI" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p = new PdiRequest { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", Status = "Requested" };
+    db.PdiRequests.Add(p); await db.SaveChangesAsync();
+    return Results.Ok(new { p.Code, p.Vin, status = p.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/pdi/{code}/{action}", async (string code, string action, PdiResultDto? dto, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("start" or "pass" or "fail")) return Results.BadRequest(new { error = "action = start|pass|fail" });
+    code = code.Trim().ToUpperInvariant();
+    var p = await db.PdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (p is null) return Results.NotFound(new { code });
+    if (action == "start") { if (p.Status != "Requested") return Results.BadRequest(new { error = "Sai trạng thái." }); p.Status = "Inspecting"; p.Inspector = dto?.Inspector; }
+    else { if (p.Status != "Inspecting") return Results.BadRequest(new { error = "Chưa bắt đầu kiểm tra." }); p.Status = action == "pass" ? "Passed" : "Failed"; p.Result = dto?.Result; p.InspectedAt = DateTime.Now; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Code, p.Vin, status = p.Status, p.Inspector, p.Result });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -349,4 +381,6 @@ record DealerDto(string DealerCode, string DealerName, string? BUCode, string? P
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, decimal Price, decimal? Vat, string? Status);
 record CustomerDto(string? CustomerCode, string CustomerName, string? Phone, string? IdCard, string? TaxCode, string? Address, string? Email, string? ProvinceCode, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? Phone, string? Email, string? Status);
+record PdiDto(string Vin, string? DealerCode);
+record PdiResultDto(string? Inspector, string? Result);
 record RegisterOrgDto(string Name);
