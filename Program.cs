@@ -119,6 +119,16 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("Department", "Phòng ban (FrmMngDepartment)"),
     ("District", "Quận/Huyện (FrmDistrict)"),
     ("Discount", "Chiết khấu (FrmDiscount)"),
+    ("BusinessStatus", "Tình trạng KD (FrmBusinessStatus)"),
+    ("Group", "Nhóm (FrmMngGroup)"),
+    ("Position", "Chức vụ (FrmMst_Position)"),
+    ("PaymentType", "Hình thức thanh toán (FrmPaymentType)"),
+    ("PortType", "Loại cảng (FrmPortType)"),
+    ("SalesGroupType", "Nhóm bán hàng (FrmSalesGroupType)"),
+    ("SalesOrderType", "Loại đơn bán (FrmSalesOrderType)"),
+    ("SalesType", "Loại bán hàng (FrmSalesType)"),
+    ("StaffType", "Loại nhân viên (FrmStaffType)"),
+    ("CarCancelReason", "Lý do hủy (FrmUpdateCar_Status)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
