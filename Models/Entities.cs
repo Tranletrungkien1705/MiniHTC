@@ -605,6 +605,22 @@ public sealed class PointRegis
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tồn/gán thiết bị GPS ↔ VIN (Sto_StoBalanceGPS — port 1:1 FrmMngSto_StoBalanceGPS + FrmUnmapThietBi, StoFGPS):
+/// theo dõi thiết bị GPS đang gắn trên xe (VIN) nào, ở đại lý nào. Map (gắn) → Unmap (gỡ).</summary>
+public sealed class GpsBalance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GpsDvNo { get; set; } = "";        // số thiết bị (khoá)
+    public string? Vin { get; set; }                 // VIN đang gắn
+    public string? DealerCode { get; set; }
+    public string? DealerName { get; set; }
+    public string? Address { get; set; }
+    public string? StorageCode { get; set; }
+    public DateTime? MapVINDateTime { get; set; }    // ngày gắn GPS vào VIN
+    public string Status { get; set; } = "Unmapped"; // Mapped / Unmapped
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

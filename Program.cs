@@ -1227,6 +1227,49 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Tồn/gán thiết bị GPS ↔ VIN (Sto_StoBalanceGPS — port 1:1 FrmMngSto_StoBalanceGPS + FrmUnmapThietBi) =====
+app.MapGet("/api/gpsbalance", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? vin, string? device) =>
+{
+    var q = db.GpsBalances.Where(g => g.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(g => g.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(g => g.Vin != null && g.Vin.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(device)) q = q.Where(g => g.GpsDvNo.Contains(device.ToUpper()));
+    var items = await q.OrderByDescending(g => g.Id).Take(1000).Select(g => new
+    { g.GpsDvNo, g.Vin, g.DealerCode, g.DealerName, g.Address, g.StorageCode, g.MapVINDateTime, g.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, mapped = items.Count(x => x.Status == "Mapped"), items });
+}).RequireAuthorization();
+
+// Gắn thiết bị GPS lên VIN
+app.MapPost("/api/gpsbalance/map", async (GpsMapDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.GpsDvNo) || string.IsNullOrWhiteSpace(dto.Vin))
+        return Results.BadRequest(new { error = "Cần GpsDvNo và Vin." });
+    var dv = dto.GpsDvNo.Trim().ToUpperInvariant();
+    var vin = dto.Vin.Trim().ToUpperInvariant();
+    // 1 VIN chỉ gắn 1 thiết bị đang hoạt động; 1 thiết bị chỉ gắn 1 VIN
+    var vinBusy = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Status == "Mapped" && x.Vin == vin && x.GpsDvNo != dv);
+    if (vinBusy is not null) return Results.BadRequest(new { error = $"VIN {vin} đã gắn thiết bị {vinBusy.GpsDvNo}." });
+    var g = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == dv);
+    if (g is null) { g = new GpsBalance { OrgId = t.OrgId, GpsDvNo = dv }; db.GpsBalances.Add(g); }
+    g.Vin = vin; g.DealerCode = dto.DealerCode; g.DealerName = dto.DealerName; g.Address = dto.Address; g.StorageCode = dto.StorageCode;
+    g.MapVINDateTime = DateTime.Now; g.Status = "Mapped";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GpsDvNo, g.Vin, status = g.Status });
+}).RequireAuthorization();
+
+// Gỡ map thiết bị (FrmUnmapThietBi)
+app.MapPost("/api/gpsbalance/{device}/unmap", async (string device, AppDbContext db, ITenantContext t) =>
+{
+    device = device.Trim().ToUpperInvariant();
+    var g = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == device);
+    if (g is null) return Results.NotFound(new { device });
+    if (g.Status != "Mapped") return Results.BadRequest(new { error = "Thiết bị chưa gắn VIN." });
+    g.Status = "Unmapped"; g.Vin = null; g.MapVINDateTime = null;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GpsDvNo, status = g.Status });
+}).RequireAuthorization();
+
 // ===== Phiếu xuất kho thiết bị GPS (StoF_GPSOut — port 1:1 FrmStoF_GPSOut/FrmMngStoF_GPSOut) =====
 app.MapGet("/api/gpsouts", async (AppDbContext db, ITenantContext t, string? storage) =>
 {
@@ -1602,4 +1645,5 @@ record GpsInDevDto(string GpsDvNo, string? GpsBoxNo, string? Remark);
 record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsInDevDto>? Devices);
 record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, List<GpsInDevDto>? Devices);
 record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegisName, double MapLatitude, double MapLongitude, double Radius);
+record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
 record RegisterOrgDto(string Name);
