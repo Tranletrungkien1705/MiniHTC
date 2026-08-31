@@ -3071,6 +3071,31 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== Báo cáo yêu cầu QC/giao hồ sơ xe (port 1:1 báo cáo QcDocReq) — tái dùng QcDocReq + QcDocReqCar =====
+app.MapGet("/api/report/qcdocreq", async (AppDbContext db, ITenantContext t, string? model, string? deliverType, string? status) =>
+{
+    var q = db.QcDocReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.DocReqStatus == status);
+    var reqs = await q.ToListAsync();
+    var ids = reqs.Select(r => r.Id).ToHashSet();
+    var cq = db.QcDocReqCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.QcDocReqId));
+    if (!string.IsNullOrWhiteSpace(model)) cq = cq.Where(c => c.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(deliverType)) cq = cq.Where(c => c.DocDeliverTypeCode == deliverType);
+    var cars = await cq.ToListAsync();
+    var byModel = cars.GroupBy(c => string.IsNullOrEmpty(c.ModelCode) ? "(chưa rõ)" : c.ModelCode)
+        .Select(g => new { modelCode = g.Key, cars = g.Count() }).OrderByDescending(x => x.cars).ToList();
+    var byDeliver = cars.GroupBy(c => string.IsNullOrEmpty(c.DocDeliverTypeCode) ? "(chưa rõ)" : c.DocDeliverTypeCode)
+        .Select(g => new { deliverType = g.Key, cars = g.Count() }).OrderByDescending(x => x.cars).ToList();
+    var byStatus = reqs.GroupBy(r => r.DocReqStatus).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var carByReq = cars.GroupBy(c => c.QcDocReqId).ToDictionary(g => g.Key, g => g.Count());
+    var detail = reqs.Where(r => carByReq.ContainsKey(r.Id) || string.IsNullOrEmpty(model + deliverType))
+        .OrderByDescending(r => r.Id).Take(500).Select(r => new
+        {
+            r.DocReqNo, r.CreateBy, r.DocReqStatus, cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0, createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+        }).ToList();
+    return Results.Ok(new { total = reqs.Count, totalCars = cars.Count, approved = reqs.Count(r => r.DocReqStatus == "Approved"), byModel, byDeliver, byStatus, detail });
+}).RequireAuthorization();
+
 // ===== Báo cáo sắp xếp kho (port 1:1 báo cáo StorageRearrange/SC) — tái dùng StorageRearrange + Detail =====
 app.MapGet("/api/report/storagerearrange", async (AppDbContext db, ITenantContext t, string? storageFrom, string? storageTo, string? status) =>
 {
