@@ -204,6 +204,38 @@ app.MapDelete("/api/dealers/{code}", async (string code, AppDbContext db, ITenan
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice =====
+app.MapGet("/api/carprices", async (AppDbContext db, ITenantContext t, string? model) =>
+{
+    var query = db.CarPrices.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode.Contains(model));
+    var items = await query.OrderBy(c => c.ModelCode).Select(c => new
+    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carprices", async (CarPriceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Cần ModelCode." });
+    if (dto.Price < 0) return Results.BadRequest(new { error = "Price không hợp lệ." });
+    var model = dto.ModelCode.Trim().ToUpperInvariant();
+    var spec = dto.SpecCode?.Trim().ToUpperInvariant() ?? "";
+    var color = dto.ColorCode?.Trim().ToUpperInvariant() ?? "";
+    var c = await db.CarPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && (x.SpecCode ?? "") == spec && (x.ColorCode ?? "") == color);
+    if (c is null) { c = new CarPrice { OrgId = t.OrgId, ModelCode = model, SpecCode = spec, ColorCode = color }; db.CarPrices.Add(c); }
+    c.Price = dto.Price; c.Vat = dto.Vat ?? 10; c.Status = dto.Status ?? "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ModelCode, c.SpecCode, c.ColorCode, c.Price, c.Vat });
+}).RequireAuthorization();
+
+app.MapDelete("/api/carprices/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.CarPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    db.CarPrices.Remove(c); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -217,4 +249,5 @@ app.Run();
 record AreaDto(string AreaCode, string AreaName, string? Status);
 record MasterDto(string Code, string Name, string? Status);
 record DealerDto(string DealerCode, string DealerName, string? BUCode, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode, string? Status);
+record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, decimal Price, decimal? Vat, string? Status);
 record RegisterOrgDto(string Name);

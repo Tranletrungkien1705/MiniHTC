@@ -7,6 +7,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Area> Areas => Set<Area>();
     public DbSet<MasterItem> Masters => Set<MasterItem>();
     public DbSet<Dealer> Dealers => Set<Dealer>();
+    public DbSet<CarPrice> CarPrices => Set<CarPrice>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

@@ -30,6 +30,20 @@ public sealed class Dealer
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice: giá theo Model/Spec/Color.</summary>
+public sealed class CarPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public decimal Price { get; set; }
+    public decimal Vat { get; set; } = 10;
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
