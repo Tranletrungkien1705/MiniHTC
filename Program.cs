@@ -1227,6 +1227,59 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
+string[] _careTypes = { "CARE24H", "CARE72H", "DOB", "MAINT" };
+app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
+{
+    var q = db.CustomerCares.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(c => c.CareType == type);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo != null && c.PlateNo.Contains(plate.ToUpper()));
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = string.IsNullOrWhiteSpace(dto.CareType) ? "CARE24H" : dto.CareType.Trim().ToUpperInvariant();
+    if (!_careTypes.Contains(type)) return Results.BadRequest(new { error = "CareType = CARE24H|CARE72H|DOB|MAINT" });
+    if (string.IsNullOrWhiteSpace(dto.PlateNo) && string.IsNullOrWhiteSpace(dto.CusPhone))
+        return Results.BadRequest(new { error = "Cần biển số hoặc SĐT khách." });
+    var no = "CC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new CustomerCare
+    {
+        OrgId = t.OrgId, CareNo = no, CareType = type, RONo = dto.RONo, PlateNo = dto.PlateNo?.Trim().ToUpperInvariant(),
+        CusName = dto.CusName, CusPhone = dto.CusPhone, ContactDate = dto.ContactDate, Status = "Pending"
+    };
+    db.CustomerCares.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.CareNo, c.CareType, status = c.Status });
+}).RequireAuthorization();
+
+// Ghi nhận đã liên hệ (kết quả) → Contacted
+app.MapPost("/api/customercares/{no}/contact", async (string no, CareContactDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.Status == "Closed") return Results.BadRequest(new { error = "Phiếu đã đóng." });
+    c.Status = "Contacted"; c.Result = dto.Result; c.ContactedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CareNo, status = c.Status });
+}).RequireAuthorization();
+
+// Đóng phiếu → Closed
+app.MapPost("/api/customercares/{no}/close", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.Status != "Contacted") return Results.BadRequest(new { error = "Chỉ đóng phiếu Đã liên hệ." });
+    c.Status = "Closed";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CareNo, status = c.Status });
+}).RequireAuthorization();
+
 // ===== Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar) =====
 app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string? plate, string? vin, string? cus) =>
 {
@@ -2329,4 +2382,6 @@ record StockOutLineDto(string PartCode, string? PartName, string? Location, deci
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
+record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
+record CareContactDto(string? Result);
 record RegisterOrgDto(string Name);

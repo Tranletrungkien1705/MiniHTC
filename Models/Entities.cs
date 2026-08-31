@@ -952,6 +952,25 @@ public sealed class CustomerCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare — port 1:1 FrmCustomerCare, TCMotor DMSCarSv/Customer):
+/// CRM follow-up. CareType: CARE24H/CARE72H/DOB(sinh nhật)/MAINT(nhắc bảo dưỡng). Pending→Contacted→Closed.</summary>
+public sealed class CustomerCare
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CareNo { get; set; } = "";
+    public string CareType { get; set; } = "CARE24H";   // CARE24H/CARE72H/DOB/MAINT
+    public string? RONo { get; set; }
+    public string? PlateNo { get; set; }
+    public string? CusName { get; set; }
+    public string? CusPhone { get; set; }
+    public DateTime? ContactDate { get; set; }           // ngày dự kiến liên hệ
+    public string Status { get; set; } = "Pending";      // Pending → Contacted → Closed
+    public string? Result { get; set; }                  // kết quả liên hệ
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ContactedAt { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
