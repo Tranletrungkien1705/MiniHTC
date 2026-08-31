@@ -2819,6 +2819,19 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Log gửi tin nhắn SMS (số ĐT/nội dung/trạng thái) — port 1:1 FrmSendSMS (TblSMS_Send, TCMotor).</summary>
+public sealed class SmsSend
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string Mobile { get; set; } = "";
+    public string? SmsType { get; set; }
+    public string Contents { get; set; } = "";
+    public string Status { get; set; } = "Sent";   // Sent | Invalid
+    public DateTime SendDate { get; set; } = DateTime.Now;
+}
+
 /// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>
 public sealed class EmailTemplate
 {

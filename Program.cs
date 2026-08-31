@@ -3230,6 +3230,63 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Gửi SMS + log (SmsSend — port 1:1 FrmSendSMS, TCMotor) — tích hợp SmsTemplate + ServiceCustomer =====
+// Chuẩn hóa SĐT VN (giống CUtilsSMS.StdPhoneNo): giữ chữ số, chấp nhận 0xxxxxxxxx (10 số) hoặc +84/84xxxxxxxxx.
+static string? StdPhoneVn(string? raw)
+{
+    if (string.IsNullOrWhiteSpace(raw)) return null;
+    var digits = new string(raw.Where(char.IsDigit).ToArray());
+    if (digits.StartsWith("84") && digits.Length == 11) digits = "0" + digits.Substring(2);
+    if (digits.Length == 10 && digits[0] == '0') return digits;
+    return null;
+}
+app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mobile, string? status, string? batch) =>
+{
+    var q = db.SmsSends.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(mobile)) q = q.Where(x => x.Mobile.Contains(mobile!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
+    var items = await q.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "Sent"), invalid = items.Count(i => i.Status == "Invalid"), items });
+}).RequireAuthorization();
+
+// Gửi SMS: nội dung = smsType (mẫu) hoặc content trực tiếp; SĐT = danh sách mobiles và/hoặc toAllCustomers.
+app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var content = dto.Content?.Trim() ?? "";
+    string? smsType = null;
+    if (!string.IsNullOrWhiteSpace(dto.SmsType))
+    {
+        smsType = dto.SmsType.Trim().ToUpperInvariant();
+        var tpl = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == smsType && x.FlagActive == "1");
+        if (tpl is null) return Results.BadRequest(new { error = $"Không tìm thấy mẫu SMS đang bật cho loại {smsType}." });
+        content = tpl.SmsBody;
+    }
+    if (string.IsNullOrWhiteSpace(content)) return Results.BadRequest(new { error = "Chưa có nội dung SMS (chọn mẫu hoặc nhập nội dung)." });
+    var mobiles = new List<string>(dto.Mobiles ?? new());
+    if (dto.ToAllCustomers == true)
+    {
+        var custMobiles = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && c.Mobile != null && c.Mobile != "").Select(c => c.Mobile!).ToListAsync();
+        mobiles.AddRange(custMobiles);
+    }
+    if (mobiles.Count == 0) return Results.BadRequest(new { error = "Chưa có số điện thoại nhận." });
+    var no = "SMS" + DateTime.Now.ToString("yyMMddHHmmss");
+    int sent = 0, invalid = 0;
+    var invalids = new List<string>();
+    var seen = new HashSet<string>();
+    foreach (var m in mobiles)
+    {
+        var std = StdPhoneVn(m);
+        if (std is null) { invalid++; invalids.Add(m); db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = m ?? "", SmsType = smsType, Contents = content, Status = "Invalid" }); continue; }
+        if (!seen.Add(std)) continue; // bỏ trùng số trong lô
+        db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = std, SmsType = smsType, Contents = content, Status = "Sent" });
+        sent++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { batchNo = no, sent, invalid, invalids, contentLength = content.Length });
+}).RequireAuthorization();
+
 // ===== Mẫu email (EmailTemplate — port 1:1 FrmEmail_TempEmailCreate/List, TCMotor) =====
 app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -8903,6 +8960,7 @@ record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, deci
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
+record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
 record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportDto(List<PartLocationImportRow>? Rows);
