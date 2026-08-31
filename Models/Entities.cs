@@ -705,6 +705,22 @@ public sealed class MaintainExt
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Biểu chiết khấu / phạt bán xe theo ngày hiệu lực (Mst_Discount — port 1:1 FrmDiscount, Admin/Product):
+/// mỗi ngày hiệu lực 1 dòng % chiết khấu + các % phạt/chi phí. Bản mới nhất ≤ ngày bán = áp dụng.</summary>
+public sealed class Discount
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public DateTime EffectiveDate { get; set; }          // ngày hiệu lực (khoá)
+    public decimal DiscountPercent { get; set; }         // % chiết khấu
+    public decimal PenaltyPercent { get; set; }          // % phạt
+    public decimal PenaltyPercentTCKT { get; set; }      // % phạt TCKT
+    public decimal FnExpPercent { get; set; }            // % chi phí tài chính
+    public decimal PmtDsTCGPercent { get; set; }         // % chiết khấu thanh toán TCG
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

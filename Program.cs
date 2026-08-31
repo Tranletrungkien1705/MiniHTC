@@ -1227,6 +1227,31 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
 
+// ===== Biểu chiết khấu/phạt theo ngày hiệu lực (Mst_Discount — port 1:1 FrmDiscount) =====
+app.MapGet("/api/discounts", async (AppDbContext db, ITenantContext t, string? onDate) =>
+{
+    var q = db.Discounts.Where(d => d.OrgId == t.OrgId);
+    var items = await q.OrderByDescending(d => d.EffectiveDate).Take(500).Select(d => new
+    { d.EffectiveDate, d.DiscountPercent, d.PenaltyPercent, d.PenaltyPercentTCKT, d.FnExpPercent, d.PmtDsTCGPercent, d.Status }).ToListAsync();
+    // biểu áp dụng cho 1 ngày = bản hiệu lực mới nhất ≤ ngày đó
+    object? applicable = null;
+    if (DateTime.TryParse(onDate, out var od))
+        applicable = items.Where(x => x.EffectiveDate <= od).OrderByDescending(x => x.EffectiveDate).FirstOrDefault();
+    return Results.Ok(new { count = items.Count, applicable, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/discounts", async (DiscountDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
+    var ed = dto.EffectiveDate.Value.Date;
+    var d = await db.Discounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EffectiveDate == ed);
+    if (d is null) { d = new Discount { OrgId = t.OrgId, EffectiveDate = ed }; db.Discounts.Add(d); }
+    d.DiscountPercent = dto.DiscountPercent; d.PenaltyPercent = dto.PenaltyPercent; d.PenaltyPercentTCKT = dto.PenaltyPercentTCKT;
+    d.FnExpPercent = dto.FnExpPercent; d.PmtDsTCGPercent = dto.PmtDsTCGPercent; d.Status = dto.Status ?? "1"; d.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.EffectiveDate, d.DiscountPercent, d.PenaltyPercent });
+}).RequireAuthorization();
+
 // ===== Xe kho bảo dưỡng gia hạn (StoF_MaintainMain — port 1:1 FrmMaintenanceWarehouse) =====
 app.MapGet("/api/maintext", async (AppDbContext db, ITenantContext t, string? status, string? storage) =>
 {
@@ -1845,4 +1870,5 @@ record DlGrantDto(string SMHyundaiCode);
 record DlStatusDto(string SMStatus);
 record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
 record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark);
+record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status);
 record RegisterOrgDto(string Name);
