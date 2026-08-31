@@ -912,6 +912,48 @@ app.MapPost("/api/grts/{grtNo}/expiry", async (string grtNo, GrtExpiryDto dto, A
     return Results.Ok(new { g.GrtNo, g.DateExpired });
 }).RequireAuthorization();
 
+// ===== Danh sách hóa đơn xuất bán (InvoiceList — port 1:1 FrmNewInvoice/FrmMngInvoice) =====
+app.MapGet("/api/invoicelists", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.InvoiceLists.Where(l => l.OrgId == t.OrgId).OrderByDescending(l => l.Id).Take(500)
+        .Select(l => new { l.InvoiceListCode, l.CreatedDate, lines = db.InvoiceLines.Count(d => d.OrgId == t.OrgId && d.ListId == l.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoicelists", async (InvoiceListDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new List<InvoiceLineDto>()).Where(l => !string.IsNullOrWhiteSpace(l.InvoiceNo) && !string.IsNullOrWhiteSpace(l.Vin)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (InvoiceNo + Vin)." });
+    var code = "IVL" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new InvoiceList { OrgId = t.OrgId, InvoiceListCode = code, CreatedDate = DateTime.Now };
+    db.InvoiceLists.Add(h); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.InvoiceLines.Add(new InvoiceLine { OrgId = t.OrgId, ListId = h.Id, CarId = l.CarId, DealerCode = l.DealerCode, InvoiceNo = l.InvoiceNo.Trim(), Vin = l.Vin.Trim().ToUpperInvariant(), InvoiceDate = l.InvoiceDate });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.InvoiceListCode, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/invoicelists/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var h = await db.InvoiceLists.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InvoiceListCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    var lines = await db.InvoiceLines.Where(l => l.OrgId == t.OrgId && l.ListId == h.Id)
+        .Select(l => new { l.CarId, l.DealerCode, l.InvoiceNo, l.Vin, l.InvoiceDate }).ToListAsync();
+    return Results.Ok(new { h.InvoiceListCode, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapDelete("/api/invoicelists/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var h = await db.InvoiceLists.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InvoiceListCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    db.InvoiceLines.RemoveRange(db.InvoiceLines.Where(l => l.OrgId == t.OrgId && l.ListId == h.Id));
+    db.InvoiceLists.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
 app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -1001,4 +1043,6 @@ record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
 record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
 record GrtDto(string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
 record GrtExpiryDto(DateTime? DateExpired);
+record InvoiceLineDto(string? CarId, string? DealerCode, string InvoiceNo, string Vin, DateTime? InvoiceDate);
+record InvoiceListDto(List<InvoiceLineDto>? Lines);
 record RegisterOrgDto(string Name);

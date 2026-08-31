@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Danh sách hóa đơn</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} #msg{font-size:13px} .lines{font-size:12px;opacity:.85}
+  #ltbl td,#ltbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>Danh sách hóa đơn xuất bán <span class="muted">(port 1:1 FrmNewInvoice / FrmMngInvoice — InvoiceList)</span></h1>
+<div class="card">
+  <b>Tạo lô hóa đơn mới</b> <span class="muted">(mỗi dòng 1 xe/VIN)</span>
+  <table id="ltbl"><thead><tr><th>Mã xe</th><th>Đại lý</th><th>Số hóa đơn *</th><th>VIN *</th><th>Ngày HĐ</th><th></th></tr></thead>
+  <tbody id="ltb"></tbody></table>
+  <div class="bar" style="margin-top:10px">
+    <button class="sm" onclick="addLine()">+ Thêm dòng</button>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu lô</button><span id="msg"></span>
+  </div>
+</div>
+<table><thead><tr><th>Số tham chiếu</th><th>Ngày tạo</th><th>Số HĐ</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function day(d){ return d? new Date(d).toLocaleString("vi-VN"):""; }
+function addLine(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="cid" style="width:80px"></td><td><input class="dl" style="width:80px"></td>
+    <td><input class="ino" style="width:120px"></td><td><input class="vin" style="width:130px"></td>
+    <td><input class="idt" type="date"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ltb").appendChild(tr);
+}
+async function create(){
+  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({carId:tr.querySelector(".cid").value,dealerCode:tr.querySelector(".dl").value,invoiceNo:tr.querySelector(".ino").value,vin:tr.querySelector(".vin").value,invoiceDate:tr.querySelector(".idt").value||null})).filter(l=>l.invoiceNo&&l.vin);
+  const r=await fetch("/api/invoicelists",{method:"POST",headers:H(),body:JSON.stringify({lines})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.invoiceListCode+" ("+j.lines+" HĐ)."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch("/api/invoicelists",{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(l=>`<tr><td><b>${l.invoiceListCode}</b> <a href="#" class="lines" onclick="lines('${l.invoiceListCode}');return false">xem</a></td>
+    <td>${day(l.createdDate)}</td><td>${l.lines}</td>
+    <td><button class="sm" onclick="del('${l.invoiceListCode}')">Xóa</button></td></tr><tr id="x-${l.invoiceListCode}"></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có lô nào.</td></tr>';
+}
+async function del(code){ if(!confirm("Xóa lô "+code+"?")) return; const r=await fetch("/api/invoicelists/"+code,{method:"DELETE",headers:H()}); if(r.ok) load(); else msg("Lỗi xóa"); }
+async function lines(code){
+  const row=F("x-"+code); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/invoicelists/${code}/lines`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="4"><div class="lines">${(d.lines||[]).map(l=>`HĐ <b>${l.invoiceNo}</b> · VIN ${l.vin}${l.dealerCode?" · ĐL "+l.dealerCode:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addLine(); load();
+</script>
+</body></html>

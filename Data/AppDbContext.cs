@@ -28,6 +28,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PmtVoucher> PmtVouchers => Set<PmtVoucher>();
     public DbSet<PmtLine> PmtLines => Set<PmtLine>();
     public DbSet<Guarantee> Guarantees => Set<Guarantee>();
+    public DbSet<InvoiceList> InvoiceLists => Set<InvoiceList>();
+    public DbSet<InvoiceLine> InvoiceLines => Set<InvoiceLine>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();

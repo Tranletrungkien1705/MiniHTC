@@ -330,6 +330,29 @@ public sealed class Guarantee
     public DateTime? ApprovedAt { get; set; }
 }
 
+/// <summary>Danh sách hóa đơn xuất bán (InvoiceList — port 1:1 FrmNewInvoice/FrmMngInvoice):
+/// header 1 lô hóa đơn (nhập Excel A2), CreatedDate + số tham chiếu.</summary>
+public sealed class InvoiceList
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InvoiceListCode { get; set; } = "";   // số tham chiếu (GetInvoiceListNo)
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng hóa đơn (InvoiceListDetail): 1 xe/VIN + số hóa đơn + ngày HĐ.</summary>
+public sealed class InvoiceLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ListId { get; set; }
+    public string? CarId { get; set; }
+    public string? DealerCode { get; set; }
+    public string InvoiceNo { get; set; } = "";
+    public string Vin { get; set; } = "";
+    public DateTime? InvoiceDate { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
