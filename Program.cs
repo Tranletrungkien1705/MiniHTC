@@ -1913,6 +1913,60 @@ app.MapGet("/api/support/records/{vin}/history", async (string vin, AppDbContext
     return Results.Ok(new { vin, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Đề nghị thế chấp xe (ReqMortgage — port 1:1 FrmNewRM_ReqMortgage + FrmMngRM_ReqMortgage, Sales/Payment) =====
+app.MapGet("/api/reqmortgages", async (AppDbContext db, ITenantContext t, string? bank, string? no, string? status) =>
+{
+    var q = db.ReqMortgages.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(r => r.MortageBankCode == bank);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(r => r.ReqRMNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    {
+        r.ReqRMNo, r.MortageBankCode, r.DealerCode, r.Status, r.MortageDate, r.CreatedAt, r.ApprovedAt,
+        cars = db.ReqMortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqMortgageId == r.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqmortgages", async (ReqMortgageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.MortageBankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng nhận thế chấp." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe thế chấp!" });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe có số VIN '{dupe.Key}' đã có trên lưới dữ liệu!" });
+    var no = "RM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r2 = new ReqMortgage { OrgId = t.OrgId, ReqRMNo = no, MortageBankCode = dto.MortageBankCode.Trim(), DealerCode = dto.DealerCode ?? "", MortageDate = dto.MortageDate, Status = "Draft" };
+    db.ReqMortgages.Add(r2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.ReqMortgageCars.Add(new ReqMortgageCar { OrgId = t.OrgId, ReqMortgageId = r2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", EngineNo = c.EngineNo ?? "", CQNo = c.CQNo ?? "", CONo = c.CONo ?? "", DeclarationNo = c.DeclarationNo ?? "", CODate = c.CODate });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r2.ReqRMNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/reqmortgages/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cars = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == r.Id)
+        .Select(c => new { c.VIN, c.ModelCode, c.EngineNo, c.CQNo, c.CONo, c.DeclarationNo, c.CODate }).ToListAsync();
+    return Results.Ok(new { r.ReqRMNo, r.MortageBankCode, r.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqmortgages/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "cancel")) return Results.BadRequest(new { error = "action = approve|cancel" });
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = action == "approve" ? "Đề nghị thế chấp không ở trạng thái chờ duyệt." : "Không thể hủy đề nghị này." });
+    if (action == "approve") { r.Status = "Approved"; r.ApprovedAt = DateTime.Now; }
+    else r.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqRMNo, r.Status });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5924,6 +5978,8 @@ record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaim
 record GrtClaimExtSignDto(string FileName);
 record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal Price, DateTime? DeliveryDate, string? SalesManCode, string? BankCode);
 record SupportPatchDto(string Field, string Value);
+record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate);
+record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

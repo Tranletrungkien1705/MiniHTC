@@ -2508,6 +2508,35 @@ public sealed class SupportPatchLog
     public DateTime PatchedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đề nghị thế chấp xe (RM_ReqMortgage) — port 1:1 FrmNewRM_ReqMortgage + FrmMngRM_ReqMortgage. Header.</summary>
+public sealed class ReqMortgage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqRMNo { get; set; } = "";
+    public string MortageBankCode { get; set; } = "";   // NH nhan the chap
+    public string DealerCode { get; set; } = "";
+    public string Status { get; set; } = "Draft";        // Draft -> Approved / Cancelled
+    public DateTime? MortageDate { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Chi tiết xe đề nghị thế chấp (RM_ReqMortgageDtl) — port 1:1 FrmNewRM_ReqMortgage detail.</summary>
+public sealed class ReqMortgageCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqMortgageId { get; set; }
+    public string VIN { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string EngineNo { get; set; } = "";
+    public string CQNo { get; set; } = "";
+    public string CONo { get; set; } = "";
+    public string DeclarationNo { get; set; } = "";
+    public DateTime? CODate { get; set; }
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
