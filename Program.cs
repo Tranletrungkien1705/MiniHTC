@@ -129,6 +129,11 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("SalesType", "Loại bán hàng (FrmSalesType)"),
     ("StaffType", "Loại nhân viên (FrmStaffType)"),
     ("CarCancelReason", "Lý do hủy (FrmUpdateCar_Status)"),
+    ("Model", "Model xe (FrmModel)"),
+    ("Province", "Tỉnh/Thành (FrmProvince)"),
+    ("Brand", "Nhãn hiệu (FrmBrand)"),
+    ("Warehouse", "Kho (FrmWarehouse)"),
+    ("Department2", "Bộ phận (FrmDepartment)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
