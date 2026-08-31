@@ -1651,6 +1651,71 @@ app.MapPost("/api/banktms/{no}/cancel", async (string no, AppDbContext db, ITena
     return Results.Ok(new { m.TransportMinutesNo, m.Status });
 }).RequireAuthorization();
 
+// ===== Phiếu thanh toán ngân hàng (BankPayment — port 1:1 FrmMngPM, cụm Bank) =====
+app.MapGet("/api/bankpms", async (AppDbContext db, ITenantContext t, string? dealer, string? pmNo, string? status) =>
+{
+    var q = db.BankPayments.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(pmNo)) q = q.Where(p => p.PaymentNo.Contains(pmNo!) || p.BankPaymentNo.Contains(pmNo!));
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.PaymentStatus == status);
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
+    {
+        p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo, p.CreatedAt, p.ApprovedAt,
+        cars = db.BankPaymentCars.Count(c => c.OrgId == t.OrgId && c.PaymentId == p.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.BankCodeReceive)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng nhận." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên phiếu thanh toán." });
+    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var no = "PTT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var p2 = new BankPayment
+    {
+        OrgId = t.OrgId, PaymentNo = no, BankPaymentNo = dto.BankPaymentNo ?? "", DealerCode = dto.DealerCode.Trim(),
+        BankCodeSend = dto.BankCodeSend ?? "", BankCodeReceive = dto.BankCodeReceive.Trim(), BankAccountSend = dto.BankAccountSend ?? "", BankAccountReceive = dto.BankAccountReceive ?? "",
+        Funds = dto.Funds ?? "", BankLending = dto.BankLending ?? "", Remark = dto.Remark ?? "", PaymentStatus = "Draft", TotalAmount = cars.Sum(c => c.AmountCurrent)
+    };
+    db.BankPayments.Add(p2); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.BankPaymentCars.Add(new BankPaymentCar { OrgId = t.OrgId, PaymentId = p2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId ?? "", ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", SOCode = c.SOCode ?? "", ColorCode = c.ColorCode ?? "", AmountAccum = c.AmountAccum, PercentAccum = c.PercentAccum, UnitPriceActual = c.UnitPriceActual, AmountCurrent = c.AmountCurrent, PercentCurrent = c.PercentCurrent, GuaranteeNo = c.GuaranteeNo ?? "", BankGuaranteeNo = c.BankGuaranteeNo ?? "", DlrCtrNo = c.DlrCtrNo ?? "" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p2.PaymentNo, cars = cars.Count, totalAmount = p2.TotalAmount });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankpms/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    var cars = await db.BankPaymentCars.Where(c => c.OrgId == t.OrgId && c.PaymentId == p.Id)
+        .Select(c => new { c.VIN, c.CarId, c.ModelCode, c.SOCode, c.ColorCode, c.AmountAccum, c.PercentAccum, c.UnitPriceActual, c.AmountCurrent, c.PercentCurrent, c.GuaranteeNo, c.BankGuaranteeNo }).ToListAsync();
+    return Results.Ok(new { p.PaymentNo, p.DealerCode, p.PaymentStatus, p.TotalAmount, p.AccountingRecordNo, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// Duyệt phiếu TT: Draft -> Approved (gán số ghi sổ kế toán) / Rejected.
+app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, string? accNo, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.PaymentStatus != "Draft") return Results.BadRequest(new { error = "Phiếu thanh toán không ở trạng thái chờ duyệt." });
+    if (action == "approve")
+    {
+        p.PaymentStatus = "Approved"; p.ApprovedAt = DateTime.Now;
+        p.AccountingRecordNo = string.IsNullOrWhiteSpace(accNo) ? "GS" + DateTime.Now.ToString("yyMMddHHmmss") : accNo!.Trim();
+    }
+    else p.PaymentStatus = "Rejected";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
@@ -5653,6 +5718,8 @@ record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars);
 record BankDoConfirmDto(string? Remark);
 record BankTmCarDto(string VIN, string? CarId, string? EngineNo, string? SOCode, string? GuaranteeNo, string? DlrCtrNo, string? ColorCode);
 record BankTmDto(string DealerCode, string? BankCode, string? BankCodeMonitor, List<BankTmCarDto>? Cars);
+record BankPmCarDto(string VIN, string? CarId, string? ModelCode, string? SpecCode, string? SOCode, string? ColorCode, decimal AmountAccum, decimal PercentAccum, decimal UnitPriceActual, decimal AmountCurrent, decimal PercentCurrent, string? GuaranteeNo, string? BankGuaranteeNo, string? DlrCtrNo);
+record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentNo, string? BankCodeSend, string? BankAccountSend, string? BankAccountReceive, string? Funds, string? BankLending, string? Remark, List<BankPmCarDto>? Cars);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);

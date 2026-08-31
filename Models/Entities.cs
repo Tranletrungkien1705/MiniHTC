@@ -2368,6 +2368,51 @@ public sealed class BankTmCar
     public string ColorCode { get; set; } = "";
 }
 
+/// <summary>Phiếu thanh toán ngân hàng (Pmt_PM) — port 1:1 FrmMngPM. Header.</summary>
+public sealed class BankPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentNo { get; set; } = "";
+    public string BankPaymentNo { get; set; } = "";      // so phieu ben NH
+    public string DealerCode { get; set; } = "";
+    public string BankCodeSend { get; set; } = "";
+    public string BankCodeReceive { get; set; } = "";
+    public string BankAccountSend { get; set; } = "";
+    public string BankAccountReceive { get; set; } = "";
+    public string Funds { get; set; } = "";               // nguon tien
+    public string BankLending { get; set; } = "";          // NH cho vay
+    public decimal TotalAmount { get; set; }
+    public string PaymentStatus { get; set; } = "Draft";   // Draft -> Approved / Rejected
+    public string AccountingRecordNo { get; set; } = "";   // so ghi so ke toan (gan khi duyet)
+    public string Remark { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? PaymentEndDate { get; set; }
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Chi tiết phiếu thanh toán theo VIN (Pmt_PMDetail) — port 1:1 FrmMngPM detail.</summary>
+public sealed class BankPaymentCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PaymentId { get; set; }
+    public string VIN { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string SOCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public decimal AmountAccum { get; set; }
+    public decimal PercentAccum { get; set; }
+    public decimal UnitPriceActual { get; set; }
+    public decimal AmountCurrent { get; set; }
+    public decimal PercentCurrent { get; set; }
+    public string GuaranteeNo { get; set; } = "";
+    public string BankGuaranteeNo { get; set; } = "";
+    public string DlrCtrNo { get; set; } = "";
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
