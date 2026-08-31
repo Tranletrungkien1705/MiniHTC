@@ -2819,6 +2819,16 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tham số cấu hình dịch vụ theo đại lý (ParamCode→ParamValue) — port 1:1 FrmDealerServiceOptional (Ser_Param, TCMotor).</summary>
+public sealed class DealerServiceOption
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ParamCode { get; set; } = "";
+    public string ParamValue { get; set; } = "";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Loại khách hàng dịch vụ (hệ số giá, cá nhân/tổ chức) — port 1:1 FrmCusTypeCreate (Ser_CusType, TCMotor).</summary>
 public sealed class CustomerType
 {

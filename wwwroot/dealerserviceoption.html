@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Cấu hình dịch vụ đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#0d9488;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:12px} th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  input[type=number]{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;width:130px;text-align:right}
+  button{font:inherit;cursor:pointer;padding:5px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  .sw{position:relative;display:inline-block;width:46px;height:26px}
+  .sw input{opacity:0;width:0;height:0}
+  .sl{position:absolute;inset:0;background:#8884;border-radius:26px;transition:.2s;cursor:pointer}
+  .sl:before{content:"";position:absolute;height:20px;width:20px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+  input:checked+.sl{background:var(--ok)} input:checked+.sl:before{transform:translateX(20px)}
+  #msg{font-size:13px;margin-left:10px}
+  .grp{font-size:12px;opacity:.6;text-transform:uppercase;padding-top:14px}
+</style></head>
+<body>
+<h1>Cấu hình dịch vụ theo đại lý <span class="muted">(port 1:1 FrmDealerServiceOptional — TCMotor)</span></h1>
+<p class="muted">Bật/tắt các quyền duyệt và thiết lập tỉ suất lợi nhuận, đơn giá công cho module dịch vụ của đại lý. Mỗi thay đổi lưu ngay.</p>
+<div style="margin:10px 0"><button onclick="load()">Tải cấu hình</button><span id="msg"></span></div>
+<table><thead><tr><th>Tham số</th><th>Giá trị</th></tr></thead><tbody id="rows"><tr><td colspan="2" class="muted">Nhấn "Tải cấu hình".</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2000); }
+async function set(code,val){ await token();
+  const r=await fetch("/api/dealerserviceoptions",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({ParamCode:code,ParamValue:String(val)})});
+  const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); load(); return; } msg("Đã lưu "+code);
+}
+async function load(){ await token();
+  const r=await fetch("/api/dealerserviceoptions",{headers:H()}); const d=await r.json();
+  let lastType="";
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let sep=""; if(o.type!==lastType){ lastType=o.type; sep=`<tr><td colspan="2" class="grp">${o.type==='bool'?'Quyền duyệt (bật/tắt)':'Tỉ suất / đơn giá'}</td></tr>`; }
+    let ctrl = o.type==='bool'
+      ? `<label class="sw"><input type="checkbox" ${o.value==='1'?'checked':''} onchange="set('${o.paramCode}', this.checked?1:0)"><span class="sl"></span></label>`
+      : `<input type="number" step="0.01" value="${o.value}" onchange="set('${o.paramCode}', this.value)">`;
+    return sep+`<tr><td>${esc(o.label)} <span class="muted">(${o.paramCode})</span></td><td>${ctrl}</td></tr>`;
+  }).join("")||'<tr><td colspan="2" class="muted">Không có tham số.</td></tr>';
+}
+</script>
+</body></html>

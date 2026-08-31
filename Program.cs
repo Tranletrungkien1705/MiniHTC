@@ -3230,6 +3230,49 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== Tham số cấu hình dịch vụ theo đại lý (DealerServiceOption — port 1:1 FrmDealerServiceOptional, TCMotor) =====
+// Catalog SerParamCode: 5 toggle auth + 6 giá trị số (profit rate / đơn giá công).
+var DealerServiceOptCatalog = new (string Code, string Label, string Type, string Default)[]
+{
+    ("IsHidenPhoneNumber", "Ẩn số điện thoại KH", "bool", "0"),
+    ("IsAuthStockOut", "Duyệt xuất kho phụ tùng", "bool", "0"),
+    ("IsAuthInvoice", "Duyệt hóa đơn", "bool", "0"),
+    ("IsAuthEditQuotation", "Duyệt sửa báo giá", "bool", "0"),
+    ("IsAuthSO", "Duyệt đơn dịch vụ (SO)", "bool", "0"),
+    ("PartProfitRate", "Tỉ suất lợi nhuận phụ tùng (%)", "number", "0"),
+    ("SerProfitRate", "Tỉ suất lợi nhuận dịch vụ (%)", "number", "0"),
+    ("UnitPriceBDN", "Đơn giá công BDN", "number", "0"),
+    ("UnitPriceSCC", "Đơn giá công SCC", "number", "0"),
+    ("UnitPriceSCD", "Đơn giá công SCD", "number", "0"),
+    ("UnitPriceSCS", "Đơn giá công SCS", "number", "0"),
+};
+app.MapGet("/api/dealerserviceoptions", async (AppDbContext db, ITenantContext t) =>
+{
+    var stored = await db.DealerServiceOptions.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var map = stored.ToDictionary(x => x.ParamCode, x => x.ParamValue);
+    var items = DealerServiceOptCatalog.Select(c => new
+    {
+        paramCode = c.Code, label = c.Label, type = c.Type,
+        value = map.TryGetValue(c.Code, out var v) ? v : c.Default
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Cập nhật 1 tham số (chỉ chấp nhận ParamCode nằm trong catalog; bool phải '0'/'1'; number phải số).
+app.MapPost("/api/dealerserviceoptions", async (DealerServiceOptionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cat = DealerServiceOptCatalog.FirstOrDefault(c => c.Code == dto.ParamCode);
+    if (cat.Code is null) return Results.BadRequest(new { error = "Mã tham số không hợp lệ." });
+    var val = (dto.ParamValue ?? "").Trim();
+    if (cat.Type == "bool" && val != "0" && val != "1") return Results.BadRequest(new { error = "Giá trị bật/tắt phải là 0 hoặc 1." });
+    if (cat.Type == "number" && !decimal.TryParse(val, out _)) return Results.BadRequest(new { error = "Giá trị phải là số." });
+    var ex = await db.DealerServiceOptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ParamCode == dto.ParamCode);
+    if (ex is not null) { ex.ParamValue = val; ex.UpdatedAt = DateTime.Now; }
+    else db.DealerServiceOptions.Add(new DealerServiceOption { OrgId = t.OrgId, ParamCode = dto.ParamCode, ParamValue = val });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dto.ParamCode, value = val });
+}).RequireAuthorization();
+
 // ===== Loại khách hàng dịch vụ (CustomerType — port 1:1 FrmCusTypeCreate/Search, TCMotor) =====
 string[] _cusPersonTypes = { "Personal", "Organization" };
 app.MapGet("/api/customertypes", async (AppDbContext db, ITenantContext t, string? q, string? personType, string? active) =>
@@ -7946,6 +7989,7 @@ record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Pri
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
+record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
