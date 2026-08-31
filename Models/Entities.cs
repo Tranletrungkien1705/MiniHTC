@@ -44,6 +44,23 @@ public sealed class CarPrice
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Khách hàng (Mst_Customer) — port 1:1 FrmCustomerBase.</summary>
+public sealed class Customer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CustomerCode { get; set; } = "";
+    public string CustomerName { get; set; } = "";
+    public string? Phone { get; set; }
+    public string? IdCard { get; set; }
+    public string? TaxCode { get; set; }
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
