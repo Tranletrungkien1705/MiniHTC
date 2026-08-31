@@ -1463,6 +1463,27 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>Biên bản giao xe (Sto_DlvMinutes) — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes (2010.HTC/Sales/DlvMinutes). BB giao/vận chuyển xe: VIN, tuyến đi-đến, ĐVVT + lái xe, ngày giao + checklist tình trạng xe (JSON ~25 mục OS/IS/SP/DA).</summary>
+public sealed class DlvMinutes
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlvMinutesNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? FProvinceCode { get; set; }
+    public string? TProvinceCode { get; set; }
+    public string? FDistrictCode { get; set; }
+    public string? TDistrictCode { get; set; }
+    public string TransporterCode { get; set; } = "";  // đơn vị vận tải
+    public string? DriverCode { get; set; }             // lái xe
+    public DateTime? DlvStartDate { get; set; }
+    public DateTime? DlvEndDate { get; set; }
+    public string ChecklistJson { get; set; } = "{}";   // checklist tình trạng (item→bool)
+    public string Status { get; set; } = "Draft";       // Draft → Confirmed
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ConfirmedAt { get; set; }
+}
+
 /// <summary>Đề nghị nhận xe/PDI (HTMV_PDI + Dtl) — port 1:1 FrmNewPDI (2010.HTC/Sales/HTMV). Đề nghị nhận xe để PDI theo VIN.</summary>
 public sealed class HtmvPdi
 {

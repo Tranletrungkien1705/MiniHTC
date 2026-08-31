@@ -1289,6 +1289,55 @@ app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { d.DocReqNo, status = d.Status });
 }).RequireAuthorization();
 
+// ===== Biên bản giao xe (DlvMinutes — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes, 2010.HTC/Sales/DlvMinutes) =====
+app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? status, string? vin) =>
+{
+    var q = db.DlvMinutesSet.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(m => m.VIN.Contains(vin.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(m => m.Id).Take(500)
+        .Select(m => new { m.DlvMinutesNo, m.VIN, m.FProvinceCode, m.TProvinceCode, m.TransporterCode, m.DriverCode, m.DlvStartDate, m.DlvEndDate, m.Status, m.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlvminutes", async (DlvMinutesDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Cần VIN." });
+    if (string.IsNullOrWhiteSpace(dto.TransporterCode)) return Results.BadRequest(new { error = "Cần đơn vị vận tải." });
+    var checklistJson = System.Text.Json.JsonSerializer.Serialize(dto.Checklist ?? new Dictionary<string, bool>());
+    var no = "DLV" + DateTime.Now.ToString("yyMMddHHmmss");
+    var m = new DlvMinutes
+    {
+        OrgId = t.OrgId, DlvMinutesNo = no, VIN = dto.VIN.Trim().ToUpperInvariant(), FProvinceCode = dto.FProvinceCode, TProvinceCode = dto.TProvinceCode,
+        FDistrictCode = dto.FDistrictCode, TDistrictCode = dto.TDistrictCode, TransporterCode = dto.TransporterCode.Trim(), DriverCode = dto.DriverCode,
+        DlvStartDate = dto.DlvStartDate, DlvEndDate = dto.DlvEndDate, ChecklistJson = checklistJson, Status = "Draft"
+    };
+    db.DlvMinutesSet.Add(m); await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.VIN });
+}).RequireAuthorization();
+
+app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    Dictionary<string, bool> checklist;
+    try { checklist = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(m.ChecklistJson) ?? new(); }
+    catch { checklist = new(); }
+    return Results.Ok(new { m.DlvMinutesNo, m.VIN, m.FProvinceCode, m.TProvinceCode, m.FDistrictCode, m.TDistrictCode, m.TransporterCode, m.DriverCode, m.DlvStartDate, m.DlvEndDate, m.Status, checklist });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlvminutes/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.Status != "Draft") return Results.BadRequest(new { error = "Biên bản đã xác nhận." });
+    m.Status = "Confirmed"; m.ConfirmedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, status = m.Status });
+}).RequireAuthorization();
+
 // ===== Đề nghị nhận xe/PDI (HtmvPdi — port 1:1 FrmNewPDI, 2010.HTC/Sales/HTMV) =====
 app.MapGet("/api/htmvpdis", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -4705,6 +4754,7 @@ record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
+record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
 record HtmvPdiDto(List<HtmvPdiCarDto>? Cars);
 record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark);

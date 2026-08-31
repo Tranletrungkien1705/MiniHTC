@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Biên bản giao xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1080px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;box-sizing:border-box}
+  .grid input{width:100%}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+  .chk{display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;margin-top:6px;font-size:13px}
+  .chk label{display:flex;gap:6px;align-items:center;opacity:1;font-size:13px;margin:0}
+  .grp{font-size:12px;font-weight:600;opacity:.7;margin:8px 0 2px;text-transform:uppercase}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Confirmed{color:var(--ok)}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85}
+</style></head>
+<body>
+<h1>Biên bản giao xe <span class="muted">(port 1:1 FrmDealerNewDlvMinutes — Sto_DlvMinutes)</span></h1>
+<div class="card">
+  <b>Tạo biên bản giao xe</b>
+  <div class="grid" style="margin-top:10px">
+    <div><label>VIN *</label><input id="vin"></div>
+    <div><label>Đơn vị vận tải *</label><input id="tr"></div>
+    <div><label>Lái xe</label><input id="dr"></div>
+    <div><label>Tỉnh đi</label><input id="fp"></div>
+    <div><label>Tỉnh đến</label><input id="tp"></div>
+    <div><label>Ngày giao (BĐ)</label><input id="ds" type="date"></div>
+    <div><label>Ngày giao (KT)</label><input id="de" type="date"></div>
+  </div>
+  <div class="grp">Checklist tình trạng xe</div>
+  <div id="chk" class="chk"></div>
+  <div class="bar"><button class="primary" onclick="create()">Lưu BB</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Confirmed">Đã xác nhận</option></select><input id="q" placeholder="Lọc VIN" oninput="load()" style="width:120px"></div>
+<table><thead><tr><th>Số BB</th><th>VIN</th><th>Tuyến</th><th>ĐVVT</th><th>Lái xe</th><th>Ngày tạo</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; const LBL={Draft:"Nháp",Confirmed:"Đã xác nhận"};
+const ITEMS=[
+  ["OS","Ngoại thất",["OS_LightSystem:Hệ thống đèn","OS_Antenna:Ăng-ten","OS_Logo:Logo","OS_Moulding:Nẹp","OS_CementDust:Bụi xi măng"]],
+  ["IS","Nội thất",["IS_InstrumentPanel:Bảng đồng hồ","IS_Switchs:Công tắc","IS_Sunvisor:Chắn nắng","IS_CigarLighter:Tẩu thuốc","IS_Mirror:Gương","IS_RadioCD:Radio/CD","IS_AirCondition:Điều hòa","IS_Seats:Ghế","IS_RoofLamps:Đèn trần","IS_RoofMat:Trần","IS_FloorPanel:Sàn","IS_TrimPanel:Ốp","IS_KeyAndRemote:Chìa+remote","IS_Filter:Lọc"]],
+  ["SP","Phụ tùng",["SP_SpareWheel:Lốp dự phòng","SP_WheelCover:Nắp lốp","SP_ToolBag:Túi dụng cụ","SP_KeyEnvelope:Phong bì chìa"]],
+  ["DA","Giấy tờ",["DA_OriginalCertificate:Giấy CN gốc","DA_UserManual:HD sử dụng","DA_CDGuaranty:CD bảo hành","DA_GuarantyBooklet:Sổ bảo hành","DA_OriginalInvoice:HĐ gốc","DA_StampedInvoice:HĐ đóng dấu"]]
+];
+function renderChk(){ let h=""; ITEMS.forEach(([g,gn,list])=>{ h+=`<div style="grid-column:1/-1" class="muted">${gn}</div>`; list.forEach(it=>{ const[k,n]=it.split(":"); h+=`<label><input type="checkbox" class="ci" data-k="${k}" checked> ${n}</label>`; }); }); F("chk").innerHTML=h; }
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+async function create(){
+  const checklist={}; [...F("chk").querySelectorAll(".ci")].forEach(c=>checklist[c.dataset.k]=c.checked);
+  const body={vin:F("vin").value,transporterCode:F("tr").value,driverCode:F("dr").value,fProvinceCode:F("fp").value,tProvinceCode:F("tp").value,dlvStartDate:F("ds").value||null,dlvEndDate:F("de").value||null,checklist};
+  const r=await fetch("/api/dlvminutes",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  if(r.ok){ msg("Đã tạo "+j.dlvMinutesNo); F("vin").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/dlvminutes?status=${F("fst").value}&vin=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=o.status==="Draft"?`<button class="sm" onclick="confirm_('${o.dlvMinutesNo}')">Xác nhận</button>`:"";
+    return `<tr><td><b>${o.dlvMinutesNo}</b> <a href="#" class="cars" onclick="det('${o.dlvMinutesNo}');return false">chi tiết</a></td><td>${o.vin}</td><td>${o.fProvinceCode||"?"}→${o.tProvinceCode||"?"}</td><td>${o.transporterCode}</td><td>${o.driverCode||""}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.dlvMinutesNo}"></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Chưa có biên bản.</td></tr>';
+}
+async function confirm_(no){ const r=await fetch(`/api/dlvminutes/${no}/confirm`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function det(no){
+  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/dlvminutes/${no}`,{headers:H()})).json();
+  const ok=Object.entries(d.checklist||{}).filter(([k,v])=>v).length; const tot=Object.keys(d.checklist||{}).length;
+  const bad=Object.entries(d.checklist||{}).filter(([k,v])=>!v).map(([k])=>k);
+  row.innerHTML=`<td colspan="8"><div class="cars">Checklist: <b>${ok}/${tot}</b> đạt${bad.length?" · Thiếu/lỗi: "+bad.join(", "):" · Đầy đủ"}${d.dlvStartDate?" · Giao "+day(d.dlvStartDate):""}</div></td>`;
+}
+renderChk(); load();
+</script>
+</body></html>
