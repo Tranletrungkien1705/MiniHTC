@@ -4657,6 +4657,84 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Dự kiến đơn hàng theo tháng (EstimateOrder — port 1:1 FrmQuanLyDuKienDH, 2010.HTC/Sales) =====
+app.MapGet("/api/estimateorders", async (AppDbContext db, ITenantContext t, string? dealer, string? month, string? status) =>
+{
+    var q = db.EstimateOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(x => x.MonthEstimate == month);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.EstOrderNo, x.DealerCode, x.MonthEstimate, x.HtcStaffInCharge, x.Status,
+        lines = db.EstimateOrderLines.Count(l => l.OrgId == t.OrgId && l.EstimateOrderId == x.Id),
+        totalQty = db.EstimateOrderLines.Where(l => l.OrgId == t.OrgId && l.EstimateOrderId == x.Id).Sum(l => (int?)l.Quantity) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/estimateorders", async (EstimateOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.MonthEstimate)) return Results.BadRequest(new { error = "Thiếu tháng dự kiến." });
+    var lines = dto.Lines ?? new();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng model." });
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var l in lines)
+    {
+        var mc = (l.ModelCode ?? "").Trim();
+        if (mc == "") return Results.BadRequest(new { error = "Có dòng thiếu mã model." });
+        if (!seen.Add(mc + "|" + (l.SpecCode ?? ""))) return Results.BadRequest(new { error = "Trùng model+spec: " + mc });
+        if (l.Quantity <= 0) return Results.BadRequest(new { error = "Số lượng phải > 0 cho " + mc });
+    }
+    var no = "EST" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new EstimateOrder { OrgId = t.OrgId, EstOrderNo = no, DealerCode = dto.DealerCode, MonthEstimate = dto.MonthEstimate, HtcStaffInCharge = dto.HtcStaffInCharge, Status = "Draft" };
+    db.EstimateOrders.Add(h); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.EstimateOrderLines.Add(new EstimateOrderLine { OrgId = t.OrgId, EstimateOrderId = h.Id, ModelCode = l.ModelCode!.Trim(), SpecCode = l.SpecCode, Quantity = l.Quantity });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.EstOrderNo, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/estimateorders/{id}/lines", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.EstimateOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var lines = await db.EstimateOrderLines.Where(l => l.OrgId == t.OrgId && l.EstimateOrderId == id)
+        .Select(l => new { l.ModelCode, l.SpecCode, l.Quantity }).ToListAsync();
+    return Results.Ok(new { h.EstOrderNo, h.DealerCode, h.MonthEstimate, h.Status, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/estimateorders/{id}/confirm", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.EstimateOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    if (h.Status == "Confirmed") return Results.BadRequest(new { error = "Đã xác nhận rồi." });
+    h.Status = "Confirmed"; await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.Status });
+}).RequireAuthorization();
+
+// ===== Ánh xạ xe ↔ đơn hàng SX (WOMapping — port 1:1 FrmWO_Mapping, 2010.HTC/Sales) =====
+app.MapGet("/api/womappings", async (AppDbContext db, ITenantContext t, string? car, string? so) =>
+{
+    var q = db.WOMappings.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(car)) q = q.Where(x => x.CarId.Contains(car!));
+    if (!string.IsNullOrWhiteSpace(so)) q = q.Where(x => x.SoCode == so);
+    var items = await q.OrderBy(x => x.CarId).Take(1000)
+        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.Description, x.SoCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/womappings", async (WOMappingDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cid = (dto.CarId ?? "").Trim().ToUpperInvariant();
+    if (cid == "") return Results.BadRequest(new { error = "Thiếu mã xe (CarID/VIN)." });
+    var w = await db.WOMappings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarId == cid);
+    if (w is null) { w = new WOMapping { OrgId = t.OrgId, CarId = cid }; db.WOMappings.Add(w); }
+    w.ColorCode = dto.ColorCode; w.ColorNameVN = dto.ColorNameVN; w.Description = dto.Description; w.SoCode = dto.SoCode; w.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { w.Id, w.CarId });
+}).RequireAuthorization();
+
 // ===== Kế hoạch bán hàng theo quý (SalePlan — port 1:1 FrmSalePlan, 2010.HTC/Sales) =====
 app.MapGet("/api/saleplans", async (AppDbContext db, ITenantContext t, string? dealer, int? year, string? model) =>
 {
@@ -10974,6 +11052,9 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record EstimateOrderDto(string? DealerCode, string MonthEstimate, string? HtcStaffInCharge, List<EstOrderLineDto>? Lines);
+record EstOrderLineDto(string ModelCode, string? SpecCode, int Quantity);
+record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? Description, string? SoCode);
 record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, int Q2, int Q3, int Q4);
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);

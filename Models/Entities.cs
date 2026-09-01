@@ -1003,6 +1003,43 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Dự kiến đơn hàng theo tháng (header: đại lý/tháng/NV phụ trách) — port 1:1 FrmQuanLyDuKienDH (Plan_EstimateOrder, 2010.HTC/Sales).</summary>
+public sealed class EstimateOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string EstOrderNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? MonthEstimate { get; set; }        // "yyyy-MM"
+    public string? HtcStaffInCharge { get; set; }
+    public string Status { get; set; } = "Draft";      // Draft -> Confirmed
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng model trong dự kiến đơn hàng — port 1:1 FrmQuanLyDuKienDH detail, 2010.HTC.</summary>
+public sealed class EstimateOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long EstimateOrderId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public int Quantity { get; set; }
+}
+
+/// <summary>Ánh xạ xe ↔ đơn hàng SX (màu/mô tả/số SO) — port 1:1 FrmWO_Mapping (TblWOMapping, 2010.HTC/Sales).</summary>
+public sealed class WOMapping
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CarId { get; set; } = "";
+    public string? ColorCode { get; set; }
+    public string? ColorNameVN { get; set; }
+    public string? Description { get; set; }
+    public string? SoCode { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Kế hoạch bán hàng theo quý (đại lý × model × năm, Q1-Q4) — port 1:1 FrmSalePlan (2010.HTC/Sales).</summary>
 public sealed class SalePlan
 {
