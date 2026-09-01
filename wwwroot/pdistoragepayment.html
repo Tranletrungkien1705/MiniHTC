@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thanh toán PDI theo xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:64px}
+</style></head>
+<body>
+<h1>Chi tiết thanh toán PDI theo xe <span class="muted">(port 1:1 FrmSuaThanhToanPDI — 2010.HTC)</span></h1>
+<p class="muted">Sửa ngày nhập kho / xuất kho từng VIN (import), số ngày lưu = xuất - nhập. Upsert theo VIN.</p>
+<div class="card"><h3 style="margin-top:0">Import</h3>
+  <p class="muted" style="margin:2px 0">Mỗi dòng, tab: <b>VIN | Model | Spec | Màu | Kho | Đại lý | Ngày nhập (yyyy-mm-dd) | Ngày xuất</b></p>
+  <textarea id="rows" placeholder="VIN001&#9;CRETA&#9;CR-2.0&#9;Trang&#9;KHO-A&#9;DL1&#9;2026-08-01&#9;2026-08-20"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="doImport()">Cập nhật</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><div><label>VIN</label><input id="qVin" style="width:150px"></div><div><label>Đại lý</label><input id="qDealer" style="width:110px"></div><button onclick="load()">Xem</button><span id="kpi" class="muted"></span></div>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Model</th><th>Spec</th><th>Màu</th><th>Kho</th><th>ĐL</th><th>Nhập</th><th>Xuất</th><th class="num">Ngày lưu</th></tr></thead><tbody id="tb"><tr><td colspan="9" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const dt=s=>s?String(s).substring(0,10):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4500); }
+const D=v=>(v||"").trim()||null;
+async function doImport(){ await token();
+  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{VIN:(c[0]||"").trim(),ModelCode:D(c[1]),SpecCode:D(c[2]),ColorExtName:D(c[3]),StorageCodeInit:D(c[4]),DealerCode:D(c[5]),StoreDate:D(c[6]),DeliveryOutDate:D(c[7])};});
+  const r=await fetch("/api/pdistoragepayments/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
+}
+async function load(){ await token();
+  const qs=new URLSearchParams({vin:F("qVin").value,dealer:F("qDealer").value});
+  const r=await fetch("/api/pdistoragepayments?"+qs,{headers:Hh()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} xe`;
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.modelCode)}</td><td>${esc(o.specCode)}</td><td>${esc(o.colorExtName)}</td><td>${esc(o.storageCodeInit)}</td><td>${esc(o.dealerCode)}</td><td>${dt(o.storeDate)}</td><td>${dt(o.deliveryOutDate)}</td><td class="num">${o.storageDays!=null?o.storageDays:''}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

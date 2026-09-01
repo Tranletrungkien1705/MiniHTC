@@ -4968,6 +4968,45 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Chi tiết thanh toán PDI theo xe (PdiStoragePayment — port 1:1 FrmSuaThanhToanPDI, 2010.HTC) =====
+app.MapGet("/api/pdistoragepayments", async (AppDbContext db, ITenantContext t, string? vin, string? dealer) =>
+{
+    var q = db.PdiStoragePayments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var items = (await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.VIN, x.ModelCode, x.SpecCode, x.ColorExtName, x.StorageCodeInit, x.DealerCode, x.StoreDate, x.DeliveryOutDate, x.UpdatedBy, x.UpdatedAt
+    }).ToListAsync())
+    .Select(x => new { x.Id, x.VIN, x.ModelCode, x.SpecCode, x.ColorExtName, x.StorageCodeInit, x.DealerCode, x.StoreDate, x.DeliveryOutDate, x.UpdatedBy, x.UpdatedAt,
+        storageDays = (x.StoreDate.HasValue && x.DeliveryOutDate.HasValue) ? (int)(x.DeliveryOutDate.Value.Date - x.StoreDate.Value.Date).TotalDays : (int?)null }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pdistoragepayments/import", async (PdiPaymentImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
+    var dup = rows.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong file." });
+    foreach (var r in rows)
+        if (r.StoreDate.HasValue && r.DeliveryOutDate.HasValue && r.DeliveryOutDate < r.StoreDate)
+            return Results.BadRequest(new { error = $"VIN {r.VIN}: ngày xuất kho phải >= ngày nhập kho." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var vins = rows.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToHashSet();
+    var existing = await db.PdiStoragePayments.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
+    var byVin = existing.ToDictionary(x => x.VIN, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(vin, out var row)) { row = new PdiStoragePayment { OrgId = t.OrgId, VIN = vin }; db.PdiStoragePayments.Add(row); added++; } else updated++;
+        row.ModelCode = r.ModelCode; row.SpecCode = r.SpecCode; row.ColorExtName = r.ColorExtName; row.StorageCodeInit = r.StorageCodeInit; row.DealerCode = r.DealerCode;
+        row.StoreDate = r.StoreDate; row.DeliveryOutDate = r.DeliveryOutDate; row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Cập nhật trạng thái xe (CarStatusUpdate — port 1:1 FrmUpdateCar_Status, 2010.HTC) =====
 app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, string? carId, string? ttc, string? cptc) =>
 {
@@ -12553,6 +12592,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
+record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);
 record CarStatusImportDto(List<CarStatusRowDto>? Rows);
 record CarStatusRowDto(string? CarId, string? TTCStatus, string? CPTCStatus);
 record CarSpecUpdImportDto(List<CarSpecUpdRowDto>? Rows);

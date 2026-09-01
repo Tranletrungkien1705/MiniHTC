@@ -1070,6 +1070,23 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Chi tiết thanh toán PDI theo xe (Pmt_PaymentPDIDetail) — port 1:1 FrmSuaThanhToanPDI (2010.HTC). Sửa ngày nhập kho/xuất kho từng VIN; StorageDays = xuất - nhập. Upsert theo VIN.</summary>
+public sealed class PdiStoragePayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorExtName { get; set; }
+    public string? StorageCodeInit { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? StoreDate { get; set; }        // ngày nhập kho
+    public DateTime? DeliveryOutDate { get; set; }  // ngày xuất kho
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Cập nhật trạng thái xe — port 1:1 FrmUpdateCar_Status (2010.HTC). Batch cập nhật TTCStatus (hoàn thành TT chậm) + CPTCStatus theo CarId, upsert theo CarId.</summary>
 public sealed class CarStatusUpdate
 {
