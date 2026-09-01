@@ -4839,6 +4839,44 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Bảo hành xe tồn kho (InvCarWarranty — port 1:1 FrmMngInv_CarWarranty, TCMotor) =====
+// Theo dõi mốc bảo hành theo VIN (nhận/hết lưu kho/giao/bảo hành/hết hạn HTCV+ĐL) + gửi KH xác nhận BH.
+app.MapGet("/api/invcarwarranties", async (AppDbContext db, ITenantContext t, string? vin, string? dealer, string? model) =>
+{
+    var q = db.InvCarWarranties.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.VIN, x.PlateNo, x.ModelCode, x.SpecCode, x.DealerCode, x.DealerCodeBuyer,
+        x.ReceiveDate, x.StoreDateExpired, x.DeliveryDate, x.WarrantyDate, x.CustomerConfirmDate, x.HTCVDateExpired, x.DealerDateExpired
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, confirmed = items.Count(x => x.CustomerConfirmDate != null), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invcarwarranties", async (InvCarWarrantyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(vin)) return Results.BadRequest(new { error = "Chưa nhập VIN." });
+    var row = await db.InvCarWarranties.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    if (row is null) { row = new InvCarWarranty { OrgId = t.OrgId, VIN = vin }; db.InvCarWarranties.Add(row); }
+    row.PlateNo = dto.PlateNo; row.ModelCode = dto.ModelCode; row.SpecCode = dto.SpecCode; row.DealerCode = dto.DealerCode; row.DealerCodeBuyer = dto.DealerCodeBuyer;
+    row.ReceiveDate = dto.ReceiveDate; row.StoreDateExpired = dto.StoreDateExpired; row.DeliveryDate = dto.DeliveryDate; row.WarrantyDate = dto.WarrantyDate;
+    row.HTCVDateExpired = dto.HTCVDateExpired; row.DealerDateExpired = dto.DealerDateExpired; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.VIN, row.ModelCode });
+}).RequireAuthorization();
+
+// Gửi KH xác nhận bảo hành → set CustomerConfirmDate = hôm nay.
+app.MapPost("/api/invcarwarranties/{id}/confirm", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.InvCarWarranties.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.CustomerConfirmDate = DateTime.Now; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.VIN, row.CustomerConfirmDate });
+}).RequireAuthorization();
+
 // ===== Master loại thùng (LoaiThungMst — port 1:1 FrmMst_LoaiThung, TCMotor) =====
 app.MapGet("/api/loaithungs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -8627,14 +8665,27 @@ app.MapPost("/api/ctmvisits", async (CtmVisitDto dto, AppDbContext db, ITenantCo
 }).RequireAuthorization();
 
 // ===== Lượt khách lái thử (DriveTest — port 1:1 FrmNewTestDriver, DMSales.Foton/RetailContract) =====
-app.MapGet("/api/drivetests", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? phone) =>
+app.MapGet("/api/drivetests", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? phone, string? status) =>
 {
     var q = db.DriveTests.Where(d => d.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(d => d.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(d => d.TestModelCode == model);
     if (!string.IsNullOrWhiteSpace(phone)) q = q.Where(d => d.PhoneNo.Contains(phone));
-    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.DriverTestStatus == status);
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo, d.DriverTestStatus }).ToListAsync();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.DriverTestStatus == "P"), items });
+}).RequireAuthorization();
+
+// Quản lý lái thử: xác nhận KH (P->A) / huỷ (P->R) — port 1:1 FrmMngTestDriver (DLR_DriveTestApprove).
+app.MapPost("/api/drivetests/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("confirm" or "reject")) return Results.BadRequest(new { error = "action = confirm|reject" });
+    var d = await db.DriveTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DriveTestCode == code);
+    if (d is null) return Results.NotFound(new { code });
+    if (d.DriverTestStatus != "P") return Results.BadRequest(new { error = "Lượt lái thử không ở trạng thái chờ." });
+    d.DriverTestStatus = action == "confirm" ? "A" : "R";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DriveTestCode, d.DriverTestStatus });
 }).RequireAuthorization();
 
 app.MapPost("/api/drivetests", async (DriveTestDto dto, AppDbContext db, ITenantContext t) =>
@@ -11587,6 +11638,7 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired);
 record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
 record MsgDlvCarLineDto(string? CarId, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate);

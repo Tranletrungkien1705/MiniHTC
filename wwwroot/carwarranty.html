@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Bảo hành xe tồn kho</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1160px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:8px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)}
+</style></head>
+<body>
+<h1>Bảo hành xe tồn kho <span class="muted">(port 1:1 FrmMngInv_CarWarranty — TCMotor)</span></h1>
+<div class="card"><h3 style="margin-top:0">Đăng ký / cập nhật (theo VIN)</h3>
+  <div class="grid5">
+    <div><label>VIN *</label><input id="vin"></div><div><label>Biển số</label><input id="plate"></div>
+    <div><label>Model</label><input id="model"></div><div><label>Spec</label><input id="spec"></div>
+    <div><label>Đại lý</label><input id="dealer"></div><div><label>ĐL mua</label><input id="dealerBuyer"></div>
+    <div><label>Ngày nhận</label><input id="receive" placeholder="yyyy-mm-dd"></div>
+    <div><label>Hết lưu kho</label><input id="storeExp" placeholder="yyyy-mm-dd"></div>
+    <div><label>Ngày giao</label><input id="delivery" placeholder="yyyy-mm-dd"></div>
+    <div><label>Ngày BH</label><input id="warranty" placeholder="yyyy-mm-dd"></div>
+    <div><label>Hết hạn HTCV</label><input id="htcvExp" placeholder="yyyy-mm-dd"></div>
+    <div><label>Hết hạn ĐL</label><input id="dealerExp" placeholder="yyyy-mm-dd"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><div><label>VIN</label><input id="qVin" style="width:160px"></div><div><label>Đại lý</label><input id="qDealer" style="width:120px"></div><div><label>Model</label><input id="qModel" style="width:120px"></div><button onclick="load()">Xem</button></div>
+  <div id="kpi" class="muted" style="margin:6px 0"></div>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Biển số</th><th>Model</th><th>Đại lý</th><th>Nhận</th><th>Giao</th><th>BH</th><th>Hết HTCV</th><th>Hết ĐL</th><th>KH xác nhận</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="11" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const dt=s=>s?String(s).substring(0,10):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+const v=id=>F(id).value||null;
+async function save(){ await token();
+  const body={VIN:F("vin").value,PlateNo:v("plate"),ModelCode:v("model"),SpecCode:v("spec"),DealerCode:v("dealer"),DealerCodeBuyer:v("dealerBuyer"),ReceiveDate:v("receive"),StoreDateExpired:v("storeExp"),DeliveryDate:v("delivery"),WarrantyDate:v("warranty"),HTCVDateExpired:v("htcvExp"),DealerDateExpired:v("dealerExp")};
+  const r=await fetch("/api/invcarwarranties",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.vin); F("vin").value=""; load();
+}
+async function confirm2(id){ await token(); await fetch("/api/invcarwarranties/"+id+"/confirm",{method:"POST",headers:Hh()}); load(); }
+async function load(){ await token();
+  const qs=new URLSearchParams({vin:F("qVin").value,dealer:F("qDealer").value,model:F("qModel").value});
+  const r=await fetch("/api/invcarwarranties?"+qs,{headers:Hh()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} xe — KH đã xác nhận: ${d.confirmed}`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.plateNo)}</td><td>${esc(o.modelCode)}</td><td>${esc(o.dealerCode)}</td><td>${dt(o.receiveDate)}</td><td>${dt(o.deliveryDate)}</td><td>${dt(o.warrantyDate)}</td><td>${dt(o.htcvDateExpired)}</td><td>${dt(o.dealerDateExpired)}</td><td>${o.customerConfirmDate?'<span class="pill y">'+dt(o.customerConfirmDate)+'</span>':'<span class="pill n">Chưa</span>'}</td><td>${o.customerConfirmDate?'':`<button class="link" onclick="confirm2(${o.id})">Gửi KH xác nhận</button>`}</td></tr>`).join("")||'<tr><td colspan="11" class="muted">Không có xe.</td></tr>';
+}
+</script>
+</body></html>

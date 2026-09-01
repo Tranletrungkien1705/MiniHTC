@@ -1070,6 +1070,27 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Bảo hành xe tồn kho — port 1:1 FrmMngInv_CarWarranty (Inv_CarWarranty, TCMotor). Theo dõi mốc bảo hành theo VIN + gửi KH xác nhận bảo hành (CustomerConfirmDate).</summary>
+public sealed class InvCarWarranty
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? PlateNo { get; set; }
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? DealerCode { get; set; }
+    public string? DealerCodeBuyer { get; set; }
+    public DateTime? ReceiveDate { get; set; }
+    public DateTime? StoreDateExpired { get; set; }
+    public DateTime? DeliveryDate { get; set; }
+    public DateTime? WarrantyDate { get; set; }
+    public DateTime? CustomerConfirmDate { get; set; }
+    public DateTime? HTCVDateExpired { get; set; }
+    public DateTime? DealerDateExpired { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Master loại thùng đóng gói xe — port 1:1 FrmMst_LoaiThung (Mst_LoaiThung, TCMotor). LoaiThung = mã, TenLoaiThung = tên.</summary>
 public sealed class LoaiThungMst
 {
@@ -2720,6 +2741,7 @@ public sealed class DriveTest
     public string DriverLicenseNo { get; set; } = "";
     public string? RangeAge { get; set; }
     public string? Email { get; set; }
+    public string DriverTestStatus { get; set; } = "P";  // P=chờ, A=đã xác nhận KH, R=huỷ (port FrmMngTestDriver)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
