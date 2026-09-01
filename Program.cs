@@ -4657,6 +4657,40 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Kế hoạch bán hàng theo quý (SalePlan — port 1:1 FrmSalePlan, 2010.HTC/Sales) =====
+app.MapGet("/api/saleplans", async (AppDbContext db, ITenantContext t, string? dealer, int? year, string? model) =>
+{
+    var q = db.SalePlans.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (year.HasValue) q = q.Where(x => x.YearPlan == year.Value);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500)
+        .Select(x => new { x.Id, x.DealerCode, x.ModelCode, x.YearPlan, x.Q1, x.Q2, x.Q3, x.Q4, total = x.Q1 + x.Q2 + x.Q3 + x.Q4, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, grandTotal = items.Sum(i => i.total), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/saleplans", async (SalePlanDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dc = (dto.DealerCode ?? "").Trim(); var mc = (dto.ModelCode ?? "").Trim();
+    if (dc == "" || mc == "") return Results.BadRequest(new { error = "Thiếu mã đại lý hoặc model." });
+    if (dto.YearPlan < 2000 || dto.YearPlan > 2100) return Results.BadRequest(new { error = "Năm kế hoạch không hợp lệ." });
+    if (dto.Q1 < 0 || dto.Q2 < 0 || dto.Q3 < 0 || dto.Q4 < 0) return Results.BadRequest(new { error = "Số lượng quý không được âm." });
+    var p = await db.SalePlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dc && x.ModelCode == mc && x.YearPlan == dto.YearPlan);
+    if (p is null) { p = new SalePlan { OrgId = t.OrgId, DealerCode = dc, ModelCode = mc, YearPlan = dto.YearPlan }; db.SalePlans.Add(p); }
+    p.Q1 = dto.Q1; p.Q2 = dto.Q2; p.Q3 = dto.Q3; p.Q4 = dto.Q4; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.DealerCode, p.ModelCode, p.YearPlan, total = p.Q1 + p.Q2 + p.Q3 + p.Q4 });
+}).RequireAuthorization();
+
+app.MapPost("/api/saleplans/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var p = await db.SalePlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (p is null) return Results.NotFound(new { id });
+    p.FlagActive = p.FlagActive == "1" ? "0" : "1"; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.FlagActive });
+}).RequireAuthorization();
+
 // ===== Thông tin thùng xe tải (CabinInfo — port 1:1 FrmUpdate_Cabin, 2010.HTC/Sales) =====
 app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? vin, bool? onlyMissing) =>
 {
@@ -10940,6 +10974,7 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, int Q2, int Q3, int Q4);
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);
 record PaymentDiscountStatusDto(string Status, string? Note);

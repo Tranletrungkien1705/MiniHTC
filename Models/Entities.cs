@@ -1003,6 +1003,22 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Kế hoạch bán hàng theo quý (đại lý × model × năm, Q1-Q4) — port 1:1 FrmSalePlan (2010.HTC/Sales).</summary>
+public sealed class SalePlan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public int YearPlan { get; set; }
+    public int Q1 { get; set; }
+    public int Q2 { get; set; }
+    public int Q3 { get; set; }
+    public int Q4 { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Thông tin thùng xe tải theo VIN (chứng nhận/CO/hóa đơn thùng) — port 1:1 FrmUpdate_Cabin (Tbl_UpdateCabin, 2010.HTC/Sales).</summary>
 public sealed class CabinInfo
 {

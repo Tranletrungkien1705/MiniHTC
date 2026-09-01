@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Kế hoạch bán quý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} tfoot td{font-weight:700;border-top:2px solid var(--line)} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5} .kpi{display:inline-block;border:1px solid var(--line);border-radius:10px;padding:8px 14px;margin:8px 0} .kpi b{font-size:18px}
+</style></head>
+<body>
+<h1>Kế hoạch bán hàng theo quý <span class="muted">(port 1:1 FrmSalePlan — 2010.HTC/Sales)</span></h1>
+<div class="card"><h3 style="margin-top:0">Thêm/sửa kế hoạch</h3>
+  <div class="row">
+    <div><label>Đại lý *</label><input id="fDlr" style="width:100px"></div>
+    <div><label>Model *</label><input id="fModel" style="width:100px"></div>
+    <div><label>Năm *</label><input id="fYear" type="number" value="2026" style="width:90px"></div>
+    <div><label>Q1</label><input id="fQ1" type="number" value="0" style="width:70px"></div>
+    <div><label>Q2</label><input id="fQ2" type="number" value="0" style="width:70px"></div>
+    <div><label>Q3</label><input id="fQ3" type="number" value="0" style="width:70px"></div>
+    <div><label>Q4</label><input id="fQ4" type="number" value="0" style="width:70px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0"><input id="qDlr" placeholder="Đại lý" style="width:100px"><input id="qModel" placeholder="Model" style="width:100px"><input id="qYear" type="number" placeholder="Năm" style="width:90px"><button onclick="load()">Xem</button></div>
+<div class="kpi">Tổng KH: <b id="grand">0</b></div>
+<div class="wrap"><table><thead><tr><th>Đại lý</th><th>Model</th><th class="num">Năm</th><th class="num">Q1</th><th class="num">Q2</th><th class="num">Q3</th><th class="num">Q4</th><th class="num">Cả năm</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+async function save(){ await token();
+  const body={DealerCode:F("fDlr").value,ModelCode:F("fModel").value,YearPlan:+F("fYear").value||0,Q1:+F("fQ1").value||0,Q2:+F("fQ2").value||0,Q3:+F("fQ3").value||0,Q4:+F("fQ4").value||0};
+  const r=await fetch("/api/saleplans",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } m(`Đã lưu (cả năm ${M(d.total)})`); load();
+}
+async function toggle(id){ await token(); await fetch("/api/saleplans/"+id+"/toggle",{method:"POST",headers:H()}); load(); }
+function edit(o){ F("fDlr").value=o.dealerCode; F("fModel").value=o.modelCode; F("fYear").value=o.yearPlan; F("fQ1").value=o.q1; F("fQ2").value=o.q2; F("fQ3").value=o.q3; F("fQ4").value=o.q4; window.scrollTo(0,0); }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("qDlr").value)p.set("dealer",F("qDlr").value); if(F("qModel").value)p.set("model",F("qModel").value); if(F("qYear").value)p.set("year",F("qYear").value);
+  const r=await fetch("/api/saleplans?"+p.toString(),{headers:H()}); const d=await r.json(); window._rows=d.items||[];
+  F("grand").textContent=M(d.grandTotal);
+  F("rows").innerHTML=(d.items||[]).map((o,i)=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.dealerCode)}</b></td><td>${esc(o.modelCode)}</td><td class="num">${o.yearPlan}</td><td class="num">${M(o.q1)}</td><td class="num">${M(o.q2)}</td><td class="num">${M(o.q3)}</td><td class="num">${M(o.q4)}</td><td class="num"><b>${M(o.total)}</b></td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="edit(window._rows[${i}])">Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="10" class="muted">Chưa có kế hoạch.</td></tr>';
+}
+</script>
+</body></html>
