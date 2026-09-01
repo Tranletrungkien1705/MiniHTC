@@ -4209,6 +4209,29 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo doanh thu dịch vụ (report tái-dùng ServiceInvoice — port 1:1 FrmAccTotalRevenue + FrmSer_InvReportRevenueRpt, TCMotor) =====
+// Gộp hóa đơn theo tháng: tiền hàng (subtotal) + VAT − chiết khấu = tổng; tách đã thu (Paid) vs chưa thu.
+app.MapGet("/api/report/service-revenue", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var q = db.ServiceInvoices.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) q = q.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
+    var invs = await q.Select(x => new { x.SubTotal, x.VatAmount, x.DiscountAmount, x.TotalAmount, x.Status, x.CreatedAt }).ToListAsync();
+    var byMonth = invs.GroupBy(x => x.CreatedAt.ToString("yyyy-MM")).Select(g => new
+    {
+        month = g.Key, invoices = g.Count(),
+        subTotal = g.Sum(x => x.SubTotal), vat = g.Sum(x => x.VatAmount), discount = g.Sum(x => x.DiscountAmount), total = g.Sum(x => x.TotalAmount),
+        paid = g.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount), unpaid = g.Where(x => x.Status != "Paid").Sum(x => x.TotalAmount)
+    }).OrderByDescending(x => x.month).ToList();
+    return Results.Ok(new
+    {
+        totalInvoices = invs.Count,
+        grandTotal = invs.Sum(x => x.TotalAmount), grandSubTotal = invs.Sum(x => x.SubTotal), grandVat = invs.Sum(x => x.VatAmount),
+        grandPaid = invs.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount), grandUnpaid = invs.Where(x => x.Status != "Paid").Sum(x => x.TotalAmount),
+        byMonth
+    });
+}).RequireAuthorization();
+
 // ===== KPI dịch vụ tổng hợp (report tái-dùng RepairOrder + ServiceInvoice — port 1:1 FrmReportKPI/FrmReportCollectiveDisplay_KPI/FrmRpt_Correct_Repair_Rate, TCMotor) =====
 app.MapGet("/api/report/service-kpi", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
 {

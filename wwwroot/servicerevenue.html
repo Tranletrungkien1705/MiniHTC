@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo doanh thu DV</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} tfoot td{font-weight:700;border-top:2px solid var(--line)} .wrap{overflow-x:auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:12px;padding:14px} .kpi b{font-size:22px;display:block} .kpi .lbl{font-size:12px;opacity:.7}
+</style></head>
+<body>
+<h1>Báo cáo doanh thu dịch vụ <span class="muted">(port 1:1 FrmAccTotalRevenue + FrmSer_InvReportRevenueRpt — TCMotor)</span></h1>
+<p class="muted">Gộp hóa đơn dịch vụ theo tháng: tiền hàng + VAT − chiết khấu = tổng; tách đã thu / chưa thu.</p>
+<div class="row">
+  <div><label>Từ ngày</label><input id="from" type="date"></div>
+  <div><label>Đến ngày</label><input id="to" type="date"></div>
+  <button class="primary" onclick="load()">Xem</button>
+</div>
+<div class="grid" id="kpis"></div>
+<div class="wrap"><table><thead><tr><th>Tháng</th><th class="num">Số HĐ</th><th class="num">Tiền hàng</th><th class="num">VAT</th><th class="num">Chiết khấu</th><th class="num">Tổng</th><th class="num">Đã thu</th><th class="num">Chưa thu</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody>
+<tfoot id="foot"></tfoot></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("from").value)p.set("fromDate",F("from").value); if(F("to").value)p.set("toDate",F("to").value);
+  const r=await fetch("/api/report/service-revenue?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`
+    <div class="kpi"><b>${M(d.grandTotal)}</b><span class="lbl">Tổng doanh thu</span></div>
+    <div class="kpi"><b>${M(d.grandSubTotal)}</b><span class="lbl">Tiền hàng</span></div>
+    <div class="kpi"><b>${M(d.grandVat)}</b><span class="lbl">VAT</span></div>
+    <div class="kpi"><b style="color:var(--ok)">${M(d.grandPaid)}</b><span class="lbl">Đã thu</span></div>
+    <div class="kpi"><b style="color:var(--bad)">${M(d.grandUnpaid)}</b><span class="lbl">Chưa thu</span></div>
+    <div class="kpi"><b>${M(d.totalInvoices)}</b><span class="lbl">Số hóa đơn</span></div>`;
+  F("rows").innerHTML=(d.byMonth||[]).map(o=>`<tr><td><b>${esc(o.month)}</b></td><td class="num">${o.invoices}</td><td class="num">${M(o.subTotal)}</td><td class="num">${M(o.vat)}</td><td class="num">${M(o.discount)}</td><td class="num"><b>${M(o.total)}</b></td><td class="num" style="color:var(--ok)">${M(o.paid)}</td><td class="num" style="color:var(--bad)">${M(o.unpaid)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có dữ liệu.</td></tr>';
+  F("foot").innerHTML=(d.byMonth&&d.byMonth.length)?`<tr><td>TỔNG</td><td class="num">${d.totalInvoices}</td><td class="num">${M(d.grandSubTotal)}</td><td class="num">${M(d.grandVat)}</td><td class="num"></td><td class="num">${M(d.grandTotal)}</td><td class="num">${M(d.grandPaid)}</td><td class="num">${M(d.grandUnpaid)}</td></tr>`:"";
+}
+</script>
+</body></html>
