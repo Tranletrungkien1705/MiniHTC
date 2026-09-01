@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Gói dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:54px} .off{opacity:.5} .tot{font-weight:700}
+</style></head>
+<body>
+<h1>Gói dịch vụ <span class="muted">(port 1:1 FrmServicePackageCreate/Search — TCMotor/Services)</span></h1>
+<div class="card"><h3 style="margin-top:0">Tạo/sửa gói</h3>
+  <div class="row"><div><label>Mã gói *</label><input id="hNo" style="width:120px"></div><div style="flex:1"><label>Tên gói</label><input id="hName" style="width:100%"></div></div>
+  <h3>Công dịch vụ (Mã CV [tab] Tên [tab] Đơn giá [tab] Hệ số)</h3>
+  <textarea id="hSvcs" placeholder="CV01&#9;Thay dau&#9;100000&#9;1"></textarea>
+  <h3>Phụ tùng (Mã PT [tab] Tên [tab] Đơn giá [tab] Hệ số)</h3>
+  <textarea id="hParts" placeholder="PT01&#9;Loc dau&#9;150000&#9;1"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu gói</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Mã/tên gói" style="width:200px"><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Mã gói</th><th>Tên</th><th class="num">Công</th><th class="num">PT</th><th class="num">Tổng</th><th class="num">CV</th><th class="num">PT#</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<div class="card" id="det" style="display:none"><h3 style="margin-top:0">Chi tiết <span id="detName" class="muted"></span></h3><div id="detBody"></div></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+function parse4(v){ return v.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>l.split(/\t|,/).map(x=>x.trim())); }
+async function save(){ await token();
+  const svcs=parse4(F("hSvcs").value).map(c=>({SerCode:c[0]||"",SerName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1}));
+  const parts=parse4(F("hParts").value).map(c=>({PartCode:c[0]||"",PartName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1}));
+  const r=await fetch("/api/servicepackages",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({PackageNo:F("hNo").value,PackageName:F("hName").value,Services:svcs,Parts:parts})});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } m(`Đã lưu ${d.packageNo} (tổng ${M(d.grandTotal)})`); F("hSvcs").value="";F("hParts").value=""; load();
+}
+async function toggle(id){ await token(); await fetch("/api/servicepackages/"+id+"/toggle",{method:"POST",headers:H()}); load(); }
+async function detail(id,no){ await token(); const r=await fetch("/api/servicepackages/"+id+"/detail",{headers:H()}); const d=await r.json();
+  F("det").style.display="block"; F("detName").textContent="— "+no;
+  const s=(d.services||[]).map(x=>`<tr><td>${esc(x.serCode)}</td><td>${esc(x.serName)}</td><td class="num">${M(x.price)}</td><td class="num">${x.factor}</td><td class="num">${M(x.amount)}</td></tr>`).join("");
+  const p=(d.parts||[]).map(x=>`<tr><td>${esc(x.partCode)}</td><td>${esc(x.partName)}</td><td class="num">${M(x.price)}</td><td class="num">${x.factor}</td><td class="num">${M(x.amount)}</td></tr>`).join("");
+  F("detBody").innerHTML=`<h3>Công (${(d.services||[]).length})</h3><div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Giá</th><th class="num">Hệ số</th><th class="num">Thành tiền</th></tr></thead><tbody>${s||'<tr><td colspan="5" class="muted">—</td></tr>'}</tbody></table></div>
+    <h3>Phụ tùng (${(d.parts||[]).length})</h3><div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Giá</th><th class="num">Hệ số</th><th class="num">Thành tiền</th></tr></thead><tbody>${p||'<tr><td colspan="5" class="muted">—</td></tr>'}</tbody></table></div>
+    <p class="tot">Công ${M(d.serviceTotal)} + PT ${M(d.partTotal)} = <b>${M(d.grandTotal)}</b></p>`;
+}
+async function load(){ await token();
+  const r=await fetch("/api/servicepackages?q="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.packageNo)}</b></td><td>${esc(o.packageName)}</td><td class="num">${M(o.serviceTotal)}</td><td class="num">${M(o.partTotal)}</td><td class="num tot">${M(o.grandTotal)}</td><td class="num">${o.services}</td><td class="num">${o.parts}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="detail(${o.id},'${esc(o.packageNo)}')">Chi tiết</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có gói.</td></tr>';
+}
+</script>
+</body></html>

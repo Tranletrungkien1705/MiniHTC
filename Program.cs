@@ -4737,6 +4737,77 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Gói dịch vụ (ServicePackage — port 1:1 FrmServicePackageCreate/Search, TCMotor/Services) =====
+app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.ServicePackages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PackageNo.Contains(q!) || (x.PackageName != null && x.PackageName.Contains(q!)));
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.PackageNo, x.PackageName, x.ServiceTotal, x.PartTotal, x.GrandTotal, x.FlagActive,
+        services = db.ServicePackageServices.Count(s => s.OrgId == t.OrgId && s.ServicePackageId == x.Id),
+        parts = db.ServicePackageParts.Count(p => p.OrgId == t.OrgId && p.ServicePackageId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo/cập nhật gói theo PackageNo: thay toàn bộ dòng CV + PT, tính tổng (Price×Factor mỗi dòng).
+app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.PackageNo ?? "").Trim();
+    if (no == "") return Results.BadRequest(new { error = "Thiếu mã gói dịch vụ." });
+    var svcs = dto.Services ?? new(); var parts = dto.Parts ?? new();
+    if (svcs.Count == 0 && parts.Count == 0) return Results.BadRequest(new { error = "Gói phải có ít nhất 1 dòng công hoặc phụ tùng." });
+    decimal svcTotal = 0, partTotal = 0;
+    var svcRows = new List<ServicePackageService>();
+    foreach (var s in svcs)
+    {
+        if (string.IsNullOrWhiteSpace(s.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã." });
+        var f = s.Factor <= 0 ? 1 : s.Factor; var amt = Math.Round(s.Price * f, 2);
+        svcTotal += amt;
+        svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName, Price = s.Price, Factor = f, Amount = amt });
+    }
+    var partRows = new List<ServicePackagePart>();
+    var seenP = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var p in parts)
+    {
+        if (string.IsNullOrWhiteSpace(p.PartCode)) return Results.BadRequest(new { error = "Có dòng PT thiếu mã." });
+        if (!seenP.Add(p.PartCode.Trim())) return Results.BadRequest(new { error = "Trùng mã PT trong gói: " + p.PartCode });
+        var f = p.Factor <= 0 ? 1 : p.Factor; var amt = Math.Round(p.Price * f, 2);
+        partTotal += amt;
+        partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt });
+    }
+    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PackageNo == no);
+    if (h is null) { h = new ServicePackage { OrgId = t.OrgId, PackageNo = no }; db.ServicePackages.Add(h); }
+    h.PackageName = dto.PackageName; h.ServiceTotal = svcTotal; h.PartTotal = partTotal; h.GrandTotal = svcTotal + partTotal; h.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
+    db.ServicePackageParts.RemoveRange(db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
+    foreach (var s in svcRows) { s.ServicePackageId = h.Id; db.ServicePackageServices.Add(s); }
+    foreach (var p in partRows) { p.ServicePackageId = h.Id; db.ServicePackageParts.Add(p); }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.PackageNo, h.ServiceTotal, h.PartTotal, h.GrandTotal });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount }).ToListAsync();
+    var parts = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.PartCode, x.PartName, x.Price, x.Factor, x.Amount }).ToListAsync();
+    return Results.Ok(new { h.PackageNo, h.PackageName, h.ServiceTotal, h.PartTotal, h.GrandTotal, services = svcs, parts });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    h.FlagActive = h.FlagActive == "1" ? "0" : "1"; h.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.FlagActive });
+}).RequireAuthorization();
+
 // ===== Định mức khuyến mãi hội viên (CustomerPromotion — port 1:1 FrmMember, TCMotor/Customer) =====
 app.MapGet("/api/custpromotions", async (AppDbContext db, ITenantContext t, string? card, string? program) =>
 {
@@ -11234,6 +11305,9 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
+record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
+record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
 record CustPromotionDto(string CardNo, string ProgramCode, string? ProgramName, DateTime? EffDate, int QtyAllocated, string? Remark);
 record CustPromotionUseDto(int Qty);
 record DeliveryRequestDto(string? DealerCode, DateTime? RequestDate, List<DRCarDto>? Cars);

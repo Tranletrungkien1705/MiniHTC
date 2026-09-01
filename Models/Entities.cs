@@ -1003,6 +1003,46 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Gói dịch vụ (header: gồm công dịch vụ + phụ tùng bán kèm) — port 1:1 FrmServicePackageCreate/Search (TblSerServicePackage, TCMotor/Services).</summary>
+public sealed class ServicePackage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PackageNo { get; set; } = "";
+    public string? PackageName { get; set; }
+    public decimal ServiceTotal { get; set; }
+    public decimal PartTotal { get; set; }
+    public decimal GrandTotal { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng công dịch vụ trong gói — port 1:1 FrmServicePackageCreate grid CV, TCMotor.</summary>
+public sealed class ServicePackageService
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServicePackageId { get; set; }
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+    public decimal Price { get; set; }
+    public decimal Factor { get; set; } = 1;
+    public decimal Amount { get; set; }
+}
+
+/// <summary>Dòng phụ tùng trong gói dịch vụ — port 1:1 FrmServicePackageCreate grid PT, TCMotor.</summary>
+public sealed class ServicePackagePart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServicePackageId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal Price { get; set; }
+    public decimal Factor { get; set; } = 1;
+    public decimal Amount { get; set; }
+}
+
 /// <summary>Định mức khuyến mãi theo thẻ hội viên × chương trình — port 1:1 FrmMember (Crd_Member promotion, TCMotor/Customer). QtyRemain = QtyAllocated - QtyUsed.</summary>
 public sealed class CustomerPromotion
 {
