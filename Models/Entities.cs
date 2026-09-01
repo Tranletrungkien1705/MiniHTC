@@ -1070,6 +1070,28 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master loại hợp đồng — port 1:1 FrmMst_ContractType (Mst_ContractType, TCMotor). ContractType = mã, mô tả + cờ hoạt động.</summary>
+public sealed class ContractTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractType { get; set; } = "";
+    public string? ContractTypeDesc { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Master thời gian chạy DOAT (Dealer Order Allocation Time) — port 1:1 FrmMst_DOATSettingTime (Mst_DOATSettingTime, TCMotor). Cấu hình 2 khung giờ auto tạo lệnh giao xe (First/Second run).</summary>
+public sealed class DOATSettingTime
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DOATSTNo { get; set; } = "";
+    public string FlagFirstRunTime { get; set; } = "0";
+    public string FlagSecondRunTime { get; set; } = "0";
+    public DateTime CreatedAt { get; set; }
+}
+
 /// <summary>Lịch sử chính sách đơn hàng theo xe — port 1:1 FrmMngHisOrderPolicy (Car_CarHisOrderPolicy, TCMotor/Sales/Purchase). Ghi nhận chính sách đơn hàng áp cho từng xe (theo SO + CarId) kèm log kiểm toán.</summary>
 public sealed class CarHisOrderPolicy
 {

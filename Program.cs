@@ -4839,6 +4839,60 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master loại hợp đồng (ContractTypeMst — port 1:1 FrmMst_ContractType, TCMotor) =====
+app.MapGet("/api/contracttypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.ContractTypeMsts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractType.Contains(q!) || x.ContractTypeDesc!.Contains(q!));
+    var items = await qry.OrderBy(x => x.ContractType).Take(500).Select(x => new { x.Id, x.ContractType, x.ContractTypeDesc, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypes", async (ContractTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ContractType ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã loại hợp đồng." });
+    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractType == code);
+    if (row is null) { row = new ContractTypeMst { OrgId = t.OrgId, ContractType = code }; db.ContractTypeMsts.Add(row); }
+    row.ContractTypeDesc = dto.ContractTypeDesc; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ContractType, row.ContractTypeDesc, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Master khung giờ chạy DOAT (DOATSettingTime — port 1:1 FrmMst_DOATSettingTime, TCMotor) =====
+// Cấu hình 2 khung giờ auto tạo lệnh giao xe. Số DOATSTNo tự sinh; add tạo bản ghi cấu hình mới.
+app.MapGet("/api/doatsettingtimes", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.DOATSettingTimes.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.Id).Take(200)
+        .Select(x => new { x.Id, x.DOATSTNo, x.FlagFirstRunTime, x.FlagSecondRunTime, x.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, latest = items.FirstOrDefault(), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/doatsettingtimes", async (DOATSettingTimeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = "DOAT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var row = new DOATSettingTime {
+        OrgId = t.OrgId, DOATSTNo = no,
+        FlagFirstRunTime = dto.FlagFirstRunTime == true ? "1" : "0",
+        FlagSecondRunTime = dto.FlagSecondRunTime == true ? "1" : "0",
+        CreatedAt = DateTime.Now
+    };
+    db.DOATSettingTimes.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DOATSTNo, row.FlagFirstRunTime, row.FlagSecondRunTime });
+}).RequireAuthorization();
+
 // ===== Lịch sử chính sách đơn hàng theo xe (CarHisOrderPolicy — port 1:1 FrmMngHisOrderPolicy, TCMotor/Sales/Purchase) =====
 // Tra cứu chính sách đơn hàng áp cho từng xe (theo SO/CarId) + ghi nhận (record) 1 lần áp chính sách kèm log kiểm toán.
 app.MapGet("/api/carhisorderpolicies", async (AppDbContext db, ITenantContext t, string? soCode, string? carId, string? policy) =>
@@ -11451,6 +11505,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive);
+record DOATSettingTimeDto(bool? FlagFirstRunTime, bool? FlagSecondRunTime);
 record CarHisOrderPolicyDto(string? SOCode, string CarId, string? ModelCode, string? SpecCode, string? SpecDescription, string? CrtTypeCode, string? ColorCode, string? ColorName, string OrderPolicyCode, string? OrderPolicyName, DateTime? ApprovedDate);
 record BankStatementImportDto(string? BStatementNo, List<BankStatementRowDto>? Lines);
 record BankStatementRowDto(string? TransactionDate, string? TransactionCode, decimal DebitVal, decimal CreditVal, decimal BalanceVal, string? RemittanceDetail, string? BankSendCode, string? AccountSendName, string? AccountSendNo, string? BankReceiveCode, string? AccountReceiveName, string? AccountReceiveNo, string? ActVoucherCode, string? FlagTnxType, string? DealerSendCode, string? DealerReceiveCode);
