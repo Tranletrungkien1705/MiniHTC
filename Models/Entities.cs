@@ -1070,6 +1070,47 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master nhà cung cấp phụ tùng (Ser_MST_Supplier) — port 1:1 FrmMstSupplierCreate/Search (TCMotor DMSCarSv). Mã + tên + địa chỉ + SĐT + fax.</summary>
+public sealed class SerMstSupplier
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SupplierCode { get; set; } = "";
+    public string? SupplierName { get; set; }
+    public string? Address { get; set; }
+    public string? Phone { get; set; }
+    public string? Fax { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Phiếu điều chỉnh tồn kho (header) — port 1:1 FrmStockAdjCreate/Search (TCMotor DMSCarSv). Điều chỉnh SL tồn phụ tùng, duyệt theo trạng thái.</summary>
+public sealed class StockAdj
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockAdjNo { get; set; } = "";
+    public string? StorageCode { get; set; }
+    public string? Remark { get; set; }
+    public string AdjStatus { get; set; } = "Draft";   // Draft -> Approved / Rejected
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; }
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Chi tiết phiếu điều chỉnh tồn kho — port 1:1 StockAdj detail (TCMotor DMSCarSv).</summary>
+public sealed class StockAdjLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StockAdjId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? Unit { get; set; }
+    public decimal QtyBalance { get; set; }   // SL tồn hiện tại
+    public decimal QtyAdjust { get; set; }     // SL điều chỉnh (+/-)
+}
+
 /// <summary>Master loại công việc dịch vụ (Ser_MST_ServiceType) — port 1:1 FrmServiceTypeCreate/Search (TCMotor DMSCarSv). Tên loại công việc + cờ hoạt động.</summary>
 public sealed class SerServiceType
 {

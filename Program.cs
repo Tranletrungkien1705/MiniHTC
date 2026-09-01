@@ -4968,6 +4968,87 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master nhà cung cấp phụ tùng (SerMstSupplier — port 1:1 FrmMstSupplierCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.SupplierCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
+    if (!string.IsNullOrWhiteSpace(dto.Phone) && !dto.Phone!.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')')) return Results.BadRequest(new { error = "Số điện thoại không hợp lệ." });
+    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
+    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code }; db.SerMstSuppliers.Add(row); }
+    row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Phiếu điều chỉnh tồn kho (StockAdj — port 1:1 FrmStockAdjCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? status, string? no) =>
+{
+    var q = db.StockAdjs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.AdjStatus == status);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StockAdjNo.Contains(no!));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.StockAdjNo, x.StorageCode, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
+        lines = db.StockAdjLines.Count(l => l.OrgId == t.OrgId && l.StockAdjId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
+    var dup = lines.GroupBy(l => l.PartCode!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"Mã phụ tùng {dup.Key} bị trùng!" });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = "ADJ" + DateTime.Now.ToString("yyMMddHHmmss"), StorageCode = dto.StorageCode, Remark = dto.Remark, AdjStatus = "Draft", CreatedBy = by, CreatedAt = DateTime.Now };
+    db.StockAdjs.Add(h); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockAdjNo, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust }).ToListAsync();
+    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockadjs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.AdjStatus != "Draft") return Results.BadRequest(new { error = "Phiếu không ở trạng thái chờ duyệt." });
+    h.AdjStatus = action == "approve" ? "Approved" : "Rejected";
+    if (action == "approve") h.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockAdjNo, h.AdjStatus });
+}).RequireAuthorization();
+
 // ===== Master loại công việc DV (SerServiceType — port 1:1 FrmServiceTypeCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12718,6 +12799,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record StockAdjDto(string? StorageCode, string? Remark, List<StockAdjLineDto>? Lines);
+record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust);
 record SerServiceTypeDto(string? TypeName, string? FlagActive);
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
 record SerPartTypeDto(string? TypeName, string? FlagActive);
