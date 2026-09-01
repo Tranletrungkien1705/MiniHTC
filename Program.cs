@@ -4272,6 +4272,50 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Quản lý giá vốn phụ tùng (PartCostSnapshot — port 1:1 FrmPartCostManagement/FrmCaluCost/FrmReportHistoryCost, TCMotor) =====
+// Tính giá vốn bình quân gia quyền = tổng(SL×giá nhập)/tổng SL từ các phiếu NHẬP đã duyệt; lưu snapshot + cập nhật ServicePart.Cost.
+app.MapPost("/api/partcosts/calculate", async (AppDbContext db, ITenantContext t) =>
+{
+    var inIds = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed").Select(o => o.Id);
+    var agg = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && inIds.Contains(l.ServiceStockInId))
+        .GroupBy(l => new { l.PartCode, l.PartName })
+        .Select(g => new { g.Key.PartCode, g.Key.PartName, qty = g.Sum(x => x.Quantity), value = g.Sum(x => x.Quantity * x.Price) }).ToListAsync();
+    if (agg.Count == 0) return Results.Ok(new { calculated = 0, message = "Chưa có phiếu nhập đã duyệt để tính giá vốn." });
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).ToListAsync();
+    var pMap = parts.ToDictionary(p => p.PartCode, p => p);
+    int updated = 0;
+    foreach (var a in agg)
+    {
+        if (a.qty <= 0) continue;
+        var avg = Math.Round(a.value / a.qty, 2);
+        db.PartCostSnapshots.Add(new PartCostSnapshot { OrgId = t.OrgId, PartCode = a.PartCode, PartName = a.PartName,
+            AverageCost = avg, TotalQty = a.qty, TotalValue = a.value, Method = "Average" });
+        if (pMap.TryGetValue(a.PartCode, out var p)) { p.Cost = avg; updated++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { calculated = agg.Count, partsUpdated = updated });
+}).RequireAuthorization();
+
+// Giá vốn hiện tại theo mã PT (snapshot mới nhất mỗi mã).
+app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t) =>
+{
+    var snaps = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var rows = snaps.GroupBy(x => x.PartCode).Select(g => g.OrderByDescending(x => x.Id).First())
+        .Select(x => new { x.PartCode, x.PartName, x.AverageCost, x.TotalQty, x.TotalValue, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
+        .OrderBy(x => x.PartCode).ToList();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+// Lịch sử tính giá vốn 1 mã PT (các lần tính theo thời gian).
+app.MapGet("/api/report/cost-history", async (AppDbContext db, ITenantContext t, string partCode) =>
+{
+    var code = (partCode ?? "").Trim();
+    if (code == "") return Results.BadRequest(new { error = "Cần mã phụ tùng." });
+    var rows = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId && x.PartCode == code).OrderByDescending(x => x.Id)
+        .Select(x => new { x.AverageCost, x.TotalQty, x.TotalValue, x.Method, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { partCode = code, count = rows.Count, rows });
+}).RequireAuthorization();
+
 // ===== Đặt hàng tồn kho tối ưu (report tái-dùng ServiceStockOut — port 1:1 FrmQLDathangtonkhotoiuu, TCMotor) =====
 // Nhu cầu bình quân tháng (MAD) = trung bình SL xuất 6 tháng gần nhất; phân nhóm ABC theo tỉ trọng nhu cầu; đề xuất đặt hàng.
 app.MapGet("/api/report/optimal-reorder", async (AppDbContext db, ITenantContext t, decimal? leadFactor) =>

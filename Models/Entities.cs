@@ -952,6 +952,20 @@ public sealed class CustomerCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Bản ghi tính giá vốn bình quân phụ tùng (mỗi lần tính = 1 snapshot) — port 1:1 FrmPartCostManagement/FrmCaluCost/FrmReportHistoryCost (Tbl_Ser_PartCost_Calculate, TCMotor).</summary>
+public sealed class PartCostSnapshot
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal AverageCost { get; set; }
+    public decimal TotalQty { get; set; }
+    public decimal TotalValue { get; set; }
+    public string Method { get; set; } = "Average"; // Average | FIFO
+    public DateTime CalculatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>File đính kèm đề nghị bảo hành (ảnh/chứng từ theo ĐN) — port 1:1 FrmROAttachment (Ser_ROAttachment, TCMotor).</summary>
 public sealed class WarrantyAttachment
 {
