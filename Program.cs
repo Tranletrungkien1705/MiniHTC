@@ -9732,6 +9732,42 @@ app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, I
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
+// Sửa lệnh giao — cập nhật ngày giao BĐ/KT + ngày xuất kho theo VIN (port 1:1 FrmEditDO, TCMotor/Sales/Logistic).
+app.MapGet("/api/deliveryorders/{no}/carsdates", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryStartDate, c.DeliveryEndDate, c.DeliveryOutDate }).ToListAsync();
+    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/deliveryorders/{no}/edit-dates", async (string no, DoEditDatesDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.Vin)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
+    // validate: ngày KT >= ngày BĐ
+    foreach (var l in lines)
+        if (l.DeliveryStartDate.HasValue && l.DeliveryEndDate.HasValue && l.DeliveryEndDate < l.DeliveryStartDate)
+            return Results.BadRequest(new { error = $"VIN {l.Vin}: ngày kết thúc phải >= ngày bắt đầu." });
+    var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.Vin.ToUpperInvariant(), c => c);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var key = l.Vin!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.Vin!.Trim()); continue; }
+        c.DeliveryStartDate = l.DeliveryStartDate; c.DeliveryEndDate = l.DeliveryEndDate; c.DeliveryOutDate = l.DeliveryOutDate;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
 app.MapPost("/api/deliveryorders/{no}/deliver", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -11656,6 +11692,8 @@ record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
 record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);
 record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate);
 record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars);
+record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
+record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
 record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars);
 record ForeignContractLineDto(string? RefNo, string LcTemp);

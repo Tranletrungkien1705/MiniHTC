@@ -1938,6 +1938,10 @@ public sealed class DeliveryOrderCar
     public string? ColorCode { get; set; }
     public string? StorageCode { get; set; }
     public DateTime? DeliveryExpectDate { get; set; }
+    // Sửa lệnh giao (FrmEditDO): ngày giao thực tế bắt đầu/kết thúc + ngày xuất kho
+    public DateTime? DeliveryStartDate { get; set; }
+    public DateTime? DeliveryEndDate { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }
 }
 
 /// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):
