@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Sửa giá HĐ đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .newinp{width:130px;text-align:right}
+  #result{margin-top:10px}
+</style></head>
+<body>
+<h1>Sửa giá HĐ đại lý <span class="muted">(port 1:1 FrmSearchForUpdatePrice + FrmSupportUpdatePrice — 2010.HTC)</span></h1>
+<p class="muted">Công cụ hỗ trợ: tra chi tiết xe trong hợp đồng đại lý theo số HĐ / VIN, sửa giá sau VAT hàng loạt. Sửa để trống = giữ nguyên.</p>
+<div class="row">
+  <div><label>Số HĐ (DealNo)</label><input id="qDeal" style="width:140px"></div>
+  <div><label>VIN</label><input id="qVin" style="width:140px"></div>
+  <button class="primary" onclick="search()">Tìm</button>
+  <button onclick="saveAll()">Lưu giá đã sửa</button><span id="msg" class="msg"></span>
+</div>
+<div class="wrap"><table><thead><tr><th>Số HĐ</th><th>Đại lý</th><th>VIN/CarID</th><th class="num">Giá hiện tại</th><th class="num">Giá mới</th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Nhấn "Tìm".</td></tr></tbody></table></div>
+<div id="result"></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function search(){ await token();
+  const p=new URLSearchParams(); if(F("qDeal").value)p.set("dealNo",F("qDeal").value); if(F("qVin").value)p.set("vin",F("qVin").value);
+  const r=await fetch("/api/support/deal-prices?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("result").innerHTML="";
+  F("rows").innerHTML=(d.rows||[]).map(o=>`<tr data-id="${o.id}"><td><b>${esc(o.dealNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.carId)}</td><td class="num" data-old="${o.priceAFVAT}">${M(o.priceAFVAT)}</td><td><input type="number" class="newinp np" placeholder="${M(o.priceAFVAT)}"></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không tìm thấy dòng nào.</td></tr>';
+}
+async function saveAll(){ await token();
+  const fixes=[...F("rows").querySelectorAll("tr[data-id]")].map(tr=>{ const v=tr.querySelector(".np").value; return v!==""?{Id:+tr.dataset.id,NewPrice:+v}:null; }).filter(Boolean);
+  if(!fixes.length){ m("Chưa nhập giá mới nào."); return; }
+  const r=await fetch("/api/support/deal-prices",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(fixes)});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; }
+  m(`Đã sửa ${d.updated}/${d.total} dòng`);
+  F("result").innerHTML=(d.changes&&d.changes.length)?`<div class="wrap"><table><thead><tr><th>VIN</th><th class="num">Giá cũ</th><th class="num">Giá mới</th><th>Ghi chú</th></tr></thead><tbody>${d.changes.map(c=>`<tr><td>${esc(c.carId)}</td><td class="num">${c.oldPrice!=null?M(c.oldPrice):""}</td><td class="num">${c.newPrice!=null?M(c.newPrice):""}</td><td class="${c.error?'':'muted'}" style="${c.error?'color:var(--bad)':''}">${esc(c.error)||"OK"}</td></tr>`).join("")}</tbody></table></div>`:"";
+  search();
+}
+</script>
+</body></html>

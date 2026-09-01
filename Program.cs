@@ -7510,6 +7510,37 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
+// ===== Công cụ sửa giá HĐ đại lý (Support — port 1:1 FrmSearchForUpdatePrice/FrmSupportUpdatePrice, 2010.HTC) =====
+// Tra chi tiết xe trong HĐ đại lý theo số HĐ / VIN để sửa giá (giá sau VAT).
+app.MapGet("/api/support/deal-prices", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin) =>
+{
+    var q = from d in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId)
+            join h in db.DealerDeals.Where(x => x.OrgId == t.OrgId) on d.DealId equals h.Id
+            select new { d.Id, h.DealNo, h.DealerCode, d.CarId, d.PriceAFVAT };
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo.Contains(dealNo!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.CarId.Contains(vin!));
+    var rows = await q.OrderBy(x => x.DealNo).ThenBy(x => x.CarId).Take(500).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+// Sửa giá hàng loạt theo id dòng chi tiết. Trả số dòng đã sửa + log giá cũ→mới.
+app.MapPost("/api/support/deal-prices", async (List<DealPriceFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        if (f.NewPrice < 0) { changes.Add(new { f.Id, error = "Giá âm." }); continue; }
+        var d = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (d is null) { changes.Add(new { f.Id, error = "Không tìm thấy dòng." }); continue; }
+        if (d.PriceAFVAT == f.NewPrice) continue;
+        changes.Add(new { d.Id, d.CarId, oldPrice = d.PriceAFVAT, newPrice = f.NewPrice });
+        d.PriceAFVAT = f.NewPrice; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
 app.MapGet("/api/dealerdeals", async (AppDbContext db, ITenantContext t, string? dealer, string? salesType, string? buyer) =>
 {
     var q = db.DealerDeals.Where(d => d.OrgId == t.OrgId);
@@ -10002,6 +10033,7 @@ record SqLaborDto(string SerCode, string? SerName, decimal StdManHour, decimal A
 record SqPartDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat);
 record ServiceQuotationStatusDto(string Status);
 record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
+record DealPriceFixDto(long Id, decimal NewPrice);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimActionDto(string Action, string? Note);
