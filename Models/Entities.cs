@@ -1070,6 +1070,18 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Thu hồi hóa đơn HTCV — port 1:1 FrmThuHoiHD (VAT_HTCVInvoice_Invoice_Deleted, TCMotor). Import danh sách số HĐ để thu hồi (đánh dấu đã xóa); ghi log + đếm khớp InvoiceLine.</summary>
+public sealed class InvoiceRecall
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InvoiceNo { get; set; } = "";
+    public string? Reason { get; set; }
+    public string? RecalledBy { get; set; }
+    public DateTime RecalledAt { get; set; }
+    public bool MatchedInvoice { get; set; }   // có khớp 1 dòng InvoiceLine không
+}
+
 /// <summary>Gán loại hợp đồng cho xe — port 1:1 FrmUpdContractTypeForCar (TCMotor). Batch cập nhật ContractType theo CarId (import Excel), upsert theo CarId.</summary>
 public sealed class CarContractType
 {

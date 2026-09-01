@@ -4865,6 +4865,41 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Thu hồi hóa đơn HTCV (InvoiceRecall — port 1:1 FrmThuHoiHD, TCMotor) =====
+app.MapGet("/api/invoicerecalls", async (AppDbContext db, ITenantContext t, string? invoiceNo) =>
+{
+    var q = db.InvoiceRecalls.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(invoiceNo)) q = q.Where(x => x.InvoiceNo.Contains(invoiceNo!));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InvoiceNo, x.Reason, x.RecalledBy, x.RecalledAt, x.MatchedInvoice }).ToListAsync();
+    return Results.Ok(new { count = items.Count, matched = items.Count(x => x.MatchedInvoice), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoicerecalls/import", async (InvoiceRecallImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var nos = (dto.InvoiceNos ?? new()).Select(n => (n ?? "").Trim()).Where(n => n.Length > 0).ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Không có số hóa đơn để thu hồi." });
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var dups = nos.Where(n => !seen.Add(n)).Distinct().ToList();
+    if (dups.Count > 0) return Results.BadRequest(new { error = "Trùng số HĐ trong file: " + string.Join(", ", dups.Take(10)) });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    // khớp với InvoiceLine đang có
+    var existSet = (await db.InvoiceLines.Where(l => l.OrgId == t.OrgId && seen.Contains(l.InvoiceNo)).Select(l => l.InvoiceNo).ToListAsync())
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    // bỏ số HĐ đã thu hồi trước đó (skip-duplicate-neutral)
+    var already = (await db.InvoiceRecalls.Where(r => r.OrgId == t.OrgId && seen.Contains(r.InvoiceNo)).Select(r => r.InvoiceNo).ToListAsync())
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var now = DateTime.Now; int recalled = 0, skipped = 0, matched = 0;
+    foreach (var no in nos)
+    {
+        if (already.Contains(no)) { skipped++; continue; }
+        var isMatch = existSet.Contains(no); if (isMatch) matched++;
+        db.InvoiceRecalls.Add(new InvoiceRecall { OrgId = t.OrgId, InvoiceNo = no, Reason = dto.Reason, RecalledBy = by, RecalledAt = now, MatchedInvoice = isMatch });
+        recalled++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { recalled, skipped, matchedInvoice = matched });
+}).RequireAuthorization();
+
 // ===== Gán loại hợp đồng cho xe (CarContractType — port 1:1 FrmUpdContractTypeForCar, TCMotor) =====
 app.MapGet("/api/carcontracttypes", async (AppDbContext db, ITenantContext t, string? carId, string? contractType) =>
 {
@@ -12017,6 +12052,7 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record InvoiceRecallImportDto(string? Reason, List<string?>? InvoiceNos);
 record CarContractTypeImportDto(List<CarContractTypeRowDto>? Rows);
 record CarContractTypeRowDto(string? CarId, string? ModelCode, string? SpecCode, string? ColorCode, string? SOCode, string? ContractType);
 record CarReactivationDto(string? Reason, List<CarReactivationCarDto>? Cars);
