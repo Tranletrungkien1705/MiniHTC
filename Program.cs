@@ -1665,6 +1665,37 @@ app.MapPost("/api/bankpms/{no}/ctkt", async (string no, BankPmCtktDto dto, AppDb
     return Results.Ok(new { p.PaymentNo, oldAccountingRecordNo = oldNo, newAccountingRecordNo = p.AccountingRecordNo });
 }).RequireAuthorization();
 
+// Sửa thanh toán — xác nhận ngày hết hạn TT + số ghi sổ theo lô (port 1:1 FrmEditPMPayEndDate, Sales/Payment; PmConfirmDateEnd).
+// Import danh sách (PaymentNo, AccountingRecordNo, PaymentEndDate) -> cập nhật từng phiếu tìm theo PaymentNo; báo matched/notFound.
+app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var qry = db.BankPayments.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(p => p.PaymentNo.Contains(q!) || p.AccountingRecordNo.Contains(q!));
+    var items = await qry.OrderByDescending(p => p.Id).Take(500)
+        .Select(p => new { p.PaymentNo, p.DealerCode, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo, p.PaymentEndDate }).ToListAsync();
+    return Results.Ok(new { count = items.Count, withEndDate = items.Count(x => x.PaymentEndDate != null), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankpms/confirm-enddate", async (PmConfirmEndDateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new List<PmEndDateRowDto>()).Where(l => !string.IsNullOrWhiteSpace(l.PaymentNo)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Phải có ít nhất 1 dòng." });
+    var nos = lines.Select(l => l.PaymentNo!.Trim().ToUpperInvariant()).ToHashSet();
+    var rows = await db.BankPayments.Where(p => p.OrgId == t.OrgId && nos.Contains(p.PaymentNo)).ToListAsync();
+    var byNo = rows.ToDictionary(p => p.PaymentNo.ToUpperInvariant(), p => p);
+    int matched = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var key = l.PaymentNo!.Trim().ToUpperInvariant();
+        if (!byNo.TryGetValue(key, out var p)) { notFound.Add(l.PaymentNo!.Trim()); continue; }
+        if (l.PaymentEndDate.HasValue) p.PaymentEndDate = l.PaymentEndDate;
+        if (!string.IsNullOrWhiteSpace(l.AccountingRecordNo)) p.AccountingRecordNo = l.AccountingRecordNo!.Trim();
+        matched++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { matched, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
 // ===== Hóa đơn VAT HTC (VatInvoice — port 1:1 FrmMngInvoice, cụm Bank) =====
 app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string? dealer, string? invNo, string? status, string? adjType) =>
 {
@@ -11310,6 +11341,8 @@ record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? Mort
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
 record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars);
 record BankPmCtktDto(string NewAccountingRecordNo);
+record PmConfirmEndDateDto(List<PmEndDateRowDto>? Lines);
+record PmEndDateRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate);
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
 record FnExpCalcLineDto(string CarId, string? SOCode, decimal FnDepositAmount, int FnDepositCountDate, decimal FnGrtAmount, int FnGrtCountDate, decimal PDAmount, int TermActual);

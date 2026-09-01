@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Sửa thanh toán</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:80px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)}
+</style></head>
+<body>
+<h1>Sửa thanh toán <span class="muted">(port 1:1 FrmEditPMPayEndDate — TCMotor/Sales/Payment)</span></h1>
+<p class="muted">Xác nhận <b>ngày hết hạn thanh toán</b> + <b>số ghi sổ kế toán</b> cho phiếu thanh toán ngân hàng theo lô (import từ Excel), khớp theo Số phiếu TT.</p>
+
+<div class="card"><h3 style="margin-top:0">Áp dụng theo lô (dán từ Excel)</h3>
+  <p class="muted" style="margin:2px 0">Mỗi dòng: <b>Số phiếu TT [tab] Số ghi sổ [tab] Ngày hết hạn (yyyy-mm-dd)</b></p>
+  <textarea id="lines" placeholder="PTT260901120000&#9;GS-2026-001&#9;2026-12-31"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="apply()">Áp dụng</button><span id="msg" class="msg"></span></div>
+</div>
+
+<div class="card"><div class="row"><div><label>Tìm (số phiếu / số ghi sổ)</label><input id="q" style="width:240px"></div><button onclick="load()">Xem</button></div>
+  <div id="kpi" class="muted" style="margin:6px 0"></div>
+  <div class="wrap"><table><thead><tr><th>Số phiếu TT</th><th>Đại lý</th><th class="num">Số tiền</th><th>Trạng thái</th><th>Số ghi sổ</th><th>Ngày hết hạn TT</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dt=s=>s?String(s).substring(0,10):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},5000); }
+async function apply(){ await token();
+  const lines=F("lines").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/); return {PaymentNo:(c[0]||"").trim(),AccountingRecordNo:(c[1]||"").trim(),PaymentEndDate:(c[2]||"").trim()||null};});
+  const r=await fetch("/api/bankpms/confirm-enddate",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Lines:lines})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; }
+  const nf=(d.notFound||[]).length? " | Không thấy: "+d.notFound.join(", "):""; say(`Đã cập nhật ${d.matched} phiếu${nf}`); load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/bankpms/enddate?q="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
+  F("kpi").textContent=`Tổng ${d.count} phiếu — có ngày hết hạn: ${d.withEndDate}`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.paymentNo)}</b></td><td>${esc(o.dealerCode)}</td><td class="num">${M(o.totalAmount)}</td><td><span class="pill">${esc(o.paymentStatus)}</span></td><td>${esc(o.accountingRecordNo)}</td><td>${dt(o.paymentEndDate)||'<span class="muted">—</span>'}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có phiếu.</td></tr>';
+}
+</script>
+</body></html>
