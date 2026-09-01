@@ -78,6 +78,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServicePackagePart> ServicePackageParts => Set<ServicePackagePart>();
     public DbSet<BankStatementLine> BankStatementLines => Set<BankStatementLine>();
     public DbSet<SerInsurance> SerInsurances => Set<SerInsurance>();
+    public DbSet<SerInsuranceContract> SerInsuranceContracts => Set<SerInsuranceContract>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();

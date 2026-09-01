@@ -5000,6 +5000,48 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Hợp đồng bảo hiểm dịch vụ (SerInsuranceContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerInsuranceContracts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InContractCode.Contains(q!) || x.InContractNo!.Contains(q!) || x.InsNo!.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.InContractNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng bảo hiểm." });
+    if (string.IsNullOrWhiteSpace((dto.TypePayment ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập loại thanh toán." });
+    if (dto.PaymentLimit < 0) return Results.BadRequest(new { error = "Hạn mức thanh toán không hợp lệ." });
+    if (dto.StartDate.HasValue && dto.FinishDate.HasValue && dto.FinishDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
+    SerInsuranceContract row;
+    var code = (dto.InContractCode ?? "").Trim();
+    if (!string.IsNullOrWhiteSpace(code))
+        row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractCode == code) ?? new SerInsuranceContract { OrgId = t.OrgId };
+    else row = new SerInsuranceContract { OrgId = t.OrgId };
+    if (row.Id == 0)
+    {
+        row.InContractCode = string.IsNullOrWhiteSpace(code) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : code;
+        db.SerInsuranceContracts.Add(row);
+    }
+    row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.InContractCode, row.InContractNo, row.PaymentLimit, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancecontracts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Master quy đổi đơn vị TST↔DMS (TstExchangeUnit — port 1:1 FrmTST_Mst_Exchange_Unit, TCMotor DMSCarSv) =====
 app.MapGet("/api/tstexchangeunits", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12950,6 +12992,7 @@ record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? 
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
+record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

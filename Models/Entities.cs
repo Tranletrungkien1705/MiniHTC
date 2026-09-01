@@ -1123,6 +1123,22 @@ public sealed class TstPart
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>Hợp đồng bảo hiểm dịch vụ (Ser_InsuranceContract) — port 1:1 FrmInsuranceContractCreate/Search (TCMotor DMSCarSv/Admin). Theo mã HĐ (auto): số HĐ + loại thanh toán + hiệu lực + hãng BH (InsNo→SerInsurance) + hạn mức.</summary>
+public sealed class SerInsuranceContract
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InContractCode { get; set; } = "";
+    public string? InContractNo { get; set; }
+    public string? TypePayment { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? FinishDate { get; set; }
+    public string? InsNo { get; set; }
+    public decimal PaymentLimit { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {
