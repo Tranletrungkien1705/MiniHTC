@@ -40,13 +40,13 @@ function reset(){ ["sm","cc","cn","smtype","dept","start","end"].forEach(i=>F(i)
 async function save(){ await token();
   const body={SMHyundaiCode:F("sm").value,CertificateCode:F("cc").value,CertificateName:v("cn"),SMType:v("smtype"),DepartmentCode:v("dept"),EffStartDate:v("start"),EffEndDate:v("end")};
   const r=await fetch("/api/salesmancerts",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.sMHyundaiCode+" / "+d.certificateCode); reset(); load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.smHyundaiCode+" / "+d.certificateCode); reset(); load();
 }
-function edit(o){ F("sm").value=o.sMHyundaiCode; F("cc").value=o.certificateCode; F("cn").value=o.certificateName||""; F("smtype").value=o.sMType||""; F("dept").value=o.departmentCode||""; F("start").value=dshow(o.effStartDate); F("end").value=dshow(o.effEndDate); window.scrollTo(0,0); }
+function edit(o){ F("sm").value=o.smHyundaiCode; F("cc").value=o.certificateCode; F("cn").value=o.certificateName||""; F("smtype").value=o.smType||""; F("dept").value=o.departmentCode||""; F("start").value=dshow(o.effStartDate); F("end").value=dshow(o.effEndDate); window.scrollTo(0,0); }
 async function toggle(id){ await token(); await fetch("/api/salesmancerts/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
 async function load(){ await token();
   const r=await fetch("/api/salesmancerts?all="+(F("all").checked)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.sMHyundaiCode)}</b></td><td>${esc(o.certificateCode)}</td><td>${esc(o.certificateName)}</td><td>${esc(o.sMType)}</td><td>${esc(o.departmentCode)}</td><td>${dshow(o.effStartDate)}</td><td>${dshow(o.effEndDate)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có chứng chỉ.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.smHyundaiCode)}</b></td><td>${esc(o.certificateCode)}</td><td>${esc(o.certificateName)}</td><td>${esc(o.smType)}</td><td>${esc(o.departmentCode)}</td><td>${dshow(o.effStartDate)}</td><td>${dshow(o.effEndDate)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có chứng chỉ.</td></tr>';
 }
 </script>
 </body></html>
