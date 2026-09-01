@@ -1412,7 +1412,7 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.DateEnd }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.DateEnd, c.DeferredPaymentDays }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.Status, g.FlagSettled, g.TotalAmount, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -1464,6 +1464,28 @@ app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto d
     g.TotalAmount = cars.Sum(c => c.GrtValue);
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, totalAmount = g.TotalAmount, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Cập nhật số ngày trả chậm (TCLC) theo VIN (port 1:1 FrmEditGrtSoNgayTCLC, 2010.HTC).
+app.MapPost("/api/bankgrts/{no}/edit-deferred", async (string no, GrtDeferredEditDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
+    if (lines.Any(l => l.DeferredPaymentDays < 0)) return Results.BadRequest(new { error = "Số ngày trả chậm không được âm." });
+    var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var key = l.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.VIN!.Trim()); continue; }
+        c.DeferredPaymentDays = l.DeferredPaymentDays; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -4887,6 +4909,40 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     h.FlagActive = h.FlagActive == "1" ? "0" : "1"; h.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.FlagActive });
+}).RequireAuthorization();
+
+// ===== Mẫu hợp đồng của đại lý (DealerContractForm — port 1:1 FrmDlr_Mst_DealerContractForm, 2010.HTC) =====
+app.MapGet("/api/dealercontractforms", async (AppDbContext db, ITenantContext t, string? dealer, string? q, bool? all) =>
+{
+    var qry = db.DealerContractForms.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractFNo.Contains(q!) || x.ContractFName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.DealerCode).Take(500).Select(x => new { x.Id, x.DealerCode, x.ContractFNo, x.ContractFName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercontractforms", async (DealerContractFormDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var fno = (dto.ContractFNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(fno)) return Results.BadRequest(new { error = "Chưa chọn mã mẫu hợp đồng." });
+    var row = await db.DealerContractForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer);
+    if (row is null) { row = new DealerContractForm { OrgId = t.OrgId, DealerCode = dealer }; db.DealerContractForms.Add(row); }
+    row.ContractFNo = fno; row.ContractFName = dto.ContractFName; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DealerCode, row.ContractFNo, row.ContractFName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercontractforms/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DealerContractForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
 // ===== Kho tại đại lý (DealerStorageLocal — port 1:1 FrmDlr_StorageLocal, 2010.HTC) =====
@@ -12213,6 +12269,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
+record GrtDeferredEditDto(List<GrtDeferredRowDto>? Lines);
+record GrtDeferredRowDto(string? VIN, int DeferredPaymentDays);
 record DealerStorageLocalDto(string? DealerCode, string? StorageCode, string? StorageName, string? DealerName, string? FlagActive);
 record GrtValueEditDto(List<GrtValueRowDto>? Lines);
 record GrtValueRowDto(string? VIN, decimal GrtValue);

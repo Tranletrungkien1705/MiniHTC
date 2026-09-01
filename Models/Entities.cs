@@ -1070,6 +1070,18 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Mẫu hợp đồng của đại lý (Dlr_Mst_DealerContractForm) — port 1:1 FrmDlr_Mst_DealerContractForm (2010.HTC). Gán mã mẫu hợp đồng (ContractFNo) cho từng đại lý; upsert theo DealerCode.</summary>
+public sealed class DealerContractForm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ContractFNo { get; set; } = "";
+    public string? ContractFName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Kho tại đại lý (Dlr_StorageLocal) — port 1:1 FrmDlr_StorageLocal (2010.HTC). Master kho địa phương của từng đại lý; khóa kép (DealerCode × StorageCode).</summary>
 public sealed class DealerStorageLocal
 {
@@ -3121,6 +3133,7 @@ public sealed class BankGuaranteeDtl
     public DateTime? DateWarning { get; set; }
     public DateTime? DateExpired { get; set; }
     public DateTime? DateEnd { get; set; }   // ngày kết thúc bảo lãnh (FrmEditGrtExpiredDate)
+    public int DeferredPaymentDays { get; set; }  // số ngày trả chậm (FrmEditGrtSoNgayTCLC)
 }
 
 /// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>
