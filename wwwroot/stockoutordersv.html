@@ -47,7 +47,7 @@ async function save(){ await token();
   const lines=[...F("lb").querySelectorAll("tr")].map(tr=>({PartCode:tr.querySelector(".pc").value,PartName:tr.querySelector(".pn").value,Unit:tr.querySelector(".un").value,OrderQuantity:Number(tr.querySelector(".qt").value||0)}));
   const body={OrderNo:v("no"),RONo:v("ro"),OrderDate:v("date"),CusName:v("cus"),Note:v("note"),Lines:lines};
   const r=await fetch("/api/stockoutorders/sv",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.orderNo+" (RO "+d.rONo+") — tổng SL "+nf(d.totalQty)); F("lb").innerHTML=""; ["no","ro","cus","note"].forEach(i=>F(i).value=""); recalc(); load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.orderNo+" (RO "+d.roNo+") — tổng SL "+nf(d.totalQty)); F("lb").innerHTML=""; ["no","ro","cus","note"].forEach(i=>F(i).value=""); recalc(); load();
 }
 async function act(id,a){ await token(); const r=await fetch("/api/stockoutorders/"+id+"/"+a,{method:"POST",headers:Hh()}); const d=await r.json(); if(!r.ok) say("Lỗi: "+(d.error||r.status)); load(); }
 async function detail(id,no){ await token(); const r=await fetch("/api/stockoutorders/"+id,{headers:Hh()}); const d=await r.json();
@@ -55,7 +55,7 @@ async function detail(id,no){ await token(); const r=await fetch("/api/stockouto
   F("db").innerHTML=(d.lines||[]).map(o=>`<tr><td>${esc(o.partCode)}</td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num">${nf(o.orderQuantity)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Không có dòng.</td></tr>'; F("detail").scrollIntoView(); }
 async function load(){ await token();
   const r=await fetch("/api/stockoutorders?source=RO&status="+encodeURIComponent(F("fst").value)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.orderNo)}</b></td><td>${esc(o.rONo)}</td><td>${dshow(o.orderDate)}</td><td>${esc(o.cusName)}</td><td class="num">${nf(o.totalQty)}</td><td><span class="pill st-${esc(o.status)}">${esc(o.status)}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.orderNo)}')">Xem</button>${o.status==='Created'?`<button class="link" onclick="act(${o.id},'issue')">Xuất</button><button class="link" onclick="act(${o.id},'reject')">Từ chối</button>`:''}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có lệnh.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.orderNo)}</b></td><td>${esc(o.roNo)}</td><td>${dshow(o.orderDate)}</td><td>${esc(o.cusName)}</td><td class="num">${nf(o.totalQty)}</td><td><span class="pill st-${esc(o.status)}">${esc(o.status)}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.orderNo)}')">Xem</button>${o.status==='Created'?`<button class="link" onclick="act(${o.id},'issue')">Xuất</button><button class="link" onclick="act(${o.id},'reject')">Từ chối</button>`:''}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có lệnh.</td></tr>';
 }
 addLine();
 </script>
