@@ -1558,6 +1558,7 @@ public sealed class DealerDealDetail
     public string CarId { get; set; } = "";              // VIN/CarID
     public string? CusInvoiceNo { get; set; }            // số hóa đơn khách
     public DateTime? CusInvoiceDate { get; set; }
+    public string? PlateNo { get; set; }                 // biển số xe (EditDeal sửa)
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 

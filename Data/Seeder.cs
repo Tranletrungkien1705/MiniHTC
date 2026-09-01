@@ -283,6 +283,7 @@ public static class Seeder
                 "ALTER TABLE public.\"DealerDealDetails\" ADD COLUMN IF NOT EXISTS \"CusInvoiceNo\" text NULL",
                 "ALTER TABLE public.\"DealerDealDetails\" ADD COLUMN IF NOT EXISTS \"CusInvoiceDate\" timestamp NULL",
                 "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"BankCode\" text NULL",
+                "ALTER TABLE public.\"DealerDealDetails\" ADD COLUMN IF NOT EXISTS \"PlateNo\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

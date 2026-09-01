@@ -7510,6 +7510,68 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
+// ===== Sửa biển số xe trong HĐ đại lý (EditDeal — port 1:1 FrmEditDeal_PlateNo, 2010.HTC/SalesDealer) =====
+app.MapGet("/api/editdeal/plateno", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin) =>
+{
+    var q = from d in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId)
+            join h in db.DealerDeals.Where(x => x.OrgId == t.OrgId) on d.DealId equals h.Id
+            select new { d.Id, h.DealNo, d.CarId, d.PlateNo };
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo.Contains(dealNo!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.CarId.Contains(vin!));
+    var rows = await q.OrderBy(x => x.DealNo).Take(500).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/editdeal/plateno", async (List<PlateNoFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var pl = (f.PlateNo ?? "").Trim().ToUpperInvariant();
+        if (pl == "") { changes.Add(new { f.Id, error = "Biển số trống." }); continue; }
+        var d = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (d is null) { changes.Add(new { f.Id, error = "Không tìm thấy xe trong HĐ." }); continue; }
+        // Chống trùng biển số trong cùng org (bỏ chính nó).
+        if (await db.DealerDealDetails.AnyAsync(x => x.OrgId == t.OrgId && x.Id != d.Id && x.PlateNo == pl))
+        { changes.Add(new { f.Id, error = "Biển số đã gán cho xe khác: " + pl }); continue; }
+        if (d.PlateNo == pl) continue;
+        changes.Add(new { d.Id, d.CarId, oldPlate = d.PlateNo, newPlate = pl });
+        d.PlateNo = pl; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
+// ===== Sửa kiểu bán lẻ trong HĐ đại lý (EditDeal — port 1:1 FrmEditDeal_SalesType, 2010.HTC/SalesDealer) =====
+app.MapGet("/api/editdeal/salestype", async (AppDbContext db, ITenantContext t, string? dealNo, string? dealer) =>
+{
+    var q = db.DealerDeals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo.Contains(dealNo!) || (x.DealNoUser != null && x.DealNoUser.Contains(dealNo!)));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var rows = await q.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.DealNo, x.DealNoUser, x.DealerCode, x.SalesType }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/editdeal/salestype", async (List<SalesTypeFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var st = (f.SalesType ?? "").Trim();
+        if (st == "") { changes.Add(new { f.Id, error = "Kiểu bán trống." }); continue; }
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (d is null) { changes.Add(new { f.Id, error = "Không tìm thấy HĐ." }); continue; }
+        if (d.SalesType == st) continue;
+        changes.Add(new { d.Id, d.DealNo, oldType = d.SalesType, newType = st });
+        d.SalesType = st; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
 // ===== Công cụ sửa HĐ VAT xuất khách (Support — port 1:1 FrmSearchForCusInvoice_Update/FrmSupportCusInvoice_Update, 2010.HTC) =====
 app.MapGet("/api/support/cus-invoice", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin) =>
 {
@@ -10217,6 +10279,8 @@ record DealPriceFixDto(long Id, decimal NewPrice);
 record ContractSmFixDto(long Id, string? NewSmCode);
 record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
+record PlateNoFixDto(long Id, string? PlateNo);
+record SalesTypeFixDto(long Id, string? SalesType);
 record DealBankFixDto(long Id, string? BankCode);
 record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
