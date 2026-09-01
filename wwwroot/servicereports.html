@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo cáo phân tích DV</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+  .soon{color:var(--bad);font-weight:700} .warnsoon{color:var(--warn)}
+</style></head>
+<body>
+<h1>Báo cáo phân tích dịch vụ <span class="muted">(port 1:1 FrmReportCustomerNotBack + FrmRpt_SlowRotationParts + FrmTK_XeConHanBaoHanh — TCMotor)</span></h1>
+<div class="tabs">
+  <div class="tab on" id="tA" onclick="tab('A')">Khách lâu không quay lại</div>
+  <div class="tab" id="tB" onclick="tab('B')">PT luân chuyển chậm</div>
+  <div class="tab" id="tC" onclick="tab('C')">Xe còn hạn BH</div>
+</div>
+
+<div id="paneA">
+  <div class="row"><div><label>Ngưỡng (tháng)</label><input id="aM" type="number" value="6" style="width:90px"></div><button class="primary" onclick="repA()">Xem</button></div>
+  <div class="grid2" id="aKpi"></div>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Khách</th><th>Biển số</th><th class="num">Số lượt</th><th>Lần cuối</th><th class="num">Ngày trước</th></tr></thead><tbody id="aRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="row"><div><label>Kỳ (tháng)</label><input id="bM" type="number" value="6" style="width:90px"></div><button class="primary" onclick="repB()">Xem</button></div>
+  <div class="grid2" id="bKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th>ĐVT</th><th class="num">Tồn</th><th class="num">Xuất trong kỳ</th><th class="num">Giá trị tồn</th></tr></thead><tbody id="bRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+  <p class="muted">Tính PT còn tồn nhưng xuất trong kỳ = 0 hoặc &lt; 10% tồn.</p>
+</div>
+
+<div id="paneC" style="display:none">
+  <div class="row"><div><label>Sắp hết hạn (ngày)</label><input id="cS" type="number" value="30" style="width:110px"></div><button class="primary" onclick="repC()">Xem</button></div>
+  <div class="grid2" id="cKpi"></div>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Biển số</th><th>Model</th><th>Khách</th><th>Hết hạn BH</th><th class="num">Còn (ngày)</th></tr></thead><tbody id="cRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+let SOON=30;
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function tab(x){ ["A","B","C"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function repA(){ await token();
+  const r=await fetch("/api/report/customer-notback?months="+(+F("aM").value||6),{headers:H()}); const d=await r.json();
+  F("aKpi").innerHTML=`<div class="kpi"><b style="color:var(--bad)">${d.count}</b><span class="muted">Khách chưa quay lại > ${d.months} tháng</span></div>`;
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.vin)||"(không VIN)"}</b></td><td>${esc(o.cusName)}</td><td>${esc(o.plateNo)}</td><td class="num">${o.visits}</td><td>${esc(o.lastVisit)}</td><td class="num soon">${o.daysSince}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có.</td></tr>';
+}
+async function repB(){ await token();
+  const r=await fetch("/api/report/slow-rotation-parts?months="+(+F("bM").value||6),{headers:H()}); const d=await r.json();
+  F("bKpi").innerHTML=`<div class="kpi"><b style="color:var(--warn)">${d.count}</b><span class="muted">PT luân chuyển chậm</span></div><div class="kpi"><b>${M(d.tiedUpValue)}</b><span class="muted">Vốn ứ đọng</span></div>`;
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num">${M(o.stock)}</td><td class="num ${o.soldInPeriod==0?'soon':''}">${M(o.soldInPeriod)}</td><td class="num">${M(o.stockValue)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có PT chậm.</td></tr>';
+}
+async function repC(){ await token(); SOON=+F("cS").value||30;
+  const r=await fetch("/api/report/cars-under-warranty?soonDays="+SOON,{headers:H()}); const d=await r.json();
+  F("cKpi").innerHTML=`<div class="kpi"><b style="color:var(--ok)">${d.count}</b><span class="muted">Xe còn hạn BH</span></div><div class="kpi"><b style="color:var(--bad)">${d.expiringSoon}</b><span class="muted">Sắp hết (≤ ${d.soonDays} ngày)</span></div>`;
+  F("cRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.frameNo)}</b></td><td>${esc(o.plateNo)}</td><td>${esc(o.modelCode)}</td><td>${esc(o.cusName)}</td><td>${esc(o.warrantyDate)}</td><td class="num ${o.daysLeft<=SOON?'soon':''}">${o.daysLeft}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có.</td></tr>';
+}
+</script>
+</body></html>

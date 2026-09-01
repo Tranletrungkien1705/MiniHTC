@@ -4146,6 +4146,56 @@ app.MapPost("/api/servicequotations/{id}/status", async (long id, ServiceQuotati
     return Results.Ok(new { h.Id, h.Status });
 }).RequireAuthorization();
 
+// ===== Khách lâu không quay lại (report tái-dùng RepairOrder — port 1:1 FrmReportCustomerNotBack, TCMotor) =====
+// Xe/khách có lần vào xưởng gần nhất cách đây > N tháng (mặc định 6) — cần chăm sóc kéo về.
+app.MapGet("/api/report/customer-notback", async (AppDbContext db, ITenantContext t, int? months) =>
+{
+    var n = months is > 0 and <= 60 ? months.Value : 6;
+    var cutoff = DateTime.Today.AddMonths(-n);
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.CheckInDate.HasValue)
+        .Select(x => new { x.Vin, x.CusName, x.LicensePlate, x.CheckInDate }).ToListAsync();
+    var rows = ros.GroupBy(x => new { vin = x.Vin ?? "", cus = x.CusName ?? "", plate = x.LicensePlate ?? "" })
+        .Select(g => new { g.Key.vin, cusName = g.Key.cus, plateNo = g.Key.plate, visits = g.Count(), lastVisit = g.Max(x => x.CheckInDate!.Value) })
+        .Where(r => r.lastVisit < cutoff)
+        .OrderBy(r => r.lastVisit)
+        .Select(r => new { r.vin, r.cusName, r.plateNo, r.visits, lastVisit = r.lastVisit.ToString("yyyy-MM-dd"), daysSince = (int)(DateTime.Today - r.lastVisit.Date).TotalDays })
+        .ToList();
+    return Results.Ok(new { months = n, count = rows.Count, rows });
+}).RequireAuthorization();
+
+// ===== Phụ tùng luân chuyển chậm (report tái-dùng ServicePart + ServiceStockOut — port 1:1 FrmRpt_SlowRotationParts, TCMotor) =====
+// PT còn tồn nhưng SL xuất N tháng gần nhất thấp/bằng 0 — ứ đọng vốn.
+app.MapGet("/api/report/slow-rotation-parts", async (AppDbContext db, ITenantContext t, int? months) =>
+{
+    var n = months is > 0 and <= 36 ? months.Value : 6;
+    var cutoff = DateTime.Today.AddMonths(-n);
+    var outIds = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed" && o.StockOutDate.HasValue && o.StockOutDate >= cutoff).Select(o => o.Id);
+    var outByPart = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.ServiceStockOutId))
+        .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
+    var outMap = outByPart.ToDictionary(x => x.partCode, x => x.qty);
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1" && p.Quantity > 0)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.Quantity, p.Cost }).ToListAsync();
+    var rows = parts.Select(p => {
+        var outQ = outMap.TryGetValue(p.PartCode, out var v) ? v : 0m;
+        return new { p.PartCode, p.PartName, p.Unit, stock = p.Quantity, soldInPeriod = outQ, stockValue = p.Quantity * p.Cost };
+    }).Where(r => r.soldInPeriod == 0 || r.soldInPeriod < r.stock * 0.1m)  // xuất < 10% tồn hoặc không xuất
+      .OrderByDescending(r => r.stockValue).ToList();
+    return Results.Ok(new { months = n, count = rows.Count, tiedUpValue = rows.Sum(r => r.stockValue), rows });
+}).RequireAuthorization();
+
+// ===== Xe còn hạn bảo hành (report tái-dùng ServiceCar — port 1:1 FrmTK_XeConHanBaoHanh, TCMotor) =====
+app.MapGet("/api/report/cars-under-warranty", async (AppDbContext db, ITenantContext t, int? soonDays) =>
+{
+    var soon = soonDays is > 0 and <= 365 ? soonDays.Value : 30;
+    var today = DateTime.Today;
+    var cars = await db.ServiceCars.Where(v => v.OrgId == t.OrgId && v.WarrantyDate.HasValue && v.WarrantyDate.Value >= today)
+        .Select(v => new { v.FrameNo, v.PlateNo, v.ModelCode, v.CusName, v.WarrantyDate }).ToListAsync();
+    var rows = cars.Select(v => new { v.FrameNo, v.PlateNo, v.ModelCode, v.CusName,
+            warrantyDate = v.WarrantyDate!.Value.ToString("yyyy-MM-dd"), daysLeft = (int)(v.WarrantyDate.Value.Date - today).TotalDays })
+        .OrderBy(v => v.daysLeft).ToList();
+    return Results.Ok(new { count = rows.Count, expiringSoon = rows.Count(r => r.daysLeft <= soon), soonDays = soon, rows });
+}).RequireAuthorization();
+
 // ===== Bảng theo dõi tiến độ sửa chữa (report tái-dùng RepairOrder — port 1:1 FrmDealerHistoryShareMng/Display, TCMotor) =====
 // Danh sách RO theo trạng thái tiến độ + đếm theo từng trạng thái (bảng điều hành xưởng).
 app.MapGet("/api/report/ro-status-board", async (AppDbContext db, ITenantContext t, string? status, DateTime? fromDate, DateTime? toDate) =>
