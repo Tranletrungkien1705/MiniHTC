@@ -4911,6 +4911,36 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Chiết khấu TT duyệt theo VIN (PaymentReqDiscountVin — port 1:1 FrmImportExl_PaymentReqDiscount, 2010.HTC) =====
+app.MapGet("/api/paymentreqdiscountvins", async (AppDbContext db, ITenantContext t, string? prd, string? vin) =>
+{
+    var q = db.PaymentReqDiscountVins.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(prd)) q = q.Where(x => x.PRDiscountNo.Contains(prd!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.PRDiscountNo, x.VIN, x.AmountHTCAppr, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalApproved = items.Sum(x => x.AmountHTCAppr), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentreqdiscountvins/import", async (PRDiscountImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.PRDiscountNo) && !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để cập nhật." });
+    var dup = rows.GroupBy(r => (r.PRDiscountNo!.Trim().ToUpperInvariant(), r.VIN!.Trim().ToUpperInvariant())).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"Trùng (PR {dup.Key.Item1} × VIN {dup.Key.Item2}) trong file." });
+    if (rows.Any(r => r.AmountHTCAppr < 0)) return Results.BadRequest(new { error = "Số tiền duyệt không được âm." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var prd = r.PRDiscountNo!.Trim(); var vin = r.VIN!.Trim().ToUpperInvariant();
+        var row = await db.PaymentReqDiscountVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == prd && x.VIN == vin);
+        if (row is null) { row = new PaymentReqDiscountVin { OrgId = t.OrgId, PRDiscountNo = prd, VIN = vin }; db.PaymentReqDiscountVins.Add(row); added++; } else updated++;
+        row.AmountHTCAppr = r.AmountHTCAppr; row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Mẫu hợp đồng của đại lý (DealerContractForm — port 1:1 FrmDlr_Mst_DealerContractForm, 2010.HTC) =====
 app.MapGet("/api/dealercontractforms", async (AppDbContext db, ITenantContext t, string? dealer, string? q, bool? all) =>
 {
@@ -12269,6 +12299,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record PRDiscountImportDto(List<PRDiscountRowDto>? Rows);
+record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr);
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
 record GrtDeferredEditDto(List<GrtDeferredRowDto>? Lines);
 record GrtDeferredRowDto(string? VIN, int DeferredPaymentDays);

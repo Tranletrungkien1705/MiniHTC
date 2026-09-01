@@ -1070,6 +1070,18 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Số tiền chiết khấu TT được duyệt theo VIN (PRD_PaymentReqDiscount_VIN) — port 1:1 FrmImportExl_PaymentReqDiscount (2010.HTC). Import số tiền HTC duyệt cho từng VIN trong đề nghị chiết khấu; upsert theo (PRDiscountNo × VIN).</summary>
+public sealed class PaymentReqDiscountVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PRDiscountNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public decimal AmountHTCAppr { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Mẫu hợp đồng của đại lý (Dlr_Mst_DealerContractForm) — port 1:1 FrmDlr_Mst_DealerContractForm (2010.HTC). Gán mã mẫu hợp đồng (ContractFNo) cho từng đại lý; upsert theo DealerCode.</summary>
 public sealed class DealerContractForm
 {

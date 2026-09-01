@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Chiết khấu TT duyệt theo VIN</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:880px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:64px} .tot{font-weight:700}
+</style></head>
+<body>
+<h1>Chiết khấu TT duyệt theo VIN <span class="muted">(port 1:1 FrmImportExl_PaymentReqDiscount — 2010.HTC)</span></h1>
+<p class="muted">Import số tiền HTC duyệt cho từng VIN trong đề nghị chiết khấu thanh toán. Upsert theo (số ĐNCK × VIN).</p>
+<div class="card"><h3 style="margin-top:0">Import</h3>
+  <p class="muted" style="margin:2px 0">Mỗi dòng, tab: <b>Số ĐNCK | VIN | Số tiền duyệt</b></p>
+  <textarea id="rows" placeholder="PRD001&#9;VIN00001&#9;5000000"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="doImport()">Cập nhật</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><div><label>Số ĐNCK</label><input id="qPrd" style="width:140px"></div><div><label>VIN</label><input id="qVin" style="width:150px"></div><button onclick="load()">Xem</button></div>
+  <div id="kpi" class="muted" style="margin:6px 0"></div>
+  <div class="wrap"><table><thead><tr><th>Số ĐNCK</th><th>VIN</th><th class="num">Số tiền duyệt</th><th>Bởi</th></tr></thead>
+  <tbody id="tb"><tr><td colspan="4" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const Nf=v=>parseFloat(v||"0")||0;
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function doImport(){ await token();
+  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{PRDiscountNo:(c[0]||"").trim(),VIN:(c[1]||"").trim(),AmountHTCAppr:Nf(c[2])};});
+  const r=await fetch("/api/paymentreqdiscountvins/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
+}
+async function load(){ await token();
+  const qs=new URLSearchParams({prd:F("qPrd").value,vin:F("qVin").value});
+  const r=await fetch("/api/paymentreqdiscountvins?"+qs,{headers:Hh()}); const d=await r.json();
+  F("kpi").innerHTML=`${d.count} dòng — <span class="tot">Tổng duyệt: ${M(d.totalApproved)}</span>`;
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.prDiscountNo)}</b></td><td>${esc(o.vin)}</td><td class="num">${M(o.amountHTCAppr)}</td><td>${esc(o.updatedBy)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>
