@@ -1003,6 +1003,18 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>File đính kèm khiếu nại đơn phụ tùng — port 1:1 FrmSer_OrderComplainAttachment (Ser_OrderComplainAttachment, TCMotor/TST).</summary>
+public sealed class OrderComplainAttachment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ComplainNo { get; set; } = "";
+    public string FileName { get; set; } = "";
+    public string? ImageType { get; set; }   // loại ảnh (OrderComplainImageType)
+    public string? FileNote { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Định mức tồn tối thiểu (theo model/spec/đại lý) — port 1:1 FrmSt_MinInvBalance (TblSt_MinInvBalance, Admin/Product 2010.HTC).</summary>
 public sealed class MinInvBalance
 {

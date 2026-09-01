@@ -155,6 +155,10 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng: WRTRENECATE) [TCMotor]"),
     // (BOM đã port dedicated /api/boms — bỏ stub dup; ExtraWork/ExtraParts có cột giá/VAT → port dedicated; gỡ ~38 generic bịa + 15 TCMotor bịa)
     ("CostType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
+    ("DeliveryLocation", "Địa điểm giao hàng (FrmMst_DeliveryLocation/Mng) [TCMotor]"),
+    ("DeliveryForm", "Hình thức giao hàng (FrmMst_DeliveryFormMng) [TCMotor]"),
+    ("OrderComplainType", "Loại khiếu nại đơn PT (FrmMst_OrderComplainTypeMng) [TCMotor]"),
+    ("OrderComplainImageType", "Loại ảnh khiếu nại (FrmMst_OrderComplainImageTypeMng) [TCMotor]"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
@@ -4607,6 +4611,35 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     c.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.Status });
+}).RequireAuthorization();
+
+// ===== File đính kèm khiếu nại đơn PT (OrderComplainAttachment — port 1:1 FrmSer_OrderComplainAttachment, TCMotor/TST) =====
+app.MapGet("/api/ordercomplains/{no}/attachments", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var cn = no.Trim();
+    if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
+    var files = await db.OrderComplainAttachments.Where(a => a.OrgId == t.OrgId && a.ComplainNo == cn).OrderBy(a => a.Id)
+        .Select(a => new { a.Id, a.FileName, a.ImageType, a.FileNote, createdAt = a.CreatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { complainNo = cn, count = files.Count, files });
+}).RequireAuthorization();
+
+app.MapPost("/api/ordercomplains/{no}/attachments", async (string no, OcAttachDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cn = no.Trim();
+    if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
+    var fn = (dto.FileName ?? "").Trim();
+    if (fn == "") return Results.BadRequest(new { error = "Cần tên file đính kèm." });
+    var a = new OrderComplainAttachment { OrgId = t.OrgId, ComplainNo = cn, FileName = fn, ImageType = dto.ImageType, FileNote = dto.FileNote };
+    db.OrderComplainAttachments.Add(a); await db.SaveChangesAsync();
+    return Results.Ok(new { a.Id, a.FileName });
+}).RequireAuthorization();
+
+app.MapDelete("/api/ordercomplains/{no}/attachments/{attId}", async (string no, long attId, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.OrderComplainAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == no.Trim() && x.Id == attId);
+    if (a is null) return Results.NotFound(new { attId });
+    db.OrderComplainAttachments.Remove(a); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = attId });
 }).RequireAuthorization();
 
 // ===== Định mức tồn tối thiểu (MinInvBalance — port 1:1 FrmSt_MinInvBalance, Admin/Product 2010.HTC) =====
@@ -10794,6 +10827,7 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record OcAttachDto(string FileName, string? ImageType, string? FileNote);
 record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
