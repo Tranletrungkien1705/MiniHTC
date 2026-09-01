@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Cập nhật trạng thái xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:64px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)}
+</style></head>
+<body>
+<h1>Cập nhật trạng thái xe <span class="muted">(port 1:1 FrmUpdateCar_Status — 2010.HTC)</span></h1>
+<p class="muted">Batch cập nhật trạng thái TTC (hoàn thành TT chậm) + CPTC cho xe theo CarId (1 = xong, 0 = chưa).</p>
+<div class="card"><h3 style="margin-top:0">Import</h3>
+  <p class="muted" style="margin:2px 0">Mỗi dòng, tab: <b>CarId | TTC(0/1) | CPTC(0/1)</b></p>
+  <textarea id="rows" placeholder="CAR001&#9;1&#9;0"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="doImport()">Cập nhật</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><div><label>CarId</label><input id="qCar" style="width:150px"></div><button onclick="load()">Xem</button><span id="kpi" class="muted"></span></div>
+  <table><thead><tr><th>CarId</th><th>TTC</th><th>CPTC</th><th>Bởi</th></tr></thead><tbody id="tb"><tr><td colspan="4" class="muted">Nhấn "Xem".</td></tr></tbody></table>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const st=v=>v==='1'?'<span class="pill y">Xong</span>':'Chưa';
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function doImport(){ await token();
+  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{CarId:(c[0]||"").trim(),TTCStatus:(c[1]||"0").trim(),CPTCStatus:(c[2]||"0").trim()};});
+  const r=await fetch("/api/carstatusupdates/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/carstatusupdates?carId="+encodeURIComponent(F("qCar").value),{headers:Hh()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} xe — TTC xong: ${d.ttcDone}, CPTC xong: ${d.cptcDone}`;
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.carId)}</b></td><td>${st(o.ttcStatus)}</td><td>${st(o.cptcStatus)}</td><td>${esc(o.updatedBy)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

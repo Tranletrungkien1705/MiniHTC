@@ -4968,6 +4968,38 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Cập nhật trạng thái xe (CarStatusUpdate — port 1:1 FrmUpdateCar_Status, 2010.HTC) =====
+app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, string? carId, string? ttc, string? cptc) =>
+{
+    var q = db.CarStatusUpdates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    if (!string.IsNullOrWhiteSpace(ttc)) q = q.Where(x => x.TTCStatus == ttc);
+    if (!string.IsNullOrWhiteSpace(cptc)) q = q.Where(x => x.CPTCStatus == cptc);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CarId, x.TTCStatus, x.CPTCStatus, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, ttcDone = items.Count(x => x.TTCStatus == "1"), cptcDone = items.Count(x => x.CPTCStatus == "1"), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
+    var dup = rows.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
+    var existing = await db.CarStatusUpdates.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
+    var byId = existing.ToDictionary(x => x.CarId, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var cid = r.CarId!.Trim();
+        if (!byId.TryGetValue(cid, out var row)) { row = new CarStatusUpdate { OrgId = t.OrgId, CarId = cid }; db.CarStatusUpdates.Add(row); added++; } else updated++;
+        row.TTCStatus = r.TTCStatus == "1" ? "1" : "0"; row.CPTCStatus = r.CPTCStatus == "1" ? "1" : "0"; row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Cập nhật spec theo CarID (CarSpecUpdate — port 1:1 FrmUpdateSpec_CarID, 2010.HTC) =====
 app.MapGet("/api/carspecupdates", async (AppDbContext db, ITenantContext t, string? carId, string? spec) =>
 {
@@ -12521,6 +12553,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarStatusImportDto(List<CarStatusRowDto>? Rows);
+record CarStatusRowDto(string? CarId, string? TTCStatus, string? CPTCStatus);
 record CarSpecUpdImportDto(List<CarSpecUpdRowDto>? Rows);
 record CarSpecUpdRowDto(string? CarId, string? SpecCode);
 record SoEditPenaltyDto(List<SoEditPenaltyRowDto>? Lines);

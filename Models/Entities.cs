@@ -1070,6 +1070,18 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Cập nhật trạng thái xe — port 1:1 FrmUpdateCar_Status (2010.HTC). Batch cập nhật TTCStatus (hoàn thành TT chậm) + CPTCStatus theo CarId, upsert theo CarId.</summary>
+public sealed class CarStatusUpdate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CarId { get; set; } = "";
+    public string TTCStatus { get; set; } = "0";
+    public string CPTCStatus { get; set; } = "0";
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Cập nhật spec theo CarID — port 1:1 FrmUpdateSpec_CarID (2010.HTC). Batch đổi SpecCode cho xe (import Excel), upsert theo CarId.</summary>
 public sealed class CarSpecUpdate
 {
