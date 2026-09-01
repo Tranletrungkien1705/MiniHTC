@@ -4146,6 +4146,28 @@ app.MapPost("/api/servicequotations/{id}/status", async (long id, ServiceQuotati
     return Results.Ok(new { h.Id, h.Status });
 }).RequireAuthorization();
 
+// ===== Thống kê bảo hành theo chiều (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmChartWarrantyDealer/Month + FrmTK_WarrantyModel, TCMotor) =====
+// dimension: dealer | month | type. Đếm số ĐN + tổng tiền + số đã chấp thuận, gộp theo chiều.
+app.MapGet("/api/report/warranty-stats", async (AppDbContext db, ITenantContext t, string? dimension, DateTime? fromDate, DateTime? toDate) =>
+{
+    var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) q = q.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
+    var claims = await q.Select(x => new { x.DealerCode, x.WarrantyType, x.Amount, x.Status, x.CreatedAt }).ToListAsync();
+    var dim = (dimension ?? "dealer").Trim().ToLowerInvariant();
+    var keyed = claims.Select(c => new
+    {
+        key = dim == "month" ? c.CreatedAt.ToString("yyyy-MM") : dim == "type" ? (c.WarrantyType ?? "(không loại)") : (c.DealerCode ?? "(không rõ)"),
+        c.Amount, c.Status
+    });
+    var rows = keyed.GroupBy(c => c.key).Select(g => new
+    {
+        key = g.Key, claims = g.Count(), totalAmount = g.Sum(x => x.Amount),
+        accepted = g.Count(x => x.Status == "Accepted"), acceptedAmount = g.Where(x => x.Status == "Accepted").Sum(x => x.Amount)
+    }).OrderByDescending(r => r.totalAmount).ToList();
+    return Results.Ok(new { dimension = dim, count = rows.Count, totalClaims = claims.Count, grandAmount = rows.Sum(r => r.totalAmount), rows });
+}).RequireAuthorization();
+
 // ===== Khách lâu không quay lại (report tái-dùng RepairOrder — port 1:1 FrmReportCustomerNotBack, TCMotor) =====
 // Xe/khách có lần vào xưởng gần nhất cách đây > N tháng (mặc định 6) — cần chăm sóc kéo về.
 app.MapGet("/api/report/customer-notback", async (AppDbContext db, ITenantContext t, int? months) =>
