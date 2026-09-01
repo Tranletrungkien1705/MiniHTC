@@ -1070,6 +1070,30 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master loại công việc dịch vụ (Ser_MST_ServiceType) — port 1:1 FrmServiceTypeCreate/Search (TCMotor DMSCarSv). Tên loại công việc + cờ hoạt động.</summary>
+public sealed class SerServiceType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TypeName { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Master kho dịch vụ (Ser_Stock) — port 1:1 FrmStockCreate/Search (TCMotor DMSCarSv). Mã kho + tên + liên lạc + địa chỉ + email.</summary>
+public sealed class SerStock
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockNo { get; set; } = "";
+    public string? StockName { get; set; }
+    public string? Contact { get; set; }
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Master loại phụ tùng dịch vụ (Ser_MST_PartType) — port 1:1 FrmPartTypeCreate/Search (TCMotor DMSCarSv). Tên loại phụ tùng + cờ hoạt động.</summary>
 public sealed class SerPartType
 {

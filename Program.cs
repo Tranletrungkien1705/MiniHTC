@@ -4968,6 +4968,69 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master loại công việc DV (SerServiceType — port 1:1 FrmServiceTypeCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerServiceTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
+    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var name = (dto.TypeName ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại công việc." });
+    var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == name);
+    if (row is null) { row = new SerServiceType { OrgId = t.OrgId, TypeName = name }; db.SerServiceTypes.Add(row); }
+    row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/serservicetypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Master kho dịch vụ (SerStock — port 1:1 FrmStockCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerStocks.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StockNo.Contains(q!) || x.StockName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.StockNo).Take(500).Select(x => new { x.Id, x.StockNo, x.StockName, x.Contact, x.Address, x.Email, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/serstocks", async (SerStockDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.StockNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã kho." });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
+    if (row is null) { row = new SerStock { OrgId = t.OrgId, StockNo = no }; db.SerStocks.Add(row); }
+    row.StockName = dto.StockName; row.Contact = dto.Contact; row.Address = dto.Address; row.Email = dto.Email; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.StockNo, row.StockName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/serstocks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Master loại phụ tùng DV (SerPartType — port 1:1 FrmPartTypeCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12655,6 +12718,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record SerServiceTypeDto(string? TypeName, string? FlagActive);
+record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
 record SerPartTypeDto(string? TypeName, string? FlagActive);
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
