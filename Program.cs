@@ -4839,6 +4839,99 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Giám sát phiên đăng nhập (AppSession — port 1:1 FrmMngSession, TCMotor) =====
+// Liệt kê phiên đang mở + kill phiên hết hạn (theo thời gian truy cập cuối quá N phút).
+app.MapGet("/api/sessions", async (AppDbContext db, ITenantContext t, string? user, int? expireMinutes) =>
+{
+    var mins = expireMinutes.GetValueOrDefault(30);
+    var cutoff = DateTime.Now.AddMinutes(-mins);
+    var q = db.AppSessions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(user)) q = q.Where(x => x.UserCode.Contains(user!));
+    var items = await q.OrderByDescending(x => x.DateTimeLastAccess).Take(500).Select(x => new {
+        x.Id, x.SessionId, x.UserCode, x.DateTimeLogin, x.DateTimeLastAccess, x.LanguageCode, x.PartnerCode, x.PartnerUserCode, x.OtherInfo
+    }).ToListAsync();
+    var expired = items.Count(x => x.DateTimeLastAccess < cutoff);
+    return Results.Ok(new { count = items.Count, expireMinutes = mins, expired, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sessions", async (AppSessionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.UserCode)) return Results.BadRequest(new { error = "Chưa nhập UserCode." });
+    var now = DateTime.Now;
+    var s = new AppSession {
+        OrgId = t.OrgId, SessionId = "S" + now.ToString("yyMMddHHmmssfff"), UserCode = dto.UserCode.Trim(),
+        DateTimeLogin = now, DateTimeLastAccess = now, LanguageCode = dto.LanguageCode ?? "vi", PartnerCode = dto.PartnerCode, PartnerUserCode = dto.PartnerUserCode, OtherInfo = dto.OtherInfo
+    };
+    db.AppSessions.Add(s); await db.SaveChangesAsync();
+    return Results.Ok(new { s.SessionId, s.UserCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/sessions/kill-expired", async (AppDbContext db, ITenantContext t, int? expireMinutes) =>
+{
+    var cutoff = DateTime.Now.AddMinutes(-expireMinutes.GetValueOrDefault(30));
+    var expired = await db.AppSessions.Where(x => x.OrgId == t.OrgId && x.DateTimeLastAccess < cutoff).ToListAsync();
+    db.AppSessions.RemoveRange(expired);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { killed = expired.Count });
+}).RequireAuthorization();
+
+app.MapPost("/api/sessions/{id}/kill", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var s = await db.AppSessions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (s is null) return Results.NotFound(new { id });
+    db.AppSessions.Remove(s); await db.SaveChangesAsync();
+    return Results.Ok(new { killed = id });
+}).RequireAuthorization();
+
+// ===== Đề nghị cân bằng kho (StoCBReq — port 1:1 FrmMngCBReq, TCMotor/Sales/Purchase) =====
+app.MapGet("/api/stocbreqs", async (AppDbContext db, ITenantContext t, string? status, string? no) =>
+{
+    var q = db.StoCBReqs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.CBReqStatus == status);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.CBReqNo.Contains(no!));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.CBReqNo, x.CreatedDate, x.CBReqStatus, x.Remark, x.CreatedBy, x.ApprovedAt,
+        cars = db.StoCBReqDtls.Count(c => c.OrgId == t.OrgId && c.StoCBReqId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/stocbreqs", async (StoCBReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trong đề nghị." });
+    var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new StoCBReq { OrgId = t.OrgId, CBReqNo = "CBR" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, CBReqStatus = "Draft", Remark = dto.Remark, CreatedBy = by };
+    db.StoCBReqs.Add(h); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, SpecCode = c.SpecCode, EngineNo = c.EngineNo });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.CBReqNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/stocbreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id)
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo }).ToListAsync();
+    return Results.Ok(new { h.CBReqNo, h.CBReqStatus, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    var h = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.CBReqStatus != "Draft") return Results.BadRequest(new { error = "Đề nghị không ở trạng thái chờ duyệt." });
+    h.CBReqStatus = action == "approve" ? "Approved" : "Rejected";
+    if (action == "approve") h.ApprovedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.CBReqNo, h.CBReqStatus });
+}).RequireAuthorization();
+
 // ===== Bảo hành xe tồn kho (InvCarWarranty — port 1:1 FrmMngInv_CarWarranty, TCMotor) =====
 // Theo dõi mốc bảo hành theo VIN (nhận/hết lưu kho/giao/bảo hành/hết hạn HTCV+ĐL) + gửi KH xác nhận BH.
 app.MapGet("/api/invcarwarranties", async (AppDbContext db, ITenantContext t, string? vin, string? dealer, string? model) =>
@@ -11638,6 +11731,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record AppSessionDto(string? UserCode, string? LanguageCode, string? PartnerCode, string? PartnerUserCode, string? OtherInfo);
+record StoCBReqDto(string? Remark, List<StoCBReqCarDto>? Cars);
+record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? EngineNo);
 record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired);
 record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);

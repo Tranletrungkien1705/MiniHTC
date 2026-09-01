@@ -1070,6 +1070,46 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Phiên đăng nhập hệ thống — port 1:1 FrmMngSession (Session, TCMotor). Giám sát phiên đang mở + kill phiên hết hạn theo thời gian truy cập cuối.</summary>
+public sealed class AppSession
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SessionId { get; set; } = "";
+    public string UserCode { get; set; } = "";
+    public DateTime DateTimeLogin { get; set; }
+    public DateTime DateTimeLastAccess { get; set; }
+    public string? LanguageCode { get; set; }
+    public string? PartnerCode { get; set; }
+    public string? PartnerUserCode { get; set; }
+    public string? OtherInfo { get; set; }
+}
+
+/// <summary>Đề nghị cân bằng kho (header) — port 1:1 FrmMngCBReq (Sto_CBReq, TCMotor/Sales/Purchase). Đề nghị điều chuyển/cân bằng tồn kho xe theo danh sách VIN, duyệt theo trạng thái.</summary>
+public sealed class StoCBReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CBReqNo { get; set; } = "";
+    public DateTime CreatedDate { get; set; }
+    public string CBReqStatus { get; set; } = "Draft";  // Draft -> Approved / Rejected
+    public string? Remark { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedAt { get; set; }
+}
+
+/// <summary>Chi tiết xe trong đề nghị cân bằng kho — port 1:1 Sto_CBReqDtl (TCMotor).</summary>
+public sealed class StoCBReqDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StoCBReqId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? EngineNo { get; set; }
+}
+
 /// <summary>Bảo hành xe tồn kho — port 1:1 FrmMngInv_CarWarranty (Inv_CarWarranty, TCMotor). Theo dõi mốc bảo hành theo VIN + gửi KH xác nhận bảo hành (CustomerConfirmDate).</summary>
 public sealed class InvCarWarranty
 {
