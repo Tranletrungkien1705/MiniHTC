@@ -4865,6 +4865,40 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master loại NVBH theo phòng ban (SalesManType — port 1:1 FrmStaffType, TCMotor) =====
+app.MapGet("/api/salesmantypes", async (AppDbContext db, ITenantContext t, string? dept, string? q, bool? all) =>
+{
+    var qry = db.SalesManTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dept)) qry = qry.Where(x => x.DepartmentCode == dept);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMType.Contains(q!) || x.SMTypeName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.DepartmentCode).ThenBy(x => x.SMType).Take(500).Select(x => new { x.Id, x.DepartmentCode, x.SMType, x.SMTypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesmantypes", async (SalesManTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dept = (dto.DepartmentCode ?? "").Trim();
+    var smt = (dto.SMType ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(dept)) return Results.BadRequest(new { error = "Chưa nhập mã phòng ban." });
+    if (string.IsNullOrWhiteSpace(smt)) return Results.BadRequest(new { error = "Chưa nhập loại NVBH." });
+    var row = await db.SalesManTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DepartmentCode == dept && x.SMType == smt);
+    if (row is null) { row = new SalesManType { OrgId = t.OrgId, DepartmentCode = dept, SMType = smt }; db.SalesManTypes.Add(row); }
+    row.SMTypeName = dto.SMTypeName; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DepartmentCode, row.SMType, row.SMTypeName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesmantypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SalesManTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Hồ sơ phiếu thùng theo VIN (CarVinCBInfo — port 1:1 FrmUpdateCarVIN_CBInvoice, TCMotor) =====
 app.MapGet("/api/carvincbinfos", async (AppDbContext db, ITenantContext t, string? vin) =>
 {
@@ -12082,6 +12116,7 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive);
 record CarVinCBImportDto(List<CarVinCBRowDto>? Rows);
 record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice);
 record InvoiceRecallImportDto(string? Reason, List<string?>? InvoiceNos);

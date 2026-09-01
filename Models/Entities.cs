@@ -1070,6 +1070,18 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master loại nhân viên bán hàng theo phòng ban (Mst_SalesManType) — port 1:1 FrmStaffType (TCMotor). Khóa kép (DepartmentCode × SMType).</summary>
+public sealed class SalesManType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DepartmentCode { get; set; } = "";
+    public string SMType { get; set; } = "";
+    public string? SMTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Hồ sơ phiếu thùng theo VIN — port 1:1 FrmUpdateCarVIN_CBInvoice (Car_VIN CB info, TCMotor). Batch cập nhật số/ngày phiếu xuất xưởng có thùng (CB) + ngày giao phiếu, upsert theo VIN.</summary>
 public sealed class CarVinCBInfo
 {
