@@ -7510,6 +7510,64 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
+// ===== Công cụ sửa mã NVBH trên HĐ đại lý (Support — port 1:1 FrmSearchForDlr_Contract_UpdateSMCode/FrmSupport_Dlr_Contract_UpdateSMCode, 2010.HTC) =====
+app.MapGet("/api/support/contract-smcode", async (AppDbContext db, ITenantContext t, string? contractNo, string? dealer) =>
+{
+    var q = db.DlrContracts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(contractNo)) q = q.Where(x => x.DlrContractNo.Contains(contractNo!) || x.DlrContractNoUser.Contains(contractNo!));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var rows = await q.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.DlrContractNo, x.DlrContractNoUser, x.DealerCode, x.SalesManCode }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/support/contract-smcode", async (List<ContractSmFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var sm = (f.NewSmCode ?? "").Trim();
+        if (sm == "") { changes.Add(new { f.Id, error = "Mã NVBH trống." }); continue; }
+        var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (c is null) { changes.Add(new { f.Id, error = "Không tìm thấy HĐ." }); continue; }
+        if (c.SalesManCode == sm) continue;
+        changes.Add(new { c.Id, c.DlrContractNo, oldSm = c.SalesManCode, newSm = sm });
+        c.SalesManCode = sm; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
+// ===== Công cụ sửa tỉnh/huyện khách đại lý (Support — port 1:1 FrmSearchForUpdateProvinceAndDistrict/FrmSupport_BBGN_UpdateProvinceAndDistrict, 2010.HTC) =====
+app.MapGet("/api/support/customer-region", async (AppDbContext db, ITenantContext t, string? q, bool? onlyMissing) =>
+{
+    var query = db.DealerCustomers.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.FullName.Contains(q!) || x.CustomerCode.Contains(q!));
+    if (onlyMissing == true) query = query.Where(x => x.ProvinceCode == null || x.ProvinceCode == "" || x.DistrictCode == null || x.DistrictCode == "");
+    var rows = await query.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, cusId = x.CustomerCode, cusName = x.FullName, x.ProvinceCode, x.DistrictCode }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/support/customer-region", async (List<CustomerRegionFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var c = await db.DealerCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (c is null) { changes.Add(new { f.Id, error = "Không tìm thấy khách." }); continue; }
+        var prov = string.IsNullOrWhiteSpace(f.ProvinceCode) ? c.ProvinceCode : f.ProvinceCode.Trim();
+        var dist = string.IsNullOrWhiteSpace(f.DistrictCode) ? c.DistrictCode : f.DistrictCode.Trim();
+        if (prov == c.ProvinceCode && dist == c.DistrictCode) continue;
+        changes.Add(new { c.Id, cusName = c.FullName, oldProvince = c.ProvinceCode, oldDistrict = c.DistrictCode, newProvince = prov, newDistrict = dist });
+        c.ProvinceCode = prov; c.DistrictCode = dist; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
 // ===== Công cụ sửa giá HĐ đại lý (Support — port 1:1 FrmSearchForUpdatePrice/FrmSupportUpdatePrice, 2010.HTC) =====
 // Tra chi tiết xe trong HĐ đại lý theo số HĐ / VIN để sửa giá (giá sau VAT).
 app.MapGet("/api/support/deal-prices", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin) =>
@@ -10034,6 +10092,8 @@ record SqPartDto(string PartCode, string? PartName, decimal Quantity, decimal Pr
 record ServiceQuotationStatusDto(string Status);
 record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
 record DealPriceFixDto(long Id, decimal NewPrice);
+record ContractSmFixDto(long Id, string? NewSmCode);
+record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimActionDto(string Action, string? Note);
