@@ -4609,6 +4609,88 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Kho/bãi (Storage — port 1:1 FrmStorage, Admin/Product 2010.HTC) =====
+app.MapGet("/api/storages", async (AppDbContext db, ITenantContext t, string? q, string? type, string? active) =>
+{
+    var query = db.Storages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StorageCode.Contains(q!) || (x.StorageName != null && x.StorageName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(type)) query = query.Where(x => x.StorageType == type);
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.StorageCode).Take(1000)
+        .Select(x => new { x.Id, x.StorageCode, x.StorageName, x.StorageAddress, x.ProvinceCode, x.StorageType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/storages", async (StorageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.StorageCode ?? "").Trim();
+    if (code == "") return Results.BadRequest(new { error = "Thiếu mã kho." });
+    var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code);
+    if (s is null) { s = new Storage { OrgId = t.OrgId, StorageCode = code }; db.Storages.Add(s); }
+    s.StorageName = dto.StorageName; s.StorageAddress = dto.StorageAddress; s.ProvinceCode = dto.ProvinceCode; s.StorageType = dto.StorageType; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.Id, s.StorageCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/storages/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code.Trim());
+    if (s is null) return Results.NotFound(new { code });
+    s.FlagActive = s.FlagActive == "1" ? "0" : "1"; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.StorageCode, s.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/storages/import", async (List<StorageDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int created = 0, updated = 0, errorCount = 0; var errors = new List<object>(); var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    int line = 0;
+    foreach (var r in rows)
+    {
+        line++;
+        var code = (r.StorageCode ?? "").Trim();
+        if (code == "") { errorCount++; errors.Add(new { line, error = "Thiếu mã." }); continue; }
+        if (!seen.Add(code)) { errorCount++; errors.Add(new { line, code, error = "Trùng mã trong file." }); continue; }
+        var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code);
+        if (s is null) { s = new Storage { OrgId = t.OrgId, StorageCode = code }; db.Storages.Add(s); created++; } else updated++;
+        s.StorageName = r.StorageName; s.StorageAddress = r.StorageAddress; s.ProvinceCode = r.ProvinceCode; s.StorageType = r.StorageType; s.UpdatedAt = DateTime.Now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount, errors });
+}).RequireAuthorization();
+
+// ===== Tùy chọn chuẩn theo model (CarStdOption — port 1:1 FrmStandarOption, Admin/Product 2010.HTC) =====
+app.MapGet("/api/carstdoptions", async (AppDbContext db, ITenantContext t, string? model, string? active) =>
+{
+    var query = db.CarStdOptions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) query = query.Where(x => x.ModelCode == model);
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.ModelCode).ThenBy(x => x.StdCode).Take(1000)
+        .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carstdoptions", async (CarStdOptionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var mc = (dto.ModelCode ?? "").Trim(); var sc = (dto.StdCode ?? "").Trim();
+    if (mc == "" || sc == "") return Results.BadRequest(new { error = "Thiếu mã model hoặc mã tùy chọn." });
+    var o = await db.CarStdOptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc && x.StdCode == sc);
+    if (o is null) { o = new CarStdOption { OrgId = t.OrgId, ModelCode = mc, StdCode = sc }; db.CarStdOptions.Add(o); }
+    o.StdDesc = dto.StdDesc; o.GradeCode = dto.GradeCode; o.GradeDesc = dto.GradeDesc; o.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.Id, o.ModelCode, o.StdCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/carstdoptions/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var o = await db.CarStdOptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (o is null) return Results.NotFound(new { id });
+    o.FlagActive = o.FlagActive == "1" ? "0" : "1"; o.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.Id, o.FlagActive });
+}).RequireAuthorization();
+
 // ===== Nhà vận tải + xe + tài xế (Transporter — port 1:1 FrmTransporter/FrmTransporterCar/FrmTransporterDriver, Admin/Product 2010.HTC) =====
 app.MapGet("/api/transporters", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -10642,6 +10724,8 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
+record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
 record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo);
 record TransporterCarDto(string PlateNo);
 record TransporterDriverDto(string DriverId, string? DriverFullName, string? DriverLicenseNo, string? DriverPhoneNo);

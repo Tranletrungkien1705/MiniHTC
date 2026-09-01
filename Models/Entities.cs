@@ -1003,6 +1003,34 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Kho/bãi (master mã/tên/địa chỉ/tỉnh/loại kho) — port 1:1 FrmStorage (TblStorage, Admin/Product 2010.HTC).</summary>
+public sealed class Storage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StorageCode { get; set; } = "";
+    public string? StorageName { get; set; }
+    public string? StorageAddress { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? StorageType { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Tùy chọn/cấu hình chuẩn theo model (spec grade) — port 1:1 FrmStandarOption (TblCarStdOpt, Admin/Product 2010.HTC).</summary>
+public sealed class CarStdOption
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string StdCode { get; set; } = "";
+    public string? StdDesc { get; set; }
+    public string? GradeCode { get; set; }
+    public string? GradeDesc { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nhà vận tải (master đơn vị vận chuyển) — port 1:1 FrmTransporter (Tbl_Transpoter, Admin/Product 2010.HTC).</summary>
 public sealed class Transporter
 {
