@@ -1151,6 +1151,36 @@ public sealed class MstUnitPriceGPS
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>Lệnh xuất kho phụ tùng theo đơn KH (Ser_InvStockOutOrder header) — port 1:1 FrmStockOutOrderCreate (TCMotor DMSCarSv/Inventory). Header: số lệnh + ngày + khách hàng; state-machine Created→CreateStockOut/Finished/Rejected. KHÁC phiếu xuất thẳng (/api/stockouts).</summary>
+public sealed class SerStockOutOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderNo { get; set; } = "";
+    public DateTime? OrderDate { get; set; }
+    public string? CusName { get; set; }
+    public string? Address { get; set; }
+    public string? Phone { get; set; }
+    public string? Mobile { get; set; }
+    public string? Note { get; set; }
+    public decimal TotalQty { get; set; }
+    public string Status { get; set; } = "Created";
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>Dòng chi tiết lệnh xuất kho theo đơn (Ser_InvStockOutOrderDetail) — thuộc SerStockOutOrder. Mã PT + tên + ĐVT + SL yêu cầu.</summary>
+public sealed class SerStockOutOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long OrderId { get; set; }
+    public string? PartCode { get; set; }
+    public string? PartName { get; set; }
+    public string? Unit { get; set; }
+    public decimal OrderQuantity { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {
