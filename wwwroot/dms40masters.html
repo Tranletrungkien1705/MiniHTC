@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Chữ ký số & tỉ lệ phân bổ kho</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5} .exp{color:var(--bad);font-weight:700}
+</style></head>
+<body>
+<h1>Chữ ký số & tỉ lệ phân bổ kho <span class="muted">(port 1:1 FrmQLChuKyDienTu + FrmMst_StorageRate — Admin/DMS40 2010.HTC)</span></h1>
+<div class="tabs"><div class="tab on" id="tA" onclick="tab('A')">Chữ ký số đại lý</div><div class="tab" id="tB" onclick="tab('B')">Tỉ lệ phân bổ kho</div></div>
+
+<div id="paneA">
+  <div class="card"><h3 style="margin-top:0">Đăng ký/sửa chứng thư số</h3>
+    <div class="row"><div><label>Mã đại lý *</label><input id="aDlr" style="width:100px"></div><div><label>Chủ thể (tên)</label><input id="aSub" style="width:180px"></div><div><label>NCC (issuer)</label><input id="aIss" style="width:140px"></div><div><label>Serial</label><input id="aSer" style="width:120px"></div></div>
+    <div class="row" style="margin-top:6px"><div><label>Hiệu lực từ</label><input id="aFrom" type="date"></div><div><label>Đến</label><input id="aTo" type="date"></div><button class="primary" onclick="saveA()">Lưu</button><span id="msgA" class="msg"></span></div>
+  </div>
+  <div class="row" style="margin:8px 0"><input id="aQ" placeholder="Mã đại lý" style="width:120px"><button onclick="loadA()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Đại lý</th><th>Chủ thể</th><th>NCC</th><th>Serial</th><th>Từ</th><th>Đến</th><th>TT</th><th></th></tr></thead><tbody id="aRows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="card"><h3 style="margin-top:0">Tỉ lệ phân bổ (3 miền)</h3>
+    <div class="row"><div><label>Mã kho *</label><input id="bSto" style="width:90px"></div><div><label>Model *</label><input id="bMod" style="width:90px"></div><div><label>Spec</label><input id="bSpec" style="width:90px"></div><div><label>Màu</label><input id="bCol" style="width:80px"></div><div><label>Bắc</label><input id="bMB" type="number" style="width:70px" value="0"></div><div><label>Trung</label><input id="bMT" type="number" style="width:70px" value="0"></div><div><label>Nam</label><input id="bMN" type="number" style="width:70px" value="0"></div><button class="primary" onclick="saveB()">Lưu</button><span id="msgB" class="msg"></span></div>
+  </div>
+  <div class="row" style="margin:8px 0"><input id="bStoQ" placeholder="Mã kho" style="width:90px"><input id="bModQ" placeholder="Model" style="width:90px"><button onclick="loadB()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Kho</th><th>Model</th><th>Spec</th><th>Màu</th><th class="num">Bắc</th><th class="num">Trung</th><th class="num">Nam</th><th class="num">Tổng</th><th>TT</th><th></th></tr></thead><tbody id="bRows"><tr><td colspan="10" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function saveA(){ await token();
+  const r=await fetch("/api/dealercas",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({DealerCode:F("aDlr").value,CaSubject:F("aSub").value,CaIssuer:F("aIss").value,Serial:F("aSer").value,ValidFrom:F("aFrom").value||null,ValidTo:F("aTo").value||null})});
+  const d=await r.json(); if(!r.ok){ m("msgA","Lỗi: "+(d.error||r.status)); return; } m("msgA","Đã lưu "+d.dealerCode); loadA();
+}
+async function toggleA(id){ await token(); await fetch("/api/dealercas/"+id+"/toggle",{method:"POST",headers:H()}); loadA(); }
+async function loadA(){ await token();
+  const r=await fetch("/api/dealercas?dealer="+encodeURIComponent(F("aQ").value),{headers:H()}); const d=await r.json();
+  F("aRows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.dealerCode)}</b></td><td>${esc(o.caSubject)}</td><td>${esc(o.caIssuer)}</td><td>${esc(o.serial)}</td><td>${esc(o.validFrom)}</td><td class="${o.expired?'exp':''}">${esc(o.validTo)}${o.expired?' (hết hạn)':''}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="toggleA(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có chứng thư.</td></tr>';
+}
+async function saveB(){ await token();
+  const r=await fetch("/api/storagerates",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({StorageCode:F("bSto").value,ModelCode:F("bMod").value,SpecCode:F("bSpec").value,ColorExtCode:F("bCol").value,MBVal:+F("bMB").value||0,MTVal:+F("bMT").value||0,MNVal:+F("bMN").value||0})});
+  const d=await r.json(); if(!r.ok){ m("msgB","Lỗi: "+(d.error||r.status)); return; } m("msgB",`Đã lưu (tổng ${M(d.total)})`); loadB();
+}
+async function toggleB(id){ await token(); await fetch("/api/storagerates/"+id+"/toggle",{method:"POST",headers:H()}); loadB(); }
+async function loadB(){ await token();
+  const p=new URLSearchParams(); if(F("bStoQ").value)p.set("storage",F("bStoQ").value); if(F("bModQ").value)p.set("model",F("bModQ").value);
+  const r=await fetch("/api/storagerates?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("bRows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.storageCode)}</b></td><td>${esc(o.modelCode)}</td><td>${esc(o.specCode)}</td><td>${esc(o.colorExtCode)}</td><td class="num">${M(o.mbVal)}</td><td class="num">${M(o.mtVal)}</td><td class="num">${M(o.mnVal)}</td><td class="num"><b>${M(o.total)}</b></td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="toggleB(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="10" class="muted">Chưa có tỉ lệ.</td></tr>';
+}
+</script>
+</body></html>

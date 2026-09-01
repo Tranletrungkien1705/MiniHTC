@@ -1003,6 +1003,37 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Chữ ký số đại lý (chứng thư số CA) — port 1:1 FrmQLChuKyDienTu (Tbl_Dlr_CA, Admin/DMS40 2010.HTC).</summary>
+public sealed class DealerCA
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string? CaSubject { get; set; }   // tên chủ thể chữ ký
+    public string? CaIssuer { get; set; }     // nhà cung cấp/CA issuer
+    public string? Serial { get; set; }
+    public DateTime? ValidFrom { get; set; }
+    public DateTime? ValidTo { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Tỉ lệ phân bổ kho theo model/spec/màu cho 3 miền (Bắc/Trung/Nam) — port 1:1 FrmMst_StorageRate (Tbl_Auto_MapVIN_StorageRate, Admin/DMS40 2010.HTC).</summary>
+public sealed class StorageRate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StorageCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ColorExtCode { get; set; }
+    public decimal MBVal { get; set; }   // miền Bắc
+    public decimal MTVal { get; set; }   // miền Trung
+    public decimal MNVal { get; set; }   // miền Nam
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Gói bảo dưỡng theo mốc (loại BD × model, gồm hạng mục CV + vật tư) — port 1:1 FrmMaintenance (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintPackage
 {

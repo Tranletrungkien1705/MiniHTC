@@ -4609,6 +4609,78 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Chữ ký số đại lý (DealerCA — port 1:1 FrmQLChuKyDienTu, Admin/DMS40 2010.HTC) =====
+app.MapGet("/api/dealercas", async (AppDbContext db, ITenantContext t, string? dealer, string? active) =>
+{
+    var q = db.DealerCAs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode.Contains(dealer!));
+    if (active == "1" || active == "0") q = q.Where(x => x.FlagActive == active);
+    var today = DateTime.Today;
+    var items = await q.OrderBy(x => x.DealerCode).Take(500).Select(x => new
+    {
+        x.Id, x.DealerCode, x.CaSubject, x.CaIssuer, x.Serial,
+        validFrom = x.ValidFrom.HasValue ? x.ValidFrom.Value.ToString("yyyy-MM-dd") : "",
+        validTo = x.ValidTo.HasValue ? x.ValidTo.Value.ToString("yyyy-MM-dd") : "",
+        x.FlagActive, expired = x.ValidTo.HasValue && x.ValidTo.Value.Date < today
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, expiredCount = items.Count(i => i.expired), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercas", async (DealerCADto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dc = (dto.DealerCode ?? "").Trim();
+    if (dc == "") return Results.BadRequest(new { error = "Thiếu mã đại lý." });
+    if (dto.ValidFrom.HasValue && dto.ValidTo.HasValue && dto.ValidTo < dto.ValidFrom)
+        return Results.BadRequest(new { error = "Hiệu lực đến phải sau từ ngày." });
+    // 1 đại lý + serial là khóa (nếu có serial); nếu không thì theo đại lý + subject.
+    var ca = await db.DealerCAs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dc && x.Serial == dto.Serial && x.CaSubject == dto.CaSubject);
+    if (ca is null) { ca = new DealerCA { OrgId = t.OrgId, DealerCode = dc }; db.DealerCAs.Add(ca); }
+    ca.CaSubject = dto.CaSubject; ca.CaIssuer = dto.CaIssuer; ca.Serial = dto.Serial; ca.ValidFrom = dto.ValidFrom; ca.ValidTo = dto.ValidTo; ca.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { ca.Id, ca.DealerCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercas/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var ca = await db.DealerCAs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (ca is null) return Results.NotFound(new { id });
+    ca.FlagActive = ca.FlagActive == "1" ? "0" : "1"; ca.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { ca.Id, ca.FlagActive });
+}).RequireAuthorization();
+
+// ===== Tỉ lệ phân bổ kho theo miền (StorageRate — port 1:1 FrmMst_StorageRate, Admin/DMS40 2010.HTC) =====
+app.MapGet("/api/storagerates", async (AppDbContext db, ITenantContext t, string? storage, string? model) =>
+{
+    var q = db.StorageRates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(x => x.StorageCode == storage);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.ModelCode).Take(500)
+        .Select(x => new { x.Id, x.StorageCode, x.ModelCode, x.SpecCode, x.ColorExtCode, x.MBVal, x.MTVal, x.MNVal, total = x.MBVal + x.MTVal + x.MNVal, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/storagerates", async (StorageRateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var sc = (dto.StorageCode ?? "").Trim(); var mc = (dto.ModelCode ?? "").Trim();
+    if (sc == "" || mc == "") return Results.BadRequest(new { error = "Thiếu mã kho hoặc model." });
+    if (dto.MBVal < 0 || dto.MTVal < 0 || dto.MNVal < 0) return Results.BadRequest(new { error = "Tỉ lệ không được âm." });
+    var r = await db.StorageRates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == sc && x.ModelCode == mc && x.SpecCode == dto.SpecCode && x.ColorExtCode == dto.ColorExtCode);
+    if (r is null) { r = new StorageRate { OrgId = t.OrgId, StorageCode = sc, ModelCode = mc, SpecCode = dto.SpecCode, ColorExtCode = dto.ColorExtCode }; db.StorageRates.Add(r); }
+    r.MBVal = dto.MBVal; r.MTVal = dto.MTVal; r.MNVal = dto.MNVal; r.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.StorageCode, r.ModelCode, total = r.MBVal + r.MTVal + r.MNVal });
+}).RequireAuthorization();
+
+app.MapPost("/api/storagerates/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.StorageRates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { id });
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1"; r.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.FlagActive });
+}).RequireAuthorization();
+
 // ===== Gói bảo dưỡng theo mốc (MaintPackage — port 1:1 FrmMaintenance, Admin/Maintenance 2010.HTC) =====
 app.MapGet("/api/maintpackages", async (AppDbContext db, ITenantContext t, string? model, string? type) =>
 {
@@ -10474,6 +10546,8 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record DealerCADto(string DealerCode, string? CaSubject, string? CaIssuer, string? Serial, DateTime? ValidFrom, DateTime? ValidTo);
+record StorageRateDto(string StorageCode, string ModelCode, string? SpecCode, string? ColorExtCode, decimal MBVal, decimal MTVal, decimal MNVal);
 record MaintPackageDto(string TypeCode, string? TypeName, int Times, string? ModelCode, List<MpWorkDto>? Works, List<MpSupplyDto>? Supplies);
 record MpWorkDto(string? WorkItemCode, string WorkContentCode);
 record MpSupplyDto(string SupplyCode, decimal Qty);
