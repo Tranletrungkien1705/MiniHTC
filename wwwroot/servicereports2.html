@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Tần suất DV & Cung ứng PT</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+  .low{color:var(--bad);font-weight:700} .high{color:var(--ok)}
+</style></head>
+<body>
+<h1>Tần suất DV & khả năng cung ứng PT <span class="muted">(port 1:1 FrmRpt_Vehicle_Service_Frequency + FrmRpt_AbilitySupplyParts — TCMotor)</span></h1>
+<div class="tabs">
+  <div class="tab on" id="tA" onclick="tab('A')">Tần suất dịch vụ theo xe</div>
+  <div class="tab" id="tB" onclick="tab('B')">Khả năng cung ứng PT</div>
+</div>
+
+<div id="paneA">
+  <div class="row"><div><label>Số lượt tối thiểu</label><input id="aMin" type="number" value="2" style="width:100px"></div><button class="primary" onclick="repA()">Xem</button></div>
+  <div class="grid2" id="aKpi"></div>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Khách</th><th class="num">Số lượt</th><th>Lần đầu</th><th>Lần cuối</th><th class="num">TB cách (ngày)</th></tr></thead><tbody id="aRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="row"><button class="primary" onclick="repB()">Xem</button></div>
+  <div class="grid2" id="bKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th class="num">Cần</th><th class="num">Đã giao</th><th class="num">Còn nợ</th><th class="num">Số đơn</th><th class="num">Đơn mở</th><th class="num">Tỉ lệ đáp ứng</th></tr></thead><tbody id="bRows"><tr><td colspan="7" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function repA(){ await token();
+  const r=await fetch("/api/report/vehicle-frequency?minVisits="+(+F("aMin").value||2),{headers:H()}); const d=await r.json();
+  F("aKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Xe (≥${d.minVisits} lượt)</span></div><div class="kpi"><b>${d.avgVisits}</b><span class="muted">TB lượt/xe</span></div>`;
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.cusName)}</td><td class="num">${o.visits}</td><td>${esc(o.firstVisit)}</td><td>${esc(o.lastVisit)}</td><td class="num">${o.avgGapDays}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có xe nào đủ số lượt.</td></tr>';
+}
+async function repB(){ await token();
+  const r=await fetch("/api/report/part-supply-ability",{headers:H()}); const d=await r.json();
+  F("bKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Mã PT có đơn</span></div><div class="kpi"><b class="${d.overallFillRate<80?'low':'high'}">${d.overallFillRate}%</b><span class="muted">Tỉ lệ đáp ứng chung</span></div><div class="kpi"><b>${M(d.totalNeeded-d.totalFulfilled)}</b><span class="muted">Tổng còn nợ</span></div>`;
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.partCode)}</b></td><td class="num">${M(o.needed)}</td><td class="num">${M(o.fulfilled)}</td><td class="num ${o.backorder>0?'low':''}">${M(o.backorder)}</td><td class="num">${o.orders}</td><td class="num">${o.openOrders}</td><td class="num ${o.fillRate<80?'low':'high'}">${o.fillRate}%</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có đơn phụ tùng.</td></tr>';
+}
+</script>
+</body></html>

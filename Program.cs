@@ -4168,6 +4168,45 @@ app.MapGet("/api/report/warranty-stats", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { dimension = dim, count = rows.Count, totalClaims = claims.Count, grandAmount = rows.Sum(r => r.totalAmount), rows });
 }).RequireAuthorization();
 
+// ===== Tần suất dịch vụ theo xe (report tái-dùng RepairOrder — port 1:1 FrmRpt_Vehicle_Service_Frequency, TCMotor) =====
+// Mỗi VIN: số lượt vào xưởng + khoảng cách TB (ngày) giữa các lượt liên tiếp (chỉ xe >=2 lượt mới có tần suất).
+app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantContext t, int? minVisits) =>
+{
+    var minV = minVisits is > 0 ? minVisits.Value : 2;
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Vin != null && x.Vin != "" && x.CheckInDate.HasValue)
+        .Select(x => new { x.Vin, x.CusName, x.CheckInDate }).ToListAsync();
+    var rows = ros.GroupBy(x => x.Vin!).Select(g =>
+    {
+        var dates = g.Select(x => x.CheckInDate!.Value.Date).OrderBy(d => d).ToList();
+        double avgGap = 0;
+        if (dates.Count >= 2)
+        {
+            double sum = 0;
+            for (int i = 1; i < dates.Count; i++) sum += (dates[i] - dates[i - 1]).TotalDays;
+            avgGap = Math.Round(sum / (dates.Count - 1), 1);
+        }
+        return new { vin = g.Key, cusName = g.Select(x => x.CusName).FirstOrDefault(x => x != null),
+            visits = dates.Count, firstVisit = dates.First().ToString("yyyy-MM-dd"), lastVisit = dates.Last().ToString("yyyy-MM-dd"), avgGapDays = avgGap };
+    }).Where(r => r.visits >= minV).OrderByDescending(r => r.visits).ThenBy(r => r.avgGapDays).ToList();
+    return Results.Ok(new { minVisits = minV, count = rows.Count, avgVisits = rows.Count > 0 ? Math.Round(rows.Average(r => (double)r.visits), 1) : 0, rows });
+}).RequireAuthorization();
+
+// ===== Khả năng cung ứng phụ tùng (report tái-dùng ServicePartOO — port 1:1 FrmRpt_AbilitySupplyParts, TCMotor) =====
+// Tỉ lệ đáp ứng = tổng SL đã giao / tổng SL cần, theo mã PT (từ đơn phụ tùng nợ/chờ giao).
+app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t) =>
+{
+    var agg = await db.ServicePartOOs.Where(x => x.OrgId == t.OrgId)
+        .GroupBy(x => x.PartCode)
+        .Select(g => new { partCode = g.Key, needed = g.Sum(x => x.QtyNeeded), fulfilled = g.Sum(x => x.QtyFulfilled), orders = g.Count(), openOrders = g.Count(x => x.Status == "Open") })
+        .ToListAsync();
+    var rows = agg.Select(a => new { a.partCode, a.needed, a.fulfilled, backorder = a.needed - a.fulfilled, a.orders, a.openOrders,
+            fillRate = a.needed > 0 ? Math.Round(a.fulfilled / a.needed * 100, 1) : 100m })
+        .OrderBy(r => r.fillRate).ThenByDescending(r => r.backorder).ToList();
+    var totNeed = rows.Sum(r => r.needed); var totFill = rows.Sum(r => r.fulfilled);
+    return Results.Ok(new { count = rows.Count, totalNeeded = totNeed, totalFulfilled = totFill,
+        overallFillRate = totNeed > 0 ? Math.Round(totFill / totNeed * 100, 1) : 100m, rows });
+}).RequireAuthorization();
+
 // ===== Khách lâu không quay lại (report tái-dùng RepairOrder — port 1:1 FrmReportCustomerNotBack, TCMotor) =====
 // Xe/khách có lần vào xưởng gần nhất cách đây > N tháng (mặc định 6) — cần chăm sóc kéo về.
 app.MapGet("/api/report/customer-notback", async (AppDbContext db, ITenantContext t, int? months) =>
