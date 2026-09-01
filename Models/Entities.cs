@@ -1070,6 +1070,17 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Cập nhật spec theo CarID — port 1:1 FrmUpdateSpec_CarID (2010.HTC). Batch đổi SpecCode cho xe (import Excel), upsert theo CarId.</summary>
+public sealed class CarSpecUpdate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CarId { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thông tin dữ liệu đăng kiểm/thị phần (Mst_RegistrationInfo) — port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan (2010.HTC). Số liệu đăng kiểm theo (năm × tỉnh): SL + % + tổng tiền.</summary>
 public sealed class RegistrationInfo
 {
@@ -2303,6 +2314,7 @@ public sealed class SalesOrder
     public DateTime? DepositDutyEndDate { get; set; }
     public DateTime? GrtEndDate { get; set; }
     public DateTime? CarDueDate { get; set; }
+    public decimal PenalizeActual { get; set; }   // tiền phạt trả chậm thực tế (FrmUpdatePenaltyPmtDelayReal)
 }
 public sealed class SalesOrderLine
 {

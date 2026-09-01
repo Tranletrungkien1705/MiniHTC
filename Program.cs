@@ -2634,9 +2634,9 @@ app.MapGet("/api/salesorders/sodates", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(so)) q = q.Where(o => o.SoCode.Contains(so!));
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new {
-        o.SoCode, o.DealerCode, o.Status, o.ApprovedDate, o.DepositDutyEndDate, o.GrtEndDate, o.CarDueDate
+        o.SoCode, o.DealerCode, o.Status, o.ApprovedDate, o.DepositDutyEndDate, o.GrtEndDate, o.CarDueDate, o.PenalizeActual
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, totalPenalize = items.Sum(x => x.PenalizeActual), items });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesorders/edit-dates", async (SoEditDatesDto dto, AppDbContext db, ITenantContext t) =>
@@ -2662,6 +2662,26 @@ app.MapPost("/api/salesorders/edit-dates", async (SoEditDatesDto dto, AppDbConte
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Cập nhật tiền phạt trả chậm thực tế theo SO (port 1:1 FrmUpdatePenaltyPmtDelayReal, 2010.HTC).
+app.MapPost("/api/salesorders/edit-penalty", async (SoEditPenaltyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SOCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có SO thay đổi." });
+    if (lines.Any(l => l.PenalizeActual < 0)) return Results.BadRequest(new { error = "Tiền phạt không được âm." });
+    var codes = lines.Select(l => l.SOCode!.Trim()).ToHashSet();
+    var orders = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && codes.Contains(o.SoCode)).ToListAsync();
+    var byCode = orders.ToDictionary(o => o.SoCode, o => o);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var code = l.SOCode!.Trim();
+        if (!byCode.TryGetValue(code, out var o)) { notFound.Add(code); continue; }
+        o.PenalizeActual = l.PenalizeActual; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, totalPenalize = orders.Sum(o => o.PenalizeActual), notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // ===== Báo cáo bán hàng đại lý (port 1:1 FrmBanHangDL) — tái dùng SalesOrder + SalesOrderLine =====
@@ -4946,6 +4966,37 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     h.FlagActive = h.FlagActive == "1" ? "0" : "1"; h.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.FlagActive });
+}).RequireAuthorization();
+
+// ===== Cập nhật spec theo CarID (CarSpecUpdate — port 1:1 FrmUpdateSpec_CarID, 2010.HTC) =====
+app.MapGet("/api/carspecupdates", async (AppDbContext db, ITenantContext t, string? carId, string? spec) =>
+{
+    var q = db.CarSpecUpdates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CarId, x.SpecCode, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carspecupdates/import", async (CarSpecUpdImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.CarId) && !string.IsNullOrWhiteSpace(r.SpecCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để cập nhật (cần CarId + Spec)." });
+    var dup = rows.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
+    var existing = await db.CarSpecUpdates.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
+    var byId = existing.ToDictionary(x => x.CarId, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var cid = r.CarId!.Trim();
+        if (!byId.TryGetValue(cid, out var row)) { row = new CarSpecUpdate { OrgId = t.OrgId, CarId = cid }; db.CarSpecUpdates.Add(row); added++; } else updated++;
+        row.SpecCode = r.SpecCode!.Trim(); row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
 }).RequireAuthorization();
 
 // ===== Thông tin dữ liệu đăng kiểm/thị phần (RegistrationInfo — port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan, 2010.HTC) =====
@@ -12470,6 +12521,10 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarSpecUpdImportDto(List<CarSpecUpdRowDto>? Rows);
+record CarSpecUpdRowDto(string? CarId, string? SpecCode);
+record SoEditPenaltyDto(List<SoEditPenaltyRowDto>? Lines);
+record SoEditPenaltyRowDto(string? SOCode, decimal PenalizeActual);
 record RegistrationInfoDto(string? RegistYear, string? ProvinceCode, string? ProvinceName, int Qty, decimal RegistPercent, decimal TotalAmount, string? FlagActive);
 record CabinCertificateDto(string? CabinCertificateNo, string? CarType, string? FlagActive);
 record DeviceTypeDto(string? DeviceTypeCode, string? DeviceTypeName, string? FlagActive);
