@@ -1070,6 +1070,21 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Gán loại hợp đồng cho xe — port 1:1 FrmUpdContractTypeForCar (TCMotor). Batch cập nhật ContractType theo CarId (import Excel), upsert theo CarId.</summary>
+public sealed class CarContractType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CarId { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? SOCode { get; set; }
+    public string ContractType { get; set; } = "";
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Kích hoạt lại xe đã hủy — port 1:1 FrmReactiveCar (TCMotor). Chọn xe đã hủy (CarCancel Approved) → kích hoạt lại; ghi log + đổi CarCancel.Status='Reactivated'.</summary>
 public sealed class CarReactivation
 {

@@ -4865,6 +4865,39 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Gán loại hợp đồng cho xe (CarContractType — port 1:1 FrmUpdContractTypeForCar, TCMotor) =====
+app.MapGet("/api/carcontracttypes", async (AppDbContext db, ITenantContext t, string? carId, string? contractType) =>
+{
+    var q = db.CarContractTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    if (!string.IsNullOrWhiteSpace(contractType)) q = q.Where(x => x.ContractType == contractType);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CarId, x.ModelCode, x.SpecCode, x.ColorCode, x.SOCode, x.ContractType, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carcontracttypes/import", async (CarContractTypeImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để cập nhật." });
+    var dup = rows.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
+    var bad = rows.FirstOrDefault(r => string.IsNullOrWhiteSpace(r.ContractType));
+    if (bad != null) return Results.BadRequest(new { error = $"CarId {bad.CarId}: thiếu loại hợp đồng mới." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
+    var existing = await db.CarContractTypes.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
+    var byId = existing.ToDictionary(x => x.CarId, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var cid = r.CarId!.Trim();
+        if (!byId.TryGetValue(cid, out var row)) { row = new CarContractType { OrgId = t.OrgId, CarId = cid }; db.CarContractTypes.Add(row); added++; } else updated++;
+        row.ModelCode = r.ModelCode; row.SpecCode = r.SpecCode; row.ColorCode = r.ColorCode; row.SOCode = r.SOCode; row.ContractType = r.ContractType!.Trim(); row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Kích hoạt lại xe đã hủy (CarReactivation — port 1:1 FrmReactiveCar, TCMotor) =====
 app.MapGet("/api/carreactivations", async (AppDbContext db, ITenantContext t, string? vin) =>
 {
@@ -11984,6 +12017,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarContractTypeImportDto(List<CarContractTypeRowDto>? Rows);
+record CarContractTypeRowDto(string? CarId, string? ModelCode, string? SpecCode, string? ColorCode, string? SOCode, string? ContractType);
 record CarReactivationDto(string? Reason, List<CarReactivationCarDto>? Cars);
 record CarReactivationCarDto(string? VIN, string? ModelCode, string? ColorCode);
 record CarInvoiceSpecDto(string? SpecCode, string? SpecCodeInvoice, string? VehiclesType, int NumberOfSeats, string? CarType, decimal VAT, string? FlagActive);
