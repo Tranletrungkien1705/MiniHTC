@@ -2627,6 +2627,43 @@ app.MapGet("/api/report/guarantee", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = recs.Count, totalDebit = recs.Sum(Debit), totalAmount = recs.Sum(g => g.TotalAmount), byBank, byStatus, detail });
 }).RequireAuthorization();
 
+// Cập nhật ngày mốc SO theo lô (port 1:1 FrmMng_SO_Approved_Date, 2010.HTC): ngày duyệt / hết hạn nghĩa vụ cọc / hết hạn BL / đến hạn giao xe.
+app.MapGet("/api/salesorders/sodates", async (AppDbContext db, ITenantContext t, string? dealer, string? so) =>
+{
+    var q = db.SalesOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(so)) q = q.Where(o => o.SoCode.Contains(so!));
+    var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new {
+        o.SoCode, o.DealerCode, o.Status, o.ApprovedDate, o.DepositDutyEndDate, o.GrtEndDate, o.CarDueDate
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesorders/edit-dates", async (SoEditDatesDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SOCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có SO thay đổi." });
+    foreach (var l in lines)
+        if (l.DepositDutyEndDate.HasValue && l.CarDueDate.HasValue && l.CarDueDate < l.DepositDutyEndDate)
+            return Results.BadRequest(new { error = $"SO {l.SOCode}: ngày đến hạn giao xe phải >= ngày hết hạn nghĩa vụ cọc." });
+    var codes = lines.Select(l => l.SOCode!.Trim()).ToHashSet();
+    var orders = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && codes.Contains(o.SoCode)).ToListAsync();
+    var byCode = orders.ToDictionary(o => o.SoCode, o => o);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var code = l.SOCode!.Trim();
+        if (!byCode.TryGetValue(code, out var o)) { notFound.Add(code); continue; }
+        if (l.ApprovedDate.HasValue) o.ApprovedDate = l.ApprovedDate;
+        if (l.DepositDutyEndDate.HasValue) o.DepositDutyEndDate = l.DepositDutyEndDate;
+        if (l.GrtEndDate.HasValue) o.GrtEndDate = l.GrtEndDate;
+        if (l.CarDueDate.HasValue) o.CarDueDate = l.CarDueDate;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
 // ===== Báo cáo bán hàng đại lý (port 1:1 FrmBanHangDL) — tái dùng SalesOrder + SalesOrderLine =====
 app.MapGet("/api/report/salesbydealer", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? orderType, DateTime? from, DateTime? to) =>
 {
@@ -12179,6 +12216,8 @@ record PackingListVinDto(string Vin, string? CrateType);
 record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins);
 record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
 record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL);
+record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
+record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
 record SoRejectDto(string? Reason);

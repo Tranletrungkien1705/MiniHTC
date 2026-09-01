@@ -2248,6 +2248,11 @@ public sealed class SalesOrder
     public DateTime? Approved2At { get; set; }
     public string? RejectReason { get; set; }
     public DateTime? RejectedAt { get; set; }
+    // Cập nhật ngày mốc SO (FrmMng_SO_Approved_Date): ngày duyệt / hết hạn nghĩa vụ cọc / hết hạn BL / đến hạn giao xe
+    public DateTime? ApprovedDate { get; set; }
+    public DateTime? DepositDutyEndDate { get; set; }
+    public DateTime? GrtEndDate { get; set; }
+    public DateTime? CarDueDate { get; set; }
 }
 public sealed class SalesOrderLine
 {
