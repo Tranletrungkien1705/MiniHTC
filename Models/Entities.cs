@@ -1070,6 +1070,27 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
+public sealed class TechnicalLibrary
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TechnicalLibraryCode { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? PlateNo { get; set; }
+    public string? Model { get; set; }
+    public string? Engine { get; set; }
+    public string? Gear { get; set; }
+    public string? ReRepairType { get; set; }
+    public string? ReRepairRemark { get; set; }    // triệu chứng
+    public string? ReRepairReason { get; set; }    // nguyên nhân
+    public string? ReRepairSolution { get; set; }  // giải pháp
+    public string? ExclusionTest { get; set; }
+    public string IsActive { get; set; } = "1";
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
 /// <summary>Master nhà cung cấp phụ tùng (Ser_MST_Supplier) — port 1:1 FrmMstSupplierCreate/Search (TCMotor DMSCarSv). Mã + tên + địa chỉ + SĐT + fax.</summary>
 public sealed class SerMstSupplier
 {

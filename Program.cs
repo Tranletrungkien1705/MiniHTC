@@ -4968,6 +4968,45 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Thư viện kỹ thuật (TechnicalLibrary — port 1:1 FrmSer_Technical_Library, TCMotor DMSCarSv) =====
+app.MapGet("/api/technicallibraries", async (AppDbContext db, ITenantContext t, string? model, string? q, bool? all) =>
+{
+    var qry = db.TechnicalLibraries.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.IsActive == "1");
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.Model == model);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TechnicalLibraryCode.Contains(q!) || x.ReRepairRemark!.Contains(q!) || x.ReRepairReason!.Contains(q!) || x.PlateNo!.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.TechnicalLibraryCode, x.DealerCode, x.PlateNo, x.Model, x.Engine, x.Gear, x.ReRepairType,
+        x.ReRepairRemark, x.ReRepairReason, x.ReRepairSolution, x.ExclusionTest, x.IsActive, x.CreatedBy, x.CreatedAt
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.Model)) return Results.BadRequest(new { error = "Chưa nhập Model." });
+    if (string.IsNullOrWhiteSpace(dto.ReRepairRemark)) return Results.BadRequest(new { error = "Chưa nhập triệu chứng." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = new TechnicalLibrary {
+        OrgId = t.OrgId, TechnicalLibraryCode = "TLIB" + DateTime.Now.ToString("yyMMddHHmmss"),
+        DealerCode = dto.DealerCode, PlateNo = dto.PlateNo, Model = dto.Model.Trim(), Engine = dto.Engine, Gear = dto.Gear, ReRepairType = dto.ReRepairType,
+        ReRepairRemark = dto.ReRepairRemark, ReRepairReason = dto.ReRepairReason, ReRepairSolution = dto.ReRepairSolution, ExclusionTest = dto.ExclusionTest,
+        IsActive = "1", CreatedBy = by, CreatedAt = DateTime.Now
+    };
+    db.TechnicalLibraries.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.TechnicalLibraryCode, row.Model, row.CreatedBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.IsActive = row.IsActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.IsActive });
+}).RequireAuthorization();
+
 // ===== Master nhà cung cấp phụ tùng (SerMstSupplier — port 1:1 FrmMstSupplierCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12799,6 +12838,7 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
 record StockAdjDto(string? StorageCode, string? Remark, List<StockAdjLineDto>? Lines);
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust);
