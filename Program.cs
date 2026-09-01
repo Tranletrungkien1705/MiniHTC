@@ -4609,6 +4609,102 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Nhà vận tải + xe + tài xế (Transporter — port 1:1 FrmTransporter/FrmTransporterCar/FrmTransporterDriver, Admin/Product 2010.HTC) =====
+app.MapGet("/api/transporters", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.Transporters.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.TransporterCode.Contains(q!) || (x.TransporterName != null && x.TransporterName.Contains(q!)));
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.TransporterCode).Take(500).Select(x => new
+    {
+        x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.FlagActive,
+        cars = db.TransporterCars.Count(c => c.OrgId == t.OrgId && c.TransporterCode == x.TransporterCode),
+        drivers = db.TransporterDrivers.Count(d => d.OrgId == t.OrgId && d.TransporterCode == x.TransporterCode)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/transporters", async (TransporterDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TransporterCode ?? "").Trim();
+    if (code == "") return Results.BadRequest(new { error = "Thiếu mã nhà vận tải." });
+    var s = await db.Transporters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == code);
+    if (s is null) { s = new Transporter { OrgId = t.OrgId, TransporterCode = code }; db.Transporters.Add(s); }
+    s.TransporterName = dto.TransporterName; s.Address = dto.Address; s.PhoneNo = dto.PhoneNo; s.FaxNo = dto.FaxNo;
+    s.DirectorFullName = dto.DirectorFullName; s.DirectorPhoneNo = dto.DirectorPhoneNo; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.Id, s.TransporterCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/transporters/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var s = await db.Transporters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == code.Trim());
+    if (s is null) return Results.NotFound(new { code });
+    s.FlagActive = s.FlagActive == "1" ? "0" : "1"; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.TransporterCode, s.FlagActive });
+}).RequireAuthorization();
+
+// Xe của nhà vận tải: list theo mã NVT, thêm (chống trùng biển số), toggle.
+app.MapGet("/api/transporters/{code}/cars", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var cars = await db.TransporterCars.Where(x => x.OrgId == t.OrgId && x.TransporterCode == code.Trim())
+        .OrderBy(x => x.PlateNo).Select(x => new { x.Id, x.PlateNo, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { transporterCode = code, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/transporters/{code}/cars", async (string code, TransporterCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tc = code.Trim();
+    if (!await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc)) return Results.BadRequest(new { error = "Nhà vận tải không tồn tại." });
+    var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
+    if (plate == "") return Results.BadRequest(new { error = "Thiếu biển số." });
+    if (await db.TransporterCars.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc && x.PlateNo == plate))
+        return Results.BadRequest(new { error = "Biển số đã có: " + plate });
+    db.TransporterCars.Add(new TransporterCar { OrgId = t.OrgId, TransporterCode = tc, PlateNo = plate });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { plate });
+}).RequireAuthorization();
+
+app.MapPost("/api/transporters/cars/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.TransporterCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.FlagActive });
+}).RequireAuthorization();
+
+// Tài xế của nhà vận tải.
+app.MapGet("/api/transporters/{code}/drivers", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var drivers = await db.TransporterDrivers.Where(x => x.OrgId == t.OrgId && x.TransporterCode == code.Trim())
+        .OrderBy(x => x.DriverId).Select(x => new { x.Id, x.DriverId, x.DriverFullName, x.DriverLicenseNo, x.DriverPhoneNo, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { transporterCode = code, count = drivers.Count, drivers });
+}).RequireAuthorization();
+
+app.MapPost("/api/transporters/{code}/drivers", async (string code, TransporterDriverDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tc = code.Trim();
+    if (!await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc)) return Results.BadRequest(new { error = "Nhà vận tải không tồn tại." });
+    var did = (dto.DriverId ?? "").Trim();
+    if (did == "") return Results.BadRequest(new { error = "Thiếu mã tài xế." });
+    var d = await db.TransporterDrivers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc && x.DriverId == did);
+    if (d is null) { d = new TransporterDriver { OrgId = t.OrgId, TransporterCode = tc, DriverId = did }; db.TransporterDrivers.Add(d); }
+    d.DriverFullName = dto.DriverFullName; d.DriverLicenseNo = dto.DriverLicenseNo; d.DriverPhoneNo = dto.DriverPhoneNo;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DriverId });
+}).RequireAuthorization();
+
+app.MapPost("/api/transporters/drivers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var d = await db.TransporterDrivers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (d is null) return Results.NotFound(new { id });
+    d.FlagActive = d.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.Id, d.FlagActive });
+}).RequireAuthorization();
+
 // ===== Chữ ký số đại lý (DealerCA — port 1:1 FrmQLChuKyDienTu, Admin/DMS40 2010.HTC) =====
 app.MapGet("/api/dealercas", async (AppDbContext db, ITenantContext t, string? dealer, string? active) =>
 {
@@ -10546,6 +10642,9 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo);
+record TransporterCarDto(string PlateNo);
+record TransporterDriverDto(string DriverId, string? DriverFullName, string? DriverLicenseNo, string? DriverPhoneNo);
 record DealerCADto(string DealerCode, string? CaSubject, string? CaIssuer, string? Serial, DateTime? ValidFrom, DateTime? ValidTo);
 record StorageRateDto(string StorageCode, string ModelCode, string? SpecCode, string? ColorExtCode, decimal MBVal, decimal MTVal, decimal MNVal);
 record MaintPackageDto(string TypeCode, string? TypeName, int Times, string? ModelCode, List<MpWorkDto>? Works, List<MpSupplyDto>? Supplies);

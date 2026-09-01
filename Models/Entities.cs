@@ -1003,6 +1003,45 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Nhà vận tải (master đơn vị vận chuyển) — port 1:1 FrmTransporter (Tbl_Transpoter, Admin/Product 2010.HTC).</summary>
+public sealed class Transporter
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TransporterCode { get; set; } = "";
+    public string? TransporterName { get; set; }
+    public string? Address { get; set; }
+    public string? PhoneNo { get; set; }
+    public string? FaxNo { get; set; }
+    public string? DirectorFullName { get; set; }
+    public string? DirectorPhoneNo { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Xe tải của nhà vận tải — port 1:1 FrmTransporterCar (Tbl_Mst_TransporterCar, Admin/Product 2010.HTC).</summary>
+public sealed class TransporterCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TransporterCode { get; set; } = "";
+    public string PlateNo { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>Tài xế của nhà vận tải — port 1:1 FrmTransporterDriver (Tbl_Mst_TransporterDriver, Admin/Product 2010.HTC).</summary>
+public sealed class TransporterDriver
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TransporterCode { get; set; } = "";
+    public string DriverId { get; set; } = "";
+    public string? DriverFullName { get; set; }
+    public string? DriverLicenseNo { get; set; }
+    public string? DriverPhoneNo { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>Chữ ký số đại lý (chứng thư số CA) — port 1:1 FrmQLChuKyDienTu (Tbl_Dlr_CA, Admin/DMS40 2010.HTC).</summary>
 public sealed class DealerCA
 {
