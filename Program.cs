@@ -4209,6 +4209,27 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo hợp đồng đại lý (report tái-dùng DealerContract + DealerContractDetail — port 1:1 FrmContractReportForDealer, 2010.HTC/Report) =====
+// Gộp HĐ đại lý theo đại lý = số HĐ + số xe + tổng giá trị (đơn giá), lọc trạng thái.
+app.MapGet("/api/report/dealer-contracts", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
+{
+    var q = db.DealerContracts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    var contracts = await q.Select(x => new { x.Id, x.DealerCode, x.Status }).ToListAsync();
+    var cids = contracts.Select(c => c.Id).ToHashSet();
+    var details = await db.DealerContractDetails.Where(x => x.OrgId == t.OrgId).Select(x => new { x.DealerContractId, x.UnitPrice }).ToListAsync();
+    var detByC = details.Where(x => cids.Contains(x.DealerContractId)).GroupBy(x => x.DealerContractId)
+        .ToDictionary(g => g.Key, g => new { cars = g.Count(), value = g.Sum(x => x.UnitPrice) });
+    var rows = contracts.GroupBy(c => c.DealerCode ?? "(không rõ)").Select(g =>
+    {
+        int cars = 0; decimal val = 0;
+        foreach (var c in g) if (detByC.TryGetValue(c.Id, out var v)) { cars += v.cars; val += v.value; }
+        return new { dealerCode = g.Key, contracts = g.Count(), cars, totalValue = val };
+    }).OrderByDescending(r => r.totalValue).ToList();
+    return Results.Ok(new { count = rows.Count, totalContracts = rows.Sum(r => r.contracts), totalCars = rows.Sum(r => r.cars), grandValue = rows.Sum(r => r.totalValue), rows });
+}).RequireAuthorization();
+
 // ===== Báo cáo bán hàng đại lý (retail) (report tái-dùng DealerDeal + DealerDealDetail — port 1:1 FrmBanHangDL, 2010.HTC/Report) =====
 // Bán lẻ đại lý→khách: gộp theo đại lý = số HĐ + số xe + tổng giá trị (giá sau VAT), lọc khoảng ngày lập HĐ.
 app.MapGet("/api/report/dealer-retail-sales", async (AppDbContext db, ITenantContext t, string? dealer, DateTime? fromDate, DateTime? toDate) =>
