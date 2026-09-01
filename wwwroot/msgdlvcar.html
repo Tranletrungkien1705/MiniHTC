@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thông báo giao xe</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1040px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,select,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:60px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)} .bold{font-weight:700}
+</style></head>
+<body>
+<h1>Thông báo giao xe <span class="muted">(port 1:1 FrmMngMsgDeliveryCar — TCMotor/Sales/Logistic)</span></h1>
+<div class="card"><h3 style="margin-top:0">Gửi thông báo tới đại lý</h3>
+  <div class="row"><div><label>Đại lý *</label><input id="dealer" style="width:130px"></div>
+    <div><label>Loại TB</label><select id="msType"><option value="M">Thông báo giao xe</option><option value="C">Hủy thông báo giao xe</option></select></div></div>
+  <p class="muted" style="margin:8px 0 2px">Xe (mỗi dòng: <b>CarId [tab] Spec [tab] Màu [tab] Ngày hết CQ (yyyy-mm-dd)</b>)</p>
+  <textarea id="cars" placeholder="CAR001&#9;CR-2.0&#9;WHITE&#9;2026-12-31"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="send()">Gửi thông báo</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row">
+  <div><label>Đại lý</label><input id="qDealer" style="width:120px"></div>
+  <div><label>Loại TB</label><select id="qType"><option value="">Tất cả</option><option value="M">Giao xe</option><option value="C">Hủy</option></select></div>
+  <div><label>Đọc</label><select id="qRead"><option value="">Tất cả</option><option value="N">Chưa đọc</option><option value="Y">Đã đọc</option></select></div>
+  <button onclick="load()">Xem</button></div>
+  <div id="kpi" class="muted" style="margin:6px 0"></div>
+  <div class="wrap"><table><thead><tr><th>Số TB</th><th>Thời điểm</th><th>Đại lý</th><th>Loại</th><th>Xe</th><th>Đọc</th><th>Gửi bởi</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+<div class="card" id="det" style="display:none"><h3 style="margin-top:0">Xe trong TB <span id="detNo" class="muted"></span></h3><div id="detBody" class="wrap"></div></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dt=s=>s?String(s).substring(0,10):""; const dts=s=>s?String(s).substring(0,16).replace("T"," "):"";
+const typeName=v=>v==='C'?'Hủy giao xe':'Giao xe';
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function send(){ await token();
+  const cars=F("cars").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{CarId:(c[0]||"").trim(),CarSpecCode:(c[1]||"").trim(),CarColorCode:(c[2]||"").trim(),CQEndDate:(c[3]||"").trim()||null};});
+  const r=await fetch("/api/msgdlvcars",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({DealerCode:F("dealer").value,MsType:F("msType").value,Cars:cars})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã gửi ${d.msDlvNo} (${d.cars} xe)`); F("cars").value=""; load();
+}
+async function markRead(no){ await token(); await fetch("/api/msgdlvcars/"+no+"/read",{method:"POST",headers:Hh()}); load(); }
+async function detail(no){ await token(); const r=await fetch("/api/msgdlvcars/"+no+"/cars",{headers:Hh()}); const d=await r.json();
+  F("det").style.display="block"; F("detNo").textContent="— "+no;
+  F("detBody").innerHTML=`<table><thead><tr><th>CarId</th><th>Spec</th><th>Màu</th><th>Hết CQ</th></tr></thead><tbody>${(d.cars||[]).map(c=>`<tr><td>${esc(c.carId)}</td><td>${esc(c.carSpecCode)}</td><td>${esc(c.carColorCode)}</td><td>${dt(c.cqEndDate)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">—</td></tr>'}</tbody></table>`;
+}
+async function load(){ await token();
+  const qs=new URLSearchParams({dealer:F("qDealer").value,msType:F("qType").value,read:F("qRead").value});
+  const r=await fetch("/api/msgdlvcars?"+qs,{headers:Hh()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} thông báo — chưa đọc: ${d.unread}`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.msReadStatus==='N'?'bold':''}"><td>${esc(o.msDlvNo)}</td><td>${dts(o.msDateTime)}</td><td>${esc(o.dealerCode)}</td><td>${typeName(o.msType)}</td><td>${o.cars}</td><td><span class="pill ${o.msReadStatus==='Y'?'y':'n'}">${o.msReadStatus==='Y'?'Đã đọc':'Chưa'}</span></td><td>${esc(o.sendBy)}</td><td><button class="link" onclick="detail('${esc(o.msDlvNo)}')">Xe</button>${o.msReadStatus==='N'?`<button class="link" onclick="markRead('${esc(o.msDlvNo)}')">Đã đọc</button>`:''}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có thông báo.</td></tr>';
+}
+</script>
+</body></html>

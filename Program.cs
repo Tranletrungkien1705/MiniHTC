@@ -4839,6 +4839,88 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master loại thùng (LoaiThungMst — port 1:1 FrmMst_LoaiThung, TCMotor) =====
+app.MapGet("/api/loaithungs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.LoaiThungMsts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.LoaiThung.Contains(q!) || x.TenLoaiThung!.Contains(q!));
+    var items = await qry.OrderBy(x => x.LoaiThung).Take(500).Select(x => new { x.Id, x.LoaiThung, x.TenLoaiThung, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/loaithungs", async (LoaiThungDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.LoaiThung ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã loại thùng." });
+    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LoaiThung == code);
+    if (row is null) { row = new LoaiThungMst { OrgId = t.OrgId, LoaiThung = code }; db.LoaiThungMsts.Add(row); }
+    row.TenLoaiThung = dto.TenLoaiThung; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.LoaiThung, row.TenLoaiThung, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/loaithungs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Thông báo giao xe (MsgDlvCar — port 1:1 FrmMngMsgDeliveryCar, TCMotor/Sales/Logistic) =====
+// HTC/NPP gửi thông báo giao xe (kèm danh sách xe) tới đại lý; đại lý theo dõi + đánh dấu đã đọc.
+app.MapGet("/api/msgdlvcars", async (AppDbContext db, ITenantContext t, string? dealer, string? msType, string? read) =>
+{
+    var q = db.MsgDlvCars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(msType)) q = q.Where(x => x.MsType == msType);
+    if (!string.IsNullOrWhiteSpace(read)) q = q.Where(x => x.MsReadStatus == read);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.MsDlvNo, x.MsDateTime, x.DealerCode, x.MsType, x.MsReadStatus, x.SendBy, x.ReadAt,
+        cars = db.MsgDlvCarDtls.Count(c => c.OrgId == t.OrgId && c.MsgDlvCarId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, unread = items.Count(x => x.MsReadStatus == "N"), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/msgdlvcars", async (MsgDlvCarDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trong thông báo." });
+    var dup = cars.GroupBy(c => c.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng!" });
+    var msType = dto.MsType == "C" ? "C" : "M";
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new MsgDlvCar { OrgId = t.OrgId, MsDlvNo = "MSG" + DateTime.Now.ToString("yyMMddHHmmss"), MsDateTime = DateTime.Now, DealerCode = dto.DealerCode.Trim(), MsType = msType, MsReadStatus = "N", SendBy = by };
+    db.MsgDlvCars.Add(h); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.MsgDlvCarDtls.Add(new MsgDlvCarDtl { OrgId = t.OrgId, MsgDlvCarId = h.Id, CarId = c.CarId!.Trim(), CarSpecCode = c.CarSpecCode, CarColorCode = c.CarColorCode, CQEndDate = c.CQEndDate });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.MsDlvNo, h.MsType, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/msgdlvcars/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.MsgDlvCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MsDlvNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.MsgDlvCarDtls.Where(c => c.OrgId == t.OrgId && c.MsgDlvCarId == h.Id)
+        .Select(c => new { c.CarId, c.CarSpecCode, c.CarColorCode, c.CQEndDate }).ToListAsync();
+    return Results.Ok(new { h.MsDlvNo, h.DealerCode, h.MsType, h.MsReadStatus, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// Đánh dấu đã đọc thông báo.
+app.MapPost("/api/msgdlvcars/{no}/read", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.MsgDlvCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MsDlvNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    h.MsReadStatus = "Y"; h.ReadAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.MsDlvNo, h.MsReadStatus, h.ReadAt });
+}).RequireAuthorization();
+
 // ===== Master loại hợp đồng (ContractTypeMst — port 1:1 FrmMst_ContractType, TCMotor) =====
 app.MapGet("/api/contracttypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -11505,6 +11587,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
+record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
+record MsgDlvCarLineDto(string? CarId, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate);
 record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive);
 record DOATSettingTimeDto(bool? FlagFirstRunTime, bool? FlagSecondRunTime);
 record CarHisOrderPolicyDto(string? SOCode, string CarId, string? ModelCode, string? SpecCode, string? SpecDescription, string? CrtTypeCode, string? ColorCode, string? ColorName, string OrderPolicyCode, string? OrderPolicyName, DateTime? ApprovedDate);

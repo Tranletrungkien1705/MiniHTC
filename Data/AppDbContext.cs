@@ -77,6 +77,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServicePackageService> ServicePackageServices => Set<ServicePackageService>();
     public DbSet<ServicePackagePart> ServicePackageParts => Set<ServicePackagePart>();
     public DbSet<BankStatementLine> BankStatementLines => Set<BankStatementLine>();
+    public DbSet<LoaiThungMst> LoaiThungMsts => Set<LoaiThungMst>();
+    public DbSet<MsgDlvCar> MsgDlvCars => Set<MsgDlvCar>();
+    public DbSet<MsgDlvCarDtl> MsgDlvCarDtls => Set<MsgDlvCarDtl>();
     public DbSet<ContractTypeMst> ContractTypeMsts => Set<ContractTypeMst>();
     public DbSet<DOATSettingTime> DOATSettingTimes => Set<DOATSettingTime>();
     public DbSet<CarHisOrderPolicy> CarHisOrderPolicies => Set<CarHisOrderPolicy>();

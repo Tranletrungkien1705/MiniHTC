@@ -1070,6 +1070,43 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master loại thùng đóng gói xe — port 1:1 FrmMst_LoaiThung (Mst_LoaiThung, TCMotor). LoaiThung = mã, TenLoaiThung = tên.</summary>
+public sealed class LoaiThungMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string LoaiThung { get; set; } = "";
+    public string? TenLoaiThung { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Thông báo giao xe (header) — port 1:1 FrmMngMsgDeliveryCar (Msg_MsgDlvCar, TCMotor/Sales/Logistic). HTC/NPP gửi thông báo giao xe tới đại lý; đại lý theo dõi + đánh dấu đã đọc.</summary>
+public sealed class MsgDlvCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MsDlvNo { get; set; } = "";
+    public DateTime MsDateTime { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string MsType { get; set; } = "M";        // M = thông báo giao xe, C = hủy thông báo giao xe
+    public string MsReadStatus { get; set; } = "N";  // N = chưa đọc, Y = đã đọc
+    public string? SendBy { get; set; }
+    public DateTime? ReadAt { get; set; }
+}
+
+/// <summary>Chi tiết xe trong thông báo giao xe — port 1:1 Msg_MsgDlvCarDtl (TCMotor).</summary>
+public sealed class MsgDlvCarDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long MsgDlvCarId { get; set; }
+    public string CarId { get; set; } = "";
+    public string? CarSpecCode { get; set; }
+    public string? CarColorCode { get; set; }
+    public DateTime? CQEndDate { get; set; }
+}
+
 /// <summary>Master loại hợp đồng — port 1:1 FrmMst_ContractType (Mst_ContractType, TCMotor). ContractType = mã, mô tả + cờ hoạt động.</summary>
 public sealed class ContractTypeMst
 {
