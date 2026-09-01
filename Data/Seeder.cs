@@ -330,6 +330,7 @@ public static class Seeder
                 "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"DeliveryStartDate\" timestamp NULL",
                 "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"DeliveryEndDate\" timestamp NULL",
                 "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"DeliveryOutDate\" timestamp NULL",
+                "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"DateEnd\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

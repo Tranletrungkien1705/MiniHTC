@@ -1412,8 +1412,34 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.DateEnd }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.Status, g.FlagSettled, g.TotalAmount, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// Sửa bảo lãnh — cập nhật ngày hết hạn + ngày kết thúc theo VIN (port 1:1 FrmEditGrtExpiredDate, TCMotor/Sales/Payment).
+app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
+    foreach (var l in lines)
+        if (l.DateExpired.HasValue && l.DateEnd.HasValue && l.DateEnd < l.DateExpired)
+            return Results.BadRequest(new { error = $"VIN {l.VIN}: ngày kết thúc phải >= ngày hết hạn." });
+    var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var key = l.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.VIN!.Trim()); continue; }
+        if (l.DateExpired.HasValue) c.DateExpired = l.DateExpired;
+        if (l.DateEnd.HasValue) c.DateEnd = l.DateEnd;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -11617,6 +11643,8 @@ record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
 record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
 record GrtDto(string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
 record GrtExpiryDto(DateTime? DateExpired);
+record GrtExpiryEditDto(List<GrtExpiryRowDto>? Lines);
+record GrtExpiryRowDto(string? VIN, DateTime? DateExpired, DateTime? DateEnd);
 record InvoiceLineDto(string? CarId, string? DealerCode, string InvoiceNo, string Vin, DateTime? InvoiceDate);
 record InvoiceListDto(List<InvoiceLineDto>? Lines);
 record BankBillCarDto(string Vin, string? EngineNo, string? LCNo, string? GuaranteeBankCode, decimal ClaimAmount);

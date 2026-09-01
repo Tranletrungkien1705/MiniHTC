@@ -2971,6 +2971,7 @@ public sealed class BankGuaranteeDtl
     public DateTime? DateStart { get; set; }
     public DateTime? DateWarning { get; set; }
     public DateTime? DateExpired { get; set; }
+    public DateTime? DateEnd { get; set; }   // ngày kết thúc bảo lãnh (FrmEditGrtExpiredDate)
 }
 
 /// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>

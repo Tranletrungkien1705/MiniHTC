@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Sửa bảo lãnh</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} input.dt{width:140px} td.num{text-align:right;font-variant-numeric:tabular-nums}
+</style></head>
+<body>
+<h1>Sửa bảo lãnh <span class="muted">(port 1:1 FrmEditGrtExpiredDate — TCMotor/Sales/Payment)</span></h1>
+<p class="muted">Nhập số bảo lãnh (BankGrt) → sửa <b>ngày hết hạn</b> và <b>ngày kết thúc</b> cho từng xe/VIN → lưu.</p>
+<div class="card"><div class="row"><div><label>Số bảo lãnh *</label><input id="no" style="width:180px"></div><button onclick="loadGrt()">Tải xe</button><span id="msg" class="msg"></span></div>
+  <div id="head" class="muted" style="margin-top:6px"></div>
+</div>
+<div class="card" id="editCard" style="display:none"><h3 style="margin-top:0">Chi tiết bảo lãnh theo xe</h3>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th class="num">Giá trị BL</th><th>Bắt đầu</th><th>Cảnh báo</th><th>Ngày hết hạn</th><th>Ngày kết thúc</th></tr></thead>
+  <tbody id="rows"></tbody></table></div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu ngày bảo lãnh</button></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dt=s=>s?String(s).substring(0,10):""; const M=n=>Math.round(+n||0).toLocaleString("vi-VN");
+let CURNO="";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function loadGrt(){ await token(); CURNO=F("no").value.trim();
+  const r=await fetch("/api/bankgrts/"+encodeURIComponent(CURNO)+"/cars",{headers:Hh()});
+  if(!r.ok){ F("editCard").style.display="none"; say("Không thấy bảo lãnh "+CURNO); return; }
+  const d=await r.json(); F("head").textContent=`BL ${d.guaranteeNo} — đại lý ${d.dealerCode} — NH ${d.bankCode} — ${d.count} xe`;
+  F("editCard").style.display="block";
+  F("rows").innerHTML=(d.cars||[]).map(c=>`<tr data-vin="${esc(c.vin)}"><td><b>${esc(c.vin)}</b></td><td class="num">${M(c.grtValue)}</td><td>${dt(c.dateStart)}</td><td>${dt(c.dateWarning)}</td><td><input class="dt ex" type="date" value="${dt(c.dateExpired)}"></td><td><input class="dt en" type="date" value="${dt(c.dateEnd)}"></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Bảo lãnh không có xe.</td></tr>';
+}
+async function save(){ await token();
+  const lines=[...document.querySelectorAll("#rows tr[data-vin]")].map(tr=>({VIN:tr.getAttribute("data-vin"),DateExpired:tr.querySelector(".ex").value||null,DateEnd:tr.querySelector(".en").value||null}));
+  const r=await fetch("/api/bankgrts/"+encodeURIComponent(CURNO)+"/edit-expiry",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Lines:lines})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; }
+  const nf=(d.notFound||[]).length?" | Không thấy: "+d.notFound.join(", "):""; say(`Đã cập nhật ${d.updated} xe${nf}`); loadGrt();
+}
+</script>
+</body></html>
