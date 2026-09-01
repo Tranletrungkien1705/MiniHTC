@@ -1199,6 +1199,34 @@ public sealed class SalesManCertificate
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>Khóa đào tạo NVBH (Mst_Training header) — port 1:1 FrmMst_TrainingCreate/Mng/Update (2010.HTC/Admin/Product). Khóa: mã + tên + phòng ban + đại lý + giảng viên. KHÁC catalog "Training" (code/name) — đây là khóa có giảng viên + danh sách tham gia. Upsert-by-TrainingUserCode.</summary>
+public sealed class TrainingCourse
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TrainingUserCode { get; set; } = "";
+    public string? TrainingName { get; set; }
+    public string? Department { get; set; }
+    public string? DealerCode { get; set; }
+    public string? TrainerCode { get; set; }
+    public string? TrainerName { get; set; }
+    public string? Description { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Bản ghi tham gia đào tạo (Mst_TrainingDtl) — port 1:1 FrmMst_TrainingDtlCreate/Mng/Update. Thuộc khóa: NVBH (mã Hyundai) + ngày tổ chức + kết quả đầu vào/ra. Guard trùng NVBH+ngày trong 1 khóa.</summary>
+public sealed class TrainingParticipant
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long CourseId { get; set; }
+    public string? SMHyundaiCode { get; set; }
+    public DateTime? OrganizeDate { get; set; }
+    public string? ResultIn { get; set; }
+    public string? ResultOut { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {
