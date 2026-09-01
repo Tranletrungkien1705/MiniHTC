@@ -1070,6 +1070,38 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Lệnh cân bằng/điều chuyển kho (header) — port 1:1 FrmMngRearCBSC (Sto_RearrangeCB, TCMotor/Sales/Logistic). Lệnh điều chuyển xe giữa các kho theo danh sách VIN (from→to), duyệt theo trạng thái.</summary>
+public sealed class StoRearCB
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StoRearCBNo { get; set; } = "";
+    public DateTime CreatedDate { get; set; }
+    public string RearCBStatus { get; set; } = "Draft";  // Draft -> Approved / Rejected
+    public string? Remark { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+}
+
+/// <summary>Chi tiết xe trong lệnh cân bằng/điều chuyển kho — port 1:1 Sto_RearrangeCBDetail (TCMotor).</summary>
+public sealed class StoRearCBDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long StoRearCBId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? EngineNo { get; set; }
+    public string? ColorCode { get; set; }
+    public string? StorageCodeFrom { get; set; }
+    public string? StorageCodeTo { get; set; }
+    public DateTime? ExpectedStartDate { get; set; }
+    public DateTime? ExpectedEndDate { get; set; }
+    public string? CBReqNo { get; set; }
+    public string? TenLoaiThung { get; set; }
+    public string? Remark { get; set; }
+}
+
 /// <summary>Phiên đăng nhập hệ thống — port 1:1 FrmMngSession (Session, TCMotor). Giám sát phiên đang mở + kill phiên hết hạn theo thời gian truy cập cuối.</summary>
 public sealed class AppSession
 {

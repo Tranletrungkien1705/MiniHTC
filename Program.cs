@@ -4839,6 +4839,61 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Lệnh cân bằng/điều chuyển kho (StoRearCB — port 1:1 FrmMngRearCBSC, TCMotor/Sales/Logistic) =====
+app.MapGet("/api/storearcbs", async (AppDbContext db, ITenantContext t, string? status, string? no, string? vin) =>
+{
+    var q = db.StoRearCBs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.RearCBStatus == status);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StoRearCBNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(vin))
+    {
+        var v = vin!.Trim().ToUpperInvariant();
+        var ids = db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.VIN.Contains(v)).Select(c => c.StoRearCBId);
+        q = q.Where(x => ids.Contains(x.Id));
+    }
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.StoRearCBNo, x.CreatedDate, x.RearCBStatus, x.Remark, x.CreatedBy, x.ApprovedDate,
+        cars = db.StoRearCBDtls.Count(c => c.OrgId == t.OrgId && c.StoRearCBId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/storearcbs", async (StoRearCBDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trong lệnh." });
+    var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new StoRearCB { OrgId = t.OrgId, StoRearCBNo = "RCB" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, RearCBStatus = "Draft", Remark = dto.Remark, CreatedBy = by };
+    db.StoRearCBs.Add(h); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.StoRearCBDtls.Add(new StoRearCBDtl { OrgId = t.OrgId, StoRearCBId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(), SpecCode = c.SpecCode, EngineNo = c.EngineNo, ColorCode = c.ColorCode, StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo, ExpectedStartDate = c.ExpectedStartDate, ExpectedEndDate = c.ExpectedEndDate, CBReqNo = c.CBReqNo, TenLoaiThung = c.TenLoaiThung, Remark = c.Remark });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StoRearCBNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/storearcbs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.StoRearCBs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StoRearCBNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.StoRearCBId == h.Id)
+        .Select(c => new { c.VIN, c.SpecCode, c.EngineNo, c.ColorCode, c.StorageCodeFrom, c.StorageCodeTo, c.ExpectedStartDate, c.ExpectedEndDate, c.CBReqNo, c.TenLoaiThung, c.Remark }).ToListAsync();
+    return Results.Ok(new { h.StoRearCBNo, h.RearCBStatus, count = cars.Count, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/storearcbs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    var h = await db.StoRearCBs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StoRearCBNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.RearCBStatus != "Draft") return Results.BadRequest(new { error = "Lệnh không ở trạng thái chờ duyệt." });
+    h.RearCBStatus = action == "approve" ? "Approved" : "Rejected";
+    if (action == "approve") h.ApprovedDate = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StoRearCBNo, h.RearCBStatus, h.ApprovedDate });
+}).RequireAuthorization();
+
 // ===== Giám sát phiên đăng nhập (AppSession — port 1:1 FrmMngSession, TCMotor) =====
 // Liệt kê phiên đang mở + kill phiên hết hạn (theo thời gian truy cập cuối quá N phút).
 app.MapGet("/api/sessions", async (AppDbContext db, ITenantContext t, string? user, int? expireMinutes) =>
@@ -11731,6 +11786,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record StoRearCBDto(string? Remark, List<StoRearCBCarDto>? Cars);
+record StoRearCBCarDto(string? VIN, string? SpecCode, string? EngineNo, string? ColorCode, string? StorageCodeFrom, string? StorageCodeTo, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? CBReqNo, string? TenLoaiThung, string? Remark);
 record AppSessionDto(string? UserCode, string? LanguageCode, string? PartnerCode, string? PartnerUserCode, string? OtherInfo);
 record StoCBReqDto(string? Remark, List<StoCBReqCarDto>? Cars);
 record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? EngineNo);
