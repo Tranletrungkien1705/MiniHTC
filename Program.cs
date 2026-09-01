@@ -4657,6 +4657,45 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Yêu cầu chiết khấu thanh toán (PaymentDiscountReq — port 1:1 FrmReq_PaymentDiscount, 2010.HTC/Sales) =====
+app.MapGet("/api/paymentdiscountreqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+{
+    var q = db.PaymentDiscountReqs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.ReqNo, x.DealerCode, x.GuaranteeNo, x.BankGuaranteeNo, x.BankCode, x.SpecDescription, x.DiscountAmount, x.Status, x.Note
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.DiscountAmount),
+        pending = items.Count(i => i.Status == "Draft"), approved = items.Count(i => i.Status == "Approved"), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentdiscountreqs", async (PaymentDiscountReqDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.DiscountAmount <= 0) return Results.BadRequest(new { error = "Số tiền chiết khấu phải lớn hơn 0." });
+    if (string.IsNullOrWhiteSpace(dto.GuaranteeNo) && string.IsNullOrWhiteSpace(dto.BankGuaranteeNo))
+        return Results.BadRequest(new { error = "Cần số bảo lãnh hoặc số bảo lãnh ngân hàng." });
+    var no = "PDR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new PaymentDiscountReq { OrgId = t.OrgId, ReqNo = no, DealerCode = dto.DealerCode, GuaranteeNo = dto.GuaranteeNo,
+        BankGuaranteeNo = dto.BankGuaranteeNo, BankCode = dto.BankCode, SpecDescription = dto.SpecDescription, DiscountAmount = dto.DiscountAmount, Status = "Draft" };
+    db.PaymentDiscountReqs.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.ReqNo, r.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentdiscountreqs/{id}/status", async (long id, PaymentDiscountStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.PaymentDiscountReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { id });
+    var s = (dto.Status ?? "").Trim();
+    if (s != "Approved" && s != "Rejected") return Results.BadRequest(new { error = "Trạng thái phải là Approved hoặc Rejected." });
+    if (r.Status != "Draft") return Results.BadRequest(new { error = $"Chỉ duyệt được yêu cầu đang Nháp (hiện {r.Status})." });
+    if (s == "Rejected" && string.IsNullOrWhiteSpace(dto.Note)) return Results.BadRequest(new { error = "Từ chối phải ghi lý do." });
+    r.Status = s; if (!string.IsNullOrWhiteSpace(dto.Note)) r.Note = dto.Note; r.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.Status });
+}).RequireAuthorization();
+
 // ===== File đính kèm khiếu nại đơn PT (OrderComplainAttachment — port 1:1 FrmSer_OrderComplainAttachment, TCMotor/TST) =====
 app.MapGet("/api/ordercomplains/{no}/attachments", async (string no, AppDbContext db, ITenantContext t) =>
 {
@@ -10871,6 +10910,8 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);
+record PaymentDiscountStatusDto(string Status, string? Note);
 record OcAttachDto(string FileName, string? ImageType, string? FileNote);
 record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);

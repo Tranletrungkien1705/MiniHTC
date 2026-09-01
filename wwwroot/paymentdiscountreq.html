@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Yêu cầu chiết khấu thanh toán</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Rejected{color:var(--bad)}
+  .msg{font-size:13px;margin-left:6px} .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+</style></head>
+<body>
+<h1>Yêu cầu chiết khấu thanh toán <span class="muted">(port 1:1 FrmReq_PaymentDiscount — 2010.HTC/Sales)</span></h1>
+<div class="card"><h3 style="margin-top:0">Tạo yêu cầu</h3>
+  <div class="row">
+    <div><label>Đại lý</label><input id="fDlr" style="width:100px"></div>
+    <div><label>Số bảo lãnh</label><input id="fGrt" style="width:120px"></div>
+    <div><label>Số BL ngân hàng</label><input id="fBGrt" style="width:130px"></div>
+    <div><label>Mã NH</label><input id="fBank" style="width:90px"></div>
+    <div><label>Số tiền CK *</label><input id="fAmt" type="number" style="width:130px"></div>
+  </div>
+  <div class="row" style="margin-top:6px"><div style="flex:1"><label>Mô tả spec</label><input id="fSpec" style="width:100%"></div><button class="primary" onclick="create2()">Tạo</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><div><label>Trạng thái</label><select id="qS"><option value="">(tất cả)</option><option value="Draft">Nháp</option><option value="Approved">Duyệt</option><option value="Rejected">Từ chối</option></select></div><button onclick="load()">Xem</button></div>
+<div class="grid2" id="kpis"></div>
+<div class="wrap"><table><thead><tr><th>Số YC</th><th>Đại lý</th><th>Số BL</th><th>BL NH</th><th>NH</th><th class="num">Tiền CK</th><th>TT</th><th>Thao tác</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={Draft:"Nháp",Approved:"Duyệt",Rejected:"Từ chối"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+async function create2(){ await token();
+  const body={DealerCode:F("fDlr").value,GuaranteeNo:F("fGrt").value,BankGuaranteeNo:F("fBGrt").value,BankCode:F("fBank").value,SpecDescription:F("fSpec").value,DiscountAmount:+F("fAmt").value||0};
+  const r=await fetch("/api/paymentdiscountreqs",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } m("Đã tạo "+d.reqNo); F("fAmt").value=""; load();
+}
+async function setStatus(id,s){ await token();
+  let note=null; if(s==="Rejected"){ note=prompt("Lý do từ chối:"); if(!note) return; }
+  const r=await fetch("/api/paymentdiscountreqs/"+id+"/status",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Status:s,Note:note})});
+  const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
+}
+function acts(o){ return o.status==="Draft"?`<button class="link" onclick="setStatus(${o.id},'Approved')">Duyệt</button><button class="link" onclick="setStatus(${o.id},'Rejected')">Từ chối</button>`:esc(o.note)||""; }
+async function load(){ await token();
+  const r=await fetch("/api/paymentdiscountreqs?status="+F("qS").value,{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Tổng YC</span></div><div class="kpi"><b style="color:var(--warn)">${d.pending}</b><span class="muted">Chờ duyệt</span></div><div class="kpi"><b style="color:var(--ok)">${d.approved}</b><span class="muted">Đã duyệt</span></div><div class="kpi"><b>${M(d.totalAmount)}</b><span class="muted">Tổng tiền CK</span></div>`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.reqNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.guaranteeNo)}</td><td>${esc(o.bankGuaranteeNo)}</td><td>${esc(o.bankCode)}</td><td class="num">${M(o.discountAmount)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${acts(o)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có YC.</td></tr>';
+}
+</script>
+</body></html>

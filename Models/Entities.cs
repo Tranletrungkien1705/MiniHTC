@@ -1003,6 +1003,24 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Yêu cầu chiết khấu thanh toán (theo bảo lãnh/ngân hàng) — port 1:1 FrmReq_PaymentDiscount (2010.HTC/Sales). Duyệt: Draft→Approved/Rejected.</summary>
+public sealed class PaymentDiscountReq
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? GuaranteeNo { get; set; }
+    public string? BankGuaranteeNo { get; set; }
+    public string? BankCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public decimal DiscountAmount { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft -> Approved / Rejected
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>File đính kèm khiếu nại đơn phụ tùng — port 1:1 FrmSer_OrderComplainAttachment (Ser_OrderComplainAttachment, TCMotor/TST).</summary>
 public sealed class OrderComplainAttachment
 {
