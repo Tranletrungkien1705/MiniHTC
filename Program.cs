@@ -4660,7 +4660,7 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
 // ===== Đề nghị giao xe (DeliveryRequest — port 1:1 FrmNewDR/FrmHTCMngDR/FrmDRApproved, 2010.HTC/Sales) =====
 app.MapGet("/api/deliveryrequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
-    var q = db.DeliveryRequests2.Where(x => x.OrgId == t.OrgId);
+    var q = db.DeliveryRequests.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
@@ -4684,7 +4684,7 @@ app.MapPost("/api/deliveryrequests", async (DeliveryRequestDto dto, AppDbContext
     }
     var no = "DR" + DateTime.Now.ToString("yyMMddHHmmss");
     var h = new DeliveryRequest { OrgId = t.OrgId, DRNo = no, DealerCode = dto.DealerCode, RequestDate = dto.RequestDate ?? DateTime.Now, Status = "Draft" };
-    db.DeliveryRequests2.Add(h); await db.SaveChangesAsync();
+    db.DeliveryRequests.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.DeliveryRequestDetails.Add(new DeliveryRequestDetail { OrgId = t.OrgId, DeliveryRequestId = h.Id, CarId = c.CarId!.Trim(), ModelCode = c.ModelCode, DeliveryStartDate = c.DeliveryStartDate, Remark = c.Remark });
     await db.SaveChangesAsync();
@@ -4693,7 +4693,7 @@ app.MapPost("/api/deliveryrequests", async (DeliveryRequestDto dto, AppDbContext
 
 app.MapGet("/api/deliveryrequests/{id}/cars", async (long id, AppDbContext db, ITenantContext t) =>
 {
-    var h = await db.DeliveryRequests2.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    var h = await db.DeliveryRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var cars = await db.DeliveryRequestDetails.Where(l => l.OrgId == t.OrgId && l.DeliveryRequestId == id)
         .Select(l => new { l.CarId, l.ModelCode, deliveryStartDate = l.DeliveryStartDate.HasValue ? l.DeliveryStartDate.Value.ToString("yyyy-MM-dd") : "", l.Remark }).ToListAsync();
@@ -4702,7 +4702,7 @@ app.MapGet("/api/deliveryrequests/{id}/cars", async (long id, AppDbContext db, I
 
 app.MapPost("/api/deliveryrequests/{id}/action", async (long id, DRActionDto dto, AppDbContext db, ITenantContext t) =>
 {
-    var h = await db.DeliveryRequests2.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    var h = await db.DeliveryRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var act = (dto.Action ?? "").Trim().ToLowerInvariant();
     (string[] from, string to) rule = act switch
