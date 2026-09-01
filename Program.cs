@@ -4209,6 +4209,26 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo yêu cầu bảo hành TCG (report tái-dùng WarrantyClaimTC — port 1:1 FrmClaimReport, 2010.HTC/Report) =====
+// Thống kê YCBH theo trạng thái + theo đại lý + tỉ lệ chấp thuận, lọc khoảng ngày.
+app.MapGet("/api/report/tcg-warranty-claim", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? dealer) =>
+{
+    var q = db.WarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) q = q.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var claims = await q.Select(x => new { x.DealerCode, x.Status }).ToListAsync();
+    var byStatus = claims.GroupBy(c => c.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var byDealer = claims.GroupBy(c => c.DealerCode).Select(g => new
+    {
+        dealerCode = g.Key, total = g.Count(),
+        approved = g.Count(x => x.Status == "Approved" || x.Status == "Paid"), rejected = g.Count(x => x.Status == "Rejected")
+    }).OrderByDescending(x => x.total).ToList();
+    var decided = claims.Count(c => c.Status == "Approved" || c.Status == "Paid" || c.Status == "Rejected");
+    var accepted = claims.Count(c => c.Status == "Approved" || c.Status == "Paid");
+    return Results.Ok(new { total = claims.Count, accepted, acceptRate = decided > 0 ? Math.Round((decimal)accepted / decided * 100, 1) : 0m, byStatus, byDealer });
+}).RequireAuthorization();
+
 // ===== Báo cáo hợp đồng đại lý (report tái-dùng DealerContract + DealerContractDetail — port 1:1 FrmContractReportForDealer, 2010.HTC/Report) =====
 // Gộp HĐ đại lý theo đại lý = số HĐ + số xe + tổng giá trị (đơn giá), lọc trạng thái.
 app.MapGet("/api/report/dealer-contracts", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
