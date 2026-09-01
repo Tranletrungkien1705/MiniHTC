@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Báo giá sửa chữa</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1080px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px} button.sm{padding:3px 8px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Cancelled{color:var(--bad)}
+  .msg{font-size:13px;margin-left:6px} .tot{font-weight:700}
+  .lineinp{width:90px} .lineinp.sm{width:70px}
+</style></head>
+<body>
+<h1>Báo giá sửa chữa <span class="muted">(port 1:1 FrmQuotation — TCMotor)</span></h1>
+<p class="muted">Dòng công: thành tiền = giờ thực tế × đơn giá × hệ số + VAT. Dòng phụ tùng: SL × đơn giá + VAT. Trừ chiết khấu ra tổng cộng.</p>
+
+<div class="card"><h3 style="margin-top:0">Tạo báo giá</h3>
+  <div class="row">
+    <div><label>Số RO</label><input id="hRO" style="width:110px"></div>
+    <div><label>Biển số</label><input id="hPlate" style="width:100px"></div>
+    <div><label>VIN</label><input id="hVin" style="width:130px"></div>
+    <div><label>Khách hàng</label><input id="hCus" style="width:150px"></div>
+    <div><label>Chiết khấu</label><input id="hDisc" type="number" value="0" style="width:110px"></div>
+  </div>
+  <h3>Dòng công <button class="sm" onclick="addLabor()">+ Thêm CV</button></h3>
+  <div class="wrap"><table><thead><tr><th>Mã CV</th><th>Tên</th><th class="num">Giờ ĐM</th><th class="num">Giờ TT</th><th class="num">Hệ số</th><th class="num">Đơn giá</th><th class="num">VAT%</th><th></th></tr></thead><tbody id="laborRows"></tbody></table></div>
+  <h3>Dòng phụ tùng <button class="sm" onclick="addPart()">+ Thêm PT</button></h3>
+  <div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">VAT%</th><th></th></tr></thead><tbody id="partRows"></tbody></table></div>
+  <div class="row" style="margin-top:10px"><button class="primary" onclick="save()">Lưu báo giá</button><span id="msg" class="msg"></span></div>
+</div>
+
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Tìm số BG/RO/biển số" style="width:220px"><button onclick="load()">Xem báo giá</button></div>
+<div class="wrap"><table><thead><tr><th>Số BG</th><th>RO</th><th>Biển số</th><th>Khách</th><th class="num">Công</th><th class="num">PT</th><th class="num">VAT</th><th class="num">Tổng</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Nhấn "Xem báo giá".</td></tr></tbody></table></div>
+
+<div class="card" id="det" style="display:none"><h3 style="margin-top:0">Chi tiết <span id="detName" class="muted"></span></h3><div id="detBody"></div></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={Draft:"Nháp",Approved:"Đã duyệt",Cancelled:"Hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+function addLabor(){ const tr=document.createElement("tr"); tr.innerHTML=`<td><input class="lineinp sm lc"></td><td><input class="lineinp ln"></td><td><input type="number" class="lineinp sm lsm" value="0"></td><td><input type="number" class="lineinp sm lam" value="1"></td><td><input type="number" class="lineinp sm lf" value="1"></td><td><input type="number" class="lineinp lp" value="0"></td><td><input type="number" class="lineinp sm lv" value="10"></td><td><button class="link" onclick="this.closest('tr').remove()">Xóa</button></td>`; F("laborRows").appendChild(tr); }
+function addPart(){ const tr=document.createElement("tr"); tr.innerHTML=`<td><input class="lineinp sm pc"></td><td><input class="lineinp pn"></td><td><input type="number" class="lineinp sm pq" value="1"></td><td><input type="number" class="lineinp pp" value="0"></td><td><input type="number" class="lineinp sm pv" value="10"></td><td><button class="link" onclick="this.closest('tr').remove()">Xóa</button></td>`; F("partRows").appendChild(tr); }
+function collectLabors(){ return [...F("laborRows").children].map(tr=>({SerCode:tr.querySelector(".lc").value,SerName:tr.querySelector(".ln").value,StdManHour:+tr.querySelector(".lsm").value||0,ActManHour:+tr.querySelector(".lam").value||0,Factor:+tr.querySelector(".lf").value||1,Price:+tr.querySelector(".lp").value||0,Vat:+tr.querySelector(".lv").value||0})).filter(x=>x.SerCode); }
+function collectParts(){ return [...F("partRows").children].map(tr=>({PartCode:tr.querySelector(".pc").value,PartName:tr.querySelector(".pn").value,Quantity:+tr.querySelector(".pq").value||0,Price:+tr.querySelector(".pp").value||0,Vat:+tr.querySelector(".pv").value||0})).filter(x=>x.PartCode); }
+async function save(){ await token();
+  const body={RONo:F("hRO").value,Vin:F("hVin").value,PlateNo:F("hPlate").value,CusName:F("hCus").value,Discount:+F("hDisc").value||0,Labors:collectLabors(),Parts:collectParts()};
+  const r=await fetch("/api/servicequotations",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; }
+  m(`Đã lưu ${d.quoteNo} — tổng ${M(d.grandTotal)}`); F("laborRows").innerHTML="";F("partRows").innerHTML=""; load();
+}
+async function setStatus(id,s){ await token();
+  const r=await fetch("/api/servicequotations/"+id+"/status",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Status:s})});
+  const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
+}
+function acts(o){ let h=`<button class="link" onclick="detail(${o.id})">Chi tiết</button>`;
+  if(o.status==="Draft") h+=`<button class="link" onclick="setStatus(${o.id},'Approved')">Duyệt</button><button class="link" onclick="setStatus(${o.id},'Cancelled')">Hủy</button>`;
+  return h; }
+async function load(){ await token();
+  const r=await fetch("/api/servicequotations?q="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.quoteNo)}</b></td><td>${esc(o.rONo)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td class="num">${M(o.laborTotal)}</td><td class="num">${M(o.partTotal)}</td><td class="num">${M(o.vatAmount)}</td><td class="num tot">${M(o.grandTotal)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${acts(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Chưa có báo giá.</td></tr>';
+}
+async function detail(id){ await token();
+  const r=await fetch("/api/servicequotations/"+id+"/detail",{headers:H()}); const d=await r.json();
+  F("det").style.display="block"; F("detName").textContent="— "+d.quoteNo+" ("+(ST[d.status]||d.status)+")";
+  const lb=(d.labors||[]).map(x=>`<tr><td>${esc(x.serCode)}</td><td>${esc(x.serName)}</td><td class="num">${x.actManHour}</td><td class="num">${x.factor}</td><td class="num">${M(x.price)}</td><td class="num">${x.vat}%</td><td class="num">${M(x.amount)}</td></tr>`).join("");
+  const pt=(d.parts||[]).map(x=>`<tr><td>${esc(x.partCode)}</td><td>${esc(x.partName)}</td><td class="num">${x.quantity}</td><td class="num">${M(x.price)}</td><td class="num">${x.vat}%</td><td class="num">${M(x.amount)}</td></tr>`).join("");
+  F("detBody").innerHTML=`<h3>Công</h3><div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Giờ TT</th><th class="num">Hệ số</th><th class="num">Đơn giá</th><th class="num">VAT</th><th class="num">Thành tiền</th></tr></thead><tbody>${lb||'<tr><td colspan="7" class="muted">—</td></tr>'}</tbody></table></div>
+    <h3>Phụ tùng</h3><div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">SL</th><th class="num">Đơn giá</th><th class="num">VAT</th><th class="num">Thành tiền</th></tr></thead><tbody>${pt||'<tr><td colspan="6" class="muted">—</td></tr>'}</tbody></table></div>
+    <p class="tot">Công ${M(d.laborTotal)} + PT ${M(d.partTotal)} + VAT ${M(d.vatAmount)} − CK ${M(d.discount)} = <b>${M(d.grandTotal)}</b></p>`;
+}
+addLabor(); addPart();
+</script>
+</body></html>

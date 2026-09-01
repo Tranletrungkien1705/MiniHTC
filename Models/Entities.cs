@@ -952,6 +952,56 @@ public sealed class CustomerCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Báo giá sửa chữa (header: theo RO, tổng công + phụ tùng + VAT) — port 1:1 FrmQuotation (TblSerRO/Quotation, TCMotor).</summary>
+public sealed class ServiceQuotation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string QuoteNo { get; set; } = "";
+    public string? RONo { get; set; }
+    public string? Vin { get; set; }
+    public string? PlateNo { get; set; }
+    public string? CusName { get; set; }
+    public decimal LaborTotal { get; set; }
+    public decimal PartTotal { get; set; }
+    public decimal Discount { get; set; }
+    public decimal VatAmount { get; set; }
+    public decimal GrandTotal { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft -> Approved -> Cancelled
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng công (labor) trong báo giá sửa chữa — port 1:1 FrmQuotation grid CV, TCMotor.</summary>
+public sealed class ServiceQuotationLabor
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceQuotationId { get; set; }
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+    public decimal StdManHour { get; set; }   // giờ định mức
+    public decimal ActManHour { get; set; }   // giờ thực tế
+    public decimal Factor { get; set; } = 1;  // hệ số giá
+    public decimal Price { get; set; }        // đơn giá giờ công
+    public decimal Vat { get; set; } = 10;
+    public decimal Amount { get; set; }        // thành tiền (gồm VAT)
+}
+
+/// <summary>Dòng phụ tùng trong báo giá sửa chữa — port 1:1 FrmQuotation grid PT, TCMotor.</summary>
+public sealed class ServiceQuotationPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceQuotationId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public decimal Quantity { get; set; }
+    public decimal Price { get; set; }
+    public decimal Vat { get; set; } = 10;
+    public decimal Amount { get; set; }        // thành tiền (gồm VAT)
+}
+
 /// <summary>Bản ghi tính giá vốn bình quân phụ tùng (mỗi lần tính = 1 snapshot) — port 1:1 FrmPartCostManagement/FrmCaluCost/FrmReportHistoryCost (Tbl_Ser_PartCost_Calculate, TCMotor).</summary>
 public sealed class PartCostSnapshot
 {

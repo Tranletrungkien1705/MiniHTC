@@ -4072,6 +4072,80 @@ app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db,
     return Results.Ok(new { x.FrameNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== Báo giá sửa chữa (ServiceQuotation — port 1:1 FrmQuotation, TCMotor) =====
+app.MapGet("/api/servicequotations", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var query = db.ServiceQuotations.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.QuoteNo.Contains(q!) || (x.RONo != null && x.RONo.Contains(q!)) || (x.PlateNo != null && x.PlateNo.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.QuoteNo, x.RONo, x.Vin, x.PlateNo, x.CusName, x.LaborTotal, x.PartTotal, x.Discount, x.VatAmount, x.GrandTotal, x.Status
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalValue = items.Sum(i => i.GrandTotal), items });
+}).RequireAuthorization();
+
+// Tạo báo giá: dòng công (giờ tt × đơn giá × hệ số) + dòng phụ tùng (SL × đơn giá), mỗi dòng cộng VAT; trừ chiết khấu.
+app.MapPost("/api/servicequotations", async (ServiceQuotationDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var labors = dto.Labors ?? new();
+    var parts = dto.Parts ?? new();
+    if (labors.Count == 0 && parts.Count == 0) return Results.BadRequest(new { error = "Báo giá phải có ít nhất 1 dòng công hoặc phụ tùng." });
+    decimal laborBase = 0, partBase = 0, vatAmt = 0;
+    var laborRows = new List<ServiceQuotationLabor>();
+    foreach (var l in labors)
+    {
+        if (string.IsNullOrWhiteSpace(l.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã CV." });
+        var factor = l.Factor <= 0 ? 1 : l.Factor;
+        var baseAmt = l.ActManHour * l.Price * factor;
+        var amt = Math.Round(baseAmt * (1 + l.Vat / 100), 2);
+        laborBase += baseAmt; vatAmt += amt - baseAmt;
+        laborRows.Add(new ServiceQuotationLabor { OrgId = t.OrgId, SerCode = l.SerCode.Trim(), SerName = l.SerName, StdManHour = l.StdManHour, ActManHour = l.ActManHour, Factor = factor, Price = l.Price, Vat = l.Vat, Amount = amt });
+    }
+    var partRows = new List<ServiceQuotationPart>();
+    foreach (var p in parts)
+    {
+        if (string.IsNullOrWhiteSpace(p.PartCode)) return Results.BadRequest(new { error = "Có dòng phụ tùng thiếu mã." });
+        var baseAmt = p.Quantity * p.Price;
+        var amt = Math.Round(baseAmt * (1 + p.Vat / 100), 2);
+        partBase += baseAmt; vatAmt += amt - baseAmt;
+        partRows.Add(new ServiceQuotationPart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Quantity = p.Quantity, Price = p.Price, Vat = p.Vat, Amount = amt });
+    }
+    var discount = dto.Discount < 0 ? 0 : dto.Discount;
+    var grand = laborBase + partBase + vatAmt - discount;
+    if (grand < 0) return Results.BadRequest(new { error = "Chiết khấu vượt tổng giá trị báo giá." });
+    var no = "QT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new ServiceQuotation { OrgId = t.OrgId, QuoteNo = no, RONo = dto.RONo, Vin = dto.Vin, PlateNo = dto.PlateNo, CusName = dto.CusName,
+        LaborTotal = laborBase, PartTotal = partBase, Discount = discount, VatAmount = Math.Round(vatAmt, 2), GrandTotal = Math.Round(grand, 2), Status = "Draft", Note = dto.Note };
+    db.ServiceQuotations.Add(h); await db.SaveChangesAsync();
+    foreach (var l in laborRows) { l.ServiceQuotationId = h.Id; db.ServiceQuotationLabors.Add(l); }
+    foreach (var p in partRows) { p.ServiceQuotationId = h.Id; db.ServiceQuotationParts.Add(p); }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.QuoteNo, h.LaborTotal, h.PartTotal, h.VatAmount, h.GrandTotal });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicequotations/{id}/detail", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.ServiceQuotations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var labors = await db.ServiceQuotationLabors.Where(x => x.OrgId == t.OrgId && x.ServiceQuotationId == id)
+        .Select(x => new { x.SerCode, x.SerName, x.StdManHour, x.ActManHour, x.Factor, x.Price, x.Vat, x.Amount }).ToListAsync();
+    var parts = await db.ServiceQuotationParts.Where(x => x.OrgId == t.OrgId && x.ServiceQuotationId == id)
+        .Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount }).ToListAsync();
+    return Results.Ok(new { h.QuoteNo, h.RONo, h.PlateNo, h.CusName, h.LaborTotal, h.PartTotal, h.Discount, h.VatAmount, h.GrandTotal, h.Status, labors, parts });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicequotations/{id}/status", async (long id, ServiceQuotationStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.ServiceQuotations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var s = (dto.Status ?? "").Trim();
+    if (s != "Draft" && s != "Approved" && s != "Cancelled") return Results.BadRequest(new { error = "Trạng thái không hợp lệ." });
+    if (h.Status == "Approved" && s == "Draft") return Results.BadRequest(new { error = "Báo giá đã duyệt không thể quay lại Nháp." });
+    h.Status = s; await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.Status });
+}).RequireAuthorization();
+
 // ===== Bảng theo dõi tiến độ sửa chữa (report tái-dùng RepairOrder — port 1:1 FrmDealerHistoryShareMng/Display, TCMotor) =====
 // Danh sách RO theo trạng thái tiến độ + đếm theo từng trạng thái (bảng điều hành xưởng).
 app.MapGet("/api/report/ro-status-board", async (AppDbContext db, ITenantContext t, string? status, DateTime? fromDate, DateTime? toDate) =>
@@ -9746,6 +9820,10 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record ServiceQuotationDto(string? RONo, string? Vin, string? PlateNo, string? CusName, decimal Discount, string? Note, List<SqLaborDto>? Labors, List<SqPartDto>? Parts);
+record SqLaborDto(string SerCode, string? SerName, decimal StdManHour, decimal ActManHour, decimal Factor, decimal Price, decimal Vat);
+record SqPartDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat);
+record ServiceQuotationStatusDto(string Status);
 record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
