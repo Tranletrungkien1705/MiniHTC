@@ -4072,6 +4072,44 @@ app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db,
     return Results.Ok(new { x.FrameNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== Ngày đăng ký bảo hành theo VIN (ServiceCar.WarrantyRegistrationDate — port 1:1 FrmHTCSearch/UpdateWarrantyRegistrationDate, TCMotor) =====
+// Tìm xe + ngày đăng ký BH (lọc frame/biển số; onlyMissing=true chỉ xe chưa có ngày ĐK).
+app.MapGet("/api/servicecars/warranty-reg", async (AppDbContext db, ITenantContext t, string? frame, string? plate, bool? onlyMissing) =>
+{
+    var q = db.ServiceCars.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(frame)) q = q.Where(v => v.FrameNo.Contains(frame!));
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(v => v.PlateNo != null && v.PlateNo.Contains(plate!));
+    if (onlyMissing == true) q = q.Where(v => v.WarrantyRegistrationDate == null);
+    var items = await q.OrderBy(v => v.FrameNo).Take(500).Select(v => new
+    {
+        v.FrameNo, v.PlateNo, v.ModelCode, v.CusName,
+        warrantyRegDate = v.WarrantyRegistrationDate.HasValue ? v.WarrantyRegistrationDate.Value.ToString("yyyy-MM-dd") : "",
+        warrantyDate = v.WarrantyDate.HasValue ? v.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, withReg = items.Count(i => i.warrantyRegDate != ""), items });
+}).RequireAuthorization();
+
+// Cập nhật hàng loạt ngày đăng ký BH theo số khung (Excel: FrameNo + ngày). Validate frame tồn tại + ngày hợp lệ + không tương lai.
+app.MapPost("/api/servicecars/warranty-reg-batch", async (List<WarrantyRegRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0, errorCount = 0; var errors = new List<object>();
+    int line = 0;
+    foreach (var r in rows)
+    {
+        line++;
+        var frame = (r.FrameNo ?? "").Trim();
+        if (frame == "") { errorCount++; errors.Add(new { line, error = "Thiếu số khung." }); continue; }
+        if (!DateTime.TryParse(r.WarrantyRegDate, out var d)) { errorCount++; errors.Add(new { line, frame, error = "Ngày không hợp lệ." }); continue; }
+        if (d.Date > DateTime.Today) { errorCount++; errors.Add(new { line, frame, error = "Ngày đăng ký không được ở tương lai." }); continue; }
+        var car = await db.ServiceCars.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.FrameNo == frame);
+        if (car is null) { errorCount++; errors.Add(new { line, frame, error = "Không tìm thấy xe (số khung)." }); continue; }
+        car.WarrantyRegistrationDate = d.Date; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, updated, errorCount, errors });
+}).RequireAuthorization();
+
 // ===== Danh mục phụ tùng dịch vụ (ServicePart — port 1:1 FrmPart/FrmPartSearch, TCMotor) =====
 app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active) =>
 {
@@ -9660,6 +9698,7 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimActionDto(string Action, string? Note);

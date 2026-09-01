@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Ngày đăng ký bảo hành</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:100px} .cb{display:flex;align-items:center;gap:6px} .cb input{width:auto}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+  .no{color:var(--warn)} .yes{color:var(--ok)} .err{color:var(--bad)}
+</style></head>
+<body>
+<h1>Ngày đăng ký bảo hành theo VIN <span class="muted">(port 1:1 FrmHTCSearch/UpdateWarrantyRegistrationDate — TCMotor)</span></h1>
+<div class="tabs"><div class="tab on" id="tA" onclick="tab('A')">Tra cứu</div><div class="tab" id="tB" onclick="tab('B')">Cập nhật hàng loạt</div></div>
+
+<div id="paneA">
+  <div class="row"><div><label>Số khung</label><input id="qFrame" style="width:150px"></div><div><label>Biển số</label><input id="qPlate" style="width:110px"></div><label class="cb"><input type="checkbox" id="qMiss"> Chỉ xe chưa có ngày ĐK</label><button class="primary" onclick="load()">Tìm</button></div>
+  <div class="grid2" id="kpis"></div>
+  <div class="wrap"><table><thead><tr><th>Số khung</th><th>Biển số</th><th>Model</th><th>Khách hàng</th><th>Ngày ĐK BH</th><th>Ngày hết BH</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="muted">Nhấn "Tìm".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="card"><h3 style="margin-top:0">Cập nhật ngày ĐK BH hàng loạt</h3>
+    <p class="muted">Dán từ Excel: mỗi dòng = Số khung [tab] Ngày ĐK (YYYY-MM-DD). Ngày không được ở tương lai; số khung phải tồn tại.</p>
+    <textarea id="bData" placeholder="VIN123&#9;2026-01-15&#10;VIN456&#9;2026-02-20"></textarea>
+    <div class="row" style="margin-top:8px"><button class="primary" onclick="batch()">Cập nhật</button><span id="msg" class="msg"></span></div>
+    <div id="result"></div>
+  </div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},4000); }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("qFrame").value)p.set("frame",F("qFrame").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qMiss").checked)p.set("onlyMissing","true");
+  const r=await fetch("/api/servicecars/warranty-reg?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Số xe</span></div><div class="kpi"><b style="color:var(--ok)">${d.withReg}</b><span class="muted">Đã có ngày ĐK</span></div>`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.frameNo)}</b></td><td>${esc(o.plateNo)}</td><td>${esc(o.modelCode)}</td><td>${esc(o.cusName)}</td><td class="${o.warrantyRegDate?'yes':'no'}">${o.warrantyRegDate||"(chưa có)"}</td><td>${esc(o.warrantyDate)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có xe.</td></tr>';
+}
+async function batch(){ await token();
+  const rows=F("bData").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{ const c=l.split(/\t|,/).map(x=>x.trim()); return {FrameNo:c[0]||"",WarrantyRegDate:c[1]||""}; });
+  if(!rows.length){ m("msg","Chưa có dòng nào."); return; }
+  const r=await fetch("/api/servicecars/warranty-reg-batch",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(rows)});
+  const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
+  m("msg",`Cập nhật ${d.updated}/${d.total}, lỗi ${d.errorCount}`);
+  F("result").innerHTML=(d.errors&&d.errors.length)?`<h3 class="err">Lỗi (${d.errorCount})</h3><div class="wrap"><table><thead><tr><th>Dòng</th><th>Số khung</th><th>Lỗi</th></tr></thead><tbody>${d.errors.map(e=>`<tr><td>${e.line}</td><td>${esc(e.frame)}</td><td class="err">${esc(e.error)}</td></tr>`).join("")}</tbody></table></div>`:'<p class="yes">Tất cả dòng hợp lệ đã cập nhật.</p>';
+}
+</script>
+</body></html>

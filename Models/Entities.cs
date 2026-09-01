@@ -3123,6 +3123,7 @@ public sealed class ServiceCar
     public int? ProductYear { get; set; }
     public decimal CurrentKm { get; set; }
     public DateTime? WarrantyDate { get; set; }
+    public DateTime? WarrantyRegistrationDate { get; set; }   // ngày kích hoạt/đăng ký bảo hành (HTC cập nhật)
     public string? CusName { get; set; }
     public string? CusMobile { get; set; }
     public string FlagActive { get; set; } = "1";

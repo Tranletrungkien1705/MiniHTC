@@ -275,6 +275,7 @@ public static class Seeder
                 // FrmNewDealToDealer — thêm cột buyer-đại-lý + NVBH vào DealerDeals đã tồn tại
                 "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"DealerCodeBuyer\" text NULL",
                 "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"SalesManCode\" text NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"WarrantyRegistrationDate\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
