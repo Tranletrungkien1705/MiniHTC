@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Biên bản bàn giao hồ sơ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1160px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:64px}
+</style></head>
+<body>
+<h1>Biên bản bàn giao hồ sơ <span class="muted">(port 1:1 FrmInBienBanBGHS — TCMotor)</span></h1>
+<div class="card"><h3 style="margin-top:0">Tạo biên bản</h3>
+  <div class="row"><div><label>Đại lý *</label><input id="dealer" style="width:130px"></div><div style="flex:1"><label>Tên đại lý</label><input id="dealerName" style="width:100%"></div></div>
+  <div class="row" style="margin-top:6px"><div style="flex:1"><label>Ghi chú</label><input id="remark" style="width:100%"></div></div>
+  <p class="muted" style="margin:8px 0 2px">Xe (mỗi dòng, tab: <b>VIN | Model | Số máy | Số ĐK(CQ) | Số NG(CO) | Tờ khai | Số BL | HĐ HTCV | SL gốc HĐ | SL gốc VC | SL sao y VC</b>)</p>
+  <textarea id="cars" placeholder="VIN001&#9;i10&#9;ENG1&#9;CQ1&#9;CO1&#9;TK1&#9;BL1&#9;HD1&#9;1&#9;1&#9;2"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="create2()">Tạo biên bản</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><div><label>Số BB</label><input id="qNo" style="width:150px"></div><div><label>Đại lý</label><input id="qDealer" style="width:110px"></div><div><label>VIN</label><input id="qVin" style="width:130px"></div><button onclick="load()">Xem</button></div>
+  <div id="kpi" class="muted" style="margin:6px 0"></div>
+  <table><thead><tr><th>Số BB</th><th>Đại lý</th><th>Ngày</th><th>Xe</th><th>Tạo bởi</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table>
+</div>
+<div class="card" id="det" style="display:none"><h3 style="margin-top:0">Chi tiết <span id="detNo" class="muted"></span></h3><div id="detBody" class="wrap"></div></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const dt=s=>s?String(s).substring(0,10):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+const N=v=>parseInt(v||"0",10)||0;
+async function create2(){ await token();
+  const cars=F("cars").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{VIN:(c[0]||"").trim(),ModelProductionCode:(c[1]||"").trim(),EngineNo:(c[2]||"").trim(),CQNo:(c[3]||"").trim(),CONo:(c[4]||"").trim(),DeclarationNo:(c[5]||"").trim(),BankGuaranteeNo:(c[6]||"").trim(),HTCInvoiceNo:(c[7]||"").trim(),QtyInvoiceOriginal:N(c[8]),QtyTransportMnOriginal:N(c[9]),QtyTransportMnCopy:N(c[10])};});
+  const r=await fetch("/api/dochandovers",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({DealerCode:F("dealer").value,DealerName:F("dealerName").value,Remark:F("remark").value,Cars:cars})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã tạo ${d.bbbgNo} (${d.cars} xe)`); F("cars").value=""; load();
+}
+async function detail(no){ await token(); const r=await fetch("/api/dochandovers/"+no+"/cars",{headers:Hh()}); const d=await r.json();
+  F("det").style.display="block"; F("detNo").textContent=`— ${no} (${d.dealerName||d.dealerCode})`;
+  F("detBody").innerHTML=`<table><thead><tr><th>VIN</th><th>Model</th><th>Số máy</th><th>Số ĐK</th><th>Số NG</th><th>Tờ khai</th><th>Số BL</th><th>HĐ HTCV</th><th class="num">Gốc HĐ</th><th class="num">Gốc VC</th><th class="num">Sao y VC</th></tr></thead><tbody>${(d.cars||[]).map(c=>`<tr><td>${esc(c.vin)}</td><td>${esc(c.modelProductionCode)}</td><td>${esc(c.engineNo)}</td><td>${esc(c.cqNo)}</td><td>${esc(c.coNo)}</td><td>${esc(c.declarationNo)}</td><td>${esc(c.bankGuaranteeNo)}</td><td>${esc(c.htcInvoiceNo)}</td><td class="num">${c.qtyInvoiceOriginal}</td><td class="num">${c.qtyTransportMnOriginal}</td><td class="num">${c.qtyTransportMnCopy}</td></tr>`).join("")}</tbody><tfoot><tr><td colspan="8" style="text-align:right"><b>Tổng</b></td><td class="num"><b>${d.totInvoiceOriginal}</b></td><td class="num"><b>${d.totTransportOriginal}</b></td><td class="num"><b>${d.totTransportCopy}</b></td></tr></tfoot></table>`;
+}
+async function load(){ await token();
+  const qs=new URLSearchParams({no:F("qNo").value,dealer:F("qDealer").value,vin:F("qVin").value});
+  const r=await fetch("/api/dochandovers?"+qs,{headers:Hh()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} biên bản`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.bbbgNo)}</b></td><td>${esc(o.dealerName||o.dealerCode)}</td><td>${dt(o.createdDate)}</td><td>${o.cars}</td><td>${esc(o.createdBy)}</td><td><button class="link" onclick="detail('${esc(o.bbbgNo)}')">Chi tiết</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có biên bản.</td></tr>';
+}
+</script>
+</body></html>

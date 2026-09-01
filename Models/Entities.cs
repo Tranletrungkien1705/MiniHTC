@@ -1070,6 +1070,43 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Biên bản bàn giao hồ sơ (header) — port 1:1 FrmInBienBanBGHS (IN_BienBanBGHS, TCMotor). Bàn giao hồ sơ xe theo lô: mỗi xe kèm các số giấy tờ (CQ/CO/CB/tờ khai/bảo lãnh/HĐ) + SL bản gốc/sao y.</summary>
+public sealed class DocHandoverMinute
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BBBGNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? DealerName { get; set; }
+    public DateTime CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? Remark { get; set; }
+}
+
+/// <summary>Chi tiết xe trong biên bản bàn giao hồ sơ — port 1:1 IN_BienBanBGHS detail (TCMotor).</summary>
+public sealed class DocHandoverMinuteCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DocHandoverMinuteId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelProductionCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? EngineNo { get; set; }
+    public string? CQNo { get; set; }          // số đăng kiểm
+    public string? CONo { get; set; }          // số nguồn gốc
+    public string? CBNo { get; set; }          // số PXX xe có thùng
+    public string? DeclarationNo { get; set; } // tờ khai nhập khẩu
+    public string? BankGuaranteeNo { get; set; }
+    public string? BankName { get; set; }
+    public string? DlrCtrNo { get; set; }
+    public string? HTCInvoiceNo { get; set; }
+    public string? TransportMinutesNo { get; set; }
+    public int QtyInvoiceOriginal { get; set; }
+    public int QtyTransportMnOriginal { get; set; }
+    public int QtyTransportMnCopy { get; set; }
+}
+
 /// <summary>Lệnh cân bằng/điều chuyển kho (header) — port 1:1 FrmMngRearCBSC (Sto_RearrangeCB, TCMotor/Sales/Logistic). Lệnh điều chuyển xe giữa các kho theo danh sách VIN (from→to), duyệt theo trạng thái.</summary>
 public sealed class StoRearCB
 {

@@ -4865,6 +4865,57 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Biên bản bàn giao hồ sơ (DocHandoverMinute — port 1:1 FrmInBienBanBGHS, TCMotor) =====
+app.MapGet("/api/dochandovers", async (AppDbContext db, ITenantContext t, string? dealer, string? no, string? vin) =>
+{
+    var q = db.DocHandoverMinutes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.BBBGNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(vin))
+    {
+        var v = vin!.Trim().ToUpperInvariant();
+        var ids = db.DocHandoverMinuteCars.Where(c => c.OrgId == t.OrgId && c.VIN.Contains(v)).Select(c => c.DocHandoverMinuteId);
+        q = q.Where(x => ids.Contains(x.Id));
+    }
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.BBBGNo, x.DealerCode, x.DealerName, x.CreatedDate, x.CreatedBy, x.Remark,
+        cars = db.DocHandoverMinuteCars.Count(c => c.OrgId == t.OrgId && c.DocHandoverMinuteId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dochandovers", async (DocHandoverDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trong biên bản." });
+    var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new DocHandoverMinute { OrgId = t.OrgId, BBBGNo = "BBBG" + DateTime.Now.ToString("yyMMddHHmmss"), DealerCode = dto.DealerCode.Trim(), DealerName = dto.DealerName, CreatedDate = DateTime.Now, CreatedBy = by, Remark = dto.Remark };
+    db.DocHandoverMinutes.Add(h); await db.SaveChangesAsync();
+    foreach (var c in cars)
+        db.DocHandoverMinuteCars.Add(new DocHandoverMinuteCar {
+            OrgId = t.OrgId, DocHandoverMinuteId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(),
+            ModelProductionCode = c.ModelProductionCode, SpecDescription = c.SpecDescription, EngineNo = c.EngineNo,
+            CQNo = c.CQNo, CONo = c.CONo, CBNo = c.CBNo, DeclarationNo = c.DeclarationNo,
+            BankGuaranteeNo = c.BankGuaranteeNo, BankName = c.BankName, DlrCtrNo = c.DlrCtrNo, HTCInvoiceNo = c.HTCInvoiceNo, TransportMinutesNo = c.TransportMinutesNo,
+            QtyInvoiceOriginal = c.QtyInvoiceOriginal, QtyTransportMnOriginal = c.QtyTransportMnOriginal, QtyTransportMnCopy = c.QtyTransportMnCopy
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.BBBGNo, cars = cars.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/dochandovers/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.DocHandoverMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BBBGNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.DocHandoverMinuteCars.Where(c => c.OrgId == t.OrgId && c.DocHandoverMinuteId == h.Id)
+        .Select(c => new { c.VIN, c.ModelProductionCode, c.SpecDescription, c.EngineNo, c.CQNo, c.CONo, c.CBNo, c.DeclarationNo, c.BankGuaranteeNo, c.BankName, c.DlrCtrNo, c.HTCInvoiceNo, c.TransportMinutesNo, c.QtyInvoiceOriginal, c.QtyTransportMnOriginal, c.QtyTransportMnCopy }).ToListAsync();
+    var totInv = cars.Sum(c => c.QtyInvoiceOriginal); var totOrig = cars.Sum(c => c.QtyTransportMnOriginal); var totCopy = cars.Sum(c => c.QtyTransportMnCopy);
+    return Results.Ok(new { h.BBBGNo, h.DealerCode, h.DealerName, count = cars.Count, totInvoiceOriginal = totInv, totTransportOriginal = totOrig, totTransportCopy = totCopy, cars });
+}).RequireAuthorization();
+
 // ===== Lệnh cân bằng/điều chuyển kho (StoRearCB — port 1:1 FrmMngRearCBSC, TCMotor/Sales/Logistic) =====
 app.MapGet("/api/storearcbs", async (AppDbContext db, ITenantContext t, string? status, string? no, string? vin) =>
 {
@@ -11852,6 +11903,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record DocHandoverDto(string? DealerCode, string? DealerName, string? Remark, List<DocHandoverCarDto>? Cars);
+record DocHandoverCarDto(string? VIN, string? ModelProductionCode, string? SpecDescription, string? EngineNo, string? CQNo, string? CONo, string? CBNo, string? DeclarationNo, string? BankGuaranteeNo, string? BankName, string? DlrCtrNo, string? HTCInvoiceNo, string? TransportMinutesNo, int QtyInvoiceOriginal, int QtyTransportMnOriginal, int QtyTransportMnCopy);
 record StoRearCBDto(string? Remark, List<StoRearCBCarDto>? Cars);
 record StoRearCBCarDto(string? VIN, string? SpecCode, string? EngineNo, string? ColorCode, string? StorageCodeFrom, string? StorageCodeTo, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? CBReqNo, string? TenLoaiThung, string? Remark);
 record AppSessionDto(string? UserCode, string? LanguageCode, string? PartnerCode, string? PartnerUserCode, string? OtherInfo);
