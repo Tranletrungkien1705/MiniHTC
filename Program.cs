@@ -5000,6 +5000,61 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Đề nghị giao HĐ/hồ sơ thu hồi (RedeemInvoiceRequest header-detail — port 1:1 FrmNewRDInvoice/FrmMngRDInvoice, 2010.HTC/Sales/Redeem) =====
+app.MapGet("/api/redeeminvoicerequests", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var qry = db.RedeemInvoiceRequests.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqRDInvoiceNo.Contains(q!) || x.DealerCode!.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRDInvoiceNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/redeeminvoicerequests/{id}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var lines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.ReqType }).ToListAsync();
+    return Results.Ok(new { header = new { h.Id, h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt }, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/redeeminvoicerequests", async (RedeemInvoiceRequestDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
+{
+    var lines = dto.Lines ?? new List<RedeemInvoiceRequestLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Đề nghị chưa có dòng VIN." });
+    if (lines.Any(l => string.IsNullOrWhiteSpace((l.VIN ?? "").Trim()))) return Results.BadRequest(new { error = "Có dòng chưa nhập số VIN." });
+    var dup = lines.GroupBy(l => (l.VIN ?? "").Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN '{dup.Key}' bị trùng trong đề nghị." });
+    if (lines.Any(l => (l.ReqType ?? "DEALER").Trim().ToUpperInvariant() is not ("DEALER" or "BANKBL" or "BANKLC"))) return Results.BadRequest(new { error = "Loại ĐN giao phải là DEALER, BANKBL hoặc BANKLC." });
+    var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    var h = new RedeemInvoiceRequest
+    {
+        OrgId = t.OrgId,
+        ReqRDInvoiceNo = string.IsNullOrWhiteSpace((dto.ReqRDInvoiceNo ?? "").Trim()) ? "RDI" + DateTime.Now.ToString("yyMMddHHmmss") : dto.ReqRDInvoiceNo!.Trim(),
+        CreatedDate = dto.CreatedDate ?? DateTime.Now,
+        DealerCode = dto.DealerCode, Note = dto.Note, VinCount = lines.Count,
+        Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now
+    };
+    db.RedeemInvoiceRequests.Add(h);
+    await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.RedeemInvoiceRequestLines.Add(new RedeemInvoiceRequestLine { OrgId = t.OrgId, RequestId = h.Id, VIN = (l.VIN ?? "").Trim(), CarId = l.CarId, ReqType = (l.ReqType ?? "DEALER").Trim().ToUpperInvariant() });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.ReqRDInvoiceNo, h.VinCount, h.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/redeeminvoicerequests/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var target = action.ToLowerInvariant() switch { "approve" => "Approved", "reject" => "Rejected", _ => "" };
+    if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (approve/reject)." });
+    if (h.Status != "Created") return Results.BadRequest(new { error = $"Đề nghị đang '{h.Status}', chỉ xử lý khi 'Created'." });
+    h.Status = target;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.Status });
+}).RequireAuthorization();
+
 // ===== Đề nghị thu hồi hồ sơ xe (RedeemRequest header-detail — port 1:1 FrmNewRedeem/FrmMngRedeem, 2010.HTC/Sales/Redeem) =====
 app.MapGet("/api/redeemrequests", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -13280,6 +13335,8 @@ record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string?
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? ResultIn, string? ResultOut);
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines);
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType);
+record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
+record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

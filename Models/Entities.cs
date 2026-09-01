@@ -1253,6 +1253,32 @@ public sealed class RedeemRequestLine
     public string RedeemType { get; set; } = "DIRECT";
 }
 
+/// <summary>Đề nghị giao hóa đơn/hồ sơ thu hồi (RD_ReqInvoice header) — port 1:1 FrmNewRDInvoice/FrmMngRDInvoice (2010.HTC/Sales/Redeem). Header: số ĐN + ngày + đại lý; state-machine Created→Approved/Rejected. Chi tiết theo VIN, loại nhận: Đại lý / Ngân hàng BL / Ngân hàng LC.</summary>
+public sealed class RedeemInvoiceRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqRDInvoiceNo { get; set; } = "";
+    public DateTime? CreatedDate { get; set; }
+    public string? DealerCode { get; set; }
+    public string? Note { get; set; }
+    public int VinCount { get; set; }
+    public string Status { get; set; } = "Created";
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>Dòng VIN của đề nghị giao HĐ thu hồi (RD_ReqInvoiceDtl) — thuộc RedeemInvoiceRequest. VIN + xe + loại ĐN giao (DEALER=Đại lý / BANKBL=Ngân hàng BL / BANKLC=Ngân hàng LC).</summary>
+public sealed class RedeemInvoiceRequestLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RequestId { get; set; }
+    public string? VIN { get; set; }
+    public string? CarId { get; set; }
+    public string ReqType { get; set; } = "DEALER";
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {

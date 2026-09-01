@@ -87,6 +87,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<TrainingParticipant> TrainingParticipants => Set<TrainingParticipant>();
     public DbSet<RedeemRequest> RedeemRequests => Set<RedeemRequest>();
     public DbSet<RedeemRequestLine> RedeemRequestLines => Set<RedeemRequestLine>();
+    public DbSet<RedeemInvoiceRequest> RedeemInvoiceRequests => Set<RedeemInvoiceRequest>();
+    public DbSet<RedeemInvoiceRequestLine> RedeemInvoiceRequestLines => Set<RedeemInvoiceRequestLine>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
