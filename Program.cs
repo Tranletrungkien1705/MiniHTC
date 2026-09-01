@@ -4168,6 +4168,35 @@ app.MapGet("/api/report/warranty-stats", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { dimension = dim, count = rows.Count, totalClaims = claims.Count, grandAmount = rows.Sum(r => r.totalAmount), rows });
 }).RequireAuthorization();
 
+// ===== KPI dịch vụ tổng hợp (report tái-dùng RepairOrder + ServiceInvoice — port 1:1 FrmReportKPI/FrmReportCollectiveDisplay_KPI/FrmRpt_Correct_Repair_Rate, TCMotor) =====
+app.MapGet("/api/report/service-kpi", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var qro = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) qro = qro.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) qro = qro.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date <= toDate.Value.Date);
+    var ros = await qro.Select(x => x.Status).ToListAsync();
+    var totalRO = ros.Count;
+    var finished = ros.Count(s => s == "Finished");
+    var byStatus = ros.GroupBy(s => s).Select(g => new { status = g.Key, count = g.Count() }).ToList();
+    // Tỉ lệ hoàn tất (giao xe) — proxy cho "sửa đúng, hoàn thành".
+    var correctRate = totalRO > 0 ? Math.Round((decimal)finished / totalRO * 100, 1) : 0m;
+
+    var qinv = db.ServiceInvoices.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) qinv = qinv.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate.HasValue) qinv = qinv.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
+    var invs = await qinv.Select(x => new { x.TotalAmount, x.Status }).ToListAsync();
+    var paidInv = invs.Where(i => i.Status == "Paid").ToList();
+    var revenue = paidInv.Sum(i => i.TotalAmount);
+    var avgTicket = paidInv.Count > 0 ? Math.Round(revenue / paidInv.Count, 0) : 0m;
+
+    return Results.Ok(new
+    {
+        totalRO, finished, correctRate, byStatus,
+        totalInvoices = invs.Count, paidInvoices = paidInv.Count, revenue, avgTicket,
+        unpaidInvoices = invs.Count(i => i.Status != "Paid")
+    });
+}).RequireAuthorization();
+
 // ===== Tần suất dịch vụ theo xe (report tái-dùng RepairOrder — port 1:1 FrmRpt_Vehicle_Service_Frequency, TCMotor) =====
 // Mỗi VIN: số lượt vào xưởng + khoảng cách TB (ngày) giữa các lượt liên tiếp (chỉ xe >=2 lượt mới có tần suất).
 app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantContext t, int? minVisits) =>
