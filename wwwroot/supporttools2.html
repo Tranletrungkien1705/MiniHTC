@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Sửa phòng ban NVBH & ngày giao</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .msg{font-size:13px;margin-left:6px} .inp{width:110px} .res{margin-top:10px} .err{color:var(--bad)}
+</style></head>
+<body>
+<h1>Công cụ hỗ trợ sửa dữ liệu (2) <span class="muted">(port 1:1 cụm Support — 2010.HTC)</span></h1>
+<div class="tabs"><div class="tab on" id="tA" onclick="tab('A')">Sửa phòng ban + loại NVBH</div><div class="tab" id="tB" onclick="tab('B')">Sửa ngày giao xe</div></div>
+
+<div id="paneA">
+  <p class="muted">FrmSupportUpdateDepartmentAndSMType: tra NVBH, sửa mã phòng ban + loại NVBH.</p>
+  <div class="row"><div><label>Tìm NVBH</label><input id="aQ" style="width:150px"></div><button class="primary" onclick="searchA()">Tìm</button><button onclick="saveA()">Lưu</button><span id="msgA" class="msg"></span></div>
+  <div class="wrap"><table><thead><tr><th>Mã NVBH</th><th>Tên</th><th>Đại lý</th><th>Phòng HT</th><th>Loại HT</th><th>Phòng mới</th><th>Loại mới</th></tr></thead><tbody id="aRows"><tr><td colspan="7" class="muted">Nhấn "Tìm".</td></tr></tbody></table></div>
+  <div class="res" id="aRes"></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <p class="muted">FrmSupportCarDeliveryDate_Update: tra lệnh giao xe, sửa ngày giao thực tế (không tương lai).</p>
+  <div class="row"><div><label>Số lệnh giao (DO)</label><input id="bNo" style="width:150px"></div><button class="primary" onclick="searchB()">Tìm</button><button onclick="saveB()">Lưu</button><span id="msgB" class="msg"></span></div>
+  <div class="wrap"><table><thead><tr><th>Số DO</th><th>Trạng thái</th><th>Ngày giao HT</th><th>Ngày giao mới</th></tr></thead><tbody id="bRows"><tr><td colspan="4" class="muted">Nhấn "Tìm".</td></tr></tbody></table></div>
+  <div class="res" id="bRes"></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},4000); }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+function chg(changes,keys,heads){ if(!changes||!changes.length) return "";
+  return `<div class="wrap"><table><thead><tr>${heads.map(h=>`<th>${h}</th>`).join("")}<th>Ghi chú</th></tr></thead><tbody>${changes.map(c=>`<tr>${keys.map(k=>`<td>${esc(c[k]!=null?String(c[k]):"")}</td>`).join("")}<td class="${c.error?'err':'muted'}">${esc(c.error)||"OK"}</td></tr>`).join("")}</tbody></table></div>`; }
+async function searchA(){ await token();
+  const p=new URLSearchParams(); if(F("aQ").value)p.set("q",F("aQ").value);
+  const r=await fetch("/api/support/salesman-dept?"+p.toString(),{headers:H()}); const d=await r.json(); F("aRes").innerHTML="";
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr data-id="${o.id}"><td><b>${esc(o.salesManCode)}</b></td><td>${esc(o.salesManName)}</td><td>${esc(o.dealerCode)}</td><td>${esc(o.departmentCode)||"-"}</td><td>${esc(o.salesType)||"-"}</td><td><input class="inp dp" placeholder="${esc(o.departmentCode)}"></td><td><input class="inp tp" placeholder="${esc(o.salesType)}"></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không thấy NVBH.</td></tr>';
+}
+async function saveA(){ await token();
+  const fixes=[...F("aRows").querySelectorAll("tr[data-id]")].map(tr=>{ const dp=tr.querySelector(".dp").value.trim(),tp=tr.querySelector(".tp").value.trim(); return (dp||tp)?{Id:+tr.dataset.id,DepartmentCode:dp,SalesType:tp}:null; }).filter(Boolean);
+  if(!fixes.length){ m("msgA","Chưa nhập gì."); return; }
+  const r=await fetch("/api/support/salesman-dept",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(fixes)});
+  const d=await r.json(); if(!r.ok){ m("msgA","Lỗi: "+(d.error||r.status)); return; }
+  m("msgA",`Đã sửa ${d.updated}/${d.total}`); F("aRes").innerHTML=chg(d.changes,["salesManCode","oldDept","newDept","oldType","newType"],["NVBH","Phòng cũ","Phòng mới","Loại cũ","Loại mới"]); searchA();
+}
+async function searchB(){ await token();
+  const p=new URLSearchParams(); if(F("bNo").value)p.set("doNo",F("bNo").value);
+  const r=await fetch("/api/support/delivery-date?"+p.toString(),{headers:H()}); const d=await r.json(); F("bRes").innerHTML="";
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr data-id="${o.id}"><td><b>${esc(o.doNo)}</b></td><td>${esc(o.status)}</td><td>${esc(o.deliveredAt)||"-"}</td><td><input type="date" class="inp dd"></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Không thấy lệnh giao.</td></tr>';
+}
+async function saveB(){ await token();
+  const fixes=[...F("bRows").querySelectorAll("tr[data-id]")].map(tr=>{ const v=tr.querySelector(".dd").value; return v?{Id:+tr.dataset.id,DeliveredAt:v}:null; }).filter(Boolean);
+  if(!fixes.length){ m("msgB","Chưa nhập ngày."); return; }
+  const r=await fetch("/api/support/delivery-date",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(fixes)});
+  const d=await r.json(); if(!r.ok){ m("msgB","Lỗi: "+(d.error||r.status)); return; }
+  m("msgB",`Đã sửa ${d.updated}/${d.total}`); F("bRes").innerHTML=chg(d.changes,["doNo","oldDate","newDate"],["Số DO","Ngày cũ","Ngày mới"]); searchB();
+}
+</script>
+</body></html>

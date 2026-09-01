@@ -70,6 +70,7 @@ public sealed class SalesMan
     public string SalesManName { get; set; } = "";
     public string? DealerCode { get; set; }
     public string? DepartmentCode { get; set; }
+    public string? SalesType { get; set; }   // loại NVBH (SMType) — Support cập nhật
     public string? Phone { get; set; }
     public string? Email { get; set; }
     public string Status { get; set; } = "1";
