@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Lịch sử chính sách đơn hàng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1120px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+</style></head>
+<body>
+<h1>Lịch sử chính sách đơn hàng theo xe <span class="muted">(port 1:1 FrmMngHisOrderPolicy — TCMotor/Sales/Purchase)</span></h1>
+
+<div class="card"><h3 style="margin-top:0">Ghi nhận chính sách áp cho xe</h3>
+  <div class="grid4">
+    <div><label>SO Code</label><input id="fSO"></div>
+    <div><label>Car ID *</label><input id="fCar"></div>
+    <div><label>Model</label><input id="fModel"></div>
+    <div><label>Spec</label><input id="fSpec"></div>
+    <div><label>Mô tả spec</label><input id="fSpecDesc"></div>
+    <div><label>Loại CRT</label><input id="fCrt"></div>
+    <div><label>Màu (mã)</label><input id="fColor"></div>
+    <div><label>Màu (tên)</label><input id="fColorName"></div>
+    <div><label>Mã chính sách ĐH *</label><input id="fPolCode"></div>
+    <div><label>Tên chính sách ĐH</label><input id="fPolName"></div>
+    <div><label>Ngày duyệt</label><input id="fApproved" placeholder="yyyy-mm-dd"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Ghi nhận</button><span id="msg" class="msg"></span></div>
+</div>
+
+<div class="card"><div class="row">
+  <div><label>SO Code</label><input id="qSO" style="width:150px"></div>
+  <div><label>Car ID</label><input id="qCar" style="width:150px"></div>
+  <div><label>Chính sách</label><input id="qPol" style="width:170px"></div>
+  <button onclick="load()">Tra cứu</button>
+</div>
+  <div id="kpi" class="muted" style="margin:6px 0"></div>
+  <div class="wrap"><table><thead><tr><th>SO</th><th>Car ID</th><th>Model</th><th>Spec</th><th>Màu</th><th>CS đơn hàng</th><th>Ngày duyệt</th><th>Cập nhật bởi</th><th>Thời điểm</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Tra cứu".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const dt=s=>s?String(s).substring(0,10):""; const dts=s=>s?String(s).substring(0,16).replace("T"," "):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function save(){ await token();
+  const body={SOCode:F("fSO").value,CarId:F("fCar").value,ModelCode:F("fModel").value,SpecCode:F("fSpec").value,SpecDescription:F("fSpecDesc").value,CrtTypeCode:F("fCrt").value,ColorCode:F("fColor").value,ColorName:F("fColorName").value,OrderPolicyCode:F("fPolCode").value,OrderPolicyName:F("fPolName").value,ApprovedDate:F("fApproved").value||null};
+  const r=await fetch("/api/carhisorderpolicies",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; }
+  say(`Đã ghi nhận xe ${d.carId} — CS ${d.orderPolicyCode}`); F("fCar").value="";F("fPolCode").value=""; load();
+}
+async function load(){ await token();
+  const qs=new URLSearchParams({soCode:F("qSO").value,carId:F("qCar").value,policy:F("qPol").value});
+  const r=await fetch("/api/carhisorderpolicies?"+qs,{headers:H()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} bản ghi — ${d.cars} xe`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td>${esc(o.soCode)}</td><td><b>${esc(o.carId)}</b></td><td>${esc(o.modelCode)}</td><td>${esc(o.specCode)}</td><td>${esc(o.colorName||o.colorCode)}</td><td>${esc(o.orderPolicyCode)}${o.orderPolicyName?' — '+esc(o.orderPolicyName):''}</td><td>${dt(o.approvedDate)}</td><td>${esc(o.logLUBy)}</td><td>${dts(o.logLUDateTime)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có bản ghi.</td></tr>';
+}
+</script>
+</body></html>

@@ -1070,6 +1070,26 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Lịch sử chính sách đơn hàng theo xe — port 1:1 FrmMngHisOrderPolicy (Car_CarHisOrderPolicy, TCMotor/Sales/Purchase). Ghi nhận chính sách đơn hàng áp cho từng xe (theo SO + CarId) kèm log kiểm toán.</summary>
+public sealed class CarHisOrderPolicy
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SOCode { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? CrtTypeCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? ColorName { get; set; }
+    public string OrderPolicyCode { get; set; } = "";
+    public string? OrderPolicyName { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime LogLUDateTime { get; set; }
+}
+
 /// <summary>Định mức khuyến mãi theo thẻ hội viên × chương trình — port 1:1 FrmMember (Crd_Member promotion, TCMotor/Customer). QtyRemain = QtyAllocated - QtyUsed.</summary>
 public sealed class CustomerPromotion
 {

@@ -4839,6 +4839,38 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Lịch sử chính sách đơn hàng theo xe (CarHisOrderPolicy — port 1:1 FrmMngHisOrderPolicy, TCMotor/Sales/Purchase) =====
+// Tra cứu chính sách đơn hàng áp cho từng xe (theo SO/CarId) + ghi nhận (record) 1 lần áp chính sách kèm log kiểm toán.
+app.MapGet("/api/carhisorderpolicies", async (AppDbContext db, ITenantContext t, string? soCode, string? carId, string? policy) =>
+{
+    var q = db.CarHisOrderPolicies.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(soCode)) q = q.Where(x => x.SOCode.Contains(soCode!));
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    if (!string.IsNullOrWhiteSpace(policy)) q = q.Where(x => x.OrderPolicyCode.Contains(policy!) || x.OrderPolicyName!.Contains(policy!));
+    var items = await q.OrderByDescending(x => x.LogLUDateTime).ThenByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.SOCode, x.CarId, x.ModelCode, x.SpecCode, x.SpecDescription, x.CrtTypeCode, x.ColorCode, x.ColorName,
+        x.OrderPolicyCode, x.OrderPolicyName, x.ApprovedDate, x.LogLUBy, x.LogLUDateTime
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, cars = items.Select(x => x.CarId).Distinct().Count(), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carhisorderpolicies", async (CarHisOrderPolicyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CarId)) return Results.BadRequest(new { error = "Chưa nhập CarId." });
+    if (string.IsNullOrWhiteSpace(dto.OrderPolicyCode)) return Results.BadRequest(new { error = "Chưa nhập mã chính sách đơn hàng." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? user.FindFirst("sub")?.Value ?? "system";
+    var row = new CarHisOrderPolicy {
+        OrgId = t.OrgId, SOCode = (dto.SOCode ?? "").Trim(), CarId = dto.CarId.Trim(),
+        ModelCode = dto.ModelCode, SpecCode = dto.SpecCode, SpecDescription = dto.SpecDescription, CrtTypeCode = dto.CrtTypeCode,
+        ColorCode = dto.ColorCode, ColorName = dto.ColorName,
+        OrderPolicyCode = dto.OrderPolicyCode.Trim(), OrderPolicyName = dto.OrderPolicyName,
+        ApprovedDate = dto.ApprovedDate, LogLUBy = by, LogLUDateTime = DateTime.Now
+    };
+    db.CarHisOrderPolicies.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.CarId, row.OrderPolicyCode, row.LogLUBy, row.LogLUDateTime });
+}).RequireAuthorization();
+
 // ===== Sao kê ngân hàng (BankStatementLine — port 1:1 FrmBank_BankStatement, TCMotor/Sales/Payment) =====
 // Import Excel sao kê (bulk add, dedup TransactionCode trong lô) → đối soát (reconcile) với mã thanh toán DMS.
 app.MapGet("/api/bankstatements", async (AppDbContext db, ITenantContext t, string? q, string? bankReceive, string? match, string? dateFrom, string? dateTo) =>
@@ -11419,6 +11451,7 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarHisOrderPolicyDto(string? SOCode, string CarId, string? ModelCode, string? SpecCode, string? SpecDescription, string? CrtTypeCode, string? ColorCode, string? ColorName, string OrderPolicyCode, string? OrderPolicyName, DateTime? ApprovedDate);
 record BankStatementImportDto(string? BStatementNo, List<BankStatementRowDto>? Lines);
 record BankStatementRowDto(string? TransactionDate, string? TransactionCode, decimal DebitVal, decimal CreditVal, decimal BalanceVal, string? RemittanceDetail, string? BankSendCode, string? AccountSendName, string? AccountSendNo, string? BankReceiveCode, string? AccountReceiveName, string? AccountReceiveNo, string? ActVoucherCode, string? FlagTnxType, string? DealerSendCode, string? DealerReceiveCode);
 record BankStatementMatchDto(string? PaymentCodeDMS);
