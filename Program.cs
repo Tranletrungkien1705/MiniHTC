@@ -4968,6 +4968,38 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master hãng bảo hiểm DV (SerInsurance — port 1:1 FrmInsuranceCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/serinsurances", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerInsurances.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InsNo.Contains(q!) || x.InsVieName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Phone, x.Fax, x.TaxCode, x.Description, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.InsNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã hãng bảo hiểm." });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no);
+    if (row is null) { row = new SerInsurance { OrgId = t.OrgId, InsNo = no }; db.SerInsurances.Add(row); }
+    row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Phone = dto.Phone; row.Fax = dto.Fax; row.TaxCode = dto.TaxCode; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Master quy đổi đơn vị TST↔DMS (TstExchangeUnit — port 1:1 FrmTST_Mst_Exchange_Unit, TCMotor DMSCarSv) =====
 app.MapGet("/api/tstexchangeunits", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12917,6 +12949,7 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

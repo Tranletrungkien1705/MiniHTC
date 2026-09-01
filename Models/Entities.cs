@@ -1073,6 +1073,24 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master hãng bảo hiểm dịch vụ (Ser_Insurance) — port 1:1 FrmInsuranceCreate/Search (TCMotor DMSCarSv). Mã + tên Việt/Anh + địa chỉ + email/SĐT/fax + MST + mô tả.</summary>
+public sealed class SerInsurance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InsNo { get; set; } = "";
+    public string? InsVieName { get; set; }
+    public string? InsEngName { get; set; }
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string? Phone { get; set; }
+    public string? Fax { get; set; }
+    public string? TaxCode { get; set; }
+    public string? Description { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Master quy đổi đơn vị TST↔DMS (TST_Mst_Exchange_Unit) — port 1:1 FrmTST_Mst_Exchange_Unit (TCMotor DMSCarSv). Theo mã phụ tùng TST: đơn vị TST/DMS + tỷ lệ quy đổi.</summary>
 public sealed class TstExchangeUnit
 {
