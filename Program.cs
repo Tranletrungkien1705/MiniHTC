@@ -4865,6 +4865,57 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Cấu hình hóa đơn theo spec (CarInvoiceSpec — port 1:1 FrmCarSpecInvoice, TCMotor) =====
+app.MapGet("/api/carinvoicespecs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.CarInvoiceSpecs.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SpecCode.Contains(q!) || x.SpecCodeInvoice!.Contains(q!) || x.CarType!.Contains(q!));
+    var items = await qry.OrderBy(x => x.SpecCode).Take(500).Select(x => new { x.Id, x.SpecCode, x.SpecCodeInvoice, x.VehiclesType, x.NumberOfSeats, x.CarType, x.VAT, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carinvoicespecs", async (CarInvoiceSpecDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.SpecCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã spec." });
+    var row = await db.CarInvoiceSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == code);
+    if (row is null) { row = new CarInvoiceSpec { OrgId = t.OrgId, SpecCode = code }; db.CarInvoiceSpecs.Add(row); }
+    row.SpecCodeInvoice = dto.SpecCodeInvoice; row.VehiclesType = dto.VehiclesType; row.NumberOfSeats = dto.NumberOfSeats; row.CarType = dto.CarType; row.VAT = dto.VAT; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SpecCode, row.SpecCodeInvoice });
+}).RequireAuthorization();
+
+app.MapPost("/api/carinvoicespecs/import", async (CarInvoiceSpecImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SpecCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để import." });
+    var dup = rows.GroupBy(r => r.SpecCode!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"Spec {dup.Key} bị trùng trong file." });
+    var codes = rows.Select(r => r.SpecCode!.Trim()).ToHashSet();
+    var existing = await db.CarInvoiceSpecs.Where(x => x.OrgId == t.OrgId && codes.Contains(x.SpecCode)).ToListAsync();
+    var byCode = existing.ToDictionary(x => x.SpecCode, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var code = r.SpecCode!.Trim();
+        if (!byCode.TryGetValue(code, out var row)) { row = new CarInvoiceSpec { OrgId = t.OrgId, SpecCode = code }; db.CarInvoiceSpecs.Add(row); added++; } else updated++;
+        row.SpecCodeInvoice = r.SpecCodeInvoice; row.VehiclesType = r.VehiclesType; row.NumberOfSeats = r.NumberOfSeats; row.CarType = r.CarType; row.VAT = r.VAT; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
+app.MapPost("/api/carinvoicespecs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.CarInvoiceSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Biên bản bàn giao hồ sơ (DocHandoverMinute — port 1:1 FrmInBienBanBGHS, TCMotor) =====
 app.MapGet("/api/dochandovers", async (AppDbContext db, ITenantContext t, string? dealer, string? no, string? vin) =>
 {
@@ -11903,6 +11954,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarInvoiceSpecDto(string? SpecCode, string? SpecCodeInvoice, string? VehiclesType, int NumberOfSeats, string? CarType, decimal VAT, string? FlagActive);
+record CarInvoiceSpecImportDto(List<CarInvoiceSpecRowDto>? Rows);
+record CarInvoiceSpecRowDto(string? SpecCode, string? SpecCodeInvoice, string? VehiclesType, int NumberOfSeats, string? CarType, decimal VAT);
 record DocHandoverDto(string? DealerCode, string? DealerName, string? Remark, List<DocHandoverCarDto>? Cars);
 record DocHandoverCarDto(string? VIN, string? ModelProductionCode, string? SpecDescription, string? EngineNo, string? CQNo, string? CONo, string? CBNo, string? DeclarationNo, string? BankGuaranteeNo, string? BankName, string? DlrCtrNo, string? HTCInvoiceNo, string? TransportMinutesNo, int QtyInvoiceOriginal, int QtyTransportMnOriginal, int QtyTransportMnCopy);
 record StoRearCBDto(string? Remark, List<StoRearCBCarDto>? Cars);

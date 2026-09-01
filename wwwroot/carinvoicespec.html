@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Cấu hình HĐ theo spec</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:980px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:56px} .off{opacity:.5} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)} .grid6{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}
+</style></head>
+<body>
+<h1>Cấu hình hóa đơn theo spec <span class="muted">(port 1:1 FrmCarSpecInvoice — TCMotor)</span></h1>
+<div class="card"><h3 style="margin-top:0">Thêm / sửa</h3>
+  <div class="grid6">
+    <div><label>Mã spec *</label><input id="spec"></div><div><label>Spec HĐ</label><input id="specInv"></div>
+    <div><label>Loại phương tiện</label><input id="vtype"></div><div><label>Số chỗ</label><input id="seats" type="number"></div>
+    <div><label>Loại xe</label><input id="ctype"></div><div><label>VAT %</label><input id="vat" type="number"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
+  <p class="muted" style="margin:10px 0 2px">Import (mỗi dòng, tab: <b>Spec | Spec HĐ | Loại PT | Số chỗ | Loại xe | VAT</b>)</p>
+  <textarea id="imp" placeholder="i10-1.2MT&#9;HD-I10&#9;O to con&#9;5&#9;Sedan&#9;10"></textarea>
+  <div class="row" style="margin-top:6px"><button onclick="doImport()">Import</button><span id="imsg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><input id="q" placeholder="Spec / spec HĐ / loại xe" style="width:220px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="all" style="width:auto"> Cả spec đã tắt</label><button onclick="load()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Spec</th><th>Spec HĐ</th><th>Loại PT</th><th class="num">Số chỗ</th><th>Loại xe</th><th class="num">VAT%</th><th>TT</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const N=v=>parseInt(v||"0",10)||0; const Nf=v=>parseFloat(v||"0")||0;
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(el,t){ F(el).textContent=t; setTimeout(()=>{if(F(el).textContent===t)F(el).textContent="";},3500); }
+async function save(){ await token();
+  const r=await fetch("/api/carinvoicespecs",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({SpecCode:F("spec").value,SpecCodeInvoice:F("specInv").value,VehiclesType:F("vtype").value,NumberOfSeats:N(F("seats").value),CarType:F("ctype").value,VAT:Nf(F("vat").value)})});
+  const d=await r.json(); if(!r.ok){ say("msg","Lỗi: "+(d.error||r.status)); return; } say("msg","Đã lưu "+d.specCode); F("spec").value="";F("specInv").value=""; load();
+}
+async function doImport(){ await token();
+  const rows=F("imp").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{SpecCode:(c[0]||"").trim(),SpecCodeInvoice:(c[1]||"").trim(),VehiclesType:(c[2]||"").trim(),NumberOfSeats:N(c[3]),CarType:(c[4]||"").trim(),VAT:Nf(c[5])};});
+  const r=await fetch("/api/carinvoicespecs/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
+  const d=await r.json(); if(!r.ok){ say("imsg","Lỗi: "+(d.error||r.status)); return; } say("imsg",`Thêm ${d.added}, cập nhật ${d.updated}`); F("imp").value=""; load();
+}
+async function toggle(id){ await token(); await fetch("/api/carinvoicespecs/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
+async function load(){ await token();
+  const r=await fetch("/api/carinvoicespecs?all="+(F("all").checked)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.specCode)}</b></td><td>${esc(o.specCodeInvoice)}</td><td>${esc(o.vehiclesType)}</td><td class="num">${o.numberOfSeats}</td><td>${esc(o.carType)}</td><td class="num">${o.vat}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có cấu hình.</td></tr>';
+}
+</script>
+</body></html>

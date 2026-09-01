@@ -1070,6 +1070,21 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Cấu hình hóa đơn theo spec xe (Mst_CarInvoice) — port 1:1 FrmCarSpecInvoice (TCMotor). Ánh xạ SpecCode → thông tin xuất hóa đơn (spec HĐ, loại xe, số chỗ, loại phương tiện, VAT).</summary>
+public sealed class CarInvoiceSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? SpecCodeInvoice { get; set; }
+    public string? VehiclesType { get; set; }
+    public int NumberOfSeats { get; set; }
+    public string? CarType { get; set; }
+    public decimal VAT { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Biên bản bàn giao hồ sơ (header) — port 1:1 FrmInBienBanBGHS (IN_BienBanBGHS, TCMotor). Bàn giao hồ sơ xe theo lô: mỗi xe kèm các số giấy tờ (CQ/CO/CB/tờ khai/bảo lãnh/HĐ) + SL bản gốc/sao y.</summary>
 public sealed class DocHandoverMinute
 {
