@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Dữ liệu đăng kiểm / thị phần</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)}
+</style></head>
+<body>
+<h1>Dữ liệu đăng kiểm / thị phần <span class="muted">(port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan — 2010.HTC)</span></h1>
+<p class="muted">Số liệu đăng kiểm theo (năm × tỉnh): số lượng, tỷ lệ, tổng tiền. Khóa kép năm × tỉnh.</p>
+<div class="card"><div class="row">
+  <div><label>Năm *</label><input id="year" style="width:80px"></div><div><label>Mã tỉnh *</label><input id="prov" style="width:90px"></div><div style="flex:1"><label>Tên tỉnh</label><input id="provn" style="width:100%"></div>
+  <div><label>SL</label><input id="qty" type="number" style="width:80px"></div><div><label>% TP</label><input id="pct" type="number" style="width:80px"></div><div><label>Tổng tiền</label><input id="amt" type="number" style="width:120px"></div>
+  <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><input id="qYear" placeholder="Năm" style="width:80px"><input id="qProv" placeholder="Tỉnh" style="width:90px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="all" style="width:auto"> Cả đã tắt</label><button onclick="load()">Xem</button></div>
+<div id="kpi" class="muted" style="margin:6px 0"></div>
+<table><thead><tr><th>Năm</th><th>Tỉnh</th><th>Tên</th><th class="num">SL</th><th class="num">% TP</th><th class="num">Tổng tiền</th><th>TT</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;"); const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const N=v=>parseInt(v||"0",10)||0; const Nf=v=>parseFloat(v||"0")||0;
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+async function save(){ await token();
+  const r=await fetch("/api/registrationinfos",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({RegistYear:F("year").value,ProvinceCode:F("prov").value,ProvinceName:F("provn").value,Qty:N(F("qty").value),RegistPercent:Nf(F("pct").value),TotalAmount:Nf(F("amt").value)})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã lưu ${d.registYear}/${d.provinceCode}`); load();
+}
+async function toggle(id){ await token(); await fetch("/api/registrationinfos/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
+async function load(){ await token();
+  const r=await fetch("/api/registrationinfos?all="+(F("all").checked)+"&year="+encodeURIComponent(F("qYear").value)+"&province="+encodeURIComponent(F("qProv").value),{headers:Hh()}); const d=await r.json();
+  F("kpi").textContent=`${d.count} dòng — Tổng SL: ${M(d.totalQty)} — Tổng tiền: ${M(d.totalAmount)}`;
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.registYear)}</b></td><td>${esc(o.provinceCode)}</td><td>${esc(o.provinceName)}</td><td class="num">${M(o.qty)}</td><td class="num">${o.registPercent}</td><td class="num">${M(o.totalAmount)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

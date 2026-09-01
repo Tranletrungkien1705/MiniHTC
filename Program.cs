@@ -4948,6 +4948,73 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Thông tin dữ liệu đăng kiểm/thị phần (RegistrationInfo — port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan, 2010.HTC) =====
+app.MapGet("/api/registrationinfos", async (AppDbContext db, ITenantContext t, string? year, string? province, bool? all) =>
+{
+    var q = db.RegistrationInfos.Where(x => x.OrgId == t.OrgId);
+    if (all != true) q = q.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(year)) q = q.Where(x => x.RegistYear == year);
+    if (!string.IsNullOrWhiteSpace(province)) q = q.Where(x => x.ProvinceCode == province);
+    var items = await q.OrderBy(x => x.RegistYear).ThenBy(x => x.ProvinceCode).Take(500).Select(x => new { x.Id, x.RegistYear, x.ProvinceCode, x.ProvinceName, x.Qty, x.RegistPercent, x.TotalAmount, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalQty = items.Sum(x => x.Qty), totalAmount = items.Sum(x => x.TotalAmount), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/registrationinfos", async (RegistrationInfoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var year = (dto.RegistYear ?? "").Trim();
+    var prov = (dto.ProvinceCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(year)) return Results.BadRequest(new { error = "Chưa nhập năm đăng kiểm." });
+    if (string.IsNullOrWhiteSpace(prov)) return Results.BadRequest(new { error = "Chưa nhập mã tỉnh." });
+    if (dto.Qty < 0 || dto.RegistPercent < 0 || dto.TotalAmount < 0) return Results.BadRequest(new { error = "Giá trị không được âm." });
+    var row = await db.RegistrationInfos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RegistYear == year && x.ProvinceCode == prov);
+    if (row is null) { row = new RegistrationInfo { OrgId = t.OrgId, RegistYear = year, ProvinceCode = prov }; db.RegistrationInfos.Add(row); }
+    row.ProvinceName = dto.ProvinceName; row.Qty = dto.Qty; row.RegistPercent = dto.RegistPercent; row.TotalAmount = dto.TotalAmount; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.RegistYear, row.ProvinceCode, row.Qty, row.RegistPercent });
+}).RequireAuthorization();
+
+app.MapPost("/api/registrationinfos/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.RegistrationInfos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Master GCN thùng theo loại xe (CabinCertificate — port 1:1 FrmQLTTXeXuatHoaDon, 2010.HTC) =====
+app.MapGet("/api/cabincertificates", async (AppDbContext db, ITenantContext t, string? q, string? carType, bool? all) =>
+{
+    var qry = db.CabinCertificates.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(carType)) qry = qry.Where(x => x.CarType == carType);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.CabinCertificateNo.Contains(q!));
+    var items = await qry.OrderBy(x => x.CabinCertificateNo).Take(500).Select(x => new { x.Id, x.CabinCertificateNo, x.CarType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cabincertificates", async (CabinCertificateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.CabinCertificateNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số GCN thùng." });
+    var row = await db.CabinCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CabinCertificateNo == no);
+    if (row is null) { row = new CabinCertificate { OrgId = t.OrgId, CabinCertificateNo = no }; db.CabinCertificates.Add(row); }
+    row.CarType = dto.CarType; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.CabinCertificateNo, row.CarType, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/cabincertificates/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.CabinCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Master loại thiết bị (DeviceType — port 1:1 FrmQLLoaiThietBi, 2010.HTC) =====
 app.MapGet("/api/devicetypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12403,6 +12470,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record RegistrationInfoDto(string? RegistYear, string? ProvinceCode, string? ProvinceName, int Qty, decimal RegistPercent, decimal TotalAmount, string? FlagActive);
+record CabinCertificateDto(string? CabinCertificateNo, string? CarType, string? FlagActive);
 record DeviceTypeDto(string? DeviceTypeCode, string? DeviceTypeName, string? FlagActive);
 record DeviceTypeSpecDto(string? DeviceTypeCode, string? DeviceTypeName, string? SpecCode, string? SpecDescription, string? FlagActive);
 record PRDiscountImportDto(List<PRDiscountRowDto>? Rows);

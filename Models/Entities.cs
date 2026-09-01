@@ -1070,6 +1070,32 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Thông tin dữ liệu đăng kiểm/thị phần (Mst_RegistrationInfo) — port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan (2010.HTC). Số liệu đăng kiểm theo (năm × tỉnh): SL + % + tổng tiền.</summary>
+public sealed class RegistrationInfo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RegistYear { get; set; } = "";
+    public string ProvinceCode { get; set; } = "";
+    public string? ProvinceName { get; set; }
+    public int Qty { get; set; }
+    public decimal RegistPercent { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Master giấy chứng nhận thùng theo loại xe (Mst_CabinCertificate) — port 1:1 FrmQLTTXeXuatHoaDon (2010.HTC). Số GCN thùng + loại xe.</summary>
+public sealed class CabinCertificate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CabinCertificateNo { get; set; } = "";
+    public string? CarType { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Master loại thiết bị (Mst_DeviceType) — port 1:1 FrmQLLoaiThietBi (2010.HTC). Mã + tên + cờ hoạt động.</summary>
 public sealed class DeviceType
 {
