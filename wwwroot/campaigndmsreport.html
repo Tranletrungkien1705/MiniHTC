@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — BC chiến dịch & bảo hành DMS</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706;--info:#0891b2}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .s-Draft{color:var(--warn)} .s-Active{color:var(--ok)} .s-Closed{opacity:.6} .s-Sent{color:var(--info)} .s-Confirmed{color:var(--accent)} .s-Accepted{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Reverted{color:var(--warn)}
+</style></head>
+<body>
+<h1>Báo cáo chiến dịch & bảo hành DMS <span class="muted">(port 1:1 FrmReportCamMarketingHTC + FrmRpt_DMSSer_Rpt_DMSClaim — TCMotor)</span></h1>
+<div class="tabs"><div class="tab on" id="tA" onclick="tab('A')">Chiến dịch marketing</div><div class="tab" id="tB" onclick="tab('B')">Bảo hành gửi DMS</div></div>
+
+<div id="paneA">
+  <div class="row"><button class="primary" onclick="repA()">Xem</button></div>
+  <div class="grid2" id="aKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Số CD</th><th>Tên</th><th>ĐK Đại lý</th><th>Từ</th><th>Đến</th><th class="num">Số PT</th><th class="num">% giảm TB</th><th class="num">% giảm max</th><th>TT</th></tr></thead><tbody id="aRows"><tr><td colspan="9" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="row"><div><label>Từ ngày</label><input id="bFrom" type="date"></div><div><label>Đến ngày</label><input id="bTo" type="date"></div><button class="primary" onclick="repB()">Xem</button></div>
+  <div class="grid2" id="bKpi"></div>
+  <div class="wrap"><table><thead><tr><th>Số ĐN</th><th>Đại lý</th><th>VIN</th><th>Biển số</th><th>Loại</th><th class="num">Tiền</th><th>TT</th></tr></thead><tbody id="bRows"><tr><td colspan="7" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const CST={Draft:"Nháp",Active:"Kích hoạt",Closed:"Đóng"};
+const WST={Sent:"Chờ xem xét",Confirmed:"Chờ duyệt",Accepted:"Chấp thuận",Rejected:"Từ chối",Reverted:"Hoàn trả"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function repA(){ await token();
+  const r=await fetch("/api/report/campaign-marketing",{headers:H()}); const d=await r.json();
+  F("aKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Tổng chiến dịch</span></div><div class="kpi"><b style="color:var(--ok)">${d.active}</b><span class="muted">Đang kích hoạt</span></div>`;
+  F("aRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.camNo)}</b></td><td>${esc(o.camName)}</td><td>${esc(o.conditionDealer)}</td><td>${esc(o.startDate)}</td><td>${esc(o.endDate)}</td><td class="num">${o.parts}</td><td class="num">${o.avgDiscount}%</td><td class="num">${o.maxDiscount}%</td><td><span class="pill s-${o.status}">${CST[o.status]||o.status}</span></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có chiến dịch.</td></tr>';
+}
+async function repB(){ await token();
+  const p=new URLSearchParams(); if(F("bFrom").value)p.set("fromDate",F("bFrom").value); if(F("bTo").value)p.set("toDate",F("bTo").value);
+  const r=await fetch("/api/report/dms-claim?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("bKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">ĐN gửi DMS</span></div><div class="kpi"><b style="color:var(--ok)">${d.accepted}</b><span class="muted">Chấp thuận</span></div><div class="kpi"><b>${d.acceptRate}%</b><span class="muted">Tỉ lệ duyệt</span></div><div class="kpi"><b>${M(d.totalAmount)}</b><span class="muted">Tổng tiền</span></div>`;
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.claimNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.vin)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.warrantyType)}</td><td class="num">${M(o.amount)}</td><td><span class="pill s-${o.status}">${WST[o.status]||o.status}</span></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có ĐN gửi DMS.</td></tr>';
+}
+</script>
+</body></html>

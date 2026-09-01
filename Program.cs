@@ -4168,6 +4168,43 @@ app.MapGet("/api/report/warranty-stats", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { dimension = dim, count = rows.Count, totalClaims = claims.Count, grandAmount = rows.Sum(r => r.totalAmount), rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo chiến dịch marketing (report tái-dùng ServiceCampaign — port 1:1 FrmReportCamMarketingHTC/FrmCamExportRpt, TCMotor) =====
+app.MapGet("/api/report/campaign-marketing", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.ServiceCampaigns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    var cams = await q.OrderByDescending(x => x.Id).Select(x => new { x.Id, x.CamNo, x.CamName, x.ConditionDealer, x.Status, x.StartDate, x.EndDate }).ToListAsync();
+    var partAgg = await db.ServiceCampaignParts.Where(p => p.OrgId == t.OrgId)
+        .GroupBy(p => p.ServiceCampaignId)
+        .Select(g => new { camId = g.Key, parts = g.Count(), avgDiscount = g.Average(x => x.PercentDiscount), maxDiscount = g.Max(x => x.PercentDiscount) }).ToListAsync();
+    var pMap = partAgg.ToDictionary(x => x.camId, x => x);
+    var rows = cams.Select(c => {
+        pMap.TryGetValue(c.Id, out var pa);
+        return new { c.CamNo, c.CamName, c.ConditionDealer, c.Status,
+            startDate = c.StartDate.HasValue ? c.StartDate.Value.ToString("yyyy-MM-dd") : "",
+            endDate = c.EndDate.HasValue ? c.EndDate.Value.ToString("yyyy-MM-dd") : "",
+            parts = pa?.parts ?? 0, avgDiscount = pa != null ? Math.Round(pa.avgDiscount, 1) : 0m, maxDiscount = pa?.maxDiscount ?? 0m };
+    }).ToList();
+    var byStatus = cams.GroupBy(c => c.Status).Select(g => new { status = g.Key, count = g.Count() }).ToList();
+    return Results.Ok(new { count = rows.Count, active = cams.Count(c => c.Status == "Active"), byStatus, rows });
+}).RequireAuthorization();
+
+// ===== Báo cáo bảo hành gửi DMS (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmRpt_DMSSer_Rpt_DMSClaim, TCMotor) =====
+// Các ĐN đã gửi lên DMS (Sent trở đi) + phân loại theo trạng thái duyệt + tỉ lệ chấp thuận.
+app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status != "Pending"); // đã gửi DMS
+    if (fromDate.HasValue) q = q.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
+    var claims = await q.Select(x => new { x.ClaimNo, x.DealerCode, x.Vin, x.PlateNo, x.WarrantyType, x.Amount, x.Status }).ToListAsync();
+    var byStatus = claims.GroupBy(c => c.Status).Select(g => new { status = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) }).ToList();
+    var accepted = claims.Count(c => c.Status == "Accepted");
+    var decided = claims.Count(c => c.Status == "Accepted" || c.Status == "Rejected");
+    var acceptRate = decided > 0 ? Math.Round((decimal)accepted / decided * 100, 1) : 0m;
+    var rows = claims.OrderByDescending(c => c.Amount).Select(c => new { c.ClaimNo, c.DealerCode, c.Vin, c.PlateNo, c.WarrantyType, c.Amount, c.Status }).ToList();
+    return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
+}).RequireAuthorization();
+
 // ===== KPI dịch vụ tổng hợp (report tái-dùng RepairOrder + ServiceInvoice — port 1:1 FrmReportKPI/FrmReportCollectiveDisplay_KPI/FrmRpt_Correct_Repair_Rate, TCMotor) =====
 app.MapGet("/api/report/service-kpi", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
 {
