@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đếm lượt khách dịch vụ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:20px;display:block}
+  .badge{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line)} .b-new{color:var(--accent)} .b-ret{color:var(--ok);font-weight:700}
+</style></head>
+<body>
+<h1>Đếm lượt khách dịch vụ <span class="muted">(port 1:1 FrmReportCountCus/_OnlyHTC/_ToHTC — TCMotor)</span></h1>
+<p class="muted">Đếm số lượt vào xưởng (lệnh sửa chữa) theo từng xe/khách. Khách mới = 1 lượt; khách quay lại = nhiều lượt.</p>
+<div class="row">
+  <div><label>Từ ngày</label><input id="from" type="date"></div>
+  <div><label>Đến ngày</label><input id="to" type="date"></div>
+  <div><label>Phân loại</label><select id="kind"><option value="all">Tất cả</option><option value="new">Khách mới</option><option value="returning">Khách quay lại</option></select></div>
+  <button class="primary" onclick="load()">Xem báo cáo</button>
+</div>
+<div class="grid2" id="kpis"></div>
+<div class="wrap"><table><thead><tr><th>Số khung (VIN)</th><th>Khách hàng</th><th class="num">Số lượt</th><th>Loại</th><th>Lần gần nhất</th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("from").value)p.set("fromDate",F("from").value); if(F("to").value)p.set("toDate",F("to").value); p.set("kind",F("kind").value);
+  const r=await fetch("/api/report/customer-visits?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`<div class="kpi"><b>${d.totalCustomers}</b><span class="muted">Tổng khách/xe</span></div><div class="kpi"><b>${d.totalVisits}</b><span class="muted">Tổng lượt vào</span></div><div class="kpi"><b style="color:var(--accent)">${d.newCustomers}</b><span class="muted">Khách mới</span></div><div class="kpi"><b style="color:var(--ok)">${d.returningCustomers}</b><span class="muted">Khách quay lại</span></div>`;
+  F("rows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.vin)||"(không VIN)"}</b></td><td>${esc(o.cusName)}</td><td class="num">${o.visits}</td><td><span class="badge ${o.visits>1?'b-ret':'b-new'}">${o.visits>1?"Quay lại":"Mới"}</span></td><td>${esc(o.lastVisit)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>';
+}
+</script>
+</body></html>

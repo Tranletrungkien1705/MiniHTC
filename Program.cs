@@ -4072,6 +4072,32 @@ app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db,
     return Results.Ok(new { x.FrameNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== Báo cáo đếm lượt khách dịch vụ (report tái-dùng RepairOrder — port 1:1 FrmReportCountCus/_OnlyHTC/_ToHTC, TCMotor) =====
+// Đếm số lượt vào xưởng (RO) theo từng xe/khách; phân loại khách mới (1 lượt) vs quay lại (>1 lượt); lọc khoảng ngày check-in.
+app.MapGet("/api/report/customer-visits", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? kind) =>
+{
+    var q = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) q = q.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date <= toDate.Value.Date);
+    var ros = await q.Select(x => new { x.Vin, x.CusName, x.CheckInDate }).ToListAsync();
+    var grouped = ros.GroupBy(x => new { vin = x.Vin ?? "", cus = x.CusName ?? "" }).Select(g => new
+    {
+        vin = g.Key.vin, cusName = g.Key.cus, visits = g.Count(),
+        lastVisit = g.Max(x => x.CheckInDate).HasValue ? g.Max(x => x.CheckInDate)!.Value.ToString("yyyy-MM-dd") : ""
+    }).ToList();
+    // kind: new (1 lượt) | returning (>1 lượt) | all
+    var k = (kind ?? "all").Trim().ToLowerInvariant();
+    var rows = (k == "new" ? grouped.Where(r => r.visits == 1)
+             : k == "returning" ? grouped.Where(r => r.visits > 1)
+             : grouped).OrderByDescending(r => r.visits).ToList();
+    return Results.Ok(new
+    {
+        totalCustomers = grouped.Count, totalVisits = grouped.Sum(r => r.visits),
+        newCustomers = grouped.Count(r => r.visits == 1), returningCustomers = grouped.Count(r => r.visits > 1),
+        count = rows.Count, rows
+    });
+}).RequireAuthorization();
+
 // ===== Ngày đăng ký bảo hành theo VIN (ServiceCar.WarrantyRegistrationDate — port 1:1 FrmHTCSearch/UpdateWarrantyRegistrationDate, TCMotor) =====
 // Tìm xe + ngày đăng ký BH (lọc frame/biển số; onlyMissing=true chỉ xe chưa có ngày ĐK).
 app.MapGet("/api/servicecars/warranty-reg", async (AppDbContext db, ITenantContext t, string? frame, string? plate, bool? onlyMissing) =>
