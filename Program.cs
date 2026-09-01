@@ -4209,6 +4209,27 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo gợi ý đặt hàng (report tái-dùng SalesOrder + SalesOrderLine — port 1:1 FrmBCGoiYDatHang, 2010.HTC/Sales) =====
+// Gợi ý SL đặt = TB nhu cầu tháng (tổng SL đặt N tháng gần nhất / N) × hệ số; gom theo đại lý + model.
+app.MapGet("/api/report/order-suggestion", async (AppDbContext db, ITenantContext t, int? months, decimal? factor, string? dealer) =>
+{
+    var n = months is > 0 and <= 24 ? months.Value : 6;
+    var f = factor is > 0 and <= 6 ? factor.Value : 1m;
+    var cutoff = DateTime.Today.AddMonths(-n);
+    var soIds = db.SalesOrders.Where(o => o.OrgId == t.OrgId && o.CreatedAt >= cutoff && (o.Status == "Approved1" || o.Status == "Approved2" || o.Status == "Sent"));
+    if (!string.IsNullOrWhiteSpace(dealer)) soIds = soIds.Where(o => o.DealerCode == dealer);
+    var lines = await (from l in db.SalesOrderLines.Where(x => x.OrgId == t.OrgId)
+                       join o in soIds on l.SalesOrderId equals o.Id
+                       select new { o.DealerCode, l.ModelCode, l.SpecCode, l.RequestedQuantity }).ToListAsync();
+    var rows = lines.GroupBy(x => new { x.DealerCode, x.ModelCode, spec = x.SpecCode ?? "" })
+        .Select(g => {
+            var total = g.Sum(x => x.RequestedQuantity);
+            var avg = Math.Round((decimal)total / n, 1);
+            return new { g.Key.DealerCode, g.Key.ModelCode, spec = g.Key.spec, totalQty = total, avgMonthly = avg, suggestOrder = (int)Math.Ceiling(avg * f) };
+        }).OrderBy(r => r.DealerCode).ThenByDescending(r => r.totalQty).ToList();
+    return Results.Ok(new { months = n, factor = f, count = rows.Count, totalSuggest = rows.Sum(r => r.suggestOrder), rows });
+}).RequireAuthorization();
+
 // ===== Báo cáo doanh thu dịch vụ (report tái-dùng ServiceInvoice — port 1:1 FrmAccTotalRevenue + FrmSer_InvReportRevenueRpt, TCMotor) =====
 // Gộp hóa đơn theo tháng: tiền hàng (subtotal) + VAT − chiết khấu = tổng; tách đã thu (Paid) vs chưa thu.
 app.MapGet("/api/report/service-revenue", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
