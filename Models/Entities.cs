@@ -1003,6 +1003,32 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Vật tư bảo dưỡng (master mã/tên/ĐVT chuẩn+thường) — port 1:1 FrmSupplies (Admin/Maintenance, 2010.HTC).</summary>
+public sealed class MaintSupply
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string? Name { get; set; }
+    public string? StandardUnit { get; set; }   // PARTUNITCODESTD
+    public string? CommonUnit { get; set; }      // PARTUNITCODEDEFAULT
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
+public sealed class MaintWorkContent
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContentCode { get; set; } = "";   // MTNTKITEMCODE
+    public string? ItemCode { get; set; }            // MTNTKCODE (hạng mục cha)
+    public string? Content { get; set; }             // MTNTKITEMNAME
+    public int DisplayOrder { get; set; }            // VIEWIDX
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Bản ghi tính giá vốn bình quân phụ tùng (mỗi lần tính = 1 snapshot) — port 1:1 FrmPartCostManagement/FrmCaluCost/FrmReportHistoryCost (Tbl_Ser_PartCost_Calculate, TCMotor).</summary>
 public sealed class PartCostSnapshot
 {

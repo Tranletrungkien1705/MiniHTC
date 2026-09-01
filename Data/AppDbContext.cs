@@ -73,6 +73,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceWarrantyClaim> ServiceWarrantyClaims => Set<ServiceWarrantyClaim>();
     public DbSet<WarrantyAttachment> WarrantyAttachments => Set<WarrantyAttachment>();
     public DbSet<PartCostSnapshot> PartCostSnapshots => Set<PartCostSnapshot>();
+    public DbSet<MaintSupply> MaintSupplies => Set<MaintSupply>();
+    public DbSet<MaintWorkContent> MaintWorkContents => Set<MaintWorkContent>();
     public DbSet<ServiceQuotation> ServiceQuotations => Set<ServiceQuotation>();
     public DbSet<ServiceQuotationLabor> ServiceQuotationLabors => Set<ServiceQuotationLabor>();
     public DbSet<ServiceQuotationPart> ServiceQuotationParts => Set<ServiceQuotationPart>();

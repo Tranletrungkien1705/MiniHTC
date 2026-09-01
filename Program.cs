@@ -4609,6 +4609,88 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Vật tư bảo dưỡng (MaintSupply — port 1:1 FrmSupplies, Admin/Maintenance 2010.HTC) =====
+app.MapGet("/api/maintsupplies", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.MaintSupplies.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.Code.Contains(q!) || (x.Name != null && x.Name.Contains(q!)));
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.Code).Take(1000)
+        .Select(x => new { x.Id, x.Code, x.Name, x.StandardUnit, x.CommonUnit, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintsupplies", async (MaintSupplyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.Code ?? "").Trim();
+    if (code == "") return Results.BadRequest(new { error = "Thiếu mã vật tư." });
+    var s = await db.MaintSupplies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (s is null) { s = new MaintSupply { OrgId = t.OrgId, Code = code }; db.MaintSupplies.Add(s); }
+    s.Name = dto.Name; s.StandardUnit = dto.StandardUnit; s.CommonUnit = dto.CommonUnit; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.Id, s.Code });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintsupplies/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var s = await db.MaintSupplies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code.Trim());
+    if (s is null) return Results.NotFound(new { code });
+    s.FlagActive = s.FlagActive == "1" ? "0" : "1"; s.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.Code, s.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintsupplies/import", async (List<MaintSupplyDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int created = 0, updated = 0, errorCount = 0; var errors = new List<object>(); var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    int line = 0;
+    foreach (var r in rows)
+    {
+        line++;
+        var code = (r.Code ?? "").Trim();
+        if (code == "") { errorCount++; errors.Add(new { line, error = "Thiếu mã." }); continue; }
+        if (!seen.Add(code)) { errorCount++; errors.Add(new { line, code, error = "Trùng mã trong file." }); continue; }
+        var s = await db.MaintSupplies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+        if (s is null) { s = new MaintSupply { OrgId = t.OrgId, Code = code }; db.MaintSupplies.Add(s); created++; } else updated++;
+        s.Name = r.Name; s.StandardUnit = r.StandardUnit; s.CommonUnit = r.CommonUnit; s.UpdatedAt = DateTime.Now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount, errors });
+}).RequireAuthorization();
+
+// ===== Nội dung công việc bảo dưỡng (MaintWorkContent — port 1:1 FrmWorkContents, Admin/Maintenance 2010.HTC) =====
+app.MapGet("/api/maintworkcontents", async (AppDbContext db, ITenantContext t, string? q, string? item, string? active) =>
+{
+    var query = db.MaintWorkContents.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ContentCode.Contains(q!) || (x.Content != null && x.Content.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(item)) query = query.Where(x => x.ItemCode == item);
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.ItemCode).ThenBy(x => x.DisplayOrder).Take(1000)
+        .Select(x => new { x.Id, x.ContentCode, x.ItemCode, x.Content, x.DisplayOrder, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintworkcontents", async (MaintWorkContentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ContentCode ?? "").Trim();
+    if (code == "") return Results.BadRequest(new { error = "Thiếu mã nội dung." });
+    var c = await db.MaintWorkContents.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContentCode == code);
+    if (c is null) { c = new MaintWorkContent { OrgId = t.OrgId, ContentCode = code }; db.MaintWorkContents.Add(c); }
+    c.ItemCode = dto.ItemCode; c.Content = dto.Content; c.DisplayOrder = dto.DisplayOrder; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.ContentCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintworkcontents/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.MaintWorkContents.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContentCode == code.Trim());
+    if (c is null) return Results.NotFound(new { code });
+    c.FlagActive = c.FlagActive == "1" ? "0" : "1"; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ContentCode, c.FlagActive });
+}).RequireAuthorization();
+
 // ===== Quản lý giá vốn phụ tùng (PartCostSnapshot — port 1:1 FrmPartCostManagement/FrmCaluCost/FrmReportHistoryCost, TCMotor) =====
 // Tính giá vốn bình quân gia quyền = tổng(SL×giá nhập)/tổng SL từ các phiếu NHẬP đã duyệt; lưu snapshot + cập nhật ServicePart.Cost.
 app.MapPost("/api/partcosts/calculate", async (AppDbContext db, ITenantContext t) =>
@@ -10324,6 +10406,8 @@ record ContractSmFixDto(long Id, string? NewSmCode);
 record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
+record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);
 record DealBankFixDto(long Id, string? BankCode);
