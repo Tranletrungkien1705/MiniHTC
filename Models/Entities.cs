@@ -1139,6 +1139,18 @@ public sealed class SerInsuranceContract
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>Đơn giá thuê thiết bị GPS (Mst_UnitPriceGPS) — port 1:1 FrmMst_UnitPriceGPS (2010.HTC/Sales/Product). Theo số hợp đồng: đơn giá GPS + ngày hiệu lực. Upsert-by-ContractNo.</summary>
+public sealed class MstUnitPriceGPS
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractNo { get; set; } = "";
+    public decimal UnitPrice { get; set; }
+    public DateTime? EffStartDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {

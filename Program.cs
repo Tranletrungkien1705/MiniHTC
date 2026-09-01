@@ -5000,6 +5000,38 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Đơn giá thuê thiết bị GPS (MstUnitPriceGPS — port 1:1 FrmMst_UnitPriceGPS, 2010.HTC/Sales/Product) =====
+app.MapGet("/api/unitpricegps", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.MstUnitPriceGpsItems.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractNo.Contains(q!));
+    var items = await qry.OrderBy(x => x.ContractNo).Take(500).Select(x => new { x.Id, x.ContractNo, x.UnitPrice, x.EffStartDate, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.ContractNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng." });
+    if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không hợp lệ." });
+    var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
+    if (row is null) { row = new MstUnitPriceGPS { OrgId = t.OrgId, ContractNo = no }; db.MstUnitPriceGpsItems.Add(row); }
+    row.UnitPrice = dto.UnitPrice; row.EffStartDate = dto.EffStartDate; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ContractNo, row.UnitPrice, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/unitpricegps/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Hợp đồng bảo hiểm dịch vụ (SerInsuranceContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor DMSCarSv/Admin) =====
 app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -12993,6 +13025,7 @@ record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
+record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
