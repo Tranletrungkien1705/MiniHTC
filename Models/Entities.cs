@@ -1070,6 +1070,19 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Kho tại đại lý (Dlr_StorageLocal) — port 1:1 FrmDlr_StorageLocal (2010.HTC). Master kho địa phương của từng đại lý; khóa kép (DealerCode × StorageCode).</summary>
+public sealed class DealerStorageLocal
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string StorageCode { get; set; } = "";
+    public string? StorageName { get; set; }
+    public string? DealerName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Cập nhật thông tin hóa đơn/thế chấp theo VIN — port 1:1 FrmCapNhatThongTinHoaDon (2010.HTC). Batch cập nhật số HĐ nhà máy, số vận đơn, số ĐK/NG, thông tin thế chấp NH + ngày giải chấp, upsert theo VIN.</summary>
 public sealed class CarVinInvoiceInfo
 {

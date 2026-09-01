@@ -1442,6 +1442,30 @@ app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
+// Cập nhật giá trị bảo lãnh theo VIN (port 1:1 FrmEditGrtValue, 2010.HTC).
+app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
+    if (lines.Any(l => l.GrtValue < 0)) return Results.BadRequest(new { error = "Giá trị bảo lãnh không được âm." });
+    var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var key = l.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.VIN!.Trim()); continue; }
+        c.GrtValue = l.GrtValue; updated++;
+    }
+    // cập nhật lại tổng giá trị bảo lãnh trên header
+    g.TotalAmount = cars.Sum(c => c.GrtValue);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, totalAmount = g.TotalAmount, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
 app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
     if (action is not ("approve" or "reject" or "settle")) return Results.BadRequest(new { error = "action = approve|reject|settle" });
@@ -4863,6 +4887,40 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     h.FlagActive = h.FlagActive == "1" ? "0" : "1"; h.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.FlagActive });
+}).RequireAuthorization();
+
+// ===== Kho tại đại lý (DealerStorageLocal — port 1:1 FrmDlr_StorageLocal, 2010.HTC) =====
+app.MapGet("/api/dealerstoragelocals", async (AppDbContext db, ITenantContext t, string? dealer, string? q, bool? all) =>
+{
+    var qry = db.DealerStorageLocals.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StorageCode.Contains(q!) || x.StorageName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.DealerCode).ThenBy(x => x.StorageCode).Take(500).Select(x => new { x.Id, x.DealerCode, x.StorageCode, x.StorageName, x.DealerName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerstoragelocals", async (DealerStorageLocalDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var code = (dto.StorageCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã kho." });
+    var row = await db.DealerStorageLocals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.StorageCode == code);
+    if (row is null) { row = new DealerStorageLocal { OrgId = t.OrgId, DealerCode = dealer, StorageCode = code }; db.DealerStorageLocals.Add(row); }
+    row.StorageName = dto.StorageName; row.DealerName = dto.DealerName; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DealerCode, row.StorageCode, row.StorageName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerstoragelocals/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DealerStorageLocals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
 // ===== Cập nhật thông tin hóa đơn/thế chấp theo VIN (CarVinInvoiceInfo — port 1:1 FrmCapNhatThongTinHoaDon, 2010.HTC) =====
@@ -12155,6 +12213,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record DealerStorageLocalDto(string? DealerCode, string? StorageCode, string? StorageName, string? DealerName, string? FlagActive);
+record GrtValueEditDto(List<GrtValueRowDto>? Lines);
+record GrtValueRowDto(string? VIN, decimal GrtValue);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive);

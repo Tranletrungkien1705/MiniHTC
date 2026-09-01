@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Cập nhật giá trị bảo lãnh</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:840px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} input.val{width:150px;text-align:right}
+</style></head>
+<body>
+<h1>Cập nhật giá trị bảo lãnh <span class="muted">(port 1:1 FrmEditGrtValue — 2010.HTC)</span></h1>
+<p class="muted">Nhập số bảo lãnh → sửa <b>giá trị bảo lãnh</b> từng xe/VIN → lưu. Tổng giá trị bảo lãnh trên phiếu tự cập nhật.</p>
+<div class="card"><div class="row"><div><label>Số bảo lãnh *</label><input id="no" style="width:180px"></div><button onclick="loadGrt()">Tải xe</button><span id="msg" class="msg"></span></div>
+  <div id="head" class="muted" style="margin-top:6px"></div>
+</div>
+<div class="card" id="editCard" style="display:none"><h3 style="margin-top:0">Chi tiết bảo lãnh</h3>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th class="num">Hết hạn</th><th class="num">Giá trị bảo lãnh</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu giá trị</button></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dt=s=>s?String(s).substring(0,10):""; const M=n=>Math.round(+n||0).toLocaleString("vi-VN");
+let CURNO="";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+async function loadGrt(){ await token(); CURNO=F("no").value.trim();
+  const r=await fetch("/api/bankgrts/"+encodeURIComponent(CURNO)+"/cars",{headers:Hh()});
+  if(!r.ok){ F("editCard").style.display="none"; say("Không thấy bảo lãnh "+CURNO); return; }
+  const d=await r.json(); F("head").textContent=`BL ${d.guaranteeNo} — đại lý ${d.dealerCode} — NH ${d.bankCode} — ${d.count} xe — tổng ${M(d.totalAmount)}`;
+  F("editCard").style.display="block";
+  F("rows").innerHTML=(d.cars||[]).map(c=>`<tr data-vin="${esc(c.vin)}"><td><b>${esc(c.vin)}</b></td><td class="num">${dt(c.dateExpired)}</td><td class="num"><input class="val" type="number" value="${c.grtValue||0}"></td></tr>`).join("")||'<tr><td colspan="3" class="muted">Bảo lãnh không có xe.</td></tr>';
+}
+async function save(){ await token();
+  const lines=[...document.querySelectorAll("#rows tr[data-vin]")].map(tr=>({VIN:tr.getAttribute("data-vin"),GrtValue:parseFloat(tr.querySelector(".val").value)||0}));
+  const r=await fetch("/api/bankgrts/"+encodeURIComponent(CURNO)+"/edit-value",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Lines:lines})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; }
+  say(`Đã cập nhật ${d.updated} xe — tổng mới ${M(d.totalAmount)}`); loadGrt();
+}
+</script>
+</body></html>
