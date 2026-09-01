@@ -5000,6 +5000,55 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== NVBH đại lý + duyệt BĐH (DealerSalesMan — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC, 2010.HTC/SalesDealer) =====
+var smWorkStatuses = new[] { "THUVIEC", "CHINHTHUC", "NGHIVIEC", "CTVIEN" };
+app.MapGet("/api/dealersalesmen", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? bdh, bool? all) =>
+{
+    var qry = db.DealerSalesMen.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(bdh)) qry = qry.Where(x => x.BDHStatus == bdh);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMCode.Contains(q!) || x.SMName!.Contains(q!) || x.SMHyundaiCode!.Contains(q!));
+    var items = await qry.OrderBy(x => x.SMCode).Take(500).Select(x => new { x.Id, x.SMCode, x.SMHyundaiCode, x.SMName, x.DealerCode, x.SMEmail, x.SMPhoneNo, x.IdentityCardNo, x.SMGender, x.ProvinceCode, x.QualificationCode, x.StartDate, x.EndDate, x.SMStatus, x.BDHStatus, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealersalesmen", async (DealerSalesManDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.SMCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH." });
+    if (string.IsNullOrWhiteSpace((dto.SMName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên NVBH." });
+    var work = (dto.SMStatus ?? "THUVIEC").Trim().ToUpperInvariant();
+    if (!smWorkStatuses.Contains(work)) return Results.BadRequest(new { error = "Trạng thái làm việc không hợp lệ (THUVIEC/CHINHTHUC/NGHIVIEC/CTVIEN)." });
+    if (!string.IsNullOrWhiteSpace(dto.SMEmail) && !(dto.SMEmail!.Contains('@') && dto.SMEmail.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
+    if (row is null) { row = new DealerSalesMan { OrgId = t.OrgId, SMCode = code, BDHStatus = "Pending" }; db.DealerSalesMen.Add(row); }
+    row.SMHyundaiCode = dto.SMHyundaiCode; row.SMName = dto.SMName; row.DealerCode = dto.DealerCode; row.SMEmail = dto.SMEmail; row.SMPhoneNo = dto.SMPhoneNo; row.IdentityCardNo = dto.IdentityCardNo; row.SMGender = dto.SMGender; row.ProvinceCode = dto.ProvinceCode; row.QualificationCode = dto.QualificationCode; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.SMStatus = work; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SMCode, row.SMName, row.SMStatus, row.BDHStatus });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealersalesmen/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    var target = action.ToLowerInvariant() switch { "approve" => "Approved", "reject" => "Rejected", _ => "" };
+    if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (approve/reject)." });
+    if (row.BDHStatus != "Pending") return Results.BadRequest(new { error = $"NVBH đã ở trạng thái duyệt '{row.BDHStatus}', chỉ duyệt khi 'Pending'." });
+    row.BDHStatus = target; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.BDHStatus });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealersalesmen/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Đề nghị giao HĐ/hồ sơ thu hồi (RedeemInvoiceRequest header-detail — port 1:1 FrmNewRDInvoice/FrmMngRDInvoice, 2010.HTC/Sales/Redeem) =====
 app.MapGet("/api/redeeminvoicerequests", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
@@ -13337,6 +13386,7 @@ record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? Deal
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType);
+record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

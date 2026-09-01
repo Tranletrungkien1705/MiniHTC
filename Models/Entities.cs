@@ -1279,6 +1279,29 @@ public sealed class RedeemInvoiceRequestLine
     public string ReqType { get; set; } = "DEALER";
 }
 
+/// <summary>NVBH đại lý + duyệt BĐH (Mst_DlSalesMan) — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC (2010.HTC/SalesDealer). Đại lý đăng ký NVBH → HTC/BĐH duyệt. 2 trạng thái: SMStatus (thử việc/chính thức/nghỉ/CTV) + BDHStatus (duyệt). KHÁC master SalesMan đơn giản. Upsert-by-SMCode.</summary>
+public sealed class DealerSalesMan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SMCode { get; set; } = "";
+    public string? SMHyundaiCode { get; set; }
+    public string? SMName { get; set; }
+    public string? DealerCode { get; set; }
+    public string? SMEmail { get; set; }
+    public string? SMPhoneNo { get; set; }
+    public string? IdentityCardNo { get; set; }
+    public string? SMGender { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? QualificationCode { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string SMStatus { get; set; } = "THUVIEC";   // THUVIEC/CHINHTHUC/NGHIVIEC/CTVIEN
+    public string BDHStatus { get; set; } = "Pending";   // Pending → Approved / Rejected (BĐH duyệt)
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — NVBH đại lý (duyệt BĐH)</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1080px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5} .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)}
+  .b-Pending{color:var(--warn);border-color:var(--warn)} .b-Approved{color:var(--ok);border-color:var(--ok)} .b-Rejected{opacity:.6}
+</style></head>
+<body>
+<h1>NVBH đại lý — duyệt BĐH <span class="muted">(port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC — 2010.HTC/SalesDealer)</span></h1>
+<div class="card"><h3 style="margin-top:0">Đăng ký / sửa NVBH (theo mã)</h3>
+  <div class="grid4">
+    <div><label>Mã NVBH *</label><input id="code"></div>
+    <div><label>Mã Hyundai</label><input id="hyu"></div>
+    <div><label>Họ tên *</label><input id="name"></div>
+    <div><label>Đại lý</label><input id="dealer"></div>
+    <div><label>Email</label><input id="email"></div>
+    <div><label>Điện thoại</label><input id="phone"></div>
+    <div><label>CMND/CCCD</label><input id="idc"></div>
+    <div><label>Giới tính</label><select id="gender"><option value="">—</option><option value="M">Nam</option><option value="F">Nữ</option></select></div>
+    <div><label>Tỉnh</label><input id="prov"></div>
+    <div><label>Trình độ</label><input id="qual"></div>
+    <div><label>Ngày vào</label><input id="start" type="date"></div>
+    <div><label>Trạng thái LV</label><select id="status"><option value="THUVIEC">Thử việc</option><option value="CHINHTHUC">Chính thức</option><option value="CTVIEN">Cộng tác viên</option><option value="NGHIVIEC">Nghỉ việc</option></select></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><button onclick="reset()">Mới</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Mã / tên NVBH" style="width:200px"><select id="fbdh"><option value="">— duyệt: tất cả —</option><option value="Pending">Chờ duyệt</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="all" style="width:auto"> Cả đã tắt</label><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Hyundai</th><th>Họ tên</th><th>Đại lý</th><th>ĐT</th><th>TTLV</th><th>Duyệt BĐH</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dshow=s=>s?String(s).slice(0,10):""; const wname=s=>({THUVIEC:'Thử việc',CHINHTHUC:'Chính thức',CTVIEN:'CTV',NGHIVIEC:'Nghỉ việc'}[s]||s); const bname=s=>({Pending:'Chờ duyệt',Approved:'Đã duyệt',Rejected:'Từ chối'}[s]||s);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3800); }
+const v=id=>F(id).value||null;
+function reset(){ ["code","hyu","name","dealer","email","phone","idc","prov","qual","start"].forEach(i=>F(i).value=""); F("gender").value=""; F("status").value="THUVIEC"; }
+async function save(){ await token();
+  const body={SMCode:F("code").value,SMHyundaiCode:v("hyu"),SMName:F("name").value,DealerCode:v("dealer"),SMEmail:v("email"),SMPhoneNo:v("phone"),IdentityCardNo:v("idc"),SMGender:v("gender"),ProvinceCode:v("prov"),QualificationCode:v("qual"),StartDate:v("start"),SMStatus:F("status").value};
+  const r=await fetch("/api/dealersalesmen",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.sMCode); reset(); load();
+}
+function edit(o){ F("code").value=o.sMCode; F("hyu").value=o.sMHyundaiCode||""; F("name").value=o.sMName||""; F("dealer").value=o.dealerCode||""; F("email").value=o.sMEmail||""; F("phone").value=o.sMPhoneNo||""; F("idc").value=o.identityCardNo||""; F("prov").value=o.provinceCode||""; F("qual").value=o.qualificationCode||""; F("start").value=dshow(o.startDate); F("gender").value=o.sMGender||""; F("status").value=o.sMStatus||"THUVIEC"; window.scrollTo(0,0); }
+async function act(id,a){ await token(); const r=await fetch("/api/dealersalesmen/"+id+"/"+a,{method:"POST",headers:Hh()}); const d=await r.json(); if(!r.ok) say("Lỗi: "+(d.error||r.status)); load(); }
+async function load(){ await token();
+  const r=await fetch("/api/dealersalesmen?all="+(F("all").checked)+"&bdh="+encodeURIComponent(F("fbdh").value)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.sMCode)}</b></td><td>${esc(o.sMHyundaiCode)}</td><td>${esc(o.sMName)}</td><td>${esc(o.dealerCode)}</td><td>${esc(o.sMPhoneNo)}</td><td>${wname(o.sMStatus)}</td><td><span class="pill b-${esc(o.bDHStatus)}">${bname(o.bDHStatus)}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button>${o.bDHStatus==='Pending'?`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button><button class="link" onclick="act(${o.id},'reject')">Từ chối</button>`:''}<button class="link" onclick="act(${o.id},'toggle')">${o.flagActive==='1'?'Tắt':'Bật'}</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có NVBH.</td></tr>';
+}
+</script>
+</body></html>
