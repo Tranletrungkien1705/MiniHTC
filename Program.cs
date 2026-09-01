@@ -4209,6 +4209,23 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo bảo hành theo phụ tùng chính (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmReportWarranty_MainPart, TCMotor/Warranty) =====
+// Top phụ tùng xuất hiện trong đề nghị bảo hành: số ĐN + tổng tiền + số đã chấp thuận theo mã PT.
+app.MapGet("/api/report/warranty-by-part", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
+{
+    var n = top is > 0 and <= 200 ? top.Value : 30;
+    var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.PartCode != null && x.PartCode != "");
+    if (fromDate.HasValue) q = q.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
+    var claims = await q.Select(x => new { x.PartCode, x.Amount, x.Status }).ToListAsync();
+    var rows = claims.GroupBy(c => c.PartCode!).Select(g => new
+    {
+        partCode = g.Key, claims = g.Count(), totalAmount = g.Sum(x => x.Amount),
+        accepted = g.Count(x => x.Status == "Accepted"), acceptedAmount = g.Where(x => x.Status == "Accepted").Sum(x => x.Amount)
+    }).OrderByDescending(r => r.claims).ThenByDescending(r => r.totalAmount).Take(n).ToList();
+    return Results.Ok(new { count = rows.Count, totalClaims = claims.Count, grandAmount = rows.Sum(r => r.totalAmount), rows });
+}).RequireAuthorization();
+
 // ===== Báo cáo yêu cầu bảo hành TCG (report tái-dùng WarrantyClaimTC — port 1:1 FrmClaimReport, 2010.HTC/Report) =====
 // Thống kê YCBH theo trạng thái + theo đại lý + tỉ lệ chấp thuận, lọc khoảng ngày.
 app.MapGet("/api/report/tcg-warranty-claim", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? dealer) =>
