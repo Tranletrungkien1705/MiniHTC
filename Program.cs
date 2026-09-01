@@ -4968,6 +4968,71 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master quy đổi đơn vị TST↔DMS (TstExchangeUnit — port 1:1 FrmTST_Mst_Exchange_Unit, TCMotor DMSCarSv) =====
+app.MapGet("/api/tstexchangeunits", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.TstExchangeUnits.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TSTPartCode.Contains(q!) || x.VieName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieName, x.TSTUnit, x.DMSUnit, x.ExchangeRate, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TSTPartCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng TST." });
+    if (dto.ExchangeRate <= 0) return Results.BadRequest(new { error = "Tỷ lệ quy đổi phải > 0." });
+    var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+    if (row is null) { row = new TstExchangeUnit { OrgId = t.OrgId, TSTPartCode = code }; db.TstExchangeUnits.Add(row); }
+    row.VieName = dto.VieName; row.TSTUnit = dto.TSTUnit; row.DMSUnit = dto.DMSUnit; row.ExchangeRate = dto.ExchangeRate; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TSTPartCode, row.ExchangeRate, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Master phụ tùng TST (TstPart — port 1:1 FrmTST_Mst_Part, TCMotor DMSCarSv) =====
+app.MapGet("/api/tstparts", async (AppDbContext db, ITenantContext t, string? q, string? group, bool? all) =>
+{
+    var qry = db.TstParts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(group)) qry = qry.Where(x => x.PartGroup == group);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TSTPartCode.Contains(q!) || x.VieName!.Contains(q!) || x.VieNameHTC!.Contains(q!));
+    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieNameHTC, x.VieName, x.EngName, x.Unit, x.VAT, x.TSTPrice, x.PartGroup, x.PartType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstparts", async (TstPartDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TSTPartCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng TST." });
+    if (dto.TSTPrice < 0 || dto.VAT < 0) return Results.BadRequest(new { error = "Giá/VAT không được âm." });
+    var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+    if (row is null) { row = new TstPart { OrgId = t.OrgId, TSTPartCode = code }; db.TstParts.Add(row); }
+    row.VieNameHTC = dto.VieNameHTC; row.VieName = dto.VieName; row.EngName = dto.EngName; row.Unit = dto.Unit; row.VAT = dto.VAT; row.TSTPrice = dto.TSTPrice; row.PartGroup = dto.PartGroup; row.PartType = dto.PartType; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TSTPartCode, row.TSTPrice, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Thư viện kỹ thuật (TechnicalLibrary — port 1:1 FrmSer_Technical_Library, TCMotor DMSCarSv) =====
 app.MapGet("/api/technicallibraries", async (AppDbContext db, ITenantContext t, string? model, string? q, bool? all) =>
 {
@@ -12852,6 +12917,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
+record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
 record StockAdjDto(string? StorageCode, string? Remark, List<StockAdjLineDto>? Lines);

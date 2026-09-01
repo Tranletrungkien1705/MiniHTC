@@ -1073,6 +1073,38 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master quy đổi đơn vị TST↔DMS (TST_Mst_Exchange_Unit) — port 1:1 FrmTST_Mst_Exchange_Unit (TCMotor DMSCarSv). Theo mã phụ tùng TST: đơn vị TST/DMS + tỷ lệ quy đổi.</summary>
+public sealed class TstExchangeUnit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public string? VieName { get; set; }
+    public string? TSTUnit { get; set; }
+    public string? DMSUnit { get; set; }
+    public decimal ExchangeRate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Master phụ tùng TST (TST_Mst_Part) — port 1:1 FrmTST_Mst_Part (TCMotor DMSCarSv). Mã + tên HTC/Việt/Anh + đơn vị + VAT + giá TST + nhóm/loại.</summary>
+public sealed class TstPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public string? VieNameHTC { get; set; }
+    public string? VieName { get; set; }
+    public string? EngName { get; set; }
+    public string? Unit { get; set; }
+    public decimal VAT { get; set; }
+    public decimal TSTPrice { get; set; }
+    public string? PartGroup { get; set; }
+    public string? PartType { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {
