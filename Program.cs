@@ -4865,6 +4865,45 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Cập nhật thông tin hóa đơn/thế chấp theo VIN (CarVinInvoiceInfo — port 1:1 FrmCapNhatThongTinHoaDon, 2010.HTC) =====
+app.MapGet("/api/carvininvoiceinfos", async (AppDbContext db, ITenantContext t, string? vin, string? bank) =>
+{
+    var q = db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(x => x.MortageBankCode == bank);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.VIN, x.InvoiceNoFactory, x.InvoiceFactoryDate, x.BillNo, x.CQNo, x.CONo, x.MortageBankCode, x.MortageStartDate, x.MortageEndDate, x.RedeemDate, x.UpdatedBy, x.UpdatedAt
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, redeemed = items.Count(x => x.RedeemDate != null), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carvininvoiceinfos/import", async (CarVinInvoiceImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
+    var dup = rows.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong file." });
+    // validate: ngày kết thúc thế chấp >= ngày bắt đầu
+    foreach (var r in rows)
+        if (r.MortageStartDate.HasValue && r.MortageEndDate.HasValue && r.MortageEndDate < r.MortageStartDate)
+            return Results.BadRequest(new { error = $"VIN {r.VIN}: ngày kết thúc thế chấp phải >= ngày bắt đầu." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var vins = rows.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToHashSet();
+    var existing = await db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
+    var byVin = existing.ToDictionary(x => x.VIN, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(vin, out var row)) { row = new CarVinInvoiceInfo { OrgId = t.OrgId, VIN = vin }; db.CarVinInvoiceInfos.Add(row); added++; } else updated++;
+        row.InvoiceNoFactory = r.InvoiceNoFactory; row.InvoiceFactoryDate = r.InvoiceFactoryDate; row.BillNo = r.BillNo; row.CQNo = r.CQNo; row.CONo = r.CONo;
+        row.MortageBankCode = r.MortageBankCode; row.MortageStartDate = r.MortageStartDate; row.MortageEndDate = r.MortageEndDate; row.RedeemDate = r.RedeemDate;
+        row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Master loại NVBH theo phòng ban (SalesManType — port 1:1 FrmStaffType, TCMotor) =====
 app.MapGet("/api/salesmantypes", async (AppDbContext db, ITenantContext t, string? dept, string? q, bool? all) =>
 {
@@ -12116,6 +12155,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
+record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive);
 record CarVinCBImportDto(List<CarVinCBRowDto>? Rows);
 record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice);

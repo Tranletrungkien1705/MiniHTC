@@ -1070,6 +1070,25 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Cập nhật thông tin hóa đơn/thế chấp theo VIN — port 1:1 FrmCapNhatThongTinHoaDon (2010.HTC). Batch cập nhật số HĐ nhà máy, số vận đơn, số ĐK/NG, thông tin thế chấp NH + ngày giải chấp, upsert theo VIN.</summary>
+public sealed class CarVinInvoiceInfo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? InvoiceNoFactory { get; set; }
+    public DateTime? InvoiceFactoryDate { get; set; }
+    public string? BillNo { get; set; }
+    public string? CQNo { get; set; }
+    public string? CONo { get; set; }
+    public string? MortageBankCode { get; set; }
+    public DateTime? MortageStartDate { get; set; }
+    public DateTime? MortageEndDate { get; set; }
+    public DateTime? RedeemDate { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Master loại nhân viên bán hàng theo phòng ban (Mst_SalesManType) — port 1:1 FrmStaffType (TCMotor). Khóa kép (DepartmentCode × SMType).</summary>
 public sealed class SalesManType
 {
