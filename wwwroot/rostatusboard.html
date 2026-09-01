@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Bảng tiến độ sửa chữa</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706;--info:#0891b2}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1060px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+  .chip{border:1px solid var(--line);border-radius:10px;padding:8px 12px;cursor:pointer} .chip b{font-size:18px}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .s-HasRO{color:var(--warn)} .s-InGarage{color:var(--info)} .s-Repaired{color:var(--accent)} .s-CheckEnd{color:var(--accent)} .s-Paid{color:var(--ok)} .s-Finished{color:var(--ok);font-weight:700}
+  .wait{color:var(--bad);font-weight:700}
+</style></head>
+<body>
+<h1>Bảng tiến độ sửa chữa <span class="muted">(port 1:1 FrmDealerHistoryShareMng/Display — TCMotor)</span></h1>
+<p class="muted">Theo dõi lệnh sửa chữa (RO) theo trạng thái tiến độ. Bấm chip trạng thái để lọc.</p>
+<div class="row">
+  <div><label>Từ ngày</label><input id="from" type="date"></div>
+  <div><label>Đến ngày</label><input id="to" type="date"></div>
+  <button class="primary" onclick="load()">Tải bảng</button>
+</div>
+<div class="chips" id="chips"></div>
+<div class="wrap"><table><thead><tr><th>Số RO</th><th>Biển số</th><th>VIN</th><th>Khách</th><th>Yêu cầu</th><th>Check-in</th><th>Dự kiến giao</th><th>Trạng thái</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Tải bảng".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let CURSTATUS="";
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={HasRO:"Chờ sửa",InGarage:"Đang sửa",Repaired:"Sửa xong",CheckEnd:"Đã kiểm",Paid:"Đã thu tiền",Finished:"Đã giao xe"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+function params(withStatus){ const p=new URLSearchParams(); if(F("from").value)p.set("fromDate",F("from").value); if(F("to").value)p.set("toDate",F("to").value); if(withStatus&&CURSTATUS)p.set("status",CURSTATUS); return p; }
+async function load(){ await token();
+  const r=await fetch("/api/report/ro-status-board?"+params(true).toString(),{headers:H()}); const d=await r.json();
+  const total=(d.byStatus||[]).reduce((s,x)=>s+x.count,0);
+  let chips=`<div class="chip" onclick="pick('')" style="${CURSTATUS===''?'border-color:var(--accent)':''}"><b>${total}</b><br><span class="muted">Tất cả</span></div>`;
+  chips+=(d.byStatus||[]).map(x=>`<div class="chip" onclick="pick('${x.status}')" style="${CURSTATUS===x.status?'border-color:var(--accent)':''}"><b>${x.count}</b><br><span class="pill s-${x.status}">${ST[x.status]||x.status}</span></div>`).join("");
+  F("chips").innerHTML=chips;
+  F("rows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.rONo)}</b></td><td>${esc(o.licensePlate)}</td><td>${esc(o.vin)}</td><td>${esc(o.cusName)} ${o.cusWaiting?'<span class="wait">(chờ)</span>':''}</td><td>${esc(o.cusRequest)}</td><td>${esc(o.checkInDate)}</td><td>${esc(o.planedDelivery)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có RO.</td></tr>';
+}
+function pick(s){ CURSTATUS=s; load(); }
+</script>
+</body></html>

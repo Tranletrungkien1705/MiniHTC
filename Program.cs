@@ -4072,6 +4072,28 @@ app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db,
     return Results.Ok(new { x.FrameNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== Bảng theo dõi tiến độ sửa chữa (report tái-dùng RepairOrder — port 1:1 FrmDealerHistoryShareMng/Display, TCMotor) =====
+// Danh sách RO theo trạng thái tiến độ + đếm theo từng trạng thái (bảng điều hành xưởng).
+app.MapGet("/api/report/ro-status-board", async (AppDbContext db, ITenantContext t, string? status, DateTime? fromDate, DateTime? toDate) =>
+{
+    var q = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (fromDate.HasValue) q = q.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date <= toDate.Value.Date);
+    var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.RONo, x.LicensePlate, x.Vin, x.CusName, x.CusRequest, x.Status, x.CusWaiting,
+        checkInDate = x.CheckInDate.HasValue ? x.CheckInDate.Value.ToString("yyyy-MM-dd") : "",
+        planedDelivery = x.PlanedDeliveryDate.HasValue ? x.PlanedDeliveryDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    // Đếm theo mọi trạng thái trong phạm vi ngày (không phụ thuộc filter status).
+    var qAll = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (fromDate.HasValue) qAll = qAll.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) qAll = qAll.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date <= toDate.Value.Date);
+    var byStatus = await qAll.GroupBy(x => x.Status).Select(g => new { status = g.Key, count = g.Count() }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, byStatus, rows });
+}).RequireAuthorization();
+
 // ===== Báo cáo đếm lượt khách dịch vụ (report tái-dùng RepairOrder — port 1:1 FrmReportCountCus/_OnlyHTC/_ToHTC, TCMotor) =====
 // Đếm số lượt vào xưởng (RO) theo từng xe/khách; phân loại khách mới (1 lượt) vs quay lại (>1 lượt); lọc khoảng ngày check-in.
 app.MapGet("/api/report/customer-visits", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? kind) =>
