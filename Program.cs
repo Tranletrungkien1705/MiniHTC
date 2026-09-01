@@ -4865,6 +4865,36 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Hồ sơ phiếu thùng theo VIN (CarVinCBInfo — port 1:1 FrmUpdateCarVIN_CBInvoice, TCMotor) =====
+app.MapGet("/api/carvincbinfos", async (AppDbContext db, ITenantContext t, string? vin) =>
+{
+    var q = db.CarVinCBInfos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.VIN, x.CBNo, x.CBDate, x.DateDeliveryCBInvoice, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carvincbinfos/import", async (CarVinCBImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
+    var dup = rows.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong file." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var vins = rows.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToHashSet();
+    var existing = await db.CarVinCBInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
+    var byVin = existing.ToDictionary(x => x.VIN, x => x);
+    int added = 0, updated = 0; var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(vin, out var row)) { row = new CarVinCBInfo { OrgId = t.OrgId, VIN = vin }; db.CarVinCBInfos.Add(row); added++; } else updated++;
+        row.CBNo = r.CBNo; row.CBDate = r.CBDate; row.DateDeliveryCBInvoice = r.DateDeliveryCBInvoice; row.UpdatedBy = by; row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Thu hồi hóa đơn HTCV (InvoiceRecall — port 1:1 FrmThuHoiHD, TCMotor) =====
 app.MapGet("/api/invoicerecalls", async (AppDbContext db, ITenantContext t, string? invoiceNo) =>
 {
@@ -12052,6 +12082,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarVinCBImportDto(List<CarVinCBRowDto>? Rows);
+record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice);
 record InvoiceRecallImportDto(string? Reason, List<string?>? InvoiceNos);
 record CarContractTypeImportDto(List<CarContractTypeRowDto>? Rows);
 record CarContractTypeRowDto(string? CarId, string? ModelCode, string? SpecCode, string? ColorCode, string? SOCode, string? ContractType);

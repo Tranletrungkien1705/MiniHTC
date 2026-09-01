@@ -1070,6 +1070,19 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Hồ sơ phiếu thùng theo VIN — port 1:1 FrmUpdateCarVIN_CBInvoice (Car_VIN CB info, TCMotor). Batch cập nhật số/ngày phiếu xuất xưởng có thùng (CB) + ngày giao phiếu, upsert theo VIN.</summary>
+public sealed class CarVinCBInfo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? CBNo { get; set; }
+    public DateTime? CBDate { get; set; }
+    public DateTime? DateDeliveryCBInvoice { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thu hồi hóa đơn HTCV — port 1:1 FrmThuHoiHD (VAT_HTCVInvoice_Invoice_Deleted, TCMotor). Import danh sách số HĐ để thu hồi (đánh dấu đã xóa); ghi log + đếm khớp InvoiceLine.</summary>
 public sealed class InvoiceRecall
 {
