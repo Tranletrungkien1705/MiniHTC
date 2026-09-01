@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đặt hàng tồn kho tối ưu</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1120px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end;margin:10px 0}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} tfoot td{font-weight:700;border-top:2px solid var(--line)} .wrap{overflow-x:auto}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+  .icc{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line)} .icc-A{color:var(--ok);font-weight:700} .icc-B{color:var(--warn)} .icc-C{opacity:.7}
+  .sug{color:var(--bad);font-weight:700}
+</style></head>
+<body>
+<h1>Đặt hàng tồn kho tối ưu <span class="muted">(port 1:1 FrmQLDathangtonkhotoiuu — TCMotor)</span></h1>
+<p class="muted">Nhu cầu bình quân tháng (MAD) = TB số lượng xuất 6 tháng gần nhất. Phân nhóm ABC theo tỉ trọng nhu cầu. Đề xuất đặt = trần(MAD × hệ số) − tồn hiện tại.</p>
+<div class="row">
+  <div><label>Hệ số giao hàng+an toàn</label><input id="factor" type="number" step="0.1" value="1.5" style="width:110px"></div>
+  <button class="primary" onclick="load()">Tính đề xuất</button>
+  <span id="msg" class="muted"></span>
+</div>
+<div class="grid2" id="kpis"></div>
+<div class="wrap"><table><thead><tr><th>Mã PT</th><th>Tên</th><th class="num">T-5</th><th class="num">T-4</th><th class="num">T-3</th><th class="num">T-2</th><th class="num">T-1</th><th class="num">T0</th><th class="num">Tổng 6T</th><th class="num">MAD</th><th class="num">Tần suất</th><th>ABC</th><th class="num">Tồn</th><th class="num">Mục tiêu</th><th class="num">Đề xuất đặt</th></tr></thead>
+<tbody id="rows"><tr><td colspan="15" class="muted">Nhấn "Tính đề xuất".</td></tr></tbody>
+<tfoot id="foot"></tfoot></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}; }
+async function load(){ await token();
+  const r=await fetch("/api/report/optimal-reorder?leadFactor="+(+F("factor").value||1.5),{headers:H()}); const d=await r.json();
+  F("msg").textContent="Hệ số "+d.leadFactor;
+  F("kpis").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Mã có xuất 6T</span></div><div class="kpi"><b style="color:var(--bad)">${d.needOrder}</b><span class="muted">Mã cần đặt</span></div><div class="kpi"><b>${M(d.totalSuggest)}</b><span class="muted">Tổng SL đề xuất</span></div>`;
+  F("rows").innerHTML=(d.rows||[]).map(o=>{ const b=o.buckets||[0,0,0,0,0,0];
+    return `<tr><td><b>${esc(o.partCode)}</b></td><td>${esc(o.partName)}</td>${b.map(x=>`<td class="num">${x?M(x):""}</td>`).join("")}<td class="num"><b>${M(o.total6mo)}</b></td><td class="num">${M(o.mad)}</td><td class="num">${o.freq}</td><td><span class="icc icc-${o.icc}">${o.icc}</span></td><td class="num">${M(o.current)}</td><td class="num">${M(o.target)}</td><td class="num ${o.suggestOrder>0?'sug':''}">${o.suggestOrder>0?M(o.suggestOrder):"-"}</td></tr>`;
+  }).join("")||'<tr><td colspan="15" class="muted">Chưa có dữ liệu xuất kho 6 tháng gần nhất.</td></tr>';
+  F("foot").innerHTML=(d.rows&&d.rows.length)?`<tr><td colspan="14">TỔNG ĐỀ XUẤT ĐẶT</td><td class="num">${M(d.totalSuggest)}</td></tr>`:"";
+}
+</script>
+</body></html>

@@ -4272,6 +4272,48 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Đặt hàng tồn kho tối ưu (report tái-dùng ServiceStockOut — port 1:1 FrmQLDathangtonkhotoiuu, TCMotor) =====
+// Nhu cầu bình quân tháng (MAD) = trung bình SL xuất 6 tháng gần nhất; phân nhóm ABC theo tỉ trọng nhu cầu; đề xuất đặt hàng.
+app.MapGet("/api/report/optimal-reorder", async (AppDbContext db, ITenantContext t, decimal? leadFactor) =>
+{
+    var factor = leadFactor is > 0 and <= 12 ? leadFactor.Value : 1.5m; // hệ số thời gian giao + an toàn
+    var now = DateTime.Now;
+    var startMonth = new DateTime(now.Year, now.Month, 1).AddMonths(-5); // đầu tháng của 6 tháng gần nhất (gồm tháng này)
+    var confirmedIds = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed" && o.StockOutDate.HasValue && o.StockOutDate >= startMonth)
+        .Select(o => new { o.Id, o.StockOutDate });
+    var lines = await (from l in db.ServiceStockOutLines.Where(x => x.OrgId == t.OrgId)
+                       join o in confirmedIds on l.ServiceStockOutId equals o.Id
+                       select new { l.PartCode, l.Quantity, date = o.StockOutDate!.Value }).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Quantity, p.MinQuantity }).ToListAsync();
+    var pMap = parts.ToDictionary(p => p.PartCode, p => p);
+    // Gom theo mã PT + 6 rổ tháng (index 0 = 5 tháng trước ... 5 = tháng này).
+    int MonthIdx(DateTime d) => (d.Year - startMonth.Year) * 12 + (d.Month - startMonth.Month);
+    var byPart = lines.GroupBy(l => l.PartCode).Select(g =>
+    {
+        var buckets = new decimal[6];
+        foreach (var l in g) { var i = MonthIdx(l.date); if (i >= 0 && i < 6) buckets[i] += l.Quantity; }
+        var total = buckets.Sum();
+        var mad = Math.Round(total / 6m, 2);
+        var months = g.Where(x => x.Quantity > 0).Select(x => new DateTime(x.date.Year, x.date.Month, 1)).Distinct().Count();
+        pMap.TryGetValue(g.Key, out var p);
+        var cur = p?.Quantity ?? 0m;
+        var target = Math.Ceiling(mad * factor);
+        var suggest = Math.Max(0, target - cur);
+        return new { partCode = g.Key, partName = p?.PartName, buckets, total6mo = total, mad, freq = months, current = cur, target, suggestOrder = suggest };
+    }).OrderByDescending(x => x.total6mo).ToList();
+    // Phân nhóm ABC theo tỉ trọng lũy kế nhu cầu.
+    var grand = byPart.Sum(x => x.total6mo);
+    decimal cum = 0;
+    var rows = byPart.Select(x =>
+    {
+        cum += x.total6mo;
+        var share = grand > 0 ? cum / grand : 0;
+        var icc = share <= 0.7m ? "A" : share <= 0.9m ? "B" : "C";
+        return new { x.partCode, x.partName, x.buckets, x.total6mo, x.mad, x.freq, x.current, x.target, x.suggestOrder, icc };
+    }).ToList();
+    return Results.Ok(new { count = rows.Count, needOrder = rows.Count(r => r.suggestOrder > 0), totalSuggest = rows.Sum(r => r.suggestOrder), leadFactor = factor, rows });
+}).RequireAuthorization();
+
 // ===== File đính kèm đề nghị bảo hành (WarrantyAttachment — port 1:1 FrmROAttachment, TCMotor) =====
 app.MapGet("/api/warrantyclaims/{id}/attachments", async (long id, AppDbContext db, ITenantContext t) =>
 {
