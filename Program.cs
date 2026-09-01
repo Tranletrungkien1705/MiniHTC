@@ -4209,6 +4209,28 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
 }).RequireAuthorization();
 
+// ===== Báo cáo bán hàng đại lý (retail) (report tái-dùng DealerDeal + DealerDealDetail — port 1:1 FrmBanHangDL, 2010.HTC/Report) =====
+// Bán lẻ đại lý→khách: gộp theo đại lý = số HĐ + số xe + tổng giá trị (giá sau VAT), lọc khoảng ngày lập HĐ.
+app.MapGet("/api/report/dealer-retail-sales", async (AppDbContext db, ITenantContext t, string? dealer, DateTime? fromDate, DateTime? toDate) =>
+{
+    var q = db.DealerDeals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (fromDate.HasValue) q = q.Where(x => x.DealDate >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(x => x.DealDate < toDate.Value.Date.AddDays(1));
+    var deals = await q.Select(x => new { x.Id, x.DealerCode }).ToListAsync();
+    var dealIds = deals.Select(d => d.Id).ToHashSet();
+    var details = await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId).Select(x => new { x.DealId, x.PriceAFVAT }).ToListAsync();
+    var detByDeal = details.Where(x => dealIds.Contains(x.DealId)).GroupBy(x => x.DealId)
+        .ToDictionary(g => g.Key, g => new { cars = g.Count(), value = g.Sum(x => x.PriceAFVAT) });
+    var rows = deals.GroupBy(d => d.DealerCode ?? "(không rõ)").Select(g =>
+    {
+        int cars = 0; decimal val = 0;
+        foreach (var d in g) if (detByDeal.TryGetValue(d.Id, out var v)) { cars += v.cars; val += v.value; }
+        return new { dealerCode = g.Key, deals = g.Count(), cars, totalValue = val };
+    }).OrderByDescending(r => r.totalValue).ToList();
+    return Results.Ok(new { count = rows.Count, totalDeals = rows.Sum(r => r.deals), totalCars = rows.Sum(r => r.cars), grandValue = rows.Sum(r => r.totalValue), rows });
+}).RequireAuthorization();
+
 // ===== Báo cáo gợi ý đặt hàng (report tái-dùng SalesOrder + SalesOrderLine — port 1:1 FrmBCGoiYDatHang, 2010.HTC/Sales) =====
 // Gợi ý SL đặt = TB nhu cầu tháng (tổng SL đặt N tháng gần nhất / N) × hệ số; gom theo đại lý + model.
 app.MapGet("/api/report/order-suggestion", async (AppDbContext db, ITenantContext t, int? months, decimal? factor, string? dealer) =>
