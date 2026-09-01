@@ -771,6 +771,9 @@ public sealed class RepairOrder
     public bool CusWaiting { get; set; }               // khách chờ
     public string Status { get; set; } = "HasRO";      // HasRO→InGarage→Repaired→CheckEnd→Paid→Finished
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // Từ chối lệnh sửa chữa (FrmROReject)
+    public string? RejectNote { get; set; }
+    public DateTime? RejectedAt { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>

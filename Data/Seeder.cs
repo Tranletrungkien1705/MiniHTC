@@ -332,6 +332,8 @@ public static class Seeder
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"GrtEndDate\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"CarDueDate\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"PenalizeActual\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"RejectNote\" text NULL",
+                "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"RejectedAt\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"LatestDeliveryDate\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"Approved1At\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"Approved2At\" timestamp NULL",

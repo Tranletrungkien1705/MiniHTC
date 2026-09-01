@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Từ chối lệnh sửa chữa</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--red:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.link{border:none;background:none;color:var(--accent);padding:2px 6px} button.rej{color:var(--red)}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .r{color:var(--red);border-color:var(--red)}
+</style></head>
+<body>
+<h1>Từ chối lệnh sửa chữa <span class="muted">(port 1:1 FrmROReject — TCMotor DMSCarSv)</span></h1>
+<p class="muted">Tra cứu lệnh sửa chữa (RO) và từ chối kèm lý do. Lệnh đã kết thúc/đã từ chối không thể từ chối lại.</p>
+<div class="card"><div class="row"><div><label>Biển số</label><input id="qPlate" style="width:120px"></div><div><label>Trạng thái</label><select id="qStatus"><option value="">Tất cả</option><option value="HasRO">Mới</option><option value="InGarage">Trong xưởng</option><option value="Repaired">Đã sửa</option><option value="Rejected">Từ chối</option></select></div><button onclick="load()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Số RO</th><th>Biển số</th><th>Chủ xe</th><th>Trạng thái</th><th>Lý do từ chối</th><th></th></tr></thead>
+  <tbody id="tb"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+async function reject(no){ await token(); const note=prompt("Lý do từ chối RO "+no+":"); if(!note) return;
+  const r=await fetch("/api/repairorders/"+no+"/reject",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Note:note})});
+  const d=await r.json(); if(!r.ok)alert(d.error||r.status); load(); }
+async function load(){ await token();
+  const qs=new URLSearchParams({plate:F("qPlate").value,status:F("qStatus").value});
+  const r=await fetch("/api/repairorders?"+qs,{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.roNo)}</b></td><td>${esc(o.licensePlate)}</td><td>${esc(o.cusName)}</td><td>${o.status==='Rejected'?'<span class="pill r">Từ chối</span>':esc(o.status)}</td><td>${esc(o.rejectNote)}</td><td>${(o.status!=='Rejected'&&o.status!=='Finished')?`<button class="link rej" onclick="reject('${esc(o.roNo)}')">Từ chối</button>`:''}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có RO.</td></tr>';
+}
+</script>
+</body></html>

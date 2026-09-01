@@ -11874,7 +11874,7 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.LicensePlate.Contains(plate.ToUpper()));
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status,
+        r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status, r.RejectNote,
         services = db.RoServiceItems.Count(s => s.OrgId == t.OrgId && s.RoId == r.Id),
         parts = db.RoPartItems.Count(p => p.OrgId == t.OrgId && p.RoId == r.Id),
         total = db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id).Sum(s => (decimal?)s.Amount) ?? 0
@@ -11950,6 +11950,19 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     r.Status = target;
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, status = r.Status });
+}).RequireAuthorization();
+
+// Từ chối lệnh sửa chữa (port 1:1 FrmROReject, TCMotor DMSCarSv): set Rejected + ghi lý do.
+app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.Note)) return Results.BadRequest(new { error = "Chưa nhập lý do từ chối." });
+    if (r.Status is "Finished" or "Rejected") return Results.BadRequest(new { error = "Lệnh đã kết thúc/đã từ chối, không thể từ chối." });
+    r.Status = "Rejected"; r.RejectNote = dto.Note.Trim(); r.RejectedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.Status, r.RejectNote });
 }).RequireAuthorization();
 
 // ===== Giá bán xe TCG theo spec (Mst_TCGCarSalePrice — port 1:1 FrmMstTCGCarSalePrice) =====
@@ -12668,6 +12681,7 @@ record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engi
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note);
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts);
 record RoAdvanceDto(string ToStatus);
+record RoRejectDto(string? Note);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines);
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
