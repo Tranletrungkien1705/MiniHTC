@@ -1003,6 +1003,21 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Thông tin thùng xe tải theo VIN (chứng nhận/CO/hóa đơn thùng) — port 1:1 FrmUpdate_Cabin (Tbl_UpdateCabin, 2010.HTC/Sales).</summary>
+public sealed class CabinInfo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? CabinCertificateNo { get; set; }   // số giấy chứng nhận thùng
+    public DateTime? CabinCertificateDate { get; set; }
+    public string? CabinCONo { get; set; }             // số nguồn gốc (CO)
+    public string? CabinInvoiceNo { get; set; }        // số hóa đơn thùng
+    public DateTime? CabinInvoiceDate { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Yêu cầu chiết khấu thanh toán (theo bảo lãnh/ngân hàng) — port 1:1 FrmReq_PaymentDiscount (2010.HTC/Sales). Duyệt: Draft→Approved/Rejected.</summary>
 public sealed class PaymentDiscountReq
 {

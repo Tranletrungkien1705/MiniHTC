@@ -4657,6 +4657,36 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Thông tin thùng xe tải (CabinInfo — port 1:1 FrmUpdate_Cabin, 2010.HTC/Sales) =====
+app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? vin, bool? onlyMissing) =>
+{
+    var q = db.CabinInfos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin.Contains(vin!));
+    if (onlyMissing == true) q = q.Where(x => x.CabinCertificateNo == null || x.CabinCertificateNo == "");
+    var items = await q.OrderBy(x => x.Vin).Take(1000).Select(x => new
+    {
+        x.Id, x.Vin, x.SpecCode, x.CabinCertificateNo,
+        cabinCertificateDate = x.CabinCertificateDate.HasValue ? x.CabinCertificateDate.Value.ToString("yyyy-MM-dd") : "",
+        x.CabinCONo, x.CabinInvoiceNo,
+        cabinInvoiceDate = x.CabinInvoiceDate.HasValue ? x.CabinInvoiceDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cabininfos", async (CabinInfoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var vin = (dto.Vin ?? "").Trim().ToUpperInvariant();
+    if (vin == "") return Results.BadRequest(new { error = "Thiếu số khung (VIN)." });
+    if (dto.CabinInvoiceDate.HasValue && dto.CabinInvoiceDate.Value.Date > DateTime.Today)
+        return Results.BadRequest(new { error = "Ngày hóa đơn thùng không được ở tương lai." });
+    var c = await db.CabinInfos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
+    if (c is null) { c = new CabinInfo { OrgId = t.OrgId, Vin = vin }; db.CabinInfos.Add(c); }
+    c.SpecCode = dto.SpecCode; c.CabinCertificateNo = dto.CabinCertificateNo; c.CabinCertificateDate = dto.CabinCertificateDate;
+    c.CabinCONo = dto.CabinCONo; c.CabinInvoiceNo = dto.CabinInvoiceNo; c.CabinInvoiceDate = dto.CabinInvoiceDate; c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.Vin });
+}).RequireAuthorization();
+
 // ===== Yêu cầu chiết khấu thanh toán (PaymentDiscountReq — port 1:1 FrmReq_PaymentDiscount, 2010.HTC/Sales) =====
 app.MapGet("/api/paymentdiscountreqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -10910,6 +10940,7 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);
 record PaymentDiscountStatusDto(string Status, string? Note);
 record OcAttachDto(string FileName, string? ImageType, string? FileNote);

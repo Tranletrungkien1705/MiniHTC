@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thông tin thùng xe tải</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .cb{display:flex;align-items:center;gap:6px} .cb input{width:auto}
+</style></head>
+<body>
+<h1>Thông tin thùng xe tải <span class="muted">(port 1:1 FrmUpdate_Cabin — 2010.HTC/Sales)</span></h1>
+<div class="card"><h3 style="margin-top:0">Cập nhật thùng theo VIN</h3>
+  <div class="row">
+    <div><label>Số khung VIN *</label><input id="fVin" style="width:140px"></div>
+    <div><label>Spec</label><input id="fSpec" style="width:90px"></div>
+    <div><label>Số GCN thùng</label><input id="fCert" style="width:120px"></div>
+    <div><label>Ngày GCN</label><input id="fCertD" type="date"></div>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <div><label>Số CO (nguồn gốc)</label><input id="fCO" style="width:120px"></div>
+    <div><label>Số HĐ thùng</label><input id="fInv" style="width:120px"></div>
+    <div><label>Ngày HĐ</label><input id="fInvD" type="date"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="VIN" style="width:150px"><label class="cb"><input type="checkbox" id="qMiss"> Chỉ VIN thiếu GCN</label><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>VIN</th><th>Spec</th><th>Số GCN</th><th>Ngày GCN</th><th>Số CO</th><th>Số HĐ</th><th>Ngày HĐ</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+async function save(){ await token();
+  const body={Vin:F("fVin").value,SpecCode:F("fSpec").value,CabinCertificateNo:F("fCert").value,CabinCertificateDate:F("fCertD").value||null,CabinCONo:F("fCO").value,CabinInvoiceNo:F("fInv").value,CabinInvoiceDate:F("fInvD").value||null};
+  const r=await fetch("/api/cabininfos",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } m("Đã lưu "+d.vin); F("fVin").value=""; load();
+}
+function edit(o){ F("fVin").value=o.vin; F("fSpec").value=o.specCode||""; F("fCert").value=o.cabinCertificateNo||""; F("fCertD").value=o.cabinCertificateDate||""; F("fCO").value=o.cabinCONo||""; F("fInv").value=o.cabinInvoiceNo||""; F("fInvD").value=o.cabinInvoiceDate||""; window.scrollTo(0,0); }
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("q").value)p.set("vin",F("q").value); if(F("qMiss").checked)p.set("onlyMissing","true");
+  const r=await fetch("/api/cabininfos?"+p.toString(),{headers:H()}); const d=await r.json();
+  window._rows=d.items||[];
+  F("rows").innerHTML=(d.items||[]).map((o,i)=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.specCode)}</td><td>${esc(o.cabinCertificateNo)}</td><td>${esc(o.cabinCertificateDate)}</td><td>${esc(o.cabinCONo)}</td><td>${esc(o.cabinInvoiceNo)}</td><td>${esc(o.cabinInvoiceDate)}</td><td><button class="link" onclick="edit(window._rows[${i}])">Sửa</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu thùng.</td></tr>';
+}
+</script>
+</body></html>
