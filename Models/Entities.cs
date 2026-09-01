@@ -1003,6 +1003,21 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Định mức khuyến mãi theo thẻ hội viên × chương trình — port 1:1 FrmMember (Crd_Member promotion, TCMotor/Customer). QtyRemain = QtyAllocated - QtyUsed.</summary>
+public sealed class CustomerPromotion
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CardNo { get; set; } = "";
+    public string ProgramCode { get; set; } = "";
+    public string? ProgramName { get; set; }
+    public DateTime? EffDate { get; set; }
+    public int QtyAllocated { get; set; }
+    public int QtyUsed { get; set; }
+    public string? Remark { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Đề nghị giao xe (header: đại lý gửi HTC duyệt) — port 1:1 FrmNewDR/FrmHTCMngDR/FrmDRApproved (Dlr_DR, 2010.HTC/Sales).</summary>
 public sealed class DeliveryRequest
 {

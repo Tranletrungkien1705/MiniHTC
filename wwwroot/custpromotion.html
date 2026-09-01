@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Định mức KM hội viên</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .rem{color:var(--ok);font-weight:700} .rem0{color:var(--bad)}
+</style></head>
+<body>
+<h1>Định mức khuyến mãi hội viên <span class="muted">(port 1:1 FrmMember — TCMotor/Customer)</span></h1>
+<div class="card"><h3 style="margin-top:0">Cấp định mức KM (thẻ × chương trình)</h3>
+  <div class="row">
+    <div><label>Số thẻ *</label><input id="fCard" style="width:120px"></div>
+    <div><label>Mã CT *</label><input id="fProg" style="width:100px"></div>
+    <div style="flex:1"><label>Tên chương trình</label><input id="fProgN" style="width:100%"></div>
+    <div><label>Hiệu lực từ</label><input id="fEff" type="date"></div>
+    <div><label>Định mức</label><input id="fQty" type="number" value="0" style="width:90px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0"><input id="qCard" placeholder="Số thẻ" style="width:120px"><input id="qProg" placeholder="Mã CT" style="width:100px"><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Số thẻ</th><th>Mã CT</th><th>Tên CT</th><th>Hiệu lực</th><th class="num">Định mức</th><th class="num">Đã dùng</th><th class="num">Còn</th><th>Thao tác</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+async function save(){ await token();
+  const r=await fetch("/api/custpromotions",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({CardNo:F("fCard").value,ProgramCode:F("fProg").value,ProgramName:F("fProgN").value,EffDate:F("fEff").value||null,QtyAllocated:+F("fQty").value||0})});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } m("Đã lưu (còn "+M(d.remain)+")"); load();
+}
+async function use(id){ await token(); const q=prompt("Số lượt dùng:","1"); if(!q) return;
+  const r=await fetch("/api/custpromotions/"+id+"/use",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Qty:+q||1})});
+  const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
+}
+async function load(){ await token();
+  const p=new URLSearchParams(); if(F("qCard").value)p.set("card",F("qCard").value); if(F("qProg").value)p.set("program",F("qProg").value);
+  const r=await fetch("/api/custpromotions?"+p.toString(),{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.cardNo)}</b></td><td>${esc(o.programCode)}</td><td>${esc(o.programName)}</td><td>${esc(o.effDate)}</td><td class="num">${M(o.qtyAllocated)}</td><td class="num">${M(o.qtyUsed)}</td><td class="num ${o.remain>0?'rem':'rem0'}">${M(o.remain)}</td><td>${o.remain>0?`<button class="link" onclick="use(${o.id})">Dùng</button>`:""}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có định mức.</td></tr>';
+}
+</script>
+</body></html>

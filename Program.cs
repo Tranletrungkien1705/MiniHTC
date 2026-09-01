@@ -4737,6 +4737,45 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Định mức khuyến mãi hội viên (CustomerPromotion — port 1:1 FrmMember, TCMotor/Customer) =====
+app.MapGet("/api/custpromotions", async (AppDbContext db, ITenantContext t, string? card, string? program) =>
+{
+    var q = db.CustomerPromotions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(card)) q = q.Where(x => x.CardNo == card);
+    if (!string.IsNullOrWhiteSpace(program)) q = q.Where(x => x.ProgramCode == program);
+    var items = await q.OrderBy(x => x.CardNo).ThenBy(x => x.ProgramCode).Take(500).Select(x => new
+    {
+        x.Id, x.CardNo, x.ProgramCode, x.ProgramName, effDate = x.EffDate.HasValue ? x.EffDate.Value.ToString("yyyy-MM-dd") : "",
+        x.QtyAllocated, x.QtyUsed, remain = x.QtyAllocated - x.QtyUsed, x.Remark
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalRemain = items.Sum(i => i.remain), items });
+}).RequireAuthorization();
+
+// Cấp định mức KM cho thẻ × chương trình (upsert theo card+program, cộng dồn allocated).
+app.MapPost("/api/custpromotions", async (CustPromotionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var card = (dto.CardNo ?? "").Trim(); var prog = (dto.ProgramCode ?? "").Trim();
+    if (card == "" || prog == "") return Results.BadRequest(new { error = "Thiếu số thẻ hoặc mã chương trình." });
+    if (dto.QtyAllocated < 0) return Results.BadRequest(new { error = "Định mức không được âm." });
+    var p = await db.CustomerPromotions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CardNo == card && x.ProgramCode == prog);
+    if (p is null) { p = new CustomerPromotion { OrgId = t.OrgId, CardNo = card, ProgramCode = prog }; db.CustomerPromotions.Add(p); }
+    p.ProgramName = dto.ProgramName; p.EffDate = dto.EffDate; p.QtyAllocated = dto.QtyAllocated; p.Remark = dto.Remark; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.CardNo, p.ProgramCode, remain = p.QtyAllocated - p.QtyUsed });
+}).RequireAuthorization();
+
+// Dùng 1 lượt KM: tăng QtyUsed, guard không vượt định mức.
+app.MapPost("/api/custpromotions/{id}/use", async (long id, CustPromotionUseDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var p = await db.CustomerPromotions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (p is null) return Results.NotFound(new { id });
+    var n = dto.Qty <= 0 ? 1 : dto.Qty;
+    if (p.QtyUsed + n > p.QtyAllocated) return Results.BadRequest(new { error = $"Vượt định mức (còn {p.QtyAllocated - p.QtyUsed})." });
+    p.QtyUsed += n; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.QtyUsed, remain = p.QtyAllocated - p.QtyUsed });
+}).RequireAuthorization();
+
 // ===== Đề nghị giao xe (DeliveryRequest — port 1:1 FrmNewDR/FrmHTCMngDR/FrmDRApproved, 2010.HTC/Sales) =====
 app.MapGet("/api/deliveryrequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -11195,6 +11234,8 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record CustPromotionDto(string CardNo, string ProgramCode, string? ProgramName, DateTime? EffDate, int QtyAllocated, string? Remark);
+record CustPromotionUseDto(int Qty);
 record DeliveryRequestDto(string? DealerCode, DateTime? RequestDate, List<DRCarDto>? Cars);
 record DRCarDto(string CarId, string? ModelCode, DateTime? DeliveryStartDate, string? Remark);
 record DRActionDto(string Action, string? Note);
