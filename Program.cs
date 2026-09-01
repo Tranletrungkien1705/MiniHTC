@@ -7510,6 +7510,50 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
+// ===== Sửa ngày lập HĐ + cờ kiểm chứng CSKH (EditDeal — port 1:1 FrmEditDeal_DealDate/FrmEditDeal_KiemChung, 2010.HTC/SalesDealer) =====
+app.MapGet("/api/editdeal/dealinfo", async (AppDbContext db, ITenantContext t, string? dealNo, string? dealer) =>
+{
+    var q = db.DealerDeals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo.Contains(dealNo!) || (x.DealNoUser != null && x.DealNoUser.Contains(dealNo!)));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.DealNo, x.DealNoUser, x.DealerCode, dealDate = x.DealDate.ToString("yyyy-MM-dd"), x.CtmCareFlag
+    }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+// Sửa ngày lập HĐ (không tương lai) và/hoặc cờ kiểm chứng CSKH (1=đã kiểm chứng / 0=chưa).
+app.MapPost("/api/editdeal/dealinfo", async (List<DealInfoFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (d is null) { changes.Add(new { f.Id, error = "Không tìm thấy HĐ." }); continue; }
+        DateTime newDate = d.DealDate;
+        if (!string.IsNullOrWhiteSpace(f.DealDate))
+        {
+            if (!DateTime.TryParse(f.DealDate, out var dt)) { changes.Add(new { f.Id, error = "Ngày không hợp lệ." }); continue; }
+            if (dt.Date > DateTime.Today) { changes.Add(new { f.Id, error = "Ngày lập HĐ không được ở tương lai." }); continue; }
+            newDate = dt.Date;
+        }
+        var newFlag = d.CtmCareFlag;
+        if (!string.IsNullOrWhiteSpace(f.CtmCareFlag))
+        {
+            var fl = f.CtmCareFlag.Trim();
+            if (fl != "0" && fl != "1") { changes.Add(new { f.Id, error = "Cờ kiểm chứng phải là 0 hoặc 1." }); continue; }
+            newFlag = fl;
+        }
+        if (newDate == d.DealDate && newFlag == d.CtmCareFlag) continue;
+        changes.Add(new { d.Id, d.DealNo, oldDate = d.DealDate.ToString("yyyy-MM-dd"), newDate = newDate.ToString("yyyy-MM-dd"), oldFlag = d.CtmCareFlag, newFlag });
+        d.DealDate = newDate; d.CtmCareFlag = newFlag; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
 // ===== Sửa biển số xe trong HĐ đại lý (EditDeal — port 1:1 FrmEditDeal_PlateNo, 2010.HTC/SalesDealer) =====
 app.MapGet("/api/editdeal/plateno", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin) =>
 {
@@ -10280,6 +10324,7 @@ record ContractSmFixDto(long Id, string? NewSmCode);
 record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
+record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);
 record DealBankFixDto(long Id, string? BankCode);
 record DeliveryDateFixDto(long Id, string? DeliveredAt);
