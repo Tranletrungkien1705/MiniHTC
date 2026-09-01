@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Chứng chỉ NVBH</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5} .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)}
+</style></head>
+<body>
+<h1>Chứng chỉ nhân viên bán hàng <span class="muted">(port 1:1 FrmMst_SalesManCertificateCreate/Mng — 2010.HTC/Admin)</span></h1>
+<div class="card"><h3 style="margin-top:0">Gán / sửa chứng chỉ (theo mã NVBH + chứng chỉ)</h3>
+  <div class="grid4">
+    <div><label>Mã NVBH (Hyundai) *</label><input id="sm"></div>
+    <div><label>Mã chứng chỉ *</label><input id="cc"></div>
+    <div><label>Tên chứng chỉ</label><input id="cn"></div>
+    <div><label>Loại NV</label><input id="smtype"></div>
+    <div><label>Phòng ban</label><input id="dept"></div>
+    <div><label>Hiệu lực từ</label><input id="start" type="date"></div>
+    <div><label>Hiệu lực đến</label><input id="end" type="date"></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><button onclick="reset()">Mới</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Mã NVBH / chứng chỉ" style="width:220px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="all" style="width:auto"> Cả đã tắt</label><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Mã NVBH</th><th>Chứng chỉ</th><th>Tên CC</th><th>Loại NV</th><th>Phòng</th><th>Từ</th><th>Đến</th><th>TT</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="9" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dshow=s=>s?String(s).slice(0,10):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3800); }
+const v=id=>F(id).value||null;
+function reset(){ ["sm","cc","cn","smtype","dept","start","end"].forEach(i=>F(i).value=""); }
+async function save(){ await token();
+  const body={SMHyundaiCode:F("sm").value,CertificateCode:F("cc").value,CertificateName:v("cn"),SMType:v("smtype"),DepartmentCode:v("dept"),EffStartDate:v("start"),EffEndDate:v("end")};
+  const r=await fetch("/api/salesmancerts",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.sMHyundaiCode+" / "+d.certificateCode); reset(); load();
+}
+function edit(o){ F("sm").value=o.sMHyundaiCode; F("cc").value=o.certificateCode; F("cn").value=o.certificateName||""; F("smtype").value=o.sMType||""; F("dept").value=o.departmentCode||""; F("start").value=dshow(o.effStartDate); F("end").value=dshow(o.effEndDate); window.scrollTo(0,0); }
+async function toggle(id){ await token(); await fetch("/api/salesmancerts/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
+async function load(){ await token();
+  const r=await fetch("/api/salesmancerts?all="+(F("all").checked)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.sMHyundaiCode)}</b></td><td>${esc(o.certificateCode)}</td><td>${esc(o.certificateName)}</td><td>${esc(o.sMType)}</td><td>${esc(o.departmentCode)}</td><td>${dshow(o.effStartDate)}</td><td>${dshow(o.effEndDate)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có chứng chỉ.</td></tr>';
+}
+</script>
+</body></html>

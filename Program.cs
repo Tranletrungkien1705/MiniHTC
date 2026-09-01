@@ -5000,6 +5000,41 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Chứng chỉ nhân viên bán hàng (SalesManCertificate — port 1:1 FrmMst_SalesManCertificateCreate/Mng/Update, 2010.HTC/Admin) =====
+app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, string? q, string? cert, bool? all) =>
+{
+    var qry = db.SalesManCertificates.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(cert)) qry = qry.Where(x => x.CertificateCode == cert);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMHyundaiCode.Contains(q!) || x.CertificateCode.Contains(q!) || x.CertificateName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.EffStartDate, x.EffEndDate, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesmancerts", async (SalesManCertificateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var sm = (dto.SMHyundaiCode ?? "").Trim();
+    var cc = (dto.CertificateCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(sm)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH (Hyundai code)." });
+    if (string.IsNullOrWhiteSpace(cc)) return Results.BadRequest(new { error = "Chưa chọn chứng chỉ." });
+    if (dto.EffStartDate.HasValue && dto.EffEndDate.HasValue && dto.EffEndDate < dto.EffStartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
+    var row = await db.SalesManCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm && x.CertificateCode == cc);
+    if (row is null) { row = new SalesManCertificate { OrgId = t.OrgId, SMHyundaiCode = sm, CertificateCode = cc }; db.SalesManCertificates.Add(row); }
+    row.CertificateName = dto.CertificateName; row.SMType = dto.SMType; row.DepartmentCode = dto.DepartmentCode; row.EffStartDate = dto.EffStartDate; row.EffEndDate = dto.EffEndDate; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SMHyundaiCode, row.CertificateCode, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesmancerts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SalesManCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Lệnh xuất kho phụ tùng theo đơn KH (SerStockOutOrder header-detail — port 1:1 FrmStockOutOrderCreate, TCMotor DMSCarSv/Inventory) =====
 app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, string? q, string? status, string? source) =>
 {
@@ -13121,6 +13156,7 @@ record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffSt
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
 record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
+record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

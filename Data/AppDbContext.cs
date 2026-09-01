@@ -82,6 +82,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstUnitPriceGPS> MstUnitPriceGpsItems => Set<MstUnitPriceGPS>();
     public DbSet<SerStockOutOrder> SerStockOutOrders => Set<SerStockOutOrder>();
     public DbSet<SerStockOutOrderLine> SerStockOutOrderLines => Set<SerStockOutOrderLine>();
+    public DbSet<SalesManCertificate> SalesManCertificates => Set<SalesManCertificate>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();

@@ -1183,6 +1183,22 @@ public sealed class SerStockOutOrderLine
     public decimal OrderQuantity { get; set; }
 }
 
+/// <summary>Chứng chỉ nhân viên bán hàng (Mst_SalesManCertificate) — port 1:1 FrmMst_SalesManCertificateCreate/Mng/Update (2010.HTC/Admin/Product). Gán chứng chỉ cho NVBH theo mã Hyundai + loại NV + hiệu lực. KHÁC catalog Certificate (code/name) — đây là bản GÁN có hạn. Upsert by (SMHyundaiCode+CertificateCode).</summary>
+public sealed class SalesManCertificate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SMHyundaiCode { get; set; } = "";
+    public string CertificateCode { get; set; } = "";
+    public string? CertificateName { get; set; }
+    public string? SMType { get; set; }
+    public string? DepartmentCode { get; set; }
+    public DateTime? EffStartDate { get; set; }
+    public DateTime? EffEndDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {
