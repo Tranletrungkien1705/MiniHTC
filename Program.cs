@@ -4609,6 +4609,73 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Gói bảo dưỡng theo mốc (MaintPackage — port 1:1 FrmMaintenance, Admin/Maintenance 2010.HTC) =====
+app.MapGet("/api/maintpackages", async (AppDbContext db, ITenantContext t, string? model, string? type) =>
+{
+    var q = db.MaintPackages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(x => x.TypeCode == type);
+    var items = await q.OrderBy(x => x.ModelCode).ThenBy(x => x.Times).Take(500).Select(x => new
+    {
+        x.Id, x.TypeCode, x.TypeName, x.Times, x.ModelCode, x.FlagActive,
+        works = db.MaintPackageWorks.Count(w => w.OrgId == t.OrgId && w.MaintPackageId == x.Id),
+        supplies = db.MaintPackageSupplies.Count(s => s.OrgId == t.OrgId && s.MaintPackageId == x.Id)
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tạo/cập nhật gói bảo dưỡng theo (TypeCode + Model): thay toàn bộ danh sách CV + vật tư.
+app.MapPost("/api/maintpackages", async (MaintPackageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tc = (dto.TypeCode ?? "").Trim();
+    if (tc == "") return Results.BadRequest(new { error = "Thiếu mã loại bảo dưỡng." });
+    if (dto.Times < 0) return Results.BadRequest(new { error = "Mốc bảo dưỡng không hợp lệ." });
+    var works = dto.Works ?? new();
+    var supplies = dto.Supplies ?? new();
+    // Guard: SL vật tư > 0 + không trùng mã vật tư trong gói.
+    var seenSup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var s in supplies)
+    {
+        var sc = (s.SupplyCode ?? "").Trim();
+        if (sc == "") return Results.BadRequest(new { error = "Có dòng vật tư thiếu mã." });
+        if (!seenSup.Add(sc)) return Results.BadRequest(new { error = "Trùng mã vật tư trong gói: " + sc });
+        if (s.Qty <= 0) return Results.BadRequest(new { error = "Số lượng vật tư phải > 0 cho " + sc });
+    }
+    var p = await db.MaintPackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeCode == tc && x.ModelCode == dto.ModelCode);
+    if (p is null) { p = new MaintPackage { OrgId = t.OrgId, TypeCode = tc, ModelCode = dto.ModelCode }; db.MaintPackages.Add(p); }
+    p.TypeName = dto.TypeName; p.Times = dto.Times; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    // Thay toàn bộ chi tiết.
+    var oldW = db.MaintPackageWorks.Where(x => x.OrgId == t.OrgId && x.MaintPackageId == p.Id);
+    var oldS = db.MaintPackageSupplies.Where(x => x.OrgId == t.OrgId && x.MaintPackageId == p.Id);
+    db.MaintPackageWorks.RemoveRange(oldW); db.MaintPackageSupplies.RemoveRange(oldS);
+    foreach (var w in works)
+        if (!string.IsNullOrWhiteSpace(w.WorkContentCode))
+            db.MaintPackageWorks.Add(new MaintPackageWork { OrgId = t.OrgId, MaintPackageId = p.Id, WorkItemCode = w.WorkItemCode, WorkContentCode = w.WorkContentCode.Trim() });
+    foreach (var s in supplies)
+        db.MaintPackageSupplies.Add(new MaintPackageSupply { OrgId = t.OrgId, MaintPackageId = p.Id, SupplyCode = s.SupplyCode!.Trim(), Qty = s.Qty });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.TypeCode, p.ModelCode, works = works.Count, supplies = supplies.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/maintpackages/{id}/detail", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var p = await db.MaintPackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (p is null) return Results.NotFound(new { id });
+    var works = await db.MaintPackageWorks.Where(x => x.OrgId == t.OrgId && x.MaintPackageId == id).Select(x => new { x.WorkItemCode, x.WorkContentCode }).ToListAsync();
+    var supplies = await db.MaintPackageSupplies.Where(x => x.OrgId == t.OrgId && x.MaintPackageId == id).Select(x => new { x.SupplyCode, x.Qty }).ToListAsync();
+    return Results.Ok(new { p.TypeCode, p.TypeName, p.Times, p.ModelCode, works, supplies });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintpackages/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var p = await db.MaintPackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (p is null) return Results.NotFound(new { id });
+    p.FlagActive = p.FlagActive == "1" ? "0" : "1"; p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.FlagActive });
+}).RequireAuthorization();
+
 // ===== Vật tư bảo dưỡng (MaintSupply — port 1:1 FrmSupplies, Admin/Maintenance 2010.HTC) =====
 app.MapGet("/api/maintsupplies", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -10407,6 +10474,9 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record MaintPackageDto(string TypeCode, string? TypeName, int Times, string? ModelCode, List<MpWorkDto>? Works, List<MpSupplyDto>? Supplies);
+record MpWorkDto(string? WorkItemCode, string WorkContentCode);
+record MpSupplyDto(string SupplyCode, decimal Qty);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

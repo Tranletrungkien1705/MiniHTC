@@ -73,6 +73,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceWarrantyClaim> ServiceWarrantyClaims => Set<ServiceWarrantyClaim>();
     public DbSet<WarrantyAttachment> WarrantyAttachments => Set<WarrantyAttachment>();
     public DbSet<PartCostSnapshot> PartCostSnapshots => Set<PartCostSnapshot>();
+    public DbSet<MaintPackage> MaintPackages => Set<MaintPackage>();
+    public DbSet<MaintPackageWork> MaintPackageWorks => Set<MaintPackageWork>();
+    public DbSet<MaintPackageSupply> MaintPackageSupplies => Set<MaintPackageSupply>();
     public DbSet<MaintSupply> MaintSupplies => Set<MaintSupply>();
     public DbSet<MaintWorkContent> MaintWorkContents => Set<MaintWorkContent>();
     public DbSet<ServiceQuotation> ServiceQuotations => Set<ServiceQuotation>();

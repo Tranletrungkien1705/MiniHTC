@@ -1003,6 +1003,39 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Gói bảo dưỡng theo mốc (loại BD × model, gồm hạng mục CV + vật tư) — port 1:1 FrmMaintenance (Admin/Maintenance, 2010.HTC).</summary>
+public sealed class MaintPackage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TypeCode { get; set; } = "";   // MTNTP
+    public string? TypeName { get; set; }         // MTNTPNAME
+    public int Times { get; set; }                // MTNTIMES — mốc BD lần thứ n
+    public string? ModelCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Hạng mục công việc trong gói bảo dưỡng — port 1:1 FrmMaintenance grid works, 2010.HTC.</summary>
+public sealed class MaintPackageWork
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long MaintPackageId { get; set; }
+    public string? WorkItemCode { get; set; }        // MTNTKCODE (hạng mục)
+    public string WorkContentCode { get; set; } = ""; // MTNTKITEMCODE (nội dung CV)
+}
+
+/// <summary>Vật tư trong gói bảo dưỡng (mã + SL) — port 1:1 FrmMaintenance grid supplies, 2010.HTC.</summary>
+public sealed class MaintPackageSupply
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long MaintPackageId { get; set; }
+    public string SupplyCode { get; set; } = "";     // PARTCODE
+    public decimal Qty { get; set; }
+}
+
 /// <summary>Vật tư bảo dưỡng (master mã/tên/ĐVT chuẩn+thường) — port 1:1 FrmSupplies (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintSupply
 {
