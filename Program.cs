@@ -5001,12 +5001,13 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
 }).RequireAuthorization();
 
 // ===== Lệnh xuất kho phụ tùng theo đơn KH (SerStockOutOrder header-detail — port 1:1 FrmStockOutOrderCreate, TCMotor DMSCarSv/Inventory) =====
-app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, string? q, string? status, string? source) =>
 {
     var qry = db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.OrderNo.Contains(q!) || x.CusName!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Phone, x.Mobile, x.TotalQty, x.Status, x.CreatedBy, x.CreatedAt }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(source)) qry = qry.Where(x => x.SourceType == source);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.OrderNo.Contains(q!) || x.CusName!.Contains(q!) || x.RONo!.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Phone, x.Mobile, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -5015,7 +5016,34 @@ app.MapGet("/api/stockoutorders/{id}", async (long id, AppDbContext db, ITenantC
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && x.OrderId == id).Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.OrderQuantity }).ToListAsync();
-    return Results.Ok(new { header = new { h.Id, h.OrderNo, h.OrderDate, h.CusName, h.Address, h.Phone, h.Mobile, h.Note, h.TotalQty, h.Status, h.CreatedBy, h.CreatedAt }, lines });
+    return Results.Ok(new { header = new { h.Id, h.OrderNo, h.OrderDate, h.CusName, h.Address, h.Phone, h.Mobile, h.Note, h.TotalQty, h.Status, h.SourceType, h.RONo, h.CreatedBy, h.CreatedAt }, lines });
+}).RequireAuthorization();
+
+// Lệnh xuất theo lệnh sửa chữa (FrmStockOutOrderSvCreate) — bắt buộc số RO; xuất PT phục vụ RO
+app.MapPost("/api/stockoutorders/sv", async (SerStockOutOrderSvDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
+{
+    if (string.IsNullOrWhiteSpace((dto.RONo ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập số lệnh sửa chữa (RO)." });
+    var lines = dto.Lines ?? new List<SerStockOutOrderLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lệnh xuất chưa có dòng phụ tùng." });
+    if (lines.Any(l => string.IsNullOrWhiteSpace((l.PartCode ?? "").Trim()))) return Results.BadRequest(new { error = "Có dòng chưa nhập mã phụ tùng." });
+    if (lines.Any(l => l.OrderQuantity <= 0)) return Results.BadRequest(new { error = "Số lượng yêu cầu phải lớn hơn 0." });
+    var dup = lines.GroupBy(l => (l.PartCode ?? "").Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"Phụ tùng '{dup.Key}' bị trùng trong lệnh." });
+    var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    var h = new SerStockOutOrder
+    {
+        OrgId = t.OrgId,
+        OrderNo = string.IsNullOrWhiteSpace((dto.OrderNo ?? "").Trim()) ? "SOS" + DateTime.Now.ToString("yyMMddHHmmss") : dto.OrderNo!.Trim(),
+        OrderDate = dto.OrderDate ?? DateTime.Now,
+        CusName = dto.CusName, Note = dto.Note, RONo = dto.RONo!.Trim(), SourceType = "RO",
+        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now
+    };
+    db.SerStockOutOrders.Add(h);
+    await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.SerStockOutOrderLines.Add(new SerStockOutOrderLine { OrgId = t.OrgId, OrderId = h.Id, PartCode = (l.PartCode ?? "").Trim(), PartName = l.PartName, Unit = l.Unit, OrderQuantity = l.OrderQuantity });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.OrderNo, h.RONo, h.TotalQty, h.Status, lineCount = lines.Count });
 }).RequireAuthorization();
 
 app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
@@ -13092,6 +13120,7 @@ record SerInsuranceContractDto(string? InContractCode, string? InContractNo, str
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
+record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

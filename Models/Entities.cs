@@ -1165,6 +1165,8 @@ public sealed class SerStockOutOrder
     public string? Note { get; set; }
     public decimal TotalQty { get; set; }
     public string Status { get; set; } = "Created";
+    public string SourceType { get; set; } = "CUS";   // CUS = đơn khách hàng; RO = theo lệnh sửa chữa (FrmStockOutOrderSvCreate)
+    public string? RONo { get; set; }                  // số lệnh sửa chữa (khi SourceType=RO)
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
 }
