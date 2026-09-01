@@ -1070,6 +1070,30 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master loại thiết bị (Mst_DeviceType) — port 1:1 FrmQLLoaiThietBi (2010.HTC). Mã + tên + cờ hoạt động.</summary>
+public sealed class DeviceType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeviceTypeCode { get; set; } = "";
+    public string? DeviceTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Loại thiết bị theo spec xe (Mst_DeviceType_Spec) — port 1:1 FrmQLLoaiThietBiTheoXe (2010.HTC). Gán loại thiết bị áp cho từng spec xe; khóa kép (DeviceTypeCode × SpecCode).</summary>
+public sealed class DeviceTypeSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeviceTypeCode { get; set; } = "";
+    public string? DeviceTypeName { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? SpecDescription { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Số tiền chiết khấu TT được duyệt theo VIN (PRD_PaymentReqDiscount_VIN) — port 1:1 FrmImportExl_PaymentReqDiscount (2010.HTC). Import số tiền HTC duyệt cho từng VIN trong đề nghị chiết khấu; upsert theo (PRDiscountNo × VIN).</summary>
 public sealed class PaymentReqDiscountVin
 {

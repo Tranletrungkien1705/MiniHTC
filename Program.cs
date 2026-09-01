@@ -4948,6 +4948,71 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master loại thiết bị (DeviceType — port 1:1 FrmQLLoaiThietBi, 2010.HTC) =====
+app.MapGet("/api/devicetypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.DeviceTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.DeviceTypeCode.Contains(q!) || x.DeviceTypeName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.DeviceTypeCode).Take(500).Select(x => new { x.Id, x.DeviceTypeCode, x.DeviceTypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/devicetypes", async (DeviceTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.DeviceTypeCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã loại thiết bị." });
+    var row = await db.DeviceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeviceTypeCode == code);
+    if (row is null) { row = new DeviceType { OrgId = t.OrgId, DeviceTypeCode = code }; db.DeviceTypes.Add(row); }
+    row.DeviceTypeName = dto.DeviceTypeName; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DeviceTypeCode, row.DeviceTypeName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/devicetypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DeviceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Loại thiết bị theo spec xe (DeviceTypeSpec — port 1:1 FrmQLLoaiThietBiTheoXe, 2010.HTC) =====
+app.MapGet("/api/devicetypespecs", async (AppDbContext db, ITenantContext t, string? deviceType, string? spec, bool? all) =>
+{
+    var q = db.DeviceTypeSpecs.Where(x => x.OrgId == t.OrgId);
+    if (all != true) q = q.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(deviceType)) q = q.Where(x => x.DeviceTypeCode == deviceType);
+    if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
+    var items = await q.OrderBy(x => x.DeviceTypeCode).ThenBy(x => x.SpecCode).Take(500).Select(x => new { x.Id, x.DeviceTypeCode, x.DeviceTypeName, x.SpecCode, x.SpecDescription, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/devicetypespecs", async (DeviceTypeSpecDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dtc = (dto.DeviceTypeCode ?? "").Trim();
+    var spec = (dto.SpecCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(dtc)) return Results.BadRequest(new { error = "Chưa nhập loại thiết bị." });
+    if (string.IsNullOrWhiteSpace(spec)) return Results.BadRequest(new { error = "Chưa nhập Spec." });
+    var row = await db.DeviceTypeSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeviceTypeCode == dtc && x.SpecCode == spec);
+    if (row is null) { row = new DeviceTypeSpec { OrgId = t.OrgId, DeviceTypeCode = dtc, SpecCode = spec }; db.DeviceTypeSpecs.Add(row); }
+    row.DeviceTypeName = dto.DeviceTypeName; row.SpecDescription = dto.SpecDescription; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DeviceTypeCode, row.SpecCode, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/devicetypespecs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DeviceTypeSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Chiết khấu TT duyệt theo VIN (PaymentReqDiscountVin — port 1:1 FrmImportExl_PaymentReqDiscount, 2010.HTC) =====
 app.MapGet("/api/paymentreqdiscountvins", async (AppDbContext db, ITenantContext t, string? prd, string? vin) =>
 {
@@ -12338,6 +12403,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record DeviceTypeDto(string? DeviceTypeCode, string? DeviceTypeName, string? FlagActive);
+record DeviceTypeSpecDto(string? DeviceTypeCode, string? DeviceTypeName, string? SpecCode, string? SpecDescription, string? FlagActive);
 record PRDiscountImportDto(List<PRDiscountRowDto>? Rows);
 record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr);
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
