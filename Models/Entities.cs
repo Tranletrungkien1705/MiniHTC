@@ -1540,6 +1540,7 @@ public sealed class DealerDeal
     public string? CustomerCodeDriver { get; set; }      // người lái
     public string? CustomerCodeHolder { get; set; }      // người đứng tên
     public string? DlrContractNo { get; set; }
+    public string? BankCode { get; set; }                // mã ngân hàng tài trợ (Support sửa)
     public string SalesType { get; set; } = "";          // kiểu bán lẻ
     public string FlagPDI { get; set; } = "1";           // 1 = có PDI, 0 = không
     public string? ReasonNotPDI { get; set; }

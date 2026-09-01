@@ -7510,6 +7510,71 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
+// ===== Công cụ sửa HĐ VAT xuất khách (Support — port 1:1 FrmSearchForCusInvoice_Update/FrmSupportCusInvoice_Update, 2010.HTC) =====
+app.MapGet("/api/support/cus-invoice", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin) =>
+{
+    var q = from d in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId)
+            join h in db.DealerDeals.Where(x => x.OrgId == t.OrgId) on d.DealId equals h.Id
+            select new { d.Id, h.DealNo, d.CarId, d.CusInvoiceNo, d.CusInvoiceDate };
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo.Contains(dealNo!));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.CarId.Contains(vin!));
+    var rows = await q.OrderBy(x => x.DealNo).Take(500)
+        .Select(x => new { x.Id, x.DealNo, x.CarId, x.CusInvoiceNo, cusInvoiceDate = x.CusInvoiceDate.HasValue ? x.CusInvoiceDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/support/cus-invoice", async (List<CusInvoiceFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var d = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (d is null) { changes.Add(new { f.Id, error = "Không tìm thấy dòng." }); continue; }
+        DateTime? newDate = d.CusInvoiceDate;
+        if (!string.IsNullOrWhiteSpace(f.CusInvoiceDate))
+        {
+            if (!DateTime.TryParse(f.CusInvoiceDate, out var dt)) { changes.Add(new { f.Id, error = "Ngày HĐ không hợp lệ." }); continue; }
+            newDate = dt.Date;
+        }
+        var newNo = string.IsNullOrWhiteSpace(f.CusInvoiceNo) ? d.CusInvoiceNo : f.CusInvoiceNo.Trim();
+        if (newNo == d.CusInvoiceNo && newDate == d.CusInvoiceDate) continue;
+        changes.Add(new { d.Id, d.CarId, oldNo = d.CusInvoiceNo, newNo });
+        d.CusInvoiceNo = newNo; d.CusInvoiceDate = newDate; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
+// ===== Công cụ sửa mã ngân hàng trên HĐ đại lý (Support — port 1:1 FrmSearchForDLS_Deal_UpdateBankCode/FrmSupportDLS_Deal_UpdateBankCode, 2010.HTC) =====
+app.MapGet("/api/support/deal-bankcode", async (AppDbContext db, ITenantContext t, string? dealNo, string? dealer) =>
+{
+    var q = db.DealerDeals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo.Contains(dealNo!) || (x.DealNoUser != null && x.DealNoUser.Contains(dealNo!)));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    var rows = await q.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.DealNo, x.DealNoUser, x.DealerCode, x.BankCode }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+app.MapPost("/api/support/deal-bankcode", async (List<DealBankFixDto> fixes, AppDbContext db, ITenantContext t) =>
+{
+    if (fixes is null || fixes.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào." });
+    int updated = 0; var changes = new List<object>();
+    foreach (var f in fixes)
+    {
+        var bc = (f.BankCode ?? "").Trim();
+        if (bc == "") { changes.Add(new { f.Id, error = "Mã ngân hàng trống." }); continue; }
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == f.Id);
+        if (d is null) { changes.Add(new { f.Id, error = "Không tìm thấy HĐ." }); continue; }
+        if (d.BankCode == bc) continue;
+        changes.Add(new { d.Id, d.DealNo, oldBank = d.BankCode, newBank = bc });
+        d.BankCode = bc; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { total = fixes.Count, updated, changes });
+}).RequireAuthorization();
+
 // ===== Công cụ sửa phòng ban + loại NVBH (Support — port 1:1 FrmSearchForUpdateDepartmentAndSMType/FrmSupportUpdateDepartmentAndSMType, 2010.HTC) =====
 app.MapGet("/api/support/salesman-dept", async (AppDbContext db, ITenantContext t, string? q, string? dealer) =>
 {
@@ -10151,6 +10216,8 @@ record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
 record DealPriceFixDto(long Id, decimal NewPrice);
 record ContractSmFixDto(long Id, string? NewSmCode);
 record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
+record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
+record DealBankFixDto(long Id, string? BankCode);
 record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
