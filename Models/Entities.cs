@@ -1003,6 +1003,32 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Đề nghị giao xe (header: đại lý gửi HTC duyệt) — port 1:1 FrmNewDR/FrmHTCMngDR/FrmDRApproved (Dlr_DR, 2010.HTC/Sales).</summary>
+public sealed class DeliveryRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DRNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public DateTime? RequestDate { get; set; }
+    public string Status { get; set; } = "Draft"; // Draft -> Sent -> Approved / Rejected
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng xe trong đề nghị giao xe — port 1:1 FrmNewDR detail (Dlr_DRDetail, 2010.HTC).</summary>
+public sealed class DeliveryRequestDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long DeliveryRequestId { get; set; }
+    public string CarId { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public DateTime? DeliveryStartDate { get; set; }
+    public string? Remark { get; set; }
+}
+
 /// <summary>Dự kiến đơn hàng theo tháng (header: đại lý/tháng/NV phụ trách) — port 1:1 FrmQuanLyDuKienDH (Plan_EstimateOrder, 2010.HTC/Sales).</summary>
 public sealed class EstimateOrder
 {
