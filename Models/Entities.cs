@@ -1070,6 +1070,29 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Master loại phụ tùng dịch vụ (Ser_MST_PartType) — port 1:1 FrmPartTypeCreate/Search (TCMotor DMSCarSv). Tên loại phụ tùng + cờ hoạt động.</summary>
+public sealed class SerPartType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TypeName { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>Master kỳ khảo sát JD Power (Ser_MST_JDPowerTerm) — port 1:1 FrmJDPowerTermCreate/Search (TCMotor DMSCarSv). Mã kỳ + nội dung + ngày bắt đầu/kết thúc.</summary>
+public sealed class JDPowerTerm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string JDPTermCode { get; set; } = "";
+    public string? JDPTermName { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Chi tiết thanh toán PDI theo xe (Pmt_PaymentPDIDetail) — port 1:1 FrmSuaThanhToanPDI (2010.HTC). Sửa ngày nhập kho/xuất kho từng VIN; StorageDays = xuất - nhập. Upsert theo VIN.</summary>
 public sealed class PdiStoragePayment
 {

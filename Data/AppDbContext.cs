@@ -77,6 +77,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServicePackageService> ServicePackageServices => Set<ServicePackageService>();
     public DbSet<ServicePackagePart> ServicePackageParts => Set<ServicePackagePart>();
     public DbSet<BankStatementLine> BankStatementLines => Set<BankStatementLine>();
+    public DbSet<SerPartType> SerPartTypes => Set<SerPartType>();
+    public DbSet<JDPowerTerm> JDPowerTerms => Set<JDPowerTerm>();
     public DbSet<PdiStoragePayment> PdiStoragePayments => Set<PdiStoragePayment>();
     public DbSet<CarStatusUpdate> CarStatusUpdates => Set<CarStatusUpdate>();
     public DbSet<CarSpecUpdate> CarSpecUpdates => Set<CarSpecUpdate>();

@@ -4968,6 +4968,69 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master loại phụ tùng DV (SerPartType — port 1:1 FrmPartTypeCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerPartTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
+    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/serparttypes", async (SerPartTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var name = (dto.TypeName ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại phụ tùng." });
+    var row = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == name);
+    if (row is null) { row = new SerPartType { OrgId = t.OrgId, TypeName = name }; db.SerPartTypes.Add(row); }
+    row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Master kỳ khảo sát JD Power (JDPowerTerm — port 1:1 FrmJDPowerTermCreate/Search, TCMotor DMSCarSv) =====
+app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.JDPowerTerms.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.JDPTermCode.Contains(q!) || x.JDPTermName!.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.JDPTermCode, x.JDPTermName, x.StartDate, x.EndDate, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.JDPTermCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã kỳ khảo sát." });
+    if (dto.StartDate.HasValue && dto.EndDate.HasValue && dto.EndDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày kết thúc phải >= ngày bắt đầu." });
+    var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == code);
+    if (row is null) { row = new JDPowerTerm { OrgId = t.OrgId, JDPTermCode = code }; db.JDPowerTerms.Add(row); }
+    row.JDPTermName = dto.JDPTermName; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.JDPTermCode, row.JDPTermName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/jdpowerterms/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Chi tiết thanh toán PDI theo xe (PdiStoragePayment — port 1:1 FrmSuaThanhToanPDI, 2010.HTC) =====
 app.MapGet("/api/pdistoragepayments", async (AppDbContext db, ITenantContext t, string? vin, string? dealer) =>
 {
@@ -12592,6 +12655,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record SerPartTypeDto(string? TypeName, string? FlagActive);
+record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);
 record CarStatusImportDto(List<CarStatusRowDto>? Rows);
