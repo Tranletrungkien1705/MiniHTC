@@ -4609,6 +4609,76 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     return Results.Ok(new { c.Id, c.Status });
 }).RequireAuthorization();
 
+// ===== Định mức tồn tối thiểu (MinInvBalance — port 1:1 FrmSt_MinInvBalance, Admin/Product 2010.HTC) =====
+app.MapGet("/api/mininvbalances", async (AppDbContext db, ITenantContext t, string? model, string? dealer) =>
+{
+    var q = db.MinInvBalances.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelList.Contains(model!));
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerList != null && x.DealerList.Contains(dealer!));
+    var items = await q.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.ModelList, x.SpecMix, x.DealerList, x.TotalQty, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mininvbalances", async (MinInvBalanceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var ml = (dto.ModelList ?? "").Trim();
+    if (ml == "") return Results.BadRequest(new { error = "Thiếu danh sách model." });
+    if (dto.TotalQty < 0) return Results.BadRequest(new { error = "Định mức không được âm." });
+    var b = new MinInvBalance { OrgId = t.OrgId, ModelList = ml, SpecMix = dto.SpecMix, DealerList = dto.DealerList, TotalQty = dto.TotalQty };
+    db.MinInvBalances.Add(b); await db.SaveChangesAsync();
+    return Results.Ok(new { b.Id });
+}).RequireAuthorization();
+
+app.MapPost("/api/mininvbalances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var b = await db.MinInvBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (b is null) return Results.NotFound(new { id });
+    b.FlagActive = b.FlagActive == "1" ? "0" : "1"; b.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.Id, b.FlagActive });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mininvbalances/{id}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var b = await db.MinInvBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (b is null) return Results.NotFound(new { id });
+    db.MinInvBalances.Remove(b); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
+// ===== Hạn bảo hành theo model (WarrantyExpires — port 1:1 FrmWarrantyExpires, Admin/Product 2010.HTC) =====
+app.MapGet("/api/warrantyexpires", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var query = db.WarrantyExpiresList.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ModelCode.Contains(q!) || (x.ModelName != null && x.ModelName.Contains(q!)));
+    if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    var items = await query.OrderBy(x => x.ModelCode).Take(1000)
+        .Select(x => new { x.Id, x.ModelCode, x.ModelName, x.WarrantyMonths, x.WarrantyKM, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyexpires", async (WarrantyExpiresDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var mc = (dto.ModelCode ?? "").Trim();
+    if (mc == "") return Results.BadRequest(new { error = "Thiếu mã model." });
+    if (dto.WarrantyMonths < 0 || dto.WarrantyKM < 0) return Results.BadRequest(new { error = "Hạn bảo hành không được âm." });
+    var w = await db.WarrantyExpiresList.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc);
+    if (w is null) { w = new WarrantyExpires { OrgId = t.OrgId, ModelCode = mc }; db.WarrantyExpiresList.Add(w); }
+    w.ModelName = dto.ModelName; w.WarrantyMonths = dto.WarrantyMonths; w.WarrantyKM = dto.WarrantyKM; w.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { w.Id, w.ModelCode });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyexpires/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var w = await db.WarrantyExpiresList.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code.Trim());
+    if (w is null) return Results.NotFound(new { code });
+    w.FlagActive = w.FlagActive == "1" ? "0" : "1"; w.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { w.ModelCode, w.FlagActive });
+}).RequireAuthorization();
+
 // ===== Kho/bãi (Storage — port 1:1 FrmStorage, Admin/Product 2010.HTC) =====
 app.MapGet("/api/storages", async (AppDbContext db, ITenantContext t, string? q, string? type, string? active) =>
 {
@@ -10724,6 +10794,8 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
+record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
 record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
 record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo);

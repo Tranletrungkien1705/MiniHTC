@@ -1003,6 +1003,32 @@ public sealed class ServiceQuotationPart
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
 }
 
+/// <summary>Định mức tồn tối thiểu (theo model/spec/đại lý) — port 1:1 FrmSt_MinInvBalance (TblSt_MinInvBalance, Admin/Product 2010.HTC).</summary>
+public sealed class MinInvBalance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelList { get; set; } = "";     // ListModel
+    public string? SpecMix { get; set; }             // ListSpecMix
+    public string? DealerList { get; set; }          // ListDealer
+    public decimal TotalQty { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>
+public sealed class WarrantyExpires
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? ModelName { get; set; }
+    public int WarrantyMonths { get; set; }
+    public decimal WarrantyKM { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Kho/bãi (master mã/tên/địa chỉ/tỉnh/loại kho) — port 1:1 FrmStorage (TblStorage, Admin/Product 2010.HTC).</summary>
 public sealed class Storage
 {

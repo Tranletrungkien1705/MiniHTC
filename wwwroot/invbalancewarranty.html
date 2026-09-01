@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Định mức tồn & hạn BH model</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px} button.del{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5}
+</style></head>
+<body>
+<h1>Định mức tồn & hạn bảo hành model <span class="muted">(port 1:1 FrmSt_MinInvBalance + FrmWarrantyExpires — Admin/Product 2010.HTC)</span></h1>
+<div class="tabs"><div class="tab on" id="tA" onclick="tab('A')">Định mức tồn tối thiểu</div><div class="tab" id="tB" onclick="tab('B')">Hạn BH theo model</div></div>
+
+<div id="paneA">
+  <div class="card"><h3 style="margin-top:0">Thêm định mức</h3>
+    <div class="row"><div><label>Model (list) *</label><input id="aModel" style="width:140px" placeholder="ACCENT,TUCSON"></div><div><label>Spec mix</label><input id="aSpec" style="width:130px"></div><div><label>Đại lý (list)</label><input id="aDlr" style="width:130px"></div><div><label>Định mức SL *</label><input id="aQty" type="number" style="width:110px"></div><button class="primary" onclick="saveA()">Thêm</button><span id="msgA" class="msg"></span></div>
+  </div>
+  <div class="row" style="margin:8px 0"><input id="aQ" placeholder="Model" style="width:130px"><button onclick="loadA()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Model</th><th>Spec mix</th><th>Đại lý</th><th class="num">Định mức</th><th>TT</th><th></th></tr></thead><tbody id="aRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<div id="paneB" style="display:none">
+  <div class="card"><h3 style="margin-top:0">Thêm/sửa hạn BH</h3>
+    <div class="row"><div><label>Mã model *</label><input id="bCode" style="width:110px"></div><div><label>Tên model</label><input id="bName" style="width:160px"></div><div><label>Hạn (tháng)</label><input id="bMonths" type="number" style="width:100px"></div><div><label>Hạn (km)</label><input id="bKM" type="number" style="width:110px"></div><button class="primary" onclick="saveB()">Lưu</button><span id="msgB" class="msg"></span></div>
+  </div>
+  <div class="row" style="margin:8px 0"><input id="bQ" placeholder="Mã/tên model" style="width:150px"><button onclick="loadB()">Xem</button></div>
+  <div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Tháng</th><th class="num">Km</th><th>TT</th><th></th></tr></thead><tbody id="bRows"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
+function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":"none"; F("t"+k).className="tab"+(k===x?" on":""); }); }
+async function saveA(){ await token();
+  const r=await fetch("/api/mininvbalances",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({ModelList:F("aModel").value,SpecMix:F("aSpec").value,DealerList:F("aDlr").value,TotalQty:+F("aQty").value||0})});
+  const d=await r.json(); if(!r.ok){ m("msgA","Lỗi: "+(d.error||r.status)); return; } m("msgA","Đã thêm"); F("aModel").value="";F("aQty").value=""; loadA();
+}
+async function toggleA(id){ await token(); await fetch("/api/mininvbalances/"+id+"/toggle",{method:"POST",headers:H()}); loadA(); }
+async function delA(id){ await token(); if(!confirm("Xóa định mức?")) return; await fetch("/api/mininvbalances/"+id,{method:"DELETE",headers:H()}); loadA(); }
+async function loadA(){ await token();
+  const r=await fetch("/api/mininvbalances?model="+encodeURIComponent(F("aQ").value),{headers:H()}); const d=await r.json();
+  F("aRows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.modelList)}</b></td><td>${esc(o.specMix)}</td><td>${esc(o.dealerList)}</td><td class="num">${M(o.totalQty)}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="toggleA(${o.id})">Đổi</button><button class="link del" onclick="delA(${o.id})">Xóa</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có định mức.</td></tr>';
+}
+async function saveB(){ await token();
+  const r=await fetch("/api/warrantyexpires",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({ModelCode:F("bCode").value,ModelName:F("bName").value,WarrantyMonths:+F("bMonths").value||0,WarrantyKM:+F("bKM").value||0})});
+  const d=await r.json(); if(!r.ok){ m("msgB","Lỗi: "+(d.error||r.status)); return; } m("msgB","Đã lưu "+d.modelCode); F("bCode").value=""; loadB();
+}
+async function toggleB(code){ await token(); await fetch("/api/warrantyexpires/"+encodeURIComponent(code)+"/toggle",{method:"POST",headers:H()}); loadB(); }
+async function loadB(){ await token();
+  const r=await fetch("/api/warrantyexpires?q="+encodeURIComponent(F("bQ").value),{headers:H()}); const d=await r.json();
+  F("bRows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.modelCode)}</b></td><td>${esc(o.modelName)}</td><td class="num">${o.warrantyMonths}</td><td class="num">${M(o.warrantyKM)}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="toggleB('${esc(o.modelCode)}')">Đổi</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có.</td></tr>';
+}
+</script>
+</body></html>
