@@ -1043,6 +1043,33 @@ public sealed class ServicePackagePart
     public decimal Amount { get; set; }
 }
 
+/// <summary>Dòng sao kê ngân hàng — port 1:1 FrmBank_BankStatement (TCMotor/Sales/Payment). Import Excel sao kê, đối soát (reconcile) với mã thanh toán DMS qua PaymentCodeDMS.</summary>
+public sealed class BankStatementLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BStatementNo { get; set; } = "";     // số sao kê / lô
+    public string? TransactionDate { get; set; }        // ngày giao dịch (varchar giữ nguyên format sao kê)
+    public string? TransactionCode { get; set; }        // mã giao dịch (khoá đối chiếu trong file)
+    public decimal DebitVal { get; set; }               // ghi nợ
+    public decimal CreditVal { get; set; }              // ghi có
+    public decimal BalanceVal { get; set; }             // số dư
+    public string? RemittanceDetail { get; set; }       // nội dung chuyển khoản
+    public string? BankSendCode { get; set; }
+    public string? AccountSendName { get; set; }
+    public string? AccountSendNo { get; set; }
+    public string? BankReceiveCode { get; set; }
+    public string? AccountReceiveName { get; set; }
+    public string? AccountReceiveNo { get; set; }
+    public string? ActVoucherCode { get; set; }         // mã chứng từ kế toán
+    public string? PaymentCodeDMS { get; set; }         // mã thanh toán DMS đã đối soát
+    public string? FlagTnxType { get; set; }            // loại giao dịch
+    public string? DealerSendCode { get; set; }
+    public string? DealerReceiveCode { get; set; }
+    public string MatchStatus { get; set; } = "N";      // N=chưa đối soát, Y=đã khớp PaymentCodeDMS
+    public DateTime CreatedAt { get; set; }
+}
+
 /// <summary>Định mức khuyến mãi theo thẻ hội viên × chương trình — port 1:1 FrmMember (Crd_Member promotion, TCMotor/Customer). QtyRemain = QtyAllocated - QtyUsed.</summary>
 public sealed class CustomerPromotion
 {

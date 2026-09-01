@@ -4808,6 +4808,84 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Sao kê ngân hàng (BankStatementLine — port 1:1 FrmBank_BankStatement, TCMotor/Sales/Payment) =====
+// Import Excel sao kê (bulk add, dedup TransactionCode trong lô) → đối soát (reconcile) với mã thanh toán DMS.
+app.MapGet("/api/bankstatements", async (AppDbContext db, ITenantContext t, string? q, string? bankReceive, string? match, string? dateFrom, string? dateTo) =>
+{
+    var qry = db.BankStatementLines.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.RemittanceDetail!.Contains(q) || x.TransactionCode!.Contains(q) || x.BStatementNo.Contains(q) || x.PaymentCodeDMS!.Contains(q));
+    if (!string.IsNullOrWhiteSpace(bankReceive)) qry = qry.Where(x => x.BankReceiveCode == bankReceive);
+    if (!string.IsNullOrWhiteSpace(match)) qry = qry.Where(x => x.MatchStatus == match);
+    if (!string.IsNullOrWhiteSpace(dateFrom)) qry = qry.Where(x => x.TransactionDate!.CompareTo(dateFrom) >= 0);
+    if (!string.IsNullOrWhiteSpace(dateTo)) qry = qry.Where(x => x.TransactionDate!.CompareTo(dateTo) <= 0);
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.BStatementNo, x.TransactionDate, x.TransactionCode, x.DebitVal, x.CreditVal, x.BalanceVal,
+        x.RemittanceDetail, x.BankReceiveCode, x.AccountReceiveNo, x.AccountSendName, x.PaymentCodeDMS, x.MatchStatus, x.FlagTnxType
+    }).ToListAsync();
+    var totDebit = items.Sum(x => x.DebitVal); var totCredit = items.Sum(x => x.CreditVal);
+    var matched = items.Count(x => x.MatchStatus == "Y");
+    return Results.Ok(new { count = items.Count, totDebit, totCredit, matched, unmatched = items.Count - matched, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankstatements/import", async (BankStatementImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.BStatementNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "BStatementNo bắt buộc" });
+    var lines = dto.Lines ?? new List<BankStatementRowDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Phải có ít nhất 1 dòng sao kê" });
+    // dedup TransactionCode trong lô (guard dup-in-file)
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var dups = new List<string>();
+    foreach (var l in lines)
+    {
+        var tc = (l.TransactionCode ?? "").Trim();
+        if (!string.IsNullOrEmpty(tc) && !seen.Add(tc)) dups.Add(tc);
+    }
+    if (dups.Count > 0) return Results.BadRequest(new { error = "Trùng mã giao dịch trong lô: " + string.Join(", ", dups.Distinct().Take(10)) });
+    // bỏ dòng đã tồn tại trong DB theo TransactionCode (skip-duplicate-neutral)
+    var existing = await db.BankStatementLines.Where(x => x.OrgId == t.OrgId && seen.Contains(x.TransactionCode!)).Select(x => x.TransactionCode!).ToListAsync();
+    var existSet = new HashSet<string>(existing, StringComparer.OrdinalIgnoreCase);
+    int added = 0, skipped = 0;
+    var now = DateTime.Now;
+    foreach (var l in lines)
+    {
+        var tc = (l.TransactionCode ?? "").Trim();
+        if (!string.IsNullOrEmpty(tc) && existSet.Contains(tc)) { skipped++; continue; }
+        db.BankStatementLines.Add(new BankStatementLine {
+            OrgId = t.OrgId, BStatementNo = no, TransactionDate = l.TransactionDate, TransactionCode = tc,
+            DebitVal = l.DebitVal, CreditVal = l.CreditVal, BalanceVal = l.BalanceVal,
+            RemittanceDetail = l.RemittanceDetail, BankSendCode = l.BankSendCode, AccountSendName = l.AccountSendName, AccountSendNo = l.AccountSendNo,
+            BankReceiveCode = l.BankReceiveCode, AccountReceiveName = l.AccountReceiveName, AccountReceiveNo = l.AccountReceiveNo,
+            ActVoucherCode = l.ActVoucherCode, FlagTnxType = l.FlagTnxType, DealerSendCode = l.DealerSendCode, DealerReceiveCode = l.DealerReceiveCode,
+            MatchStatus = "N", CreatedAt = now
+        });
+        added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { bStatementNo = no, added, skipped });
+}).RequireAuthorization();
+
+// Đối soát: gán mã thanh toán DMS cho 1 dòng → MatchStatus='Y' (bỏ trống mã = huỷ đối soát)
+app.MapPost("/api/bankstatements/{id}/match", async (long id, BankStatementMatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.BankStatementLines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { id });
+    var code = (dto.PaymentCodeDMS ?? "").Trim();
+    r.PaymentCodeDMS = string.IsNullOrEmpty(code) ? null : code;
+    r.MatchStatus = string.IsNullOrEmpty(code) ? "N" : "Y";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.PaymentCodeDMS, r.MatchStatus });
+}).RequireAuthorization();
+
+app.MapDelete("/api/bankstatements/{id}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.BankStatementLines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { id });
+    db.BankStatementLines.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
 // ===== Định mức khuyến mãi hội viên (CustomerPromotion — port 1:1 FrmMember, TCMotor/Customer) =====
 app.MapGet("/api/custpromotions", async (AppDbContext db, ITenantContext t, string? card, string? program) =>
 {
@@ -11308,6 +11386,9 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record BankStatementImportDto(string? BStatementNo, List<BankStatementRowDto>? Lines);
+record BankStatementRowDto(string? TransactionDate, string? TransactionCode, decimal DebitVal, decimal CreditVal, decimal BalanceVal, string? RemittanceDetail, string? BankSendCode, string? AccountSendName, string? AccountSendNo, string? BankReceiveCode, string? AccountReceiveName, string? AccountReceiveNo, string? ActVoucherCode, string? FlagTnxType, string? DealerSendCode, string? DealerReceiveCode);
+record BankStatementMatchDto(string? PaymentCodeDMS);
 record CustPromotionDto(string CardNo, string ProgramCode, string? ProgramName, DateTime? EffDate, int QtyAllocated, string? Remark);
 record CustPromotionUseDto(int Qty);
 record DeliveryRequestDto(string? DealerCode, DateTime? RequestDate, List<DRCarDto>? Cars);
