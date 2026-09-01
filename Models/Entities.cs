@@ -1070,6 +1070,19 @@ public sealed class BankStatementLine
     public DateTime CreatedAt { get; set; }
 }
 
+/// <summary>Kích hoạt lại xe đã hủy — port 1:1 FrmReactiveCar (TCMotor). Chọn xe đã hủy (CarCancel Approved) → kích hoạt lại; ghi log + đổi CarCancel.Status='Reactivated'.</summary>
+public sealed class CarReactivation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? Reason { get; set; }
+    public string? ReactivatedBy { get; set; }
+    public DateTime ReactivatedAt { get; set; }
+}
+
 /// <summary>Cấu hình hóa đơn theo spec xe (Mst_CarInvoice) — port 1:1 FrmCarSpecInvoice (TCMotor). Ánh xạ SpecCode → thông tin xuất hóa đơn (spec HĐ, loại xe, số chỗ, loại phương tiện, VAT).</summary>
 public sealed class CarInvoiceSpec
 {

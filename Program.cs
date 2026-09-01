@@ -4865,6 +4865,36 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { h.Id, h.FlagActive });
 }).RequireAuthorization();
 
+// ===== Kích hoạt lại xe đã hủy (CarReactivation — port 1:1 FrmReactiveCar, TCMotor) =====
+app.MapGet("/api/carreactivations", async (AppDbContext db, ITenantContext t, string? vin) =>
+{
+    var q = db.CarReactivations.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.VIN, x.ModelCode, x.ColorCode, x.Reason, x.ReactivatedBy, x.ReactivatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carreactivations", async (CarReactivationDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe để kích hoạt lại." });
+    var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now; int reactivated = 0, cancelReverted = 0;
+    foreach (var c in cars)
+    {
+        var vin = c.VIN!.Trim().ToUpperInvariant();
+        db.CarReactivations.Add(new CarReactivation { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, ColorCode = c.ColorCode, Reason = dto.Reason, ReactivatedBy = by, ReactivatedAt = now });
+        reactivated++;
+        // đảo trạng thái hủy đã duyệt (nếu có) → Reactivated
+        var cancels = await db.CarCancels.Where(x => x.OrgId == t.OrgId && x.Vin == vin && x.Status == "Approved").ToListAsync();
+        foreach (var cn in cancels) { cn.Status = "Reactivated"; cancelReverted++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { reactivated, cancelReverted });
+}).RequireAuthorization();
+
 // ===== Cấu hình hóa đơn theo spec (CarInvoiceSpec — port 1:1 FrmCarSpecInvoice, TCMotor) =====
 app.MapGet("/api/carinvoicespecs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -11954,6 +11984,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record CarReactivationDto(string? Reason, List<CarReactivationCarDto>? Cars);
+record CarReactivationCarDto(string? VIN, string? ModelCode, string? ColorCode);
 record CarInvoiceSpecDto(string? SpecCode, string? SpecCodeInvoice, string? VehiclesType, int NumberOfSeats, string? CarType, decimal VAT, string? FlagActive);
 record CarInvoiceSpecImportDto(List<CarInvoiceSpecRowDto>? Rows);
 record CarInvoiceSpecRowDto(string? SpecCode, string? SpecCodeInvoice, string? VehiclesType, int NumberOfSeats, string? CarType, decimal VAT);
