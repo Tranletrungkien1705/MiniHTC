@@ -1227,6 +1227,32 @@ public sealed class TrainingParticipant
     public string? ResultOut { get; set; }
 }
 
+/// <summary>Đề nghị thu hồi hồ sơ xe (RD_ReqRedeem header) — port 1:1 FrmNewRedeem/FrmMngRedeem (2010.HTC/Sales/Redeem). Header: số ĐN + ngày + đại lý; state-machine Created→Approved/Rejected. Chi tiết theo VIN, loại Trực tiếp/Bảo lãnh.</summary>
+public sealed class RedeemRequest
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqRedeemNo { get; set; } = "";
+    public DateTime? CreatedDate { get; set; }
+    public string? DealerCode { get; set; }
+    public string? Note { get; set; }
+    public int VinCount { get; set; }
+    public string Status { get; set; } = "Created";
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>Dòng VIN của đề nghị thu hồi (RD_ReqRedeemDtl) — thuộc RedeemRequest. VIN + xe + loại thu hồi (DIRECT=Trực tiếp / GUARANTEE=Bảo lãnh).</summary>
+public sealed class RedeemRequestLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RequestId { get; set; }
+    public string? VIN { get; set; }
+    public string? CarId { get; set; }
+    public string RedeemType { get; set; } = "DIRECT";
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {

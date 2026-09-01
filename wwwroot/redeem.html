@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đề nghị thu hồi hồ sơ</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button,select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)}
+  .st-Created{color:var(--warn);border-color:var(--warn)} .st-Approved{color:var(--ok);border-color:var(--ok)} .st-Rejected{opacity:.6}
+  input.cell,select.cell{padding:4px 6px;width:100%}
+</style></head>
+<body>
+<h1>Đề nghị thu hồi hồ sơ xe <span class="muted">(port 1:1 FrmNewRedeem/FrmMngRedeem — 2010.HTC/Sales/Redeem)</span></h1>
+<div class="card"><h3 style="margin-top:0">Đề nghị mới</h3>
+  <div class="grid4">
+    <div><label>Số đề nghị</label><input id="no" placeholder="để trống = tự sinh"></div>
+    <div><label>Ngày</label><input id="date" type="date"></div>
+    <div><label>Đại lý</label><input id="dealer"></div>
+    <div><label>Ghi chú</label><input id="note"></div>
+  </div>
+  <div class="wrap"><table><thead><tr><th style="width:34%">Số VIN *</th><th style="width:30%">Mã xe (CarId)</th><th style="width:26%">Loại thu hồi</th><th></th></tr></thead><tbody id="lb"></tbody></table></div>
+  <div class="row" style="margin-top:6px"><button onclick="addLine()">+ VIN</button><span class="muted">Số VIN: <b id="cnt">0</b></span></div>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Tạo đề nghị</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Số ĐN / đại lý" style="width:220px"><select id="fst"><option value="">— tất cả TT —</option><option>Created</option><option>Approved</option><option>Rejected</option></select><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Số ĐN</th><th>Ngày</th><th>Đại lý</th><th>Số VIN</th><th>TT</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<div id="detail" class="card" style="display:none"><h3 style="margin-top:0">Chi tiết <span id="dno"></span></h3><div class="wrap"><table><thead><tr><th>VIN</th><th>Mã xe</th><th>Loại</th></tr></thead><tbody id="db"></tbody></table></div></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dshow=s=>s?String(s).slice(0,10):""; const tname=t=>t==='GUARANTEE'?'Bảo lãnh':'Trực tiếp';
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+const v=id=>F(id).value||null;
+function addLine(){ const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="cell vin"></td><td><input class="cell car"></td><td><select class="cell typ"><option value="DIRECT">Trực tiếp</option><option value="GUARANTEE">Bảo lãnh</option></select></td><td><button class="link" onclick="this.closest('tr').remove();cnt()">x</button></td>`;
+  F("lb").appendChild(tr); cnt(); }
+function cnt(){ F("cnt").textContent=F("lb").querySelectorAll("tr").length; }
+async function save(){ await token();
+  const lines=[...F("lb").querySelectorAll("tr")].map(tr=>({VIN:tr.querySelector(".vin").value,CarId:tr.querySelector(".car").value,RedeemType:tr.querySelector(".typ").value}));
+  const body={ReqRedeemNo:v("no"),CreatedDate:v("date"),DealerCode:v("dealer"),Note:v("note"),Lines:lines};
+  const r=await fetch("/api/redeemrequests",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.reqRedeemNo+" — "+d.vinCount+" VIN"); F("lb").innerHTML=""; ["no","dealer","note"].forEach(i=>F(i).value=""); cnt(); load();
+}
+async function act(id,a){ await token(); const r=await fetch("/api/redeemrequests/"+id+"/"+a,{method:"POST",headers:Hh()}); const d=await r.json(); if(!r.ok) say("Lỗi: "+(d.error||r.status)); load(); }
+async function detail(id,no){ await token(); const r=await fetch("/api/redeemrequests/"+id,{headers:Hh()}); const d=await r.json();
+  F("dno").textContent=no; F("detail").style.display="block";
+  F("db").innerHTML=(d.lines||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.carId)}</td><td>${tname(o.redeemType)}</td></tr>`).join("")||'<tr><td colspan="3" class="muted">Không có VIN.</td></tr>'; F("detail").scrollIntoView(); }
+async function load(){ await token();
+  const r=await fetch("/api/redeemrequests?status="+encodeURIComponent(F("fst").value)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.reqRedeemNo)}</b></td><td>${dshow(o.createdDate)}</td><td>${esc(o.dealerCode)}</td><td>${o.vinCount}</td><td><span class="pill st-${esc(o.status)}">${esc(o.status)}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.reqRedeemNo)}')">Xem</button>${o.status==='Created'?`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button><button class="link" onclick="act(${o.id},'reject')">Từ chối</button>`:''}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có đề nghị.</td></tr>';
+}
+addLine();
+</script>
+</body></html>
