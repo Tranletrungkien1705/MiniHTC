@@ -22,14 +22,18 @@
   <select id="st"><option value="THUVIEC">Thử việc</option><option value="CHINGTHUC">Chính thức</option><option value="CTVIEN">Cộng tác viên</option><option value="NGHIVIEC">Nghỉ việc</option></select>
   <button class="primary" onclick="save()">Lưu NV</button><span id="msg"></span>
 </div>
+  <span class="muted" style="width:100%"></span>
+  <input id="whCode" placeholder="Mã NV (LS công tác) *" style="width:150px"><input id="whReason" placeholder="Lý do" style="width:140px"><input id="whDesc" placeholder="Mô tả" style="width:200px">
+  <button onclick="saveWorkHistory()">Lưu LS công tác</button><span id="whMsg" class="muted"></span>
+</div>
 <div class="bar">
   <span class="kpi">Tổng: <b id="kt">0</b></span><span class="kpi">Đã cấp mã Hyundai: <b id="ka">0</b></span>
   <span style="flex:1"></span>
   <select id="fst" onchange="load()"><option value="">Tất cả TT</option><option value="THUVIEC">Thử việc</option><option value="CHINGTHUC">Chính thức</option><option value="CTVIEN">CTV</option><option value="NGHIVIEC">Nghỉ việc</option></select>
   <select id="fap" onchange="load()"><option value="">Tất cả</option><option value="1">Đã duyệt</option><option value="0">Chưa duyệt</option></select>
 </div>
-<table><thead><tr><th>Mã NV</th><th>Họ tên</th><th>Đại lý</th><th>Mã Hyundai</th><th>Trạng thái</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Mã NV</th><th>Họ tên</th><th>Đại lý</th><th>Mã Hyundai</th><th>Trạng thái</th><th>Lý do / Mô tả</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const ST={THUVIEC:"Thử việc",CHINGTHUC:"Chính thức",CTVIEN:"Cộng tác viên",NGHIVIEC:"Nghỉ việc"};
@@ -54,13 +58,22 @@ async function load(){ await token();
     if(s.smStatus!=="NGHIVIEC") act+=`<button class="sm" onclick="setStatus('${s.smCode}','NGHIVIEC')">Nghỉ việc</button>`;
     return `<tr><td><b>${s.smCode}</b></td><td>${s.smName}</td><td>${s.dealerCode||"—"}</td>
       <td class="${s.smHyundaiCode?'hcode':'nocode'}">${s.smHyundaiCode||"chưa cấp"}</td>
-      <td><span class="pill s-${s.smStatus}">${ST[s.smStatus]||s.smStatus}</span></td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="6" class="muted">Chưa có NV.</td></tr>';
+      <td><span class="pill s-${s.smStatus}">${ST[s.smStatus]||s.smStatus}</span></td>
+      <td class="muted">${s.smReason||""}${s.smDesc?" — "+s.smDesc:""}</td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có NV.</td></tr>';
 }
 async function grant(code){ const hc=prompt("Mã Hyundai cấp cho "+code+":"); if(!hc) return;
   const r=await fetch(`/api/dlsalesmen/${code}/grant`,{method:"POST",headers:H(),body:JSON.stringify({sMHyundaiCode:hc})});
   const j=await r.json(); if(r.ok){ msg("Đã cấp mã "+j.smHyundaiCode+" → "+ST[j.smStatus]); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function setStatus(code,st){ const r=await fetch(`/api/dlsalesmen/${code}/status`,{method:"POST",headers:H(),body:JSON.stringify({sMStatus:st})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function saveWorkHistory(){
+  const code=F("whCode").value.trim(); if(!code){ F("whMsg").textContent="Cần mã NV"; return; }
+  const body={rows:[{smCode:code,smReason:F("whReason").value,smDesc:F("whDesc").value}]};
+  const r=await fetch("/api/dlsalesmen/workhistory",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  F("whMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy NV."):("Lỗi: "+(j.error||r.status));
+  if(r.ok && j.updated) load();
+}
 load();
 </script>
 </body></html>

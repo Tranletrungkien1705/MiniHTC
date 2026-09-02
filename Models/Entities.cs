@@ -858,6 +858,10 @@ public sealed class DlSalesMan
     public DateTime? DateOfBirth { get; set; }
     public string? PhoneNo { get; set; }
     public string? IdentityCardNo { get; set; }
+    public DateTime? StartDate { get; set; }    // ngày bắt đầu công tác — port FrmQuanLyLSCongTac
+    public DateTime? EndDate { get; set; }      // ngày kết thúc công tác
+    public string? SMReason { get; set; }       // lý do (nghỉ việc/chuyển...)
+    public string? SMDesc { get; set; }         // mô tả chi tiết
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

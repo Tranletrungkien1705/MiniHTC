@@ -14162,8 +14162,26 @@ app.MapGet("/api/dlsalesmen", async (AppDbContext db, ITenantContext t, string? 
     if (approved == "1") q = q.Where(s => s.SMHyundaiCode != null && s.SMHyundaiCode != "");
     else if (approved == "0") q = q.Where(s => s.SMHyundaiCode == null || s.SMHyundaiCode == "");
     var items = await q.OrderBy(s => s.SMCode).Take(500).Select(s => new
-    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.Sex, s.DateOfBirth, s.PhoneNo, s.IdentityCardNo }).ToListAsync();
+    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.Sex, s.DateOfBirth, s.PhoneNo, s.IdentityCardNo, s.StartDate, s.EndDate, s.SMReason, s.SMDesc }).ToListAsync();
     return Results.Ok(new { count = items.Count, approved = items.Count(x => !string.IsNullOrEmpty(x.SMHyundaiCode)), items });
+}).RequireAuthorization();
+
+// Sửa hàng loạt lý do/mô tả lịch sử công tác (port 1:1 FrmQuanLyLSCongTac, 2010.HTC/Admin/Product)
+app.MapPost("/api/dlsalesmen/workhistory", async (DlWorkHistoryDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SMCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Dữ liệu không thay đổi!" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var code = r.SMCode!.Trim().ToUpperInvariant();
+        var s = await db.DlSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
+        if (s is null) { notFound.Add(code); continue; }
+        s.SMReason = r.SMReason; s.SMDesc = r.SMDesc; s.UpdatedAt = DateTime.Now;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 app.MapPost("/api/dlsalesmen", async (DlSalesManDto dto, AppDbContext db, ITenantContext t) =>
@@ -14686,6 +14704,8 @@ record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegi
 record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
 record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? Remark);
 record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo);
+record DlWorkHistoryRowDto(string? SMCode, string? SMReason, string? SMDesc);
+record DlWorkHistoryDto(List<DlWorkHistoryRowDto>? Rows);
 record DlGrantDto(string SMHyundaiCode);
 record DlStatusDto(string SMStatus);
 record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
