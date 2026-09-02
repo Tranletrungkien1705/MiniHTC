@@ -8934,6 +8934,41 @@ app.MapDelete("/api/filepathvideos/{code}", async (string code, AppDbContext db,
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Ảnh mẫu phiếu TN-GX (SerModelAudImage — port 1:1 FrmSerMstModelAudImageCreate/Search, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, string? model, string? audType) =>
+{
+    var qry = db.SerModelAudImages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(audType)) qry = qry.Where(x => x.ReceptionFAudType == audType);
+    var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).Take(500)
+        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/modelaudimages", async (SerModelAudImageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var model = (dto.ModelCode ?? "").Trim();
+    var audType = (dto.ReceptionFAudType ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (string.IsNullOrWhiteSpace(audType)) return Results.BadRequest(new { error = "Chưa chọn đầu mục." });
+    if (string.IsNullOrWhiteSpace((dto.FilePath ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập link ảnh." });
+    var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
+    var isNew = row is null;
+    if (isNew) { row = new SerModelAudImage { OrgId = t.OrgId, ModelCode = model, ReceptionFAudType = audType }; db.SerModelAudImages.Add(row); }
+    row!.FilePath = dto.FilePath; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FilePath, isNew });
+}).RequireAuthorization();
+
+app.MapDelete("/api/modelaudimages", async (string model, string audType, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
+    if (row is null) return Results.NotFound(new { model, audType });
+    db.SerModelAudImages.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = new { model, audType } });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -14071,6 +14106,7 @@ record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
+record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);

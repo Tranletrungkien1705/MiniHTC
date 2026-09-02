@@ -5026,6 +5026,19 @@ public sealed class SerFilePathVideo
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Ảnh mẫu trên phiếu tiếp nhận-giao xe (Ser_Mst_ModelAudImage — port 1:1 FrmSerMstModelAudImageCreate/Search, TCMotor DMSCarSv/Admin):
+/// ảnh minh họa theo Model + đầu mục kiểm tra (ReceptionFAudType, mã tự do — chưa có master riêng), khóa hợp = (ModelCode, ReceptionFAudType).
+/// FilePath lưu URL (thay browse-file bằng dán link).</summary>
+public sealed class SerModelAudImage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string ReceptionFAudType { get; set; } = "";
+    public string? FilePath { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
