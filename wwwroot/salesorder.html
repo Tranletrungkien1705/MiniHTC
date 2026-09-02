@@ -57,7 +57,7 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/salesorders?status=${F("fst").value}&type=${F("fty").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.soCode}')">Gửi</button>`
+    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.soCode}')">Gửi</button> <button class="sm" onclick="rename('${o.soCode}')">Đổi số</button>`
       :o.status==="Sent"?`<button class="sm" onclick="approve1('${o.soCode}')">Duyệt C1</button> <button class="sm" onclick="reject('${o.soCode}')">Từ chối</button>`
       :o.status==="Approved1"?`<button class="sm" onclick="approve2('${o.soCode}')">Duyệt C2</button> <button class="sm" onclick="reject('${o.soCode}')">Từ chối</button>`:"";
     let extra=o.salesPolicy?`<div class="cars">CS: ${o.salesPolicy}${o.expectedMonth?" · DK "+day(o.expectedMonth):""}</div>`:"";
@@ -66,6 +66,10 @@ async function load(){ await token();
   }).join("")||'<tr><td colspan="9" class="muted">Chưa có đơn hàng.</td></tr>';
 }
 async function send(no){ const r=await fetch(`/api/salesorders/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function rename(no){ const nc=prompt("Số đơn hàng mới:",no); if(!nc||nc===no) return;
+  const r=await fetch(`/api/salesorders/${no}/rename-code`,{method:"POST",headers:H(),body:JSON.stringify({newSoCode:nc})});
+  const j=await r.json(); if(r.ok){ msg("Đã đổi "+j.oldCode+" → "+j.newCode); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
 async function approve1(no){
   const sp=prompt("Chính sách bán (SPCode):","SP01"); if(sp===null) return;
   const em=prompt("Tháng dự kiến (YYYY-MM-DD):","");

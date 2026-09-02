@@ -11302,6 +11302,23 @@ app.MapPost("/api/salesorders/{no}/reject", async (string no, SoRejectDto dto, A
     return Results.Ok(new { o.SoCode, status = o.Status });
 }).RequireAuthorization();
 
+// Đổi số đơn hàng SO (port 1:1 FrmOrderSOModify, DMSales.Foton/Sales). Chỉ đổi khi còn Draft; mã mới không được trùng.
+app.MapPost("/api/salesorders/{no}/rename-code", async (string no, SoRenameDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
+    if (o is null) return Results.NotFound(new { no });
+    var newCode = (dto.NewSoCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(newCode)) return Results.BadRequest(new { error = "Chưa nhập số đơn hàng mới." });
+    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ đổi số đơn hàng khi còn nháp (Draft)." });
+    if (newCode != no && await db.SalesOrders.AnyAsync(x => x.OrgId == t.OrgId && x.SoCode == newCode))
+        return Results.BadRequest(new { error = $"Số đơn hàng '{newCode}' đã tồn tại." });
+    var oldCode = o.SoCode;
+    o.SoCode = newCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { oldCode, newCode = o.SoCode });
+}).RequireAuthorization();
+
 // ===== Packing List (PackingList/PL — port 1:1 FrmNewPL/FrmMngPL, DMSales.Foton) =====
 app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string? lc, string? port) =>
 {
@@ -13482,6 +13499,7 @@ record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? Deposi
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
 record SoRejectDto(string? Reason);
+record SoRenameDto(string? NewSoCode);
 record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
 record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);
 record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
