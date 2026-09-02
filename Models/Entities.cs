@@ -3327,6 +3327,17 @@ public sealed class DealerDealDetail
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
 }
 
+/// <summary>File đính kèm sổ bảo hành theo HĐ bán lẻ (Dls_DealerDealAttach) — port 1:1 FrmEditDeal_SoBaoHanh (2010.HTC/SalesDealer). Metadata file (không lưu binary) — 1 file mới nhất mỗi DealNo, upsert.</summary>
+public sealed class DealerDealAttach
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string FileName { get; set; } = "";
+    public string? FilePath { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Thiết lập hóa đơn theo model (Mst_InvoiceSetup) — port 1:1 FrmMst_InvoiceSetup (2010.HTC/Admin/Product). Cờ xuất HĐ HTMV/TCG theo model.</summary>
 public sealed class InvoiceSetup
 {

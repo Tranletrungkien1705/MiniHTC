@@ -43,6 +43,15 @@
     <span style="flex:1"></span><button class="primary" onclick="editKhgd()">Lưu</button><span id="ekMsg"></span>
   </div>
 </div>
+<div class="card">
+  <b>File đính kèm sổ bảo hành (port 1:1 FrmEditDeal_SoBaoHanh)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã GD *</label><input id="faNo" style="width:110px"></div>
+    <div><label>Tên file *</label><input id="faName" style="width:160px" placeholder="sobaohanh.pdf"></div>
+    <div><label>Đường dẫn</label><input id="faPath" style="width:180px"></div>
+    <button onclick="saveAttach()">Lưu file</button><button class="sm" onclick="viewAttach()">Xem</button><span id="faMsg"></span>
+  </div>
+</div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc mã ĐL" oninput="load()" style="width:100px"><input id="qb" placeholder="Lọc KH mua" oninput="load()" style="width:100px"></div>
 <table><thead><tr><th>Mã GD</th><th>HĐ user</th><th>Đại lý</th><th>KH mua</th><th>Kiểu</th><th>PDI</th><th>Số xe</th><th class="num">Tổng (sau VAT)</th><th>Ngày GD</th></tr></thead>
 <tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
@@ -83,6 +92,20 @@ async function editKhgd(){
   const j=await r.json();
   F("ekMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD."):("Lỗi: "+(j.error||r.status));
   if(r.ok && j.updated) load();
+}
+async function saveAttach(){
+  const no=F("faNo").value.trim(), name=F("faName").value.trim();
+  if(!no||!name){ F("faMsg").textContent="Cần Mã GD + Tên file"; return; }
+  const body={rows:[{dealNo:no,fileNameNew:name,filePathNew:F("faPath").value||null}]};
+  const r=await fetch("/api/dealerdealattaches",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  F("faMsg").textContent=r.ok?"Đã lưu.":("Lỗi: "+(j.error||r.status));
+}
+async function viewAttach(){
+  const no=F("faNo").value.trim(); if(!no){ F("faMsg").textContent="Cần Mã GD"; return; }
+  const r=await fetch(`/api/dealerdealattaches/${no}`,{headers:H()});
+  const j=await r.json();
+  F("faMsg").textContent=r.ok?`File: ${j.fileName}${j.filePath?" ("+j.filePath+")":""}`:"Chưa có file đính kèm.";
 }
 addCar(); load();
 </script>

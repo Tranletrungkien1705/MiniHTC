@@ -235,6 +235,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarActualPrice> CarActualPrices => Set<CarActualPrice>();
     public DbSet<DealerDeal> DealerDeals => Set<DealerDeal>();
     public DbSet<DealerDealDetail> DealerDealDetails => Set<DealerDealDetail>();
+    public DbSet<DealerDealAttach> DealerDealAttaches => Set<DealerDealAttach>();
     public DbSet<DlrPdiRequest> DlrPdiRequests => Set<DlrPdiRequest>();
     public DbSet<DlrPdiRequestDetail> DlrPdiRequestDetails => Set<DlrPdiRequestDetail>();
     public DbSet<DealerCustomer> DealerCustomers => Set<DealerCustomer>();

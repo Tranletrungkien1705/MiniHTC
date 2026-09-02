@@ -6301,6 +6301,32 @@ app.MapDelete("/api/spsupportretails/{vin}/{spsrCode}", async (string vin, strin
     return Results.Ok(new { deleted = vin });
 }).RequireAuthorization();
 
+// ===== File đính kèm sổ bảo hành theo HĐ bán lẻ (DealerDealAttach — port 1:1 FrmEditDeal_SoBaoHanh, 2010.HTC/SalesDealer) =====
+app.MapGet("/api/dealerdealattaches/{dealNo}", async (string dealNo, AppDbContext db, ITenantContext t) =>
+{
+    dealNo = dealNo.Trim();
+    var row = await db.DealerDealAttaches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == dealNo);
+    if (row is null) return Results.NotFound(new { dealNo });
+    return Results.Ok(new { row.DealNo, row.FileName, row.FilePath, row.UpdatedAt });
+}).RequireAuthorization();
+
+// Cập nhật hàng loạt (khớp btnApply_Click/DealerSalesDealUpdateAttachFileMulti gốc) — chỉ dòng có FileNameNew mới upsert.
+app.MapPost("/api/dealerdealattaches", async (DealerDealAttachBatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.FileNameNew)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int added = 0, updated = 0;
+    foreach (var r in rows)
+    {
+        var no = r.DealNo!.Trim();
+        var row = await db.DealerDealAttaches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+        if (row is null) { row = new DealerDealAttach { OrgId = t.OrgId, DealNo = no }; db.DealerDealAttaches.Add(row); added++; } else updated++;
+        row.FileName = r.FileNameNew!.Trim(); row.FilePath = r.FilePathNew; row.UpdatedAt = DateTime.Now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Mẫu hợp đồng của đại lý (DealerContractForm — port 1:1 FrmDlr_Mst_DealerContractForm, 2010.HTC) =====
 app.MapGet("/api/dealercontractforms", async (AppDbContext db, ITenantContext t, string? dealer, string? q, bool? all) =>
 {
@@ -15531,6 +15557,8 @@ record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, st
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record SPSupportRetailImportDto(List<SPSupportRetailRowDto>? Rows);
+record DealerDealAttachRowDto(string? DealNo, string? FileNameNew, string? FilePathNew);
+record DealerDealAttachBatchDto(List<DealerDealAttachRowDto>? Rows);
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
 record GrtDeferredEditDto(List<GrtDeferredRowDto>? Lines);
 record GrtDeferredRowDto(string? VIN, int DeferredPaymentDays);
