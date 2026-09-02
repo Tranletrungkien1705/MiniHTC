@@ -159,6 +159,7 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("DeliveryForm", "Hình thức giao hàng (FrmMst_DeliveryFormMng) [TCMotor]"),
     ("OrderComplainType", "Loại khiếu nại đơn PT (FrmMst_OrderComplainTypeMng) [TCMotor]"),
     ("OrderComplainImageType", "Loại ảnh khiếu nại (FrmMst_OrderComplainImageTypeMng) [TCMotor]"),
+    ("CustomerBase", "Nguồn gốc khách hàng (FrmCustomerBase)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
