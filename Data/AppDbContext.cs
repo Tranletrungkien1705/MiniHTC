@@ -105,6 +105,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<VinModelOrginalMst> VinModelOrginalMsts => Set<VinModelOrginalMst>();
     public DbSet<ExtraWorkLimitationMst> ExtraWorkLimitationMsts => Set<ExtraWorkLimitationMst>();
     public DbSet<WarrantyExtensionDateLog> WarrantyExtensionDateLogs => Set<WarrantyExtensionDateLog>();
+    public DbSet<SerAssignmentWork> SerAssignmentWorks => Set<SerAssignmentWork>();
+    public DbSet<SerAssignmentWorkStage> SerAssignmentWorkStages => Set<SerAssignmentWorkStage>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();

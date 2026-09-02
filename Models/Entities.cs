@@ -2360,6 +2360,29 @@ public sealed class WarrantyExtensionDateLog
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phân công công đoạn sửa chữa theo RO (Ser_AssignmentWork header) — port 1:1 FrmSer_AssignmentWork (TCMotor DMSCarSv/Services). Header theo RO; 7 công đoạn (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) mỗi công đoạn gán khoang (Cavity) + kế hoạch/thực tế bắt đầu-kết thúc → SerAssignmentWorkStage.</summary>
+public sealed class SerAssignmentWork
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng công đoạn trong phân công RO — thuộc SerAssignmentWork. StageCode (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) + khoang gán + kế hoạch/thực tế bắt đầu-kết thúc.</summary>
+public sealed class SerAssignmentWorkStage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long AssignmentWorkId { get; set; }
+    public string StageCode { get; set; } = "";
+    public string? CavityId { get; set; }
+    public DateTime? PlanStart { get; set; }
+    public DateTime? PlanFinish { get; set; }
+    public DateTime? ActualStart { get; set; }
+    public DateTime? ActualFinish { get; set; }
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {

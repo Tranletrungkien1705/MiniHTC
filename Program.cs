@@ -7847,6 +7847,35 @@ app.MapPost("/api/warrantyextensiondatelogs/{id}/toggle", async (long id, AppDbC
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Phân công công đoạn sửa chữa theo RO (SerAssignmentWork header-detail — port 1:1 FrmSer_AssignmentWork, TCMotor DMSCarSv/Services) =====
+var assignmentWorkStages = new[] { "SCC", "SCD", "SCDB", "SCKSC", "SCLR", "SCN", "SCS" };
+app.MapGet("/api/serassignmentworks/{roNo}", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (h is null) return Results.Ok(new { roNo, exists = false, stages = Array.Empty<object>() });
+    var stages = await db.SerAssignmentWorkStages.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id)
+        .Select(x => new { x.StageCode, x.CavityId, x.PlanStart, x.PlanFinish, x.ActualStart, x.ActualFinish }).ToListAsync();
+    return Results.Ok(new { roNo, exists = true, h.UpdatedAt, stages });
+}).RequireAuthorization();
+
+app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var stageCode = (dto.StageCode ?? "").Trim().ToUpperInvariant();
+    if (!assignmentWorkStages.Contains(stageCode)) return Results.BadRequest(new { error = "Mã công đoạn không hợp lệ (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS)." });
+    if (dto.PlanStart.HasValue && dto.PlanFinish.HasValue && dto.PlanFinish < dto.PlanStart) return Results.BadRequest(new { error = "Kế hoạch kết thúc trước kế hoạch bắt đầu." });
+    if (dto.ActualStart.HasValue && dto.ActualFinish.HasValue && dto.ActualFinish < dto.ActualStart) return Results.BadRequest(new { error = "Thực tế kết thúc trước thực tế bắt đầu." });
+    var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
+    var stage = await db.SerAssignmentWorkStages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id && x.StageCode == stageCode);
+    if (stage is null) { stage = new SerAssignmentWorkStage { OrgId = t.OrgId, AssignmentWorkId = h.Id, StageCode = stageCode }; db.SerAssignmentWorkStages.Add(stage); }
+    stage.CavityId = dto.CavityId; stage.PlanStart = dto.PlanStart; stage.PlanFinish = dto.PlanFinish; stage.ActualStart = dto.ActualStart; stage.ActualFinish = dto.ActualFinish;
+    h.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { roNo, stageCode, stage.CavityId, stage.PlanStart, stage.PlanFinish, stage.ActualStart, stage.ActualFinish });
+}).RequireAuthorization();
+
 // ===== Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
 app.MapGet("/api/vinmodelorginalmsts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
 {
@@ -14102,6 +14131,7 @@ record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive);
 record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive);
 record ExtraWorkLimitationMstDto(string? ExtraWorkCode, string? ExtraWorkName, string? WarrantyDtlCode, decimal MaxPrice, string? FlagActive);
 record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategoryCode, string? ExtCategoryName, DateTime? ExtensionDate, string? Remark, string? FlagActive);
+record SerAssignmentWorkStageDto(string? StageCode, string? CavityId, DateTime? PlanStart, DateTime? PlanFinish, DateTime? ActualStart, DateTime? ActualFinish);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);
