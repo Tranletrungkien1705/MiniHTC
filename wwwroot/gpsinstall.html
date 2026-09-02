@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đồng bộ ngày xuất kho GPS</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,textarea{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:100px}
+  .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .s-Pending{color:var(--warn)} .s-Synced{color:var(--ok)}
+</style></head>
+<body>
+<h1>Đồng bộ ngày xuất kho VIN-GPS <span class="muted">(port 1:1 FrmDongBoNgayXuatKho — 2010.HTC/StoFGPS)</span></h1>
+<p class="muted">Import danh sách VIN + GPS ID + ngày xuất kho, đồng bộ sang hệ thống GPS bên thứ 3 (Veloca — mô phỏng trên fleet-demo).</p>
+<div class="card"><h3 style="margin-top:0">Import (dán từ Excel)</h3>
+  <p class="muted" style="margin:2px 0">Mỗi dòng: <b>VIN [tab] GPS ID [tab] Ngày xuất kho (yyyy-mm-dd)</b></p>
+  <textarea id="lines" placeholder="VIN0001&#9;GPS001&#9;2026-09-01"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="doImport()">Import</button><button onclick="doSync()">Đồng bộ</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Pending">Chưa đồng bộ</option><option value="Synced">Đã đồng bộ</option></select><button onclick="load()">Xem</button></div>
+<table><thead><tr><th>VIN</th><th>GPS ID</th><th>Ngày xuất kho</th><th>Trạng thái</th></tr></thead>
+<tbody id="rows"><tr><td colspan="4" class="muted">Nhấn "Xem".</td></tr></tbody></table>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const dt=s=>s?String(s).substring(0,10):"";
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},5000); }
+async function doImport(){ await token();
+  const rows=F("lines").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/); return {Vin:(c[0]||"").trim(),GpsNo:(c[1]||"").trim(),DateActive:(c[2]||"").trim()||null};});
+  const r=await fetch("/api/gpsinstalls/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(rows)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã import ${d.imported} dòng.`); F("lines").value=""; load();
+}
+async function doSync(){ await token();
+  const r=await fetch("/api/gpsinstalls/sync",{method:"POST",headers:H()});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đồng bộ thành công ${d.synced} dòng.`); load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/gpsinstalls?status="+F("fst").value,{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.gpsNo)}</td><td>${dt(o.dateActive)}</td><td><span class="pill s-${o.syncStatus}">${o.syncStatus==="Synced"?"Đã đồng bộ":"Chưa đồng bộ"}</span></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dữ liệu.</td></tr>';
+}
+load();
+</script>
+</body></html>

@@ -9310,6 +9310,40 @@ app.MapPost("/api/avnpayments", async (AvnPaymentDto dto, AppDbContext db, ITena
     return Results.Ok(new { h.PmtNo, h.TotalAmount, lines = lines.Count });
 }).RequireAuthorization();
 
+// ===== Đồng bộ ngày xuất kho VIN-GPS sang Veloca (GpsInstall — port 1:1 FrmDongBoNgayXuatKho, 2010.HTC/StoFGPS) =====
+app.MapGet("/api/gpsinstalls", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var q = db.GpsInstalls.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.SyncStatus == status);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Import danh sách (khớp btnImportExcel_Click gốc): guard VIN/GPS ID/ngày bắt buộc + trùng VIN+GPS ID trong lô.
+app.MapPost("/api/gpsinstalls/import", async (List<GpsInstallDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    var list = (rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.Vin) && !string.IsNullOrWhiteSpace(r.GpsNo)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "VIN không được trống!" });
+    if (list.Any(r => r.DateActive is null)) return Results.BadRequest(new { error = "Ngày xuất kho không được trống!" });
+    var dupe = list.GroupBy(r => (r.Vin.Trim().ToUpperInvariant(), r.GpsNo.Trim().ToUpperInvariant())).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN: '{dupe.Key.Item1}' - GPS ID: '{dupe.Key.Item2}' bị lặp trong file excel!" });
+    foreach (var r in list)
+        db.GpsInstalls.Add(new GpsInstall { OrgId = t.OrgId, Vin = r.Vin.Trim().ToUpperInvariant(), GpsNo = r.GpsNo.Trim().ToUpperInvariant(), DateActive = r.DateActive!.Value });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { imported = list.Count });
+}).RequireAuthorization();
+
+// Đồng bộ (khớp btnDongBoNggayXuatKho_Click gốc — mô phỏng gọi Veloca, luôn thành công trên fleet-demo).
+app.MapPost("/api/gpsinstalls/sync", async (AppDbContext db, ITenantContext t) =>
+{
+    var pending = await db.GpsInstalls.Where(x => x.OrgId == t.OrgId && x.SyncStatus == "Pending").ToListAsync();
+    if (pending.Count == 0) return Results.BadRequest(new { error = "Không có VIN - GPS ID - Ngày xuất kho cần đồng bộ!" });
+    var now = DateTime.Now;
+    foreach (var x in pending) { x.SyncStatus = "Synced"; x.SyncedAt = now; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { synced = pending.Count });
+}).RequireAuthorization();
+
 // ===== Thanh toán phí GPS theo tháng (GpsPayment — port 1:1 FrmTaoThanhToanGPS/FrmQuanLyThanhToanGPS, 2010.HTC Sales/Purchase) =====
 app.MapGet("/api/gpspayments", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -14945,6 +14979,7 @@ record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTi
 record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);
 record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, string? ModelName, string? SpecDescription, string? GpsId, DateTime CostGPSStartDate, DateTime CostGPSEndDate, int DeductDate, decimal PriceGPS, string? ContractGPS);
 record GpsPaymentDto(DateTime? PmtMonth, List<GpsPaymentLineDto>? Lines);
+record GpsInstallDto(string Vin, string GpsNo, DateTime? DateActive);
 record StoragePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtNameVN, string? DealerCode, DateTime? StorageDate, DateTime? DeliveryOutDate, decimal CostCoat, decimal CostStorage, string? Remark);
 record StoragePaymentDto(DateTime? PmtMonth, List<StoragePaymentLineDto>? Lines);
 record StoragePaymentEditLineDto(string? Vin, decimal CostCoat, decimal CostStorage);

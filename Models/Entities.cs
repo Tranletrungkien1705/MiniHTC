@@ -704,6 +704,21 @@ public sealed class GpsPaymentLine
     public decimal AmountGPS { get; set; }      // tự tính = PriceGPS * ActualCostGPSDate
 }
 
+/// <summary>Đồng bộ ngày xuất kho VIN-GPS sang Veloca (StoF_GPSIn — port 1:1 FrmDongBoNgayXuatKho, 2010.HTC/StoFGPS):
+/// import Excel danh sách VIN+GPS ID+ngày xuất kho, đồng bộ sang hệ thống GPS bên thứ 3 (Veloca API — mô phỏng ở đây, không gọi thật).
+/// SyncStatus: Pending(chưa đồng bộ)→Synced(đã đồng bộ).</summary>
+public sealed class GpsInstall
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+    public string GpsNo { get; set; } = "";
+    public DateTime DateActive { get; set; }
+    public string SyncStatus { get; set; } = "Pending";
+    public DateTime? SyncedAt { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Thanh toán phí lưu kho theo tháng (Pmt_PaymentStorage — port 1:1 FrmQuanLyThanhToanLuuKho/FrmSuaThanhToanLuuKho, 2010.HTC Sales/Purchase):
 /// mỗi dòng VIN có phí lưu kho + phí che phủ, TotalAmount(dòng)=CostCoat+CostStorage (đã gồm VAT), AmountTotal(header)=Σ dòng,
 /// TotalBeforeVAT=AmountTotal/1.1, VatAmount=AmountTotal-TotalBeforeVAT. Trạng thái P(mới tạo)→A1→A2→F(đã ký)/C(từ chối/hủy);
