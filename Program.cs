@@ -7778,6 +7778,75 @@ app.MapPost("/api/staffmsts/{id}/toggle", async (long id, AppDbContext db, ITena
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Giới hạn giá công phát sinh theo loại BH chi tiết (ExtraWorkLimitationMst — port 1:1 FrmMstExtraWorkLimitationMng, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/extraworklimitationmsts", async (AppDbContext db, ITenantContext t, string? code, bool? all) =>
+{
+    var qry = db.ExtraWorkLimitationMsts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(code)) qry = qry.Where(x => x.ExtraWorkCode == code);
+    var items = await qry.OrderBy(x => x.ExtraWorkCode).ThenBy(x => x.WarrantyDtlCode).Take(1000)
+        .Select(x => new { x.Id, x.ExtraWorkCode, x.ExtraWorkName, x.WarrantyDtlCode, x.MaxPrice, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/extraworklimitationmsts", async (ExtraWorkLimitationMstDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ExtraWorkCode ?? "").Trim().ToUpperInvariant();
+    var dtl = (dto.WarrantyDtlCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã công phát sinh." });
+    if (string.IsNullOrWhiteSpace(dtl)) return Results.BadRequest(new { error = "Chưa chọn loại BH chi tiết." });
+    if (dto.MaxPrice < 0) return Results.BadRequest(new { error = "Giá tối đa không được âm." });
+    var row = await db.ExtraWorkLimitationMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ExtraWorkCode == code && x.WarrantyDtlCode == dtl);
+    if (row is null) { row = new ExtraWorkLimitationMst { OrgId = t.OrgId, ExtraWorkCode = code, WarrantyDtlCode = dtl }; db.ExtraWorkLimitationMsts.Add(row); }
+    row.ExtraWorkName = dto.ExtraWorkName; row.MaxPrice = dto.MaxPrice; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ExtraWorkCode, row.WarrantyDtlCode, row.MaxPrice, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/extraworklimitationmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ExtraWorkLimitationMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Gia hạn bảo hành theo VIN (WarrantyExtensionDateLog — port 1:1 FrmMstWarrantyExtensionDateMng, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/warrantyextensiondatelogs", async (AppDbContext db, ITenantContext t, string? vin, bool? all) =>
+{
+    var qry = db.WarrantyExtensionDateLogs.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(vin)) qry = qry.Where(x => x.VIN.Contains(vin!.ToUpperInvariant()));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.VIN, x.RONo, x.ExtCategoryCode, x.ExtCategoryName, x.ExtensionDate, x.Remark, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyextensiondatelogs", async (WarrantyExtensionDateLogDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    var ro = (dto.RONo ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(vin)) return Results.BadRequest(new { error = "Chưa nhập số VIN." });
+    if (dto.ExtensionDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày gia hạn." });
+    var row = await db.WarrantyExtensionDateLogs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.RONo == ro);
+    if (row is null) { row = new WarrantyExtensionDateLog { OrgId = t.OrgId, VIN = vin, RONo = ro }; db.WarrantyExtensionDateLogs.Add(row); }
+    row.ExtCategoryCode = dto.ExtCategoryCode; row.ExtCategoryName = dto.ExtCategoryName; row.ExtensionDate = dto.ExtensionDate; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.VIN, row.RONo, row.ExtensionDate, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyextensiondatelogs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.WarrantyExtensionDateLogs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
 app.MapGet("/api/vinmodelorginalmsts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
 {
@@ -14031,6 +14100,8 @@ record WarrantyWorkMstDto(string? ROWWorkCode, string? ROWWorkName, string? Mode
 record CompartmentMstDto(string? CompartmentCode, string? CompartmentName, string? FlagActive);
 record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive);
 record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive);
+record ExtraWorkLimitationMstDto(string? ExtraWorkCode, string? ExtraWorkName, string? WarrantyDtlCode, decimal MaxPrice, string? FlagActive);
+record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategoryCode, string? ExtCategoryName, DateTime? ExtensionDate, string? Remark, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

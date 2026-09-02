@@ -2332,6 +2332,34 @@ public sealed class VinModelOrginalMst
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Giới hạn giá công phát sinh theo loại BH chi tiết (Mst_Extra_Work_Limitation_Mng) — port 1:1 FrmMstExtraWorkLimitationMng (TCMotor DMSCarSv/Admin). Composite key ExtraWorkCode(ROWArisCode)+WarrantyDtlCode(ROWTypeDtlCode) → MaxPrice ghi đè theo loại BH. KHÁC ExtraWorkMst (giá tối đa chung, không theo loại BH).</summary>
+public sealed class ExtraWorkLimitationMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ExtraWorkCode { get; set; } = "";
+    public string? ExtraWorkName { get; set; }
+    public string WarrantyDtlCode { get; set; } = "";
+    public decimal MaxPrice { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Gia hạn bảo hành theo VIN (Mst_Warranty_Extension_Date_Mng) — port 1:1 FrmMstWarrantyExtensionDateMng (TCMotor DMSCarSv/Admin). VIN + số RO + loại gia hạn + ngày gia hạn mới + ghi chú. Insert-log, upsert-by-(VIN+RONo).</summary>
+public sealed class WarrantyExtensionDateLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? RONo { get; set; }
+    public string? ExtCategoryCode { get; set; }
+    public string? ExtCategoryName { get; set; }
+    public DateTime? ExtensionDate { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {

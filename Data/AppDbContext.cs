@@ -103,6 +103,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CompartmentMst> CompartmentMsts => Set<CompartmentMst>();
     public DbSet<StaffMst> StaffMsts => Set<StaffMst>();
     public DbSet<VinModelOrginalMst> VinModelOrginalMsts => Set<VinModelOrginalMst>();
+    public DbSet<ExtraWorkLimitationMst> ExtraWorkLimitationMsts => Set<ExtraWorkLimitationMst>();
+    public DbSet<WarrantyExtensionDateLog> WarrantyExtensionDateLogs => Set<WarrantyExtensionDateLog>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
