@@ -11566,6 +11566,24 @@ app.MapPost("/api/salespolicies/{code}/toggle", async (string code, AppDbContext
     return Results.Ok(new { p.SPSRCode, flagMstValid = p.FlagMstValid });
 }).RequireAuthorization();
 
+// Hủy hàng loạt chính sách (port 1:1 FrmMstPolicy_Mng btnCancel_Click / DeleteSPL, 2010.HTC/Sales)
+app.MapPost("/api/salespolicies/cancel-batch", async (SalesPolicyCancelDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var codes = (dto.SPSRCodes ?? new()).Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim().ToUpperInvariant()).ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa chọn chính sách để hủy" });
+    var deleted = new List<string>();
+    foreach (var code in codes)
+    {
+        var p = await db.SalesPolicyMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SPSRCode == code);
+        if (p is null) continue;
+        db.SalesPolicyMstDetails.RemoveRange(db.SalesPolicyMstDetails.Where(l => l.OrgId == t.OrgId && l.PolicyId == p.Id));
+        db.SalesPolicyMsts.Remove(p);
+        deleted.Add(code);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted });
+}).RequireAuthorization();
+
 // ===== Phiếu bảo trì xe lưu kho bãi (StoFMaintain — port 1:1 FrmMaintenanceSlipList/Detail, 2010.HTC/Maintenance) =====
 app.MapGet("/api/stofmaintains", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
 {
@@ -14856,6 +14874,7 @@ record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? 
 record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
 record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
+record SalesPolicyCancelDto(List<string>? SPSRCodes);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);

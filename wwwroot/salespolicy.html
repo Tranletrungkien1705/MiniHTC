@@ -59,10 +59,14 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/salespolicies?status=${F("fst").value}&type=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.spsrCode}</b> <a href="#" class="cars" onclick="det('${o.spsrCode}');return false">xem</a></td><td>${o.spNo}</td><td>${o.spsrType||""}</td><td>${o.formBusinessSupportCode||""}</td><td>${day(o.startDate)}–${day(o.endDate)}</td><td>${o.lines}</td><td class="num">${money(o.totalSupport)}</td><td><span class="pill p-${o.flagMstValid}">${o.flagMstValid==="1"?"Hiệu lực":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.spsrCode}')">Đổi TT</button></td></tr><tr id="x-${o.spsrCode}"></tr>`
+    `<tr><td><b>${o.spsrCode}</b> <a href="#" class="cars" onclick="det('${o.spsrCode}');return false">xem</a></td><td>${o.spNo}</td><td>${o.spsrType||""}</td><td>${o.formBusinessSupportCode||""}</td><td>${day(o.startDate)}–${day(o.endDate)}</td><td>${o.lines}</td><td class="num">${money(o.totalSupport)}</td><td><span class="pill p-${o.flagMstValid}">${o.flagMstValid==="1"?"Hiệu lực":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.spsrCode}')">Đổi TT</button> <button class="sm" onclick="cancelPolicy('${o.spsrCode}')" style="color:#dc2626">Hủy</button></td></tr><tr id="x-${o.spsrCode}"></tr>`
   ).join("")||'<tr><td colspan="9" class="muted">Chưa có chính sách.</td></tr>';
 }
 async function toggle(c){ const r=await fetch(`/api/salespolicies/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function cancelPolicy(c){
+  const r=await fetch("/api/salespolicies/cancel-batch",{method:"POST",headers:H(),body:JSON.stringify({sPSRCodes:[c]})});
+  const j=await r.json(); msg((j.deleted||[]).length?"Đã hủy "+c+".":"Lỗi: "+(j.error||r.status)); load();
+}
 async function det(c){
   const row=F("x-"+c); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/salespolicies/${c}/details`,{headers:H()})).json();
