@@ -422,6 +422,7 @@ public sealed class TranspFee
     public string ModelCode { get; set; } = "";
     public decimal ValFee { get; set; }
     public int ExpectedDays { get; set; }
+    public string? TFVCode { get; set; }   // phiên bản CPVT (batch) — port FrmMngTranspFeeHist
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

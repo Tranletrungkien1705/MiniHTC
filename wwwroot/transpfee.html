@@ -26,6 +26,10 @@
 </div>
 <table><thead><tr><th>Tỉnh From</th><th>Huyện</th><th>Tỉnh To</th><th>Huyện</th><th>Nhà VC</th><th>Model</th><th class="n">Phí</th><th class="n">Ngày</th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<h1 style="font-size:16px;margin-top:24px">Lịch sử phiên bản CPVT <span class="muted">(port 1:1 FrmMngTranspFeeHist)</span></h1>
+<div class="bar"><button onclick="loadVer()">Xem lịch sử</button><span id="verMsg" class="muted"></span></div>
+<table><thead><tr><th>Phiên bản (TFVCode)</th><th class="n">Số dòng</th><th>Cập nhật</th><th></th></tr></thead>
+<tbody id="verRows"><tr><td colspan="4" class="muted">Nhấn "Xem lịch sử".</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const n=x=>Number(x||0).toLocaleString("vi-VN");
@@ -46,6 +50,15 @@ async function load(){ await token();
   F("rows").innerHTML=(d.items||[]).map(f=>`<tr><td><b>${f.provinceCodeFrom}</b></td><td>${f.districtCodeFrom||"—"}</td>
     <td><b>${f.provinceCodeTo}</b></td><td>${f.districtCodeTo||"—"}</td><td>${f.transporterCode}</td><td>${f.modelCode}</td>
     <td class="n">${n(f.valFee)}</td><td class="n">${f.expectedDays}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có tuyến phí.</td></tr>';
+}
+async function loadVer(){ await token();
+  const d=await (await fetch("/api/transpfees/versions",{headers:H()})).json();
+  F("verRows").innerHTML=(d.items||[]).map(v=>`<tr><td><b>${v.tfvCode}</b></td><td class="n">${v.rows}</td><td>${new Date(v.updatedAt).toLocaleString("vi-VN")}</td><td><button onclick="delVer('${v.tfvCode}')" style="color:#dc2626">Xóa</button></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có phiên bản.</td></tr>';
+}
+async function delVer(tfv){
+  if(!confirm("Bạn chắc chắn muốn xóa phiên bản CPVT?")) return;
+  const r=await fetch("/api/transpfees/versions/delete-batch",{method:"POST",headers:H(),body:JSON.stringify({TFVCodes:[tfv]})});
+  const j=await r.json(); F("verMsg").textContent=r.ok?`Đã xóa ${j.deletedRows} dòng.`:("Lỗi: "+(j.error||r.status)); loadVer(); load();
 }
 load();
 </script>

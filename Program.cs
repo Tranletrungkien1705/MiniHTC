@@ -1031,6 +1031,46 @@ app.MapPost("/api/transpfees", async (TranspFeeDto dto, AppDbContext db, ITenant
     return Results.Ok(new { f.ProvinceCodeFrom, f.ProvinceCodeTo, f.TransporterCode, f.ModelCode, f.ValFee, f.ExpectedDays });
 }).RequireAuthorization();
 
+// Tạo hàng loạt 1 phiên bản CPVT mới (port 1:1 FrmNewTranspFee btnApply_Click, Phase2) — mỗi lần Apply tạo 1 lô TFVCode mới, không upsert.
+app.MapPost("/api/transpfees/versions", async (TranspFeeVersionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.ProvinceCodeFrom) && !string.IsNullOrWhiteSpace(r.ProvinceCodeTo)
+        && !string.IsNullOrWhiteSpace(r.TransporterCode) && !string.IsNullOrWhiteSpace(r.ModelCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu CPVT." });
+    var tfv = "TFV" + DateTime.Now.ToString("yyMMddHHmmss");
+    foreach (var r in rows)
+        db.TranspFees.Add(new TranspFee
+        {
+            OrgId = t.OrgId, TFVCode = tfv, ProvinceCodeFrom = r.ProvinceCodeFrom!.Trim().ToUpperInvariant(), ProvinceCodeTo = r.ProvinceCodeTo!.Trim().ToUpperInvariant(),
+            DistrictCodeFrom = r.DistrictCodeFrom, DistrictCodeTo = r.DistrictCodeTo, TransporterCode = r.TransporterCode!.Trim().ToUpperInvariant(),
+            ModelCode = r.ModelCode!.Trim().ToUpperInvariant(), ValFee = r.ValFee, ExpectedDays = r.ExpectedDays
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { tfvCode = tfv, rows = rows.Count });
+}).RequireAuthorization();
+
+// Danh sách phiên bản CPVT (port 1:1 FrmMngTranspFeeHist btnSearch_Click)
+app.MapGet("/api/transpfees/versions", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.TranspFees.Where(f => f.OrgId == t.OrgId && f.TFVCode != null)
+        .GroupBy(f => f.TFVCode)
+        .Select(g => new { tfvCode = g.Key, rows = g.Count(), updatedAt = g.Max(x => x.UpdatedAt) })
+        .OrderByDescending(g => g.updatedAt).Take(200).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Xóa hàng loạt phiên bản CPVT (port 1:1 FrmMngTranspFeeHist btnDeleteDetail_Click / DeleteTranspFeeVerList)
+app.MapPost("/api/transpfees/versions/delete-batch", async (TranspFeeVerDeleteDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var codes = (dto.TFVCodes ?? new()).Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Hãy chọn Phiên bản CPVT" });
+    var rows = db.TranspFees.Where(f => f.OrgId == t.OrgId && f.TFVCode != null && codes.Contains(f.TFVCode));
+    var deletedRows = await rows.CountAsync();
+    db.TranspFees.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deletedVersions = codes.Count, deletedRows });
+}).RequireAuthorization();
+
 // ===== Biên bản vận chuyển / giao nhận (TransportMinutes — port 1:1 FrmNewTransportMinutes/FrmMngTransportMinutes) =====
 app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
@@ -14839,6 +14879,8 @@ record BankBillReceiveDto(DateTime? BankBillReciveDate);
 record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode);
 record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
+record TranspFeeVersionDto(List<TranspFeeDto>? Rows);
+record TranspFeeVerDeleteDto(List<string>? TFVCodes);
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
