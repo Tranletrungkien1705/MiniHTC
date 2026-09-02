@@ -3544,9 +3544,10 @@ public sealed class StorageRearrange
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SCNo { get; set; } = "";
-    public string Status { get; set; } = "Draft"; // Draft → Confirmed / Cancelled
+    public string Status { get; set; } = "Draft"; // Draft → Confirmed / Cancelled ; hoặc Draft → Approved1 → Confirmed (duyệt 2 cấp, FrmMngSC)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
+    public DateTime? Approved1At { get; set; }
 }
 public sealed class StorageRearrangeDetail
 {

@@ -10758,7 +10758,7 @@ app.MapGet("/api/storagerearranges", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.SCNo, r.Status, r.CreatedAt, r.ConfirmedAt,
+        r.SCNo, r.Status, r.CreatedAt, r.Approved1At, r.ConfirmedAt,
         cars = db.StorageRearrangeDetails.Count(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -10790,15 +10790,29 @@ app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db
     return Results.Ok(new { r.SCNo, r.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
+// action: confirm|cancel (1 bước, giữ nguyên) hoặc approve1|approve2 (2 cấp, khớp FrmMngSC: Draft→Approved1→Confirmed).
 app.MapPost("/api/storagerearranges/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    if (action is not ("confirm" or "cancel" or "approve1" or "approve2")) return Results.BadRequest(new { error = "action = confirm|cancel|approve1|approve2" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Không thể xử lý Yêu cầu chuyển kho này" });
-    if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
-    else r.Status = "Cancelled";
+    if (action is "confirm" or "cancel")
+    {
+        if (r.Status != "Draft") return Results.BadRequest(new { error = "Không thể xử lý Yêu cầu chuyển kho này" });
+        if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
+        else r.Status = "Cancelled";
+    }
+    else if (action == "approve1")
+    {
+        if (r.Status != "Draft") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 khi đang ở trạng thái Nháp." });
+        r.Status = "Approved1"; r.Approved1At = DateTime.Now;
+    }
+    else // approve2
+    {
+        if (r.Status != "Approved1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 trước khi duyệt cấp 2." });
+        r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now;
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.SCNo, status = r.Status });
 }).RequireAuthorization();
