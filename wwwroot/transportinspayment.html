@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Thanh toán vận tải + bảo hiểm</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1140px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .linerow input{width:100%}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+</style></head>
+<body>
+<h1>Thanh toán vận tải + bảo hiểm <span class="muted">(port 1:1 FrmQuanLyThanhToanVanTaiBaoHiem/FrmTaoThanhToanVanTaiBaoHiem — 2010.HTC Sales/Purchase)</span></h1>
+<div class="card"><h3 style="margin-top:0">Tạo phiếu thanh toán vận tải + bảo hiểm</h3>
+  <div class="row"><label>Tháng thanh toán *</label><input id="month" type="month"></div>
+  <h3>Danh sách VIN — phí vận tải + phí bảo hiểm − phạt trễ hạn</h3>
+  <table id="lineTbl"><thead><tr><th>VIN</th><th>Nơi đến</th><th style="width:100px">Phí vận tải</th><th style="width:100px">Phí bảo hiểm</th><th style="width:100px">Phạt trễ hạn</th><th></th></tr></thead>
+  <tbody id="lineRows"></tbody></table>
+  <button onclick="addLine()">+ Thêm VIN</button>
+  <div class="row" style="margin-top:10px"><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Số phiếu" style="width:200px"><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Số phiếu</th><th>Tháng</th><th class="num">Trước VAT</th><th class="num">VAT</th><th class="num">Tổng</th><th>Ký HTV</th><th>Ký TCMS</th><th>TT</th><th>Hành động</th></tr></thead><tbody id="tb"><tr><td colspan="9" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
+function addLine(){ const tr=document.createElement("tr"); tr.className="linerow";
+  tr.innerHTML=`<td><input class="lv"></td><td><input class="lp"></td><td><input class="lf" type="number" value="0"></td><td><input class="li" type="number" value="0"></td><td><input class="lt" type="number" value="0"></td><td><button class="link" onclick="this.closest('tr').remove()">Xóa</button></td>`;
+  F("lineRows").appendChild(tr); }
+addLine();
+async function save(){ await token();
+  const lines=[...F("lineRows").querySelectorAll("tr")].map(tr=>({Vin:tr.querySelector(".lv").value,TProvinceName:tr.querySelector(".lp").value,TFValReal:+tr.querySelector(".lf").value||0,InsuranceCost:+tr.querySelector(".li").value||0,TPValReal:+tr.querySelector(".lt").value||0})).filter(l=>l.Vin);
+  const body={PmtMonth:F("month").value?F("month").value+"-01":null,Lines:lines};
+  const r=await fetch("/api/transportinspayments",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.pmtNo+" — tổng "+M(d.amountTotal)); F("lineRows").innerHTML=""; addLine(); load();
+}
+async function act(no,path,method){ await token();
+  const url = path ? `/api/transportinspayments/${encodeURIComponent(no)}/${path}` : `/api/transportinspayments/${encodeURIComponent(no)}`;
+  const r=await fetch(url,{method:method||"POST",headers:Hh()});
+  const d=await r.json(); say(r.ok? "OK "+no : "Lỗi: "+(d.error||r.status)); load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/transportinspayments?q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>{ const unsigned = o.htvSignStatus==="P" && o.tcmsSignStatus==="P";
+  return `<tr><td><b>${esc(o.pmtNo)}</b></td><td>${String(o.pmtMonth).slice(0,7)}</td><td class="num">${M(o.totalBeforeVAT)}</td><td class="num">${M(o.vatAmount)}</td><td class="num">${M(o.amountTotal)}</td>
+  <td><span class="pill">${esc(o.htvSignStatus)}</span> ${o.htvSignStatus==="P"?`<button class="link" onclick="act('${esc(o.pmtNo)}','htvsign')">Ký HTV</button>`:""}</td>
+  <td><span class="pill">${esc(o.tcmsSignStatus)}</span> ${o.tcmsSignStatus==="P"?`<button class="link" onclick="act('${esc(o.pmtNo)}','tcmssign')">Ký TCMS</button>`:""}</td>
+  <td><span class="pill">${esc(o.status)}</span></td>
+  <td>${(o.status==="P"&&unsigned)?`<button class="link" onclick="act('${esc(o.pmtNo)}','deny')">Từ chối</button>`:""}${((o.status==="C"||o.status==="P")&&unsigned)?`<button class="link" onclick="act('${esc(o.pmtNo)}','','DELETE')">Xóa</button>`:""}</td></tr>`; }).join("")||'<tr><td colspan="9" class="muted">Chưa có phiếu.</td></tr>';
+}
+</script>
+</body></html>

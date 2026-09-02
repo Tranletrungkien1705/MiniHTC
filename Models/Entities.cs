@@ -784,6 +784,46 @@ public sealed class PdiFeePaymentLine
     public decimal TotalPrice { get; set; }    // tự tính = CostInCheck + CostOutCheck
 }
 
+/// <summary>Thanh toán phí vận tải + bảo hiểm theo tháng (Pmt_TransportIns — port 1:1 FrmQuanLyThanhToanVanTaiBaoHiem/FrmTaoThanhToanVanTaiBaoHiem, 2010.HTC Sales/Purchase):
+/// cùng cấu trúc/guard với StoragePayment/PdiFeePayment — mỗi dòng VIN: ValTransport(dòng)=TFValReal(phí vận tải)+InsuranceCost(phí bảo hiểm)-TPValReal(phạt trễ hạn);
+/// AmountTotal(header)=Σ dòng (đã gồm VAT); TotalBeforeVAT=AmountTotal/1.1. Sửa/từ chối/xóa CHỈ khi Status=P và cả 2 bên CHƯA ký (=P).</summary>
+public sealed class TransportInsPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PmtNo { get; set; } = "";
+    public DateTime PmtMonth { get; set; }
+    public decimal TotalBeforeVAT { get; set; }
+    public decimal VatAmount { get; set; }
+    public decimal AmountTotal { get; set; }
+    public string HtvSignStatus { get; set; } = "P";
+    public DateTime? HtvSignAt { get; set; }
+    public string TcmsSignStatus { get; set; } = "P";
+    public DateTime? TcmsSignAt { get; set; }
+    public string Status { get; set; } = "P";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng VIN trong phiếu thanh toán vận tải + bảo hiểm — port 1:1 grid FrmTaoThanhToanVanTaiBaoHiem, 2010.HTC.</summary>
+public sealed class TransportInsPaymentLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TransportInsPaymentId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? CarId { get; set; }
+    public string? DlvMnNo { get; set; }
+    public string? TProvinceName { get; set; }
+    public DateTime? ExpectedDlvEndDate { get; set; }
+    public DateTime? DlvEndDate { get; set; }
+    public decimal TFValReal { get; set; }      // phí vận tải
+    public decimal TPValReal { get; set; }      // phạt trễ hạn
+    public decimal PriceCar { get; set; }
+    public decimal InsuranceCost { get; set; }  // phí bảo hiểm
+    public decimal ValTransport { get; set; }   // tự tính = TFValReal + InsuranceCost - TPValReal
+    public string? Remark { get; set; }
+}
+
 /// <summary>Vi phạm của nhân viên bán hàng (HR_SalesManViolate — port 1:1 FrmCreateSalesManViolate/FrmMngSalesManViolate, SalesDealer):
 /// ghi nhận kỷ luật NVBH theo loại vi phạm + thời hạn. ViolateNumber tự tăng theo từng NV (lần vi phạm thứ n).</summary>
 public sealed class SalesManViolate

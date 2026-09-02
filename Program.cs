@@ -9501,6 +9501,123 @@ app.MapDelete("/api/pdifeepayments/{no}", async (string no, AppDbContext db, ITe
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
+// ===== Thanh toán phí vận tải + bảo hiểm theo tháng (TransportInsPayment — port 1:1 FrmQuanLyThanhToanVanTaiBaoHiem/FrmTaoThanhToanVanTaiBaoHiem, 2010.HTC Sales/Purchase) =====
+app.MapGet("/api/transportinspayments", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var qry = db.TransportInsPayments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status,
+      lines = db.TransportInsPaymentLines.Count(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == x.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/transportinspayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.TransportInsPaymentLines.Where(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == h.Id).Select(l => new
+    { l.Vin, l.CarId, l.DlvMnNo, l.TProvinceName, l.ExpectedDlvEndDate, l.DlvEndDate, l.TFValReal, l.TPValReal, l.PriceCar, l.InsuranceCost, l.ValTransport, l.Remark }).ToListAsync();
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
+}).RequireAuthorization();
+
+// Khớp gốc: ValTransport(dòng)=TFValReal+InsuranceCost-TPValReal (đã gồm VAT); AmountTotal(header)=Σ dòng; TotalBeforeVAT=AmountTotal/1.1.
+app.MapPost("/api/transportinspayments", async (TransportInsPaymentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.PmtMonth is null) return Results.BadRequest(new { error = "Chưa nhập tháng thanh toán!" });
+    var lines = dto.Lines ?? new List<TransportInsPaymentLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
+
+    var no = "TPI" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new TransportInsPayment { OrgId = t.OrgId, PmtNo = no, PmtMonth = dto.PmtMonth.Value };
+    db.TransportInsPayments.Add(h); await db.SaveChangesAsync();
+
+    decimal total = 0;
+    foreach (var l in lines)
+    {
+        var amount = l.TFValReal + l.InsuranceCost - l.TPValReal;
+        total += amount;
+        db.TransportInsPaymentLines.Add(new TransportInsPaymentLine
+        {
+            OrgId = t.OrgId, TransportInsPaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), CarId = l.CarId, DlvMnNo = l.DlvMnNo,
+            TProvinceName = l.TProvinceName, ExpectedDlvEndDate = l.ExpectedDlvEndDate, DlvEndDate = l.DlvEndDate, TFValReal = l.TFValReal, TPValReal = l.TPValReal,
+            PriceCar = l.PriceCar, InsuranceCost = l.InsuranceCost, ValTransport = amount, Remark = l.Remark
+        });
+    }
+    h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, lines = lines.Count });
+}).RequireAuthorization();
+
+// Sửa (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp form Tạo dùng lại ở chế độ Edit gốc) — CHỈ sửa TFValReal/TPValReal/InsuranceCost/PriceCar từng dòng theo VIN.
+app.MapPut("/api/transportinspayments/{no}/edit", async (string no, TransportInsPaymentEditDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
+        return Results.BadRequest(new { error = "Chỉ có thể sửa khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
+    var rows = dto.Lines ?? new List<TransportInsPaymentEditLineDto>();
+    decimal total = 0;
+    var allLines = await db.TransportInsPaymentLines.Where(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == h.Id).ToListAsync();
+    foreach (var l in allLines)
+    {
+        var row = rows.FirstOrDefault(r => string.Equals(r.Vin, l.Vin, StringComparison.OrdinalIgnoreCase));
+        if (row is not null)
+        {
+            l.TFValReal = row.TFValReal; l.TPValReal = row.TPValReal; l.InsuranceCost = row.InsuranceCost;
+            l.ValTransport = row.TFValReal + row.InsuranceCost - row.TPValReal;
+        }
+        total += l.ValTransport;
+    }
+    h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal });
+}).RequireAuthorization();
+
+// Ký HTV / Ký TCMS (chỉ khi Status=P, khớp btnHTVSign/btnTCMSSign gốc)
+app.MapPost("/api/transportinspayments/{no}/{side}sign", async (string no, string side, AppDbContext db, ITenantContext t) =>
+{
+    if (side != "htv" && side != "tcms") return Results.NotFound();
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "P") return Results.BadRequest(new { error = "Chỉ có thể ký khi trạng thái thanh toán là P" });
+    if (side == "htv") { h.HtvSignStatus = "A"; h.HtvSignAt = DateTime.Now; } else { h.TcmsSignStatus = "A"; h.TcmsSignAt = DateTime.Now; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtNo, h.HtvSignStatus, h.TcmsSignStatus });
+}).RequireAuthorization();
+
+// Từ chối (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnDeny_Click gốc)
+app.MapPost("/api/transportinspayments/{no}/deny", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
+        return Results.BadRequest(new { error = "Chỉ có thể từ chối khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
+    h.Status = "C";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtNo, h.Status });
+}).RequireAuthorization();
+
+// Xóa (khớp btnDelete_Click gốc: Status C hoặc P, và cả 2 bên CHƯA ký (P))
+app.MapDelete("/api/transportinspayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (!((h.Status == "C" || h.Status == "P") && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
+        return Results.BadRequest(new { error = "Chưa có thể xóa khi trạng thái thanh toán là C hoặc P\nVà trạng thái ký của HTV và TCMS là P" });
+    var lines = db.TransportInsPaymentLines.Where(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == h.Id);
+    db.TransportInsPaymentLines.RemoveRange(lines);
+    db.TransportInsPayments.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -14615,6 +14732,10 @@ record PdiFeePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, s
 record PdiFeePaymentDto(DateTime? PmtMonth, List<PdiFeePaymentLineDto>? Lines);
 record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck);
 record PdiFeePaymentEditDto(List<PdiFeePaymentEditLineDto>? Lines);
+record TransportInsPaymentLineDto(string? Vin, string? CarId, string? DlvMnNo, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? DlvEndDate, decimal TFValReal, decimal TPValReal, decimal PriceCar, decimal InsuranceCost, string? Remark);
+record TransportInsPaymentDto(DateTime? PmtMonth, List<TransportInsPaymentLineDto>? Lines);
+record TransportInsPaymentEditLineDto(string? Vin, decimal TFValReal, decimal TPValReal, decimal InsuranceCost);
+record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);

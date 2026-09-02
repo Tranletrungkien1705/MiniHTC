@@ -193,6 +193,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<StoragePaymentLine> StoragePaymentLines => Set<StoragePaymentLine>();
     public DbSet<PdiFeePayment> PdiFeePayments => Set<PdiFeePayment>();
     public DbSet<PdiFeePaymentLine> PdiFeePaymentLines => Set<PdiFeePaymentLine>();
+    public DbSet<TransportInsPayment> TransportInsPayments => Set<TransportInsPayment>();
+    public DbSet<TransportInsPaymentLine> TransportInsPaymentLines => Set<TransportInsPaymentLine>();
     public DbSet<ServiceCustomer> ServiceCustomers => Set<ServiceCustomer>();
     public DbSet<OrderPart> OrderParts => Set<OrderPart>();
     public DbSet<OrderPartLine> OrderPartLines => Set<OrderPartLine>();
