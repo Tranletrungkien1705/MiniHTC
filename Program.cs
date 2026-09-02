@@ -9520,6 +9520,43 @@ app.MapPost("/api/dlvminutes/{no}/confirm", async (string no, AppDbContext db, I
     return Results.Ok(new { m.DlvMinutesNo, status = m.Status });
 }).RequireAuthorization();
 
+// Hỗ trợ sửa biên bản giao nhận theo lô (port 1:1 FrmSupport_BBGN_UpdateProvinceAndDistrict/FrmSupport_Sto_DlvMinutes_Update, ERP.V15.2025/Support).
+// field = fProvince|tProvince|fDistrict|tDistrict|dlvStartDate.
+app.MapPost("/api/dlvminutes/{no}/patch", async (string no, DlvMinutesPatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var field = (dto.Field ?? "").Trim();
+    if (field is not ("fProvince" or "tProvince" or "fDistrict" or "tDistrict" or "dlvStartDate")) return Results.BadRequest(new { error = "Field không hợp lệ (fProvince|tProvince|fDistrict|tDistrict|dlvStartDate)." });
+    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+    string oldVal;
+    switch (field)
+    {
+        case "fProvince": oldVal = m.FProvinceCode ?? ""; m.FProvinceCode = dto.Value.Trim().ToUpperInvariant(); break;
+        case "tProvince": oldVal = m.TProvinceCode ?? ""; m.TProvinceCode = dto.Value.Trim().ToUpperInvariant(); break;
+        case "fDistrict": oldVal = m.FDistrictCode ?? ""; m.FDistrictCode = dto.Value.Trim().ToUpperInvariant(); break;
+        case "tDistrict": oldVal = m.TDistrictCode ?? ""; m.TDistrictCode = dto.Value.Trim().ToUpperInvariant(); break;
+        default:
+            if (!DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày bắt đầu không hợp lệ." });
+            oldVal = m.DlvStartDate?.ToString("yyyy-MM-dd") ?? ""; m.DlvStartDate = newDate; break;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, field, oldValue = oldVal, newValue = dto.Value.Trim() });
+}).RequireAuthorization();
+
+// Hỗ trợ xóa biên bản giao nhận (port 1:1 FrmSupportSto_DlvMinutes_Delete, ERP.V15.2025/Support). Chỉ xóa được khi còn Draft.
+app.MapDelete("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.Status != "Draft") return Results.BadRequest(new { error = "Biên bản đã xác nhận, không thể xóa." });
+    db.DlvMinutesSet.Remove(m);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
+}).RequireAuthorization();
+
 // ===== Đề nghị nhận xe/PDI (HtmvPdi — port 1:1 FrmNewPDI, 2010.HTC/Sales/HTMV) =====
 app.MapGet("/api/htmvpdis", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -13442,6 +13479,7 @@ record GrtClaimExtSignDto(string FileName);
 record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal Price, DateTime? DeliveryDate, string? SalesManCode, string? BankCode);
 record SupportPatchDto(string Field, string Value);
 record DlrContractPatchDto(string Field, string Value);
+record DlvMinutesPatchDto(string Field, string Value);
 record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars);
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
