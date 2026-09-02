@@ -12618,7 +12618,7 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo }).ToListAsync();
-    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
+    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
 }).RequireAuthorization();
 
 // Sửa hàng loạt KH mua/lái/đứng tên trên các GD bán lẻ đã lập (port 1:1 FrmEditDeal_KHGD, 2010.HTC/SalesDealer)
@@ -12653,6 +12653,24 @@ app.MapPost("/api/dealerdeals/edit-salestype", async (EditDealSalesTypeDto dto, 
         var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
         if (d is null) { notFound.Add(no); continue; }
         d.SalesType = r.SalesType!.Trim().ToUpperInvariant();
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Sửa cờ kiểm chứng CSKH hàng loạt (port 1:1 FrmEditDeal_KiemChung/DealerSalesDealUpdateCtmCareInfoMulti gốc)
+app.MapPost("/api/dealerdeals/edit-ctmcare", async (EditDealCtmCareDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.DealNo!.Trim();
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+        if (d is null) { notFound.Add(no); continue; }
+        d.CtmCareFlag = r.CtmCareFlag;
         updated++;
     }
     await db.SaveChangesAsync();
@@ -15431,6 +15449,8 @@ record EditDealSalesTypeRowDto(string? DealNo, string? SalesType);
 record EditDealSalesTypeDto(List<EditDealSalesTypeRowDto>? Rows);
 record EditDealPlateNoRowDto(string? DealNo, string? CarId, string? PlateNo);
 record EditDealPlateNoDto(List<EditDealPlateNoRowDto>? Rows);
+record EditDealCtmCareRowDto(string? DealNo, string? CtmCareFlag);
+record EditDealCtmCareDto(List<EditDealCtmCareRowDto>? Rows);
 record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);

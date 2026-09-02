@@ -44,6 +44,14 @@
   </div>
 </div>
 <div class="card">
+  <b>Sửa cờ kiểm chứng CSKH (port 1:1 FrmEditDeal_KiemChung)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã GD *</label><input id="ccNo" style="width:110px"></div>
+    <div><label>Cờ kiểm chứng</label><select id="ccVal"><option value="1">Đã kiểm chứng</option><option value="0">Chưa kiểm chứng</option></select></div>
+    <button onclick="saveCtmCare()">Lưu</button><span id="ccMsg"></span>
+  </div>
+</div>
+<div class="card">
   <b>Sửa kiểu bán lẻ (port 1:1 FrmEditDeal_SalesType)</b>
   <div class="bar" style="margin:10px 0">
     <div><label>Mã GD *</label><input id="stNo" style="width:110px"></div>
@@ -109,6 +117,13 @@ async function editKhgd(){
   const j=await r.json();
   F("ekMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD."):("Lỗi: "+(j.error||r.status));
   if(r.ok && j.updated) load();
+}
+async function saveCtmCare(){
+  const no=F("ccNo").value.trim();
+  if(!no){ F("ccMsg").textContent="Cần Mã GD"; return; }
+  const r=await fetch("/api/dealerdeals/edit-ctmcare",{method:"POST",headers:H(),body:JSON.stringify({rows:[{dealNo:no,ctmCareFlag:F("ccVal").value}]})});
+  const j=await r.json();
+  F("ccMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD."):("Lỗi: "+(j.error||r.status));
 }
 async function saveSalesType(){
   const no=F("stNo").value.trim(), val=F("stVal").value.trim();
