@@ -4189,6 +4189,8 @@ public sealed class BankPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PaymentEndDate { get; set; }
     public DateTime? ApprovedAt { get; set; }
+    public decimal? InterestRate { get; set; }  // lãi suất vay (%) — port FrmUpdate_Pmt_Payment
+    public int? LoanPeriod { get; set; }        // kỳ hạn vay (tháng)
 }
 
 /// <summary>Chi tiết phiếu thanh toán theo VIN (Pmt_PMDetail) — port 1:1 FrmMngPM detail.</summary>

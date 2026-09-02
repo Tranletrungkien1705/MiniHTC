@@ -1688,7 +1688,7 @@ app.MapGet("/api/bankpms", async (AppDbContext db, ITenantContext t, string? dea
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.PaymentStatus == status);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo, p.CreatedAt, p.ApprovedAt,
+        p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo, p.CreatedAt, p.ApprovedAt, p.InterestRate, p.LoanPeriod,
         cars = db.BankPaymentCars.Count(c => c.OrgId == t.OrgId && c.PaymentId == p.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -1756,6 +1756,33 @@ app.MapPost("/api/bankpms/{no}/ctkt", async (string no, BankPmCtktDto dto, AppDb
     p.AccountingRecordNo = dto.NewAccountingRecordNo.Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PaymentNo, oldAccountingRecordNo = oldNo, newAccountingRecordNo = p.AccountingRecordNo });
+}).RequireAuthorization();
+
+// Sửa lãi suất + kỳ hạn vay theo lô (port 1:1 FrmUpdate_Pmt_Payment, Sales/Payment) — guard: cả 2 bắt buộc + số; lãi suất 0-100; kỳ hạn > 0.
+app.MapPost("/api/bankpms/interest-rate", async (BankPmInterestDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.PaymentNo)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    foreach (var r in rows)
+    {
+        if (r.InterestRate is null || r.LoanPeriod is null)
+            return Results.BadRequest(new { error = $"Cần nhập đủ thông tin lãi suất và kỳ hạn cho thanh toán {r.PaymentNo}!" });
+        if (r.InterestRate < 0 || r.InterestRate > 100)
+            return Results.BadRequest(new { error = $"Thông tin lãi suất của thanh toán {r.PaymentNo} phải lớn hơn bằng 0(>=0) và nhỏ hơn bằng 100(<=100)!" });
+        if (r.LoanPeriod < 0)
+            return Results.BadRequest(new { error = $"Thông tin kỳ hạn của thanh toán {r.PaymentNo} phải lớn hơn 0(>0)!" });
+    }
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.PaymentNo!.Trim().ToUpperInvariant();
+        var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+        if (p is null) { notFound.Add(no); continue; }
+        p.InterestRate = r.InterestRate; p.LoanPeriod = r.LoanPeriod;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // Sửa thanh toán — xác nhận ngày hết hạn TT + số ghi sổ theo lô (port 1:1 FrmEditPMPayEndDate, Sales/Payment; PmConfirmDateEnd).
@@ -14902,6 +14929,8 @@ record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? Mort
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
 record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars);
 record BankPmCtktDto(string NewAccountingRecordNo);
+record BankPmInterestRowDto(string? PaymentNo, decimal? InterestRate, int? LoanPeriod);
+record BankPmInterestDto(List<BankPmInterestRowDto>? Rows);
 record PmConfirmEndDateDto(List<PmEndDateRowDto>? Lines);
 record PmEndDateRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate);
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
