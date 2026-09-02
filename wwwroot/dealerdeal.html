@@ -44,6 +44,23 @@
   </div>
 </div>
 <div class="card">
+  <b>Sửa kiểu bán lẻ (port 1:1 FrmEditDeal_SalesType)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã GD *</label><input id="stNo" style="width:110px"></div>
+    <div><label>Kiểu bán lẻ mới *</label><input id="stVal" style="width:90px" placeholder="RETAIL"></div>
+    <button onclick="saveSalesType()">Lưu</button><span id="stMsg"></span>
+  </div>
+</div>
+<div class="card">
+  <b>Sửa biển số xe (port 1:1 FrmEditDeal_PlateNo)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã GD *</label><input id="pnNo" style="width:110px"></div>
+    <div><label>Mã xe (CarId) *</label><input id="pnCar" style="width:100px"></div>
+    <div><label>Biển số mới</label><input id="pnVal" style="width:110px"></div>
+    <button onclick="savePlateNo()">Lưu</button><span id="pnMsg"></span>
+  </div>
+</div>
+<div class="card">
   <b>File đính kèm sổ bảo hành (port 1:1 FrmEditDeal_SoBaoHanh)</b>
   <div class="bar" style="margin:10px 0">
     <div><label>Mã GD *</label><input id="faNo" style="width:110px"></div>
@@ -92,6 +109,21 @@ async function editKhgd(){
   const j=await r.json();
   F("ekMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD."):("Lỗi: "+(j.error||r.status));
   if(r.ok && j.updated) load();
+}
+async function saveSalesType(){
+  const no=F("stNo").value.trim(), val=F("stVal").value.trim();
+  if(!no||!val){ F("stMsg").textContent="Cần Mã GD + Kiểu bán lẻ"; return; }
+  const r=await fetch("/api/dealerdeals/edit-salestype",{method:"POST",headers:H(),body:JSON.stringify({rows:[{dealNo:no,salesType:val}]})});
+  const j=await r.json();
+  F("stMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD."):("Lỗi: "+(j.error||r.status));
+  if(r.ok && j.updated) load();
+}
+async function savePlateNo(){
+  const no=F("pnNo").value.trim(), car=F("pnCar").value.trim();
+  if(!no||!car){ F("pnMsg").textContent="Cần Mã GD + Mã xe"; return; }
+  const r=await fetch("/api/dealerdeals/edit-platenumber",{method:"POST",headers:H(),body:JSON.stringify({rows:[{dealNo:no,carId:car,plateNo:F("pnVal").value||null}]})});
+  const j=await r.json();
+  F("pnMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD/xe."):("Lỗi: "+(j.error||r.status));
 }
 async function saveAttach(){
   const no=F("faNo").value.trim(), name=F("faName").value.trim();

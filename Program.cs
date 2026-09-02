@@ -12641,6 +12641,44 @@ app.MapPost("/api/dealerdeals/edit-khgd", async (EditDealKhgdDto dto, AppDbConte
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
+// Sửa kiểu bán lẻ hàng loạt (port 1:1 FrmEditDeal_SalesType/DealerSalesDealUpdateSalesTypeMulti gốc)
+app.MapPost("/api/dealerdeals/edit-salestype", async (EditDealSalesTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.SalesType)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.DealNo!.Trim();
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+        if (d is null) { notFound.Add(no); continue; }
+        d.SalesType = r.SalesType!.Trim().ToUpperInvariant();
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Sửa biển số xe hàng loạt (port 1:1 FrmEditDeal_PlateNo/DealerSalesDealUpdatePlateNoMulti gốc) — khóa theo (DealNo, CarId)
+app.MapPost("/api/dealerdeals/edit-platenumber", async (EditDealPlateNoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.DealNo!.Trim(); var carId = r.CarId!.Trim();
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+        if (d is null) { notFound.Add(no); continue; }
+        var line = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == carId);
+        if (line is null) { notFound.Add($"{no}/{carId}"); continue; }
+        line.PlateNo = r.PlateNo;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
 // Chuyển xe sang đại lý khác (FrmNewDealToDealer) — DealerDeal buyer là đại lý, SalesType F7
 app.MapPost("/api/dealerdeals/todealer", async (DealToDealerDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -15389,6 +15427,10 @@ record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoice
 record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
 record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
 record EditDealKhgdDto(List<EditDealKhgdRowDto>? Rows);
+record EditDealSalesTypeRowDto(string? DealNo, string? SalesType);
+record EditDealSalesTypeDto(List<EditDealSalesTypeRowDto>? Rows);
+record EditDealPlateNoRowDto(string? DealNo, string? CarId, string? PlateNo);
+record EditDealPlateNoDto(List<EditDealPlateNoRowDto>? Rows);
 record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
