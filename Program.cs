@@ -14784,8 +14784,27 @@ app.MapGet("/api/vinpackings", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(v => v.Vin.Contains(vin.ToUpper()));
     if (!string.IsNullOrWhiteSpace(typeCB)) q = q.Where(v => v.TypeCB == typeCB);
     var items = await q.OrderByDescending(v => v.Id).Take(500)
-        .Select(v => new { v.Vin, v.TypeCB, v.LoaiThung, v.ActualSpec, v.SerialNo, v.InspectionDate, v.UpdatedAt }).ToListAsync();
+        .Select(v => new { v.Vin, v.TypeCB, v.LoaiThung, v.ActualSpec, v.SerialNo, v.InspectionDate, v.AVNCode, v.AVNDate, v.AVNScreenSerialNo, v.UpdatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, packed = items.Count(x => x.TypeCB == "1"), items });
+}).RequireAuthorization();
+
+// Sửa hàng loạt spec thực tế + số seri + mã/ngày/seri AVN theo VIN (port 1:1 FrmUpdateCVActualSpec, 2010.HTC/Sales/Phase2) — KHÔNG đổi TypeCB.
+app.MapPost("/api/vinpackings/actualspec", async (VinActualSpecDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu cần cập nhật" });
+    int updated = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.Vin.Trim().ToUpperInvariant();
+        var v = await db.VinPackings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
+        if (v is null) { v = new VinPacking { OrgId = t.OrgId, Vin = vin }; db.VinPackings.Add(v); }
+        v.ActualSpec = r.ActualSpec; v.SerialNo = r.SerialNo; v.AVNCode = r.AVNCode; v.AVNDate = r.AVNDate; v.AVNScreenSerialNo = r.AVNScreenSerialNo;
+        v.UpdatedAt = DateTime.Now;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated });
 }).RequireAuthorization();
 
 // Batch upsert như import Excel: mỗi VIN → set TypeCB='1' (đã đóng thùng) + LoaiThung/ActualSpec/SerialNo/InspectionDate
@@ -15002,6 +15021,8 @@ record VinPairDto(string FVIN, string RVIN);
 record MapVinDto(List<VinPairDto>? Pairs);
 record VinPackingRowDto(string Vin, string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);
 record VinPackingDto(List<VinPackingRowDto>? Items);
+record VinActualSpecRowDto(string Vin, string? ActualSpec, string? SerialNo, string? AVNCode, DateTime? AVNDate, string? AVNScreenSerialNo);
+record VinActualSpecDto(List<VinActualSpecRowDto>? Rows);
 record GpsClaimDto(string GpsDvNo, string? BeforeFixRemark, string? Remark);
 record GpsInDevDto(string GpsDvNo, string? GpsBoxNo, string? Remark);
 record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsInDevDto>? Devices);

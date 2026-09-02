@@ -523,6 +523,9 @@ public sealed class VinPacking
     public string? ActualSpec { get; set; }          // spec thực tế
     public string? SerialNo { get; set; }
     public DateTime? InspectionDate { get; set; }     // ngày kiểm định
+    public string? AVNCode { get; set; }              // mã AVN (đầu DVD/màn hình) — port FrmUpdateCVActualSpec
+    public DateTime? AVNDate { get; set; }
+    public string? AVNScreenSerialNo { get; set; }    // số seri màn hình AVN
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

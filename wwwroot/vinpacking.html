@@ -25,10 +25,15 @@
     <span style="flex:1"></span><button class="primary" onclick="save()">Lưu đóng thùng</button><span id="msg"></span>
   </div>
 </div>
+<div class="card">
+  <b>Sửa spec thực + số seri + AVN (port 1:1 FrmUpdateCVActualSpec)</b>
+  <table id="atbl"><thead><tr><th>VIN *</th><th>Spec thực</th><th>Số seri</th><th>Mã AVN</th><th>Ngày AVN</th><th>Seri màn hình AVN</th><th></th></tr></thead><tbody id="atb"></tbody></table>
+  <div class="bar" style="margin-top:8px"><button class="sm" onclick="addSpecRow()">+ Thêm VIN</button><span style="flex:1"></span><button class="primary" onclick="saveSpec()">Lưu spec/AVN</button><span id="specMsg"></span></div>
+</div>
 <div class="bar"><span class="kpi">Tổng VIN: <b id="kt">0</b></span><span class="kpi">Đã đóng thùng: <b id="kp">0</b></span>
   <span style="flex:1"></span><input id="q" placeholder="Lọc VIN" oninput="load()" style="width:130px"></div>
-<table><thead><tr><th>VIN</th><th>Trạng thái</th><th>Loại thùng</th><th>Spec thực</th><th>Số seri</th><th>Ngày kiểm</th></tr></thead>
-<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>VIN</th><th>Trạng thái</th><th>Loại thùng</th><th>Spec thực</th><th>Số seri</th><th>Ngày kiểm</th><th>AVN</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"—";
@@ -56,8 +61,22 @@ async function load(){ await token();
   F("kt").textContent=d.count; F("kp").textContent=d.packed;
   F("rows").innerHTML=(d.items||[]).map(v=>`<tr><td><b>${v.vin}</b></td>
     <td><span class="pill p-${v.typeCB}">${v.typeCB==="1"?"Đã đóng thùng":"Chưa"}</span></td>
-    <td>${v.loaiThung||"—"}</td><td>${v.actualSpec||"—"}</td><td>${v.serialNo||"—"}</td><td>${day(v.inspectionDate)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có VIN.</td></tr>';
+    <td>${v.loaiThung||"—"}</td><td>${v.actualSpec||"—"}</td><td>${v.serialNo||"—"}</td><td>${day(v.inspectionDate)}</td>
+    <td>${v.avnCode?v.avnCode+" · "+day(v.avnDate)+(v.avnScreenSerialNo?" · "+v.avnScreenSerialNo:""):"—"}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có VIN.</td></tr>';
 }
-addRow(); load();
+function addSpecRow(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="s-vin" style="width:120px"></td><td><input class="s-as" style="width:90px"></td><td><input class="s-sn" style="width:90px"></td>
+    <td><input class="s-ac" style="width:90px"></td><td><input class="s-ad" type="date"></td><td><input class="s-asn" style="width:110px"></td>
+    <td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("atb").appendChild(tr);
+}
+async function saveSpec(){ await token();
+  const rows=[...F("atb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".s-vin").value,actualSpec:tr.querySelector(".s-as").value,serialNo:tr.querySelector(".s-sn").value,avnCode:tr.querySelector(".s-ac").value,avnDate:tr.querySelector(".s-ad").value||null,avnScreenSerialNo:tr.querySelector(".s-asn").value})).filter(x=>x.vin);
+  const r=await fetch("/api/vinpackings/actualspec",{method:"POST",headers:H(),body:JSON.stringify({rows})});
+  const j=await r.json();
+  if(r.ok){ F("specMsg").textContent="Đã cập nhật "+j.updated+" VIN."; F("atb").innerHTML="";addSpecRow(); load(); } else F("specMsg").textContent="Lỗi: "+(j.error||r.status);
+}
+addRow(); addSpecRow(); load();
 </script>
 </body></html>
