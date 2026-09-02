@@ -182,6 +182,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CustomerCareMace> CustomerCareMaces => Set<CustomerCareMace>();
     public DbSet<InsuranceAttachmentType> InsuranceAttachmentTypes => Set<InsuranceAttachmentType>();
     public DbSet<InsuranceAttachment> InsuranceAttachments => Set<InsuranceAttachment>();
+    public DbSet<CampaignMarketing> CampaignMarketings => Set<CampaignMarketing>();
+    public DbSet<CampaignMarketingPart> CampaignMarketingParts => Set<CampaignMarketingPart>();
     public DbSet<ServiceCustomer> ServiceCustomers => Set<ServiceCustomer>();
     public DbSet<OrderPart> OrderParts => Set<OrderPart>();
     public DbSet<OrderPartLine> OrderPartLines => Set<OrderPartLine>();

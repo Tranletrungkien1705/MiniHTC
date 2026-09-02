@@ -9075,6 +9075,59 @@ app.MapPost("/api/insuranceattachments/{roNo}", async (string roNo, InsuranceAtt
     return Results.Ok(new { roNo, count = codes.Count });
 }).RequireAuthorization();
 
+// ===== Chiến dịch marketing HTC gửi đại lý (CampaignMarketing — port 1:1 FrmSer_CampaignMarketing/Mng, TCMotor DMSCarSv/Ser_CampaignMarketing) =====
+app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var qry = db.CampaignMarketings.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.CamNo.Contains(q!) || x.CamName.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.CamNo, x.CamName, x.CamDesc, x.EffDateStart, x.EffDateEnd, x.ConditionDealer, parts = db.CampaignMarketingParts.Count(p => p.OrgId == t.OrgId && p.CampaignId == x.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var parts = await db.CampaignMarketingParts.Where(p => p.OrgId == t.OrgId && p.CampaignId == c.Id).Select(p => new { p.PartCode, p.PercentDiscount }).ToListAsync();
+    return Results.Ok(new
+    { c.CamNo, c.CamName, c.CamDesc, c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd, c.ConditionVin, c.ConditionPlateNo, c.ConditionDealer, parts });
+}).RequireAuthorization();
+
+// Khớp checkForm() + btnApply_Click gốc: guard tên/nội dung/ngày bắt buộc, PercentDiscount 0-100, PartCode không trùng trong 1 lần tạo.
+app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CamName)) return Results.BadRequest(new { error = "Chưa nhập tên chiến dịch." });
+    if (string.IsNullOrWhiteSpace(dto.CamDesc)) return Results.BadRequest(new { error = "Chưa nhập nội dung chiến dịch." });
+    if (dto.EffDateStart is null) return Results.BadRequest(new { error = "Chưa nhập ngày chiến dịch từ." });
+    if (dto.EffDateEnd is null) return Results.BadRequest(new { error = "Chưa nhập ngày chiến dịch đến." });
+    var parts = dto.Parts ?? new List<CampaignMarketingPartDto>();
+    var dupCodes = parts.Select(p => (p.PartCode ?? "").Trim().ToUpperInvariant()).Where(c => c.Length > 0)
+        .GroupBy(c => c).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+    if (dupCodes.Count > 0) return Results.BadRequest(new { error = $"Mã phụ tùng '{dupCodes[0]}' bị lặp trên lưới!" });
+    foreach (var p in parts)
+        if (p.PercentDiscount < 0 || p.PercentDiscount > 100) return Results.BadRequest(new { error = "Hệ số giảm(%) phải >= 0 và <= 100!" });
+
+    var no = "CM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new CampaignMarketing
+    {
+        OrgId = t.OrgId, CamNo = no, CamName = dto.CamName.Trim(), CamDesc = dto.CamDesc,
+        EffDateStart = dto.EffDateStart.Value, EffDateEnd = dto.EffDateEnd.Value,
+        WarrantyDateStart = dto.WarrantyDateStart, WarrantyDateEnd = dto.WarrantyDateEnd,
+        ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo, ConditionDealer = dto.ConditionDealer
+    };
+    db.CampaignMarketings.Add(c); await db.SaveChangesAsync();
+    foreach (var p in parts)
+    {
+        var code = (p.PartCode ?? "").Trim().ToUpperInvariant();
+        if (code.Length == 0) continue;
+        db.CampaignMarketingParts.Add(new CampaignMarketingPart { OrgId = t.OrgId, CampaignId = c.Id, PartCode = code, PercentDiscount = Math.Round(p.PercentDiscount, 2) });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CamNo, partsCount = parts.Count });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -14140,6 +14193,8 @@ record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? 
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes);
+record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
+record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);

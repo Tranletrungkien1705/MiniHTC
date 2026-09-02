@@ -2484,6 +2484,36 @@ public sealed class CustomerCare
     public DateTime? ContactedAt { get; set; }
 }
 
+/// <summary>Chiến dịch marketing HTC gửi đại lý (Ser_CampaignMarketing — port 1:1 FrmSer_CampaignMarketing/Mng + FrmListDealer(Update),
+/// TCMotor DMSCarSv/Ser_CampaignMarketing): header + điều kiện áp dụng (VIN/biển số/đại lý, lưu CSV theo đúng cách nhập tay của WinForm)
+/// + danh sách phụ tùng khuyến mãi kèm % giảm.</summary>
+public sealed class CampaignMarketing
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string CamName { get; set; } = "";
+    public string? CamDesc { get; set; }
+    public DateTime EffDateStart { get; set; }
+    public DateTime EffDateEnd { get; set; }
+    public DateTime? WarrantyDateStart { get; set; }
+    public DateTime? WarrantyDateEnd { get; set; }
+    public string? ConditionVin { get; set; }        // CSV
+    public string? ConditionPlateNo { get; set; }     // CSV
+    public string? ConditionDealer { get; set; }      // CSV
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Phụ tùng khuyến mãi trong chiến dịch marketing (dòng) — port 1:1 grid gridCPart, TCMotor.</summary>
+public sealed class CampaignMarketingPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long CampaignId { get; set; }
+    public string PartCode { get; set; } = "";
+    public decimal PercentDiscount { get; set; }
+}
+
 /// <summary>Chăm sóc KH chương trình MACE hãng (Ser_CustomerCareMace — port 1:1 FrmCustomerCareMace/Update/ApointDate, TCMotor DMSCarSv/Customer):
 /// chương trình CSKH riêng theo MaceType (mã do hãng quy định), khác CustomerCare thường (24h/72h/DOB/Maint).
 /// WinForm gốc chỉ SEARCH + cập nhật trạng thái liên hệ (không tạo tay từng bản — nguồn phát sinh từ hãng);
