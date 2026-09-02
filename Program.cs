@@ -13097,6 +13097,21 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// Gán kỹ thuật viên cho 1 dòng công việc trong RO (port 1:1 FrmSerItemEngineerList — picker 2 lưới chuyển qua lại,
+// TCMotor DMSCarSv/Services): lưu danh sách KTV đã chọn thành chuỗi "no1,no2,..." vào RoServiceItem.Engineer.
+app.MapPost("/api/repairorders/{no}/services/{serCode}/engineers", async (string no, string serCode, RoEngineersDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var item = await db.RoServiceItems.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.RoId == r.Id && s.SerCode == serCode);
+    if (item is null) return Results.NotFound(new { serCode });
+    var codes = (dto.EngineerNos ?? new List<string>()).Select(x => x.Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    item.Engineer = codes.Count == 0 ? null : string.Join(",", codes);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, serCode, engineers = codes });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -13843,6 +13858,7 @@ record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQt
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
+record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines);
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
