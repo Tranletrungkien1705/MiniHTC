@@ -8897,6 +8897,43 @@ app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, I
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== Video tư vấn dịch vụ (SerFilePathVideo — port 1:1 FrmSerMstFilePathVideoCreate/Search, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var qry = db.SerFilePathVideos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.FilePathVideoCode.Contains(q!) || x.FilePathVideoName!.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(active)) qry = qry.Where(x => x.FlagActive == active);
+    var items = await qry.OrderBy(x => x.IdxView).ThenBy(x => x.FilePathVideoCode).Take(500)
+        .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/filepathvideos", async (SerFilePathVideoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.FilePathVideoCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã video." });
+    if (System.Text.RegularExpressions.Regex.IsMatch(code, "[^a-zA-Z0-9_-]")) return Results.BadRequest(new { error = "Mã video không được nhập ký tự đặc biệt." });
+    if (string.IsNullOrWhiteSpace((dto.FilePathVideoName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên video." });
+    if (string.IsNullOrWhiteSpace((dto.FilePathVideo ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập link video." });
+    var row = await db.SerFilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new SerFilePathVideo { OrgId = t.OrgId, FilePathVideoCode = code, FlagActive = "1" }; db.SerFilePathVideos.Add(row); }
+    row!.FilePathVideoName = dto.FilePathVideoName; row.FilePathVideo = dto.FilePathVideo; row.FilePathAvatar = dto.FilePathAvatar;
+    row.IdxView = dto.IdxView; if (!isNew && dto.FlagActive != null) row.FlagActive = dto.FlagActive;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.FilePathVideoCode, row.FilePathVideoName, row.IdxView, row.FlagActive, isNew });
+}).RequireAuthorization();
+
+app.MapDelete("/api/filepathvideos/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerFilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == code);
+    if (row is null) return Results.NotFound(new { code });
+    db.SerFilePathVideos.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -14033,6 +14070,7 @@ record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Pri
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
+record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);

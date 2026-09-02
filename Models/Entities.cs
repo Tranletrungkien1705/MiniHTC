@@ -5011,6 +5011,21 @@ public sealed class CarModelStd
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Video tư vấn dịch vụ (Ser_Mst_FilePathVideo — port 1:1 FrmSerMstFilePathVideoCreate/Search, TCMotor DMSCarSv/Admin):
+/// thư viện video tư vấn hiển thị theo thứ tự (IdxView) + ảnh đại diện. FilePathAvatar lưu URL (thay browse-file bằng dán link).</summary>
+public sealed class SerFilePathVideo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string FilePathVideoCode { get; set; } = "";
+    public string? FilePathVideoName { get; set; }
+    public string? FilePathVideo { get; set; }
+    public string? FilePathAvatar { get; set; }
+    public int IdxView { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {

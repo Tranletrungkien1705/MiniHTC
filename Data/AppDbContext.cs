@@ -7,6 +7,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Area> Areas => Set<Area>();
     public DbSet<MasterItem> Masters => Set<MasterItem>();
     public DbSet<CarModelStd> CarModelStds => Set<CarModelStd>();
+    public DbSet<SerFilePathVideo> SerFilePathVideos => Set<SerFilePathVideo>();
     public DbSet<Dealer> Dealers => Set<Dealer>();
     public DbSet<CarPrice> CarPrices => Set<CarPrice>();
     public DbSet<Customer> Customers => Set<Customer>();
