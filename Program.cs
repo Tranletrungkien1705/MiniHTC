@@ -8370,7 +8370,7 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
-        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note
+        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -8391,9 +8391,13 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
             && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
         if (overlap) return Results.BadRequest(new { error = "Khoang " + cavity + " đã có lịch trùng khung giờ." });
     }
+    var engineerNo = (dto.EngineerNo ?? "").Trim().ToUpperInvariant();
+    if (engineerNo != "" && !await db.ServiceEngineers.AnyAsync(e => e.OrgId == t.OrgId && e.EngineerNo == engineerNo))
+        return Results.BadRequest(new { error = "CVDV không tồn tại: " + engineerNo });
     var no = "APP" + DateTime.Now.ToString("yyMMddHHmmss");
     var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
-        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked" };
+        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked",
+        EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo };
     db.ServiceAppointments.Add(a); await db.SaveChangesAsync();
     return Results.Ok(new { a.Id, a.AppNo, a.Status });
 }).RequireAuthorization();
@@ -14513,7 +14517,7 @@ record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode)
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimActionDto(string Action, string? Note);
-record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note);
+record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo);
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);

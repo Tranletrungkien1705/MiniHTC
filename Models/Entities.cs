@@ -4767,6 +4767,8 @@ public sealed class ServiceAppointment
     public DateTime AppTo { get; set; }
     public string Status { get; set; } = "Booked"; // Booked -> Arrived -> Done / Cancelled
     public string? Note { get; set; }
+    public string? EngineerNo { get; set; }        // CVDV nhận lịch hẹn — port bổ sung FrmQuotationApp
+    public string? QuoteNo { get; set; }           // Báo giá ước tính gắn theo lịch hẹn (FK mềm tới ServiceQuotation.QuoteNo)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

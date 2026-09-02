@@ -20,7 +20,7 @@
   .slot{font-size:12px;border-top:1px dashed var(--line);padding:4px 0}
 </style></head>
 <body>
-<h1>Lịch hẹn dịch vụ <span class="muted">(port 1:1 FrmAppList + FrmShowCavityStatus — TCMotor)</span></h1>
+<h1>Lịch hẹn dịch vụ <span class="muted">(port 1:1 FrmAppList + FrmShowCavityStatus + FrmQuotationApp — TCMotor)</span></h1>
 <div class="tabs"><div class="tab on" id="t1" onclick="tab(1)">Lịch hẹn</div><div class="tab" id="t2" onclick="tab(2)">Bảng khoang/bay</div></div>
 
 <div id="pane1">
@@ -32,6 +32,8 @@
     <div><label>Điện thoại</label><input id="fMob" style="width:120px"></div>
     <div><label>Model</label><input id="fModel" style="width:110px"></div>
     <div><label>Loại hẹn</label><input id="fType" style="width:100px" placeholder="BD"></div>
+    <div><label>CVDV nhận lịch</label><input id="fEng" style="width:100px" placeholder="Mã KTV"></div>
+    <div><label>Số báo giá (nếu có)</label><input id="fQuote" style="width:120px"></div>
   </div>
   <div class="row" style="margin-top:8px">
     <div><label>Từ (giờ) *</label><input id="fFrom" type="datetime-local"></div>
@@ -46,8 +48,8 @@
   <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="Booked">Đã đặt</option><option value="Arrived">Đã đến</option><option value="Done">Xong</option><option value="Cancelled">Hủy</option></select></div>
   <button onclick="load()">Xem lịch</button>
 </div>
-<div class="wrap"><table><thead><tr><th>Số hẹn</th><th>Khoang</th><th>Biển số</th><th>KH</th><th>Model</th><th>Từ</th><th>Đến</th><th>TT</th><th>Thao tác</th></tr></thead>
-<tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Xem lịch".</td></tr></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>Số hẹn</th><th>Khoang</th><th>Biển số</th><th>KH</th><th>Model</th><th>CVDV</th><th>Từ</th><th>Đến</th><th>TT</th><th>Thao tác</th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Nhấn "Xem lịch".</td></tr></tbody></table></div>
 </div>
 
 <div id="pane2" style="display:none">
@@ -68,7 +70,7 @@ function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)
 function tab(n){ F("pane1").style.display=n===1?"block":"none"; F("pane2").style.display=n===2?"block":"none"; F("t1").className="tab"+(n===1?" on":""); F("t2").className="tab"+(n===2?" on":""); }
 async function book(){ await token();
   if(!F("fFrom").value||!F("fTo").value){ m("msg","Cần giờ bắt đầu và kết thúc."); return; }
-  const body={CavityName:F("fCav").value,PlateNo:F("fPlate").value,CusName:F("fCus").value,Mobile:F("fMob").value,ModelName:F("fModel").value,AppType:F("fType").value,AppFrom:F("fFrom").value,AppTo:F("fTo").value,Note:F("fNote").value};
+  const body={CavityName:F("fCav").value,PlateNo:F("fPlate").value,CusName:F("fCus").value,Mobile:F("fMob").value,ModelName:F("fModel").value,AppType:F("fType").value,AppFrom:F("fFrom").value,AppTo:F("fTo").value,Note:F("fNote").value,EngineerNo:F("fEng").value||null,QuoteNo:F("fQuote").value||null};
   const r=await fetch("/api/appointments",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
   m("msg","Đã đặt "+d.appNo); load();
@@ -85,7 +87,7 @@ function act(o){ let h="";
 async function load(){ await token();
   const p=new URLSearchParams(); if(F("qDate").value)p.set("date",F("qDate").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qStatus").value)p.set("status",F("qStatus").value);
   const r=await fetch("/api/appointments?"+p.toString(),{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có lịch hẹn.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.engineerNo)||"—"}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có lịch hẹn.</td></tr>';
 }
 async function board(){ await token();
   const p=new URLSearchParams(); if(F("bDate").value)p.set("date",F("bDate").value);
