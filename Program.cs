@@ -1476,7 +1476,7 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.DateEnd, c.DeferredPaymentDays }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.Status, g.FlagSettled, g.TotalAmount, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -1528,6 +1528,32 @@ app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto d
     g.TotalAmount = cars.Sum(c => c.GrtValue);
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, totalAmount = g.TotalAmount, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Sửa bảo lãnh: ngày hiệu lực + giá trị + cờ chiết khấu theo VIN (port 1:1 FrmEditGrt, 2010.HTC) — khớp btnApply_Click gốc (chỉ dòng EDIT status mới gửi).
+app.MapPost("/api/bankgrts/{no}/edit-start", async (string no, GrtStartEditDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
+    int updated = 0; var notFound = new List<string>();
+    foreach (var l in lines)
+    {
+        var key = l.VIN!.Trim().ToUpperInvariant();
+        if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.VIN!.Trim()); continue; }
+        if (l.DateStart.HasValue) c.DateStart = l.DateStart;
+        if (l.DateExpired.HasValue) c.DateExpired = l.DateExpired;
+        if (l.GrtValue.HasValue) c.GrtValue = l.GrtValue.Value;
+        c.FlagDtlDiscount = l.FlagDtlDiscount;
+        updated++;
+    }
+    if (lines.Any(l => l.GrtValue.HasValue)) g.TotalAmount = cars.Sum(c => c.GrtValue);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // Cập nhật số ngày trả chậm (TCLC) theo VIN (port 1:1 FrmEditGrtSoNgayTCLC, 2010.HTC).
@@ -15630,6 +15656,8 @@ record GrtDateRecieveRootRowDto(string? BankGuaranteeNo, DateTime? DateRecieveGr
 record DealerStorageLocalDto(string? DealerCode, string? StorageCode, string? StorageName, string? DealerName, string? FlagActive);
 record GrtValueEditDto(List<GrtValueRowDto>? Lines);
 record GrtValueRowDto(string? VIN, decimal GrtValue);
+record GrtStartEditDto(List<GrtStartRowDto>? Lines);
+record GrtStartRowDto(string? VIN, DateTime? DateStart, DateTime? DateExpired, decimal? GrtValue, string? FlagDtlDiscount);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive);

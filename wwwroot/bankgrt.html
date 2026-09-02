@@ -35,6 +35,13 @@
   <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRow()">+ Thêm xe</button><button class="primary" onclick="save()">Tạo bảo lãnh</button><span id="msg"></span></div>
 </div>
 <div class="card">
+  <b>Sửa bảo lãnh theo VIN <span class="muted">(port 1:1 FrmEditGrt — ngày hiệu lực + giá trị + cờ chiết khấu)</span></b>
+  <div class="bar" style="margin:10px 0"><div><label>Số BL *</label><input id="egNo" style="width:130px"></div></div>
+  <table style="margin-top:6px"><thead><tr><th>VIN *</th><th>Ngày hiệu lực</th><th>Ngày hết hạn</th><th class="num">Giá trị BL</th><th>Cờ CK</th><th></th></tr></thead>
+  <tbody id="egRows"></tbody></table>
+  <div class="bar" style="margin-top:8px"><button class="sm" onclick="addEgRow()">+ Thêm dòng</button><button class="primary" onclick="saveEditGrt()">Lưu</button><span id="msgEg"></span></div>
+</div>
+<div class="card">
   <b>Sửa ngày nhận LC/BL gốc <span class="muted">(port 1:1 FrmEditDateRecieveGrtRoot/FrmUpdateGrtDate — theo số BL của NH)</span></b>
   <table style="margin-top:10px"><thead><tr><th>Số BL của NH *</th><th>Ngày nhận LC/BL gốc *</th><th></th></tr></thead>
   <tbody id="rootRows"></tbody></table>
@@ -96,6 +103,20 @@ async function decide(no,act){ event.stopPropagation();
   const j=await r.json();
   if(r.ok){ msg(`${no}: ${ST[j.status]||j.status}${j.flagSettled==="1"?" / đã tất toán":""}`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
+function addEgRow(v){ v=v||{}; const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="eg-vin" style="width:110px" value="${v.vin||""}"></td><td><input class="eg-ds" type="date"></td><td><input class="eg-de" type="date"></td><td class="num"><input class="eg-val" type="number" style="width:100px"></td><td><select class="eg-disc"><option value="">—</option><option value="1">Có CK</option><option value="0">Không CK</option></select></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("egRows").appendChild(tr); }
+async function saveEditGrt(){
+  const no=F("egNo").value.trim(); if(!no){ F("msgEg").textContent="Cần Số BL"; return; }
+  const lines=[...document.querySelectorAll("#egRows tr")].map(tr=>({
+    VIN:tr.querySelector(".eg-vin").value, DateStart:tr.querySelector(".eg-ds").value||null, DateExpired:tr.querySelector(".eg-de").value||null,
+    GrtValue:tr.querySelector(".eg-val").value?+tr.querySelector(".eg-val").value:null, FlagDtlDiscount:tr.querySelector(".eg-disc").value||null
+  })).filter(l=>l.VIN.trim());
+  const r=await fetch(`/api/bankgrts/${no}/edit-start`,{method:"POST",headers:H(),body:JSON.stringify({Lines:lines})});
+  const j=await r.json();
+  F("msgEg").textContent=r.ok?(`Đã cập nhật ${j.updated} xe.`+(j.notFound&&j.notFound.length?" Không thấy: "+j.notFound.join(", "):"")):("Lỗi: "+(j.error||r.status));
+  if(r.ok) load();
+}
 function addRootRow(v){ v=v||{}; const tr=document.createElement("tr");
   tr.innerHTML=`<td><input class="r-no" style="width:140px" value="${v.no||""}"></td><td><input class="r-date" type="date" value="${v.date||""}"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
   F("rootRows").appendChild(tr); }
@@ -105,6 +126,6 @@ async function saveRoot(){
   const j=await r.json();
   if(r.ok){ F("msgRoot").textContent=`Đã cập nhật ${j.updated} bản ghi.`+(j.notFound&&j.notFound.length?" Không thấy: "+j.notFound.join(", "):""); F("rootRows").innerHTML=""; addRootRow(); load(); } else F("msgRoot").textContent="Lỗi: "+(j.error||r.status);
 }
-addRootRow(); addRow(); load();
+addRootRow(); addRow(); addEgRow(); load();
 </script>
 </body></html>
