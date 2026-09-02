@@ -2221,6 +2221,20 @@ public sealed class ContractTypeModel
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tùy chọn tiêu chuẩn theo model+hạng (Car_Std_Opt) — port 1:1 FrmStandarOption (TCMotor DMSales.Foton/Admin/Product). Composite key ModelCode+StdCode → mô tả + GradeCode/GradeDesc. Upsert.</summary>
+public sealed class CarStdOpt
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string StdCode { get; set; } = "";
+    public string? StdDesc { get; set; }
+    public string? GradeCode { get; set; }
+    public string? GradeDesc { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {

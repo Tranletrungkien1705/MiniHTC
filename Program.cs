@@ -7646,6 +7646,40 @@ app.MapPost("/api/maintworkitems/{id}/toggle", async (long id, AppDbContext db, 
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Tùy chọn tiêu chuẩn theo model+hạng (CarStdOpt — port 1:1 FrmStandarOption, TCMotor DMSales.Foton/Admin/Product) =====
+app.MapGet("/api/carstdopts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
+{
+    var qry = db.CarStdOpts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
+    var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.StdCode).Take(1000)
+        .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carstdopts", async (CarStdOptDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    var std = (dto.StdCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (string.IsNullOrWhiteSpace(std)) return Results.BadRequest(new { error = "Chưa nhập mã tùy chọn tiêu chuẩn." });
+    var row = await db.CarStdOpts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.StdCode == std);
+    if (row is null) { row = new CarStdOpt { OrgId = t.OrgId, ModelCode = model, StdCode = std }; db.CarStdOpts.Add(row); }
+    row.StdDesc = dto.StdDesc; row.GradeCode = dto.GradeCode; row.GradeDesc = dto.GradeDesc; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ModelCode, row.StdCode, row.StdDesc, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/carstdopts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.CarStdOpts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Cấu hình mẫu phụ lục HĐ theo loại ĐH+HTTT+model (ContractTypeModel — port 1:1 FrmCtr_ContractTypeModel, TCMotor DMSales.Foton/Admin/Product) =====
 app.MapGet("/api/contracttypemodels", async (AppDbContext db, ITenantContext t, string? soType, string? model, bool? all) =>
 {
@@ -13752,6 +13786,7 @@ record MpSupplyDto(string SupplyCode, decimal Qty);
 record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? FlagActive);
 record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal RateApprMax, string? FlagActive);
 record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive);
+record CarStdOptDto(string? ModelCode, string? StdCode, string? StdDesc, string? GradeCode, string? GradeDesc, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

@@ -95,6 +95,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MaintWorkItem> MaintWorkItems => Set<MaintWorkItem>();
     public DbSet<RateApprOrderModelMax> RateApprOrderModelMaxes => Set<RateApprOrderModelMax>();
     public DbSet<ContractTypeModel> ContractTypeModels => Set<ContractTypeModel>();
+    public DbSet<CarStdOpt> CarStdOpts => Set<CarStdOpt>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
