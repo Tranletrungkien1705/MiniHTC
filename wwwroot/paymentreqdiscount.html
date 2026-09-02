@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đề nghị chiết khấu TT theo VIN</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1100px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{opacity:.7;font-size:10px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-Draft{color:var(--warn)} .p-Approved1{color:var(--accent)} .p-Approved2{color:var(--ok)} .p-Cancelled{color:var(--bad)}
+  #msg,#dMsg{font-size:13px} .wrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Đề nghị chiết khấu thanh toán theo VIN <span class="muted">(port 1:1 FrmPayReDiscount/FrmMngPaymentReqDiscountDealer — duyệt 2 cấp)</span></h1>
+<div class="card">
+  <b>Tạo đề nghị (đại lý)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã đại lý</label><input id="dl" style="width:100px"></div>
+    <div><label>Mã chính sách hỗ trợ BH *</label><input id="sp" style="width:120px"></div>
+    <div><label>Ghi chú</label><input id="rm" style="width:220px"></div>
+  </div>
+  <div class="wrap">
+  <table id="tLines"><thead><tr><th>VIN</th><th>Xe</th><th>Đơn giá TT</th><th>Số tiền ĐL đề nghị</th><th>Khách hàng</th><th></th></tr></thead><tbody id="lineRows"></tbody></table>
+  </div>
+  <button class="sm" onclick="addLine()">+ Thêm dòng VIN</button>
+  <div class="bar" style="margin-top:10px"><button class="primary" onclick="create()">Lưu đề nghị</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Approved1">Đã duyệt cấp 1</option><option value="Approved2">Đã duyệt cấp 2</option><option value="Cancelled">Đã hủy</option></select>
+  <input id="q" placeholder="Lọc Số ĐN" oninput="load()" style="width:150px">
+</div>
+<div class="wrap">
+<table><thead><tr><th>Số ĐN</th><th>Đại lý</th><th>CS BH</th><th>Số VIN</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+</div>
+<div id="detail" class="card" style="display:none">
+  <b id="dTitle"></b> <span id="dMsg"></span>
+  <div class="wrap"><table id="dTable"><thead><tr><th>VIN</th><th>Đơn giá TT</th><th>ĐL đề nghị</th><th>HTC duyệt</th><th>Khách hàng</th></tr></thead><tbody id="dRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const money=n=>Number(n||0).toLocaleString("vi-VN");
+const LBL={Draft:"Nháp",Approved1:"Duyệt cấp 1",Approved2:"Duyệt cấp 2",Cancelled:"Đã hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input style="width:110px" class="vin"></td><td><input style="width:70px" class="carid"></td>
+    <td><input type="number" class="up" style="width:90px" value="0"></td><td><input type="number" class="ad" style="width:90px" value="0"></td>
+    <td><input class="cn" style="width:110px"></td><td><button class="sm" onclick="this.closest('tr').remove()">x</button></td>`;
+  F("lineRows").appendChild(tr);
+}
+addLine();
+function collectLines(){
+  return [...F("lineRows").querySelectorAll("tr")].map(tr=>({
+    vin: tr.querySelector(".vin").value.trim(), carId: tr.querySelector(".carid").value.trim()||null,
+    unitPriceActual: +tr.querySelector(".up").value||0, amountDealerRequest: +tr.querySelector(".ad").value||0,
+    customerName: tr.querySelector(".cn").value.trim()||null,
+  })).filter(l=>l.vin);
+}
+async function create(){
+  const lines=collectLines();
+  if(!F("sp").value||lines.length===0){ msg("Cần Mã chính sách hỗ trợ BH + ít nhất 1 dòng VIN"); return; }
+  const r=await fetch("/api/paymentreqdiscounts",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value||null,spCode:F("sp").value,remark:F("rm").value||null,lines})});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã tạo ${j.prDiscountNo}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/paymentreqdiscounts?status=${F("fst").value}&q=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=`<button class="sm" onclick="view('${o.prDiscountNo}')">Xem</button> `;
+    if(o.status==="Draft") act+=`<button class="sm" onclick="act('${o.prDiscountNo}','approve1')">Duyệt C1</button> <button class="sm" onclick="act('${o.prDiscountNo}','cancel')">Hủy</button>`;
+    if(o.status==="Approved1") act+=`<button class="sm" onclick="act('${o.prDiscountNo}','approve2')">Duyệt C2</button> <button class="sm" onclick="act('${o.prDiscountNo}','cancel')">Hủy</button>`;
+    return `<tr><td><b>${o.prDiscountNo}</b></td><td>${o.dealerCode||"—"}</td><td>${o.spCode}</td><td>${o.lines}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có đề nghị.</td></tr>';
+}
+async function act(no,action){ const r=await fetch(`/api/paymentreqdiscounts/${no}/${action}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else alert(j.error||r.status); }
+async function view(no){ await token();
+  const d=await (await fetch(`/api/paymentreqdiscounts/${no}`,{headers:H()})).json();
+  F("detail").style.display="block"; F("dTitle").textContent=`${d.prDiscountNo} — ${d.dealerCode||""}`; F("dMsg").textContent="";
+  F("dRows").innerHTML=(d.lines||[]).map(l=>`<tr><td>${l.vin}</td><td>${money(l.unitPriceActual)}</td><td>${money(l.amountDealerRequest)}</td><td>${money(l.amountHTCAppr)}</td><td>${l.customerName||"—"}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">—</td></tr>';
+}
+load();
+</script>
+</body></html>

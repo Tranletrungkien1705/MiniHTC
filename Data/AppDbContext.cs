@@ -128,6 +128,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DeviceType> DeviceTypes => Set<DeviceType>();
     public DbSet<DeviceTypeSpec> DeviceTypeSpecs => Set<DeviceTypeSpec>();
     public DbSet<PaymentReqDiscountVin> PaymentReqDiscountVins => Set<PaymentReqDiscountVin>();
+    public DbSet<PaymentReqDiscount> PaymentReqDiscounts => Set<PaymentReqDiscount>();
     public DbSet<DealerContractForm> DealerContractForms => Set<DealerContractForm>();
     public DbSet<DealerStorageLocal> DealerStorageLocals => Set<DealerStorageLocal>();
     public DbSet<CarVinInvoiceInfo> CarVinInvoiceInfos => Set<CarVinInvoiceInfo>();

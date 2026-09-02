@@ -1747,7 +1747,8 @@ public sealed class DeviceTypeSpec
     public DateTime UpdatedAt { get; set; }
 }
 
-/// <summary>Số tiền chiết khấu TT được duyệt theo VIN (PRD_PaymentReqDiscount_VIN) — port 1:1 FrmImportExl_PaymentReqDiscount (2010.HTC). Import số tiền HTC duyệt cho từng VIN trong đề nghị chiết khấu; upsert theo (PRDiscountNo × VIN).</summary>
+/// <summary>Số tiền chiết khấu TT được duyệt theo VIN (PRD_PaymentReqDiscount_VIN) — port 1:1 FrmImportExl_PaymentReqDiscount (2010.HTC). Import số tiền HTC duyệt cho từng VIN trong đề nghị chiết khấu; upsert theo (PRDiscountNo × VIN).
+/// Mở rộng thêm các cột chi tiết VIN (CarId/SpecCode/DeliveryDate/DlrContractNo/SMName/UnitPriceActual/AmountDealerRequest/CustomerName) để phục vụ FrmPayReDiscount/FrmMngPaymentReqDiscountDealer (đề nghị + duyệt 2 cấp).</summary>
 public sealed class PaymentReqDiscountVin
 {
     public long Id { get; set; }
@@ -1757,6 +1758,35 @@ public sealed class PaymentReqDiscountVin
     public decimal AmountHTCAppr { get; set; }
     public string? UpdatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
+    public string? CarId { get; set; }
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }
+    public DateTime? DeliveryEndDate { get; set; }
+    public DateTime? DeliveryDate { get; set; }
+    public string? DlrContractNo { get; set; }
+    public string? SMName { get; set; }
+    public DateTime? CusInvoiceDate { get; set; }
+    public decimal UnitPriceActual { get; set; }
+    public decimal AmountDealerRequest { get; set; }
+    public string? CustomerName { get; set; }
+}
+
+/// <summary>Đề nghị chiết khấu TT theo VIN — header (PRD_PaymentReqDiscount) — port 1:1 FrmPayReDiscount (tạo đề nghị, đại lý) + FrmMngPaymentReqDiscountDealer (duyệt 2 cấp, HTC), 2010.HTC/Sales.
+/// Status: Draft(đại lý lập)→Approved1→Approved2(HTC duyệt 2 cấp)/Cancelled.</summary>
+public sealed class PaymentReqDiscount
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PRDiscountNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string SPCode { get; set; } = "";
+    public string? Remark { get; set; }
+    public string Status { get; set; } = "Draft";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? Approve1At { get; set; }
+    public DateTime? Approve2At { get; set; }
+    public DateTime? CancelledAt { get; set; }
 }
 
 /// <summary>Mẫu hợp đồng của đại lý (Dlr_Mst_DealerContractForm) — port 1:1 FrmDlr_Mst_DealerContractForm (2010.HTC). Gán mã mẫu hợp đồng (ContractFNo) cho từng đại lý; upsert theo DealerCode.</summary>
