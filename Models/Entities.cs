@@ -860,9 +860,12 @@ public sealed class PartStockIn
     public string? StockInType { get; set; }
     public string WarehouseCode { get; set; } = "";
     public string? Staff { get; set; }
-    public string Status { get; set; } = "Draft";      // Draft → Posted
+    public string Status { get; set; } = "Draft";      // Draft → Posted / Rejected
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PostedAt { get; set; }
+    public string? RejectReason { get; set; }
+    public string? RejectedBy { get; set; }
+    public DateTime? RejectedAt { get; set; }
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
@@ -903,9 +906,12 @@ public sealed class PartStockOut
     public string? StockOutType { get; set; }
     public string WarehouseCode { get; set; } = "";
     public string? Reason { get; set; }
-    public string Status { get; set; } = "Draft";      // Draft → Posted
+    public string Status { get; set; } = "Draft";      // Draft → Posted / Rejected
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PostedAt { get; set; }
+    public string? RejectReason { get; set; }
+    public string? RejectedBy { get; set; }
+    public DateTime? RejectedAt { get; set; }
 }
 
 /// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>

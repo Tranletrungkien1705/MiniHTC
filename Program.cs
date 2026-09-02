@@ -12448,6 +12448,20 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
     return Results.Ok(new { h.StockOutNo, status = h.Status, postedLines = lines.Count });
 }).RequireAuthorization();
 
+// Hủy phiếu xuất kho (port 1:1 FrmSOReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
+app.MapPost("/api/stockouts/{no}/reject", async (string no, StockRejectDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu xuất." });
+    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ hủy được phiếu Draft." });
+    var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    h.Status = "Rejected"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status });
+}).RequireAuthorization();
+
 // ===== Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate) + tồn kho PartStock =====
 app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
 {
@@ -12505,6 +12519,20 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
     h.Status = "Posted"; h.PostedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status, postedLines = lines.Count });
+}).RequireAuthorization();
+
+// Hủy phiếu nhập kho (port 1:1 FrmSIReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
+app.MapPost("/api/stockins/{no}/reject", async (string no, StockRejectDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu nhập." });
+    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ hủy được phiếu Draft." });
+    var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    h.Status = "Rejected"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status });
 }).RequireAuthorization();
 
 // Tồn kho phụ tùng (Ser_Inv_PartStock — báo cáo tồn, đọc bởi FrmPartStockSearch/ReportStockBalance)
@@ -13454,6 +13482,7 @@ record StockInLineDto(string PartCode, string? PartName, string? Location, decim
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);
 record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines);
+record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
