@@ -11885,6 +11885,26 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
 }).RequireAuthorization();
 
+// Sửa hàng loạt KH mua/lái/đứng tên trên các GD bán lẻ đã lập (port 1:1 FrmEditDeal_KHGD, 2010.HTC/SalesDealer)
+app.MapPost("/api/dealerdeals/edit-khgd", async (EditDealKhgdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.DealNo!.Trim();
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+        if (d is null) { notFound.Add(no); continue; }
+        if (r.CustomerCodeBuyer is not null) d.CustomerCodeBuyer = r.CustomerCodeBuyer;
+        d.CustomerCodeHolder = r.CustomerCodeHolder;
+        d.CustomerCodeDriver = r.CustomerCodeDriver;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
 // Chuyển xe sang đại lý khác (FrmNewDealToDealer) — DealerDeal buyer là đại lý, SalesType F7
 app.MapPost("/api/dealerdeals/todealer", async (DealToDealerDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -14407,6 +14427,8 @@ record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
 record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);
 record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
 record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
+record EditDealKhgdDto(List<EditDealKhgdRowDto>? Rows);
+record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);

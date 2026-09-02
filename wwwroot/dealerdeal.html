@@ -33,6 +33,16 @@
   <table id="ctbl"><thead><tr><th>Mã xe / VIN *</th><th>Số HĐ khách</th><th>Ngày HĐ</th><th>Giá sau VAT</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addCar()">+ Thêm xe</button>
 </div>
+<div class="card">
+  <b>Sửa KH mua/lái/đứng tên (port 1:1 FrmEditDeal_KHGD)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã GD *</label><input id="ekNo" style="width:110px"></div>
+    <div><label>KH người mua</label><input id="ekB" style="width:100px"></div>
+    <div><label>KH người lái</label><input id="ekD" style="width:100px"></div>
+    <div><label>KH đứng tên</label><input id="ekH" style="width:100px"></div>
+    <span style="flex:1"></span><button class="primary" onclick="editKhgd()">Lưu</button><span id="ekMsg"></span>
+  </div>
+</div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc mã ĐL" oninput="load()" style="width:100px"><input id="qb" placeholder="Lọc KH mua" oninput="load()" style="width:100px"></div>
 <table><thead><tr><th>Mã GD</th><th>HĐ user</th><th>Đại lý</th><th>KH mua</th><th>Kiểu</th><th>PDI</th><th>Số xe</th><th class="num">Tổng (sau VAT)</th><th>Ngày GD</th></tr></thead>
 <tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
@@ -65,6 +75,14 @@ async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/dealerdeals/${no}/cars`,{headers:H()})).json();
   row.innerHTML=`<td colspan="9"><div class="cars">KH lái: ${d.customerCodeDriver||"—"} · KH đứng tên: ${d.customerCodeHolder||"—"}<br>${(d.cars||[]).map(c=>`Xe <b>${c.carId}</b>${c.cusInvoiceNo?" · HĐ "+c.cusInvoiceNo:""} · ${money(c.priceAFVAT)}đ`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+async function editKhgd(){
+  const no=F("ekNo").value.trim(); if(!no){ F("ekMsg").textContent="Cần mã GD"; return; }
+  const body={rows:[{dealNo:no,customerCodeBuyer:F("ekB").value||null,customerCodeHolder:F("ekH").value||null,customerCodeDriver:F("ekD").value||null}]};
+  const r=await fetch("/api/dealerdeals/edit-khgd",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  F("ekMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy GD."):("Lỗi: "+(j.error||r.status));
+  if(r.ok && j.updated) load();
 }
 addCar(); load();
 </script>
