@@ -5000,6 +5000,38 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Master thương hiệu xe dịch vụ (ServiceTradeMark — port 1:1 FrmTradeMarkCreate/Search, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TradeMarkCode.Contains(q!) || x.TradeMarkName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TradeMarkCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã thương hiệu." });
+    if (string.IsNullOrWhiteSpace((dto.TradeMarkName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên thương hiệu." });
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code);
+    if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code }; db.ServiceTradeMarks.Add(row); }
+    row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Khách đến xem xe (CustomerVisit — port 1:1 FrmCusVisit, 2010.HTC/Sales/RetailContract) =====
 app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
 {
@@ -13417,6 +13449,7 @@ record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, st
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
+record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);

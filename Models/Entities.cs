@@ -1315,6 +1315,17 @@ public sealed class CustomerVisit
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Master thương hiệu xe dịch vụ (Ser_MST_TradeMark) — port 1:1 FrmTradeMarkCreate/Search (TCMotor DMSCarSv/Admin). Mã + tên thương hiệu. Upsert-by-code + toggle.</summary>
+public sealed class ServiceTradeMark
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TradeMarkCode { get; set; } = "";
+    public string? TradeMarkName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; }
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {
