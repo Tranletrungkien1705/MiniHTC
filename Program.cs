@@ -7644,6 +7644,41 @@ app.MapPost("/api/maintworkitems/{id}/toggle", async (long id, AppDbContext db, 
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Tỷ lệ duyệt đơn hàng tối đa theo đại lý+model (RateApprOrderModelMax — port 1:1 FrmRateApprOrderModelMax, 2010.HTC/Admin/Dealer) =====
+app.MapGet("/api/rateapprordermodelmaxes", async (AppDbContext db, ITenantContext t, string? dealer, string? model, bool? all) =>
+{
+    var qry = db.RateApprOrderModelMaxes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
+    var items = await qry.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(1000).Select(x => new { x.Id, x.DealerCode, x.ModelCode, x.RateApprMax, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/rateapprordermodelmaxes", async (RateApprOrderModelMaxDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (dto.RateApprMax < 0) return Results.BadRequest(new { error = "Tỷ lệ duyệt tối đa không được âm." });
+    var row = await db.RateApprOrderModelMaxes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ModelCode == model);
+    if (row is null) { row = new RateApprOrderModelMax { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model }; db.RateApprOrderModelMaxes.Add(row); }
+    row.RateApprMax = dto.RateApprMax; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DealerCode, row.ModelCode, row.RateApprMax, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/rateapprordermodelmaxes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.RateApprOrderModelMaxes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Nội dung công việc bảo dưỡng (MaintWorkContent — port 1:1 FrmWorkContents, Admin/Maintenance 2010.HTC) =====
 app.MapGet("/api/maintworkcontents", async (AppDbContext db, ITenantContext t, string? q, string? item, string? active) =>
 {
@@ -13568,6 +13603,7 @@ record MaintPackageDto(string TypeCode, string? TypeName, int Times, string? Mod
 record MpWorkDto(string? WorkItemCode, string WorkContentCode);
 record MpSupplyDto(string SupplyCode, decimal Qty);
 record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? FlagActive);
+record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal RateApprMax, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

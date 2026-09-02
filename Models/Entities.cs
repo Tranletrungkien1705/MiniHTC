@@ -2190,6 +2190,18 @@ public sealed class MaintWorkItem
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Tỷ lệ duyệt đơn hàng tối đa theo đại lý+model (Mst_RateApprOrderModelMax) — port 1:1 FrmRateApprOrderModelMax (2010.HTC/Admin/Dealer). Composite key DealerCode+ModelCode. Upsert.</summary>
+public sealed class RateApprOrderModelMax
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public decimal RateApprMax { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {

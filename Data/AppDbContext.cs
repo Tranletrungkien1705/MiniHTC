@@ -93,6 +93,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CustomerVisit> CustomerVisits => Set<CustomerVisit>();
     public DbSet<ServiceTradeMark> ServiceTradeMarks => Set<ServiceTradeMark>();
     public DbSet<MaintWorkItem> MaintWorkItems => Set<MaintWorkItem>();
+    public DbSet<RateApprOrderModelMax> RateApprOrderModelMaxes => Set<RateApprOrderModelMax>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
