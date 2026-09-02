@@ -8469,6 +8469,69 @@ app.MapPost("/api/insdebits/{no}/payments", async (string no, InsDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== Công nợ nhà cung cấp phụ tùng + thu tiền (SupplierDebit — port 1:1 FrmSuplierDebitCreate/FrmSupplierDebitSearch/FrmSupplierPaymentCreate, TCMotor DMSCarSv/Debit) =====
+app.MapGet("/api/supplierdebits", async (AppDbContext db, ITenantContext t, string? supplier, string? status) =>
+{
+    var query = db.SupplierDebits.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(supplier)) query = query.Where(x => x.SupplierCode == supplier);
+    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.SupplierCode, x.StockInNo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
+        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : ""
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
+}).RequireAuthorization();
+
+// Tạo/cộng dồn nợ NCC theo (SupplierCode, StockInNo) — khớp Check_HaveDebit_01 WinForm gốc.
+app.MapPost("/api/supplierdebits", async (SupplierDebitDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var supplier = (dto.SupplierCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(supplier)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
+    if (dto.DebitAmount <= 0) return Results.BadRequest(new { error = "Số tiền nợ phải lớn hơn 0." });
+    if (dto.DebitDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày trả nợ." });
+    var stockIn = (dto.StockInNo ?? "").Trim();
+    var row = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == supplier && x.StockInNo == stockIn);
+    var isNew = row is null;
+    if (isNew) { row = new SupplierDebit { OrgId = t.OrgId, SupplierCode = supplier, StockInNo = stockIn, Status = "Open" }; db.SupplierDebits.Add(row); }
+    row!.DebitAmount += dto.DebitAmount; row.DebitDate = dto.DebitDate; row.Note = dto.Note;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SupplierCode, row.StockInNo, row.DebitAmount, isNew });
+}).RequireAuthorization();
+
+app.MapDelete("/api/supplierdebits/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    db.SupplierDebits.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
+app.MapGet("/api/supplierdebits/{id:long}/payments", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var pays = await db.SupplierDebitPayments.Where(p => p.OrgId == t.OrgId && p.SupplierDebitId == h.Id).OrderBy(p => p.Id)
+        .Select(p => new { p.PaymentAmount, p.Note, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    return Results.Ok(new { h.Id, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
+}).RequireAuthorization();
+
+// Thanh toán nợ NCC (không vượt số dư; đủ tiền -> Paid).
+app.MapPost("/api/supplierdebits/{id:long}/payments", async (long id, SupplierDebitPaymentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền trả phải lớn hơn 0." });
+    var balance = h.DebitAmount - h.PaidAmount;
+    if (dto.PaymentAmount > balance) return Results.BadRequest(new { error = $"Số tiền trả vượt số dư công nợ ({balance})." });
+    db.SupplierDebitPayments.Add(new SupplierDebitPayment { OrgId = t.OrgId, SupplierDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note });
+    h.PaidAmount += dto.PaymentAmount;
+    if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
+}).RequireAuthorization();
+
 // ===== Báo cáo công nợ (report tái-dùng CusDebit + InsDebit — port 1:1 FrmReportTotalCusDebit/InsDebit/ReceivableDebit + FrmReportSerPaymentGet, TCMotor) =====
 // Tổng công nợ phải thu: gộp dư nợ khách hàng + hãng bảo hiểm (mỗi bên 1 nhóm), có tổng cộng.
 app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext t, string? debtorType) =>
@@ -14275,6 +14338,8 @@ record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, stri
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
+record SupplierDebitDto(string? SupplierCode, string? StockInNo, decimal DebitAmount, DateTime? DebitDate, string? Note);
+record SupplierDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
 record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers);
 record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);

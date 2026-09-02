@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Công nợ nhà cung cấp</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--bad:#dc2626;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px} button.link.bad{color:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Open{color:var(--warn)} .s-Paid{color:var(--ok)}
+  .msg{font-size:13px;margin-left:6px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px}
+  .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
+</style></head>
+<body>
+<h1>Công nợ nhà cung cấp phụ tùng <span class="muted">(port 1:1 FrmSuplierDebitCreate/FrmSupplierDebitSearch + FrmSupplierPaymentCreate — TCMotor)</span></h1>
+<p class="muted">HTC nợ tiền nhà cung cấp theo phiếu nhập kho phụ tùng (StockIn); cộng dồn theo (nhà cung cấp, số phiếu nhập). Trả dần, không vượt số dư; đủ tiền → Đã trả.</p>
+
+<div class="card"><h3 style="margin-top:0">Ghi nhận nợ nhà cung cấp</h3>
+  <div class="row">
+    <div><label>Mã NCC *</label><input id="fSupplier" style="width:100px"></div>
+    <div><label>Số phiếu nhập kho</label><input id="fStockIn" style="width:140px"></div>
+    <div><label>Số tiền nợ *</label><input id="fAmount" type="number" style="width:140px"></div>
+    <div><label>Ngày trả nợ *</label><input id="fDate" type="date" style="width:150px"></div>
+    <div style="flex:1"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
+    <button class="primary" onclick="create2()">Ghi nợ</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Mã NCC" style="width:220px"><button onclick="load()">Tìm</button></div>
+<div class="grid2" id="kpis"></div>
+<div class="wrap"><table><thead><tr><th>NCC</th><th>Phiếu nhập</th><th class="num">Nợ</th><th class="num">Đã trả</th><th class="num">Còn</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Tìm".</td></tr></tbody></table></div>
+
+<div class="card" id="pCard" style="display:none"><h3 style="margin-top:0">Trả tiền <span id="pName" class="muted"></span></h3>
+  <div class="row">
+    <div><label>Số tiền trả</label><input id="pAmount" type="number" style="width:140px"></div>
+    <div style="flex:1"><label>Ghi chú</label><input id="pNote" style="width:100%"></div>
+    <button class="primary" onclick="pay()">Trả</button><span id="msg2" class="msg"></span>
+  </div>
+  <div class="wrap"><table><thead><tr><th class="num">Số tiền</th><th>Ngày</th><th>Ghi chú</th></tr></thead><tbody id="pRows"></tbody></table></div>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let CUR=null;
+const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const ST={Open:"Còn nợ",Paid:"Đã trả"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
+async function create2(){ await token();
+  const body={SupplierCode:F("fSupplier").value,StockInNo:F("fStockIn").value,DebitAmount:+F("fAmount").value||0,DebitDate:F("fDate").value||null,Note:F("fNote").value};
+  const r=await fetch("/api/supplierdebits",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
+  m("msg",(d.isNew?"Đã tạo nợ #":"Đã cộng dồn nợ #")+d.id); F("fAmount").value=""; load();
+}
+async function del(id){ await token();
+  if(!confirm("Xóa công nợ #"+id+"?")) return;
+  const r=await fetch("/api/supplierdebits/"+id,{method:"DELETE",headers:H()});
+  if(!r.ok){ m("msg","Lỗi xóa"); return; } m("msg","Đã xóa #"+id); load();
+}
+async function load(){ await token();
+  const r=await fetch("/api/supplierdebits?supplier="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
+  F("kpis").innerHTML=`<div class="kpi"><b>${M(d.totalDebit)}</b><span class="muted">Tổng nợ</span></div><div class="kpi"><b style="color:var(--ok)">${M(d.totalPaid)}</b><span class="muted">Đã trả</span></div><div class="kpi"><b style="color:var(--warn)">${M(d.totalBalance)}</b><span class="muted">Còn nợ</span></div>`;
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.supplierCode)}</b></td><td>${esc(o.stockInNo)}</td><td class="num">${M(o.debitAmount)}</td><td class="num">${M(o.paidAmount)}</td><td class="num">${M(o.balance)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.status==="Open"?`<button class="link" onclick="openPay(${o.id})">Trả</button>`:""}<button class="link" onclick="openPay(${o.id})">Sổ</button><button class="link bad" onclick="del(${o.id})">Xóa</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có công nợ.</td></tr>';
+}
+async function openPay(id){ CUR=id; await token();
+  const r=await fetch("/api/supplierdebits/"+id+"/payments",{headers:H()}); const d=await r.json();
+  F("pCard").style.display="block"; F("pName").textContent=`— #${id} (còn ${M(d.balance)} / ${ST[d.status]})`;
+  F("pRows").innerHTML=(d.payments||[]).map(p=>`<tr><td class="num">${M(p.paymentAmount)}</td><td>${esc(p.payDate)}</td><td>${esc(p.note)}</td></tr>`).join("")||'<tr><td colspan="3" class="muted">Chưa trả lần nào.</td></tr>';
+  window.scrollTo(0,document.body.scrollHeight);
+}
+async function pay(){ if(!CUR) return; await token();
+  const body={PaymentAmount:+F("pAmount").value||0,Note:F("pNote").value};
+  const r=await fetch("/api/supplierdebits/"+CUR+"/payments",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ m("msg2","Lỗi: "+(d.error||r.status)); return; }
+  m("msg2",`Còn ${M(d.balance)} — ${ST[d.status]}`); F("pAmount").value=""; openPay(CUR); load();
+}
+</script>
+</body></html>

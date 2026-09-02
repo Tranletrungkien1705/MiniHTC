@@ -293,6 +293,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceAppointment> ServiceAppointments => Set<ServiceAppointment>();
     public DbSet<InsDebit> InsDebits => Set<InsDebit>();
     public DbSet<InsDebitPayment> InsDebitPayments => Set<InsDebitPayment>();
+    public DbSet<SupplierDebit> SupplierDebits => Set<SupplierDebit>();
+    public DbSet<SupplierDebitPayment> SupplierDebitPayments => Set<SupplierDebitPayment>();
     public DbSet<SmsAutoConfig> SmsAutoConfigs => Set<SmsAutoConfig>();
     public DbSet<EmailSend> EmailSends => Set<EmailSend>();
     public DbSet<EmailAutoConfig> EmailAutoConfigs => Set<EmailAutoConfig>();

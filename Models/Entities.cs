@@ -4705,6 +4705,34 @@ public sealed class InsDebitPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Công nợ nhà cung cấp phụ tùng (HTC nợ NCC theo phiếu nhập kho) — port 1:1 FrmSuplierDebitCreate/FrmSupplierDebitSearch
+/// (TblCusDebit type SupplierDebit, TCMotor DMSCarSv/Debit). Cộng dồn theo (SupplierCode, StockInNo).</summary>
+public sealed class SupplierDebit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SupplierCode { get; set; } = "";
+    public string? StockInNo { get; set; }
+    public decimal DebitAmount { get; set; }
+    public decimal PaidAmount { get; set; }
+    public DateTime? DebitDate { get; set; }
+    public string? Note { get; set; }
+    public string Status { get; set; } = "Open"; // Open -> Paid
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Thanh toán trên công nợ nhà cung cấp — port 1:1 FrmSupplierPaymentCreate (TblPayment, TCMotor DMSCarSv/Debit).</summary>
+public sealed class SupplierDebitPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SupplierDebitId { get; set; }
+    public decimal PaymentAmount { get; set; }
+    public DateTime? PayDate { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
 public sealed class SharePart
 {
