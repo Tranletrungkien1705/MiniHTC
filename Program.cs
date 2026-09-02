@@ -10590,6 +10590,27 @@ app.MapPost("/api/dlrcontracts/{no}/cancel", async (string no, AppDbContext db, 
     return Results.Ok(new { c.DlrContractNo, status = c.Status });
 }).RequireAuthorization();
 
+// Hỗ trợ sửa HĐ đại lý theo lô (port 1:1 FrmSupportDlr_Contract_UpdateBankCode/UpdateSalesType/UpdateSMCode, ERP.V15.2025/Support).
+// field = bankCode|salesType|salesManCode.
+app.MapPost("/api/dlrcontracts/{no}/patch", async (string no, DlrContractPatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var field = (dto.Field ?? "").Trim();
+    if (field is not ("bankCode" or "salesType" or "salesManCode")) return Results.BadRequest(new { error = "Field không hợp lệ (bankCode|salesType|salesManCode)." });
+    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+    string oldVal;
+    switch (field)
+    {
+        case "bankCode": oldVal = c.BankCode ?? ""; c.BankCode = dto.Value.Trim().ToUpperInvariant(); break;
+        case "salesType": oldVal = c.SalesType; c.SalesType = dto.Value.Trim().ToUpperInvariant(); break;
+        default: oldVal = c.SalesManCode; c.SalesManCode = dto.Value.Trim().ToUpperInvariant(); break;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrContractNo, field, oldValue = oldVal, newValue = dto.Value.Trim().ToUpperInvariant() });
+}).RequireAuthorization();
+
 // ===== Khách hàng đại lý (DealerCustomer — port 1:1 FrmNewCustomer/FrmMngCustomer, DMSales.Foton/SalesDealer) =====
 app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? type) =>
 {
@@ -13420,6 +13441,7 @@ record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaim
 record GrtClaimExtSignDto(string FileName);
 record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal Price, DateTime? DeliveryDate, string? SalesManCode, string? BankCode);
 record SupportPatchDto(string Field, string Value);
+record DlrContractPatchDto(string Field, string Value);
 record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars);
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
