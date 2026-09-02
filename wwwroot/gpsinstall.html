@@ -22,9 +22,16 @@
   <textarea id="lines" placeholder="VIN0001&#9;GPS001&#9;2026-09-01"></textarea>
   <div class="row" style="margin-top:8px"><button class="primary" onclick="doImport()">Import</button><button onclick="doSync()">Đồng bộ</button><span id="msg" class="msg"></span></div>
 </div>
-<div class="card"><div class="row"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Pending">Chưa đồng bộ</option><option value="Synced">Đã đồng bộ</option></select><button onclick="load()">Xem</button></div>
-<table><thead><tr><th>VIN</th><th>GPS ID</th><th>Ngày xuất kho</th><th>Trạng thái</th></tr></thead>
-<tbody id="rows"><tr><td colspan="4" class="muted">Nhấn "Xem".</td></tr></tbody></table>
+<div class="card"><h3 style="margin-top:0">Map VIN cho GPS (port 1:1 FrmSto_StoBalanceGPS)</h3>
+  <p class="muted" style="margin:2px 0">Mỗi dòng: <b>VIN [tab] GPS ID</b></p>
+  <textarea id="mapLines" placeholder="VIN0001&#9;GPS001"></textarea>
+  <div class="row" style="margin-top:8px"><button class="primary" onclick="doMap()">Map VIN</button><span id="mapMsg" class="msg"></span></div>
+</div>
+<div class="card"><div class="row"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Pending">Chưa đồng bộ</option><option value="Synced">Đã đồng bộ</option></select>
+  <select id="fmap" onchange="load()"><option value="">Tất cả (map)</option><option value="0">Chưa map VIN</option><option value="1">Đã map VIN</option></select>
+  <button onclick="load()">Xem</button></div>
+<table><thead><tr><th>VIN</th><th>GPS ID</th><th>Ngày xuất kho</th><th>Trạng thái</th><th>Map VIN</th></tr></thead>
+<tbody id="rows"><tr><td colspan="5" class="muted">Nhấn "Xem".</td></tr></tbody></table>
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
@@ -44,9 +51,16 @@ async function doSync(){ await token();
   const r=await fetch("/api/gpsinstalls/sync",{method:"POST",headers:H()});
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đồng bộ thành công ${d.synced} dòng.`); load();
 }
+async function doMap(){ await token();
+  const rows=F("mapLines").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/); return {Vin:(c[0]||"").trim(),GpsNo:(c[1]||"").trim()};});
+  const r=await fetch("/api/gpsinstalls/map",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(rows)});
+  const d=await r.json(); if(!r.ok){ F("mapMsg").textContent="Lỗi: "+(d.error||r.status); return; }
+  const nf=(d.notFound||[]).length?" | Không thấy: "+d.notFound.join(", "):"";
+  F("mapMsg").textContent=`Map VIN thành công! ${d.mapped} dòng${nf}`; F("mapLines").value=""; load();
+}
 async function load(){ await token();
-  const r=await fetch("/api/gpsinstalls?status="+F("fst").value,{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.gpsNo)}</td><td>${dt(o.dateActive)}</td><td><span class="pill s-${o.syncStatus}">${o.syncStatus==="Synced"?"Đã đồng bộ":"Chưa đồng bộ"}</span></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dữ liệu.</td></tr>';
+  const r=await fetch(`/api/gpsinstalls?status=${F("fst").value}&mapStatus=${F("fmap").value}`,{headers:H()}); const d=await r.json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.gpsNo)}</td><td>${dt(o.dateActive)}</td><td><span class="pill s-${o.syncStatus}">${o.syncStatus==="Synced"?"Đã đồng bộ":"Chưa đồng bộ"}</span></td><td>${o.mapStatus==="1"?"Đã map":"Chưa map"}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 load();
 </script>

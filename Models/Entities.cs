@@ -716,6 +716,9 @@ public sealed class GpsInstall
     public DateTime DateActive { get; set; }
     public string SyncStatus { get; set; } = "Pending";
     public DateTime? SyncedAt { get; set; }
+    public string MapStatus { get; set; } = "0";  // 0=chưa map VIN, 1=đã map — port FrmSto_StoBalanceGPS
+    public string? GpsMapVINNo { get; set; }      // số lô map VIN (auto-gen theo lượt Apply)
+    public DateTime? MappedAt { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

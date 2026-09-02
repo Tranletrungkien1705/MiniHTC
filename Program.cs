@@ -9311,12 +9311,33 @@ app.MapPost("/api/avnpayments", async (AvnPaymentDto dto, AppDbContext db, ITena
 }).RequireAuthorization();
 
 // ===== Đồng bộ ngày xuất kho VIN-GPS sang Veloca (GpsInstall — port 1:1 FrmDongBoNgayXuatKho, 2010.HTC/StoFGPS) =====
-app.MapGet("/api/gpsinstalls", async (AppDbContext db, ITenantContext t, string? status) =>
+app.MapGet("/api/gpsinstalls", async (AppDbContext db, ITenantContext t, string? status, string? mapStatus) =>
 {
     var q = db.GpsInstalls.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.SyncStatus == status);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(mapStatus)) q = q.Where(x => x.MapStatus == mapStatus);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt, x.MapStatus, x.GpsMapVINNo, x.MappedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Map VIN cho lô GPS chưa map (port 1:1 FrmSto_StoBalanceGPS btnApply_Click) — khớp theo (VIN, GpsNo).
+app.MapPost("/api/gpsinstalls/map", async (List<GpsInstallMapDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    var list = (rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.Vin) && !string.IsNullOrWhiteSpace(r.GpsNo)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Lưới danh sách VIN - GPS trống!" });
+    var mapNo = "GMV" + DateTime.Now.ToString("yyMMddHHmmss");
+    var now = DateTime.Now;
+    int mapped = 0; var notFound = new List<string>();
+    foreach (var r in list)
+    {
+        var vin = r.Vin.Trim().ToUpperInvariant(); var gps = r.GpsNo.Trim().ToUpperInvariant();
+        var x = await db.GpsInstalls.FirstOrDefaultAsync(g => g.OrgId == t.OrgId && g.Vin == vin && g.GpsNo == gps);
+        if (x is null) { notFound.Add($"{vin}/{gps}"); continue; }
+        x.MapStatus = "1"; x.GpsMapVINNo = mapNo; x.MappedAt = now;
+        mapped++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { gpsMapVINNo = mapNo, mapped, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // Import danh sách (khớp btnImportExcel_Click gốc): guard VIN/GPS ID/ngày bắt buộc + trùng VIN+GPS ID trong lô.
@@ -14980,6 +15001,7 @@ record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);
 record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, string? ModelName, string? SpecDescription, string? GpsId, DateTime CostGPSStartDate, DateTime CostGPSEndDate, int DeductDate, decimal PriceGPS, string? ContractGPS);
 record GpsPaymentDto(DateTime? PmtMonth, List<GpsPaymentLineDto>? Lines);
 record GpsInstallDto(string Vin, string GpsNo, DateTime? DateActive);
+record GpsInstallMapDto(string Vin, string GpsNo);
 record StoragePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtNameVN, string? DealerCode, DateTime? StorageDate, DateTime? DeliveryOutDate, decimal CostCoat, decimal CostStorage, string? Remark);
 record StoragePaymentDto(DateTime? PmtMonth, List<StoragePaymentLineDto>? Lines);
 record StoragePaymentEditLineDto(string? Vin, decimal CostCoat, decimal CostStorage);
