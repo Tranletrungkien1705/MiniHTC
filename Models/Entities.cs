@@ -635,6 +635,42 @@ public sealed class GpsTransaction
     public DateTime? UnMapDateTime { get; set; }   // null = đang gắn
 }
 
+/// <summary>Thanh toán phí GPS theo tháng (Pmt_PaymentGPS — port 1:1 FrmTaoThanhToanGPS/QuanLyThanhToanGPS, 2010.HTC Sales/Purchase):
+/// phiếu thu phí duy trì GPS theo tháng, gồm nhiều dòng VIN. Tự tính AmountGPS = PriceGPS × ActualCostGPSDate (ngày tính phí thực = ngày dự kiến − ngày khấu trừ).</summary>
+public sealed class GpsPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PmtNo { get; set; } = "";
+    public DateTime PmtMonth { get; set; }
+    public decimal TotalWithoutVAT { get; set; }
+    public decimal AmountVAT { get; set; }
+    public decimal TotalAfterVAT { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng VIN trong phiếu thanh toán GPS — port 1:1 grid FrmTaoThanhToanGPS, 2010.HTC.</summary>
+public sealed class GpsPaymentLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long GpsPaymentId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ModelName { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? GpsId { get; set; }
+    public DateTime CostGPSStartDate { get; set; }
+    public DateTime CostGPSEndDate { get; set; }
+    public int DeductDate { get; set; }        // số ngày khấu trừ (>=0)
+    public decimal PriceGPS { get; set; }
+    public string? ContractGPS { get; set; }
+    public int PlanCostGPSDate { get; set; }    // tự tính = số ngày (start..end) + 1
+    public int ActualCostGPSDate { get; set; }  // tự tính = PlanCostGPSDate - DeductDate
+    public decimal AmountGPS { get; set; }      // tự tính = PriceGPS * ActualCostGPSDate
+}
+
 /// <summary>Vi phạm của nhân viên bán hàng (HR_SalesManViolate — port 1:1 FrmCreateSalesManViolate/FrmMngSalesManViolate, SalesDealer):
 /// ghi nhận kỷ luật NVBH theo loại vi phạm + thời hạn. ViolateNumber tự tăng theo từng NV (lần vi phạm thứ n).</summary>
 public sealed class SalesManViolate
