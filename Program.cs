@@ -9325,14 +9325,14 @@ app.MapPost("/api/storagepayments", async (StoragePaymentDto dto, AppDbContext d
     return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, lines = lines.Count });
 }).RequireAuthorization();
 
-// Sửa (chỉ khi Status=P và cả 2 bên đã ký A, khớp btnEdit_Click gốc) — CHỈ sửa CostCoat/CostStorage từng dòng theo VIN, KHÔNG thêm/bớt dòng.
+// Sửa (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnEdit_Click gốc) — CHỈ sửa CostCoat/CostStorage từng dòng theo VIN, KHÔNG thêm/bớt dòng.
 app.MapPut("/api/storagepayments/{no}/edit", async (string no, StoragePaymentEditDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (!(h.Status == "P" && h.HtvSignStatus == "A" && h.TcmsSignStatus == "A"))
-        return Results.BadRequest(new { error = "Chỉ có thể sửa khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là A" });
+    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
+        return Results.BadRequest(new { error = "Chỉ có thể sửa khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
     var rows = dto.Lines ?? new List<StoragePaymentEditLineDto>();
     decimal total = 0;
     var allLines = await db.StoragePaymentLines.Where(l => l.OrgId == t.OrgId && l.StoragePaymentId == h.Id).ToListAsync();
@@ -9360,26 +9360,26 @@ app.MapPost("/api/storagepayments/{no}/{side}sign", async (string no, string sid
     return Results.Ok(new { h.PmtNo, h.HtvSignStatus, h.TcmsSignStatus });
 }).RequireAuthorization();
 
-// Từ chối (chỉ khi Status=P và cả 2 bên đã ký A, khớp btnDeny_Click gốc)
+// Từ chối (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnDeny_Click gốc)
 app.MapPost("/api/storagepayments/{no}/deny", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (!(h.Status == "P" && h.HtvSignStatus == "A" && h.TcmsSignStatus == "A"))
-        return Results.BadRequest(new { error = "Chỉ có thể từ chối khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là A" });
+    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
+        return Results.BadRequest(new { error = "Chỉ có thể từ chối khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
     h.Status = "C";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.PmtNo, h.Status });
 }).RequireAuthorization();
 
-// Xóa (khớp btnDelete_Click gốc: Status C hoặc P, và cả 2 bên đã ký A)
+// Xóa (khớp btnDelete_Click gốc: Status C hoặc P, và cả 2 bên CHƯA ký (P))
 app.MapDelete("/api/storagepayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (!((h.Status == "C" || h.Status == "P") && h.HtvSignStatus == "A" && h.TcmsSignStatus == "A"))
+    if (!((h.Status == "C" || h.Status == "P") && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
         return Results.BadRequest(new { error = "Chưa có thể xóa khi trạng thái thanh toán là C hoặc P\nVà trạng thái ký của HTV và TCMS là P" });
     var lines = db.StoragePaymentLines.Where(l => l.OrgId == t.OrgId && l.StoragePaymentId == h.Id);
     db.StoragePaymentLines.RemoveRange(lines);
