@@ -1302,6 +1302,19 @@ public sealed class DealerSalesMan
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>Ghi nhận khách đến xem xe (Dlr_CtmVisit) — port 1:1 FrmCusVisit (2010.HTC/Sales/RetailContract). Log walk-in showroom: mã ghi (theo thời điểm) + đại lý + giới tính + độ tuổi + model quan tâm. Insert-only, không sửa/xóa.</summary>
+public sealed class CustomerVisit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CusVisitCode { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? Gender { get; set; }
+    public string? RangeAgeCode { get; set; }
+    public string? ModelCode { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
 public sealed class TechnicalLibrary
 {

@@ -5000,6 +5000,35 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Khách đến xem xe (CustomerVisit — port 1:1 FrmCusVisit, 2010.HTC/Sales/RetailContract) =====
+app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
+{
+    var qry = db.CustomerVisits.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
+    if (from.HasValue) qry = qry.Where(x => x.CreatedAt >= from.Value);
+    if (to.HasValue) qry = qry.Where(x => x.CreatedAt <= to.Value);
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CusVisitCode, x.DealerCode, x.Gender, x.RangeAgeCode, x.ModelCode, x.CreatedAt }).ToListAsync();
+    var byModel = items.GroupBy(x => x.ModelCode ?? "?").Select(g => new { model = g.Key, count = g.Count() }).OrderByDescending(g => g.count).ToList();
+    var byGender = items.GroupBy(x => x.Gender ?? "?").Select(g => new { gender = g.Key, count = g.Count() }).ToList();
+    return Results.Ok(new { count = items.Count, byModel, byGender, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/customervisits", async (CustomerVisitDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace((dto.ModelCode ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn model xe quan tâm." });
+    var v = new CustomerVisit
+    {
+        OrgId = t.OrgId,
+        CusVisitCode = string.IsNullOrWhiteSpace((dto.CusVisitCode ?? "").Trim()) ? "CV" + DateTime.Now.ToString("yyyyMMddHHmmssfff") : dto.CusVisitCode!.Trim(),
+        DealerCode = dto.DealerCode, Gender = dto.Gender, RangeAgeCode = dto.RangeAgeCode, ModelCode = dto.ModelCode!.Trim(),
+        CreatedAt = DateTime.Now
+    };
+    db.CustomerVisits.Add(v);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { v.Id, v.CusVisitCode, v.ModelCode });
+}).RequireAuthorization();
+
 // ===== NVBH đại lý + duyệt BĐH (DealerSalesMan — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC, 2010.HTC/SalesDealer) =====
 var smWorkStatuses = new[] { "THUVIEC", "CHINHTHUC", "NGHIVIEC", "CTVIEN" };
 app.MapGet("/api/dealersalesmen", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? bdh, bool? all) =>
@@ -13387,6 +13416,7 @@ record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
+record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
