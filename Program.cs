@@ -7646,6 +7646,44 @@ app.MapPost("/api/maintworkitems/{id}/toggle", async (long id, AppDbContext db, 
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Cấu hình mẫu phụ lục HĐ theo loại ĐH+HTTT+model (ContractTypeModel — port 1:1 FrmCtr_ContractTypeModel, TCMotor DMSales.Foton/Admin/Product) =====
+app.MapGet("/api/contracttypemodels", async (AppDbContext db, ITenantContext t, string? soType, string? model, bool? all) =>
+{
+    var qry = db.ContractTypeModels.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(soType)) qry = qry.Where(x => x.SOType == soType);
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
+    var items = await qry.OrderBy(x => x.SOType).ThenBy(x => x.ModelCode).Take(1000)
+        .Select(x => new { x.Id, x.SOType, x.PmtMethodNo, x.ModelCode, x.ContractType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypemodels", async (ContractTypeModelDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var so = (dto.SOType ?? "").Trim().ToUpperInvariant();
+    var pmt = (dto.PmtMethodNo ?? "").Trim().ToUpperInvariant();
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(so)) return Results.BadRequest(new { error = "Chưa chọn loại đơn hàng." });
+    if (string.IsNullOrWhiteSpace(pmt)) return Results.BadRequest(new { error = "Chưa chọn hình thức thanh toán." });
+    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (string.IsNullOrWhiteSpace((dto.ContractType ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn mẫu phụ lục HĐ." });
+    var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == so && x.PmtMethodNo == pmt && x.ModelCode == model);
+    if (row is null) { row = new ContractTypeModel { OrgId = t.OrgId, SOType = so, PmtMethodNo = pmt, ModelCode = model }; db.ContractTypeModels.Add(row); }
+    row.ContractType = dto.ContractType!.Trim().ToUpperInvariant(); row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SOType, row.PmtMethodNo, row.ModelCode, row.ContractType, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypemodels/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Tỷ lệ duyệt đơn hàng tối đa theo đại lý+model (RateApprOrderModelMax — port 1:1 FrmRateApprOrderModelMax, 2010.HTC/Admin/Dealer) =====
 app.MapGet("/api/rateapprordermodelmaxes", async (AppDbContext db, ITenantContext t, string? dealer, string? model, bool? all) =>
 {
@@ -13666,6 +13704,7 @@ record MpWorkDto(string? WorkItemCode, string WorkContentCode);
 record MpSupplyDto(string SupplyCode, decimal Qty);
 record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? FlagActive);
 record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal RateApprMax, string? FlagActive);
+record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

@@ -2202,6 +2202,19 @@ public sealed class RateApprOrderModelMax
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Cấu hình mẫu phụ lục hợp đồng theo loại ĐH+HT thanh toán+model (Ctr_ContractTypeModel) — port 1:1 FrmCtr_ContractTypeModel (TCMotor DMSales.Foton/Admin/Product). Composite key SOType+PmtMethodNo+ModelCode → ContractType áp dụng. Upsert.</summary>
+public sealed class ContractTypeModel
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SOType { get; set; } = "";
+    public string PmtMethodNo { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string ContractType { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {
