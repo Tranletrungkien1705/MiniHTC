@@ -3985,6 +3985,26 @@ public sealed class SalesPolicyMstDetail
     public string? Remark { get; set; }
 }
 
+/// <summary>Hỗ trợ bán lẻ theo VIN gắn với chính sách bán hàng (SPL_SPSupportRetail) — port 1:1 FrmPolicySales_Mng (2010.HTC/Sales).
+/// Nguồn gốc là 1 tra cứu tổng hợp (join SO/DO/HTCInvoice/PaymentReqDiscount để tính DateFullStatus="ngày đủ điều kiện"); ở đây ĐƠN GIẢN HOÁ thành trường nhập tay DateFullStatus (không tự tính từ join đa bảng — quá sâu để trace 1:1 trong 1 fire) + tham chiếu HTCInvoiceNo/HTCInvoiceDate nhập trực tiếp.</summary>
+public sealed class SPSupportRetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string SPSRCode { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public decimal AmountSupport { get; set; }
+    public DateTime DateSupport { get; set; }
+    public DateTime? DateFullStatus { get; set; }
+    public string? HTCInvoiceNo { get; set; }
+    public DateTime? HTCInvoiceDate { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Phiếu bảo trì xe lưu kho bãi (StoF_Maintain) — port 1:1 FrmMaintenanceSlipList/Detail (2010.HTC/Maintenance). Bảo dưỡng xe thành phẩm lưu kho, theo VIN.</summary>
 public sealed class StoFMaintain
 {
