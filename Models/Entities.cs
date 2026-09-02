@@ -3505,6 +3505,9 @@ public sealed class BankingTrans
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }
     public DateTime? ApprovedAt { get; set; }
+    // Trạng thái bên ngân hàng (BKTRANSBANKSTATUS) — port FrmQL_DeNghiGDNganHang: P(chưa gửi NH)→A1/A2/A3(các bước xử lý NH), độc lập với Status nội bộ.
+    public string BankStatus { get; set; } = "P";
+    public DateTime? PushedToBankAt { get; set; }
 }
 
 /// <summary>Biên bản giao xe (Sto_DlvMinutes) — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes (2010.HTC/Sales/DlvMinutes). BB giao/vận chuyển xe: VIN, tuyến đi-đến, ĐVVT + lái xe, ngày giao + checklist tình trạng xe (JSON ~25 mục OS/IS/SP/DA).</summary>

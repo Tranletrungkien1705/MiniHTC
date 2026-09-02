@@ -33,8 +33,8 @@
   <select id="fty" onchange="load()"><option value="">Tất cả loại</option><option value="GNTT">GNTT</option><option value="BLLC">BLLC</option><option value="PHLC">PHLC</option></select>
   <input id="q" placeholder="Lọc ngân hàng" oninput="load()" style="width:110px">
 </div>
-<table><thead><tr><th>Số ĐN</th><th>Ngân hàng</th><th>Loại</th><th>Ngày GN</th><th class="num">Số tiền</th><th>Ngày tạo</th><th>TT</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Số ĐN</th><th>Ngân hàng</th><th>Loại</th><th>Ngày GN</th><th class="num">Số tiền</th><th>Ngày tạo</th><th>TT</th><th>TT Ngân hàng</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; const dd=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
@@ -56,11 +56,15 @@ async function load(){ await token();
   F("rows").innerHTML=(d.items||[]).map(o=>{
     let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.soDeNghi}')">Gửi</button>`
       :o.status==="Sent"?`<button class="sm" onclick="act1('${o.soDeNghi}','approve')">Duyệt</button> <button class="sm" onclick="act1('${o.soDeNghi}','reject')">Từ chối</button>`:"";
-    return `<tr><td><b>${o.soDeNghi}</b></td><td>${o.bankCode}</td><td>${o.transType}</td><td>${dd(o.disbursementDate)}</td><td class="num">${money(o.amountDisbursed)}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="8" class="muted">Chưa có đề nghị.</td></tr>';
+    act += ` <button class="sm" onclick="act1('${o.soDeNghi}','pushbank')">Gửi NH</button>`;
+    if (o.status==="Approved" && ["A1","A2","A3"].includes(o.bankStatus)) act += ` <button class="sm" onclick="act1('${o.soDeNghi}','cancel-request')">Hủy ĐN</button>`;
+    if (o.status==="Draft" && o.bankStatus==="P") act += ` <button class="sm" onclick="delReq('${o.soDeNghi}')" style="color:#dc2626">Xóa</button>`;
+    return `<tr><td><b>${o.soDeNghi}</b></td><td>${o.bankCode}</td><td>${o.transType}</td><td>${dd(o.disbursementDate)}</td><td class="num">${money(o.amountDisbursed)}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${o.bankStatus}</td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="9" class="muted">Chưa có đề nghị.</td></tr>';
 }
 async function send(no){ const r=await fetch(`/api/bankingtrans/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function act1(no,a){ const r=await fetch(`/api/bankingtrans/${no}/${a}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function delReq(no){ const r=await fetch(`/api/bankingtrans/${no}`,{method:"DELETE",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 load();
 </script>
 </body></html>

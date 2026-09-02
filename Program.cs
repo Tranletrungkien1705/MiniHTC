@@ -10732,8 +10732,45 @@ app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.TransType == type);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
-        .Select(b => new { b.SoDeNghi, b.BankCode, b.TransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt }).ToListAsync();
+        .Select(b => new { b.SoDeNghi, b.BankCode, b.TransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt, b.BankStatus, b.PushedToBankAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Gửi đề nghị sang ngân hàng (port 1:1 FrmQL_DeNghiGDNganHang btnSendToBank_Click / RQ_BankingTransactions_PushBank) — không yêu cầu trạng thái, khớp gốc.
+app.MapPost("/api/bankingtrans/{no}/pushbank", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    b.BankStatus = "A1"; b.PushedToBankAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.SoDeNghi, b.BankStatus });
+}).RequireAuthorization();
+
+// Hủy đề nghị (port 1:1 btnCancel_Click) — chỉ khi Status='Approved' (A) và BankStatus thuộc A1/A2/A3.
+app.MapPost("/api/bankingtrans/{no}/cancel-request", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    if (!(b.Status == "Approved" && (b.BankStatus == "A1" || b.BankStatus == "A2" || b.BankStatus == "A3")))
+        return Results.BadRequest(new { error = "Không thể hủy nếu 2 trạng thái khác 'A' - 'A1'/'A2'/'A3'!" });
+    b.Status = "Cancelled";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.SoDeNghi, b.Status });
+}).RequireAuthorization();
+
+// Xóa đề nghị (port 1:1 btnDelete_Click) — chỉ khi Status='Draft' (P) và BankStatus='P'.
+app.MapDelete("/api/bankingtrans/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    if (!(b.Status == "Draft" && b.BankStatus == "P"))
+        return Results.BadRequest(new { error = "Không thể xóa nếu hai trạng thái khác 'P' - 'P'!" });
+    db.BankingTranses.Remove(b);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, ITenantContext t) =>
