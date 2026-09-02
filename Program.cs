@@ -2009,6 +2009,19 @@ app.MapPost("/api/grtclaimexts/{no}/sign", async (string no, GrtClaimExtSignDto 
     return Results.Ok(new { g.GrtClaimExtNo, signStatus = g.SignStatus, g.FileName, signedCars = cars.Count });
 }).RequireAuthorization();
 
+// Xóa công văn gia hạn (port 1:1 FrmQLCVanGiaHan_PhatHanhBL btnDelete_Click) — chỉ khi SignStatus=P (chưa ký).
+app.MapDelete("/api/grtclaimexts/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.GrtClaimExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimExtNo == no);
+    if (g is null) return Results.NotFound(new { no });
+    if (g.SignStatus != "P") return Results.BadRequest(new { error = "Trạng thái công văn không hợp lệ!" });
+    db.GrtClaimExtCars.RemoveRange(db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id));
+    db.GrtClaimExts.Remove(g);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
+}).RequireAuthorization();
+
 // ===== Hỗ trợ sửa dữ liệu theo VIN (SupportRecord — port 1:1 cụm Support: giá/ngày giao/mã NVBH/mã NH) =====
 app.MapGet("/api/support/records", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? dealer) =>
 {

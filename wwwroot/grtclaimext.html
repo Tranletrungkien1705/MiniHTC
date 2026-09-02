@@ -56,7 +56,7 @@ async function save(){
 async function load(){ await token();
   const d=await (await fetch(`/api/grtclaimexts?dealer=${F("qd").value}&no=${F("qn").value}&sign=${F("qs").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    const act=o.signStatus==="P"?`<button class="sm ok" onclick="sign('${o.grtClaimExtNo}')">Ký</button>`:"";
+    const act=o.signStatus==="P"?`<button class="sm ok" onclick="sign('${o.grtClaimExtNo}')">Ký</button> <button class="sm" onclick="del('${o.grtClaimExtNo}')" style="color:#dc2626">Xóa</button>`:"";
     return `<tr onclick="detail('${o.grtClaimExtNo}')"><td><b>${o.grtClaimExtNo}</b></td><td>${o.dealerCode}</td><td class="num">${o.numberOfGuaranteeExt}</td><td class="num">${o.cars}</td><td>${o.fileName||"—"}</td><td><span class="pill s-${o.signStatus}">${ST[o.signStatus]||o.signStatus}</span></td><td onclick="event.stopPropagation()">${act}</td></tr>`;
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có công văn.</td></tr>';
 }
@@ -69,6 +69,10 @@ async function sign(no){
   const fn=prompt("Tên file đã ký:", no+"_signed.pdf"); if(fn===null) return;
   const r=await fetch(`/api/grtclaimexts/${no}/sign`,{method:"POST",headers:H(),body:JSON.stringify({fileName:fn})});
   const j=await r.json(); if(r.ok){ msg(`${no}: đã ký (${j.signedCars} xe)`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function del(no){
+  const r=await fetch(`/api/grtclaimexts/${no}`,{method:"DELETE",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`Đã xóa ${no}`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 addRow(); load();
 </script>
