@@ -12333,7 +12333,8 @@ app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? g
     var query = db.ServiceEngineers.Where(e => e.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(group)) query = query.Where(e => e.GroupRCode == group);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(e => e.EngineerName.Contains(q) || e.EngineerNo.Contains(q.ToUpper()));
-    var items = await query.OrderBy(e => e.EngineerNo).Take(500).Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status }).ToListAsync();
+    var items = await query.OrderBy(e => e.EngineerNo).Take(500)
+        .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType, e.StartWorkDate, e.FinishWorkDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -12342,11 +12343,15 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     if (string.IsNullOrWhiteSpace(dto.EngineerNo) || string.IsNullOrWhiteSpace(dto.EngineerName))
         return Results.BadRequest(new { error = "Cần EngineerNo và EngineerName." });
     var no = dto.EngineerNo.Trim().ToUpperInvariant();
+    if (System.Text.RegularExpressions.Regex.IsMatch(no, "[^a-zA-Z0-9_-]")) return Results.BadRequest(new { error = "Mã nhân viên không được nhập ký tự đặc biệt." });
+    if (dto.StartWorkDate.HasValue && dto.FinishWorkDate.HasValue && dto.FinishWorkDate < dto.StartWorkDate)
+        return Results.BadRequest(new { error = "Ngày bắt đầu làm việc không được lớn hơn ngày kết thúc làm việc." });
     var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
     if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no }; db.ServiceEngineers.Add(e); }
-    e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.Status = dto.Status ?? "1"; e.UpdatedAt = DateTime.Now;
+    e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.Status = dto.Status ?? "1";
+    e.EngineerType = dto.EngineerType; e.StartWorkDate = dto.StartWorkDate; e.FinishWorkDate = dto.FinishWorkDate; e.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode });
+    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate });
 }).RequireAuthorization();
 
 // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
@@ -13883,7 +13888,7 @@ record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
-record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status);
+record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate);
 record CampaignContactDto(string? PlateNo, string? CusName, string? Address);
 record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
 record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType);

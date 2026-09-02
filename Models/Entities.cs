@@ -2581,8 +2581,9 @@ public sealed class GroupRepair
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Kỹ thuật viên dịch vụ (Ser_Engineer — port 1:1 FrmEngineerCreate, TCMotor DMSCarSv/Admin):
-/// KTV thuộc 1 nhóm sửa chữa. RO service items tham chiếu KTV.</summary>
+/// <summary>Kỹ thuật viên dịch vụ (Ser_Engineer — port 1:1 FrmEngineerCreate + FrmEmployeeCreate/Search, TCMotor DMSCarSv/Admin):
+/// KTV thuộc 1 nhóm sửa chữa. RO service items tham chiếu KTV. FrmEmployeeCreate là màn nhập chi tiết hơn
+/// trên CÙNG bảng Ser_Engineer (thêm loại nhân viên CVDV/KTV chung/KTV đồng-sơn/Khác + ngày làm việc).</summary>
 public sealed class ServiceEngineer
 {
     public long Id { get; set; }
@@ -2592,6 +2593,9 @@ public sealed class ServiceEngineer
     public string? GroupRCode { get; set; }
     public string? Note { get; set; }
     public string Status { get; set; } = "1";
+    public string? EngineerType { get; set; }      // 1=CVDV,2=KTV sửa chữa chung,3=KTV đồng sơn,4=Khác
+    public DateTime? StartWorkDate { get; set; }
+    public DateTime? FinishWorkDate { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

@@ -21,14 +21,17 @@
 </div>
 <table><thead><tr><th>Mã nhóm</th><th>Tên nhóm</th><th>Ghi chú</th><th>Số KTV</th></tr></thead><tbody id="grows"><tr><td colspan="4" class="muted">…</td></tr></tbody></table>
 
-<h3>Kỹ thuật viên</h3>
+<h3>Kỹ thuật viên / Nhân viên <span class="muted">(gộp FrmEngineerCreate + FrmEmployeeCreate — cùng bảng Ser_Engineer)</span></h3>
 <div class="bar">
   <input id="en" placeholder="Mã KTV *" style="width:100px"><input id="ename" placeholder="Họ tên *" style="width:160px">
-  <select id="eg"><option value="">— Nhóm SC —</option></select><input id="enote" placeholder="Ghi chú" style="width:140px">
+  <select id="eg"><option value="">— Nhóm SC —</option></select>
+  <select id="etype"><option value="">— Loại NV —</option><option value="1">Cố vấn dịch vụ</option><option value="2">KTV sửa chữa chung</option><option value="3">KTV đồng sơn</option><option value="4">Nhân viên khác</option></select>
+  <input id="enote" placeholder="Ghi chú" style="width:120px">
   <button class="primary" onclick="saveEng()">Lưu KTV</button><span id="emsg"></span>
 </div>
+<div class="bar"><label class="muted">Ngày bắt đầu LV<br><input id="estart" type="date"></label><label class="muted">Ngày kết thúc LV<br><input id="efinish" type="date"></label></div>
 <div class="bar"><select id="fg" onchange="loadEng()"><option value="">Tất cả nhóm</option></select><input id="q" placeholder="Tìm KTV" oninput="loadEng()" style="width:130px"></div>
-<table><thead><tr><th>Mã KTV</th><th>Họ tên</th><th>Nhóm SC</th><th>Ghi chú</th></tr></thead><tbody id="erows"><tr><td colspan="4" class="muted">…</td></tr></tbody></table>
+<table><thead><tr><th>Mã KTV</th><th>Họ tên</th><th>Nhóm SC</th><th>Loại NV</th><th>Bắt đầu LV</th><th>Kết thúc LV</th><th>Ghi chú</th></tr></thead><tbody id="erows"><tr><td colspan="7" class="muted">…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 async function token(){ if(TOKEN) return TOKEN;
@@ -48,12 +51,16 @@ async function loadGroups(){ await token();
   F("fg").innerHTML='<option value="">Tất cả nhóm</option>'+(d.items||[]).map(g=>`<option value="${g.groupRCode}">${g.groupRName}</option>`).join("");
 }
 async function saveEng(){
-  const r=await fetch("/api/engineers",{method:"POST",headers:H(),body:JSON.stringify({engineerNo:F("en").value,engineerName:F("ename").value,groupRCode:F("eg").value,note:F("enote").value})});
+  const body={engineerNo:F("en").value,engineerName:F("ename").value,groupRCode:F("eg").value,note:F("enote").value,
+    engineerType:F("etype").value||null,startWorkDate:F("estart").value||null,finishWorkDate:F("efinish").value||null};
+  const r=await fetch("/api/engineers",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json(); if(r.ok){ F("emsg").textContent="Đã lưu "+j.engineerNo; F("en").value="";F("ename").value=""; loadEng(); } else F("emsg").textContent="Lỗi: "+(j.error||r.status);
 }
+const ETYPE={"1":"CVDV","2":"KTV chung","3":"KTV đồng sơn","4":"Khác"};
+const dshow=s=>s?String(s).slice(0,10):"—";
 async function loadEng(){ await token();
   const d=await (await fetch(`/api/engineers?group=${F("fg").value}&q=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
-  F("erows").innerHTML=(d.items||[]).map(e=>`<tr><td><b>${e.engineerNo}</b></td><td>${e.engineerName}</td><td>${e.groupRCode||"—"}</td><td class="muted">${e.note||"—"}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có KTV.</td></tr>';
+  F("erows").innerHTML=(d.items||[]).map(e=>`<tr><td><b>${e.engineerNo}</b></td><td>${e.engineerName}</td><td>${e.groupRCode||"—"}</td><td>${ETYPE[e.engineerType]||"—"}</td><td>${dshow(e.startWorkDate)}</td><td>${dshow(e.finishWorkDate)}</td><td class="muted">${e.note||"—"}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có KTV.</td></tr>';
 }
 (async()=>{ await loadGroups(); await loadEng(); })();
 </script>
