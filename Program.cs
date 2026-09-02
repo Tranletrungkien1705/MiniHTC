@@ -7646,6 +7646,42 @@ app.MapPost("/api/maintworkitems/{id}/toggle", async (long id, AppDbContext db, 
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Điều khoản thanh toán chiết khấu/công nợ (PaymentTermMst — port 1:1 FrmMst_PaymentTerm, TCMotor DMSales.Foton/Admin/Product) =====
+app.MapGet("/api/paymenttermmsts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.PaymentTermMsts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.DCPType.Contains(q!) || x.DCPTypeName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.DCPType).Take(500)
+        .Select(x => new { x.Id, x.DCPType, x.DCPTypeName, x.PaymentDueDays, x.GuaranteeDueDays, x.PaymentCLDueDays, x.PaymentNHSDueDays, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymenttermmsts", async (PaymentTermMstDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.DCPType ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã điều khoản." });
+    if (string.IsNullOrWhiteSpace((dto.DCPTypeName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên điều khoản." });
+    if (dto.PaymentDueDays < 0 || dto.GuaranteeDueDays < 0 || dto.PaymentCLDueDays < 0 || dto.PaymentNHSDueDays < 0)
+        return Results.BadRequest(new { error = "Số ngày đến hạn không được âm." });
+    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == code);
+    if (row is null) { row = new PaymentTermMst { OrgId = t.OrgId, DCPType = code }; db.PaymentTermMsts.Add(row); }
+    row.DCPTypeName = dto.DCPTypeName; row.PaymentDueDays = dto.PaymentDueDays; row.GuaranteeDueDays = dto.GuaranteeDueDays;
+    row.PaymentCLDueDays = dto.PaymentCLDueDays; row.PaymentNHSDueDays = dto.PaymentNHSDueDays; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DCPType, row.DCPTypeName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymenttermmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Tùy chọn tiêu chuẩn theo model+hạng (CarStdOpt — port 1:1 FrmStandarOption, TCMotor DMSales.Foton/Admin/Product) =====
 app.MapGet("/api/carstdopts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
 {
@@ -13787,6 +13823,7 @@ record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? Flag
 record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal RateApprMax, string? FlagActive);
 record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive);
 record CarStdOptDto(string? ModelCode, string? StdCode, string? StdDesc, string? GradeCode, string? GradeDesc, string? FlagActive);
+record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDays, int GuaranteeDueDays, int PaymentCLDueDays, int PaymentNHSDueDays, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

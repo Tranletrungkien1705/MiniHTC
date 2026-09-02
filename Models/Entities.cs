@@ -2235,6 +2235,21 @@ public sealed class CarStdOpt
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Điều khoản thanh toán chiết khấu/công nợ (Mst_PaymentTerm) — port 1:1 FrmMst_PaymentTerm (TCMotor DMSales.Foton/Admin/Product). Mã ĐK + tên + số ngày đến hạn TT/BL/CL/NHS. Upsert-by-code + toggle. KHÁC catalog "PaymentTerm" (FrmMst_Dieu_Khoan_ThanhToan).</summary>
+public sealed class PaymentTermMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DCPType { get; set; } = "";
+    public string? DCPTypeName { get; set; }
+    public int PaymentDueDays { get; set; }
+    public int GuaranteeDueDays { get; set; }
+    public int PaymentCLDueDays { get; set; }
+    public int PaymentNHSDueDays { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {
