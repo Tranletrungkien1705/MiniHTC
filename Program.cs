@@ -6354,6 +6354,62 @@ app.MapPost("/api/dealerdealattaches", async (DealerDealAttachBatchDto dto, AppD
     return Results.Ok(new { added, updated });
 }).RequireAuthorization();
 
+// ===== Đề nghị đăng ký xe lái thử (CarTestCar — port 1:1 FrmNewRegister_TestCar, 2010.HTC/Sales) =====
+app.MapGet("/api/cartestcars", async (AppDbContext db, ITenantContext t, string? dealer, string? q) =>
+{
+    var qry = db.CarTestCars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TestCarCode.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.TestCarCode, x.DealerCode, x.Remark, x.CreatedAt, lines = db.CarTestCarDtls.Count(l => l.OrgId == t.OrgId && l.TestCarId == x.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cartestcars/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.CarTestCarDtls.Where(l => l.OrgId == t.OrgId && l.TestCarId == h.Id)
+        .Select(l => new { l.CarId, l.VIN, l.ModelCode, l.SpecCode, l.SpecDescription, l.SoDonHang, l.ColorCode, l.ColorName, l.EffDateStart, l.EffDateEnd, l.UnitPriceActual }).ToListAsync();
+    return Results.Ok(new { h.TestCarCode, h.DealerCode, h.Remark, h.CreatedAt, lines });
+}).RequireAuthorization();
+
+// Lưu đề nghị (khớp Car_TestCar_Save gốc: TestCarCode tự sinh nếu trống; đã tồn tại → thay toàn bộ dòng VIN, khớp hành vi "sửa đề nghị")
+app.MapPost("/api/cartestcars", async (CarTestCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = dto.Lines ?? new List<CarTestCarLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lưới dữ liệu trống!" });
+
+    var no = string.IsNullOrWhiteSpace(dto.TestCarCode) ? "TC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.TestCarCode.Trim();
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) { h = new CarTestCar { OrgId = t.OrgId, TestCarCode = no }; db.CarTestCars.Add(h); await db.SaveChangesAsync(); }
+    else { db.CarTestCarDtls.RemoveRange(db.CarTestCarDtls.Where(l => l.OrgId == t.OrgId && l.TestCarId == h.Id)); }
+    h.DealerCode = dto.DealerCode; h.Remark = dto.Remark;
+
+    foreach (var l in lines)
+        db.CarTestCarDtls.Add(new CarTestCarDtl
+        {
+            OrgId = t.OrgId, TestCarId = h.Id, CarId = l.CarId ?? "", VIN = (l.Vin ?? "").Trim().ToUpperInvariant(), ModelCode = l.ModelCode,
+            SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, SoDonHang = l.SoDonHang, ColorCode = l.ColorCode, ColorName = l.ColorName,
+            EffDateStart = l.EffDateStart, EffDateEnd = l.EffDateEnd, UnitPriceActual = l.UnitPriceActual
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.TestCarCode, lines = lines.Count });
+}).RequireAuthorization();
+
+// Xóa đề nghị (khớp Car_TestCar_Save với flagIsDelete=1 gốc)
+app.MapDelete("/api/cartestcars/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) return Results.NotFound(new { no });
+    db.CarTestCarDtls.RemoveRange(db.CarTestCarDtls.Where(l => l.OrgId == t.OrgId && l.TestCarId == h.Id));
+    db.CarTestCars.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
+}).RequireAuthorization();
+
 // ===== Mẫu hợp đồng của đại lý (DealerContractForm — port 1:1 FrmDlr_Mst_DealerContractForm, 2010.HTC) =====
 app.MapGet("/api/dealercontractforms", async (AppDbContext db, ITenantContext t, string? dealer, string? q, bool? all) =>
 {
@@ -15658,6 +15714,8 @@ record GrtValueEditDto(List<GrtValueRowDto>? Lines);
 record GrtValueRowDto(string? VIN, decimal GrtValue);
 record GrtStartEditDto(List<GrtStartRowDto>? Lines);
 record GrtStartRowDto(string? VIN, DateTime? DateStart, DateTime? DateExpired, decimal? GrtValue, string? FlagDtlDiscount);
+record CarTestCarLineDto(string? CarId, string? Vin, string? ModelCode, string? SpecCode, string? SpecDescription, string? SoDonHang, string? ColorCode, string? ColorName, DateTime? EffDateStart, DateTime? EffDateEnd, decimal UnitPriceActual);
+record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, List<CarTestCarLineDto>? Lines);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive);

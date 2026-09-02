@@ -2274,6 +2274,37 @@ public sealed class MinInvBalance
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Đề nghị đăng ký xe lái thử (Car_TestCar) — port 1:1 FrmNewRegister_TestCar (2010.HTC/Sales). Header đề nghị + danh sách VIN được đăng ký làm xe lái thử, có hiệu lực từ-đến.
+/// Khác TestDrive (lịch hẹn khách lái thử) — đây là đề nghị NỘI BỘ phân bổ VIN làm demo/xe lái thử.</summary>
+public sealed class CarTestCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TestCarCode { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng VIN trong đề nghị đăng ký xe lái thử — port 1:1 grid FrmNewRegister_TestCar (Car_TestCarDtl, 2010.HTC).</summary>
+public sealed class CarTestCarDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TestCarId { get; set; }
+    public string CarId { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? SoDonHang { get; set; }
+    public string? ColorCode { get; set; }
+    public string? ColorName { get; set; }
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    public decimal UnitPriceActual { get; set; }
+}
+
 /// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>
 public sealed class WarrantyExpires
 {
