@@ -14725,29 +14725,34 @@ app.MapPost("/api/transplans/mapvin", async (MapVinDto dto, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Yêu cầu vận chuyển thu hồi xe (StoTranspReq — port 1:1 FrmNewRetrieveTransReq/FrmMngRetrieveTransReq) =====
-app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+string[] _transpReqTypes = { "Retrieve", "StorageRearrCB", "StorageRearrange" };
+string _transpReqPrefix(string type) => type switch { "StorageRearrCB" => "RCB", "StorageRearrange" => "RRG", _ => "RTR" };
+app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? type) =>
 {
-    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId);
+    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId && r.TranspReqType == (string.IsNullOrWhiteSpace(type) ? "Retrieve" : type));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt,
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt, r.TranspReqType,
         cars = db.RetrieveReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// type: Retrieve (mặc định, FrmNewRetrieveTransReq) | StorageRearrCB (FrmMngRearCBTranspReq — YC chuyển kho đóng thùng) | StorageRearrange (FrmMngRearrangeTranspReq).
 app.MapPost("/api/retrievereqs", async (RetrieveReqDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
         return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode." });
+    var type = string.IsNullOrWhiteSpace(dto.TranspReqType) ? "Retrieve" : dto.TranspReqType.Trim();
+    if (!_transpReqTypes.Contains(type)) return Results.BadRequest(new { error = "TranspReqType = Retrieve|StorageRearrCB|StorageRearrange" });
     var vins = (dto.Cars ?? new List<RetrieveReqCarDto>()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
     if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
     var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var no = "RTR" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new RetrieveRequest { OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "Pending" };
+    var no = _transpReqPrefix(type) + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new RetrieveRequest { OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "Pending", TranspReqType = type };
     db.RetrieveRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.RetrieveReqCars.Add(new RetrieveReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), StorageCode = c.StorageCode, DtlStatus = "Pending" });
@@ -14887,7 +14892,7 @@ record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate);
 record RetrieveReqCarDto(string Vin, string? StorageCode);
-record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars);
+record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars, string? TranspReqType);
 record VinPairDto(string FVIN, string RVIN);
 record MapVinDto(List<VinPairDto>? Pairs);
 record VinPackingRowDto(string Vin, string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);

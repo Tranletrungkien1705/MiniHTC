@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — YC chuyển kho vận chuyển</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1000px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-Pending{color:var(--warn)} .p-Approved{color:var(--ok)} .p-Rejected{color:var(--bad)}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
+</style></head>
+<body>
+<h1>YC vận chuyển chuyển kho <span class="muted">(port 1:1 FrmMngRearCBTranspReq / FrmMngRearrangeTranspReq — dùng chung StoTranspReq với YC thu hồi)</span></h1>
+<div class="card">
+  <b>Tạo yêu cầu</b>
+  <div class="bar" style="margin:10px 0">
+    <label>Loại:</label><select id="tp2"><option value="StorageRearrCB">Chuyển kho đóng thùng (RearCB)</option><option value="StorageRearrange">Chuyển kho (Rearrange)</option></select>
+    <input id="dl" placeholder="Đại lý *" style="width:130px"><input id="tp" placeholder="Nhà vận chuyển *" style="width:140px">
+    <input id="rs" placeholder="Lý do" style="width:150px">
+    <span style="flex:1"></span><button class="primary" onclick="create()">Lưu YC</button><span id="msg"></span>
+  </div>
+  <table id="ctbl"><thead><tr><th>VIN *</th><th>Kho nhận về</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
+  <button class="sm" style="margin-top:8px" onclick="addCar()">+ Thêm xe</button>
+</div>
+<div class="bar" style="margin:10px 0">
+  <label>Xem loại:</label><select id="ftp" onchange="load()"><option value="StorageRearrCB">RearCB</option><option value="StorageRearrange">Rearrange</option></select>
+  <select id="fst" onchange="load()"><option value="">Tất cả TT</option><option value="Pending">Đang xử lý</option><option value="Approved">Phê duyệt</option><option value="Rejected">Từ chối</option></select>
+</div>
+<table><thead><tr><th>Số YC</th><th>Đại lý</th><th>NVC</th><th>Lý do</th><th>Số xe</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const LBL={Pending:"Đang xử lý",Approved:"Phê duyệt",Rejected:"Từ chối"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addCar(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="vin" style="width:140px"></td><td><input class="st" style="width:100px"></td>
+    <td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("ctb").appendChild(tr);
+}
+async function create(){
+  const cars=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,storageCode:tr.querySelector(".st").value})).filter(c=>c.vin);
+  const r=await fetch("/api/retrievereqs",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,transporterCode:F("tp").value,reason:F("rs").value,cars,transpReqType:F("tp2").value})});
+  const j=await r.json();
+  if(r.ok){ msg("Đã lưu "+j.transpReqNo+" ("+j.cars+" xe)."); F("ctb").innerHTML="";addCar(); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/retrievereqs?status=${F("fst").value}&type=${F("ftp").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(r=>{
+    let act=r.status==="Pending"?`<button class="sm" onclick="act('${r.transpReqNo}','approve')">Duyệt</button> <button class="sm" onclick="act('${r.transpReqNo}','reject')">Từ chối</button>`:"";
+    return `<tr><td><b>${r.transpReqNo}</b> <a href="#" class="cars" onclick="cars('${r.transpReqNo}');return false">xem xe</a></td>
+      <td>${r.dealerCode}</td><td>${r.transporterCode}</td><td>${r.reason||"—"}</td><td>${r.cars}</td>
+      <td><span class="pill p-${r.status}">${LBL[r.status]||r.status}</span></td><td>${act}</td></tr><tr id="c-${r.transpReqNo}"></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có yêu cầu.</td></tr>';
+}
+async function act(no,a){ const r=await fetch(`/api/retrievereqs/${no}/${a}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function cars(no){
+  const row=F("c-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
+  const d=await (await fetch(`/api/retrievereqs/${no}/cars`,{headers:H()})).json();
+  row.innerHTML=`<td colspan="7"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b>${c.storageCode?" · kho "+c.storageCode:""} · ${c.dtlStatus}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+addCar(); load();
+</script>
+</body></html>

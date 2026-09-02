@@ -497,6 +497,7 @@ public sealed class RetrieveRequest
     public string Status { get; set; } = "Pending";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DecidedAt { get; set; }
+    public string TranspReqType { get; set; } = "Retrieve"; // Retrieve|StorageRearrCB|StorageRearrange — port FrmMngRearCBTranspReq/FrmMngRearrangeTranspReq (dùng chung bảng StoTranspReq)
 }
 
 /// <summary>Dòng xe trong YC thu hồi (StoTranspReqDtl): VIN + kho nhận về.</summary>
