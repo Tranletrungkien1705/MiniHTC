@@ -11858,6 +11858,27 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
     return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SignDate, c.Status, count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
 }).RequireAuthorization();
 
+// Sửa số lượng theo dòng model/spec/màu (port 1:1 FrmMngRetailContractHistory btnFlagDone01_Click, Sales/RetailContract)
+app.MapPost("/api/dlrcontracts/{no}/update-qty", async (string no, DlrContractQtyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var rows = (dto.Rows ?? new()).Where(r => r.UpdateQty > 0).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có Số lượng thay đổi" });
+    int updated = 0;
+    var lines = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id).ToListAsync();
+    foreach (var r in rows)
+    {
+        var line = lines.FirstOrDefault(l => l.ModelCode == r.ModelCode && l.SpecCode == r.SpecCode && l.ColorCode == r.ColorCode);
+        if (line is null) continue;
+        line.Qty = r.UpdateQty;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrContractNo, updated });
+}).RequireAuthorization();
+
 app.MapPost("/api/dlrcontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -14948,6 +14969,8 @@ record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
+record DlrContractQtyRowDto(string? ModelCode, string? SpecCode, string? ColorCode, int UpdateQty);
+record DlrContractQtyDto(List<DlrContractQtyRowDto>? Rows);
 record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);
 record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? UserCodeMtn, string? StorageCodeInit, string? StorageCodeCurrent, string? MtnStatusMain, string? Remark);
 record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
