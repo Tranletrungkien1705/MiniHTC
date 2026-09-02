@@ -1202,8 +1202,29 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal }).ToListAsync();
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay }).ToListAsync();
     return Results.Ok(new { d.DocReqNo, d.Status, count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
+}).RequireAuthorization();
+
+// Sửa hàng loạt ngày/số tờ trình + số ngày hỗ trợ vay vốn theo VIN (port 1:1 FrmUpdateDocReq, 2010.HTC/Sales)
+app.MapPost("/api/docreqs/{no}/edit-support", async (string no, DocReqSupportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
+    if (d is null) return Results.NotFound(new { no });
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var vin = r.Vin!.Trim().ToUpperInvariant();
+        var c = await db.DocReqCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqId == d.Id && x.Vin == vin);
+        if (c is null) { notFound.Add(vin); continue; }
+        c.LetterRepresentationDate = r.LetterRepresentationDate; c.LetterRepresentationNo = r.LetterRepresentationNo; c.LoanSupportDay = r.LoanSupportDay;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 app.MapPost("/api/docreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -14896,6 +14917,8 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
 record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars);
+record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
+record DocReqSupportDto(List<DocReqSupportRowDto>? Rows);
 record ForeignContractLineDto(string? RefNo, string LcTemp);
 record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
 record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);

@@ -3092,6 +3092,9 @@ public sealed class DocReqCar
     public string? ColorCode { get; set; }
     public string? EngineNo { get; set; }
     public decimal AmountTotal { get; set; }
+    public DateTime? LetterRepresentationDate { get; set; }  // ngày tờ trình — port FrmUpdateDocReq
+    public string? LetterRepresentationNo { get; set; }      // số tờ trình
+    public int? LoanSupportDay { get; set; }                 // số ngày hỗ trợ vay vốn
 }
 
 /// <summary>Hợp đồng ngoại (CO) — port 1:1 FrmNewCO/FrmMngCO (DMSales.Foton). Gom nhiều dòng LC_Temp của PI vào 1 số hợp đồng ngoại.</summary>

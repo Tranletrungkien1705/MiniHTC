@@ -22,6 +22,14 @@
   <table id="ctbl"><thead><tr><th>VIN *</th><th>Model</th><th>Màu</th><th>Số máy</th><th>Thành tiền</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addCar()">+ Thêm xe</button>
 </div>
+<div class="card">
+  <b>Sửa ngày/số tờ trình + hỗ trợ vay vốn (port 1:1 FrmUpdateDocReq)</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="suNo" placeholder="Số hồ sơ *" style="width:130px"><input id="suVin" placeholder="VIN *" style="width:130px">
+    <input id="suDate" type="date" title="Ngày tờ trình"><input id="suNoRep" placeholder="Số tờ trình" style="width:110px"><input id="suDay" type="number" placeholder="Số ngày HT vay" style="width:110px">
+    <button onclick="editSupport()">Lưu</button><span id="suMsg"></span>
+  </div>
+</div>
 <div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Submitted">Đã nộp</option><option value="Done">Hoàn tất</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
 <table><thead><tr><th>Số hồ sơ</th><th>Đại lý</th><th>Số xe</th><th>Tổng tiền</th><th>Ngày tạo</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
@@ -57,7 +65,15 @@ async function flow(no,action){ const r=await fetch(`/api/docreqs/${no}/${action
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/docreqs/${no}/cars`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="7"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b>${c.modelCode?" · "+c.modelCode:""}${c.engineNo?" · máy "+c.engineNo:""} · ${money(c.amountTotal)}đ`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+  row.innerHTML=`<td colspan="7"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b>${c.modelCode?" · "+c.modelCode:""}${c.engineNo?" · máy "+c.engineNo:""} · ${money(c.amountTotal)}đ${c.letterRepresentationNo?" · tờ trình "+c.letterRepresentationNo:""}${c.loanSupportDay?" · HT vay "+c.loanSupportDay+" ngày":""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+async function editSupport(){
+  const no=F("suNo").value.trim(), vin=F("suVin").value.trim();
+  if(!no||!vin){ F("suMsg").textContent="Cần số hồ sơ + VIN"; return; }
+  const body={rows:[{vin,letterRepresentationDate:F("suDate").value||null,letterRepresentationNo:F("suNoRep").value,loanSupportDay:F("suDay").value?parseInt(F("suDay").value):null}]};
+  const r=await fetch(`/api/docreqs/${no}/edit-support`,{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  F("suMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy VIN trong hồ sơ."):("Lỗi: "+(j.error||r.status));
 }
 addCar(); load();
 </script>
