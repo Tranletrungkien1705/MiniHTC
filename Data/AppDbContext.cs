@@ -163,6 +163,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PaymentDiscountReq> PaymentDiscountReqs => Set<PaymentDiscountReq>();
     public DbSet<OrderComplainAttachment> OrderComplainAttachments => Set<OrderComplainAttachment>();
     public DbSet<MinInvBalance> MinInvBalances => Set<MinInvBalance>();
+    public DbSet<Dms40SoRoot> Dms40SoRoots => Set<Dms40SoRoot>();
+    public DbSet<Dms40SoRootDetail> Dms40SoRootDetails => Set<Dms40SoRootDetail>();
     public DbSet<CarTestCar> CarTestCars => Set<CarTestCar>();
     public DbSet<CarTestCarDtl> CarTestCarDtls => Set<CarTestCarDtl>();
     public DbSet<SPSupportRetail> SPSupportRetails => Set<SPSupportRetail>();

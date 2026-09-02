@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đơn hàng gốc DMS40</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1100px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{opacity:.7;font-size:10px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-P{color:var(--warn)} .p-A{color:var(--accent)} .p-F{color:var(--ok)} .p-C{color:var(--bad)}
+  #msg,#dMsg{font-size:13px} .wrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Đơn hàng gốc DMS40 <span class="muted">(port 1:1 FrmUpgradeMngOrderDealer/FrmUpgradeOrderApprove/FrmUpgradeOrderApprovePlan — duyệt số lượng theo model)</span></h1>
+<div class="muted">Đơn giản hoá: bỏ nhánh "duyệt đặc biệt PA→F" và mirror kho WH của bản gốc.</div>
+<div class="card">
+  <b>Tạo đơn hàng gốc</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã đại lý *</label><input id="dl" style="width:100px"></div>
+    <div><label>Loại SO</label><input id="st" style="width:80px"></div>
+    <div><label>Chính sách BH</label><input id="sp" style="width:100px"></div>
+    <div><label>Tháng đặt hàng</label><input id="om" type="month"></div>
+  </div>
+  <div class="wrap">
+  <table id="tLines"><thead><tr><th>Model</th><th>Spec</th><th>Màu</th><th>Đơn giá</th><th>SL yêu cầu</th><th>Ghi chú</th><th></th></tr></thead><tbody id="lineRows"></tbody></table>
+  </div>
+  <button class="sm" onclick="addLine()">+ Thêm dòng model</button>
+  <div class="bar" style="margin-top:10px"><button class="primary" onclick="create()">Tạo đơn</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Chờ duyệt</option><option value="A">Đã duyệt</option><option value="F">Hoàn tất</option><option value="C">Đã hủy</option></select>
+  <input id="fq" placeholder="Lọc Số SOR" oninput="load()" style="width:150px">
+</div>
+<div class="wrap">
+<table><thead><tr><th>Số SOR</th><th>Đại lý</th><th>Loại</th><th>Số dòng</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+</div>
+<div id="detail" class="card" style="display:none">
+  <b id="dTitle"></b> <span id="dMsg"></span>
+  <div class="wrap"><table id="dTable"><thead><tr><th>Model</th><th>Spec</th><th>Màu</th><th>SL yêu cầu</th><th>SL duyệt 1</th><th>SL duyệt 2</th></tr></thead><tbody id="dRows"></tbody></table></div>
+  <div class="bar" style="margin-top:8px"><input id="apModel" placeholder="Model" style="width:80px"><input id="apSpec" placeholder="Spec" style="width:80px"><input id="apColor" placeholder="Màu" style="width:80px"><input id="apQty" type="number" placeholder="SL duyệt" style="width:100px"><button class="sm" onclick="approveLine()">Duyệt dòng này</button></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const money=n=>Number(n||0).toLocaleString("vi-VN");
+const LBL={P:"Chờ duyệt",A:"Đã duyệt",F:"Hoàn tất",C:"Đã hủy"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input style="width:80px" class="model"></td><td><input style="width:80px" class="spec"></td><td><input style="width:70px" class="color"></td>
+    <td><input type="number" class="up" style="width:100px" value="0"></td><td><input type="number" class="rq" style="width:90px" value="0"></td>
+    <td><input style="width:110px" class="rm"></td><td><button class="sm" onclick="this.closest('tr').remove()">x</button></td>`;
+  F("lineRows").appendChild(tr);
+}
+addLine();
+function collectLines(){
+  return [...F("lineRows").querySelectorAll("tr")].map(tr=>({
+    modelCode: tr.querySelector(".model").value.trim(), specCode: tr.querySelector(".spec").value.trim()||null, colorCode: tr.querySelector(".color").value.trim()||null,
+    unitPriceInit: +tr.querySelector(".up").value||0, requestedQuantity: +tr.querySelector(".rq").value||0, remark: tr.querySelector(".rm").value.trim()||null,
+  })).filter(l=>l.modelCode);
+}
+async function create(){
+  const lines=collectLines();
+  if(!F("dl").value||lines.length===0){ msg("Cần mã đại lý + ít nhất 1 dòng model"); return; }
+  const r=await fetch("/api/dms40/soroots",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,soType:F("st").value||null,spCode:F("sp").value||null,orderMonth:F("om").value?F("om").value+"-01":null,lines})});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã tạo ${j.sorCode} (${j.lines} dòng)`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/dms40/soroots?status=${F("fst").value}&q=${F("fq").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=`<button class="sm" onclick="view('${o.sorCode}')">Xem</button> `;
+    if(o.status==="P") act+=`<button class="sm" onclick="doCancel('${o.sorCode}')">Hủy</button>`;
+    if(o.status==="A") act+=`<button class="sm" onclick="finish('${o.sorCode}')">Hoàn tất</button> <button class="sm" onclick="doCancel('${o.sorCode}')">Hủy</button>`;
+    return `<tr><td><b>${o.sorCode}</b></td><td>${o.dealerCode}</td><td>${o.soType||"—"}</td><td>${o.lines}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="6" class="muted">Chưa có đơn hàng.</td></tr>';
+}
+let curNo=null;
+async function view(no){ await token(); curNo=no;
+  const d=await (await fetch(`/api/dms40/soroots/${no}`,{headers:H()})).json();
+  F("detail").style.display="block"; F("dTitle").textContent=`${d.sorCode} — ${d.dealerCode} (${LBL[d.status]||d.status})`; F("dMsg").textContent="";
+  F("dRows").innerHTML=(d.lines||[]).map(l=>`<tr><td>${l.modelCode}</td><td>${l.specCode||"—"}</td><td>${l.colorCode||"—"}</td><td>${money(l.requestedQuantity)}</td><td>${money(l.approved1Quantity)}</td><td>${money(l.approved2Quantity)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">—</td></tr>';
+}
+async function approveLine(){
+  if(!curNo){ F("dMsg").textContent="Chọn đơn trước"; return; }
+  const body={lines:[{modelCode:F("apModel").value,specCode:F("apSpec").value||null,colorCode:F("apColor").value||null,approved1Quantity:+F("apQty").value||0}]};
+  const r=await fetch(`/api/dms40/soroots/${curNo}/approve`,{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  F("dMsg").textContent=r.ok?`Đã duyệt ${j.updated} dòng.`:("Lỗi: "+(j.error||r.status));
+  if(r.ok){ view(curNo); load(); }
+}
+async function finish(no){ const r=await fetch(`/api/dms40/soroots/${no}/finish`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else alert(j.error||r.status); }
+async function doCancel(no){ const r=await fetch(`/api/dms40/soroots/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else alert(j.error||r.status); }
+load();
+</script>
+</body></html>

@@ -2305,6 +2305,43 @@ public sealed class CarTestCarDtl
     public decimal UnitPriceActual { get; set; }
 }
 
+/// <summary>Đơn hàng gốc DMS40 (DMS40_Ord_SalesOrderRoot) — port 1:1 FrmUpgradeMngOrderDealer/FrmUpgradeOrderApprove/FrmUpgradeOrderApprovePlan, 2010.HTC/Sales/Upgrade.
+/// Header gom nhiều dòng model/spec/color của 1 đợt đặt hàng kế hoạch; duyệt SỐ LƯỢNG theo dòng (khác D4OSORA/Dms40SoRootApproval — duyệt cả ĐƠN theo rule).
+/// Status: P(chờ duyệt)→A(đã duyệt 1 phần/toàn phần, có thể duyệt tiếp Approved2)→F(hoàn tất)/C(hủy).
+/// ĐƠN GIẢN HOÁ: bỏ qua nhánh "duyệt đặc biệt PA→F"/mirror WH/join Model-Spec-Color master (quá sâu để trace 1:1 trong 1 fire).</summary>
+public sealed class Dms40SoRoot
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SORCode { get; set; } = "";
+    public string? SOType { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string? SPCode { get; set; }
+    public DateTime? OrderMonth { get; set; }
+    public DateTime? ProductionMonth { get; set; }
+    public DateTime? ExpectedMonth { get; set; }
+    public string Status { get; set; } = "P";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? ApprDTime { get; set; }
+}
+
+/// <summary>Dòng model/spec/color trong đơn hàng gốc DMS40 — port 1:1 grid FrmUpgradeOrderApprovePlan (DMS40_Ord_SalesOrderRootDetail).</summary>
+public sealed class Dms40SoRootDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SoRootId { get; set; }
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public decimal UnitPriceInit { get; set; }
+    public decimal RequestedQuantity { get; set; }
+    public decimal Approved1Quantity { get; set; }
+    public decimal Approved2Quantity { get; set; }
+    public decimal CancelQuantityTotal { get; set; }
+    public string? Remark { get; set; }
+}
+
 /// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>
 public sealed class WarrantyExpires
 {
