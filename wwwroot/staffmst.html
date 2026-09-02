@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Nhân viên</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .off{opacity:.5} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)}
+</style></head>
+<body>
+<h1>Nhân viên <span class="muted">(port 1:1 FrmMst_Staff — TCMotor DMSCarSv/Admin)</span></h1>
+<div class="card"><h3 style="margin-top:0">Thêm / sửa</h3>
+  <div class="row">
+    <div><label>Mã NV *</label><input id="code"></div>
+    <div><label>Tên NV *</label><input id="name" style="width:260px"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Mã / tên" style="width:220px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="all" style="width:auto"> Cả đã tắt</label><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên NV</th><th>TT</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="4" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3800); }
+async function save(){ await token();
+  const r=await fetch("/api/staffmsts",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({StaffCode:F("code").value,StaffName:F("name").value})});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.staffCode); F("code").value=""; F("name").value=""; load();
+}
+async function toggle(id){ await token(); await fetch("/api/staffmsts/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
+async function load(){ await token();
+  const r=await fetch("/api/staffmsts?all="+(F("all").checked)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.staffCode)}</b></td><td>${esc(o.staffName)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có nhân viên.</td></tr>';
+}
+</script>
+</body></html>

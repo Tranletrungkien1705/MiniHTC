@@ -2298,6 +2298,40 @@ public sealed class WarrantyWorkMst
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Khoang/ngăn kho (Mst_Compartment) — port 1:1 FrmMst_Compartment (TCMotor DMSCarSv/Admin). Mã + tên khoang. Upsert-by-code + toggle.</summary>
+public sealed class CompartmentMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CompartmentCode { get; set; } = "";
+    public string? CompartmentName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Nhân viên (Mst_Staff) — port 1:1 FrmMst_Staff (TCMotor DMSCarSv/Admin). Mã + tên nhân viên. Upsert-by-code + toggle.</summary>
+public sealed class StaffMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StaffCode { get; set; } = "";
+    public string? StaffName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Mã VIN gốc theo model (Mst_VINModelOrginal) — port 1:1 FrmVINModelOrginal (TCMotor DMSCarSv/Admin). Tiền tố VIN + model + mã xuất xứ. Composite key VINCode+ModelCode. Upsert.</summary>
+public sealed class VinModelOrginalMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VINCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? OrginalCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {
