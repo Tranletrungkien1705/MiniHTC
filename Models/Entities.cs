@@ -3167,6 +3167,7 @@ public sealed class CtTkhq
     public DateTime OpenDate { get; set; }       // ngày mở tờ khai
     public string? PortCode { get; set; }
     public string? Remark { get; set; }
+    public DateTime? TaxPaymentDate { get; set; } // ngày nộp thuế — port FrmMngCT_TKHQ, PHẢI >= OpenDate
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 public sealed class CtTkhqVin

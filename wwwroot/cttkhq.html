@@ -28,9 +28,19 @@
   <table id="vtbl"><thead><tr><th>VIN *</th><th></th></tr></thead><tbody id="vtb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addVin()">+ Thêm VIN</button>
 </div>
+<div class="card">
+  <b>Sửa ngày nộp thuế (port 1:1 FrmMngCT_TKHQ)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Số tờ khai *</label><input id="taxNo" style="width:150px"></div>
+    <div><label>Ngày nộp thuế *</label><input id="taxDate" type="date"></div>
+    <span style="flex:1"></span><button class="primary" onclick="updateTax()">Lưu</button>
+    <button onclick="deleteTk()" style="color:#dc2626">Xóa tờ khai</button>
+    <span id="taxMsg"></span>
+  </div>
+</div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc cảng" oninput="load()" style="width:110px"></div>
-<table><thead><tr><th>Số tờ khai</th><th>Ngày mở</th><th>Cảng</th><th>Số VIN</th><th>Ghi chú</th></tr></thead>
-<tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Số tờ khai</th><th>Ngày mở</th><th>Cảng</th><th>Số VIN</th><th>Ngày nộp thuế</th><th>Ghi chú</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
@@ -52,13 +62,28 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/cttkhqs?port=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.declarationNo}</b> <a href="#" class="cars" onclick="vins('${o.declarationNo}');return false">xem VIN</a></td><td>${day(o.openDate)}</td><td>${o.portCode||""}</td><td>${o.vins}</td><td>${o.remark||""}</td></tr><tr id="x-${o.declarationNo}"></tr>`
-  ).join("")||'<tr><td colspan="5" class="muted">Chưa có tờ khai.</td></tr>';
+    `<tr><td><b>${o.declarationNo}</b> <a href="#" class="cars" onclick="vins('${o.declarationNo}');return false">xem VIN</a></td><td>${day(o.openDate)}</td><td>${o.portCode||""}</td><td>${o.vins}</td><td>${day(o.taxPaymentDate)}</td><td>${o.remark||""}</td></tr><tr id="x-${o.declarationNo}"></tr>`
+  ).join("")||'<tr><td colspan="6" class="muted">Chưa có tờ khai.</td></tr>';
 }
 async function vins(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/cttkhqs/${no}/vins`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="5"><div class="cars">${(d.vins||[]).map(v=>`<b>${v}</b>`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+  row.innerHTML=`<td colspan="6"><div class="cars">${(d.vins||[]).map(v=>`<b>${v}</b>`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+}
+async function updateTax(){
+  const no=F("taxNo").value.trim(); if(!no){ F("taxMsg").textContent="Cần số tờ khai"; return; }
+  const body={rows:[{declarationNo:no,taxPaymentDate:F("taxDate").value||null}]};
+  const r=await fetch("/api/cttkhqs/tax-payment-date",{method:"POST",headers:H(),body:JSON.stringify(body)});
+  const j=await r.json();
+  F("taxMsg").textContent=r.ok?(j.updated?"Đã lưu.":"Không tìm thấy TK."):("Lỗi: "+(j.error||r.status));
+  if(r.ok && j.updated) load();
+}
+async function deleteTk(){
+  const no=F("taxNo").value.trim(); if(!no){ F("taxMsg").textContent="Cần số tờ khai"; return; }
+  const r=await fetch("/api/cttkhqs/delete-batch",{method:"POST",headers:H(),body:JSON.stringify({declarationNos:[no]})});
+  const j=await r.json();
+  F("taxMsg").textContent=r.ok?((j.deleted||[]).length?"Đã xóa.":"Không tìm thấy TK."):("Lỗi: "+(j.error||r.status));
+  if(r.ok) load();
 }
 addVin(); load();
 </script>

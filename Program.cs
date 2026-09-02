@@ -12331,10 +12331,49 @@ app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? por
     if (!string.IsNullOrWhiteSpace(port)) query = query.Where(k => k.PortCode == port);
     var items = await query.OrderByDescending(k => k.Id).Take(500).Select(k => new
     {
-        k.DeclarationNo, k.OpenDate, k.PortCode, k.Remark, k.CreatedAt,
+        k.DeclarationNo, k.OpenDate, k.PortCode, k.Remark, k.TaxPaymentDate, k.CreatedAt,
         vins = db.CtTkhqVins.Count(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Sửa hàng loạt ngày nộp thuế (port 1:1 FrmMngCT_TKHQ btnUpdateTaxPaymentDate_Click) — guard TaxPaymentDate >= OpenDate.
+app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DeclarationNo)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.DeclarationNo!.Trim();
+        var k = await db.CtTkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
+        if (k is null) { notFound.Add(no); continue; }
+        if (r.TaxPaymentDate is null) continue;
+        if (r.TaxPaymentDate.Value < k.OpenDate)
+            return Results.BadRequest(new { error = $"TKHQ: {no} ngày nộp thuế phải sau Ngày mở TKHQ!" });
+        k.TaxPaymentDate = r.TaxPaymentDate;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Xóa hàng loạt tờ khai (port 1:1 FrmMngCT_TKHQ btnDeleteTk_Click)
+app.MapPost("/api/cttkhqs/delete-batch", async (CtTkhqDeleteDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var nos = (dto.DeclarationNos ?? new()).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn tờ khai để xóa" });
+    var deleted = new List<string>();
+    foreach (var no in nos)
+    {
+        var k = await db.CtTkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
+        if (k is null) continue;
+        db.CtTkhqVins.RemoveRange(db.CtTkhqVins.Where(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id));
+        db.CtTkhqs.Remove(k);
+        deleted.Add(no);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted });
 }).RequireAuthorization();
 
 app.MapPost("/api/cttkhqs", async (CtTkhqDto dto, AppDbContext db, ITenantContext t) =>
@@ -14791,6 +14830,9 @@ record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string Receiv
 record PackingListVinDto(string Vin, string? CrateType);
 record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins);
 record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
+record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);
+record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
+record CtTkhqDeleteDto(List<string>? DeclarationNos);
 record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL);
 record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
 record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
