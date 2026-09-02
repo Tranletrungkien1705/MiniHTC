@@ -12815,6 +12815,7 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
 
 // ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
 string[] _careTypes = { "CARE24H", "CARE72H", "DOB", "MAINT" };
+string[] _maceStatuses = { "Pending", "Contacted", "NotContacted" };
 app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
 {
     var q = db.CustomerCares.Where(c => c.OrgId == t.OrgId);
@@ -12862,6 +12863,52 @@ app.MapPost("/api/customercares/{no}/close", async (string no, AppDbContext db, 
     if (c is null) return Results.NotFound(new { no });
     if (c.Status != "Contacted") return Results.BadRequest(new { error = "Chỉ đóng phiếu Đã liên hệ." });
     c.Status = "Closed";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CareNo, status = c.Status });
+}).RequireAuthorization();
+
+// ===== Chăm sóc KH chương trình MACE hãng (CustomerCareMace — port 1:1 FrmCustomerCareMace/Update/ApointDate, TCMotor DMSCarSv/Customer) =====
+app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, string? maceType, string? status, string? vin) =>
+{
+    var q = db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(maceType)) q = q.Where(c => c.MaceType == maceType);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin != null && c.Vin.Contains(vin.ToUpper()));
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark }).ToListAsync();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+}).RequireAuthorization();
+
+// Tạo bản ghi MACE (WinForm gốc chỉ search vì nguồn phát sinh từ hãng — thêm POST để nhập tay tương đương)
+app.MapPost("/api/customercaremaces", async (CustomerCareMaceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var maceType = (dto.MaceType ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(maceType)) return Results.BadRequest(new { error = "Chưa nhập MaceType." });
+    if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.CusName))
+        return Results.BadRequest(new { error = "Cần VIN hoặc tên khách." });
+    var no = "MC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var c = new CustomerCareMace
+    {
+        OrgId = t.OrgId, CareNo = no, MaceType = maceType, RONo = dto.RONo, Vin = dto.Vin?.Trim().ToUpperInvariant(),
+        CusName = dto.CusName, MaceRecomentDate = dto.MaceRecomentDate, Status = "Pending"
+    };
+    db.CustomerCareMaces.Add(c); await db.SaveChangesAsync();
+    return Results.Ok(new { c.CareNo, c.MaceType, status = c.Status });
+}).RequireAuthorization();
+
+// Cập nhật trạng thái liên hệ (khớp FrmCustomerCareMaceUpdate: Contacted bắt buộc có ContactDate).
+app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceContactDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.CustomerCareMaces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var status = (dto.Status ?? "").Trim();
+    if (!_maceStatuses.Contains(status)) return Results.BadRequest(new { error = "Status = Pending|Contacted|NotContacted" });
+    if (status == "Contacted" && dto.ContactDate is null)
+        return Results.BadRequest(new { error = "Bạn chưa nhập Ngày liên hệ. Hãy nhập Ngày liên hệ để cập nhật tình trạng liên hệ." });
+    c.Status = status; c.Remark = dto.Remark;
+    c.ContactDate = status == "Contacted" ? dto.ContactDate : null;
+    c.ApointDate = status == "Contacted" ? dto.ApointDate : null;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();
@@ -14046,6 +14093,8 @@ record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VA
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);
+record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
+record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);

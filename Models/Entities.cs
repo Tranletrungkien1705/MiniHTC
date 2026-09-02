@@ -2461,6 +2461,27 @@ public sealed class CustomerCare
     public DateTime? ContactedAt { get; set; }
 }
 
+/// <summary>Chăm sóc KH chương trình MACE hãng (Ser_CustomerCareMace — port 1:1 FrmCustomerCareMace/Update/ApointDate, TCMotor DMSCarSv/Customer):
+/// chương trình CSKH riêng theo MaceType (mã do hãng quy định), khác CustomerCare thường (24h/72h/DOB/Maint).
+/// WinForm gốc chỉ SEARCH + cập nhật trạng thái liên hệ (không tạo tay từng bản — nguồn phát sinh từ hãng);
+/// ở đây thêm POST tạo để có đường nhập liệu thủ công tương đương.</summary>
+public sealed class CustomerCareMace
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CareNo { get; set; } = "";
+    public string MaceType { get; set; } = "";
+    public string? RONo { get; set; }
+    public string? Vin { get; set; }
+    public string? CusName { get; set; }
+    public string Status { get; set; } = "Pending";  // Pending(Chưa liên hệ)/Contacted(Đã liên hệ)/NotContacted(Không liên hệ)
+    public DateTime? ContactDate { get; set; }
+    public DateTime? ApointDate { get; set; }
+    public DateTime? MaceRecomentDate { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo, TCMotor DMSCarSv/Customer):
 /// customer master dịch vụ (cá nhân/tổ chức) + người liên hệ. CustomerCar/Care tham chiếu theo CusCode.</summary>
 public sealed class ServiceCustomer
