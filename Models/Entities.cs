@@ -3687,6 +3687,50 @@ public sealed class GrtClaimDetail
     public string? BankCode { get; set; }
 }
 
+/// <summary>Đề nghị chiết khấu thanh toán sớm BL/LC theo VIN (Req_PaymentDiscount + Dtl — port 1:1 FrmReq_PaymentDiscount/FrmMngReq_PaymentDiscount, 2010.HTC/Sales):
+/// 3 giai đoạn (Phase1/2/3), mỗi giai đoạn: AmountPhase (gốc BL/LC còn lại) × DiscountPercentPhase/100 × DiscountDateNumberPhase/365 = DiscountPricePhase (chiết khấu được hưởng khi trả sớm).
+/// TotalDiscountPrice = Σ 3 giai đoạn. Status: Draft(đại lý lập)→Sent(gửi HTC)→Approved/Rejected.</summary>
+public sealed class ReqPaymentDiscount
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReqNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime? PGDateEndFrom { get; set; }   // ngày tất toán BL từ
+    public DateTime? PGDateEndTo { get; set; }     // ngày tất toán BL đến
+    public string Status { get; set; } = "Draft";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+    public DateTime? DecidedAt { get; set; }
+}
+
+/// <summary>Dòng VIN trong đề nghị chiết khấu TT sớm — port 1:1 grid FrmReq_PaymentDiscount, 2010.HTC.</summary>
+public sealed class ReqPaymentDiscountLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ReqId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? CarId { get; set; }
+    public DateTime? PaymentEndDatePhase1 { get; set; }
+    public decimal AmountPhase1 { get; set; }
+    public int DiscountDateNumberPhase1 { get; set; }
+    public decimal DiscountPercentPhase1 { get; set; }
+    public decimal DiscountPricePhase1 { get; set; }   // tự tính
+    public DateTime? PaymentEndDatePhase2 { get; set; }
+    public decimal AmountPhase2 { get; set; }
+    public int DiscountDateNumberPhase2 { get; set; }
+    public decimal DiscountPercentPhase2 { get; set; }
+    public decimal DiscountPricePhase2 { get; set; }   // tự tính
+    public DateTime? PaymentEndDatePhase3 { get; set; }
+    public decimal AmountPhase3 { get; set; }
+    public int DiscountDateNumberPhase3 { get; set; }
+    public decimal DiscountPercentPhase3 { get; set; }
+    public decimal DiscountPricePhase3 { get; set; }   // tự tính
+    public decimal TotalAmount { get; set; }
+    public decimal TotalDiscountPrice { get; set; }    // tự tính = Σ 3 giai đoạn
+}
+
 /// <summary>Yêu cầu đóng thùng (Sto_CBReq + Detail) — port 1:1 FrmNewCBReq (2010.HTC/Sales/Purchase). Đóng thùng lô xe xuất khẩu theo VIN, kho đi→kho đến + loại đóng thùng.</summary>
 public sealed class CBReq
 {

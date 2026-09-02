@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đề nghị chiết khấu TT sớm BL/LC</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--warn:#d97706;--ok:#16a34a;--bad:#dc2626}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1100px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  table{width:100%;border-collapse:collapse;font-size:12px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{opacity:.7;font-size:10px;text-transform:uppercase}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  .p-Draft{color:var(--warn)} .p-Sent{color:var(--accent)} .p-Approved{color:var(--ok)} .p-Rejected{color:var(--bad)}
+  #msg,#dMsg{font-size:13px} .phase{border-left:3px solid var(--accent);padding-left:8px;margin:6px 0}
+  .wrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Đề nghị chiết khấu thanh toán sớm BL/LC theo VIN <span class="muted">(port 1:1 FrmReq_PaymentDiscount/FrmMngReq_PaymentDiscount — 3 giai đoạn)</span></h1>
+<div class="muted">Công thức (đơn giản hoá, không trace được biz-layer gốc): Chiết khấu Phase = Số tiền × Tỷ lệ% /100 × Số ngày/365</div>
+<div class="card">
+  <b>Tạo đề nghị</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Mã đại lý *</label><input id="dl" style="width:100px"></div>
+    <div><label>Tất toán BL từ</label><input id="fFrom" type="date"></div>
+    <div><label>Tất toán BL đến</label><input id="fTo" type="date"></div>
+  </div>
+  <div class="wrap">
+  <table id="tLines"><thead><tr>
+    <th>VIN</th><th>Xe (CarId)</th>
+    <th>Ngày TT P1</th><th>Số tiền P1</th><th>Số ngày P1</th><th>Tỷ lệ% P1</th>
+    <th>Ngày TT P2</th><th>Số tiền P2</th><th>Số ngày P2</th><th>Tỷ lệ% P2</th>
+    <th>Ngày TT P3</th><th>Số tiền P3</th><th>Số ngày P3</th><th>Tỷ lệ% P3</th><th></th>
+  </tr></thead><tbody id="lineRows"></tbody></table>
+  </div>
+  <button class="sm" onclick="addLine()">+ Thêm dòng VIN</button>
+  <div class="bar" style="margin-top:10px"><button class="primary" onclick="create()">Lưu đề nghị</button><span id="msg"></span></div>
+</div>
+<div class="bar" style="margin:10px 0">
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Sent">Đã gửi</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select>
+  <input id="q" placeholder="Lọc Số ĐN/Đại lý" oninput="load()" style="width:150px">
+</div>
+<div class="wrap">
+<table><thead><tr><th>Số ĐN</th><th>Đại lý</th><th>Từ</th><th>Đến</th><th>Số VIN</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+</div>
+<div id="detail" class="card" style="display:none">
+  <b id="dTitle"></b> <span id="dMsg"></span>
+  <div class="wrap"><table id="dTable"><thead><tr><th>VIN</th><th>ĐK P1</th><th>ĐK P2</th><th>ĐK P3</th><th>Tổng tiền</th><th>Tổng CK</th></tr></thead><tbody id="dRows"></tbody></table></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):""; const money=n=>Number(n||0).toLocaleString("vi-VN");
+const LBL={Draft:"Nháp",Sent:"Đã gửi",Approved:"Đã duyệt",Rejected:"Từ chối"};
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+function addLine(){
+  const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input style="width:110px" class="vin"></td><td><input style="width:70px" class="carid"></td>
+    <td><input type="date" class="p1d"></td><td><input type="number" class="p1a" style="width:80px" value="0"></td><td><input type="number" class="p1n" style="width:55px" value="0"></td><td><input type="number" class="p1p" style="width:55px" value="0"></td>
+    <td><input type="date" class="p2d"></td><td><input type="number" class="p2a" style="width:80px" value="0"></td><td><input type="number" class="p2n" style="width:55px" value="0"></td><td><input type="number" class="p2p" style="width:55px" value="0"></td>
+    <td><input type="date" class="p3d"></td><td><input type="number" class="p3a" style="width:80px" value="0"></td><td><input type="number" class="p3n" style="width:55px" value="0"></td><td><input type="number" class="p3p" style="width:55px" value="0"></td>
+    <td><button class="sm" onclick="this.closest('tr').remove()">x</button></td>`;
+  F("lineRows").appendChild(tr);
+}
+addLine();
+function collectLines(){
+  return [...F("lineRows").querySelectorAll("tr")].map(tr=>({
+    vin: tr.querySelector(".vin").value.trim(), carId: tr.querySelector(".carid").value.trim()||null,
+    paymentEndDatePhase1: tr.querySelector(".p1d").value||null, amountPhase1: +tr.querySelector(".p1a").value||0, discountDateNumberPhase1: +tr.querySelector(".p1n").value||0, discountPercentPhase1: +tr.querySelector(".p1p").value||0,
+    paymentEndDatePhase2: tr.querySelector(".p2d").value||null, amountPhase2: +tr.querySelector(".p2a").value||0, discountDateNumberPhase2: +tr.querySelector(".p2n").value||0, discountPercentPhase2: +tr.querySelector(".p2p").value||0,
+    paymentEndDatePhase3: tr.querySelector(".p3d").value||null, amountPhase3: +tr.querySelector(".p3a").value||0, discountDateNumberPhase3: +tr.querySelector(".p3n").value||0, discountPercentPhase3: +tr.querySelector(".p3p").value||0,
+  })).filter(l=>l.vin);
+}
+async function create(){
+  const lines=collectLines();
+  if(!F("dl").value||lines.length===0){ msg("Cần mã đại lý + ít nhất 1 dòng VIN"); return; }
+  const r=await fetch("/api/reqpaymentdiscounts",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,pgDateEndFrom:F("fFrom").value||null,pgDateEndTo:F("fTo").value||null,lines})});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã tạo ${j.reqNo} — Tổng CK: ${money(j.totalDiscount)}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function load(){ await token();
+  const d=await (await fetch(`/api/reqpaymentdiscounts?status=${F("fst").value}&q=${F("q").value}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>{
+    let act=`<button class="sm" onclick="view('${o.reqNo}')">Xem</button> `;
+    if(o.status==="Draft") act+=`<button class="sm" onclick="send('${o.reqNo}')">Gửi</button>`;
+    if(o.status==="Sent") act+=`<button class="sm" onclick="decide('${o.reqNo}',true)">Duyệt</button> <button class="sm" onclick="decide('${o.reqNo}',false)">Từ chối</button>`;
+    return `<tr><td><b>${o.reqNo}</b></td><td>${o.dealerCode}</td><td>${day(o.pgDateEndFrom)}</td><td>${day(o.pgDateEndTo)}</td><td>${o.lines}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="7" class="muted">Chưa có đề nghị.</td></tr>';
+}
+async function send(no){ const r=await fetch(`/api/reqpaymentdiscounts/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else alert(j.error||r.status); }
+async function decide(no,approve){ const r=await fetch(`/api/reqpaymentdiscounts/${no}/decide`,{method:"POST",headers:H(),body:JSON.stringify({approve})}); const j=await r.json(); if(r.ok) load(); else alert(j.error||r.status); }
+async function view(no){ await token();
+  const d=await (await fetch(`/api/reqpaymentdiscounts/${no}`,{headers:H()})).json();
+  F("detail").style.display="block"; F("dTitle").textContent=`${d.reqNo} — ${d.dealerCode}`; F("dMsg").textContent="";
+  F("dRows").innerHTML=(d.lines||[]).map(l=>`<tr><td>${l.vin}</td><td>${money(l.discountPricePhase1)}</td><td>${money(l.discountPricePhase2)}</td><td>${money(l.discountPricePhase3)}</td><td>${money(l.totalAmount)}</td><td><b>${money(l.totalDiscountPrice)}</b></td></tr>`).join("")||'<tr><td colspan="6" class="muted">—</td></tr>';
+}
+load();
+</script>
+</body></html>

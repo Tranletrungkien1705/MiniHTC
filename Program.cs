@@ -14979,6 +14979,90 @@ app.MapPost("/api/quotas", async (QuotaDto dto, AppDbContext db, ITenantContext 
     return Results.Ok(new { x.DealerCode, x.ModelCode, x.Period, x.Qty, remain = x.Qty - x.UsedQty });
 }).RequireAuthorization();
 
+// ===== Đề nghị chiết khấu thanh toán sớm BL/LC theo VIN (ReqPaymentDiscount — port 1:1 FrmReq_PaymentDiscount/FrmMngReq_PaymentDiscount, 2010.HTC/Sales)
+// CÔNG THỨC ĐƠN GIẢN HOÁ (biz-layer server-side gốc không trace được từ WinForm client): DiscountPricePhaseN = AmountPhaseN × DiscountPercentPhaseN/100 × DiscountDateNumberPhaseN/365, cùng kiểu daily-rate đã dùng ở InsuranceReq. =====
+app.MapGet("/api/reqpaymentdiscounts", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+{
+    var qry = db.ReqPaymentDiscounts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqNo.Contains(q!) || x.DealerCode.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.ReqNo, x.DealerCode, x.PGDateEndFrom, x.PGDateEndTo, x.Status, x.CreatedAt,
+      lines = db.ReqPaymentDiscountLines.Count(l => l.OrgId == t.OrgId && l.ReqId == x.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/reqpaymentdiscounts/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ReqPaymentDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.ReqPaymentDiscountLines.Where(l => l.OrgId == t.OrgId && l.ReqId == h.Id).Select(l => new
+    { l.VIN, l.CarId,
+      l.PaymentEndDatePhase1, l.AmountPhase1, l.DiscountDateNumberPhase1, l.DiscountPercentPhase1, l.DiscountPricePhase1,
+      l.PaymentEndDatePhase2, l.AmountPhase2, l.DiscountDateNumberPhase2, l.DiscountPercentPhase2, l.DiscountPricePhase2,
+      l.PaymentEndDatePhase3, l.AmountPhase3, l.DiscountDateNumberPhase3, l.DiscountPercentPhase3, l.DiscountPricePhase3,
+      l.TotalAmount, l.TotalDiscountPrice }).ToListAsync();
+    return Results.Ok(new { h.ReqNo, h.DealerCode, h.PGDateEndFrom, h.PGDateEndTo, h.Status, h.CreatedAt, h.SentAt, h.DecidedAt, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/reqpaymentdiscounts", async (ReqPaymentDiscountDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý" });
+    var lines = dto.Lines ?? new List<ReqPaymentDiscountLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có VIN nào" });
+
+    var no = "PGD" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new ReqPaymentDiscount { OrgId = t.OrgId, ReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), PGDateEndFrom = dto.PGDateEndFrom, PGDateEndTo = dto.PGDateEndTo, Status = "Draft" };
+    db.ReqPaymentDiscounts.Add(h); await db.SaveChangesAsync();
+
+    decimal totalAmount = 0, totalDiscount = 0;
+    foreach (var l in lines)
+    {
+        decimal DiscP(decimal amount, int days, decimal percent) => Math.Round(amount * (percent / 100m) * (days / 365m), 0);
+        var d1 = DiscP(l.AmountPhase1, l.DiscountDateNumberPhase1, l.DiscountPercentPhase1);
+        var d2 = DiscP(l.AmountPhase2, l.DiscountDateNumberPhase2, l.DiscountPercentPhase2);
+        var d3 = DiscP(l.AmountPhase3, l.DiscountDateNumberPhase3, l.DiscountPercentPhase3);
+        var lineAmount = l.AmountPhase1 + l.AmountPhase2 + l.AmountPhase3;
+        var lineDiscount = d1 + d2 + d3;
+        totalAmount += lineAmount; totalDiscount += lineDiscount;
+        db.ReqPaymentDiscountLines.Add(new ReqPaymentDiscountLine
+        {
+            OrgId = t.OrgId, ReqId = h.Id, VIN = (l.Vin ?? "").Trim().ToUpperInvariant(), CarId = l.CarId,
+            PaymentEndDatePhase1 = l.PaymentEndDatePhase1, AmountPhase1 = l.AmountPhase1, DiscountDateNumberPhase1 = l.DiscountDateNumberPhase1, DiscountPercentPhase1 = l.DiscountPercentPhase1, DiscountPricePhase1 = d1,
+            PaymentEndDatePhase2 = l.PaymentEndDatePhase2, AmountPhase2 = l.AmountPhase2, DiscountDateNumberPhase2 = l.DiscountDateNumberPhase2, DiscountPercentPhase2 = l.DiscountPercentPhase2, DiscountPricePhase2 = d2,
+            PaymentEndDatePhase3 = l.PaymentEndDatePhase3, AmountPhase3 = l.AmountPhase3, DiscountDateNumberPhase3 = l.DiscountDateNumberPhase3, DiscountPercentPhase3 = l.DiscountPercentPhase3, DiscountPricePhase3 = d3,
+            TotalAmount = lineAmount, TotalDiscountPrice = lineDiscount
+        });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.ReqNo, h.DealerCode, lines = lines.Count, totalAmount, totalDiscount });
+}).RequireAuthorization();
+
+// Gửi HTC duyệt (chỉ khi Status=Draft, khớp btnGui_Click gốc)
+app.MapPost("/api/reqpaymentdiscounts/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ReqPaymentDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ có thể gửi khi trạng thái là Draft" });
+    h.Status = "Sent"; h.SentAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.ReqNo, h.Status });
+}).RequireAuthorization();
+
+// Duyệt/Từ chối (chỉ khi Status=Sent, khớp btnApprove/btnReject FrmMngReq_PaymentDiscount gốc)
+app.MapPost("/api/reqpaymentdiscounts/{no}/decide", async (string no, ReqPaymentDiscountDecideDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ReqPaymentDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "Sent") return Results.BadRequest(new { error = "Chỉ có thể duyệt/từ chối khi trạng thái là Sent" });
+    h.Status = dto.Approve ? "Approved" : "Rejected"; h.DecidedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.ReqNo, h.Status });
+}).RequireAuthorization();
+
 app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Cần Name." });
@@ -15095,6 +15179,12 @@ record StoragePaymentEditLineDto(string? Vin, decimal CostCoat, decimal CostStor
 record StoragePaymentEditDto(List<StoragePaymentEditLineDto>? Lines);
 record PdiFeePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtName, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate, decimal CostInCheck, decimal CostOutCheck);
 record PdiFeePaymentDto(DateTime? PmtMonth, List<PdiFeePaymentLineDto>? Lines);
+record ReqPaymentDiscountLineDto(string? Vin, string? CarId,
+    DateTime? PaymentEndDatePhase1, decimal AmountPhase1, int DiscountDateNumberPhase1, decimal DiscountPercentPhase1,
+    DateTime? PaymentEndDatePhase2, decimal AmountPhase2, int DiscountDateNumberPhase2, decimal DiscountPercentPhase2,
+    DateTime? PaymentEndDatePhase3, decimal AmountPhase3, int DiscountDateNumberPhase3, decimal DiscountPercentPhase3);
+record ReqPaymentDiscountDto(string? DealerCode, DateTime? PGDateEndFrom, DateTime? PGDateEndTo, List<ReqPaymentDiscountLineDto>? Lines);
+record ReqPaymentDiscountDecideDto(bool Approve);
 record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck);
 record PdiFeePaymentEditDto(List<PdiFeePaymentEditLineDto>? Lines);
 record TransportInsPaymentLineDto(string? Vin, string? CarId, string? DlvMnNo, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? DlvEndDate, decimal TFValReal, decimal TPValReal, decimal PriceCar, decimal InsuranceCost, string? Remark);

@@ -353,6 +353,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DmsCancelBankMD> DmsCancelBankMDs => Set<DmsCancelBankMD>();
     public DbSet<GrtClaim> GrtClaims => Set<GrtClaim>();
     public DbSet<GrtClaimDetail> GrtClaimDetails => Set<GrtClaimDetail>();
+    public DbSet<ReqPaymentDiscount> ReqPaymentDiscounts => Set<ReqPaymentDiscount>();
+    public DbSet<ReqPaymentDiscountLine> ReqPaymentDiscountLines => Set<ReqPaymentDiscountLine>();
     public DbSet<CBReq> CBReqs => Set<CBReq>();
     public DbSet<CBReqDetail> CBReqDetails => Set<CBReqDetail>();
     public DbSet<StorageRearrange> StorageRearranges => Set<StorageRearrange>();
