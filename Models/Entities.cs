@@ -2179,6 +2179,17 @@ public sealed class MaintSupply
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Hạng mục công việc bảo dưỡng (master, Mst_MTNTK) — port 1:1 FrmWorkItems (Admin/Maintenance, 2010.HTC). Mã + tên hạng mục — là cha của MaintWorkContent (ItemCode tham chiếu WorkItemCode). Upsert-by-code + toggle.</summary>
+public sealed class MaintWorkItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string WorkItemCode { get; set; } = "";   // MTNTKCODE
+    public string? WorkItemName { get; set; }         // MTNTKNAME
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {

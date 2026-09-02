@@ -7612,6 +7612,38 @@ app.MapPost("/api/maintsupplies/import", async (List<MaintSupplyDto> rows, AppDb
     return Results.Ok(new { total = rows.Count, created, updated, errorCount, errors });
 }).RequireAuthorization();
 
+// ===== Hạng mục công việc bảo dưỡng (MaintWorkItem — port 1:1 FrmWorkItems, Admin/Maintenance 2010.HTC) =====
+app.MapGet("/api/maintworkitems", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.MaintWorkItems.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.WorkItemCode.Contains(q!) || x.WorkItemName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.WorkItemCode).Take(500).Select(x => new { x.Id, x.WorkItemCode, x.WorkItemName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintworkitems", async (MaintWorkItemDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.WorkItemCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã hạng mục." });
+    if (string.IsNullOrWhiteSpace((dto.WorkItemName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên hạng mục." });
+    var row = await db.MaintWorkItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WorkItemCode == code);
+    if (row is null) { row = new MaintWorkItem { OrgId = t.OrgId, WorkItemCode = code }; db.MaintWorkItems.Add(row); }
+    row.WorkItemName = dto.WorkItemName; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.WorkItemCode, row.WorkItemName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintworkitems/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.MaintWorkItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Nội dung công việc bảo dưỡng (MaintWorkContent — port 1:1 FrmWorkContents, Admin/Maintenance 2010.HTC) =====
 app.MapGet("/api/maintworkcontents", async (AppDbContext db, ITenantContext t, string? q, string? item, string? active) =>
 {
@@ -13535,6 +13567,7 @@ record StorageRateDto(string StorageCode, string ModelCode, string? SpecCode, st
 record MaintPackageDto(string TypeCode, string? TypeName, int Times, string? ModelCode, List<MpWorkDto>? Works, List<MpSupplyDto>? Supplies);
 record MpWorkDto(string? WorkItemCode, string WorkContentCode);
 record MpSupplyDto(string SupplyCode, decimal Qty);
+record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);
