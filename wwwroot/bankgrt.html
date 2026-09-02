@@ -34,6 +34,12 @@
   <tbody id="carRows"></tbody></table>
   <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRow()">+ Thêm xe</button><button class="primary" onclick="save()">Tạo bảo lãnh</button><span id="msg"></span></div>
 </div>
+<div class="card">
+  <b>Sửa ngày nhận LC/BL gốc <span class="muted">(port 1:1 FrmEditDateRecieveGrtRoot/FrmUpdateGrtDate — theo số BL của NH)</span></b>
+  <table style="margin-top:10px"><thead><tr><th>Số BL của NH *</th><th>Ngày nhận LC/BL gốc *</th><th></th></tr></thead>
+  <tbody id="rootRows"></tbody></table>
+  <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRootRow()">+ Thêm dòng</button><button class="primary" onclick="saveRoot()">Lưu</button><span id="msgRoot"></span></div>
+</div>
 <div class="bar" style="margin:10px 0">
   <input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:100px">
   <input id="qn" placeholder="Lọc số BL" oninput="load()" style="width:110px">
@@ -41,7 +47,7 @@
   <select id="qt" onchange="load()"><option value="">Mọi loại BL</option><option value="0">NH giám sát</option><option value="1">NH phát hành</option></select>
   <select id="qst" onchange="load()"><option value="">Tất toán: tất cả</option><option value="0">Chưa tất toán</option><option value="1">Đã tất toán</option></select>
 </div>
-<div class="wrap"><table><thead><tr><th>Số BL</th><th>Đại lý</th><th>NH</th><th>Loại BL</th><th class="num">Kỳ hạn</th><th class="num">Tổng GT BL</th><th class="num">Số xe</th><th>Trạng thái</th><th>Tất toán</th><th></th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Số BL</th><th>Đại lý</th><th>NH</th><th>Loại BL</th><th class="num">Kỳ hạn</th><th class="num">Tổng GT BL</th><th class="num">Số xe</th><th>Ngày nhận gốc</th><th>Trạng thái</th><th>Tất toán</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table></div>
 <div class="card" id="detCard" style="display:none">
   <b>Chi tiết xe — <span id="detNo"></span></b>
@@ -77,8 +83,8 @@ async function load(){ await token();
     let act="";
     if(o.status==="Draft") act=`<button class="sm ok" onclick="decide('${o.guaranteeNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.guaranteeNo}','reject')">Từ chối</button>`;
     else if(o.status==="Approved"&&o.flagSettled!=="1") act=`<button class="sm warn" onclick="decide('${o.guaranteeNo}','settle')">Tất toán</button>`;
-    return `<tr onclick="detail('${o.guaranteeNo}')"><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCode}</td><td>${o.guaranteeType==="1"?"NH phát hành":"NH giám sát"}</td><td class="num">${o.term}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.flagSettled==="1"?"✓ Đã TT":"—"}</td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="10" class="muted">Chưa có bảo lãnh.</td></tr>';
+    return `<tr onclick="detail('${o.guaranteeNo}')"><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCode}</td><td>${o.guaranteeType==="1"?"NH phát hành":"NH giám sát"}</td><td class="num">${o.term}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td>${(o.dateRecieveGrtRoot||"").substring(0,10)||"—"}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.flagSettled==="1"?"✓ Đã TT":"—"}</td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="11" class="muted">Chưa có bảo lãnh.</td></tr>';
 }
 async function detail(no){
   const d=await (await fetch(`/api/bankgrts/${no}/cars`,{headers:H()})).json();
@@ -90,6 +96,15 @@ async function decide(no,act){ event.stopPropagation();
   const j=await r.json();
   if(r.ok){ msg(`${no}: ${ST[j.status]||j.status}${j.flagSettled==="1"?" / đã tất toán":""}`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
-addRow(); load();
+function addRootRow(v){ v=v||{}; const tr=document.createElement("tr");
+  tr.innerHTML=`<td><input class="r-no" style="width:140px" value="${v.no||""}"></td><td><input class="r-date" type="date" value="${v.date||""}"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("rootRows").appendChild(tr); }
+async function saveRoot(){
+  const rows=[...document.querySelectorAll("#rootRows tr")].map(tr=>({BankGuaranteeNo:tr.querySelector(".r-no").value,DateRecieveGrtRoot:tr.querySelector(".r-date").value||null})).filter(r=>r.BankGuaranteeNo.trim());
+  const r=await fetch("/api/bankgrts/date-recieve-root",{method:"POST",headers:H(),body:JSON.stringify({Rows:rows})});
+  const j=await r.json();
+  if(r.ok){ F("msgRoot").textContent=`Đã cập nhật ${j.updated} bản ghi.`+(j.notFound&&j.notFound.length?" Không thấy: "+j.notFound.join(", "):""); F("rootRows").innerHTML=""; addRootRow(); load(); } else F("msgRoot").textContent="Lỗi: "+(j.error||r.status);
+}
+addRootRow(); addRow(); load();
 </script>
 </body></html>

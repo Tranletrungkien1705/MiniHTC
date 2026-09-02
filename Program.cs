@@ -1378,7 +1378,7 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
     if (!string.IsNullOrWhiteSpace(settled)) q = q.Where(g => g.FlagSettled == settled);
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
-        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
+        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
         cars = db.BankGuaranteeDtls.Count(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -1485,6 +1485,25 @@ app.MapPost("/api/bankgrts/{no}/edit-deferred", async (string no, GrtDeferredEdi
         var key = l.VIN!.Trim().ToUpperInvariant();
         if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.VIN!.Trim()); continue; }
         c.DeferredPaymentDays = l.DeferredPaymentDays; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// Cập nhật hàng loạt "Ngày nhận LC/BL gốc" theo số bảo lãnh NH (port 1:1 FrmEditDateRecieveGrtRoot/FrmUpdateGrtDate, 2010.HTC/Sales/Payment).
+// Khớp gốc: khóa theo BankGuaranteeNo (không phải VIN) — 1 dòng lưới = 1 bảo lãnh; cảnh báo (không chặn) nếu BankGuaranteeNo trùng nhiều bản ghi, áp dụng cho tất cả bản trùng.
+app.MapPost("/api/bankgrts/date-recieve-root", async (GrtDateRecieveRootDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.BankGuaranteeNo)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi." });
+    if (rows.Any(r => r.DateRecieveGrtRoot is null)) return Results.BadRequest(new { error = "Ngày nhận LC/BL gốc không được trống!" });
+    int updated = 0; var notFound = new List<string>();
+    foreach (var r in rows)
+    {
+        var no = r.BankGuaranteeNo!.Trim();
+        var matches = await db.BankGuarantees.Where(g => g.OrgId == t.OrgId && g.BankGuaranteeNo == no).ToListAsync();
+        if (matches.Count == 0) { notFound.Add(no); continue; }
+        foreach (var g in matches) { g.DateRecieveGrtRoot = r.DateRecieveGrtRoot; updated++; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
@@ -14549,6 +14568,8 @@ record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
 record GrtDeferredEditDto(List<GrtDeferredRowDto>? Lines);
 record GrtDeferredRowDto(string? VIN, int DeferredPaymentDays);
+record GrtDateRecieveRootDto(List<GrtDateRecieveRootRowDto>? Rows);
+record GrtDateRecieveRootRowDto(string? BankGuaranteeNo, DateTime? DateRecieveGrtRoot);
 record DealerStorageLocalDto(string? DealerCode, string? StorageCode, string? StorageName, string? DealerName, string? FlagActive);
 record GrtValueEditDto(List<GrtValueRowDto>? Lines);
 record GrtValueRowDto(string? VIN, decimal GrtValue);

@@ -3952,6 +3952,7 @@ public sealed class BankGuarantee
     public DateTime? DateOpen { get; set; }
     public DateTime? DateExpired { get; set; }
     public DateTime? DateEnd { get; set; }
+    public DateTime? DateRecieveGrtRoot { get; set; }     // ngày nhận LC/BL gốc — port FrmEditDateRecieveGrtRoot/FrmUpdateGrtDate
     public decimal TotalAmount { get; set; }
     public string Status { get; set; } = "Draft";        // Draft -> Approved / Rejected
     public string FlagSettled { get; set; } = "0";        // 1 = da tat toan
