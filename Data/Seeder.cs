@@ -457,6 +457,8 @@ public static class Seeder
                 "ALTER TABLE public.\"VinPackings\" ADD COLUMN IF NOT EXISTS \"AVNCode\" text NULL",
                 "ALTER TABLE public.\"VinPackings\" ADD COLUMN IF NOT EXISTS \"AVNDate\" timestamp NULL",
                 "ALTER TABLE public.\"VinPackings\" ADD COLUMN IF NOT EXISTS \"AVNScreenSerialNo\" text NULL",
+                "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"BankCodeMD\" text NULL",
+                "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"FlagDlrCtrAdjust\" text NOT NULL DEFAULT '0'",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

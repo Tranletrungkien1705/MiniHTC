@@ -3660,6 +3660,8 @@ public sealed class DmsDealerContract
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DlrApprDTime { get; set; }
     public DateTime? HTCAppr2DTime { get; set; }
+    public string? BankCodeMD { get; set; }         // NH phát hành bảo lãnh MD — port FrmDMS40_SelectedBankMD
+    public string FlagDlrCtrAdjust { get; set; } = "0"; // HĐ điều chỉnh
 }
 
 /// <summary>Công văn bảo lãnh/claim đại lý (GrtClaim + Detail) — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim (2010.HTC/Sales/GrtClaim). Công văn bảo lãnh lô xe theo đại lý + phép nhận.</summary>

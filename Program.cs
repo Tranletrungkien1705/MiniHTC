@@ -11103,8 +11103,22 @@ app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.DlrCtrStatus == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
     var items = await q.OrderByDescending(c => c.Id).Take(500)
-        .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime }).ToListAsync();
+        .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime, c.BankCodeMD, c.FlagDlrCtrAdjust }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Chọn ngân hàng phát hành bảo lãnh MD (port 1:1 FrmDMS40_SelectedBankMD btnApply_Click) — chỉ khi chưa chọn NH (BankCodeMD rỗng).
+app.MapPost("/api/dmsdealercontracts/{no}/selectbankmd", async (string no, DmsSelectBankMDDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.BankCodeMD)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng phát hành bảo lãnh!" });
+    if (!string.IsNullOrWhiteSpace(c.BankCodeMD)) return Results.BadRequest(new { error = "HĐ đã có ngân hàng phát hành bảo lãnh, hãy dùng chức năng Hủy NH trước." });
+    c.BankCodeMD = dto.BankCodeMD.Trim().ToUpperInvariant();
+    c.FlagDlrCtrAdjust = dto.FlagDlrCtrAdjust == "1" ? "1" : "0";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, c.BankCodeMD, c.FlagDlrCtrAdjust });
 }).RequireAuthorization();
 
 app.MapPost("/api/dmsdealercontracts", async (DmsDealerContractDto dto, AppDbContext db, ITenantContext t) =>
@@ -11195,7 +11209,9 @@ app.MapPost("/api/dmscancelbankmd", async (DmsCancelBankMDDto dto, AppDbContext 
     var seq = await db.DmsCancelBankMDs.CountAsync(m => m.OrgId == t.OrgId && m.DlrCtrNo == dlr) + 1;
     var no = dlr + "." + seq;
     var m = new DmsCancelBankMD { OrgId = t.OrgId, CancelBankMDNo = no, DlrCtrNo = dlr, BankCodeMD = dto.BankCodeMD, Remark = dto.Remark, FlagIsDelete = dto.FlagIsDelete == "1" ? "1" : "0" };
-    db.DmsCancelBankMDs.Add(m); await db.SaveChangesAsync();
+    db.DmsCancelBankMDs.Add(m);
+    c.BankCodeMD = null;   // cho phép chọn lại NH khác (khớp btnCancelBankMD gốc)
+    await db.SaveChangesAsync();
     return Results.Ok(new { m.CancelBankMDNo, m.DlrCtrNo, message = "Tạo hủy ngân hàng phát hành bảo lãnh thành công!" });
 }).RequireAuthorization();
 
@@ -15434,6 +15450,7 @@ record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
 record DealerContractCarDto(string CarId, decimal UnitPrice);
 record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser, string DealerCode, DateTime? ContractDate, List<DealerContractCarDto>? Cars);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate);
+record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);

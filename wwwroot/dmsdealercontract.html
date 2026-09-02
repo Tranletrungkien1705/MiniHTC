@@ -27,9 +27,18 @@
     <span style="flex:1"></span><button class="primary" onclick="create()">Lưu HĐ</button><span id="msg"></span>
   </div>
 </div>
+<div class="card">
+  <b>Chọn ngân hàng phát hành bảo lãnh MD (port 1:1 FrmDMS40_SelectedBankMD)</b>
+  <div class="bar" style="margin:10px 0">
+    <div><label>Số HĐ *</label><input id="bkNo" style="width:150px"></div>
+    <div><label>Mã NH *</label><input id="bkCode" style="width:100px"></div>
+    <label><input id="bkAdj" type="checkbox"> HĐ điều chỉnh</label>
+    <button onclick="selectBank()">Chọn NH</button><span id="bkMsg"></span>
+  </div>
+</div>
 <div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Signed">Đã ký đủ</option><option value="Cancelled">Đã hủy</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
-<table><thead><tr><th>Số HĐ</th><th>Đại lý</th><th>Ngày HĐ</th><th>Ký bên B (ĐL)</th><th>Ký bên A (HTC)</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
-<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Số HĐ</th><th>Đại lý</th><th>Ngày HĐ</th><th>Ký bên B (ĐL)</th><th>Ký bên A (HTC)</th><th>NH bảo lãnh MD</th><th>Trạng thái</th><th>Hành động</th></tr></thead>
+<tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):""; const LBL={Draft:"Nháp",Signed:"Đã ký đủ",Cancelled:"Đã hủy"}; const SG={S:"Đã ký",P:"Chờ ký"};
@@ -53,11 +62,18 @@ async function load(){ await token();
       if(o.htcSignStatus!=="S") act+=`<button class="sm" onclick="sign('${o.dlrCtrNo}','htc')">HTC ký</button> `;
       act+=`<button class="sm" onclick="cancel('${o.dlrCtrNo}')">Hủy</button>`;
     }
-    return `<tr><td><b>${o.dlrCtrNo}</b></td><td>${o.dealerCode}</td><td>${day(o.contractDate)}</td><td><span class="sg s-${o.dlrSignStatus}">${SG[o.dlrSignStatus]}</span></td><td><span class="sg s-${o.htcSignStatus}">${SG[o.htcSignStatus]}</span></td><td><span class="pill p-${o.dlrCtrStatus}">${LBL[o.dlrCtrStatus]||o.dlrCtrStatus}</span></td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="7" class="muted">Chưa có hợp đồng.</td></tr>';
+    return `<tr><td><b>${o.dlrCtrNo}</b></td><td>${o.dealerCode}</td><td>${day(o.contractDate)}</td><td><span class="sg s-${o.dlrSignStatus}">${SG[o.dlrSignStatus]}</span></td><td><span class="sg s-${o.htcSignStatus}">${SG[o.htcSignStatus]}</span></td><td>${o.bankCodeMD||"—"}${o.flagDlrCtrAdjust==="1"?" (điều chỉnh)":""}</td><td><span class="pill p-${o.dlrCtrStatus}">${LBL[o.dlrCtrStatus]||o.dlrCtrStatus}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="8" class="muted">Chưa có hợp đồng.</td></tr>';
 }
 async function sign(no,side){ const r=await fetch(`/api/dmsdealercontracts/${no}/sign/${side}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function cancel(no){ const r=await fetch(`/api/dmsdealercontracts/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function selectBank(){
+  const no=F("bkNo").value.trim(); if(!no||!F("bkCode").value){ F("bkMsg").textContent="Cần Số HĐ + Mã NH"; return; }
+  const r=await fetch(`/api/dmsdealercontracts/${no}/selectbankmd`,{method:"POST",headers:H(),body:JSON.stringify({bankCodeMD:F("bkCode").value,flagDlrCtrAdjust:F("bkAdj").checked?"1":"0"})});
+  const j=await r.json();
+  F("bkMsg").textContent=r.ok?"Đã chọn NH "+j.bankCodeMD:"Lỗi: "+(j.error||r.status);
+  if(r.ok) load();
+}
 load();
 </script>
 </body></html>
