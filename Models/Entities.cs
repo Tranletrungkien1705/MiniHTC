@@ -3628,6 +3628,7 @@ public sealed class HtmvPdiDtl
     public string? RefNo { get; set; }
     public string? ProductionMonth { get; set; }
     public string? EngineNo { get; set; }
+    public string PdiResult { get; set; } = "Pending"; // Pending → Passed/Failed (FrmMngPDI btnApproved/btnCancel)
 }
 
 /// <summary>Xe nhập kho PDI (PDI_VIN) — port 1:1 FrmStoragePDI (2010.HTC/Sales/HTMV). Xe tại kho PDI: model/spec/màu + số chìa/AVN/ắc quy.</summary>

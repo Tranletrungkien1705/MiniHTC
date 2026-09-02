@@ -15,7 +15,7 @@
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
 </style></head>
 <body>
-<h1>Đề nghị nhận xe (PDI) <span class="muted">(port 1:1 FrmNewPDI — HTMV_PDI)</span></h1>
+<h1>Đề nghị nhận xe (PDI) <span class="muted">(port 1:1 FrmNewPDI + FrmMngPDI — HTMV_PDI/PDIDtl)</span></h1>
 <div class="card">
   <b>Tạo đề nghị nhận xe</b>
   <div class="bar" style="margin:10px 0"><span style="flex:1"></span><button class="primary" onclick="create()">Lưu ĐN</button><span id="msg"></span></div>
@@ -51,10 +51,21 @@ async function load(){ await token();
   }).join("")||'<tr><td colspan="5" class="muted">Chưa có đề nghị.</td></tr>';
 }
 async function done(no){ const r=await fetch(`/api/htmvpdis/${no}/complete`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+const PDI_R={Pending:"Chờ PDI",Passed:"Đạt PDI",Failed:"Không đạt"};
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/htmvpdis/${no}/cars`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="5"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b>${c.specCode?" · "+c.specCode:""}${c.lCTemp?" · LC "+c.lCTemp:""}${c.engineNo?" · máy "+c.engineNo:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+  row.innerHTML=`<td colspan="5"><div class="cars">${(d.cars||[]).map(c=>
+    `<label><input type="checkbox" class="pdivin-${no}" value="${c.vin}"> VIN <b>${c.vin}</b>${c.specCode?" · "+c.specCode:""}${c.lCTemp?" · LC "+c.lCTemp:""}${c.engineNo?" · máy "+c.engineNo:""} · <i>${PDI_R[c.pdiResult]||c.pdiResult}</i></label>`
+  ).join("<br>")||"—"}
+  <div class="bar" style="margin-top:6px"><button class="sm" onclick="pdiCarsAction('${no}','approve')">Xác nhận đạt PDI</button> <button class="sm" onclick="pdiCarsAction('${no}','cancel')">Xác nhận không đạt</button></div></div>`;
+}
+async function pdiCarsAction(no,action){
+  const vins=[...document.querySelectorAll(`.pdivin-${no}:checked`)].map(c=>c.value);
+  if(vins.length===0){ msg("Chưa chọn dữ liệu"); return; }
+  const r=await fetch(`/api/htmvpdis/${no}/${action}-cars`,{method:"POST",headers:H(),body:JSON.stringify({vins})});
+  const j=await r.json();
+  if(r.ok){ msg(`Đã cập nhật ${j.updated} xe.`); F("x-"+no).innerHTML=""; cars(no); } else msg("Lỗi: "+(j.error||r.status));
 }
 addCar(); load();
 </script>

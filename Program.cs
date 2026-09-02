@@ -11174,7 +11174,7 @@ app.MapGet("/api/htmvpdis/{no}/cars", async (string no, AppDbContext db, ITenant
     var r = await db.HtmvPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PDINo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
-        .Select(c => new { c.VIN, c.ColorCode, c.SpecCode, c.LCTemp, c.RefNo, c.ProductionMonth, c.EngineNo }).ToListAsync();
+        .Select(c => new { c.VIN, c.ColorCode, c.SpecCode, c.LCTemp, c.RefNo, c.ProductionMonth, c.EngineNo, c.PdiResult }).ToListAsync();
     return Results.Ok(new { r.PDINo, r.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -11187,6 +11187,22 @@ app.MapPost("/api/htmvpdis/{no}/complete", async (string no, AppDbContext db, IT
     r.Status = "Done"; r.DoneAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { r.PDINo, status = r.Status });
+}).RequireAuthorization();
+
+// Xác nhận từng xe đạt/không đạt PDI (port 1:1 FrmMngPDI btnApproved_Click/btnCancel_Click — salesSv.PDIApproved/PDICancel, 2010.HTC/Sales/HTMV) — theo checkbox chọn VIN.
+app.MapPost("/api/htmvpdis/{no}/{action}-cars", async (string no, string action, HtmvPdiCarsActionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("approve" or "cancel")) return Results.NotFound();
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.HtmvPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PDINo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim().ToUpperInvariant()).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn dữ liệu" });
+    var cars = await db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id && vins.Contains(c.VIN)).ToListAsync();
+    var result = action == "approve" ? "Passed" : "Failed";
+    foreach (var c in cars) c.PdiResult = result;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated = cars.Count, result });
 }).RequireAuthorization();
 
 // ===== Xe nhập kho PDI (StoragePdiVin — port 1:1 FrmStoragePDI, 2010.HTC/Sales/HTMV) =====
@@ -15834,6 +15850,7 @@ record BankingTransDto(string BankCode, string TransType, DateTime? Disbursement
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
 record HtmvPdiDto(List<HtmvPdiCarDto>? Cars);
+record HtmvPdiCarsActionDto(List<string>? Vins);
 record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark);
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
 record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
