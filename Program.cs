@@ -12544,6 +12544,34 @@ app.MapPost("/api/salesorders/{no}/reject", async (string no, SoRejectDto dto, A
     return Results.Ok(new { o.SoCode, status = o.Status });
 }).RequireAuthorization();
 
+// ===== Duyệt tự động đơn hàng theo luật (D4OSORA — port 1:1 FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade) =====
+string[] _d4OsoraRules = { "Rule1", "Rule2", "Rule2A", "Rule3", "RuleCancel" };
+app.MapGet("/api/dms40/so-root-approvals", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.Dms40SoRootApprovals.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.Id).Take(100)
+        .Select(x => new { x.ApprovalNo, x.RuleType, x.AffectedCount, x.RunAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Khớp btnApprove_Click gốc: chọn luật rồi chạy 1 lượt — RuleCancel hủy hàng loạt SO đang chờ (Sent→Rejected);
+// các luật khác duyệt tự động hàng loạt SO đang chờ (Sent→Approved2, bỏ qua Approved1).
+app.MapPost("/api/dms40/so-root-approvals/run", async (Dms40ApproveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rule = (dto.RuleType ?? "").Trim();
+    if (!_d4OsoraRules.Contains(rule)) return Results.BadRequest(new { error = "Luật không hợp lệ (Rule1|Rule2|Rule2A|Rule3|RuleCancel)." });
+    var pending = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && o.Status == "Sent").ToListAsync();
+    var now = DateTime.Now;
+    if (rule == "RuleCancel")
+        foreach (var o in pending) { o.Status = "Rejected"; o.RejectReason = "Hủy tự động (" + rule + ")"; o.RejectedAt = now; }
+    else
+        foreach (var o in pending) { o.Status = "Approved2"; o.Approved1At = now; o.Approved2At = now; }
+    var no = "D4OSORA" + DateTime.Now.ToString("yyMMddHHmmss");
+    var log = new Dms40SoRootApproval { OrgId = t.OrgId, ApprovalNo = no, RuleType = rule, AffectedCount = pending.Count, RunAt = now };
+    db.Dms40SoRootApprovals.Add(log);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { log.ApprovalNo, log.RuleType, affected = pending.Count });
+}).RequireAuthorization();
+
 // Đổi số đơn hàng SO (port 1:1 FrmOrderSOModify, DMSales.Foton/Sales). Chỉ đổi khi còn Draft; mã mới không được trùng.
 app.MapPost("/api/salesorders/{no}/rename-code", async (string no, SoRenameDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -14884,6 +14912,7 @@ record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? Deposi
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
 record SoRejectDto(string? Reason);
+record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);
 record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
 record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);

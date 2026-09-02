@@ -195,6 +195,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PdiFeePaymentLine> PdiFeePaymentLines => Set<PdiFeePaymentLine>();
     public DbSet<TransportInsPayment> TransportInsPayments => Set<TransportInsPayment>();
     public DbSet<TransportInsPaymentLine> TransportInsPaymentLines => Set<TransportInsPaymentLine>();
+    public DbSet<Dms40SoRootApproval> Dms40SoRootApprovals => Set<Dms40SoRootApproval>();
     public DbSet<ServiceCustomer> ServiceCustomers => Set<ServiceCustomer>();
     public DbSet<OrderPart> OrderParts => Set<OrderPart>();
     public DbSet<OrderPartLine> OrderPartLines => Set<OrderPartLine>();

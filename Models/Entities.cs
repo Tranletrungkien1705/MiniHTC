@@ -3206,6 +3206,19 @@ public sealed class SalesOrder
     public DateTime? CarDueDate { get; set; }
     public decimal PenalizeActual { get; set; }   // tiền phạt trả chậm thực tế (FrmUpdatePenaltyPmtDelayReal)
 }
+/// <summary>Lượt duyệt tự động đơn hàng DMS40 (D4OSORA — port 1:1 FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade):
+/// chọn luật (Rule1/Rule2/Rule2A/Rule3/RuleCancel) rồi chạy 1 lượt duyệt/hủy hàng loạt SO đang chờ (Status=Sent).
+/// RuleCancel → chuyển các SO Sent thành Rejected; các luật khác → duyệt thẳng lên Approved2 (bỏ qua Approved1, khớp "duyệt tự động").</summary>
+public sealed class Dms40SoRootApproval
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ApprovalNo { get; set; } = "";
+    public string RuleType { get; set; } = "";
+    public int AffectedCount { get; set; }
+    public DateTime RunAt { get; set; } = DateTime.Now;
+}
+
 public sealed class SalesOrderLine
 {
     public long Id { get; set; }
