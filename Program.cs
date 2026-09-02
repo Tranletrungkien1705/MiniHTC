@@ -8863,6 +8863,40 @@ app.MapDelete("/api/customergroups/{no}/members/{cusId}", async (string no, stri
     return Results.Ok(new { removed = cusId });
 }).RequireAuthorization();
 
+// ===== Model chuẩn dịch vụ (CarModelStd — port 1:1 FrmMstCarModelStd, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string? modelCode, string? modelName, string? active) =>
+{
+    var qry = db.CarModelStds.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(modelCode)) qry = qry.Where(x => x.ModelCode.Contains(modelCode!));
+    if (!string.IsNullOrWhiteSpace(modelName)) qry = qry.Where(x => x.ModelName!.Contains(modelName!));
+    if (!string.IsNullOrWhiteSpace(active)) qry = qry.Where(x => x.FlagActive == active);
+    var items = await qry.OrderBy(x => x.ModelCode).Take(500).Select(x => new { x.ModelCode, x.ModelName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Mã model trống!" });
+    if (string.IsNullOrWhiteSpace((dto.ModelName ?? "").Trim())) return Results.BadRequest(new { error = "Tên model trống!" });
+    var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new CarModelStd { OrgId = t.OrgId, ModelCode = code }; db.CarModelStds.Add(row); }
+    row!.ModelName = dto.ModelName; row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ModelCode, row.ModelName, row.FlagActive, isNew });
+}).RequireAuthorization();
+
+app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
+    if (row is null) return Results.NotFound(new { code });
+    db.CarModelStds.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -13998,6 +14032,7 @@ record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPric
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
 record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
+record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);

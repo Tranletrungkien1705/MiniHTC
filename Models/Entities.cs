@@ -4999,6 +4999,18 @@ public sealed class DelayTransport
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Master model chuẩn dịch vụ (Mst_CarModelStd — port 1:1 FrmMstCarModelStd, TCMotor DMSCarSv/Admin):
+/// mã model + tên, dùng làm danh mục model tham chiếu cho các màn dịch vụ khác.</summary>
+public sealed class CarModelStd
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? ModelName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
 public sealed class MasterItem
 {
