@@ -97,6 +97,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ContractTypeModel> ContractTypeModels => Set<ContractTypeModel>();
     public DbSet<CarStdOpt> CarStdOpts => Set<CarStdOpt>();
     public DbSet<PaymentTermMst> PaymentTermMsts => Set<PaymentTermMst>();
+    public DbSet<ComplaintErrorCode> ComplaintErrorCodes => Set<ComplaintErrorCode>();
+    public DbSet<ROWarrantyType> ROWarrantyTypes => Set<ROWarrantyType>();
+    public DbSet<WarrantyWorkMst> WarrantyWorkMsts => Set<WarrantyWorkMst>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();

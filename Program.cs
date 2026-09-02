@@ -7646,6 +7646,109 @@ app.MapPost("/api/maintworkitems/{id}/toggle", async (long id, AppDbContext db, 
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== Mã lỗi khiếu nại/chẩn đoán bảo hành (ComplaintErrorCode — port 1:1 FrmMstComplaintAndDiagnosticErrorCodeMng, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/complainterrorcodes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.ComplaintErrorCodes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ErrorCode.Contains(q!) || x.ErrorName!.Contains(q!));
+    var items = await qry.OrderBy(x => x.ErrorCode).Take(500)
+        .Select(x => new { x.Id, x.ErrorCode, x.ErrorName, x.ErrorDesc, x.ErrorTypeCode, x.WarrantyDate, x.WarrantyKm, x.Remark, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/complainterrorcodes", async (ComplaintErrorCodeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ErrorCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã lỗi." });
+    if (string.IsNullOrWhiteSpace((dto.ErrorName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên lỗi." });
+    if (dto.WarrantyDate < 0 || dto.WarrantyKm < 0) return Results.BadRequest(new { error = "Số ngày/km bảo hành không được âm." });
+    var row = await db.ComplaintErrorCodes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ErrorCode == code);
+    if (row is null) { row = new ComplaintErrorCode { OrgId = t.OrgId, ErrorCode = code }; db.ComplaintErrorCodes.Add(row); }
+    row.ErrorName = dto.ErrorName; row.ErrorDesc = dto.ErrorDesc; row.ErrorTypeCode = dto.ErrorTypeCode; row.WarrantyDate = dto.WarrantyDate; row.WarrantyKm = dto.WarrantyKm; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ErrorCode, row.ErrorName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/complainterrorcodes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ComplaintErrorCodes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Loại bảo hành RO (ROWarrantyType — port 1:1 FrmMstWarrantyTypeMng, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/rowarrantytypes", async (AppDbContext db, ITenantContext t, string? typeCode, bool? all) =>
+{
+    var qry = db.ROWarrantyTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(typeCode)) qry = qry.Where(x => x.ROWTypeCode == typeCode);
+    var items = await qry.OrderBy(x => x.ROWTypeCode).ThenBy(x => x.ROWTypeDtlCode).Take(1000)
+        .Select(x => new { x.Id, x.ROWTypeCode, x.ROWTypeName, x.ROWTypeDtlCode, x.ROWTypeDtlName, x.ROWPhotoType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/rowarrantytypes", async (ROWarrantyTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tc = (dto.ROWTypeCode ?? "").Trim().ToUpperInvariant();
+    var dc = (dto.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(tc)) return Results.BadRequest(new { error = "Chưa nhập mã loại bảo hành." });
+    if (string.IsNullOrWhiteSpace(dc)) return Results.BadRequest(new { error = "Chưa nhập mã loại chi tiết." });
+    var row = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWTypeCode == tc && x.ROWTypeDtlCode == dc);
+    if (row is null) { row = new ROWarrantyType { OrgId = t.OrgId, ROWTypeCode = tc, ROWTypeDtlCode = dc }; db.ROWarrantyTypes.Add(row); }
+    row.ROWTypeName = dto.ROWTypeName; row.ROWTypeDtlName = dto.ROWTypeDtlName; row.ROWPhotoType = dto.ROWPhotoType; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROWTypeCode, row.ROWTypeDtlCode, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/rowarrantytypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== Hạng mục công bảo hành theo model (WarrantyWorkMst — port 1:1 FrmMstWarrantyWorkMng, TCMotor DMSCarSv/Admin) =====
+app.MapGet("/api/warrantyworkmsts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
+{
+    var qry = db.WarrantyWorkMsts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
+    var items = await qry.OrderBy(x => x.ROWWorkCode).ThenBy(x => x.ModelCode).Take(1000)
+        .Select(x => new { x.Id, x.ROWWorkCode, x.ROWWorkName, x.ModelCode, x.AppTypeCode, x.RateHour, x.RatePrice, x.Price, x.VAT, x.Remark, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ROWWorkCode ?? "").Trim().ToUpperInvariant();
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã hạng mục công." });
+    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (dto.RateHour < 0 || dto.RatePrice < 0 || dto.Price < 0) return Results.BadRequest(new { error = "Giờ công/đơn giá không được âm." });
+    var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code && x.ModelCode == model);
+    if (row is null) { row = new WarrantyWorkMst { OrgId = t.OrgId, ROWWorkCode = code, ModelCode = model }; db.WarrantyWorkMsts.Add(row); }
+    row.ROWWorkName = dto.ROWWorkName; row.AppTypeCode = dto.AppTypeCode; row.RateHour = dto.RateHour; row.RatePrice = dto.RatePrice; row.Price = dto.Price; row.VAT = dto.VAT; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROWWorkCode, row.ModelCode, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyworkmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Điều khoản thanh toán chiết khấu/công nợ (PaymentTermMst — port 1:1 FrmMst_PaymentTerm, TCMotor DMSales.Foton/Admin/Product) =====
 app.MapGet("/api/paymenttermmsts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -13824,6 +13927,9 @@ record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal R
 record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive);
 record CarStdOptDto(string? ModelCode, string? StdCode, string? StdDesc, string? GradeCode, string? GradeDesc, string? FlagActive);
 record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDays, int GuaranteeDueDays, int PaymentCLDueDays, int PaymentNHSDueDays, string? FlagActive);
+record ComplaintErrorCodeDto(string? ErrorCode, string? ErrorName, string? ErrorDesc, string? ErrorTypeCode, int WarrantyDate, int WarrantyKm, string? Remark, string? FlagActive);
+record ROWarrantyTypeDto(string? ROWTypeCode, string? ROWTypeName, string? ROWTypeDtlCode, string? ROWTypeDtlName, string? ROWPhotoType, string? FlagActive);
+record WarrantyWorkMstDto(string? ROWWorkCode, string? ROWWorkName, string? ModelCode, string? AppTypeCode, decimal RateHour, decimal RatePrice, decimal Price, decimal VAT, string? Remark, string? FlagActive);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

@@ -2250,6 +2250,54 @@ public sealed class PaymentTermMst
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Mã lỗi khiếu nại/chẩn đoán bảo hành (Mst_Complaint_And_Diagnostic_Error_Code_Mng) — port 1:1 FrmMstComplaintAndDiagnosticErrorCodeMng (TCMotor DMSCarSv/Admin). Mã + tên + mô tả + loại lỗi + số km/ngày còn bảo hành áp dụng. Upsert-by-code + toggle.</summary>
+public sealed class ComplaintErrorCode
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ErrorCode { get; set; } = "";
+    public string? ErrorName { get; set; }
+    public string? ErrorDesc { get; set; }
+    public string? ErrorTypeCode { get; set; }
+    public int WarrantyDate { get; set; }
+    public int WarrantyKm { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Loại bảo hành RO (Ser_MST_ROWarrantyType) — port 1:1 FrmMstWarrantyTypeMng (TCMotor DMSCarSv/Admin). Loại chính + loại chi tiết + yêu cầu ảnh chứng minh. Upsert-by-(TypeCode+DtlCode) + toggle.</summary>
+public sealed class ROWarrantyType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWTypeCode { get; set; } = "";
+    public string? ROWTypeName { get; set; }
+    public string ROWTypeDtlCode { get; set; } = "";
+    public string? ROWTypeDtlName { get; set; }
+    public string? ROWPhotoType { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Hạng mục công bảo hành theo model (Mst_Warranty_Work_Mng) — port 1:1 FrmMstWarrantyWorkMng (TCMotor DMSCarSv/Admin). Mã CV + tên + model + loại áp dụng + số giờ công + đơn giá giờ/công + VAT. Upsert-by-(code+model) + toggle.</summary>
+public sealed class WarrantyWorkMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWWorkCode { get; set; } = "";
+    public string? ROWWorkName { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string? AppTypeCode { get; set; }
+    public decimal RateHour { get; set; }
+    public decimal RatePrice { get; set; }
+    public decimal Price { get; set; }
+    public decimal VAT { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Nội dung công việc bảo dưỡng (theo hạng mục) — port 1:1 FrmWorkContents (Admin/Maintenance, 2010.HTC).</summary>
 public sealed class MaintWorkContent
 {
