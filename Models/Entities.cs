@@ -705,7 +705,7 @@ public sealed class GpsPaymentLine
 /// <summary>Thanh toán phí lưu kho theo tháng (Pmt_PaymentStorage — port 1:1 FrmQuanLyThanhToanLuuKho/FrmSuaThanhToanLuuKho, 2010.HTC Sales/Purchase):
 /// mỗi dòng VIN có phí lưu kho + phí che phủ, TotalAmount(dòng)=CostCoat+CostStorage (đã gồm VAT), AmountTotal(header)=Σ dòng,
 /// TotalBeforeVAT=AmountTotal/1.1, VatAmount=AmountTotal-TotalBeforeVAT. Trạng thái P(mới tạo)→A1→A2→F(đã ký)/C(từ chối/hủy);
-/// ký HTV + ký TCMS độc lập (P=chưa ký/A=đã ký); sửa/xóa CHỈ khi Status=P và cả 2 bên đã ký A.</summary>
+/// ký HTV + ký TCMS độc lập (P=chưa ký/A=đã ký); sửa/từ chối/xóa CHỈ khi Status=P và cả 2 bên CHƯA ký (=P, khớp guard gốc).</summary>
 public sealed class StoragePayment
 {
     public long Id { get; set; }
@@ -742,6 +742,46 @@ public sealed class StoragePaymentLine
     public decimal CostStorage { get; set; }
     public decimal TotalAmount { get; set; }    // tự tính = CostCoat + CostStorage
     public string? Remark { get; set; }
+}
+
+/// <summary>Thanh toán phí PDI theo tháng (Pmt_PaymentPDI — port 1:1 FrmQuanLyThanhToanPDI/FrmSuaThanhToanPDI, 2010.HTC Sales/Purchase):
+/// cùng cấu trúc/guard với StoragePayment — mỗi dòng VIN có phí kiểm tra vào (CostInCheck) + phí kiểm tra ra (CostOutCheck),
+/// TotalPrice(dòng)=CostInCheck+CostOutCheck; sửa/từ chối/xóa CHỈ khi Status=P và cả 2 bên CHƯA ký (=P, khớp guard gốc).</summary>
+public sealed class PdiFeePayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PmtNo { get; set; } = "";
+    public DateTime PmtMonth { get; set; }
+    public decimal TotalBeforeVAT { get; set; }
+    public decimal VatAmount { get; set; }
+    public decimal AmountTotal { get; set; }
+    public string HtvSignStatus { get; set; } = "P";
+    public DateTime? HtvSignAt { get; set; }
+    public string TcmsSignStatus { get; set; } = "P";
+    public DateTime? TcmsSignAt { get; set; }
+    public string Status { get; set; } = "P";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng VIN trong phiếu thanh toán PDI — port 1:1 grid FrmQuanLyThanhToanPDI, 2010.HTC.</summary>
+public sealed class PdiFeePaymentLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PdiFeePaymentId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? ModelName { get; set; }
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? ColorExtName { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? StoreDate { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }
+    public decimal CostInCheck { get; set; }
+    public decimal CostOutCheck { get; set; }
+    public decimal TotalPrice { get; set; }    // tự tính = CostInCheck + CostOutCheck
 }
 
 /// <summary>Vi phạm của nhân viên bán hàng (HR_SalesManViolate — port 1:1 FrmCreateSalesManViolate/FrmMngSalesManViolate, SalesDealer):
