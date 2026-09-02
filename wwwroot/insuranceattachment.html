@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Hồ sơ bảo hiểm theo RO</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px}
+</style></head>
+<body>
+<h1>Hồ sơ bảo hiểm theo RO <span class="muted">(port 1:1 FrmInsuranceAttachmentAdd — TCMotor DMSCarSv/Insurance)</span></h1>
+<p class="muted">Tích chọn các loại tài liệu đã thu thập cho lệnh sửa chữa (RO) liên quan bảo hiểm; danh mục loại tài liệu quản lý ở khung dưới.</p>
+<div class="card"><h3 style="margin-top:0">Tra cứu / cập nhật hồ sơ</h3>
+  <div class="row"><input id="ro" placeholder="Số RO" style="width:200px"><button class="primary" onclick="load()">Tra cứu</button><span id="msg" class="msg"></span></div>
+</div>
+<div class="card" id="listCard" style="display:none">
+  <h3 style="margin-top:0">Danh sách tài liệu — RO <span id="roShow"></span></h3>
+  <div class="wrap"><table><thead><tr><th></th><th>Mã</th><th>Tên tài liệu</th><th>Ghi chú</th></tr></thead><tbody id="tb"></tbody></table></div>
+  <div class="row" style="margin-top:10px"><button class="primary" onclick="save()">Lưu</button></div>
+</div>
+<div class="card"><h3 style="margin-top:0">Danh mục loại tài liệu</h3>
+  <div class="row"><input id="tcode" placeholder="Mã *" style="width:100px"><input id="tname" placeholder="Tên *" style="width:180px"><input id="tnote" placeholder="Ghi chú" style="width:160px"><button onclick="saveType()">Thêm</button><span id="tmsg" class="msg"></span></div>
+</div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3800); }
+async function saveType(){ await token();
+  const r=await fetch("/api/insuranceattachmenttypes",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Code:F("tcode").value,Name:F("tname").value,Note:F("tnote").value})});
+  const d=await r.json(); if(!r.ok){ say("tmsg","Lỗi: "+(d.error||r.status)); return; } say("tmsg","Đã thêm "+d.code); F("tcode").value=""; F("tname").value=""; F("tnote").value="";
+}
+async function load(){ await token();
+  const ro=F("ro").value; if(!ro){ say("msg","Chưa nhập số RO."); return; }
+  const r=await fetch("/api/insuranceattachments/"+encodeURIComponent(ro),{headers:Hh()}); const d=await r.json();
+  F("roShow").textContent=d.roNo; F("listCard").style.display="block";
+  F("tb").innerHTML=(d.items||[]).map(x=>`<tr><td><input type="checkbox" data-code="${esc(x.code)}" ${x.ischecked?"checked":""}></td><td><b>${esc(x.code)}</b></td><td>${esc(x.name)}</td><td class="muted">${esc(x.note)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có danh mục tài liệu — thêm ở khung dưới.</td></tr>';
+}
+async function save(){ await token();
+  const codes=[...F("tb").querySelectorAll('input[type=checkbox]:checked')].map(c=>c.dataset.code);
+  const r=await fetch("/api/insuranceattachments/"+encodeURIComponent(F("ro").value),{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Codes:codes})});
+  const d=await r.json(); if(!r.ok){ say("msg","Lỗi: "+(d.error||r.status)); return; } say("msg","Đã lưu "+d.count+" tài liệu.");
+}
+</script>
+</body></html>

@@ -9032,6 +9032,49 @@ app.MapDelete("/api/modelaudimages", async (string model, string audType, AppDbC
     return Results.Ok(new { deleted = new { model, audType } });
 }).RequireAuthorization();
 
+// ===== Checklist hồ sơ bảo hiểm theo RO (InsuranceAttachment — port 1:1 FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance) =====
+app.MapGet("/api/insuranceattachmenttypes", async (AppDbContext db, ITenantContext t, bool? all) =>
+{
+    var qry = db.InsuranceAttachmentTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.Status == "1");
+    var items = await qry.OrderBy(x => x.Code).Take(500).Select(x => new { x.Code, x.Name, x.Note, x.Status }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/insuranceattachmenttypes", async (InsuranceAttachmentTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.Code ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã tài liệu." });
+    var row = await db.InsuranceAttachmentTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (row is null) { row = new InsuranceAttachmentType { OrgId = t.OrgId, Code = code }; db.InsuranceAttachmentTypes.Add(row); }
+    row.Name = dto.Name; row.Note = dto.Note; row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Code, row.Name });
+}).RequireAuthorization();
+
+// Trả toàn bộ danh mục kèm cờ đã-có cho 1 RO (khớp checklist tích-chọn trong FrmInsuranceAttachmentAdd).
+app.MapGet("/api/insuranceattachments/{roNo}", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var types = await db.InsuranceAttachmentTypes.Where(x => x.OrgId == t.OrgId && x.Status == "1").OrderBy(x => x.Code).ToListAsync();
+    var have = (await db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == roNo).Select(x => x.AttachmentCode).ToListAsync()).ToHashSet();
+    var items = types.Select(x => new { x.Code, x.Name, x.Note, ischecked = have.Contains(x.Code) });
+    return Results.Ok(new { roNo, items });
+}).RequireAuthorization();
+
+// Lưu bộ tài liệu đã tích chọn cho 1 RO — thay toàn bộ set (khớp btnSave gốc: lưu lại cả danh sách check).
+app.MapPost("/api/insuranceattachments/{roNo}", async (string roNo, InsuranceAttachmentSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var codes = (dto.Codes ?? new List<string>()).Select(x => x.Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa tích chọn tài liệu nào." });
+    var old = db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    db.InsuranceAttachments.RemoveRange(old);
+    foreach (var c in codes) db.InsuranceAttachments.Add(new InsuranceAttachment { OrgId = t.OrgId, RONo = roNo, AttachmentCode = c });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { roNo, count = codes.Count });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -14095,6 +14138,8 @@ record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? 
 record CareContactDto(string? Result);
 record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
+record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
+record InsuranceAttachmentSaveDto(List<string>? Codes);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);

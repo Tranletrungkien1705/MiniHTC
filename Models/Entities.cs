@@ -2421,6 +2421,29 @@ public sealed class WarrantyAttachment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Danh mục loại tài liệu hồ sơ bảo hiểm (Mst_Attachment) — port 1:1 phần catalog của FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance.</summary>
+public sealed class InsuranceAttachmentType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Code { get; set; } = "";
+    public string? Name { get; set; }
+    public string? Note { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Checklist hồ sơ bảo hiểm đã thu theo RO (Ser_InsuranceAttachment — port 1:1 FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance):
+/// đánh dấu loại tài liệu nào (theo InsuranceAttachmentType) đã có cho 1 RO. Tồn tại bản ghi = đã tích chọn.</summary>
+public sealed class InsuranceAttachment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public string AttachmentCode { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
 public sealed class ServiceWarrantyClaim
 {
