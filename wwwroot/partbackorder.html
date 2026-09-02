@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Phụ tùng nợ khách</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#4f46e5;--ok:#16a34a;--warn:#d97706}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:920px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:14px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0} .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  input,button{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit} label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:10.5px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .msg{font-size:13px;margin-left:6px} .pill{font-size:11px;padding:1px 7px;border-radius:20px;border:1px solid var(--line)} .y{color:var(--ok);border-color:var(--ok)} .n{color:var(--warn);border-color:var(--warn)}
+</style></head>
+<body>
+<h1>Phụ tùng nợ khách <span class="muted">(port 1:1 FrmNewSerPartOO/FrmMngSerPartOO — TCMotor DMSCarSv/Services)</span></h1>
+<p class="muted">PT hết hàng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Nhập lại cùng biển số + mã PT = cập nhật số lượng đã trả.</p>
+<div class="card"><h3 style="margin-top:0">Ghi nhận / cập nhật</h3>
+  <div class="row">
+    <div><label>Biển số *</label><input id="plate" style="width:120px"></div>
+    <div><label>Mã PT *</label><input id="code" style="width:110px"></div>
+    <div style="flex:1;min-width:160px"><label>Tên PT *</label><input id="name" style="width:100%"></div>
+    <div><label>Loại xe</label><input id="cartype" style="width:110px"></div>
+    <div><label>CVDV</label><input id="staff" style="width:100px"></div>
+  </div>
+  <div class="row">
+    <div><label>SL nợ *</label><input id="qtyowed" type="number" style="width:100px"></div>
+    <div><label>SL đã trả</label><input id="qtyret" type="number" style="width:100px" value="0"></div>
+    <div><label>Ngày hẹn trả</label><input id="promise" type="date"></div>
+    <div><label>Ngày đặt hàng</label><input id="order" type="date"></div>
+    <div><label>Ngày về DK</label><input id="expect" type="date"></div>
+    <div style="flex:1"><label>Ghi chú</label><input id="note" style="width:100%"></div>
+    <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span>
+  </div>
+</div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Biển số" style="width:160px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="onlyopen" style="width:auto"> Chỉ chưa trả đủ</label><button onclick="load()">Xem</button></div>
+<div class="wrap"><table><thead><tr><th>Biển số</th><th>Mã PT</th><th>Tên PT</th><th class="num">SL nợ</th><th class="num">Đã trả</th><th class="num">Còn</th><th>Hẹn trả</th><th>TT</th></tr></thead><tbody id="tb"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
+function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3800); }
+async function save(){ await token();
+  const body={PlateNo:F("plate").value,PartCode:F("code").value,PartName:F("name").value,CarType:F("cartype").value,StaffCode:F("staff").value,
+    QtyOwed:+F("qtyowed").value||0,QtyReturned:+F("qtyret").value||0,PromiseDate:F("promise").value||null,OrderDate:F("order").value||null,ExpectedDate:F("expect").value||null,Note:F("note").value};
+  const r=await fetch("/api/partbackorders",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say((d.isNew?"Đã tạo ":"Đã cập nhật ")+d.plateNo+"/"+d.partCode); load();
+}
+async function load(){ await token();
+  const r=await fetch(`/api/partbackorders?plate=${encodeURIComponent(F("q").value)}&open=${F("onlyopen").checked}`,{headers:Hh()}); const d=await r.json();
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.plateNo)}</b></td><td>${esc(o.partCode)}</td><td>${esc(o.partName)}</td><td class="num">${o.qtyOwed}</td><td class="num">${o.qtyReturned}</td><td class="num">${o.remain}</td><td>${o.promiseDate?String(o.promiseDate).slice(0,10):"—"}</td><td><span class="pill ${o.remain<=0?'y':'n'}">${o.remain<=0?'Đã trả đủ':'Còn nợ'}</span></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có PT nợ.</td></tr>';
+}
+</script>
+</body></html>

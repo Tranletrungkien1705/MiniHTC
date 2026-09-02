@@ -2535,6 +2535,26 @@ public sealed class CustomerCareMace
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor DMSCarSv/Services):
+/// PT hết hàng nhưng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Upsert theo (PlateNo, PartCode).</summary>
+public sealed class PartBackorder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PlateNo { get; set; } = "";
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    public string? CarType { get; set; }
+    public string? StaffCode { get; set; }         // CVDV
+    public decimal QtyOwed { get; set; }
+    public decimal QtyReturned { get; set; }
+    public DateTime? PromiseDate { get; set; }      // NgayHenTra
+    public DateTime? OrderDate { get; set; }        // NgayDatHang
+    public DateTime? ExpectedDate { get; set; }     // NgayVeDK
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo, TCMotor DMSCarSv/Customer):
 /// customer master dịch vụ (cá nhân/tổ chức) + người liên hệ. CustomerCar/Care tham chiếu theo CusCode.</summary>
 public sealed class ServiceCustomer

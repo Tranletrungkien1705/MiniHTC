@@ -9128,6 +9128,35 @@ app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbCon
     return Results.Ok(new { c.CamNo, partsCount = parts.Count });
 }).RequireAuthorization();
 
+// ===== Phụ tùng nợ khách (PartBackorder — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor DMSCarSv/Services) =====
+app.MapGet("/api/partbackorders", async (AppDbContext db, ITenantContext t, string? plate, bool? open) =>
+{
+    var qry = db.PartBackorders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(plate)) qry = qry.Where(x => x.PlateNo.Contains(plate.ToUpper()));
+    if (open == true) qry = qry.Where(x => x.QtyReturned < x.QtyOwed);
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.PlateNo, x.PartCode, x.PartName, x.CarType, x.StaffCode, x.QtyOwed, x.QtyReturned, remain = x.QtyOwed - x.QtyReturned, x.PromiseDate, x.OrderDate, x.ExpectedDate, x.Note }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Khớp ValidateInput() gốc + upsert theo (PlateNo, PartCode) như UpdateRow() WinForm.
+app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
+    var code = (dto.PartCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa có phụ tùng" });
+    if (string.IsNullOrWhiteSpace(plate)) return Results.BadRequest(new { error = "Phải nhập biển số" });
+    if (dto.QtyOwed <= 0) return Results.BadRequest(new { error = "Phải nhập số lượng nợ" });
+    var row = await db.PartBackorders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate && x.PartCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new PartBackorder { OrgId = t.OrgId, PlateNo = plate, PartCode = code }; db.PartBackorders.Add(row); }
+    row!.PartName = dto.PartName; row.CarType = dto.CarType; row.StaffCode = dto.StaffCode;
+    row.QtyOwed = dto.QtyOwed; row.QtyReturned = dto.QtyReturned;
+    row.PromiseDate = dto.PromiseDate; row.OrderDate = dto.OrderDate; row.ExpectedDate = dto.ExpectedDate; row.Note = dto.Note;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.PlateNo, row.PartCode, row.QtyOwed, row.QtyReturned, isNew });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -14195,6 +14224,7 @@ record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
+record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
