@@ -635,6 +635,37 @@ public sealed class GpsTransaction
     public DateTime? UnMapDateTime { get; set; }   // null = đang gắn
 }
 
+/// <summary>Thanh toán phí AVN (áo vỏ nylon) theo tháng (Pmt_PaymentAVN — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase):
+/// phiếu thu phí phụ kiện AVN theo tháng, nhiều dòng VIN, đơn giá cố định/xe, tổng = Σ UnitPriceAVN.</summary>
+public sealed class AvnPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PmtNo { get; set; } = "";
+    public DateTime PmtMonth { get; set; }
+    public decimal TotalAmount { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng VIN trong phiếu thanh toán AVN — port 1:1 grid FrmTaoThanhToanAVN, 2010.HTC.</summary>
+public sealed class AvnPaymentLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long AvnPaymentId { get; set; }
+    public string Vin { get; set; } = "";
+    public string? AvnCode { get; set; }
+    public DateTime? AvnDate { get; set; }
+    public DateTime? InStorageDate { get; set; }
+    public string? EngineNo { get; set; }
+    public string? SerialNo { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ModelName { get; set; }
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public decimal UnitPriceAVN { get; set; }
+}
+
 /// <summary>Thanh toán phí GPS theo tháng (Pmt_PaymentGPS — port 1:1 FrmTaoThanhToanGPS/QuanLyThanhToanGPS, 2010.HTC Sales/Purchase):
 /// phiếu thu phí duy trì GPS theo tháng, gồm nhiều dòng VIN. Tự tính AmountGPS = PriceGPS × ActualCostGPSDate (ngày tính phí thực = ngày dự kiến − ngày khấu trừ).</summary>
 public sealed class GpsPayment

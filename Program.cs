@@ -9161,6 +9161,48 @@ app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db,
     return Results.Ok(new { row.PlateNo, row.PartCode, row.QtyOwed, row.QtyReturned, isNew });
 }).RequireAuthorization();
 
+// ===== Thanh toán phí AVN theo tháng (AvnPayment — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase) =====
+app.MapGet("/api/avnpayments", async (AppDbContext db, ITenantContext t, string? q) =>
+{
+    var qry = db.AvnPayments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.PmtNo, x.PmtMonth, x.TotalAmount, lines = db.AvnPaymentLines.Count(l => l.OrgId == t.OrgId && l.AvnPaymentId == x.Id) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/avnpayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.AvnPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.AvnPaymentLines.Where(l => l.OrgId == t.OrgId && l.AvnPaymentId == h.Id).Select(l => new
+    { l.Vin, l.AvnCode, l.AvnDate, l.InStorageDate, l.EngineNo, l.SerialNo, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.UnitPriceAVN }).ToListAsync();
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalAmount, lines });
+}).RequireAuthorization();
+
+// Khớp btnSave gốc: guard tháng bắt buộc, ≥1 VIN ("Không có dữ liệu"), đơn giá >= 0; tổng = Σ UnitPriceAVN.
+app.MapPost("/api/avnpayments", async (AvnPaymentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.PmtMonth is null) return Results.BadRequest(new { error = "Chưa chọn tháng thanh toán" });
+    var lines = dto.Lines ?? new List<AvnPaymentLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
+    foreach (var l in lines)
+        if (l.UnitPriceAVN < 0) return Results.BadRequest(new { error = "Giá trị phải lớn hơn hoặc bằng 0!" });
+
+    var no = "AVN" + DateTime.Now.ToString("yyMMddHHmmss");
+    var h = new AvnPayment { OrgId = t.OrgId, PmtNo = no, PmtMonth = dto.PmtMonth.Value, TotalAmount = lines.Sum(l => l.UnitPriceAVN) };
+    db.AvnPayments.Add(h); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.AvnPaymentLines.Add(new AvnPaymentLine
+        {
+            OrgId = t.OrgId, AvnPaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), AvnCode = l.AvnCode, AvnDate = l.AvnDate, InStorageDate = l.InStorageDate,
+            EngineNo = l.EngineNo, SerialNo = l.SerialNo, ModelCode = l.ModelCode, ModelName = l.ModelName, SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, UnitPriceAVN = l.UnitPriceAVN
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtNo, h.TotalAmount, lines = lines.Count });
+}).RequireAuthorization();
+
 // ===== Thanh toán phí GPS theo tháng (GpsPayment — port 1:1 FrmTaoThanhToanGPS/FrmQuanLyThanhToanGPS, 2010.HTC Sales/Purchase) =====
 app.MapGet("/api/gpspayments", async (AppDbContext db, ITenantContext t, string? q) =>
 {
@@ -14282,6 +14324,8 @@ record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
 record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note);
+record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);
+record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);
 record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, string? ModelName, string? SpecDescription, string? GpsId, DateTime CostGPSStartDate, DateTime CostGPSEndDate, int DeductDate, decimal PriceGPS, string? ContractGPS);
 record GpsPaymentDto(DateTime? PmtMonth, List<GpsPaymentLineDto>? Lines);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
