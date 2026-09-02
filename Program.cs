@@ -12617,7 +12617,7 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
-        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT }).ToListAsync();
+        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo }).ToListAsync();
     return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
 }).RequireAuthorization();
 

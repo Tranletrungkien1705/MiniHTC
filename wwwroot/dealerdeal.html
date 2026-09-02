@@ -100,7 +100,7 @@ async function load(){ await token();
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/dealerdeals/${no}/cars`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="9"><div class="cars">KH lái: ${d.customerCodeDriver||"—"} · KH đứng tên: ${d.customerCodeHolder||"—"}<br>${(d.cars||[]).map(c=>`Xe <b>${c.carId}</b>${c.cusInvoiceNo?" · HĐ "+c.cusInvoiceNo:""} · ${money(c.priceAFVAT)}đ`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+  row.innerHTML=`<td colspan="9"><div class="cars">KH lái: ${d.customerCodeDriver||"—"} · KH đứng tên: ${d.customerCodeHolder||"—"}<br>${(d.cars||[]).map(c=>`Xe <b>${c.carId}</b>${c.plateNo?" · BS "+c.plateNo:""}${c.cusInvoiceNo?" · HĐ "+c.cusInvoiceNo:""} · ${money(c.priceAFVAT)}đ`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
 }
 async function editKhgd(){
   const no=F("ekNo").value.trim(); if(!no){ F("ekMsg").textContent="Cần mã GD"; return; }
