@@ -9098,6 +9098,17 @@ app.MapPost("/api/supplierdebits", async (SupplierDebitDto dto, AppDbContext db,
     if (dto.DebitAmount <= 0) return Results.BadRequest(new { error = "Số tiền nợ phải lớn hơn 0." });
     if (dto.DebitDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày trả nợ." });
     var stockIn = (dto.StockInNo ?? "").Trim();
+    // audit 2026-09-03: CheckDebitAmount() gốc chặn số tiền nợ > dDefaultDebitAmount (số tiền phải trả = tổng phiếu nhập) — port trước thiếu guard này.
+    if (!string.IsNullOrWhiteSpace(stockIn))
+    {
+        var stockInTotal = await db.ServiceStockIns.Where(x => x.OrgId == t.OrgId && x.StockInNo == stockIn).Select(x => (decimal?)x.TotalAmount).FirstOrDefaultAsync();
+        if (stockInTotal is not null)
+        {
+            var already = await db.SupplierDebits.Where(x => x.OrgId == t.OrgId && x.SupplierCode == supplier && x.StockInNo == stockIn).Select(x => x.DebitAmount).FirstOrDefaultAsync();
+            if (already + dto.DebitAmount > stockInTotal.Value)
+                return Results.BadRequest(new { error = $"Số tiền nợ vượt quá số tiền phải trả ({stockInTotal.Value})." });
+        }
+    }
     var row = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == supplier && x.StockInNo == stockIn);
     var isNew = row is null;
     if (isNew) { row = new SupplierDebit { OrgId = t.OrgId, SupplierCode = supplier, StockInNo = stockIn, Status = "Open" }; db.SupplierDebits.Add(row); }
