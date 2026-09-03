@@ -323,6 +323,7 @@ public sealed class InsuranceFee
     public string? ContractNo { get; set; }
     public decimal Fee { get; set; }
     public decimal Percent { get; set; }
+    public DateTime? EffStartDate { get; set; }  // ngày hiệu lực (TblMst_InsuranceFee.EffStartDate)
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

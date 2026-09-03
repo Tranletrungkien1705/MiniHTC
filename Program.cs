@@ -15596,7 +15596,7 @@ app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) 
     var query = db.InsuranceFees.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.Code.Contains(q) || (x.ContractNo ?? "").Contains(q));
     var items = await query.OrderBy(x => x.Code).Select(x => new
-    { x.Code, x.InsCompanyCode, x.InsTypeCode, x.ContractNo, x.Fee, x.Percent, x.Status }).ToListAsync();
+    { x.Code, x.InsCompanyCode, x.InsTypeCode, x.ContractNo, x.Fee, x.Percent, x.EffStartDate, x.Status }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -15607,7 +15607,7 @@ app.MapPost("/api/insfees", async (InsFeeDto dto, AppDbContext db, ITenantContex
     var x = await db.InsuranceFees.FirstOrDefaultAsync(y => y.OrgId == t.OrgId && y.Code == code);
     if (x is null) { x = new InsuranceFee { OrgId = t.OrgId, Code = code }; db.InsuranceFees.Add(x); }
     x.InsCompanyCode = dto.InsCompanyCode; x.InsTypeCode = dto.InsTypeCode; x.ContractNo = dto.ContractNo;
-    x.Fee = dto.Fee; x.Percent = dto.Percent; x.Status = dto.Status ?? "1";
+    x.Fee = dto.Fee; x.Percent = dto.Percent; x.EffStartDate = dto.EffStartDate; x.Status = dto.Status ?? "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { x.Code, x.Fee, x.Percent });
 }).RequireAuthorization();
@@ -15636,6 +15636,7 @@ app.MapPost("/api/quotas", async (QuotaDto dto, AppDbContext db, ITenantContext 
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode) || string.IsNullOrWhiteSpace(dto.Period))
         return Results.BadRequest(new { error = "Cần DealerCode, ModelCode, Period." });
+    if (dto.Qty < 0) return Results.BadRequest(new { error = "Số lượng quota không được âm." });
     var dealer = dto.DealerCode.Trim().ToUpperInvariant(); var model = dto.ModelCode.Trim().ToUpperInvariant(); var period = dto.Period.Trim();
     var x = await db.Quotas.FirstOrDefaultAsync(y => y.OrgId == t.OrgId && y.DealerCode == dealer && y.ModelCode == model && y.Period == period);
     if (x is null) { x = new Quota { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model, Period = period }; db.Quotas.Add(x); }
@@ -15772,7 +15773,7 @@ record PODto(string SupplierCode, string? Note, decimal Total);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
-record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, string? Status);
+record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, DateTime? EffStartDate, string? Status);
 record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);
 record MortgageDto(string BankCode, List<string>? Vins);
 record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
