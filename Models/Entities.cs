@@ -939,12 +939,14 @@ public sealed class SalesManViolate
     public string SalesManCode { get; set; } = "";
     public string? SalesManName { get; set; }
     public string DealerCode { get; set; } = "";
-    public string ViolateTypeId { get; set; } = "";       // loại vi phạm (Mst_ViolateType)
+    public string ViolateTypeId { get; set; } = "";       // loại vi phạm (Mst_ViolateType); "VV"=vĩnh viễn, "TT"=tạm thời
     public int ViolateNumber { get; set; }                // lần vi phạm thứ n (auto +1 theo NV)
     public DateTime? ViolateDateStart { get; set; }
-    public DateTime? ViolateDateEnd { get; set; }
+    public DateTime? ViolateDateEnd { get; set; }         // bắt buộc khi ViolateTypeId=="TT"
     public string? IdentityCardNo { get; set; }
     public string? PhoneNo { get; set; }
+    public string? SMType { get; set; }                   // snapshot loại NV lúc vi phạm (HR_SalesManViolate.SMType)
+    public string? SmDateOfBirth { get; set; }            // snapshot ngày sinh (HR_SalesManViolate.SMDateOfBirth)
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

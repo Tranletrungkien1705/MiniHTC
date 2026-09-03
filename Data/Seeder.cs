@@ -167,6 +167,9 @@ public static class Seeder
                 "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"FlagEarlyCancel\" text NULL",
                 "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"RetrieveRemark\" text NULL",
                 "UPDATE public.\"CarRetrieves\" SET \"Status\" = 'Pending' WHERE \"Status\" = 'Requested'",
+                // #48 SalesManViolate: thêm SMType + SmDateOfBirth (snapshot denorm từ DlSalesMan tại thời điểm vi phạm)
+                "ALTER TABLE public.\"SalesManViolates\" ADD COLUMN IF NOT EXISTS \"SMType\" text NULL",
+                "ALTER TABLE public.\"SalesManViolates\" ADD COLUMN IF NOT EXISTS \"SmDateOfBirth\" text NULL",
                 // #29 Guarantee: thêm DealerCode (TblGuarantee.DealerCode — grt.DealerCode set trong FrmNewGrt line 865)
                 "ALTER TABLE public.\"Guarantees\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NOT NULL DEFAULT ''",
                 // #25 InsuranceFee: thêm EffStartDate (ngày hiệu lực — trong WinForm là cột 3 của TblMst_InsuranceFee)

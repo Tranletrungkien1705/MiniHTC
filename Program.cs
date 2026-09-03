@@ -14985,6 +14985,8 @@ app.MapPost("/api/deviceprices", async (DevicePriceDto dto, AppDbContext db, ITe
 {
     if (string.IsNullOrWhiteSpace(dto.SpecCode) || string.IsNullOrWhiteSpace(dto.DeviceCode))
         return Results.BadRequest(new { error = "Cần SpecCode và DeviceCode." });
+    if (string.IsNullOrWhiteSpace(dto.DeviceTypeCode))
+        return Results.BadRequest(new { error = "Cần DeviceTypeCode." });
     var spec = dto.SpecCode.Trim().ToUpperInvariant();
     var dev = dto.DeviceCode.Trim().ToUpperInvariant();
     var ed = dto.EffectiveDate?.Date;
@@ -15230,7 +15232,15 @@ app.MapPost("/api/smviolates", async (SmViolateDto dto, AppDbContext db, ITenant
 {
     if (string.IsNullOrWhiteSpace(dto.SalesManCode) || string.IsNullOrWhiteSpace(dto.ViolateTypeId))
         return Results.BadRequest(new { error = "Cần SalesManCode và ViolateTypeId." });
+    if (string.IsNullOrWhiteSpace(dto.ViolateDateStart.ToString()))
+        return Results.BadRequest(new { error = "Cần ViolateDateStart." });
+    // Guard: ViolateDateEnd bắt buộc khi loại "TT" (tạm thời) — FrmCreateSalesManViolate line 249
+    if (dto.ViolateTypeId.Trim().ToUpperInvariant() == "TT" && dto.ViolateDateEnd == null)
+        return Results.BadRequest(new { error = "ViolateDateEnd bắt buộc khi ViolateTypeId=TT (tạm thời)." });
     var sm = dto.SalesManCode.Trim().ToUpperInvariant();
+    // Guard: NV đã bị "VV" (vĩnh viễn) → block — FrmCreateSalesManViolate line 275
+    var hasVV = await db.SalesManViolates.AnyAsync(v => v.OrgId == t.OrgId && v.SalesManCode == sm && v.ViolateTypeId == "VV");
+    if (hasVV) return Results.BadRequest(new { error = "Nhân viên đã bị cấm bán hàng/tuyển dụng vĩnh viễn (VV)." });
     // ViolateNumber = lần vi phạm thứ n của NV này (auto +1 như FrmCreateSalesManViolate)
     var lastNo = await db.SalesManViolates.Where(v => v.OrgId == t.OrgId && v.SalesManCode == sm)
         .Select(v => (int?)v.ViolateNumber).MaxAsync() ?? 0;
@@ -15239,7 +15249,8 @@ app.MapPost("/api/smviolates", async (SmViolateDto dto, AppDbContext db, ITenant
         OrgId = t.OrgId, SalesManCode = sm, SalesManName = dto.SalesManName, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
         ViolateTypeId = dto.ViolateTypeId.Trim().ToUpperInvariant(), ViolateNumber = lastNo + 1,
         ViolateDateStart = dto.ViolateDateStart, ViolateDateEnd = dto.ViolateDateEnd,
-        IdentityCardNo = dto.IdentityCardNo, PhoneNo = dto.PhoneNo, Remark = dto.Remark
+        IdentityCardNo = dto.IdentityCardNo, PhoneNo = dto.PhoneNo,
+        SMType = dto.SMType, SmDateOfBirth = dto.SmDateOfBirth, Remark = dto.Remark
     };
     db.SalesManViolates.Add(v); await db.SaveChangesAsync();
     return Results.Ok(new { v.SalesManCode, v.ViolateTypeId, v.ViolateNumber });
@@ -15813,7 +15824,7 @@ record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsI
 record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, List<GpsInDevDto>? Devices);
 record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegisName, double MapLatitude, double MapLongitude, double Radius);
 record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
-record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? Remark);
+record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? SMType, string? SmDateOfBirth, string? Remark);
 record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo,
     string? BDHStatus, DateTime? ChallengeStartDate, DateTime? ChallengeEndDate, string? QualityRank, string? AccountHTA);
 record DlWorkHistoryRowDto(string? SMCode, string? SMReason, string? SMDesc);
