@@ -2494,6 +2494,7 @@ public sealed class Transporter
     public string? FaxNo { get; set; }
     public string? DirectorFullName { get; set; }
     public string? DirectorPhoneNo { get; set; }
+    public string? ContactorPhoneNo { get; set; }  // WinForm TblTranspoter.ContactorPhoneNo (line 45)
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

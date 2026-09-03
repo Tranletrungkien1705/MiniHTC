@@ -7904,6 +7904,9 @@ app.MapPost("/api/storages", async (StorageDto dto, AppDbContext db, ITenantCont
 {
     var code = (dto.StorageCode ?? "").Trim();
     if (code == "") return Results.BadRequest(new { error = "Thiếu mã kho." });
+    // WinForm line 216-219: StorageType phải là "BT" (Bãi tập kết) hoặc "DT" (Đóng thùng)
+    var stype = (dto.StorageType ?? "").Trim().ToUpperInvariant();
+    if (stype != "" && stype != "BT" && stype != "DT") return Results.BadRequest(new { error = "Loại kho phải là BT hoặc DT." });
     var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code);
     if (s is null) { s = new Storage { OrgId = t.OrgId, StorageCode = code }; db.Storages.Add(s); }
     s.StorageName = dto.StorageName; s.StorageAddress = dto.StorageAddress; s.ProvinceCode = dto.ProvinceCode; s.StorageType = dto.StorageType; s.UpdatedAt = DateTime.Now;
@@ -7992,7 +7995,7 @@ app.MapPost("/api/transporters", async (TransporterDto dto, AppDbContext db, ITe
     var s = await db.Transporters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == code);
     if (s is null) { s = new Transporter { OrgId = t.OrgId, TransporterCode = code }; db.Transporters.Add(s); }
     s.TransporterName = dto.TransporterName; s.Address = dto.Address; s.PhoneNo = dto.PhoneNo; s.FaxNo = dto.FaxNo;
-    s.DirectorFullName = dto.DirectorFullName; s.DirectorPhoneNo = dto.DirectorPhoneNo; s.UpdatedAt = DateTime.Now;
+    s.DirectorFullName = dto.DirectorFullName; s.DirectorPhoneNo = dto.DirectorPhoneNo; s.ContactorPhoneNo = dto.ContactorPhoneNo; s.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.Id, s.TransporterCode });
 }).RequireAuthorization();
@@ -16194,7 +16197,7 @@ record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, d
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
 record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
-record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo);
+record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo, string? ContactorPhoneNo);
 record TransporterCarDto(string PlateNo);
 record TransporterDriverDto(string DriverId, string? DriverFullName, string? DriverLicenseNo, string? DriverPhoneNo);
 record DealerCADto(string DealerCode, string? CaSubject, string? CaIssuer, string? Serial, DateTime? ValidFrom, DateTime? ValidTo);
