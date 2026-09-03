@@ -80,7 +80,9 @@ public sealed class CarPrice
     public string? SpecCode { get; set; }
     public string? ColorCode { get; set; }
     public decimal Price { get; set; }
-    public decimal Vat { get; set; } = 10;
+    public decimal Vat { get; set; } = 10;   // audit 2026-09-03: KHÔNG có trong FrmCarPrice gốc (đã kiểm tra, không thấy field VAT) — do fire trước tự thêm để tiện tính giá gồm thuế, giữ lại vì không phá dữ liệu, nhưng lưu ý đây KHÔNG phải field 1:1.
+    public DateTime EffectiveDate { get; set; } = DateTime.Now;   // audit 2026-09-03: THIẾU HOÀN TOÀN — CarPrice gốc là bảng giá THEO THỜI ĐIỂM (1 Model+Spec+Color có nhiều giá theo Effective_Date)
+    public string SoType { get; set; } = "";  // audit 2026-09-03: THIẾU HOÀN TOÀN — 1 phần khóa hỗn hợp gốc (Model+Spec+Color+EffectiveDate+SoType)
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

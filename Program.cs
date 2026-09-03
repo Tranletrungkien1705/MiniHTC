@@ -299,23 +299,28 @@ app.MapGet("/api/carprices", async (AppDbContext db, ITenantContext t, string? m
 {
     var query = db.CarPrices.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode.Contains(model));
-    var items = await query.OrderBy(c => c.ModelCode).Select(c => new
-    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status }).ToListAsync();
+    var items = await query.OrderBy(c => c.ModelCode).ThenByDescending(c => c.EffectiveDate).Select(c => new
+    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// Khớp gviewDbPrice_ValidatingEditor gốc: khoá hỗn hợp Model+Spec+Color+EffectiveDate+SoType (1 model/spec/color có NHIỀU giá theo thời điểm+loại đơn) — trước audit chỉ khoá theo Model+Spec+Color (mất hoàn toàn tính năng lịch sử giá).
 app.MapPost("/api/carprices", async (CarPriceDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Cần ModelCode." });
     if (dto.Price < 0) return Results.BadRequest(new { error = "Price không hợp lệ." });
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
     var model = dto.ModelCode.Trim().ToUpperInvariant();
     var spec = dto.SpecCode?.Trim().ToUpperInvariant() ?? "";
     var color = dto.ColorCode?.Trim().ToUpperInvariant() ?? "";
-    var c = await db.CarPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && (x.SpecCode ?? "") == spec && (x.ColorCode ?? "") == color);
-    if (c is null) { c = new CarPrice { OrgId = t.OrgId, ModelCode = model, SpecCode = spec, ColorCode = color }; db.CarPrices.Add(c); }
+    var soType = dto.SoType?.Trim().ToUpperInvariant() ?? "";
+    if (!string.IsNullOrEmpty(spec) && !await db.CarSpecs.AnyAsync(s => s.OrgId == t.OrgId && s.ModelCode == model && s.SpecCode == spec && s.FlagActive == "1"))
+        return Results.BadRequest(new { error = $"Mã spec '{spec}' của Mã model '{model}' không hợp lệ!" });
+    var c = await db.CarPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && (x.SpecCode ?? "") == spec && (x.ColorCode ?? "") == color && x.EffectiveDate == dto.EffectiveDate && x.SoType == soType);
+    if (c is null) { c = new CarPrice { OrgId = t.OrgId, ModelCode = model, SpecCode = spec, ColorCode = color, EffectiveDate = dto.EffectiveDate.Value, SoType = soType }; db.CarPrices.Add(c); }
     c.Price = dto.Price; c.Vat = dto.Vat ?? 10; c.Status = dto.Status ?? "1";
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.ModelCode, c.SpecCode, c.ColorCode, c.Price, c.Vat });
+    return Results.Ok(new { c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat });
 }).RequireAuthorization();
 
 app.MapDelete("/api/carprices/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
@@ -15538,7 +15543,7 @@ record DealerDto(string DealerCode, string DealerName, string? DealerType, strin
     string? ContactName, string? Signer, string? SignerPosition, string? CtrNoSigner, string? CtrNoSignerPosition, string? Remark, string? HTCStaffInCharge,
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
     string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status);
-record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, decimal Price, decimal? Vat, string? Status);
+record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
 record CustomerDto(string? CustomerCode, string CustomerName, string? Phone, string? IdCard, string? TaxCode, string? Address, string? Email, string? ProvinceCode, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? Phone, string? Email, string? Status);
 record PdiDto(string Vin, string? DealerCode);

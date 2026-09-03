@@ -16,12 +16,14 @@
 <h1>Bảng giá xe <span class="muted">(port 1:1 FrmCarPrice — Mst_CarPrice)</span></h1>
 <div class="bar">
   <input id="m" placeholder="Model *" style="width:110px"><input id="sp" placeholder="Spec" style="width:90px"><input id="cl" placeholder="Màu" style="width:90px">
+  <input id="ed" type="date" title="Ngày hiệu lực *" style="width:150px"><input id="st" placeholder="Loại ĐH (SoType)" style="width:110px">
   <input id="pr" placeholder="Giá (VND)" style="width:140px"><input id="vt" placeholder="VAT %" value="10" style="width:70px">
   <button class="primary" onclick="save()">Lưu</button>
   <span style="flex:1"></span><input id="q" placeholder="Lọc model" oninput="load()" style="width:120px"><span id="msg"></span>
 </div>
-<table><thead><tr><th>Model</th><th>Spec</th><th>Màu</th><th class="n">Giá</th><th class="n">VAT</th><th class="n">Giá gồm VAT</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<div class="muted">Bảng giá theo THỜI ĐIỂM hiệu lực + loại đơn hàng — 1 Model/Spec/Màu có thể có nhiều dòng giá khác ngày/loại ĐH.</div>
+<table><thead><tr><th>Model</th><th>Spec</th><th>Màu</th><th>Hiệu lực</th><th>Loại ĐH</th><th class="n">Giá</th><th class="n">VAT</th><th class="n">Giá gồm VAT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 async function token(){ if(TOKEN) return TOKEN;
@@ -35,12 +37,14 @@ async function load(){ await token();
   const d=await (await fetch("/api/carprices?model="+encodeURIComponent(F("q").value),{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(x=>`<tr>
     <td><b>${x.modelCode}</b></td><td>${x.specCode||""}</td><td>${x.colorCode||""}</td>
+    <td>${x.effectiveDate?new Date(x.effectiveDate).toLocaleDateString('vi-VN'):""}</td><td>${x.soType||""}</td>
     <td class="n">${fmt(x.price)}</td><td class="n">${x.vat}%</td><td class="n">${fmt(Math.round(x.priceVat))}</td>
     <td><span class="act err" onclick="del(${x.id})">Xoá</span></td></tr>`).join("")
-    || '<tr><td colspan="7" class="muted">Chưa có giá.</td></tr>';
+    || '<tr><td colspan="9" class="muted">Chưa có giá.</td></tr>';
 }
 async function save(){
-  const body=JSON.stringify({modelCode:F("m").value,specCode:F("sp").value,colorCode:F("cl").value,price:Number(F("pr").value||0),vat:Number(F("vt").value||10)});
+  if(!F("ed").value){ msg("Cần Ngày hiệu lực",false); return; }
+  const body=JSON.stringify({modelCode:F("m").value,specCode:F("sp").value,colorCode:F("cl").value,effectiveDate:F("ed").value,soType:F("st").value,price:Number(F("pr").value||0),vat:Number(F("vt").value||10)});
   const r=await fetch("/api/carprices",{method:"POST",headers:H(),body});
   if(r.ok){ msg("Đã lưu.",true); F("pr").value=""; load(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
 }
