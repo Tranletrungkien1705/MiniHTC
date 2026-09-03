@@ -4061,6 +4061,8 @@ public sealed class MnfPlOrder
     public Guid OrgId { get; set; }
     public string OrderNo { get; set; } = "";
     public string OrdType { get; set; } = "";     // loại đơn hàng
+    public string? OrdMonth { get; set; }          // tháng đặt hàng (yyyy/MM)
+    public string? Remark { get; set; }
     public string Status { get; set; } = "Draft"; // Draft → Sent
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }

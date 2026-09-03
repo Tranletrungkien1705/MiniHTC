@@ -370,6 +370,7 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Chưa chọn Quê quán!" });
     if (string.IsNullOrWhiteSpace(dto.Specialized)) return Results.BadRequest(new { error = "Chưa nhập Chuyên ngành!" });
     if (string.IsNullOrWhiteSpace(dto.QualificationCode)) return Results.BadRequest(new { error = "Chưa chọn Trình độ chuyên môn!" });
+    if (string.IsNullOrWhiteSpace(dto.CertificateCode)) return Results.BadRequest(new { error = "Chưa chọn Chứng chỉ!" });
     if (dto.StartDate is null) return Results.BadRequest(new { error = "Chưa nhập Ngày bắt đầu!" });
     if (dto.SalesType.Trim().Equals("TVBH", StringComparison.OrdinalIgnoreCase))
     {
@@ -12138,12 +12139,13 @@ app.MapGet("/api/mnfplorders", async (AppDbContext db, ITenantContext t, string?
 app.MapPost("/api/mnfplorders", async (MnfPlOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.OrdType)) return Results.BadRequest(new { error = "Cần loại đơn hàng." });
+    if (string.IsNullOrWhiteSpace(dto.OrdMonth)) return Results.BadRequest(new { error = "Chưa chọn tháng!" });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Danh sách đặt hàng trống!" });
     if (lines.Any(l => l.MnfPlIdx <= 0)) return Results.BadRequest(new { error = "Thứ tự SX phải > 0!" });
     if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
     var no = "MNF" + DateTime.Now.ToString("yyMMddHHmmss");
-    var o = new MnfPlOrder { OrgId = t.OrgId, OrderNo = no, OrdType = dto.OrdType.Trim(), Status = "Draft" };
+    var o = new MnfPlOrder { OrgId = t.OrgId, OrderNo = no, OrdType = dto.OrdType.Trim(), OrdMonth = dto.OrdMonth.Trim(), Remark = dto.Remark, Status = "Draft" };
     db.MnfPlOrders.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.MnfPlOrderDtls.Add(new MnfPlOrderDtl { OrgId = t.OrgId, MnfPlOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, ColorCode = l.ColorCode, Quantity = l.Quantity, MnfPlIdx = l.MnfPlIdx });
@@ -16298,7 +16300,7 @@ record CarLocationDto(string VIN, string? LocationOld, string Location);
 record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
 record ReqRedeemDto(List<ReqRedeemCarDto>? Cars);
 record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx);
-record MnfPlOrderDto(string OrdType, List<MnfPlOrderLineDto>? Lines);
+record MnfPlOrderDto(string OrdType, string? OrdMonth, string? Remark, List<MnfPlOrderLineDto>? Lines);
 record TestCarRegisterCarDto(string VIN, string? ModelCode);
 record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
