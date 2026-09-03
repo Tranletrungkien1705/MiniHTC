@@ -24,7 +24,8 @@
   <div class="grid" style="margin-top:10px">
     <div><label>Mã NH *</label><input id="bk"></div>
     <div><label>Mã đại lý *</label><input id="dl"></div>
-    <div><label>Chi nhánh NH</label><input id="br"></div>
+    <div><label>Mã chi nhánh NH</label><input id="br"></div>
+    <div><label>Tên chi nhánh NH</label><input id="bn"></div>
     <div><label>Số HĐ tín dụng</label><input id="cn"></div>
     <div><label>Ngày HĐ TD</label><input id="cd" type="date"></div>
     <div><label>Hạn mức TD</label><input id="ca" type="number"></div>
@@ -46,7 +47,7 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const body={bankCode:F("bk").value,dealerCode:F("dl").value,bankBranchCode:F("br").value,creditContractNo:F("cn").value,creditContractDate:F("cd").value||null,creditAmount:parseFloat(F("ca").value)||0,flagBankGrt:F("fg").checked?"1":"0",flagBankPmt:F("fp").checked?"1":"0"};
+  const body={bankCode:F("bk").value,dealerCode:F("dl").value,bankBranchCode:F("br").value,bankBranchName:F("bn").value,creditContractNo:F("cn").value,creditContractDate:F("cd").value||null,creditAmount:parseFloat(F("ca").value)||0,flagBankGrt:F("fg").checked?"1":"0",flagBankPmt:F("fp").checked?"1":"0"};
   const r=await fetch("/api/dealerbanks",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
   if(r.ok){ msg("Đã lưu "+j.bankCode+"/"+j.dealerCode); ["bk","dl","br","cn","ca"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));

@@ -10866,21 +10866,32 @@ app.MapGet("/api/dealerbanks", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(b => b.FlagActive == active);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
-        .Select(b => new { b.BankCode, b.DealerCode, b.BankBranchCode, b.CreditContractNo, b.CreditContractDate, b.CreditAmount, b.FlagBankGrt, b.FlagBankPmt, b.FlagActive }).ToListAsync();
+        .Select(b => new { b.BankCode, b.DealerCode, b.BankBranchCode, b.BankBranchName, b.CreditContractNo, b.CreditContractDate, b.CreditAmount, b.FlagBankGrt, b.FlagBankPmt, b.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/dealerbanks", async (DealerBankDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa nhập mã ngân hàng." });
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    // audit 2026-09-03: bổ sung guard đúng nguồn FrmDealerBank.btnImport_Click/gviewDb_ValidateRow
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Mã ngân hàng không được để trống!" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Mã đại lý không được để trống!" });
     var bk = dto.BankCode.Trim().ToUpperInvariant(); var dl = dto.DealerCode.Trim().ToUpperInvariant();
+    if (!await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Bank" && m.Code == bk && m.Status == "1"))
+        return Results.BadRequest(new { error = $"Mã ngân hàng {bk} không hợp lệ!" });
+    if (!await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dl && d.Status == "1"))
+        return Results.BadRequest(new { error = $"Mã đại lý {dl} không hợp lệ!" });
+    if (dto.CreditAmount < 0) return Results.BadRequest(new { error = "Phải >= 0!" });
+    if (!string.IsNullOrWhiteSpace(dto.FlagBankGrt) && dto.FlagBankGrt != "0" && dto.FlagBankGrt != "1")
+        return Results.BadRequest(new { error = "Kiểu dữ liệu không chính xác" });
+    if (!string.IsNullOrWhiteSpace(dto.FlagBankPmt) && dto.FlagBankPmt != "0" && dto.FlagBankPmt != "1")
+        return Results.BadRequest(new { error = "Kiểu dữ liệu không chính xác" });
     if (await db.DealerBanks.AnyAsync(b => b.OrgId == t.OrgId && b.BankCode == bk && b.DealerCode == dl))
         return Results.BadRequest(new { error = $"Ngân hàng {bk} của đại lý {dl} đã tồn tại!" });
     var b = new DealerBank
     {
-        OrgId = t.OrgId, BankCode = bk, DealerCode = dl, BankBranchCode = dto.BankBranchCode, CreditContractNo = dto.CreditContractNo, CreditContractDate = dto.CreditContractDate,
-        CreditAmount = dto.CreditAmount, FlagBankGrt = dto.FlagBankGrt == "1" ? "1" : "0", FlagBankPmt = dto.FlagBankPmt == "1" ? "1" : "0", FlagActive = "1"
+        OrgId = t.OrgId, BankCode = bk, DealerCode = dl, BankBranchCode = dto.BankBranchCode, BankBranchName = dto.BankBranchName,
+        CreditContractNo = dto.CreditContractNo, CreditContractDate = dto.CreditContractDate,
+        CreditAmount = dto.CreditAmount, FlagBankGrt = dto.FlagBankGrt ?? "0", FlagBankPmt = dto.FlagBankPmt ?? "0", FlagActive = "1"
     };
     db.DealerBanks.Add(b); await db.SaveChangesAsync();
     return Results.Ok(new { b.BankCode, b.DealerCode });
@@ -16058,7 +16069,7 @@ record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, str
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
-record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);
+record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? BankBranchName, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode);
 record PaymentTermDto(DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo, string? ModelCode, string? SpecCode, string? FlagDepositPmt, decimal DepositPercent, decimal GuaranteePercent, int GuaranteeDays, int DepositDutyEndDays, int GuaranteeEndDays, int DepositDealDateDays);

@@ -3545,6 +3545,7 @@ public sealed class DealerBank
     public string BankCode { get; set; } = "";
     public string DealerCode { get; set; } = "";
     public string? BankBranchCode { get; set; }
+    public string? BankBranchName { get; set; }      // audit 2026-09-03: bổ sung — thiếu ở fire trước
     public string? CreditContractNo { get; set; }
     public DateTime? CreditContractDate { get; set; }
     public decimal CreditAmount { get; set; }        // hạn mức tín dụng
