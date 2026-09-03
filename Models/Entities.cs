@@ -3613,6 +3613,12 @@ public sealed class CarSpec
     public int? NumberOfSeats { get; set; }
     public string FlagAmbulance { get; set; } = "0";
     public string FlagActive { get; set; } = "1";
+    // audit 2026-09-03: 5 field dưới bổ sung — thiếu ở port trước (FrmCarSpec.cs)
+    public string? AssemblyStatus { get; set; }      // CKD/CBU
+    public string FlagInvoiceFactory { get; set; } = "0";
+    public string FlagDepositPmt { get; set; } = "0";
+    public string? OriginNo { get; set; }            // bắt buộc nếu AssemblyStatus=CBU
+    public DateTime? QuotaDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

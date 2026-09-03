@@ -27,11 +27,17 @@
     <div><label>Std/Opt</label><input id="so"></div>
     <div><label>Grade</label><input id="gr"></div>
     <div><label>OCN</label><input id="ocn"></div>
-    <div><label>Spec gốc</label><input id="rs"></div>
+    <div><label>Spec gốc (RootSpec) *</label><input id="rs"></div>
     <div><label>Số chỗ</label><input id="ns" type="number"></div>
     <div><label>Mô tả</label><input id="ds"></div>
+    <div><label>Lắp ráp</label><select id="as"><option value="">—</option><option value="CKD">CKD</option><option value="CBU">CBU</option></select></div>
+    <div><label>Xuất xứ (bắt buộc nếu CBU)</label><input id="on"></div>
+    <div><label>Ngày quota</label><input id="qd" type="date"></div>
   </div>
-  <div class="bar"><label class="muted"><input type="checkbox" id="amb"> Xe cứu thương</label><button class="primary" onclick="create()">Lưu Spec</button><span id="msg"></span></div>
+  <div class="bar"><label class="muted"><input type="checkbox" id="amb"> Xe cứu thương</label>
+    <label class="muted"><input type="checkbox" id="inv"> Có HĐ nhà máy (bắt buộc nếu CKD)</label>
+    <label class="muted"><input type="checkbox" id="dep"> Cần đặt cọc</label>
+    <button class="primary" onclick="create()">Lưu Spec</button><span id="msg"></span></div>
 </div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Tìm mã/mô tả" oninput="load()" style="width:150px"><input id="qm" placeholder="Lọc model" oninput="load()" style="width:100px"><select id="fa" onchange="load()"><option value="">Tất cả</option><option value="1">Hoạt động</option><option value="0">Ngừng</option></select></div>
 <table><thead><tr><th>Mã Spec</th><th>Model</th><th>Grade</th><th>OCN</th><th>Số chỗ</th><th>Mô tả</th><th>Cứu thương</th><th>TT</th><th></th></tr></thead>
@@ -45,10 +51,10 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const body={specCode:F("sc").value,modelCode:F("md").value,stdOptCode:F("so").value,gradeCode:F("gr").value,oCNCode:F("ocn").value,specDesc:F("ds").value,rootSpec:F("rs").value,numberOfSeats:parseInt(F("ns").value)||null,flagAmbulance:F("amb").checked?"1":"0"};
+  const body={specCode:F("sc").value,modelCode:F("md").value,stdOptCode:F("so").value,gradeCode:F("gr").value,oCNCode:F("ocn").value,specDesc:F("ds").value,rootSpec:F("rs").value,numberOfSeats:parseInt(F("ns").value)||null,flagAmbulance:F("amb").checked?"1":"0",assemblyStatus:F("as").value,flagInvoiceFactory:F("inv").checked?"1":"0",flagDepositPmt:F("dep").checked?"1":"0",originNo:F("on").value,quotaDate:F("qd").value||null};
   const r=await fetch("/api/carspecs",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
-  if(r.ok){ msg("Đã lưu "+j.specCode); ["sc","md","so","gr","ocn","rs","ns","ds"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã lưu "+j.specCode); ["sc","md","so","gr","ocn","rs","ns","ds","on","qd"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/carspecs?q=${F("q").value}&model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();

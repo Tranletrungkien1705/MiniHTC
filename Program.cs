@@ -10999,7 +10999,8 @@ app.MapGet("/api/carspecs", async (AppDbContext db, ITenantContext t, string? mo
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(c => c.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.SpecCode.Contains(q) || (c.SpecDesc != null && c.SpecDesc.Contains(q)));
     var items = await query.OrderByDescending(c => c.Id).Take(500)
-        .Select(c => new { c.SpecCode, c.ModelCode, c.StdOptCode, c.GradeCode, c.OCNCode, c.SpecDesc, c.RootSpec, c.NumberOfSeats, c.FlagAmbulance, c.FlagActive }).ToListAsync();
+        .Select(c => new { c.SpecCode, c.ModelCode, c.StdOptCode, c.GradeCode, c.OCNCode, c.SpecDesc, c.RootSpec, c.NumberOfSeats, c.FlagAmbulance, c.FlagActive,
+            c.AssemblyStatus, c.FlagInvoiceFactory, c.FlagDepositPmt, c.OriginNo, c.QuotaDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -11009,10 +11010,28 @@ app.MapPost("/api/carspecs", async (CarSpecDto dto, AppDbContext db, ITenantCont
     var code = dto.SpecCode.Trim().ToUpperInvariant();
     if (await db.CarSpecs.AnyAsync(c => c.OrgId == t.OrgId && c.SpecCode == code))
         return Results.BadRequest(new { error = $"Mã Spec {code} đã tồn tại!" });
+    // audit 2026-09-03: guard bổ sung đúng nguồn FrmCarSpec.cs (gviewDB_ValidatingEditor + btnApply_Click)
+    if (string.IsNullOrWhiteSpace(dto.RootSpec)) return Results.BadRequest(new { error = "RootSpec không để trống." });
+    var root = dto.RootSpec.Trim().ToUpperInvariant();
+    var assembly = (dto.AssemblyStatus ?? "").Trim().ToUpperInvariant();
+    var flagInv = dto.FlagInvoiceFactory == "1" ? "1" : "0";
+    if (assembly == "CKD" && flagInv != "1") return Results.BadRequest(new { error = "Xe CKD phải có Hóa đơn nhà máy" });
+    if (assembly == "CBU" && string.IsNullOrWhiteSpace(dto.OriginNo)) return Results.BadRequest(new { error = "Xe CBU phải có Xuất xứ" });
+    if (root != code)
+    {
+        // RootSpec tham chiếu 1 spec khác đã tồn tại + đang active + cùng ModelCode (nguồn: CheckRootSpec + "Thêm mới spec - RootSpec phải active")
+        var rootSpec = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == root);
+        if (rootSpec is null) return Results.BadRequest(new { error = $"RootSpec {root} không hợp lệ." });
+        if (rootSpec.FlagActive != "1") return Results.BadRequest(new { error = $"RootSpec: {root} inactive." });
+        if (!string.Equals(rootSpec.ModelCode, dto.ModelCode, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = $"RootSpec {root} không hợp lệ. Các specCode cùng RootSpec phải cùng ModelCode." });
+    }
     var c = new CarSpec
     {
         OrgId = t.OrgId, SpecCode = code, ModelCode = dto.ModelCode, StdOptCode = dto.StdOptCode, GradeCode = dto.GradeCode, OCNCode = dto.OCNCode,
-        SpecDesc = dto.SpecDesc, RootSpec = dto.RootSpec, NumberOfSeats = dto.NumberOfSeats, FlagAmbulance = dto.FlagAmbulance == "1" ? "1" : "0", FlagActive = "1"
+        SpecDesc = dto.SpecDesc, RootSpec = root, NumberOfSeats = dto.NumberOfSeats, FlagAmbulance = dto.FlagAmbulance == "1" ? "1" : "0", FlagActive = "1",
+        AssemblyStatus = dto.AssemblyStatus, FlagInvoiceFactory = flagInv, FlagDepositPmt = dto.FlagDepositPmt == "1" ? "1" : "0",
+        OriginNo = dto.OriginNo, QuotaDate = dto.QuotaDate
     };
     db.CarSpecs.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.SpecCode });
@@ -16028,7 +16047,8 @@ record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode,
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode);
 record PaymentTermDto(DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo, string? ModelCode, string? SpecCode, string? FlagDepositPmt, decimal DepositPercent, decimal GuaranteePercent, int GuaranteeDays, int DepositDutyEndDays, int GuaranteeEndDays, int DepositDealDateDays);
-record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance);
+record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance,
+    string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate);
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
 record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
