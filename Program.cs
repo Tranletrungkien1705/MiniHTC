@@ -264,6 +264,27 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     return Results.Ok(new { d.DealerCode, d.DealerName, d.Status });
 }).RequireAuthorization();
 
+// Import hàng loạt data thật từ Mst_Dealer (SQL nguồn 2010.HTC) — dedupe theo DealerCode.
+app.MapPost("/api/import/dealers", async (List<ImportDealerRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu import." });
+    int added = 0, updated = 0;
+    foreach (var r in rows)
+    {
+        if (string.IsNullOrWhiteSpace(r.DealerCode)) continue;
+        var code = r.DealerCode.Trim().ToUpperInvariant();
+        var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
+        if (d is null) { d = new Dealer { OrgId = t.OrgId, DealerCode = code }; db.Dealers.Add(d); added++; } else updated++;
+        d.DealerName = r.DealerName ?? d.DealerName; d.DealerType = r.DealerType; d.BUCode = r.BUCode; d.BuPattern = r.BuPattern; d.ProvinceCode = r.ProvinceCode;
+        d.DealerPhoneNo = r.DealerPhoneNo; d.DealerFaxNo = r.DealerFaxNo; d.CompanyName = r.CompanyName; d.CompanyAddress = r.CompanyAddress; d.ShowroomAddress = r.ShowroomAddress;
+        d.TaxCode = r.TaxCode; d.DirectorName = r.DirectorName; d.DirectorPhoneNo = r.DirectorPhoneNo; d.DirectorEmail = r.DirectorEmail;
+        d.ContactName = r.ContactName; d.FlagDirect = r.FlagDirect; d.FlagActive = r.FlagActive; d.DealerScale = r.DealerScale; d.Remark = r.Remark;
+        d.Status = r.FlagActive == "0" ? "0" : "1";
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated, total = rows.Count });
+}).RequireAuthorization();
+
 app.MapDelete("/api/dealers/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -15507,6 +15528,9 @@ app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
 record MasterDto(string Code, string Name, string? ParentCode, string? Status);
+record ImportDealerRowDto(string? DealerCode, string? DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode,
+    string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress, string? TaxCode,
+    string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail, string? ContactName, string? FlagDirect, string? FlagActive, string? DealerScale, string? Remark);
 record DealerDto(string DealerCode, string DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
     string? FlagDirect, string? FlagActive, string? DealerScale, string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress,
     string? GarageAddress, string? GarageManagerPhoneNo, string? GarageFaxNo, string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail,
