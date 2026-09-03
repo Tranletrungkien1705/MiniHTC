@@ -6637,6 +6637,8 @@ app.MapGet("/api/dms40/soroots/{no}", async (string no, AppDbContext db, ITenant
 app.MapPost("/api/dms40/soroots", async (Dms40SoRootDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    // WinForm line 810: OrderMonth bắt buộc
+    if (dto.OrderMonth is null) return Results.BadRequest(new { error = "Chưa chọn tháng đơn hàng." });
     var lines = dto.Lines ?? new List<Dms40SoRootLineDto>();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu model." });
 
