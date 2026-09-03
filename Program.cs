@@ -141,7 +141,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("CarCancelReason", "Lý do hủy (FrmUpdateCar_Status)"),
     ("Model", "Model xe (FrmModel)"),
     ("Province", "Tỉnh/Thành (FrmProvince)"),
-    ("AccountBank", "Tài khoản ngân hàng (FrmMstAccountBank)"),
     ("DealerBank", "Ngân hàng đại lý (FrmDealerBank)"),
     ("BusinessPlan", "Kế hoạch KD (FrmMngBusinessPlan)"),
     ("CarSpec", "Cấu hình xe (FrmCarSpec)"),
@@ -189,7 +188,9 @@ app.MapGet("/api/master/{cat}", async (string cat, AppDbContext db, ITenantConte
 }).RequireAuthorization();
 
 // Category có cha bắt buộc (audit 2026-09-03 — FrmDistrict cần ProvinceCode, FrmProvince cần AreaCode; bỏ sót ở lần port đầu tiên).
-var MasterParentRule = new Dictionary<string, string> { ["District"] = "Province", ["Province"] = "__Area__" };
+// audit 2026-09-03: "Certificate" cần scope theo SMType (Mst_SalesManType) — nguồn FrmCertificate.cs cột
+// SMType + FrmCreateSalesMan lọc chứng chỉ theo SMType đã chọn (lueSMType_EditValueChanged → dvCer.RowFilter SMType).
+var MasterParentRule = new Dictionary<string, string> { ["District"] = "Province", ["Province"] = "__Area__", ["Certificate"] = "__SalesManType__" };
 
 app.MapPost("/api/master/{cat}", async (string cat, MasterDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -202,6 +203,8 @@ app.MapPost("/api/master/{cat}", async (string cat, MasterDto dto, AppDbContext 
         if (parentCode is null) return Results.BadRequest(new { error = $"Category '{cat}' cần ParentCode." });
         bool parentExists = parentCat == "__Area__"
             ? await db.Areas.AnyAsync(a => a.OrgId == t.OrgId && a.AreaCode == parentCode)
+            : parentCat == "__SalesManType__"
+            ? await db.SalesManTypes.AnyAsync(s => s.OrgId == t.OrgId && s.SMType == parentCode)
             : await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == parentCat && m.Code == parentCode);
         if (!parentExists) return Results.BadRequest(new { error = $"ParentCode '{parentCode}' không tồn tại." });
     }
@@ -3597,11 +3600,19 @@ app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string
 
 app.MapPost("/api/bankaccounts", async (BankAccountDto dto, AppDbContext db, ITenantContext t) =>
 {
+    // audit 2026-09-03: nguồn (btnSave_Click, Excel-row validate) bắt buộc AccountName/BankCode/DealerCode/FlagAccGrtClaim
+    // — port trước chỉ check AccountNo, và dedupe chỉ theo AccountNo (nguồn dùng khóa hỗn hợp AccountNo+BankCode, xem
+    // BankAccountKey trong FrmMstAccountBank.cs — 1 số TK có thể lặp lại ở NH khác).
     if (string.IsNullOrWhiteSpace(dto.AccountNo)) return Results.BadRequest(new { error = "Số tài khoản không được trống!" });
-    var acc = dto.AccountNo.Trim();
-    if (await db.BankAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountNo == acc))
-        return Results.BadRequest(new { error = $"Số tài khoản {acc} đã tồn tại!" });
-    var a2 = new BankAccount { OrgId = t.OrgId, AccountNo = acc, AccountName = dto.AccountName, BankCode = dto.BankCode, DealerCode = dto.DealerCode, FlagAccGrtClaim = dto.FlagAccGrtClaim == "1" ? "1" : "0", FlagActive = "1" };
+    if (string.IsNullOrWhiteSpace(dto.AccountName)) return Results.BadRequest(new { error = "Tên tài khoản không được để trống" });
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Mã ngân hàng không được để trống" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Mã đại lý không được để trống" });
+    if (string.IsNullOrWhiteSpace(dto.FlagAccGrtClaim) || (dto.FlagAccGrtClaim != "0" && dto.FlagAccGrtClaim != "1"))
+        return Results.BadRequest(new { error = "Cờ TK Công văn không hợp lệ!" });
+    var acc = dto.AccountNo.Trim(); var bankCode = dto.BankCode.Trim();
+    if (await db.BankAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountNo == acc && a.BankCode == bankCode))
+        return Results.BadRequest(new { error = $"Tài khoản import '{acc}' thuộc ngân hàng '{bankCode}' đã tồn tại!" });
+    var a2 = new BankAccount { OrgId = t.OrgId, AccountNo = acc, AccountName = dto.AccountName, BankCode = bankCode, DealerCode = dto.DealerCode, FlagAccGrtClaim = dto.FlagAccGrtClaim, FlagActive = "1" };
     db.BankAccounts.Add(a2); await db.SaveChangesAsync();
     return Results.Ok(new { a2.AccountNo });
 }).RequireAuthorization();
@@ -10825,6 +10836,9 @@ app.MapPost("/api/carocns", async (CarOCNDto dto, AppDbContext db, ITenantContex
 {
     if (string.IsNullOrWhiteSpace(dto.OCNCode)) return Results.BadRequest(new { error = "Chưa nhập mã OCN." });
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
+    // audit 2026-09-03: nguồn (gviewDbAdvancedOption_ValidatingEditor/gviewExcel_ValidatingEditor) bắt buộc
+    // MỌI cột editable không rỗng, kể cả OCN_Desc — port trước để OCNDesc optional.
+    if (string.IsNullOrWhiteSpace(dto.OCNDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả OCN." });
     var oc = dto.OCNCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
     if (await db.CarOCNs.AnyAsync(c => c.OrgId == t.OrgId && c.OCNCode == oc && c.ModelCode == md))
         return Results.BadRequest(new { error = $"OCN {oc} của model {md} đã tồn tại!" });
@@ -10842,6 +10856,7 @@ app.MapPost("/api/carocns/{model}/{code}/toggle", async (string model, string co
     await db.SaveChangesAsync();
     return Results.Ok(new { c.OCNCode, c.ModelCode, flagActive = c.FlagActive });
 }).RequireAuthorization();
+
 
 // ===== Ngân hàng đại lý (DealerBank — port 1:1 FrmDealerBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/dealerbanks", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? active) =>
