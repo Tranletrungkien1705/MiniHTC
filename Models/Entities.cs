@@ -30,6 +30,45 @@ public sealed class Dealer
     public string? TaxCode { get; set; }
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // audit 2026-09-03 — 29 field còn thiếu so với FrmDealer gốc (39 field), bổ sung đủ:
+    public string? DealerType { get; set; }
+    public string? BuPattern { get; set; }
+    public string? FlagDirect { get; set; }
+    public string? FlagActive { get; set; }
+    public string? DealerScale { get; set; }
+    public string? DealerPhoneNo { get; set; }
+    public string? DealerFaxNo { get; set; }
+    public string? CompanyName { get; set; }
+    public string? CompanyAddress { get; set; }
+    public string? ShowroomAddress { get; set; }
+    public string? GarageAddress { get; set; }
+    public string? GarageManagerPhoneNo { get; set; }
+    public string? GarageFaxNo { get; set; }
+    public string? DirectorName { get; set; }
+    public string? DirectorPhoneNo { get; set; }
+    public string? DirectorEmail { get; set; }
+    public string? SalesManagerName { get; set; }
+    public string? SalesManagerPhoneNo { get; set; }
+    public string? SalesManagerEmail { get; set; }
+    public string? GarageManagerName { get; set; }
+    public string? GarageManagerEmail { get; set; }
+    public string? ContactName { get; set; }
+    public string? Signer { get; set; }
+    public string? SignerPosition { get; set; }
+    public string? CtrNoSigner { get; set; }
+    public string? CtrNoSignerPosition { get; set; }
+    public string? Remark { get; set; }
+    public string? HTCStaffInCharge { get; set; }
+    public string? DealerAddress01 { get; set; }
+    public string? DealerAddress02 { get; set; }
+    public string? DealerAddress03 { get; set; }
+    public string? DealerAddress04 { get; set; }
+    public string? DealerAddress05 { get; set; }
+    public string? FlagTCG { get; set; }
+    public string? FlagOrdTCG { get; set; }
+    public string? FlagAutoLXX { get; set; }
+    public string? FlagAutoMapVIN { get; set; }
+    public string? FlagAutoSOAppr { get; set; }
 }
 
 /// <summary>Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice: giá theo Model/Spec/Color.</summary>

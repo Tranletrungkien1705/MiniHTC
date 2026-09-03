@@ -17,12 +17,17 @@
 <body>
 <h1>Quản lý Đại lý <span class="muted">(port 1:1 FrmDealer — Mst_Dealer)</span></h1>
 <div class="grid">
-  <input id="c" placeholder="Mã đại lý *"><input id="n" placeholder="Tên đại lý *" style="grid-column:span 2"><input id="bu" placeholder="BUCode">
-  <input id="pv" placeholder="Tỉnh"><input id="addr" placeholder="Địa chỉ" style="grid-column:span 2"><input id="ph" placeholder="Điện thoại">
-  <input id="fx" placeholder="Fax"><input id="em" placeholder="Email"><input id="tx" placeholder="Mã số thuế">
+  <input id="c" placeholder="Mã đại lý *"><input id="n" placeholder="Tên đại lý *" style="grid-column:span 2"><input id="bu" placeholder="BUCode *">
+  <input id="bup" placeholder="BuPattern *"><input id="pv" placeholder="Tỉnh *"><input id="dt" placeholder="Loại đại lý"><input id="ds" placeholder="Quy mô">
+  <input id="addr" placeholder="Địa chỉ" style="grid-column:span 2"><input id="ph" placeholder="Điện thoại"><input id="fx" placeholder="Fax">
+  <input id="em" placeholder="Email"><input id="tx" placeholder="Mã số thuế"><input id="cpn" placeholder="Tên công ty"><input id="cpnAddr" placeholder="Địa chỉ ĐKKD">
+  <input id="dir" placeholder="Giám đốc"><input id="dirPh" placeholder="Mobile GĐ"><input id="contact" placeholder="Người liên lạc"><input id="remark" placeholder="Ghi chú">
   <select id="st"><option value="1">Hiệu lực</option><option value="0">Ngừng</option></select>
+  <select id="fd"><option value="">FlagDirect: —</option><option value="1">Trực tiếp</option><option value="0">Không</option></select>
+  <select id="ftcg"><option value="">FlagTCG: —</option><option value="1">Có</option><option value="0">Không</option></select>
 </div>
 <div class="bar"><button class="primary" onclick="save()">Lưu</button><input id="q" placeholder="Tìm mã/tên..." oninput="load()" style="width:auto;flex:1" onclick="event.stopPropagation()"><span id="msg"></span></div>
+<div class="muted">Ghi chú: form này hiển thị các field chính; các field còn lại (địa chỉ showroom/xưởng DV, TP bán hàng/DV, người ký HĐ, 5 dòng địa chỉ phụ, cờ tự động LXX/MapVIN/SOAppr...) vẫn lưu được qua API /api/dealers nhưng chưa có ô nhập riêng trên UI này.</div>
 <div class="tblwrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>BU</th><th>Tỉnh</th><th>ĐT</th><th>Email</th><th>MST</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table></div>
 <script>
@@ -42,13 +47,19 @@ async function load(){ await token();
     <td><span class="act" onclick='fill(${JSON.stringify(x)})'>Sửa</span><span class="act err" onclick="del('${x.dealerCode}')">Xoá</span></td></tr>`).join("")
     || '<tr><td colspan="9" class="muted">Chưa có đại lý.</td></tr>';
 }
-function fill(x){ F("c").value=x.dealerCode;F("n").value=x.dealerName;F("bu").value=x.buCode||"";F("pv").value=x.provinceCode||"";
-  F("addr").value=x.address||"";F("ph").value=x.phone||"";F("fx").value=x.fax||"";F("em").value=x.email||"";F("tx").value=x.taxCode||"";F("st").value=x.status; }
+function fill(x){ F("c").value=x.dealerCode;F("n").value=x.dealerName;F("bu").value=x.buCode||"";F("bup").value=x.buPattern||"";F("pv").value=x.provinceCode||"";
+  F("dt").value=x.dealerType||"";F("ds").value=x.dealerScale||"";
+  F("addr").value=x.address||"";F("ph").value=x.phone||"";F("fx").value=x.fax||"";F("em").value=x.email||"";F("tx").value=x.taxCode||"";
+  F("cpn").value=x.companyName||"";F("cpnAddr").value=x.companyAddress||"";F("dir").value=x.directorName||"";F("dirPh").value=x.directorPhoneNo||"";
+  F("contact").value=x.contactName||"";F("remark").value=x.remark||"";F("st").value=x.status;F("fd").value=x.flagDirect||"";F("ftcg").value=x.flagTCG||""; }
 async function save(){
-  const body=JSON.stringify({dealerCode:F("c").value,dealerName:F("n").value,buCode:F("bu").value,provinceCode:F("pv").value,
-    address:F("addr").value,phone:F("ph").value,fax:F("fx").value,email:F("em").value,taxCode:F("tx").value,status:F("st").value});
+  const body=JSON.stringify({dealerCode:F("c").value,dealerName:F("n").value,buCode:F("bu").value,buPattern:F("bup").value,provinceCode:F("pv").value,
+    dealerType:F("dt").value||null,dealerScale:F("ds").value||null,
+    address:F("addr").value,phone:F("ph").value,fax:F("fx").value,email:F("em").value,taxCode:F("tx").value,
+    companyName:F("cpn").value||null,companyAddress:F("cpnAddr").value||null,directorName:F("dir").value||null,directorPhoneNo:F("dirPh").value||null,
+    contactName:F("contact").value||null,remark:F("remark").value||null,flagDirect:F("fd").value||null,flagTCG:F("ftcg").value||null,status:F("st").value});
   const r=await fetch("/api/dealers",{method:"POST",headers:H(),body});
-  if(r.ok){ msg("Đã lưu.",true); ["c","n","bu","pv","addr","ph","fx","em","tx"].forEach(i=>F(i).value=""); load(); }
+  if(r.ok){ msg("Đã lưu.",true); ["c","n","bu","bup","dt","ds","addr","ph","fx","em","tx","cpn","cpnAddr","dir","dirPh","contact","remark"].forEach(i=>F(i).value=""); load(); }
   else msg("Lỗi: "+((await r.json()).error||r.status),false);
 }
 async function del(c){ if(!confirm("Xoá đại lý "+c+"?"))return;

@@ -227,19 +227,38 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
     var query = db.Dealers.Where(d => d.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(d => d.DealerCode.Contains(q) || d.DealerName.Contains(q));
     var items = await query.OrderBy(d => d.DealerCode).Select(d => new
-    { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode, d.Status }).ToListAsync();
+    { d.DealerCode, d.DealerName, d.DealerType, d.BUCode, d.BuPattern, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode,
+      d.FlagDirect, d.FlagActive, d.DealerScale, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
+      d.GarageAddress, d.GarageManagerPhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
+      d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
+      d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
+      d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
+      d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// Khớp gviewDb_ValidatingEditor gốc: ProvinceCode/BUCode/BuPattern/DealerName bắt buộc.
 app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.DealerName))
         return Results.BadRequest(new { error = "Cần DealerCode và DealerName." });
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCode) || string.IsNullOrWhiteSpace(dto.BUCode) || string.IsNullOrWhiteSpace(dto.BuPattern))
+        return Results.BadRequest(new { error = "Cần ProvinceCode, BUCode và BuPattern." });
     var code = dto.DealerCode.Trim().ToUpperInvariant();
     var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
     if (d is null) { d = new Dealer { OrgId = t.OrgId, DealerCode = code }; db.Dealers.Add(d); }
-    d.DealerName = dto.DealerName.Trim(); d.BUCode = dto.BUCode; d.ProvinceCode = dto.ProvinceCode;
+    d.DealerName = dto.DealerName.Trim(); d.DealerType = dto.DealerType; d.BUCode = dto.BUCode; d.BuPattern = dto.BuPattern; d.ProvinceCode = dto.ProvinceCode;
     d.Address = dto.Address; d.Phone = dto.Phone; d.Fax = dto.Fax; d.Email = dto.Email; d.TaxCode = dto.TaxCode;
+    d.FlagDirect = dto.FlagDirect; d.FlagActive = dto.FlagActive; d.DealerScale = dto.DealerScale;
+    d.DealerPhoneNo = dto.DealerPhoneNo; d.DealerFaxNo = dto.DealerFaxNo; d.CompanyName = dto.CompanyName; d.CompanyAddress = dto.CompanyAddress;
+    d.ShowroomAddress = dto.ShowroomAddress; d.GarageAddress = dto.GarageAddress; d.GarageManagerPhoneNo = dto.GarageManagerPhoneNo; d.GarageFaxNo = dto.GarageFaxNo;
+    d.DirectorName = dto.DirectorName; d.DirectorPhoneNo = dto.DirectorPhoneNo; d.DirectorEmail = dto.DirectorEmail;
+    d.SalesManagerName = dto.SalesManagerName; d.SalesManagerPhoneNo = dto.SalesManagerPhoneNo; d.SalesManagerEmail = dto.SalesManagerEmail;
+    d.GarageManagerName = dto.GarageManagerName; d.GarageManagerEmail = dto.GarageManagerEmail;
+    d.ContactName = dto.ContactName; d.Signer = dto.Signer; d.SignerPosition = dto.SignerPosition; d.CtrNoSigner = dto.CtrNoSigner; d.CtrNoSignerPosition = dto.CtrNoSignerPosition;
+    d.Remark = dto.Remark; d.HTCStaffInCharge = dto.HTCStaffInCharge;
+    d.DealerAddress01 = dto.DealerAddress01; d.DealerAddress02 = dto.DealerAddress02; d.DealerAddress03 = dto.DealerAddress03; d.DealerAddress04 = dto.DealerAddress04; d.DealerAddress05 = dto.DealerAddress05;
+    d.FlagTCG = dto.FlagTCG; d.FlagOrdTCG = dto.FlagOrdTCG; d.FlagAutoLXX = dto.FlagAutoLXX; d.FlagAutoMapVIN = dto.FlagAutoMapVIN; d.FlagAutoSOAppr = dto.FlagAutoSOAppr;
     d.Status = dto.Status ?? "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { d.DealerCode, d.DealerName, d.Status });
@@ -15488,7 +15507,13 @@ app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
 record MasterDto(string Code, string Name, string? ParentCode, string? Status);
-record DealerDto(string DealerCode, string DealerName, string? BUCode, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode, string? Status);
+record DealerDto(string DealerCode, string DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
+    string? FlagDirect, string? FlagActive, string? DealerScale, string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress,
+    string? GarageAddress, string? GarageManagerPhoneNo, string? GarageFaxNo, string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail,
+    string? SalesManagerName, string? SalesManagerPhoneNo, string? SalesManagerEmail, string? GarageManagerName, string? GarageManagerEmail,
+    string? ContactName, string? Signer, string? SignerPosition, string? CtrNoSigner, string? CtrNoSignerPosition, string? Remark, string? HTCStaffInCharge,
+    string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
+    string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status);
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, decimal Price, decimal? Vat, string? Status);
 record CustomerDto(string? CustomerCode, string CustomerName, string? Phone, string? IdCard, string? TaxCode, string? Address, string? Email, string? ProvinceCode, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? Phone, string? Email, string? Status);
