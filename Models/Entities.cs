@@ -132,7 +132,7 @@ public sealed class SalesMan
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Yêu cầu kiểm tra trước giao xe PDI (Pre-Delivery Inspection) — port 1:1 FrmMngDlr_PDIRequest.</summary>
+/// <summary>PDI inspection tracking (simplified) — KHÔNG có twin WinForm 1:1: FrmMngDlr_PDIRequest đã port đúng tại DlrPdiRequest; FrmMngPDI/FrmNewPDI đã port tại HtmvPdi. Entity này là flow tổng hợp HTC-track Requested→Inspecting→Passed/Failed per VIN.</summary>
 public sealed class PdiRequest
 {
     public long Id { get; set; }
