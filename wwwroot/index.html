@@ -23,6 +23,7 @@
   <span style="flex:1"></span>
   <input id="fCode" placeholder="Mã KV" style="width:90px">
   <input id="fName" placeholder="Tên khu vực" style="width:200px">
+  <input id="fRoot" placeholder="Mã KV cha (để trống=gốc)" style="width:160px">
   <select id="fStatus" style="padding:7px;border-radius:8px;border:1px solid var(--line);background:transparent;color:inherit">
     <option value="1">Hiệu lực</option><option value="0">Ngừng</option>
   </select>
@@ -30,8 +31,8 @@
 </div>
 
 <div id="msg"></div>
-<table><thead><tr><th>Mã</th><th>Tên khu vực</th><th>Trạng thái</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Mã</th><th>Tên khu vực</th><th>KV cha</th><th>Cấp</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
 
 <script>
 let TOKEN = null;
@@ -52,16 +53,17 @@ async function load(){
   const d = await r.json();
   document.getElementById("rows").innerHTML = (d.items||[]).map(a=>`
     <tr><td><b>${a.areaCode}</b></td><td>${a.areaName}</td>
+    <td>${a.areaRootCode||"—"}</td><td>${a.level}</td>
     <td><span class="pill">${a.status==="1"?"Hiệu lực":"Ngừng"}</span></td>
-    <td><span class="act" onclick="edit('${a.areaCode}','${a.areaName.replace(/'/g,"\\'")}','${a.status}')">Sửa</span>
+    <td><span class="act" onclick="edit('${a.areaCode}','${a.areaName.replace(/'/g,"\\'")}','${a.areaRootCode||""}','${a.status}')">Sửa</span>
     <span class="act err" onclick="del('${a.areaCode}')">Xoá</span></td></tr>`).join("")
-    || '<tr><td colspan="4" class="muted">Chưa có khu vực.</td></tr>';
+    || '<tr><td colspan="6" class="muted">Chưa có khu vực.</td></tr>';
 }
-function edit(c,n,s){ document.getElementById("fCode").value=c; document.getElementById("fName").value=n; document.getElementById("fStatus").value=s; }
+function edit(c,n,root,s){ document.getElementById("fCode").value=c; document.getElementById("fName").value=n; document.getElementById("fRoot").value=root; document.getElementById("fStatus").value=s; }
 async function save(){
-  const body = JSON.stringify({areaCode:document.getElementById("fCode").value, areaName:document.getElementById("fName").value, status:document.getElementById("fStatus").value});
+  const body = JSON.stringify({areaCode:document.getElementById("fCode").value, areaName:document.getElementById("fName").value, areaRootCode:document.getElementById("fRoot").value||null, status:document.getElementById("fStatus").value});
   const r = await fetch("/api/areas", {method:"POST", headers:H(), body});
-  if(r.ok){ msg("Đã lưu.", true); document.getElementById("fCode").value=""; document.getElementById("fName").value=""; load(); }
+  if(r.ok){ msg("Đã lưu.", true); document.getElementById("fCode").value=""; document.getElementById("fName").value=""; document.getElementById("fRoot").value=""; load(); }
   else msg("Lỗi: "+((await r.json()).error||r.status), false);
 }
 async function del(c){

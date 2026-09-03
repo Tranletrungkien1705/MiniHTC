@@ -8,6 +8,8 @@ public sealed class Area
     public Guid OrgId { get; set; }
     public string AreaCode { get; set; } = "";
     public string AreaName { get; set; } = "";
+    public string? AreaRootCode { get; set; }   // mã khu vực cha (cây phân cấp) — port 1:1 FrmArea, audit 2026-09-03 phát hiện thiếu
+    public int Level { get; set; } = 1;         // cấp bậc, tự tính = Level(cha)+1; root=1
     public string Status { get; set; } = "1";   // 1=hiệu lực, 0=ngừng (cờ 2010.HTC)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

@@ -78,20 +78,30 @@ app.MapGet("/api/areas", async (AppDbContext db, ITenantContext t, string? q) =>
     var query = db.Areas.Where(a => a.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(a => a.AreaCode.Contains(q) || a.AreaName.Contains(q));
     var items = await query.OrderBy(a => a.AreaCode)
-        .Select(a => new { a.AreaCode, a.AreaName, a.Status }).ToListAsync();
+        .Select(a => new { a.AreaCode, a.AreaName, a.AreaRootCode, a.Level, a.Status }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// Khớp btnApply_Click gốc: Level tự tính = Level(cha theo AreaRootCode)+1; root (không có cha, hoặc cha không tồn tại)=1.
 app.MapPost("/api/areas", async (AreaDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.AreaCode) || string.IsNullOrWhiteSpace(dto.AreaName))
         return Results.BadRequest(new { error = "Cần AreaCode và AreaName." });
     var code = dto.AreaCode.Trim().ToUpperInvariant();
+    var rootCode = string.IsNullOrWhiteSpace(dto.AreaRootCode) ? null : dto.AreaRootCode.Trim().ToUpperInvariant();
+    int level = 1;
+    if (rootCode is not null)
+    {
+        var parent = await db.Areas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AreaCode == rootCode);
+        if (parent is null) return Results.BadRequest(new { error = $"Khu vực cha '{rootCode}' không tồn tại." });
+        if (parent.AreaCode == code) return Results.BadRequest(new { error = "Khu vực không thể là cha của chính nó." });
+        level = parent.Level + 1;
+    }
     var a = await db.Areas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AreaCode == code);
-    if (a is null) { a = new Area { OrgId = t.OrgId, AreaCode = code, AreaName = dto.AreaName.Trim(), Status = dto.Status ?? "1" }; db.Areas.Add(a); }
-    else { a.AreaName = dto.AreaName.Trim(); a.Status = dto.Status ?? a.Status; }   // btnApply: upsert
+    if (a is null) { a = new Area { OrgId = t.OrgId, AreaCode = code, AreaName = dto.AreaName.Trim(), AreaRootCode = rootCode, Level = level, Status = dto.Status ?? "1" }; db.Areas.Add(a); }
+    else { a.AreaName = dto.AreaName.Trim(); a.AreaRootCode = rootCode; a.Level = level; a.Status = dto.Status ?? a.Status; }   // btnApply: upsert
     await db.SaveChangesAsync();
-    return Results.Ok(new { a.AreaCode, a.AreaName, a.Status });
+    return Results.Ok(new { a.AreaCode, a.AreaName, a.AreaRootCode, a.Level, a.Status });
 }).RequireAuthorization();
 
 app.MapDelete("/api/areas/{code}", async (string code, AppDbContext db, ITenantContext t) =>
@@ -15464,7 +15474,7 @@ app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 
 app.Run();
 
-record AreaDto(string AreaCode, string AreaName, string? Status);
+record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
 record MasterDto(string Code, string Name, string? Status);
 record DealerDto(string DealerCode, string DealerName, string? BUCode, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode, string? Status);
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, decimal Price, decimal? Vat, string? Status);
