@@ -12371,11 +12371,19 @@ app.MapGet("/api/cardrivertests", async (AppDbContext db, ITenantContext t, stri
 app.MapPost("/api/cardrivertests", async (CarDriverTestDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DrvTestPlateNo)) return Results.BadRequest(new { error = "Biển số không hợp lệ." });
+    // audit 2026-09-03: bổ sung guard đúng nguồn FrmMstCarDriverTestHTC.gviewOrderDetail_ValidateRow (regex biển số 2 dạng + VIN đúng 17 ký tự)
+    var plateCheck = dto.DrvTestPlateNo.Trim();
+    if (!System.Text.RegularExpressions.Regex.IsMatch(plateCheck, @"^[0-9]{1}[0-9]{0,1}[A-Z]{1,2}-[0-9]{4,5}$") &&
+        !System.Text.RegularExpressions.Regex.IsMatch(plateCheck, @"^[A-Z]{2}-[0-9]{4,5}$"))
+        return Results.BadRequest(new { error = "Biển số không hợp lệ" });
+    if (!string.IsNullOrWhiteSpace(dto.DrvTestVIN) && dto.DrvTestVIN.Trim().Length != 17)
+        return Results.BadRequest(new { error = "Số VIN không hợp lệ" });
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập Model." });
     if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Chưa nhập Spec." });
     if (string.IsNullOrWhiteSpace(dto.ColorCode)) return Results.BadRequest(new { error = "Chưa nhập Màu." });
-    if (dto.DateSupport1 is not null && dto.DateSupport2 is not null && dto.DateSupport2 <= dto.DateSupport1)
-        return Results.BadRequest(new { error = "Ngày hỗ trợ đợt 2 phải lớn hơn Ngày hỗ trợ đợt 1." });
+    // audit 2026-09-03: nguồn (btnSave_Click) chỉ báo lỗi khi Date1 > Date2 (Date1==Date2 hợp lệ) — port trước chặn cả trường hợp bằng nhau (sai, chặt hơn nguồn)
+    if (dto.DateSupport1 is not null && dto.DateSupport2 is not null && dto.DateSupport1 > dto.DateSupport2)
+        return Results.BadRequest(new { error = "Ngày hỗ trợ đợt 2 phải lớn hơn Ngày hỗ trợ đợt 1" });
     var plate = dto.DrvTestPlateNo.Trim().ToUpperInvariant();
     if (await db.CarDriverTests.AnyAsync(c => c.OrgId == t.OrgId && c.DrvTestPlateNo == plate))
         return Results.BadRequest(new { error = $"Biển số {plate} đã tồn tại (trùng)!" });
