@@ -342,18 +342,51 @@ app.MapGet("/api/salesmen", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(s => s.SalesManCode.Contains(q) || s.SalesManName.Contains(q));
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(s => s.DealerCode == dealer);
     var items = await query.OrderBy(s => s.SalesManCode).Take(500).Select(s => new
-    { s.SalesManCode, s.SalesManName, s.DealerCode, s.DepartmentCode, s.Phone, s.Email, s.Status }).ToListAsync();
+    { s.SalesManCode, s.SalesManName, s.DealerCode, s.DepartmentCode, s.SalesType, s.Phone, s.Email, s.Status,
+      s.Gender, s.DateOfBirth, s.ProvinceCode, s.PositionCode, s.SMHyundaiCode, s.IdentityCardNo }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.SalesManName)) return Results.BadRequest(new { error = "Cần SalesManName." });
+    // audit 2026-09-03: bổ sung guard đúng nguồn FrmCreateSalesMan.btnSave_Click (trước chỉ check SalesManName)
+    if (string.IsNullOrWhiteSpace(dto.SMHyundaiCode)) return Results.BadRequest(new { error = "Chưa nhập Mã nhân viên Hyundai!" });
+    if (string.IsNullOrWhiteSpace(dto.IdentityCardNo)) return Results.BadRequest(new { error = "Chưa nhập Số CMND/ thẻ CCCD!" });
+    if (string.IsNullOrWhiteSpace(dto.DepartmentCode)) return Results.BadRequest(new { error = "Chưa chọn Mã phòng ban!" });
+    if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "Chưa chọn Mã loại nhân viên!" });
+    if (string.IsNullOrWhiteSpace(dto.SalesManName)) return Results.BadRequest(new { error = "Chưa nhập Họ và tên nhân viên!" });
+    if (string.IsNullOrWhiteSpace(dto.Gender)) return Results.BadRequest(new { error = "Chưa chọn Giới tính!" });
+    if (dto.DateOfBirth is null) return Results.BadRequest(new { error = "Chưa nhập Ngày sinh!" });
+    if (string.IsNullOrWhiteSpace(dto.Phone)) return Results.BadRequest(new { error = "Chưa nhập Số điện thoại nhân viên!" });
+    if (!System.Text.RegularExpressions.Regex.IsMatch(dto.Phone.Trim(), @"^0\d{9,10}$")) return Results.BadRequest(new { error = "Số điện thoại không hợp lệ!" });
+    if (string.IsNullOrWhiteSpace(dto.Status) || dto.Status == "0") return Results.BadRequest(new { error = "Chưa chọn Trạng thái!" });
+    if (string.IsNullOrWhiteSpace(dto.PositionCode)) return Results.BadRequest(new { error = "Chưa nhập Chức vụ!" });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !System.Text.RegularExpressions.Regex.IsMatch(dto.Email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+        return Results.BadRequest(new { error = "Email không hợp lệ!" });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập Địa chỉ!" });
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Chưa chọn Quê quán!" });
+    if (string.IsNullOrWhiteSpace(dto.Specialized)) return Results.BadRequest(new { error = "Chưa nhập Chuyên ngành!" });
+    if (string.IsNullOrWhiteSpace(dto.QualificationCode)) return Results.BadRequest(new { error = "Chưa chọn Trình độ chuyên môn!" });
+    if (dto.StartDate is null) return Results.BadRequest(new { error = "Chưa nhập Ngày bắt đầu!" });
+    if (dto.SalesType.Trim().Equals("TVBH", StringComparison.OrdinalIgnoreCase))
+    {
+        if (string.IsNullOrWhiteSpace(dto.WebsiteLink)) return Results.BadRequest(new { error = "Chưa nhập Website!" });
+        if (string.IsNullOrWhiteSpace(dto.FacebookLink)) return Results.BadRequest(new { error = "Chưa nhập Facebook cá nhân!" });
+        if (string.IsNullOrWhiteSpace(dto.FanpageLink)) return Results.BadRequest(new { error = "Chưa nhập Fanpage!" });
+        if (string.IsNullOrWhiteSpace(dto.GroupLink)) return Results.BadRequest(new { error = "Chưa nhập Group!" });
+        if (string.IsNullOrWhiteSpace(dto.ZaloLink)) return Results.BadRequest(new { error = "Chưa nhập Zalo!" });
+    }
     var code = string.IsNullOrWhiteSpace(dto.SalesManCode) ? "NV" + DateTime.Now.ToString("yyMMddHHmmss") : dto.SalesManCode.Trim().ToUpperInvariant();
     var s = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code);
     if (s is null) { s = new SalesMan { OrgId = t.OrgId, SalesManCode = code }; db.SalesMen.Add(s); }
-    s.SalesManName = dto.SalesManName.Trim(); s.DealerCode = dto.DealerCode; s.DepartmentCode = dto.DepartmentCode;
+    s.SalesManName = dto.SalesManName.Trim(); s.DealerCode = dto.DealerCode; s.DepartmentCode = dto.DepartmentCode; s.SalesType = dto.SalesType;
     s.Phone = dto.Phone; s.Email = dto.Email; s.Status = dto.Status ?? "1";
+    s.Gender = dto.Gender; s.DateOfBirth = dto.DateOfBirth; s.Address = dto.Address; s.ProvinceCode = dto.ProvinceCode;
+    s.QualificationCode = dto.QualificationCode; s.Specialized = dto.Specialized; s.YearExperience = dto.YearExperience;
+    s.StartDate = dto.StartDate; s.EndDate = dto.EndDate; s.Position = dto.Position; s.PositionCode = dto.PositionCode;
+    s.CertificateCode = dto.CertificateCode; s.SMHyundaiCode = dto.SMHyundaiCode; s.IdentityCardNo = dto.IdentityCardNo;
+    s.WebsiteLink = dto.WebsiteLink; s.FacebookLink = dto.FacebookLink; s.FanpageLink = dto.FanpageLink;
+    s.GroupLink = dto.GroupLink; s.ZaloLink = dto.ZaloLink; s.AccountHTA = dto.AccountHTA;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.SalesManCode, s.SalesManName, s.Status });
 }).RequireAuthorization();
@@ -15527,7 +15560,10 @@ record DealerDto(string DealerCode, string DealerName, string? DealerType, strin
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
     string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status);
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
-record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? Phone, string? Email, string? Status);
+record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? SalesType, string? Phone, string? Email, string? Status,
+    string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,
+    DateTime? StartDate, DateTime? EndDate, string? Position, string? PositionCode, string? CertificateCode, string? SMHyundaiCode, string? IdentityCardNo,
+    string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? AccountHTA);
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string Vin, string? DealerCode, string? Reason);

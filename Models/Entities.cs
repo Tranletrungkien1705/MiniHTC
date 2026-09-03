@@ -108,6 +108,27 @@ public sealed class SalesMan
     public string? Phone { get; set; }
     public string? Email { get; set; }
     public string Status { get; set; } = "1";
+    // audit 2026-09-03: 19 field dưới đây bổ sung — port trước audit chỉ có 9/28 field thật (FrmCreateSalesMan.cs)
+    public string? Gender { get; set; }             // 0=Nam/1=Nữ
+    public DateTime? DateOfBirth { get; set; }
+    public string? Address { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? QualificationCode { get; set; }  // trình độ chuyên môn
+    public string? Specialized { get; set; }        // chuyên ngành
+    public string? YearExperience { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? Position { get; set; }           // chức vụ (text tự do trong nguồn — SMPosition)
+    public string? PositionCode { get; set; }        // SMPositionCode (Mst_Position)
+    public string? CertificateCode { get; set; }
+    public string? SMHyundaiCode { get; set; }
+    public string? IdentityCardNo { get; set; }
+    public string? WebsiteLink { get; set; }         // bắt buộc nếu SalesType=TVBH
+    public string? FacebookLink { get; set; }
+    public string? FanpageLink { get; set; }
+    public string? GroupLink { get; set; }
+    public string? ZaloLink { get; set; }
+    public string? AccountHTA { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

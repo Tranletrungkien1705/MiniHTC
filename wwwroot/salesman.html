@@ -17,8 +17,16 @@
 <h1>Nhân viên bán hàng <span class="muted">(port 1:1 FrmCreateSalesMan — Mst_SalesMan)</span></h1>
 <div class="grid">
   <input id="c" placeholder="Mã NV (auto nếu trống)"><input id="n" placeholder="Tên nhân viên *" style="grid-column:span 2"><input id="dl" placeholder="Mã đại lý">
-  <input id="dp" placeholder="Bộ phận"><input id="ph" placeholder="Điện thoại"><input id="em" placeholder="Email">
-  <select id="st"><option value="1">Đang làm</option><option value="0">Nghỉ</option></select>
+  <input id="dp" placeholder="Bộ phận *"><input id="ty" placeholder="Loại NV (SalesType) *"><input id="ph" placeholder="Điện thoại *"><input id="em" placeholder="Email">
+  <input id="hy" placeholder="Mã NV Hyundai *"><input id="ic" placeholder="CMND/CCCD *">
+  <select id="gd"><option value="">Giới tính *</option><option value="0">Nam</option><option value="1">Nữ</option></select>
+  <input id="db" type="date" title="Ngày sinh *">
+  <input id="ad" placeholder="Địa chỉ *" style="grid-column:span 2"><input id="pv" placeholder="Quê quán (mã tỉnh) *">
+  <input id="qc" placeholder="Trình độ CM *"><input id="sp" placeholder="Chuyên ngành *"><input id="pc" placeholder="Mã chức vụ *">
+  <input id="sd" type="date" title="Ngày bắt đầu *">
+  <select id="st"><option value="1">Đang làm (Chính thức/Thử việc/CTV)</option><option value="0">Nghỉ việc</option></select>
+  <input id="ws" placeholder="Website (nếu TVBH)"><input id="fb" placeholder="Facebook (nếu TVBH)">
+  <input id="fp" placeholder="Fanpage (nếu TVBH)"><input id="gr" placeholder="Group (nếu TVBH)"><input id="za" placeholder="Zalo (nếu TVBH)">
 </div>
 <div class="bar"><button class="primary" onclick="save()">Lưu</button><input id="q" placeholder="Tìm mã/tên..." oninput="load()" style="width:auto;flex:1"><span id="msg"></span></div>
 <table><thead><tr><th>Mã</th><th>Tên</th><th>Đại lý</th><th>Bộ phận</th><th>ĐT</th><th>Email</th><th>TT</th><th></th></tr></thead>
@@ -40,11 +48,18 @@ async function load(){ await token();
     || '<tr><td colspan="8" class="muted">Chưa có nhân viên.</td></tr>';
 }
 function fill(x){ F("c").value=x.salesManCode;F("n").value=x.salesManName;F("dl").value=x.dealerCode||"";F("dp").value=x.departmentCode||"";
-  F("ph").value=x.phone||"";F("em").value=x.email||"";F("st").value=x.status; }
+  F("ty").value=x.salesType||"";F("ph").value=x.phone||"";F("em").value=x.email||"";F("st").value=x.status;
+  F("gd").value=x.gender||"";F("db").value=(x.dateOfBirth||"").slice(0,10);F("pv").value=x.provinceCode||"";
+  F("pc").value=x.positionCode||"";F("hy").value=x.smHyundaiCode||"";F("ic").value=x.identityCardNo||""; }
 async function save(){
-  const body=JSON.stringify({salesManCode:F("c").value,salesManName:F("n").value,dealerCode:F("dl").value,departmentCode:F("dp").value,phone:F("ph").value,email:F("em").value,status:F("st").value});
+  const body=JSON.stringify({salesManCode:F("c").value,salesManName:F("n").value,dealerCode:F("dl").value,departmentCode:F("dp").value,
+    salesType:F("ty").value,phone:F("ph").value,email:F("em").value,status:F("st").value,
+    gender:F("gd").value,dateOfBirth:F("db").value||null,address:F("ad").value,provinceCode:F("pv").value,
+    qualificationCode:F("qc").value,specialized:F("sp").value,positionCode:F("pc").value,
+    startDate:F("sd").value||null,smHyundaiCode:F("hy").value,identityCardNo:F("ic").value,
+    websiteLink:F("ws").value,facebookLink:F("fb").value,fanpageLink:F("fp").value,groupLink:F("gr").value,zaloLink:F("za").value});
   const r=await fetch("/api/salesmen",{method:"POST",headers:H(),body});
-  if(r.ok){ msg("Đã lưu.",true); ["c","n","dl","dp","ph","em"].forEach(i=>F(i).value=""); load(); }
+  if(r.ok){ msg("Đã lưu.",true); ["c","n","dl","dp","ty","ph","em","hy","ic","db","ad","pv","qc","sp","pc","sd","ws","fb","fp","gr","za"].forEach(i=>F(i).value=""); load(); }
   else msg("Lỗi: "+((await r.json()).error||r.status),false);
 }
 async function del(c){ if(!confirm("Xoá nhân viên "+c+"?"))return;
