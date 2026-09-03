@@ -403,6 +403,7 @@ public sealed class Guarantee
     public Guid OrgId { get; set; }
     public string GrtNo { get; set; } = "";          // số nội bộ (GetGrtNo)
     public string? BankGrtNo { get; set; }           // số bảo lãnh do NH cấp
+    public string DealerCode { get; set; } = "";     // đại lý chủ bảo lãnh (TblGuarantee.DealerCode)
     public string BankCode { get; set; } = "";
     public string GrtType { get; set; } = "BL";      // BL/LCTC/LCUP/EPLC
     public decimal GrtValue { get; set; }            // giá trị bảo lãnh

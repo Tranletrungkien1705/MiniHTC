@@ -167,6 +167,8 @@ public static class Seeder
                 "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"FlagEarlyCancel\" text NULL",
                 "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"RetrieveRemark\" text NULL",
                 "UPDATE public.\"CarRetrieves\" SET \"Status\" = 'Pending' WHERE \"Status\" = 'Requested'",
+                // #29 Guarantee: thêm DealerCode (TblGuarantee.DealerCode — grt.DealerCode set trong FrmNewGrt line 865)
+                "ALTER TABLE public.\"Guarantees\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NOT NULL DEFAULT ''",
                 // #25 InsuranceFee: thêm EffStartDate (ngày hiệu lực — trong WinForm là cột 3 của TblMst_InsuranceFee)
                 "ALTER TABLE public.\"InsuranceFees\" ADD COLUMN IF NOT EXISTS \"EffStartDate\" timestamp NULL",
                 // #18 CarCancel: rename Reason→CarCancelRemark + thêm 2 cờ

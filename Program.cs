@@ -978,7 +978,7 @@ app.MapGet("/api/grts", async (AppDbContext db, ITenantContext t, string? status
     var now = DateTime.Now;
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
-        g.GrtNo, g.BankGrtNo, g.BankCode, g.GrtType, g.GrtValue, g.GrtDate, g.DateExpired, g.Status,
+        g.GrtNo, g.BankGrtNo, g.DealerCode, g.BankCode, g.GrtType, g.GrtValue, g.GrtDate, g.DateExpired, g.Status,
         expired = g.DateExpired != null && g.DateExpired < now
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalValue = items.Sum(x => x.GrtValue), items });
@@ -986,6 +986,7 @@ app.MapGet("/api/grts", async (AppDbContext db, ITenantContext t, string? status
 
 app.MapPost("/api/grts", async (GrtDto dto, AppDbContext db, ITenantContext t) =>
 {
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
     if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Cần BankCode (ngân hàng bảo lãnh)." });
     if (dto.GrtValue <= 0) return Results.BadRequest(new { error = "Giá trị bảo lãnh phải > 0." });
     var type = string.IsNullOrWhiteSpace(dto.GrtType) ? "BL" : dto.GrtType.Trim().ToUpperInvariant();
@@ -993,7 +994,8 @@ app.MapPost("/api/grts", async (GrtDto dto, AppDbContext db, ITenantContext t) =
     var grtNo = "GRT" + DateTime.Now.ToString("yyMMddHHmmss");
     var g = new Guarantee
     {
-        OrgId = t.OrgId, GrtNo = grtNo, BankGrtNo = dto.BankGrtNo, BankCode = dto.BankCode.Trim().ToUpperInvariant(),
+        OrgId = t.OrgId, GrtNo = grtNo, BankGrtNo = dto.BankGrtNo, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        BankCode = dto.BankCode.Trim().ToUpperInvariant(),
         GrtType = type, GrtValue = dto.GrtValue,
         GrtDate = dto.GrtDate ?? DateTime.Now, DateExpired = dto.DateExpired, Status = "Pending"
     };
@@ -15778,7 +15780,7 @@ record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int
 record MortgageDto(string BankCode, List<string>? Vins);
 record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
 record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
-record GrtDto(string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
+record GrtDto(string DealerCode, string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
 record GrtExpiryDto(DateTime? DateExpired);
 record GrtExpiryEditDto(List<GrtExpiryRowDto>? Lines);
 record GrtExpiryRowDto(string? VIN, DateTime? DateExpired, DateTime? DateEnd);
