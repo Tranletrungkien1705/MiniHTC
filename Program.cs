@@ -5381,6 +5381,7 @@ app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, stri
 
 app.MapPost("/api/customervisits", async (CustomerVisitDto dto, AppDbContext db, ITenantContext t) =>
 {
+    if (string.IsNullOrWhiteSpace((dto.RangeAgeCode ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn độ tuổi khách." });
     if (string.IsNullOrWhiteSpace((dto.ModelCode ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn model xe quan tâm." });
     var v = new CustomerVisit
     {
@@ -6224,6 +6225,11 @@ app.MapPost("/api/carspecupdates/import", async (CarSpecUpdImportDto dto, AppDbC
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để cập nhật (cần CarId + Spec)." });
     var dup = rows.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
+    // WinForm line 98-101: spec phải active trong hệ thống
+    var specCodes = rows.Select(r => r.SpecCode!.Trim()).ToHashSet();
+    var activeSpecs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId && specCodes.Contains(s.SpecCode) && s.FlagActive == "1").Select(s => s.SpecCode).ToListAsync()).ToHashSet();
+    var invalidSpec = rows.FirstOrDefault(r => !activeSpecs.Contains(r.SpecCode!.Trim()));
+    if (invalidSpec != null) return Results.BadRequest(new { error = $"Spec '{invalidSpec.SpecCode}' không tồn tại hoặc đang InActive." });
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
     var existing = await db.CarSpecUpdates.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
@@ -6257,6 +6263,7 @@ app.MapPost("/api/registrationinfos", async (RegistrationInfoDto dto, AppDbConte
     if (string.IsNullOrWhiteSpace(year)) return Results.BadRequest(new { error = "Chưa nhập năm đăng kiểm." });
     if (string.IsNullOrWhiteSpace(prov)) return Results.BadRequest(new { error = "Chưa nhập mã tỉnh." });
     if (dto.Qty < 0 || dto.RegistPercent < 0 || dto.TotalAmount < 0) return Results.BadRequest(new { error = "Giá trị không được âm." });
+    if (dto.RegistPercent > 100) return Results.BadRequest(new { error = "Tỉ lệ đăng kiểm không được vượt 100%." });
     var row = await db.RegistrationInfos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RegistYear == year && x.ProvinceCode == prov);
     if (row is null) { row = new RegistrationInfo { OrgId = t.OrgId, RegistYear = year, ProvinceCode = prov }; db.RegistrationInfos.Add(row); }
     row.ProvinceName = dto.ProvinceName; row.Qty = dto.Qty; row.RegistPercent = dto.RegistPercent; row.TotalAmount = dto.TotalAmount; row.UpdatedAt = DateTime.Now;
@@ -7669,11 +7676,14 @@ app.MapPost("/api/womappings", async (WOMappingDto dto, AppDbContext db, ITenant
 {
     var cid = (dto.CarId ?? "").Trim().ToUpperInvariant();
     if (cid == "") return Results.BadRequest(new { error = "Thiếu mã xe (CarID/VIN)." });
+    // WinForm line 175: WorkOrderNoTemp bắt buộc
+    if (string.IsNullOrWhiteSpace(dto.WorkOrderNoTemp)) return Results.BadRequest(new { error = "Chưa nhập WorkOrder tạm cho xe này." });
     var w = await db.WOMappings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarId == cid);
     if (w is null) { w = new WOMapping { OrgId = t.OrgId, CarId = cid }; db.WOMappings.Add(w); }
-    w.ColorCode = dto.ColorCode; w.ColorNameVN = dto.ColorNameVN; w.Description = dto.Description; w.SoCode = dto.SoCode; w.UpdatedAt = DateTime.Now;
+    w.ColorCode = dto.ColorCode; w.ColorNameVN = dto.ColorNameVN; w.Description = dto.Description; w.SoCode = dto.SoCode;
+    w.WorkOrderNoTemp = dto.WorkOrderNoTemp!.Trim(); w.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { w.Id, w.CarId });
+    return Results.Ok(new { w.Id, w.CarId, w.WorkOrderNoTemp });
 }).RequireAuthorization();
 
 // ===== Kế hoạch bán hàng theo quý (SalePlan — port 1:1 FrmSalePlan, 2010.HTC/Sales) =====
@@ -16174,7 +16184,7 @@ record DRCarDto(string CarId, string? ModelCode, DateTime? DeliveryStartDate, st
 record DRActionDto(string Action, string? Note);
 record EstimateOrderDto(string? DealerCode, string MonthEstimate, string? HtcStaffInCharge, List<EstOrderLineDto>? Lines);
 record EstOrderLineDto(string ModelCode, string? SpecCode, int Quantity);
-record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? Description, string? SoCode);
+record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? Description, string? SoCode, string? WorkOrderNoTemp);
 record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, int Q2, int Q3, int Q4);
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);

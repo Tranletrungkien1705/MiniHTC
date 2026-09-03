@@ -2295,6 +2295,7 @@ public sealed class WOMapping
     public string? ColorNameVN { get; set; }
     public string? Description { get; set; }
     public string? SoCode { get; set; }
+    public string? WorkOrderNoTemp { get; set; }  // WinForm core output: CarCarMapWorkOrder (line 193)
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

@@ -172,6 +172,8 @@ public static class Seeder
                 "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"Place\" text NULL",
                 // SalesManCertificate: thêm DealerCode (TblMst_SalesManCertificate.DealerCode — WinForm line 196)
                 "ALTER TABLE public.\"SalesManCertificates\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                // #77 WOMapping: thêm WorkOrderNoTemp (core field FrmWO_Mapping.CarCarMapWorkOrder)
+                "ALTER TABLE public.\"WOMappings\" ADD COLUMN IF NOT EXISTS \"WorkOrderNoTemp\" text NULL",
                 // #48 SalesManViolate: thêm SMType + SmDateOfBirth (snapshot denorm từ DlSalesMan tại thời điểm vi phạm)
                 "ALTER TABLE public.\"SalesManViolates\" ADD COLUMN IF NOT EXISTS \"SMType\" text NULL",
                 "ALTER TABLE public.\"SalesManViolates\" ADD COLUMN IF NOT EXISTS \"SmDateOfBirth\" text NULL",
