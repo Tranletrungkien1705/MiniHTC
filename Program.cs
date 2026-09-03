@@ -7960,6 +7960,8 @@ app.MapPost("/api/carstdoptions", async (CarStdOptionDto dto, AppDbContext db, I
 {
     var mc = (dto.ModelCode ?? "").Trim(); var sc = (dto.StdCode ?? "").Trim();
     if (mc == "" || sc == "") return Results.BadRequest(new { error = "Thiếu mã model hoặc mã tùy chọn." });
+    if (string.IsNullOrWhiteSpace(dto.StdDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả tùy chọn tiêu chuẩn." });
+    if (string.IsNullOrWhiteSpace(dto.GradeDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả phân cấp." });
     var o = await db.CarStdOptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc && x.StdCode == sc);
     if (o is null) { o = new CarStdOption { OrgId = t.OrgId, ModelCode = mc, StdCode = sc }; db.CarStdOptions.Add(o); }
     o.StdDesc = dto.StdDesc; o.GradeCode = dto.GradeCode; o.GradeDesc = dto.GradeDesc; o.UpdatedAt = DateTime.Now;
@@ -8645,6 +8647,8 @@ app.MapPost("/api/carstdopts", async (CarStdOptDto dto, AppDbContext db, ITenant
     var std = (dto.StdCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
     if (string.IsNullOrWhiteSpace(std)) return Results.BadRequest(new { error = "Chưa nhập mã tùy chọn tiêu chuẩn." });
+    if (string.IsNullOrWhiteSpace(dto.StdDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả tùy chọn tiêu chuẩn." });
+    if (string.IsNullOrWhiteSpace(dto.GradeDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả phân cấp." });
     var row = await db.CarStdOpts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.StdCode == std);
     if (row is null) { row = new CarStdOpt { OrgId = t.OrgId, ModelCode = model, StdCode = std }; db.CarStdOpts.Add(row); }
     row.StdDesc = dto.StdDesc; row.GradeCode = dto.GradeCode; row.GradeDesc = dto.GradeDesc; row.UpdatedAt = DateTime.Now;
