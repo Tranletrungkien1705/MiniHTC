@@ -10903,6 +10903,7 @@ app.MapPost("/api/invoiceids", async (InvoiceIDDto dto, AppDbContext db, ITenant
         return Results.BadRequest(new { error = "Loại HĐ = HTC | HTCLD | TCG." });
     if (string.IsNullOrWhiteSpace(dto.InvoiceIDCode)) return Results.BadRequest(new { error = $"Số hiệu hóa đơn {dto.InvoiceIDType} bắt buộc nhập" });
     if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Ngày hiệu lực bắt buộc nhập" });
+    if (dto.EffectiveDate.Value.Date < DateTime.Now.Date) return Results.BadRequest(new { error = "Ngày hiệu lực không hợp lệ (không được trong quá khứ)." });
     var code = dto.InvoiceIDCode.Trim();
     if (await db.InvoiceIDs.AnyAsync(i => i.OrgId == t.OrgId && i.InvoiceIDType == dto.InvoiceIDType && i.InvoiceIDCode == code))
         return Results.BadRequest(new { error = $"Số hiệu {code} loại {dto.InvoiceIDType} đã tồn tại!" });
