@@ -1002,6 +1002,9 @@ public sealed class MaintainExt
     public DateTime? MtnExtEndDTime { get; set; }     // ra khỏi BD gia hạn (MtnExtOut)
     public string? MtnExtRemark { get; set; }
     public string MtnExtStatusMain { get; set; } = "NG"; // NG / IN / OUT
+    // audit 2026-09-03: bổ sung — nguồn FrmMaintenanceWarehouse.gvMaintenanceWarehouse_ShowingEditor chỉ cho
+    // sửa tay 3 cột: UserCodeMtnExt/MtnExtStatusMain/MtnExtRemark — UserCodeMtnExt bị thiếu hoàn toàn ở port trước.
+    public string? UserCodeMtnExt { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
