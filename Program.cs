@@ -184,20 +184,32 @@ app.MapGet("/api/master/{cat}", async (string cat, AppDbContext db, ITenantConte
 {
     var query = db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == cat);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(m => m.Code.Contains(q) || m.Name.Contains(q));
-    var items = await query.OrderBy(m => m.Code).Select(m => new { m.Code, m.Name, m.Status }).ToListAsync();
+    var items = await query.OrderBy(m => m.Code).Select(m => new { m.Code, m.Name, m.ParentCode, m.Status }).ToListAsync();
     return Results.Ok(new { category = cat, count = items.Count, items });
 }).RequireAuthorization();
+
+// Category có cha bắt buộc (audit 2026-09-03 — FrmDistrict cần ProvinceCode, FrmProvince cần AreaCode; bỏ sót ở lần port đầu tiên).
+var MasterParentRule = new Dictionary<string, string> { ["District"] = "Province", ["Province"] = "__Area__" };
 
 app.MapPost("/api/master/{cat}", async (string cat, MasterDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name))
         return Results.BadRequest(new { error = "Cần Code và Name." });
     var code = dto.Code.Trim().ToUpperInvariant();
+    string? parentCode = string.IsNullOrWhiteSpace(dto.ParentCode) ? null : dto.ParentCode.Trim().ToUpperInvariant();
+    if (MasterParentRule.TryGetValue(cat, out var parentCat))
+    {
+        if (parentCode is null) return Results.BadRequest(new { error = $"Category '{cat}' cần ParentCode." });
+        bool parentExists = parentCat == "__Area__"
+            ? await db.Areas.AnyAsync(a => a.OrgId == t.OrgId && a.AreaCode == parentCode)
+            : await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == parentCat && m.Code == parentCode);
+        if (!parentExists) return Results.BadRequest(new { error = $"ParentCode '{parentCode}' không tồn tại." });
+    }
     var m = await db.Masters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Category == cat && x.Code == code);
-    if (m is null) { m = new MasterItem { OrgId = t.OrgId, Category = cat, Code = code, Name = dto.Name.Trim(), Status = dto.Status ?? "1" }; db.Masters.Add(m); }
-    else { m.Name = dto.Name.Trim(); m.Status = dto.Status ?? m.Status; }
+    if (m is null) { m = new MasterItem { OrgId = t.OrgId, Category = cat, Code = code, Name = dto.Name.Trim(), ParentCode = parentCode, Status = dto.Status ?? "1" }; db.Masters.Add(m); }
+    else { m.Name = dto.Name.Trim(); m.ParentCode = parentCode; m.Status = dto.Status ?? m.Status; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { category = cat, m.Code, m.Name, m.Status });
+    return Results.Ok(new { category = cat, m.Code, m.Name, m.ParentCode, m.Status });
 }).RequireAuthorization();
 
 app.MapDelete("/api/master/{cat}/{code}", async (string cat, string code, AppDbContext db, ITenantContext t) =>
@@ -15475,7 +15487,7 @@ app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
-record MasterDto(string Code, string Name, string? Status);
+record MasterDto(string Code, string Name, string? ParentCode, string? Status);
 record DealerDto(string DealerCode, string DealerName, string? BUCode, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode, string? Status);
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, decimal Price, decimal? Vat, string? Status);
 record CustomerDto(string? CustomerCode, string CustomerName, string? Phone, string? IdCard, string? TaxCode, string? Address, string? Email, string? ProvinceCode, string? Status);

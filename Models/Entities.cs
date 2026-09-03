@@ -5590,6 +5590,7 @@ public sealed class MasterItem
     public string Category { get; set; } = "";   // 1 category = 1 màn Frm gốc
     public string Code { get; set; } = "";
     public string Name { get; set; } = "";
+    public string? ParentCode { get; set; }       // audit 2026-09-03: một số category có cha bắt buộc (District→ProvinceCode, Province→AreaCode) — trước đó bị bỏ sót
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
