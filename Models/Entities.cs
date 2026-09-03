@@ -147,7 +147,7 @@ public sealed class PdiRequest
     public DateTime? InspectedAt { get; set; }
 }
 
-/// <summary>Thu hồi xe (FrmMngCarRetrieve) — thu hồi xe từ đại lý (khác triệu hồi an toàn).</summary>
+/// <summary>Thu hồi xe (FrmMngCarRetrieve / FrmNewCarRetrieve) — thu hồi xe từ đại lý về kho HTC.</summary>
 public sealed class CarRetrieve
 {
     public long Id { get; set; }
@@ -155,23 +155,28 @@ public sealed class CarRetrieve
     public string Code { get; set; } = "";
     public string Vin { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string? Reason { get; set; }
-    public string Status { get; set; } = "Requested";   // Requested → Approved → Retrieved (hoặc Rejected)
+    public string StorageCode { get; set; } = "";        // kho nhận xe (BẮT BUỘC — gviewCar_ValidateRow)
+    public DateTime? ExpectedStartDate { get; set; }     // ngày dự kiến bắt đầu thu hồi (BẮT BUỘC)
+    public DateTime? ExpectedEndDate { get; set; }       // ngày dự kiến kết thúc thu hồi (BẮT BUỘC)
+    public string? FlagEarlyCancel { get; set; }         // cờ xe sắp hủy (từ Car, read-only)
+    public string? RetrieveRemark { get; set; }          // ghi chú (TblCarRetrieveDetail.Remark)
+    public string Status { get; set; } = "Pending";      // Pending → Approved / Rejected (Stage.Pending nguồn)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
-    public DateTime? RetrievedAt { get; set; }
 }
 
-/// <summary>Hủy xe (FrmMngCarCancel) — hủy đơn/xe theo lý do, có duyệt.</summary>
+/// <summary>Hủy xe (FrmCarCancel + FrmMngCarCancel) — hủy xe theo loại hủy, ghi nhận per-car; duyệt là governance thêm của web.</summary>
 public sealed class CarCancel
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string Code { get; set; } = "";
     public string Vin { get; set; } = "";
-    public string? CancelTypeCode { get; set; }
-    public string? Reason { get; set; }
-    public string Status { get; set; } = "Requested";   // Requested → Approved → Rejected
+    public string? CancelTypeCode { get; set; }          // CarCancelType (BẮT BUỘC nguồn — ERROROFDEALER mặc định)
+    public string? CarCancelRemark { get; set; }         // TblRejectCar.CarCancelRemark per car
+    public string? FlagEarlyCancel { get; set; }         // cờ xe sắp hủy
+    public string? FlagMapVIN { get; set; }              // cờ map VIN
+    public string Status { get; set; } = "Requested";   // Requested → Approved / Rejected (governance web thêm)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
 }

@@ -482,53 +482,71 @@ app.MapPost("/api/pdi/{code}/{action}", async (string code, string action, PdiRe
 }).RequireAuthorization();
 
 // ===== Thu hồi xe (port 1:1 FrmMngCarRetrieve) =====
+// ===== Thu hồi xe (port 1:1 FrmMngCarRetrieve / FrmNewCarRetrieve) =====
+// Audit #17: thêm StorageCode/ExpectedStartDate/ExpectedEndDate/FlagEarlyCancel/RetrieveRemark; fix status Pending/Approved/Rejected
 app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? status) =>
 {
     var q = db.CarRetrieves.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    { r.Code, r.Vin, r.DealerCode, r.Reason, r.Status, r.CreatedAt, r.ApprovedAt, r.RetrievedAt }).ToListAsync();
+    { r.Code, r.Vin, r.DealerCode, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate, r.FlagEarlyCancel, r.RetrieveRemark, r.Status, r.CreatedAt, r.ApprovedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Hãy nhập mã kho." });
+    if (dto.ExpectedStartDate is null) return Results.BadRequest(new { error = "Hãy nhập ngày thu hồi dự kiến." });
+    if (dto.ExpectedEndDate is null) return Results.BadRequest(new { error = "Hãy nhập ngày kết thúc thu hồi DK." });
     var code = "TH" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new CarRetrieve { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", Reason = dto.Reason, Status = "Requested" };
+    var r = new CarRetrieve
+    {
+        OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(),
+        DealerCode = dto.DealerCode ?? "", StorageCode = dto.StorageCode.Trim().ToUpperInvariant(),
+        ExpectedStartDate = dto.ExpectedStartDate, ExpectedEndDate = dto.ExpectedEndDate,
+        FlagEarlyCancel = dto.FlagEarlyCancel, RetrieveRemark = dto.RetrieveRemark,
+        Status = "Pending"
+    };
     db.CarRetrieves.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.Code, r.Vin, status = r.Status });
+    return Results.Ok(new { r.Code, r.Vin, r.StorageCode, status = r.Status });
 }).RequireAuthorization();
 
 app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("approve" or "reject" or "retrieve")) return Results.BadRequest(new { error = "action = approve|reject|retrieve" });
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
     if (r is null) return Results.NotFound(new { code });
-    var now = DateTime.Now;
-    if (action == "approve") { if (r.Status != "Requested") return Results.BadRequest(new { error = "Sai trạng thái." }); r.Status = "Approved"; r.ApprovedAt = now; }
-    else if (action == "reject") { if (r.Status != "Requested") return Results.BadRequest(new { error = "Sai trạng thái." }); r.Status = "Rejected"; r.ApprovedAt = now; }
-    else { if (r.Status != "Approved") return Results.BadRequest(new { error = "Chưa duyệt." }); r.Status = "Retrieved"; r.RetrievedAt = now; }
+    if (r.Status != "Pending") return Results.BadRequest(new { error = "Sai trạng thái (cần Pending)." });
+    r.Status = action == "approve" ? "Approved" : "Rejected"; r.ApprovedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { r.Code, r.Vin, status = r.Status });
 }).RequireAuthorization();
 
-// ===== Hủy xe (port 1:1 FrmMngCarCancel) =====
+// ===== Hủy xe (port 1:1 FrmCarCancel / FrmMngCarCancel) =====
+// Audit #18: rename Reason→CarCancelRemark; thêm FlagEarlyCancel/FlagMapVIN; guard CancelTypeCode bắt buộc
 app.MapGet("/api/cancels", async (AppDbContext db, ITenantContext t, string? status) =>
 {
     var q = db.CarCancels.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.Code, c.Vin, c.CancelTypeCode, c.Reason, c.Status, c.CreatedAt, c.ApprovedAt }).ToListAsync();
+    { c.Code, c.Vin, c.CancelTypeCode, c.CarCancelRemark, c.FlagEarlyCancel, c.FlagMapVIN, c.Status, c.CreatedAt, c.ApprovedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    if (string.IsNullOrWhiteSpace(dto.CancelTypeCode)) return Results.BadRequest(new { error = "Cần loại hủy (CancelTypeCode)." });
     var code = "HX" + DateTime.Now.ToString("yyMMddHHmmss");
-    var c = new CarCancel { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), CancelTypeCode = dto.CancelTypeCode, Reason = dto.Reason, Status = "Requested" };
+    var c = new CarCancel
+    {
+        OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(),
+        CancelTypeCode = dto.CancelTypeCode.Trim(), CarCancelRemark = dto.CarCancelRemark,
+        FlagEarlyCancel = dto.FlagEarlyCancel, FlagMapVIN = dto.FlagMapVIN,
+        Status = "Requested"
+    };
     db.CarCancels.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.Code, c.Vin, status = c.Status });
 }).RequireAuthorization();
@@ -15739,8 +15757,8 @@ record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode
     string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? AccountHTA);
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
-record RetrieveDto(string Vin, string? DealerCode, string? Reason);
-record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
+record RetrieveDto(string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);
+record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
 record PlanHeaderDto(string DealerCode, int YearPlan, string? Version, string? HTCStaffInCharge);
