@@ -961,6 +961,13 @@ public sealed class DlSalesMan
     public DateTime? EndDate { get; set; }      // ngày kết thúc công tác
     public string? SMReason { get; set; }       // lý do (nghỉ việc/chuyển...)
     public string? SMDesc { get; set; }         // mô tả chi tiết
+    // audit 2026-09-03: bổ sung field thiếu — nguồn thật FrmMngSalesManHTC.cs (btnImportExcel_Click), KHÔNG
+    // phải FrmMngSalesManApproved.cs (đó chỉ là màn báo cáo đọc-chốt-tháng, không có logic ghi các field này).
+    public string? BDHStatus { get; set; }          // CHALLENGE (đang thử thách) | APPOINT (đã bổ nhiệm)
+    public DateTime? ChallengeStartDate { get; set; }
+    public DateTime? ChallengeEndDate { get; set; }
+    public string? QualityRank { get; set; }        // LV0 Tập sự / LV1 Đạt chuẩn / LV2 Cao cấp / LV3 Chuyên gia
+    public string? AccountHTA { get; set; }         // "1"=Có / "0"=Không
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

@@ -15084,7 +15084,8 @@ app.MapGet("/api/dlsalesmen", async (AppDbContext db, ITenantContext t, string? 
     if (approved == "1") q = q.Where(s => s.SMHyundaiCode != null && s.SMHyundaiCode != "");
     else if (approved == "0") q = q.Where(s => s.SMHyundaiCode == null || s.SMHyundaiCode == "");
     var items = await q.OrderBy(s => s.SMCode).Take(500).Select(s => new
-    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.Sex, s.DateOfBirth, s.PhoneNo, s.IdentityCardNo, s.StartDate, s.EndDate, s.SMReason, s.SMDesc }).ToListAsync();
+    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.Sex, s.DateOfBirth, s.PhoneNo, s.IdentityCardNo, s.StartDate, s.EndDate, s.SMReason, s.SMDesc,
+      s.BDHStatus, s.ChallengeStartDate, s.ChallengeEndDate, s.QualityRank, s.AccountHTA }).ToListAsync();
     return Results.Ok(new { count = items.Count, approved = items.Count(x => !string.IsNullOrEmpty(x.SMHyundaiCode)), items });
 }).RequireAuthorization();
 
@@ -15121,12 +15122,28 @@ app.MapPost("/api/dlsalesmen", async (DlSalesManDto dto, AppDbContext db, ITenan
         if (!_smStatuses.Contains(st)) return Results.BadRequest(new { error = "SMStatus = THUVIEC|CHINGTHUC|CTVIEN|NGHIVIEC" });
         s.SMStatus = st;
     }
+    // audit 2026-09-03: guard đúng nguồn FrmMngSalesManHTC.btnImportExcel_Click
+    if (!string.IsNullOrWhiteSpace(dto.BDHStatus) && dto.BDHStatus != "CHALLENGE" && dto.BDHStatus != "APPOINT")
+        return Results.BadRequest(new { error = "Trạng thái BĐH trong excel không hợp lệ!" });
+    if (dto.ChallengeStartDate is not null && dto.ChallengeEndDate is not null && dto.ChallengeStartDate > dto.ChallengeEndDate)
+        return Results.BadRequest(new { error = "Ngày kết thúc thử thách trong excel trước ngày bắt đầu thử thách!" });
+    if (!string.IsNullOrWhiteSpace(dto.QualityRank) && dto.QualityRank != "LV0" && dto.QualityRank != "LV1" && dto.QualityRank != "LV2" && dto.QualityRank != "LV3")
+        return Results.BadRequest(new { error = "Xếp loại chất lượng trong excel không hợp lệ!" });
+    if (!string.IsNullOrWhiteSpace(dto.AccountHTA) && dto.AccountHTA != "1" && dto.AccountHTA != "0")
+        return Results.BadRequest(new { error = "Tài khoản HTA trong excel không hợp lệ!" });
+    s.BDHStatus = dto.BDHStatus; s.ChallengeStartDate = dto.ChallengeStartDate; s.ChallengeEndDate = dto.ChallengeEndDate;
+    s.QualityRank = dto.QualityRank; s.AccountHTA = dto.AccountHTA;
     s.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.SMCode, s.SMName, s.SMStatus, s.SMHyundaiCode });
 }).RequireAuthorization();
 
-// Duyệt = cấp mã Hyundai (FrmMngSalesManApproved)
+// Duyệt = cấp mã Hyundai. audit 2026-09-03: KHÔNG lần được nguồn thật cho tính năng "duyệt cấp mã" —
+// FrmMngSalesManApproved.cs (đã đọc trọn) thực ra chỉ là màn báo cáo đọc-chốt-tháng (read-only), không có
+// nút/logic duyệt nào; FrmMngSalesManHTC.cs (đã đọc trọn) cũng không có. SMHyundaiCode thật ra được SINH TỰ ĐỘNG
+// lúc tạo mới NV (FrmCreateSalesMan.GetSequenceGetForSMHyundaiCode), không phải cấp sau qua bước duyệt riêng.
+// Giữ nguyên endpoint này như 1 tính năng đơn giản hoá hợp lý (không xoá vì không có bằng chứng nó SAI, chỉ là
+// KHÔNG XÁC MINH ĐƯỢC nguồn) — không suy diễn thêm, không tự tin đây là "khớp 1:1".
 app.MapPost("/api/dlsalesmen/{code}/grant", async (string code, DlGrantDto dto, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -15753,7 +15770,8 @@ record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, L
 record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegisName, double MapLatitude, double MapLongitude, double Radius);
 record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
 record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? Remark);
-record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo);
+record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo,
+    string? BDHStatus, DateTime? ChallengeStartDate, DateTime? ChallengeEndDate, string? QualityRank, string? AccountHTA);
 record DlWorkHistoryRowDto(string? SMCode, string? SMReason, string? SMDesc);
 record DlWorkHistoryDto(List<DlWorkHistoryRowDto>? Rows);
 record DlGrantDto(string SMHyundaiCode);
