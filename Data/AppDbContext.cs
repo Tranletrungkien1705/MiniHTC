@@ -17,6 +17,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarCancel> CarCancels => Set<CarCancel>();
     public DbSet<SysConfig> Configs => Set<SysConfig>();
     public DbSet<BusinessPlan> BusinessPlans => Set<BusinessPlan>();
+    public DbSet<BusinessPlanHeader> BusinessPlanHeaders => Set<BusinessPlanHeader>();
     public DbSet<TestDrive> TestDrives => Set<TestDrive>();
     public DbSet<WarrantyClaimTC> WarrantyClaims => Set<WarrantyClaimTC>();
     public DbSet<SupplierPO> SupplierPOs => Set<SupplierPO>();

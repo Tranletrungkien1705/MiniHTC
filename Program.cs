@@ -570,6 +570,60 @@ app.MapPost("/api/plans", async (PlanDto dto, AppDbContext db, ITenantContext t)
     return Results.Ok(new { p.DealerCode, p.ModelCode, p.Month, p.TargetQty, p.ActualQty });
 }).RequireAuthorization();
 
+// audit 2026-09-03: vòng đời duyệt kế hoạch KD (FrmMngBusinessPlan) — Pending→Approved1→Approved2(→Cancelled nếu ACTUAL).
+app.MapGet("/api/planheaders", async (AppDbContext db, ITenantContext t, string? dealer, string? status, int? year) =>
+{
+    var q = db.BusinessPlanHeaders.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(h => h.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(h => h.Status == status);
+    if (year.HasValue) q = q.Where(h => h.YearPlan == year.Value);
+    var items = await q.OrderByDescending(h => h.Id).Take(500)
+        .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/planheaders", async (PlanHeaderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
+    if (dto.YearPlan <= 0) return Results.BadRequest(new { error = "Cần YearPlan." });
+    var dealer = dto.DealerCode.Trim().ToUpperInvariant();
+    var code = $"BPL{dto.YearPlan}-{dealer}-{(await db.BusinessPlanHeaders.CountAsync(h => h.OrgId == t.OrgId) + 1):D4}";
+    var h = new BusinessPlanHeader
+    {
+        OrgId = t.OrgId, BusinessPlanCode = code, DealerCode = dealer, YearPlan = dto.YearPlan,
+        Version = dto.Version == "ACTUAL" ? "ACTUAL" : "INIT", Status = "Pending", HTCStaffInCharge = dto.HTCStaffInCharge
+    };
+    db.BusinessPlanHeaders.Add(h); await db.SaveChangesAsync();
+    return Results.Ok(new { h.BusinessPlanCode, h.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/planheaders/{code}/approve1", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    if (h.Status != "Pending") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
+    h.Status = "Approved1"; h.Approve1At = DateTime.Now; await db.SaveChangesAsync();
+    return Results.Ok(new { h.BusinessPlanCode, h.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/planheaders/{code}/approve2", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    if (h.Status != "Approved1") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
+    h.Status = "Approved2"; h.Approve2At = DateTime.Now; await db.SaveChangesAsync();
+    return Results.Ok(new { h.BusinessPlanCode, h.Status });
+}).RequireAuthorization();
+
+app.MapPost("/api/planheaders/{code}/cancel", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    if (h.Status != "Approved2" || h.Version != "ACTUAL") return Results.BadRequest(new { error = "Kế hoạch kinh doanh không hợp lệ!" });
+    h.Status = "Cancelled"; h.CancelledAt = DateTime.Now; await db.SaveChangesAsync();
+    return Results.Ok(new { h.BusinessPlanCode, h.Status });
+}).RequireAuthorization();
+
 // ===== Lái thử xe (port 1:1 FrmMstCarDriverTest — TCMotor) =====
 app.MapGet("/api/testdrives", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -15615,6 +15669,7 @@ record RetrieveDto(string Vin, string? DealerCode, string? Reason);
 record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
+record PlanHeaderDto(string DealerCode, int YearPlan, string? Version, string? HTCStaffInCharge);
 record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);

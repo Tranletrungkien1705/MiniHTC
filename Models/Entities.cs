@@ -200,6 +200,27 @@ public sealed class BusinessPlan
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>Header duyệt kế hoạch KD theo năm (Mst_BPL_BusinessPlan) — port 1:1 FrmMngBusinessPlan (2010.HTC/Sales).
+/// audit 2026-09-03: port trước CHỈ có BusinessPlan (số mục tiêu/thực tế phẳng theo tháng-model, KHÔNG có
+/// vòng đời duyệt Pending→Approved1→Approved2/Cancel, KHÔNG có Version INIT/ACTUAL). Bổ sung header này để
+/// mô hình đúng vòng đời duyệt — CHƯA port đủ chi tiết 3 loại kế hoạch (Rtl/Ord/BO) × 12 tháng theo từng Model
+/// (BPL_BusinessPlanDtl) — đó là gap CÒN LẠI, ghi rõ không suy diễn đã xong.</summary>
+public sealed class BusinessPlanHeader
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BusinessPlanCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public int YearPlan { get; set; }
+    public string Version { get; set; } = "INIT";        // INIT | ACTUAL
+    public string Status { get; set; } = "Pending";       // Pending -> Approved1 -> Approved2 (-> Cancelled nếu Approved2+ACTUAL)
+    public string? HTCStaffInCharge { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? Approve1At { get; set; }
+    public DateTime? Approve2At { get; set; }
+    public DateTime? CancelledAt { get; set; }
+}
+
 /// <summary>Lái thử xe (FrmMstCarDriverTest — TCMotor): khách đăng ký lái thử → xác nhận → hoàn tất.</summary>
 public sealed class TestDrive
 {
