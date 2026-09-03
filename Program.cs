@@ -403,6 +403,32 @@ app.MapDelete("/api/salesmen/{code}", async (string code, AppDbContext db, ITena
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// Import hàng loạt NVBH thật từ Mst_SalesMan (SQL nguồn 2010.HTC, 18490 dòng thật). Dedupe theo SalesManCode.
+app.MapPost("/api/import/salesmen", async (List<ImportSalesManDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu import." });
+    int added = 0, skipped = 0;
+    foreach (var r in rows)
+    {
+        if (string.IsNullOrWhiteSpace(r.SMCode) || string.IsNullOrWhiteSpace(r.SMName)) { skipped++; continue; }
+        var code = r.SMCode.Trim().ToUpperInvariant();
+        if (await db.SalesMen.AnyAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code)) { skipped++; continue; }
+        db.SalesMen.Add(new SalesMan
+        {
+            OrgId = t.OrgId, SalesManCode = code, SalesManName = r.SMName.Trim(), DealerCode = r.DealerCode, DepartmentCode = r.DepartmentCode,
+            SalesType = r.SMType, Phone = r.SMPhoneNo, Email = r.SMEmail, Status = r.SMStatus == "0" ? "0" : "1",
+            Gender = r.SMGender, DateOfBirth = DateTime.TryParse(r.SMDateOfBirth, out var dob) ? dob : null, Address = r.SMAddress,
+            ProvinceCode = r.ProvinceCode, QualificationCode = r.QualificationCode, Specialized = r.SMSpecialized,
+            StartDate = DateTime.TryParse(r.SMStartDate, out var sd) ? sd : null, PositionCode = r.SMPostionCode,
+            SMHyundaiCode = r.SMHyundaiCode, IdentityCardNo = r.IdentityCardNo,
+            WebsiteLink = r.WebsiteLink, FacebookLink = r.FacebookLink, FanpageLink = r.FanpageLink, GroupLink = r.GroupLink, ZaloLink = r.ZaloLink, AccountHTA = r.AccountHTA
+        });
+        added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, skipped, total = rows.Count });
+}).RequireAuthorization();
+
 // ===== Báo cáo đại lý (port 1:1 kiểu FrmBC*/Rpt — read-only + lọc + tổng hợp) =====
 app.MapGet("/api/reports/dealers", async (AppDbContext db, ITenantContext t, string? province, string? status) =>
 {
@@ -15678,6 +15704,10 @@ record CancelDto(string Vin, string? CancelTypeCode, string? Reason);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
 record PlanHeaderDto(string DealerCode, int YearPlan, string? Version, string? HTCStaffInCharge);
+record ImportSalesManDto(string? SMCode, string? SMHyundaiCode, string? IdentityCardNo, string? DealerCode, string? DepartmentCode, string? SMType,
+    string? SMName, string? SMGender, string? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
+    string? SMSpecialized, string? QualificationCode, string? SMPostionCode, string? SMStartDate, string? SMStatus,
+    string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? AccountHTA);
 record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);
