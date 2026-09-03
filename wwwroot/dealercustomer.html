@@ -23,18 +23,22 @@
     <div><label>Mã KH (tự sinh nếu trống)</label><input id="code"></div>
     <div><label>Mã đại lý</label><input id="dl"></div>
     <div><label>Loại KH *</label><input id="ct" placeholder="CN/DN"></div>
-    <div><label>KH gốc</label><input id="cb" value="KH"></div>
+    <div><label>KH gốc (Nguồn KH) *</label><input id="cb" value="KH"></div>
     <div><label>Họ tên *</label><input id="fn"></div>
+    <div><label>Họ tên (EN)</label><input id="fnen"></div>
     <div><label>Địa chỉ *</label><input id="ad"></div>
     <div><label>Số điện thoại *</label><input id="ph"></div>
     <div><label>Email</label><input id="em"></div>
     <div><label>Mã số thuế</label><input id="tx"></div>
-    <div><label>Tỉnh</label><input id="pv"></div>
+    <div><label>Tỉnh *</label><input id="pv"></div>
     <div><label>Huyện</label><input id="ds"></div>
     <div><label>CMND/CCCD</label><input id="id"></div>
     <div><label>Loại giấy tờ</label><input id="it"></div>
-    <div><label>Giới tính</label><select id="gd"><option value="">—</option><option value="M">Nam</option><option value="F">Nữ</option></select></div>
+    <div><label>Giới tính *</label><select id="gd"><option value="">—</option><option value="0">Nam</option><option value="1">Nữ</option></select></div>
     <div><label>Ngày sinh</label><input id="db" type="date"></div>
+    <div><label>Người đại diện</label><input id="rn"></div>
+    <div><label>Chức vụ</label><input id="ps"></div>
+    <div><label>Số TK ngân hàng</label><input id="ab"></div>
   </div>
   <div class="bar"><button class="primary" onclick="create()">Lưu KH</button><span id="msg"></span></div>
 </div>
@@ -50,10 +54,10 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const body={customerCode:F("code").value,dealerCode:F("dl").value,cusTypeCode:F("ct").value,cusBaseCode:F("cb").value,fullName:F("fn").value,address:F("ad").value,phoneNo:F("ph").value,email:F("em").value,taxCode:F("tx").value,provinceCode:F("pv").value,districtCode:F("ds").value,idCardNo:F("id").value,idCardType:F("it").value,gender:F("gd").value,dateOfBirth:F("db").value||null};
+  const body={customerCode:F("code").value,dealerCode:F("dl").value,cusTypeCode:F("ct").value,cusBaseCode:F("cb").value,fullName:F("fn").value,fullNameEN:F("fnen").value,address:F("ad").value,phoneNo:F("ph").value,email:F("em").value,taxCode:F("tx").value,provinceCode:F("pv").value,districtCode:F("ds").value,idCardNo:F("id").value,idCardType:F("it").value,gender:F("gd").value,dateOfBirth:F("db").value||null,representName:F("rn").value,position:F("ps").value,cusAccountBank:F("ab").value};
   const r=await fetch("/api/dealercustomers",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
-  if(r.ok){ msg("Đã lưu "+j.customerCode+" - "+j.fullName); ["code","fn","ad","ph","em","tx","id"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã lưu "+j.customerCode+" - "+j.fullName); ["code","fn","fnen","ad","ph","em","tx","id","rn","ps","ab"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/dealercustomers?q=${F("q").value}&dealer=${F("qd").value}`,{headers:H()})).json();

@@ -331,36 +331,9 @@ app.MapDelete("/api/carprices/{id:long}", async (long id, AppDbContext db, ITena
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
-// ===== Khách hàng (Mst_Customer) — port 1:1 FrmCustomerBase =====
-app.MapGet("/api/customers", async (AppDbContext db, ITenantContext t, string? q) =>
-{
-    var query = db.Customers.Where(c => c.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.CustomerCode.Contains(q) || c.CustomerName.Contains(q) || (c.Phone ?? "").Contains(q));
-    var items = await query.OrderBy(c => c.CustomerCode).Take(500).Select(c => new
-    { c.CustomerCode, c.CustomerName, c.Phone, c.IdCard, c.TaxCode, c.Address, c.Email, c.ProvinceCode, c.Status }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
-}).RequireAuthorization();
-
-app.MapPost("/api/customers", async (CustomerDto dto, AppDbContext db, ITenantContext t) =>
-{
-    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "Cần CustomerName." });
-    var code = string.IsNullOrWhiteSpace(dto.CustomerCode) ? "KH" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CustomerCode.Trim().ToUpperInvariant();
-    var c = await db.Customers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CustomerCode == code);
-    if (c is null) { c = new Customer { OrgId = t.OrgId, CustomerCode = code }; db.Customers.Add(c); }
-    c.CustomerName = dto.CustomerName.Trim(); c.Phone = dto.Phone; c.IdCard = dto.IdCard; c.TaxCode = dto.TaxCode;
-    c.Address = dto.Address; c.Email = dto.Email; c.ProvinceCode = dto.ProvinceCode; c.Status = dto.Status ?? "1";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { c.CustomerCode, c.CustomerName, c.Status });
-}).RequireAuthorization();
-
-app.MapDelete("/api/customers/{code}", async (string code, AppDbContext db, ITenantContext t) =>
-{
-    code = code.Trim().ToUpperInvariant();
-    var c = await db.Customers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CustomerCode == code);
-    if (c is null) return Results.NotFound(new { code });
-    db.Customers.Remove(c); await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = code });
-}).RequireAuthorization();
+// audit 2026-09-03: cụm "/api/customers" (Customer entity, twin trace sai FrmCustomerBase) đã XOÁ —
+// xem chú thích trong Entities.cs. Dùng /api/dealercustomers (DealerCustomer, port đúng FrmNewCustomer)
+// cho nghiệp vụ khách hàng, và /api/master/CustomerBase cho danh mục "Nguồn khách hàng".
 
 // ===== Nhân viên bán hàng (Mst_SalesMan) — port 1:1 FrmCreateSalesMan =====
 app.MapGet("/api/salesmen", async (AppDbContext db, ITenantContext t, string? q, string? dealer) =>
@@ -12494,17 +12467,27 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
     if (string.IsNullOrWhiteSpace(dto.FullName)) return Results.BadRequest(new { error = "Hãy nhập Họ tên." });
     if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Hãy nhập Địa chỉ." });
     if (string.IsNullOrWhiteSpace(dto.PhoneNo)) return Results.BadRequest(new { error = "Hãy nhập Số điện thoại." });
+    // audit 2026-09-03: regex đúng nguồn Util.IsPhoneNumber2 (FrmNewCustomer.txtPhone_Validating)
+    if (!System.Text.RegularExpressions.Regex.IsMatch(dto.PhoneNo.Trim(), @"^(01[2689]|09|08|07|06|05|04|03|02)[0-9]{8,9}$"))
+        return Results.BadRequest(new { error = "Số điện thoại không hợp lệ!" });
     if (!string.IsNullOrWhiteSpace(dto.IDCardNo) && dto.IDCardNo.Any(ch => !char.IsLetterOrDigit(ch)))
         return Results.BadRequest(new { error = "IDCardNo không được nhập ký tự đặc biệt." });
+    // audit 2026-09-03: bổ sung guard thiếu — nguồn bắt buộc Tỉnh/Giới tính/Nguồn KH (btnApply_Click)
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Hãy chọn Tỉnh." });
+    if (string.IsNullOrWhiteSpace(dto.Gender)) return Results.BadRequest(new { error = "Hãy chọn Giới tính." });
+    if (string.IsNullOrWhiteSpace(dto.CusBaseCode)) return Results.BadRequest(new { error = "Hãy chọn Nguồn khách hàng." });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !System.Text.RegularExpressions.Regex.IsMatch(dto.Email, @"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*"))
+        return Results.BadRequest(new { error = "Email không hợp lệ." });
     var code = string.IsNullOrWhiteSpace(dto.CustomerCode) ? "DC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CustomerCode.Trim().ToUpperInvariant();
     if (await db.DealerCustomers.AnyAsync(c => c.OrgId == t.OrgId && c.CustomerCode == code))
         return Results.BadRequest(new { error = $"Mã KH {code} đã tồn tại!" });
     var c = new DealerCustomer
     {
         OrgId = t.OrgId, CustomerCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), CusTypeCode = dto.CusTypeCode.Trim(),
-        CusBaseCode = dto.CusBaseCode ?? "KH", FullName = dto.FullName.Trim(), Address = dto.Address.Trim(), PhoneNo = dto.PhoneNo.Trim(),
+        CusBaseCode = dto.CusBaseCode, FullName = dto.FullName.Trim(), FullNameEN = dto.FullNameEN, Address = dto.Address.Trim(), PhoneNo = dto.PhoneNo.Trim(),
         Email = dto.Email, TaxCode = dto.TaxCode, ProvinceCode = dto.ProvinceCode, DistrictCode = dto.DistrictCode,
-        IDCardNo = dto.IDCardNo, IDCardType = dto.IDCardType, Gender = dto.Gender, DateOfBirth = dto.DateOfBirth
+        IDCardNo = dto.IDCardNo, IDCardType = dto.IDCardType, Gender = dto.Gender, DateOfBirth = dto.DateOfBirth,
+        RepresentName = dto.RepresentName, Position = dto.Position, CusAccountBank = dto.CusAccountBank
     };
     db.DealerCustomers.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.CustomerCode, c.FullName });
@@ -15544,7 +15527,6 @@ record DealerDto(string DealerCode, string DealerName, string? DealerType, strin
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
     string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status);
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
-record CustomerDto(string? CustomerCode, string CustomerName, string? Phone, string? IdCard, string? TaxCode, string? Address, string? Email, string? ProvinceCode, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? Phone, string? Email, string? Status);
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
@@ -15720,7 +15702,7 @@ record EditDealCtmCareDto(List<EditDealCtmCareRowDto>? Rows);
 record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
-record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth);
+record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 record DlrContractQtyRowDto(string? ModelCode, string? SpecCode, string? ColorCode, int UpdateQty);

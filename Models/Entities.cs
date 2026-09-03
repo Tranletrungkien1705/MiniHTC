@@ -87,22 +87,13 @@ public sealed class CarPrice
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Khách hàng (Mst_Customer) — port 1:1 FrmCustomerBase.</summary>
-public sealed class Customer
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string CustomerCode { get; set; } = "";
-    public string CustomerName { get; set; } = "";
-    public string? Phone { get; set; }
-    public string? IdCard { get; set; }
-    public string? TaxCode { get; set; }
-    public string? Address { get; set; }
-    public string? Email { get; set; }
-    public string? ProvinceCode { get; set; }
-    public string Status { get; set; } = "1";
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-}
+// audit 2026-09-03: entity "Customer"/"/api/customers"/"customer.html" (tick "port 1:1 FrmCustomerBase" trong
+// manifest ban đầu) là TWIN TRACE SAI — FrmCustomerBase.cs thực ra chỉ là màn danh mục "Nguồn khách hàng"
+// (CustomerBaseCode/Name/FlagActive, chỉ đọc — đã port đúng qua Masters category "CustomerBase").
+// Nghiệp vụ khách hàng thật (CustomerCode/FullName/Phone/IDCard/Province/District/Gender/CusBaseCode...) là
+// FrmNewCustomer/FrmMngCustomer (Views/SalesDealer) — đã port đúng, đủ field hơn, ở DealerCustomer/api/dealercustomers
+// bên dưới (do một fire audit khác, độc lập, port đúng nguồn). "Customer" là bản trùng/thiếu field, KHÔNG có nơi
+// nào khác trong code gọi tới (grep xác nhận) → xoá hẳn thay vì vá thêm, tránh 2 nguồn sự thật cho cùng 1 nghiệp vụ.
 
 /// <summary>Nhân viên bán hàng (Mst_SalesMan) — port 1:1 FrmCreateSalesMan.</summary>
 public sealed class SalesMan
@@ -4260,6 +4251,7 @@ public sealed class DealerCustomer
     public string CusTypeCode { get; set; } = "";     // loại khách hàng
     public string? CusBaseCode { get; set; }          // KH gốc (mặc định KH)
     public string FullName { get; set; } = "";
+    public string? FullNameEN { get; set; }           // audit 2026-09-03: bổ sung — thiếu ở fire trước
     public string Address { get; set; } = "";
     public string PhoneNo { get; set; } = "";
     public string? Email { get; set; }
@@ -4270,6 +4262,9 @@ public sealed class DealerCustomer
     public string? IDCardType { get; set; }
     public string? Gender { get; set; }
     public DateTime? DateOfBirth { get; set; }
+    public string? RepresentName { get; set; }        // audit 2026-09-03: bổ sung (người đại diện, KH doanh nghiệp)
+    public string? Position { get; set; }              // audit 2026-09-03: bổ sung (chức vụ người đại diện)
+    public string? CusAccountBank { get; set; }         // audit 2026-09-03: bổ sung (số TK ngân hàng KH)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
