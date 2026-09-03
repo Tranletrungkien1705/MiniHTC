@@ -1510,6 +1510,7 @@ public sealed class SalesManCertificate
     public string? CertificateName { get; set; }
     public string? SMType { get; set; }
     public string? DepartmentCode { get; set; }
+    public string? DealerCode { get; set; }                 // đại lý NVBH (TblMst_SalesManCertificate.DealerCode — WinForm line 196)
     public DateTime? EffStartDate { get; set; }
     public DateTime? EffEndDate { get; set; }
     public string FlagActive { get; set; } = "1";
@@ -1540,6 +1541,8 @@ public sealed class TrainingParticipant
     public long CourseId { get; set; }
     public string? SMHyundaiCode { get; set; }
     public DateTime? OrganizeDate { get; set; }
+    public string? FormalityTraining { get; set; }  // hình thức đào tạo (TblMst_TrainingDtl.FormalityTraining — WinForm line 168)
+    public string? Place { get; set; }              // địa điểm (TblMst_TrainingDtl.Place — WinForm line 170)
     public string? ResultIn { get; set; }
     public string? ResultOut { get; set; }
 }

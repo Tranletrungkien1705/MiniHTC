@@ -5568,6 +5568,11 @@ app.MapPost("/api/trainingcourses", async (TrainingCourseDto dto, AppDbContext d
     var code = (dto.TrainingUserCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã khóa đào tạo." });
     if (string.IsNullOrWhiteSpace((dto.TrainingName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên khóa đào tạo." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.TrainerCode)) return Results.BadRequest(new { error = "Chưa chọn loại giảng viên." });
+    // Guard: giảng viên nội bộ bắt buộc nhập tên (FrmMst_TrainingCreate line 73-79)
+    if (dto.TrainerCode.Trim() == "NOIBO" && string.IsNullOrWhiteSpace(dto.TrainerName))
+        return Results.BadRequest(new { error = "Giảng viên nội bộ: bắt buộc nhập tên giảng viên." });
     var row = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TrainingUserCode == code);
     if (row is null) { row = new TrainingCourse { OrgId = t.OrgId, TrainingUserCode = code }; db.TrainingCourses.Add(row); }
     row.TrainingName = dto.TrainingName; row.Department = dto.Department; row.DealerCode = dto.DealerCode; row.TrainerCode = dto.TrainerCode; row.TrainerName = dto.TrainerName; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
@@ -5602,7 +5607,7 @@ app.MapPost("/api/trainingcourses/{id}/participants", async (long id, TrainingPa
     if (dto.OrganizeDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày tổ chức." });
     var exists = await db.TrainingParticipants.AnyAsync(x => x.OrgId == t.OrgId && x.CourseId == id && x.SMHyundaiCode == sm && x.OrganizeDate == dto.OrganizeDate);
     if (exists) return Results.BadRequest(new { error = $"NVBH {sm} đã tham gia khóa này vào ngày đó." });
-    var p = new TrainingParticipant { OrgId = t.OrgId, CourseId = id, SMHyundaiCode = sm, OrganizeDate = dto.OrganizeDate, ResultIn = dto.ResultIn, ResultOut = dto.ResultOut };
+    var p = new TrainingParticipant { OrgId = t.OrgId, CourseId = id, SMHyundaiCode = sm, OrganizeDate = dto.OrganizeDate, FormalityTraining = dto.FormalityTraining, Place = dto.Place, ResultIn = dto.ResultIn, ResultOut = dto.ResultOut };
     db.TrainingParticipants.Add(p);
     await db.SaveChangesAsync();
     return Results.Ok(new { p.Id, p.SMHyundaiCode, p.OrganizeDate });
@@ -5634,10 +5639,12 @@ app.MapPost("/api/salesmancerts", async (SalesManCertificateDto dto, AppDbContex
     var cc = (dto.CertificateCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(sm)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH (Hyundai code)." });
     if (string.IsNullOrWhiteSpace(cc)) return Results.BadRequest(new { error = "Chưa chọn chứng chỉ." });
-    if (dto.EffStartDate.HasValue && dto.EffEndDate.HasValue && dto.EffEndDate < dto.EffStartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
+    if (dto.EffStartDate is null) return Results.BadRequest(new { error = "Cần EffStartDate (ngày hiệu lực bắt đầu)." });
+    if (dto.EffEndDate.HasValue && dto.EffEndDate < dto.EffStartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
     var row = await db.SalesManCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm && x.CertificateCode == cc);
     if (row is null) { row = new SalesManCertificate { OrgId = t.OrgId, SMHyundaiCode = sm, CertificateCode = cc }; db.SalesManCertificates.Add(row); }
-    row.CertificateName = dto.CertificateName; row.SMType = dto.SMType; row.DepartmentCode = dto.DepartmentCode; row.EffStartDate = dto.EffStartDate; row.EffEndDate = dto.EffEndDate; row.UpdatedAt = DateTime.Now;
+    row.CertificateName = dto.CertificateName; row.SMType = dto.SMType; row.DepartmentCode = dto.DepartmentCode;
+    row.DealerCode = dto.DealerCode; row.EffStartDate = dto.EffStartDate; row.EffEndDate = dto.EffEndDate; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.SMHyundaiCode, row.CertificateCode, row.FlagActive });
@@ -5759,6 +5766,7 @@ app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db,
     var no = (dto.ContractNo ?? "").Trim();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng." });
     if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không hợp lệ." });
+    if (dto.EffStartDate is null) return Results.BadRequest(new { error = "Cần EffStartDate (ngày hiệu lực)." });
     var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
     if (row is null) { row = new MstUnitPriceGPS { OrgId = t.OrgId, ContractNo = no }; db.MstUnitPriceGpsItems.Add(row); }
     row.UnitPrice = dto.UnitPrice; row.EffStartDate = dto.EffStartDate; row.UpdatedAt = DateTime.Now;
@@ -16077,9 +16085,9 @@ record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffSt
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
 record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
-record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive);
+record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive);
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
-record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? ResultIn, string? ResultOut);
+record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut);
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines);
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
