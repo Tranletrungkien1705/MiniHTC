@@ -346,7 +346,9 @@ app.MapGet("/api/salesmen", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(s => s.DealerCode == dealer);
     var items = await query.OrderBy(s => s.SalesManCode).Take(500).Select(s => new
     { s.SalesManCode, s.SalesManName, s.DealerCode, s.DepartmentCode, s.SalesType, s.Phone, s.Email, s.Status,
-      s.Gender, s.DateOfBirth, s.ProvinceCode, s.PositionCode, s.SMHyundaiCode, s.IdentityCardNo }).ToListAsync();
+      s.Gender, s.DateOfBirth, s.Address, s.ProvinceCode, s.QualificationCode, s.Specialized, s.YearExperience,
+      s.StartDate, s.EndDate, s.Position, s.PositionCode, s.CertificateCode, s.SMHyundaiCode, s.IdentityCardNo,
+      s.WebsiteLink, s.FacebookLink, s.FanpageLink, s.GroupLink, s.ZaloLink, s.AccountHTA }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
