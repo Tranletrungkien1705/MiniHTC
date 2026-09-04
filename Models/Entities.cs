@@ -4185,6 +4185,7 @@ public sealed class SPSupportRetail
     public string? DealerCode { get; set; }
     public string? SpecCode { get; set; }
     public string? ModelCode { get; set; }
+    public string? PRDiscountNo { get; set; }
     public decimal AmountSupport { get; set; }
     public DateTime DateSupport { get; set; }
     public DateTime? DateFullStatus { get; set; }
