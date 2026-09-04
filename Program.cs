@@ -806,9 +806,10 @@ app.MapPost("/api/boms/{code}/lines", async (string code, BomLineDto dto, AppDbC
     var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
     if (b is null) return Results.NotFound(new { code });
     if (string.IsNullOrWhiteSpace(dto.PartSku)) return Results.BadRequest(new { error = "Cần PartSku." });
-    db.BomLines.Add(new BomLine { OrgId = t.OrgId, BomId = b.Id, PartSku = dto.PartSku.Trim().ToUpperInvariant(), PartName = dto.PartName, Qty = dto.Qty <= 0 ? 1 : dto.Qty });
+    var line = new BomLine { OrgId = t.OrgId, BomId = b.Id, PartSku = dto.PartSku.Trim().ToUpperInvariant(), PartName = dto.PartName, Qty = dto.Qty <= 0 ? 1 : dto.Qty };
+    db.BomLines.Add(line);
     await db.SaveChangesAsync();
-    return Results.Ok(new { bom = code, dto.PartSku, dto.Qty });
+    return Results.Ok(new { bom = code, line.PartSku, line.Qty });
 }).RequireAuthorization();
 
 app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
