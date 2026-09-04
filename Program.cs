@@ -5596,7 +5596,7 @@ app.MapGet("/api/trainingcourses/{id}/participants", async (long id, AppDbContex
 {
     var course = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (course is null) return Results.NotFound(new { id });
-    var items = await db.TrainingParticipants.Where(x => x.OrgId == t.OrgId && x.CourseId == id).OrderBy(x => x.OrganizeDate).Select(x => new { x.Id, x.SMHyundaiCode, x.OrganizeDate, x.ResultIn, x.ResultOut }).ToListAsync();
+    var items = await db.TrainingParticipants.Where(x => x.OrgId == t.OrgId && x.CourseId == id).OrderBy(x => x.OrganizeDate).Select(x => new { x.Id, x.SMHyundaiCode, x.OrganizeDate, x.FormalityTraining, x.Place, x.ResultIn, x.ResultOut }).ToListAsync();
     return Results.Ok(new { course = new { course.Id, course.TrainingUserCode, course.TrainingName }, count = items.Count, items });
 }).RequireAuthorization();
 
@@ -5631,7 +5631,7 @@ app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, strin
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(cert)) qry = qry.Where(x => x.CertificateCode == cert);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMHyundaiCode.Contains(q!) || x.CertificateCode.Contains(q!) || x.CertificateName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.EffStartDate, x.EffEndDate, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -7671,7 +7671,7 @@ app.MapGet("/api/womappings", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(car)) q = q.Where(x => x.CarId.Contains(car!));
     if (!string.IsNullOrWhiteSpace(so)) q = q.Where(x => x.SoCode == so);
     var items = await q.OrderBy(x => x.CarId).Take(1000)
-        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.Description, x.SoCode }).ToListAsync();
+        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.Description, x.SoCode, x.WorkOrderNoTemp }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
