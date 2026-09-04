@@ -7534,7 +7534,8 @@ app.MapPost("/api/custpromotions", async (CustPromotionDto dto, AppDbContext db,
     if (dto.QtyAllocated < 0) return Results.BadRequest(new { error = "Định mức không được âm." });
     var p = await db.CustomerPromotions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CardNo == card && x.ProgramCode == prog);
     if (p is null) { p = new CustomerPromotion { OrgId = t.OrgId, CardNo = card, ProgramCode = prog }; db.CustomerPromotions.Add(p); }
-    p.ProgramName = dto.ProgramName; p.EffDate = dto.EffDate; p.QtyAllocated = dto.QtyAllocated; p.Remark = dto.Remark; p.UpdatedAt = DateTime.Now;
+    // Cộng dồn định mức (đúng comment method + nghiệp vụ cấp thêm KM, không ghi đè mất phần đã cấp trước).
+    p.ProgramName = dto.ProgramName; p.EffDate = dto.EffDate; p.QtyAllocated += dto.QtyAllocated; p.Remark = dto.Remark; p.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.Id, p.CardNo, p.ProgramCode, remain = p.QtyAllocated - p.QtyUsed });
 }).RequireAuthorization();
