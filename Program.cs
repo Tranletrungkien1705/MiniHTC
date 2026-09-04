@@ -7986,7 +7986,7 @@ app.MapGet("/api/transporters", async (AppDbContext db, ITenantContext t, string
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.TransporterCode).Take(500).Select(x => new
     {
-        x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.FlagActive,
+        x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.ContactorPhoneNo, x.FlagActive,
         cars = db.TransporterCars.Count(c => c.OrgId == t.OrgId && c.TransporterCode == x.TransporterCode),
         drivers = db.TransporterDrivers.Count(d => d.OrgId == t.OrgId && d.TransporterCode == x.TransporterCode)
     }).ToListAsync();
