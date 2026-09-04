@@ -14945,6 +14945,7 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
+    if (r.Status == "Rejected") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
     var target = (dto.ToStatus ?? "").Trim();
     var curIdx = Array.IndexOf(_roFlow, r.Status);
     var tgtIdx = Array.IndexOf(_roFlow, target);
