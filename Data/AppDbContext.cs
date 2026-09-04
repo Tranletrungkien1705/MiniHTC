@@ -169,6 +169,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarTestCarDtl> CarTestCarDtls => Set<CarTestCarDtl>();
     public DbSet<SPSupportRetail> SPSupportRetails => Set<SPSupportRetail>();
     public DbSet<CarVinMaster> CarVinMasters => Set<CarVinMaster>();
+    public DbSet<SalesPolicyEligibility> SalesPolicyEligibilities => Set<SalesPolicyEligibility>();
     public DbSet<WarrantyExpires> WarrantyExpiresList => Set<WarrantyExpires>();
     public DbSet<Storage> Storages => Set<Storage>();
     public DbSet<CarStdOption> CarStdOptions => Set<CarStdOption>();

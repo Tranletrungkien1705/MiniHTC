@@ -4206,6 +4206,17 @@ public sealed class CarVinMaster
     public string? DealerCode { get; set; }
 }
 
+/// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
+public sealed class SalesPolicyEligibility
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SPSRCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string? DealerCode { get; set; }
+}
+
 /// <summary>Phiếu bảo trì xe lưu kho bãi (StoF_Maintain) — port 1:1 FrmMaintenanceSlipList/Detail (2010.HTC/Maintenance). Bảo dưỡng xe thành phẩm lưu kho, theo VIN.</summary>
 public sealed class StoFMaintain
 {

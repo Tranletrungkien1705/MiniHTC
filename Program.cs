@@ -6533,6 +6533,18 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         if (!vinMasterByVin.ContainsKey(vin))
             return Results.BadRequest(new { error = $"VIN {vin}: không tìm thấy trong danh mục xe (Car_Vin)." });
     }
+    // Biz.HTC.WH.cs SPL_SPSupportRetail_Create: SPSRCode+Spec+Model(+Dealer) phải eligible trong SPL_SalesPolicyMstDetail (áp mọi đại lý) hoặc MstDetailDealer (riêng đại lý đó).
+    var spsrCodes = rows.Select(r => r.SPSRCode!.Trim().ToUpperInvariant()).ToHashSet();
+    var eligRows = await db.SalesPolicyEligibilities.Where(x => x.OrgId == t.OrgId && spsrCodes.Contains(x.SPSRCode)).ToListAsync();
+    foreach (var r in rows)
+    {
+        var vin = r.Vin!.Trim().ToUpperInvariant();
+        var vm = vinMasterByVin[vin];
+        var spsr = r.SPSRCode!.Trim().ToUpperInvariant();
+        var eligible = eligRows.Any(e => e.SPSRCode == spsr && e.ModelCode == vm.ModelCode && e.SpecCode == vm.SpecCode && (e.DealerCode == null || e.DealerCode == vm.DealerCode));
+        if (!eligible)
+            return Results.BadRequest(new { error = $"VIN {vin}: chính sách {spsr} không áp dụng cho model/spec/đại lý này." });
+    }
     foreach (var r in rows)
     {
         var vin = r.Vin!.Trim().ToUpperInvariant();
@@ -6570,6 +6582,28 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
         db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant() });
         existing.Add(vin); added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, skipped });
+}).RequireAuthorization();
+
+// Import điều kiện eligible chính sách hỗ trợ bán lẻ (nguồn SPL_SalesPolicyMstDetail + MstDetailDealer, gộp phẳng) — phục vụ guard #4 SPSupportRetail.
+app.MapPost("/api/salespolicyeligibilities/import", async (List<SalesPolicyEligibilityImportDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để import." });
+    int added = 0, skipped = 0;
+    var existing = (await db.SalesPolicyEligibilities.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.SPSRCode, x.ModelCode, x.SpecCode, x.DealerCode }).ToListAsync())
+        .Select(x => (x.SPSRCode, x.ModelCode, x.SpecCode, x.DealerCode)).ToHashSet();
+    foreach (var r in rows)
+    {
+        if (string.IsNullOrWhiteSpace(r.SPSRCode) || string.IsNullOrWhiteSpace(r.ModelCode) || string.IsNullOrWhiteSpace(r.SpecCode)) { skipped++; continue; }
+        var spsr = r.SPSRCode.Trim().ToUpperInvariant(); var model = r.ModelCode.Trim(); var spec = r.SpecCode.Trim();
+        var dealer = string.IsNullOrWhiteSpace(r.DealerCode) ? null : r.DealerCode.Trim().ToUpperInvariant();
+        var key = (spsr, model, spec, dealer);
+        if (existing.Contains(key)) { skipped++; continue; }
+        db.SalesPolicyEligibilities.Add(new SalesPolicyEligibility { OrgId = t.OrgId, SPSRCode = spsr, ModelCode = model, SpecCode = spec, DealerCode = dealer });
+        existing.Add(key); added++;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { added, skipped });
@@ -16194,6 +16228,7 @@ record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, st
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode);
+record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);
 record SPSupportRetailImportDto(List<SPSupportRetailRowDto>? Rows);
 record DealerDealAttachRowDto(string? DealNo, string? FileNameNew, string? FilePathNew);
 record DealerDealAttachBatchDto(List<DealerDealAttachRowDto>? Rows);
