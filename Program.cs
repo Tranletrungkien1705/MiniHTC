@@ -12133,7 +12133,7 @@ app.MapGet("/api/mnfplorders", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(ordType)) q = q.Where(o => o.OrdType == ordType);
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
-        o.OrderNo, o.OrdType, o.Status, o.CreatedAt, o.SentAt,
+        o.OrderNo, o.OrdType, o.OrdMonth, o.Remark, o.Status, o.CreatedAt, o.SentAt,
         lines = db.MnfPlOrderDtls.Count(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id),
         qty = db.MnfPlOrderDtls.Where(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
@@ -15254,7 +15254,7 @@ app.MapGet("/api/smviolates", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(v => v.ViolateTypeId == type);
     var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new
-    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.Remark, v.CreatedAt }).ToListAsync();
+    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.SMType, v.SmDateOfBirth, v.Remark, v.CreatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
