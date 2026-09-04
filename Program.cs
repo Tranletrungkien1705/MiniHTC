@@ -625,7 +625,7 @@ app.MapGet("/api/planheaders", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(h => h.Status == status);
     if (year.HasValue) q = q.Where(h => h.YearPlan == year.Value);
     var items = await q.OrderByDescending(h => h.Id).Take(500)
-        .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt }).ToListAsync();
+        .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
