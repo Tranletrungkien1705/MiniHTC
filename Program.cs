@@ -6524,12 +6524,23 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         if (prdStatus is not ("Approved1" or "Approved2"))
             return Results.BadRequest(new { error = $"VIN {r.Vin}: đề nghị chiết khấu {prd} chưa được duyệt (hiện {prdStatus})." });
     }
+    // Biz.HTC.WH.cs SPL_SPSupportRetail_Create: VIN phải tồn tại trong Car_Vin+Car_Car; DealerCode/SpecCode/ModelCode LẤY TỪ VIN master (ghi đè giá trị caller gửi), không tin caller.
+    var vins = rows.Select(r => r.Vin!.Trim().ToUpperInvariant()).ToHashSet();
+    var vinMasterByVin = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToDictionaryAsync(x => x.VIN, x => x);
     foreach (var r in rows)
     {
+        var vin = r.Vin!.Trim().ToUpperInvariant();
+        if (!vinMasterByVin.ContainsKey(vin))
+            return Results.BadRequest(new { error = $"VIN {vin}: không tìm thấy trong danh mục xe (Car_Vin)." });
+    }
+    foreach (var r in rows)
+    {
+        var vin = r.Vin!.Trim().ToUpperInvariant();
+        var vm = vinMasterByVin[vin];
         db.SPSupportRetails.Add(new SPSupportRetail
         {
-            OrgId = t.OrgId, VIN = r.Vin!.Trim().ToUpperInvariant(), SPSRCode = r.SPSRCode!.Trim().ToUpperInvariant(), DealerCode = r.DealerCode?.Trim().ToUpperInvariant(),
-            SpecCode = r.SpecCode, ModelCode = r.ModelCode, PRDiscountNo = r.PRDiscountNo!.Trim(), AmountSupport = r.AmountSupport, DateSupport = r.DateSupport ?? DateTime.Now,
+            OrgId = t.OrgId, VIN = vin, SPSRCode = r.SPSRCode!.Trim().ToUpperInvariant(), DealerCode = vm.DealerCode,
+            SpecCode = vm.SpecCode, ModelCode = vm.ModelCode, PRDiscountNo = r.PRDiscountNo!.Trim(), AmountSupport = r.AmountSupport, DateSupport = r.DateSupport ?? DateTime.Now,
             DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, Remark = r.Remark
         });
     }
@@ -6544,6 +6555,24 @@ app.MapDelete("/api/spsupportretails/{vin}/{spsrCode}", async (string vin, strin
     if (row is null) return Results.NotFound(new { vin, spsrCode });
     db.SPSupportRetails.Remove(row); await db.SaveChangesAsync();
     return Results.Ok(new { deleted = vin });
+}).RequireAuthorization();
+
+// Import master VIN tối giản (nguồn Car_Vin+Car_Car, cùng nguồn MiniVehicle) — phục vụ guard tồn tại VIN cho SPSupportRetail.
+app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để import." });
+    var vins = rows.Where(r => !string.IsNullOrWhiteSpace(r.Vin)).Select(r => r.Vin!.Trim().ToUpperInvariant()).ToHashSet();
+    var existing = (await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).Select(x => x.VIN).ToListAsync()).ToHashSet();
+    int added = 0, skipped = 0;
+    foreach (var r in rows)
+    {
+        var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
+        if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant() });
+        existing.Add(vin); added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, skipped });
 }).RequireAuthorization();
 
 // ===== File đính kèm sổ bảo hành theo HĐ bán lẻ (DealerDealAttach — port 1:1 FrmEditDeal_SoBaoHanh, 2010.HTC/SalesDealer) =====
@@ -16164,6 +16193,7 @@ record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr
 record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, string? SpecDescription, DateTime? DeliveryOutDate, DateTime? DeliveryEndDate, DateTime? DeliveryDate, string? DlrContractNo, string? SMName, DateTime? CusInvoiceDate, decimal UnitPriceActual, decimal AmountDealerRequest, string? CustomerName);
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode);
 record SPSupportRetailImportDto(List<SPSupportRetailRowDto>? Rows);
 record DealerDealAttachRowDto(string? DealNo, string? FileNameNew, string? FilePathNew);
 record DealerDealAttachBatchDto(List<DealerDealAttachRowDto>? Rows);
