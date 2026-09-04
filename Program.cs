@@ -6509,6 +6509,9 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         if (string.IsNullOrWhiteSpace(r.Vin)) return Results.BadRequest(new { error = "VIN không để trống" });
         if (string.IsNullOrWhiteSpace(r.SPSRCode)) return Results.BadRequest(new { error = "Số chính sách không để trống" });
     }
+    // Biz.HTC.WH.cs SPL_SPSupportRetail_Create: strKeyDetail = |VIN|SPSRCode| — chặn trùng key trong cùng batch trước khi ghi.
+    var dupKey = rows.GroupBy(r => (r.Vin!.Trim().ToUpperInvariant(), r.SPSRCode!.Trim().ToUpperInvariant())).FirstOrDefault(g => g.Count() > 1);
+    if (dupKey != null) return Results.BadRequest(new { error = $"Trùng (VIN {dupKey.Key.Item1} × SPSRCode {dupKey.Key.Item2}) trong file." });
     foreach (var r in rows)
     {
         db.SPSupportRetails.Add(new SPSupportRetail
