@@ -5238,8 +5238,21 @@ public sealed class VatInvoice
     public string OS_HDDT_InvoiceCode { get; set; } = "";  // ma HDDT
     public string InvoiceAdjType { get; set; } = "";       // loai dieu chinh (rong=goc)
     public string RootHTCInvoiceNo { get; set; } = "";     // HD goc (khi la HD dieu chinh)
-    public string VatHTCStatus { get; set; } = "Draft";    // Draft -> Issued -> Deleted
+    /// <summary>
+    /// 🔴 Trạng thái hoá đơn theo ĐÚNG mã nguồn (`TConst.Stage`, cột `VAT_HTCInvoice.VatHTCStatus`):
+    /// "P" chờ duyệt (tạo mới) → "F" đã duyệt/phát hành → "C" đã huỷ · "R" bị từ chối.
+    /// ⚠️ Port cũ dùng chuỗi TỰ ĐẶT "Draft"/"Issued"/"Deleted" ⇒ không đối chiếu được với dữ liệu hệ nguồn.
+    /// ⚠️ Nguồn tách 2 việc: **DUYỆT** (P→F, `Biz.HTC.WH.cs:122079`) và **GÁN SỐ HOÁ ĐƠN** (hàm riêng,
+    /// `Biz.HTC.WH.cs:123182`); port cũ gộp cả hai vào một bước "issue".
+    /// Đọc được dữ liệu cũ: Draft→"P", Issued→"F", Deleted→"C".
+    /// </summary>
+    public string VatHTCStatus { get; set; } = "P";
     public string DeleteReason { get; set; } = "";
+
+    /// <summary>Thời điểm duyệt/huỷ (`ApprovedDate`) — nguồn ghi ở CẢ hai nhánh duyệt và huỷ.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>Người duyệt/huỷ (`ApprovedBy`).</summary>
+    public string? ApprovedBy { get; set; }  // VAT_HTCInvoice
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? HTCInvoiceDate { get; set; }
 }
