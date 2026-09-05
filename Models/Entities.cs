@@ -648,10 +648,27 @@ public sealed class TransportPlan
     public string? StorageCode { get; set; }
     public string? FProvinceCode { get; set; }       // từ tỉnh
     public string? TProvinceCode { get; set; }       // đến tỉnh
+    /// <summary>Từ huyện (`FDistrictCode`) — nguồn BẮT BUỘC khi nhà vận chuyển duyệt.</summary>
+    public string? FDistrictCode { get; set; }
+    /// <summary>Đến huyện (`TDistrictCode`) — nguồn BẮT BUỘC khi nhà vận chuyển duyệt.</summary>
+    public string? TDistrictCode { get; set; }
     public string? TransporterCode { get; set; }
     public DateTime? ExpectedDate { get; set; }
     public string Status { get; set; } = "Pending";  // Pending → Finished
     public DateTime? ApprovedDate { get; set; }
+
+    /// <summary>
+    /// 🔴 TRỤC TRẠNG THÁI THỨ HAI — phía NHÀ VẬN CHUYỂN duyệt (`Sto_TranspPlan.TransporterStatus`),
+    /// **ĐỘC LẬP** với <see cref="Status"/> (duyệt nội bộ HTC):
+    /// "P" chờ nhà vận chuyển duyệt → **"F" nhận chở** (`TConst.Stage.Finished`) · **"D" từ chối** (`Stage.Decline`).
+    /// Nguồn: `TERP.BizTransporter/Report.cs:1403` — hệ `ERP.V15.DMSSales.Real`, **chỉ có trên máy 150**.
+    /// Port cũ chỉ có 1 trục ⇒ **không biết nhà vận chuyển đã nhận chở hay đã từ chối**.
+    /// </summary>
+    public string TransporterStatus { get; set; } = "P";
+    /// <summary>Thời điểm nhà vận chuyển duyệt/từ chối (`TransporterAppDate`).</summary>
+    public DateTime? TransporterAppDate { get; set; }
+    /// <summary>Người của nhà vận chuyển thao tác (`TransporterAppBy`).</summary>
+    public string? TransporterAppBy { get; set; }
 }
 
 /// <summary>Yêu cầu vận chuyển thu hồi xe (StoTranspReq/retrieve — port 1:1 FrmNewRetrieveTransReq/FrmMngRetrieveTransReq, Phase2):

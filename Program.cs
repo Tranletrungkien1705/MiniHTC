@@ -1925,7 +1925,8 @@ app.MapGet("/api/transplans", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
-    { p.VINPlan, p.Vin, p.ModelCode, p.DealerCode, p.StorageCode, p.FProvinceCode, p.TProvinceCode, p.TransporterCode, p.ExpectedDate, p.Status, p.ApprovedDate }).ToListAsync();
+    { p.VINPlan, p.Vin, p.ModelCode, p.DealerCode, p.StorageCode, p.FProvinceCode, p.TProvinceCode, p.TransporterCode, p.ExpectedDate, p.Status, p.ApprovedDate,
+      p.FDistrictCode, p.TDistrictCode, p.TransporterStatus, p.TransporterAppDate, p.TransporterAppBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -1939,6 +1940,7 @@ app.MapPost("/api/transplans", async (TransPlanDto dto, AppDbContext db, ITenant
     else if (p.Status == "Finished") return Results.BadRequest(new { error = "KH đã duyệt, không sửa được." });
     p.Vin = dto.Vin; p.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); p.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     p.StorageCode = dto.StorageCode; p.FProvinceCode = dto.FProvinceCode; p.TProvinceCode = dto.TProvinceCode;
+    p.FDistrictCode = dto.FDistrictCode; p.TDistrictCode = dto.TDistrictCode;
     p.TransporterCode = dto.TransporterCode; p.ExpectedDate = dto.ExpectedDate;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, status = p.Status });
@@ -1955,6 +1957,52 @@ app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbCon
     await db.SaveChangesAsync();
     return Results.Ok(new { p.VINPlan, status = p.Status });
 }).RequireAuthorization();
+
+// 🔴 NHÀ VẬN CHUYỂN DUYỆT / TỪ CHỐI kế hoạch vận chuyển — trục trạng thái THỨ HAI, độc lập duyệt nội bộ.
+// Nguồn: `TERP.BizTransporter/Report.cs:1268-1414` (hệ `ERP.V15.DMSSales.Real`, CHỈ có trên máy 150),
+// WS `Sto_TranspPlanApprovedByTransporter` — cổng `TERP.WSTransp` cho nhà vận chuyển đăng nhập.
+// Tham số nguồn `strFlagUnApproved`: "0" = DUYỆT (nhận chở), "1" = TỪ CHỐI.
+app.MapPost("/api/transplans/{vinPlan}/transporter-approve", async (
+    string vinPlan, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? unapprove) =>
+{
+    vinPlan = vinPlan.Trim().ToUpperInvariant();
+    var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vinPlan);
+    if (p is null) return Results.NotFound(new { vinPlan });
+
+    // Guard 1 (nguồn): chỉ thao tác khi trục nhà vận chuyển đang "P".
+    if (p.TransporterStatus != "P")
+        return Results.BadRequest(new { error = $"Kế hoạch đang ở trạng thái nhà vận chuyển '{p.TransporterStatus}', chỉ xử lý khi 'P'." });
+
+    // Guard 2-6 (nguồn): mỗi trường một mã lỗi RIÊNG — đơn vị vận tải + ĐỦ 4 mã địa bàn đi/đến.
+    if (string.IsNullOrWhiteSpace(p.TransporterCode))
+        return Results.BadRequest(new { error = "Kế hoạch chưa có đơn vị vận tải." });
+    if (string.IsNullOrWhiteSpace(p.FProvinceCode))
+        return Results.BadRequest(new { error = "Kế hoạch chưa có tỉnh đi." });
+    if (string.IsNullOrWhiteSpace(p.FDistrictCode))
+        return Results.BadRequest(new { error = "Kế hoạch chưa có huyện đi." });
+    if (string.IsNullOrWhiteSpace(p.TProvinceCode))
+        return Results.BadRequest(new { error = "Kế hoạch chưa có tỉnh đến." });
+    if (string.IsNullOrWhiteSpace(p.TDistrictCode))
+        return Results.BadRequest(new { error = "Kế hoạch chưa có huyện đến." });
+
+    // Nguồn: duyệt ⇒ Stage.Finished ("F"); từ chối ⇒ Stage.Decline ("D").
+    var isUnapprove = unapprove == "1";
+    p.TransporterStatus = isUnapprove ? "D" : "F";
+    p.TransporterAppDate = DateTime.Now;
+    p.TransporterAppBy = user.Identity?.Name ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.VINPlan, transporterStatus = p.TransporterStatus, p.TransporterAppDate, p.TransporterAppBy });
+}).RequireAuthorization();
+
+app.MapGet("/api/transplans/transporter-statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ nhà vận chuyển duyệt" },
+        new { code = "F", name = "Nhà vận chuyển nhận chở" },
+        new { code = "D", name = "Nhà vận chuyển từ chối" } },
+    note = "Trục ĐỘC LẬP với Status duyệt nội bộ HTC. Duyệt yêu cầu đủ đơn vị vận tải + 4 mã địa bàn (tỉnh/huyện đi-đến).",
+})).RequireAuthorization();
 
 // ===== Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, DMSales.Foton) =====
 string[] _docReqFlow = { "Draft", "Submitted", "Done" };
@@ -20169,7 +20217,7 @@ record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? Engin
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
-record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate);
+record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null);
 record RetrieveReqCarDto(string Vin, string? StorageCode);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars, string? TranspReqType);
 record VinPairDto(string FVIN, string RVIN);
