@@ -5983,6 +5983,15 @@ public sealed class CusDebitPayment
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long CusDebitId { get; set; }
+    /// <summary>Số phiếu thu (`Ser_Payment.PaymentNo`) — nguồn sinh bằng `SerDebitGeneratePaymentNo`.
+    /// Nhiều dòng thu cùng 1 lần nộp dùng CHUNG số này (1 phiếu phân bổ vào nhiều công nợ).</summary>
+    public string? PaymentNo { get; set; }
+    /// <summary>Mã đại lý (DealerCode) — nguồn BẮT BUỘC (checkPaymentFieldEmpty).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Tên người nộp tiền (PayPersonName) — nguồn BẮT BUỘC.</summary>
+    public string? PayPersonName { get; set; }
+    /// <summary>Số CMND/CCCD người nộp tiền (PayPersonIDCardNo) — nguồn BẮT BUỘC.</summary>
+    public string? PayPersonIDCardNo { get; set; }
     public decimal PaymentAmount { get; set; }
     public DateTime? PayDate { get; set; }
     public string? Note { get; set; }
@@ -6078,6 +6087,15 @@ public sealed class InsDebitPayment
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long InsDebitId { get; set; }
+    /// <summary>Số phiếu thu (`Ser_Payment.PaymentNo`) — nguồn sinh bằng `SerDebitGeneratePaymentNo`.
+    /// Nhiều dòng thu cùng 1 lần nộp dùng CHUNG số này (1 phiếu phân bổ vào nhiều công nợ).</summary>
+    public string? PaymentNo { get; set; }
+    /// <summary>Mã đại lý (DealerCode) — nguồn BẮT BUỘC (checkPaymentFieldEmpty).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Tên người nộp tiền (PayPersonName) — nguồn BẮT BUỘC.</summary>
+    public string? PayPersonName { get; set; }
+    /// <summary>Số CMND/CCCD người nộp tiền (PayPersonIDCardNo) — nguồn BẮT BUỘC.</summary>
+    public string? PayPersonIDCardNo { get; set; }
     public decimal PaymentAmount { get; set; }
     public DateTime? PayDate { get; set; }
     public string? Note { get; set; }
@@ -6106,6 +6124,15 @@ public sealed class SupplierDebitPayment
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long SupplierDebitId { get; set; }
+    /// <summary>Số phiếu thu (`Ser_Payment.PaymentNo`) — nguồn sinh bằng `SerDebitGeneratePaymentNo`.
+    /// Nhiều dòng thu cùng 1 lần nộp dùng CHUNG số này (1 phiếu phân bổ vào nhiều công nợ).</summary>
+    public string? PaymentNo { get; set; }
+    /// <summary>Mã đại lý (DealerCode) — nguồn BẮT BUỘC (checkPaymentFieldEmpty).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Tên người nộp tiền (PayPersonName) — nguồn BẮT BUỘC.</summary>
+    public string? PayPersonName { get; set; }
+    /// <summary>Số CMND/CCCD người nộp tiền (PayPersonIDCardNo) — nguồn BẮT BUỘC.</summary>
+    public string? PayPersonIDCardNo { get; set; }
     public decimal PaymentAmount { get; set; }
     public DateTime? PayDate { get; set; }
     public string? Note { get; set; }

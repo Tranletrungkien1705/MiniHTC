@@ -6138,7 +6138,7 @@ app.MapGet("/api/cusdebits/{no}/payments", async (string no, AppDbContext db, IT
     var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     var pays = await db.CusDebitPayments.Where(p => p.OrgId == t.OrgId && p.CusDebitId == h.Id).OrderBy(p => p.Id)
-        .Select(p => new { p.PaymentAmount, p.Note, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
     return Results.Ok(new { h.DebitNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
 }).RequireAuthorization();
 
@@ -6149,9 +6149,16 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
+    // Guard của nguồn (checkPaymentFieldEmpty): đại lý + người nộp + CMND/CCCD + ngày thu đều BẮT BUỘC.
+    // ⚠️ CusID KHÔNG bắt buộc — nguồn đã COMMENT dòng truyền strCusID vào hàm check (luật "port dòng active").
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
+    if (dto.PayDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày thu tiền." });
     var balance = h.DebitAmount - h.PaidAmount;
     if (dto.PaymentAmount > balance) return Results.BadRequest(new { error = $"Số tiền thu vượt số dư công nợ ({balance})." });
-    db.CusDebitPayments.Add(new CusDebitPayment { OrgId = t.OrgId, CusDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note });
+    db.CusDebitPayments.Add(new CusDebitPayment { OrgId = t.OrgId, CusDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note,
+        PaymentNo = "PM" + DateTime.Now.ToString("yyMMddHHmmss"), DealerCode = dto.DealerCode, PayPersonName = dto.PayPersonName, PayPersonIDCardNo = dto.PayPersonIDCardNo });
     h.PaidAmount += dto.PaymentAmount;
     if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
     await db.SaveChangesAsync();
@@ -11195,7 +11202,7 @@ app.MapGet("/api/insdebits/{no}/payments", async (string no, AppDbContext db, IT
     var h = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     var pays = await db.InsDebitPayments.Where(p => p.OrgId == t.OrgId && p.InsDebitId == h.Id).OrderBy(p => p.Id)
-        .Select(p => new { p.PaymentAmount, p.Note, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
     return Results.Ok(new { h.DebitNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
 }).RequireAuthorization();
 
@@ -11206,9 +11213,16 @@ app.MapPost("/api/insdebits/{no}/payments", async (string no, InsDebitPaymentDto
     var h = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
+    // Guard của nguồn (checkPaymentFieldEmpty): đại lý + người nộp + CMND/CCCD + ngày thu đều BẮT BUỘC.
+    // ⚠️ CusID KHÔNG bắt buộc — nguồn đã COMMENT dòng truyền strCusID vào hàm check (luật "port dòng active").
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
+    if (dto.PayDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày thu tiền." });
     var balance = h.DebitAmount - h.PaidAmount;
     if (dto.PaymentAmount > balance) return Results.BadRequest(new { error = $"Số tiền thu vượt số dư công nợ ({balance})." });
-    db.InsDebitPayments.Add(new InsDebitPayment { OrgId = t.OrgId, InsDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note });
+    db.InsDebitPayments.Add(new InsDebitPayment { OrgId = t.OrgId, InsDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note,
+        PaymentNo = "PM" + DateTime.Now.ToString("yyMMddHHmmss"), DealerCode = dto.DealerCode, PayPersonName = dto.PayPersonName, PayPersonIDCardNo = dto.PayPersonIDCardNo });
     h.PaidAmount += dto.PaymentAmount;
     if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
     await db.SaveChangesAsync();
@@ -11270,7 +11284,7 @@ app.MapGet("/api/supplierdebits/{id:long}/payments", async (long id, AppDbContex
     var h = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var pays = await db.SupplierDebitPayments.Where(p => p.OrgId == t.OrgId && p.SupplierDebitId == h.Id).OrderBy(p => p.Id)
-        .Select(p => new { p.PaymentAmount, p.Note, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
     return Results.Ok(new { h.Id, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
 }).RequireAuthorization();
 
@@ -11280,13 +11294,131 @@ app.MapPost("/api/supplierdebits/{id:long}/payments", async (long id, SupplierDe
     var h = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền trả phải lớn hơn 0." });
+    // Guard của nguồn (checkPaymentFieldEmpty): đại lý + người nộp + CMND/CCCD + ngày thu đều BẮT BUỘC.
+    // ⚠️ CusID KHÔNG bắt buộc — nguồn đã COMMENT dòng truyền strCusID vào hàm check (luật "port dòng active").
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
+    if (dto.PayDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày thu tiền." });
     var balance = h.DebitAmount - h.PaidAmount;
     if (dto.PaymentAmount > balance) return Results.BadRequest(new { error = $"Số tiền trả vượt số dư công nợ ({balance})." });
-    db.SupplierDebitPayments.Add(new SupplierDebitPayment { OrgId = t.OrgId, SupplierDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note });
+    db.SupplierDebitPayments.Add(new SupplierDebitPayment { OrgId = t.OrgId, SupplierDebitId = h.Id, PaymentAmount = dto.PaymentAmount, PayDate = dto.PayDate ?? DateTime.Now, Note = dto.Note,
+        PaymentNo = "PM" + DateTime.Now.ToString("yyMMddHHmmss"), DealerCode = dto.DealerCode, PayPersonName = dto.PayPersonName, PayPersonIDCardNo = dto.PayPersonIDCardNo });
     h.PaidAmount += dto.PaymentAmount;
     if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
+}).RequireAuthorization();
+
+// ===== 🔴 PHÂN BỔ 1 PHIẾU THU sang NHIỀU CÔNG NỢ (luật của nguồn mà port cũ làm mất) =====
+// Nguồn BizCarSv.Debit.cs:2976-3007: 1 phiếu thu (Ser_Payment) sinh NHIỀU dòng Ser_PaymentDetail,
+// trả lần lượt các công nợ CHƯA HẾT DƯ cho tới khi hết tiền. Port cũ gắn CHẶT 1 lần thu = 1 công nợ
+// ⇒ thu 1 lần cho nhiều RO phải tự tay bổ ra từng dòng, và số phiếu thu không nối được các dòng đó với nhau.
+// Ba chủ thể (khách hàng / bảo hiểm / nhà cung cấp) dùng CHUNG luật này — nguồn chỉ khác cột khoá.
+app.MapPost("/api/debits/allocate-payment", async (
+    string subject, SerPaymentAllocateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    subject = (subject ?? "").Trim().ToLowerInvariant();
+    if (subject != "cus" && subject != "ins" && subject != "supplier")
+        return Results.BadRequest(new { error = "subject phải là cus | ins | supplier." });
+
+    // Guard của nguồn (checkPaymentFieldEmpty).
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
+    if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
+    if (dto.PayDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày thu tiền." });
+    if (string.IsNullOrWhiteSpace(dto.SubjectKey))
+        return Results.BadRequest(new { error = "Chưa chọn chủ thể công nợ (mã KH / số HĐ bảo hiểm / mã NCC)." });
+
+    var payNo = "PM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var payDate = dto.PayDate;
+    var remaining = dto.PaymentAmount;
+    var allocated = new List<object>();
+
+    // ⚠️ LỆCH CÓ CHỦ ĐÍCH so với nguồn: nguồn so sánh "dư nợ > tiền còn lại" nên khi BẰNG NHAU sẽ đi nhánh
+    // else rồi vòng sau sinh thêm 1 dòng phân bổ SỐ TIỀN 0. Ở đây dừng ngay khi hết tiền.
+    // Tiền dư (nếu trả quá tổng nợ) KHÔNG bị chặn — giống nguồn — mà trả về ở "unallocated".
+    if (subject == "cus")
+    {
+        var debts = await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.CusId == dto.SubjectKey
+                        && x.DebitAmount > x.PaidAmount).OrderBy(x => x.Id).ToListAsync();
+        foreach (var h in debts)
+        {
+            if (remaining <= 0) break;
+            var left = h.DebitAmount - h.PaidAmount;
+            var take = left > remaining ? remaining : left;
+            db.CusDebitPayments.Add(new CusDebitPayment { OrgId = t.OrgId, CusDebitId = h.Id, PaymentAmount = take,
+                PayDate = payDate, Note = dto.Note, PaymentNo = payNo, DealerCode = dto.DealerCode,
+                PayPersonName = dto.PayPersonName, PayPersonIDCardNo = dto.PayPersonIDCardNo });
+            h.PaidAmount += take;
+            if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
+            remaining -= take;
+            allocated.Add(new { debitNo = h.DebitNo, amount = take, status = h.Status });
+        }
+    }
+    else if (subject == "ins")
+    {
+        var debts = await db.InsDebits.Where(x => x.OrgId == t.OrgId && x.InsNo == dto.SubjectKey
+                        && x.DebitAmount > x.PaidAmount).OrderBy(x => x.Id).ToListAsync();
+        foreach (var h in debts)
+        {
+            if (remaining <= 0) break;
+            var left = h.DebitAmount - h.PaidAmount;
+            var take = left > remaining ? remaining : left;
+            db.InsDebitPayments.Add(new InsDebitPayment { OrgId = t.OrgId, InsDebitId = h.Id, PaymentAmount = take,
+                PayDate = payDate, Note = dto.Note, PaymentNo = payNo, DealerCode = dto.DealerCode,
+                PayPersonName = dto.PayPersonName, PayPersonIDCardNo = dto.PayPersonIDCardNo });
+            h.PaidAmount += take;
+            if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
+            remaining -= take;
+            allocated.Add(new { debitNo = h.DebitNo, amount = take, status = h.Status });
+        }
+    }
+    else
+    {
+        var debts = await db.SupplierDebits.Where(x => x.OrgId == t.OrgId && x.SupplierCode == dto.SubjectKey
+                        && x.DebitAmount > x.PaidAmount).OrderBy(x => x.Id).ToListAsync();
+        foreach (var h in debts)
+        {
+            if (remaining <= 0) break;
+            var left = h.DebitAmount - h.PaidAmount;
+            var take = left > remaining ? remaining : left;
+            db.SupplierDebitPayments.Add(new SupplierDebitPayment { OrgId = t.OrgId, SupplierDebitId = h.Id, PaymentAmount = take,
+                PayDate = payDate, Note = dto.Note, PaymentNo = payNo, DealerCode = dto.DealerCode,
+                PayPersonName = dto.PayPersonName, PayPersonIDCardNo = dto.PayPersonIDCardNo });
+            h.PaidAmount += take;
+            if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
+            remaining -= take;
+            allocated.Add(new { debitNo = h.StockInNo ?? "", amount = take, status = h.Status });
+        }
+    }
+
+    if (allocated.Count == 0)
+        return Results.BadRequest(new { error = "Chủ thể này không còn công nợ nào chưa trả hết." });
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { paymentNo = payNo, subject, subjectKey = dto.SubjectKey,
+        paymentAmount = dto.PaymentAmount, allocatedAmount = dto.PaymentAmount - remaining,
+        unallocated = remaining, count = allocated.Count, allocated });
+}).RequireAuthorization();
+
+// Tra 1 phiếu thu theo SỐ PHIẾU — gom các dòng phân bổ của cùng lần nộp (cả 3 chủ thể).
+app.MapGet("/api/debits/payments/{paymentNo}", async (string paymentNo, AppDbContext db, ITenantContext t) =>
+{
+    var no = paymentNo.Trim();
+    var cus = await db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
+        .Select(x => new { subject = "cus", x.PaymentAmount, x.DealerCode, x.PayPersonName, x.PayPersonIDCardNo, x.Note,
+            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    var ins = await db.InsDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
+        .Select(x => new { subject = "ins", x.PaymentAmount, x.DealerCode, x.PayPersonName, x.PayPersonIDCardNo, x.Note,
+            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    var sup = await db.SupplierDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
+        .Select(x => new { subject = "supplier", x.PaymentAmount, x.DealerCode, x.PayPersonName, x.PayPersonIDCardNo, x.Note,
+            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+    var all = cus.Concat(ins).Concat(sup).ToList();
+    if (all.Count == 0) return Results.NotFound(new { paymentNo = no });
+    return Results.Ok(new { paymentNo = no, count = all.Count, totalAmount = all.Sum(x => x.PaymentAmount), lines = all });
 }).RequireAuthorization();
 
 // ===== Báo cáo công nợ (report tái-dùng CusDebit + InsDebit — port 1:1 FrmReportTotalCusDebit/InsDebit/ReceivableDebit + FrmReportSerPaymentGet, TCMotor) =====
@@ -19439,9 +19571,9 @@ record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngNam
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null);
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
-record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
+record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record SupplierDebitDto(string? SupplierCode, string? StockInNo, decimal DebitAmount, DateTime? DebitDate, string? Note);
-record SupplierDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
+record SupplierDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
 record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers);
 record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);
@@ -19457,7 +19589,8 @@ record InventoryImportRow(string? PartCode, string? LocationCode, decimal Quanti
 record InventoryImportDto(List<InventoryImportRow>? Rows);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
-record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
+record SerPaymentAllocateDto(string? DealerCode, string? SubjectKey, decimal PaymentAmount, string? PayPersonName, string? PayPersonIDCardNo, DateTime? PayDate, string? Note);
+record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat, decimal? Factor = null, string? PartPriceId = null, string? Note = null);
 record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
