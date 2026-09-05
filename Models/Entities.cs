@@ -6091,7 +6091,19 @@ public sealed class PartQuote
     public string? ReceiveName { get; set; }
     public string? PaymentMethod { get; set; }
     public string? Remark { get; set; }
+
+    /// <summary>Tổng tiền tính từ các dòng — CÓ nhân hệ số giảm giá của từng dòng (∑ PartQuoteLine.Amount).</summary>
     public decimal TotalAmount { get; set; }
+
+    /// <summary>
+    /// Tổng tiền theo đúng cột `SumAmount` của nguồn:
+    /// <c>sum(Quantity*Price + Quantity*Price*0.01*VAT)</c> — ⚠️ <b>KHÔNG</b> nhân <c>Factor</c>.
+    /// 🔴 Nguồn BẤT ĐỐI XỨNG: từng DÒNG tính CÓ hệ số (`Amount`), còn TỔNG ở header tính KHÔNG hệ số
+    /// (<c>BizCarSv.Inventory.Quote.cs</c> dòng 1586 vs 1777) ⇒ khi có dòng giảm giá thì
+    /// <see cref="SumAmountNoFactor"/> ≠ <see cref="TotalAmount"/>. Giữ CẢ HAI để đối soát,
+    /// KHÔNG tự "sửa cho khớp" vì đó là hành vi thật của hệ nguồn.
+    /// </summary>
+    public decimal SumAmountNoFactor { get; set; }
     public string Status { get; set; } = "Draft";   // Draft -> Sent -> Approved / Cancelled
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

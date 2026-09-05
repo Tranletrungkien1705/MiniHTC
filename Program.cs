@@ -11076,6 +11076,7 @@ app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? 
     {
         x.QuoteNo, x.CusId, x.CusName, x.Mobile, x.ReceiveName, x.PaymentMethod, x.TotalAmount, x.Status,
         createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
+        x.SumAmountNoFactor,
         lines = db.PartQuoteLines.Count(l => l.OrgId == t.OrgId && l.PartQuoteId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -11090,7 +11091,7 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
     var no = "PQ" + DateTime.Now.ToString("yyMMddHHmmss");
     var h = new PartQuote { OrgId = t.OrgId, QuoteNo = no, CusId = dto.CusId, CusName = dto.CusName, Mobile = dto.Mobile, ReceiveName = dto.ReceiveName, PaymentMethod = dto.PaymentMethod, Remark = dto.Remark, Status = "Draft" };
     db.PartQuotes.Add(h); await db.SaveChangesAsync();
-    decimal total = 0m;
+    decimal total = 0m, sumAmountNoFactor = 0m;
     foreach (var l in lines)
     {
         // Hệ số giảm giá: nguồn đọc `isnull(sst.Factor, 1)` ⇒ không nhập thì coi như 1 (không giảm).
@@ -11100,6 +11101,10 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
         var amountBeforeVat = l.Quantity * l.UnitPrice * factor;
         var amount = amountBeforeVat + l.Quantity * l.UnitPrice * (l.Vat / 100m) * factor;
         total += amount;
+        // 🔴 Cột SumAmount của nguồn tính KHÔNG có Factor:
+        //   sum(Qty*Price + Qty*Price*0.01*VAT)
+        // Nguồn bất đối xứng giữa dòng và tổng — giữ nguyên cả hai, không tự sửa cho khớp.
+        sumAmountNoFactor += l.Quantity * l.UnitPrice * (1 + l.Vat / 100m);
         db.PartQuoteLines.Add(new PartQuoteLine
         {
             OrgId = t.OrgId, PartQuoteId = h.Id,
@@ -11110,8 +11115,9 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
         });
     }
     h.TotalAmount = total;
+    h.SumAmountNoFactor = sumAmountNoFactor;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.QuoteNo, lines = lines.Count, totalAmount = total });
+    return Results.Ok(new { h.QuoteNo, lines = lines.Count, totalAmount = total, sumAmountNoFactor });
 }).RequireAuthorization();
 
 app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -11121,7 +11127,7 @@ app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITen
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartQuoteLines.Where(l => l.OrgId == t.OrgId && l.PartQuoteId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Factor, l.PartPriceId, l.Note, l.AmountBeforeVat, l.Amount }).ToListAsync();
-    return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, count = lines.Count, lines });
+    return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, h.SumAmountNoFactor, count = lines.Count, lines });
 }).RequireAuthorization();
 
 // Chuyển trạng thái báo giá: Draft->Sent->Approved (hoặc cancel).
