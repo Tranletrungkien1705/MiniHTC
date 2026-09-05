@@ -5621,7 +5621,20 @@ public sealed class SmsSend
     public string Mobile { get; set; } = "";
     public string? SmsType { get; set; }
     public string Contents { get; set; } = "";
-    public string Status { get; set; } = "Sent";   // Sent | Invalid
+
+    /// <summary>
+    /// Trạng thái gửi theo TConst.SmsStage (6 giá trị):
+    /// "N" Null · "P" Pending (chờ gửi) · "G" Progress (đang gửi) · "C" Cancel (huỷ) ·
+    /// "F" Finish (gửi xong) · "R" Reject (gửi lỗi/từ chối).
+    /// ⚠️ Nguồn tạo lô SMS với `EffectStatus = P` rồi mới gửi bất đồng bộ (FrmSendSMS.cs:398);
+    /// KHÔNG đánh dấu "đã gửi" ngay lúc tạo như port cũ.
+    /// `FrmSMSMng` đọc lại lô lỗi bằng chính "R".
+    /// </summary>
+    public string Status { get; set; } = "P";
+
+    /// <summary>Số điện thoại không hợp lệ (port cũ đánh dấu bằng Status="Invalid" — nay tách thành cờ riêng).</summary>
+    public bool InvalidMobile { get; set; }
+
     public DateTime SendDate { get; set; } = DateTime.Now;
 }
 

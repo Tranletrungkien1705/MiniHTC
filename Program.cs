@@ -4530,7 +4530,7 @@ app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mo
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
     var items = await q.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+        .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, x.InvalidMobile, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "Sent"), invalid = items.Count(i => i.Status == "Invalid"), items });
 }).RequireAuthorization();
 
@@ -4555,19 +4555,73 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
     }
     if (mobiles.Count == 0) return Results.BadRequest(new { error = "Chưa có số điện thoại nhận." });
     var no = "SMS" + DateTime.Now.ToString("yyMMddHHmmss");
-    int sent = 0, invalid = 0;
+    int queued = 0, invalid = 0;
     var invalids = new List<string>();
     var seen = new HashSet<string>();
     foreach (var m in mobiles)
     {
         var std = StdPhoneVn(m);
-        if (std is null) { invalid++; invalids.Add(m); db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = m ?? "", SmsType = smsType, Contents = content, Status = "Invalid" }); continue; }
+        if (std is null)
+        {
+            // Số sai định dạng: nguồn coi là lô lỗi (Reject), kèm cờ riêng để biết lỗi do SỐ chứ không do gửi.
+            invalid++; invalids.Add(m);
+            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = m ?? "", SmsType = smsType, Contents = content, Status = "R", InvalidMobile = true });
+            continue;
+        }
         if (!seen.Add(std)) continue; // bỏ trùng số trong lô
-        db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = std, SmsType = smsType, Contents = content, Status = "Sent" });
-        sent++;
+        // ⚠️ Nguồn tạo lô ở trạng thái "P" (chờ gửi) rồi mới gửi bất đồng bộ — KHÔNG đánh dấu đã gửi ngay.
+        db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = std, SmsType = smsType, Contents = content, Status = "P" });
+        queued++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { batchNo = no, sent, invalid, invalids, contentLength = content.Length });
+    return Results.Ok(new { batchNo = no, queued, invalid, invalids, contentLength = content.Length });
+}).RequireAuthorization();
+
+// 🔴 Trạng thái gửi SMS theo ĐÚNG nguồn (TConst.SmsStage) — port cũ chỉ có 2/6 (Sent|Invalid).
+var smsStageNames = new Dictionary<string, string>
+{
+    ["N"] = "Null",
+    ["P"] = "Chờ gửi",
+    ["G"] = "Đang gửi",
+    ["C"] = "Huỷ",
+    ["F"] = "Gửi xong",
+    ["R"] = "Gửi lỗi / từ chối",
+};
+
+// Ánh xạ giá trị port CŨ → mã nguồn, giữ dữ liệu đã tạo đọc được.
+var smsLegacyStatusMap = new Dictionary<string, string> { ["Sent"] = "F", ["Invalid"] = "R" };
+
+app.MapGet("/api/smssends/statuses", () => Results.Ok(new
+{
+    statuses = smsStageNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    legacyMap = smsLegacyStatusMap.Select(kv => new { legacy = kv.Key, code = kv.Value }),
+    note = "Nguồn tạo lô ở P (chờ gửi) rồi gửi bất đồng bộ; kết thúc F (xong) hoặc R (lỗi)."
+})).RequireAuthorization();
+
+// Cập nhật kết quả gửi của cả lô (bộ gửi SMS gọi lại sau khi xử lý xong).
+app.MapPost("/api/smssends/{batchNo}/status", async (
+    string batchNo, SmsBatchStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    batchNo = batchNo.Trim().ToUpperInvariant();
+    var target = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+    if (!smsStageNames.ContainsKey(target))
+        return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", smsStageNames.Keys)}" });
+
+    var rows = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == batchNo).ToListAsync();
+    if (rows.Count == 0) return Results.NotFound(new { batchNo });
+
+    var updated = 0;
+    foreach (var row in rows)
+    {
+        var current = smsLegacyStatusMap.TryGetValue(row.Status, out var mapped) ? mapped : row.Status;
+        // Số sai định dạng đã chốt lỗi từ đầu — không đổi theo kết quả gửi của lô.
+        if (row.InvalidMobile) continue;
+        // Đã kết thúc (F/C) thì không đổi nữa.
+        if (current is "F" or "C") continue;
+        row.Status = target; updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { batchNo, status = target, statusName = smsStageNames[target], updated, total = rows.Count });
 }).RequireAuthorization();
 
 // ===== Gửi email + log (EmailSend — port 1:1 FrmSendEmail, TCMotor) — tích hợp EmailTemplate + ServiceCustomer =====
@@ -19013,6 +19067,7 @@ record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, deci
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
+record SmsBatchStatusDto(string? ToStatus);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
 record ServiceQuotationDto(string? RONo, string? Vin, string? PlateNo, string? CusName, decimal Discount, string? Note, List<SqLaborDto>? Labors, List<SqPartDto>? Parts,
     /// Mức khấu trừ bảo hiểm — CHỈ hợp lệ khi báo giá có dòng ExpenseType="ROInsurance" (luật checkInsuranceDeductible).
