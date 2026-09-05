@@ -821,6 +821,153 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Voucher điểm hội viên áp vào LSC (port 1:1 FrmMember_Voucher — TCMotor DMSCarSv/Services) =====
+// Nguồn: LoyaltyService.WA_OSCarSv_Crd_MemberVoucher_Get(memberNo) + serROService.Ser_RO_UpdateMemberVoucher.
+app.MapGet("/api/vouchers", async (AppDbContext db, ITenantContext t, string? memberNo) =>
+{
+    if (string.IsNullOrWhiteSpace(memberNo)) return Results.BadRequest(new { error = "Cần số hội viên (memberNo)." });
+    var mem = memberNo.Trim().ToUpperInvariant();
+    var items = await db.MemberVouchers.Where(v => v.OrgId == t.OrgId && v.MemberNo == mem)
+        .OrderBy(v => v.PointExpireDate)
+        .Select(v => new { v.VoucherNo, v.PointVCTotal, v.PointVCRemain, v.PointVCLimit, v.PointExpireDate })
+        .ToListAsync();
+    return Results.Ok(new { memberNo = mem, count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/vouchers", async (MemberVoucherDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.MemberNo) || string.IsNullOrWhiteSpace(dto.VoucherNo))
+        return Results.BadRequest(new { error = "Cần MemberNo và VoucherNo." });
+    var mem = dto.MemberNo.Trim().ToUpperInvariant();
+    var no = dto.VoucherNo.Trim().ToUpperInvariant();
+    var v = await db.MemberVouchers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MemberNo == mem && x.VoucherNo == no);
+    if (v is null) { v = new MemberVoucher { OrgId = t.OrgId, MemberNo = mem, VoucherNo = no }; db.MemberVouchers.Add(v); }
+    v.PointVCTotal = dto.PointVCTotal; v.PointVCRemain = dto.PointVCRemain;
+    v.PointVCLimit = dto.PointVCLimit; v.PointExpireDate = dto.PointExpireDate;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { v.VoucherNo, v.MemberNo, v.PointVCTotal, v.PointVCRemain, v.PointVCLimit, v.PointExpireDate });
+}).RequireAuthorization();
+
+// Áp voucher vào lệnh sửa chữa — port NGUYÊN 6 luật của btnApply_Click.
+// Giữ đúng câu thông báo gốc, KỂ CẢ lỗi chính tả "Vourcher" trong source — không tự sửa cho đẹp,
+// để sau này còn đối chiếu 1:1 với màn WinForm.
+app.MapPost("/api/ros/{roNo}/vouchers", async (
+    string roNo,
+    ApplyVoucherDto request,
+    AppDbContext database,
+    ITenantContext tenant) =>
+{
+    var repairOrderNo = roNo.Trim().ToUpperInvariant();
+    var repairOrder = await database.RepairOrders
+        .FirstOrDefaultAsync(order => order.OrgId == tenant.OrgId && order.RONo == repairOrderNo);
+    if (repairOrder is null)
+        return Results.NotFound(new { error = $"Không tìm thấy RO {repairOrderNo}." });
+
+    if (string.IsNullOrWhiteSpace(request.MemberNo))
+        return Results.BadRequest(new { error = "Cần số hội viên (memberNo)." });
+    var memberNo = request.MemberNo.Trim().ToUpperInvariant();
+
+    var requestedLines = request.Lines ?? new List<ApplyVoucherLineDto>();
+    // LUẬT 6 (gốc): lưới trống → "Lưới dữ liệu trống!"
+    if (requestedLines.Count == 0)
+        return Results.BadRequest(new { error = "Lưới dữ liệu trống!" });
+
+    // Nguồn dùng GetDateTimeServer() — mốc so hạn là NGÀY SERVER, không phải ngày máy client.
+    var serverDate = DateTime.Now.Date;
+
+    // Nạp sẵn voucher của hội viên (1 query thay vì query trong vòng lặp — tránh N+1).
+    var requestedVoucherNos = requestedLines
+        .Where(line => line.PointVCUse > 0)
+        .Select(line => (line.VoucherNo ?? "").Trim().ToUpperInvariant())
+        .ToHashSet();
+    var memberVouchers = await database.MemberVouchers
+        .Where(voucher => voucher.OrgId == tenant.OrgId
+                       && voucher.MemberNo == memberNo
+                       && requestedVoucherNos.Contains(voucher.VoucherNo))
+        .ToDictionaryAsync(voucher => voucher.VoucherNo);
+
+    var acceptedUsages = new List<VoucherUsage>();
+    decimal totalPointUsed = 0;
+
+    foreach (var line in requestedLines)
+    {
+        // LUẬT 1: điểm sử dụng phải là số NGUYÊN và >= 0.
+        if (line.PointVCUse < 0 || line.PointVCUse != Math.Floor(line.PointVCUse))
+            return Results.BadRequest(new { error = "Điểm sử dụng phải là số nguyên dương(>=0)!" });
+
+        // Nguồn chỉ kiểm/áp các dòng thực sự dùng điểm (PointVCUse > 0); dòng 0 điểm bỏ qua.
+        if (line.PointVCUse == 0) continue;
+
+        var voucherNo = (line.VoucherNo ?? "").Trim().ToUpperInvariant();
+        if (!memberVouchers.TryGetValue(voucherNo, out var voucher))
+            return Results.BadRequest(new { error = $"Không tìm thấy voucher '{voucherNo}' của hội viên {memberNo}." });
+
+        var validationError = ValidateVoucherLine(voucher, line.PointVCUse, serverDate);
+        if (validationError is not null) return Results.BadRequest(new { error = validationError });
+
+        totalPointUsed += line.PointVCUse;
+        acceptedUsages.Add(new VoucherUsage(voucher, line.PointVCUse));
+    }
+
+    // LUẬT 5: tổng điểm voucher không được vượt số tiền khách phải thanh toán.
+    if (totalPointUsed > request.AmountFinal)
+        return Results.BadRequest(new
+        {
+            error = $"Tổng điểm Voucher({totalPointUsed:N0}) vượt quá số tiền khách hàng thanh toán({request.AmountFinal:N0})!"
+        });
+
+    // Nguồn (Ser_RO_UpdateMemberVoucher) ghi đè toàn bộ danh sách voucher của RO → xoá cũ rồi ghi mới.
+    var previousUsages = await database.RoVoucherUses
+        .Where(usage => usage.OrgId == tenant.OrgId && usage.RoId == repairOrder.Id)
+        .ToListAsync();
+    database.RoVoucherUses.RemoveRange(previousUsages);
+
+    foreach (var (voucher, pointUsed) in acceptedUsages)
+    {
+        database.RoVoucherUses.Add(new RoVoucherUse
+        {
+            OrgId = tenant.OrgId,
+            RoId = repairOrder.Id,
+            MemberNo = memberNo,
+            VoucherNo = voucher.VoucherNo,
+            PointVCUse = pointUsed
+        });
+        // Trừ giá trị còn lại; guard phía trên đã chặn vượt nên đây chỉ là phòng vệ cuối.
+        voucher.PointVCRemain = Math.Max(0, voucher.PointVCRemain - pointUsed);
+    }
+
+    await database.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        roNo = repairOrder.RONo,
+        memberNo,
+        applied = acceptedUsages.Count,
+        pointVoucher = totalPointUsed,
+        message = "Lưu thành công!"   // đúng thông báo form gốc
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/ros/{roNo}/vouchers", async (string roNo, AppDbContext database, ITenantContext tenant) =>
+{
+    var repairOrderNo = roNo.Trim().ToUpperInvariant();
+    var repairOrder = await database.RepairOrders
+        .FirstOrDefaultAsync(order => order.OrgId == tenant.OrgId && order.RONo == repairOrderNo);
+    if (repairOrder is null) return Results.NotFound(new { error = $"Không tìm thấy RO {repairOrderNo}." });
+
+    var appliedVouchers = await database.RoVoucherUses
+        .Where(usage => usage.OrgId == tenant.OrgId && usage.RoId == repairOrder.Id)
+        .Select(usage => new { usage.VoucherNo, usage.MemberNo, usage.PointVCUse, usage.AppliedAt })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        roNo = repairOrder.RONo,
+        count = appliedVouchers.Count,
+        pointVoucher = appliedVouchers.Sum(usage => usage.PointVCUse),
+        items = appliedVouchers
+    });
+}).RequireAuthorization();
+
 // ===== Lịch sử dịch vụ theo xe (port 1:1 FrmServiceHistory — TCMotor DMSCarSv/Services) =====
 // Nguồn: Ser_ServiceHistory_Get (BizCarSv.Service01.cs:432)
 //   select ro.*, case when ro.DealerCode = '<dealer của user>' then 1 else 0 end CanShowDetail
@@ -15973,6 +16120,33 @@ app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
     return Results.Ok(new { orgId = org.Id, apiKey = org.ApiKey });
 });
 
+
+/// <summary>
+/// Kiểm 3 luật per-dòng của FrmMember_Voucher.btnApply_Click.
+/// Tách riêng để mỗi luật kiểm được độc lập và endpoint chỉ còn lo điều phối (Single Responsibility).
+/// </summary>
+/// <param name="voucher">Voucher đang xét (lấy từ DB, không tin số liệu client gửi lên).</param>
+/// <param name="pointUsed">Số điểm người dùng muốn dùng của voucher này.</param>
+/// <param name="serverDate">Ngày SERVER — nguồn dùng GetDateTimeServer(), không dùng ngày client.</param>
+/// <returns>null nếu hợp lệ; ngược lại là câu thông báo lỗi ĐÚNG NGUYÊN VĂN form gốc.</returns>
+static string? ValidateVoucherLine(MemberVoucher voucher, decimal pointUsed, DateTime serverDate)
+{
+    // LUẬT 2: không được dùng quá hạn mức mỗi lần.
+    if (pointUsed > voucher.PointVCLimit)
+        return "Điểm sử dụng phải <= Điểm sử dụng tối đa!";
+
+    // LUẬT 3: không được dùng quá giá trị còn lại của voucher.
+    if (pointUsed > voucher.PointVCRemain)
+        return "Điểm sử dụng phải <= Giá trị còn lại!";
+
+    // LUẬT 4: voucher phải còn hạn (so ngày, bỏ phần giờ — giống .Date của nguồn).
+    // Giữ nguyên lỗi chính tả "Vourcher" y như source để đối chiếu 1:1.
+    if (voucher.PointExpireDate.HasValue && voucher.PointExpireDate.Value.Date < serverDate)
+        return $"Vourcher '{voucher.VoucherNo}' đã hết hạn!";
+
+    return null;
+}
+
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
@@ -16009,6 +16183,31 @@ record PODto(string SupplierCode, string? Note, decimal Total);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
+
+
+// ----- Voucher điểm hội viên (FrmMember_Voucher) -----
+/// <summary>1 voucher của hội viên (khớp lưới Crd_MemberVoucher của form gốc).</summary>
+record MemberVoucherDto(
+    string MemberNo,
+    string VoucherNo,
+    decimal PointVCTotal,      // tổng điểm voucher
+    decimal PointVCRemain,     // giá trị còn lại
+    decimal PointVCLimit,      // điểm sử dụng tối đa mỗi lần
+    DateTime? PointExpireDate  // ngày hết hạn
+);
+
+/// <summary>1 dòng người dùng nhập trên lưới: dùng bao nhiêu điểm của voucher nào.</summary>
+record ApplyVoucherLineDto(string VoucherNo, decimal PointVCUse);
+
+/// <summary>
+/// Yêu cầu áp voucher vào 1 lệnh sửa chữa.
+/// <paramref name="AmountFinal"/> = số tiền khách phải thanh toán (biến `_dAmountFinal` của form gốc),
+/// dùng cho luật "tổng điểm voucher không vượt quá số tiền thanh toán".
+/// </summary>
+record ApplyVoucherDto(string MemberNo, decimal AmountFinal, List<ApplyVoucherLineDto>? Lines);
+
+/// <summary>Cặp (voucher, số điểm dùng) đã qua toàn bộ guard, chờ ghi xuống DB.</summary>
+record VoucherUsage(MemberVoucher Voucher, decimal PointUsed);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, DateTime? EffStartDate, string? Status);
 record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);

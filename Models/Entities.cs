@@ -5763,3 +5763,33 @@ public sealed class ServiceComplaint
     public string? ProcessDetail { get; set; }       // gridColProcessDetail — chi tiết xử lý
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// Voucher điểm hội viên (Crd_MemberVoucher — FrmMember_Voucher, TCMotor DMSCarSv/Services).
+/// Nguồn lấy qua LoyaltyService.WA_OSCarSv_Crd_MemberVoucher_Get(memberNo).
+/// Cột đúng lưới gốc: VoucherNo / PointVCTotal / PointVCRemain / PointVCLimit / PointExpireDate.
+/// </summary>
+public sealed class MemberVoucher
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MemberNo { get; set; } = "";          // số hội viên
+    public string VoucherNo { get; set; } = "";         // gridcolVoucherNo
+    public decimal PointVCTotal { get; set; }           // gridcolPointVCTotal — tổng điểm voucher
+    public decimal PointVCRemain { get; set; }          // gridcolPointVCRemain — giá trị còn lại
+    public decimal PointVCLimit { get; set; }           // gridColPointVCLimit — điểm sử dụng TỐI ĐA mỗi lần
+    public DateTime? PointExpireDate { get; set; }      // gridcolPointExpireDate — ngày hết hạn
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Điểm voucher đã áp vào 1 lệnh sửa chữa (Ser_RO_UpdateMemberVoucher).</summary>
+public sealed class RoVoucherUse
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RoId { get; set; }
+    public string MemberNo { get; set; } = "";
+    public string VoucherNo { get; set; } = "";
+    public decimal PointVCUse { get; set; }             // gridColPointVCUse — điểm sử dụng lần này
+    public DateTime AppliedAt { get; set; } = DateTime.Now;
+}
