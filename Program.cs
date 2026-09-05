@@ -16073,6 +16073,153 @@ app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITe
     return Results.Ok(new { p.PLNo, p.LcNo, vins = vins.Count });
 }).RequireAuthorization();
 
+// ===== 🔴 LỊCH SỬ DI CHUYỂN KHO của xe (Sto_StorageTransaction — 2010.HTC ERP.V15.DataWH) =====
+// Port cũ THIẾU HOÀN TOÀN bảng này. Nguồn: Biz.HTC.WH.cs — Sto_StorageTransaction_AddX/_Check (bản máy 150).
+var storageRefTypeNames = new Dictionary<string, string>
+{
+    ["PL"] = "Packing list",
+    ["BBGN"] = "Biên bản giao nhận",
+};
+
+app.MapGet("/api/storagetransactions/reftypes", () => Results.Ok(new
+{
+    refTypes = storageRefTypeNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "FlagInDay bật khi xe rời kho ngay trong ngày vào — chỉ tính phí lưu kho ngày đó cho kho xuất.",
+})).RequireAuthorization();
+
+app.MapGet("/api/storagetransactions", async (
+    AppDbContext db, ITenantContext t, string? vin, string? refNo, string? refType, string? storageCode) =>
+{
+    var qy = db.StorageTransactions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(x => x.Vin == vin);
+    if (!string.IsNullOrWhiteSpace(refNo)) qy = qy.Where(x => x.RefNo == refNo);
+    if (!string.IsNullOrWhiteSpace(refType)) qy = qy.Where(x => x.RefType == refType);
+    if (!string.IsNullOrWhiteSpace(storageCode)) qy = qy.Where(x => x.StorageCode == storageCode || x.StorageCodeTo == storageCode);
+    var items = await qy.OrderBy(x => x.Vin).ThenBy(x => x.DTimeFrom).Take(1000).Select(x => new
+    {
+        x.Id, x.Vin, x.RefNo, x.RefType, x.StorageCode, x.StorageCodeTo, x.DTimeFrom, x.DTimeTo,
+        x.FlagInDay, x.Remark, x.CreatedBy, x.CreatedDTime,
+        stillInStorage = x.StorageCodeTo == null,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, inStorage = items.Count(i => i.stillInStorage), items });
+}).RequireAuthorization();
+
+// Ghi giao dịch kho theo LÔ — port đủ chuỗi guard của Sto_StorageTransaction_AddX.
+app.MapPost("/api/storagetransactions", async (
+    List<StorageTransactionDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Danh sách giao dịch kho trống." });
+
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var prepared = new List<StorageTransaction>();
+    var actor = user.Identity?.Name ?? "system";
+
+    foreach (var r in rows)
+    {
+        var vin = (r.Vin ?? "").Trim();
+        // Guard nguồn: các trường BẮT BUỘC. StorageCodeTo/DTimeTo KHÔNG bắt buộc —
+        // nguồn có sẵn 2 guard cho chúng nhưng đã COMMENT (luật "port dòng active").
+        if (vin.Length == 0) return Results.BadRequest(new { error = "Có dòng thiếu số khung (VIN)." });
+        var refNo = (r.RefNo ?? "").Trim();
+        if (refNo.Length == 0) return Results.BadRequest(new { error = $"VIN {vin}: chưa nhập số chứng từ (RefNo)." });
+        var refType = (r.RefType ?? "").Trim().ToUpperInvariant();
+        if (refType.Length == 0) return Results.BadRequest(new { error = $"VIN {vin}: chưa nhập loại chứng từ (RefType)." });
+        if (!storageRefTypeNames.ContainsKey(refType))
+            return Results.BadRequest(new { error = $"VIN {vin}: loại chứng từ không hợp lệ (chỉ PL/BBGN)." });
+        var storageCode = (r.StorageCode ?? "").Trim();
+        if (storageCode.Length == 0) return Results.BadRequest(new { error = $"VIN {vin}: chưa nhập mã kho." });
+        if (r.DTimeFrom is null) return Results.BadRequest(new { error = $"VIN {vin}: chưa nhập thời điểm vào kho." });
+
+        // Guard nguồn: TRÙNG VIN trong cùng một lô input.
+        if (!seen.Add(vin)) return Results.BadRequest(new { error = $"VIN {vin} bị lặp trong cùng một lô." });
+
+        // Guard nguồn (Sto_StorageTransaction_Check, FlagExist = Inactive): cặp (VIN, RefNo) đã tồn tại thì CẤM ghi lại.
+        var dup = await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin && x.RefNo == refNo);
+        if (dup) return Results.BadRequest(new { error = $"VIN {vin} đã có giao dịch kho với chứng từ {refNo}." });
+
+        // 🔴 Luật FlagInDay (ảnh hưởng TIỀN): có giao dịch trước của chính VIN này rời kho ĐÚNG TRONG NGÀY
+        // xe vào kho mới, và kho ĐẾN của giao dịch cũ chính là kho ĐI của giao dịch mới.
+        var day = r.DTimeFrom.Value.Date;
+        var inDay = await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin
+            && x.StorageCodeTo == storageCode && x.DTimeTo != null
+            && x.DTimeTo.Value.Date == day);
+
+        prepared.Add(new StorageTransaction
+        {
+            OrgId = t.OrgId, Vin = vin, RefNo = refNo, RefType = refType, StorageCode = storageCode,
+            StorageCodeTo = string.IsNullOrWhiteSpace(r.StorageCodeTo) ? null : r.StorageCodeTo!.Trim(),
+            DTimeFrom = r.DTimeFrom.Value, DTimeTo = r.DTimeTo,
+            FlagInDay = inDay ? "1" : "0", Remark = r.Remark, CreatedBy = actor,
+        });
+    }
+
+    db.StorageTransactions.AddRange(prepared);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = prepared.Count, inDay = prepared.Count(x => x.FlagInDay == "1"),
+        items = prepared.Select(x => new { x.Id, x.Vin, x.RefNo, x.RefType, x.StorageCode, x.FlagInDay }) });
+}).RequireAuthorization();
+
+// Sinh giao dịch kho từ PACKING LIST — port vùng đã sửa ở bản máy 150 (CarVINUpdateMulti_New20181119).
+// 🔴 Guard MỚI của bản 150: KHÔNG gọi hàm ghi khi không còn dòng nào cần ghi.
+// Bản laptop gọi thẳng ⇒ ghi kho với lô RỖNG.
+app.MapPost("/api/packinglists/{no}/storage-transactions", async (
+    string no, List<PackingListStorageDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var pl = await db.PackingLists.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PLNo == no);
+    if (pl is null) return Results.NotFound(new { no });
+    if (rows is null) rows = new List<PackingListStorageDto>();
+
+    var plVins = await db.PackingListVins.Where(x => x.OrgId == t.OrgId && x.PLId == pl.Id)
+        .Select(x => x.Vin).ToListAsync();
+    var vinSet = new HashSet<string>(plVins, StringComparer.OrdinalIgnoreCase);
+
+    var actor = user.Identity?.Name ?? "system";
+    var prepared = new List<StorageTransaction>();
+    var skippedNoStoreDate = 0; var skippedExisted = 0; var skippedNotInPl = 0;
+
+    foreach (var r in rows)
+    {
+        var vin = (r.Vin ?? "").Trim();
+        if (vin.Length == 0 || !vinSet.Contains(vin)) { skippedNotInPl++; continue; }
+        // Nguồn chỉ ghi cho VIN CÓ ngày nhập kho (StoreDate).
+        if (r.StoreDate is null) { skippedNoStoreDate++; continue; }
+        // Nguồn chỉ ghi khi CHƯA có giao dịch (VIN, RefNo) — có rồi thì bỏ qua, KHÔNG báo lỗi.
+        if (await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin && x.RefNo == no))
+        { skippedExisted++; continue; }
+        if (prepared.Any(x => string.Equals(x.Vin, vin, StringComparison.OrdinalIgnoreCase))) { skippedExisted++; continue; }
+
+        var day = r.StoreDate.Value.Date;
+        var storageCode = (r.StorageCodeCurrent ?? "").Trim();
+        var inDay = storageCode.Length > 0 && await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId
+            && x.Vin == vin && x.StorageCodeTo == storageCode && x.DTimeTo != null && x.DTimeTo.Value.Date == day);
+
+        prepared.Add(new StorageTransaction
+        {
+            OrgId = t.OrgId, Vin = vin, RefNo = no,
+            RefType = "PL",                       // TConst.Sto_StorageTransaction_RefType.PL
+            StorageCode = storageCode,
+            StorageCodeTo = null,                 // nguồn ghi DBNull — xe mới vào kho, chưa xuất
+            DTimeFrom = r.StoreDate.Value,
+            DTimeTo = null, Remark = null,
+            FlagInDay = inDay ? "1" : "0", CreatedBy = actor,
+        });
+    }
+
+    // 🔴 Chính là guard bản 150: không có dòng nào thì KHÔNG ghi gì cả.
+    if (prepared.Count == 0)
+        return Results.Ok(new { plNo = no, created = 0, skippedNoStoreDate, skippedExisted, skippedNotInPl,
+            note = "Không có VIN nào cần ghi giao dịch kho — không gọi ghi (guard bản máy 150)." });
+
+    db.StorageTransactions.AddRange(prepared);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { plNo = no, created = prepared.Count, skippedNoStoreDate, skippedExisted, skippedNotInPl,
+        items = prepared.Select(x => new { x.Vin, x.StorageCode, x.DTimeFrom, x.FlagInDay }) });
+}).RequireAuthorization();
+
 app.MapGet("/api/packinglists/{no}/vins", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -19270,6 +19417,8 @@ record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines
 record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars);
 record PackingListVinDto(string Vin, string? CrateType);
+record StorageTransactionDto(string? Vin, string? RefNo, string? RefType, string? StorageCode, string? StorageCodeTo, DateTime? DTimeFrom, DateTime? DTimeTo, string? Remark);
+record PackingListStorageDto(string? Vin, DateTime? StoreDate, string? StorageCodeCurrent);
 record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins);
 record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
 record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);

@@ -3919,6 +3919,47 @@ public sealed class PackingList
     public DateTime ShippingDateEndExpected { get; set; }  // ngày DK đến cảng
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+/// <summary>
+/// 🔴 LỊCH SỬ DI CHUYỂN KHO của xe (`Sto_StorageTransaction` — 2010.HTC ERP.V15.DataWH).
+/// Port cũ THIẾU HOÀN TOÀN: có kho, có packing list, có VIN nhưng **không có vết xe đã nằm kho nào,
+/// từ ngày nào tới ngày nào** ⇒ không dựng lại được lịch sử lưu kho và không tính được phí lưu kho.
+/// </summary>
+public sealed class StorageTransaction
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Vin { get; set; } = "";
+
+    /// <summary>Số chứng từ phát sinh giao dịch (RefNo) — vd số packing list.</summary>
+    public string RefNo { get; set; } = "";
+
+    /// <summary>Loại chứng từ (`TConst.Sto_StorageTransaction_RefType`): "PL" packing list · "BBGN" biên bản giao nhận.</summary>
+    public string RefType { get; set; } = "PL";
+
+    /// <summary>Kho ĐI (StorageCode) — nguồn BẮT BUỘC.</summary>
+    public string StorageCode { get; set; } = "";
+
+    /// <summary>Kho ĐẾN (StorageCodeTo) — nguồn KHÔNG bắt buộc (guard đã bị comment): còn trống = xe chưa xuất kho.</summary>
+    public string? StorageCodeTo { get; set; }
+
+    /// <summary>Thời điểm vào kho (DTimeFrom) — nguồn BẮT BUỘC.</summary>
+    public DateTime DTimeFrom { get; set; }
+
+    /// <summary>Thời điểm rời kho (DTimeTo) — nguồn KHÔNG bắt buộc (guard đã bị comment).</summary>
+    public DateTime? DTimeTo { get; set; }
+
+    /// <summary>
+    /// 🔴 CỜ NHẬP-XUẤT TRONG NGÀY (FlagInDay) — bật khi xe rời kho trước ĐÚNG TRONG NGÀY đã vào kho này.
+    /// Lý do ghi ngay trong nguồn: *"nếu nhập xuất trong ngày thì CHỈ tính phí lưu kho của ngày hôm đó
+    /// cho KHO XUẤT thôi"* ⇒ đây là **cờ ảnh hưởng tiền**, không phải cờ thống kê.
+    /// </summary>
+    public string FlagInDay { get; set; } = "0";
+
+    public string? Remark { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedDTime { get; set; } = DateTime.Now;
+}
+
 public sealed class PackingListVin
 {
     public long Id { get; set; }
