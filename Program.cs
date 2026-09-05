@@ -16508,41 +16508,81 @@ app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db,
     var exists = await db.OrderParts.AnyAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == orderNo);
     if (!exists) return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt {orderNo}." });
     var no = "CMP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var c = new OrderComplain { OrgId = t.OrgId, ComplainNo = no, OrderPartNo = orderNo, ComplainType = dto.ComplainType, Content = dto.Content, DMSStatus = "P", TSTStatus = "" };
+    var c = new OrderComplain { OrgId = t.OrgId, ComplainNo = no, OrderPartNo = orderNo, ComplainType = dto.ComplainType, Content = dto.Content, DMSStatus = "P", TSTStatus = "1" };   // nguồn set TSTStatus=1 (Chờ duyệt) NGAY khi tạo, không để rỗng
     db.OrderComplains.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.ComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus });
 }).RequireAuthorization();
 
 // DMS gửi (P→A); TST tiếp nhận/xử lý/giải quyết
+// 🔴 Trạng thái khiếu nại theo ĐÚNG nguồn. Mã TST là SỐ NHẢY (1/15/21/31), KHÔNG liên tục.
+// Kết cục PHÂN ĐÔI: 21 = KHÔNG chấp thuận · 31 = CHẤP THUẬN — port cũ gộp thành một "Resolved".
+var complainTstStatusNames = new Dictionary<string, string>
+{
+    ["1"] = "Chờ duyệt",
+    ["15"] = "Đang xử lý",
+    ["21"] = "Không chấp thuận khiếu nại",
+    ["31"] = "Chấp thuận khiếu nại",
+};
+
+// Ánh xạ giá trị port CŨ → mã nguồn, để dữ liệu đã tạo vẫn đọc được.
+var complainLegacyTstMap = new Dictionary<string, string>
+{
+    [""] = "1",
+    ["Processing"] = "1",
+    ["Pending"] = "15",
+    ["Resolved"] = "31",   // port cũ chỉ có MỘT kết cục ⇒ quy về "chấp thuận"
+};
+
+app.MapGet("/api/ordercomplains/statuses", () => Results.Ok(new
+{
+    dmsStatuses = new[] { new { code = "P", name = "Mới tạo" }, new { code = "A", name = "Đã gửi" } },
+    tstStatuses = complainTstStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    legacyTstMap = complainLegacyTstMap.Select(kv => new { legacy = kv.Key, code = kv.Value }),
+    note = "Mã TST nhảy số 1/15/21/31; nguồn set '1' NGAY KHI TẠO, không có trạng thái rỗng."
+})).RequireAuthorization();
+
 app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action, OrderComplainActDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("send" or "receive" or "process" or "resolve")) return Results.BadRequest(new { error = "action = send|receive|process|resolve" });
+    if (action is not ("send" or "process" or "approve" or "reject"))
+        return Results.BadRequest(new { error = "action = send|process|approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var c = await db.OrderComplains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == no);
     if (c is null) return Results.NotFound(new { no });
+
+    // Quy trạng thái port cũ về mã nguồn trước khi xét.
+    var tst = complainLegacyTstMap.TryGetValue(c.TSTStatus, out var mappedTst) ? mappedTst : c.TSTStatus;
+
     if (action == "send")
     {
         if (c.DMSStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi khiếu nại Mới tạo." });
         c.DMSStatus = "A";
     }
-    else if (action == "receive")
+    else
     {
         if (c.DMSStatus != "A") return Results.BadRequest(new { error = "DMS chưa gửi khiếu nại." });
-        if (c.TSTStatus != "") return Results.BadRequest(new { error = "Đã tiếp nhận." });
-        c.TSTStatus = "Processing";
+        if (action == "process")
+        {
+            if (tst != "1") return Results.BadRequest(new { error = "Chỉ chuyển sang Đang xử lý khi đang Chờ duyệt." });
+            tst = "15";
+        }
+        else
+        {
+            // Kết cục: CHẤP THUẬN (31) hoặc KHÔNG chấp thuận (21) — hai đường riêng, không gộp.
+            if (tst is not ("1" or "15")) return Results.BadRequest(new { error = "Khiếu nại đã có kết luận." });
+            if (string.IsNullOrWhiteSpace(dto.Resolution))
+                return Results.BadRequest(new { error = "Phải ghi nội dung kết luận." });
+            tst = action == "approve" ? "31" : "21";
+            c.Resolution = dto.Resolution;
+        }
+        c.TSTStatus = tst;
     }
-    else if (action == "process")
-    {
-        if (c.TSTStatus != "Processing") return Results.BadRequest(new { error = "Chưa tiếp nhận (Processing)." });
-        c.TSTStatus = "Pending";
-    }
-    else // resolve
-    {
-        if (c.TSTStatus != "Pending") return Results.BadRequest(new { error = "Chưa đang xử lý (Pending)." });
-        c.TSTStatus = "Resolved"; c.Resolution = dto.Resolution;
-    }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.ComplainNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus });
+    return Results.Ok(new
+    {
+        c.ComplainNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
+        tstStatusName = complainTstStatusNames.TryGetValue(c.TSTStatus, out var tstName) ? tstName : c.TSTStatus
+    });
 }).RequireAuthorization();
 
 // ===== Đơn đặt phụ tùng từ NCC (Ser_Order_Part — port 1:1 FrmSer_Order_Part) =====

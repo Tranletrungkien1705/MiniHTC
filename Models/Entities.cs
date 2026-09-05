@@ -3398,8 +3398,17 @@ public sealed class OrderComplain
     public string OrderPartNo { get; set; } = "";       // đơn đặt PT liên quan
     public string? ComplainType { get; set; }
     public string? Content { get; set; }
-    public string DMSStatus { get; set; } = "P";        // P → A (bên DMS đại lý)
-    public string TSTStatus { get; set; } = "";         // '' → Processing → Pending → Resolved (bên TST)
+    /// <summary>Trạng thái phía DMS/đại lý (TConst.DMSOrderComplainStatus): "P" mới tạo → "A" đã gửi.</summary>
+    public string DMSStatus { get; set; } = "P";
+
+    /// <summary>
+    /// Trạng thái phía TST (TConst.TSTOrderComplainStatus) — ⚠️ mã lưu là SỐ NHẢY, không liên tục:
+    /// "1" Chờ duyệt · "15" Đang xử lý · "21" KHÔNG chấp thuận · "31" CHẤP THUẬN.
+    /// ⚠️ Nguồn set "1" NGAY KHI TẠO khiếu nại (cùng lúc với DMSStatus="P"), KHÔNG có trạng thái rỗng.
+    /// 🔴 Kết cục PHÂN ĐÔI (21 vs 31) — port cũ gộp thành một "Resolved" nên mất kết quả nghiệp vụ.
+    /// </summary>
+    public string TSTStatus { get; set; } = "1";
+
     public string? Resolution { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
