@@ -12153,28 +12153,141 @@ app.MapGet("/api/paymentterms", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
         p.PMTermNo, p.EffectiveDateFrom, p.EffectiveDateTo, p.ModelCode, p.SpecCode, p.FlagDepositPmt, p.DepositPercent, p.GuaranteePercent,
-        p.GuaranteeDays, p.DepositDutyEndDays, p.GuaranteeEndDays, p.DepositDealDateDays, p.FlagActive
+        p.GuaranteeDays, p.DepositDutyEndDays, p.GuaranteeEndDays, p.DepositDealDateDays, p.FlagActive,
+        // Số dòng model/quy cách áp dụng — chi tiết lấy ở /api/paymentterms/{no}/details.
+        details = db.PaymentTermDetails.Count(d => d.OrgId == t.OrgId && d.PMTermNo == p.PMTermNo)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+/// <summary>
+/// Kiểm phần đầu (header) của điều khoản thanh toán — giữ NGUYÊN VĂN thứ tự và câu thông báo
+/// của btnSave_Click (FrmNew_Dieu_Khoan_ThanhToan), rồi tới các luật số học của biz Mst_PaymentTerm_Create.
+/// </summary>
+static string? ValidatePaymentTermHeader(PaymentTermDto dto)
+{
+    if (dto.EffectiveDateFrom is null) return "Chưa nhập Ngày XNĐH từ!";
+    if (dto.EffectiveDateTo is null) return "Chưa nhập Ngày XNĐH đến!";
+    if (dto.DepositPercent is null) return "Chưa nhập % Cọc!";
+    if (dto.GuaranteePercent is null) return "Chưa nhập % Bảo lãnh!";
+    if (dto.GuaranteeDays is null) return "Chưa nhập Chính sách gia hạn thời gian BL (ngày)!";
+    if (dto.DepositDutyEndDays is null) return "Chưa nhập Thời hạn TTC!";
+    if (dto.GuaranteeEndDays is null) return "Chưa nhập Thời hạn PHBL!";
+    if (dto.DepositDealDateDays is null) return "Chưa nhập Thời hạn TTC theo Ngày báo bán!";
+
+    // Biz: ngày đến không được nhỏ hơn ngày từ.
+    if (dto.EffectiveDateTo < dto.EffectiveDateFrom) return "Ngày XNĐH đến phải >= Ngày XNĐH từ!";
+
+    // Biz chỉ đòi >= 0 cho MỌI số (không có trần 100 cho phần trăm).
+    if (dto.DepositPercent < 0) return "% Cọc không hợp lệ!";
+    if (dto.GuaranteePercent < 0) return "% Bảo lãnh không hợp lệ!";
+    if (dto.GuaranteeDays < 0) return "Chính sách gia hạn thời gian BL (ngày) không hợp lệ!";
+    if (dto.DepositDutyEndDays < 0) return "Thời hạn TTC không hợp lệ!";
+    if (dto.GuaranteeEndDays < 0) return "Thời hạn PHBL không hợp lệ!";
+    if (dto.DepositDealDateDays < 0) return "Thời hạn TTC theo Ngày báo bán không hợp lệ!";
+    return null;
+}
+
+/// <summary>Kiểm lưới model/quy cách: bắt buộc có dòng, không trùng CẶP (model, quy cách).</summary>
+static string? ValidatePaymentTermDetails(List<PaymentTermDetailDto>? details)
+{
+    var lines = (details ?? new()).Where(d => !string.IsNullOrWhiteSpace(d.ModelCode)).ToList();
+    // Biz: Mst_PaymentTerm_Create_TableDtlBlank; form: "Lưới danh sách model không có dữ liệu!".
+    if (lines.Count == 0) return "Lưới danh sách model không có dữ liệu!";
+    var duplicated = lines
+        .GroupBy(d => $"{d.ModelCode!.Trim().ToUpperInvariant()}|{(d.SpecCode ?? "").Trim().ToUpperInvariant()}")
+        .FirstOrDefault(g => g.Count() > 1);
+    if (duplicated is not null) return $"Model/quy cách '{duplicated.Key}' bị trùng!";
+    return null;
+}
+
+/// <summary>Ghi lại toàn bộ lưới model/quy cách của một điều khoản (thay thế trọn, đúng cách nguồn lưu bảng chi tiết).</summary>
+static void ReplacePaymentTermDetails(
+    AppDbContext db, Guid orgId, string pmTermNo, List<PaymentTermDetailDto> details)
+{
+    db.PaymentTermDetails.RemoveRange(
+        db.PaymentTermDetails.Where(d => d.OrgId == orgId && d.PMTermNo == pmTermNo));
+    foreach (var line in details)
+        db.PaymentTermDetails.Add(new PaymentTermDetail
+        {
+            OrgId = orgId,
+            PMTermNo = pmTermNo,
+            ModelCode = line.ModelCode!.Trim().ToUpperInvariant(),
+            ModelName = line.ModelName,
+            SpecCode = (line.SpecCode ?? "").Trim().ToUpperInvariant(),
+            SpecDescription = line.SpecDescription,
+            FlagDepositPmt = line.FlagDepositPmt == "1" ? "1" : "0"
+        });
+}
+
+// Danh sách model/quy cách áp dụng cho 1 điều khoản (lưới của FrmNew_Dieu_Khoan_ThanhToan).
+app.MapGet("/api/paymentterms/{no}/details", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var term = await db.PaymentTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMTermNo == no);
+    if (term is null) return Results.NotFound(new { no });
+    var details = await db.PaymentTermDetails
+        .Where(d => d.OrgId == t.OrgId && d.PMTermNo == no)
+        .Select(d => new { d.ModelCode, d.ModelName, d.SpecCode, d.SpecDescription, d.FlagDepositPmt })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        term.PMTermNo, term.EffectiveDateFrom, term.EffectiveDateTo,
+        term.DepositPercent, term.GuaranteePercent, term.GuaranteeDays,
+        term.DepositDutyEndDays, term.GuaranteeEndDays, term.DepositDealDateDays,
+        term.FlagActive, count = details.Count, details
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/paymentterms", async (PaymentTermDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (dto.EffectiveDateFrom is null) return Results.BadRequest(new { error = "Chưa chọn ngày hiệu lực từ." });
-    if (dto.EffectiveDateTo is null) return Results.BadRequest(new { error = "Chưa chọn ngày hiệu lực đến." });
-    if (dto.EffectiveDateTo < dto.EffectiveDateFrom) return Results.BadRequest(new { error = "Ngày hiệu lực đến phải >= từ." });
-    if (dto.DepositPercent < 0 || dto.DepositPercent > 100 || dto.GuaranteePercent < 0 || dto.GuaranteePercent > 100)
-        return Results.BadRequest(new { error = "% cọc / % bảo lãnh phải trong 0 - 100." });
+    var headerError = ValidatePaymentTermHeader(dto);
+    if (headerError is not null) return Results.BadRequest(new { error = headerError });
+    var detailError = ValidatePaymentTermDetails(dto.Details);
+    if (detailError is not null) return Results.BadRequest(new { error = detailError });
+    var details = dto.Details!.Where(d => !string.IsNullOrWhiteSpace(d.ModelCode)).ToList();
+
     var no = "PMT" + DateTime.Now.ToString("yyMMddHHmmss");
     var p = new PaymentTerm
     {
-        OrgId = t.OrgId, PMTermNo = no, EffectiveDateFrom = dto.EffectiveDateFrom.Value, EffectiveDateTo = dto.EffectiveDateTo.Value,
-        ModelCode = dto.ModelCode, SpecCode = dto.SpecCode, FlagDepositPmt = dto.FlagDepositPmt == "1" ? "1" : "0", DepositPercent = dto.DepositPercent,
-        GuaranteePercent = dto.GuaranteePercent, GuaranteeDays = dto.GuaranteeDays, DepositDutyEndDays = dto.DepositDutyEndDays,
-        GuaranteeEndDays = dto.GuaranteeEndDays, DepositDealDateDays = dto.DepositDealDateDays, FlagActive = "1"
+        OrgId = t.OrgId, PMTermNo = no,
+        EffectiveDateFrom = dto.EffectiveDateFrom!.Value, EffectiveDateTo = dto.EffectiveDateTo!.Value,
+        DepositPercent = dto.DepositPercent!.Value, GuaranteePercent = dto.GuaranteePercent!.Value,
+        GuaranteeDays = dto.GuaranteeDays!.Value, DepositDutyEndDays = dto.DepositDutyEndDays!.Value,
+        GuaranteeEndDays = dto.GuaranteeEndDays!.Value, DepositDealDateDays = dto.DepositDealDateDays!.Value,
+        FlagActive = "1"
     };
-    db.PaymentTerms.Add(p); await db.SaveChangesAsync();
-    return Results.Ok(new { p.PMTermNo });
+    db.PaymentTerms.Add(p);
+    ReplacePaymentTermDetails(db, t.OrgId, no, details);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PMTermNo, details = details.Count, message = "Tạo thành công" });
+}).RequireAuthorization();
+
+// Sửa điều khoản (MODE_EDIT của form → biz Mst_PaymentTerm_Update): thay TRỌN header + lưới model.
+app.MapPost("/api/paymentterms/{no}", async (
+    string no, PaymentTermDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.PaymentTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMTermNo == no);
+    if (p is null) return Results.NotFound(new { no });
+
+    var headerError = ValidatePaymentTermHeader(dto);
+    if (headerError is not null) return Results.BadRequest(new { error = headerError });
+    var detailError = ValidatePaymentTermDetails(dto.Details);
+    if (detailError is not null) return Results.BadRequest(new { error = detailError });
+    var details = dto.Details!.Where(d => !string.IsNullOrWhiteSpace(d.ModelCode)).ToList();
+
+    p.EffectiveDateFrom = dto.EffectiveDateFrom!.Value;
+    p.EffectiveDateTo = dto.EffectiveDateTo!.Value;
+    p.DepositPercent = dto.DepositPercent!.Value;
+    p.GuaranteePercent = dto.GuaranteePercent!.Value;
+    p.GuaranteeDays = dto.GuaranteeDays!.Value;
+    p.DepositDutyEndDays = dto.DepositDutyEndDays!.Value;
+    p.GuaranteeEndDays = dto.GuaranteeEndDays!.Value;
+    p.DepositDealDateDays = dto.DepositDealDateDays!.Value;
+    ReplacePaymentTermDetails(db, t.OrgId, no, details);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PMTermNo, details = details.Count, message = "Sửa thành công" });
 }).RequireAuthorization();
 
 app.MapPost("/api/paymentterms/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
@@ -17780,7 +17893,17 @@ record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
 record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? BankBranchName, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode);
-record PaymentTermDto(DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo, string? ModelCode, string? SpecCode, string? FlagDepositPmt, decimal DepositPercent, decimal GuaranteePercent, int GuaranteeDays, int DepositDutyEndDays, int GuaranteeEndDays, int DepositDealDateDays);
+/// <summary>Một dòng lưới model/quy cách của điều khoản thanh toán.</summary>
+record PaymentTermDetailDto(string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? FlagDepositPmt);
+/// <summary>
+/// Điều khoản thanh toán: header + LƯỚI model/quy cách (nguồn là bảng chi tiết riêng Mst_PaymentTermDetail).
+/// Các trường số để nullable để phân biệt "chưa nhập" (báo lỗi bắt buộc) với "nhập số 0" (hợp lệ).
+/// </summary>
+record PaymentTermDto(
+    DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo,
+    decimal? DepositPercent, decimal? GuaranteePercent,
+    int? GuaranteeDays, int? DepositDutyEndDays, int? GuaranteeEndDays, int? DepositDealDateDays,
+    List<PaymentTermDetailDto>? Details);
 record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance,
     string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate);
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);

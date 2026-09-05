@@ -3785,6 +3785,29 @@ public sealed class PaymentTerm
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// Model/quy cách áp dụng cho một điều khoản thanh toán (Mst_PaymentTermDetail —
+/// port 1:1 lưới của FrmNew_Dieu_Khoan_ThanhToan, 2010.HTC/Admin/Product).
+/// MỘT điều khoản áp dụng cho NHIỀU cặp (model, quy cách); nguồn lưu thành bảng chi tiết riêng.
+/// Khoá nghiệp vụ của dòng là CẶP (ModelCode, SpecCode) — form ghép chuỗi "ModelCode|SpecCode" khi xoá dòng.
+/// </summary>
+public sealed class PaymentTermDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Số điều khoản thanh toán (khoá nối về <see cref="PaymentTerm"/>).</summary>
+    public string PMTermNo { get; set; } = "";
+
+    public string ModelCode { get; set; } = "";
+    public string? ModelName { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? SpecDescription { get; set; }
+
+    /// <summary>Cờ áp dụng đặt cọc cho cặp model/quy cách này: "1" = có, "0" = không.</summary>
+    public string FlagDepositPmt { get; set; } = "0";
+}
+
 /// <summary>Quy cách xe (Mst_CarSpec) — port 1:1 FrmCarSpec (2010.HTC/Admin/Product). Master spec: model/std-opt/grade/OCN/số chỗ/spec gốc.</summary>
 public sealed class CarSpec
 {

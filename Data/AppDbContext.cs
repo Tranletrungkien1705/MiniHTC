@@ -354,6 +354,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerInventoryThreshold> DealerInventoryThresholds => Set<DealerInventoryThreshold>();
     public DbSet<DealerZone> DealerZones => Set<DealerZone>();
     public DbSet<PaymentTerm> PaymentTerms => Set<PaymentTerm>();
+    public DbSet<PaymentTermDetail> PaymentTermDetails => Set<PaymentTermDetail>();
     public DbSet<CarSpec> CarSpecs => Set<CarSpec>();
     public DbSet<AVNPrice> AVNPrices => Set<AVNPrice>();
     public DbSet<DOATCondition> DOATConditions => Set<DOATCondition>();
