@@ -1105,7 +1105,14 @@ public sealed class RoServiceItem
     public string? SerName { get; set; }
     public string? Cause { get; set; }                 // nguyên nhân
     public string? Result { get; set; }                // kết quả
+    /// <summary>⚠️ Một tên KTV dạng chữ. Danh sách KTV thật của hạng mục nằm ở
+    /// <see cref="RoServiceItemEngineer"/> (1-n, do hệ thống tự sinh).</summary>
     public string? Engineer { get; set; }              // kỹ thuật viên
+
+    /// <summary>Loại công việc của hạng mục (Ser_ROServiceItems.ROType: BDD/SCC/SCD/SCS/PDI/SPK)
+    /// — quyết định hạng mục này nhận nhóm KTV "sửa chữa chung" hay "đồng sơn".</summary>
+    public string? ROType { get; set; }
+
     public decimal Amount { get; set; }                // tiền công
 }
 
@@ -2950,6 +2957,46 @@ public sealed class SerAssignmentWork
     public Guid OrgId { get; set; }
     public string RONo { get; set; } = "";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// Kỹ thuật viên được phân công cho một RO theo LOẠI CÔNG VIỆC
+/// (Ser_AssignmentWorkEngineer — port 1:1 FrmSer_AssignmentWork, TCMotor DMSCarSv/Services).
+/// MỘT RO phân cho NHIỀU kỹ thuật viên; mỗi dòng là một cặp (kỹ thuật viên, loại công việc).
+/// Nguồn lưu cả danh sách theo kiểu XOÁ HẾT rồi GHI LẠI mỗi lần lưu phân công.
+/// </summary>
+public sealed class SerAssignmentWorkEngineer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long AssignmentWorkId { get; set; }
+
+    /// <summary>Mã kỹ thuật viên (nguồn dùng EngineerID, ghép ra EngineerNo/EngineerName khi đọc).</summary>
+    public string EngineerNo { get; set; } = "";
+
+    /// <summary>Loại công việc: SCC/SCD/SCN/SCS/SCDB/SCLR/SCKSC (TConst.Ser_AssignmentWork_WorkType).</summary>
+    public string WorkType { get; set; } = "";
+
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public string? UpdatedBy { get; set; }
+}
+
+/// <summary>
+/// Kỹ thuật viên gắn với TỪNG hạng mục dịch vụ của RO (Ser_ROServiceItemsEngineer —
+/// port 1:1 hiệu ứng phụ của FrmSer_AssignmentWork, TCMotor DMSCarSv/Services).
+/// ⚠️ Bảng này KHÔNG do người dùng nhập: nguồn TỰ SINH khi lưu phân công kỹ thuật viên,
+/// bằng cách phân phối KTV vào từng hạng mục theo loại công việc của hạng mục đó.
+/// </summary>
+public sealed class RoServiceItemEngineer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Hạng mục dịch vụ của RO (<see cref="RoServiceItem"/>).</summary>
+    public long RoServiceItemId { get; set; }
+
+    public string SerCode { get; set; } = "";
+    public string EngineerNo { get; set; } = "";
 }
 
 /// <summary>Dòng công đoạn trong phân công RO — thuộc SerAssignmentWork. StageCode (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) + khoang gán + kế hoạch/thực tế bắt đầu-kết thúc.</summary>

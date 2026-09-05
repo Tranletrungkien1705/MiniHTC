@@ -1280,7 +1280,7 @@ app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbCont
         return Results.Ok(new { r.RONo, canShowDetail = 0, mode = "PartsOnly", partCount = parts.Count, parts });
 
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.Amount }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Amount }).ToListAsync();
     return Results.Ok(new { r.RONo, canShowDetail = 1, mode = "Full", services, partCount = parts.Count, parts });
 }).RequireAuthorization();
 
@@ -9810,7 +9810,102 @@ app.MapGet("/api/serassignmentworks/{roNo}", async (string roNo, AppDbContext db
     if (h is null) return Results.Ok(new { roNo, exists = false, stages = Array.Empty<object>() });
     var stages = await db.SerAssignmentWorkStages.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id)
         .Select(x => new { x.StageCode, x.CavityId, x.PlanStart, x.PlanFinish, x.ActualStart, x.ActualFinish }).ToListAsync();
-    return Results.Ok(new { roNo, exists = true, h.UpdatedAt, stages });
+    var engineers = await db.SerAssignmentWorkEngineers.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id)
+        .Select(x => new { x.EngineerNo, x.WorkType, x.UpdatedAt, x.UpdatedBy }).ToListAsync();
+    return Results.Ok(new { roNo, exists = true, h.UpdatedAt, stages, engineers });
+}).RequireAuthorization();
+
+// Danh sách kỹ thuật viên phân công cho RO + hiệu ứng tự sinh sang từng hạng mục dịch vụ.
+app.MapGet("/api/serassignmentworks/{roNo}/engineers", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (h is null) return Results.NotFound(new { roNo });
+    var engineers = await db.SerAssignmentWorkEngineers.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id)
+        .Select(x => new { x.EngineerNo, x.WorkType }).ToListAsync();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.RONo == roNo);
+    var itemEngineers = ro is null ? new List<object>() : await db.RoServiceItemEngineers
+        .Where(e => e.OrgId == t.OrgId && db.RoServiceItems
+            .Where(i => i.OrgId == t.OrgId && i.RoId == ro.Id).Select(i => i.Id).Contains(e.RoServiceItemId))
+        .Select(e => (object)new { e.SerCode, e.EngineerNo }).ToListAsync();
+    return Results.Ok(new { roNo, count = engineers.Count, engineers, itemEngineers });
+}).RequireAuthorization();
+
+// Lưu TRỌN danh sách kỹ thuật viên phân công (nguồn xoá hết rồi ghi lại — ProcessDelete… trước ProcessSave…),
+// rồi TỰ SINH lại bảng kỹ thuật viên theo từng hạng mục dịch vụ.
+app.MapPost("/api/serassignmentworks/{roNo}/engineers", async (
+    string roNo, SerAssignmentWorkEngineersDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var lines = (dto.Engineers ?? new()).Where(e => !string.IsNullOrWhiteSpace(e.EngineerNo)).ToList();
+    foreach (var line in lines)
+    {
+        var workType = (line.WorkType ?? "").Trim().ToUpperInvariant();
+        if (!assignmentWorkStages.Contains(workType))
+            return Results.BadRequest(new { error = $"Loại công việc không hợp lệ: {line.WorkType}. Cho phép: {string.Join(", ", assignmentWorkStages)}" });
+    }
+    var duplicated = lines
+        .GroupBy(e => $"{e.EngineerNo!.Trim().ToUpperInvariant()}|{(e.WorkType ?? "").Trim().ToUpperInvariant()}")
+        .FirstOrDefault(g => g.Count() > 1);
+    if (duplicated is not null)
+        return Results.BadRequest(new { error = $"Kỹ thuật viên/loại công việc '{duplicated.Key}' bị trùng!" });
+
+    var actor = user.Identity?.Name;
+    var now = DateTime.Now;
+
+    var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
+
+    db.SerAssignmentWorkEngineers.RemoveRange(
+        db.SerAssignmentWorkEngineers.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id));
+    foreach (var line in lines)
+        db.SerAssignmentWorkEngineers.Add(new SerAssignmentWorkEngineer
+        {
+            OrgId = t.OrgId, AssignmentWorkId = h.Id,
+            EngineerNo = line.EngineerNo!.Trim().ToUpperInvariant(),
+            WorkType = line.WorkType!.Trim().ToUpperInvariant(),
+            UpdatedAt = now, UpdatedBy = actor
+        });
+    h.UpdatedAt = now;
+
+    // --- Hiệu ứng phụ của nguồn: phân phối KTV xuống từng hạng mục dịch vụ của RO ---
+    // Nhóm "sửa chữa chung" = KTV có WorkType SCC; "đồng sơn" = MỌI WorkType còn lại.
+    var engineersGeneralRepair = lines
+        .Where(e => e.WorkType!.Trim().ToUpperInvariant() == "SCC")
+        .Select(e => e.EngineerNo!.Trim().ToUpperInvariant()).Distinct().ToList();
+    var engineersBodyPaint = lines
+        .Where(e => e.WorkType!.Trim().ToUpperInvariant() != "SCC")
+        .Select(e => e.EngineerNo!.Trim().ToUpperInvariant()).Distinct().ToList();
+
+    var repairOrder = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.RONo == roNo);
+    var derivedCount = 0;
+    if (repairOrder is not null)
+    {
+        var serviceItems = await db.RoServiceItems
+            .Where(i => i.OrgId == t.OrgId && i.RoId == repairOrder.Id).ToListAsync();
+        var itemIds = serviceItems.Select(i => i.Id).ToList();
+        db.RoServiceItemEngineers.RemoveRange(
+            db.RoServiceItemEngineers.Where(e => e.OrgId == t.OrgId && itemIds.Contains(e.RoServiceItemId)));
+
+        foreach (var item in serviceItems)
+        {
+            // Hạng mục loại BDD/SCC/PDI nhận nhóm "sửa chữa chung"; MỌI loại khác nhận nhóm "đồng sơn".
+            var itemType = (item.ROType ?? "").Trim().ToUpperInvariant();
+            var engineersForItem = itemType is "SCC" or "BDD" or "PDI" ? engineersGeneralRepair : engineersBodyPaint;
+            foreach (var engineerNo in engineersForItem)
+            {
+                db.RoServiceItemEngineers.Add(new RoServiceItemEngineer
+                {
+                    OrgId = t.OrgId, RoServiceItemId = item.Id, SerCode = item.SerCode, EngineerNo = engineerNo
+                });
+                derivedCount++;
+            }
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { roNo, engineers = lines.Count, itemEngineersDerived = derivedCount });
 }).RequireAuthorization();
 
 app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t) =>
@@ -16718,7 +16813,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     foreach (var s in dto.Services ?? new())
         if (!string.IsNullOrWhiteSpace(s.SerCode))
-            db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = s.Amount });
+            db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = s.Amount, ROType = s.ROType });
     foreach (var p in dto.Parts ?? new())
         if (!string.IsNullOrWhiteSpace(p.PartCode))
             db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = p.NeedQty <= 0 ? 1 : p.NeedQty, UnitPrice = p.UnitPrice, Note = p.Note });
@@ -16747,7 +16842,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.Amount }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Amount }).ToListAsync();
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
         .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, lineTotal = p.NeedQty * p.UnitPrice, p.Note }).ToListAsync();
     return Results.Ok(new
@@ -17887,7 +17982,7 @@ record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal Pen
 record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
-record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount);
+record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null);
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note);
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null);
 record RoAdvanceDto(string ToStatus);
@@ -18306,6 +18401,8 @@ record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive);
 record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive);
 record ExtraWorkLimitationMstDto(string? ExtraWorkCode, string? ExtraWorkName, string? WarrantyDtlCode, decimal MaxPrice, string? FlagActive);
 record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategoryCode, string? ExtCategoryName, DateTime? ExtensionDate, string? Remark, string? FlagActive, string? ROWRID = null);
+record SerAssignmentWorkEngineerLineDto(string? EngineerNo, string? WorkType);
+record SerAssignmentWorkEngineersDto(List<SerAssignmentWorkEngineerLineDto>? Engineers);
 record SerAssignmentWorkStageDto(string? StageCode, string? CavityId, DateTime? PlanStart, DateTime? PlanFinish, DateTime? ActualStart, DateTime? ActualFinish);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
