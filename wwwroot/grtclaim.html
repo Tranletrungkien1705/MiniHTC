@@ -12,7 +12,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Issued{color:var(--ok)} .p-Cancelled{color:#dc2626}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-A{color:var(--ok)} .p-C{color:#dc2626}
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
 </style></head>
 <body>
@@ -28,12 +28,15 @@
   <table id="ctbl"><thead><tr><th>VIN *</th><th>Đơn giá</th><th>Ngân hàng</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addCar()">+ Thêm xe</button>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Issued">Đã phát hành</option><option value="Cancelled">Đã hủy</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
+<div class="bar" style="margin:10px 0"><!-- Bỏ bộ lọc theo trạng thái công văn: `Pmt_GrtClaim` KHÔNG có cột trạng thái ở nguồn;
+     trạng thái thật là `VinSignStatus` của từng VIN — xem trong bảng "xem xe". --><input type="hidden" id="fst" value=""><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
 <table><thead><tr><th>Số CV</th><th>Đại lý</th><th>Phép nhận</th><th>Số xe</th><th class="num">Tổng giá</th><th>Ngày tạo</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; const LBL={Draft:"Nháp",Issued:"Đã phát hành",Cancelled:"Đã hủy"};
+const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; // Trục trạng thái THẬT nằm ở từng VIN (Pmt_GrtClaimDetail.VinSignStatus, TConst.VinSignStatus).
+// Header Pmt_GrtClaim KHÔNG có cột trạng thái ⇒ cột "Trạng thái" cũ đã bỏ.
+const LBL={P:"Chưa ký",A:"Đã ký",C:"Đã huỷ"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -52,15 +55,27 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/grtclaims?status=${F("fst").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="act1('${o.grtClaimNo}','issue')">Phát hành</button> <button class="sm" onclick="act1('${o.grtClaimNo}','cancel')">Hủy</button>`:"";
-    return `<tr><td><b>${o.grtClaimNo}</b> <a href="#" class="cars" onclick="cars('${o.grtClaimNo}');return false">xem xe</a></td><td>${o.dealerCode}</td><td>${o.flagisHTC}</td><td>${o.cars}</td><td class="num">${money(o.total)}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.grtClaimNo}"></tr>`;
+    // Nguồn chỉ có XOÁ cả công văn (GrtClaimDelete); ký/huỷ là thao tác theo TỪNG VIN ở bảng "xem xe".
+    let act=`<button class="sm" onclick="delClaim('${o.grtClaimNo}')">Xoá</button>`;
+    return `<tr><td><b>${o.grtClaimNo}</b> <a href="#" class="cars" onclick="cars('${o.grtClaimNo}');return false">xem xe</a></td><td>${o.dealerCode}</td><td>${o.flagisHTC}</td><td>${o.cars}</td><td class="num">${money(o.total)}</td><td>${day(o.createdAt)}</td><td class="muted">theo VIN</td><td>${act}</td></tr><tr id="x-${o.grtClaimNo}"></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Chưa có công văn.</td></tr>';
 }
-async function act1(no,a){ const r=await fetch(`/api/grtclaims/${no}/${a}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+// Ký / huỷ theo TỪNG VIN (Pmt_GrtClaimDetail.VinSignStatus).
+async function vinAct(no,vin,a){ const r=await fetch(`/api/grtclaims/${no}/cars/${vin}/${a}`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ const row=F("x-"+no); row.innerHTML=""; cars(no); load(); } else msg("Lỗi: "+(j.error||r.status)); }
+async function delClaim(no){ if(!confirm("Xoá công văn "+no+"?")) return;
+  const r=await fetch(`/api/grtclaims/${no}`,{method:"DELETE",headers:H()}); const j=await r.json();
+  if(r.ok){ msg(`Đã xoá ${no} (${j.linesDeleted} dòng).`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/grtclaims/${no}/cars`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="8"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b> · ${money(c.unitPrice)}đ${c.bankCode?" · NH "+c.bankCode:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+  // Mỗi VIN có trạng thái ký riêng + nút theo guard: ký chỉ từ "P", huỷ khi chưa "C".
+  row.innerHTML=`<td colspan="8"><div class="cars">${(d.cars||[]).map(c=>{
+    const st=c.vinSignStatus||"P";
+    const b=(st==="P"?`<button class="sm" onclick="vinAct('${no}','${c.vin}','sign')">Ký</button> `:"")
+      +(st!=="C"?`<button class="sm" onclick="vinAct('${no}','${c.vin}','cancel')">Huỷ</button>`:"");
+    return `VIN <b>${c.vin}</b> <span class="pill p-${st}">${LBL[st]||st}</span> · ${money(c.unitPrice)}đ${c.bankCode?" · NH "+c.bankCode:""} ${b}`;
+  }).join("<br>")||"—"}</div></td>`;
 }
 addCar(); load();
 </script>

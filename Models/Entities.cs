@@ -5006,7 +5006,15 @@ public sealed class GrtClaim
     public string DealerCode { get; set; } = "";
     public DateTime? ContractDate { get; set; }
     public string FlagisHTC { get; set; } = "";   // phép nhận: HTC / DL
-    public string Status { get; set; } = "Draft"; // Draft → Issued (phát hành) / Cancelled
+    /// <summary>
+    /// ⚠️ **Nguồn KHÔNG có cột trạng thái cho HEADER**: bảng `Pmt_GrtClaim` chỉ gồm
+    /// `GrtClaimNo`/`CreatedBy`/`CreatedDate`/`DealerCode`/`Remark` (BizHTC.Payment.cs:2705-2712),
+    /// và `grep "GrtClaimStatus"` toàn hệ = **0 hit**.
+    /// ⇒ `Draft/Issued/Cancelled` của port cũ là **trạng thái BỊA hoàn toàn**.
+    /// Trục trạng thái THẬT nằm ở **DÒNG**: <see cref="GrtClaimDetail.VinSignStatus"/>.
+    /// Giữ cột này để đọc dữ liệu cũ, **không dùng làm điều kiện nghiệp vụ**.
+    /// </summary>
+    public string Status { get; set; } = "Draft";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? IssuedAt { get; set; }
 }
@@ -5018,6 +5026,14 @@ public sealed class GrtClaimDetail
     public string VIN { get; set; } = "";
     public decimal UnitPrice { get; set; }
     public string? BankCode { get; set; }
+    /// <summary>
+    /// 🔴 Trạng thái ký của TỪNG VIN (`Pmt_GrtClaimDetail.VinSignStatus`) theo `TConst.VinSignStatus`
+    /// (`Const.Main.DMS40.cs:531-536`): **"P" chưa ký · "A" đã ký · "C" huỷ**.
+    /// Đây là trục trạng thái DUY NHẤT có thật của cụm công văn bảo lãnh — port cũ thiếu hẳn,
+    /// thay bằng một trục bịa ở header.
+    /// Nguồn tạo dòng ở "P" (Biz.HTC.WH.My.cs:5572), ký ⇒ "A" (6106), huỷ ⇒ "C" (6819).
+    /// </summary>
+    public string VinSignStatus { get; set; } = "P";
 }
 
 /// <summary>Đề nghị chiết khấu thanh toán sớm BL/LC theo VIN (Req_PaymentDiscount + Dtl — port 1:1 FrmReq_PaymentDiscount/FrmMngReq_PaymentDiscount, 2010.HTC/Sales):

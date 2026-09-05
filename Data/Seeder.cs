@@ -845,6 +845,11 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Công văn bảo lãnh: trục trạng thái thật nằm ở DÒNG (Pmt_GrtClaimDetail.VinSignStatus)
+                "ALTER TABLE public.\"GrtClaimDetails\" ADD COLUMN IF NOT EXISTS \"VinSignStatus\" text NOT NULL DEFAULT 'P'",
+                // Dữ liệu cũ: header Issued ⇒ mọi dòng coi như đã ký "A"; header Cancelled ⇒ "C".
+                "UPDATE public.\"GrtClaimDetails\" d SET \"VinSignStatus\" = 'A' FROM public.\"GrtClaims\" h WHERE h.\"Id\" = d.\"GrtClaimId\" AND h.\"Status\" = 'Issued'",
+                "UPDATE public.\"GrtClaimDetails\" d SET \"VinSignStatus\" = 'C' FROM public.\"GrtClaims\" h WHERE h.\"Id\" = d.\"GrtClaimId\" AND h.\"Status\" = 'Cancelled'",
                 // HĐ đại lý DMS40: liên kết bản điều chỉnh → hợp đồng gốc (đường vào trạng thái "AJ")
                 "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DlrCtrNoParent\" text NULL",
                 // Biên bản huỷ HĐ đại lý DMS40: trạng thái BB + 2 trục ký (đại lý / HTC 2 cấp)

@@ -15765,6 +15765,15 @@ app.MapPost("/api/grtclaims", async (GrtClaimDto dto, AppDbContext db, ITenantCo
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "GRT" + DateTime.Now.ToString("yyMMddHHmmss");
+    // 🔴 Guard nguồn (`Pmt_GrtClaimCreate_Multi_New20190312`, Biz.HTC.WH.My.cs:5415-5420):
+    //    VIN đã nằm trong một công văn khác với `VinSignStatus not in ('C')` thì **KHÔNG thêm được**.
+    foreach (var vinChk in cars.Select(x => x.VIN.Trim().ToUpperInvariant()).Distinct())
+    {
+        var dup = await db.GrtClaimDetails.Where(x => x.OrgId == t.OrgId && x.VIN == vinChk && x.VinSignStatus != "C")
+            .Join(db.GrtClaims.Where(h => h.OrgId == t.OrgId), dt => dt.GrtClaimId, h => h.Id, (dt, h) => h.GrtClaimNo)
+            .FirstOrDefaultAsync();
+        if (dup != null) return Results.BadRequest(new { error = $"VIN {vinChk} đã nằm trong công văn {dup} (chưa huỷ)." });
+    }
     var r = new GrtClaim { OrgId = t.OrgId, GrtClaimNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, FlagisHTC = dto.FlagisHTC.Trim(), Status = "Draft" };
     db.GrtClaims.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
@@ -15779,21 +15788,48 @@ app.MapGet("/api/grtclaims/{no}/cars", async (string no, AppDbContext db, ITenan
     var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id)
-        .Select(c => new { c.VIN, c.UnitPrice, c.BankCode }).ToListAsync();
-    return Results.Ok(new { r.GrtClaimNo, r.DealerCode, r.FlagisHTC, r.Status, count = cars.Count, cars, total = cars.Sum(x => x.UnitPrice) });
+        .Select(c => new { c.VIN, c.UnitPrice, c.BankCode, c.VinSignStatus }).ToListAsync();
+    return Results.Ok(new { r.GrtClaimNo, r.DealerCode, r.FlagisHTC, count = cars.Count, cars, total = cars.Sum(x => x.UnitPrice),
+        signed = cars.Count(x => x.VinSignStatus == "A"), cancelled = cars.Count(x => x.VinSignStatus == "C") });
 }).RequireAuthorization();
 
-app.MapPost("/api/grtclaims/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 KÝ / HUỶ theo TỪNG VIN — trục thật của cụm là `Pmt_GrtClaimDetail.VinSignStatus`
+// ("P" chưa ký → "A" đã ký, hoặc "C" huỷ). Header `Pmt_GrtClaim` KHÔNG có cột trạng thái,
+// nên endpoint `issue`/`cancel` ở cấp công văn của port cũ là **bịa** — đã thay bằng thao tác theo dòng.
+app.MapPost("/api/grtclaims/{no}/cars/{vin}/{action}", async (string no, string vin, string action, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("issue" or "cancel")) return Results.BadRequest(new { error = "action = issue|cancel" });
+    if (action is not ("sign" or "cancel")) return Results.BadRequest(new { error = "action = sign|cancel" });
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
+    var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var d = await db.GrtClaimDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimId == r.Id && x.VIN == vin);
+    if (d is null) return Results.NotFound(new { no, vin });
+    if (action == "sign")
+    {
+        if (d.VinSignStatus != "P") return Results.BadRequest(new { error = $"VIN {vin} đang ở '{d.VinSignStatus}' — chỉ ký khi chưa ký (P)." });
+        d.VinSignStatus = "A";
+    }
+    else
+    {
+        if (d.VinSignStatus == "C") return Results.BadRequest(new { error = $"VIN {vin} đã huỷ." });
+        d.VinSignStatus = "C";
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.GrtClaimNo, d.VIN, d.VinSignStatus });
+}).RequireAuthorization();
+
+// 🔴 XOÁ cả công văn — `GrtClaimDelete_New20181115` (BizHTC.Payment.cs:3180): nguồn xoá thẳng
+// `Pmt_GrtClaimDetail` rồi `Pmt_GrtClaim`, RBAC `myCommon_CheckHTCDirect`; **không có trạng thái huỷ ở header**.
+app.MapDelete("/api/grtclaims/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
     no = no.Trim().ToUpperInvariant();
     var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Công văn đã xử lý." });
-    if (action == "issue") { r.Status = "Issued"; r.IssuedAt = DateTime.Now; }
-    else r.Status = "Cancelled";
+    var lines = await db.GrtClaimDetails.Where(x => x.OrgId == t.OrgId && x.GrtClaimId == r.Id).ToListAsync();
+    db.GrtClaimDetails.RemoveRange(lines);
+    db.GrtClaims.Remove(r);
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.GrtClaimNo, status = r.Status });
+    return Results.Ok(new { no, linesDeleted = lines.Count });
 }).RequireAuthorization();
 
 // ===== Yêu cầu đóng thùng (CBReq — port 1:1 FrmNewCBReq, 2010.HTC/Sales/Purchase) =====
