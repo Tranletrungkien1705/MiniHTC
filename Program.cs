@@ -10960,9 +10960,21 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
     decimal total = 0m;
     foreach (var l in lines)
     {
-        var amount = l.Quantity * l.UnitPrice * (1 + l.Vat / 100m);
+        // Hệ số giảm giá: nguồn đọc `isnull(sst.Factor, 1)` ⇒ không nhập thì coi như 1 (không giảm).
+        var factor = l.Factor ?? 1m;
+        // Công thức nguyên văn nguồn (Issue 813) — hệ số nhân vào CẢ phần gốc LẪN phần thuế:
+        //   Amount = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor
+        var amountBeforeVat = l.Quantity * l.UnitPrice * factor;
+        var amount = amountBeforeVat + l.Quantity * l.UnitPrice * (l.Vat / 100m) * factor;
         total += amount;
-        db.PartQuoteLines.Add(new PartQuoteLine { OrgId = t.OrgId, PartQuoteId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Unit = l.Unit, Quantity = l.Quantity, UnitPrice = l.UnitPrice, Vat = l.Vat, Amount = amount });
+        db.PartQuoteLines.Add(new PartQuoteLine
+        {
+            OrgId = t.OrgId, PartQuoteId = h.Id,
+            PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Unit = l.Unit,
+            Quantity = l.Quantity, UnitPrice = l.UnitPrice, Vat = l.Vat,
+            Factor = factor, PartPriceId = l.PartPriceId, Note = l.Note,
+            AmountBeforeVat = amountBeforeVat, Amount = amount
+        });
     }
     h.TotalAmount = total;
     await db.SaveChangesAsync();
@@ -10975,7 +10987,7 @@ app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITen
     var h = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartQuoteLines.Where(l => l.OrgId == t.OrgId && l.PartQuoteId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Amount }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Factor, l.PartPriceId, l.Note, l.AmountBeforeVat, l.Amount }).ToListAsync();
     return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -18485,7 +18497,7 @@ record InventoryImportDto(List<InventoryImportRow>? Rows);
 record ServicePartFulfillDto(decimal Qty);
 record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);
-record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat);
+record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat, decimal? Factor = null, string? PartPriceId = null, string? Note = null);
 record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);

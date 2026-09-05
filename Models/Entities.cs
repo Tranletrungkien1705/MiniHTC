@@ -5943,7 +5943,25 @@ public sealed class PartQuoteLine
     public string? Unit { get; set; }
     public decimal Quantity { get; set; }
     public decimal UnitPrice { get; set; }
+
+    /// <summary>Thuế suất theo PHẦN TRĂM (nguồn tính `0.01*VAT`), vd 10 = 10%.</summary>
     public decimal Vat { get; set; }
+
+    /// <summary>
+    /// Hệ số giảm giá của dòng (Ser_Inv_QuotePartItems.Factor — "Hệ số" trên lưới, Issue 813).
+    /// Mặc định 1 (không giảm). Nhân vào CẢ phần gốc LẪN phần thuế: nguồn tính
+    /// `Qty*Price*Factor + Qty*Price*0.01*VAT*Factor`.
+    /// </summary>
+    public decimal Factor { get; set; } = 1m;
+
+    /// <summary>Bảng giá đã áp cho dòng này (PartPriceId) — để truy vết giá lấy từ đâu.</summary>
+    public string? PartPriceId { get; set; }
+
+    public string? Note { get; set; }
+
+    /// <summary>Thành tiền TRƯỚC thuế, đã nhân hệ số (nguồn trả cột AmountBeforeVAT).</summary>
+    public decimal AmountBeforeVat { get; set; }
+
     public decimal Amount { get; set; }
 }
 
