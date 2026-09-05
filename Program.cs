@@ -4707,8 +4707,10 @@ app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
     var items = await q.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.BatchNo, x.Email, x.EmailType, x.Subject, x.Status, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
-    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "Sent"), invalid = items.Count(i => i.Status == "Invalid"), items });
+        .Select(x => new { x.BatchNo, x.Email, x.EmailType, x.Subject, x.Status, x.InvalidEmail,
+            x.FromAddress, x.CusId, x.IsAuto, x.DealerCode, x.FileAttachment, x.UserName, x.Note,
+            sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "1"), pending = items.Count(i => i.Status == "0" && !i.InvalidEmail), invalid = items.Count(i => i.InvalidEmail), items });
 }).RequireAuthorization();
 
 // Gửi email: tiêu đề/nội dung = emailType (mẫu) hoặc subject+body trực tiếp; người nhận = emails và/hoặc toAllCustomers.
@@ -4734,19 +4736,74 @@ app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenant
     }
     if (emails.Count == 0) return Results.BadRequest(new { error = "Chưa có địa chỉ email nhận." });
     var no = "EML" + DateTime.Now.ToString("yyMMddHHmmss");
-    int sent = 0, invalid = 0;
+    // 🔴 Nguồn ghi HEADER LÔ (Email_BatchSendEmail) trước, mang ngày hiệu lực / người gửi / file đính kèm cả lô.
+    db.EmailBatches.Add(new EmailBatch
+    {
+        OrgId = t.OrgId, BatchNo = no, DealerCode = dto.DealerCode,
+        EffectDate = dto.EffectDate ?? DateTime.Now, SendBy = dto.SendBy, AttachmentName = dto.AttachmentName,
+    });
+    int queued = 0, invalid = 0;
     var invalids = new List<string>();
     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     foreach (var e in emails)
     {
-        if (!IsValidEmail(e)) { invalid++; invalids.Add(e); db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = e ?? "", EmailType = emailType, Subject = subject, Body = body, Status = "Invalid" }); continue; }
+        if (!IsValidEmail(e)) { invalid++; invalids.Add(e); db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = e ?? "", EmailType = emailType,
+            Subject = subject, Body = body, Status = "0", InvalidEmail = true,
+            FromAddress = dto.FromAddress, DealerCode = dto.DealerCode, UserName = dto.SendBy,
+            IsAuto = dto.IsAuto == true ? "1" : "0", Note = "Địa chỉ email sai định dạng." }); continue; }
         var std = e.Trim();
         if (!seen.Add(std)) continue; // bỏ trùng email trong lô
-        db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = std, EmailType = emailType, Subject = subject, Body = body, Status = "Sent" });
-        sent++;
+        // ⚠️ Xếp vào hàng đợi ở "0" (chưa gửi) — nguồn chỉ cập nhật "1" SAU KHI gửi xong.
+        db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = std, EmailType = emailType,
+            Subject = subject, Body = body, Status = "0",
+            FromAddress = dto.FromAddress, CusId = null, DealerCode = dto.DealerCode, UserName = dto.SendBy,
+            IsAuto = dto.IsAuto == true ? "1" : "0", FileAttachment = dto.AttachmentName });
+        queued++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { batchNo = no, sent, invalid, invalids, subject });
+    return Results.Ok(new { batchNo = no, queued, invalid, invalids, subject, status = "0",
+        note = "Lô mới ở trạng thái chờ gửi — gọi POST /api/emailsends/{batchNo}/status khi gửi xong." });
+}).RequireAuthorization();
+
+// 🔴 Bộ gửi cập nhật kết quả lô email — port cũ KHÔNG có bước này (đánh dấu "đã gửi" ngay lúc tạo).
+// Nguồn cập nhật cờ "1" sau khi gửi xong (BizCarSv.SendMail.cs:616).
+app.MapPost("/api/emailsends/{batchNo}/status", async (
+    string batchNo, EmailBatchStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = batchNo.Trim();
+    var rows = await db.EmailSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == no && !x.InvalidEmail).ToListAsync();
+    if (rows.Count == 0) return Results.NotFound(new { batchNo = no });
+    var to = (dto.Status ?? "").Trim();
+    if (to != "0" && to != "1")
+        return Results.BadRequest(new { error = "Trạng thái chỉ nhận '0' (chưa gửi) hoặc '1' (đã gửi)." });
+
+    var changed = 0;
+    foreach (var r in rows)
+    {
+        // Không đụng dòng đã chốt "đã gửi" — tránh ghi đè kết quả.
+        if (r.Status == "1") continue;
+        r.Status = to;
+        if (!string.IsNullOrWhiteSpace(dto.Note)) r.Note = dto.Note;
+        if (to == "1") r.SendDate = DateTime.Now;
+        changed++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { batchNo = no, status = to, changed, skippedAlreadySent = rows.Count - changed });
+}).RequireAuthorization();
+
+app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
+{
+    statuses = new[] { new { code = "0", name = "Chưa gửi (trong hàng đợi)" }, new { code = "1", name = "Đã gửi" } },
+    note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
+})).RequireAuthorization();
+
+app.MapGet("/api/emailbatches", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    var qy = db.EmailBatches.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.BatchNo, x.DealerCode, x.EffectDate, x.SendBy, x.AttachmentName, x.CreatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // ===== Cấu hình gửi email tự động (EmailAutoConfig — port 1:1 FrmAutoSendConfig, TCMotor) =====
@@ -19883,7 +19940,8 @@ record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note
 record SupplierDebitDto(string? SupplierCode, string? StockInNo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record SupplierDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
-record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers);
+record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers, string? FromAddress = null, string? DealerCode = null, string? SendBy = null, string? AttachmentName = null, DateTime? EffectDate = null, bool? IsAuto = null);
+record EmailBatchStatusDto(string? Status, string? Note);
 record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);
 record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);
 record ServiceCampaignPartDto(string PartCode, string? PartName, decimal PercentDiscount);

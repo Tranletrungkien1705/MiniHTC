@@ -5717,8 +5717,58 @@ public sealed class EmailSend
     public string? EmailType { get; set; }
     public string Subject { get; set; } = "";
     public string Body { get; set; } = "";
-    public string Status { get; set; } = "Sent";   // Sent | Invalid
+
+    /// <summary>
+    /// 🔴 Trạng thái gửi là CỜ "1"/"0" của nguồn (`Constants.Flag`), KHÔNG phải chuỗi "Sent"/"Invalid":
+    /// "0" chưa gửi (mới đưa vào hàng đợi) · "1" đã xử lý gửi.
+    /// ⚠️ Nguồn tạo dòng hàng đợi ở "0" (`FrmSendEmail.cs:466` = `Flag.Inactive`) rồi mới gửi;
+    /// chỉ khi gửi xong mới cập nhật "1" (`BizCarSv.SendMail.cs:616`). Port cũ đánh dấu
+    /// "Sent" NGAY LÚC TẠO ⇒ không phân biệt được "đã xếp hàng" với "đã gửi".
+    /// Giữ đọc được dữ liệu cũ: "Sent" ⇒ "1", "Invalid" ⇒ "0" + <see cref="InvalidEmail"/>.
+    /// </summary>
+    public string Status { get; set; } = "0";
+
+    /// <summary>Địa chỉ email sai định dạng — lỗi DỮ LIỆU, tách khỏi kết quả gửi (như đã làm cho SMS).</summary>
+    public bool InvalidEmail { get; set; }
+
+    /// <summary>Địa chỉ gửi đi (FromAddress).</summary>
+    public string? FromAddress { get; set; }
+
+    /// <summary>Mã khách hàng nhận (CusID) — nguồn lưu để truy ngược email về khách.</summary>
+    public string? CusId { get; set; }
+
+    /// <summary>Gửi TỰ ĐỘNG hay gửi tay (IsAuto) — cờ "1"/"0".</summary>
+    public string IsAuto { get; set; } = "0";
+
+    public string? DealerCode { get; set; }
+    /// <summary>Tên file đính kèm của riêng dòng này (FileAttachment).</summary>
+    public string? FileAttachment { get; set; }
+    /// <summary>Người thao tác (UserName).</summary>
+    public string? UserName { get; set; }
+    /// <summary>Ghi chú / lý do lỗi gửi (Note/Remark) — port cũ không có chỗ ghi lỗi gửi.</summary>
+    public string? Note { get; set; }
+
     public DateTime SendDate { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// 🔴 HEADER LÔ gửi email (`Email_BatchSendEmail` — BizCarSv.SendMail.cs:1002-1060).
+/// Port cũ chỉ có chuỗi `BatchNo` lặp trên từng dòng, KHÔNG có bản ghi lô ⇒ mất
+/// ngày hiệu lực, người gửi, và **file đính kèm dùng chung cho cả lô**.
+/// </summary>
+public sealed class EmailBatch
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    /// <summary>Ngày hiệu lực / hẹn gửi của lô (EffectDate).</summary>
+    public DateTime? EffectDate { get; set; }
+    /// <summary>Người gửi lô (SendBy).</summary>
+    public string? SendBy { get; set; }
+    /// <summary>Tên file đính kèm dùng chung cả lô (AttachmentName).</summary>
+    public string? AttachmentName { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Cấu hình gửi SMS tự động theo giờ/loại + ngày hiệu lực — port 1:1 FrmSMSSetAutoSend (TblSMS_ConfigSendAuto, TCMotor).</summary>
