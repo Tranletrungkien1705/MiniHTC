@@ -16358,7 +16358,7 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.ReqQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng PT (PartCode + ReqQty > 0)." });
     var no = "RQ" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new ReqPartPrice { OrgId = t.OrgId, ReqNo = no, DMSStatus = "P", TSTStatus = "Pending" };
+    var r = new ReqPartPrice { OrgId = t.OrgId, ReqNo = no, DMSStatus = "P", TSTStatus = "1" };   // nguồn set TST=1 (Chờ duyệt) ngay khi tạo
     db.ReqPartPrices.Add(r); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.ReqPartPriceLines.Add(new ReqPartPriceLine { OrgId = t.OrgId, ReqId = r.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, ReqQty = l.ReqQty, QuotedPrice = 0 });
@@ -16377,6 +16377,34 @@ app.MapGet("/api/reqpartprices/{no}/lines", async (string no, AppDbContext db, I
 }).RequireAuthorization();
 
 // DMS gửi (P→A)
+// 🔴 Trạng thái YC báo giá PT theo ĐÚNG nguồn. Mã TST là SỐ NHẢY, **KHÔNG có mã 3**.
+// ⚠️ Nguồn dùng lớp hằng `DMSSuggestPriceStatus`/`TSTSuggestPriceStatus` cho chính Req_PartPrice
+//    (trùng nội dung với `DMS/TSTReqPartPriceStatus`) — hai bộ hằng song trùng, KHÔNG phải màn riêng.
+var reqPartPriceTstNames = new Dictionary<string, string>
+{
+    ["1"] = "Chờ duyệt",
+    ["2"] = "Đã duyệt, chờ hoàn thiện",
+    ["4"] = "Đã hoàn thiện",
+};
+var reqPartPriceDmsNames = new Dictionary<string, string>
+{
+    ["P"] = "Mới tạo", ["A"] = "Đã gửi", ["F"] = "Hoàn thiện", ["R"] = "Từ chối",
+};
+
+// Ánh xạ giá trị port CŨ → mã nguồn, giữ dữ liệu đã tạo đọc được.
+var reqPartPriceLegacyTstMap = new Dictionary<string, string>
+{
+    ["Pending"] = "1", ["Quoted"] = "2", ["Finished"] = "4",
+};
+
+app.MapGet("/api/reqpartprices/statuses", () => Results.Ok(new
+{
+    dmsStatuses = reqPartPriceDmsNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    tstStatuses = reqPartPriceTstNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    legacyTstMap = reqPartPriceLegacyTstMap.Select(kv => new { legacy = kv.Key, code = kv.Value }),
+    note = "Mã TST nhảy số 1/2/4 — KHÔNG có mã 3. DMS có nhánh R (từ chối)."
+})).RequireAuthorization();
+
 app.MapPost("/api/reqpartprices/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -16388,34 +16416,50 @@ app.MapPost("/api/reqpartprices/{no}/send", async (string no, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
-// TST báo giá (điền QuotedPrice từng dòng) → TSTStatus Quoted
+// TST báo giá (điền QuotedPrice từng dòng) → TSTStatus "2" (đã duyệt, chờ hoàn thiện).
 app.MapPost("/api/reqpartprices/{no}/quote", async (string no, ReqQuoteDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     if (r.DMSStatus != "A") return Results.BadRequest(new { error = "DMS chưa gửi YC." });
-    if (r.TSTStatus == "Finished") return Results.BadRequest(new { error = "Đã hoàn tất." });
+    if (r.DMSStatus == "R") return Results.BadRequest(new { error = "YC đã bị từ chối." });
+    var tstCurrent = reqPartPriceLegacyTstMap.TryGetValue(r.TSTStatus, out var mappedTst) ? mappedTst : r.TSTStatus;
+    if (tstCurrent == "4") return Results.BadRequest(new { error = "Đã hoàn thiện." });
     var quotes = (dto.Quotes ?? new()).ToDictionary(x => (x.PartCode ?? "").Trim().ToUpperInvariant(), x => x.QuotedPrice);
     var lines = await db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id).ToListAsync();
     int filled = 0;
     foreach (var l in lines)
         if (quotes.TryGetValue(l.PartCode, out var price)) { l.QuotedPrice = price; filled++; }
-    r.TSTStatus = "Quoted"; r.QuotedAt = DateTime.Now;
+    r.TSTStatus = "2"; r.QuotedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReqNo, tstStatus = r.TSTStatus, filled });
+    return Results.Ok(new { r.ReqNo, tstStatus = r.TSTStatus, tstStatusName = reqPartPriceTstNames["2"], filled });
 }).RequireAuthorization();
 
-// DMS chấp nhận → Finished
+// DMS chấp nhận → TST "4" (đã hoàn thiện) + DMS "F".
 app.MapPost("/api/reqpartprices/{no}/finish", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.TSTStatus != "Quoted") return Results.BadRequest(new { error = "Chưa được báo giá (Quoted)." });
-    r.TSTStatus = "Finished"; r.DMSStatus = "F";
+    var tstCurrent = reqPartPriceLegacyTstMap.TryGetValue(r.TSTStatus, out var mappedFinish) ? mappedFinish : r.TSTStatus;
+    if (tstCurrent != "2") return Results.BadRequest(new { error = "Chưa được báo giá (TST phải ở trạng thái 2)." });
+    r.TSTStatus = "4"; r.DMSStatus = "F";
     await db.SaveChangesAsync();
     return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus, tstStatus = r.TSTStatus });
+}).RequireAuthorization();
+
+// 🔴 TỪ CHỐI yêu cầu báo giá (DMSStatus "R") — nhánh port cũ thiếu hẳn.
+app.MapPost("/api/reqpartprices/{no}/reject", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.DMSStatus == "F") return Results.BadRequest(new { error = "YC đã hoàn thiện, không từ chối được." });
+    if (r.DMSStatus == "R") return Results.BadRequest(new { error = "YC đã bị từ chối." });
+    r.DMSStatus = "R";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus, dmsStatusName = reqPartPriceDmsNames["R"] });
 }).RequireAuthorization();
 
 // ===== Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment) =====

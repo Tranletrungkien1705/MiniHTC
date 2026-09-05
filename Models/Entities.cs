@@ -3472,8 +3472,18 @@ public sealed class ReqPartPrice
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string ReqNo { get; set; } = "";
-    public string DMSStatus { get; set; } = "P";       // P → A → F
-    public string TSTStatus { get; set; } = "Pending"; // Pending → Quoted → Finished
+    /// <summary>
+    /// Trạng thái phía DMS (TConst.DMSReqPartPriceStatus): "P" mới tạo → "A" đã gửi → "F" hoàn thiện,
+    /// và **"R" TỪ CHỐI** — nhánh port cũ thiếu hẳn.
+    /// </summary>
+    public string DMSStatus { get; set; } = "P";
+
+    /// <summary>
+    /// Trạng thái phía TST (TConst.TSTReqPartPriceStatus) — ⚠️ mã lưu là SỐ NHẢY, **không có mã 3**:
+    /// "1" Chờ duyệt · "2" Đã duyệt, chờ hoàn thiện · "4" Đã hoàn thiện.
+    /// Nguồn set "1" ngay khi tạo (cùng lúc DMSStatus="P").
+    /// </summary>
+    public string TSTStatus { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? QuotedAt { get; set; }
 }
