@@ -2105,6 +2105,20 @@ app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantCont
 }).RequireAuthorization();
 
 // ===== Bảo lãnh ngân hàng (BankGuarantee — port 1:1 FrmBankGrt, cụm Bank/TERP.BankClient) =====
+// 🔴 Bảo lãnh ngân hàng dùng mã trạng thái của nguồn (TConst.Stage), KHÔNG phải chuỗi tự đặt.
+// WarningPeriod = 3 (TConst.HTCConst.WarningPeriod) — dùng cho cả guard kỳ hạn lẫn công thức kỳ cảnh báo.
+const int BankGrtWarningPeriod = 3;
+
+app.MapGet("/api/bankgrts/statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ duyệt" },
+        new { code = "A", name = "Đã duyệt" },
+        new { code = "R", name = "Bị từ chối" } },
+    warningPeriod = BankGrtWarningPeriod,
+    note = "Duyệt yêu cầu Term và TermActual đều >= WarningPeriod; TermWarning = TermActual - WarningPeriod.",
+})).RequireAuthorization();
+
 app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? grtNo, string? status, string? type, string? settled) =>
 {
     var q = db.BankGuarantees.Where(g => g.OrgId == t.OrgId);
@@ -2137,11 +2151,13 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
         OrgId = t.OrgId, GuaranteeNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode.Trim(),
         BankGuaranteeNo = dto.BankGuaranteeNo ?? "", GuaranteeType = gtype, Term = dto.Term,
         DateOpen = dto.DateOpen, DateExpired = dto.DateExpired, DateEnd = dto.DateEnd, Remark = dto.Remark ?? "",
-        Status = "Draft", FlagSettled = "0", TotalAmount = cars.Sum(c => c.GrtValue)
+        // Nguồn tạo ở "P" (TConst.Stage.Pending) — BizHTC.zTemp.cs:14542.
+        Status = "P", FlagSettled = "0", TotalAmount = cars.Sum(c => c.GrtValue)
     };
     db.BankGuarantees.Add(g2); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), GrtValue = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired });
+        db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), GrtValue = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired,
+            GuaranteeDetailStatus = "P" });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573)
     await db.SaveChangesAsync();
     return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount });
 }).RequireAuthorization();
@@ -2152,7 +2168,7 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.Status, g.FlagSettled, g.TotalAmount, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -2273,7 +2289,9 @@ app.MapPost("/api/bankgrts/date-recieve-root", async (GrtDateRecieveRootDto dto,
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
-app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bankgrts/{no}/{action}", async (
+    string no, string action, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, int? termActualQ, string? remark) =>
 {
     if (action is not ("approve" or "reject" or "settle")) return Results.BadRequest(new { error = "action = approve|reject|settle" });
     no = no.Trim().ToUpperInvariant();
@@ -2281,18 +2299,40 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (string no, string action, AppD
     if (g is null) return Results.NotFound(new { no });
     if (action is "approve" or "reject")
     {
-        if (g.Status != "Draft") return Results.BadRequest(new { error = "Bảo lãnh không ở trạng thái chờ duyệt." });
-        if (action == "approve") { g.Status = "Approved"; g.ApprovedAt = DateTime.Now; }
-        else g.Status = "Rejected";
+        if (g.Status != "P") return Results.BadRequest(new { error = $"Bảo lãnh không ở trạng thái chờ duyệt (đang: {g.Status})." });
+        if (action == "approve")
+        {
+            // Guard của nguồn (Biz.HTC.WH.My.cs:10600-10630): CẢ kỳ hạn đăng ký LẪN kỳ hạn thực tế
+            // phải >= WarningPeriod, mỗi cái một mã lỗi riêng.
+            var termActual = termActualQ ?? g.TermActual;
+            if (g.Term < BankGrtWarningPeriod)
+                return Results.BadRequest(new { error = $"Kỳ hạn bảo lãnh phải >= {BankGrtWarningPeriod} (đang: {g.Term})." });
+            if (termActual < BankGrtWarningPeriod)
+                return Results.BadRequest(new { error = $"Kỳ hạn thực tế phải >= {BankGrtWarningPeriod} (đang: {termActual})." });
+            g.Status = "A"; g.ApprovedAt = DateTime.Now;
+            g.TermActual = termActual;
+            // Giá trị DẪN XUẤT của nguồn — không phải nhập tay.
+            g.TermWarning = termActual - BankGrtWarningPeriod;
+        }
+        else
+        {
+            g.Status = "R";
+            if (!string.IsNullOrWhiteSpace(remark)) g.RemarkReject = remark!.Trim();
+        }
+        g.ApprovedBy = user.Identity?.Name ?? "system";
+
+        // 🔴 Nguồn LAN trạng thái xuống TẤT CẢ dòng chi tiết (Biz.HTC.WH.My.cs:10675-10681).
+        var dtls = await db.BankGuaranteeDtls.Where(x => x.OrgId == t.OrgId && x.GuaranteeId == g.Id).ToListAsync();
+        foreach (var d in dtls) d.GuaranteeDetailStatus = g.Status;
     }
     else // settle = tất toán
     {
-        if (g.Status != "Approved") return Results.BadRequest(new { error = "Chỉ tất toán bảo lãnh đã duyệt." });
+        if (g.Status != "A") return Results.BadRequest(new { error = "Chỉ tất toán bảo lãnh đã duyệt." });
         if (g.FlagSettled == "1") return Results.BadRequest(new { error = "Bảo lãnh đã tất toán." });
         g.FlagSettled = "1"; g.SettledAt = DateTime.Now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled });
+    return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled, g.TermActual, g.TermWarning, g.RemarkReject });
 }).RequireAuthorization();
 
 // ===== Lệnh xuất xe - NH xác nhận nhận xe (BankDeliveryOrder — port 1:1 FrmBankDO, cụm Bank) =====
@@ -3794,7 +3834,8 @@ app.MapGet("/api/report/guarantee", async (AppDbContext db, ITenantContext t, st
     {
         g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.TotalAmount, g.Status, g.FlagSettled,
         dateOpen = g.DateOpen != null ? g.DateOpen.Value.ToString("yyyy-MM-dd") : "",
-        debit = Debit(g)
+        debit = Debit(g),
+        g.TermActual, g.TermWarning, g.RemarkReject, g.ApprovedBy
     }).ToList();
     return Results.Ok(new { total = recs.Count, totalDebit = recs.Sum(Debit), totalAmount = recs.Sum(g => g.TotalAmount), byBank, byStatus, detail });
 }).RequireAuthorization();

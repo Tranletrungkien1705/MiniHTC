@@ -5088,11 +5088,37 @@ public sealed class BankGuarantee
     public DateTime? DateEnd { get; set; }
     public DateTime? DateRecieveGrtRoot { get; set; }     // ngày nhận LC/BL gốc — port FrmEditDateRecieveGrtRoot/FrmUpdateGrtDate
     public decimal TotalAmount { get; set; }
-    public string Status { get; set; } = "Draft";        // Draft -> Approved / Rejected
+
+    /// <summary>
+    /// 🔴 Trạng thái bảo lãnh theo ĐÚNG mã nguồn (`Pmt_Guarantee.GuaranteeStatus`, `TConst.Stage`):
+    /// "P" chờ duyệt → "A" đã duyệt · "R" bị từ chối.
+    /// ⚠️ Port cũ dùng chuỗi TỰ ĐẶT "Draft"/"Approved"/"Rejected"; chính hàm kiểm tra của nguồn
+    /// (`myPayment_CheckBankGuaranteeNo`) lọc `GuaranteeStatus = "A"` ⇒ mã tự đặt không khớp.
+    /// Đọc được dữ liệu cũ: Draft→"P", Approved→"A", Rejected→"R".
+    /// </summary>
+    public string Status { get; set; } = "P";
     public string FlagSettled { get; set; } = "0";        // 1 = da tat toan
     public string Remark { get; set; } = "";
+
+    /// <summary>Lý do TỪ CHỐI (`RemarkReject`) — nguồn ghi riêng, không dùng chung `Remark`.</summary>
+    public string? RemarkReject { get; set; }
+
+    /// <summary>
+    /// Kỳ hạn THỰC TẾ (`TermActual`) — nguồn ghi khi duyệt, TÁCH khỏi <see cref="Term"/> (kỳ hạn đăng ký).
+    /// Khi duyệt, CẢ HAI phải &gt;= <c>WarningPeriod</c> (=3), mỗi cái một mã lỗi riêng.
+    /// </summary>
+    public int TermActual { get; set; }
+
+    /// <summary>
+    /// Kỳ CẢNH BÁO (`TermWarning`) — **giá trị DẪN XUẤT** của nguồn: `TermActual - WarningPeriod` (=3).
+    /// Port cũ không có ⇒ mất mốc cảnh báo sắp hết hạn bảo lãnh.
+    /// </summary>
+    public int TermWarning { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
+    /// <summary>Người duyệt/từ chối (`ApprovedBy`) — nguồn ghi ở CẢ hai nhánh.</summary>
+    public string? ApprovedBy { get; set; }
     public DateTime? SettledAt { get; set; }
 }
 
@@ -5113,6 +5139,13 @@ public sealed class BankGuaranteeDtl
     public DateTime? DateEnd { get; set; }   // ngày kết thúc bảo lãnh (FrmEditGrtExpiredDate)
     public int DeferredPaymentDays { get; set; }  // số ngày trả chậm (FrmEditGrtSoNgayTCLC)
     public string? FlagDtlDiscount { get; set; }  // cờ chiết khấu dòng (FrmEditGrt)
+
+    /// <summary>
+    /// 🔴 Trạng thái RIÊNG của TỪNG DÒNG xe (`Pmt_GuaranteeDetail.GuaranteeDetailStatus`) — port cũ THIẾU HẲN.
+    /// Nguồn tạo dòng ở "P" và khi duyệt/từ chối header thì **lan xuống TẤT CẢ dòng**
+    /// (`Biz.HTC.WH.My.cs:10679`). Có cột này thì mới truy được từng xe đang ở trạng thái nào.
+    /// </summary>
+    public string GuaranteeDetailStatus { get; set; } = "P";
 }
 
 /// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>
