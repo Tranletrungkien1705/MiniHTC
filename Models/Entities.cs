@@ -1812,6 +1812,38 @@ public sealed class CarStatusUpdate
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>
+/// Trạng thái hoạt động của xe + thông tin huỷ xe (Car_Car.FlagActive / CarCancel* —
+/// port 1:1 FrmCapNhatTTHuyXe, 2010.HTC TERP.HTCClient/Views/Sales).
+/// Màn nhập Excel danh sách mã xe rồi HUỶ HÀNG LOẠT hoặc PHỤC HỒI HÀNG LOẠT.
+/// Khác <see cref="CarCancel"/> (quy trình huỷ 1 xe có mã phiếu + duyệt): đây là thao tác
+/// kỹ thuật theo lô, phục vụ nghiệp vụ map VIN.
+/// </summary>
+public sealed class CarActiveStatus
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Mã xe — khoá upsert của màn (nguồn nhập Excel đúng 1 cột CarId).</summary>
+    public string CarId { get; set; } = "";
+
+    /// <summary>VIN đã map cho xe. CÓ VIN thì cấm cả huỷ lẫn phục hồi (guard của nguồn).</summary>
+    public string? Vin { get; set; }
+
+    /// <summary>"1" = đang hoạt động, "0" = đã huỷ (TConst.Flag.Active/Inactive).</summary>
+    public string FlagActive { get; set; } = "1";
+
+    public string? CarCancelRemark { get; set; }
+    public DateTime? CarCancelDate { get; set; }
+    public string? CarCancelBy { get; set; }
+
+    /// <summary>Loại huỷ — nguồn luôn ghi "NONE" ở cả hai thao tác huỷ và phục hồi.</summary>
+    public string CarCancelType { get; set; } = "NONE";
+
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public string? UpdatedBy { get; set; }
+}
+
 /// <summary>Cập nhật spec theo CarID — port 1:1 FrmUpdateSpec_CarID (2010.HTC). Batch đổi SpecCode cho xe (import Excel), upsert theo CarId.</summary>
 public sealed class CarSpecUpdate
 {

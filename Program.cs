@@ -7007,6 +7007,160 @@ app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDb
     return Results.Ok(new { added, updated });
 }).RequireAuthorization();
 
+// ===== Huỷ / phục hồi xe hàng loạt (CarActiveStatus — port 1:1 FrmCapNhatTTHuyXe, 2010.HTC Views/Sales) =====
+// TWIN đã trace: SalesService.Car_Car_UpdSpecial_HuyXe / _PhucHoi
+//   → biz Car_Car_UpdSpecial_HuyXeX / Car_Car_UpdSpecial_PhucHoiX (TERP.BizHTC/DataWH/Biz.HTC.WH.cs).
+// Form nhập Excel đúng MỘT cột mã xe (header dòng 2), rồi bấm "Hủy xe" hoặc "Active xe" cho cả lô.
+
+/// <summary>Chuẩn hoá + kiểm danh sách mã xe của lô: bắt buộc nhập, không trùng (đúng thứ tự kiểm của form).</summary>
+static (List<string>? CarIds, string? Error) NormalizeCarIdBatch(List<string>? rawCarIds)
+{
+    var lines = rawCarIds ?? new List<string>();
+    if (lines.Count == 0) return (null, "Lưới dữ liệu xe trống!");
+    var carIds = new List<string>();
+    foreach (var raw in lines)
+    {
+        var carId = (raw ?? "").Trim();
+        if (carId.Length == 0) return (null, "Mã xe bắt buộc nhập!");
+        if (carIds.Contains(carId, StringComparer.OrdinalIgnoreCase))
+            return (null, $"Xe '{carId}' bị lặp!");
+        carIds.Add(carId);
+    }
+    return (carIds, null);
+}
+
+app.MapGet("/api/caractivestatuses", async (AppDbContext db, ITenantContext t, string? carId, string? flagActive) =>
+{
+    var q = db.CarActiveStatuses.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.CarId, x.Vin, x.FlagActive, x.CarCancelRemark, x.CarCancelDate, x.CarCancelBy,
+        x.CarCancelType, x.UpdatedAt, x.UpdatedBy
+    }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        active = items.Count(i => i.FlagActive == "1"),
+        cancelled = items.Count(i => i.FlagActive == "0"),
+        items
+    });
+}).RequireAuthorization();
+
+// Huỷ xe hàng loạt: FlagActive 1 → 0, ghi kèm thông tin huỷ.
+app.MapPost("/api/caractivestatuses/cancel", async (
+    CarIdBatchDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var (carIds, batchError) = NormalizeCarIdBatch(dto.CarIds);
+    if (batchError is not null) return Results.BadRequest(new { error = batchError });
+
+    var rows = await db.CarActiveStatuses
+        .Where(x => x.OrgId == t.OrgId && carIds!.Contains(x.CarId)).ToListAsync();
+    var byCarId = rows.ToDictionary(x => x.CarId, StringComparer.OrdinalIgnoreCase);
+
+    foreach (var carId in carIds!)
+    {
+        if (!byCarId.TryGetValue(carId, out var row))
+            return Results.BadRequest(new { error = $"Xe '{carId}' không có trong hệ thống!" });
+        // Nguồn chỉ nhận xe đang Active (strFlagActiveListToCheck = Flag.Active).
+        if (row.FlagActive != "1")
+            return Results.BadRequest(new { error = $"Xe '{carId}' không ở trạng thái hoạt động!" });
+        // 🔴 Guard chính: đã map VIN thì KHÔNG được huỷ (Car_Car_UpdSpecial_HuyXe_NotAllowUpdate).
+        if (!string.IsNullOrWhiteSpace(row.Vin))
+            return Results.BadRequest(new { error = $"Xe '{carId}' đã có VIN '{row.Vin}', không được phép cập nhật!" });
+    }
+
+    var actor = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    foreach (var carId in carIds!)
+    {
+        var row = byCarId[carId];
+        row.FlagActive = "0";
+        row.CarCancelRemark = "Huy Xe upd for MapVIN support";   // giữ nguyên chuỗi của nguồn
+        row.CarCancelDate = now.Date;
+        row.CarCancelBy = actor;
+        row.CarCancelType = "NONE";
+        row.UpdatedAt = now; row.UpdatedBy = actor;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { cancelled = carIds!.Count, message = "Hủy xe thành công!" });
+}).RequireAuthorization();
+
+// Phục hồi xe hàng loạt: FlagActive 0 → 1, XOÁ sạch thông tin huỷ.
+app.MapPost("/api/caractivestatuses/restore", async (
+    CarIdBatchDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var (carIds, batchError) = NormalizeCarIdBatch(dto.CarIds);
+    if (batchError is not null) return Results.BadRequest(new { error = batchError });
+
+    var rows = await db.CarActiveStatuses
+        .Where(x => x.OrgId == t.OrgId && carIds!.Contains(x.CarId)).ToListAsync();
+    var byCarId = rows.ToDictionary(x => x.CarId, StringComparer.OrdinalIgnoreCase);
+
+    foreach (var carId in carIds!)
+    {
+        if (!byCarId.TryGetValue(carId, out var row))
+            return Results.BadRequest(new { error = $"Xe '{carId}' không có trong hệ thống!" });
+        // Nguồn chỉ nhận xe đang Inactive (strFlagActiveListToCheck = Flag.Inactive).
+        if (row.FlagActive != "0")
+            return Results.BadRequest(new { error = $"Xe '{carId}' chưa bị hủy!" });
+        // Guard giống nhánh huỷ: đã map VIN thì cấm (Car_Car_UpdSpecial_PhucHoi_NotAllowUpdate).
+        if (!string.IsNullOrWhiteSpace(row.Vin))
+            return Results.BadRequest(new { error = $"Xe '{carId}' đã có VIN '{row.Vin}', không được phép cập nhật!" });
+    }
+
+    var actor = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    foreach (var carId in carIds!)
+    {
+        var row = byCarId[carId];
+        row.FlagActive = "1";
+        // Nguồn set NULL cả 3 cột thông tin huỷ, riêng CarCancelType vẫn giữ "NONE".
+        row.CarCancelRemark = null;
+        row.CarCancelDate = null;
+        row.CarCancelBy = null;
+        row.CarCancelType = "NONE";
+        row.UpdatedAt = now; row.UpdatedBy = actor;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { restored = carIds!.Count, message = "Active xe thành công!" });
+}).RequireAuthorization();
+
+// Nạp danh sách xe (thay cho bước import Excel của form) — dùng để dựng dữ liệu thử/đồng bộ.
+app.MapPost("/api/caractivestatuses/import", async (
+    CarActiveImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var lines = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lưới dữ liệu xe trống!" });
+    var duplicated = lines.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (duplicated is not null) return Results.BadRequest(new { error = $"Xe '{duplicated.Key}' bị lặp!" });
+
+    var carIds = lines.Select(r => r.CarId!.Trim()).ToList();
+    var existing = await db.CarActiveStatuses
+        .Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId)).ToListAsync();
+    var byCarId = existing.ToDictionary(x => x.CarId, StringComparer.OrdinalIgnoreCase);
+
+    var actor = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    int added = 0, updated = 0;
+    foreach (var line in lines)
+    {
+        var carId = line.CarId!.Trim();
+        if (!byCarId.TryGetValue(carId, out var row))
+        {
+            row = new CarActiveStatus { OrgId = t.OrgId, CarId = carId };
+            db.CarActiveStatuses.Add(row); byCarId[carId] = row; added++;
+        }
+        else updated++;
+        row.Vin = string.IsNullOrWhiteSpace(line.Vin) ? null : line.Vin.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(line.FlagActive)) row.FlagActive = line.FlagActive == "0" ? "0" : "1";
+        row.UpdatedAt = now; row.UpdatedBy = actor;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
 // ===== Cập nhật spec theo CarID (CarSpecUpdate — port 1:1 FrmUpdateSpec_CarID, 2010.HTC) =====
 app.MapGet("/api/carspecupdates", async (AppDbContext db, ITenantContext t, string? carId, string? spec) =>
 {
@@ -17417,6 +17571,10 @@ record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);
 record CarStatusImportDto(List<CarStatusRowDto>? Rows);
 record CarStatusRowDto(string? CarId, string? TTCStatus, string? CPTCStatus);
+/// <summary>Lô mã xe để huỷ / phục hồi hàng loạt (tương ứng lưới của FrmCapNhatTTHuyXe).</summary>
+record CarIdBatchDto(List<string>? CarIds);
+record CarActiveRowDto(string? CarId, string? Vin, string? FlagActive);
+record CarActiveImportDto(List<CarActiveRowDto>? Rows);
 record CarSpecUpdImportDto(List<CarSpecUpdRowDto>? Rows);
 record CarSpecUpdRowDto(string? CarId, string? SpecCode);
 record SoEditPenaltyDto(List<SoEditPenaltyRowDto>? Lines);
