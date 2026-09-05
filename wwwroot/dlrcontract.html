@@ -14,7 +14,7 @@
   .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Active{color:var(--ok)} .p-Cancelled{color:#dc2626}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-A{color:var(--ok)} .p-F{color:#2563eb} .p-C{color:#dc2626}
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ltbl td,#ltbl th{padding:4px 6px}
 </style></head>
 <body>
@@ -44,12 +44,13 @@
     <button onclick="updateQty()">Lưu SL</button><span id="quMsg"></span>
   </div>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Active">Hiệu lực</option><option value="Cancelled">Đã hủy</option></select><input id="q" placeholder="Lọc KH" oninput="load()" style="width:110px"></div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Mới tạo</option><option value="A">Xác nhận</option><option value="F">Hoàn thành</option><option value="C">Đã hủy</option></select><input id="q" placeholder="Lọc KH" oninput="load()" style="width:110px"></div>
 <table><thead><tr><th>Số HĐ</th><th>HĐ user</th><th>Đại lý</th><th>NVBH</th><th>KH</th><th>Ngày ký</th><th>Dòng</th><th class="num">Tổng (sau VAT)</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):""; const LBL={Active:"Hiệu lực",Cancelled:"Đã hủy"};
+const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):""; // Mã theo TConst.DlrCtrStatus1 (Dlr_Contract.DlrCtrStatus) — hằng RIÊNG của DMS40
+const LBL={P:"Mới tạo",A:"Xác nhận",C:"Đã hủy",F:"Hoàn thành"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -69,11 +70,17 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/dlrcontracts?status=${F("fst").value}&customer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Active"?`<button class="sm" onclick="cancel('${o.dlrContractNo}')">Hủy</button>`:"";
+    // Luồng nguồn: P → A (xác nhận) → F (hoàn thành); huỷ chỉ từ P. Xác nhận/huỷ ở nguồn làm THEO LÔ.
+    let act=o.status==="P"?`<button class="sm" onclick="batch('${o.dlrContractNo}','approve')">Xác nhận</button> <button class="sm" onclick="batch('${o.dlrContractNo}','cancel')">Hủy</button>`
+      :o.status==="A"?`<button class="sm" onclick="finish('${o.dlrContractNo}')">Hoàn thành</button>`:"";
     return `<tr><td><b>${o.dlrContractNo}</b> <a href="#" class="cars" onclick="lines('${o.dlrContractNo}');return false">xem dòng</a></td><td>${o.dlrContractNoUser}</td><td>${o.dealerCode||""}</td><td>${o.salesManCode}</td><td>${o.customerName}</td><td>${day(o.signDate)}</td><td>${o.lines}</td><td class="num">${money(o.total)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.dlrContractNo}"></tr>`;
   }).join("")||'<tr><td colspan="10" class="muted">Chưa có hợp đồng.</td></tr>';
 }
-async function cancel(no){ const r=await fetch(`/api/dlrcontracts/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+// Nguồn Dlr_Contract_ApproveMulti / _CancelMulti nhận DANH SÁCH số HĐ — ở đây gửi mảng 1 phần tử.
+async function batch(no,action){ const r=await fetch(`/api/dlrcontracts/${action}-multi`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({contractNos:[no]})});
+  const j=await r.json(); if(r.ok){ msg(`${no}: ${LBL[j.status]||j.status}`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
+async function finish(no){ const r=await fetch(`/api/dlrcontracts/${no}/finish`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function lines(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/dlrcontracts/${no}/lines`,{headers:H()})).json();

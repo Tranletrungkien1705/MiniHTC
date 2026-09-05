@@ -16586,6 +16586,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
         c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
+        c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
         total = db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id).Sum(l => (decimal?)l.TotalAmountAfterVAT) ?? 0
     }).ToListAsync();
@@ -16655,15 +16656,48 @@ app.MapPost("/api/dlrcontracts/{no}/update-qty", async (string no, DlrContractQt
     return Results.Ok(new { c.DlrContractNo, updated });
 }).RequireAuthorization();
 
-app.MapPost("/api/dlrcontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 XÁC NHẬN / HUỶ HỢP ĐỒNG BÁN LẺ — `Dlr_Contract_ApproveMulti` (BizHTC.Contract.cs:7215) và
+// `Dlr_Contract_CancelMulti` (7566). **Cả hai đều làm THEO LÔ**: nhận bảng `Dlr_Contract` nhiều dòng,
+// `foreach` theo `DlrContractNo`, guard **"P"** rồi ghi `ApproveDTime/By` hoặc `CancelDTime/By`.
+// ⚠️ Port cũ chỉ có `cancel` từng HĐ với trạng thái tự đặt Active→Cancelled: thiếu bước **xác nhận "A"**,
+// thiếu **theo lô**, và không lưu ai xác nhận/huỷ.
+// TWIN: hai hàm này **chỉ có ở `TERP.WSHTC.64`** (37294/37359).
+app.MapPost("/api/dlrcontracts/{action}-multi", async (string action, DlrContractBatchDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (action is not ("approve" or "cancel")) return Results.BadRequest(new { error = "action = approve | cancel" });
+    var nos = (dto.ContractNos ?? new()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim().ToUpperInvariant()).Distinct().ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn hợp đồng nào." });
+    var rows = await db.DlrContracts.Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
+    var missing = nos.Except(rows.Select(x => x.DlrContractNo)).ToList();
+    if (missing.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy hợp đồng: {string.Join(", ", missing)}" });
+    // Cả hai hàm nguồn đều guard `strDlrCtrStatusListToCheck = DlrCtrStatus1.Pending` ⇒ CHỈ từ "P".
+    var bad = rows.FirstOrDefault(x => x.Status != "P");
+    if (bad is not null)
+        return Results.BadRequest(new { error = $"HĐ {bad.DlrContractNo} đang ở trạng thái '{bad.Status}' — chỉ xử lý được HĐ mới tạo (P)." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    foreach (var c in rows)
+    {
+        if (action == "approve") { c.Status = "A"; c.ApproveDTime = now; c.ApproveBy = who; }
+        else { c.Status = "C"; c.CancelDTime = now; c.CancelBy = who; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { action, affected = rows.Count, status = rows[0].Status });
+}).RequireAuthorization();
+
+// Đánh dấu HOÀN THÀNH ("F") — trạng thái thứ tư của `DlrCtrStatus1`, đi kèm `FinishDTime`/`FinishBy`.
+// Nguồn chỉ cho HĐ đã xác nhận mới đi tiếp; port theo đúng thứ tự P → A → F.
+app.MapPost("/api/dlrcontracts/{no}/finish", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.Status != "Active") return Results.BadRequest(new { error = "HĐ không ở trạng thái hiệu lực." });
-    c.Status = "Cancelled";
+    if (c.Status != "A") return Results.BadRequest(new { error = "Chỉ hoàn thành được HĐ đã xác nhận (A)." });
+    c.Status = "F"; c.FinishDTime = DateTime.Now;
+    c.FinishBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrContractNo, status = c.Status });
+    return Results.Ok(new { c.DlrContractNo, status = c.Status, statusName = "Hoàn thành" });
 }).RequireAuthorization();
 
 // Hỗ trợ sửa HĐ đại lý theo lô (port 1:1 FrmSupportDlr_Contract_UpdateBankCode/UpdateSalesType/UpdateSMCode, ERP.V15.2025/Support).
@@ -21063,6 +21097,8 @@ record DlrPdiApproveDto(string? Remark);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
+// Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
+record DlrContractBatchDto(List<string>? ContractNos);
 record DlrContractQtyRowDto(string? ModelCode, string? SpecCode, string? ColorCode, int UpdateQty);
 record DlrContractQtyDto(List<DlrContractQtyRowDto>? Rows);
 record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);

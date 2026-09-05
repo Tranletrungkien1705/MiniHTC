@@ -845,6 +845,16 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // HĐ bán lẻ (Dlr_Contract): 4 trạng thái TConst.DlrCtrStatus1 + mốc xác nhận/huỷ/hoàn thành
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"ApproveDTime\" timestamp NULL",
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"ApproveBy\" text NULL",
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp NULL",
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text NULL",
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"FinishDTime\" timestamp NULL",
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"FinishBy\" text NULL",
+                // "Active" của port cũ không phân biệt được P với A ⇒ quy về "P" (mới tạo).
+                "UPDATE public.\"DlrContracts\" SET \"Status\" = 'P' WHERE \"Status\" = 'Active'",
+                "UPDATE public.\"DlrContracts\" SET \"Status\" = 'C' WHERE \"Status\" = 'Cancelled'",
                 // Lượt lái thử: nguồn ghi người/ngày duyệt cho cả nhánh duyệt lẫn từ chối
                 "ALTER TABLE public.\"DriveTests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
                 "ALTER TABLE public.\"DriveTests\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",

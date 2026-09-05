@@ -5470,8 +5470,25 @@ public sealed class DlrContract
     public DateTime SignDate { get; set; }         // ngày ký HĐ
     public DateTime ContractDate { get; set; } = DateTime.Now;
     public string? BankCode { get; set; }
-    public string Status { get; set; } = "Active"; // Active → Cancelled
+    /// <summary>
+    /// 🔴 Trạng thái HĐ bán lẻ (`Dlr_Contract.DlrCtrStatus`) theo `TConst.DlrCtrStatus1`
+    /// (`Const.Main.DMS40.cs:805-811`, chú thích nguồn ghi rõ *"Trạng thái hợp đồng bán lẻ"*):
+    /// **"P" Mới tạo · "A" Xác nhận · "C" Hủy · "F" Hoàn thành**.
+    /// ⚠️ Port cũ `Active → Cancelled` = **2 trạng thái tự đặt**, thiếu hẳn bước **xác nhận "A"**
+    /// và trạng thái kết thúc **"F"**; cũng không phân biệt "mới tạo" với "đã xác nhận".
+    /// ⚠️ `DlrCtrStatus1` là hằng RIÊNG của DMS40, không phải `TConst.Stage`.
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>Ngày/người XÁC NHẬN hợp đồng (`ApproveDTime`/`ApproveBy`) — nguồn `Dlr_Contract_ApproveMulti`.</summary>
+    public DateTime? ApproveDTime { get; set; }
+    public string? ApproveBy { get; set; }
+    /// <summary>Ngày/người HUỶ (`CancelDTime`/`CancelBy`) — nguồn `Dlr_Contract_CancelMulti`.</summary>
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    /// <summary>Ngày/người HOÀN THÀNH (`FinishDTime`/`FinishBy`) — đi kèm trạng thái "F".</summary>
+    public DateTime? FinishDTime { get; set; }
+    public string? FinishBy { get; set; }
 }
 public sealed class DlrContractDetail
 {
