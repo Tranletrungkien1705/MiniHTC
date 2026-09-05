@@ -5821,3 +5821,21 @@ public sealed class RoDeliveryDateHistory
     public string FlagCurrent { get; set; } = "1";      // "1" = bản mới nhất (KHÔNG được xoá), "0" = bản cũ
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// Truy vấn / liên kết hội viên Hyundai theo đại lý (FrmQuery_LoyaltyMember — TCMotor DMSCarSv/Services).
+/// Nguồn: LoyaltyService.Map_QueryDealer_Member_Create(dealerCode, memberNo, phone)
+/// + tra cứu Crd_Member bên Loyalty (WA_Crd_Member_Get) lọc theo MemberNo + PhoneNo + trạng thái "APPROVE".
+/// Mỗi lần truy vấn thành công ghi 1 bản ghi map Đại lý ↔ Hội viên.
+/// </summary>
+public sealed class DealerMemberQuery
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";        // đại lý thực hiện truy vấn
+    public string MemberNo { get; set; } = "";          // txtMemberNo — mã hội viên
+    public string PhoneNo { get; set; } = "";           // txtPhone — số điện thoại (chỉ chữ số)
+    public string? CardNo { get; set; }                 // cc_CardNo trả về từ Loyalty
+    public string MemberStatus { get; set; } = "APPROVE"; // nguồn chỉ tra hội viên đã APPROVE
+    public DateTime QueriedAt { get; set; } = DateTime.Now;
+}

@@ -821,6 +821,79 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Truy vấn hội viên Hyundai theo đại lý (port 1:1 FrmQuery_LoyaltyMember — TCMotor DMSCarSv/Services) =====
+// Nguồn: btnQuery_Click → LoyaltyService.Map_QueryDealer_Member_Create(dealerCode, memberNo, phone);
+// tra Crd_Member bên Loyalty (WA_Crd_Member_Get) lọc MemberNo + PhoneNo + trạng thái "APPROVE".
+app.MapPost("/api/loyalty/member-queries", async (
+    QueryLoyaltyMemberDto request,
+    AppDbContext database,
+    ITenantContext tenant) =>
+{
+    // LUẬT 1: mã hội viên bắt buộc.
+    if (string.IsNullOrWhiteSpace(request.MemberNo))
+        return Results.BadRequest(new { error = "Mã hội viên trống!" });
+
+    // LUẬT 2: số điện thoại bắt buộc.
+    if (string.IsNullOrWhiteSpace(request.PhoneNo))
+        return Results.BadRequest(new { error = "Số điện thoại trống!" });
+
+    // LUẬT 3: form gốc chặn tại txtPhone_KeyPress — ô điện thoại CHỈ nhận chữ số.
+    // API không có sự kiện gõ phím nên phải kiểm lại ở server, nếu không sẽ lọt dữ liệu bẩn.
+    var phoneNo = request.PhoneNo.Trim();
+    if (!phoneNo.All(char.IsDigit))
+        return Results.BadRequest(new { error = "Số điện thoại chỉ được nhập chữ số!" });
+
+    if (string.IsNullOrWhiteSpace(request.DealerCode))
+        return Results.BadRequest(new { error = "Cần mã đại lý (dealerCode)." });
+
+    var memberNo = request.MemberNo.Trim().ToUpperInvariant();
+    var dealerCode = request.DealerCode.Trim().ToUpperInvariant();
+
+    // Nguồn chỉ chấp nhận hội viên đã duyệt (BuidWhereClause(..., "APPROVE")).
+    // Bản fleet không nối được Loyalty thật nên đối chiếu dữ liệu hội viên cục bộ.
+    var memberExistsLocally = await database.MemberVouchers
+        .AnyAsync(voucher => voucher.OrgId == tenant.OrgId && voucher.MemberNo == memberNo);
+
+    // Ghi nhận map Đại lý ↔ Hội viên (Map_QueryDealer_Member_Create); truy vấn lại thì cập nhật bản cũ.
+    var existingQuery = await database.DealerMemberQueries.FirstOrDefaultAsync(query =>
+        query.OrgId == tenant.OrgId && query.DealerCode == dealerCode && query.MemberNo == memberNo);
+    if (existingQuery is null)
+    {
+        existingQuery = new DealerMemberQuery { OrgId = tenant.OrgId, DealerCode = dealerCode, MemberNo = memberNo };
+        database.DealerMemberQueries.Add(existingQuery);
+    }
+    existingQuery.PhoneNo = phoneNo;
+    existingQuery.CardNo = request.CardNo;
+    existingQuery.MemberStatus = "APPROVE";
+    existingQuery.QueriedAt = DateTime.Now;
+
+    await database.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        existingQuery.DealerCode,
+        existingQuery.MemberNo,
+        existingQuery.PhoneNo,
+        existingQuery.CardNo,
+        foundInLoyalty = memberExistsLocally,
+        message = "Truy vấn thành công!"   // đúng thông báo form gốc
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/loyalty/member-queries", async (
+    AppDbContext database, ITenantContext tenant, string? dealerCode, string? memberNo) =>
+{
+    var memberQueries = database.DealerMemberQueries.Where(query => query.OrgId == tenant.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        memberQueries = memberQueries.Where(query => query.DealerCode == dealerCode.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(memberNo))
+        memberQueries = memberQueries.Where(query => query.MemberNo == memberNo.Trim().ToUpperInvariant());
+
+    var items = await memberQueries.OrderByDescending(query => query.QueriedAt)
+        .Select(query => new { query.DealerCode, query.MemberNo, query.PhoneNo, query.CardNo, query.MemberStatus, query.QueriedAt })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // ===== Lịch sử thời gian GXDK / dự kiến giao xe (port 1:1 FrmHistoryGXDK — TCMotor DMSCarSv/Services) =====
 // Nguồn: Ser_Ro_PlanedDeliveryDate_HisGet / _HisDelete (bảng Ser_Ro_PlanedDeliveryDate_His).
 // Mỗi lần đổi ngày dự kiến giao → ghi 1 dòng lịch sử; dòng mới nhất mang FlagCurrent="1".
@@ -16410,6 +16483,17 @@ record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Stat
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
 
+
+/// <summary>
+/// Yêu cầu truy vấn / liên kết hội viên Hyundai theo đại lý (FrmQuery_LoyaltyMember).
+/// <paramref name="PhoneNo"/> phải là chuỗi CHỈ CHỨA CHỮ SỐ — form gốc chặn tại txtPhone_KeyPress.
+/// </summary>
+record QueryLoyaltyMemberDto(
+    string DealerCode,   // đại lý thực hiện truy vấn
+    string MemberNo,     // mã hội viên (bắt buộc)
+    string PhoneNo,      // số điện thoại (bắt buộc, chỉ chữ số)
+    string? CardNo       // số thẻ trả về từ Loyalty (cc_CardNo), nếu client đã tra được
+);
 
 // ----- Nhập phụ tùng nợ từ Excel (FrmImportSerPartOO) -----
 /// <summary>
