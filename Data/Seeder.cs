@@ -845,6 +845,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // HĐ đại lý DMS40: liên kết bản điều chỉnh → hợp đồng gốc (đường vào trạng thái "AJ")
+                "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DlrCtrNoParent\" text NULL",
                 // Biên bản huỷ HĐ đại lý DMS40: trạng thái BB + 2 trục ký (đại lý / HTC 2 cấp)
                 "ALTER TABLE public.\"DmsCancelMinutesSet\" ADD COLUMN IF NOT EXISTS \"CancelMinutesStatus\" text NOT NULL DEFAULT 'NS'",
                 "ALTER TABLE public.\"DmsCancelMinutesSet\" ADD COLUMN IF NOT EXISTS \"DlrSignCcMnStatus\" text NOT NULL DEFAULT 'P'",

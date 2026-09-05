@@ -4986,6 +4986,15 @@ public sealed class DmsDealerContract
     public DateTime? HTCAppr2DTime { get; set; }
     public string? BankCodeMD { get; set; }         // NH phát hành bảo lãnh MD — port FrmDMS40_SelectedBankMD
     public string FlagDlrCtrAdjust { get; set; } = "0"; // HĐ điều chỉnh
+    /// <summary>
+    /// 🔴 Số HỢP ĐỒNG GỐC mà bản này điều chỉnh (`DMS40_CT_DealerContract.DlrCtrNoParent`).
+    /// Nguồn `_DlrApproveAdjust` (0.34.Contract.cs:4410-4640) chạy **HAI câu update**:
+    /// · `on t.DlrCtrNo = f.DlrCtrNo` → HĐ **con** nhận `DlrSignStatus`/`DlrCtrStatus` mới;
+    /// · `on t.DlrCtrNo = f.**DlrCtrNoParent**` → HĐ **gốc** bị đánh **`DlrCtrStatus = "AJ"`** (Adjusted).
+    /// ⚠️ Không có cột này thì trạng thái **"AJ"** của `TConst.DlrCtrStatus` **không có đường vào** —
+    /// đúng khoảng trống mà lượt #83 đã ghi nợ.
+    /// </summary>
+    public string? DlrCtrNoParent { get; set; }
 }
 
 /// <summary>Công văn bảo lãnh/claim đại lý (GrtClaim + Detail) — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim (2010.HTC/Sales/GrtClaim). Công văn bảo lãnh lô xe theo đại lý + phép nhận.</summary>

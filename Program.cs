@@ -15489,7 +15489,7 @@ app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.DlrCtrStatus == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
     var items = await q.OrderByDescending(c => c.Id).Take(500)
-        .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime, c.BankCodeMD, c.FlagDlrCtrAdjust }).ToListAsync();
+        .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime, c.BankCodeMD, c.FlagDlrCtrAdjust, c.DlrCtrNoParent }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -15519,6 +15519,35 @@ app.MapPost("/api/dmsdealercontracts", async (DmsDealerContractDto dto, AppDbCon
     return Results.Ok(new { c.DlrCtrNo, c.DealerCode });
 }).RequireAuthorization();
 
+// 🔴 TẠO HỢP ĐỒNG ĐIỀU CHỈNH — `DMS40_CT_DealerContract_SaveAdjust_New20181115` (0.34.Contract.cs:2410).
+// Sinh một hợp đồng MỚI trỏ về hợp đồng gốc qua `DlrCtrNoParent`, cờ `FlagDlrCtrAdjust = "1"`,
+// hai trục ký quay lại "P" và trạng thái "NS". Hợp đồng gốc **chưa** đổi ở bước này —
+// nó chỉ thành **"AJ"** khi đại lý duyệt bản điều chỉnh.
+// ⚠️ Nguồn sinh số bằng `SequenceGetForDlrCtrNoAdjust_New20190523` (tách số gốc theo "/" rồi lấy
+//    sequence từ DB). MiniHTC chưa có bảng sequence ⇒ dùng quy ước `<số gốc>/ĐC<n>` — **đã ghi nợ**.
+app.MapPost("/api/dmsdealercontracts/{no}/adjust", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var parent = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (parent is null) return Results.NotFound(new { no });
+    if (parent.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ — không điều chỉnh được." });
+    if (parent.DlrCtrStatus == "AJ") return Results.BadRequest(new { error = "Hợp đồng đã có bản điều chỉnh." });
+    var seq = await db.DmsDealerContracts.CountAsync(x => x.OrgId == t.OrgId && x.DlrCtrNoParent == no) + 1;
+    var newNo = no + "/ĐC" + seq;
+    if (await db.DmsDealerContracts.AnyAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == newNo))
+        return Results.BadRequest(new { error = $"Số hợp đồng điều chỉnh {newNo} đã tồn tại!" });
+    var adj = new DmsDealerContract
+    {
+        OrgId = t.OrgId, DlrCtrNo = newNo, DlrCtrNoParent = parent.DlrCtrNo,
+        DealerCode = parent.DealerCode, ContractDate = DateTime.Now,
+        DlrSignStatus = "P", HTCSignStatus = "P", DlrCtrStatus = "NS",
+        FlagDlrCtrAdjust = "1", BankCodeMD = parent.BankCodeMD,
+    };
+    db.DmsDealerContracts.Add(adj);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { adj.DlrCtrNo, adj.DlrCtrNoParent, status = adj.DlrCtrStatus, adj.FlagDlrCtrAdjust });
+}).RequireAuthorization();
+
 // 🔴 ĐẠI LÝ (bên B) DUYỆT — `DMS40_CT_DealerContract_DlrApprove_New20190531` (0.34.Contract.cs:4069):
 // gán `DlrSignStatus = TConst.DlrSignStatus.**Approved** ("A")` — KHÔNG phải "S" như port cũ.
 app.MapPost("/api/dmsdealercontracts/{no}/dlr-approve", async (string no, AppDbContext db, ITenantContext t) =>
@@ -15529,8 +15558,16 @@ app.MapPost("/api/dmsdealercontracts/{no}/dlr-approve", async (string no, AppDbC
     if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
     if (c.DlrSignStatus != "P") return Results.BadRequest(new { error = $"Bên B đang ở trạng thái '{c.DlrSignStatus}' — chỉ duyệt khi đang chờ (P)." });
     c.DlrSignStatus = "A"; c.DlrApprDTime = DateTime.Now;
+    // 🔴 Nếu đây là BẢN ĐIỀU CHỈNH, nguồn `_DlrApproveAdjust` còn chạy câu update thứ hai
+    //    `on t.DlrCtrNo = f.DlrCtrNoParent` để đánh **HỢP ĐỒNG GỐC** thành "AJ" (Adjusted).
+    string? parentMarked = null;
+    if (!string.IsNullOrWhiteSpace(c.DlrCtrNoParent))
+    {
+        var parent = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == c.DlrCtrNoParent);
+        if (parent is not null) { parent.DlrCtrStatus = "AJ"; parentMarked = parent.DlrCtrNo; }
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.DlrCtrStatus });
+    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.DlrCtrStatus, parentAdjusted = parentMarked });
 }).RequireAuthorization();
 
 // 🔴 HTC (bên A) duyệt **HAI CẤP** — `_HTCApprove1Adjust` (5748) rồi `_HTCApprove2Adjust` (5870),

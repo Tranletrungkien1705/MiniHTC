@@ -67,13 +67,18 @@ async function load(){ await token();
       if(o.htcSignStatus==="P") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',1,false)">HTC duyệt C1</button> `;
       if(o.htcSignStatus==="A1") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',2,false)">HTC duyệt C2</button> `;
       if(o.htcSignStatus==="P"||o.htcSignStatus==="A1") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',0,true)">HTC từ chối</button> `;
-      act+=`<button class="sm" onclick="cancel('${o.dlrCtrNo}')">Hủy</button>`;
+      act+=`<button class="sm" onclick="cancel('${o.dlrCtrNo}')">Hủy</button> `;
+      // Tạo bản điều chỉnh — HĐ gốc chỉ thành "AJ" khi đại lý duyệt bản điều chỉnh đó.
+      if(!o.dlrCtrNoParent) act+=`<button class="sm" onclick="adjust('${o.dlrCtrNo}')">Điều chỉnh</button>`;
     }
-    return `<tr><td><b>${o.dlrCtrNo}</b></td><td>${o.dealerCode}</td><td>${day(o.contractDate)}</td><td><span class="sg s-${o.dlrSignStatus}">${SG[o.dlrSignStatus]}</span></td><td><span class="sg s-${o.htcSignStatus}">${SG[o.htcSignStatus]}</span></td><td>${o.bankCodeMD||"—"}${o.flagDlrCtrAdjust==="1"?" (điều chỉnh)":""}</td><td><span class="pill p-${o.dlrCtrStatus}">${LBL[o.dlrCtrStatus]||o.dlrCtrStatus}</span></td><td>${act}</td></tr>`;
+    return `<tr><td><b>${o.dlrCtrNo}</b>${o.dlrCtrNoParent?`<div class="muted">ĐC của ${o.dlrCtrNoParent}</div>`:""}</td><td>${o.dealerCode}</td><td>${day(o.contractDate)}</td><td><span class="sg s-${o.dlrSignStatus}">${SG[o.dlrSignStatus]}</span></td><td><span class="sg s-${o.htcSignStatus}">${SG[o.htcSignStatus]}</span></td><td>${o.bankCodeMD||"—"}${o.flagDlrCtrAdjust==="1"?" (điều chỉnh)":""}</td><td><span class="pill p-${o.dlrCtrStatus}">${LBL[o.dlrCtrStatus]||o.dlrCtrStatus}</span></td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Chưa có hợp đồng.</td></tr>';
 }
 async function dlrAppr(no){ const r=await fetch(`/api/dmsdealercontracts/${no}/dlr-approve`,{method:"POST",headers:H()});
-  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+  const j=await r.json(); if(r.ok){ if(j.parentAdjusted) msg(`Đã duyệt. HĐ gốc ${j.parentAdjusted} chuyển sang Đã điều chỉnh (AJ).`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
+async function adjust(no){ if(!confirm("Tạo hợp đồng điều chỉnh từ "+no+"?")) return;
+  const r=await fetch(`/api/dmsdealercontracts/${no}/adjust`,{method:"POST",headers:H()}); const j=await r.json();
+  if(r.ok){ msg(`Đã tạo bản điều chỉnh ${j.dlrCtrNo}.`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function htcAppr(no,level,reject){ const r=await fetch(`/api/dmsdealercontracts/${no}/htc-approve`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({level,reject})});
   const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function cancel(no){ const r=await fetch(`/api/dmsdealercontracts/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
