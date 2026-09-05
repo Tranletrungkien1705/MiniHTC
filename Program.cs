@@ -8704,7 +8704,8 @@ app.MapGet("/api/cartestcars", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TestCarCode.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.TestCarCode, x.DealerCode, x.Remark, x.CreatedAt, lines = db.CarTestCarDtls.Count(l => l.OrgId == t.OrgId && l.TestCarId == x.Id) }).ToListAsync();
+    { x.TestCarCode, x.DealerCode, x.Remark, x.CreatedAt, x.TestCarStatus, x.ApprovedAt, x.ApprovedBy, x.RejectReason,
+      lines = db.CarTestCarDtls.Count(l => l.OrgId == t.OrgId && l.TestCarId == x.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -8714,8 +8715,9 @@ app.MapGet("/api/cartestcars/{no}", async (string no, AppDbContext db, ITenantCo
     var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.CarTestCarDtls.Where(l => l.OrgId == t.OrgId && l.TestCarId == h.Id)
-        .Select(l => new { l.CarId, l.VIN, l.ModelCode, l.SpecCode, l.SpecDescription, l.SoDonHang, l.ColorCode, l.ColorName, l.EffDateStart, l.EffDateEnd, l.UnitPriceActual }).ToListAsync();
-    return Results.Ok(new { h.TestCarCode, h.DealerCode, h.Remark, h.CreatedAt, lines });
+        .Select(l => new { l.CarId, l.VIN, l.ModelCode, l.SpecCode, l.SpecDescription, l.SoDonHang, l.ColorCode, l.ColorName, l.EffDateStart, l.EffDateEnd, l.UnitPriceActual,
+            l.TestCarStatusDtl }).ToListAsync();
+    return Results.Ok(new { h.TestCarCode, h.DealerCode, h.Remark, h.CreatedAt, h.TestCarStatus, h.ApprovedAt, h.ApprovedBy, h.RejectReason, lines });
 }).RequireAuthorization();
 
 // Lưu đề nghị (khớp Car_TestCar_Save gốc: TestCarCode tự sinh nếu trống; đã tồn tại → thay toàn bộ dòng VIN, khớp hành vi "sửa đề nghị")
@@ -8730,16 +8732,65 @@ app.MapPost("/api/cartestcars", async (CarTestCarDto dto, AppDbContext db, ITena
     else { db.CarTestCarDtls.RemoveRange(db.CarTestCarDtls.Where(l => l.OrgId == t.OrgId && l.TestCarId == h.Id)); }
     h.DealerCode = dto.DealerCode; h.Remark = dto.Remark;
 
+    // 🔴 LUẬT CHỐNG ĐĂNG KÝ TRÙNG XE (nguồn: mycheck_Car_TestCar_CarId, BizHTC.Car.cs:4942-5008):
+    // một CarId KHÔNG được nằm ở >1 đề nghị có trạng thái DÒNG thuộc ('P','A').
+    var carIds = lines.Select(x => (x.CarId ?? "").Trim()).Where(x => x.Length > 0).ToList();
+    if (carIds.Count > 0)
+    {
+        var clash = await db.CarTestCarDtls
+            .Where(x => x.OrgId == t.OrgId && x.TestCarId != h.Id
+                        && carIds.Contains(x.CarId)
+                        && (x.TestCarStatusDtl == "P" || x.TestCarStatusDtl == "A"))
+            .Select(x => x.CarId).FirstOrDefaultAsync();
+        if (clash != null)
+            return Results.BadRequest(new { error = $"Xe {clash} đã nằm trong một đề nghị xe lái thử khác đang chờ duyệt hoặc đã duyệt." });
+    }
+
     foreach (var l in lines)
         db.CarTestCarDtls.Add(new CarTestCarDtl
         {
             OrgId = t.OrgId, TestCarId = h.Id, CarId = l.CarId ?? "", VIN = (l.Vin ?? "").Trim().ToUpperInvariant(), ModelCode = l.ModelCode,
             SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, SoDonHang = l.SoDonHang, ColorCode = l.ColorCode, ColorName = l.ColorName,
-            EffDateStart = l.EffDateStart, EffDateEnd = l.EffDateEnd, UnitPriceActual = l.UnitPriceActual
+            EffDateStart = l.EffDateStart, EffDateEnd = l.EffDateEnd, UnitPriceActual = l.UnitPriceActual,
+            TestCarStatusDtl = "P",
         });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.TestCarCode, lines = lines.Count });
 }).RequireAuthorization();
+
+// 🔴 DUYỆT / TỪ CHỐI đề nghị xe lái thử — port cũ (bộ CarTestCar) KHÔNG có vòng đời duyệt nào.
+app.MapPost("/api/cartestcars/{no}/action", async (
+    string no, string action, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? reason) =>
+{
+    no = no.Trim();
+    var act = (action ?? "").Trim().ToLowerInvariant();
+    if (act != "approve" && act != "reject") return Results.BadRequest(new { error = "action = approve|reject" });
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.TestCarStatus != "P")
+        return Results.BadRequest(new { error = $"Đề nghị đang '{h.TestCarStatus}', chỉ xử lý khi 'P'." });
+    if (act == "reject" && string.IsNullOrWhiteSpace(reason))
+        return Results.BadRequest(new { error = "Từ chối phải ghi lý do." });
+
+    var target = act == "approve" ? "A" : "R";
+    h.TestCarStatus = target;
+    h.ApprovedAt = DateTime.Now; h.ApprovedBy = user.Identity?.Name ?? "system";
+    if (act == "reject") h.RejectReason = reason!.Trim();
+    foreach (var l in await db.CarTestCarDtls.Where(x => x.OrgId == t.OrgId && x.TestCarId == h.Id).ToListAsync())
+        l.TestCarStatusDtl = target;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.TestCarCode, status = h.TestCarStatus, h.ApprovedAt, h.RejectReason });
+}).RequireAuthorization();
+
+app.MapGet("/api/cartestcars/statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ duyệt" },
+        new { code = "A", name = "Đã duyệt" },
+        new { code = "R", name = "Từ chối" } },
+    note = "Một xe (CarId) chỉ được nằm trong ĐÚNG MỘT đề nghị đang ở 'P' hoặc 'A'.",
+})).RequireAuthorization();
 
 // Xóa đề nghị (khớp Car_TestCar_Save với flagIsDelete=1 gốc)
 app.MapDelete("/api/cartestcars/{no}", async (string no, AppDbContext db, ITenantContext t) =>
@@ -15448,57 +15499,31 @@ app.MapPost("/api/devicecars", async (List<DeviceCarDto> dto, AppDbContext db, I
 }).RequireAuthorization();
 
 // ===== Đăng ký xe trưng bày/test (TestCarRegister — port 1:1 FrmMngRegister_TestCar, 2010.HTC/Sales) =====
-app.MapGet("/api/testcarregisters", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+// ⛔ HỢP NHẤT THỰC THỂ SONG TRÙNG (ca thứ 5, #58): khối này trước đây ghi vào bộ
+// `TestCarRegister`/`TestCarRegisterCar` RIÊNG, trong khi `/api/cartestcars` ghi vào
+// `CarTestCar`/`CarTestCarDtl` — **cùng bảng nguồn `Car_TestCar`/`Car_TestCarDtl`**.
+// Nay trỏ chung một bảng; xem thêm `POST /api/cartestcars/{no}/action`.
+app.MapGet("/api/testcarregs", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
 {
-    var q = db.TestCarRegisters.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
-    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
-    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    var qy = db.CarTestCars.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(r => r.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(r => r.TestCarStatus == status);
+    var items = await qy.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.TestCarCode, r.DealerCode, r.Status, r.CreatedAt, r.ApprovedAt, r.RejectReason,
-        cars = db.TestCarRegisterCars.Count(c => c.OrgId == t.OrgId && c.TestCarRegisterId == r.Id)
+        r.TestCarCode, r.DealerCode, status = r.TestCarStatus, r.CreatedAt, r.ApprovedAt, r.RejectReason,
+        cars = db.CarTestCarDtls.Count(c => c.OrgId == t.OrgId && c.TestCarId == r.Id),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/testcarregisters", async (TestCarRegisterDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/testcarregs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
-    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
-    var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var no = "TC" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new TestCarRegister { OrgId = t.OrgId, TestCarCode = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
-    db.TestCarRegisters.Add(r); await db.SaveChangesAsync();
-    foreach (var c in cars)
-        db.TestCarRegisterCars.Add(new TestCarRegisterCar { OrgId = t.OrgId, TestCarRegisterId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, StatusDtl = "P" });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { r.TestCarCode, cars = cars.Count });
-}).RequireAuthorization();
-
-app.MapGet("/api/testcarregisters/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var r = await db.TestCarRegisters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
-    if (r is null) return Results.NotFound(new { no });
-    var cars = await db.TestCarRegisterCars.Where(c => c.OrgId == t.OrgId && c.TestCarRegisterId == r.Id)
-        .Select(c => new { c.VIN, c.ModelCode, c.StatusDtl }).ToListAsync();
-    return Results.Ok(new { r.TestCarCode, r.Status, count = cars.Count, cars });
-}).RequireAuthorization();
-
-app.MapPost("/api/testcarregisters/{no}/{action}", async (string no, string action, SoRejectDto? dto, AppDbContext db, ITenantContext t) =>
-{
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
-    no = no.Trim().ToUpperInvariant();
-    var r = await db.TestCarRegisters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
-    if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối đơn Nháp." });
-    var cars = await db.TestCarRegisterCars.Where(c => c.OrgId == t.OrgId && c.TestCarRegisterId == r.Id).ToListAsync();
-    if (action == "approve") { r.Status = "Approved"; r.ApprovedAt = DateTime.Now; foreach (var c in cars) c.StatusDtl = "A"; }
-    else { r.Status = "Rejected"; r.RejectReason = dto?.Reason; foreach (var c in cars) c.StatusDtl = "R"; }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { r.TestCarCode, status = r.Status });
+    no = no.Trim();
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.CarTestCarDtls.Where(c => c.OrgId == t.OrgId && c.TestCarId == h.Id)
+        .Select(c => new { c.CarId, vin = c.VIN, c.ModelCode, statusDtl = c.TestCarStatusDtl }).ToListAsync();
+    return Results.Ok(new { h.TestCarCode, status = h.TestCarStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
 // ===== Đổi màu xe (CarColorChange — port 1:1 FrmChange_CarColor, 2010.HTC/Sales) =====

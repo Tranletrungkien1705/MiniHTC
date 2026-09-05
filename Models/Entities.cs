@@ -2712,6 +2712,16 @@ public sealed class CarTestCar
     public string TestCarCode { get; set; } = "";
     public string? DealerCode { get; set; }
     public string? Remark { get; set; }
+
+    /// <summary>
+    /// 🔴 Trạng thái đề nghị (`Car_TestCar.TestCarStatus`, `TConst.Stage`): "P" chờ duyệt → "A" đã duyệt · "R" từ chối.
+    /// Port cũ (bộ này) **KHÔNG có trạng thái nào** — chỉ lưu được dữ liệu, không có vòng đời duyệt.
+    /// </summary>
+    public string TestCarStatus { get; set; } = "P";
+    public DateTime? ApprovedAt { get; set; }
+    public string? ApprovedBy { get; set; }
+    public string? RejectReason { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -2729,6 +2739,15 @@ public sealed class CarTestCarDtl
     public string? SoDonHang { get; set; }
     public string? ColorCode { get; set; }
     public string? ColorName { get; set; }
+
+    /// <summary>
+    /// 🔴 Trạng thái RIÊNG của DÒNG xe (`Car_TestCarDtl.TestCarStatusDtl`): "P" · "A" · "R".
+    /// ⚠️ Chính cột này là căn cứ của luật CHỐNG ĐĂNG KÝ TRÙNG XE:
+    /// nguồn đếm số đề nghị chứa cùng `CarId` **có trạng thái dòng thuộc ('P','A')**;
+    /// &gt; 1 ⇒ **báo lỗi** (`BizHTC.Car.cs:4942-5008`, hàm `mycheck_Car_TestCar_CarId`).
+    /// </summary>
+    public string TestCarStatusDtl { get; set; } = "P";
+
     public DateTime? EffDateStart { get; set; }
     public DateTime? EffDateEnd { get; set; }
     public decimal UnitPriceActual { get; set; }
@@ -4913,7 +4932,12 @@ public sealed class DeviceCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Đăng ký xe trưng bày/test (Car_TestCar + Dtl) — port 1:1 FrmMngRegister_TestCar (2010.HTC/Sales). Đại lý đăng ký lô xe làm xe trưng bày, có duyệt.</summary>
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (ca thứ 5, phát hiện #58 bằng sweep tên bảng nguồn).
+/// `TestCarRegister`/`TestCarRegisterCar` và <see cref="CarTestCar"/>/<see cref="CarTestCarDtl"/>
+/// **cùng map một bảng nguồn `Car_TestCar`/`Car_TestCarDtl`**.
+/// Endpoint `/api/testcarregs` đã trỏ sang <see cref="CarTestCar"/>. Giữ lớp này để đọc dữ liệu cũ, **KHÔNG ghi mới**.
+/// </summary>
 public sealed class TestCarRegister
 {
     public long Id { get; set; }

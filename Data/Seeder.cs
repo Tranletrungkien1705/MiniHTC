@@ -831,6 +831,12 @@ public static class Seeder
                 "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"RedeemDate\" timestamp NULL",
                 "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
                 "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                // Xe lái thử: vòng đời duyệt + trạng thái theo DÒNG (Car_TestCar / Car_TestCarDtl)
+                "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"TestCarStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"ApprovedAt\" timestamp NULL",
+                "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"RejectReason\" text NULL",
+                "ALTER TABLE public.\"CarTestCarDtls\" ADD COLUMN IF NOT EXISTS \"TestCarStatusDtl\" text NOT NULL DEFAULT 'P'",
                 // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
                 "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
                 "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",
