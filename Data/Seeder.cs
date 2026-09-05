@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Đề nghị hồ sơ xe: huỷ cả đề nghị (CancelDate/By, CreatedBy) + duyệt TCG ghi cả 4 cột
+                "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"CancelDate\" timestamp NULL",
+                "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text NULL",
+                "ALTER TABLE public.\"DocReqCars\" ADD COLUMN IF NOT EXISTS \"ApprovedDate1\" timestamp NULL",
+                "ALTER TABLE public.\"DocReqCars\" ADD COLUMN IF NOT EXISTS \"ApprovedBy1\" text NULL",
                 // Đề nghị làm hồ sơ xe: bổ sung cột nguồn (2 tầng trạng thái) + chuyển tên tự đặt sang mã
                 "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"TypeCRR\" text NOT NULL DEFAULT 'NORMAL'",
                 "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedDate1\" timestamp NULL",

@@ -56,14 +56,19 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/docreqs?status=${F("fst").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    // Chỉ duyệt cấp 1 là hành động ở HEADER. Duyệt cấp 2 / từ chối / huỷ nằm ở TỪNG XE (bảng "xem xe").
-    let act=o.status==="P"?`<button class="sm" onclick="ap1('${o.docReqNo}')">Duyệt C1</button>`:"";
+    // Ở HEADER chỉ có Duyệt C1 và Huỷ cả đề nghị (đều chỉ từ "P").
+    // Duyệt C2 / từ chối / huỷ từng xe nằm ở bảng "xem xe" — nguồn thao tác theo TỪNG XE.
+    let act=o.status==="P"?`<button class="sm" onclick="ap1('${o.docReqNo}')">Duyệt C1</button> <button class="sm" onclick="cancelReq('${o.docReqNo}')">Huỷ đề nghị</button>`:"";
     return `<tr><td><b>${o.docReqNo}</b> <a href="#" class="cars" onclick="cars('${o.docReqNo}');return false">xem xe</a></td><td>${o.dealerCode}</td><td>${o.cars}</td>
       <td>${money(o.total)}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.docReqNo}"></tr>`;
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có hồ sơ.</td></tr>';
 }
 async function ap1(no){ const r=await fetch(`/api/docreqs/${no}/approve1`,{method:"POST",headers:H()}); const j=await r.json();
   if(r.ok){ msg(j.oneStep?"Đề nghị loại thường — đã duyệt thẳng lên cấp 2.":"Đã duyệt cấp 1."); load(); } else msg("Lỗi: "+(j.error||r.status)); }
+// Huỷ CẢ đề nghị (nguồn: CarDocReqListCancel) — lan trạng thái "C" xuống mọi xe trong đề nghị.
+async function cancelReq(no){ const rm=prompt("Lý do huỷ cả đề nghị:",""); if(rm===null) return;
+  const r=await fetch(`/api/docreqs/${no}/cancel`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({remark:rm})});
+  const j=await r.json(); if(r.ok){ msg(`Đã huỷ đề nghị, ${j.carsCancelled} xe.`+(j.mailQueued?" Đã xếp hàng email thông báo.":"")); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 // Hành động theo TỪNG XE (nguồn: CarDocReqDtlApprove2 / Reject / Cancel).
 async function carAct(no,vin,action){ let rm=null;
   if(action!=="approve2"){ rm=prompt(action==="reject"?"Lý do từ chối:":"Lý do huỷ:",""); if(rm===null) return; }

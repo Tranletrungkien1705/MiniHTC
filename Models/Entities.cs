@@ -4184,6 +4184,16 @@ public sealed class DocReq
     public string? ApprovedBy1 { get; set; }
     public DateTime? ApprovedDate2 { get; set; }
     public string? ApprovedBy2 { get; set; }
+    /// <summary>
+    /// Người TẠO đề nghị (`Car_DocReqList.CreatedBy`) — không chỉ để hiển thị: khi huỷ đề nghị, nguồn
+    /// lấy đại lý **của người tạo** rồi mới kiểm quyền truy cập (`CarDocReqListCancel`, Biz.HTC.WH.cs:84977-84996):
+    /// *"Đại lý được Hủy đề nghị do Đại lý tạo ra. Không được hủy đề nghị do HTC tạo hộ"*.
+    /// </summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>Ngày huỷ đề nghị (`Car_DocReqList.CancelDate`).</summary>
+    public DateTime? CancelDate { get; set; }
+    /// <summary>Người huỷ đề nghị (`Car_DocReqList.CancelBy`).</summary>
+    public string? CancelBy { get; set; }
 }
 
 /// <summary>Dòng xe làm hồ sơ (Car_DocReqDtl): VIN + model + màu + số máy + tiền.</summary>
@@ -4204,6 +4214,10 @@ public sealed class DocReqCar
     /// huỷ từ **"A1" hoặc "A2"**.
     /// </summary>
     public string DRDtlStatus { get; set; } = "P";
+    /// <summary>Ngày/người duyệt cấp 1 của DÒNG — chỉ luồng **TCG** dùng: `CarDocReqTCGDtlApprove2`
+    /// ghi CẢ BỐN cột duyệt cùng lúc vì duyệt một lần là qua cả hai cấp.</summary>
+    public DateTime? ApprovedDate1 { get; set; }
+    public string? ApprovedBy1 { get; set; }
     public DateTime? ApprovedDate2 { get; set; }
     public string? ApprovedBy2 { get; set; }
     public DateTime? RejectDate { get; set; }

@@ -2020,7 +2020,7 @@ app.MapGet("/api/docreqs", async (AppDbContext db, ITenantContext t, string? sta
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
     var vins = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
@@ -2033,7 +2033,7 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
     var typeCRR = (dto.TypeCRR ?? "NORMAL").Trim().ToUpperInvariant();
     if (typeCRR is not ("NORMAL" or "SPECIAL" or "DEALER" or "DEALERTCG"))
         return Results.BadRequest(new { error = "TypeCRR = NORMAL | SPECIAL | DEALER | DEALERTCG." });
-    var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P" };
+    var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.DocReqs.Add(d); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal });
@@ -2047,8 +2047,8 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
-    return Results.Ok(new { d.DocReqNo, d.Status, d.TypeCRR, d.ApprovedBy1, d.ApprovedBy2, count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
+    return Results.Ok(new { d.DocReqNo, d.Status, d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy, count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
 }).RequireAuthorization();
 
 // Sửa hàng loạt ngày/số tờ trình + số ngày hỗ trợ vay vốn theo VIN (port 1:1 FrmUpdateDocReq, 2010.HTC/Sales)
@@ -2095,6 +2095,67 @@ app.MapPost("/api/docreqs/{no}/approve1", async (string no, AppDbContext db, ITe
     return Results.Ok(new { d.DocReqNo, status = d.Status, d.TypeCRR, oneStep = d.Status == "A2" });
 }).RequireAuthorization();
 
+// 🔴 HUỶ CẢ ĐỀ NGHỊ — `CarDocReqListCancel_New20181119` (Biz.HTC.WH.cs:84912-85170).
+// Khác hẳn huỷ từng xe: chỉ vào từ **"P"** (đề nghị chưa duyệt), và **lan trạng thái "C" xuống MỌI dòng**.
+app.MapPost("/api/docreqs/{no}/cancel", async (string no, DocReqCarActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
+    if (d is null) return Results.NotFound(new { no });
+    if (d.Status != "P") return Results.BadRequest(new { error = "Chỉ huỷ được đề nghị đang chờ duyệt (P)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    // 🔴 RBAC theo NGƯỜI TẠO, không theo đại lý ghi trên đề nghị: nguồn lấy `CreatedBy` → đại lý của
+    //    người đó → `myCommon_CheckAccessDealerData(BUPattern, BUCode)`. Nguyên văn comment nguồn:
+    //    "Đại lý được Hủy đề nghị do Đại lý tạo ra. Không được hủy đề nghị do HTC tạo hộ".
+    //    ⚠️ MiniHTC chưa có tầng BUPattern/ability ⇒ tạm kiểm bằng chính người tạo; đã ghi nợ RBAC.
+    if (!string.IsNullOrWhiteSpace(d.CreatedBy) && !string.Equals(d.CreatedBy, who, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = $"Đề nghị do '{d.CreatedBy}' tạo — bạn không huỷ được đề nghị người khác tạo hộ." });
+
+    var cars = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && x.DocReqId == d.Id).ToListAsync();
+    var vins = cars.Select(x => x.Vin).ToList();
+
+    // Huỷ đề nghị NORMAL thì phải huỷ đề nghị SPECIAL của cùng xe TRƯỚC (nguồn kiểm từng VIN).
+    if (string.Equals(d.TypeCRR, "NORMAL", StringComparison.OrdinalIgnoreCase))
+    {
+        var specialIds = db.DocReqs.Where(x => x.OrgId == t.OrgId && x.TypeCRR == "SPECIAL" && x.Id != d.Id).Select(x => x.Id);
+        var blocked = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && vins.Contains(x.Vin) && specialIds.Contains(x.DocReqId))
+            .Select(x => x.Vin).FirstOrDefaultAsync();
+        if (blocked != null)
+            return Results.BadRequest(new { error = $"Xe {blocked} còn đề nghị loại đặc biệt — phải huỷ đề nghị đặc biệt trước." });
+    }
+    // Guard hạ nguồn: đề nghị giải chấp (ReqDMNo) và đề nghị hoá đơn (ReqIVNo).
+    var dm = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN!)).Select(x => x.VIN).FirstOrDefaultAsync();
+    if (dm != null) return Results.BadRequest(new { error = $"Xe {dm} đã có đề nghị giải chấp — không huỷ được đề nghị hồ sơ." });
+    var iv = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN!)).Select(x => x.VIN).FirstOrDefaultAsync();
+    if (iv != null) return Results.BadRequest(new { error = $"Xe {iv} đã có đề nghị hoá đơn — không huỷ được đề nghị hồ sơ." });
+
+    var now = DateTime.Now;
+    d.Status = "C"; d.CancelDate = now; d.CancelBy = who;
+    // Nguồn lan xuống MỌI dòng bằng một câu update (không lọc theo trạng thái dòng).
+    foreach (var c in cars) c.DRDtlStatus = "C";
+
+    // Nguồn gửi email thông báo khi đề nghị do ĐẠI LÝ tạo (`TypeCRR == DEALER`) — nhánh dễ bị bỏ sót.
+    var mailed = false;
+    if (string.Equals(d.TypeCRR, "DEALER", StringComparison.OrdinalIgnoreCase))
+    {
+        db.EmailSends.Add(new EmailSend
+        {
+            OrgId = t.OrgId,
+            BatchNo = "DRCANCEL" + now.ToString("yyMMddHHmmss"),
+            Email = "",
+            EmailType = "DOCREQ_CANCEL",
+            Subject = $"Huỷ đề nghị giấy tờ {d.DocReqNo}",
+            Body = $"Đề nghị {d.DocReqNo} (đại lý {d.DealerCode}, {cars.Count} xe) đã bị huỷ bởi {who}." + (dto?.Remark is null ? "" : $" Lý do: {dto.Remark}"),
+            DealerCode = d.DealerCode,
+            Status = "0",   // hàng đợi — đúng cờ nguồn, chưa gửi
+        });
+        mailed = true;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DocReqNo, status = d.Status, statusName = "Huỷ", carsCancelled = cars.Count, mailQueued = mailed });
+}).RequireAuthorization();
+
 // 🔴 DUYỆT CẤP 2 / TỪ CHỐI / HUỶ — nguồn thao tác theo **TỪNG XE**, không theo cả đề nghị:
 //    `CarDocReqDtlApprove2_New20181119` (82492) · `CarDocReqDtlReject_New20181119` (83426) ·
 //    `CarDocReqDtlCancel_New20210223` (82986).
@@ -2114,6 +2175,19 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
 
     if (action == "approve2")
     {
+        // 🔴 Luồng TCG dùng hàm RIÊNG `CarDocReqTCGDtlApprove2_New20181119` (Biz.HTC.WH.cs:82847-82931):
+        //    vào từ **"P"** (không phải "A1") rồi lên thẳng "A2", và ghi **CẢ BỐN** cột duyệt cùng lúc —
+        //    duyệt một lần là qua cả hai cấp.
+        //    ⚠️ Nợ cấu trúc: nguồn để luồng TCG ở **bảng RIÊNG** `Car_DocReqTCGList`/`Car_DocReqTCGDtl`
+        //    (cột trạng thái `DRTCGDtlStatus`), MiniHTC đang gộp chung và phân biệt bằng `TypeCRR`.
+        if (string.Equals(d.TypeCRR, "DEALERTCG", StringComparison.OrdinalIgnoreCase))
+        {
+            if (c.DRDtlStatus != "P") return Results.BadRequest(new { error = $"Xe {vin} (luồng TCG) phải đang chờ duyệt (P)." });
+            c.DRDtlStatus = "A2";
+            c.ApprovedDate1 = now; c.ApprovedBy1 = who; c.ApprovedDate2 = now; c.ApprovedBy2 = who;
+            await db.SaveChangesAsync();
+            return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Duyệt cấp 2 (TCG, một bước)" });
+        }
         // Nguồn: `strRequestStatusListToCheck = Stage.Approved1` ⇒ CHỈ từ "A1".
         if (c.DRDtlStatus != "A1") return Results.BadRequest(new { error = $"Xe {vin} phải ở trạng thái duyệt cấp 1 (A1)." });
         c.DRDtlStatus = "A2"; c.ApprovedDate2 = now; c.ApprovedBy2 = who;
