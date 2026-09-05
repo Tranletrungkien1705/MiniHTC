@@ -1846,8 +1846,16 @@ public sealed class RedeemInvoiceRequest
     public string? DealerCode { get; set; }
     public string? Note { get; set; }
     public int VinCount { get; set; }
-    public string Status { get; set; } = "Created";
+
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG mã nguồn (`RD_ReqInvoice.ReqIVStatus`, `TConst.Stage`): "P" → "A" · "R".
+    /// ⚠️ Header là **GIÁ TRỊ DẪN XUẤT** — chỉ "A" khi mọi dòng đã duyệt (giống đề nghị giải chấp #55).
+    /// Đọc dữ liệu cũ: Created→"P", Approved→"A", Rejected→"R".
+    /// </summary>
+    public string Status { get; set; } = "P";
     public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -1859,7 +1867,30 @@ public sealed class RedeemInvoiceRequestLine
     public long RequestId { get; set; }
     public string? VIN { get; set; }
     public string? CarId { get; set; }
+    /// <summary>`TypeRDReqIv` — nơi nhận hồ sơ: DEALER đại lý · BANKBL ngân hàng bảo lãnh · BANKLC ngân hàng LC.</summary>
     public string ReqType { get; set; } = "DEALER";
+
+    /// <summary>
+    /// 🔴 Trạng thái RIÊNG của DÒNG (`RDReqIvDtlStatus`) — **nơi thao tác duyệt thực sự xảy ra**.
+    /// Nguồn tạo ở "P", duyệt từng dòng thành "A"; header chỉ chuyển "A" khi **hết dòng "P"**
+    /// (comment nguyên văn của nguồn: *"Nếu Dtl đã được duyệt hết thì chuyển trạng thái Mng"*,
+    /// `Biz.HTC.WH.cs:128126-128142`).
+    /// </summary>
+    public string RDReqIvDtlStatus { get; set; } = "P";
+
+    public string? DealerCode { get; set; }
+    /// <summary>Ngân hàng đang nhận thế chấp (`MortageBankCode`).
+    /// ⚠️ KHÁC đề nghị giải chấp (#55): ở nghiệp vụ giao hồ sơ này nguồn **KHÔNG** ghi đè thành "HTC.HO" khi duyệt.</summary>
+    public string? MortageBankCode { get; set; }
+
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public string? Remark { get; set; }
+
+    // Thông tin hoá đơn mang từ bộ thực thể song trùng cũ sang, để không mất khả năng đã có.
+    public string? HTCInvoiceNo { get; set; }
+    public string? InvoiceNoFactory { get; set; }
+    public string? TCGInvoiceNo { get; set; }
 }
 
 /// <summary>NVBH đại lý + duyệt BĐH (Mst_DlSalesMan) — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC (2010.HTC/SalesDealer). Đại lý đăng ký NVBH → HTC/BĐH duyệt. 2 trạng thái: SMStatus (thử việc/chính thức/nghỉ/CTV) + BDHStatus (duyệt). KHÁC master SalesMan đơn giản. Upsert-by-SMCode.</summary>
@@ -4565,7 +4596,12 @@ public sealed class StoragePdiVin
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Đề nghị giao hồ sơ (RD_ReqInvoice + Dtl) — port 1:1 FrmNewRDInvoice (2010.HTC/Sales/Redeem). Đề nghị giao hồ sơ/hóa đơn cho lô VIN.</summary>
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (ca thứ 3, phát hiện #56 bằng sweep tên bảng nguồn).
+/// `ReqInvoice`/`ReqInvoiceDtl` và <see cref="RedeemInvoiceRequest"/>/<see cref="RedeemInvoiceRequestLine"/>
+/// **cùng map một bảng nguồn `RD_ReqInvoice`/`RD_ReqInvoiceDtl`** (grep `SaveData("RD_ReqInvoice"` — nguồn chỉ có 1 bảng).
+/// Endpoint `/api/reqinvoices` đã trỏ sang <see cref="RedeemInvoiceRequest"/>. Giữ lớp này để đọc dữ liệu cũ, **KHÔNG ghi mới**.
+/// </summary>
 public sealed class ReqInvoice
 {
     public long Id { get; set; }

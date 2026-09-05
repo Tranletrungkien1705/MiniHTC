@@ -811,6 +811,22 @@ public static class Seeder
                 "ALTER TABLE public.\"RedeemRequestLines\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
                 "ALTER TABLE public.\"RedeemRequestLines\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"RedeemRequestLines\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                // Đề nghị giao hồ sơ: mã trạng thái đúng nguồn + trạng thái theo DÒNG (RD_ReqInvoice)
+                "ALTER TABLE public.\"RedeemInvoiceRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"RDReqIvDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"MortageBankCode\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"HTCInvoiceNo\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"InvoiceNoFactory\" text NULL",
+                "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"TCGInvoiceNo\" text NULL",
+                // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
+                "UPDATE public.\"RedeemInvoiceRequests\" SET \"Status\" = 'P' WHERE \"Status\" = 'Created'",
+                "UPDATE public.\"RedeemInvoiceRequests\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",
+                "UPDATE public.\"RedeemInvoiceRequests\" SET \"Status\" = 'R' WHERE \"Status\" = 'Rejected'",
                 // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
                 "UPDATE public.\"RedeemRequests\" SET \"Status\" = 'P' WHERE \"Status\" = 'Created'",
                 "UPDATE public.\"RedeemRequests\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",

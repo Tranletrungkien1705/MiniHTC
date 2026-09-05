@@ -7095,7 +7095,7 @@ app.MapGet("/api/redeeminvoicerequests", async (AppDbContext db, ITenantContext 
     var qry = db.RedeemInvoiceRequests.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqRDInvoiceNo.Contains(q!) || x.DealerCode!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRDInvoiceNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRDInvoiceNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedDate, x.ApprovedBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -7104,7 +7104,7 @@ app.MapGet("/api/redeeminvoicerequests/{id}", async (long id, AppDbContext db, I
     var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.ReqType }).ToListAsync();
-    return Results.Ok(new { header = new { h.Id, h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt }, lines });
+    return Results.Ok(new { header = new { h.Id, h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt, h.ApprovedDate, h.ApprovedBy }, lines });
 }).RequireAuthorization();
 
 app.MapPost("/api/redeeminvoicerequests", async (RedeemInvoiceRequestDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
@@ -7136,10 +7136,13 @@ app.MapPost("/api/redeeminvoicerequests/{id}/{action}", async (long id, string a
 {
     var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var target = action.ToLowerInvariant() switch { "approve" => "Approved", "reject" => "Rejected", _ => "" };
+    var target = action.ToLowerInvariant() switch { "approve" => "A", "reject" => "R", _ => "" };
     if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (approve/reject)." });
-    if (h.Status != "Created") return Results.BadRequest(new { error = $"Đề nghị đang '{h.Status}', chỉ xử lý khi 'Created'." });
-    h.Status = target;
+    if (h.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang '{h.Status}', chỉ xử lý khi 'P' (chờ duyệt)." });
+    // ⚠️ Lối tắt của bản port: nguồn duyệt TỪNG DÒNG rồi suy ra header — xem /api/reqinvoices/{no}/approve-vin.
+    h.Status = target; h.ApprovedDate = DateTime.Now;
+    var allLines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == h.Id).ToListAsync();
+    foreach (var ln in allLines) { ln.RDReqIvDtlStatus = target; ln.ApprovedDate = DateTime.Now; }
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.Status });
 }).RequireAuthorization();
@@ -14668,53 +14671,103 @@ app.MapPost("/api/storagepdivins", async (List<StoragePdiVinDto> dto, AppDbConte
 }).RequireAuthorization();
 
 // ===== Đề nghị giao hồ sơ (ReqInvoice — port 1:1 FrmNewRDInvoice, 2010.HTC/Sales/Redeem) =====
+// ⛔ HỢP NHẤT THỰC THỂ SONG TRÙNG (ca thứ 3, #56): `/api/reqinvoices` trước đây ghi vào bộ
+// `ReqInvoice`/`ReqInvoiceDtl` RIÊNG, trong khi `/api/redeeminvoicerequests` ghi vào
+// `RedeemInvoiceRequest`/`RedeemInvoiceRequestLine` — **cùng bảng nguồn `RD_ReqInvoice`**.
 app.MapGet("/api/reqinvoices", async (AppDbContext db, ITenantContext t, string? status) =>
 {
-    var q = db.ReqInvoices.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
-    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    var qy = db.RedeemInvoiceRequests.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(r => r.Status == status);
+    var items = await qy.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.ReqIVNo, r.Status, r.CreatedAt, r.DoneAt,
-        cars = db.ReqInvoiceDtls.Count(c => c.OrgId == t.OrgId && c.ReqInvoiceId == r.Id)
+        reqIVNo = r.ReqRDInvoiceNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy,
+        cars = db.RedeemInvoiceRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id),
+        carsPending = db.RedeemInvoiceRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id && c.RDReqIvDtlStatus == "P"),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/reqinvoices", async (ReqInvoiceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reqinvoices", async (
+    ReqInvoiceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (cars.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+
     var no = "RIV" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new ReqInvoice { OrgId = t.OrgId, ReqIVNo = no, Status = "Draft" };
-    db.ReqInvoices.Add(r); await db.SaveChangesAsync();
+    var h = new RedeemInvoiceRequest
+    {
+        OrgId = t.OrgId, ReqRDInvoiceNo = no, CreatedDate = DateTime.Now, CreatedAt = DateTime.Now,
+        VinCount = cars.Count, Status = "P",     // TConst.Stage.Pending (Biz.HTC.WH.cs:127385)
+        CreatedBy = user.Identity?.Name ?? "system",
+    };
+    db.RedeemInvoiceRequests.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.ReqInvoiceDtls.Add(new ReqInvoiceDtl { OrgId = t.OrgId, ReqInvoiceId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), HTCInvoiceNo = c.HTCInvoiceNo, InvoiceNoFactory = c.InvoiceNoFactory, TCGInvoiceNo = c.TCGInvoiceNo });
+        db.RedeemInvoiceRequestLines.Add(new RedeemInvoiceRequestLine
+        {
+            OrgId = t.OrgId, RequestId = h.Id, VIN = c.VIN.Trim().ToUpperInvariant(),
+            RDReqIvDtlStatus = "P",              // nguồn tạo dòng ở Pending (Biz.HTC.WH.cs:127423)
+            HTCInvoiceNo = c.HTCInvoiceNo, InvoiceNoFactory = c.InvoiceNoFactory, TCGInvoiceNo = c.TCGInvoiceNo,
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReqIVNo, cars = cars.Count, message = "Tạo đề nghị giao hồ sơ thành công" });
+    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, cars = cars.Count, status = h.Status, message = "Tạo đề nghị giao hồ sơ thành công" });
 }).RequireAuthorization();
 
 app.MapGet("/api/reqinvoices/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var r = await db.ReqInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqIVNo == no);
-    if (r is null) return Results.NotFound(new { no });
-    var cars = await db.ReqInvoiceDtls.Where(c => c.OrgId == t.OrgId && c.ReqInvoiceId == r.Id)
-        .Select(c => new { c.VIN, c.HTCInvoiceNo, c.InvoiceNoFactory, c.TCGInvoiceNo }).ToListAsync();
-    return Results.Ok(new { r.ReqIVNo, r.Status, count = cars.Count, cars });
+    var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRDInvoiceNo.ToUpper() == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.RedeemInvoiceRequestLines.Where(c => c.OrgId == t.OrgId && c.RequestId == h.Id)
+        .Select(c => new { c.VIN, c.CarId, typeRDReqIv = c.ReqType, c.RDReqIvDtlStatus, c.DealerCode,
+            c.MortageBankCode, c.ApprovedDate, c.ApprovedBy, c.Remark,
+            c.HTCInvoiceNo, c.InvoiceNoFactory, c.TCGInvoiceNo }).ToListAsync();
+    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, h.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/reqinvoices/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT GIAO HỒ SƠ THEO TỪNG VIN — đúng chiều nguồn (Biz.HTC.WH.cs:128108-128142).
+// Comment nguyên văn của nguồn: "Nếu Dtl đã được duyệt hết thì chuyển trạng thái Mng".
+// ⚠️ KHÁC đề nghị giải chấp (#55): ở đây nguồn KHÔNG ghi đè MortageBankCode = "HTC.HO".
+app.MapPost("/api/reqinvoices/{no}/approve-vin", async (
+    string no, string vin, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var r = await db.ReqInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqIVNo == no);
-    if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
-    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    var v = (vin ?? "").Trim().ToUpperInvariant();
+    if (v.Length == 0) return Results.BadRequest(new { error = "Chưa chọn VIN cần duyệt." });
+    var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRDInvoiceNo.ToUpper() == no);
+    if (h is null) return Results.NotFound(new { no });
+    var line = await db.RedeemInvoiceRequestLines
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestId == h.Id && x.VIN != null && x.VIN.ToUpper() == v);
+    if (line is null) return Results.NotFound(new { no, vin = v });
+    if (line.RDReqIvDtlStatus != "P")
+        return Results.BadRequest(new { error = $"Dòng VIN {v} đang '{line.RDReqIvDtlStatus}', chỉ duyệt khi 'P'." });
+
+    var actor = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    line.RDReqIvDtlStatus = "A"; line.ApprovedDate = now; line.ApprovedBy = actor;
+
+    var stillPending = await db.RedeemInvoiceRequestLines
+        .CountAsync(x => x.OrgId == t.OrgId && x.RequestId == h.Id && x.RDReqIvDtlStatus == "P" && x.Id != line.Id);
+    if (stillPending == 0) { h.Status = "A"; h.ApprovedDate = now; h.ApprovedBy = actor; }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReqIVNo, status = r.Status });
+    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, vin = v, lineStatus = line.RDReqIvDtlStatus,
+        headerStatus = h.Status, remainingPending = stillPending });
 }).RequireAuthorization();
+
+app.MapGet("/api/reqinvoices/statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ duyệt" },
+        new { code = "A", name = "Đã duyệt" },
+        new { code = "R", name = "Từ chối" } },
+    reqTypes = new[] {
+        new { code = "DEALER", name = "Đại lý" },
+        new { code = "BANKBL", name = "Ngân hàng bảo lãnh" },
+        new { code = "BANKLC", name = "Ngân hàng LC" } },
+    note = "Header là giá trị DẪN XUẤT: chỉ 'A' khi mọi dòng VIN đã duyệt.",
+})).RequireAuthorization();
 
 // ===== Hợp đồng đại lý (DealerContract/DC — port 1:1 FrmNewDC/FrmMngDC, 2010.HTC/Sales/Contract) =====
 app.MapGet("/api/dealercontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
