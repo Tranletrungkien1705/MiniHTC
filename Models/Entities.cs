@@ -5736,3 +5736,22 @@ public sealed class MasterItem
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// Chi tiết khiếu nại theo xe (FrmChiTietKhieuNai — TCMotor DMSCarSv/Services): tra cứu lịch sử khiếu nại theo BIỂN SỐ.
+/// Nguồn gốc là proxy sang hệ HCC (`iCIC_ListClaimByPlateNo` → API `DmsClaimGetByPlateNo`), lưới đúng 6 cột:
+/// ClaimNo / CreatDate / ReceiveDate / DealerCode / CusRequest / ProcessDetail (lưới gốc read-only, không cho sửa).
+/// </summary>
+public sealed class ServiceComplaint
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PlateNo { get; set; } = "";        // khoá tra cứu (txtPlateNo)
+    public string ClaimNo { get; set; } = "";        // gridColClaimNo — số khiếu nại
+    public DateTime? CreatDate { get; set; }         // gridColCreateDate — ngày tạo (giữ nguyên tên gốc "CreatDate")
+    public DateTime? ReceiveDate { get; set; }       // gridColReceiveDate — ngày tiếp nhận
+    public string? DealerCode { get; set; }          // gridColDealerCode — đại lý
+    public string? CusRequest { get; set; }          // gridColCusRequest — yêu cầu khách hàng
+    public string? ProcessDetail { get; set; }       // gridColProcessDetail — chi tiết xử lý
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}

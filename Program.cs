@@ -821,6 +821,38 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Chi tiết khiếu nại theo xe (port 1:1 FrmChiTietKhieuNai — TCMotor DMSCarSv/Services) =====
+// Nguồn: iCIC_ListClaimByPlateNo (BizCarSv.ZTemp.cs) — proxy sang HCC API DmsClaimGetByPlateNo.
+// Luật gốc: BẮT BUỘC nhập biển số, để trống thì báo "Chưa nhập biển số!" và KHÔNG tra cứu.
+// Lưới gốc read-only 6 cột: ClaimNo/CreatDate/ReceiveDate/DealerCode/CusRequest/ProcessDetail.
+app.MapGet("/api/complaints", async (AppDbContext db, ITenantContext t, string? plateNo) =>
+{
+    if (string.IsNullOrWhiteSpace(plateNo))
+        return Results.BadRequest(new { error = "Chưa nhập biển số!" });   // đúng thông báo form gốc
+    var plate = plateNo.Trim().ToUpperInvariant();
+    var items = await db.ServiceComplaints
+        .Where(c => c.OrgId == t.OrgId && c.PlateNo == plate)
+        .OrderByDescending(c => c.CreatDate)
+        .Select(c => new { c.ClaimNo, c.CreatDate, c.ReceiveDate, c.DealerCode, c.CusRequest, c.ProcessDetail })
+        .ToListAsync();
+    return Results.Ok(new { plateNo = plate, count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/complaints", async (ComplaintDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số!" });
+    if (string.IsNullOrWhiteSpace(dto.ClaimNo)) return Results.BadRequest(new { error = "Cần số khiếu nại (ClaimNo)." });
+    var plate = dto.PlateNo.Trim().ToUpperInvariant();
+    var no = dto.ClaimNo.Trim().ToUpperInvariant();
+    var c = await db.ServiceComplaints.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ClaimNo == no);
+    if (c is null) { c = new ServiceComplaint { OrgId = t.OrgId, ClaimNo = no }; db.ServiceComplaints.Add(c); }
+    c.PlateNo = plate;
+    c.CreatDate = dto.CreatDate; c.ReceiveDate = dto.ReceiveDate;
+    c.DealerCode = dto.DealerCode; c.CusRequest = dto.CusRequest; c.ProcessDetail = dto.ProcessDetail;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.ClaimNo, c.PlateNo, c.CreatDate, c.ReceiveDate, c.DealerCode, c.CusRequest, c.ProcessDetail });
+}).RequireAuthorization();
+
 // ===== Gia hạn bảo hành (port 1:1 FrmMstWarrantyExtension — TCMotor) =====
 app.MapGet("/api/wexts", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -15917,6 +15949,7 @@ record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal Part
 record PODto(string SupplierCode, string? Note, decimal Total);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
+record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, DateTime? EffStartDate, string? Status);
 record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);
