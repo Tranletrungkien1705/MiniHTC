@@ -5723,7 +5723,52 @@ public sealed class ServiceAppointment
     public string? Note { get; set; }
     public string? EngineerNo { get; set; }        // CVDV nhận lịch hẹn — port bổ sung FrmQuotationApp
     public string? QuoteNo { get; set; }           // Báo giá ước tính gắn theo lịch hẹn (FK mềm tới ServiceQuotation.QuoteNo)
+
+    /// <summary>Yêu cầu của khách khi đặt lịch (Ser_App.CusRequest).</summary>
+    public string? CusRequest { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// Hạng mục dịch vụ khách đặt trước trong một lịch hẹn (Ser_AppServiceItems —
+/// port 1:1 FrmAppointment*, TCMotor DMSCarSv/Appointment).
+/// MỘT lịch hẹn đặt NHIỀU dịch vụ — đây là nội dung chính của lịch hẹn, không phải phần phụ.
+/// </summary>
+public sealed class AppointmentServiceItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppNo { get; set; } = "";
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+
+    /// <summary>Giờ công định mức của dịch vụ (Ser_Mst_Service.StdManHour) — nguồn trả kèm để ước tính thời gian.</summary>
+    public decimal? StdManHour { get; set; }
+
+    public string? Note { get; set; }
+}
+
+/// <summary>
+/// Phụ tùng khách đặt trước trong một lịch hẹn (Ser_AppPartItems —
+/// port 1:1 FrmAppointment*, TCMotor DMSCarSv/Appointment).
+/// </summary>
+public sealed class AppointmentPartItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppNo { get; set; } = "";
+    public string PartCode { get; set; } = "";
+
+    /// <summary>Tên phụ tùng tiếng Việt (Ser_Mst_Part.VieName).</summary>
+    public string? PartName { get; set; }
+
+    /// <summary>Tên phụ tùng tiếng Anh (Ser_Mst_Part.EngName) — nguồn trả cả hai.</summary>
+    public string? EngName { get; set; }
+
+    public string? Unit { get; set; }
+    public decimal Quantity { get; set; }
+    public string? Note { get; set; }
 }
 
 /// <summary>Công nợ bảo hiểm (hãng BH nợ tiền bồi thường theo RO) — port 1:1 FrmInsDebitSearch (TblCusDebit type InsuranceDebit, TCMotor).</summary>

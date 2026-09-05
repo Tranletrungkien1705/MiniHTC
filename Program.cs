@@ -10504,7 +10504,9 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
-        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo
+        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
+        serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
+        partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -10528,12 +10530,58 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
     var engineerNo = (dto.EngineerNo ?? "").Trim().ToUpperInvariant();
     if (engineerNo != "" && !await db.ServiceEngineers.AnyAsync(e => e.OrgId == t.OrgId && e.EngineerNo == engineerNo))
         return Results.BadRequest(new { error = "CVDV không tồn tại: " + engineerNo });
+    // TWIN đã trace: WS gọi `Ser_App_Create_New20201230` (BizCarSv.ZTemp.cs) — KHÔNG phải `Ser_App_Create` trần.
+    // Bản LIVE NÉM LỖI khi dòng dịch vụ/phụ tùng thiếu mã (bản cũ chỉ ghi DBNull) ⇒ port theo bản LIVE.
+    var serviceItems = dto.ServiceItems ?? new();
+    foreach (var line in serviceItems)
+        if (string.IsNullOrWhiteSpace(line.SerCode))
+            return Results.BadRequest(new { error = "Dịch vụ không có trong danh mục!" });
+    var partItems = dto.PartItems ?? new();
+    foreach (var line in partItems)
+        if (string.IsNullOrWhiteSpace(line.PartCode))
+            return Results.BadRequest(new { error = "Phụ tùng không có trong kho!" });
+
     var no = "APP" + DateTime.Now.ToString("yyMMddHHmmss");
     var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
         CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked",
-        EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo };
-    db.ServiceAppointments.Add(a); await db.SaveChangesAsync();
-    return Results.Ok(new { a.Id, a.AppNo, a.Status });
+        EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest };
+    db.ServiceAppointments.Add(a);
+
+    foreach (var line in serviceItems)
+        db.AppointmentServiceItems.Add(new AppointmentServiceItem
+        {
+            OrgId = t.OrgId, AppNo = no,
+            SerCode = line.SerCode!.Trim().ToUpperInvariant(), SerName = line.SerName,
+            StdManHour = line.StdManHour, Note = line.Note
+        });
+    foreach (var line in partItems)
+        db.AppointmentPartItems.Add(new AppointmentPartItem
+        {
+            OrgId = t.OrgId, AppNo = no,
+            PartCode = line.PartCode!.Trim().ToUpperInvariant(), PartName = line.PartName, EngName = line.EngName,
+            Unit = line.Unit, Quantity = line.Quantity, Note = line.Note
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.Id, a.AppNo, a.Status, serviceItems = serviceItems.Count, partItems = partItems.Count });
+}).RequireAuthorization();
+
+// Nội dung đặt trước của lịch hẹn: danh sách dịch vụ + phụ tùng khách yêu cầu.
+app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no);
+    if (a is null) return Results.NotFound(new { no });
+    var services = await db.AppointmentServiceItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no)
+        .Select(x => new { x.SerCode, x.SerName, x.StdManHour, x.Note }).ToListAsync();
+    var parts = await db.AppointmentPartItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no)
+        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Quantity, x.Note }).ToListAsync();
+    return Results.Ok(new
+    {
+        a.AppNo, a.PlateNo, a.CusName, a.CusRequest, a.AppFrom, a.AppTo, a.Status,
+        services, parts,
+        // Tổng giờ công định mức — cơ sở ước tính thời gian giữ khoang cho lịch hẹn.
+        totalStdManHour = services.Sum(s => s.StdManHour ?? 0)
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t) =>
@@ -18413,7 +18461,9 @@ record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode)
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimActionDto(string Action, string? Note);
-record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo);
+record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
+record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
+record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null);
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note);

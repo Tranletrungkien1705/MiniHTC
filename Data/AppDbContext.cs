@@ -333,6 +333,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<EmailTemplate> EmailTemplates => Set<EmailTemplate>();
     public DbSet<SmsSend> SmsSends => Set<SmsSend>();
     public DbSet<ServiceAppointment> ServiceAppointments => Set<ServiceAppointment>();
+    public DbSet<AppointmentServiceItem> AppointmentServiceItems => Set<AppointmentServiceItem>();
+    public DbSet<AppointmentPartItem> AppointmentPartItems => Set<AppointmentPartItem>();
     public DbSet<InsDebit> InsDebits => Set<InsDebit>();
     public DbSet<InsDebitPayment> InsDebitPayments => Set<InsDebitPayment>();
     public DbSet<SupplierDebit> SupplierDebits => Set<SupplierDebit>();
