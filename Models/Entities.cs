@@ -342,7 +342,47 @@ public sealed class WarrantyClaimTC
     public DateTime? DecidedAt { get; set; }
 }
 
-/// <summary>Đơn đặt hàng nhà cung cấp (TCMotor Supplier PO) — OEM mua phụ tùng từ NCC.</summary>
+/// <summary>
+/// Đơn mua xe từ hãng (`Ord_PurchaseOrder` — port 1:1 `OrderPOCreate_New2018119` /
+/// `OrderPOCancel_New20181119`, 2010.HTC `Biz.HTC.WH.cs:27908/28160`).
+/// ⚠️ Nguồn **KHÔNG có cột trạng thái**, vòng đời chỉ là cờ `FlagActive`: Create gán "1" (28085),
+/// Cancel guard "1" rồi gán "0" (28241) — giống hệt `Ord_POCommand` (cụm lệnh đặt hàng).
+/// </summary>
+public sealed class PurchaseOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số đơn mua (`Ord_PurchaseOrder.POCode`).</summary>
+    public string POCode { get; set; } = "";
+    public string OrderMonth { get; set; } = "";
+    public string? ProductionMonth { get; set; }
+    public string? ExpectedMonth { get; set; }
+    /// <summary>Cờ hiệu lực — trục vòng đời DUY NHẤT của cụm ("1" còn hiệu lực / "0" đã huỷ).</summary>
+    public string FlagActive { get; set; } = "1";
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Dòng đơn mua xe (`Ord_PurchaseOrderDetail`): spec + model + màu + số lượng.</summary>
+public sealed class PurchaseOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PurchaseOrderId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public int Quantity { get; set; } = 1;
+}
+
+/// <summary>
+/// ⚠️ **ENTITY TỰ CHẾ — KHÔNG có bảng nguồn.** Đã kiểm đủ 3 cách trên cả TCMotor lẫn 2010.HTC:
+/// `SaveData("...PO"/"...PurchaseOrder")`, `insert into`, và grep tên cột `["PoNo"]` — **đều 0 hit**;
+/// TCMotor chỉ có master `Ser_MST_Supplier`, không có bảng PO nhà cung cấp.
+/// Cột `SupplierCode`/`Total` và chuỗi `Draft→Sent→Received` không tương ứng nguồn nào.
+/// Giữ nguyên để không phá dữ liệu/UI đang có; **cần người quyết định xoá hay giữ** (đã ghi nợ).
+/// Đơn mua xe THẬT của nguồn là <see cref="PurchaseOrder"/> (`Ord_PurchaseOrder`).
+/// </summary>
 public sealed class SupplierPO
 {
     public long Id { get; set; }

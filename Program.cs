@@ -833,6 +833,68 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// ===== Đơn mua xe từ hãng (Ord_PurchaseOrder — port 1:1 OrderPOCreate_New2018119 /
+// OrderPOCancel_New20181119, 2010.HTC Biz.HTC.WH.cs:27908/28160) =====
+// ⚠️ Nguồn KHÔNG có cột trạng thái: vòng đời chỉ bằng cờ `FlagActive` ("1"→"0"), giống `Ord_POCommand`.
+app.MapGet("/api/purchaseorders", async (AppDbContext db, ITenantContext t, string? month, string? flagActive) =>
+{
+    var qy = db.PurchaseOrders.Where(o => o.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(month)) qy = qy.Where(o => o.OrderMonth == month);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(o => o.FlagActive == flagActive);
+    var items = await qy.OrderByDescending(o => o.Id).Take(500).Select(o => new
+    {
+        o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt,
+        lines = db.PurchaseOrderLines.Count(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id),
+        totalQty = db.PurchaseOrderLines.Where(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.OrderMonth)) return Results.BadRequest(new { error = "Cần OrderMonth (YYYYMM)." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
+    var code = (dto.POCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) code = "PO" + DateTime.Now.ToString("yyMMddHHmmss");
+    if (await db.PurchaseOrders.AnyAsync(x => x.OrgId == t.OrgId && x.POCode == code))
+        return Results.BadRequest(new { error = $"Số đơn mua {code} đã tồn tại!" });
+    var o = new PurchaseOrder
+    {
+        OrgId = t.OrgId, POCode = code, OrderMonth = dto.OrderMonth.Trim(),
+        ProductionMonth = dto.ProductionMonth, ExpectedMonth = dto.ExpectedMonth,
+        FlagActive = "1", CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    };
+    db.PurchaseOrders.Add(o); await db.SaveChangesAsync();
+    foreach (var l in lines)
+        db.PurchaseOrderLines.Add(new PurchaseOrderLine { OrgId = t.OrgId, PurchaseOrderId = o.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, Quantity = l.Quantity });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.POCode, o.OrderMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), o.FlagActive });
+}).RequireAuthorization();
+
+app.MapGet("/api/purchaseorders/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var o = await db.PurchaseOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.POCode == code);
+    if (o is null) return Results.NotFound(new { code });
+    var lines = await db.PurchaseOrderLines.Where(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id)
+        .Select(l => new { l.SpecCode, l.ModelCode, l.ColorCode, l.Quantity }).ToListAsync();
+    return Results.Ok(new { o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
+}).RequireAuthorization();
+
+// 🔴 HUỶ — `OrderPOCancel_New20181119`: guard `myOrder_CheckPO(..., Flag.Active)` rồi gán
+// `FlagActive = Flag.Inactive`. Nguồn **KHÔNG xoá dòng chi tiết** khi huỷ.
+app.MapPost("/api/purchaseorders/{code}/cancel", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var o = await db.PurchaseOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.POCode == code);
+    if (o is null) return Results.NotFound(new { code });
+    if (o.FlagActive != "1") return Results.BadRequest(new { error = "Đơn mua đã huỷ." });
+    o.FlagActive = "0";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.POCode, o.FlagActive });
+}).RequireAuthorization();
+
 // ===== Đơn đặt hàng NCC (port 1:1 Supplier PO — TCMotor) =====
 app.MapGet("/api/pos", async (AppDbContext db, ITenantContext t, string? status) =>
 {
@@ -21052,6 +21114,9 @@ record ImportSalesManDto(string? SMCode, string? SMHyundaiCode, string? Identity
 record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);
+// Đơn mua xe từ hãng (Ord_PurchaseOrder) — nguồn không có trạng thái, chỉ cờ FlagActive.
+record PurchaseOrderDto(string OrderMonth, List<PurchaseOrderLineDto>? Lines, string? POCode = null, string? ProductionMonth = null, string? ExpectedMonth = null);
+record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
