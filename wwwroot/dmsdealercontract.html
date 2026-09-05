@@ -64,9 +64,14 @@ async function load(){ await token();
     // Duyệt cấp 2 chỉ khi hợp đồng còn "NS", và sau đó nguồn VẪN giữ "NS" (không tự chuyển "S").
     if(o.dlrCtrStatus!=="C" && o.dlrCtrStatus!=="S"){
       if(o.dlrSignStatus==="P") act+=`<button class="sm" onclick="dlrAppr('${o.dlrCtrNo}')">ĐL duyệt</button> `;
-      if(o.htcSignStatus==="P") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',1,false)">HTC duyệt C1</button> `;
-      if(o.htcSignStatus==="A1") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',2,false)">HTC duyệt C2</button> `;
-      if(o.htcSignStatus==="P"||o.htcSignStatus==="A1") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',0,true)">HTC từ chối</button> `;
+      // 🔴 Cả ba thao tác của bên A đều yêu cầu đại lý CÒN CHỜ ("P") — HTC duyệt TRƯỚC khi đại lý ký.
+      if(o.dlrSignStatus==="P"){
+        if(o.htcSignStatus==="P"&&o.dlrCtrStatus==="NS") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',1,false)">HTC duyệt C1</button> `;
+        if(o.htcSignStatus==="A1"&&o.dlrCtrStatus==="NS") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',2,false)">HTC duyệt C2</button> `;
+        // A1 ⇒ BỎ DUYỆT (về P); A2 ⇒ từ chối thật + huỷ hợp đồng. Hai nhánh khác hẳn nhau.
+        if(o.htcSignStatus==="A1") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',0,true)">HTC bỏ duyệt C1</button> `;
+        if(o.htcSignStatus==="A2") act+=`<button class="sm" onclick="htcAppr('${o.dlrCtrNo}',0,true)">HTC từ chối (huỷ HĐ)</button> `;
+      }
       act+=`<button class="sm" onclick="cancel('${o.dlrCtrNo}')">Hủy</button> `;
       // Tạo bản điều chỉnh — HĐ gốc chỉ thành "AJ" khi đại lý duyệt bản điều chỉnh đó.
       if(!o.dlrCtrNoParent) act+=`<button class="sm" onclick="adjust('${o.dlrCtrNo}')">Điều chỉnh</button>`;

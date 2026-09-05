@@ -15580,19 +15580,41 @@ app.MapPost("/api/dmsdealercontracts/{no}/htc-approve", async (string no, DmsHtc
     if (c is null) return Results.NotFound(new { no });
     if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
     var level = dto?.Level ?? 1;
+    // 🔴 Nguồn KHÔNG có bản "không-Adjust": ba hàm LIVE là `_HTCApprove1AdjustX` (5539),
+    //    `_HTCApprove2AdjustX` (5919) và `_HTCRejectAdjustX` (6320) — cả ba guard **BA TRỤC cùng lúc**.
+    // ⚠️ Luật phản trực giác: cả ba đều yêu cầu `DlrSignStatus = "P"` — tức **HTC duyệt TRƯỚC khi
+    //    đại lý ký**; nếu đại lý đã duyệt ("A") thì HTC không thao tác được nữa.
     if (dto?.Reject == true)
     {
-        if (c.HTCSignStatus is not ("P" or "A1")) return Results.BadRequest(new { error = "Chỉ từ chối khi bên A đang chờ (P) hoặc mới duyệt cấp 1 (A1)." });
-        c.HTCSignStatus = "R";
+        // `_HTCRejectAdjustX`: guard Dlr="P", HTC ∈ {"A1","A2"}, HĐ ∈ {"NS","S"} —
+        // **không từ chối được khi HTC chưa duyệt gì**.
+        if (c.DlrSignStatus != "P") return Results.BadRequest(new { error = $"Đại lý đang ở '{c.DlrSignStatus}' — bên A chỉ thao tác khi đại lý còn chờ (P)." });
+        if (c.HTCSignStatus is not ("A1" or "A2")) return Results.BadRequest(new { error = "Chỉ từ chối sau khi bên A đã duyệt cấp 1 (A1) hoặc cấp 2 (A2)." });
+        if (c.DlrCtrStatus is not ("NS" or "S")) return Results.BadRequest(new { error = $"Hợp đồng đang ở '{c.DlrCtrStatus}' — không từ chối được." });
+        // 🔴 HAI NHÁNH KHÁC HẲN NHAU tuỳ trạng thái hiện tại (nguồn 6389-6399):
+        if (c.HTCSignStatus == "A1")
+        {
+            // Đang cấp 1 ⇒ **BỎ DUYỆT**: quay về "P", hợp đồng trở lại "NS". KHÔNG phải từ chối.
+            c.HTCSignStatus = "P"; c.DlrCtrStatus = "NS";
+        }
+        else
+        {
+            // Đang cấp 2 ⇒ từ chối thật: "R" **và HUỶ luôn hợp đồng** ("C").
+            c.HTCSignStatus = "R"; c.DlrCtrStatus = "C";
+        }
     }
     else if (level == 1)
     {
+        // `_HTCApprove1AdjustX`: guard Dlr="P", HTC="P", HĐ="NS".
+        if (c.DlrSignStatus != "P") return Results.BadRequest(new { error = $"Đại lý đang ở '{c.DlrSignStatus}' — bên A chỉ duyệt khi đại lý còn chờ (P)." });
         if (c.HTCSignStatus != "P") return Results.BadRequest(new { error = $"Bên A đang ở '{c.HTCSignStatus}' — duyệt cấp 1 chỉ từ chờ (P)." });
+        if (c.DlrCtrStatus != "NS") return Results.BadRequest(new { error = $"Hợp đồng đang ở '{c.DlrCtrStatus}' — duyệt cấp 1 chỉ khi chưa ký (NS)." });
         c.HTCSignStatus = "A1";
     }
     else
     {
-        // Guard nguồn: HTCSignStatus phải "A1" VÀ DlrCtrStatus phải "NS".
+        // `_HTCApprove2AdjustX`: guard Dlr="P", HTC="A1", HĐ="NS".
+        if (c.DlrSignStatus != "P") return Results.BadRequest(new { error = $"Đại lý đang ở '{c.DlrSignStatus}' — bên A chỉ duyệt khi đại lý còn chờ (P)." });
         if (c.HTCSignStatus != "A1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 (A1) trước." });
         if (c.DlrCtrStatus != "NS") return Results.BadRequest(new { error = $"Hợp đồng đang ở '{c.DlrCtrStatus}' — duyệt cấp 2 chỉ khi chưa ký (NS)." });
         c.HTCSignStatus = "A2"; c.HTCAppr2DTime = DateTime.Now;
