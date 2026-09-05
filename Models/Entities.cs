@@ -4547,6 +4547,36 @@ public sealed class DealerDealDetail
     public DateTime? CusInvoiceDate { get; set; }
     public string? PlateNo { get; set; }                 // biển số xe (EditDeal sửa)
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
+    /// <summary>Ngày giao xe cho khách (`DLS_DealDetail.DeliveryDate`) — `CarDeliveryDate_Update`
+    /// cập nhật cột này theo cặp khoá `DealNo` + `CarId`.</summary>
+    public DateTime? DeliveryDate { get; set; }
+}
+
+/// <summary>
+/// Lịch sử cập nhật NGÀY GIAO XE (`CarDeliveryDate_HisUpd` — port 1:1 `CarDeliveryDate_Update`,
+/// 2010.HTC `Biz.HTC.WH.cs:139603`).
+/// 🔴 Một hành động sửa ngày giao ghi vào **BA bảng** với **ba tên cột khác nhau** nhưng **cùng một giá trị**:
+/// `Sto_DlvMinutes.DlvEndDate` · `Car_DeliveryOrderDetail.DeliveryEndDate` · `DLS_DealDetail.DeliveryDate`.
+/// Bảng này lưu **giá trị CŨ của cả ba cột** cùng giá trị mới, nên là dấu vết duy nhất để đối soát.
+/// </summary>
+public sealed class CarDeliveryDateHisUpd
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DlvMnNo { get; set; }
+    public string VIN { get; set; } = "";
+    public string? DeliveryOrderNo { get; set; }
+    public string? CarId { get; set; }
+    public string? DealNo { get; set; }
+    public DateTime? DlvEndDateOld { get; set; }
+    public DateTime? DeliveryEndDateOld { get; set; }
+    public DateTime? DeliveryDateOld { get; set; }
+    public DateTime? DlvEndDateNew { get; set; }
+    public DateTime? DeliveryEndDateNew { get; set; }
+    public DateTime? DeliveryDateNew { get; set; }
+    /// <summary>Thời điểm cập nhật (`UpdDTime`).</summary>
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
 }
 
 /// <summary>File đính kèm sổ bảo hành theo HĐ bán lẻ (Dls_DealerDealAttach) — port 1:1 FrmEditDeal_SoBaoHanh (2010.HTC/SalesDealer). Metadata file (không lưu binary) — 1 file mới nhất mỗi DealNo, upsert.</summary>
@@ -6411,6 +6441,8 @@ public sealed class TranspDlvConfirm
 
     /// <summary>Trạng thái duyệt phía giao (FDLVMNSTATUS): P = chờ duyệt, A = đã duyệt.</summary>
     public string FDlvMnStatus { get; set; } = "P";
+    // (`DlvEndDate` đã khai báo ở trên) — `CarDeliveryDate_Update` cập nhật cột đó với
+    // **guard `FDlvMnStatus = 'A'`**: chỉ biên bản đã duyệt phía F mới được sửa ngày giao.
 
     /// <summary>Trạng thái duyệt phía nhận (TDLVMNSTATUS): P = chờ duyệt, A = đã duyệt.</summary>
     public string TDlvMnStatus { get; set; } = "P";

@@ -833,6 +833,76 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// ===== Cập nhật NGÀY GIAO XE (CarDeliveryDate_Update — port 1:1 2010.HTC Biz.HTC.WH.cs:139603) =====
+// 🔴 MỘT hành động ghi vào **BA bảng** với **ba tên cột khác nhau** nhưng cùng một giá trị:
+//   · `Sto_DlvMinutes.DlvEndDate`            join `DlvMnNo` + `VIN`, **guard `FDlvMnStatus = 'A'`**
+//   · `Car_DeliveryOrderDetail.DeliveryEndDate` join `DeliveryOrderNo` + `CarId`
+//   · `DLS_DealDetail.DeliveryDate`          join `DealNo` + `CarId`
+// và ghi lịch sử `CarDeliveryDate_HisUpd` lưu **giá trị CŨ của cả ba cột** + giá trị mới.
+// TWIN: chỉ `TERP.WSHTC.64` (36429) có hàm này; md5 thân hàm khớp 2 máy.
+app.MapGet("/api/cardeliverydate/history", async (AppDbContext db, ITenantContext t, string? vin) =>
+{
+    var qy = db.CarDeliveryDateHisUpds.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(h => h.VIN == vin.Trim().ToUpperInvariant());
+    var items = await qy.OrderByDescending(h => h.Id).Take(500).Select(h => new
+    {
+        h.VIN, h.DlvMnNo, h.DeliveryOrderNo, h.CarId, h.DealNo,
+        h.DlvEndDateOld, h.DeliveryEndDateOld, h.DeliveryDateOld,
+        h.DlvEndDateNew, h.DeliveryEndDateNew, h.DeliveryDateNew, h.UpdDTime, h.UpdBy
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/cardeliverydate/update", async (CarDeliveryDateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN) && r.CarDeliveryDate is not null).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng nào để cập nhật ngày giao xe." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    int nDlv = 0, nDo = 0, nDeal = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        var newDate = r.CarDeliveryDate!.Value;
+        var his = new CarDeliveryDateHisUpd
+        {
+            OrgId = t.OrgId, VIN = vin, DlvMnNo = r.DlvMnNo, DeliveryOrderNo = r.DeliveryOrderNo,
+            CarId = r.CarId, DealNo = r.DealNo, UpdDTime = now, UpdBy = who,
+            DlvEndDateNew = newDate, DeliveryEndDateNew = newDate, DeliveryDateNew = newDate,
+        };
+
+        // (1) Biên bản giao xe — CHỈ khi đã duyệt phía F ("A"), đúng guard `t.FDlvMnStatus = 'A'`.
+        if (!string.IsNullOrWhiteSpace(r.DlvMnNo))
+        {
+            var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo && x.FDlvMnStatus == "A");
+            if (m is not null) { his.DlvEndDateOld = m.DlvEndDate; m.DlvEndDate = newDate; nDlv++; }
+        }
+        // (2) Dòng lệnh giao xe.
+        if (!string.IsNullOrWhiteSpace(r.DeliveryOrderNo) && !string.IsNullOrWhiteSpace(r.CarId))
+        {
+            var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == r.DeliveryOrderNo);
+            if (o is not null)
+            {
+                var c = await db.DeliveryOrderCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoId == o.Id && x.Vin == r.CarId);
+                if (c is not null) { his.DeliveryEndDateOld = c.DeliveryEndDate; c.DeliveryEndDate = newDate; nDo++; }
+            }
+        }
+        // (3) Dòng giao dịch bán lẻ.
+        if (!string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.CarId))
+        {
+            var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == r.DealNo);
+            if (d is not null)
+            {
+                var dd = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == r.CarId);
+                if (dd is not null) { his.DeliveryDateOld = dd.DeliveryDate; dd.DeliveryDate = newDate; nDeal++; }
+            }
+        }
+        db.CarDeliveryDateHisUpds.Add(his);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, dlvMinutesUpdated = nDlv, deliveryOrderCarsUpdated = nDo, dealDetailsUpdated = nDeal });
+}).RequireAuthorization();
+
 // ===== Đơn mua xe từ hãng (Ord_PurchaseOrder — port 1:1 OrderPOCreate_New2018119 /
 // OrderPOCancel_New20181119, 2010.HTC Biz.HTC.WH.cs:27908/28160) =====
 // ⚠️ Nguồn KHÔNG có cột trạng thái: vòng đời chỉ bằng cờ `FlagActive` ("1"→"0"), giống `Ord_POCommand`.
@@ -21884,3 +21954,7 @@ record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string Mo
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email);
 record RegisterOrgDto(string Name);
+
+// Cập nhật ngày giao xe theo LÔ dòng (nguồn nhận bảng `dtInput_CarDeliveryDate` nhiều dòng).
+record CarDeliveryDateDto(List<CarDeliveryDateRowDto>? Rows);
+record CarDeliveryDateRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, string? CarId, string? DealNo, DateTime? CarDeliveryDate);
