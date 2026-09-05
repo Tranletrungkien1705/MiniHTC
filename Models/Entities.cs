@@ -2826,11 +2826,20 @@ public sealed class ROWarrantyTypePhoto
     public string? ROWPTName { get; set; }
 }
 
-/// <summary>Hạng mục công bảo hành theo model (Mst_Warranty_Work_Mng) — port 1:1 FrmMstWarrantyWorkMng (TCMotor DMSCarSv/Admin). Mã CV + tên + model + loại áp dụng + số giờ công + đơn giá giờ/công + VAT. Upsert-by-(code+model) + toggle.</summary>
+/// <summary>
+/// Hạng mục công bảo hành theo model — port 1:1 FrmMstWarrantyWorkMng (TCMotor DMSCarSv/Admin).
+/// ⚠️ Tên bảng THẬT ở nguồn là <c>Ser_MST_ROWarrantyWork</c> (biz Ser_MST_ROWarrantyWork_Get);
+/// <c>Mst_Warranty_Work_Mng</c> chỉ là tên lớp hằng phía client.
+/// Mã CV + tên + model + loại áp dụng + giờ định mức + giá định mức + giá bán + thuế.
+/// </summary>
 public sealed class WarrantyWorkMst
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+
+    /// <summary>Khoá tự tăng của nguồn (ROWWID).</summary>
+    public string? ROWWID { get; set; }
+
     public string ROWWorkCode { get; set; } = "";
     public string? ROWWorkName { get; set; }
     public string ModelCode { get; set; } = "";

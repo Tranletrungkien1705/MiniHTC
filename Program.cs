@@ -9871,23 +9871,106 @@ app.MapGet("/api/warrantyworkmsts", async (AppDbContext db, ITenantContext t, st
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.ROWWorkCode).ThenBy(x => x.ModelCode).Take(1000)
-        .Select(x => new { x.Id, x.ROWWorkCode, x.ROWWorkName, x.ModelCode, x.AppTypeCode, x.RateHour, x.RatePrice, x.Price, x.VAT, x.Remark, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ROWWID, x.ROWWorkCode, x.ROWWorkName, x.ModelCode, x.AppTypeCode, x.RateHour, x.RatePrice, x.Price, x.VAT, x.Remark, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+
+// Ký tự bị cấm trong mã công việc và mã model (nguồn kiểm bằng 4 lần Contains).
+string[] warrantyWorkForbiddenChars = { "@", "#", "$", "%" };
+
+/// <summary>
+/// Kiểm một dòng hạng mục công bảo hành — giữ NGUYÊN VĂN và ĐÚNG THỨ TỰ 11 luật của
+/// FrmMstWarrantyWorkMng. Chú ý ngưỡng BẤT ĐỐI XỨNG: giờ định mức và giá định mức phải &gt; 0,
+/// còn giá bán và thuế chỉ cần &gt;= 0.
+/// </summary>
+string? ValidateWarrantyWorkLine(
+    string? workCode, string? workName, string? modelCode,
+    decimal rateHour, decimal ratePrice, decimal price, decimal vat, string? flagActive)
+{
+    var code = (workCode ?? "").Trim();
+    if (code.Length == 0) return "Mã công việc không được bỏ trống!";
+    if (warrantyWorkForbiddenChars.Any(code.Contains))
+        return "Mã công việc không được chứa ký tự '@'/'#'/'$'/'%'!";
+
+    if (string.IsNullOrWhiteSpace(workName)) return "Tên công việc không được bỏ trống!";
+
+    // Mã model được phép BỎ TRỐNG; chỉ khi có nhập mới kiểm ký tự cấm.
+    var model = (modelCode ?? "").Trim();
+    if (model.Length > 0 && warrantyWorkForbiddenChars.Any(model.Contains))
+        return "Mã model không được chứa ký tự '@'/'#'/'$'/'%'!";
+
+    if (rateHour <= 0) return "Giá trị của Giờ định mức phải lớn hơn 0!";
+    if (ratePrice <= 0) return "Giá trị của Giá định mức phải lớn hơn 0!";
+    if (price < 0) return "Giá trị của Giá bán phải lớn hơn hoặc bằng 0!";
+    if (vat < 0) return "Giá trị của Thuế phải lớn hơn hoặc bằng 0!";
+
+    var flag = (flagActive ?? "").Trim();
+    if (flag.Length > 0 && flag != "0" && flag != "1") return "Trạng thái chỉ có thể là 0 hoặc 1!";
+    return null;
+}
 
 app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.ROWWorkCode ?? "").Trim().ToUpperInvariant();
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã hạng mục công." });
-    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
-    if (dto.RateHour < 0 || dto.RatePrice < 0 || dto.Price < 0) return Results.BadRequest(new { error = "Giờ công/đơn giá không được âm." });
+    var lineError = ValidateWarrantyWorkLine(code, dto.ROWWorkName, model, dto.RateHour, dto.RatePrice, dto.Price, dto.VAT, dto.FlagActive);
+    if (lineError is not null) return Results.BadRequest(new { error = lineError });
+
     var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code && x.ModelCode == model);
     if (row is null) { row = new WarrantyWorkMst { OrgId = t.OrgId, ROWWorkCode = code, ModelCode = model }; db.WarrantyWorkMsts.Add(row); }
+    if (!string.IsNullOrWhiteSpace(dto.ROWWID)) row.ROWWID = dto.ROWWID!.Trim();
     row.ROWWorkName = dto.ROWWorkName; row.AppTypeCode = dto.AppTypeCode; row.RateHour = dto.RateHour; row.RatePrice = dto.RatePrice; row.Price = dto.Price; row.VAT = dto.VAT; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ROWWorkCode, row.ModelCode, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ROWWID, row.ROWWorkCode, row.ModelCode, row.FlagActive });
+}).RequireAuthorization();
+
+// Nhập hàng loạt từ Excel — port 1:1 nhánh import của FrmMstWarrantyWorkMng.
+// Nguồn kiểm TOÀN BỘ file trước; gặp lỗi là DỪNG và KHÔNG lưu gì (return giữa vòng lặp).
+app.MapPost("/api/warrantyworkmsts/import", async (
+    WarrantyWorkImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = dto.Rows ?? new();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "File excel không có dữ liệu!" });
+
+    for (var i = 0; i < lines.Count; i++)
+    {
+        var line = lines[i];
+        var code = (line.ROWWorkCode ?? "").Trim();
+        var model = (line.ModelCode ?? "").Trim();
+
+        var lineError = ValidateWarrantyWorkLine(code, line.ROWWorkName, model, line.RateHour, line.RatePrice, line.Price, line.VAT, line.FlagActive);
+        if (lineError is not null) return Results.BadRequest(new { row = i + 1, error = lineError });
+
+        // ⚠️ Nguồn so trùng CHỈ theo mã công việc — vế so ModelCode đã bị COMMENT.
+        // Nên hai dòng cùng mã CV nhưng khác model VẪN bị coi là trùng.
+        var duplicated = lines
+            .Where((other, otherIndex) => otherIndex != i)
+            .Any(other => string.Equals((other.ROWWorkCode ?? "").Trim(), code, StringComparison.OrdinalIgnoreCase));
+        if (duplicated) return Results.BadRequest(new { row = i + 1, error = "Mã công việc trong file excel bị trùng lặp!" });
+    }
+
+    var now = DateTime.Now;
+    int added = 0, updated = 0;
+    foreach (var line in lines)
+    {
+        var code = line.ROWWorkCode!.Trim().ToUpperInvariant();
+        var model = (line.ModelCode ?? "").Trim().ToUpperInvariant();
+        var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code && x.ModelCode == model);
+        if (row is null)
+        {
+            row = new WarrantyWorkMst { OrgId = t.OrgId, ROWWorkCode = code, ModelCode = model };
+            db.WarrantyWorkMsts.Add(row); added++;
+        }
+        else updated++;
+        row.ROWWorkName = line.ROWWorkName; row.AppTypeCode = line.AppTypeCode;
+        row.RateHour = line.RateHour; row.RatePrice = line.RatePrice;
+        row.Price = line.Price; row.VAT = line.VAT; row.Remark = line.Remark;
+        if (!string.IsNullOrWhiteSpace(line.FlagActive)) row.FlagActive = line.FlagActive!;
+        row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, updated, total = lines.Count, message = "Import thành công!" });
 }).RequireAuthorization();
 
 app.MapPost("/api/warrantyworkmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -18121,7 +18204,8 @@ record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDay
 record ComplaintErrorCodeDto(string? ErrorCode, string? ErrorName, string? ErrorDesc, string? ErrorTypeCode, int WarrantyDate, int WarrantyKm, string? Remark, string? FlagActive);
 record ROWarrantyTypePhotoDto(string? ROWPTCode, string? ROWPTName);
 record ROWarrantyTypeDto(string? ROWTypeCode, string? ROWTypeName, string? ROWTypeDtlCode, string? ROWTypeDtlName, string? ROWPhotoType, string? FlagActive, List<ROWarrantyTypePhotoDto>? Photos = null, string? ROWTID = null);
-record WarrantyWorkMstDto(string? ROWWorkCode, string? ROWWorkName, string? ModelCode, string? AppTypeCode, decimal RateHour, decimal RatePrice, decimal Price, decimal VAT, string? Remark, string? FlagActive);
+record WarrantyWorkMstDto(string? ROWWorkCode, string? ROWWorkName, string? ModelCode, string? AppTypeCode, decimal RateHour, decimal RatePrice, decimal Price, decimal VAT, string? Remark, string? FlagActive, string? ROWWID = null);
+record WarrantyWorkImportDto(List<WarrantyWorkMstDto>? Rows);
 record CompartmentMstDto(string? CompartmentCode, string? CompartmentName, string? FlagActive);
 record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive);
 record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive);
