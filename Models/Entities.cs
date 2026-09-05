@@ -805,6 +805,49 @@ public sealed class GpsInstall
     public string MapStatus { get; set; } = "0";  // 0=chưa map VIN, 1=đã map — port FrmSto_StoBalanceGPS
     public string? GpsMapVINNo { get; set; }      // số lô map VIN (auto-gen theo lượt Apply)
     public DateTime? MappedAt { get; set; }
+
+    /// <summary>
+    /// 🔴 TRỤC TRẠNG THÁI THỨ HAI, ĐỘC LẬP với <see cref="MapStatus"/> (`Sto_StoBalanceGPS.InStatus`):
+    /// "1" thiết bị ĐANG TRONG KHO · "0" ĐÃ XUẤT kho.
+    /// Port cũ chỉ có trục "đã map VIN hay chưa" ⇒ không phân biệt được thiết bị **còn trong kho**
+    /// với thiết bị **đã xuất mà chưa map**.
+    /// </summary>
+    public string InStatus { get; set; } = "1";
+
+    /// <summary>Kho chứa thiết bị (`StorageCode`) — job auto-unmap chạy trên kho "STOGPS".</summary>
+    public string? StorageCode { get; set; }
+
+    /// <summary>
+    /// Số HỘP GPS (`GPSBoxNo`) — nguồn tách RIÊNG khỏi số thiết bị (`GPSDvNo`, ở đây là <see cref="GpsNo"/>).
+    /// Port cũ gộp thành 1 cột ⇒ mất khả năng tra theo hộp. (Thực thể `GpsOutDetail` của chính MiniHTC
+    /// đã tách đúng 2 cột này — chỗ đó đúng, chỗ này gộp.)
+    /// </summary>
+    public string? GpsBoxNo { get; set; }
+
+    /// <summary>VIN THẬT của xe (`VINReal`) — khác <see cref="Vin"/> là VIN đang được map.
+    /// Lệch nhau ⇒ map sai xe; port cũ không có cột này nên không phát hiện được.</summary>
+    public string? VinReal { get; set; }
+
+    /// <summary>Loại chứng từ nguồn (`RefNo_Type`) — truy ngược thiết bị về chứng từ nhập/xuất.</summary>
+    public string? RefNoType { get; set; }
+    /// <summary>Khoá chứng từ nguồn (`RefNo_PK`).</summary>
+    public string? RefNoPk { get; set; }
+
+    /// <summary>Cờ KHOÁ thiết bị (`BlockStatus`) — thiết bị bị khoá thì không cho thao tác.</summary>
+    public string BlockStatus { get; set; } = "0";
+
+    /// <summary>
+    /// 🔴 Vị trí xe do API GPS trả về (`VINAddress`) — **là căn cứ để GỠ MAP TỰ ĐỘNG**:
+    /// job `AutoUnMapVin` coi `Address` RỖNG nghĩa là **thiết bị đã bị tháo khỏi xe** và gỡ map.
+    /// Không có cột này thì không thực hiện được luật đó.
+    /// </summary>
+    public string? VinAddress { get; set; }
+
+    /// <summary>Số lô GỠ map VIN (`GPSUnMapVINNo`) — nguồn sinh 1 số cho mỗi lượt gỡ.</summary>
+    public string? GpsUnMapVINNo { get; set; }
+    public DateTime? UnMappedAt { get; set; }
+
+    public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -12401,7 +12401,8 @@ app.MapGet("/api/gpsinstalls", async (AppDbContext db, ITenantContext t, string?
     var q = db.GpsInstalls.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.SyncStatus == status);
     if (!string.IsNullOrWhiteSpace(mapStatus)) q = q.Where(x => x.MapStatus == mapStatus);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt, x.MapStatus, x.GpsMapVINNo, x.MappedAt }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt, x.MapStatus, x.GpsMapVINNo, x.MappedAt,
+        x.InStatus, x.StorageCode, x.GpsBoxNo, x.VinReal, x.RefNoType, x.RefNoPk, x.BlockStatus, x.VinAddress, x.GpsUnMapVINNo, x.UnMappedAt, x.Remark }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -12434,9 +12435,80 @@ app.MapPost("/api/gpsinstalls/import", async (List<GpsInstallDto> rows, AppDbCon
     var dupe = list.GroupBy(r => (r.Vin.Trim().ToUpperInvariant(), r.GpsNo.Trim().ToUpperInvariant())).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN: '{dupe.Key.Item1}' - GPS ID: '{dupe.Key.Item2}' bị lặp trong file excel!" });
     foreach (var r in list)
-        db.GpsInstalls.Add(new GpsInstall { OrgId = t.OrgId, Vin = r.Vin.Trim().ToUpperInvariant(), GpsNo = r.GpsNo.Trim().ToUpperInvariant(), DateActive = r.DateActive!.Value });
+        db.GpsInstalls.Add(new GpsInstall { OrgId = t.OrgId, Vin = r.Vin.Trim().ToUpperInvariant(), GpsNo = r.GpsNo.Trim().ToUpperInvariant(), DateActive = r.DateActive!.Value,
+            StorageCode = r.StorageCode, GpsBoxNo = r.GpsBoxNo, VinReal = r.VinReal, RefNoType = r.RefNoType, RefNoPk = r.RefNoPk,
+            InStatus = string.IsNullOrWhiteSpace(r.InStatus) ? "1" : r.InStatus!.Trim(),
+            BlockStatus = string.IsNullOrWhiteSpace(r.BlockStatus) ? "0" : r.BlockStatus!.Trim(),
+            Remark = r.Remark });
     await db.SaveChangesAsync();
     return Results.Ok(new { imported = list.Count });
+}).RequireAuthorization();
+
+// ===== 🔴 GỠ MAP VIN TỰ ĐỘNG — port job `AutoUnMapVin` (2010.HTC Refs/Jobs/DMS.Sale.MapVin.Job) =====
+// Luật: lấy các thiết bị đang map (MapStatus="1"), gọi API GPS theo LÔ 100 IMEI, thiết bị nào API trả về
+// **Address RỖNG** thì coi là **đã bị tháo khỏi xe** ⇒ gỡ map. Mỗi lượt gỡ sinh 1 số lô (GPSUnMapVINNo).
+// ⚠️ MiniHTC không gọi API GPS thật ⇒ nhận kết quả API qua payload; phần "gọi API" là XẤP XỈ CÓ CHỦ ĐÍCH.
+const int GpsAutoUnmapPageSize = 100;   // nguồn chia lô đúng 100 IMEI mỗi lần gọi API
+
+app.MapGet("/api/gpsinstalls/auto-unmap/candidates", async (
+    AppDbContext db, ITenantContext t, string? storageCode) =>
+{
+    var code = string.IsNullOrWhiteSpace(storageCode) ? "STOGPS" : storageCode!.Trim();
+    var list = await db.GpsInstalls
+        .Where(x => x.OrgId == t.OrgId && x.MapStatus == "1")
+        .OrderBy(x => x.Id).Select(x => x.GpsNo).ToListAsync();
+    var pages = new List<object>();
+    for (var i = 0; i < list.Count; i += GpsAutoUnmapPageSize)
+        pages.Add(new { page = i / GpsAutoUnmapPageSize + 1, imeis = list.Skip(i).Take(GpsAutoUnmapPageSize) });
+    return Results.Ok(new { storageCode = code, total = list.Count, pageSize = GpsAutoUnmapPageSize,
+        pageCount = pages.Count, pages,
+        note = "Gọi API GPS theo từng lô IMEI này, rồi POST kết quả sang /api/gpsinstalls/auto-unmap." });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsinstalls/auto-unmap", async (
+    List<GpsOnlineResultDto> results, AppDbContext db, ITenantContext t, string? storageCode) =>
+{
+    if (results is null || results.Count == 0)
+        return Results.BadRequest(new { error = "Chưa có kết quả API GPS để xét gỡ map." });
+    var code = string.IsNullOrWhiteSpace(storageCode) ? "STOGPS" : storageCode!.Trim();
+
+    var imeis = results.Where(r => !string.IsNullOrWhiteSpace(r.Imei))
+        .Select(r => r.Imei!.Trim().ToUpperInvariant()).ToList();
+    var rows = await db.GpsInstalls
+        .Where(x => x.OrgId == t.OrgId && x.MapStatus == "1" && imeis.Contains(x.GpsNo)).ToListAsync();
+
+    var unmapNo = "GUM" + DateTime.Now.ToString("yyMMddHHmmss");
+    var now = DateTime.Now;
+    var unmapped = new List<object>();
+    var keptOnline = 0;
+
+    foreach (var r in results)
+    {
+        var imei = (r.Imei ?? "").Trim().ToUpperInvariant();
+        var row = rows.FirstOrDefault(x => x.GpsNo == imei);
+        if (row is null) continue;
+
+        // 🔴 Chính là luật của nguồn: Address RỖNG ⇒ thiết bị đã bị THÁO ⇒ gỡ map.
+        if (!string.IsNullOrWhiteSpace(r.Address))
+        {
+            row.VinAddress = r.Address;   // còn online: chỉ cập nhật vị trí, KHÔNG gỡ
+            keptOnline++;
+            continue;
+        }
+        unmapped.Add(new { row.GpsNo, vinWas = row.Vin });
+        row.MapStatus = "0";
+        row.VinAddress = null;
+        row.GpsUnMapVINNo = unmapNo;
+        row.UnMappedAt = now;
+        row.StorageCode ??= code;
+    }
+
+    if (unmapped.Count == 0)
+        return Results.Ok(new { storageCode = code, unmapped = 0, keptOnline,
+            note = "Không có thiết bị tháo!" });   // đúng thông điệp của nguồn
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { storageCode = code, gpsUnMapVINNo = unmapNo, unmapped = unmapped.Count, keptOnline, items = unmapped });
 }).RequireAuthorization();
 
 // Đồng bộ (khớp btnDongBoNggayXuatKho_Click gốc — mô phỏng gọi Veloca, luôn thành công trên fleet-demo).
@@ -19462,7 +19534,8 @@ record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTi
 record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);
 record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, string? ModelName, string? SpecDescription, string? GpsId, DateTime CostGPSStartDate, DateTime CostGPSEndDate, int DeductDate, decimal PriceGPS, string? ContractGPS);
 record GpsPaymentDto(DateTime? PmtMonth, List<GpsPaymentLineDto>? Lines);
-record GpsInstallDto(string Vin, string GpsNo, DateTime? DateActive);
+record GpsInstallDto(string Vin, string GpsNo, DateTime? DateActive, string? StorageCode = null, string? GpsBoxNo = null, string? VinReal = null, string? RefNoType = null, string? RefNoPk = null, string? InStatus = null, string? BlockStatus = null, string? Remark = null);
+record GpsOnlineResultDto(string? Imei, string? Address);
 record GpsInstallMapDto(string Vin, string GpsNo);
 record StoragePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtNameVN, string? DealerCode, DateTime? StorageDate, DateTime? DeliveryOutDate, decimal CostCoat, decimal CostStorage, string? Remark);
 record StoragePaymentDto(DateTime? PmtMonth, List<StoragePaymentLineDto>? Lines);
