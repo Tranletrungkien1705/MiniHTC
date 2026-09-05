@@ -4161,10 +4161,29 @@ public sealed class DocReq
     public Guid OrgId { get; set; }
     public string DocReqNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";      // Draft → Submitted → Done
+    /// <summary>
+    /// 🔴 Trạng thái ĐỀ NGHỊ (`Car_DocReqList.DRListStatus`) theo `TConst.Stage`:
+    /// **"P" chờ duyệt · "A1" duyệt cấp 1 · "A2" duyệt cấp 2 · "F" hoàn tất**.
+    /// ⚠️ Port cũ `Draft/Submitted/Done` là **tên tự đặt**, và quan trọng hơn: port cũ đặt trạng thái
+    /// **CHỈ Ở HEADER** trong khi nguồn có **HAI TẦNG** — header `DRListStatus` và **dòng `DRDtlStatus`**;
+    /// duyệt cấp 2 / từ chối / huỷ của nguồn đều thao tác **theo TỪNG XE**, không theo cả đề nghị.
+    /// </summary>
+    public string Status { get; set; } = "P";
+    /// <summary>
+    /// 🔴 Loại đề nghị (`Car_DocReqList.TypeCRR`, `TConst.CarDocReqType`):
+    /// **"NORMAL" thường · "SPECIAL" đặc biệt · "DEALER" đại lý tạo · "DEALERTCG" đại lý TCG**.
+    /// Quyết định LUỒNG DUYỆT: loại **NORMAL duyệt 1 lần là nhảy thẳng P→"A2"** (ghi luôn người/ngày
+    /// duyệt cấp 2), các loại khác chỉ lên "A1" rồi phải duyệt cấp 2 theo từng xe.
+    /// Nguồn có **3 đường tạo riêng**: `CarDocReqCreateHTC` · `CreateDealer` · `TCGCreateDealer`.
+    /// </summary>
+    public string TypeCRR { get; set; } = "NORMAL";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SubmittedAt { get; set; }
     public DateTime? DoneAt { get; set; }
+    public DateTime? ApprovedDate1 { get; set; }
+    public string? ApprovedBy1 { get; set; }
+    public DateTime? ApprovedDate2 { get; set; }
+    public string? ApprovedBy2 { get; set; }
 }
 
 /// <summary>Dòng xe làm hồ sơ (Car_DocReqDtl): VIN + model + màu + số máy + tiền.</summary>
@@ -4178,6 +4197,19 @@ public sealed class DocReqCar
     public string? ColorCode { get; set; }
     public string? EngineNo { get; set; }
     public decimal AmountTotal { get; set; }
+    /// <summary>
+    /// 🔴 Trạng thái của **TỪNG XE** trong đề nghị (`Car_DocReqDtl.DRDtlStatus`) — trục mà port cũ THIẾU HẲN.
+    /// "P" chờ · "A1" theo header · "A2" đã duyệt cấp 2 · "R" từ chối · "C" huỷ.
+    /// Guard nguồn: duyệt cấp 2 chỉ từ **"A1"**; **từ chối chỉ từ "A2"** (từ chối SAU khi đã duyệt cấp 2);
+    /// huỷ từ **"A1" hoặc "A2"**.
+    /// </summary>
+    public string DRDtlStatus { get; set; } = "P";
+    public DateTime? ApprovedDate2 { get; set; }
+    public string? ApprovedBy2 { get; set; }
+    public DateTime? RejectDate { get; set; }
+    public string? RejectBy { get; set; }
+    /// <summary>Ghi chú khi từ chối/huỷ dòng (`Car_DocReqDtl.Remark`).</summary>
+    public string? Remark { get; set; }
     public DateTime? LetterRepresentationDate { get; set; }  // ngày tờ trình — port FrmUpdateDocReq
     public string? LetterRepresentationNo { get; set; }      // số tờ trình
     public int? LoanSupportDay { get; set; }                 // số ngày hỗ trợ vay vốn
