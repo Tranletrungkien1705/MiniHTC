@@ -1584,12 +1584,31 @@ public sealed class TrainingParticipant
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long CourseId { get; set; }
+
+    /// <summary>
+    /// Mã bản ghi tham gia (TRAININGDTLCODE) — định danh thật ở nguồn.
+    /// Cùng một NVBH có thể tham gia LẠI một khoá ở đợt khác, nên khoá phải là mã này;
+    /// khoá theo (khoá học, NVBH) là hẹp hơn nguồn.
+    /// </summary>
+    public string TrainingDtlCode { get; set; } = "";
+
     public string? SMHyundaiCode { get; set; }
+
+    /// <summary>Tên NVBH — nguồn trả kèm trong lưới tra cứu (cột MS_SMNAME).</summary>
+    public string? SMName { get; set; }
+
     public DateTime? OrganizeDate { get; set; }
     public string? FormalityTraining { get; set; }  // hình thức đào tạo (TblMst_TrainingDtl.FormalityTraining — WinForm line 168)
     public string? Place { get; set; }              // địa điểm (TblMst_TrainingDtl.Place — WinForm line 170)
     public string? ResultIn { get; set; }
     public string? ResultOut { get; set; }
+
+    /// <summary>Cờ hiệu lực (FLAGACTIVE) — nguồn có lọc theo cờ này trong Mst_TrainingDtl_Get.</summary>
+    public string FlagActive { get; set; } = "1";
+
+    /// <summary>Vết cập nhật (LOGLUDATETIME / LOGLUBY).</summary>
+    public DateTime? UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
 }
 
 /// <summary>Đề nghị thu hồi hồ sơ xe (RD_ReqRedeem header) — port 1:1 FrmNewRedeem/FrmMngRedeem (2010.HTC/Sales/Redeem). Header: số ĐN + ngày + đại lý; state-machine Created→Approved/Rejected. Chi tiết theo VIN, loại Trực tiếp/Bảo lãnh.</summary>

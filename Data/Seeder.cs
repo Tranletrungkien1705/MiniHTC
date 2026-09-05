@@ -655,6 +655,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StockReqs\" ADD COLUMN IF NOT EXISTS \"PlateNo\" text NULL",
                 "ALTER TABLE public.\"StockReqs\" ADD COLUMN IF NOT EXISTS \"FrameNo\" text NULL",
                 "ALTER TABLE public.\"StockReqs\" ADD COLUMN IF NOT EXISTS \"Note\" text NULL",
+                // Tham gia đào tạo (Mst_TrainingDtl — FrmQLTienTrinhThamGiaKhoaDT, 2010.HTC): mã bản ghi + tên NV + cờ hiệu lực + vết cập nhật
+                "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"TrainingDtlCode\" text NOT NULL DEFAULT ''",
+                "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"SMName\" text NULL",
+                "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+                "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"UpdatedAt\" timestamp NULL",
+                "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"UpdatedBy\" text NULL",
                 // Chứng chỉ NVBH (Mst_SalesManCertificate — FrmMst_SalesManCertificateCreate/FrmQLTienTrinhCapChungChi, 2010.HTC):
                 // bổ sung SMCerNo (định danh thật, cho phép cấp lại nhiều lần) + Remark + vết tạo/sửa
                 "ALTER TABLE public.\"SalesManCertificates\" ADD COLUMN IF NOT EXISTS \"SMCerNo\" text NOT NULL DEFAULT ''",

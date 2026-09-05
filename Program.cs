@@ -6393,7 +6393,7 @@ app.MapGet("/api/trainingcourses/{id}/participants", async (long id, AppDbContex
 {
     var course = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (course is null) return Results.NotFound(new { id });
-    var items = await db.TrainingParticipants.Where(x => x.OrgId == t.OrgId && x.CourseId == id).OrderBy(x => x.OrganizeDate).Select(x => new { x.Id, x.SMHyundaiCode, x.OrganizeDate, x.FormalityTraining, x.Place, x.ResultIn, x.ResultOut }).ToListAsync();
+    var items = await db.TrainingParticipants.Where(x => x.OrgId == t.OrgId && x.CourseId == id).OrderBy(x => x.OrganizeDate).Select(x => new { x.Id, x.TrainingDtlCode, x.SMHyundaiCode, x.SMName, x.OrganizeDate, x.FormalityTraining, x.Place, x.ResultIn, x.ResultOut, x.FlagActive, x.UpdatedAt }).ToListAsync();
     return Results.Ok(new { course = new { course.Id, course.TrainingUserCode, course.TrainingName }, count = items.Count, items });
 }).RequireAuthorization();
 
@@ -6406,10 +6406,92 @@ app.MapPost("/api/trainingcourses/{id}/participants", async (long id, TrainingPa
     if (dto.OrganizeDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày tổ chức." });
     var exists = await db.TrainingParticipants.AnyAsync(x => x.OrgId == t.OrgId && x.CourseId == id && x.SMHyundaiCode == sm && x.OrganizeDate == dto.OrganizeDate);
     if (exists) return Results.BadRequest(new { error = $"NVBH {sm} đã tham gia khóa này vào ngày đó." });
-    var p = new TrainingParticipant { OrgId = t.OrgId, CourseId = id, SMHyundaiCode = sm, OrganizeDate = dto.OrganizeDate, FormalityTraining = dto.FormalityTraining, Place = dto.Place, ResultIn = dto.ResultIn, ResultOut = dto.ResultOut };
+    var p = new TrainingParticipant
+    {
+        OrgId = t.OrgId, CourseId = id,
+        // Mã bản ghi tham gia (TRAININGDTLCODE) — định danh thật của nguồn, sinh khi client không truyền.
+        TrainingDtlCode = string.IsNullOrWhiteSpace(dto.TrainingDtlCode) ? "TDT" + DateTime.Now.ToString("yyMMddHHmmssfff") : dto.TrainingDtlCode.Trim(),
+        SMHyundaiCode = sm, SMName = dto.SMName, OrganizeDate = dto.OrganizeDate,
+        FormalityTraining = dto.FormalityTraining, Place = dto.Place,
+        ResultIn = dto.ResultIn, ResultOut = dto.ResultOut,
+        FlagActive = dto.FlagActive == "0" ? "0" : "1",
+        UpdatedAt = DateTime.Now
+    };
     db.TrainingParticipants.Add(p);
     await db.SaveChangesAsync();
     return Results.Ok(new { p.Id, p.SMHyundaiCode, p.OrganizeDate });
+}).RequireAuthorization();
+
+// Tiến trình tham gia khoá đào tạo — port 1:1 FrmQLTienTrinhThamGiaKhoaDT (2010.HTC/Admin/Product):
+// tra cứu lịch sử đào tạo XUYÊN KHOÁ của nhân viên (nguồn: DealerService.Mst_TrainingDtl_Get, 7 tham số lọc)
+// rồi xuất Excel. Lưới nguồn ghép Mst_Training (mã + tên khoá), Mst_SalesMan (mã + tên NV) và tên đại lý.
+app.MapGet("/api/trainingparticipants/progress", async (
+    AppDbContext db, ITenantContext t,
+    string? trainingCode, string? trainingUserCode, string? trainingName,
+    string? smHyundaiCode, string? smName, DateTime? organizeDate, string? flagActive) =>
+{
+    var q = db.TrainingParticipants.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(smHyundaiCode)) q = q.Where(x => x.SMHyundaiCode!.Contains(smHyundaiCode!));
+    if (!string.IsNullOrWhiteSpace(smName)) q = q.Where(x => x.SMName != null && x.SMName.Contains(smName!));
+    if (organizeDate.HasValue) q = q.Where(x => x.OrganizeDate == organizeDate);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+
+    // Lọc theo khoá học: nguồn lọc trên bảng đã ghép, nên phải quy về danh sách khoá trước.
+    if (!string.IsNullOrWhiteSpace(trainingCode)
+        || !string.IsNullOrWhiteSpace(trainingUserCode)
+        || !string.IsNullOrWhiteSpace(trainingName))
+    {
+        var courseQuery = db.TrainingCourses.Where(c => c.OrgId == t.OrgId);
+        if (!string.IsNullOrWhiteSpace(trainingCode)) courseQuery = courseQuery.Where(c => c.TrainingUserCode == trainingCode);
+        if (!string.IsNullOrWhiteSpace(trainingUserCode)) courseQuery = courseQuery.Where(c => c.TrainingUserCode.Contains(trainingUserCode!));
+        if (!string.IsNullOrWhiteSpace(trainingName)) courseQuery = courseQuery.Where(c => c.TrainingName != null && c.TrainingName.Contains(trainingName!));
+        var courseIdsFiltered = await courseQuery.Select(c => c.Id).ToListAsync();
+        q = q.Where(x => courseIdsFiltered.Contains(x.CourseId));
+    }
+
+    var rows = await q.OrderBy(x => x.SMHyundaiCode).ThenBy(x => x.OrganizeDate).Take(1000).ToListAsync();
+    var courseIdsOfRows = rows.Select(r => r.CourseId).Distinct().ToList();
+    var courses = await db.TrainingCourses
+        .Where(c => c.OrgId == t.OrgId && courseIdsOfRows.Contains(c.Id))
+        .Select(c => new { c.Id, c.TrainingUserCode, c.TrainingName, c.DealerCode })
+        .ToListAsync();
+    var courseById = courses.ToDictionary(c => c.Id);
+
+    var dealerCodes = courses.Where(c => c.DealerCode != null).Select(c => c.DealerCode!).Distinct().ToList();
+    var dealerRows = await db.Dealers
+        .Where(d => d.OrgId == t.OrgId && dealerCodes.Contains(d.DealerCode))
+        .Select(d => new { d.DealerCode, d.DealerName })
+        .ToListAsync();
+    var dealerNameByCode = dealerRows
+        .GroupBy(d => d.DealerCode)
+        .ToDictionary(g => g.Key, g => g.First().DealerName);
+
+    var items = rows.Select((r, i) =>
+    {
+        courseById.TryGetValue(r.CourseId, out var course);
+        var dealerCode = course?.DealerCode;
+        return new
+        {
+            index = i + 1,
+            r.TrainingDtlCode,
+            trainingUserCode = course?.TrainingUserCode,
+            trainingName = course?.TrainingName,
+            r.SMHyundaiCode,
+            r.SMName,
+            dealerCode,
+            dealerName = dealerCode is not null && dealerNameByCode.TryGetValue(dealerCode, out var dn) ? dn : null,
+            r.OrganizeDate,
+            r.FormalityTraining,
+            r.Place,
+            r.ResultIn,
+            r.ResultOut,
+            r.FlagActive,
+            r.UpdatedAt
+        };
+    }).ToList();
+
+    // Nguồn hiện thông báo "không tìm thấy kết quả" khi lưới rỗng.
+    return Results.Ok(new { count = items.Count, notFound = items.Count == 0, items });
 }).RequireAuthorization();
 
 app.MapDelete("/api/trainingcourses/{id}/participants/{pid}", async (long id, long pid, AppDbContext db, ITenantContext t) =>
@@ -17817,7 +17899,7 @@ record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit,
 record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive, string? SMCerNo = null, string? Remark = null);
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
-record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut);
+record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? TrainingDtlCode = null, string? SMName = null, string? FlagActive = null);
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines);
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
