@@ -4549,9 +4549,42 @@ public sealed class BankingTrans
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }
     public DateTime? ApprovedAt { get; set; }
-    // Trạng thái bên ngân hàng (BKTRANSBANKSTATUS) — port FrmQL_DeNghiGDNganHang: P(chưa gửi NH)→A1/A2/A3(các bước xử lý NH), độc lập với Status nội bộ.
+    /// <summary>
+    /// Trạng thái bên NGÂN HÀNG (`BkTransBankStatus`, `TConst.BkTransBankStatus` — hệ `ERP.DMS.HTC.VPBank.WS`,
+    /// **chỉ có trên máy 150**): "N" · "P" · "C" · **"A0".."A5"** các mức duyệt · "F" hoàn tất · "R" từ chối.
+    /// 📌 Port cũ chỉ ghi nhận P/A1/A2/A3 — nguồn có **A0 và A4, A5** nữa, cùng "F"/"C"/"R".
+    /// </summary>
     public string BankStatus { get; set; } = "P";
     public DateTime? PushedToBankAt { get; set; }
+
+    /// <summary>Mã tham chiếu do ngân hàng cấp khi báo kết quả về (`RefBankCode`).</summary>
+    public string? RefBankCode { get; set; }
+    /// <summary>Ghi chú của ngân hàng trả về (`BankRemark`).</summary>
+    public string? BankRemark { get; set; }
+    public DateTime? BankUpdatedAt { get; set; }
+
+    // --- Nhóm GIẢI NGÂN (LD) — ngân hàng trả về ---
+    /// <summary>Số khế ước giải ngân. ⚠️ Nguồn CÓ guard "Số LDNo trống!" nhưng **đã COMMENT** ⇒ KHÔNG bắt buộc.</summary>
+    public string? LDNo { get; set; }
+    public string? DisbursementTerm { get; set; }
+    public decimal DisbursementInterestRate { get; set; }
+
+    // --- Nhóm BẢO LÃNH (MD) ---
+    /// <summary>Số bảo lãnh. ⚠️ Guard "Số MDNo trống!" của nguồn cũng **đã COMMENT** ⇒ KHÔNG bắt buộc.</summary>
+    public string? MDNo { get; set; }
+    public decimal GrtAmount { get; set; }
+    public DateTime? GrtDateStart { get; set; }
+    public DateTime? GrtDateEnd { get; set; }
+    public string? GrtTerm { get; set; }
+    public decimal GrtFee { get; set; }
+    /// <summary>Ngày trả phí bảo lãnh chậm (`GrtLatePmtDate`).</summary>
+    public DateTime? GrtLatePmtDate { get; set; }
+
+    // --- Nhóm LC ---
+    public string? LCNo { get; set; }
+    public decimal LCAmount { get; set; }
+    public DateTime? LCStartDate { get; set; }
+    public DateTime? LCEndDate { get; set; }
 }
 
 /// <summary>Biên bản giao xe (Sto_DlvMinutes) — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes (2010.HTC/Sales/DlvMinutes). BB giao/vận chuyển xe: VIN, tuyến đi-đến, ĐVVT + lái xe, ngày giao + checklist tình trạng xe (JSON ~25 mục OS/IS/SP/DA).</summary>
@@ -5943,6 +5976,32 @@ public sealed class DlvMinutesCheckItem
 
     /// <summary>Kết quả kiểm tra phía NHẬN — rỗng nghĩa là chưa chấm.</summary>
     public string? TStatus { get; set; }
+}
+
+/// <summary>
+/// File ngân hàng gửi kèm giao dịch tài trợ (`RQ_BankingTransBankFile`).
+/// 🔴 Nguồn CHỈ nhận file khi trạng thái ngân hàng = "F", **hoặc** ngân hàng là VietinBank và trạng thái = "A4"
+/// (`BizHTC.VPBank.cs:4000-4006`); và **tổng dung lượng file trong 1 lần gọi API &lt;= 10MB**.
+/// </summary>
+public sealed class BankingTransBankFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Khoá về <see cref="BankingTrans"/> (bảng nguồn \`RQ_BankingTransactions\`).</summary>
+    public long BankingTransId { get; set; }
+    public int FileIndex { get; set; }
+    public string? FileType { get; set; }
+    public string? FilePath { get; set; }
+    public string FileName { get; set; } = "";
+    public string? DocumentType { get; set; }
+    /// <summary>Dung lượng file (byte).</summary>
+    public long FileSize { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>Trạng thái ngân hàng tại thời điểm gửi file.</summary>
+    public string? BkTransBankStatus { get; set; }
+    /// <summary>Trạng thái ký (`TConst.SigningStatus`): P chờ · A đã duyệt · F hoàn tất.</summary>
+    public string? SignStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Xe trên biên bản giao nhận vận chuyển — port 1:1 FrmMngDlvMinutes detail.</summary>

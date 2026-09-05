@@ -14452,11 +14452,127 @@ app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.TransType == type);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
-        .Select(b => new { b.SoDeNghi, b.BankCode, b.TransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt, b.BankStatus, b.PushedToBankAt }).ToListAsync();
+        .Select(b => new { b.SoDeNghi, b.BankCode, b.TransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt, b.BankStatus, b.PushedToBankAt,
+            b.RefBankCode, b.BankRemark, b.BankUpdatedAt,
+            b.LDNo, b.DisbursementTerm, b.DisbursementInterestRate,
+            b.MDNo, b.GrtAmount, b.GrtDateStart, b.GrtDateEnd, b.GrtTerm, b.GrtFee, b.GrtLatePmtDate,
+            b.LCNo, b.LCAmount, b.LCStartDate, b.LCEndDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Gửi đề nghị sang ngân hàng (port 1:1 FrmQL_DeNghiGDNganHang btnSendToBank_Click / RQ_BankingTransactions_PushBank) — không yêu cầu trạng thái, khớp gốc.
+// ===== 🔴 NGÂN HÀNG BÁO KẾT QUẢ VỀ — hệ `ERP.DMS.HTC.VPBank.WS` (CHỈ có trên máy 150) =====
+// TWIN: WS gọi `HTVSalesBankTrans_BankTransactionUpdate_New20230710`, KHÔNG phải bản trần.
+// Port cũ mới có chiều ĐẨY SANG ngân hàng (`/pushbank`); chiều **ngân hàng báo về** thì thiếu hẳn.
+var bkTransBankStatusNames = new Dictionary<string, string>
+{
+    ["N"] = "Chưa gửi",
+    ["P"] = "Chờ ngân hàng xử lý",
+    ["A0"] = "Ngân hàng duyệt mức 0",
+    ["A1"] = "Ngân hàng duyệt mức 1",
+    ["A2"] = "Ngân hàng duyệt mức 2",
+    ["A3"] = "Ngân hàng duyệt mức 3",
+    ["A4"] = "Ngân hàng duyệt mức 4",
+    ["A5"] = "Ngân hàng duyệt mức 5",
+    ["F"] = "Hoàn tất",
+    ["C"] = "Huỷ",
+    ["R"] = "Từ chối",
+};
+
+app.MapGet("/api/bankingtrans/bankstatuses", () => Results.Ok(new
+{
+    bankStatuses = bkTransBankStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    bankCodes = new[] { "VieTin", "VIETINBANK" },
+    note = "Trạng thái NỘI BỘ chỉ đồng bộ theo ngân hàng khi ngân hàng trả F, C hoặc R — mức duyệt A0..A5 KHÔNG đổi trạng thái nội bộ.",
+})).RequireAuthorization();
+
+app.MapPost("/api/bankingtrans/{no}/bank-update", async (
+    string no, BankingTransUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    var st = (dto.BkTransBankStatus ?? "").Trim();
+    if (!bkTransBankStatusNames.ContainsKey(st))
+        return Results.BadRequest(new { error = $"Trạng thái ngân hàng không hợp lệ: {st}." });
+
+    r.BankStatus = st;
+    r.BankRemark = dto.BankRemark;
+    if (!string.IsNullOrWhiteSpace(dto.RefBankCode)) r.RefBankCode = dto.RefBankCode!.Trim();
+
+    // 🔴 Đồng bộ trạng thái NỘI BỘ CÓ ĐIỀU KIỆN — chỉ khi ngân hàng trả F / C / R
+    // (BizHTC.VPBank.cs:4028-4042). Mức duyệt A0..A5 của ngân hàng KHÔNG đổi trạng thái nội bộ.
+    if (st == "F" || st == "C" || st == "R") r.Status = st;
+
+    // ⚠️ Guard "Số LDNo trống!" / "Số MDNo trống!" CÓ trong nguồn nhưng **đã bị COMMENT**
+    // (BizHTC.VPBank.cs:224-236 và 310-322) ⇒ KHÔNG port thành bắt buộc; chỉ ghi khi khác rỗng.
+    if (!string.IsNullOrWhiteSpace(dto.LDNo)) r.LDNo = dto.LDNo!.Trim();
+    if (dto.DisbursementAmount.HasValue) r.AmountDisbursed = dto.DisbursementAmount.Value;
+    if (dto.DisbursementDate.HasValue) r.DisbursementDate = dto.DisbursementDate;
+    if (!string.IsNullOrWhiteSpace(dto.DisbursementTerm)) r.DisbursementTerm = dto.DisbursementTerm;
+    if (dto.DisbursementInterestRate.HasValue) r.DisbursementInterestRate = dto.DisbursementInterestRate.Value;
+
+    if (!string.IsNullOrWhiteSpace(dto.MDNo)) r.MDNo = dto.MDNo!.Trim();
+    if (dto.GrtAmount.HasValue) r.GrtAmount = dto.GrtAmount.Value;
+    if (dto.GrtDateStart.HasValue) r.GrtDateStart = dto.GrtDateStart;
+    if (dto.GrtDateEnd.HasValue) r.GrtDateEnd = dto.GrtDateEnd;
+    if (!string.IsNullOrWhiteSpace(dto.GrtTerm)) r.GrtTerm = dto.GrtTerm;
+    if (dto.GrtFee.HasValue) r.GrtFee = dto.GrtFee.Value;
+    if (dto.GrtLatePmtDate.HasValue) r.GrtLatePmtDate = dto.GrtLatePmtDate;
+
+    if (!string.IsNullOrWhiteSpace(dto.LCNo)) r.LCNo = dto.LCNo!.Trim();
+    if (dto.LCAmount.HasValue) r.LCAmount = dto.LCAmount.Value;
+    if (dto.LCStartDate.HasValue) r.LCStartDate = dto.LCStartDate;
+    if (dto.LCEndDate.HasValue) r.LCEndDate = dto.LCEndDate;
+
+    r.BankUpdatedAt = DateTime.Now;
+
+    // 🔴 File ngân hàng gửi kèm: nguồn CHỈ nhận khi trạng thái = "F",
+    // HOẶC ngân hàng là VietinBank và trạng thái = "A4" (BizHTC.VPBank.cs:4000-4006).
+    var files = dto.Files ?? new List<BankingTransFileDto>();
+    var fileAccepted = st == "F"
+        || (string.Equals(r.BankCode, "VieTin", StringComparison.OrdinalIgnoreCase) && st == "A4");
+    var savedFiles = 0;
+    if (files.Count > 0)
+    {
+        if (!fileAccepted)
+            return Results.BadRequest(new { error = "Chỉ nhận file khi trạng thái ngân hàng là 'F', hoặc VietinBank ở mức 'A4'." });
+        // 🔴 Tổng dung lượng file trong MỘT lần gọi API <= 10MB — giữ nguyên thông điệp gốc của nguồn.
+        var total = files.Sum(f => f.FileSize);
+        if (total > 10L * 1024 * 1024)
+            return Results.BadRequest(new { error = "Tổng dung lượng các file trong 1 api là 10MB." });
+        var idx = await db.BankingTransBankFiles.CountAsync(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id);
+        foreach (var f in files)
+        {
+            db.BankingTransBankFiles.Add(new BankingTransBankFile
+            {
+                OrgId = t.OrgId, BankingTransId = r.Id, FileIndex = ++idx,
+                FileType = f.FileType, FilePath = f.FilePath, FileName = f.FileName ?? "",
+                DocumentType = f.DocumentType, FileSize = f.FileSize, Remark = f.Remark,
+                BkTransBankStatus = st, SignStatus = f.SignStatus,
+            });
+            savedFiles++;
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.SoDeNghi, bankStatus = r.BankStatus, status = r.Status,
+        internalStatusSynced = st == "F" || st == "C" || st == "R", savedFiles });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankingtrans/{no}/files", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (r is null) return Results.NotFound(new { no });
+    var files = await db.BankingTransBankFiles.Where(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id)
+        .OrderBy(f => f.FileIndex).Select(f => new
+        { f.FileIndex, f.FileName, f.FileType, f.FilePath, f.DocumentType, f.FileSize, f.Remark, f.BkTransBankStatus, f.SignStatus })
+        .ToListAsync();
+    return Results.Ok(new { r.SoDeNghi, count = files.Count, totalSize = files.Sum(f => f.FileSize), files });
+}).RequireAuthorization();
+
 app.MapPost("/api/bankingtrans/{no}/pushbank", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -20559,6 +20675,8 @@ record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string
     string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate);
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
+record BankingTransFileDto(string? FileName, string? FileType, string? FilePath, string? DocumentType, long FileSize, string? Remark, string? SignStatus);
+record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, string? RefBankCode, string? LDNo, decimal? DisbursementAmount, DateTime? DisbursementDate, string? DisbursementTerm, decimal? DisbursementInterestRate, string? MDNo, decimal? GrtAmount, DateTime? GrtDateStart, DateTime? GrtDateEnd, string? GrtTerm, decimal? GrtFee, DateTime? GrtLatePmtDate, string? LCNo, decimal? LCAmount, DateTime? LCStartDate, DateTime? LCEndDate, List<BankingTransFileDto>? Files);
 record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
