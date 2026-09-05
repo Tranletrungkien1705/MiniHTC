@@ -223,6 +223,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<OrderPartLine> OrderPartLines => Set<OrderPartLine>();
     public DbSet<WarrantyClaimPartItem> WarrantyClaimPartItems => Set<WarrantyClaimPartItem>();
     public DbSet<StorageTransaction> StorageTransactions => Set<StorageTransaction>();
+    public DbSet<BusinessPlanDtl> BusinessPlanDtls => Set<BusinessPlanDtl>();
     public DbSet<EmailBatch> EmailBatches => Set<EmailBatch>();
     public DbSet<OrderComplain> OrderComplains => Set<OrderComplain>();
     public DbSet<SupplierPayment> SupplierPayments => Set<SupplierPayment>();

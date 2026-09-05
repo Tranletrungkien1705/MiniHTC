@@ -626,7 +626,8 @@ app.MapGet("/api/planheaders", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(h => h.Status == status);
     if (year.HasValue) q = q.Where(h => h.YearPlan == year.Value);
     var items = await q.OrderByDescending(h => h.Id).Take(500)
-        .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt }).ToListAsync();
+        .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt,
+            h.Approve1By, h.Approve2By, h.TimesPlan }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -639,27 +640,34 @@ app.MapPost("/api/planheaders", async (PlanHeaderDto dto, AppDbContext db, ITena
     var h = new BusinessPlanHeader
     {
         OrgId = t.OrgId, BusinessPlanCode = code, DealerCode = dealer, YearPlan = dto.YearPlan,
-        Version = dto.Version == "ACTUAL" ? "ACTUAL" : "INIT", Status = "Pending", HTCStaffInCharge = dto.HTCStaffInCharge
+        Version = dto.Version == "ACTUAL" ? "ACTUAL" : "INIT",
+        Status = "P",   // TConst.BusinessPlanStatus.Pending (BizHTC.zTemp.cs:48481)
+        HTCStaffInCharge = dto.HTCStaffInCharge
     };
     db.BusinessPlanHeaders.Add(h); await db.SaveChangesAsync();
     return Results.Ok(new { h.BusinessPlanCode, h.Status });
 }).RequireAuthorization();
 
-app.MapPost("/api/planheaders/{code}/approve1", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/planheaders/{code}/approve1", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
     if (h is null) return Results.NotFound(new { code });
-    if (h.Status != "Pending") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
-    h.Status = "Approved1"; h.Approve1At = DateTime.Now; await db.SaveChangesAsync();
+    if (h.Status != "P") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
+    h.Status = "A1"; h.Approve1At = DateTime.Now; h.Approve1By = user.Identity?.Name ?? "system";
+    await db.SaveChangesAsync();
     return Results.Ok(new { h.BusinessPlanCode, h.Status });
 }).RequireAuthorization();
 
-app.MapPost("/api/planheaders/{code}/approve2", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/planheaders/{code}/approve2", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
     if (h is null) return Results.NotFound(new { code });
-    if (h.Status != "Approved1") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
-    h.Status = "Approved2"; h.Approve2At = DateTime.Now; await db.SaveChangesAsync();
+    if (h.Status != "A1") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
+    h.Status = "A2"; h.Approve2At = DateTime.Now; h.Approve2By = user.Identity?.Name ?? "system";
+    // 🔴 Nguồn ghi trạng thái DÒNG là "A" (KHÔNG phải "A2" như header) — BizHTC.zTemp.cs:50221.
+    var dtls = await db.BusinessPlanDtls.Where(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code).ToListAsync();
+    foreach (var dl in dtls) dl.BusinessPlanDtlStatus = "A";
+    await db.SaveChangesAsync();
     return Results.Ok(new { h.BusinessPlanCode, h.Status });
 }).RequireAuthorization();
 
@@ -667,9 +675,97 @@ app.MapPost("/api/planheaders/{code}/cancel", async (string code, AppDbContext d
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
     if (h is null) return Results.NotFound(new { code });
-    if (h.Status != "Approved2" || h.Version != "ACTUAL") return Results.BadRequest(new { error = "Kế hoạch kinh doanh không hợp lệ!" });
-    h.Status = "Cancelled"; h.CancelledAt = DateTime.Now; await db.SaveChangesAsync();
+    if (h.Status != "A2" || h.Version != "ACTUAL") return Results.BadRequest(new { error = "Kế hoạch kinh doanh không hợp lệ!" });
+    // ⚠️ Nguồn KHÔNG có mã huỷ trong TConst.BusinessPlanStatus — giữ nguyên "A2" và chỉ ghi mốc huỷ,
+    // KHÔNG tự đặt thêm mã trạng thái mới.
+    h.CancelledAt = DateTime.Now; await db.SaveChangesAsync();
     return Results.Ok(new { h.BusinessPlanCode, h.Status });
+}).RequireAuthorization();
+
+app.MapGet("/api/planheaders/statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ duyệt" },
+        new { code = "A1", name = "Đã duyệt cấp 1" },
+        new { code = "A2", name = "Đã duyệt cấp 2" },
+        new { code = "A", name = "Đã duyệt (dùng cho dòng chi tiết)" } },
+    versions = new[] { "INIT", "ACTUAL" },
+    note = "Nguồn KHÔNG có mã huỷ; huỷ chỉ ghi mốc CancelledAt, trạng thái giữ A2.",
+})).RequireAuthorization();
+
+// 🔴 DÒNG chi tiết kế hoạch KD (BPL_BusinessPlanDtl) — 3 loại × 12 tháng theo từng Model.
+app.MapGet("/api/planheaders/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    var lines = await db.BusinessPlanDtls.Where(l => l.OrgId == t.OrgId && l.BusinessPlanCode == code)
+        .OrderBy(l => l.ModelCode).Select(l => new
+        {
+            l.Id, l.ModelCode, l.BusinessPlanDtlStatus, l.VersionDtl, l.Rtl_TotalQtyDeal, l.BO_TotalQtyBO,
+            l.Rtl_QtyM1, l.Rtl_QtyM2, l.Rtl_QtyM3, l.Rtl_QtyM4, l.Rtl_QtyM5, l.Rtl_QtyM6, l.Rtl_QtyM7, l.Rtl_QtyM8, l.Rtl_QtyM9, l.Rtl_QtyM10, l.Rtl_QtyM11, l.Rtl_QtyM12, l.Ord_QtyM1, l.Ord_QtyM2, l.Ord_QtyM3, l.Ord_QtyM4, l.Ord_QtyM5, l.Ord_QtyM6, l.Ord_QtyM7, l.Ord_QtyM8, l.Ord_QtyM9, l.Ord_QtyM10, l.Ord_QtyM11, l.Ord_QtyM12, l.BO_QtyM1, l.BO_QtyM2, l.BO_QtyM3, l.BO_QtyM4, l.BO_QtyM5, l.BO_QtyM6, l.BO_QtyM7, l.BO_QtyM8, l.BO_QtyM9, l.BO_QtyM10, l.BO_QtyM11, l.BO_QtyM12, 
+        }).ToListAsync();
+    return Results.Ok(new { h.BusinessPlanCode, h.YearPlan, h.Status, h.Version, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/planheaders/{code}/lines", async (
+    string code, BusinessPlanDtlDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    // Nguồn chỉ cho sửa chi tiết khi kế hoạch còn chờ duyệt (BizHTC.zTemp.cs:48742).
+    if (h.Status != "P") return Results.BadRequest(new { error = $"Chỉ sửa chi tiết khi kế hoạch đang chờ duyệt (đang: {h.Status})." });
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (model.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã model." });
+
+    var row = await db.BusinessPlanDtls.FirstOrDefaultAsync(l => l.OrgId == t.OrgId && l.BusinessPlanCode == code && l.ModelCode == model);
+    if (row is null)
+    {
+        row = new BusinessPlanDtl { OrgId = t.OrgId, BusinessPlanCode = code, ModelCode = model };
+        db.BusinessPlanDtls.Add(row);
+    }
+    row.YearPlan = h.YearPlan;
+    row.VersionDtl = h.Version;              // dòng theo phiên bản của header lúc lập
+    row.BusinessPlanDtlStatus = "P";
+    row.Rtl_TotalQtyDeal = dto.Rtl_TotalQtyDeal;
+    row.BO_TotalQtyBO = dto.BO_TotalQtyBO;
+        row.Rtl_QtyM1 = dto.Rtl_QtyM1;
+        row.Rtl_QtyM2 = dto.Rtl_QtyM2;
+        row.Rtl_QtyM3 = dto.Rtl_QtyM3;
+        row.Rtl_QtyM4 = dto.Rtl_QtyM4;
+        row.Rtl_QtyM5 = dto.Rtl_QtyM5;
+        row.Rtl_QtyM6 = dto.Rtl_QtyM6;
+        row.Rtl_QtyM7 = dto.Rtl_QtyM7;
+        row.Rtl_QtyM8 = dto.Rtl_QtyM8;
+        row.Rtl_QtyM9 = dto.Rtl_QtyM9;
+        row.Rtl_QtyM10 = dto.Rtl_QtyM10;
+        row.Rtl_QtyM11 = dto.Rtl_QtyM11;
+        row.Rtl_QtyM12 = dto.Rtl_QtyM12;
+        row.Ord_QtyM1 = dto.Ord_QtyM1;
+        row.Ord_QtyM2 = dto.Ord_QtyM2;
+        row.Ord_QtyM3 = dto.Ord_QtyM3;
+        row.Ord_QtyM4 = dto.Ord_QtyM4;
+        row.Ord_QtyM5 = dto.Ord_QtyM5;
+        row.Ord_QtyM6 = dto.Ord_QtyM6;
+        row.Ord_QtyM7 = dto.Ord_QtyM7;
+        row.Ord_QtyM8 = dto.Ord_QtyM8;
+        row.Ord_QtyM9 = dto.Ord_QtyM9;
+        row.Ord_QtyM10 = dto.Ord_QtyM10;
+        row.Ord_QtyM11 = dto.Ord_QtyM11;
+        row.Ord_QtyM12 = dto.Ord_QtyM12;
+        row.BO_QtyM1 = dto.BO_QtyM1;
+        row.BO_QtyM2 = dto.BO_QtyM2;
+        row.BO_QtyM3 = dto.BO_QtyM3;
+        row.BO_QtyM4 = dto.BO_QtyM4;
+        row.BO_QtyM5 = dto.BO_QtyM5;
+        row.BO_QtyM6 = dto.BO_QtyM6;
+        row.BO_QtyM7 = dto.BO_QtyM7;
+        row.BO_QtyM8 = dto.BO_QtyM8;
+        row.BO_QtyM9 = dto.BO_QtyM9;
+        row.BO_QtyM10 = dto.BO_QtyM10;
+        row.BO_QtyM11 = dto.BO_QtyM11;
+        row.BO_QtyM12 = dto.BO_QtyM12;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, row.ModelCode, row.BusinessPlanDtlStatus, row.VersionDtl });
 }).RequireAuthorization();
 
 // ===== Lái thử xe (port 1:1 FrmMstCarDriverTest — TCMotor) =====
@@ -19554,6 +19650,7 @@ record RetrieveDto(string Vin, string? DealerCode, string StorageCode, DateTime?
 record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
+record BusinessPlanDtlDto(string? ModelCode, decimal Rtl_TotalQtyDeal = 0, decimal BO_TotalQtyBO = 0, decimal Rtl_QtyM1 = 0, decimal Rtl_QtyM2 = 0, decimal Rtl_QtyM3 = 0, decimal Rtl_QtyM4 = 0, decimal Rtl_QtyM5 = 0, decimal Rtl_QtyM6 = 0, decimal Rtl_QtyM7 = 0, decimal Rtl_QtyM8 = 0, decimal Rtl_QtyM9 = 0, decimal Rtl_QtyM10 = 0, decimal Rtl_QtyM11 = 0, decimal Rtl_QtyM12 = 0, decimal Ord_QtyM1 = 0, decimal Ord_QtyM2 = 0, decimal Ord_QtyM3 = 0, decimal Ord_QtyM4 = 0, decimal Ord_QtyM5 = 0, decimal Ord_QtyM6 = 0, decimal Ord_QtyM7 = 0, decimal Ord_QtyM8 = 0, decimal Ord_QtyM9 = 0, decimal Ord_QtyM10 = 0, decimal Ord_QtyM11 = 0, decimal Ord_QtyM12 = 0, decimal BO_QtyM1 = 0, decimal BO_QtyM2 = 0, decimal BO_QtyM3 = 0, decimal BO_QtyM4 = 0, decimal BO_QtyM5 = 0, decimal BO_QtyM6 = 0, decimal BO_QtyM7 = 0, decimal BO_QtyM8 = 0, decimal BO_QtyM9 = 0, decimal BO_QtyM10 = 0, decimal BO_QtyM11 = 0, decimal BO_QtyM12 = 0);
 record PlanHeaderDto(string DealerCode, int YearPlan, string? Version, string? HTCStaffInCharge);
 record ImportSalesManDto(string? SMCode, string? SMHyundaiCode, string? IdentityCardNo, string? DealerCode, string? DepartmentCode, string? SMType,
     string? SMName, string? SMGender, string? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,

@@ -218,12 +218,95 @@ public sealed class BusinessPlanHeader
     public string DealerCode { get; set; } = "";
     public int YearPlan { get; set; }
     public string Version { get; set; } = "INIT";        // INIT | ACTUAL
-    public string Status { get; set; } = "Pending";       // Pending -> Approved1 -> Approved2 (-> Cancelled nếu Approved2+ACTUAL)
+
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG mã nguồn `TConst.BusinessPlanStatus` (`BPL_BusinessPlan.BusinessPlanStatus`):
+    /// "P" chờ duyệt → "A1" duyệt cấp 1 → "A2" duyệt cấp 2 · "A" đã duyệt (dùng cho DÒNG chi tiết).
+    /// ⚠️ Port cũ dùng chuỗi TỰ ĐẶT "Pending"/"Approved1"/"Approved2" và **tự thêm "Cancelled" —
+    /// mã mà nguồn KHÔNG CÓ**; ngược lại **thiếu mã "A"**.
+    /// Đọc dữ liệu cũ: Pending→"P", Approved1→"A1", Approved2→"A2", Cancelled→"A2" (nguồn không có huỷ).
+    /// </summary>
+    public string Status { get; set; } = "P";
     public string? HTCStaffInCharge { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? Approve1At { get; set; }
+    /// <summary>Người duyệt cấp 1 (`Appr1By`) — nguồn nhân bản sang phiên bản mới.</summary>
+    public string? Approve1By { get; set; }
     public DateTime? Approve2At { get; set; }
+    /// <summary>Người duyệt cấp 2 (`Appr2By`).</summary>
+    public string? Approve2By { get; set; }
+    /// <summary>Số lần lập kế hoạch (`TimesPlan`) — nguồn giữ khi nhân bản phiên bản.</summary>
+    public int TimesPlan { get; set; }
     public DateTime? CancelledAt { get; set; }
+}
+
+/// <summary>
+/// 🔴 DÒNG chi tiết kế hoạch kinh doanh (`BPL_BusinessPlanDtl`) — **gap đã ghi rõ ở comment header
+/// từ đợt audit 2026-09-03, nay port**: mỗi dòng là 1 `ModelCode`, mang **3 LOẠI kế hoạch × 12 tháng**:
+/// bán lẻ (`Rtl_`), đặt hàng (`Ord_`), back-order (`BO_`).
+/// Không có bảng này thì kế hoạch năm **không có số liệu nào** — chỉ còn vỏ vòng đời duyệt.
+/// </summary>
+public sealed class BusinessPlanDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BusinessPlanCode { get; set; } = "";
+    public int YearPlan { get; set; }
+    public string ModelCode { get; set; } = "";
+
+    /// <summary>Trạng thái RIÊNG của dòng (`BusinessPlanDtlStatus`).
+    /// ⚠️ Nguồn KHÔNG lan y hệt trạng thái header: khi nhân bản phiên bản, header ghi **"A2"**
+    /// còn dòng ghi **"A"** (`BizHTC.zTemp.cs:50185` vs `:50221`).</summary>
+    public string BusinessPlanDtlStatus { get; set; } = "P";
+    /// <summary>Phiên bản của DÒNG (`VersionDtl`) — tách khỏi `Version` của header.</summary>
+    public string VersionDtl { get; set; } = "INIT";
+
+    /// <summary>Tổng số hợp đồng bán lẻ cả năm (`Rtl_TotalQtyDeal`).</summary>
+    public decimal Rtl_TotalQtyDeal { get; set; }
+    /// <summary>Tổng back-order cả năm (`BO_TotalQtyBO`).</summary>
+    public decimal BO_TotalQtyBO { get; set; }
+
+    // ----- Kế hoạch bán lẻ (Rtl_) theo 12 tháng -----
+    public decimal Rtl_QtyM1 { get; set; }
+    public decimal Rtl_QtyM2 { get; set; }
+    public decimal Rtl_QtyM3 { get; set; }
+    public decimal Rtl_QtyM4 { get; set; }
+    public decimal Rtl_QtyM5 { get; set; }
+    public decimal Rtl_QtyM6 { get; set; }
+    public decimal Rtl_QtyM7 { get; set; }
+    public decimal Rtl_QtyM8 { get; set; }
+    public decimal Rtl_QtyM9 { get; set; }
+    public decimal Rtl_QtyM10 { get; set; }
+    public decimal Rtl_QtyM11 { get; set; }
+    public decimal Rtl_QtyM12 { get; set; }
+
+    // ----- Kế hoạch đặt hàng (Ord_) theo 12 tháng -----
+    public decimal Ord_QtyM1 { get; set; }
+    public decimal Ord_QtyM2 { get; set; }
+    public decimal Ord_QtyM3 { get; set; }
+    public decimal Ord_QtyM4 { get; set; }
+    public decimal Ord_QtyM5 { get; set; }
+    public decimal Ord_QtyM6 { get; set; }
+    public decimal Ord_QtyM7 { get; set; }
+    public decimal Ord_QtyM8 { get; set; }
+    public decimal Ord_QtyM9 { get; set; }
+    public decimal Ord_QtyM10 { get; set; }
+    public decimal Ord_QtyM11 { get; set; }
+    public decimal Ord_QtyM12 { get; set; }
+
+    // ----- Kế hoạch back-order (BO_) theo 12 tháng -----
+    public decimal BO_QtyM1 { get; set; }
+    public decimal BO_QtyM2 { get; set; }
+    public decimal BO_QtyM3 { get; set; }
+    public decimal BO_QtyM4 { get; set; }
+    public decimal BO_QtyM5 { get; set; }
+    public decimal BO_QtyM6 { get; set; }
+    public decimal BO_QtyM7 { get; set; }
+    public decimal BO_QtyM8 { get; set; }
+    public decimal BO_QtyM9 { get; set; }
+    public decimal BO_QtyM10 { get; set; }
+    public decimal BO_QtyM11 { get; set; }
+    public decimal BO_QtyM12 { get; set; }
 }
 
 /// <summary>Lái thử xe (FrmMstCarDriverTest — TCMotor): khách đăng ký lái thử → xác nhận → hoàn tất.</summary>
