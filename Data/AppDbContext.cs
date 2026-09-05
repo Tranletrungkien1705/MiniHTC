@@ -291,6 +291,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<GpsVinSync> GpsVinSyncs => Set<GpsVinSync>();
     public DbSet<TranspDlvConfirm> TranspDlvConfirms => Set<TranspDlvConfirm>();
     public DbSet<TranspDlvConfirmCar> TranspDlvConfirmCars => Set<TranspDlvConfirmCar>();
+    public DbSet<DlvMinutesCheckItem> DlvMinutesCheckItems => Set<DlvMinutesCheckItem>();
     public DbSet<HmcSalesRecord> HmcSalesRecords => Set<HmcSalesRecord>();
     public DbSet<BackOrder> BackOrders => Set<BackOrder>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();

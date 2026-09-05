@@ -5015,10 +5015,81 @@ public sealed class TranspDlvConfirm
     public string DlvMinutesNo { get; set; } = "";
     public string TransporterCode { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string ConfirmStatus { get; set; } = "Pending";   // Pending -> Confirmed
+    public string ConfirmStatus { get; set; } = "Pending";   // Pending -> Confirmed (phía nhà vận chuyển)
     public string Remark { get; set; } = "";
     public DateTime? ConfirmDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // --- Biên bản giao nhận có HAI PHÍA duyệt độc lập (Sto_DlvMinutes, 2010.HTC) ---
+    // F = phía GIAO (kho/nhà máy HTC), T = phía NHẬN (đại lý). Mã trạng thái theo TConst.Stage: P/A.
+    // Duyệt phía F KHÔNG tự chốt phía T — nguồn cố ý comment dòng cập nhật TDlvMnStatus (--20131126).
+
+    /// <summary>Trạng thái duyệt phía giao (FDLVMNSTATUS): P = chờ duyệt, A = đã duyệt.</summary>
+    public string FDlvMnStatus { get; set; } = "P";
+
+    /// <summary>Trạng thái duyệt phía nhận (TDLVMNSTATUS): P = chờ duyệt, A = đã duyệt.</summary>
+    public string TDlvMnStatus { get; set; } = "P";
+
+    public DateTime? FApprovedDate { get; set; }
+    public string? FApprovedBy { get; set; }
+    public DateTime? TApprovedDate { get; set; }
+    public string? TApprovedBy { get; set; }
+
+    /// <summary>Yêu cầu vận chuyển gắn với biên bản (TRANSPREQNO / TRANSPREQTYPE).</summary>
+    public string? TranspReqNo { get; set; }
+    public string? TranspReqType { get; set; }
+
+    /// <summary>Kho + địa chỉ hai đầu tuyến (FSTORAGECODE/TSTORAGECODE, FADDRESS/TADDRESS).</summary>
+    public string? FStorageCode { get; set; }
+    public string? TStorageCode { get; set; }
+    public string? FAddress { get; set; }
+    public string? TAddress { get; set; }
+
+    /// <summary>Ngày xuất kho / ngày giao đến (DLVSTARTDATE / DLVENDDATE).</summary>
+    public DateTime? DlvStartDate { get; set; }
+    public DateTime? DlvEndDate { get; set; }
+
+    /// <summary>Xe tải + lái xe lúc GIAO (PLATENO/DRIVERID) và lúc NHẬN (TPLATENO/TDRIVERID) — có thể đổi giữa đường.</summary>
+    public string? PlateNo { get; set; }
+    public string? DriverId { get; set; }
+    public string? TPlateNo { get; set; }
+    public string? TDriverId { get; set; }
+
+    /// <summary>Ghi chú riêng của từng phía (FREMARK / TREMARK).</summary>
+    public string? FRemark { get; set; }
+    public string? TRemark { get; set; }
+
+    /// <summary>Số km ghi nhận hai phía (FSTATUS_IA_KM / TSTATUS_IA_KM) + ghi chú kèm.</summary>
+    public string? FStatusIaKm { get; set; }
+    public string? TStatusIaKm { get; set; }
+    public string? FStatusIaRemark { get; set; }
+    public string? TStatusIaRemark { get; set; }
+}
+
+/// <summary>
+/// Một mục kiểm tra trên biên bản giao nhận xe (Sto_DlvMinutes cột FSTATUS_* / TSTATUS_*,
+/// port 1:1 FrmHTCNewDlvMinutes / FrmHTCMngDlvMinutes, 2010.HTC TERP.HTCClient/Views/Sales/DlvMinutes).
+/// Nguồn để 34 mục kiểm tra thành 68 cột phẳng (mỗi mục 2 cột F/T); ở đây mô hình hoá thành
+/// bảng chi tiết một-dòng-một-mục để thêm/bớt mục không phải đổi schema.
+/// Mỗi mục được chấm ĐỘC LẬP hai phía: F = bên giao ghi nhận, T = bên nhận ghi nhận.
+/// </summary>
+public sealed class DlvMinutesCheckItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long TranspDlvConfirmId { get; set; }
+
+    /// <summary>Nhóm mục kiểm tra: OS (ngoại thất), IS (nội thất), SP (phụ tùng kèm xe), DA (giấy tờ).</summary>
+    public string ItemGroup { get; set; } = "";
+
+    /// <summary>Mã mục kiểm tra, đúng phần đuôi tên cột nguồn (vd "Paint" trong FSTATUS_OS_PAINT).</summary>
+    public string ItemCode { get; set; } = "";
+
+    /// <summary>Kết quả kiểm tra phía GIAO — rỗng nghĩa là chưa chấm.</summary>
+    public string? FStatus { get; set; }
+
+    /// <summary>Kết quả kiểm tra phía NHẬN — rỗng nghĩa là chưa chấm.</summary>
+    public string? TStatus { get; set; }
 }
 
 /// <summary>Xe trên biên bản giao nhận vận chuyển — port 1:1 FrmMngDlvMinutes detail.</summary>

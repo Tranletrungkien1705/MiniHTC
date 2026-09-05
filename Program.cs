@@ -3293,6 +3293,8 @@ app.MapGet("/api/transpdlv", async (AppDbContext db, ITenantContext t, string? t
     var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
         m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, m.CreatedAt,
+        m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
+        m.TranspReqNo, m.TranspReqType, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -3306,7 +3308,17 @@ app.MapPost("/api/transpdlv", async (TranspDlvDto dto, AppDbContext db, ITenantC
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "BBGN" + DateTime.Now.ToString("yyMMddHHmmss");
-    var m2 = new TranspDlvConfirm { OrgId = t.OrgId, DlvMinutesNo = no, TransporterCode = dto.TransporterCode.Trim(), DealerCode = dto.DealerCode ?? "", ConfirmStatus = "Pending" };
+    var m2 = new TranspDlvConfirm
+    {
+        OrgId = t.OrgId, DlvMinutesNo = no, TransporterCode = dto.TransporterCode.Trim(),
+        DealerCode = dto.DealerCode ?? "", ConfirmStatus = "Pending",
+        // Hai phía duyệt độc lập, đều bắt đầu ở P (TConst.Stage.Pending).
+        FDlvMnStatus = "P", TDlvMnStatus = "P",
+        TranspReqNo = dto.TranspReqNo, TranspReqType = dto.TranspReqType,
+        FStorageCode = dto.FStorageCode, TStorageCode = dto.TStorageCode,
+        FAddress = dto.FAddress, TAddress = dto.TAddress,
+        DlvStartDate = dto.DlvStartDate, PlateNo = dto.PlateNo, DriverId = dto.DriverId
+    };
     db.TranspDlvConfirms.Add(m2); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.TranspDlvConfirmCars.Add(new TranspDlvConfirmCar { OrgId = t.OrgId, TranspDlvConfirmId = m2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "" });
@@ -3334,6 +3346,175 @@ app.MapPost("/api/transpdlv/{no}/confirm", async (string no, TranspConfirmDto? b
     m.ConfirmStatus = "Confirmed"; m.Remark = body?.Remark ?? ""; m.ConfirmDate = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { m.DlvMinutesNo, status = m.ConfirmStatus });
+}).RequireAuthorization();
+
+// ===== Biên bản giao nhận xe: duyệt HAI PHÍA + bảng kiểm tra tình trạng xe =====
+// Port 1:1 FrmHTCMngDlvMinutes + FrmHTCNewDlvMinutes (2010.HTC TERP.HTCClient/Views/Sales/DlvMinutes).
+// TWIN đã trace: WSHTC.Sto_DlvMinutes_Approved → biz Sto_DlvMinutes_Approve_New20190416 (KHÔNG phải hàm trùng tên).
+
+// Danh mục mục kiểm tra — đúng phần đuôi các cột FSTATUS_*/TSTATUS_* của bảng Sto_DlvMinutes.
+// Nguồn trải thành 68 cột phẳng (34 mục × 2 phía); ở đây giữ nguyên danh mục nhưng lưu theo dòng.
+var dlvCheckItemCatalog = new (string Group, string Code)[]
+{
+    // OS — ngoại thất
+    ("OS", "Chassis"), ("OS", "Paint"), ("OS", "Glass"), ("OS", "Wipers"), ("OS", "Mirrors"),
+    ("OS", "LightSystem"), ("OS", "Antenna"), ("OS", "Logo"), ("OS", "Moulding"), ("OS", "CementDust"),
+    // IS — nội thất
+    ("IS", "InstrumentPanel"), ("IS", "Switchs"), ("IS", "Sunvisor"), ("IS", "CigarLighter"), ("IS", "Mirror"),
+    ("IS", "RadioCD"), ("IS", "AirCondition"), ("IS", "Seats"), ("IS", "RoofLamps"), ("IS", "RoofMat"),
+    ("IS", "FloorPanel"), ("IS", "TrimPanel"), ("IS", "KeyAndRemote"), ("IS", "Filter"),
+    // SP — phụ tùng kèm xe
+    ("SP", "SpareWheel"), ("SP", "WheelCover"), ("SP", "ToolBag"), ("SP", "KeyEnvelope"),
+    // DA — giấy tờ kèm xe
+    ("DA", "OriginalCertificate"), ("DA", "UserManual"), ("DA", "CDGuaranty"),
+    ("DA", "GuarantyBooklet"), ("DA", "OriginalInvoice"), ("DA", "StampedInvoice"),
+};
+var dlvCheckItemCodes = dlvCheckItemCatalog.Select(i => i.Code).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+// Danh mục mục kiểm tra để client dựng form (nguồn là các nhãn cố định trên FrmHTCNewDlvMinutes).
+app.MapGet("/api/transpdlv/checkitems", () => Results.Ok(new
+{
+    count = dlvCheckItemCatalog.Length,
+    groups = dlvCheckItemCatalog.GroupBy(i => i.Group)
+        .Select(g => new { group = g.Key, items = g.Select(i => i.Code).ToArray() })
+})).RequireAuthorization();
+
+// Bảng kiểm tra tình trạng xe của một biên bản, kèm trạng thái duyệt hai phía.
+app.MapGet("/api/transpdlv/{no}/checkitems", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var items = await db.DlvMinutesCheckItems
+        .Where(i => i.OrgId == t.OrgId && i.TranspDlvConfirmId == m.Id)
+        .Select(i => new { i.ItemGroup, i.ItemCode, i.FStatus, i.TStatus }).ToListAsync();
+    return Results.Ok(new
+    {
+        m.DlvMinutesNo, m.TranspReqNo, m.TranspReqType,
+        m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
+        m.FStorageCode, m.TStorageCode, m.FAddress, m.TAddress, m.DlvStartDate, m.DlvEndDate,
+        m.PlateNo, m.DriverId, m.TPlateNo, m.TDriverId, m.FRemark, m.TRemark,
+        m.FStatusIaKm, m.TStatusIaKm, m.FStatusIaRemark, m.TStatusIaRemark,
+        count = items.Count, items
+    });
+}).RequireAuthorization();
+
+// Ghi bảng kiểm tra + thông tin tuyến của MỘT phía (side = F bên giao, T bên nhận).
+// Nguồn chỉ cho sửa khi biên bản CHƯA duyệt phía F (btnUpdate_Click).
+app.MapPost("/api/transpdlv/{no}/checkitems", async (
+    string no, DlvCheckSheetDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    var side = (dto.Side ?? "").Trim().ToUpperInvariant();
+    if (side is not ("F" or "T")) return Results.BadRequest(new { error = "Side = F (bên giao) | T (bên nhận)" });
+
+    // Giữ nguyên câu thông báo của form gốc.
+    if (m.FDlvMnStatus == "A")
+        return Results.BadRequest(new { error = "Biên bản giao nhận đã được phê duyệt, không được phép sửa" });
+
+    var lines = dto.Items ?? new();
+    var unknown = lines.FirstOrDefault(l => !dlvCheckItemCodes.Contains((l.ItemCode ?? "").Trim()));
+    if (unknown is not null)
+        return Results.BadRequest(new { error = $"Mục kiểm tra không hợp lệ: {unknown.ItemCode}" });
+    var duplicated = lines.GroupBy(l => l.ItemCode!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (duplicated is not null)
+        return Results.BadRequest(new { error = $"Mục kiểm tra {duplicated.Key} bị trùng!" });
+
+    var existing = await db.DlvMinutesCheckItems
+        .Where(i => i.OrgId == t.OrgId && i.TranspDlvConfirmId == m.Id).ToListAsync();
+    foreach (var line in lines)
+    {
+        var code = line.ItemCode!.Trim();
+        var row = existing.FirstOrDefault(i => string.Equals(i.ItemCode, code, StringComparison.OrdinalIgnoreCase));
+        if (row is null)
+        {
+            row = new DlvMinutesCheckItem
+            {
+                OrgId = t.OrgId, TranspDlvConfirmId = m.Id, ItemCode = code,
+                ItemGroup = dlvCheckItemCatalog.First(i => string.Equals(i.Code, code, StringComparison.OrdinalIgnoreCase)).Group
+            };
+            db.DlvMinutesCheckItems.Add(row);
+            existing.Add(row);
+        }
+        // Chỉ ghi đè cột của đúng phía đang nhập — phía kia giữ nguyên kết quả đã chấm.
+        if (side == "F") row.FStatus = line.Status; else row.TStatus = line.Status;
+    }
+
+    if (side == "F")
+    {
+        m.FStorageCode = dto.StorageCode ?? m.FStorageCode;
+        m.FAddress = dto.Address ?? m.FAddress;
+        m.PlateNo = dto.PlateNo ?? m.PlateNo;
+        m.DriverId = dto.DriverId ?? m.DriverId;
+        m.FRemark = dto.Remark ?? m.FRemark;
+        m.FStatusIaKm = dto.StatusIaKm ?? m.FStatusIaKm;
+        m.FStatusIaRemark = dto.StatusIaRemark ?? m.FStatusIaRemark;
+        m.DlvStartDate = dto.DlvDate ?? m.DlvStartDate;
+    }
+    else
+    {
+        m.TStorageCode = dto.StorageCode ?? m.TStorageCode;
+        m.TAddress = dto.Address ?? m.TAddress;
+        m.TPlateNo = dto.PlateNo ?? m.TPlateNo;
+        m.TDriverId = dto.DriverId ?? m.TDriverId;
+        m.TRemark = dto.Remark ?? m.TRemark;
+        m.TStatusIaKm = dto.StatusIaKm ?? m.TStatusIaKm;
+        m.TStatusIaRemark = dto.StatusIaRemark ?? m.TStatusIaRemark;
+        m.DlvEndDate = dto.DlvDate ?? m.DlvEndDate;
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, side, saved = lines.Count });
+}).RequireAuthorization();
+
+// Duyệt biên bản. side=F duyệt phía giao, side=T duyệt phía nhận.
+// 🔴 Nguồn (Sto_DlvMinutes_Approve_New20190416) CHỈ cập nhật FDlvMnStatus/FApprovedDate/FApprovedBy —
+// dòng cập nhật TDlvMnStatus bị comment cố ý (--20131126) ⇒ duyệt phía giao KHÔNG kéo theo phía nhận.
+app.MapPost("/api/transpdlv/{no}/approve", async (
+    string no, DlvApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    var side = (dto?.Side ?? "F").Trim().ToUpperInvariant();
+    if (side is not ("F" or "T")) return Results.BadRequest(new { error = "Side = F (bên giao) | T (bên nhận)" });
+
+    var currentStatus = side == "F" ? m.FDlvMnStatus : m.TDlvMnStatus;
+    // Nguồn chỉ duyệt khi đang ở P; câu thông báo giữ nguyên chính tả của form gốc ("bàn gian").
+    if (currentStatus != "P")
+        return Results.BadRequest(new { error = "Biên bản bàn gian đã được phê duyệt" });
+
+    var actor = user.Identity?.Name;
+    var now = DateTime.Now;
+    if (side == "F") { m.FDlvMnStatus = "A"; m.FApprovedDate = now; m.FApprovedBy = actor; }
+    else             { m.TDlvMnStatus = "A"; m.TApprovedDate = now; m.TApprovedBy = actor; }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, side, m.FDlvMnStatus, m.TDlvMnStatus });
+}).RequireAuthorization();
+
+// Sửa thông tin bàn giao cho đại lý — chỉ mở khi CẢ HAI phía đã duyệt (btnUpdateDealer_Click).
+app.MapPost("/api/transpdlv/{no}/updatedealer", async (
+    string no, DlvUpdateDealerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    if (m.FDlvMnStatus != "A" || m.TDlvMnStatus != "A")
+        return Results.BadRequest(new { error = "Biên bản bàn gian chưa phê duyệt, không được phép sửa cho đại lý" });
+
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) m.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+    m.TAddress = dto.TAddress ?? m.TAddress;
+    m.DlvEndDate = dto.DlvEndDate ?? m.DlvEndDate;
+    m.TRemark = dto.TRemark ?? m.TRemark;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.DealerCode, m.TAddress, m.DlvEndDate });
 }).RequireAuthorization();
 
 // ===== Báo cáo bán hàng HMC (HmcSalesRecord — port 1:1 FrmHMCReport, SalesDealer) =====
@@ -17124,8 +17305,21 @@ record SbhBatchDto(List<string>? Vins);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
 record TranspDlvCarDto(string VIN, string? ModelCode);
-record TranspDlvDto(string TransporterCode, string? DealerCode, List<TranspDlvCarDto>? Cars);
+record TranspDlvDto(
+    string TransporterCode, string? DealerCode, List<TranspDlvCarDto>? Cars,
+    string? TranspReqNo = null, string? TranspReqType = null,
+    string? FStorageCode = null, string? TStorageCode = null,
+    string? FAddress = null, string? TAddress = null,
+    DateTime? DlvStartDate = null, string? PlateNo = null, string? DriverId = null);
 record TranspConfirmDto(string? Remark);
+/// <summary>Một dòng của bảng kiểm tra tình trạng xe trên biên bản giao nhận.</summary>
+record DlvCheckLineDto(string? ItemCode, string? Status);
+/// <summary>Bảng kiểm tra + thông tin tuyến do MỘT phía (F bên giao / T bên nhận) ghi nhận.</summary>
+record DlvCheckSheetDto(
+    string? Side, List<DlvCheckLineDto>? Items, string? StorageCode, string? Address,
+    string? PlateNo, string? DriverId, string? Remark, string? StatusIaKm, string? StatusIaRemark, DateTime? DlvDate);
+record DlvApproveDto(string? Side);
+record DlvUpdateDealerDto(string? DealerCode, string? TAddress, DateTime? DlvEndDate, string? TRemark);
 record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
 record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
