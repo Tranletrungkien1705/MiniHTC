@@ -821,6 +821,59 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Lịch sử dịch vụ theo xe (port 1:1 FrmServiceHistory — TCMotor DMSCarSv/Services) =====
+// Nguồn: Ser_ServiceHistory_Get (BizCarSv.Service01.cs:432)
+//   select ro.*, case when ro.DealerCode = '<dealer của user>' then 1 else 0 end CanShowDetail
+//   from Ser_RO ro join Ser_Customer join Ser_Car  where car.PlateNo = @plateNo
+//   order by ro.finisheddate desc
+// 🔴 LUẬT CỐT LÕI — CanShowDetail = phân quyền XEM CHÉO ĐẠI LÝ:
+//   RO thuộc CHÍNH đại lý đang đăng nhập → 1 → form gốc cho mở FrmQuotation (xem báo giá chi tiết).
+//   RO của đại lý KHÁC                   → 0 → chỉ mở FrmPartReplace (xem danh sách phụ tùng, read-only).
+//   Tức: xe từng sửa ở đại lý khác thì KHÔNG được xem báo giá/chi tiết của đại lý đó.
+app.MapGet("/api/servicehistory", async (AppDbContext db, ITenantContext t, string? plateNo, string? dealerCode) =>
+{
+    if (string.IsNullOrWhiteSpace(plateNo))
+        return Results.BadRequest(new { error = "Chưa nhập biển số!" });
+    var plate = plateNo.Trim().ToUpperInvariant();
+    var myDealer = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var rows = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId && r.LicensePlate.ToUpper() == plate)
+        .OrderByDescending(r => r.FinishedDate)          // đúng "order by ro.finisheddate desc"
+        .Select(r => new
+        {
+            roId = r.Id, r.RONo, r.LicensePlate, r.TrademarkNameModel, r.ColorCode,
+            r.CusRequest, r.CheckInDate, r.PlanedDeliveryDate,
+            r.ActualDeliveryDate,                         // caption gốc: "Giờ giao xe thực tế"
+            r.Assistant, r.DealerCode,
+            statusName = r.Status,                        // cột STATUSNAME của lưới gốc
+            // CanShowDetail: 1 nếu RO thuộc đại lý đang xem, 0 nếu của đại lý khác
+            canShowDetail = (myDealer != "" && (r.DealerCode ?? "").ToUpper() == myDealer) ? 1 : 0
+        })
+        .ToListAsync();
+    return Results.Ok(new { plateNo = plate, dealerCode = myDealer, count = rows.Count, items = rows });
+}).RequireAuthorization();
+
+// Chi tiết 1 RO trong lịch sử — CHẶN theo đúng luật CanShowDetail của form gốc.
+// canShow=0 (RO của đại lý khác) → chỉ trả DANH SÁCH PHỤ TÙNG (đúng FrmPartReplace: read-only,
+// lưới gốc ẩn cột ĐVT + Ghi chú, hiện Mã PT/Tên PT/Số lượng), KHÔNG trả báo giá/tiền.
+app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == roId);
+    if (r is null) return Results.NotFound(new { error = "Không tồn tại." });
+    var myDealer = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var canShow = myDealer != "" && (r.DealerCode ?? "").ToUpperInvariant() == myDealer;
+
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
+        .Select(p => new { p.PartCode, p.PartName, qty = p.NeedQty }).ToListAsync();
+
+    if (!canShow)
+        return Results.Ok(new { r.RONo, canShowDetail = 0, mode = "PartsOnly", partCount = parts.Count, parts });
+
+    var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.Amount }).ToListAsync();
+    return Results.Ok(new { r.RONo, canShowDetail = 1, mode = "Full", services, partCount = parts.Count, parts });
+}).RequireAuthorization();
+
 // ===== Chi tiết khiếu nại theo xe (port 1:1 FrmChiTietKhieuNai — TCMotor DMSCarSv/Services) =====
 // Nguồn: iCIC_ListClaimByPlateNo (BizCarSv.ZTemp.cs) — proxy sang HCC API DmsClaimGetByPlateNo.
 // Luật gốc: BẮT BUỘC nhập biển số, để trống thì báo "Chưa nhập biển số!" và KHÔNG tra cứu.
@@ -15009,7 +15062,10 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     {
         OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
         CheckInDate = dto.CheckInDate ?? DateTime.Now, PlanedDeliveryDate = dto.PlanedDeliveryDate, CusRequest = dto.CusRequest,
-        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HasRO"
+        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HasRO",
+        // 4 cột phục vụ màn Lịch sử dịch vụ (FrmServiceHistory); DealerCode là khoá của luật CanShowDetail
+        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant
     };
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     foreach (var s in dto.Services ?? new())
@@ -15082,8 +15138,11 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
     if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}." });
     r.Status = target;
+    // Nguồn FrmServiceHistory sắp xếp "order by ro.finisheddate desc" → phải đóng dấu mốc khi RO hoàn tất,
+    // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
+    if (target == "Finished") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, status = r.Status });
+    return Results.Ok(new { r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate });
 }).RequireAuthorization();
 
 // Từ chối lệnh sửa chữa (port 1:1 FrmROReject, TCMotor DMSCarSv): set Rejected + ghi lý do.
@@ -16005,7 +16064,7 @@ record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount);
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note);
-record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts);
+record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

@@ -1085,6 +1085,14 @@ public sealed class RepairOrder
     // Từ chối lệnh sửa chữa (FrmROReject)
     public string? RejectNote { get; set; }
     public DateTime? RejectedAt { get; set; }
+    // Bổ sung 2026-09-05 cho màn Lịch sử dịch vụ (FrmServiceHistory) — lưới gốc hiển thị các cột này;
+    // nguồn `Ser_ServiceHistory_Get` (BizCarSv.Service01.cs:432) select `ro.*` join Ser_Customer + Ser_Car.
+    public string? DealerCode { get; set; }            // Ser_RO.DealerCode — dùng cho luật CanShowDetail
+    public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
+    public string? ColorCode { get; set; }             // Ser_Car.ColorCode — màu xe
+    public string? Assistant { get; set; }             // Ser_RO.Assistant — cố vấn dịch vụ
+    public DateTime? ActualDeliveryDate { get; set; }  // Ser_RO.ActualDeliveryDate — "Giờ giao xe thực tế"
+    public DateTime? FinishedDate { get; set; }        // Ser_RO.FinishedDate — khoá sắp xếp (order by desc)
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
