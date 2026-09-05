@@ -39,7 +39,7 @@
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc theo số HĐ" oninput="load()" style="width:180px"></div>
 <div class="card">
   <h2>Danh sách BB hủy HĐ</h2>
-  <table><thead><tr><th>Số BB</th><th>Số HĐ</th><th>Ghi chú</th><th>Xóa</th><th>Ngày</th></tr></thead><tbody id="mrows"><tr><td colspan="5" class="muted">…</td></tr></tbody></table>
+  <table><thead><tr><th>Số BB</th><th>Số HĐ</th><th>Ghi chú</th><th>Xóa</th><th>TT biên bản</th><th>ĐL ký</th><th>HTC ký</th><th>Ngày</th><th></th></tr></thead><tbody id="mrows"><tr><td colspan="9" class="muted">…</td></tr></tbody></table>
 </div>
 <div class="card">
   <h2>Danh sách hủy NH bảo lãnh</h2>
@@ -61,9 +61,25 @@ async function createBankMD(){
   const r=await fetch("/api/dmscancelbankmd",{method:"POST",headers:H(),body:JSON.stringify({dlrCtrNo:F("b_no").value,bankCodeMD:F("b_bk").value,remark:F("b_rm").value,flagIsDelete:"0"})});
   const j=await r.json(); F("b_msg").textContent=r.ok?(j.message+" ("+j.cancelBankMDNo+")"):"Lỗi: "+(j.error||r.status); if(r.ok){F("b_no").value="";F("b_rm").value="";load();}
 }
+const CM={NS:"Chưa ký",S:"Đã ký",AJ:"Điều chỉnh",C:"Đã huỷ"};
+const SGN={N:"—",P:"Chờ",C:"Huỷ",A:"Đã duyệt",A1:"Duyệt C1",A2:"Duyệt C2",F:"Hoàn thành",R:"Từ chối",D:"Từ chối (D)"};
+async function cmAct(no,action){ const r=await fetch(`/api/dmscancelminutes/${no}/${action}`,{method:"POST",headers:H()});
+  const j=await r.json(); if(!r.ok){ alert(j.error||r.status); return; } load(); }
 async function load(){ await token(); const q=F("q").value;
   const m=await (await fetch(`/api/dmscancelminutes?dlrCtrNo=${q}`,{headers:H()})).json();
-  F("mrows").innerHTML=(m.items||[]).map(o=>`<tr><td><b>${o.cancelMinutesNo}</b></td><td>${o.dlrCtrNo}</td><td>${o.remark||""}</td><td>${o.flagIsDelete==="1"?"✓":""}</td><td>${day(o.createdAt)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có.</td></tr>';
+  // Ba trục: CancelMinutesStatus (NS/S/AJ/C) · DlrSignCcMnStatus · HTCSignCcMnStatus (P→A1→A).
+  // Hợp đồng CHỈ bị huỷ ở bước HTC duyệt cấp 2 — không phải lúc tạo biên bản.
+  F("mrows").innerHTML=(m.items||[]).map(o=>{
+    const ds=o.dlrSignCcMnStatus, hs=o.htcSignCcMnStatus; let act="";
+    if(o.cancelMinutesStatus==="NS"){
+      if(ds==="P") act+=`<button class="sm" onclick="cmAct('${o.cancelMinutesNo}','dlr-approve')">ĐL duyệt</button> `;
+      if(ds==="A"&&hs==="P") act+=`<button class="sm" onclick="cmAct('${o.cancelMinutesNo}','htc-appr1')">HTC C1</button> <button class="sm" onclick="cmAct('${o.cancelMinutesNo}','dlr-cancel')">ĐL huỷ BB</button> `;
+      if(ds==="A"&&hs==="A1") act+=`<button class="sm" onclick="cmAct('${o.cancelMinutesNo}','htc-appr2')">HTC C2 (huỷ HĐ)</button> `;
+      if(ds==="A"&&(hs==="P"||hs==="A1")) act+=`<button class="sm" onclick="cmAct('${o.cancelMinutesNo}','reject')">HTC từ chối</button>`;
+    }
+    return `<tr><td><b>${o.cancelMinutesNo}</b></td><td>${o.dlrCtrNo}</td><td>${o.remark||""}</td><td>${o.flagIsDelete==="1"?"✓":""}</td>`
+      +`<td>${CM[o.cancelMinutesStatus]||o.cancelMinutesStatus||""}</td><td>${SGN[ds]||ds||""}</td><td>${SGN[hs]||hs||""}</td><td>${day(o.createdAt)}</td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="9" class="muted">Chưa có.</td></tr>';
   const b=await (await fetch(`/api/dmscancelbankmd?dlrCtrNo=${q}`,{headers:H()})).json();
   F("brows").innerHTML=(b.items||[]).map(o=>`<tr><td><b>${o.cancelBankMDNo}</b></td><td>${o.dlrCtrNo}</td><td>${o.bankCodeMD||""}</td><td>${o.remark||""}</td><td>${day(o.createdAt)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có.</td></tr>';
 }

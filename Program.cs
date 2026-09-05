@@ -15584,7 +15584,7 @@ app.MapGet("/api/dmscancelminutes", async (AppDbContext db, ITenantContext t, st
 {
     var q = db.DmsCancelMinutesSet.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(m => m.DlrCtrNo == dlrCtrNo);
-    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelMinutesNo, m.DlrCtrNo, m.Remark, m.FlagIsDelete, m.CreatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelMinutesNo, m.DlrCtrNo, m.Remark, m.FlagIsDelete, m.CancelMinutesStatus, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CreatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -15598,9 +15598,64 @@ app.MapPost("/api/dmscancelminutes", async (DmsCancelMinutesDto dto, AppDbContex
     var no = dlr + "." + seq;
     var m = new DmsCancelMinutes { OrgId = t.OrgId, CancelMinutesNo = no, DlrCtrNo = dlr, Remark = dto.Remark, FlagIsDelete = dto.FlagIsDelete == "1" ? "1" : "0" };
     db.DmsCancelMinutesSet.Add(m);
-    c.DlrCtrStatus = "Cancelled";   // hủy HĐ
+    // 🔴 Port cũ huỷ hợp đồng NGAY khi tạo biên bản — SAI. Nguồn (`_Save_New20181115`) chỉ tạo biên bản
+    //    ở trạng thái "NS" với hai trục ký đang chờ ("P"); hợp đồng chỉ bị huỷ khi **HTC duyệt cấp 2**.
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.CancelMinutesNo, m.DlrCtrNo, message = "Tạo biên bản hủy hợp đồng thành công!" });
+    return Results.Ok(new { m.CancelMinutesNo, m.DlrCtrNo, status = m.CancelMinutesStatus, message = "Tạo biên bản hủy hợp đồng thành công!" });
+}).RequireAuthorization();
+
+// 🔴 QUY TRÌNH KÝ BIÊN BẢN HUỶ HĐ — `DMS40_DlrCtr_CancelMinutes_*` (0.34.Contract.cs:6767-9000).
+// Bốn hành động, mỗi hành động guard **đồng thời hai trục ký**:
+//   · `_DlrApprove` (7556): Dlr="P" ⇒ Dlr="A"
+//   · `_DlrCancel`  (7872): Dlr="A", HTC="P" ⇒ Dlr="C" **và** biên bản "C"
+//   · `_HTCAppr1`   (8098): Dlr="A", HTC="P" ⇒ HTC="A1"
+//   · `_HTCAppr2`   (8328): Dlr="A", HTC="A1" ⇒ HTC="A", biên bản **"S"**,
+//        **và huỷ luôn HỢP ĐỒNG** (`DMS40_CT_DealerContract.DlrCtrStatus = "C"`) — hiệu ứng LAN SANG BẢNG KHÁC
+//   · `_Reject`     (8779): Dlr="A" ⇒ HTC="R" **và** biên bản "C"
+app.MapPost("/api/dmscancelminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("dlr-approve" or "dlr-cancel" or "htc-appr1" or "htc-appr2" or "reject"))
+        return Results.BadRequest(new { error = "action = dlr-approve|dlr-cancel|htc-appr1|htc-appr2|reject" });
+    no = no.Trim();
+    var m = await db.DmsCancelMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CancelMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    if (action == "dlr-approve")
+    {
+        if (m.DlrSignCcMnStatus != "P") return Results.BadRequest(new { error = $"Đại lý đang ở '{m.DlrSignCcMnStatus}' — chỉ duyệt khi đang chờ (P)." });
+        m.DlrSignCcMnStatus = "A";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { m.CancelMinutesNo, m.DlrSignCcMnStatus, m.CancelMinutesStatus });
+    }
+
+    // Bốn hành động còn lại đều yêu cầu đại lý đã duyệt ("A").
+    if (m.DlrSignCcMnStatus != "A") return Results.BadRequest(new { error = "Đại lý chưa duyệt biên bản (cần Dlr = A)." });
+
+    if (action == "dlr-cancel")
+    {
+        if (m.HTCSignCcMnStatus != "P") return Results.BadRequest(new { error = "Chỉ đại lý huỷ được khi HTC chưa duyệt (P)." });
+        m.DlrSignCcMnStatus = "C"; m.CancelMinutesStatus = "C";
+    }
+    else if (action == "htc-appr1")
+    {
+        if (m.HTCSignCcMnStatus != "P") return Results.BadRequest(new { error = $"HTC đang ở '{m.HTCSignCcMnStatus}' — duyệt cấp 1 chỉ từ chờ (P)." });
+        m.HTCSignCcMnStatus = "A1";
+    }
+    else if (action == "htc-appr2")
+    {
+        if (m.HTCSignCcMnStatus != "A1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 (A1) trước." });
+        m.HTCSignCcMnStatus = "A"; m.CancelMinutesStatus = "S";
+        // 🔴 Chỉ ở BƯỚC NÀY hợp đồng mới thực sự bị huỷ.
+        var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == m.DlrCtrNo);
+        if (c is not null) { c.DlrCtrStatus = "C"; }
+    }
+    else // reject
+    {
+        if (m.HTCSignCcMnStatus is not ("P" or "A1")) return Results.BadRequest(new { error = "Chỉ từ chối khi HTC đang chờ (P) hoặc mới duyệt cấp 1 (A1)." });
+        m.HTCSignCcMnStatus = "R"; m.CancelMinutesStatus = "C";
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.CancelMinutesNo, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CancelMinutesStatus });
 }).RequireAuthorization();
 
 // Hủy NH phát hành bảo lãnh MD (FrmDMS40_DlrCtr_CancelBankMD)

@@ -4920,6 +4920,23 @@ public sealed class DmsCancelMinutes
     public string DlrCtrNo { get; set; } = "";
     public string? Remark { get; set; }
     public string FlagIsDelete { get; set; } = "0";
+    /// <summary>
+    /// 🔴 Trạng thái biên bản (`CancelMinutesStatus`) theo `TConst.CancelMinutesStatus`
+    /// (`Const.Main.DMS40.cs:189-195`): **"NS" chưa ký · "S" đã ký · "AJ" điều chỉnh · "C" huỷ**.
+    /// ⚠️ Port cũ KHÔNG có trục này — tạo biên bản là **huỷ luôn hợp đồng ngay**, bỏ qua toàn bộ
+    /// quy trình ký/duyệt bên dưới.
+    /// </summary>
+    public string CancelMinutesStatus { get; set; } = "NS";
+    /// <summary>
+    /// 🔴 Ký của đại lý trên biên bản (`DlrSignCcMnStatus`, `TConst.DlrSignCcMnStatus` 155-165):
+    /// N/**P**/C/**A**/A1/A2/F/R/D.
+    /// </summary>
+    public string DlrSignCcMnStatus { get; set; } = "P";
+    /// <summary>
+    /// 🔴 Ký của HTC (`HTCSignCcMnStatus`, 172-182) — **HAI CẤP**: "P" → **"A1"** (cấp 1) → **"A"** (cấp 2),
+    /// hoặc **"R"** từ chối.
+    /// </summary>
+    public string HTCSignCcMnStatus { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
