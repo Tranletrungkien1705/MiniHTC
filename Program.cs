@@ -14874,14 +14874,23 @@ app.MapPost("/api/receptions/{no}/deliver", async (string no, AppDbContext db, I
 }).RequireAuthorization();
 
 // ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
+// GAP parity đã vá (đối chiếu BizCarSv.Inventory.cs Ser_ROStockRequisition_Get + FrmROStockRequisition.txtNo_KeyDown):
+// nguồn BỎ TIỀN TỐ "LS-" (số LSC) / "PX-" (số phiếu xuất) / "BG-" (số báo giá) TRƯỚC khi khớp theo RONo.
+// Trước khi vá, tìm bằng "LS-VNN054-..." hoặc "PX-..." luôn ra rỗng vì so thẳng chuỗi có tiền tố.
 app.MapGet("/api/stockreqs", async (AppDbContext db, ITenantContext t, string? status, string? ro) =>
 {
     var q = db.StockReqs.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
-    if (!string.IsNullOrWhiteSpace(ro)) q = q.Where(s => s.RONo.Contains(ro.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(ro))
+    {
+        var key = ro.Trim().ToUpperInvariant().Replace("LS-", "").Replace("PX-", "").Replace("BG-", "").Trim();
+        q = q.Where(s => s.RONo.Contains(key));
+    }
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
         s.ReqNo, s.RONo, s.Status, s.CreatedAt, s.IssuedAt,
+        lsNo = "LS-" + s.RONo,                                  // ô txtLSNo của form gốc
+        s.DealerCode, s.Assistant, s.PlateNo, s.FrameNo, s.Note, // GAP đã vá: 5 cột form gốc bị bỏ sót
         lines = db.StockReqLines.Count(l => l.OrgId == t.OrgId && l.ReqId == s.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -14903,7 +14912,16 @@ app.MapPost("/api/stockreqs", async (StockReqDto dto, AppDbContext db, ITenantCo
     }
     if (lines.Count == 0 && pulled.Count == 0) return Results.BadRequest(new { error = "Không có dòng phụ tùng (đặt fromRO=true để kéo từ RO, hoặc gửi lines)." });
     var no = "PX-" + roNo;
-    var h = new StockReq { OrgId = t.OrgId, ReqNo = no, RONo = roNo, Status = "Draft" };
+    var h = new StockReq
+    {
+        OrgId = t.OrgId, ReqNo = no, RONo = roNo, Status = "Draft",
+        // GAP đã vá: nhận 5 trường form gốc; không gửi thì kế thừa từ RO (đúng nguồn: join Ser_RO/Ser_Customer)
+        DealerCode = dto.DealerCode,
+        Assistant = dto.Assistant,
+        PlateNo = dto.PlateNo ?? ro.LicensePlate,   // Ser_Customer.PlateNo ↔ RepairOrder.LicensePlate
+        FrameNo = dto.FrameNo ?? ro.Vin,            // Ser_Customer.FrameNo ↔ số khung/VIN
+        Note = dto.Note
+    };
     db.StockReqs.Add(h); await db.SaveChangesAsync();
     foreach (var l in pulled) { l.ReqId = h.Id; db.StockReqLines.Add(l); }
     foreach (var l in lines)
@@ -15959,7 +15977,7 @@ record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
-record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines);
+record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);

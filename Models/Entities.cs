@@ -1126,6 +1126,14 @@ public sealed class StockReq
     public string Status { get; set; } = "Draft";      // Draft → Issued
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? IssuedAt { get; set; }
+    // GAP đã vá 2026-09-05: form gốc FrmROStockRequisition có các ô txtAssistant/txtPalteNo/txtFrameNo/txtNote,
+    // nguồn join Ser_RO.Assistant + Ser_Customer.PlateNo/FrameNo (BizCarSv.Inventory.cs Ser_ROStockRequisition_Get)
+    // — bản port trước bỏ sót toàn bộ 5 cột này.
+    public string? DealerCode { get; set; }            // Ser_ROStockRequisition.DealerCode
+    public string? Assistant { get; set; }             // Ser_RO.Assistant (cố vấn dịch vụ)
+    public string? PlateNo { get; set; }               // Ser_Customer.PlateNo (biển số)
+    public string? FrameNo { get; set; }               // Ser_Customer.FrameNo (số khung)
+    public string? Note { get; set; }                  // ghi chú phiếu (txtNote)
 }
 
 /// <summary>Dòng phụ tùng phiếu xuất (Ser_RO_StockRequisitionDtl): mã PT + vị trí + SL + ĐVT.</summary>
