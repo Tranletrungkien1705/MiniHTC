@@ -3175,6 +3175,59 @@ public sealed class ServiceWarrantyClaim
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// 🔴 DÒNG PHỤ TÙNG của đề nghị bảo hành (`Ser_ROWarrantyReportPartItems` — 1-n theo ROWID).
+/// Port cũ CHỈ có 1 cột vô hướng <c>ServiceWarrantyClaim.PartCode</c> ⇒ mỗi đề nghị chỉ khai được
+/// ĐÚNG 1 phụ tùng, không có số lượng / đơn giá / VAT / nguồn gốc PT ⇒ mất toàn bộ chiều chi tiết
+/// và mọi luật kiểm tra theo dòng của nguồn (BizCarSv.WarrantyReport.cs:960-1290, máy 150 canonical).
+/// </summary>
+public sealed class WarrantyClaimPartItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>ROWID — khoá về đề nghị bảo hành (<see cref="ServiceWarrantyClaim.Id"/>).</summary>
+    public long ClaimId { get; set; }
+
+    /// <summary>PartID/PartCode — mã phụ tùng.</summary>
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+
+    /// <summary>
+    /// 🔴 LOẠI PHỤ TÙNG trong đề nghị bảo hành (`TConst.ROWPartType`) — trục mà port cũ THIẾU HẲN:
+    /// "PTC" phụ tùng chính · "PTTT" phụ tùng thay thế · "VTP" vật tư phụ.
+    /// Nguồn BẮT BUỘC nhập (rỗng ⇒ "PT {mã} loại phụ tùng không được trống!") và
+    /// mỗi đề nghị chỉ được ĐÚNG 1 dòng "PTC" ("Báo cáo bảo hành chỉ có 1 phụ tùng chính!").
+    /// </summary>
+    public string RowPartType { get; set; } = "PTTT";
+
+    /// <summary>
+    /// Nguồn gốc phụ tùng (`TConst.ROWPartOrderType`): "TST" mua qua đơn đặt TST · "OTHER" nguồn khác.
+    /// Nguồn BẮT BUỘC nhập ("Chưa có nguồn gốc phụ tùng!") và chỉ nhận đúng 2 giá trị này.
+    /// </summary>
+    public string PartOrderType { get; set; } = "OTHER";
+
+    /// <summary>Số đơn đặt phụ tùng — BẮT BUỘC khi <see cref="PartOrderType"/> = "TST".</summary>
+    public string? PartOrderNo { get; set; }
+
+    public decimal Quantity { get; set; } = 1;
+    public decimal Price { get; set; }
+    /// <summary>Hệ số (Factor) — nhân vào thành tiền theo nguồn.</summary>
+    public decimal Factor { get; set; } = 1;
+    public decimal Vat { get; set; }
+    /// <summary>Giá bảo hiểm chi trả (InsurancePrice).</summary>
+    public decimal InsurancePrice { get; set; }
+    /// <summary>Loại chi phí (ExpenseType) của dòng.</summary>
+    public string? ExpenseType { get; set; }
+    /// <summary>Trạng thái bảo hành RIÊNG của dòng (WarrantyStatus) — độc lập trạng thái đề nghị.</summary>
+    public string? WarrantyStatus { get; set; }
+    /// <summary>Cờ phụ tùng chính (FlagMainPart) — nguồn lưu tách khỏi <see cref="RowPartType"/>.</summary>
+    public string? FlagMainPart { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare — port 1:1 FrmCustomerCare, TCMotor DMSCarSv/Customer):
 /// CRM follow-up. CareType: CARE24H/CARE72H/DOB(sinh nhật)/MAINT(nhắc bảo dưỡng). Pending→Contacted→Closed.</summary>
 public sealed class CustomerCare

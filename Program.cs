@@ -6265,6 +6265,127 @@ app.MapPost("/api/warrantyclaims/{id}/hmcsync", async (
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo máy trạng thái duyệt bảo hành (submit/review/approve/reject/revert).
+// ===== 🔴 DÒNG PHỤ TÙNG của đề nghị bảo hành (Ser_ROWarrantyReportPartItems — 1-n, port cũ THIẾU HẲN) =====
+// Nguồn: BizCarSv.WarrantyReport.cs:960-1290 (bản máy 150 canonical). Port cũ chỉ có 1 cột PartCode vô hướng.
+var rowPartTypeNames = new Dictionary<string, string>
+{
+    ["PTC"] = "Phụ tùng chính",
+    ["PTTT"] = "Phụ tùng thay thế",
+    ["VTP"] = "Vật tư phụ",
+};
+
+app.MapGet("/api/warrantyclaims/rowparttypes", () => Results.Ok(new
+{
+    types = rowPartTypeNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Bắt buộc nhập cho mỗi dòng PT; mỗi đề nghị chỉ được ĐÚNG 1 dòng PTC.",
+    partOrderTypes = new[] { new { code = "TST", name = "Mua qua đơn đặt TST" }, new { code = "OTHER", name = "Nguồn khác" } },
+})).RequireAuthorization();
+
+app.MapGet("/api/warrantyclaims/{id}/parts", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id)
+        .OrderBy(x => x.Id).Select(x => new
+        {
+            x.Id, x.ClaimId, x.PartCode, x.PartName, x.RowPartType, x.PartOrderType, x.PartOrderNo,
+            x.Quantity, x.Price, x.Factor, x.Vat, x.InsurancePrice, x.ExpenseType, x.WarrantyStatus,
+            x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt,
+            rowPartTypeName = rowPartTypeNames.ContainsKey(x.RowPartType) ? rowPartTypeNames[x.RowPartType] : x.RowPartType,
+            amount = x.Quantity * x.Price * x.Factor,
+        }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.amount), items });
+}).RequireAuthorization();
+
+// Thêm 1 dòng phụ tùng vào đề nghị bảo hành — port ĐỦ chuỗi guard của nguồn.
+app.MapPost("/api/warrantyclaims/{id}/parts", async (
+    long id, WarrantyClaimPartItemDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { error = "Không tìm thấy đề nghị bảo hành." });
+
+    var partCode = (dto.PartCode ?? "").Trim();
+    if (partCode.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
+
+    // Guard 1 (nguồn): loại phụ tùng KHÔNG được trống và phải thuộc PTC/PTTT/VTP.
+    var rowPartType = (dto.RowPartType ?? "").Trim().ToUpperInvariant();
+    if (rowPartType.Length == 0)
+        return Results.BadRequest(new { error = $"PT {partCode} loại phụ tùng không được trống!" });
+    if (!rowPartTypeNames.ContainsKey(rowPartType))
+        return Results.BadRequest(new { error = $"Loại phụ tùng không hợp lệ (chỉ PTC/PTTT/VTP), nhận: {rowPartType}." });
+
+    // Guard 2 (nguồn, biến bCheckPTC): mỗi đề nghị chỉ được ĐÚNG 1 phụ tùng chính.
+    // ⚠️ Nguồn CÓ đoạn bắt buộc phải có PTC nhưng đã COMMENT (dòng ~1285) ⇒ KHÔNG port thành ràng buộc.
+    if (rowPartType == "PTC")
+    {
+        var hasPtc = await db.WarrantyClaimPartItems
+            .AnyAsync(x => x.OrgId == t.OrgId && x.ClaimId == id && x.RowPartType == "PTC");
+        if (hasPtc) return Results.BadRequest(new { error = "Báo cáo bảo hành chỉ có 1 phụ tùng chính!" });
+    }
+
+    // Guard 3 (nguồn): nguồn gốc phụ tùng bắt buộc và chỉ nhận TST/OTHER.
+    var partOrderType = (dto.PartOrderType ?? "").Trim().ToUpperInvariant();
+    if (partOrderType.Length == 0)
+        return Results.BadRequest(new { error = "Chưa có nguồn gốc phụ tùng!" });
+    if (partOrderType != "TST" && partOrderType != "OTHER")
+        return Results.BadRequest(new { error = "Nguồn gốc phụ tùng không hợp lệ!" });
+
+    var partOrderNo = (dto.PartOrderNo ?? "").Trim();
+    if (partOrderType == "TST")
+    {
+        // Guard 4 (nguồn): TST thì số đơn hàng bắt buộc.
+        if (partOrderNo.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số đơn hàng!" });
+
+        // Guard 5 (nguồn): đơn hàng phải TỒN TẠI và đã được duyệt/hoàn thành, có đúng dòng phụ tùng này.
+        var order = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == partOrderNo);
+        if (order is null || (order.OrderPartStatus != "Approved" && order.OrderPartStatus != "Finished"))
+            return Results.BadRequest(new { error = "Số đơn hàng không hợp lệ!" });
+        var line = await db.OrderPartLines
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartId == order.Id && x.PartCode == partCode);
+        if (line is null) return Results.BadRequest(new { error = "Số đơn hàng không hợp lệ!" });
+
+        // Guard 6 (nguồn): tổng SL trên MỌI đề nghị bảo hành (trừ đề nghị bị từ chối) phải <= SL duyệt của đơn.
+        var usedQty = await db.WarrantyClaimPartItems
+            .Where(x => x.OrgId == t.OrgId && x.ClaimId != id && x.PartOrderType == "TST"
+                        && x.PartOrderNo == partOrderNo && x.PartCode == partCode)
+            .Join(db.ServiceWarrantyClaims.Where(w => w.OrgId == t.OrgId && w.Status != "Rejected"),
+                  x => x.ClaimId, w => w.Id, (x, w) => x.Quantity)
+            .SumAsync();
+        if (line.OrderQty < usedQty + dto.Quantity)
+            return Results.BadRequest(new { error = $"Số lượng phụ tùng BCBH phải <= số lượng duyệt của đơn hàng (duyệt {line.OrderQty}, đã dùng {usedQty})." });
+
+        // Guard 7 (nguồn): đơn giá BCBH phải BẰNG đơn giá của đơn hàng.
+        if (line.Price != dto.Price)
+            return Results.BadRequest(new { error = $"Đơn giá BCBH và đơn giá của đơn hàng phải bằng nhau (đơn hàng {line.Price})." });
+    }
+
+    if (dto.Quantity <= 0) return Results.BadRequest(new { error = "Số lượng phải lớn hơn 0." });
+    if (dto.Price < 0) return Results.BadRequest(new { error = "Đơn giá không được âm." });
+
+    var row = new WarrantyClaimPartItem
+    {
+        OrgId = t.OrgId, ClaimId = id, PartCode = partCode, PartName = dto.PartName,
+        RowPartType = rowPartType, PartOrderType = partOrderType,
+        PartOrderNo = partOrderNo.Length == 0 ? null : partOrderNo,
+        Quantity = dto.Quantity, Price = dto.Price, Factor = dto.Factor <= 0 ? 1 : dto.Factor,
+        Vat = dto.Vat, InsurancePrice = dto.InsurancePrice, ExpenseType = dto.ExpenseType,
+        WarrantyStatus = dto.WarrantyStatus, FlagMainPart = rowPartType == "PTC" ? "1" : dto.FlagMainPart,
+        Note = dto.Note,
+    };
+    db.WarrantyClaimPartItems.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ClaimId, row.PartCode, row.RowPartType, amount = row.Quantity * row.Price * row.Factor });
+}).RequireAuthorization();
+
+app.MapDelete("/api/warrantyclaims/{id}/parts/{lineId}", async (
+    long id, long lineId, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.WarrantyClaimPartItems
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ClaimId == id && x.Id == lineId);
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy dòng phụ tùng." });
+    db.WarrantyClaimPartItems.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = lineId });
+}).RequireAuthorization();
+
 app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -19310,6 +19431,7 @@ record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
+record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
 record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
