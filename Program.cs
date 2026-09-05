@@ -16500,29 +16500,66 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
     var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.OrderQty, l.Price, lineTotal = l.OrderQty * l.Price }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.OrderQty, l.Price, l.OrderPartStatusDtl, lineTotal = l.OrderQty * l.Price }).ToListAsync();
     return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, count = lines.Count, lines, total = lines.Sum(x => x.lineTotal) });
 }).RequireAuthorization();
 
-// Gửi NCC (approve) / Hoàn thành (finish) — tiến đúng chuỗi Pending→Approved→Finished
+// Gửi NCC (approve) / Hoàn thành (finish) / TỪ CHỐI (reject) — nguồn TConst.OrderPartStatus: P → A → F, và R.
+// 🔴 Port cũ thiếu hẳn `Rejected`(R) ⇒ không có đường từ chối đơn đặt phụ tùng.
+// Thao tác ở header ĐỒNG BỘ xuống trạng thái từng dòng, đúng cách nguồn ghi OrderPartStatusDtl.
 app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("approve" or "finish")) return Results.BadRequest(new { error = "action = approve|finish" });
+    if (action is not ("approve" or "finish" or "reject")) return Results.BadRequest(new { error = "action = approve|finish|reject" });
     no = no.Trim().ToUpperInvariant();
     var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
     if (o is null) return Results.NotFound(new { no });
+
+    string lineStatus;
     if (action == "approve")
     {
         if (o.OrderPartStatus != "Pending") return Results.BadRequest(new { error = "Chỉ gửi NCC đơn Mới tạo." });
-        o.OrderPartStatus = "Approved"; o.SentAt = DateTime.Now;
+        o.OrderPartStatus = "Approved"; o.SentAt = DateTime.Now; lineStatus = "A";
+    }
+    else if (action == "finish")
+    {
+        if (o.OrderPartStatus != "Approved") return Results.BadRequest(new { error = "Chỉ hoàn thành đơn Đã gửi NCC." });
+        o.OrderPartStatus = "Finished"; o.FinishedAt = DateTime.Now; lineStatus = "F";
     }
     else
     {
-        if (o.OrderPartStatus != "Approved") return Results.BadRequest(new { error = "Chỉ hoàn thành đơn Đã gửi NCC." });
-        o.OrderPartStatus = "Finished"; o.FinishedAt = DateTime.Now;
+        // Từ chối được khi đơn CHƯA hoàn thành.
+        if (o.OrderPartStatus == "Finished") return Results.BadRequest(new { error = "Đơn đã hoàn thành, không từ chối được." });
+        if (o.OrderPartStatus == "Rejected") return Results.BadRequest(new { error = "Đơn đã bị từ chối." });
+        o.OrderPartStatus = "Rejected"; lineStatus = "R";
     }
+
+    // Đồng bộ trạng thái từng dòng (nguồn ghi OrderPartStatusDtl trong cùng thao tác).
+    var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).ToListAsync();
+    foreach (var l in lines) l.OrderPartStatusDtl = lineStatus;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.OrderPartNo, status = o.OrderPartStatus });
+    return Results.Ok(new { o.OrderPartNo, status = o.OrderPartStatus, linesUpdated = lines.Count });
+}).RequireAuthorization();
+
+// Duyệt / từ chối TỪNG DÒNG đơn đặt — khả năng nguồn có nhờ cột OrderPartStatusDtl riêng của dòng.
+app.MapPost("/api/orderparts/{no}/lines/{partCode}/status", async (
+    string no, string partCode, OrderPartLineStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    partCode = partCode.Trim().ToUpperInvariant();
+    var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
+    if (o is null) return Results.NotFound(new { no });
+    var line = await db.OrderPartLines.FirstOrDefaultAsync(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id && l.PartCode.ToUpper() == partCode);
+    if (line is null) return Results.NotFound(new { no, partCode });
+
+    string[] lineStatuses = { "P", "A", "F", "R" };
+    var target = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+    if (!lineStatuses.Contains(target))
+        return Results.BadRequest(new { error = "ToStatus = P (mới tạo) | A (đã duyệt) | F (hoàn thành) | R (từ chối)" });
+
+    line.OrderPartStatusDtl = target;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderPartNo, line.PartCode, lineStatus = line.OrderPartStatusDtl });
 }).RequireAuthorization();
 
 // ===== Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo) =====
@@ -18602,6 +18639,7 @@ record TransportInsPaymentEditLineDto(string? Vin, decimal TFValReal, decimal TP
 record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
+record OrderPartLineStatusDto(string? ToStatus);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content);
 record OrderComplainActDto(string? Resolution);

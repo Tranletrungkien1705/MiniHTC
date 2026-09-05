@@ -3377,6 +3377,15 @@ public sealed class OrderPartLine
     public string? PartName { get; set; }
     public decimal OrderQty { get; set; } = 1;
     public decimal Price { get; set; }
+
+    /// <summary>
+    /// Trạng thái RIÊNG của TỪNG DÒNG đơn đặt (Ser_Order_PartDtl.ORDERPARTSTATUSDTL) —
+    /// nguồn ghi độc lập với trạng thái header: `= Pending` khi tạo, `= Approved` khi duyệt.
+    /// ⚠️ Nhờ cột này mà đơn đặt có thể duyệt/nhận TỪNG PHẦN (dòng này duyệt, dòng kia chưa);
+    /// gộp vào trạng thái header là mất khả năng đó.
+    /// P (Pending) → A (Approved) → F (Finished) · R (Rejected).
+    /// </summary>
+    public string OrderPartStatusDtl { get; set; } = "P";
 }
 
 /// <summary>Khiếu nại đơn đặt phụ tùng (Ser_OrderComplain — port 1:1 FrmSer_OrderComplain/FrmSer_OrderComplainMng, TCMotor DMSCarSv/TST):
