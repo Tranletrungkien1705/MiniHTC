@@ -3159,6 +3159,17 @@ public sealed class ServiceWarrantyClaim
     /// <summary>Số biên nhận claim do HMC trả về (ClmRcptNo) — bằng chứng hãng đã nhận.</summary>
     public string? ClmRcptNo { get; set; }
 
+    /// <summary>
+    /// SỐ LẦN đã gửi THÀNH CÔNG sang HMC (HMCApiQtyA) — tăng 1 mỗi lần gửi thành công.
+    /// ⚠️ Không chỉ để thống kê: từ lần đẩy THỨ 2 trở đi, số serial claim gửi hãng phải đổi
+    /// ký tự "-" thành CHỮ CÁI theo số lần (lần 2 = A, lần 3 = B…) — xem <see cref="ClmNoSrl"/>.
+    /// Chỉ có ở bản biz `Ser_ROWarrantyReport_SendHMCX_20260227` (máy 150), bản laptop KHÔNG có.
+    /// </summary>
+    public int HMCApiQtyA { get; set; }
+
+    /// <summary>Số serial claim gửi hãng (clmNoSrl) — đã áp luật đổi "-" thành chữ cái khi gửi lại.</summary>
+    public string? ClmNoSrl { get; set; }
+
     public string? HtcNote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;

@@ -6168,7 +6168,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HtcNote
+        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
         pending = items.Count(i => i.Status == "Pending"), sent = items.Count(i => i.Status == "Sent"),
@@ -6204,7 +6204,18 @@ app.MapGet("/api/warrantyclaims/hmcapistatuses", () => Results.Ok(new
     note = "Trục ĐỘC LẬP với Status duyệt nội bộ; nguồn set 'P' ngay khi tạo đề nghị."
 })).RequireAuthorization();
 
+/// <summary>
+/// Đổi số lần gửi lại thành chữ cái theo nguồn (`CUtils.SoSangChuCai`): 1→A, 2→B, …
+/// Dùng cho số serial claim khi đẩy lại sang HMC.
+/// </summary>
+static string ResendSuffixLetter(int resendCount)
+{
+    if (resendCount <= 0) return "";
+    return ((char)('A' + (resendCount - 1) % 26)).ToString();
+}
+
 // Ghi kết quả đồng bộ HMC (bộ đẩy API gọi lại sau khi có phản hồi của hãng).
+// TWIN: bản LIVE trên máy 150 là `Ser_ROWarrantyReport_SendHMCX_20260227` — bản laptop KHÔNG có hàm này.
 app.MapPost("/api/warrantyclaims/{id}/hmcsync", async (
     long id, WarrantyHmcSyncDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -6214,17 +6225,43 @@ app.MapPost("/api/warrantyclaims/{id}/hmcsync", async (
     if (!hmcApiStatusNames.ContainsKey(target))
         return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", hmcApiStatusNames.Keys)}" });
 
-    // Guard của nguồn: đã gửi THÀNH CÔNG ("A") thì KHÔNG ghi đè kết quả nữa
-    // (`if (strHMCApiStatus != TConst.Stage.Approved)` đặt ngay trước câu UPDATE).
+    // 🔴 Guard MỚI của bản _20260227: chỉ đẩy HMC khi đề nghị đang ở trạng thái duyệt "Confirmed"
+    // (`CheckExistROWarrantyReport(..., Ser_WarrantyReport_Status.Confirmed, ...)`).
+    if (c.Status != "Confirmed")
+        return Results.BadRequest(new { error = $"Chỉ đẩy HMC khi đề nghị ở trạng thái Confirmed (đang: {c.Status})." });
+
+    // Guard: đã gửi THÀNH CÔNG ("A") thì KHÔNG gửi lại.
+    // ⚠️ Ở nguồn, ĐIỀU KIỆN CODE và COMMENT/tham số lỗi MÂU THUẪN nhau:
+    //    comment + `HMCApiStatusListToCheck` ghi hợp lệ = "Pending,Fail" (chỉ cho gửi khi P hoặc R),
+    //    nhưng biểu thức lại là `if (status != Success) throw`.
+    //    Port theo COMMENT + danh sách hợp lệ vì đó mới khớp nghiệp vụ "đã gửi thành công thì thôi".
+    //    ĐÃ FLAG trong sổ theo dõi để người xác nhận — không tự quyết là bug của nguồn.
     if (c.HMCApiStatus == "A")
-        return Results.BadRequest(new { error = "Đề nghị đã đồng bộ thành công sang HMC, không ghi đè." });
+        return Results.BadRequest(new { error = "Đề nghị đã đồng bộ thành công sang HMC, không gửi lại." });
 
     c.HMCApiStatus = target;
     c.SyncHMCDateTime = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.ClmRcptNo)) c.ClmRcptNo = dto.ClmRcptNo.Trim();
+
+    if (target == "A")
+    {
+        // Chỉ lần gửi THÀNH CÔNG mới tăng đếm (nguồn: `HMCApiQtyA = iHMCApiQtyACur`).
+        var previousSuccess = c.HMCApiQtyA;   // số lần đã gửi thành công TRƯỚC lần này
+        c.HMCApiQtyA = previousSuccess + 1;
+        // Từ lần đẩy THỨ 2 trở đi: đổi "-" trong số serial claim thành chữ cái theo số lần đã gửi.
+        // Lần 1 giữ nguyên; lần 2 = A; lần 3 = B…
+        var serial = (dto.ClmNoSrl ?? c.ClmNoSrl ?? "").Trim();
+        if (serial.Length > 0)
+            c.ClmNoSrl = previousSuccess > 0 ? serial.Replace("-", ResendSuffixLetter(previousSuccess)) : serial;
+    }
+
     c.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.Id, c.HMCApiStatus, statusName = hmcApiStatusNames[target], c.SyncHMCDateTime, c.ClmRcptNo });
+    return Results.Ok(new
+    {
+        c.Id, c.HMCApiStatus, statusName = hmcApiStatusNames[target],
+        c.SyncHMCDateTime, c.ClmRcptNo, c.HMCApiQtyA, c.ClmNoSrl
+    });
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo máy trạng thái duyệt bảo hành (submit/review/approve/reject/revert).
@@ -19273,7 +19310,7 @@ record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
-record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo);
+record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
 record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
