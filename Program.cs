@@ -7150,7 +7150,7 @@ app.MapGet("/api/redeemrequests", async (AppDbContext db, ITenantContext t, stri
     var qry = db.RedeemRequests.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqRedeemNo.Contains(q!) || x.DealerCode!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRedeemNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRedeemNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedDate, x.ApprovedBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -7159,7 +7159,7 @@ app.MapGet("/api/redeemrequests/{id}", async (long id, AppDbContext db, ITenantC
     var h = await db.RedeemRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.RedeemType }).ToListAsync();
-    return Results.Ok(new { header = new { h.Id, h.ReqRedeemNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt }, lines });
+    return Results.Ok(new { header = new { h.Id, h.ReqRedeemNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt, h.ApprovedDate, h.ApprovedBy }, lines });
 }).RequireAuthorization();
 
 app.MapPost("/api/redeemrequests", async (RedeemRequestDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
@@ -7191,10 +7191,15 @@ app.MapPost("/api/redeemrequests/{id}/{action}", async (long id, string action, 
 {
     var h = await db.RedeemRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var target = action.ToLowerInvariant() switch { "approve" => "Approved", "reject" => "Rejected", _ => "" };
+    var target = action.ToLowerInvariant() switch { "approve" => "A", "reject" => "R", _ => "" };
     if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (approve/reject)." });
-    if (h.Status != "Created") return Results.BadRequest(new { error = $"Đề nghị đang '{h.Status}', chỉ xử lý khi 'Created'." });
+    if (h.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang '{h.Status}', chỉ xử lý khi 'P' (chờ duyệt)." });
+    // ⚠️ Duyệt cả đề nghị là lối tắt của bản port. Nguồn duyệt TỪNG DÒNG rồi mới suy ra header
+    // — xem POST /api/reqredeems/{no}/approve-vin. Ở đây đồng bộ luôn trạng thái mọi dòng cho nhất quán.
     h.Status = target;
+    h.ApprovedDate = DateTime.Now;
+    var allLines = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == h.Id).ToListAsync();
+    foreach (var ln in allLines) { ln.DMReqDtlStatus = target; ln.ApprovedDate = DateTime.Now; }
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.Status });
 }).RequireAuthorization();
@@ -15153,55 +15158,113 @@ app.MapPost("/api/carlocations", async (List<CarLocationDto> dto, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Đề nghị giải chấp (ReqRedeem — port 1:1 FrmNewRedeem, 2010.HTC/Sales/Redeem) =====
+// ⛔ HỢP NHẤT THỰC THỂ SONG TRÙNG (#55): `/api/reqredeems` trước đây ghi vào bộ `ReqRedeem`/`ReqRedeemDtl`
+// RIÊNG, trong khi `/api/redeemrequests` ghi vào `RedeemRequest`/`RedeemRequestLine` —
+// **cùng một bảng nguồn `RD_ReqRedeem`/`RD_ReqRedeemDtl`**. Nay cả hai dùng CHUNG một bảng.
 app.MapGet("/api/reqredeems", async (AppDbContext db, ITenantContext t, string? status) =>
 {
-    var q = db.ReqRedeems.Where(r => r.OrgId == t.OrgId);
+    var q = db.RedeemRequests.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.ReqDMNo, r.Status, r.CreatedAt, r.DoneAt,
-        cars = db.ReqRedeemDtls.Count(c => c.OrgId == t.OrgId && c.ReqRedeemId == r.Id)
+        reqDMNo = r.ReqRedeemNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy,
+        cars = db.RedeemRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id),
+        carsPending = db.RedeemRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id && c.DMReqDtlStatus == "P"),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/reqredeems", async (ReqRedeemDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reqredeems", async (
+    ReqRedeemDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa tích chọn xe để tạo!" });
+    // Guard nguồn: HTC.HO là ĐÍCH sau khi giải chấp, không được là NH bàn giao lúc tạo.
     if (cars.Any(c => string.Equals(c.BankCode?.Trim(), "HTC.HO", StringComparison.OrdinalIgnoreCase)))
         return Results.BadRequest(new { error = "Không được chọn ngân hàng bàn giao tài sản là HTC.HO!" });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+
     var no = "RDM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new ReqRedeem { OrgId = t.OrgId, ReqDMNo = no, Status = "Draft" };
-    db.ReqRedeems.Add(r); await db.SaveChangesAsync();
+    var h = new RedeemRequest
+    {
+        OrgId = t.OrgId, ReqRedeemNo = no, CreatedDate = DateTime.Now, CreatedAt = DateTime.Now,
+        DealerCode = cars.Select(c => c.DealerCode).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
+        VinCount = cars.Count, Status = "P",          // TConst.Stage.Pending (Biz.HTC.WH.cs:126377)
+        CreatedBy = user.Identity?.Name ?? "system",
+    };
+    db.RedeemRequests.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.ReqRedeemDtls.Add(new ReqRedeemDtl { OrgId = t.OrgId, ReqRedeemId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId, DealerCode = c.DealerCode, TypeDMReq = c.TypeDMReq, BankCode = c.BankCode });
+        db.RedeemRequestLines.Add(new RedeemRequestLine
+        {
+            OrgId = t.OrgId, RequestId = h.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId,
+            RedeemType = string.IsNullOrWhiteSpace(c.TypeDMReq) ? "DIRECT" : c.TypeDMReq!.Trim().ToUpperInvariant(),
+            DealerCode = c.DealerCode, MortageBankCode = c.BankCode,
+            DMReqDtlStatus = "P",                      // nguồn tạo dòng ở Pending (Biz.HTC.WH.cs:126416)
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReqDMNo, cars = cars.Count, message = "Tạo đề nghị giải chấp thành công" });
+    return Results.Ok(new { reqDMNo = h.ReqRedeemNo, cars = cars.Count, status = h.Status, message = "Tạo đề nghị giải chấp thành công" });
 }).RequireAuthorization();
 
 app.MapGet("/api/reqredeems/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var r = await db.ReqRedeems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqDMNo == no);
-    if (r is null) return Results.NotFound(new { no });
-    var cars = await db.ReqRedeemDtls.Where(c => c.OrgId == t.OrgId && c.ReqRedeemId == r.Id)
-        .Select(c => new { c.VIN, c.CarId, c.DealerCode, c.TypeDMReq, c.BankCode }).ToListAsync();
-    return Results.Ok(new { r.ReqDMNo, r.Status, count = cars.Count, cars });
+    var h = await db.RedeemRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRedeemNo.ToUpper() == no);
+    if (h is null) return Results.NotFound(new { no });
+    var cars = await db.RedeemRequestLines.Where(c => c.OrgId == t.OrgId && c.RequestId == h.Id)
+        .Select(c => new { c.VIN, c.CarId, c.DealerCode, typeDMReq = c.RedeemType, c.MortageBankCode,
+            c.DMReqDtlStatus, c.DRListCode, c.ApprovedDate, c.ApprovedBy, c.Remark }).ToListAsync();
+    return Results.Ok(new { reqDMNo = h.ReqRedeemNo, h.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/reqredeems/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴🔴 DUYỆT GIẢI CHẤP THEO TỪNG VIN — đúng chiều của nguồn (Biz.HTC.WH.cs:126540-126624).
+// Header KHÔNG lan xuống dòng; ngược lại: duyệt xong 1 dòng thì kiểm "còn dòng nào ở P không",
+// **hết dòng P thì header MỚI tự chuyển "A"**.
+// Side-effect của nguồn: ghi `MortageBankCode = "HTC.HO"` lên DÒNG **và lên bảng xe thế chấp**
+// — tức chuyển quyền thế chấp xe về HTC.
+app.MapPost("/api/reqredeems/{no}/approve-vin", async (
+    string no, string vin, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var r = await db.ReqRedeems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqDMNo == no);
-    if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
-    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    var v = (vin ?? "").Trim().ToUpperInvariant();
+    if (v.Length == 0) return Results.BadRequest(new { error = "Chưa chọn VIN cần duyệt." });
+    var h = await db.RedeemRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRedeemNo.ToUpper() == no);
+    if (h is null) return Results.NotFound(new { no });
+    var line = await db.RedeemRequestLines
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestId == h.Id && x.VIN != null && x.VIN.ToUpper() == v);
+    if (line is null) return Results.NotFound(new { no, vin = v });
+    // Guard nguồn: chỉ duyệt dòng đang ở "P".
+    if (line.DMReqDtlStatus != "P")
+        return Results.BadRequest(new { error = $"Dòng VIN {v} đang '{line.DMReqDtlStatus}', chỉ duyệt khi 'P'." });
+
+    var actor = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    line.DMReqDtlStatus = "A"; line.ApprovedDate = now; line.ApprovedBy = actor;
+    line.MortageBankCode = "HTC.HO";      // TConst.BANKHTC.HTCHO
+
+    // Side-effect trên bảng xe thế chấp (nguồn ghi lên Car_Vin).
+    var carRows = await db.BankCarMortages.Where(x => x.OrgId == t.OrgId && x.VIN.ToUpper() == v).ToListAsync();
+    foreach (var cr in carRows) cr.MortageBankCode = "HTC.HO";
+
+    // Header là GIÁ TRỊ DẪN XUẤT: chỉ chuyển "A" khi KHÔNG còn dòng nào ở "P".
+    var stillPending = await db.RedeemRequestLines
+        .CountAsync(x => x.OrgId == t.OrgId && x.RequestId == h.Id && x.DMReqDtlStatus == "P" && x.Id != line.Id);
+    if (stillPending == 0) { h.Status = "A"; h.ApprovedDate = now; h.ApprovedBy = actor; }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReqDMNo, status = r.Status });
+    return Results.Ok(new { reqDMNo = h.ReqRedeemNo, vin = v, lineStatus = line.DMReqDtlStatus,
+        headerStatus = h.Status, remainingPending = stillPending, carMortgageUpdated = carRows.Count });
 }).RequireAuthorization();
+
+app.MapGet("/api/reqredeems/statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ duyệt" },
+        new { code = "A", name = "Đã duyệt" },
+        new { code = "R", name = "Từ chối" } },
+    redeemTypes = new[] { new { code = "DIRECT", name = "Trực tiếp" }, new { code = "GUARANTEE", name = "Bảo lãnh" } },
+    note = "Header là giá trị DẪN XUẤT: chỉ 'A' khi mọi dòng VIN đã duyệt. Duyệt xong ghi NH thế chấp = HTC.HO.",
+})).RequireAuthorization();
 
 // ===== Đặt hàng sản xuất (MnfPlOrder — port 1:1 FrmDatHangSX/FrmQLDatHangSX, 2010.HTC/Sales/WorkOrder) =====
 app.MapGet("/api/mnfplorders", async (AppDbContext db, ITenantContext t, string? status, string? ordType) =>

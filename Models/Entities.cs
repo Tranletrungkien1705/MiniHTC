@@ -1785,8 +1785,20 @@ public sealed class RedeemRequest
     public string? DealerCode { get; set; }
     public string? Note { get; set; }
     public int VinCount { get; set; }
-    public string Status { get; set; } = "Created";
+
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG mã nguồn (`RD_ReqRedeem.DMReqStatus`, `TConst.Stage`):
+    /// "P" chờ duyệt → "A" đã duyệt · "R" từ chối.
+    /// ⚠️⚠️ Ở nghiệp vụ này header là **GIÁ TRỊ DẪN XUẤT**: nguồn duyệt **TỪNG DÒNG (theo VIN)**,
+    /// rồi kiểm "còn dòng nào ở P không"; **hết dòng P thì header mới tự chuyển "A"**
+    /// (`Biz.HTC.WH.cs:126588-126624`). KHÔNG phải header lan xuống dòng.
+    /// Đọc dữ liệu cũ: Created→"P", Approved→"A", Rejected→"R".
+    /// </summary>
+    public string Status { get; set; } = "P";
     public string? CreatedBy { get; set; }
+    /// <summary>Thời điểm header được duyệt — nguồn chỉ ghi khi TẤT CẢ dòng đã duyệt.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; }
 }
 
@@ -1798,7 +1810,30 @@ public sealed class RedeemRequestLine
     public long RequestId { get; set; }
     public string? VIN { get; set; }
     public string? CarId { get; set; }
+    /// <summary>`TypeDMReq` (`TConst.RDType`): DIRECT trực tiếp · GUARANTEE bảo lãnh.</summary>
     public string RedeemType { get; set; } = "DIRECT";
+
+    /// <summary>
+    /// 🔴 Trạng thái RIÊNG của DÒNG (`DMReqDtlStatus`) — **đây mới là nơi thao tác duyệt xảy ra**.
+    /// Nguồn tạo ở "P", duyệt từng dòng thành "A".
+    /// </summary>
+    public string DMReqDtlStatus { get; set; } = "P";
+
+    public string? DealerCode { get; set; }
+
+    /// <summary>
+    /// 🔴 Ngân hàng đang nhận thế chấp (`MortageBankCode`).
+    /// Khi TẠO: **cấm là "HTC.HO"**. Khi DUYỆT giải chấp: nguồn **ghi đè thành "HTC.HO"**
+    /// (`TConst.BANKHTC.HTCHO`) — tức **chuyển quyền thế chấp xe về HTC** — và ghi **cả trên bảng VIN**.
+    /// </summary>
+    public string? MortageBankCode { get; set; }
+
+    /// <summary>Mã danh sách hồ sơ xe liên quan (`DRListCode`).</summary>
+    public string? DRListCode { get; set; }
+
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public string? Remark { get; set; }
 }
 
 /// <summary>Đề nghị giao hóa đơn/hồ sơ thu hồi (RD_ReqInvoice header) — port 1:1 FrmNewRDInvoice/FrmMngRDInvoice (2010.HTC/Sales/Redeem). Header: số ĐN + ngày + đại lý; state-machine Created→Approved/Rejected. Chi tiết theo VIN, loại nhận: Đại lý / Ngân hàng BL / Ngân hàng LC.</summary>
@@ -4768,7 +4803,14 @@ public sealed class CarLocation
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Đề nghị giải chấp (RD_ReqRedeem + Dtl) — port 1:1 FrmNewRedeem (2010.HTC/Sales/Redeem). Đại lý đề nghị giải chấp xe (release thế chấp) theo VIN.</summary>
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (phát hiện #55).
+/// `ReqRedeem`/`ReqRedeemDtl` và <see cref="RedeemRequest"/>/<see cref="RedeemRequestLine"/>
+/// **cùng map một bảng nguồn `RD_ReqRedeem`/`RD_ReqRedeemDtl`** (nguồn chỉ có DUY NHẤT 1 bảng —
+/// kiểm bằng grep `SaveData("RD_ReqRedeem"`).
+/// Nghiệp vụ nay dùng <see cref="RedeemRequest"/>; endpoint `/api/reqredeems` đã trỏ sang bảng đó.
+/// Giữ lớp này để đọc dữ liệu cũ, **KHÔNG ghi mới**.
+/// </summary>
 public sealed class ReqRedeem
 {
     public long Id { get; set; }
