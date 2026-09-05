@@ -2920,10 +2920,65 @@ public sealed class CustomerCare
     public string? CusName { get; set; }
     public string? CusPhone { get; set; }
     public DateTime? ContactDate { get; set; }           // ngày dự kiến liên hệ
-    public string Status { get; set; } = "Pending";      // Pending → Contacted → Closed
+    /// <summary>Trạng thái liên hệ — port đúng 4 mã của nguồn (TConst SerCareStatus):
+    /// PEND (chưa liên hệ) → CINFB (đã liên hệ, chưa phản hồi) / CIFB (đã liên hệ, đã phản hồi) / REJ (không cần liên hệ).
+    /// Giữ thêm Pending/Contacted/Closed cho dữ liệu cũ đã tạo trước khi vá.</summary>
+    public string Status { get; set; } = "PEND";
     public string? Result { get; set; }                  // kết quả liên hệ
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ContactedAt { get; set; }
+}
+
+/// <summary>
+/// Phiếu khảo sát chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare24h / Ser_CustomerCare72h —
+/// port 1:1 FrmCSCCustomerCare24h/72h, TCMotor DMSCarSv/Customer).
+/// Mỗi phiếu CSKH (<see cref="CustomerCare"/>) có TỐI ĐA MỘT bản khảo sát: nguồn đọc
+/// "top 1 * where CusCareID = ..." rồi insert-nếu-chưa-có / update-nếu-đã-có (upsert theo CareNo).
+/// Bộ 6 câu hỏi dùng CHUNG cho cả 24h và 72h (form 24h nạp hằng số của lớp SerCusCare72hQA).
+/// </summary>
+public sealed class CustomerCareSurvey
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Số phiếu CSKH được khảo sát (nguồn: CusCareID) — khoá upsert.</summary>
+    public string CareNo { get; set; } = "";
+
+    /// <summary>Lệnh sửa chữa gắn với phiếu (nguồn: ROID).</summary>
+    public string? RONo { get; set; }
+
+    /// <summary>Ngày hoàn thành sửa chữa hiển thị trên form (nguồn: FinishedDate24, ô chỉ đọc).</summary>
+    public DateTime? FinishedDate { get; set; }
+
+    /// <summary>Ngày liên hệ khách (nguồn: ContactDate24).</summary>
+    public DateTime? ContactDate { get; set; }
+
+    // --- 6 câu trả lời khảo sát, lưu đúng MÃ đáp án của nguồn (vd "YourCarProblem_Yes") ---
+
+    /// <summary>Câu 1 — Xe làm dịch vụ có vấn đề gì không? (YourCarProblem_Yes/_No)</summary>
+    public string? YourCarProblem { get; set; }
+
+    /// <summary>Câu 2 — Có hài lòng về chất lượng dịch vụ không? (YourSatisfyQSv_Yes/_No/_Consider)</summary>
+    public string? YourSatisfyQSv { get; set; }
+
+    /// <summary>Câu 3 — Thái độ phục vụ và tư vấn của nhân viên (FyourCSSH_OK/_Nomarl/_No/_Other)</summary>
+    public string? FyourCSSH { get; set; }
+
+    /// <summary>Câu 4 — Sẵn sàng quay lại xưởng lần sửa chữa tiếp theo? (YourRIWN_Yes/_No)</summary>
+    public string? YourRIWN { get; set; }
+
+    /// <summary>Câu 5 — Cơ sở vật chất đáp ứng nhu cầu chưa? (WFBasicNeeds_OK/_Nomarl/_No/_Other)</summary>
+    public string? WFBasicNeeds { get; set; }
+
+    /// <summary>Câu 6 — Mong muốn ở sự phục vụ của công ty (tự luận; nguồn ghi cùng giá trị với Note).</summary>
+    public string? YourHopeOfOur { get; set; }
+
+    /// <summary>Ghi chú phiếu (nguồn: Note24).</summary>
+    public string? Note { get; set; }
+
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; }
 }
 
 /// <summary>Chiến dịch marketing HTC gửi đại lý (Ser_CampaignMarketing — port 1:1 FrmSer_CampaignMarketing/Mng + FrmListDealer(Update),

@@ -15166,7 +15166,8 @@ app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo != null && c.PlateNo.Contains(plate.ToUpper()));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+    // "Chưa liên hệ" nhận cả mã nguồn PEND lẫn giá trị Pending của dữ liệu tạo trước khi vá mã trạng thái.
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status is "PEND" or "Pending"), items });
 }).RequireAuthorization();
 
 app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, ITenantContext t) =>
@@ -15179,7 +15180,8 @@ app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, I
     var c = new CustomerCare
     {
         OrgId = t.OrgId, CareNo = no, CareType = type, RONo = dto.RONo, PlateNo = dto.PlateNo?.Trim().ToUpperInvariant(),
-        CusName = dto.CusName, CusPhone = dto.CusPhone, ContactDate = dto.ContactDate, Status = "Pending"
+        CusName = dto.CusName, CusPhone = dto.CusPhone, ContactDate = dto.ContactDate,
+        Status = "PEND"   // mã nguồn SerCareStatus.Pending
     };
     db.CustomerCares.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, c.CareType, status = c.Status });
@@ -15207,6 +15209,124 @@ app.MapPost("/api/customercares/{no}/close", async (string no, AppDbContext db, 
     c.Status = "Closed";
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, status = c.Status });
+}).RequireAuthorization();
+
+// ===== Khảo sát CSKH sau dịch vụ (Ser_CustomerCare24h/72h — port 1:1 FrmCSCCustomerCare24h/72h, TCMotor DMSCarSv/Customer) =====
+// Bộ 6 câu hỏi + 3 nút kết thúc: "Đã liên hệ, chưa phản hồi" / "Đã liên hệ, đã phản hồi" / "Không liên hệ".
+// Cả 3 nút gọi CÙNG một hàm biz Ser_CustomerCare24h, chỉ khác mã trạng thái truyền vào.
+
+// Mã trạng thái CSKH đúng nguồn (TERP.Constants SerCareStatus) — KHÔNG gộp, vì "chưa phản hồi"
+// và "đã phản hồi" là hai kết quả nghiệp vụ khác nhau dùng để chấm chất lượng dịch vụ.
+var careSurveyStatusTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["PEND"]  = "Chưa liên hệ",
+    ["CINFB"] = "Đã liên hệ, chưa phản hồi",
+    ["CIFB"]  = "Đã liên hệ, đã phản hồi",
+    ["REJ"]   = "Không liên hệ",
+};
+
+// Đáp án hợp lệ của từng câu hỏi — đúng danh sách RadioGroupItem mà form nạp từ SerCusCare72hQA.
+// Form gốc chỉ cho chọn trong danh sách nên không thể nhập bừa; API phải tự kiểm ở server.
+var careSurveyAnswerOptions = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
+{
+    ["YourCarProblem"] = new[] { "YourCarProblem_Yes", "YourCarProblem_No" },
+    ["YourSatisfyQSv"] = new[] { "YourSatisfyQSv_Yes", "YourSatisfyQSv_No", "YourSatisfyQSv_Consider" },
+    ["FyourCSSH"]      = new[] { "FyourCSSH_OK", "FyourCSSH_Nomarl", "FyourCSSH_No", "FyourCSSH_Other" },
+    ["YourRIWN"]       = new[] { "YourRIWN_Yes", "YourRIWN_No" },
+    ["WFBasicNeeds"]   = new[] { "WFBasicNeeds_OK", "WFBasicNeeds_Nomarl", "WFBasicNeeds_No", "WFBasicNeeds_Other" },
+};
+
+app.MapGet("/api/customercares/{no}/survey", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var care = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (care is null) return Results.NotFound(new { no });
+    var survey = await db.CustomerCareSurveys.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    return Results.Ok(new
+    {
+        care.CareNo, care.CareType, care.RONo, care.PlateNo, care.CusName, care.CusPhone,
+        status = care.Status,
+        statusText = careSurveyStatusTexts.TryGetValue(care.Status, out var text) ? text : care.Status,
+        survey = survey is null ? null : new
+        {
+            survey.RONo, survey.FinishedDate, survey.ContactDate,
+            survey.YourCarProblem, survey.YourSatisfyQSv, survey.FyourCSSH,
+            survey.YourRIWN, survey.WFBasicNeeds, survey.YourHopeOfOur,
+            survey.Note, survey.CreatedBy, survey.CreatedAt, survey.UpdatedAt
+        }
+    });
+}).RequireAuthorization();
+
+// Lưu khảo sát + chốt trạng thái liên hệ (3 nút của form gộp về 1 endpoint, phân biệt bằng Status).
+app.MapPost("/api/customercares/{no}/survey", async (
+    string no, CareSurveyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var care = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (care is null) return Results.NotFound(new { no });
+
+    // Chỉ 3 kết quả mà form cho bấm; PEND là trạng thái khởi tạo, không phải kết quả khảo sát.
+    var newStatus = (dto.Status ?? "").Trim().ToUpperInvariant();
+    if (newStatus is not ("CINFB" or "CIFB" or "REJ"))
+        return Results.BadRequest(new { error = "Status = CINFB (đã liên hệ, chưa phản hồi) | CIFB (đã liên hệ, đã phản hồi) | REJ (không liên hệ)" });
+
+    // Form vô hiệu hoá đúng cái nút ứng với trạng thái hiện tại ⇒ không thể chốt lại y nguyên trạng thái cũ.
+    if (string.Equals(care.Status, newStatus, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = $"Phiếu đã ở trạng thái '{careSurveyStatusTexts[newStatus]}'." });
+
+    // Bỏ trống được (form có thể chưa chọn), nhưng đã nhập thì phải thuộc danh sách đáp án của câu đó.
+    foreach (var (questionKey, allowedAnswers) in careSurveyAnswerOptions)
+    {
+        var answer = questionKey switch
+        {
+            "YourCarProblem" => dto.YourCarProblem,
+            "YourSatisfyQSv" => dto.YourSatisfyQSv,
+            "FyourCSSH"      => dto.FyourCSSH,
+            "YourRIWN"       => dto.YourRIWN,
+            _                => dto.WFBasicNeeds,
+        };
+        if (!string.IsNullOrWhiteSpace(answer) && !allowedAnswers.Contains(answer.Trim()))
+            return Results.BadRequest(new { error = $"Đáp án câu '{questionKey}' không hợp lệ. Cho phép: {string.Join(", ", allowedAnswers)}" });
+    }
+
+    var actor = user.Identity?.Name;
+    var now = DateTime.Now;
+
+    // Upsert theo CareNo — nguồn đọc "top 1 * where CusCareID" rồi insert hoặc update chính bản ghi đó.
+    var survey = await db.CustomerCareSurveys.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    var isNewSurvey = survey is null;
+    if (survey is null)
+    {
+        survey = new CustomerCareSurvey { OrgId = t.OrgId, CareNo = no, CreatedBy = actor, CreatedAt = now };
+        db.CustomerCareSurveys.Add(survey);
+    }
+    survey.RONo = string.IsNullOrWhiteSpace(dto.RONo) ? care.RONo : dto.RONo.Trim();
+    survey.FinishedDate = dto.FinishedDate;
+    survey.ContactDate = dto.ContactDate;
+    survey.YourCarProblem = dto.YourCarProblem?.Trim();
+    survey.YourSatisfyQSv = dto.YourSatisfyQSv?.Trim();
+    survey.FyourCSSH = dto.FyourCSSH?.Trim();
+    survey.YourRIWN = dto.YourRIWN?.Trim();
+    survey.WFBasicNeeds = dto.WFBasicNeeds?.Trim();
+    // Nguồn ghi cùng một giá trị ô ghi chú vào cả Note lẫn YourHopeOfOur (câu 6 tự luận) — giữ nguyên hành vi.
+    survey.Note = dto.Note;
+    survey.YourHopeOfOur = dto.Note;
+    if (!isNewSurvey) survey.UpdatedAt = now;
+
+    // Đồng bộ trạng thái phiếu CSKH (nguồn: Ser_CustomerCareStatusUpdate).
+    // Ngày liên hệ để trống thì XOÁ ngày trên phiếu, không giữ ngày cũ.
+    care.Status = newStatus;
+    care.ContactDate = dto.ContactDate;
+    if (newStatus != "REJ") care.ContactedAt = now;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        care.CareNo,
+        status = care.Status,
+        statusText = careSurveyStatusTexts[newStatus],
+        surveyCreated = isNewSurvey
+    });
 }).RequireAuthorization();
 
 // ===== Chăm sóc KH chương trình MACE hãng (CustomerCareMace — port 1:1 FrmCustomerCareMace/Update/ApointDate, TCMotor DMSCarSv/Customer) =====
@@ -16829,6 +16949,11 @@ record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VA
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);
+/// <summary>Khảo sát CSKH sau dịch vụ — 6 câu trả lời + trạng thái chốt (CINFB/CIFB/REJ).</summary>
+record CareSurveyDto(
+    string? Status, string? RONo, DateTime? FinishedDate, DateTime? ContactDate,
+    string? YourCarProblem, string? YourSatisfyQSv, string? FyourCSSH,
+    string? YourRIWN, string? WFBasicNeeds, string? Note);
 record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
