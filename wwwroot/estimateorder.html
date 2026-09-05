@@ -12,7 +12,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
   table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
   .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Confirmed{color:var(--ok)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-P{color:var(--warn)} .s-A1{color:#2563eb} .s-A2{color:var(--ok)}
   .msg{font-size:13px;margin-left:6px} textarea{width:100%;min-height:56px}
 </style></head>
 <body>
@@ -42,7 +42,8 @@
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const M=n=>(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
-const ST={Draft:"Nháp",Confirmed:"Đã XN"};
+// Mã theo TConst.PLEOrdStatus (Plan_EstimateOrder.PLEOrdStatus) — hằng RIÊNG của DMS40, không phải TConst.Stage
+const ST={P:"Chờ duyệt",A1:"Duyệt cấp 1",A2:"Duyệt cấp 2"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -56,14 +57,18 @@ async function save(){ await token();
   const r=await fetch("/api/estimateorders",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; } m("msg","Đã lưu "+d.estOrderNo); F("hLines").value=""; load();
 }
-async function confirm2(id){ await token(); const r=await fetch("/api/estimateorders/"+id+"/confirm",{method:"POST",headers:H()}); const d=await r.json(); if(!r.ok){alert(d.error||r.status);return;} load(); }
+// Nguồn duyệt THEO LÔ (bảng Plan_EstimateOrder nhiều dòng) — API nhận danh sách số đơn.
+// "cancel" là HUỶ DUYỆT (trả về "P"), KHÔNG phải xoá đơn.
+async function act(no,action){ await token();
+  const r=await fetch("/api/estimateorders/"+action,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({orderNos:[no]})});
+  const d=await r.json(); if(!r.ok){alert(d.error||r.status);return;} load(); }
 async function detail(id,no){ await token(); const r=await fetch("/api/estimateorders/"+id+"/lines",{headers:H()}); const d=await r.json();
   F("det").style.display="block"; F("detName").textContent="— "+no;
   F("detRows").innerHTML=(d.lines||[]).map(o=>`<tr><td><b>${esc(o.modelCode)}</b></td><td>${esc(o.specCode)}</td><td class="num">${M(o.quantity)}</td></tr>`).join("")||'<tr><td colspan="3" class="muted">—</td></tr>'; }
 async function load(){ await token();
   const p=new URLSearchParams(); if(F("qDlr").value)p.set("dealer",F("qDlr").value); if(F("qMonth").value)p.set("month",F("qMonth").value);
   const r=await fetch("/api/estimateorders?"+p.toString(),{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.estOrderNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.monthEstimate)}</td><td>${esc(o.htcStaffInCharge)}</td><td class="num">${o.lines}</td><td class="num">${M(o.totalQty)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.estOrderNo)}')">Chi tiết</button>${o.status==='Draft'?`<button class="link" onclick="confirm2(${o.id})">Xác nhận</button>`:""}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.estOrderNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.monthEstimate)}</td><td>${esc(o.htcStaffInCharge)}</td><td class="num">${o.lines}</td><td class="num">${M(o.totalQty)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.estOrderNo)}')">Chi tiết</button>${o.status==='P'?`<button class="link" onclick="act('${esc(o.estOrderNo)}','approve')">Duyệt C1</button>`:o.status==='A1'?`<button class="link" onclick="act('${esc(o.estOrderNo)}','approve2')">Duyệt C2</button> <button class="link" onclick="act('${esc(o.estOrderNo)}','cancel')">Huỷ duyệt</button>`:o.status==='A2'?`<button class="link" onclick="act('${esc(o.estOrderNo)}','cancel')">Huỷ duyệt</button>`:""}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có.</td></tr>';
 }
 async function saveW(){ await token();
   const r=await fetch("/api/womappings",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({CarId:F("wCar").value,ColorCode:F("wColor").value,ColorNameVN:F("wColorN").value,Description:F("wDesc").value,SoCode:F("wSo").value})});

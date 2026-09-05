@@ -2687,8 +2687,28 @@ public sealed class EstimateOrder
     public string? DealerCode { get; set; }
     public string? MonthEstimate { get; set; }        // "yyyy-MM"
     public string? HtcStaffInCharge { get; set; }
-    public string Status { get; set; } = "Draft";      // Draft -> Confirmed
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG `TConst.PLEOrdStatus` (`Const.Main.DMS40.cs:70-78`), cột
+    /// `Plan_EstimateOrder.PLEOrdStatus`: **"P" chờ duyệt · "A1" duyệt cấp 1 · "A2" duyệt cấp 2**.
+    /// ⚠️ Port cũ `Draft → Confirmed` = **một bước duy nhất**, mất cả hai cấp duyệt của nguồn
+    /// (`Plan_EstimateOrder_Appr1` / `_Appr2`) lẫn đường **huỷ duyệt** (`_Cancel`).
+    /// ⚠️ `PLEOrdStatus` là hằng RIÊNG của DMS40, không dùng chung `TConst.Stage` — trùng giá trị
+    /// P/A1/A2 nhưng là bộ khác, nên tra cứu phải theo đúng lớp hằng này.
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>Ngày/người duyệt cấp 1 (`Appr1DTime`/`Appr1By`).</summary>
+    public DateTime? Appr1DTime { get; set; }
+    public string? Appr1By { get; set; }
+    /// <summary>Ngày/người duyệt cấp 2 (`Appr2DTime`/`Appr2By`).</summary>
+    public DateTime? Appr2DTime { get; set; }
+    public string? Appr2By { get; set; }
+    /// <summary>
+    /// Ngày/người **HUỶ DUYỆT** (`CancelDTime`/`CancelBy`) — nguồn `Plan_EstimateOrder_Cancel`
+    /// KHÔNG xoá/huỷ đơn mà **trả trạng thái về "P"** từ "A1" hoặc "A2".
+    /// </summary>
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
 }
 
 /// <summary>Dòng model trong dự kiến đơn hàng — port 1:1 FrmQuanLyDuKienDH detail, 2010.HTC.</summary>

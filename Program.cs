@@ -10182,6 +10182,7 @@ app.MapGet("/api/estimateorders", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.Id, x.EstOrderNo, x.DealerCode, x.MonthEstimate, x.HtcStaffInCharge, x.Status,
+        x.Appr1By, x.Appr1DTime, x.Appr2By, x.Appr2DTime, x.CancelBy, x.CancelDTime,
         lines = db.EstimateOrderLines.Count(l => l.OrgId == t.OrgId && l.EstimateOrderId == x.Id),
         totalQty = db.EstimateOrderLines.Where(l => l.OrgId == t.OrgId && l.EstimateOrderId == x.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
@@ -10202,7 +10203,7 @@ app.MapPost("/api/estimateorders", async (EstimateOrderDto dto, AppDbContext db,
         if (l.Quantity <= 0) return Results.BadRequest(new { error = "Số lượng phải > 0 cho " + mc });
     }
     var no = "EST" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new EstimateOrder { OrgId = t.OrgId, EstOrderNo = no, DealerCode = dto.DealerCode, MonthEstimate = dto.MonthEstimate, HtcStaffInCharge = dto.HtcStaffInCharge, Status = "Draft" };
+    var h = new EstimateOrder { OrgId = t.OrgId, EstOrderNo = no, DealerCode = dto.DealerCode, MonthEstimate = dto.MonthEstimate, HtcStaffInCharge = dto.HtcStaffInCharge, Status = "P" };
     db.EstimateOrders.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.EstimateOrderLines.Add(new EstimateOrderLine { OrgId = t.OrgId, EstimateOrderId = h.Id, ModelCode = l.ModelCode!.Trim(), SpecCode = l.SpecCode, Quantity = l.Quantity });
@@ -10219,13 +10220,40 @@ app.MapGet("/api/estimateorders/{id}/lines", async (long id, AppDbContext db, IT
     return Results.Ok(new { h.EstOrderNo, h.DealerCode, h.MonthEstimate, h.Status, lines });
 }).RequireAuthorization();
 
-app.MapPost("/api/estimateorders/{id}/confirm", async (long id, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT 2 CẤP + HUỶ DUYỆT — `Plan_EstimateOrder_Appr1` (BizHTC.zTemp.cs:54702) ·
+// `_Appr2`→`_Appr2X` (55070→54820) · `_Cancel`→`_CancelX` (55440→55189).
+// ⚠️ Port cũ chỉ có một bước `confirm` — mất cả hai cấp duyệt lẫn đường huỷ duyệt.
+// ⚠️ **Nguồn làm THEO LÔ**: cả ba hàm nhận một BẢNG `Plan_EstimateOrder` nhiều dòng và
+//    `foreach` từng `PLEOrdNo` — port cũ hạ xuống thao tác từng đơn. Endpoint này nhận danh sách số đơn.
+// ⚠️ Bẫy tên đã kiểm: hàm public `_Appr2` là DUYỆT cấp 2 (gọi `_Appr2X`), còn phần đặt lại "P"
+//    nằm ở `_CancelX` — đọc lướt rất dễ gán nhầm nhánh.
+app.MapPost("/api/estimateorders/{action}", async (string action, EstOrderApproveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var h = await db.EstimateOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (h is null) return Results.NotFound(new { id });
-    if (h.Status == "Confirmed") return Results.BadRequest(new { error = "Đã xác nhận rồi." });
-    h.Status = "Confirmed"; await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.Status });
+    if (action is not ("approve" or "approve2" or "cancel"))
+        return Results.BadRequest(new { error = "action = approve (cấp 1) | approve2 (cấp 2) | cancel (huỷ duyệt)" });
+    var nos = (dto.OrderNos ?? new()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim().ToUpperInvariant()).Distinct().ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn đơn dự kiến nào." });
+
+    var rows = await db.EstimateOrders.Where(x => x.OrgId == t.OrgId && nos.Contains(x.EstOrderNo)).ToListAsync();
+    var missing = nos.Except(rows.Select(x => x.EstOrderNo)).ToList();
+    if (missing.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy đơn: {string.Join(", ", missing)}" });
+
+    // Guard trạng thái của nguồn: Appr1 vào từ "P"; Appr2 vào từ "A1"; Cancel vào từ "A1" HOẶC "A2".
+    string[] from = action switch { "approve" => new[] { "P" }, "approve2" => new[] { "A1" }, _ => new[] { "A1", "A2" } };
+    var bad = rows.FirstOrDefault(x => !from.Contains(x.Status));
+    if (bad is not null)
+        return Results.BadRequest(new { error = $"Đơn {bad.EstOrderNo} đang ở trạng thái '{bad.Status}' — yêu cầu {string.Join("/", from)}." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    foreach (var h in rows)
+    {
+        if (action == "approve") { h.Status = "A1"; h.Appr1DTime = now; h.Appr1By = who; }
+        else if (action == "approve2") { h.Status = "A2"; h.Appr2DTime = now; h.Appr2By = who; }
+        else { h.Status = "P"; h.CancelDTime = now; h.CancelBy = who; }   // huỷ duyệt: trả về "P", KHÔNG xoá đơn
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { action, affected = rows.Count, status = rows[0].Status });
 }).RequireAuthorization();
 
 // ===== Ánh xạ xe ↔ đơn hàng SX (WOMapping — port 1:1 FrmWO_Mapping, 2010.HTC/Sales) =====
@@ -21269,6 +21297,8 @@ record DeliveryRequestDto(string? DealerCode, DateTime? RequestDate, List<DRCarD
 record DRCarDto(string CarId, string? ModelCode, DateTime? DeliveryStartDate, string? Remark);
 record DRActionDto(string Action, string? Note);
 record EstimateOrderDto(string? DealerCode, string MonthEstimate, string? HtcStaffInCharge, List<EstOrderLineDto>? Lines);
+// Nguồn duyệt THEO LÔ: bảng Plan_EstimateOrder nhiều dòng, lặp theo PLEOrdNo.
+record EstOrderApproveDto(List<string>? OrderNos);
 record EstOrderLineDto(string ModelCode, string? SpecCode, int Quantity);
 record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? Description, string? SoCode, string? WorkOrderNoTemp);
 record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, int Q2, int Q3, int Q4);

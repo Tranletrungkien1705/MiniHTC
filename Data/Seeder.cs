@@ -845,6 +845,16 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Dự kiến đơn hàng (Plan_EstimateOrder): 2 cấp duyệt + huỷ duyệt theo TConst.PLEOrdStatus
+                "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"Appr1DTime\" timestamp NULL",
+                "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"Appr1By\" text NULL",
+                "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"Appr2DTime\" timestamp NULL",
+                "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"Appr2By\" text NULL",
+                "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp NULL",
+                "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text NULL",
+                // "Confirmed" của port cũ = đã duyệt xong ⇒ quy về "A2".
+                "UPDATE public.\"EstimateOrders\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"EstimateOrders\" SET \"Status\" = 'A2' WHERE \"Status\" = 'Confirmed'",
                 // Chuyển kho (SC): 2 tầng trạng thái + người/ngày duyệt 2 cấp
                 "ALTER TABLE public.\"StorageRearranges\" ADD COLUMN IF NOT EXISTS \"Approved2At\" timestamp NULL",
                 "ALTER TABLE public.\"StorageRearranges\" ADD COLUMN IF NOT EXISTS \"ApprovedBy1\" text NULL",
