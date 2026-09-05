@@ -845,6 +845,19 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // PDI HTMV: 3 trục trạng thái (header + 2 trục trên cùng một dòng) + cột nguồn còn thiếu
+                "ALTER TABLE public.\"HtmvPdis\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"HtmvPdis\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"HtmvPdis\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"HtmvPdis\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"ModelCode\" text NULL",
+                "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"PDIDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"PDIStorageStatus\" text NOT NULL DEFAULT 'P'",
+                "UPDATE public.\"HtmvPdis\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"HtmvPdis\" SET \"Status\" = 'F' WHERE \"Status\" = 'Done'",
+                // Dữ liệu cũ: Passed ⇒ kho PDI "F"; Failed ⇒ dòng "C".
+                "UPDATE public.\"HtmvPdiDtls\" SET \"PDIStorageStatus\" = 'F' WHERE \"PdiResult\" = 'Passed'",
+                "UPDATE public.\"HtmvPdiDtls\" SET \"PDIDtlStatus\" = 'C' WHERE \"PdiResult\" = 'Failed'",
                 // Lệnh đặt hàng: nguồn dùng cờ FlagActive (không có cột trạng thái) + cột tháng SX/dự kiến
                 "ALTER TABLE public.\"POCommands\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
                 "ALTER TABLE public.\"POCommands\" ADD COLUMN IF NOT EXISTS \"ProductionMonth\" text NULL",

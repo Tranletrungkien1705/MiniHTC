@@ -4830,7 +4830,20 @@ public sealed class HtmvPdi
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string PDINo { get; set; } = "";
-    public string Status { get; set; } = "Draft"; // Draft → Done
+    /// <summary>
+    /// 🔴 Trạng thái đề nghị (`HTMV_PDI.PDIStatus`) theo `TConst.Stage` — nguồn tạo ở **"P"**
+    /// (BizHTC.HTMV.cs:1384). Port cũ `Draft → Done` là tên tự đặt.
+    /// ⚠️ Cụm này có **BA trục trạng thái**: header `PDIStatus`, và **HAI trục trên cùng một DÒNG** —
+    /// <see cref="HtmvPdiDtl.PDIDtlStatus"/> và <see cref="HtmvPdiDtl.PDIStorageStatus"/>.
+    /// </summary>
+    public string Status { get; set; } = "P";
+    /// <summary>Ghi chú (`HTMV_PDI.Remark`) — nguồn ghi khi tạo, port cũ thiếu.</summary>
+    public string? Remark { get; set; }
+    /// <summary>Người tạo (`CreatedBy`) — nguồn ghi khi tạo, port cũ thiếu.</summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>Ngày/người duyệt (`ApprovedDate`/`ApprovedBy`) — nguồn khởi tạo NULL rồi ghi khi duyệt.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DoneAt { get; set; }
 }
@@ -4846,7 +4859,23 @@ public sealed class HtmvPdiDtl
     public string? RefNo { get; set; }
     public string? ProductionMonth { get; set; }
     public string? EngineNo { get; set; }
-    public string PdiResult { get; set; } = "Pending"; // Pending → Passed/Failed (FrmMngPDI btnApproved/btnCancel)
+    /// <summary>Mã model của dòng (`HTMV_PDIDtl.ModelCode`) — nguồn ghi riêng, port cũ thiếu.</summary>
+    public string? ModelCode { get; set; }
+    /// <summary>
+    /// 🔴 Trạng thái DÒNG (`HTMV_PDIDtl.PDIDtlStatus`, `TConst.Stage`): tạo ở **"P"**;
+    /// `HTMV_PDICancel_New20181115` guard `"P"` rồi gán **"C"** (BizHTC.HTMV.cs:2558+).
+    /// </summary>
+    public string PDIDtlStatus { get; set; } = "P";
+    /// <summary>
+    /// 🔴 Trạng thái KHO PDI của dòng (`PDIStorageStatus`, `TConst.PDIStorageStatus`
+    /// — `Const.Main.cs:131-139`: N/P/C/A/A1/A2/F). Trục **thứ hai trên cùng một dòng**, độc lập với
+    /// `PDIDtlStatus`. Bản LIVE `HTMV_PDIApprove_New20181115`
+    /// (**MMSIntergration/BizHTC.MMSIntergration.cs:2213** — file KHÁC với Create/Cancel)
+    /// guard `"P"` rồi gán **"F" (Finished)**, KHÔNG phải "A".
+    /// </summary>
+    public string PDIStorageStatus { get; set; } = "P";
+    /// <summary>⚠️ Giữ để đọc dữ liệu cũ; trục thật là hai cột trên. Port cũ dùng Pending/Passed/Failed.</summary>
+    public string PdiResult { get; set; } = "Pending";
 }
 
 /// <summary>Xe nhập kho PDI (PDI_VIN) — port 1:1 FrmStoragePDI (2010.HTC/Sales/HTMV). Xe tại kho PDI: model/spec/màu + số chìa/AVN/ắc quy.</summary>

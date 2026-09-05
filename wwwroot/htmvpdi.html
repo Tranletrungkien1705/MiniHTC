@@ -11,7 +11,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Done{color:var(--ok)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-F{color:var(--ok)} .p-C{color:#dc2626} .p-A{color:#2563eb}
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
 </style></head>
 <body>
@@ -22,12 +22,14 @@
   <table id="ctbl"><thead><tr><th>VIN *</th><th>Spec</th><th>Màu</th><th>LC tạm</th><th>Ref</th><th>Tháng SX</th><th>Số máy</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addCar()">+ Thêm xe</button>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Done">Hoàn tất</option></select></div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Chờ</option><option value="F">Hoàn tất</option><option value="C">Huỷ</option></select></div>
 <table><thead><tr><th>Số PDI</th><th>Số xe</th><th>Ngày tạo</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="5" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Draft:"Nháp",Done:"Hoàn tất"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
+// Mã TConst.Stage / TConst.PDIStorageStatus — cụm PDI có BA trục: header PDIStatus,
+// và trên mỗi DÒNG là PDIDtlStatus + PDIStorageStatus (độc lập nhau).
+const LBL={N:"—",P:"Chờ",C:"Huỷ",A:"Duyệt",A1:"Duyệt C1",A2:"Duyệt C2",F:"Hoàn tất",R:"Từ chối"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -46,17 +48,20 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/htmvpdis?status=${F("fst").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="done('${o.pdiNo}')">Hoàn tất</button>`:"";
+    // Nguồn không có "hoàn tất đề nghị": duyệt là thao tác trên KHO PDI của từng dòng (P → F).
+    let act=`<button class="sm" onclick="apprAll('${o.pdiNo}')">Duyệt kho PDI</button>`;
     return `<tr><td><b>${o.pdiNo}</b> <a href="#" class="cars" onclick="cars('${o.pdiNo}');return false">xem xe</a></td><td>${o.cars}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.pdiNo}"></tr>`;
   }).join("")||'<tr><td colspan="5" class="muted">Chưa có đề nghị.</td></tr>';
 }
-async function done(no){ const r=await fetch(`/api/htmvpdis/${no}/complete`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+// Duyệt cả đề nghị = duyệt kho PDI cho mọi dòng còn "P" (HTMV_PDIApprove_New20181115).
+async function apprAll(no){ const r=await fetch(`/api/htmvpdis/${no}/approve`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({vins:[]})});
+  const j=await r.json(); if(r.ok){ msg(`Đã duyệt kho PDI ${j.approved} xe.`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 const PDI_R={Pending:"Chờ PDI",Passed:"Đạt PDI",Failed:"Không đạt"};
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/htmvpdis/${no}/cars`,{headers:H()})).json();
   row.innerHTML=`<td colspan="5"><div class="cars">${(d.cars||[]).map(c=>
-    `<label><input type="checkbox" class="pdivin-${no}" value="${c.vin}"> VIN <b>${c.vin}</b>${c.specCode?" · "+c.specCode:""}${c.lCTemp?" · LC "+c.lCTemp:""}${c.engineNo?" · máy "+c.engineNo:""} · <i>${PDI_R[c.pdiResult]||c.pdiResult}</i></label>`
+    `<label><input type="checkbox" class="pdivin-${no}" value="${c.vin}"> VIN <b>${c.vin}</b>${c.specCode?" · "+c.specCode:""}${c.lCTemp?" · LC "+c.lCTemp:""}${c.engineNo?" · máy "+c.engineNo:""} · dòng <span class="pill p-${c.pDIDtlStatus}">${LBL[c.pDIDtlStatus]||c.pDIDtlStatus}</span> · kho PDI <span class="pill p-${c.pDIStorageStatus}">${LBL[c.pDIStorageStatus]||c.pDIStorageStatus}</span></label>`
   ).join("<br>")||"—"}
   <div class="bar" style="margin-top:6px"><button class="sm" onclick="pdiCarsAction('${no}','approve')">Xác nhận đạt PDI</button> <button class="sm" onclick="pdiCarsAction('${no}','cancel')">Xác nhận không đạt</button></div></div>`;
 }

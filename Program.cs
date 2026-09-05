@@ -15209,14 +15209,14 @@ app.MapGet("/api/htmvpdis", async (AppDbContext db, ITenantContext t, string? st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/htmvpdis", async (HtmvPdiDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/htmvpdis", async (HtmvPdiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (cars.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "PDI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new HtmvPdi { OrgId = t.OrgId, PDINo = no, Status = "Draft" };
+    var r = new HtmvPdi { OrgId = t.OrgId, PDINo = no, Status = "P", Remark = dto.Remark, CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.HtmvPdis.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.HtmvPdiDtls.Add(new HtmvPdiDtl { OrgId = t.OrgId, HtmvPdiId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ColorCode = c.ColorCode, SpecCode = c.SpecCode, LCTemp = c.LCTemp, RefNo = c.RefNo, ProductionMonth = c.ProductionMonth, EngineNo = c.EngineNo });
@@ -15230,19 +15230,30 @@ app.MapGet("/api/htmvpdis/{no}/cars", async (string no, AppDbContext db, ITenant
     var r = await db.HtmvPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PDINo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
-        .Select(c => new { c.VIN, c.ColorCode, c.SpecCode, c.LCTemp, c.RefNo, c.ProductionMonth, c.EngineNo, c.PdiResult }).ToListAsync();
+        .Select(c => new { c.VIN, c.ColorCode, c.SpecCode, c.ModelCode, c.LCTemp, c.RefNo, c.ProductionMonth, c.EngineNo, c.PdiResult, c.PDIDtlStatus, c.PDIStorageStatus }).ToListAsync();
     return Results.Ok(new { r.PDINo, r.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/htmvpdis/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT — `HTMV_PDIApprove_New20181115`. ⚠️ Bản LIVE nằm ở **file KHÁC**:
+// `MMSIntergration/BizHTC.MMSIntergration.cs:2213` (Create/Cancel ở `BizHTC.HTMV.cs`);
+// hàm `HTMV_PDIApprove` không hậu tố ở `BizHTC.HTMV.cs:1988` **không được WS gọi** — bản chết.
+// Guard `PDIStorageStatus = "P"` rồi gán **"F" (Finished)** — KHÔNG phải "A".
+app.MapPost("/api/htmvpdis/{no}/approve", async (string no, HtmvPdiCarsActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.HtmvPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PDINo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
-    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    var qy = db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id);
+    var vins = (dto?.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim().ToUpperInvariant()).ToList();
+    if (vins.Count > 0) qy = qy.Where(c => vins.Contains(c.VIN));
+    var cars = await qy.ToListAsync();
+    var bad = cars.FirstOrDefault(c => c.PDIStorageStatus != "P");
+    if (bad is not null) return Results.BadRequest(new { error = $"VIN {bad.VIN} có trạng thái kho PDI '{bad.PDIStorageStatus}' — chỉ duyệt khi đang chờ (P)." });
+    foreach (var c in cars) c.PDIStorageStatus = "F";
+    r.ApprovedDate = DateTime.Now;
+    r.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.PDINo, status = r.Status });
+    return Results.Ok(new { r.PDINo, approved = cars.Count, storageStatus = "F" });
 }).RequireAuthorization();
 
 // Xác nhận từng xe đạt/không đạt PDI (port 1:1 FrmMngPDI btnApproved_Click/btnCancel_Click — salesSv.PDIApproved/PDICancel, 2010.HTC/Sales/HTMV) — theo checkbox chọn VIN.
@@ -15255,10 +15266,24 @@ app.MapPost("/api/htmvpdis/{no}/{action}-cars", async (string no, string action,
     var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim().ToUpperInvariant()).ToList();
     if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn dữ liệu" });
     var cars = await db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id && vins.Contains(c.VIN)).ToListAsync();
-    var result = action == "approve" ? "Passed" : "Failed";
-    foreach (var c in cars) c.PdiResult = result;
+    // 🔴 Hai hành động chạm HAI TRỤC KHÁC NHAU trên cùng một dòng (không phải một cột "kết quả"):
+    //  · duyệt  ⇒ `PDIStorageStatus` "P" → **"F"** (`HTMV_PDIApprove_New20181115`);
+    //  · huỷ    ⇒ `PDIDtlStatus` "P" → **"C"**, guard thêm `PDIStorageStatus in ("P","C")`
+    //             (`HTMV_PDICancel_New20181115`, BizHTC.HTMV.cs:2558+).
+    if (action == "approve")
+    {
+        var bad = cars.FirstOrDefault(c => c.PDIStorageStatus != "P");
+        if (bad is not null) return Results.BadRequest(new { error = $"VIN {bad.VIN} có trạng thái kho PDI '{bad.PDIStorageStatus}' — chỉ duyệt khi đang chờ (P)." });
+        foreach (var c in cars) { c.PDIStorageStatus = "F"; c.PdiResult = "Passed"; }
+    }
+    else
+    {
+        var bad = cars.FirstOrDefault(c => c.PDIDtlStatus != "P" || (c.PDIStorageStatus != "P" && c.PDIStorageStatus != "C"));
+        if (bad is not null) return Results.BadRequest(new { error = $"VIN {bad.VIN}: dòng '{bad.PDIDtlStatus}' / kho PDI '{bad.PDIStorageStatus}' — không huỷ được." });
+        foreach (var c in cars) { c.PDIDtlStatus = "C"; c.PdiResult = "Failed"; }
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { updated = cars.Count, result });
+    return Results.Ok(new { updated = cars.Count, action });
 }).RequireAuthorization();
 
 // ===== Xe nhập kho PDI (StoragePdiVin — port 1:1 FrmStoragePDI, 2010.HTC/Sales/HTMV) =====
@@ -21747,7 +21772,7 @@ record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, stri
 record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
-record HtmvPdiDto(List<HtmvPdiCarDto>? Cars);
+record HtmvPdiDto(List<HtmvPdiCarDto>? Cars, string? Remark = null);
 record HtmvPdiCarsActionDto(List<string>? Vins);
 record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal UnitPriceInit, decimal RequestedQuantity, string? Remark);
 record Dms40SoRootDto(string? SORCode, string? SOType, string? DealerCode, string? SPCode, DateTime? OrderMonth, List<Dms40SoRootLineDto>? Lines);
