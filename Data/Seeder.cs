@@ -845,6 +845,19 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Chuyển kho (SC): 2 tầng trạng thái + người/ngày duyệt 2 cấp
+                "ALTER TABLE public.\"StorageRearranges\" ADD COLUMN IF NOT EXISTS \"Approved2At\" timestamp NULL",
+                "ALTER TABLE public.\"StorageRearranges\" ADD COLUMN IF NOT EXISTS \"ApprovedBy1\" text NULL",
+                "ALTER TABLE public.\"StorageRearranges\" ADD COLUMN IF NOT EXISTS \"ApprovedBy2\" text NULL",
+                "ALTER TABLE public.\"StorageRearranges\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"RearrangeDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"ExpectedStartDate\" timestamp NULL",
+                "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"ExpectedEndDate\" timestamp NULL",
+                // "Confirmed"/"Cancelled" không có ở nguồn: Confirmed = đã duyệt đủ 2 cấp ⇒ "A2".
+                "UPDATE public.\"StorageRearranges\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"StorageRearranges\" SET \"Status\" = 'A1' WHERE \"Status\" = 'Approved1'",
+                "UPDATE public.\"StorageRearranges\" SET \"Status\" = 'A2' WHERE \"Status\" = 'Confirmed'",
+                "UPDATE public.\"StorageRearranges\" SET \"Status\" = 'R' WHERE \"Status\" = 'Cancelled'",
                 // Yêu cầu bảo hiểm: 2 tầng trạng thái + cột người/ngày duyệt
                 "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
                 "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",

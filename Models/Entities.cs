@@ -5016,10 +5016,21 @@ public sealed class StorageRearrange
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SCNo { get; set; } = "";
-    public string Status { get; set; } = "Draft"; // Draft → Confirmed / Cancelled ; hoặc Draft → Approved1 → Confirmed (duyệt 2 cấp, FrmMngSC)
+    /// <summary>
+    /// 🔴 Trạng thái phiếu (`Sto_StorageRearrange.RearrangeStatus`) theo `TConst.Stage`:
+    /// **"P" chờ duyệt → "A1" duyệt cấp 1 → "A2" duyệt cấp 2 · "R" từ chối**.
+    /// ⚠️ Port cũ `Draft/Confirmed/Cancelled/Approved1`: sai mã, và **"Confirmed"/"Cancelled" đều BỊA** —
+    /// nguồn không có xác nhận/huỷ, chỉ có hai cấp duyệt (`StorageStorageRearrangeApprove1/Approve2`).
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
     public DateTime? Approved1At { get; set; }
+    public DateTime? Approved2At { get; set; }
+    public string? ApprovedBy1 { get; set; }
+    public string? ApprovedBy2 { get; set; }
+    /// <summary>Ghi chú của người duyệt — nguồn ghi ở CẢ hai cấp và CẢ hai nhánh (duyệt lẫn không duyệt).</summary>
+    public string? Remark { get; set; }
 }
 public sealed class StorageRearrangeDetail
 {
@@ -5027,6 +5038,16 @@ public sealed class StorageRearrangeDetail
     public Guid OrgId { get; set; }
     public long StorageRearrangeId { get; set; }
     public string VIN { get; set; } = "";
+    /// <summary>
+    /// 🔴 Trạng thái của TỪNG XE (`Sto_StorageRearrangeDetail.RearrangeDtlStatus`) — trục port cũ THIẾU.
+    /// Duyệt cấp 1 lan xuống 'A1' (không duyệt ⇒ 'R'); duyệt cấp 2 lan xuống 'A2'
+    /// (**bỏ duyệt ⇒ trả dòng về 'P'**, không phải giữ nguyên).
+    /// </summary>
+    public string RearrangeDtlStatus { get; set; } = "P";
+    /// <summary>Ngày dự kiến kết thúc chuyển kho theo dòng (`ExpectedEndDate`) — nguồn guard phải **>=**
+    /// `ExpectedStartDate` khi sửa (`StorageStorageRearrangeDetailUpdate`).</summary>
+    public DateTime? ExpectedStartDate { get; set; }
+    public DateTime? ExpectedEndDate { get; set; }
     public string? StorageCodeFrom { get; set; }
     public string StorageCodeTo { get; set; } = "";
     public string? Remark { get; set; }

@@ -15665,7 +15665,7 @@ app.MapPost("/api/storagerearranges", async (StorageRearrangeDto dto, AppDbConte
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "SC" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new StorageRearrange { OrgId = t.OrgId, SCNo = no, Status = "Draft" };
+    var r = new StorageRearrange { OrgId = t.OrgId, SCNo = no, Status = "P" };
     db.StorageRearranges.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.StorageRearrangeDetails.Add(new StorageRearrangeDetail { OrgId = t.OrgId, StorageRearrangeId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), Remark = c.Remark });
@@ -15679,35 +15679,61 @@ app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db
     var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.StorageRearrangeDetails.Where(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
-        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark }).ToListAsync();
-    return Results.Ok(new { r.SCNo, r.Status, count = cars.Count, cars });
+        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark, c.RearrangeDtlStatus, c.ExpectedStartDate, c.ExpectedEndDate }).ToListAsync();
+    return Results.Ok(new { r.SCNo, r.Status, r.ApprovedBy1, r.ApprovedBy2, r.Remark, count = cars.Count, cars });
 }).RequireAuthorization();
 
 // action: confirm|cancel (1 bước, giữ nguyên) hoặc approve1|approve2 (2 cấp, khớp FrmMngSC: Draft→Approved1→Confirmed).
-app.MapPost("/api/storagerearranges/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT 2 CẤP — `StorageStorageRearrangeApprove1/Approve2_New20181119` (Biz.HTC.WH.cs:68013 / 68245).
+// ⚠️ Nguồn KHÔNG có "xác nhận"/"huỷ" phiếu chuyển kho: port cũ tự thêm `confirm`/`cancel` — đã bỏ.
+// ⚠️ Cờ NGHỊCH ĐẢO như cụm bảo hiểm: `strFlagUnapprove == Flag.Inactive("0")` mới là **DUYỆT**.
+// Bất đối xứng giữa hai cấp (đúng nguồn, không sắp lại):
+//   · cấp 1 không duyệt ⇒ **"R" (từ chối)** · cấp 2 không duyệt ⇒ **về "P" (bỏ duyệt)**.
+// Mỗi cấp lan trạng thái xuống MỌI dòng: 'A1'/'R' ở cấp 1, 'A2'/'P' ở cấp 2.
+app.MapPost("/api/storagerearranges/{no}/{action}", async (string no, string action, ScApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("confirm" or "cancel" or "approve1" or "approve2")) return Results.BadRequest(new { error = "action = confirm|cancel|approve1|approve2" });
+    if (action is not ("approve1" or "approve2")) return Results.BadRequest(new { error = "action = approve1|approve2" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (action is "confirm" or "cancel")
+    var ok = dto?.Approve ?? true;
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var lines = await db.StorageRearrangeDetails.Where(x => x.OrgId == t.OrgId && x.StorageRearrangeId == r.Id).ToListAsync();
+    string dtl;
+    if (action == "approve1")
     {
-        if (r.Status != "Draft") return Results.BadRequest(new { error = "Không thể xử lý Yêu cầu chuyển kho này" });
-        if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
-        else r.Status = "Cancelled";
+        if (r.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 phiếu đang chờ duyệt (P)." });
+        r.Status = ok ? "A1" : "R"; dtl = ok ? "A1" : "R";
+        r.Approved1At = now; r.ApprovedBy1 = who;
     }
-    else if (action == "approve1")
+    else
     {
-        if (r.Status != "Draft") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 khi đang ở trạng thái Nháp." });
-        r.Status = "Approved1"; r.Approved1At = DateTime.Now;
+        if (r.Status != "A1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 (A1) trước khi duyệt cấp 2." });
+        r.Status = ok ? "A2" : "P"; dtl = ok ? "A2" : "P";
+        r.Approved2At = now; r.ApprovedBy2 = who;
+        if (ok) r.ConfirmedAt = now;
     }
-    else // approve2
-    {
-        if (r.Status != "Approved1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 trước khi duyệt cấp 2." });
-        r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now;
-    }
+    r.Remark = dto?.Remark;
+    foreach (var l in lines) l.RearrangeDtlStatus = dtl;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.SCNo, status = r.Status });
+    return Results.Ok(new { r.SCNo, status = r.Status, linesUpdated = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 SỬA DÒNG — `StorageStorageRearrangeDetailUpdate_New20181119` (68475): sửa `ExpectedEndDate` +
+// `Remark` của MỘT xe, guard **ngày kết thúc dự kiến không được sớm hơn ngày bắt đầu dự kiến**.
+app.MapPost("/api/storagerearranges/{no}/cars/{vin}", async (string no, string vin, ScCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
+    var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var c = await db.StorageRearrangeDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageRearrangeId == r.Id && x.VIN == vin);
+    if (c is null) return Results.NotFound(new { no, vin });
+    if (c.ExpectedStartDate is not null && dto.ExpectedEndDate is not null && c.ExpectedStartDate > dto.ExpectedEndDate)
+        return Results.BadRequest(new { error = "Ngày kết thúc dự kiến không được sớm hơn ngày bắt đầu dự kiến." });
+    c.ExpectedEndDate = dto.ExpectedEndDate; c.Remark = dto.Remark;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, c.VIN, c.ExpectedStartDate, c.ExpectedEndDate, c.Remark });
 }).RequireAuthorization();
 
 // ===== Đề nghị bảo hiểm (InsuranceReq — port 1:1 FrmNewInsuranceReq, 2010.HTC/Sales/Purchase) =====
@@ -21368,6 +21394,9 @@ record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, st
 record CBReqDto(List<CBReqCarDto>? Cars);
 record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
 record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars);
+// Duyệt chuyển kho: nguồn dùng MỘT hàm/cấp với cờ `strFlagUnapprove` (nghịch đảo) — ở đây phơi ra `Approve`.
+record ScApproveDto(bool Approve = true, string? Remark = null);
+record ScCarUpdateDto(DateTime? ExpectedEndDate, string? Remark);
 record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
 record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive);
 record MstInsTypeDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, string? FlagActive);
