@@ -6053,6 +6053,7 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
     var items = await query.OrderBy(x => x.FrameNo).Take(500).Select(x => new
     {
         x.FrameNo, x.PlateNo, x.EngineNo, x.ModelCode, x.ColorCode, x.TradeMark, x.ProductYear, x.CurrentKm, x.CusName, x.CusMobile, x.FlagActive,
+        x.MemberCarID, x.DealerCode, x.CusID,
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -6072,9 +6073,39 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.FrameNo, updated = true });
     }
-    var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile, FlagActive = "1" };
+    var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile,
+        MemberCarID = dto.MemberCarID, DealerCode = dto.DealerCode, CusID = dto.CusID, FlagActive = "1" };
     db.ServiceCars.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.FrameNo, updated = false });
+}).RequireAuthorization();
+
+// 🔴 GÁN MÃ XE HỘI VIÊN (Loyalty) cho xe dịch vụ — port `CarSv_SerCarUpdate_MemberCarID`
+// (`DMS-Loyalty/DMS/TERP.BizDMS/Biz.zzzz.iNOS.CarSv.cs:2630-2770`, hệ CHỈ có trên máy 150).
+app.MapPost("/api/servicecars/{frameNo}/membercar", async (
+    string frameNo, ServiceCarMemberDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var fn = frameNo.Trim().ToUpperInvariant();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var cus = (dto.CusID ?? "").Trim();
+    var mem = (dto.MemberCarID ?? "").Trim();
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa có mã đại lý." });
+    if (cus.Length == 0) return Results.BadRequest(new { error = "Chưa có mã khách hàng." });
+    if (mem.Length == 0) return Results.BadRequest(new { error = "Chưa có mã xe hội viên." });
+
+    // Guard 1 (nguồn): mã xe hội viên KHÔNG được đã gán cho xe khác ĐANG HOẠT ĐỘNG trong CÙNG đại lý.
+    var dup = await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1"
+        && x.MemberCarID == mem && x.DealerCode == dealer && x.FrameNo != fn);
+    if (dup) return Results.BadRequest(new { error = $"Mã xe hội viên {mem} đã được gán cho xe khác của đại lý {dealer}." });
+
+    // Guard 2 (nguồn): xe phải tồn tại theo BỘ BA đại lý + số khung + khách hàng.
+    var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.FrameNo == fn && x.CusID == cus);
+    if (car is null)
+        return Results.NotFound(new { error = "Không tìm thấy xe theo đại lý + số khung + mã khách hàng.", dealer, frameNo = fn, cusID = cus });
+
+    car.MemberCarID = mem;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { car.FrameNo, car.DealerCode, car.CusID, car.MemberCarID });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db, ITenantContext t) =>
@@ -20584,7 +20615,8 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
-record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile);
+record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null);
+record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email);

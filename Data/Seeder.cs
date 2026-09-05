@@ -836,6 +836,10 @@ public static class Seeder
                 "ALTER TABLE public.\"BankTransportMinutes\" ADD COLUMN IF NOT EXISTS \"GuaranteeType\" text NOT NULL DEFAULT '0'",
                 // Gỡ map GPS: vết người gỡ + nhật ký giao dịch GPS đầy đủ (Sto_StoTransactionGPS)
                 "ALTER TABLE public.\"GpsInstalls\" ADD COLUMN IF NOT EXISTS \"UnMapBy\" text NULL",
+                // Xe dịch vụ ↔ hội viên Loyalty (Ser_Car.MemberCarID — hệ DMS-Loyalty, chỉ có trên máy 150)
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"MemberCarID\" text NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CusID\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"StorageCode\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"GpsBoxNo\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"VinReal\" text NULL",

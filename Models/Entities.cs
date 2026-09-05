@@ -6601,6 +6601,21 @@ public sealed class ServiceCar
     public DateTime? WarrantyRegistrationDate { get; set; }   // ngày kích hoạt/đăng ký bảo hành (HTC cập nhật)
     public string? CusName { get; set; }
     public string? CusMobile { get; set; }
+
+    /// <summary>
+    /// 🔴 Mã XE HỘI VIÊN (`Ser_Car.MemberCarID`) — liên kết xe dịch vụ với hội viên Loyalty.
+    /// Nguồn: `DMS-Loyalty/DMS/TERP.BizDMS/Biz.zzzz.iNOS.CarSv.cs` (hàm `CarSv_SerCarUpdate_MemberCarID`) —
+    /// hệ **CHỈ có trên máy 150**, laptop KHÔNG có `TERP.BizDMS`.
+    /// ⚠️ **Không được trùng trong cùng đại lý**: nguồn chặn nếu mã này đã gán cho xe khác đang hoạt động.
+    /// </summary>
+    public string? MemberCarID { get; set; }
+
+    /// <summary>Đại lý quản lý xe (`DealerCode`) — phần khoá tra cứu của nguồn và phạm vi chống trùng.</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>Mã khách hàng (`CusID`) — nguồn tra xe theo BỘ BA `DealerCode` + `FrameNo` + `CusID`.</summary>
+    public string? CusID { get; set; }
+
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
