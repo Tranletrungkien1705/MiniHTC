@@ -1307,6 +1307,12 @@ public sealed class ServiceQuotation
     public string Status { get; set; } = "Draft"; // Draft -> Approved -> Cancelled
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // GAP đã vá 2026-09-05: bản port trước THIẾU TOÀN BỘ phần bảo hiểm của FrmQuotation.
+    // Nguồn: txtInsuranceDeductible + checkInsuranceDeductible() — ô "Mức khấu trừ bảo hiểm"
+    // CHỈ hiện/áp dụng khi báo giá có ít nhất 1 dòng ExpenseType = ROInsurance.
+    public decimal InsuranceDeductible { get; set; }   // Ser_RO.InsuranceDeductible — mức khấu trừ bảo hiểm
+    public decimal InsuranceTotal { get; set; }        // tổng tiền phần bảo hiểm (sau VAT)
+    public bool HasInsuranceItem { get; set; }         // có dòng bảo hiểm không → điều kiện hiện ô khấu trừ
 }
 
 /// <summary>Dòng công (labor) trong báo giá sửa chữa — port 1:1 FrmQuotation grid CV, TCMotor.</summary>
@@ -1323,6 +1329,9 @@ public sealed class ServiceQuotationLabor
     public decimal Price { get; set; }        // đơn giá giờ công
     public decimal Vat { get; set; } = 10;
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
+    // GAP đã vá 2026-09-05: 2 cột lưới gốc bị bỏ sót (srInsurancePrice + phân loại chi phí)
+    public string ExpenseType { get; set; } = "";  // TblSerROServiceItems.ExpenseType — "ROInsurance" = dòng bảo hiểm
+    public decimal InsurancePrice { get; set; }    // TblSerROServiceItems.InsurancePrice — phần bảo hiểm chi trả
 }
 
 /// <summary>Dòng phụ tùng trong báo giá sửa chữa — port 1:1 FrmQuotation grid PT, TCMotor.</summary>
@@ -1337,6 +1346,9 @@ public sealed class ServiceQuotationPart
     public decimal Price { get; set; }
     public decimal Vat { get; set; } = 10;
     public decimal Amount { get; set; }        // thành tiền (gồm VAT)
+    // GAP đã vá 2026-09-05: 2 cột lưới gốc bị bỏ sót (paInsurancePrice + phân loại chi phí)
+    public string ExpenseType { get; set; } = "";  // TblSerROPartItems.ExpenseType — "ROInsurance" = dòng bảo hiểm
+    public decimal InsurancePrice { get; set; }    // TblSerROPartItems.InsurancePrice — phần bảo hiểm chi trả
 }
 
 /// <summary>Gói dịch vụ (header: gồm công dịch vụ + phụ tùng bán kèm) — port 1:1 FrmServicePackageCreate/Search (TblSerServicePackage, TCMotor/Services).</summary>

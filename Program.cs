@@ -5070,7 +5070,9 @@ app.MapGet("/api/servicequotations", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.QuoteNo, x.RONo, x.Vin, x.PlateNo, x.CusName, x.LaborTotal, x.PartTotal, x.Discount, x.VatAmount, x.GrandTotal, x.Status
+        x.Id, x.QuoteNo, x.RONo, x.Vin, x.PlateNo, x.CusName, x.LaborTotal, x.PartTotal, x.Discount, x.VatAmount, x.GrandTotal, x.Status,
+        // GAP đã vá: phần bảo hiểm trước đây không được trả về
+        x.HasInsuranceItem, x.InsuranceDeductible, x.InsuranceTotal
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalValue = items.Sum(i => i.GrandTotal), items });
 }).RequireAuthorization();
@@ -5090,7 +5092,13 @@ app.MapPost("/api/servicequotations", async (ServiceQuotationDto dto, AppDbConte
         var baseAmt = l.ActManHour * l.Price * factor;
         var amt = Math.Round(baseAmt * (1 + l.Vat / 100), 2);
         laborBase += baseAmt; vatAmt += amt - baseAmt;
-        laborRows.Add(new ServiceQuotationLabor { OrgId = t.OrgId, SerCode = l.SerCode.Trim(), SerName = l.SerName, StdManHour = l.StdManHour, ActManHour = l.ActManHour, Factor = factor, Price = l.Price, Vat = l.Vat, Amount = amt });
+        laborRows.Add(new ServiceQuotationLabor
+        {
+            OrgId = t.OrgId, SerCode = l.SerCode.Trim(), SerName = l.SerName, StdManHour = l.StdManHour,
+            ActManHour = l.ActManHour, Factor = factor, Price = l.Price, Vat = l.Vat, Amount = amt,
+            // GAP đã vá: phân loại chi phí + phần bảo hiểm chi trả (2 cột lưới gốc bị bỏ sót)
+            ExpenseType = (l.ExpenseType ?? "").Trim(), InsurancePrice = l.InsurancePrice
+        });
     }
     var partRows = new List<ServiceQuotationPart>();
     foreach (var p in parts)
@@ -5099,14 +5107,40 @@ app.MapPost("/api/servicequotations", async (ServiceQuotationDto dto, AppDbConte
         var baseAmt = p.Quantity * p.Price;
         var amt = Math.Round(baseAmt * (1 + p.Vat / 100), 2);
         partBase += baseAmt; vatAmt += amt - baseAmt;
-        partRows.Add(new ServiceQuotationPart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Quantity = p.Quantity, Price = p.Price, Vat = p.Vat, Amount = amt });
+        partRows.Add(new ServiceQuotationPart
+        {
+            OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName,
+            Quantity = p.Quantity, Price = p.Price, Vat = p.Vat, Amount = amt,
+            // GAP đã vá: phân loại chi phí + phần bảo hiểm chi trả (2 cột lưới gốc bị bỏ sót)
+            ExpenseType = (p.ExpenseType ?? "").Trim(), InsurancePrice = p.InsurancePrice
+        });
     }
     var discount = dto.Discount < 0 ? 0 : dto.Discount;
     var grand = laborBase + partBase + vatAmt - discount;
     if (grand < 0) return Results.BadRequest(new { error = "Chiết khấu vượt tổng giá trị báo giá." });
+
+    // 🔴 GAP đã vá — luật checkInsuranceDeductible() của FrmQuotation:
+    // "Mức khấu trừ bảo hiểm" CHỈ áp dụng khi báo giá có ÍT NHẤT 1 dòng ExpenseType = ROInsurance
+    // (quét CẢ lưới công LẪN lưới phụ tùng). Không có dòng bảo hiểm → ô bị ẩn ⇒ mức khấu trừ phải = 0.
+    const string InsuranceExpenseType = "ROInsurance";
+    var hasInsuranceItem =
+        laborRows.Any(labor => string.Equals(labor.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase)) ||
+        partRows.Any(part => string.Equals(part.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase));
+
+    var insuranceDeductible = dto.InsuranceDeductible < 0 ? 0 : dto.InsuranceDeductible;
+    if (!hasInsuranceItem && insuranceDeductible > 0)
+        return Results.BadRequest(new { error = "Báo giá không có dòng bảo hiểm, không nhập được mức khấu trừ bảo hiểm." });
+
+    // Tổng phần bảo hiểm = tiền các dòng có ExpenseType = ROInsurance (dùng cho báo cáo/đối soát BH).
+    var insuranceTotal =
+        laborRows.Where(labor => string.Equals(labor.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase)).Sum(labor => labor.Amount) +
+        partRows.Where(part => string.Equals(part.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase)).Sum(part => part.Amount);
+
     var no = "QT" + DateTime.Now.ToString("yyMMddHHmmss");
     var h = new ServiceQuotation { OrgId = t.OrgId, QuoteNo = no, RONo = dto.RONo, Vin = dto.Vin, PlateNo = dto.PlateNo, CusName = dto.CusName,
-        LaborTotal = laborBase, PartTotal = partBase, Discount = discount, VatAmount = Math.Round(vatAmt, 2), GrandTotal = Math.Round(grand, 2), Status = "Draft", Note = dto.Note };
+        LaborTotal = laborBase, PartTotal = partBase, Discount = discount, VatAmount = Math.Round(vatAmt, 2), GrandTotal = Math.Round(grand, 2), Status = "Draft", Note = dto.Note,
+        // GAP đã vá: phần bảo hiểm của báo giá
+        HasInsuranceItem = hasInsuranceItem, InsuranceDeductible = insuranceDeductible, InsuranceTotal = Math.Round(insuranceTotal, 2) };
     db.ServiceQuotations.Add(h); await db.SaveChangesAsync();
     foreach (var l in laborRows) { l.ServiceQuotationId = h.Id; db.ServiceQuotationLabors.Add(l); }
     foreach (var p in partRows) { p.ServiceQuotationId = h.Id; db.ServiceQuotationParts.Add(p); }
@@ -16824,9 +16858,15 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
-record ServiceQuotationDto(string? RONo, string? Vin, string? PlateNo, string? CusName, decimal Discount, string? Note, List<SqLaborDto>? Labors, List<SqPartDto>? Parts);
-record SqLaborDto(string SerCode, string? SerName, decimal StdManHour, decimal ActManHour, decimal Factor, decimal Price, decimal Vat);
-record SqPartDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat);
+record ServiceQuotationDto(string? RONo, string? Vin, string? PlateNo, string? CusName, decimal Discount, string? Note, List<SqLaborDto>? Labors, List<SqPartDto>? Parts,
+    /// Mức khấu trừ bảo hiểm — CHỈ hợp lệ khi báo giá có dòng ExpenseType="ROInsurance" (luật checkInsuranceDeductible).
+    decimal InsuranceDeductible = 0);
+record SqLaborDto(string SerCode, string? SerName, decimal StdManHour, decimal ActManHour, decimal Factor, decimal Price, decimal Vat,
+    string? ExpenseType = null,      // "ROInsurance" = dòng do bảo hiểm chi trả
+    decimal InsurancePrice = 0);     // phần bảo hiểm chi trả cho dòng này
+record SqPartDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat,
+    string? ExpenseType = null,      // "ROInsurance" = dòng do bảo hiểm chi trả
+    decimal InsurancePrice = 0);     // phần bảo hiểm chi trả cho dòng này
 record ServiceQuotationStatusDto(string Status);
 record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
 record DealPriceFixDto(long Id, decimal NewPrice);
