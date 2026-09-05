@@ -5516,9 +5516,21 @@ public sealed class DlrPdiRequest
     public Guid OrgId { get; set; }
     public string DlrPdiReqNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";   // Draft → Done
+    /// <summary>
+    /// 🔴 Trạng thái yêu cầu (`Dlr_PDIRequest.DlrPDIReqStatus`) theo `TConst.Stage`:
+    /// **"P" chờ duyệt → "A" đã duyệt** (dùng `Stage.Approved` = "A", **một cấp duyệt**).
+    /// ⚠️ Port cũ `Draft → Done` (`/complete`) đặt tên như một bước "hoàn tất" tự phát, trong khi
+    /// nguồn là **DUYỆT** (`DlrPDIRequestApprove`) có ghi người/ngày duyệt và **lan xuống mọi dòng**.
+    /// Nguồn KHÔNG có từ chối/huỷ — ngoài duyệt chỉ còn **XOÁ** (`DlrPDIRequestDelete`, chỉ khi "P").
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DoneAt { get; set; }
+    /// <summary>Ngày/người duyệt (`ApprovedDate`/`ApprovedBy`).</summary>
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    /// <summary>Ghi chú của người duyệt (`Dlr_PDIRequest.Remark`).</summary>
+    public string? Remark { get; set; }
 }
 public sealed class DlrPdiRequestDetail
 {
@@ -5528,6 +5540,12 @@ public sealed class DlrPdiRequestDetail
     public string RONo { get; set; } = "";
     public DateTime? ROCreatedDate { get; set; }
     public string? ROStatus { get; set; }
+    /// <summary>
+    /// 🔴 Trạng thái của TỪNG DÒNG (`Dlr_PDIRequestDtl.DlrPDIReqDtlStatus`) — trục port cũ THIẾU.
+    /// Tạo ở "P"; khi duyệt yêu cầu, nguồn lan xuống **'A'** cho mọi dòng bằng một câu update.
+    /// ⚠️ Khác hẳn `ROStatus` (trạng thái lệnh sửa chữa được đồng bộ về) — hai trục độc lập.
+    /// </summary>
+    public string DlrPDIReqDtlStatus { get; set; } = "P";
 }
 
 /// <summary>Giá xe thực tế theo VIN (UpdateCarPrice) — port 1:1 FrmUpdateCar (DMSales.Foton). Cập nhật đơn giá thực tế cho từng xe (batch).</summary>

@@ -17167,7 +17167,7 @@ app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db,
     var dupe = ros.GroupBy(r => r.RONo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"RO {dupe.Key} bị trùng!" });
     var no = "PDIR" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new DlrPdiRequest { OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    var p = new DlrPdiRequest { OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
     db.DlrPdiRequests.Add(p); await db.SaveChangesAsync();
     foreach (var r in ros)
         db.DlrPdiRequestDetails.Add(new DlrPdiRequestDetail { OrgId = t.OrgId, DlrPdiReqId = p.Id, RONo = r.RONo.Trim().ToUpperInvariant(), ROCreatedDate = r.ROCreatedDate, ROStatus = r.ROStatus });
@@ -17181,19 +17181,43 @@ app.MapGet("/api/dlrpdirequests/{no}/cars", async (string no, AppDbContext db, I
     var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
     if (p is null) return Results.NotFound(new { no });
     var cars = await db.DlrPdiRequestDetails.Where(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
-        .Select(c => new { c.RONo, c.ROCreatedDate, c.ROStatus }).ToListAsync();
-    return Results.Ok(new { p.DlrPdiReqNo, p.Status, count = cars.Count, cars });
+        .Select(c => new { c.RONo, c.ROCreatedDate, c.ROStatus, c.DlrPDIReqDtlStatus }).ToListAsync();
+    return Results.Ok(new { p.DlrPdiReqNo, p.Status, p.ApprovedBy, p.ApprovedDate, p.Remark, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/dlrpdirequests/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT — `DlrPDIRequestApprove` (Biz.HTC.WH.DlrPDIRequest.cs:1735-1870). Vào từ **"P"**, ra **"A"**;
+// ghi `Remark`/`ApprovedDate`/`ApprovedBy` rồi **lan trạng thái 'A' xuống MỌI dòng** (`DlrPDIReqDtlStatus`).
+// ⚠️ Port cũ gọi bước này là "complete" (Draft→Done) — mất hẳn ngữ nghĩa DUYỆT và cả tầng trạng thái dòng.
+// ⚠️ Nguồn KHÔNG có từ chối/huỷ cho yêu cầu này.
+app.MapPost("/api/dlrpdirequests/{no}/approve", async (string no, DlrPdiApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
     if (p is null) return Results.NotFound(new { no });
-    if (p.Status != "Draft") return Results.BadRequest(new { error = "Yêu cầu đã hoàn tất." });
-    p.Status = "Done"; p.DoneAt = DateTime.Now;
+    if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt được yêu cầu đang chờ duyệt (P)." });
+    var now = DateTime.Now;
+    p.Status = "A"; p.DoneAt = now; p.ApprovedDate = now;
+    p.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    p.Remark = dto?.Remark;
+    var lines = await db.DlrPdiRequestDetails.Where(x => x.OrgId == t.OrgId && x.DlrPdiReqId == p.Id).ToListAsync();
+    foreach (var l in lines) l.DlrPDIReqDtlStatus = "A";
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.DlrPdiReqNo, status = p.Status });
+    return Results.Ok(new { p.DlrPdiReqNo, status = p.Status, statusName = "Đã duyệt", linesUpdated = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 XOÁ — `DlrPDIRequestDelete` (1564-1735): guard header **"P"** (đã duyệt thì không xoá được);
+// xoá dòng rồi xoá header. Đây là đường DUY NHẤT để bỏ một yêu cầu — nguồn không có huỷ/từ chối.
+app.MapDelete("/api/dlrpdirequests/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ xoá được yêu cầu đang chờ duyệt (P)." });
+    var lines = await db.DlrPdiRequestDetails.Where(x => x.OrgId == t.OrgId && x.DlrPdiReqId == p.Id).ToListAsync();
+    db.DlrPdiRequestDetails.RemoveRange(lines);
+    db.DlrPdiRequests.Remove(p);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, linesDeleted = lines.Count });
 }).RequireAuthorization();
 
 // ===== Chi tiết tờ khai hải quan (CtTkhq/CT_TKHQ — port 1:1 FrmNewCT_TKHQ, DMSales.Foton) =====
@@ -20978,6 +21002,7 @@ record EditDealCtmCareDto(List<EditDealCtmCareRowDto>? Rows);
 record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
+record DlrPdiApproveDto(string? Remark);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);

@@ -845,6 +845,14 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Đề nghị PDI của đại lý: 2 tầng trạng thái + người/ngày duyệt
+                "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"DlrPdiRequestDetails\" ADD COLUMN IF NOT EXISTS \"DlrPDIReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "UPDATE public.\"DlrPdiRequests\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"DlrPdiRequests\" SET \"Status\" = 'A' WHERE \"Status\" = 'Done'",
+                "UPDATE public.\"DlrPdiRequestDetails\" d SET \"DlrPDIReqDtlStatus\" = 'A' FROM public.\"DlrPdiRequests\" h WHERE h.\"Id\" = d.\"DlrPdiReqId\" AND h.\"Status\" = 'A'",
                 // Dự kiến đơn hàng (Plan_EstimateOrder): 2 cấp duyệt + huỷ duyệt theo TConst.PLEOrdStatus
                 "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"Appr1DTime\" timestamp NULL",
                 "ALTER TABLE public.\"EstimateOrders\" ADD COLUMN IF NOT EXISTS \"Appr1By\" text NULL",
