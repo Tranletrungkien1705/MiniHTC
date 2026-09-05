@@ -2232,6 +2232,14 @@ app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantCont
 // WarningPeriod = 3 (TConst.HTCConst.WarningPeriod) — dùng cho cả guard kỳ hạn lẫn công thức kỳ cảnh báo.
 const int BankGrtWarningPeriod = 3;
 
+app.MapGet("/api/bankgrts/rbac", () => Results.Ok(new
+{
+    roles = new[] {
+        new { guaranteeType = "0", name = "Ngân hàng GIÁM SÁT", filterColumn = "BankCodeMonitor", param = "bankAbilityPattern" },
+        new { guaranteeType = "1", name = "Ngân hàng PHÁT HÀNH", filterColumn = "BankBUCode", param = "buAbilityPattern" } },
+    note = "Nguồn RẼ NHÁNH tầng lọc theo vai trò ngân hàng (TERP.BizBank/Report.cs:703-713); pattern rỗng = xem tất cả (nội bộ HTC).",
+})).RequireAuthorization();
+
 app.MapGet("/api/bankgrts/statuses", () => Results.Ok(new
 {
     statuses = new[] {
@@ -2242,7 +2250,8 @@ app.MapGet("/api/bankgrts/statuses", () => Results.Ok(new
     note = "Duyệt yêu cầu Term và TermActual đều >= WarningPeriod; TermWarning = TermActual - WarningPeriod.",
 })).RequireAuthorization();
 
-app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? grtNo, string? status, string? type, string? settled) =>
+app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? grtNo, string? status, string? type, string? settled,
+    string? bankAbilityPattern, string? buAbilityPattern) =>
 {
     var q = db.BankGuarantees.Where(g => g.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode == dealer);
@@ -2251,6 +2260,21 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(g => g.Status == status);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(g => g.GuaranteeType == type);
     if (!string.IsNullOrWhiteSpace(settled)) q = q.Where(g => g.FlagSettled == settled);
+    // 🔴 RBAC của cổng ngân hàng (`TERP.BizBank/Report.cs:703-713`) — **RẼ NHÁNH THEO VAI TRÒ**:
+    //   GuaranteeType "0" (NH GIÁM SÁT)  ⇒ lọc `BankCodeMonitor like @strAbilityOfBank`
+    //   GuaranteeType "1" (NH PHÁT HÀNH) ⇒ lọc `BankBUCode      like @strAbilityOfUser`
+    // Port cũ KHÔNG có tầng lọc này ⇒ một ngân hàng đăng nhập **thấy bảo lãnh của mọi ngân hàng khác**.
+    // Truyền pattern rỗng = xem tất cả (người dùng nội bộ HTC).
+    if (!string.IsNullOrWhiteSpace(bankAbilityPattern))
+    {
+        var pm = bankAbilityPattern!.Trim().Replace("%", "");
+        q = q.Where(g => g.GuaranteeType != "0" || g.BankCodeMonitor.Contains(pm));
+    }
+    if (!string.IsNullOrWhiteSpace(buAbilityPattern))
+    {
+        var pu = buAbilityPattern!.Trim().Replace("%", "");
+        q = q.Where(g => g.GuaranteeType != "1" || (g.BankBUCode != null && g.BankBUCode.Contains(pu)));
+    }
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
@@ -2273,6 +2297,7 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     {
         OrgId = t.OrgId, GuaranteeNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode.Trim(),
         BankGuaranteeNo = dto.BankGuaranteeNo ?? "", GuaranteeType = gtype, Term = dto.Term,
+        BankCodeMonitor = dto.BankCodeMonitor ?? "", BankBUCode = dto.BankBUCode,
         DateOpen = dto.DateOpen, DateExpired = dto.DateExpired, DateEnd = dto.DateEnd, Remark = dto.Remark ?? "",
         // Nguồn tạo ở "P" (TConst.Stage.Pending) — BizHTC.zTemp.cs:14542.
         Status = "P", FlagSettled = "0", TotalAmount = cars.Sum(c => c.GrtValue)
@@ -4013,7 +4038,7 @@ app.MapGet("/api/report/guarantee", async (AppDbContext db, ITenantContext t, st
         g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.TotalAmount, g.Status, g.FlagSettled,
         dateOpen = g.DateOpen != null ? g.DateOpen.Value.ToString("yyyy-MM-dd") : "",
         debit = Debit(g),
-        g.TermActual, g.TermWarning, g.RemarkReject, g.ApprovedBy
+        g.TermActual, g.TermWarning, g.RemarkReject, g.ApprovedBy, g.BankCodeMonitor, g.BankBUCode
     }).ToList();
     return Results.Ok(new { total = recs.Count, totalDebit = recs.Sum(Debit), totalAmount = recs.Sum(g => g.TotalAmount), byBank, byStatus, detail });
 }).RequireAuthorization();
@@ -20405,7 +20430,7 @@ record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? Col
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
 record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
-record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars);
+record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
 record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars);
 record BankDoConfirmDto(string? Remark);

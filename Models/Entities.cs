@@ -5356,7 +5356,22 @@ public sealed class BankGuarantee
     public string DealerCode { get; set; } = "";
     public string BankCode { get; set; } = "";
     public string BankGuaranteeNo { get; set; } = "";   // so BL do NH cap
+    /// <summary>
+    /// Vai trò ngân hàng: "0" = NH GIÁM SÁT · "1" = NH PHÁT HÀNH.
+    /// 🔴 Đây KHÔNG chỉ là nhãn phân loại — nguồn dùng nó để **RẼ NHÁNH TẦNG LỌC RBAC**
+    /// (`TERP.BizBank/Report.cs:703-713`, hệ `ERP.V15.DMSSales.Real` chỉ có trên máy 150):
+    /// vai trò "0" lọc theo <see cref="BankCodeMonitor"/>; vai trò "1" lọc theo mã đơn vị KD của ngân hàng.
+    /// </summary>
     public string GuaranteeType { get; set; } = "0";     // 0=NH giam sat, 1=NH phat hanh
+
+    /// <summary>
+    /// 🔴 Mã NGÂN HÀNG GIÁM SÁT của bảo lãnh (`Pmt_Guarantee.BankCodeMonitor`) — port cũ THIẾU HẲN ở đây
+    /// (chỉ có ở biên bản vận chuyển). Không có cột này thì **không thực hiện được nhánh RBAC vai trò "0"**.
+    /// </summary>
+    public string BankCodeMonitor { get; set; } = "";   // NH GIÁM SÁT của bảo lãnh
+
+    /// <summary>Mã đơn vị kinh doanh của ngân hàng phát hành (`Mst_Bank.BankBUCode`) — căn cứ RBAC vai trò "1".</summary>
+    public string? BankBUCode { get; set; }
     public int Term { get; set; }                         // ky han (thang)
     public DateTime? DateOpen { get; set; }
     public DateTime? DateExpired { get; set; }
