@@ -11,7 +11,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Sent{color:var(--ok)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-1{color:var(--ok)} .p-0{color:#dc2626}
   #msg{font-size:13px} .det{font-size:12px;opacity:.85}
 </style></head>
 <body>
@@ -22,12 +22,13 @@
   <table id="ltbl"><thead><tr><th>Spec *</th><th>Mô tả</th><th>Màu</th><th>Cảng</th><th>Nhà máy</th><th class="n">SL</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addLine()">+ Dòng xe</button>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Sent">Đã gửi hãng</option></select><input id="q" placeholder="Lọc tháng" oninput="load()" style="width:110px"></div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="1">Còn hiệu lực</option><option value="0">Đã huỷ</option></select><input id="q" placeholder="Lọc tháng" oninput="load()" style="width:110px"></div>
 <table><thead><tr><th>Mã lệnh</th><th>Tháng</th><th>Dòng</th><th class="n">Tổng SL</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Draft:"Nháp",Sent:"Đã gửi hãng"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
+// Nguồn Ord_POCommand KHÔNG có cột trạng thái — chỉ cờ FlagActive ("1" còn hiệu lực / "0" đã huỷ).
+const LBL={"1":"Còn hiệu lực","0":"Đã huỷ"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -44,14 +45,17 @@ async function create(){
   if(r.ok){ msg("Đã tạo "+j.poCmdCode+" ("+j.totalQty+" xe)."); F("ltb").innerHTML="";addLine(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
-  const d=await (await fetch(`/api/pocommands?status=${F("fst").value}&month=${F("q").value}`,{headers:H()})).json();
+  const d=await (await fetch(`/api/pocommands?flagActive=${F("fst").value}&month=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.poCmdCode}')">Gửi hãng</button>`:"";
+    // Nguồn chỉ có HUỶ lệnh (OrderPOCommandCancel) — không có bước "gửi hãng".
+    let act=o.flagActive==="1"?`<button class="sm" onclick="cancelPo('${o.poCmdCode}')">Huỷ lệnh</button>`:"";
     return `<tr><td><b>${o.poCmdCode}</b> <a href="#" class="det" onclick="lines('${o.poCmdCode}');return false">xem</a></td><td>${o.orderMonth}</td><td>${o.lines}</td>
-      <td class="n">${n(o.totalQty)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.poCmdCode}"></tr>`;
+      <td class="n">${n(o.totalQty)}</td><td><span class="pill p-${o.flagActive}">${LBL[o.flagActive]||o.flagActive}</span></td><td>${act}</td></tr><tr id="x-${o.poCmdCode}"></tr>`;
   }).join("")||'<tr><td colspan="6" class="muted">Chưa có lệnh.</td></tr>';
 }
-async function send(no){ const r=await fetch(`/api/pocommands/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function cancelPo(no){ if(!confirm("Huỷ lệnh đặt hàng "+no+"?")) return;
+  const r=await fetch(`/api/pocommands/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json();
+  if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function lines(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/pocommands/${no}/lines`,{headers:H()})).json();

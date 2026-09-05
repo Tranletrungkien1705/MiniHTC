@@ -4029,7 +4029,22 @@ public sealed class POCommand
     public Guid OrgId { get; set; }
     public string PoCmdCode { get; set; } = "";
     public string OrderMonth { get; set; } = "";       // YYYYMM tháng đặt hàng
-    public string Status { get; set; } = "Draft";      // Draft → Sent
+    /// <summary>Tháng sản xuất (`Ord_POCommand.ProductionMonth`) — nguồn ghi khi tạo lệnh, port cũ thiếu.</summary>
+    public string? ProductionMonth { get; set; }
+    /// <summary>Tháng dự kiến về (`ExpectedMonth`) — nguồn ghi khi tạo lệnh, port cũ thiếu.</summary>
+    public string? ExpectedMonth { get; set; }
+    /// <summary>
+    /// 🔴 Nguồn dùng **cờ `Ord_POCommand.FlagActive`** ("1" còn hiệu lực / "0" đã huỷ), **KHÔNG có cột
+    /// trạng thái**: `grep "POCommandStatus|PoCmdStatus"` toàn hệ = **0 hit**.
+    /// `OrderPOCommandCreate` gán `FlagActive = Flag.Active` (Biz.HTC.WH.cs:28478);
+    /// `OrderPOCommandCancel` guard `Flag.Active` rồi gán `Flag.Inactive` (28636).
+    /// ⚠️ `Draft → Sent` của port cũ là **trạng thái BỊA** — nguồn không có bước "gửi hãng".
+    /// </summary>
+    public string FlagActive { get; set; } = "1";
+    /// <summary>Người tạo lệnh (`CreatedBy`) — nguồn ghi khi tạo, port cũ thiếu.</summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>⚠️ Giữ để đọc dữ liệu cũ, KHÔNG dùng làm điều kiện nghiệp vụ (xem <see cref="FlagActive"/>).</summary>
+    public string Status { get; set; } = "Draft";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }
 }
@@ -4045,6 +4060,10 @@ public sealed class POCommandLine
     public string? ColorCode { get; set; }
     public string? PortCode { get; set; }              // cảng nhận
     public string? PlantCode { get; set; }             // nhà máy sản xuất
+    /// <summary>Số LC tạm (`Ord_POCommandDetail.LCTemp`) — cột đầu tiên nguồn ghi cho mỗi dòng, port cũ thiếu.</summary>
+    public string? LCTemp { get; set; }
+    /// <summary>Mã model (`ModelCode`) — nguồn ghi riêng, tách khỏi `SpecCode`; port cũ thiếu.</summary>
+    public string? ModelCode { get; set; }
     public int Quantity { get; set; } = 1;
 }
 

@@ -845,6 +845,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Lệnh đặt hàng: nguồn dùng cờ FlagActive (không có cột trạng thái) + cột tháng SX/dự kiến
+                "ALTER TABLE public.\"POCommands\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+                "ALTER TABLE public.\"POCommands\" ADD COLUMN IF NOT EXISTS \"ProductionMonth\" text NULL",
+                "ALTER TABLE public.\"POCommands\" ADD COLUMN IF NOT EXISTS \"ExpectedMonth\" text NULL",
+                "ALTER TABLE public.\"POCommands\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"POCommandLines\" ADD COLUMN IF NOT EXISTS \"LCTemp\" text NULL",
+                "ALTER TABLE public.\"POCommandLines\" ADD COLUMN IF NOT EXISTS \"ModelCode\" text NULL",
                 // Công văn bảo lãnh: trục trạng thái thật nằm ở DÒNG (Pmt_GrtClaimDetail.VinSignStatus)
                 "ALTER TABLE public.\"GrtClaimDetails\" ADD COLUMN IF NOT EXISTS \"VinSignStatus\" text NOT NULL DEFAULT 'P'",
                 // Dữ liệu cũ: header Issued ⇒ mọi dòng coi như đã ký "A"; header Cancelled ⇒ "C".

@@ -18442,30 +18442,40 @@ app.MapPost("/api/caractualprices", async (List<CarPriceUpdateDto> dto, AppDbCon
 }).RequireAuthorization();
 
 // ===== Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, DMSales.Foton) =====
-app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month, string? flagActive) =>
 {
     var q = db.POCommands.Where(o => o.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
     if (!string.IsNullOrWhiteSpace(month)) q = q.Where(o => o.OrderMonth == month);
+    // Nguồn lọc theo cờ FlagActive (không có trạng thái); giữ tham số `status` cho tương thích cũ.
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(o => o.FlagActive == flagActive);
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
-        o.PoCmdCode, o.OrderMonth, o.Status, o.CreatedAt, o.SentAt,
+        o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt,
         lines = db.POCommandLines.Count(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id),
         totalQty = db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.OrderMonth)) return Results.BadRequest(new { error = "Cần OrderMonth (YYYYMM)." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
     var no = "POC" + DateTime.Now.ToString("yyMMddHHmmss");
-    var o = new POCommand { OrgId = t.OrgId, PoCmdCode = no, OrderMonth = dto.OrderMonth.Trim(), Status = "Draft" };
+    // 🔴 Nguồn `OrderPOCommandCreate_New20181119` (Biz.HTC.WH.cs:28472-28478) ghi đủ
+    //    ProductionMonth / ExpectedMonth / CreatedBy / FlagActive="1" — port cũ chỉ có OrderMonth.
+    var o = new POCommand
+    {
+        OrgId = t.OrgId, PoCmdCode = no, OrderMonth = dto.OrderMonth.Trim(),
+        ProductionMonth = dto.ProductionMonth, ExpectedMonth = dto.ExpectedMonth,
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        FlagActive = "1", Status = "Draft",
+    };
     db.POCommands.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.POCommandLines.Add(new POCommandLine { OrgId = t.OrgId, PoCmdId = o.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), SpecDesc = l.SpecDesc, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, Quantity = l.Quantity });
+        db.POCommandLines.Add(new POCommandLine { OrgId = t.OrgId, PoCmdId = o.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), SpecDesc = l.SpecDesc, ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, LCTemp = l.LCTemp, Quantity = l.Quantity });
     await db.SaveChangesAsync();
     return Results.Ok(new { o.PoCmdCode, o.OrderMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), status = o.Status });
 }).RequireAuthorization();
@@ -18476,19 +18486,23 @@ app.MapGet("/api/pocommands/{no}/lines", async (string no, AppDbContext db, ITen
     var o = await db.POCommands.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id)
-        .Select(l => new { l.SpecCode, l.SpecDesc, l.ColorCode, l.PortCode, l.PlantCode, l.Quantity }).ToListAsync();
-    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.Status, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
+        .Select(l => new { l.SpecCode, l.SpecDesc, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.LCTemp, l.Quantity }).ToListAsync();
+    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
 }).RequireAuthorization();
 
-app.MapPost("/api/pocommands/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+// ⚠️ ĐÃ BỎ `/send`: nguồn KHÔNG có bước "gửi hãng" — `Ord_POCommand` không có cột trạng thái nào.
+// 🔴 HUỶ LỆNH — `OrderPOCommandCancel_New20181119` (Biz.HTC.WH.cs:28555-28640): guard
+// `myOrder_CheckPOCommand(..., Flag.Active)` rồi gán `FlagActive = Flag.Inactive` ("0").
+// Đây là **hành động đổi trạng thái DUY NHẤT** của cụm này.
+app.MapPost("/api/pocommands/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.POCommands.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ gửi hãng lệnh Nháp." });
-    o.Status = "Sent"; o.SentAt = DateTime.Now;
+    if (o.FlagActive != "1") return Results.BadRequest(new { error = "Lệnh đặt hàng đã huỷ." });
+    o.FlagActive = "0";
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.PoCmdCode, status = o.Status });
+    return Results.Ok(new { o.PoCmdCode, o.FlagActive });
 }).RequireAuthorization();
 
 // ===== Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice) =====
@@ -21250,8 +21264,8 @@ record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount
     decimal AmountDiscountOther = 0,   // txtAmountDiscountOther — chiết khấu khác (số nguyên >= 0)
     decimal PointTotal = 0,            // txtPointTotal — tổng điểm tích
     string? CardTypeExpect = null);    // txtCardTypeExpect — hạng thẻ dự kiến sau tích
-record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity);
-record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines);
+record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null);
+record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines, string? ProductionMonth = null, string? ExpectedMonth = null);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
