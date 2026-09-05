@@ -1398,7 +1398,13 @@ public sealed class PartStockIn
     public string? StockInType { get; set; }
     public string WarehouseCode { get; set; } = "";
     public string? Staff { get; set; }
-    public string Status { get; set; } = "Draft";      // Draft → Posted / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG `TConst.Ser_Inv_StockIn` cua nguon (`Const.Main.cs:203-210`):
+    /// **"1" Mới tạo · "2" Tiến hành · "3" Kết thúc · "4" Điều chỉnh · "5" Hủy**.
+    /// ⚠️ Port cũ `Draft/Posted/Rejected` = **3 trạng thái**, thiếu hẳn "2" Tiến hành (bước trung gian
+    /// bắt buộc — nguồn KHÔNG cho nhảy thẳng 1→3) và "4" Điều chỉnh (phiếu cũ bị phiếu điều chỉnh thay).
+    /// </summary>
+    public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PostedAt { get; set; }
     public string? RejectReason { get; set; }
@@ -1444,7 +1450,11 @@ public sealed class PartStockOut
     public string? StockOutType { get; set; }
     public string WarehouseCode { get; set; } = "";
     public string? Reason { get; set; }
-    public string Status { get; set; } = "Draft";      // Draft → Posted / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG `TConst.Ser_Inv_StockOut` (`Const.Main.cs:232-239`) — cùng bộ mã với phiếu nhập:
+    /// **"1" Mới tạo · "2" Tiến hành · "3" Kết thúc · "4" Điều chỉnh · "5" Hủy**.
+    /// </summary>
+    public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PostedAt { get; set; }
     public string? RejectReason { get; set; }

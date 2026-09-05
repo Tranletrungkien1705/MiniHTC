@@ -845,6 +845,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Phiếu nhập/xuất kho phụ tùng: chuyển tên tự đặt sang mã TConst.Ser_Inv_StockIn/StockOut
+                "UPDATE public.\"PartStockIns\" SET \"Status\" = '1' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"PartStockIns\" SET \"Status\" = '3' WHERE \"Status\" = 'Posted'",
+                "UPDATE public.\"PartStockIns\" SET \"Status\" = '5' WHERE \"Status\" = 'Rejected'",
+                "UPDATE public.\"PartStockOuts\" SET \"Status\" = '1' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"PartStockOuts\" SET \"Status\" = '3' WHERE \"Status\" = 'Posted'",
+                "UPDATE public.\"PartStockOuts\" SET \"Status\" = '5' WHERE \"Status\" = 'Rejected'",
                 // Phiếu điều chỉnh tồn kho: bổ sung cột nguồn + chuyển tên tự đặt sang mã TConst.Ser_StockAdj
                 "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"StockOutDate\" timestamp NULL",
                 "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",

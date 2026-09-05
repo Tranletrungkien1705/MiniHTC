@@ -18872,7 +18872,7 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartStockOut { OrgId = t.OrgId, StockOutNo = no, StockOutDate = dto.StockOutDate ?? DateTime.Now, StockOutType = dto.StockOutType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "Draft" };
+    var h = new PartStockOut { OrgId = t.OrgId, StockOutNo = no, StockOutDate = dto.StockOutDate ?? DateTime.Now, StockOutType = dto.StockOutType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "1" };
     db.PartStockOuts.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity });
@@ -18891,12 +18891,35 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
 }).RequireAuthorization();
 
 // Ghi sổ: TRỪ tồn PartStock; guard tồn không đủ (kiểm TẤT CẢ dòng trước khi trừ)
+// 🔴 TIẾN HÀNH "1"→"2" cho phiếu xuất (`CheckStockOutNotPendingExecuting`, StockOut.cs:5269-5295).
+app.MapPost("/api/stockouts/{no}/execute", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "1") return Results.BadRequest(new { error = "Chỉ chuyển Tiến hành từ phiếu Mới tạo (1)." });
+    h.Status = "2";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Tiến hành" });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockouts/{no}/revert", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2)." });
+    h.Status = "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Mới tạo" });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ ghi sổ phiếu Draft." });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2)." });
     var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
     // kiểm tồn đủ trước
     foreach (var l in lines)
@@ -18914,9 +18937,10 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
         var stock = await db.PartStocks.FirstAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
         stock.OnHand -= l.Quantity; stock.UpdatedAt = DateTime.Now;
     }
-    h.Status = "Posted"; h.PostedAt = DateTime.Now;
+    // ⚠️ KHÔNG gán lại StockOutDate: luật "ngày = thời điểm duyệt" chỉ có ở phiếu NHẬP, nguồn phiếu XUẤT không có.
+    h.Status = "3"; h.PostedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockOutNo, status = h.Status, postedLines = lines.Count });
+    return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
 }).RequireAuthorization();
 
 // Hủy phiếu xuất kho (port 1:1 FrmSOReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
@@ -18926,14 +18950,17 @@ app.MapPost("/api/stockouts/{no}/reject", async (string no, StockRejectDto dto, 
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu xuất." });
-    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ hủy được phiếu Draft." });
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
-    h.Status = "Rejected"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
+    h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, status = h.Status });
 }).RequireAuthorization();
 
 // ===== Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate) + tồn kho PartStock =====
+// ⚠️ KHÔNG khai lại `/api/stockdocs/statuses` ở đây: endpoint đó ĐÃ CÓ (~Program.cs:5817) phục vụ cụm
+//    `ServiceStockIn` — và cụm đó port **CÙNG một bảng nguồn `Ser_Inv_StockIn`** với `PartStockIn` dưới đây
+//    (`TblSerInvStockIn` chỉ là lớp hằng TÊN CỘT phía client, không phải bảng thứ hai).
+//    ⇒ Nợ GỘP 2 entity trùng, đã ghi sổ; không gộp vội vì nhiều báo cáo đang đọc `ServiceStockIn`.
 app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
 {
     var q = db.PartStockIns.Where(s => s.OrgId == t.OrgId);
@@ -18954,7 +18981,7 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "Draft" };
+    var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "1" };
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
@@ -18973,12 +19000,40 @@ app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenan
 }).RequireAuthorization();
 
 // Ghi sổ: tăng tồn PartStock (integration thật)
+// 🔴 TIẾN HÀNH "1"→"2" — bước trung gian BẮT BUỘC của nguồn, port cũ THIẾU HẲN.
+app.MapPost("/api/stockins/{no}/execute", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "1") return Results.BadRequest(new { error = "Chỉ chuyển Tiến hành từ phiếu Mới tạo (1)." });
+    h.Status = "2";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Tiến hành" });
+}).RequireAuthorization();
+
+// 🔴 LÙI trạng thái "2"→"1" (nhánh `strIsRevert == Flag.Active` của nguồn) — port cũ THIẾU.
+// ⚠️ Nguồn phiếu NHẬP dùng `CheckStockInNotPending` vốn chấp nhận **cả "1" LẪN "5" (Hủy)** ⇒ lùi được sang Hủy.
+//    Phiếu XUẤT thì KHÔNG (`CheckStockOutNotPending` chỉ nhận "1") — luật LỆCH giữa 2 màn, giữ nguyên.
+app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2)." });
+    h.Status = "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Mới tạo" });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ ghi sổ phiếu Draft." });
+    // 🔴 Nguồn CHỈ cho Kết thúc từ "2" Tiến hành (`CheckStockInNotPendingExecuting` + nhánh
+    //    `strCurrentStatus == Executing` ⇒ `CheckStockInNotFinished`) — KHÔNG có đường 1→3 thẳng.
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2)." });
     var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
     foreach (var l in lines)
     {
@@ -18987,9 +19042,11 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
         if (stock is null) { stock = new PartStock { OrgId = t.OrgId, WarehouseCode = h.WarehouseCode, PartCode = l.PartCode, PartName = l.PartName, Location = l.Location, OnHand = 0 }; db.PartStocks.Add(stock); }
         stock.OnHand += l.Quantity; stock.PartName = l.PartName ?? stock.PartName; stock.UpdatedAt = DateTime.Now;
     }
-    h.Status = "Posted"; h.PostedAt = DateTime.Now;
+    // 🔴 Luật nguồn 2025-01-24 (dongnt, StockIn.cs:4605-4609): khi Kết thúc thì **StockInDate lấy theo
+    //    THỜI ĐIỂM DUYỆT**, không giữ ngày nhập lúc lập phiếu. Chỉ phiếu NHẬP có luật này, phiếu XUẤT không.
+    h.Status = "3"; h.StockInDate = DateTime.Now; h.PostedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, status = h.Status, postedLines = lines.Count });
+    return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
 }).RequireAuthorization();
 
 // Hủy phiếu nhập kho (port 1:1 FrmSIReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
@@ -18999,9 +19056,11 @@ app.MapPost("/api/stockins/{no}/reject", async (string no, StockRejectDto dto, A
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu nhập." });
-    if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ hủy được phiếu Draft." });
+    // 🔴 Nguồn (`StockIn.cs:6476-6489`) chỉ `CheckExistStockIn` rồi gán Reject — **KHÔNG chặn trạng thái**.
+    // Port cũ chặn `!= "Draft"` là guard CHẶT HƠN nguồn (sai chiều). Đã bỏ để đúng 1:1.
+    // ⚠️ Hệ quả nguồn: huỷ phiếu đã Kết thúc KHÔNG hoàn lại tồn kho — đã ghi C0-bug4 để người quyết.
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
-    h.Status = "Rejected"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
+    h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status });
 }).RequireAuthorization();
