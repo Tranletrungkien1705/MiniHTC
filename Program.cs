@@ -6836,6 +6836,57 @@ app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext 
     return Results.Ok(new { h.Id, h.OrderNo, h.TotalQty, h.Status, lineCount = lines.Count });
 }).RequireAuthorization();
 
+// 🔴 Bộ trạng thái ĐẦY ĐỦ của lệnh xuất kho (TConst.Ser_Inv_StockOutOrder) — port cũ mới có 3/7.
+// Quy trình DUYỆT nằm ở KHÚC GIỮA mà port cũ bỏ hẳn: gửi → chờ → chấp nhận → đã tạo phiếu xuất.
+var stockOutOrderStatusSourceCodes = new Dictionary<string, string>
+{
+    ["Created"] = "1",          // Mới tạo
+    ["Submitted"] = "2",        // Đã gửi
+    ["Rejected"] = "3",         // Từ chối
+    ["Waiting"] = "4",          // Đang chờ
+    ["Accepted"] = "5",         // Chấp nhận
+    ["CreateStockOut"] = "6",   // Đã tạo phiếu xuất
+    ["Finished"] = "7",         // Kết thúc
+};
+
+// Bảng chuyển tiếp. `Accepted`/`CreateStockOut`/`Finished` là các mốc biz nguồn CHẶN sửa tiếp
+// (CheckStockOutOrderAccepted / …CreateStockOut / …Finished trong BizCarSv.Inventory.StockOut).
+var stockOutOrderTransitions = new Dictionary<string, string[]>
+{
+    ["Created"] = new[] { "Submitted", "Rejected" },
+    ["Submitted"] = new[] { "Waiting", "Accepted", "Rejected" },
+    ["Waiting"] = new[] { "Accepted", "Rejected" },
+    ["Accepted"] = new[] { "CreateStockOut" },
+    ["CreateStockOut"] = new[] { "Finished" },
+    ["Finished"] = Array.Empty<string>(),
+    ["Rejected"] = Array.Empty<string>(),
+};
+
+app.MapGet("/api/stockoutorders/statuses", () => Results.Ok(new
+{
+    statuses = stockOutOrderStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    transitions = stockOutOrderTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
+    note = "Accepted/CreateStockOut/Finished là các mốc biz nguồn chặn sửa tiếp."
+})).RequireAuthorization();
+
+// Chuyển trạng thái theo đúng bảng chuyển tiếp của nguồn.
+app.MapPost("/api/stockoutorders/{id}/status", async (
+    long id, StockOutOrderStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var target = (dto.ToStatus ?? "").Trim();
+    if (!stockOutOrderStatusSourceCodes.ContainsKey(target))
+        return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", stockOutOrderStatusSourceCodes.Keys)}" });
+    if (!stockOutOrderTransitions.TryGetValue(h.Status, out var allowedTargets) || !allowedTargets.Contains(target))
+        return Results.BadRequest(new { error = $"Không thể chuyển từ '{h.Status}' sang '{target}'. Cho phép: {string.Join(", ", allowedTargets ?? Array.Empty<string>())}" });
+    h.Status = target;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.Status, sourceCode = stockOutOrderStatusSourceCodes[target] });
+}).RequireAuthorization();
+
+// Giữ đường cũ cho client đã tích hợp: /issue đi TẮT từ Created thẳng tới Finished.
+// ⚠️ Nguồn KHÔNG có bước tắt này (phải qua Submitted→Accepted→CreateStockOut) — dùng /status để đi đúng quy trình.
 app.MapPost("/api/stockoutorders/{id}/issue", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -6843,14 +6894,16 @@ app.MapPost("/api/stockoutorders/{id}/issue", async (long id, AppDbContext db, I
     if (h.Status != "Created") return Results.BadRequest(new { error = $"Lệnh đang '{h.Status}', chỉ xuất được khi 'Created'." });
     h.Status = "Finished";
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.Status });
+    return Results.Ok(new { h.Id, h.Status, shortcut = true });
 }).RequireAuthorization();
 
 app.MapPost("/api/stockoutorders/{id}/reject", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    if (h.Status != "Created") return Results.BadRequest(new { error = $"Lệnh đang '{h.Status}', chỉ từ chối được khi 'Created'." });
+    // Nguồn cho từ chối ở MỌI trạng thái chưa chốt, không riêng 'Created'.
+    if (!stockOutOrderTransitions.TryGetValue(h.Status, out var rejectable) || !rejectable.Contains("Rejected"))
+        return Results.BadRequest(new { error = $"Lệnh đang '{h.Status}', không từ chối được nữa." });
     h.Status = "Rejected";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.Status });
@@ -18782,6 +18835,7 @@ record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Facto
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
+record StockOutOrderStatusDto(string? ToStatus);
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
 record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
