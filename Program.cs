@@ -6168,7 +6168,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HtcNote
+        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HtcNote
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
         pending = items.Count(i => i.Status == "Pending"), sent = items.Count(i => i.Status == "Sent"),
@@ -6187,6 +6187,44 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
         Amount = dto.Amount, Status = "Pending" };
     db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.ClaimNo, c.Status });
+}).RequireAuthorization();
+
+// 🔴 TRỤC TRẠNG THÁI THỨ HAI của đề nghị bảo hành: đồng bộ sang API hãng HMC (TConst.HMCApiStatus).
+// ĐỘC LẬP với luồng duyệt nội bộ (/action) — port cũ thiếu hẳn trục này.
+var hmcApiStatusNames = new Dictionary<string, string>
+{
+    ["P"] = "Chờ gửi HMC",
+    ["A"] = "Gửi thành công",
+    ["R"] = "Gửi lỗi",
+};
+
+app.MapGet("/api/warrantyclaims/hmcapistatuses", () => Results.Ok(new
+{
+    statuses = hmcApiStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Trục ĐỘC LẬP với Status duyệt nội bộ; nguồn set 'P' ngay khi tạo đề nghị."
+})).RequireAuthorization();
+
+// Ghi kết quả đồng bộ HMC (bộ đẩy API gọi lại sau khi có phản hồi của hãng).
+app.MapPost("/api/warrantyclaims/{id}/hmcsync", async (
+    long id, WarrantyHmcSyncDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var target = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+    if (!hmcApiStatusNames.ContainsKey(target))
+        return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", hmcApiStatusNames.Keys)}" });
+
+    // Guard của nguồn: đã gửi THÀNH CÔNG ("A") thì KHÔNG ghi đè kết quả nữa
+    // (`if (strHMCApiStatus != TConst.Stage.Approved)` đặt ngay trước câu UPDATE).
+    if (c.HMCApiStatus == "A")
+        return Results.BadRequest(new { error = "Đề nghị đã đồng bộ thành công sang HMC, không ghi đè." });
+
+    c.HMCApiStatus = target;
+    c.SyncHMCDateTime = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.ClmRcptNo)) c.ClmRcptNo = dto.ClmRcptNo.Trim();
+    c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.HMCApiStatus, statusName = hmcApiStatusNames[target], c.SyncHMCDateTime, c.ClmRcptNo });
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo máy trạng thái duyệt bảo hành (submit/review/approve/reject/revert).
@@ -19235,6 +19273,7 @@ record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
 record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
+record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo);
 record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);

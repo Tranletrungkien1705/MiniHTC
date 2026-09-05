@@ -3144,6 +3144,21 @@ public sealed class ServiceWarrantyClaim
     public decimal Amount { get; set; }
     // Pending(Chưa gửi) -> Sent(Chờ xem xét) -> Confirmed(Chờ duyệt) -> Accepted/Rejected; Reverted(HTC hoàn trả) quay lại đại lý.
     public string Status { get; set; } = "Pending";
+
+    /// <summary>
+    /// 🔴 TRỤC TRẠNG THÁI THỨ HAI — đồng bộ đề nghị sang API của HÃNG HMC (TConst.HMCApiStatus),
+    /// ĐỘC LẬP hoàn toàn với <see cref="Status"/> (luồng duyệt nội bộ đại lý ↔ HTC):
+    /// "P" chờ gửi · "A" gửi thành công · "R" gửi lỗi.
+    /// Nguồn set "P" NGAY KHI TẠO đề nghị (BizCarSv.WarrantyReport.cs:2563).
+    /// </summary>
+    public string HMCApiStatus { get; set; } = "P";
+
+    /// <summary>Thời điểm đồng bộ sang HMC (SyncHMCDateTime).</summary>
+    public DateTime? SyncHMCDateTime { get; set; }
+
+    /// <summary>Số biên nhận claim do HMC trả về (ClmRcptNo) — bằng chứng hãng đã nhận.</summary>
+    public string? ClmRcptNo { get; set; }
+
     public string? HtcNote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
