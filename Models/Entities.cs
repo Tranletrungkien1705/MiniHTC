@@ -5979,7 +5979,12 @@ public sealed class BackOrder
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Đơn giá thiết bị GPS theo hợp đồng — port 1:1 FrmMst_UnitPriceGPS (Mst_UnitPriceGPS).</summary>
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (ca thứ 6 — ca CUỐI của sweep, phát hiện #56, xử lý #59).
+/// `GpsUnitPrice` và <see cref="MstUnitPriceGPS"/> **cùng map bảng nguồn `Mst_UnitPriceGPS`**,
+/// cột gần như y hệt (ContractNo/UnitPrice/EffStartDate/FlagActive).
+/// Endpoint `/api/gpsunitprices` đã trỏ sang <see cref="MstUnitPriceGPS"/>. Giữ lớp này để đọc dữ liệu cũ, **KHÔNG ghi mới**.
+/// </summary>
 public sealed class GpsUnitPrice
 {
     public long Id { get; set; }

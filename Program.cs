@@ -7670,7 +7670,7 @@ app.MapGet("/api/unitpricegps", async (AppDbContext db, ITenantContext t, string
     var qry = db.MstUnitPriceGpsItems.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractNo.Contains(q!));
-    var items = await qry.OrderBy(x => x.ContractNo).Take(500).Select(x => new { x.Id, x.ContractNo, x.UnitPrice, x.EffStartDate, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.ContractNo).Take(500).Select(x => new { x.Id, x.ContractNo, x.UnitPrice, x.EffStartDate, x.FlagActive, x.UpdatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -7686,6 +7686,21 @@ app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db,
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.ContractNo, row.UnitPrice, row.FlagActive });
+}).RequireAuthorization();
+
+// 🔴 XOÁ đơn giá GPS — port nhánh `bIsDelete` của nguồn (Biz.HTC.WH.cs:190873-190900).
+// Luật: **CẤM xoá nếu số hợp đồng đã được dùng** ở chi tiết thanh toán GPS
+// (nguồn join `Pmt_PaymentGPSDetail.ContractGPS`) — tránh mất căn cứ tính tiền của phiếu đã lập.
+app.MapPost("/api/unitpricegps/{id}/delete", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    var used = await db.GpsPaymentLines.AnyAsync(x => x.OrgId == t.OrgId && x.ContractGPS == row.ContractNo);
+    if (used)
+        return Results.BadRequest(new { error = $"Hợp đồng GPS {row.ContractNo} đã được dùng ở thanh toán GPS — không xoá được." });
+    db.MstUnitPriceGpsItems.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = row.ContractNo });
 }).RequireAuthorization();
 
 app.MapPost("/api/unitpricegps/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -13849,12 +13864,15 @@ app.MapPost("/api/inventorycosts/{storage}/{costType}/toggle", async (string sto
 }).RequireAuthorization();
 
 // ===== Đơn giá thiết bị GPS theo hợp đồng (GpsUnitPrice — port 1:1 FrmMst_UnitPriceGPS, Admin/Product) =====
+// ⛔ HỢP NHẤT THỰC THỂ SONG TRÙNG (ca thứ 6 — CUỐI của sweep, #59): khối này trước đây ghi vào
+// `GpsUnitPrice` RIÊNG, trong khi `/api/unitpricegps` ghi vào `MstUnitPriceGPS` —
+// **cùng bảng nguồn `Mst_UnitPriceGPS`**, cột gần như y hệt. Nay dùng CHUNG một bảng.
 app.MapGet("/api/gpsunitprices", async (AppDbContext db, ITenantContext t, string? contract, string? active) =>
 {
-    var q = db.GpsUnitPrices.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(contract)) q = q.Where(x => x.ContractNo.Contains(contract!));
-    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    var qy = db.MstUnitPriceGpsItems.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(contract)) qy = qy.Where(x => x.ContractNo.Contains(contract!));
+    if (!string.IsNullOrWhiteSpace(active)) qy = qy.Where(x => x.FlagActive == active);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.ContractNo, x.UnitPrice, x.FlagActive,
         effStartDate = x.EffStartDate.HasValue ? x.EffStartDate.Value.ToString("yyyy-MM-dd") : ""
@@ -13862,30 +13880,30 @@ app.MapGet("/api/gpsunitprices", async (AppDbContext db, ITenantContext t, strin
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Upsert theo số hợp đồng (mỗi hợp đồng 1 đơn giá; nhập lại = cập nhật đơn giá + ngày hiệu lực).
+// Upsert theo số hợp đồng. Guard của nguồn (Mst_UnitPriceGPS_Save): số HĐ + **ngày hiệu lực** + đơn giá
+// đều BẮT BUỘC, đơn giá không âm; lưu xong nguồn set FlagActive = "1".
 app.MapPost("/api/gpsunitprices", async (GpsUnitPriceDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng." });
     if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không hợp lệ." });
+    if (dto.EffStartDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày hiệu lực." });
     var no = dto.ContractNo.Trim();
-    var ex = await db.GpsUnitPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
-    if (ex is not null)
-    {
-        ex.UnitPrice = dto.UnitPrice; ex.EffStartDate = dto.EffStartDate; ex.FlagActive = "1";
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.ContractNo, updated = true });
-    }
-    var r = new GpsUnitPrice { OrgId = t.OrgId, ContractNo = no, UnitPrice = dto.UnitPrice, EffStartDate = dto.EffStartDate, FlagActive = "1" };
-    db.GpsUnitPrices.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ContractNo, updated = false });
+    var ex = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
+    var updated = ex is not null;
+    if (ex is null) { ex = new MstUnitPriceGPS { OrgId = t.OrgId, ContractNo = no }; db.MstUnitPriceGpsItems.Add(ex); }
+    ex.UnitPrice = dto.UnitPrice; ex.EffStartDate = dto.EffStartDate;
+    ex.FlagActive = "1";                       // nguồn luôn set Flag.Active khi lưu
+    ex.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { ex.ContractNo, updated });
 }).RequireAuthorization();
 
 app.MapPost("/api/gpsunitprices/{contract}/toggle", async (string contract, AppDbContext db, ITenantContext t) =>
 {
     contract = contract.Trim();
-    var x = await db.GpsUnitPrices.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ContractNo == contract);
+    var x = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ContractNo == contract);
     if (x is null) return Results.NotFound(new { contract });
-    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1"; x.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { x.ContractNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
