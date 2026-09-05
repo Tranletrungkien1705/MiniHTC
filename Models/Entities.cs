@@ -5759,15 +5759,68 @@ public sealed class Bulletin
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string BulletinNo { get; set; } = "";
+
+    /// <summary>Số bản tin của hãng HMC (BULLETINNOHMC) — nguồn BẮT BUỘC nhập.</summary>
+    public string? BulletinNoHMC { get; set; }
+
     public string? Remark { get; set; }
+
+    /// <summary>⚠️ Dịch vụ/phụ tùng liên quan thực chất nằm ở <see cref="BulletinDtl"/> (1-n).
+    /// Bốn cột này giữ cho dữ liệu cũ, không còn là nguồn sự thật.</summary>
     public string? PartCode { get; set; }
     public string? PartName { get; set; }
     public string? SerCode { get; set; }
     public string? SerName { get; set; }
+
     public DateTime? DateExpired { get; set; }
     public string? FileNameAttachment { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    /// <summary>Ngày phát hành bản tin (CREATEDATE) — khác CreatedAt là mốc ghi bản ghi.</summary>
+    public DateTime? CreateDate { get; set; }
+
+    /// <summary>Người phát hành bản tin (USERCREATE).</summary>
+    public string? UserCreate { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// Dịch vụ / phụ tùng liên quan tới một bản tin kỹ thuật (Btl_BulletinDtl —
+/// port 1:1 FrmBulletinHTCCreate/Modify, TCMotor DMSCarSv/Bulletin).
+/// MỘT bản tin gắn NHIỀU cặp dịch vụ + phụ tùng; nguồn ghi từng dòng vào bảng riêng.
+/// </summary>
+public sealed class BulletinDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BulletinNo { get; set; } = "";
+    public string? SerCode { get; set; }
+    public string? SerName { get; set; }
+    public string? PartCode { get; set; }
+    public string? PartName { get; set; }
+}
+
+/// <summary>
+/// VIN áp dụng của một bản tin kỹ thuật (Btl_Bulletin_VIN —
+/// port 1:1 FrmBulletinHTCCreate/Modify + FrmBulletinDealerSearch, TCMotor DMSCarSv/Bulletin).
+/// MỘT bản tin áp cho NHIỀU xe, và mỗi xe có trạng thái xử lý RIÊNG — nhờ đó đại lý
+/// theo dõi được xe nào đã làm, xe nào chưa.
+/// </summary>
+public sealed class BulletinVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BulletinNo { get; set; } = "";
+
+    /// <summary>Số khung xe (VINNO).</summary>
+    public string VinNo { get; set; } = "";
+
+    /// <summary>Đại lý phụ trách xe này (DEALERCODE).</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>Trạng thái xử lý RIÊNG của xe này. Nguồn đọc `isnull(bv.Status,'P')` ⇒ mặc định "P" (chờ xử lý).</summary>
+    public string Status { get; set; } = "P";
 }
 
 /// <summary>Báo giá phụ tùng dịch vụ (header) — port 1:1 FrmPartQuotation (TblSerInvQuote, TCMotor).</summary>

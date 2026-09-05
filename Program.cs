@@ -10673,27 +10673,111 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.BulletinNo, x.Remark, x.PartCode, x.PartName, x.SerCode, x.SerName, x.FileNameAttachment, x.FlagActive,
+        x.BulletinNo, x.BulletinNoHMC, x.Remark, x.PartCode, x.PartName, x.SerCode, x.SerName, x.FileNameAttachment, x.FlagActive, x.CreateDate, x.UserCreate,
+        vins = db.BulletinVins.Count(v => v.OrgId == t.OrgId && v.BulletinNo == x.BulletinNo),
         dateExpired = x.DateExpired.HasValue ? x.DateExpired.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Upsert theo số thông báo (số trống = auto-gen).
+// TWIN đã trace: WS gọi `Blt_BulletinCreate_20210224` / `Blt_BulletinUpdate_20210224`
+// (KHÔNG phải Blt_BulletinCreate / Blt_BulletinUpdate trần — có tới 4 phiên bản trong biz).
 app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Remark)) return Results.BadRequest(new { error = "Chưa nhập nội dung thông báo." });
-    var no = string.IsNullOrWhiteSpace(dto.BulletinNo) ? "BLT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.BulletinNo.Trim().ToUpperInvariant();
-    var ex = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
-    if (ex is not null)
+    // Biz chặn thiếu số bản tin hãng (Blt_Bulletin_InvalidBulletinNoHMC) — form không có luật này.
+    if (string.IsNullOrWhiteSpace(dto.BulletinNoHMC)) return Results.BadRequest(new { error = "Chưa nhập số bản tin HMC!" });
+
+    var vinLines = dto.Vins ?? new();
+    foreach (var line in vinLines)
     {
-        ex.Remark = dto.Remark; ex.PartCode = dto.PartCode; ex.PartName = dto.PartName; ex.SerCode = dto.SerCode; ex.SerName = dto.SerName; ex.DateExpired = dto.DateExpired; ex.FileNameAttachment = dto.FileNameAttachment; ex.FlagActive = "1";
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.BulletinNo, updated = true });
+        // Nguồn gọi CheckVINEmpty cho từng dòng trước khi ghi.
+        if (string.IsNullOrWhiteSpace(line.VinNo)) return Results.BadRequest(new { error = "Số khung không được để trống!" });
     }
-    var r = new Bulletin { OrgId = t.OrgId, BulletinNo = no, Remark = dto.Remark, PartCode = dto.PartCode, PartName = dto.PartName, SerCode = dto.SerCode, SerName = dto.SerName, DateExpired = dto.DateExpired, FileNameAttachment = dto.FileNameAttachment, FlagActive = "1" };
-    db.Bulletins.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.BulletinNo, updated = false });
+    var duplicatedVin = vinLines
+        .GroupBy(v => v.VinNo!.Trim().ToUpperInvariant())
+        .FirstOrDefault(g => g.Count() > 1);
+    if (duplicatedVin is not null)
+        return Results.BadRequest(new { error = $"Số khung '{duplicatedVin.Key}' bị trùng trong danh sách!" });
+
+    var no = string.IsNullOrWhiteSpace(dto.BulletinNo) ? "BLT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.BulletinNo.Trim().ToUpperInvariant();
+    var row = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
+    var updated = row is not null;
+    if (row is null) { row = new Bulletin { OrgId = t.OrgId, BulletinNo = no }; db.Bulletins.Add(row); }
+
+    row.BulletinNoHMC = dto.BulletinNoHMC!.Trim();
+    row.Remark = dto.Remark;
+    row.PartCode = dto.PartCode; row.PartName = dto.PartName;
+    row.SerCode = dto.SerCode; row.SerName = dto.SerName;
+    row.DateExpired = dto.DateExpired;
+    row.FileNameAttachment = dto.FileNameAttachment;
+    row.CreateDate = dto.CreateDate; row.UserCreate = dto.UserCreate;
+    row.FlagActive = "1";
+    await db.SaveChangesAsync();
+
+    // Hai bảng chi tiết: chỉ thay khi client CÓ gửi lên (không gửi = giữ nguyên).
+    if (dto.Details is not null)
+    {
+        db.BulletinDtls.RemoveRange(db.BulletinDtls.Where(d => d.OrgId == t.OrgId && d.BulletinNo == no));
+        foreach (var line in dto.Details)
+            db.BulletinDtls.Add(new BulletinDtl
+            {
+                OrgId = t.OrgId, BulletinNo = no,
+                SerCode = line.SerCode, SerName = line.SerName,
+                PartCode = line.PartCode, PartName = line.PartName
+            });
+    }
+    if (dto.Vins is not null)
+    {
+        db.BulletinVins.RemoveRange(db.BulletinVins.Where(v => v.OrgId == t.OrgId && v.BulletinNo == no));
+        foreach (var line in vinLines)
+            db.BulletinVins.Add(new BulletinVin
+            {
+                OrgId = t.OrgId, BulletinNo = no,
+                VinNo = line.VinNo!.Trim().ToUpperInvariant(),
+                DealerCode = line.DealerCode,
+                // Không truyền trạng thái thì mặc định "P" đúng như `isnull(bv.Status,'P')` của nguồn.
+                Status = string.IsNullOrWhiteSpace(line.Status) ? "P" : line.Status!.Trim().ToUpperInvariant()
+            });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { row.BulletinNo, row.BulletinNoHMC, details = dto.Details?.Count ?? 0, vins = vinLines.Count, updated });
+}).RequireAuthorization();
+
+// Chi tiết một bản tin: dịch vụ/phụ tùng liên quan + danh sách VIN áp dụng kèm trạng thái từng xe.
+app.MapGet("/api/bulletins/{no}/details", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var row = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
+    if (row is null) return Results.NotFound(new { no });
+    var details = await db.BulletinDtls.Where(d => d.OrgId == t.OrgId && d.BulletinNo == no)
+        .Select(d => new { d.SerCode, d.SerName, d.PartCode, d.PartName }).ToListAsync();
+    var vins = await db.BulletinVins.Where(v => v.OrgId == t.OrgId && v.BulletinNo == no)
+        .Select(v => new { v.VinNo, v.DealerCode, v.Status }).ToListAsync();
+    return Results.Ok(new
+    {
+        row.BulletinNo, row.BulletinNoHMC, row.Remark, row.CreateDate, row.UserCreate,
+        row.DateExpired, row.FileNameAttachment, row.FlagActive,
+        details, vins,
+        pendingVins = vins.Count(v => v.Status == "P")
+    });
+}).RequireAuthorization();
+
+// Đại lý cập nhật trạng thái xử lý của MỘT xe trên bản tin (FrmBulletinDealerSearch).
+app.MapPost("/api/bulletins/{no}/vins/{vin}/status", async (
+    string no, string vin, BulletinVinStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    vin = vin.Trim().ToUpperInvariant();
+    var row = await db.BulletinVins.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.BulletinNo == no && v.VinNo == vin);
+    if (row is null) return Results.NotFound(new { no, vin });
+    var status = (dto.Status ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(status)) return Results.BadRequest(new { error = "Chưa chọn trạng thái." });
+    row.Status = status;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.BulletinNo, row.VinNo, row.Status });
 }).RequireAuthorization();
 
 app.MapPost("/api/bulletins/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
@@ -18042,7 +18126,10 @@ record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string?
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
-record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment);
+record BulletinDtlDto(string? SerCode, string? SerName, string? PartCode, string? PartName);
+record BulletinVinDto(string? VinNo, string? DealerCode, string? Status);
+record BulletinVinStatusDto(string? Status);
+record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);

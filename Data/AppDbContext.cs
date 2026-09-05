@@ -315,6 +315,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerServiceOption> DealerServiceOptions => Set<DealerServiceOption>();
     public DbSet<InsContract> InsContracts => Set<InsContract>();
     public DbSet<Bulletin> Bulletins => Set<Bulletin>();
+    public DbSet<BulletinDtl> BulletinDtls => Set<BulletinDtl>();
+    public DbSet<BulletinVin> BulletinVins => Set<BulletinVin>();
     public DbSet<SharePart> ShareParts => Set<SharePart>();
     public DbSet<PartGroup> PartGroups => Set<PartGroup>();
     public DbSet<ServicePart> ServiceParts => Set<ServicePart>();
