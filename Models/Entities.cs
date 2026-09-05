@@ -424,8 +424,12 @@ public sealed class Quota
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Đề nghị thế chấp xe (RM_ReqMortgage — port 1:1 FrmNewRM_ReqMortgage/FrmMngRM_ReqMortgage):
-/// header đề nghị thế chấp lô xe cho ngân hàng. Pending(Mới tạo)→Approved(Đang thế chấp)→Finished(Đã giải chấp).</summary>
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (ca thứ 4, phát hiện #57 bằng sweep tên bảng nguồn).
+/// `MortgageRequest`/`MortgageCar` và <see cref="ReqMortgage"/>/<see cref="ReqMortgageCar"/>
+/// **cùng map một bảng nguồn `RM_ReqMortgage`/`RM_ReqMortgageDtl`**.
+/// Endpoint `/api/mortgages` đã trỏ sang <see cref="ReqMortgage"/>. Giữ lớp này để đọc dữ liệu cũ, **KHÔNG ghi mới**.
+/// </summary>
 public sealed class MortgageRequest
 {
     public long Id { get; set; }
@@ -5574,10 +5578,17 @@ public sealed class ReqMortgage
     public string ReqRMNo { get; set; } = "";
     public string MortageBankCode { get; set; } = "";   // NH nhan the chap
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";        // Draft -> Approved / Cancelled
+    /// <summary>
+    /// 🔴 Trạng thái đề nghị thế chấp theo mã nguồn (`RM_ReqMortgage.RMStatus`, `TConst.Stage`):
+    /// "P" chờ duyệt → "A" đang thế chấp → "F" đã giải chấp · "C" huỷ.
+    /// Đọc dữ liệu cũ: Draft→"P", Approved→"A", Finished→"F", Cancelled→"C".
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime? MortageDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
+    /// <summary>Thời điểm giải chấp xong toàn bộ lô.</summary>
+    public DateTime? FinishedAt { get; set; }
 }
 
 /// <summary>Chi tiết xe đề nghị thế chấp (RM_ReqMortgageDtl) — port 1:1 FrmNewRM_ReqMortgage detail.</summary>
@@ -5593,6 +5604,28 @@ public sealed class ReqMortgageCar
     public string CONo { get; set; } = "";
     public string DeclarationNo { get; set; } = "";
     public DateTime? CODate { get; set; }
+
+    /// <summary>
+    /// 🔴 Trạng thái RIÊNG của DÒNG xe (`RM_ReqMortgageDtl.RMDtlStatus`, `TConst.Stage`):
+    /// "P" chờ duyệt → "A" **đang thế chấp** → "F" **đã giải chấp**.
+    /// Nguồn thao tác theo TỪNG VIN (`BizHTC.GiaiChap.cs:987 / 1384 / 3040`).
+    /// </summary>
+    public string RMDtlStatus { get; set; } = "P";
+
+    /// <summary>Ngân hàng đang giữ thế chấp xe này (`MortageBankCode`) — ghi khi DUYỆT; khi GIẢI CHẤP đổi thành "HTC.HO".</summary>
+    public string? MortageBankCode { get; set; }
+
+    /// <summary>Ngày BẮT ĐẦU thế chấp (`MortageStartDate`) — nguồn ghi = ngày duyệt.</summary>
+    public DateTime? MortageStartDate { get; set; }
+
+    /// <summary>
+    /// 🔴 Ngày GIẢI CHẤP (`RedeemDate`) — nguồn ghi khi duyệt **đề nghị giải chấp**, cùng lúc đóng dòng về "F".
+    /// ⚠️ Đây là **mắt nối giữa 2 nghiệp vụ**: duyệt giải chấp (RD_ReqRedeem) tác động ngược lên dòng thế chấp.
+    /// </summary>
+    public DateTime? RedeemDate { get; set; }
+
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
 }
 
 /// <summary>Yêu cầu chứng từ QC/xuất xưởng (QC_DocReq) — port 1:1 FrmMngQCDocReq (Sales/HTMV). Header.</summary>

@@ -823,6 +823,19 @@ public static class Seeder
                 "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"HTCInvoiceNo\" text NULL",
                 "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"InvoiceNoFactory\" text NULL",
                 "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"TCGInvoiceNo\" text NULL",
+                // Thế chấp xe: trạng thái theo DÒNG + mốc thế chấp/giải chấp (RM_ReqMortgageDtl)
+                "ALTER TABLE public.\"ReqMortgages\" ADD COLUMN IF NOT EXISTS \"FinishedAt\" timestamp NULL",
+                "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"RMDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"MortageBankCode\" text NULL",
+                "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"MortageStartDate\" timestamp NULL",
+                "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"RedeemDate\" timestamp NULL",
+                "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"ReqMortgageCars\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
+                "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",
+                "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'F' WHERE \"Status\" = 'Finished'",
+                "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'C' WHERE \"Status\" = 'Cancelled'",
                 // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
                 "UPDATE public.\"RedeemInvoiceRequests\" SET \"Status\" = 'P' WHERE \"Status\" = 'Created'",
                 "UPDATE public.\"RedeemInvoiceRequests\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",

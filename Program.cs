@@ -1445,17 +1445,19 @@ app.MapPost("/api/wexts/{code}/{action}", async (string code, string action, App
     return Results.Ok(new { w.Code, status = w.Status });
 }).RequireAuthorization();
 
-// ===== Đề nghị thế chấp xe (RM_ReqMortgage — port 1:1 FrmNewRM_ReqMortgage/FrmMngRM_ReqMortgage) =====
-// Header + lô xe. Pending(Mới tạo) → Approved(Đang thế chấp) → Finished(Đã giải chấp).
+// ⛔ HỢP NHẤT THỰC THỂ SONG TRÙNG (ca thứ 4, #57): `/api/mortgages` trước đây ghi vào bộ
+// `MortgageRequest`/`MortgageCar` RIÊNG, trong khi `/api/reqmortgages` ghi vào `ReqMortgage`/`ReqMortgageCar`
+// — **cùng bảng nguồn `RM_ReqMortgage`/`RM_ReqMortgageDtl`**. Nay dùng CHUNG một bảng.
 app.MapGet("/api/mortgages", async (AppDbContext db, ITenantContext t, string? status, string? bank) =>
 {
-    var q = db.MortgageRequests.Where(m => m.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
-    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank);
-    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    var qy = db.ReqMortgages.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(bank)) qy = qy.Where(m => m.MortageBankCode == bank);
+    var items = await qy.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
-        m.Id, m.ReqRMNo, m.BankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
-        cars = db.MortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqId == m.Id)
+        m.Id, m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
+        cars = db.ReqMortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id),
+        carsMortgaged = db.ReqMortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id && c.RMDtlStatus == "A"),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -1466,46 +1468,23 @@ app.MapPost("/api/mortgages", async (MortgageDto dto, AppDbContext db, ITenantCo
     var vins = (dto.Vins ?? new List<string>()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).Distinct().ToList();
     if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
     var reqNo = "RM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var m = new MortgageRequest { OrgId = t.OrgId, ReqRMNo = reqNo, BankCode = dto.BankCode.Trim().ToUpperInvariant(), Status = "Pending" };
-    db.MortgageRequests.Add(m);
-    await db.SaveChangesAsync();
+    var m = new ReqMortgage { OrgId = t.OrgId, ReqRMNo = reqNo, MortageBankCode = dto.BankCode.Trim().ToUpperInvariant(), Status = "P" };
+    db.ReqMortgages.Add(m); await db.SaveChangesAsync();
     foreach (var v in vins)
-        db.MortgageCars.Add(new MortgageCar { OrgId = t.OrgId, ReqId = m.Id, Vin = v, DtlStatus = "Pending" });
+        db.ReqMortgageCars.Add(new ReqMortgageCar { OrgId = t.OrgId, ReqMortgageId = m.Id, VIN = v, RMDtlStatus = "P" });
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.ReqRMNo, m.BankCode, status = m.Status, cars = vins.Count });
+    return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, status = m.Status, cars = vins.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, ITenantContext t) =>
 {
     reqNo = reqNo.Trim().ToUpperInvariant();
-    var m = await db.MortgageRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == reqNo);
+    var m = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo.ToUpper() == reqNo);
     if (m is null) return Results.NotFound(new { reqNo });
-    var cars = await db.MortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqId == m.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.EngineNo, c.DtlStatus }).ToListAsync();
-    return Results.Ok(new { m.ReqRMNo, m.BankCode, m.Status, count = cars.Count, cars });
-}).RequireAuthorization();
-
-app.MapPost("/api/mortgages/{reqNo}/{action}", async (string reqNo, string action, AppDbContext db, ITenantContext t) =>
-{
-    if (action is not ("approve" or "finish")) return Results.BadRequest(new { error = "action = approve|finish" });
-    reqNo = reqNo.Trim().ToUpperInvariant();
-    var m = await db.MortgageRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == reqNo);
-    if (m is null) return Results.NotFound(new { reqNo });
-    if (action == "approve")
-    {
-        if (m.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt được đề nghị Mới tạo." });
-        m.Status = "Approved"; m.ApprovedAt = DateTime.Now;
-    }
-    else // finish = giải chấp
-    {
-        if (m.Status != "Approved") return Results.BadRequest(new { error = "Chỉ giải chấp được đề nghị Đang thế chấp." });
-        m.Status = "Finished"; m.FinishedAt = DateTime.Now;
-    }
-    var newDtl = action == "approve" ? "Approved" : "Finished";
-    foreach (var c in await db.MortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqId == m.Id).ToListAsync())
-        c.DtlStatus = newDtl;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { m.ReqRMNo, status = m.Status });
+    var cars = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id)
+        .Select(c => new { vin = c.VIN, c.ModelCode, c.EngineNo, dtlStatus = c.RMDtlStatus,
+            c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy }).ToListAsync();
+    return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
 // ===== Phiếu chi / thanh toán (Pmt_Payment — port 1:1 FrmNewPM/FrmMngPM) =====
@@ -3115,10 +3094,11 @@ app.MapPost("/api/reqmortgages", async (ReqMortgageDto dto, AppDbContext db, ITe
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Xe có số VIN '{dupe.Key}' đã có trên lưới dữ liệu!" });
     var no = "RM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r2 = new ReqMortgage { OrgId = t.OrgId, ReqRMNo = no, MortageBankCode = dto.MortageBankCode.Trim(), DealerCode = dto.DealerCode ?? "", MortageDate = dto.MortageDate, Status = "Draft" };
+    var r2 = new ReqMortgage { OrgId = t.OrgId, ReqRMNo = no, MortageBankCode = dto.MortageBankCode.Trim(), DealerCode = dto.DealerCode ?? "", MortageDate = dto.MortageDate, Status = "P" };
     db.ReqMortgages.Add(r2); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.ReqMortgageCars.Add(new ReqMortgageCar { OrgId = t.OrgId, ReqMortgageId = r2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", EngineNo = c.EngineNo ?? "", CQNo = c.CQNo ?? "", CONo = c.CONo ?? "", DeclarationNo = c.DeclarationNo ?? "", CODate = c.CODate });
+        db.ReqMortgageCars.Add(new ReqMortgageCar { OrgId = t.OrgId, ReqMortgageId = r2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", EngineNo = c.EngineNo ?? "", CQNo = c.CQNo ?? "", CONo = c.CONo ?? "", DeclarationNo = c.DeclarationNo ?? "", CODate = c.CODate,
+            RMDtlStatus = "P" });
     await db.SaveChangesAsync();
     return Results.Ok(new { r2.ReqRMNo, cars = cars.Count });
 }).RequireAuthorization();
@@ -3129,7 +3109,8 @@ app.MapGet("/api/reqmortgages/{no}/cars", async (string no, AppDbContext db, ITe
     var r = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == r.Id)
-        .Select(c => new { c.VIN, c.ModelCode, c.EngineNo, c.CQNo, c.CONo, c.DeclarationNo, c.CODate }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.EngineNo, c.CQNo, c.CONo, c.DeclarationNo, c.CODate,
+            c.RMDtlStatus, c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy }).ToListAsync();
     return Results.Ok(new { r.ReqRMNo, r.MortageBankCode, r.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -3139,12 +3120,65 @@ app.MapPost("/api/reqmortgages/{no}/{action}", async (string no, string action, 
     no = no.Trim().ToUpperInvariant();
     var r = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = action == "approve" ? "Đề nghị thế chấp không ở trạng thái chờ duyệt." : "Không thể hủy đề nghị này." });
-    if (action == "approve") { r.Status = "Approved"; r.ApprovedAt = DateTime.Now; }
-    else r.Status = "Cancelled";
+    if (r.Status != "P") return Results.BadRequest(new { error = action == "approve" ? "Đề nghị thế chấp không ở trạng thái chờ duyệt." : "Không thể hủy đề nghị này." });
+    if (action == "approve")
+    {
+        r.Status = "A"; r.ApprovedAt = DateTime.Now;
+        // ⚠️ Lối tắt: nguồn duyệt TỪNG VIN (xem /approve-vin). Ở đây đồng bộ mọi dòng cho nhất quán.
+        foreach (var c in await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == r.Id).ToListAsync())
+        {
+            if (c.RMDtlStatus != "P") continue;
+            c.RMDtlStatus = "A"; c.ApprovedDate = DateTime.Now;
+            c.MortageStartDate = DateTime.Now.Date;          // nguồn: MortageStartDate = ngày duyệt
+            c.MortageBankCode = r.MortageBankCode;
+        }
+    }
+    else r.Status = "C";
     await db.SaveChangesAsync();
     return Results.Ok(new { r.ReqRMNo, r.Status });
 }).RequireAuthorization();
+
+// 🔴 DUYỆT THẾ CHẤP THEO TỪNG VIN — đúng chiều nguồn (BizHTC.GiaiChap.cs:1370-1388).
+// Nguồn ghi cho DÒNG: RMDtlStatus="A" + ApprovedDate/By + **MortageStartDate = ngày duyệt** + MortageBankCode.
+app.MapPost("/api/reqmortgages/{no}/approve-vin", async (
+    string no, string vin, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var v = (vin ?? "").Trim().ToUpperInvariant();
+    if (v.Length == 0) return Results.BadRequest(new { error = "Chưa chọn VIN cần duyệt." });
+    var r = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo.ToUpper() == no);
+    if (r is null) return Results.NotFound(new { no });
+    var line = await db.ReqMortgageCars
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqMortgageId == r.Id && x.VIN.ToUpper() == v);
+    if (line is null) return Results.NotFound(new { no, vin = v });
+    // Guard nguồn (RM_ReqMortgageDtl_CheckDB với RMDtlStatusListToCheck = Pending).
+    if (line.RMDtlStatus != "P")
+        return Results.BadRequest(new { error = $"Dòng VIN {v} đang '{line.RMDtlStatus}', chỉ duyệt khi 'P'." });
+
+    var now = DateTime.Now;
+    line.RMDtlStatus = "A";
+    line.ApprovedDate = now; line.ApprovedBy = user.Identity?.Name ?? "system";
+    line.MortageStartDate = now.Date;
+    line.MortageBankCode = r.MortageBankCode;
+
+    var stillPending = await db.ReqMortgageCars
+        .CountAsync(x => x.OrgId == t.OrgId && x.ReqMortgageId == r.Id && x.RMDtlStatus == "P" && x.Id != line.Id);
+    if (stillPending == 0 && r.Status == "P") { r.Status = "A"; r.ApprovedAt = now; }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReqRMNo, vin = v, lineStatus = line.RMDtlStatus, headerStatus = r.Status,
+        line.MortageStartDate, remainingPending = stillPending });
+}).RequireAuthorization();
+
+app.MapGet("/api/reqmortgages/statuses", () => Results.Ok(new
+{
+    statuses = new[] {
+        new { code = "P", name = "Chờ duyệt" },
+        new { code = "A", name = "Đang thế chấp" },
+        new { code = "F", name = "Đã giải chấp" },
+        new { code = "C", name = "Đã huỷ" } },
+    note = "Giải chấp KHÔNG làm ở đây — duyệt đề nghị giải chấp (/api/reqredeems/{no}/approve-vin) sẽ đóng dòng thế chấp về 'F' và ghi RedeemDate.",
+})).RequireAuthorization();
 
 // ===== Yêu cầu chứng từ QC/xuất xưởng (QcDocReq — port 1:1 FrmMngQCDocReq, Sales/HTMV) =====
 app.MapGet("/api/qcdocreqs", async (AppDbContext db, ITenantContext t, string? no, string? status) =>
@@ -15298,6 +15332,18 @@ app.MapPost("/api/reqredeems/{no}/approve-vin", async (
     // Side-effect trên bảng xe thế chấp (nguồn ghi lên Car_Vin).
     var carRows = await db.BankCarMortages.Where(x => x.OrgId == t.OrgId && x.VIN.ToUpper() == v).ToListAsync();
     foreach (var cr in carRows) cr.MortageBankCode = "HTC.HO";
+
+    // 🔴 BỔ SUNG #57 (thiếu ở #55): nguồn ĐỒNG THỜI đóng DÒNG THẾ CHẤP của chính VIN đó
+    // về "F" (đã giải chấp) và ghi **RedeemDate** (BizHTC.GiaiChap.cs:3032-3041).
+    // Đây là mắt nối giữa 2 nghiệp vụ — không có thì xe giải chấp xong vẫn hiện "đang thế chấp".
+    var mortLines = await db.ReqMortgageCars
+        .Where(x => x.OrgId == t.OrgId && x.VIN.ToUpper() == v && x.RMDtlStatus == "A").ToListAsync();
+    foreach (var ml in mortLines)
+    {
+        ml.RMDtlStatus = "F";
+        ml.RedeemDate = now.Date;
+        ml.MortageBankCode = "HTC.HO";
+    }
 
     // Header là GIÁ TRỊ DẪN XUẤT: chỉ chuyển "A" khi KHÔNG còn dòng nào ở "P".
     var stillPending = await db.RedeemRequestLines
