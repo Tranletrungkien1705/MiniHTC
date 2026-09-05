@@ -14673,7 +14673,11 @@ app.MapGet("/api/serviceinvoices", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(i => i.Status == status);
     if (!string.IsNullOrWhiteSpace(ro)) q = q.Where(i => i.RONo.Contains(ro.ToUpper()));
     var items = await q.OrderByDescending(i => i.Id).Take(500).Select(i => new
-    { i.InvoiceNo, i.RONo, i.SubTotal, i.VatPercent, i.VatAmount, i.DiscountAmount, i.TotalAmount, i.PaymentType, i.Status, i.PaidAt }).ToListAsync();
+    {
+        i.InvoiceNo, i.RONo, i.SubTotal, i.VatPercent, i.VatAmount, i.DiscountAmount, i.TotalAmount, i.PaymentType, i.Status, i.PaidAt,
+        // GAP đã vá: 6 cột tiền/điểm trước đây không được trả về
+        i.AmountFromMC, i.AmountDiscountOther, i.TotalBeforeTax, i.TotalAfterTax, i.PointTotal, i.CardTypeExpect
+    }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalRevenue = items.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount), items });
 }).RequireAuthorization();
 
@@ -14692,17 +14696,40 @@ app.MapPost("/api/serviceinvoices", async (ServiceInvoiceDto dto, AppDbContext d
     var subTotal = svcTotal + partTotal;
     var vatPercent = dto.VatPercent < 0 ? 0 : dto.VatPercent;
     var discount = dto.DiscountAmount < 0 ? 0 : dto.DiscountAmount;
+
+    // GAP đã vá — luật txtAmountDiscountOther_EditValueChanging của FrmInvoice:
+    // "chiết khấu khác" phải là SỐ NGUYÊN >= 0, form gốc CHẶN NHẬP (e.Cancel) nếu vi phạm.
+    // API không có sự kiện gõ nên phải kiểm ở server, nếu không sẽ lọt số lẻ/số âm.
+    var amountDiscountOther = dto.AmountDiscountOther;
+    if (amountDiscountOther < 0 || amountDiscountOther != Math.Floor(amountDiscountOther))
+        return Results.BadRequest(new { error = "Chiết khấu khác phải là số nguyên dương(>=0)!" });
+
+    // Chiết khấu từ hãng (AmountFromMC) — nguồn tách RIÊNG với chiết khấu khác để còn đối soát.
+    var amountFromMC = dto.AmountFromMC < 0 ? 0 : dto.AmountFromMC;
+
     var vatAmount = Math.Round(subTotal * vatPercent / 100m, 0);
-    var total = subTotal + vatAmount - discount;
+    var totalBeforeTax = subTotal;
+    var totalAfterTax = subTotal + vatAmount;
+    // Tổng phải trả = sau thuế − (chiết khấu chung + chiết khấu hãng + chiết khấu khác)
+    var total = totalAfterTax - discount - amountFromMC - amountDiscountOther;
     if (total < 0) total = 0;
+
     var no = "INV" + DateTime.Now.ToString("yyMMddHHmmss");
     var inv = new ServiceInvoice
     {
         OrgId = t.OrgId, InvoiceNo = no, RONo = roNo, SubTotal = subTotal, VatPercent = vatPercent, VatAmount = vatAmount,
-        DiscountAmount = discount, TotalAmount = total, PaymentType = dto.PaymentType, Status = "Draft"
+        DiscountAmount = discount, TotalAmount = total, PaymentType = dto.PaymentType, Status = "Draft",
+        // GAP đã vá: 6 cột tiền/điểm của FrmInvoice
+        AmountFromMC = amountFromMC, AmountDiscountOther = amountDiscountOther,
+        TotalBeforeTax = totalBeforeTax, TotalAfterTax = totalAfterTax,
+        PointTotal = dto.PointTotal < 0 ? 0 : dto.PointTotal, CardTypeExpect = dto.CardTypeExpect
     };
     db.ServiceInvoices.Add(inv); await db.SaveChangesAsync();
-    return Results.Ok(new { inv.InvoiceNo, inv.RONo, inv.SubTotal, inv.VatAmount, inv.DiscountAmount, inv.TotalAmount, status = inv.Status });
+    return Results.Ok(new
+    {
+        inv.InvoiceNo, inv.RONo, inv.SubTotal, inv.VatAmount, inv.DiscountAmount, inv.TotalAmount, status = inv.Status,
+        inv.AmountFromMC, inv.AmountDiscountOther, inv.TotalBeforeTax, inv.TotalAfterTax, inv.PointTotal, inv.CardTypeExpect
+    });
 }).RequireAuthorization();
 
 // Thanh toán → Paid; nếu RO đang CheckEnd thì đẩy sang Paid (tích hợp workflow RO)
@@ -16857,7 +16884,16 @@ record CampaignContactDto(string? PlateNo, string? CusName, string? Address,
     string? ContName = null, string? ContTel = null, string? ContMobile = null, string? ContEmail = null,
     string? Remark = null);
 record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
-record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType);
+/// <summary>
+/// Lập hoá đơn dịch vụ cho 1 lệnh sửa chữa (FrmInvoice).
+/// Nguồn tách RIÊNG 2 loại chiết khấu: <paramref name="AmountFromMC"/> (từ hãng) và
+/// <paramref name="AmountDiscountOther"/> (khác) — cái sau bắt buộc là SỐ NGUYÊN >= 0.
+/// </summary>
+record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType,
+    decimal AmountFromMC = 0,          // txtAmountDiscount — chiết khấu từ hãng
+    decimal AmountDiscountOther = 0,   // txtAmountDiscountOther — chiết khấu khác (số nguyên >= 0)
+    decimal PointTotal = 0,            // txtPointTotal — tổng điểm tích
+    string? CardTypeExpect = null);    // txtCardTypeExpect — hạng thẻ dự kiến sau tích
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity);
 record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);

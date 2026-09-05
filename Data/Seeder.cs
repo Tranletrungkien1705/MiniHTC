@@ -602,6 +602,13 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceQuotationLabors\" ADD COLUMN IF NOT EXISTS \"InsurancePrice\" numeric NOT NULL DEFAULT 0",
                 "ALTER TABLE public.\"ServiceQuotationParts\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text NOT NULL DEFAULT ''",
                 "ALTER TABLE public.\"ServiceQuotationParts\" ADD COLUMN IF NOT EXISTS \"InsurancePrice\" numeric NOT NULL DEFAULT 0",
+                // GAP parity FrmInvoice đã vá 2026-09-05: 6 cột tiền/điểm bị bỏ sót (2 loại chiết khấu bị gộp làm 1)
+                "ALTER TABLE public.\"ServiceInvoices\" ADD COLUMN IF NOT EXISTS \"AmountFromMC\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"ServiceInvoices\" ADD COLUMN IF NOT EXISTS \"AmountDiscountOther\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"ServiceInvoices\" ADD COLUMN IF NOT EXISTS \"TotalBeforeTax\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"ServiceInvoices\" ADD COLUMN IF NOT EXISTS \"TotalAfterTax\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"ServiceInvoices\" ADD COLUMN IF NOT EXISTS \"PointTotal\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"ServiceInvoices\" ADD COLUMN IF NOT EXISTS \"CardTypeExpect\" text NULL",
                 // GAP parity FrmCamp_CustomerList đã vá 2026-09-05: 12 cột lưới chọn KH vào chiến dịch bị bỏ sót
                 "ALTER TABLE public.\"CampaignContacts\" ADD COLUMN IF NOT EXISTS \"CusID\" text NULL",
                 "ALTER TABLE public.\"CampaignContacts\" ADD COLUMN IF NOT EXISTS \"CarID\" text NULL",

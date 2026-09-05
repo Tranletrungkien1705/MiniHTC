@@ -3196,6 +3196,15 @@ public sealed class ServiceInvoice
     public string Status { get; set; } = "Draft";      // Draft → Paid
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PaidAt { get; set; }
+    // GAP đã vá 2026-09-05: FrmInvoice tách RIÊNG 2 loại chiết khấu + có cụm tiền/điểm
+    // mà bản port gộp hết vào DiscountAmount ⇒ mất khả năng đối soát chiết khấu hãng vs chiết khấu khác.
+    public decimal AmountFromMC { get; set; }          // Ser_RO.AmountFromMC (txtAmountDiscount) — chiết khấu từ hãng
+    public decimal AmountDiscountOther { get; set; }   // Ser_RO.AmountDiscountOther (txtAmountDiscountOther) — chiết khấu khác
+    public decimal TotalBeforeTax { get; set; }        // txtTongTienTruocThue — tổng tiền trước thuế
+    public decimal TotalAfterTax { get; set; }         // txtTongTienSauThue — tổng tiền sau thuế
+    // Tích điểm hội viên hiển thị ngay trên hoá đơn
+    public decimal PointTotal { get; set; }            // txtPointTotal — tổng điểm tích
+    public string? CardTypeExpect { get; set; }        // txtCardTypeExpect — hạng thẻ dự kiến sau tích điểm
 }
 
 /// <summary>Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, TCMotor DMSales.Foton):
