@@ -16155,7 +16155,7 @@ app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
     if (!string.IsNullOrWhiteSpace(supplier)) q = q.Where(p => p.SupplierCode == supplier);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
-    { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt }).ToListAsync();
+    { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.DealerCode, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt, lines = db.SupplierPaymentLines.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, total = items.Sum(x => x.Amount), approved = items.Where(x => x.Status == "A").Sum(x => x.Amount), items });
 }).RequireAuthorization();
 
@@ -16174,11 +16174,38 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
         if (amount <= 0)
             amount = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == order.Id).SumAsync(l => (decimal?)(l.OrderQty * l.Price)) ?? 0;
     }
+    // Có chi tiết thì TIỀN PHIẾU = TỔNG CÁC DÒNG, đúng nguồn (Ser_SupplierPaymentDtl):
+    //   Amount dòng = QtyPay * Price * (1 + VAT*0.01)
+    // ⚠️ QtyPay là SỐ LƯỢNG THANH TOÁN, khác số lượng xuất kho — một lần xuất có thể trả nhiều đợt.
+    var paymentLines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (paymentLines.Any(l => l.QtyPay <= 0)) return Results.BadRequest(new { error = "Số lượng thanh toán phải lớn hơn 0." });
+    if (paymentLines.Count > 0) amount = paymentLines.Sum(l => l.QtyPay * l.Price * (1 + l.Vat / 100m));
+
     if (amount <= 0) return Results.BadRequest(new { error = "Cần số tiền > 0." });
     var no = "SP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new SupplierPayment { OrgId = t.OrgId, PaymentNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), OrderPartNo = orderNo, Amount = amount, PaymentDate = dto.PaymentDate ?? DateTime.Now, Status = "P" };
-    db.SupplierPayments.Add(p); await db.SaveChangesAsync();
-    return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.Amount, status = p.Status });
+    var p = new SupplierPayment { OrgId = t.OrgId, PaymentNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), OrderPartNo = orderNo, DealerCode = dto.DealerCode, Amount = amount, PaymentDate = dto.PaymentDate ?? DateTime.Now, Status = "P" };
+    db.SupplierPayments.Add(p);
+    foreach (var l in paymentLines)
+        db.SupplierPaymentLines.Add(new SupplierPaymentLine
+        {
+            OrgId = t.OrgId, PaymentNo = no,
+            PartCode = l.PartCode!.Trim().ToUpperInvariant(), PartName = l.PartName,
+            QtyPay = l.QtyPay, Price = l.Price, Vat = l.Vat,
+            Amount = l.QtyPay * l.Price * (1 + l.Vat / 100m)
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.Amount, lines = paymentLines.Count, status = p.Status });
+}).RequireAuthorization();
+
+// Chi tiết phụ tùng của một phiếu thanh toán nhà cung cấp.
+app.MapGet("/api/supplierpayments/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.SupplierPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    var lines = await db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == no)
+        .Select(l => new { l.PartCode, l.PartName, l.QtyPay, l.Price, l.Vat, l.Amount }).ToListAsync();
+    return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.DealerCode, p.Status, p.Amount, p.ApprovedAt, count = lines.Count, lines });
 }).RequireAuthorization();
 
 app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext db, ITenantContext t) =>
@@ -18310,7 +18337,8 @@ record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, dec
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content);
 record OrderComplainActDto(string? Resolution);
-record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate);
+record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay, decimal Price, decimal Vat);
+record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate, List<SupplierPaymentLineDto>? Lines = null, string? DealerCode = null);
 record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty);
 record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);

@@ -3404,11 +3404,47 @@ public sealed class SupplierPayment
     public string PaymentNo { get; set; } = "";
     public string SupplierCode { get; set; } = "";
     public string? OrderPartNo { get; set; }           // đơn đặt PT liên quan
+
+    /// <summary>Đại lý lập phiếu (Ser_SupplierPayment.DEALERCODE) — nguồn lọc báo cáo theo cột này.</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>Tổng tiền phiếu — cộng từ <see cref="SupplierPaymentLine"/> khi có chi tiết.</summary>
     public decimal Amount { get; set; }
+
     public DateTime? PaymentDate { get; set; }
-    public string Status { get; set; } = "P";          // P → A
+    public string Status { get; set; } = "P";          // P → A (SupplierPaymentStatus)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? ApprovedAt { get; set; }
+    public DateTime? ApprovedAt { get; set; }          // ApprDTime
+}
+
+/// <summary>
+/// Dòng chi tiết thanh toán nhà cung cấp (Ser_SupplierPaymentDtl — TCMotor DMSCarSv).
+/// MỘT phiếu thanh toán gồm NHIỀU dòng phụ tùng; tiền của phiếu là TỔNG các dòng, không nhập tay.
+/// </summary>
+public sealed class SupplierPaymentLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Số phiếu thanh toán (SUPPLIERPAYMENTNO) — khoá nối về header.</summary>
+    public string PaymentNo { get; set; } = "";
+
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+
+    /// <summary>
+    /// SỐ LƯỢNG THANH TOÁN (QTYPAY) — ⚠️ KHÁC số lượng xuất kho: một lần xuất có thể
+    /// thanh toán làm nhiều đợt, nên nguồn tính tiền theo QtyPay chứ không theo Quantity.
+    /// </summary>
+    public decimal QtyPay { get; set; }
+
+    public decimal Price { get; set; }
+
+    /// <summary>Thuế suất theo PHẦN TRĂM (nguồn tính `VAT*0.01`).</summary>
+    public decimal Vat { get; set; }
+
+    /// <summary>Thành tiền dòng = QtyPay × Price × (1 + VAT%).</summary>
+    public decimal Amount { get; set; }
 }
 
 /// <summary>Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng, TCMotor DMSCarSv/TST):
