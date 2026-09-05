@@ -4109,12 +4109,23 @@ public sealed class DeliveryOrder
     public Guid OrgId { get; set; }
     public string DoNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";      // Draft → Approved1 → Approved2 → Delivered / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG cột `Car_DeliveryOrder.DeliveryOrderStatus` của nguồn (`TConst.Stage`):
+    /// **"P" Chờ duyệt · "A1" Duyệt cấp 1 · "A2" Duyệt cấp 2 · "R" Từ chối**.
+    /// Toàn nguồn chỉ có **3 điểm ghi** cột này (Biz.HTC.WH.cs:49868/50413/50619) và **không điểm nào**
+    /// đặt trạng thái "đã giao" ⇒ `Delivered` của port cũ là **trạng thái BỊA**; việc giao xe thực tế
+    /// nằm ở màn Biên bản giao xe (`BizHTC.Storage.DlvMinutes`), ghi vào `Car_DeliveryOrderDetail`.
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DeliveredAt { get; set; }
-    // Duyệt lệnh giao (FrmApproveDO) — duyệt 2 cấp trước khi giao
+    // Duyệt lệnh giao (FrmApproveDO) — duyệt 2 cấp; mỗi cấp ghi CẢ ngày LẪN người duyệt.
     public DateTime? Approved1At { get; set; }
     public DateTime? Approved2At { get; set; }
+    /// <summary>Người duyệt cấp 1 (`Car_DeliveryOrder.ApprovedBy1`) — port cũ chỉ lưu thời điểm.</summary>
+    public string? ApprovedBy1 { get; set; }
+    /// <summary>Người duyệt cấp 2 (`ApprovedBy2`).</summary>
+    public string? ApprovedBy2 { get; set; }
     public string? RejectReason { get; set; }
     public DateTime? RejectedAt { get; set; }
 }
@@ -4134,6 +4145,12 @@ public sealed class DeliveryOrderCar
     public DateTime? DeliveryStartDate { get; set; }
     public DateTime? DeliveryEndDate { get; set; }
     public DateTime? DeliveryOutDate { get; set; }
+    /// <summary>Ghi chú giao xe theo DÒNG (`Car_DeliveryOrderDetail.DeliveryRemark`) — nguồn cho sửa cùng
+    /// `DeliveryOutDate` qua `CarDeliveryOrderDetailUpdate_New20181119`.</summary>
+    public string? DeliveryRemark { get; set; }
+    /// <summary>Trạng thái xác nhận của DÒNG xe (`ConfirmStatus`) — trục RIÊNG, khác trạng thái của lệnh:
+    /// nguồn guard sửa dòng theo `"P,A"`, và khi xoá dòng thì `A`/`F` phải kiểm thêm hồ sơ xe.</summary>
+    public string ConfirmStatus { get; set; } = "P";
 }
 
 /// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):

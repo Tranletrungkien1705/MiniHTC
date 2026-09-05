@@ -11,7 +11,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Approved1{color:#7c3aed} .p-Approved2{color:#0891b2} .p-Delivered{color:var(--ok)} .p-Rejected{color:#dc2626}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-A1{color:#7c3aed} .p-A2{color:var(--ok)} .p-R{color:#dc2626}
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
 </style></head>
 <body>
@@ -22,12 +22,13 @@
   <table id="ctbl"><thead><tr><th>VIN *</th><th>Model</th><th>Màu</th><th>Kho</th><th>Ngày giao DK</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addCar()">+ Thêm xe</button>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Delivered">Đã giao</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Chờ duyệt</option><option value="A1">Duyệt C1</option><option value="A2">Duyệt C2</option><option value="R">Từ chối</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
 <table><thead><tr><th>Số DO</th><th>Đại lý</th><th>Số xe</th><th>Ngày tạo</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Draft:"Nháp",Approved1:"Duyệt C1",Approved2:"Duyệt C2",Delivered:"Đã giao",Rejected:"Từ chối"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
+// Mã trạng thái theo Car_DeliveryOrder.DeliveryOrderStatus của nguồn (TConst.Stage)
+const LBL={P:"Chờ duyệt",A1:"Duyệt C1",A2:"Duyệt C2",R:"Từ chối"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -43,20 +44,24 @@ async function create(){
   const j=await r.json();
   if(r.ok){ msg("Đã tạo "+j.doNo+" ("+j.cars+" xe)."); F("ctb").innerHTML="";addCar(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
+// Nguồn không có hành động "giao xe" trên lệnh giao — bỏ nút Giao; giao xe thuộc màn Biên bản giao xe.
+async function ap1(no,ok){ let rs=null; if(!ok){ rs=prompt("Lý do từ chối:",""); if(rs===null) return; }
+  const r=await fetch(`/api/deliveryorders/${no}/approve1`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({approve:ok,reason:rs})});
+  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function ap2(no,ok){ if(!ok && !confirm("Bỏ duyệt, trả lệnh về Chờ duyệt?")) return;
+  const r=await fetch(`/api/deliveryorders/${no}/approve2`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({approve:ok})});
+  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function load(){ await token();
   const d=await (await fetch(`/api/deliveryorders?status=${F("fst").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="deliver('${o.doNo}')">Giao</button> <button class="sm" onclick="ap1('${o.doNo}')">Duyệt C1</button> <button class="sm" onclick="rej('${o.doNo}')">Từ chối</button>`
-      :o.status==="Approved1"?`<button class="sm" onclick="ap2('${o.doNo}')">Duyệt C2</button> <button class="sm" onclick="rej('${o.doNo}')">Từ chối</button>`
-      :o.status==="Approved2"?`<button class="sm" onclick="deliver('${o.doNo}')">Giao xe</button>`:"";
+    // Luồng nguồn: P → A1 → A2. Từ chối là NHÁNH của duyệt C1 (không phải nút riêng);
+    // ở cấp 2, "không duyệt" nghĩa là BỎ DUYỆT, trả lệnh về P.
+    let act=o.status==="P"?`<button class="sm" onclick="ap1('${o.doNo}',true)">Duyệt C1</button> <button class="sm" onclick="ap1('${o.doNo}',false)">Từ chối</button>`
+      :o.status==="A1"?`<button class="sm" onclick="ap2('${o.doNo}',true)">Duyệt C2</button> <button class="sm" onclick="ap2('${o.doNo}',false)">Bỏ duyệt</button>`:"";
     return `<tr><td><b>${o.doNo}</b> <a href="#" class="cars" onclick="cars('${o.doNo}');return false">xem xe</a></td><td>${o.dealerCode}</td><td>${o.cars}</td>
       <td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.doNo}"></tr>`;
   }).join("")||'<tr><td colspan="6" class="muted">Chưa có DO.</td></tr>';
 }
-async function deliver(no){ const r=await fetch(`/api/deliveryorders/${no}/deliver`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
-async function ap1(no){ const r=await fetch(`/api/deliveryorders/${no}/approve1`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
-async function ap2(no){ const r=await fetch(`/api/deliveryorders/${no}/approve2`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
-async function rej(no){ const rs=prompt("Lý do từ chối:",""); if(rs===null) return; const r=await fetch(`/api/deliveryorders/${no}/reject`,{method:"POST",headers:H(),body:JSON.stringify({reason:rs})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/deliveryorders/${no}/cars`,{headers:H()})).json();

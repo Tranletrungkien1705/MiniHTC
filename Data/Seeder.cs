@@ -845,6 +845,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Lệnh giao xe: bổ sung cột nguồn + chuyển tên tự đặt sang mã TConst.Stage
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedBy1\" text NULL",
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedBy2\" text NULL",
+                "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"DeliveryRemark\" text NULL",
+                "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"ConfirmStatus\" text NOT NULL DEFAULT 'P'",
+                // "Delivered" là trạng thái BỊA (nguồn không có) — quy về "A2" đã duyệt cấp 2.
+                "UPDATE public.\"DeliveryOrders\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"DeliveryOrders\" SET \"Status\" = 'A1' WHERE \"Status\" = 'Approved1'",
+                "UPDATE public.\"DeliveryOrders\" SET \"Status\" = 'A2' WHERE \"Status\" = 'Approved2'",
+                "UPDATE public.\"DeliveryOrders\" SET \"Status\" = 'A2' WHERE \"Status\" = 'Delivered'",
+                "UPDATE public.\"DeliveryOrders\" SET \"Status\" = 'R' WHERE \"Status\" = 'Rejected'",
                 // Đơn hàng SO: bổ sung cột nguồn + chuyển tên tự đặt sang mã TConst.Stage
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"SPCode\" text NULL",
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedBy1\" text NULL",

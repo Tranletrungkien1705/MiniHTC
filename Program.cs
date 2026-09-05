@@ -17534,7 +17534,8 @@ app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db,
     var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "DO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    // 🔴 Nguồn `CarDeliveryOrderCreate_New20181119` (Biz.HTC.WH.cs:49868) tạo lệnh là "P" ngay.
+    var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
     db.DeliveryOrders.Add(o); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.DeliveryOrderCars.Add(new DeliveryOrderCar { OrgId = t.OrgId, DoId = o.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, StorageCode = c.StorageCode, DeliveryExpectDate = c.DeliveryExpectDate });
@@ -17548,8 +17549,8 @@ app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, I
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate }).ToListAsync();
-    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryOutDate, c.DeliveryRemark, c.ConfirmStatus }).ToListAsync();
+    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Sửa lệnh giao — cập nhật ngày giao BĐ/KT + ngày xuất kho theo VIN (port 1:1 FrmEditDO, TCMotor/Sales/Logistic).
@@ -17588,49 +17589,94 @@ app.MapPost("/api/deliveryorders/{no}/edit-dates", async (string no, DoEditDates
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
-app.MapPost("/api/deliveryorders/{no}/deliver", async (string no, AppDbContext db, ITenantContext t) =>
+// ⚠️ ĐÃ BỎ `/deliver`: nguồn KHÔNG có trạng thái "đã giao" trên `Car_DeliveryOrder`
+//    (chỉ 3 điểm ghi cột trạng thái, đều là P/A1/A2/R). Giao xe thực tế thuộc màn Biên bản giao xe.
+// ⚠️ ĐÃ BỎ `/reject` riêng: nguồn đặt **từ chối là NHÁNH FALSE của duyệt cấp 1**
+//    (`objDeliveryOrderStatusNew = bApprove ? Approved1 : Rejected`), không phải một hành động độc lập.
+
+// 🔴 Duyệt cấp 1 — `CarDeliveryOrderApprove1_New20181119` (Biz.HTC.WH.cs:50318-50420).
+//    Vào từ "P". `approve=false` ⇒ **"R" (từ chối)** ngay trong hàm này. Ghi cả ngày LẪN người duyệt.
+app.MapPost("/api/deliveryorders/{no}/approve1", async (string no, DoApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status is not ("Draft" or "Approved2")) return Results.BadRequest(new { error = "Chỉ giao lệnh Nháp hoặc đã duyệt cấp 2." });
-    o.Status = "Delivered"; o.DeliveredAt = DateTime.Now;
+    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 lệnh đang chờ duyệt (P)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var ok = dto?.Approve ?? true;
+    o.Status = ok ? "A1" : "R";
+    o.Approved1At = DateTime.Now; o.ApprovedBy1 = who;
+    if (!ok) { o.RejectReason = dto?.Reason; o.RejectedAt = DateTime.Now; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.DoNo, status = o.Status });
+    return Results.Ok(new { o.DoNo, status = o.Status, statusName = ok ? "Duyệt cấp 1" : "Từ chối" });
 }).RequireAuthorization();
 
-// Duyệt lệnh giao xe (FrmApproveDO) — 2 cấp trước khi giao; từ chối có lý do
-app.MapPost("/api/deliveryorders/{no}/approve1", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 Duyệt cấp 2 — `CarDeliveryOrderApprove2_New20181119` (50523-50626). Vào từ "A1".
+//    `approve=false` ⇒ **BỎ DUYỆT, trả lệnh về "P"** (KHÁC cấp 1: cấp 1 từ chối sang "R").
+app.MapPost("/api/deliveryorders/{no}/approve2", async (string no, DoApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 lệnh Nháp." });
-    o.Status = "Approved1"; o.Approved1At = DateTime.Now;
+    if (o.Status != "A1") return Results.BadRequest(new { error = "Lệnh phải duyệt cấp 1 (A1) trước." });
+    var ok = dto?.Approve ?? true;
+    o.Status = ok ? "A2" : "P";
+    o.Approved2At = DateTime.Now; o.ApprovedBy2 = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.DoNo, status = o.Status });
+    return Results.Ok(new { o.DoNo, status = o.Status, statusName = ok ? "Duyệt cấp 2" : "Chờ duyệt (đã bỏ duyệt)" });
 }).RequireAuthorization();
 
-app.MapPost("/api/deliveryorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 Sửa dòng xe trong lệnh — `CarDeliveryOrderDetailUpdate_New20181119` (50893-51010): sửa ngày xuất kho
+//    + ghi chú giao xe của MỘT xe. Guard theo `ConfirmStatus` của DÒNG (`"P,A"`), KHÔNG theo trạng thái lệnh.
+app.MapPost("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vin, DoCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
 {
-    no = no.Trim().ToUpperInvariant();
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Approved1") return Results.BadRequest(new { error = "Lệnh phải duyệt cấp 1 trước." });
-    o.Status = "Approved2"; o.Approved2At = DateTime.Now;
+    var c = await db.DeliveryOrderCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoId == o.Id && x.Vin == vin);
+    if (c is null) return Results.NotFound(new { no, vin });
+    if (c.ConfirmStatus is not ("P" or "A"))
+        return Results.BadRequest(new { error = $"Xe {vin} có trạng thái xác nhận '{c.ConfirmStatus}' — chỉ sửa khi P hoặc A." });
+    c.DeliveryOutDate = dto.DeliveryOutDate; c.DeliveryRemark = dto.DeliveryRemark;
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.DoNo, status = o.Status });
+    return Results.Ok(new { o.DoNo, c.Vin, c.DeliveryOutDate, c.DeliveryRemark });
 }).RequireAuthorization();
 
-app.MapPost("/api/deliveryorders/{no}/reject", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
+// 🔴 Xoá dòng xe khỏi lệnh — `CarDeliveryOrderDetailDelete_New20181119` (51059-51400).
+//    Nguồn chặn xoá bằng **4 ràng buộc hạ nguồn** rồi mới xoá; xoá xong nếu lệnh KHÔNG còn dòng nào
+//    thì **xoá luôn header** (kỹ thuật lọc ngược trong SQL), và trả xe về cho phép đổi VIN.
+app.MapDelete("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vin, AppDbContext db, ITenantContext t) =>
 {
-    no = no.Trim().ToUpperInvariant();
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status is not ("Draft" or "Approved1")) return Results.BadRequest(new { error = "Chỉ từ chối lệnh đang chờ duyệt." });
-    o.Status = "Rejected"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
+    var c = await db.DeliveryOrderCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoId == o.Id && x.Vin == vin);
+    if (c is null) return Results.NotFound(new { no, vin });
+
+    // (1) Đã có yêu cầu vận chuyển tham chiếu chính lệnh này (nguồn: `Sto_TranspReqDtl.RefOrdNo = DO`,
+    //     loại CARTRANSPORT, trạng thái dòng không thuộc R/C).
+    //     ⚠️ `TransportReqCar` của MiniHTC CHƯA có cột trạng thái dòng ⇒ tạm lọc theo VIN + số lệnh; đã ghi nợ.
+    if (await db.TransportReqCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin && x.DoNo == no))
+        return Results.BadRequest(new { error = $"Xe {vin} đã có yêu cầu vận chuyển — không xoá được khỏi lệnh giao." });
+    // (2) Đã lên bảng kê hoá đơn (nguồn kiểm `InvoiceListCode`).
+    if (await db.InvoiceLines.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin))
+        return Results.BadRequest(new { error = $"Xe {vin} đã nằm trong bảng kê hoá đơn — không xoá được." });
+    // (3) Dòng đã xác nhận (A) hoặc hoàn tất (F) thì còn phải sạch hồ sơ đăng ký xe (`Car_DocReqDtl`).
+    if (c.ConfirmStatus is "A" or "F" && await db.DocReqCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin))
+        return Results.BadRequest(new { error = $"Xe {vin} đã có hồ sơ đăng ký — không xoá được." });
+    // (4) Đã có yêu cầu bảo hiểm (`Ins_InsuranceReqDtl`).
+    if (await db.InsuranceReqDtls.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin))
+        return Results.BadRequest(new { error = $"Xe {vin} đã có yêu cầu bảo hiểm — không xoá được." });
+
+    db.DeliveryOrderCars.Remove(c);
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.DoNo, status = o.Status });
+    // Nguồn xoá luôn header khi lệnh không còn dòng nào.
+    var left = await db.DeliveryOrderCars.CountAsync(x => x.OrgId == t.OrgId && x.DoId == o.Id);
+    var headerRemoved = false;
+    if (left == 0) { db.DeliveryOrders.Remove(o); headerRemoved = true; await db.SaveChangesAsync(); }
+    // ⚠️ CHƯA port: nguồn còn `update Car_Car set FlagAllowChangeVIN = '1'` (trả xe về cho phép đổi VIN).
+    //    MiniHTC chưa có entity cho `Car_Car` với cột này ⇒ đã ghi nợ, KHÔNG tự bịa cột.
+    return Results.Ok(new { no, vin, carsLeft = left, headerRemoved });
 }).RequireAuthorization();
 
 // ===== Tờ khai hải quan (Tkhq — port 1:1 FrmNewTKHQ/FrmMngTKHQ, DMSales.Foton) =====
@@ -20645,6 +20691,9 @@ record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTi
 record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate);
 record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars);
 record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
+// Duyệt lệnh giao: nguồn dùng MỘT hàm cho cả duyệt và không-duyệt (cờ `bApprove`).
+record DoApproveDto(bool Approve = true, string? Reason = null);
+record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
 record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars);
