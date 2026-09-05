@@ -3170,6 +3170,23 @@ public sealed class ServiceWarrantyClaim
     /// <summary>Số serial claim gửi hãng (clmNoSrl) — đã áp luật đổi "-" thành chữ cái khi gửi lại.</summary>
     public string? ClmNoSrl { get; set; }
 
+    /// <summary>
+    /// 🔴 HÃNG bảo hành chịu claim (`Ser_ROWarrantyReport.WarrantySerCode`) — CHỈ đề nghị của
+    /// "HMC" hoặc "HTMV" mới được đẩy sang API hãng HMC. Bản biz cũ KHÔNG lọc cột này
+    /// ⇒ đẩy nhầm cả đề nghị của hãng khác sang HMC.
+    /// ⚠️ Cột này xuất hiện **duy nhất 1 lần trong toàn hệ nguồn và chỉ trên máy 150**
+    /// (`BizCarSv.WarrantyReport.cs:23496`); KHÔNG tìm thấy chỗ GHI trong code C# ⇒ giá trị
+    /// do nơi khác đặt (WinForm/DB). Ở đây cho nhập trực tiếp khi tạo đề nghị.
+    /// </summary>
+    public string? WarrantySerCode { get; set; }
+
+    /// <summary>
+    /// Thời điểm đề nghị được duyệt (`ApprovedDate`) — job đẩy HMC chỉ lấy đề nghị duyệt trong
+    /// **3 ngày 5 giờ** gần nhất. ⚠️ SUY LUẬN CỦA TÔI: nguồn lọc `ApprovedDate` trên đề nghị đang ở
+    /// trạng thái "CONF", nên ở đây ghi mốc này khi đề nghị CHUYỂN VÀO trạng thái Confirmed.
+    /// </summary>
+    public DateTime? ApprovedDate { get; set; }
+
     public string? HtcNote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;

@@ -6175,7 +6175,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote
+        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote, x.WarrantySerCode, x.ApprovedDate
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
         pending = items.Count(i => i.Status == "Pending"), sent = items.Count(i => i.Status == "Sent"),
@@ -6191,7 +6191,7 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
     var no = "WC" + DateTime.Now.ToString("yyMMddHHmmss");
     var c = new ServiceWarrantyClaim { OrgId = t.OrgId, ClaimNo = no, DealerCode = dto.DealerCode, RONo = dto.RONo,
         Vin = dto.Vin, PlateNo = dto.PlateNo, WarrantyType = dto.WarrantyType, PartCode = dto.PartCode, Description = dto.Description,
-        Amount = dto.Amount, Status = "Pending" };
+        Amount = dto.Amount, Status = "Pending", WarrantySerCode = dto.WarrantySerCode };
     db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.ClaimNo, c.Status });
 }).RequireAuthorization();
@@ -6223,6 +6223,35 @@ static string ResendSuffixLetter(int resendCount)
 
 // Ghi kết quả đồng bộ HMC (bộ đẩy API gọi lại sau khi có phản hồi của hãng).
 // TWIN: bản LIVE trên máy 150 là `Ser_ROWarrantyReport_SendHMCX_20260227` — bản laptop KHÔNG có hàm này.
+// 🔴 JOB QUÉT ứng viên đẩy HMC — port từ bản biz CHỈ CÓ TRÊN MÁY 150 (WarrantyReport.cs:23477-23505).
+// Bản laptop lọc `WarrantyStatus = 'ACCE'` (Accepted) và KHÔNG lọc hãng bảo hành; bản 150 đổi thành
+// trạng thái Confirmed + CHỈ hãng HMC/HTMV. Port cũ không có job này ⇒ không có cách lấy danh sách cần đẩy.
+app.MapGet("/api/warrantyclaims/hmc-pending", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    // Cửa sổ thời gian của nguồn: 3 ngày gần nhất, LÙI THÊM 5 GIỜ.
+    // Lý do ghi ngay trong nguồn: "tránh job chạy lâu chạy vào sáng sớm hôm sau ==> bỏ sót BCBH".
+    var fromDate = DateTime.Now.AddDays(-3).AddHours(-5).Date;
+
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId
+        // đại lý test của idocNet — nguồn loại trừ thẳng trong câu SQL
+        && x.DealerCode != "VN101"
+        // chưa đẩy (P) hoặc chưa có trạng thái đồng bộ
+        && (x.HMCApiStatus == "P" || x.HMCApiStatus == "")
+        // trạng thái duyệt: bản 150 đổi từ Accepted sang Confirmed
+        && x.Status == "Confirmed"
+        // chỉ hãng HMC/HTMV — điều kiện MỚI của bản 150
+        && (x.WarrantySerCode == "HMC" || x.WarrantySerCode == "HTMV")
+        && x.ApprovedDate != null && x.ApprovedDate >= fromDate);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer);
+
+    var items = await qy.OrderBy(x => x.Id).Select(x => new
+    {
+        x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantySerCode,
+        x.Status, x.HMCApiStatus, x.HMCApiQtyA, x.ClmNoSrl, x.ApprovedDate,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, fromDate = fromDate.ToString("yyyy-MM-dd"), items });
+}).RequireAuthorization();
+
 app.MapPost("/api/warrantyclaims/{id}/hmcsync", async (
     long id, WarrantyHmcSyncDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -6413,6 +6442,8 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     if ((act == "reject" || act == "revert") && string.IsNullOrWhiteSpace(dto.Note))
         return Results.BadRequest(new { error = "Từ chối/hoàn trả phải ghi lý do." });
     c.Status = rule.to;
+    // Mốc duyệt dùng cho job đẩy HMC (nguồn lọc ApprovedDate trên đề nghị đang ở "CONF").
+    if (rule.to == "Confirmed") c.ApprovedDate = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
     c.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
@@ -19561,7 +19592,7 @@ record SalesTypeFixDto(long Id, string? SalesType);
 record DealBankFixDto(long Id, string? BankCode);
 record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
-record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount);
+record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount, string? WarrantySerCode = null);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
