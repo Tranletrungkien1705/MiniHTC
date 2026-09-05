@@ -5177,6 +5177,95 @@ app.MapPost("/api/servicestockins/{no}/confirm", async (string no, AppDbContext 
     return Results.Ok(new { h.StockInNo, status = h.Status, partsUpdated = updated });
 }).RequireAuthorization();
 
+// ===== Trạng thái phiếu kho: bộ ĐẦY ĐỦ theo nguồn (TConst.Ser_Inv_StockIn / Ser_Inv_StockOut) =====
+// 🔴 Port cũ chỉ có 2/5: Draft → Confirmed. Nguồn có 5, trong đó HAI trạng thái mang nghĩa HUỶ:
+//   1 Pending (mới tạo) · 2 Executing (tiến hành) · 3 Finished (kết thúc = "đã duyệt")
+//   4 Adjustment (điều chỉnh — nguồn ghi rõ "coi như huỷ") · 5 Reject (huỷ)
+// Mọi báo cáo kho của nguồn đều lọc `status = 3` hoặc `not in ('4','5')` ⇒ 4/5 bị loại khỏi số liệu.
+var stockDocStatusSourceCodes = new Dictionary<string, string>
+{
+    ["Draft"] = "1",        // Pending — mới tạo
+    ["Executing"] = "2",    // Tiến hành
+    ["Confirmed"] = "3",    // Finished — kết thúc (giá trị port cũ đang dùng cho "đã duyệt")
+    ["Adjustment"] = "4",   // Điều chỉnh — COI NHƯ HUỶ
+    ["Rejected"] = "5",     // Huỷ
+};
+
+// Hai trạng thái bị LOẠI khỏi mọi báo cáo kho (nguồn: `not in ('4','5')`).
+string[] stockDocVoidStatuses = { "Adjustment", "Rejected" };
+
+app.MapGet("/api/stockdocs/statuses", () => Results.Ok(new
+{
+    statuses = stockDocStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    voidStatuses = stockDocVoidStatuses,
+    note = "Adjustment(4) và Rejected(5) bị loại khỏi mọi báo cáo kho; Confirmed(3) mới là 'đã duyệt'."
+})).RequireAuthorization();
+
+/// <summary>Kiểm trạng thái đích khi huỷ/điều chỉnh phiếu kho — dùng chung cho phiếu nhập và phiếu xuất.</summary>
+static string? ValidateStockDocVoidTarget(string[] voidStatuses, string currentStatus, string? targetStatus)
+{
+    var target = (targetStatus ?? "").Trim();
+    if (!voidStatuses.Contains(target))
+        return $"Trạng thái hợp lệ: {string.Join(", ", voidStatuses)}.";
+    // Đã ở trạng thái huỷ rồi thì thôi; đã duyệt thì phải điều chỉnh chứ không huỷ thẳng.
+    if (voidStatuses.Contains(currentStatus)) return "Phiếu đã ở trạng thái huỷ/điều chỉnh.";
+    if (currentStatus == "Confirmed" && target == "Rejected")
+        return "Phiếu đã duyệt — dùng Adjustment (điều chỉnh) thay vì huỷ thẳng.";
+    return null;
+}
+
+// Huỷ / điều chỉnh PHIẾU NHẬP. Nếu phiếu đã duyệt (đã cộng tồn) thì phải TRỪ LẠI tồn.
+app.MapPost("/api/servicestockins/{no}/void", async (
+    string no, StockDocVoidDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var error = ValidateStockDocVoidTarget(stockDocVoidStatuses, h.Status, dto.ToStatus);
+    if (error is not null) return Results.BadRequest(new { error });
+
+    var reverted = 0;
+    if (h.Status == "Confirmed")
+    {
+        // Phiếu nhập đã duyệt thì đã CỘNG tồn ⇒ điều chỉnh phải TRỪ lại, nếu không tồn kho sẽ dôi ảo.
+        var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id).ToListAsync();
+        foreach (var l in lines)
+        {
+            var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
+            if (part is not null) { part.Quantity -= l.Quantity; reverted++; }
+        }
+    }
+    h.Status = dto.ToStatus!.Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status, sourceCode = stockDocStatusSourceCodes[h.Status], partsReverted = reverted });
+}).RequireAuthorization();
+
+// Huỷ / điều chỉnh PHIẾU XUẤT. Nếu phiếu đã duyệt (đã trừ tồn) thì phải CỘNG LẠI tồn.
+app.MapPost("/api/servicestockouts/{no}/void", async (
+    string no, StockDocVoidDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var error = ValidateStockDocVoidTarget(stockDocVoidStatuses, h.Status, dto.ToStatus);
+    if (error is not null) return Results.BadRequest(new { error });
+
+    var reverted = 0;
+    if (h.Status == "Confirmed")
+    {
+        // Phiếu xuất đã duyệt thì đã TRỪ tồn ⇒ điều chỉnh phải CỘNG lại.
+        var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id).ToListAsync();
+        foreach (var l in lines)
+        {
+            var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
+            if (part is not null) { part.Quantity += l.Quantity; reverted++; }
+        }
+    }
+    h.Status = dto.ToStatus!.Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, sourceCode = stockDocStatusSourceCodes[h.Status], partsReverted = reverted });
+}).RequireAuthorization();
+
 // ===== Nhập phụ tùng nợ từ Excel (port 1:1 FrmImportSerPartOO — TCMotor DMSCarSv/Services) =====
 // Nguồn: btnImportExcel_Click (validate) + btnSave_Click (gọi partService.SerPartOOCreate từng dòng).
 // ⚠️ Excel gốc đọc bằng ExcelImport.Query(file, "A2") ⇒ HEADER Ở DÒNG 2, không phải dòng 1.
@@ -18657,6 +18746,7 @@ record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null);
+record StockDocVoidDto(string? ToStatus);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null);
