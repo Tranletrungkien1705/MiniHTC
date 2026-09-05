@@ -11273,22 +11273,67 @@ app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITen
 }).RequireAuthorization();
 
 // Chuyển trạng thái báo giá: Draft->Sent->Approved (hoặc cancel).
+// 🔴 Bộ trạng thái báo giá phụ tùng theo ĐÚNG nguồn (TConst.Ser_Inv_Quote_Status).
+// Port cũ TỰ CHẾ một luồng gửi/duyệt (Draft→Sent→Approved→Cancelled) — nguồn KHÔNG có khái niệm đó.
+// Nguồn theo dõi báo giá bám theo VÒNG ĐỜI PHIẾU XUẤT sinh ra từ nó:
+var partQuoteStatusSourceCodes = new Dictionary<string, string>
+{
+    ["Created"] = "1",        // Mới tạo
+    ["Rejected"] = "2",       // Báo giá huỷ
+    ["SOOCreated"] = "3",     // Đã tạo phiếu xuất (lệnh xuất kho)
+    ["SOIssued"] = "4",       // Đã xuất
+    ["SOAdjusted"] = "5",     // Đã điều chỉnh phiếu xuất
+    ["SORejected"] = "6",     // Đã huỷ phiếu xuất
+};
+
+// Ánh xạ giá trị port CŨ → trạng thái nguồn, để dữ liệu đã tạo vẫn đọc được.
+var partQuoteLegacyStatusMap = new Dictionary<string, string>
+{
+    ["Draft"] = "Created",
+    ["Sent"] = "Created",       // nguồn không có bước "đã gửi" riêng
+    ["Approved"] = "SOOCreated",
+    ["Cancelled"] = "Rejected",
+};
+
+app.MapGet("/api/partquotes/statuses", () => Results.Ok(new
+{
+    statuses = partQuoteStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    legacyMap = partQuoteLegacyStatusMap.Select(kv => new { legacy = kv.Key, status = kv.Value }),
+    note = "Nguồn theo dõi báo giá bám vòng đời phiếu xuất; KHÔNG có bước gửi/duyệt như port cũ."
+})).RequireAuthorization();
+
 app.MapPost("/api/partquotes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == no);
     if (h is null) return Results.NotFound(new { no });
+
+    // Quy trạng thái cũ về trạng thái nguồn trước khi xét chuyển tiếp.
+    var current = partQuoteLegacyStatusMap.TryGetValue(h.Status, out var mapped) ? mapped : h.Status;
+
+    // 🔴 Guard của biz (Ser_Inv_Quote_Delete): báo giá ĐÃ XUẤT (SOIssued) thì KHÔNG được xoá/huỷ —
+    // chỉ 4 trạng thái Created/Rejected/SOOCreated mới cho gỡ phiếu xuất đi kèm.
+    string[] cancellableStatuses = { "Created", "SOOCreated" };
+
     string next = action switch
     {
-        "send" => h.Status == "Draft" ? "Sent" : "",
-        "approve" => h.Status == "Sent" ? "Approved" : "",
-        "cancel" => h.Status != "Approved" ? "Cancelled" : "",
+        "createsoo" => current == "Created" ? "SOOCreated" : "",
+        "issue" => current == "SOOCreated" ? "SOIssued" : "",
+        "adjustso" => current == "SOIssued" ? "SOAdjusted" : "",
+        "rejectso" => current is "SOIssued" or "SOAdjusted" ? "SORejected" : "",
+        "cancel" => cancellableStatuses.Contains(current) ? "Rejected" : "",
         _ => "?"
     };
-    if (next == "?") return Results.BadRequest(new { error = "action = send|approve|cancel" });
-    if (next == "") return Results.BadRequest(new { error = $"Không thể {action} khi đang ở trạng thái {h.Status}." });
+    if (next == "?") return Results.BadRequest(new { error = "action = createsoo|issue|adjustso|rejectso|cancel" });
+    if (next == "")
+    {
+        if (action == "cancel" && current == "SOIssued")
+            return Results.BadRequest(new { error = "Báo giá đã xuất hàng, không huỷ được (dùng rejectso để huỷ phiếu xuất)." });
+        return Results.BadRequest(new { error = $"Không thể {action} khi đang ở trạng thái {current}." });
+    }
+
     h.Status = next; await db.SaveChangesAsync();
-    return Results.Ok(new { h.QuoteNo, status = h.Status });
+    return Results.Ok(new { h.QuoteNo, status = h.Status, sourceCode = partQuoteStatusSourceCodes[next] });
 }).RequireAuthorization();
 
 // ===== Hợp đồng bảo hiểm dịch vụ (InsContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor) =====
