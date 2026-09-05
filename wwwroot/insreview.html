@@ -13,7 +13,7 @@
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .s-Confirmed{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Draft,.s-Cancelled{opacity:.6}
+  .s-P{color:var(--warn)} .s-A{color:var(--ok)} .s-R{color:var(--bad)}
   tr.sel{background:var(--line)} #msg{font-size:13px}
 </style></head>
 <body>
@@ -22,8 +22,8 @@
 <div class="bar" style="margin:10px 0">
   <div><label>Số YC BH</label><input id="qno" style="width:130px" oninput="load()"></div>
   <div><label>Trạng thái</label><select id="qst" onchange="load()">
-    <option value="Confirmed">Đang xử lý (chờ duyệt)</option><option value="Approved">Phê duyệt</option><option value="Rejected">Từ chối</option>
-    <option value="Draft">Nháp</option><option value="Cancelled">Đã hủy</option><option value="">Tất cả</option></select></div>
+    <option value="P">Chờ duyệt</option><option value="A">Đã duyệt</option><option value="R">Từ chối</option>
+    <option value="">Tất cả</option></select></div>
   <span id="msg"></span>
 </div>
 <div class="wrap"><table><thead><tr><th>Số YC BH</th><th>Hãng BH</th><th>Loại hình</th><th class="num">Số xe</th><th class="num">Tổng STBH</th><th>Ngày tạo</th><th>Trạng thái</th><th></th></tr></thead>
@@ -35,7 +35,8 @@
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Draft:"Nháp",Confirmed:"Đang xử lý",Approved:"Phê duyệt",Rejected:"Từ chối",Cancelled:"Đã hủy"};
+// Mã TConst.Stage — dùng chung cho header (InsReqStatus) và dòng (InsReqDtlStatus)
+const ST={P:"Chờ duyệt",A:"Phê duyệt",R:"Từ chối"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -48,17 +49,20 @@ async function load(){ await token();
   let items=(d.items||[]); const no=F("qno").value.trim().toUpperCase();
   if(no) items=items.filter(o=>o.insReqNo.toUpperCase().includes(no));
   F("rows").innerHTML=items.map(o=>{
-    const act=o.status==="Confirmed"?`<button class="sm ok" onclick="decide('${o.insReqNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.insReqNo}','reject')">Từ chối</button>`:"";
+    // Nguồn duyệt THẲNG từ "P" — không có bước "xác nhận" trung gian.
+    const act=o.status==="P"?`<button class="sm ok" onclick="decide('${o.insReqNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.insReqNo}','reject')">Từ chối</button>`:"";
     return `<tr onclick="detail('${o.insReqNo}')"><td><b>${o.insReqNo}</b></td><td>${o.insCompanyCode}</td><td>${o.insTypeCode}</td><td class="num">${o.cars}</td><td class="num">${money(o.totalAmount)}</td><td>${(o.createdAt||"").substring(0,10)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Không có yêu cầu.</td></tr>';
 }
 async function detail(no){
   const d=await (await fetch(`/api/insurancereqs/${no}/cars`,{headers:H()})).json();
   F("detCard").style.display=""; F("detNo").textContent=no;
-  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${(c.expectedStartDate||"").substring(0,10)}</td><td class="num">${money(c.insAmount)}</td><td class="num">${c.insuranceDay}</td><td>${c.locationFrom||""}</td><td>${c.locationTo||""}</td><td class="num">${money(c.price)}</td><td class="num">${c.rate}</td><td>${c.transporterCode||""}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
+  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${(c.expectedStartDate||"").substring(0,10)}</td><td class="num">${money(c.insAmount)}</td><td class="num">${c.insuranceDay}</td><td>${c.locationFrom||""}</td><td>${c.locationTo||""}</td><td class="num">${money(c.price)}</td><td class="num">${c.rate}</td><td>${c.transporterCode||""}</td><td>${ST[c.insReqDtlStatus]||c.insReqDtlStatus||""}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
 }
 async function decide(no,act){ event.stopPropagation();
-  const r=await fetch(`/api/insurancereqs/${no}/${act}`,{method:"POST",headers:H()});
+  const rm=prompt(act==="approve"?"Ghi chú duyệt (có thể bỏ trống):":"Lý do từ chối:","");
+  if(rm===null) return;
+  const r=await fetch(`/api/insurancereqs/${no}/${act}`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({remark:rm})});
   const j=await r.json();
   if(r.ok){ msg(`${no}: ${ST[j.status]||j.status}`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }

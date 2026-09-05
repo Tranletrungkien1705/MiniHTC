@@ -845,6 +845,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Yêu cầu bảo hiểm: 2 tầng trạng thái + cột người/ngày duyệt
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"InsReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // "Confirmed"/"Cancelled" của port cũ không có ở nguồn: Confirmed vẫn là chờ duyệt "P".
+                "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'P' WHERE \"Status\" = 'Confirmed'",
+                "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",
+                "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'R' WHERE \"Status\" = 'Rejected'",
+                "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'R' WHERE \"Status\" = 'Cancelled'",
                 // Đề nghị hồ sơ xe: huỷ cả đề nghị (CancelDate/By, CreatedBy) + duyệt TCG ghi cả 4 cột
                 "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"CancelDate\" timestamp NULL",

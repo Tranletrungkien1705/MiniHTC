@@ -5072,9 +5072,21 @@ public sealed class InsuranceReq
     public string InsReqNo { get; set; } = "";
     public string InsCompanyCode { get; set; } = "";  // hãng BH
     public string InsTypeCode { get; set; } = "";      // loại hình BH
-    public string Status { get; set; } = "Draft";      // Draft → Confirmed / Cancelled
+    /// <summary>
+    /// 🔴 Trạng thái yêu cầu (`Ins_InsuranceReq.InsReqStatus`) theo `TConst.Stage`:
+    /// **"P" chờ duyệt → "A" duyệt / "R" từ chối**. Dùng `Stage.Approved` = **"A"**, KHÔNG phải A1/A2.
+    /// ⚠️ Port cũ `Draft → Confirmed → Approved/Rejected`: **"Confirmed" là bước BỊA** (nguồn duyệt
+    /// thẳng từ "P"), và **"Cancelled" cũng bịa** — nguồn không có hàm huỷ, chỉ có **XOÁ**
+    /// (`Ins_InsuranceReqDelete_New201811119`).
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
+    /// <summary>Ngày duyệt/từ chối (`ApprovedDate`) — nguồn ghi cho CẢ hai nhánh, không riêng nhánh duyệt.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    /// <summary>Ghi chú của người duyệt (`Ins_InsuranceReq.Remark`) — ghi cả khi duyệt lẫn khi từ chối.</summary>
+    public string? Remark { get; set; }
 }
 public sealed class InsuranceReqDtl
 {
@@ -5091,6 +5103,12 @@ public sealed class InsuranceReqDtl
     public decimal Rate { get; set; }
     public string? TransporterCode { get; set; }
     public string? Remark { get; set; }
+    /// <summary>
+    /// 🔴 Trạng thái của TỪNG XE (`Ins_InsuranceReqDtl.InsReqDtlStatus`) — trục port cũ THIẾU HẲN.
+    /// Tạo ở "P"; khi duyệt/từ chối yêu cầu, nguồn **lan xuống MỌI dòng** bằng một câu update ('A'/'R').
+    /// Guard: sửa dòng chỉ khi **"P"**; xoá dòng khi **"P" hoặc "A"**.
+    /// </summary>
+    public string InsReqDtlStatus { get; set; } = "P";
 }
 
 /// <summary>Cập nhật vị trí xe trong bãi (Vin.Location) — port 1:1 FrmLocationCar (2010.HTC/Sales/Logistic). Cập nhật vị trí lưu bãi theo VIN.</summary>

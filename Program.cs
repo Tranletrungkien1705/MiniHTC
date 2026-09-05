@@ -15813,7 +15813,7 @@ app.MapPost("/api/insurancereqs", async (InsuranceReqDto dto, AppDbContext db, I
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "INS" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new InsuranceReq { OrgId = t.OrgId, InsReqNo = no, InsCompanyCode = dto.InsCompanyCode.Trim(), InsTypeCode = dto.InsTypeCode.Trim(), Status = "Draft" };
+    var r = new InsuranceReq { OrgId = t.OrgId, InsReqNo = no, InsCompanyCode = dto.InsCompanyCode.Trim(), InsTypeCode = dto.InsTypeCode.Trim(), Status = "P" };
     db.InsuranceReqs.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.InsuranceReqDtls.Add(new InsuranceReqDtl { OrgId = t.OrgId, InsuranceReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ExpectedStartDate = c.ExpectedStartDate, InsAmount = c.InsAmount, InsuranceDay = c.InsuranceDay, LocationFrom = c.LocationFrom, LocationTo = c.LocationTo, Price = c.Price, Rate = c.Rate, TransporterCode = c.TransporterCode, Remark = c.Remark });
@@ -15827,31 +15827,81 @@ app.MapGet("/api/insurancereqs/{no}/cars", async (string no, AppDbContext db, IT
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id)
-        .Select(c => new { c.VIN, c.ExpectedStartDate, c.InsAmount, c.InsuranceDay, c.LocationFrom, c.LocationTo, c.Price, c.Rate, c.TransporterCode }).ToListAsync();
-    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, count = cars.Count, cars });
+        .Select(c => new { c.VIN, c.ExpectedStartDate, c.InsAmount, c.InsuranceDay, c.LocationFrom, c.LocationTo, c.Price, c.Rate, c.TransporterCode, c.Remark, c.InsReqDtlStatus }).ToListAsync();
+    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.ApprovedBy, r.ApprovedDate, r.Remark, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/insurancereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT / TỪ CHỐI — `Ins_InsuranceReqApprove_New20181119` (Biz.HTC.WH.cs:125335-125520).
+// Nguồn dùng **MỘT hàm** với cờ `strFlagUnapprove` và cờ này **NGHỊCH ĐẢO**: `bApprove = (flag == Flag.Inactive)`
+// ⇒ **"0" nghĩa là DUYỆT**, "1" là từ chối; nguồn còn validate cờ phải thuộc {"1","0"}.
+// Vào từ **"P"** (không có bước "xác nhận" trung gian nào), ra **"A"** hoặc **"R"**,
+// ghi `Remark`/`ApprovedDate`/`ApprovedBy`, rồi **lan trạng thái xuống MỌI dòng** ('A'/'R').
+app.MapPost("/api/insurancereqs/{no}/{action}", async (string no, string action, InsApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("confirm" or "cancel" or "approve" or "reject")) return Results.BadRequest(new { error = "action = confirm|cancel|approve|reject" });
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    // Sales-side: Draft -> Confirmed/Cancelled
-    if (action is "confirm" or "cancel")
-    {
-        if (r.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận Yêu cầu bảo hiểm này" : "Không thể hủy Yêu cầu bảo hiểm này" });
-        if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
-        else r.Status = "Cancelled";
-    }
-    // Insurer-side (FrmInsReq): review Confirmed (Đang xử lý) -> Approved (Phê duyệt) / Rejected (Từ chối)
-    else
-    {
-        if (r.Status != "Confirmed") return Results.BadRequest(new { error = "Chỉ duyệt được yêu cầu đang xử lý (đã gửi công ty bảo hiểm)." });
-        r.Status = action == "approve" ? "Approved" : "Rejected";
-    }
+    if (r.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt được yêu cầu đang chờ duyệt (P)." });
+    var ok = action == "approve";
+    var now = DateTime.Now;
+    r.Status = ok ? "A" : "R";
+    r.Remark = dto?.Remark; r.ApprovedDate = now;
+    r.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (ok) r.ConfirmedAt = now;
+    // Lan xuống MỌI dòng — nguồn dùng một câu update không lọc theo trạng thái dòng.
+    var lines = await db.InsuranceReqDtls.Where(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id).ToListAsync();
+    foreach (var l in lines) l.InsReqDtlStatus = ok ? "A" : "R";
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.InsReqNo, status = r.Status });
+    return Results.Ok(new { r.InsReqNo, status = r.Status, statusName = ok ? "Đã duyệt" : "Từ chối", linesUpdated = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 SỬA DÒNG — `Ins_InsuranceReqDtlUpdate_New20181119` (125568): chỉ sửa `InsuranceDay`, `Remark`,
+// `InsAmount`; guard trạng thái **DÒNG phải là "P"** (không xét trạng thái header).
+app.MapPost("/api/insurancereqs/{no}/cars/{vin}", async (string no, string vin, InsCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
+    var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var c = await db.InsuranceReqDtls.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id && x.VIN == vin);
+    if (c is null) return Results.NotFound(new { no, vin });
+    if (c.InsReqDtlStatus != "P") return Results.BadRequest(new { error = $"Xe {vin} không còn ở trạng thái chờ duyệt (P) — không sửa được." });
+    c.InsuranceDay = dto.InsuranceDay; c.InsAmount = dto.InsAmount; c.Remark = dto.Remark;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, c.VIN, c.InsuranceDay, c.InsAmount, c.Remark });
+}).RequireAuthorization();
+
+// 🔴 XOÁ DÒNG — `Ins_InsuranceReqDtlDelete_New20181119` (125711): guard dòng **"P,A"**
+// (⚠️ xoá được cả dòng ĐÃ DUYỆT — đúng nguồn, không tự siết lại); xoá xong **hết dòng thì xoá luôn header**.
+app.MapDelete("/api/insurancereqs/{no}/cars/{vin}", async (string no, string vin, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
+    var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var c = await db.InsuranceReqDtls.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id && x.VIN == vin);
+    if (c is null) return Results.NotFound(new { no, vin });
+    if (c.InsReqDtlStatus is not ("P" or "A")) return Results.BadRequest(new { error = $"Xe {vin} ở trạng thái '{c.InsReqDtlStatus}' — không xoá được." });
+    db.InsuranceReqDtls.Remove(c);
+    await db.SaveChangesAsync();
+    var left = await db.InsuranceReqDtls.CountAsync(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id);
+    var headerRemoved = false;
+    if (left == 0) { db.InsuranceReqs.Remove(r); headerRemoved = true; await db.SaveChangesAsync(); }
+    return Results.Ok(new { no, vin, carsLeft = left, headerRemoved });
+}).RequireAuthorization();
+
+// 🔴 XOÁ CẢ YÊU CẦU — `Ins_InsuranceReqDelete_New201811119` (125895): guard header **"P,A"**, xoá cả
+// dòng lẫn header. Nguồn KHÔNG có hành động "huỷ" cho yêu cầu bảo hiểm — chỉ có xoá.
+app.MapDelete("/api/insurancereqs/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status is not ("P" or "A")) return Results.BadRequest(new { error = $"Yêu cầu ở trạng thái '{r.Status}' — không xoá được." });
+    var lines = await db.InsuranceReqDtls.Where(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id).ToListAsync();
+    db.InsuranceReqDtls.RemoveRange(lines);
+    db.InsuranceReqs.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, carsDeleted = lines.Count });
 }).RequireAuthorization();
 
 // ===== Cập nhật vị trí xe trong bãi (CarLocation — port 1:1 FrmLocationCar, 2010.HTC/Sales/Logistic) =====
@@ -21322,6 +21372,8 @@ record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAm
 record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive);
 record MstInsTypeDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, string? FlagActive);
 record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars);
+record InsApproveDto(string? Remark);
+record InsCarUpdateDto(int InsuranceDay, decimal InsAmount, string? Remark);
 record CarLocationDto(string VIN, string? LocationOld, string Location);
 record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
 record ReqRedeemDto(List<ReqRedeemCarDto>? Cars);
