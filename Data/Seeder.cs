@@ -845,6 +845,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // HĐ đại lý (CT_DealerContract): mã TConst.Stage P/A/R/C/F + người duyệt/ghi chú/ngày nhận HĐ
+                "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"ReceiptContractDate\" timestamp NULL",
+                "UPDATE public.\"DealerContracts\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"DealerContracts\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",
+                "UPDATE public.\"DealerContracts\" SET \"Status\" = 'R' WHERE \"Status\" = 'Rejected'",
                 // HĐ bán lẻ (Dlr_Contract): 4 trạng thái TConst.DlrCtrStatus1 + mốc xác nhận/huỷ/hoàn thành
                 "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"ApproveDTime\" timestamp NULL",
                 "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"ApproveBy\" text NULL",

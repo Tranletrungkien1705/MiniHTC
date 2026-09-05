@@ -15399,6 +15399,7 @@ app.MapGet("/api/dealercontracts", async (AppDbContext db, ITenantContext t, str
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
         c.DealerContractNo, c.DealerContractNoUser, c.DealerCode, c.ContractDate, c.TotalAmount, c.Status, c.CreatedAt, c.ApprovedAt,
+        c.ApprovedBy, c.Remark, c.ReceiptContractDate,
         cars = db.DealerContractDetails.Count(l => l.OrgId == t.OrgId && l.DealerContractId == c.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -15415,7 +15416,7 @@ app.MapPost("/api/dealercontracts", async (DealerContractDto dto, AppDbContext d
     if (await db.DealerContracts.AnyAsync(c => c.OrgId == t.OrgId && c.DealerContractNo == no))
         return Results.BadRequest(new { error = $"Số HĐ {no} đã tồn tại!" });
     var total = cars.Sum(c => c.UnitPrice);
-    var c2 = new DealerContract { OrgId = t.OrgId, DealerContractNo = no, DealerContractNoUser = dto.DealerContractNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, TotalAmount = total, Status = "Draft" };
+    var c2 = new DealerContract { OrgId = t.OrgId, DealerContractNo = no, DealerContractNoUser = dto.DealerContractNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, TotalAmount = total, Status = "P" };
     db.DealerContracts.Add(c2); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.DealerContractDetails.Add(new DealerContractDetail { OrgId = t.OrgId, DealerContractId = c2.Id, CarId = c.CarId.Trim().ToUpperInvariant(), UnitPrice = c.UnitPrice });
@@ -15433,17 +15434,52 @@ app.MapGet("/api/dealercontracts/{no}/cars", async (string no, AppDbContext db, 
     return Results.Ok(new { c.DealerContractNo, c.DealerCode, c.TotalAmount, c.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealercontracts/{no}/{action}", async (string no, string action, SoRejectDto? dto, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT / TỪ CHỐI / HUỶ — `ContractDealerContractApprove_New201811119` (Biz.HTC.WH.cs:31068) và
+// `ContractDealerContractCancel_New20181119` (31350).
+// ⚠️ **Guard KHÁC NHAU giữa hai hành động** (đúng nguồn, không sắp lại cho "hợp lý"):
+//    · duyệt/từ chối vào từ **"P"** → "A" / "R";
+//    · **HUỶ vào từ "A"** → "C" — tức chỉ huỷ được hợp đồng **ĐÃ DUYỆT**, không huỷ hợp đồng đang chờ.
+// ⚠️ Cả hai đều ghi `Remark` và **dùng CHUNG cặp cột** `ApprovedDate`/`ApprovedBy` (kể cả khi huỷ).
+// ⚠️ Nguồn còn cho **sửa `DealerContractNoUser` và `ContractDate` ngay trong bước duyệt**.
+app.MapPost("/api/dealercontracts/{no}/{action}", async (string no, string action, DealerContractActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    if (action is not ("approve" or "reject" or "cancel")) return Results.BadRequest(new { error = "action = approve|reject|cancel" });
     no = no.Trim();
     var c = await db.DealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerContractNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.Status != "Draft") return Results.BadRequest(new { error = "Hợp đồng đã xử lý." });
-    if (action == "approve") { c.Status = "Approved"; c.ApprovedAt = DateTime.Now; }
-    else c.Status = "Rejected";
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (action == "cancel")
+    {
+        if (c.Status != "A") return Results.BadRequest(new { error = "Chỉ huỷ được hợp đồng đã duyệt (A)." });
+        c.Status = "C";
+    }
+    else
+    {
+        if (c.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối hợp đồng đang chờ duyệt (P)." });
+        c.Status = action == "approve" ? "A" : "R";
+        // Nguồn cho sửa hai trường này ngay lúc duyệt.
+        if (!string.IsNullOrWhiteSpace(dto?.DealerContractNoUser)) c.DealerContractNoUser = dto!.DealerContractNoUser!.Trim();
+        if (dto?.ContractDate is not null) c.ContractDate = dto.ContractDate;
+    }
+    c.Remark = dto?.Remark; c.ApprovedAt = now; c.ApprovedBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DealerContractNo, status = c.Status });
+}).RequireAuthorization();
+
+// 🔴 CẬP NHẬT NGÀY NHẬN HỢP ĐỒNG — `ContractDealerContractUpdate_New20181119` (31556).
+// Guard trạng thái **"A,P,F"** — chấp nhận cả **"F"**, trạng thái mà port cũ không hề có;
+// và **KHÔNG** cho sửa khi hợp đồng đã huỷ ("C").
+app.MapPost("/api/dealercontracts/{no}/receipt", async (string no, DealerContractReceiptDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.Status is not ("A" or "P" or "F"))
+        return Results.BadRequest(new { error = $"Hợp đồng ở trạng thái '{c.Status}' — chỉ cập nhật được khi P, A hoặc F." });
+    c.ReceiptContractDate = dto.ReceiptContractDate;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DealerContractNo, c.ReceiptContractDate, status = c.Status });
 }).RequireAuthorization();
 
 // ===== Hợp đồng đại lý DMS40 ký 2 bên (DmsDealerContract — port 1:1 FrmDMS40_CT_DealerContractHTC_New, 2010.HTC/Sales/DMS40) =====
@@ -21532,6 +21568,9 @@ record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFacto
 record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
 record DealerContractCarDto(string CarId, decimal UnitPrice);
 record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser, string DealerCode, DateTime? ContractDate, List<DealerContractCarDto>? Cars);
+// Duyệt HĐ đại lý: nguồn cho sửa số HĐ người dùng + ngày HĐ ngay trong bước duyệt, và ghi Remark.
+record DealerContractActionDto(string? Remark, string? DealerContractNoUser, DateTime? ContractDate);
+record DealerContractReceiptDto(DateTime? ReceiptContractDate);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate);
 record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);

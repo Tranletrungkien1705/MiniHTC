@@ -4885,9 +4885,22 @@ public sealed class DealerContract
     public string DealerCode { get; set; } = "";
     public DateTime? ContractDate { get; set; }
     public decimal TotalAmount { get; set; }
-    public string Status { get; set; } = "Draft"; // Draft → Approved / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái HĐ đại lý (`CT_DealerContract.ContractStatus`) theo `TConst.Stage`:
+    /// **"P" chờ duyệt · "A" duyệt · "R" từ chối · "C" huỷ · "F" hoàn thành**.
+    /// ⚠️ Port cũ `Draft/Approved/Rejected` = sai mã và **thiếu "C" lẫn "F"**.
+    /// 📌 Bảng nguồn xác định bằng tên biến `dt_CT_DealerContract` tại dòng ghi `DealerContractNo`
+    /// (Biz.HTC.WH.cs:30939) — KHÔNG phải `Dlr_Contract` (bảng đó là HĐ **bán lẻ**).
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
+    /// <summary>Người duyệt (`ApprovedBy`) — nguồn ghi ở CẢ duyệt/từ chối LẪN huỷ (dùng chung cột).</summary>
+    public string? ApprovedBy { get; set; }
+    /// <summary>Ghi chú người duyệt/huỷ (`CT_DealerContract.Remark`).</summary>
+    public string? Remark { get; set; }
+    /// <summary>Ngày nhận hợp đồng (`ReceiptContractDate`) — nguồn cập nhật ở `ContractDealerContractUpdate`.</summary>
+    public DateTime? ReceiptContractDate { get; set; }
 }
 public sealed class DealerContractDetail
 {

@@ -12,7 +12,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Approved{color:var(--ok)} .p-Rejected{color:#dc2626}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-A{color:var(--ok)} .p-R{color:#dc2626} .p-C{color:#64748b} .p-F{color:#2563eb}
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ctbl td,#ctbl th{padding:4px 6px}
 </style></head>
 <body>
@@ -29,12 +29,13 @@
   <table id="ctbl"><thead><tr><th>Xe/CarID *</th><th>Đơn giá</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addCar()">+ Thêm xe</button>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Chờ duyệt</option><option value="A">Đã duyệt</option><option value="R">Từ chối</option><option value="C">Đã huỷ</option><option value="F">Hoàn thành</option></select><input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px"></div>
 <table><thead><tr><th>Số HĐ</th><th>HĐ user</th><th>Đại lý</th><th>Số xe</th><th class="num">Tổng tiền</th><th>Ngày tạo</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; const LBL={Draft:"Nháp",Approved:"Đã duyệt",Rejected:"Từ chối"};
+const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleString("vi-VN"):""; // Mã TConst.Stage cho CT_DealerContract.ContractStatus
+const LBL={P:"Chờ duyệt",A:"Đã duyệt",R:"Từ chối",C:"Đã huỷ",F:"Hoàn thành"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -53,11 +54,20 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/dealercontracts?status=${F("fst").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="act1('${o.dealerContractNo}','approve')">Duyệt</button> <button class="sm" onclick="act1('${o.dealerContractNo}','reject')">Từ chối</button>`:"";
+    // Nguồn: duyệt/từ chối chỉ từ "P"; HUỶ chỉ từ "A" (huỷ hợp đồng ĐÃ duyệt, không huỷ HĐ đang chờ).
+    let act=o.status==="P"?`<button class="sm" onclick="act1('${o.dealerContractNo}','approve')">Duyệt</button> <button class="sm" onclick="act1('${o.dealerContractNo}','reject')">Từ chối</button>`
+      :o.status==="A"?`<button class="sm" onclick="act1('${o.dealerContractNo}','cancel')">Huỷ</button>`:"";
+    // Ngày nhận HĐ sửa được khi P/A/F (nguồn ContractDealerContractUpdate guard "A,P,F").
+    if(o.status==="P"||o.status==="A"||o.status==="F") act+=` <button class="sm" onclick="receipt('${o.dealerContractNo}')">Ngày nhận HĐ</button>`;
     return `<tr><td><b>${o.dealerContractNo}</b> <a href="#" class="cars" onclick="cars('${o.dealerContractNo}');return false">xem xe</a></td><td>${o.dealerContractNoUser||""}</td><td>${o.dealerCode}</td><td>${o.cars}</td><td class="num">${money(o.totalAmount)}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.dealerContractNo}"></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Chưa có hợp đồng.</td></tr>';
 }
-async function act1(no,a){ const r=await fetch(`/api/dealercontracts/${no}/${a}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function act1(no,a){ const rm=prompt(a==="approve"?"Ghi chú duyệt (có thể bỏ trống):":a==="reject"?"Lý do từ chối:":"Lý do huỷ:",""); if(rm===null) return;
+  const r=await fetch(`/api/dealercontracts/${no}/${a}`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({remark:rm})});
+  const j=await r.json(); if(r.ok){ msg(`${no}: ${LBL[j.status]||j.status}`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
+async function receipt(no){ const dt=prompt("Ngày nhận hợp đồng (YYYY-MM-DD):",""); if(dt===null) return;
+  const r=await fetch(`/api/dealercontracts/${no}/receipt`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({receiptContractDate:dt||null})});
+  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function cars(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/dealercontracts/${no}/cars`,{headers:H()})).json();
