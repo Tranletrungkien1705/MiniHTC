@@ -5097,7 +5097,7 @@ app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext d
     foreach (var l in lines)
     {
         var amount = l.Quantity * l.Price; total += amount;
-        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Amount = amount });
+        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, Amount = amount });
     }
     h.TotalAmount = total; await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, lines = lines.Count, totalAmount = total });
@@ -5109,7 +5109,7 @@ app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db,
     var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Amount }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount }).ToListAsync();
     return Results.Ok(new { h.StockInNo, h.Status, h.TotalAmount, count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -10255,27 +10255,79 @@ app.MapPost("/api/maintworkcontents/{code}/toggle", async (string code, AppDbCon
 }).RequireAuthorization();
 
 // ===== Quản lý giá vốn phụ tùng (PartCostSnapshot — port 1:1 FrmPartCostManagement/FrmCaluCost/FrmReportHistoryCost, TCMotor) =====
-// Tính giá vốn bình quân gia quyền = tổng(SL×giá nhập)/tổng SL từ các phiếu NHẬP đã duyệt; lưu snapshot + cập nhật ServicePart.Cost.
-app.MapPost("/api/partcosts/calculate", async (AppDbContext db, ITenantContext t) =>
+// Giá vốn bình quân gia quyền THEO KỲ — đúng công thức nguồn (biz Ser_PartCost_Calculate):
+//   AverageCost = (TGD + TGN) / (SLD + SLN)
+//     SLD/TGD = lượng & giá trị TỒN ĐẦU KỲ (phiếu nhập TRƯỚC FromDate)
+//     SLN/TGN = lượng & giá trị NHẬP TRONG KỲ; TGN ĐÃ GỒM THUẾ:
+//               sum(Price*Qty + VAT*0.01*Price*Qty)
+// Bỏ trống FromDate ⇒ nguồn mặc định 1990-01-01 (tính từ đầu, coi như không có tồn đầu kỳ).
+app.MapPost("/api/partcosts/calculate", async (
+    PartCostCalculateDto? dto, AppDbContext db, ITenantContext t) =>
 {
-    var inIds = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed").Select(o => o.Id);
-    var agg = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && inIds.Contains(l.ServiceStockInId))
-        .GroupBy(l => new { l.PartCode, l.PartName })
-        .Select(g => new { g.Key.PartCode, g.Key.PartName, qty = g.Sum(x => x.Quantity), value = g.Sum(x => x.Quantity * x.Price) }).ToListAsync();
-    if (agg.Count == 0) return Results.Ok(new { calculated = 0, message = "Chưa có phiếu nhập đã duyệt để tính giá vốn." });
-    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).ToListAsync();
-    var pMap = parts.ToDictionary(p => p.PartCode, p => p);
-    int updated = 0;
-    foreach (var a in agg)
+    var fromDate = dto?.FromDate ?? new DateTime(1990, 1, 1);
+    var toDate = dto?.ToDate ?? DateTime.Today;
+    if (toDate < fromDate) return Results.BadRequest(new { error = "Ngày cuối kỳ phải >= ngày đầu kỳ." });
+    // Nguồn chốt mốc cuối kỳ tới HẾT NGÀY: CalculateDateTime = ToDate + " 23:59:59".
+    var toDateEndOfDay = toDate.Date.AddDays(1).AddTicks(-1);
+
+    var confirmedStockInIds = db.ServiceStockIns
+        .Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed")
+        .Select(o => o.Id);
+
+    var stockInLines = await (
+        from line in db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && confirmedStockInIds.Contains(l.ServiceStockInId))
+        join header in db.ServiceStockIns.Where(o => o.OrgId == t.OrgId) on line.ServiceStockInId equals header.Id
+        select new { line.PartCode, line.PartName, line.Quantity, line.Price, line.Vat, header.StockInDate }).ToListAsync();
+
+    // Giá trị một dòng nhập ĐÃ GỒM THUẾ — đúng biểu thức TGN của nguồn.
+    static decimal StockInLineValue(decimal quantity, decimal price, decimal vat)
+        => quantity * price + vat * 0.01m * price * quantity;
+
+    var openingLines = stockInLines.Where(l => l.StockInDate.HasValue && l.StockInDate < fromDate).ToList();
+    var inPeriodLines = stockInLines.Where(l => l.StockInDate.HasValue && l.StockInDate >= fromDate && l.StockInDate <= toDateEndOfDay).ToList();
+
+    var partCodes = openingLines.Select(l => l.PartCode).Concat(inPeriodLines.Select(l => l.PartCode)).Distinct().ToList();
+    if (partCodes.Count == 0) return Results.Ok(new { calculated = 0, message = "Chưa có phiếu nhập đã duyệt để tính giá vốn." });
+
+    // Nguồn chỉ tính phụ tùng đang hiệu lực (p.IsActive = '1').
+    var activeParts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1").ToListAsync();
+    var partByCode = activeParts.ToDictionary(p => p.PartCode, p => p);
+
+    var now = DateTime.Now;
+    int calculated = 0, updated = 0;
+    foreach (var partCode in partCodes)
     {
-        if (a.qty <= 0) continue;
-        var avg = Math.Round(a.value / a.qty, 2);
-        db.PartCostSnapshots.Add(new PartCostSnapshot { OrgId = t.OrgId, PartCode = a.PartCode, PartName = a.PartName,
-            AverageCost = avg, TotalQty = a.qty, TotalValue = a.value, Method = "Average" });
-        if (pMap.TryGetValue(a.PartCode, out var p)) { p.Cost = avg; updated++; }
+        if (!partByCode.TryGetValue(partCode, out var part)) continue;
+
+        var opening = openingLines.Where(l => l.PartCode == partCode).ToList();
+        var inPeriod = inPeriodLines.Where(l => l.PartCode == partCode).ToList();
+
+        var openingQty = opening.Sum(l => l.Quantity);
+        var openingValue = opening.Sum(l => StockInLineValue(l.Quantity, l.Price, l.Vat));
+        var inQty = inPeriod.Sum(l => l.Quantity);
+        var inValue = inPeriod.Sum(l => StockInLineValue(l.Quantity, l.Price, l.Vat));
+
+        var totalQty = openingQty + inQty;
+        var totalValue = openingValue + inValue;
+        // Nguồn lọc `(op.SLD != 0 or si.SLN != 0)` — vừa bỏ dòng vô nghĩa, vừa CHẶN CHIA 0.
+        if (totalQty == 0) continue;
+
+        var averageCost = Math.Round(totalValue / totalQty, 2);
+        db.PartCostSnapshots.Add(new PartCostSnapshot
+        {
+            OrgId = t.OrgId, PartCode = partCode,
+            PartName = inPeriod.FirstOrDefault()?.PartName ?? opening.FirstOrDefault()?.PartName,
+            AverageCost = averageCost,
+            OpeningQty = openingQty, OpeningValue = openingValue,
+            InQty = inQty, InValue = inValue,
+            TotalQty = totalQty, TotalValue = totalValue,
+            FromDate = fromDate, ToDate = toDate, Method = "Average", CalculatedAt = now
+        });
+        part.Cost = averageCost;
+        updated++; calculated++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { calculated = agg.Count, partsUpdated = updated });
+    return Results.Ok(new { calculated, partsUpdated = updated, fromDate, toDate });
 }).RequireAuthorization();
 
 // Giá vốn hiện tại theo mã PT (snapshot mới nhất mỗi mã).
@@ -10283,7 +10335,7 @@ app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t) =>
 {
     var snaps = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId).ToListAsync();
     var rows = snaps.GroupBy(x => x.PartCode).Select(g => g.OrderByDescending(x => x.Id).First())
-        .Select(x => new { x.PartCode, x.PartName, x.AverageCost, x.TotalQty, x.TotalValue, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
+        .Select(x => new { x.PartCode, x.PartName, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
         .OrderBy(x => x.PartCode).ToList();
     return Results.Ok(new { count = rows.Count, rows });
 }).RequireAuthorization();
@@ -10294,7 +10346,7 @@ app.MapGet("/api/report/cost-history", async (AppDbContext db, ITenantContext t,
     var code = (partCode ?? "").Trim();
     if (code == "") return Results.BadRequest(new { error = "Cần mã phụ tùng." });
     var rows = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId && x.PartCode == code).OrderByDescending(x => x.Id)
-        .Select(x => new { x.AverageCost, x.TotalQty, x.TotalValue, x.Method, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+        .Select(x => new { x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, x.Method, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { partCode = code, count = rows.Count, rows });
 }).RequireAuthorization();
 
@@ -18167,6 +18219,7 @@ record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? Eng
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);
 /// <summary>Khảo sát CSKH sau dịch vụ — 6 câu trả lời + trạng thái chốt (CINFB/CIFB/REJ).</summary>
+record PartCostCalculateDto(DateTime? FromDate, DateTime? ToDate);
 record CustomerCareBirthdayDto(string? CusId, string? DealerCode, DateTime? DateBth, string? Status, DateTime? ContactDate, string? Remark, string? CareBthId = null);
 record CareSurveyDto(
     string? Status, string? RONo, DateTime? FinishedDate, DateTime? ContactDate,
@@ -18400,7 +18453,7 @@ record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email);
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
-record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price);
+record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines);

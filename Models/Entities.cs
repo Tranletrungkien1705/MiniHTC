@@ -3034,8 +3034,31 @@ public sealed class PartCostSnapshot
     public string PartCode { get; set; } = "";
     public string? PartName { get; set; }
     public decimal AverageCost { get; set; }
+
+    /// <summary>Số lượng TỒN ĐẦU KỲ (nguồn: SLD của #tbl_Open).</summary>
+    public decimal OpeningQty { get; set; }
+
+    /// <summary>Giá trị TỒN ĐẦU KỲ (nguồn: TGD).</summary>
+    public decimal OpeningValue { get; set; }
+
+    /// <summary>Số lượng NHẬP TRONG KỲ (nguồn: SLN).</summary>
+    public decimal InQty { get; set; }
+
+    /// <summary>Giá trị NHẬP TRONG KỲ, ĐÃ GỒM VAT (nguồn: TGN).</summary>
+    public decimal InValue { get; set; }
+
+    /// <summary>Tổng lượng dùng chia = OpeningQty + InQty (nguồn: SLD + SLN).</summary>
     public decimal TotalQty { get; set; }
+
+    /// <summary>Tổng giá trị dùng chia = OpeningValue + InValue (nguồn: TGD + TGN).</summary>
     public decimal TotalValue { get; set; }
+
+    /// <summary>Đầu kỳ tính giá vốn (nguồn: bỏ trống thì mặc định 1990-01-01).</summary>
+    public DateTime? FromDate { get; set; }
+
+    /// <summary>Cuối kỳ tính giá vốn (nguồn ghi CalculateDateTime = ToDate + " 23:59:59").</summary>
+    public DateTime? ToDate { get; set; }
+
     public string Method { get; set; } = "Average"; // Average | FIFO
     public DateTime CalculatedAt { get; set; } = DateTime.Now;
 }
@@ -5627,6 +5650,10 @@ public sealed class ServiceStockInLine
     public string? PartName { get; set; }
     public decimal Quantity { get; set; }
     public decimal Price { get; set; }
+
+    /// <summary>Thuế suất dòng nhập theo PHẦN TRĂM (Ser_Inv_PartInstance.SIVAT) — GỒM trong tiền tính giá vốn.</summary>
+    public decimal Vat { get; set; }
+
     public decimal Amount { get; set; }
 }
 
