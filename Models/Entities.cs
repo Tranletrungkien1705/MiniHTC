@@ -2030,9 +2030,20 @@ public sealed class StockAdj
     public string StockAdjNo { get; set; } = "";
     public string? StorageCode { get; set; }
     public string? Remark { get; set; }
-    public string AdjStatus { get; set; } = "Draft";   // Draft -> Approved / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG `TConst.Ser_StockAdj` cua nguon (TCMotor `Const.Main.cs:279-283`):
+    /// **"0" = Mới tạo · "1" = Kết thúc** — CHỈ 2 trạng thái.
+    /// ⚠️ Port cũ dùng "Draft"/"Approved"/**"Rejected"** — sai mã, và **"Rejected" là trạng thái BỊA**:
+    /// nguồn KHÔNG có nhánh huỷ phiếu điều chỉnh (khác phiếu xuất kho vốn có FrmSOReject).
+    /// </summary>
+    public string AdjStatus { get; set; } = "0";
+    /// <summary>Ngày điều chỉnh do NGƯỜI DÙNG nhập (`Ser_Inv_StockOutAdj.StockOutDate`) — không phải ngày tạo bản ghi.</summary>
+    public DateTime? StockOutDate { get; set; }
+    /// <summary>Đại lý thực hiện (`Ser_Inv_StockOutAdj.DealerCode`) — trục phân tách dữ liệu của nguồn.</summary>
+    public string? DealerCode { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+    /// <summary>Thời điểm KẾT THÚC phiếu (status "1"), lúc tồn kho thực sự bị điều chỉnh.</summary>
     public DateTime? ApprovedAt { get; set; }
 }
 
@@ -2047,6 +2058,13 @@ public sealed class StockAdjLine
     public string? Unit { get; set; }
     public decimal QtyBalance { get; set; }   // SL tồn hiện tại
     public decimal QtyAdjust { get; set; }     // SL điều chỉnh (+/-)
+    /// <summary>
+    /// 🔴 Kho CÂN ĐỐI (`Ser_Inv_StockAdjDetail.BalanceLocationID`) — nơi BỊ TRỪ số lượng khi kết thúc phiếu.
+    /// Port cũ chỉ có 1 `StorageCode` ở header ⇒ **mất trục vị trí theo DÒNG** của nguồn.
+    /// </summary>
+    public string? BalanceLocation { get; set; }
+    /// <summary>Kho ĐÍCH (`Ser_Inv_StockAdjDetail.InStockLocationID`) — nơi số lượng được chuyển sang.</summary>
+    public string? InStockLocation { get; set; }
 }
 
 /// <summary>Master loại công việc dịch vụ (Ser_MST_ServiceType) — port 1:1 FrmServiceTypeCreate/Search (TCMotor DMSCarSv). Tên loại công việc + cờ hoạt động.</summary>

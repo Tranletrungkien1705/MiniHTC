@@ -845,6 +845,14 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Phiếu điều chỉnh tồn kho: bổ sung cột nguồn + chuyển tên tự đặt sang mã TConst.Ser_StockAdj
+                "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"StockOutDate\" timestamp NULL",
+                "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"BalanceLocation\" text NULL",
+                "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"InStockLocation\" text NULL",
+                "UPDATE public.\"StockAdjs\" SET \"AdjStatus\" = '0' WHERE \"AdjStatus\" = 'Draft'",
+                "UPDATE public.\"StockAdjs\" SET \"AdjStatus\" = '1' WHERE \"AdjStatus\" = 'Approved'",
+                // 'Rejected' KHÔNG map được (nguồn không có nhánh huỷ) — giữ nguyên để không mất dấu vết dữ liệu cũ.
                 // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
                 "UPDATE public.\"StoRearCBs\" SET \"RearCBStatus\" = 'P' WHERE \"RearCBStatus\" = 'Draft'",
                 "UPDATE public.\"StoRearCBs\" SET \"RearCBStatus\" = 'A' WHERE \"RearCBStatus\" = 'Approved'",

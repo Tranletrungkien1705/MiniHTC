@@ -8035,7 +8035,7 @@ app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? s
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.AdjStatus == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StockAdjNo.Contains(no!));
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.StockAdjNo, x.StorageCode, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
+        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
         lines = db.StockAdjLines.Count(l => l.OrgId == t.OrgId && l.StockAdjId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -8048,10 +8048,16 @@ app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantCo
     var dup = lines.GroupBy(l => l.PartCode!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"Mã phụ tùng {dup.Key} bị trùng!" });
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = "ADJ" + DateTime.Now.ToString("yyMMddHHmmss"), StorageCode = dto.StorageCode, Remark = dto.Remark, AdjStatus = "Draft", CreatedBy = by, CreatedAt = DateTime.Now };
+    // 🔴 Số phiếu do CLIENT truyền rồi `.ToUpper()` (nguồn `StockOutAdjCreate`: tham số `strStockOutAdjNo`),
+    //    KHÔNG phải server tự sinh — port cũ tự bịa "ADJyyMMddHHmmss" ⇒ không khớp số phiếu hệ nguồn.
+    var no = (dto.StockAdjNo ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Bạn chưa nhập số phiếu điều chỉnh." });
+    if (await db.StockAdjs.AnyAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no))
+        return Results.BadRequest(new { error = $"Số phiếu {no} đã tồn tại!" });
+    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = no, StorageCode = dto.StorageCode, DealerCode = dto.DealerCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Remark = dto.Remark, AdjStatus = "0", CreatedBy = by, CreatedAt = DateTime.Now };
     db.StockAdjs.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust });
+        db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust, BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockAdjNo, lines = lines.Count });
 }).RequireAuthorization();
@@ -8061,20 +8067,53 @@ app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITena
     var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust, l.BalanceLocation, l.InStockLocation }).ToListAsync();
     return Results.Ok(new { h.StockAdjNo, h.AdjStatus, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockadjs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 KẾT THÚC phiếu điều chỉnh — port `ProcessFinishStockOutAdj` (BizCarSv.Inventory.StockAdj.cs:240-378).
+// Port cũ chỉ ĐỔI CỜ approve/reject mà **KHÔNG hề động vào tồn kho** ⇒ "điều chỉnh tồn kho" không điều chỉnh gì.
+// Nguồn khi kết thúc: mỗi dòng TRỪ tồn ở kho CÂN ĐỐI rồi CHUYỂN sang kho ĐÍCH, có guard tồn tại tồn kho trước.
+// ⚠️ Nhánh "reject" đã BỎ: nguồn không có huỷ phiếu điều chỉnh (`Ser_StockAdj` chỉ "0"/"1").
+app.MapPost("/api/stockadjs/{no}/finish", async (string no, AppDbContext db, ITenantContext t) =>
 {
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    no = no.Trim().ToUpperInvariant();
     var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.AdjStatus != "Draft") return Results.BadRequest(new { error = "Phiếu không ở trạng thái chờ duyệt." });
-    h.AdjStatus = action == "approve" ? "Approved" : "Rejected";
-    if (action == "approve") h.ApprovedAt = DateTime.Now;
+    if (h.AdjStatus != "0") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu ở trạng thái Mới tạo." });
+    var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id).ToListAsync();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Phiếu không có dòng phụ tùng." });
+
+    var wh = h.StorageCode ?? "";
+    // Guard theo nguồn: CheckNotExistStockBalance / CheckNotFoundPartInstance — thiếu tồn ở kho cân đối là LỖI, không âm thầm bỏ qua.
+    foreach (var l in lines)
+    {
+        var bal = l.BalanceLocation ?? "";
+        var st = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == wh && x.PartCode == l.PartCode && (x.Location ?? "") == bal);
+        if (st is null) return Results.BadRequest(new { error = $"Không tìm thấy tồn kho của {l.PartCode} tại vị trí cân đối '{bal}'." });
+        if (st.OnHand < l.QtyAdjust) return Results.BadRequest(new { error = $"Tồn không đủ cho {l.PartCode}@{bal}: cần {l.QtyAdjust}, còn {st.OnHand}." });
+    }
+    foreach (var l in lines)
+    {
+        var bal = l.BalanceLocation ?? "";
+        var src = await db.PartStocks.FirstAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == wh && x.PartCode == l.PartCode && (x.Location ?? "") == bal);
+        src.OnHand -= l.QtyAdjust; src.UpdatedAt = DateTime.Now;
+
+        // ⚠️ MÂU THUẪN NGUỒN (đã ghi C0-bug3, KHÔNG tự sửa nguồn): nhánh "chưa có bản ghi kho đích" nguồn GÁN
+        //    `= dActualQuantity` (cộng vào) còn nhánh "đã có" lại viết `- dActualQuantity` (trừ tiếp).
+        //    Port theo nhánh insert + đúng ngữ nghĩa comment nguồn "Chuyển số lượng" ⇒ CỘNG vào kho đích.
+        var dst0 = l.InStockLocation ?? "";
+        var dst = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == wh && x.PartCode == l.PartCode && (x.Location ?? "") == dst0);
+        if (dst is null)
+        {
+            dst = new PartStock { OrgId = t.OrgId, WarehouseCode = wh, PartCode = l.PartCode, PartName = l.PartName, Location = l.InStockLocation, OnHand = 0 };
+            db.PartStocks.Add(dst);
+        }
+        dst.OnHand += l.QtyAdjust; dst.UpdatedAt = DateTime.Now;
+    }
+    h.AdjStatus = "1"; h.ApprovedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockAdjNo, h.AdjStatus });
+    return Results.Ok(new { h.StockAdjNo, status = h.AdjStatus, statusName = "Kết thúc", adjustedLines = lines.Count });
 }).RequireAuthorization();
 
 // ===== Master loại công việc DV (SerServiceType — port 1:1 FrmServiceTypeCreate/Search, TCMotor DMSCarSv) =====
@@ -20781,8 +20820,8 @@ record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit,
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
-record StockAdjDto(string? StorageCode, string? Remark, List<StockAdjLineDto>? Lines);
-record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust);
+record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
+record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive);
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
 record SerPartTypeDto(string? TypeName, string? FlagActive);
