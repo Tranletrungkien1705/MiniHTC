@@ -4523,6 +4523,40 @@ static string? StdPhoneVn(string? raw)
     if (digits.Length == 10 && digits[0] == '0') return digits;
     return null;
 }
+// ===== 🔴 LUẬT TÍNH TIỀN TIN NHẮN — port từ hệ SMS.V10 (chỉ có trên máy 150), SMS.Utils/Utils.cs =====
+// Port cũ chỉ đếm "số tin" = số điện thoại. Nguồn tính tiền theo SỐ PHẦN tin: nội dung dài bị chia
+// thành nhiều phần và TÍNH TIỀN TỪNG PHẦN; tin CÓ DẤU (Unicode) chỉ được 70 ký tự/phần thay vì 160.
+app.MapGet("/api/smssends/costinfo", () => Results.Ok(new
+{
+    ansi = new { maxPartFull = SmsCost.AnsiMaxPartFull, maxPartSplit = SmsCost.AnsiMaxPartSplit, maxLength = SmsCost.AnsiMax },
+    unicodeText = new { maxPartFull = SmsCost.UnicodeMaxPartFull, maxPartSplit = SmsCost.UnicodeMaxPartSplit, maxLength = SmsCost.UnicodeMax },
+    maxPart = SmsCost.MaxPart,
+    tryCountMax = SmsCost.TryCountMax,
+    batchTypes = new[] { new { code = "CSKH", name = "Chăm sóc khách hàng" }, new { code = "QC", name = "Quảng cáo" } },
+    costTypes = new[] { new { code = "NM", name = "Thường" }, new { code = "BN", name = "Brandname" } },
+    telCos = new[] { "VIETTEL", "MOBIFONE", "VINAPHONE", "VIETNAMOBILE" },
+    projectCodes = new[] { "DMS", "IDEALER", "LOYALTY" },
+    note = "Tin QC chỉ áp bậc thang 122/268/421/574 cho VIETNAMOBILE — bản biz LIVE đã bỏ 3 mạng còn lại.",
+})).RequireAuthorization();
+
+// Ước tính tiền TRƯỚC khi gửi (không ghi gì).
+app.MapPost("/api/smssends/estimate", (SmsEstimateDto dto) =>
+{
+    var content = dto.Content?.Trim() ?? "";
+    if (content.Length == 0) return Results.BadRequest(new { error = "Chưa có nội dung SMS." });
+    var isAnsi = dto.FlagANSI ?? SmsCost.DetectAnsi(content);
+    var pieces = SmsCost.Split(content, isAnsi);
+    var perPiece = pieces.Select(x => SmsCost.Parts(x.Length, isAnsi, dto.BatchType, dto.TelCo)).ToList();
+    var parts = perPiece.Sum();
+    var recipients = Math.Max(1, dto.RecipientCount ?? 1);
+    return Results.Ok(new
+    {
+        contentLength = content.Length, isAnsi, messages = pieces.Count, partsPerRecipient = parts,
+        partsPerMessage = perPiece, recipients,
+        unitPrice = dto.UnitPrice, totalParts = parts * recipients, totalCost = dto.UnitPrice * parts * recipients,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mobile, string? status, string? batch) =>
 {
     var q = db.SmsSends.Where(x => x.OrgId == t.OrgId);
@@ -4530,8 +4564,11 @@ app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mo
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
     var items = await q.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, x.InvalidMobile, sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
-    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "Sent"), invalid = items.Count(i => i.Status == "Invalid"), items });
+        .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, x.InvalidMobile,
+            x.FlagANSI, x.TelCo, x.BatchType, x.CostType, x.ProjectCode, x.UnitPrice, x.MsgParts, x.Cost, x.TryCount,
+            sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "F"), invalid = items.Count(i => i.InvalidMobile),
+        totalParts = items.Sum(i => i.MsgParts), totalCost = items.Sum(i => i.Cost), items });
 }).RequireAuthorization();
 
 // Gửi SMS: nội dung = smsType (mẫu) hoặc content trực tiếp; SĐT = danh sách mobiles và/hoặc toAllCustomers.
@@ -4554,6 +4591,20 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
         mobiles.AddRange(custMobiles);
     }
     if (mobiles.Count == 0) return Results.BadRequest(new { error = "Chưa có số điện thoại nhận." });
+    // 🔴 Luật tiền của nguồn: nội dung dài bị CHIA thành nhiều tin (tối đa 6 phần/tin),
+    // và mỗi tin tính tiền theo SỐ PHẦN chứ không phải 1 tin = 1 tiền.
+    var batchType = string.IsNullOrWhiteSpace(dto.BatchType) ? "CSKH" : dto.BatchType!.Trim().ToUpperInvariant();
+    if (batchType != "CSKH" && batchType != "QC")
+        return Results.BadRequest(new { error = "Loại lô không hợp lệ (chỉ CSKH hoặc QC)." });
+    var costType = string.IsNullOrWhiteSpace(dto.CostType) ? "NM" : dto.CostType!.Trim().ToUpperInvariant();
+    if (costType != "NM" && costType != "BN")
+        return Results.BadRequest(new { error = "Loại chi phí không hợp lệ (chỉ NM hoặc BN)." });
+    var telCo = string.IsNullOrWhiteSpace(dto.TelCo) ? null : dto.TelCo!.Trim().ToUpperInvariant();
+    if (telCo != null && telCo != "VIETTEL" && telCo != "MOBIFONE" && telCo != "VINAPHONE" && telCo != "VIETNAMOBILE")
+        return Results.BadRequest(new { error = "Nhà mạng không hợp lệ." });
+    if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không được âm." });
+    var isAnsi = dto.FlagANSI ?? SmsCost.DetectAnsi(content);
+    var pieces = SmsCost.Split(content, isAnsi);
     var no = "SMS" + DateTime.Now.ToString("yyMMddHHmmss");
     int queued = 0, invalid = 0;
     var invalids = new List<string>();
@@ -4565,16 +4616,29 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
         {
             // Số sai định dạng: nguồn coi là lô lỗi (Reject), kèm cờ riêng để biết lỗi do SỐ chứ không do gửi.
             invalid++; invalids.Add(m);
-            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = m ?? "", SmsType = smsType, Contents = content, Status = "R", InvalidMobile = true });
+            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = m ?? "", SmsType = smsType, Contents = content, Status = "R", InvalidMobile = true,
+                FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType, ProjectCode = dto.ProjectCode });
             continue;
         }
         if (!seen.Add(std)) continue; // bỏ trùng số trong lô
         // ⚠️ Nguồn tạo lô ở trạng thái "P" (chờ gửi) rồi mới gửi bất đồng bộ — KHÔNG đánh dấu đã gửi ngay.
-        db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = std, SmsType = smsType, Contents = content, Status = "P" });
-        queued++;
+        foreach (var piece in pieces)
+        {
+            var parts = SmsCost.Parts(piece.Length, isAnsi, batchType, telCo);
+            db.SmsSends.Add(new SmsSend
+            {
+                OrgId = t.OrgId, BatchNo = no, Mobile = std, SmsType = smsType, Contents = piece, Status = "P",
+                FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType,
+                ProjectCode = dto.ProjectCode, UnitPrice = dto.UnitPrice,
+                MsgParts = parts, Cost = dto.UnitPrice * parts,
+            });
+            queued++;
+        }
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { batchNo = no, queued, invalid, invalids, contentLength = content.Length });
+    var totalParts = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == no && !x.InvalidMobile).SumAsync(x => x.MsgParts);
+    return Results.Ok(new { batchNo = no, queued, invalid, invalids, contentLength = content.Length,
+        isAnsi, messagesPerRecipient = pieces.Count, totalParts, totalCost = dto.UnitPrice * totalParts });
 }).RequireAuthorization();
 
 // 🔴 Trạng thái gửi SMS theo ĐÚNG nguồn (TConst.SmsStage) — port cũ chỉ có 2/6 (Sent|Invalid).
@@ -19576,7 +19640,71 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsBatchStatusDto(string? ToStatus);
-record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers);
+static class SmsCost
+{
+    // TConst.SMSMix
+    public const int AnsiMaxPartFull = 160;
+    public const int AnsiMaxPartSplit = 153;
+    public const int UnicodeMaxPartFull = 70;
+    public const int UnicodeMaxPartSplit = 67;
+    public const int MaxPart = 6;
+    public const int AnsiMaxPartFullQCVN_VT = 122;
+    public const int TryCountMax = 1;
+    public static int AnsiMax => AnsiMaxPartSplit * MaxPart;        // 918
+    public static int UnicodeMax => UnicodeMaxPartSplit * MaxPart;  // 402
+
+    /// <summary>Suy tin không dấu: mọi ký tự &lt;= 127. ⚠️ SUY LUẬN, nguồn đọc cờ này từ DB.</summary>
+    public static bool DetectAnsi(string contents) => contents.All(ch => ch <= 127);
+
+    public static int MaxLength(bool isAnsi) => isAnsi ? AnsiMax : UnicodeMax;
+
+    /// <summary>Chia nội dung dài thành NHIỀU TIN (SmsSplitContents) — mỗi tin tối đa 6 phần.</summary>
+    public static List<string> Split(string contents, bool isAnsi)
+    {
+        var max = MaxLength(isAnsi);
+        var result = new List<string>();
+        if (string.IsNullOrEmpty(contents)) return result;
+        var n = contents.Length / max;
+        for (var i = 0; i < n; i++) result.Add(contents.Substring(i * max, max));
+        if (n * max < contents.Length) result.Add(contents.Substring(n * max));
+        return result;
+    }
+
+    /// <summary>Công thức CHUẨN (SmsGetMsgCost): số phần tin.</summary>
+    public static int PartsNormal(int len, bool isAnsi)
+    {
+        if (len < 1) return 0;
+        return isAnsi
+            ? (len <= AnsiMaxPartFull ? 1 : (len - 1) / AnsiMaxPartSplit + 1)
+            : (len <= UnicodeMaxPartFull ? 1 : (len - 1) / UnicodeMaxPartSplit + 1);
+    }
+
+    /// <summary>
+    /// Công thức tin QUẢNG CÁO (SmsGetMsgCostQC — bản LIVE).
+    /// ⚠️ TWIN: bản chết `SmsGetMsgCostQC_Old20171028` áp bậc thang cho MobiFone/Viettel/Vinaphone;
+    /// bản LIVE đã COMMENT 3 mạng đó, CHỈ còn VietNamMobile. Port theo dòng ĐANG CHẠY.
+    /// </summary>
+    public static int PartsQC(int len, bool isAnsi, string? telCo)
+    {
+        if (len < 1) return 0;
+        if (!string.Equals(telCo, "VIETNAMOBILE", StringComparison.OrdinalIgnoreCase))
+            return PartsNormal(len, isAnsi);
+        if (len <= 122) return 1;
+        if (len <= 268) return 2;
+        if (len <= 421) return 3;
+        if (len <= 574) return 4;
+        return isAnsi
+            ? (len <= AnsiMaxPartFullQCVN_VT ? 1 : (len - AnsiMaxPartSplit) / AnsiMaxPartSplit + 1 + 1)
+            : (len <= UnicodeMaxPartFull ? 1 : (len - 1) / UnicodeMaxPartSplit + 1);
+    }
+
+    public static int Parts(int len, bool isAnsi, string? batchType, string? telCo) =>
+        string.Equals(batchType, "QC", StringComparison.OrdinalIgnoreCase)
+            ? PartsQC(len, isAnsi, telCo) : PartsNormal(len, isAnsi);
+}
+
+record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers, bool? FlagANSI = null, string? TelCo = null, string? BatchType = null, string? CostType = null, string? ProjectCode = null, decimal UnitPrice = 0);
+record SmsEstimateDto(string? Content, bool? FlagANSI, string? TelCo, string? BatchType, decimal UnitPrice, int? RecipientCount);
 record ServiceQuotationDto(string? RONo, string? Vin, string? PlateNo, string? CusName, decimal Discount, string? Note, List<SqLaborDto>? Labors, List<SqPartDto>? Parts,
     /// Mức khấu trừ bảo hiểm — CHỈ hợp lệ khi báo giá có dòng ExpenseType="ROInsurance" (luật checkInsuranceDeductible).
     decimal InsuranceDeductible = 0);

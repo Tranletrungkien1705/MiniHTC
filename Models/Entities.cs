@@ -5772,6 +5772,41 @@ public sealed class SmsSend
     /// <summary>Số điện thoại không hợp lệ (port cũ đánh dấu bằng Status="Invalid" — nay tách thành cờ riêng).</summary>
     public bool InvalidMobile { get; set; }
 
+    /// <summary>
+    /// 🔴 Tin KHÔNG DẤU hay CÓ DẤU (`FlagANSI`) — quyết định số ký tự mỗi phần tin, do đó quyết định TIỀN:
+    /// ANSI 160 ký tự (1 phần) / 153 (nhiều phần); Unicode chỉ 70 / 67.
+    /// ⚠️ Nguồn đọc cột này từ DB; tôi KHÔNG tìm thấy chỗ ghi nó trong code đã đọc ⇒ ở đây cho truyền vào,
+    /// nếu không truyền thì suy từ nội dung (mọi ký tự &lt;= 127 ⇒ ANSI). Đây là SUY LUẬN của tôi.
+    /// </summary>
+    public bool FlagANSI { get; set; }
+
+    /// <summary>Nhà mạng nhận (`TConst.TelCo`): VIETTEL · MOBIFONE · VINAPHONE · VIETNAMOBILE.
+    /// Ảnh hưởng TIỀN với tin quảng cáo. ⚠️ Nguồn không có hàm suy nhà mạng từ đầu số trong vùng đã đọc
+    /// ⇒ KHÔNG tự suy, phải truyền vào.</summary>
+    public string? TelCo { get; set; }
+
+    /// <summary>Loại lô (`TConst.BatchType`): "CSKH" chăm sóc khách hàng · "QC" quảng cáo.
+    /// 🔴 Tin QC có BẢNG GIÁ RIÊNG theo bậc thang — tính nhầm là sai tiền.</summary>
+    public string BatchType { get; set; } = "CSKH";
+
+    /// <summary>Loại chi phí (`TConst.CostType`): "NM" thường · "BN" brandname.</summary>
+    public string CostType { get; set; } = "NM";
+
+    /// <summary>Dự án phát sinh tin (`TConst.ProjectCode`): DMS · IDEALER · LOYALTY.</summary>
+    public string? ProjectCode { get; set; }
+
+    /// <summary>Đơn giá 1 PHẦN tin.</summary>
+    public decimal UnitPrice { get; set; }
+
+    /// <summary>SỐ PHẦN tin sau khi chia — chính là hệ số nhân tiền.</summary>
+    public int MsgParts { get; set; } = 1;
+
+    /// <summary>Thành tiền = <see cref="UnitPrice"/> × <see cref="MsgParts"/>.</summary>
+    public decimal Cost { get; set; }
+
+    /// <summary>Số lần đã thử gửi — nguồn giới hạn `SMSTryCountMax = 1` (KHÔNG tự gửi lại).</summary>
+    public int TryCount { get; set; }
+
     public DateTime SendDate { get; set; } = DateTime.Now;
 }
 

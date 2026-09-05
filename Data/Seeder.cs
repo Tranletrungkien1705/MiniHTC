@@ -714,6 +714,16 @@ public static class Seeder
                 "ALTER TABLE public.\"OrderPartLines\" ADD COLUMN IF NOT EXISTS \"OrderPartStatusDtl\" text NOT NULL DEFAULT 'P'",
                 // Cờ số ĐT sai định dạng ở lô SMS (tách khỏi Status để không lẫn với kết quả gửi)
                 "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"InvalidMobile\" boolean NOT NULL DEFAULT false",
+                // Luật TÍNH TIỀN tin nhắn (SMS.V10 — hệ CHỈ có trên máy 150): số phần tin quyết định tiền
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"FlagANSI\" boolean NOT NULL DEFAULT false",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"TelCo\" text NULL",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"BatchType\" text NOT NULL DEFAULT 'CSKH'",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"CostType\" text NOT NULL DEFAULT 'NM'",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"ProjectCode\" text NULL",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"UnitPrice\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"MsgParts\" integer NOT NULL DEFAULT 1",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"Cost\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"TryCount\" integer NOT NULL DEFAULT 0",
                 // Trục trạng thái đồng bộ API hãng HMC của đề nghị bảo hành (TConst.HMCApiStatus, TCMotor)
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"HMCApiStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"SyncHMCDateTime\" timestamp NULL",
