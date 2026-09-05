@@ -2776,18 +2776,54 @@ public sealed class ComplaintErrorCode
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Loại bảo hành RO (Ser_MST_ROWarrantyType) — port 1:1 FrmMstWarrantyTypeMng (TCMotor DMSCarSv/Admin). Loại chính + loại chi tiết + yêu cầu ảnh chứng minh. Upsert-by-(TypeCode+DtlCode) + toggle.</summary>
+/// <summary>
+/// Loại bảo hành RO (Ser_MST_ROWarrantyType) — port 1:1 FrmMstWarrantyTypeMng (TCMotor DMSCarSv/Admin).
+/// Loại chính (XM/SB/PT/TC/BT) + loại chi tiết (A/B/P/W/S/R/C).
+/// Danh sách loại ảnh bắt buộc nằm ở bảng chi tiết <see cref="ROWarrantyTypePhoto"/>, KHÔNG phải một cột chuỗi.
+/// </summary>
 public sealed class ROWarrantyType
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+
+    /// <summary>Khoá tự tăng của nguồn (ROWTID) — bảng chi tiết loại ảnh nối về đây.</summary>
+    public string? ROWTID { get; set; }
+
     public string ROWTypeCode { get; set; } = "";
     public string? ROWTypeName { get; set; }
     public string ROWTypeDtlCode { get; set; } = "";
     public string? ROWTypeDtlName { get; set; }
+
+    /// <summary>
+    /// ⚠️ KHÔNG phải dữ liệu gốc — đây là CHUỖI HIỂN THỊ do lưới nguồn tự dựng từ bảng chi tiết
+    /// (nối mã loại ảnh bằng ", ", có loại trừ). Giữ lại cho dữ liệu cũ; nguồn sự thật là
+    /// <see cref="ROWarrantyTypePhoto"/>.
+    /// </summary>
     public string? ROWPhotoType { get; set; }
+
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public string? UpdatedBy { get; set; }
+}
+
+/// <summary>
+/// Loại ảnh chứng minh bắt buộc cho một loại bảo hành (Ser_MST_ROWarrantyType_PhotoType —
+/// port 1:1 FrmMstWarrantyTypeMng, TCMotor DMSCarSv/Admin).
+/// MỘT loại bảo hành đòi NHIỀU loại ảnh; nguồn trả về thành một bảng kết quả riêng.
+/// </summary>
+public sealed class ROWarrantyTypePhoto
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Khoá nối về <see cref="ROWarrantyType"/> (theo Id nội bộ của MiniHTC).</summary>
+    public long ROWarrantyTypeId { get; set; }
+
+    /// <summary>Mã loại ảnh (ROWPTCODE) — tra ở master Ser_MST_ROWarrantyPhotoType.</summary>
+    public string ROWPTCode { get; set; } = "";
+
+    /// <summary>Tên loại ảnh (ROWPTNAME).</summary>
+    public string? ROWPTName { get; set; }
 }
 
 /// <summary>Hạng mục công bảo hành theo model (Mst_Warranty_Work_Mng) — port 1:1 FrmMstWarrantyWorkMng (TCMotor DMSCarSv/Admin). Mã CV + tên + model + loại áp dụng + số giờ công + đơn giá giờ/công + VAT. Upsert-by-(code+model) + toggle.</summary>

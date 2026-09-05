@@ -109,6 +109,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PaymentTermMst> PaymentTermMsts => Set<PaymentTermMst>();
     public DbSet<ComplaintErrorCode> ComplaintErrorCodes => Set<ComplaintErrorCode>();
     public DbSet<ROWarrantyType> ROWarrantyTypes => Set<ROWarrantyType>();
+    public DbSet<ROWarrantyTypePhoto> ROWarrantyTypePhotos => Set<ROWarrantyTypePhoto>();
     public DbSet<WarrantyWorkMst> WarrantyWorkMsts => Set<WarrantyWorkMst>();
     public DbSet<CompartmentMst> CompartmentMsts => Set<CompartmentMst>();
     public DbSet<StaffMst> StaffMsts => Set<StaffMst>();

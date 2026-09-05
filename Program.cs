@@ -9532,28 +9532,99 @@ app.MapPost("/api/complainterrorcodes/{id}/toggle", async (long id, AppDbContext
 }).RequireAuthorization();
 
 // ===== Loại bảo hành RO (ROWarrantyType — port 1:1 FrmMstWarrantyTypeMng, TCMotor DMSCarSv/Admin) =====
+
+/// <summary>
+/// Bốn mã loại ảnh bị LOẠI khỏi chuỗi hiển thị trên lưới nguồn (FrmMstWarrantyTypeMng).
+/// Chúng vẫn tồn tại trong bảng chi tiết — chỉ không hiện lên cột tóm tắt.
+/// </summary>
+string[] warrantyPhotoTypesHiddenOnGrid = { "KHAC", "PXK", "MPTC", "MPTM" };
+
+/// <summary>
+/// Dựng chuỗi tóm tắt "loại ảnh bắt buộc" đúng như lưới nguồn:
+/// nối mã bằng ", ", bỏ 4 mã ẩn, và BỎ QUA hẳn cặp loại "TC" + chi tiết "R" (bảo hành thiện chí)
+/// — nguồn `continue` trước khi tính nên ô này để trống.
+/// </summary>
+string BuildWarrantyPhotoTypeDisplay(string typeCode, string typeDtlCode, IEnumerable<string> photoCodes)
+{
+    if (typeCode == "TC" && typeDtlCode == "R") return "";
+    var visibleCodes = photoCodes
+        .Where(code => !string.IsNullOrWhiteSpace(code))
+        .Select(code => code.Trim().ToUpperInvariant())
+        .Where(code => !warrantyPhotoTypesHiddenOnGrid.Contains(code));
+    return string.Join(", ", visibleCodes);
+}
+
 app.MapGet("/api/rowarrantytypes", async (AppDbContext db, ITenantContext t, string? typeCode, bool? all) =>
 {
     var qry = db.ROWarrantyTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(typeCode)) qry = qry.Where(x => x.ROWTypeCode == typeCode);
-    var items = await qry.OrderBy(x => x.ROWTypeCode).ThenBy(x => x.ROWTypeDtlCode).Take(1000)
-        .Select(x => new { x.Id, x.ROWTypeCode, x.ROWTypeName, x.ROWTypeDtlCode, x.ROWTypeDtlName, x.ROWPhotoType, x.FlagActive }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    var rows = await qry.OrderBy(x => x.ROWTypeCode).ThenBy(x => x.ROWTypeDtlCode).Take(1000).ToListAsync();
+    var typeIds = rows.Select(x => x.Id).ToList();
+    var photos = await db.ROWarrantyTypePhotos
+        .Where(p => p.OrgId == t.OrgId && typeIds.Contains(p.ROWarrantyTypeId))
+        .Select(p => new { p.ROWarrantyTypeId, p.ROWPTCode, p.ROWPTName })
+        .ToListAsync();
+
+    var items = rows.Select(x =>
+    {
+        var photosOfType = photos.Where(p => p.ROWarrantyTypeId == x.Id).ToList();
+        return new
+        {
+            x.Id, x.ROWTID, x.ROWTypeCode, x.ROWTypeName, x.ROWTypeDtlCode, x.ROWTypeDtlName,
+            // Chuỗi hiển thị dựng đúng như lưới nguồn (loại trừ 4 mã + bỏ qua cặp TC/R).
+            rowPhotoType = BuildWarrantyPhotoTypeDisplay(x.ROWTypeCode, x.ROWTypeDtlCode, photosOfType.Select(p => p.ROWPTCode)),
+            photos = photosOfType.Select(p => new { p.ROWPTCode, p.ROWPTName }),
+            x.FlagActive, x.UpdatedAt
+        };
+    }).ToList();
+    return Results.Ok(new { count = items.Count, notFound = items.Count == 0, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/rowarrantytypes", async (ROWarrantyTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/rowarrantytypes", async (
+    ROWarrantyTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var tc = (dto.ROWTypeCode ?? "").Trim().ToUpperInvariant();
     var dc = (dto.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(tc)) return Results.BadRequest(new { error = "Chưa nhập mã loại bảo hành." });
     if (string.IsNullOrWhiteSpace(dc)) return Results.BadRequest(new { error = "Chưa nhập mã loại chi tiết." });
+
+    var photoLines = (dto.Photos ?? new()).Where(p => !string.IsNullOrWhiteSpace(p.ROWPTCode)).ToList();
+    var duplicatedPhoto = photoLines
+        .GroupBy(p => p.ROWPTCode!.Trim().ToUpperInvariant())
+        .FirstOrDefault(g => g.Count() > 1);
+    if (duplicatedPhoto is not null)
+        return Results.BadRequest(new { error = $"Loại ảnh '{duplicatedPhoto.Key}' bị trùng!" });
+
     var row = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWTypeCode == tc && x.ROWTypeDtlCode == dc);
     if (row is null) { row = new ROWarrantyType { OrgId = t.OrgId, ROWTypeCode = tc, ROWTypeDtlCode = dc }; db.ROWarrantyTypes.Add(row); }
-    row.ROWTypeName = dto.ROWTypeName; row.ROWTypeDtlName = dto.ROWTypeDtlName; row.ROWPhotoType = dto.ROWPhotoType; row.UpdatedAt = DateTime.Now;
+    row.ROWTypeName = dto.ROWTypeName;
+    row.ROWTypeDtlName = dto.ROWTypeDtlName;
+    if (!string.IsNullOrWhiteSpace(dto.ROWTID)) row.ROWTID = dto.ROWTID!.Trim();
+    row.UpdatedAt = DateTime.Now;
+    row.UpdatedBy = user.Identity?.Name;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ROWTypeCode, row.ROWTypeDtlCode, row.FlagActive });
+    await db.SaveChangesAsync();   // cần Id trước khi ghi bảng chi tiết
+
+    // Chỉ thay danh sách loại ảnh khi client CÓ gửi lên — không gửi = giữ nguyên.
+    if (dto.Photos is not null)
+    {
+        db.ROWarrantyTypePhotos.RemoveRange(
+            db.ROWarrantyTypePhotos.Where(p => p.OrgId == t.OrgId && p.ROWarrantyTypeId == row.Id));
+        foreach (var line in photoLines)
+            db.ROWarrantyTypePhotos.Add(new ROWarrantyTypePhoto
+            {
+                OrgId = t.OrgId,
+                ROWarrantyTypeId = row.Id,
+                ROWPTCode = line.ROWPTCode!.Trim().ToUpperInvariant(),
+                ROWPTName = line.ROWPTName
+            });
+        // Cột chuỗi hiển thị được dựng lại cho khớp bảng chi tiết.
+        row.ROWPhotoType = BuildWarrantyPhotoTypeDisplay(tc, dc, photoLines.Select(p => p.ROWPTCode!.Trim().ToUpperInvariant()));
+        await db.SaveChangesAsync();
+    }
+
+    return Results.Ok(new { row.Id, row.ROWTypeCode, row.ROWTypeDtlCode, photos = photoLines.Count, row.ROWPhotoType, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapPost("/api/rowarrantytypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -18048,7 +18119,8 @@ record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCo
 record CarStdOptDto(string? ModelCode, string? StdCode, string? StdDesc, string? GradeCode, string? GradeDesc, string? FlagActive);
 record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDays, int GuaranteeDueDays, int PaymentCLDueDays, int PaymentNHSDueDays, string? FlagActive);
 record ComplaintErrorCodeDto(string? ErrorCode, string? ErrorName, string? ErrorDesc, string? ErrorTypeCode, int WarrantyDate, int WarrantyKm, string? Remark, string? FlagActive);
-record ROWarrantyTypeDto(string? ROWTypeCode, string? ROWTypeName, string? ROWTypeDtlCode, string? ROWTypeDtlName, string? ROWPhotoType, string? FlagActive);
+record ROWarrantyTypePhotoDto(string? ROWPTCode, string? ROWPTName);
+record ROWarrantyTypeDto(string? ROWTypeCode, string? ROWTypeName, string? ROWTypeDtlCode, string? ROWTypeDtlName, string? ROWPhotoType, string? FlagActive, List<ROWarrantyTypePhotoDto>? Photos = null, string? ROWTID = null);
 record WarrantyWorkMstDto(string? ROWWorkCode, string? ROWWorkName, string? ModelCode, string? AppTypeCode, decimal RateHour, decimal RatePrice, decimal Price, decimal VAT, string? Remark, string? FlagActive);
 record CompartmentMstDto(string? CompartmentCode, string? CompartmentName, string? FlagActive);
 record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive);
