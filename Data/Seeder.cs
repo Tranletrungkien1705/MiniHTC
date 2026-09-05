@@ -837,6 +837,14 @@ public static class Seeder
                 "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"RejectReason\" text NULL",
                 "ALTER TABLE public.\"CarTestCarDtls\" ADD COLUMN IF NOT EXISTS \"TestCarStatusDtl\" text NOT NULL DEFAULT 'P'",
+                // Biên bản giao nhận: TUYẾN thuộc từng XE (hợp nhất thực thể song trùng Sto_DlvMinutes)
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"FProvinceCode\" text NULL",
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"TProvinceCode\" text NULL",
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"FDistrictCode\" text NULL",
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"TDistrictCode\" text NULL",
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"DriverCode\" text NULL",
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"DlvStartDate\" timestamp NULL",
+                "ALTER TABLE public.\"TranspDlvConfirmCars\" ADD COLUMN IF NOT EXISTS \"DlvEndDate\" timestamp NULL",
                 // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
                 "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
                 "UPDATE public.\"ReqMortgages\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",

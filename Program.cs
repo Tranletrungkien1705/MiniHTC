@@ -14534,13 +14534,26 @@ app.MapPost("/api/bankingtrans/{no}/{action}", async (string no, string action, 
 }).RequireAuthorization();
 
 // ===== Biên bản giao xe (DlvMinutes — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes, 2010.HTC/Sales/DlvMinutes) =====
+// ⛔ HỢP NHẤT NỢ ### C0 (treo từ #14, xử lý #60): cụm `/api/dlvminutes` trước đây ghi vào bộ
+// `DlvMinutes` (bảng "DlvMinutesSet") RIÊNG, trong khi `/api/transpdlv` ghi vào
+// `TranspDlvConfirm` + `TranspDlvConfirmCar` + `DlvMinutesCheckItem` — **cùng bảng nguồn `Sto_DlvMinutes`**.
+// Hợp nhất theo kiểu BỔ KHUYẾT: giữ bộ có 2 phía duyệt F/T + checklist dạng BẢNG,
+// và mang TUYẾN vận chuyển từ bộ cũ sang — nhưng đặt ở **DÒNG XE**, đúng mô hình nguồn.
 app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? status, string? vin) =>
 {
-    var q = db.DlvMinutesSet.Where(m => m.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
-    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(m => m.VIN.Contains(vin.Trim().ToUpperInvariant()));
-    var items = await q.OrderByDescending(m => m.Id).Take(500)
-        .Select(m => new { m.DlvMinutesNo, m.VIN, m.FProvinceCode, m.TProvinceCode, m.TransporterCode, m.DriverCode, m.DlvStartDate, m.DlvEndDate, m.Status, m.CreatedAt }).ToListAsync();
+    var qy = db.TranspDlvConfirms.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(m => m.FDlvMnStatus == status);
+    if (!string.IsNullOrWhiteSpace(vin))
+    {
+        var v = vin.Trim().ToUpperInvariant();
+        qy = qy.Where(m => db.TranspDlvConfirmCars.Any(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id && c.VIN.Contains(v)));
+    }
+    var items = await qy.OrderByDescending(m => m.Id).Take(500).Select(m => new
+    {
+        m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.FDlvMnStatus, m.TDlvMnStatus,
+        m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy, m.CreatedAt,
+        cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id),
+    }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -14548,82 +14561,62 @@ app.MapPost("/api/dlvminutes", async (DlvMinutesDto dto, AppDbContext db, ITenan
 {
     if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Cần VIN." });
     if (string.IsNullOrWhiteSpace(dto.TransporterCode)) return Results.BadRequest(new { error = "Cần đơn vị vận tải." });
-    var checklistJson = System.Text.Json.JsonSerializer.Serialize(dto.Checklist ?? new Dictionary<string, bool>());
     var no = "DLV" + DateTime.Now.ToString("yyMMddHHmmss");
-    var m = new DlvMinutes
+    var m = new TranspDlvConfirm
     {
-        OrgId = t.OrgId, DlvMinutesNo = no, VIN = dto.VIN.Trim().ToUpperInvariant(), FProvinceCode = dto.FProvinceCode, TProvinceCode = dto.TProvinceCode,
-        FDistrictCode = dto.FDistrictCode, TDistrictCode = dto.TDistrictCode, TransporterCode = dto.TransporterCode.Trim(), DriverCode = dto.DriverCode,
-        DlvStartDate = dto.DlvStartDate, DlvEndDate = dto.DlvEndDate, ChecklistJson = checklistJson, Status = "Draft"
+        OrgId = t.OrgId, DlvMinutesNo = no, TransporterCode = dto.TransporterCode.Trim(),
+        FDlvMnStatus = "P", TDlvMnStatus = "P",     // hai phía duyệt ĐỘC LẬP (TConst.Stage)
     };
-    db.DlvMinutesSet.Add(m); await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, m.VIN });
+    db.TranspDlvConfirms.Add(m); await db.SaveChangesAsync();
+
+    // Tuyến đi theo XE (đúng mô hình nguồn), không nằm ở header.
+    db.TranspDlvConfirmCars.Add(new TranspDlvConfirmCar
+    {
+        OrgId = t.OrgId, TranspDlvConfirmId = m.Id, VIN = dto.VIN.Trim().ToUpperInvariant(),
+        FProvinceCode = dto.FProvinceCode, TProvinceCode = dto.TProvinceCode,
+        FDistrictCode = dto.FDistrictCode, TDistrictCode = dto.TDistrictCode,
+        DriverCode = dto.DriverCode, DlvStartDate = dto.DlvStartDate, DlvEndDate = dto.DlvEndDate,
+    });
+
+    // Checklist: bộ cũ lưu JSON, bộ giữ lưu thành BẢNG (DlvMinutesCheckItem) — ghi theo bảng.
+    foreach (var kv in dto.Checklist ?? new Dictionary<string, bool>())
+    {
+        var parts = kv.Key.Split('.', 2);
+        db.DlvMinutesCheckItems.Add(new DlvMinutesCheckItem
+        {
+            OrgId = t.OrgId, TranspDlvConfirmId = m.Id,
+            ItemGroup = parts.Length == 2 ? parts[0] : "OS",
+            ItemCode = parts.Length == 2 ? parts[1] : kv.Key,
+            FStatus = kv.Value ? "1" : "0",
+        });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, vin = dto.VIN.Trim().ToUpperInvariant() });
 }).RequireAuthorization();
 
 app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
     if (m is null) return Results.NotFound(new { no });
-    Dictionary<string, bool> checklist;
-    try { checklist = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, bool>>(m.ChecklistJson) ?? new(); }
-    catch { checklist = new(); }
-    return Results.Ok(new { m.DlvMinutesNo, m.VIN, m.FProvinceCode, m.TProvinceCode, m.FDistrictCode, m.TDistrictCode, m.TransporterCode, m.DriverCode, m.DlvStartDate, m.DlvEndDate, m.Status, checklist });
+    var cars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+        .Select(c => new { c.VIN, c.ModelCode, c.FProvinceCode, c.TProvinceCode, c.FDistrictCode, c.TDistrictCode,
+            c.DriverCode, c.DlvStartDate, c.DlvEndDate }).ToListAsync();
+    var checklist = await db.DlvMinutesCheckItems.Where(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id)
+        .Select(x => new { x.ItemGroup, x.ItemCode, x.FStatus, x.TStatus }).ToListAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.DealerCode,
+        m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
+        cars, checklist });
 }).RequireAuthorization();
 
-app.MapPost("/api/dlvminutes/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
-    if (m.Status != "Draft") return Results.BadRequest(new { error = "Biên bản đã xác nhận." });
-    m.Status = "Confirmed"; m.ConfirmedAt = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, status = m.Status });
-}).RequireAuthorization();
-
-// ⚠️ SINH ĐÔI ENTITY (ghi nhận 2026-09-05, CHƯA hợp nhất): cùng bảng nguồn Sto_DlvMinutes hiện có HAI entity —
-//    `DlvMinutes` (bảng "DlvMinutesSet", theo VIN, checklist dạng JSON) dùng ở cụm Support này, và
-//    `TranspDlvConfirm` (+ `DlvMinutesCheckItem`) dùng ở cụm /api/transpdlv.
-//    Hợp nhất phải làm thành một lượt riêng có di trú dữ liệu; xem sổ theo dõi mục C.
-
-// Hỗ trợ sửa biên bản giao nhận theo lô (port 1:1 FrmSupport_BBGN_UpdateProvinceAndDistrict/FrmSupport_Sto_DlvMinutes_Update, ERP.V15.2025/Support).
-// field = fProvince|tProvince|fDistrict|tDistrict|dlvStartDate.
-app.MapPost("/api/dlvminutes/{no}/patch", async (string no, DlvMinutesPatchDto dto, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
-    var field = (dto.Field ?? "").Trim();
-    if (field is not ("fProvince" or "tProvince" or "fDistrict" or "tDistrict" or "dlvStartDate")) return Results.BadRequest(new { error = "Field không hợp lệ (fProvince|tProvince|fDistrict|tDistrict|dlvStartDate)." });
-    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
-    string oldVal;
-    switch (field)
-    {
-        case "fProvince": oldVal = m.FProvinceCode ?? ""; m.FProvinceCode = dto.Value.Trim().ToUpperInvariant(); break;
-        case "tProvince": oldVal = m.TProvinceCode ?? ""; m.TProvinceCode = dto.Value.Trim().ToUpperInvariant(); break;
-        case "fDistrict": oldVal = m.FDistrictCode ?? ""; m.FDistrictCode = dto.Value.Trim().ToUpperInvariant(); break;
-        case "tDistrict": oldVal = m.TDistrictCode ?? ""; m.TDistrictCode = dto.Value.Trim().ToUpperInvariant(); break;
-        default:
-            if (!DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày bắt đầu không hợp lệ." });
-            oldVal = m.DlvStartDate?.ToString("yyyy-MM-dd") ?? ""; m.DlvStartDate = newDate; break;
-    }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, field, oldValue = oldVal, newValue = dto.Value.Trim() });
-}).RequireAuthorization();
-
-// Sửa tỉnh/huyện hai đầu tuyến THEO LÔ — port 1:1 btnApply_Click của FrmSupport_BBGN_UpdateProvinceAndDistrict.
-// Form gửi lên MỘT BẢNG nhiều dòng (mỗi dòng = 1 VIN của biên bản) và sửa CẢ 4 CỘT cùng lúc,
-// chứ không phải sửa từng trường một như endpoint /patch ở trên.
+// Hỗ trợ sửa biên bản theo lô — khoá là CẶP (số biên bản, VIN): một biên bản chở nhiều xe, mỗi xe một tuyến.
 app.MapPost("/api/dlvminutes/patch-batch", async (
     DlvMinutesBatchPatchDto dto, AppDbContext db, ITenantContext t) =>
 {
     var lines = (dto.Rows ?? new()).ToList();
-    // Nguồn: lưới không có dòng nào được sửa → "Không có dữ liệu được thay đổi".
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
 
-    // Nguồn kiểm TỪNG DÒNG: chỉ cần MỘT trong bốn cột mới có giá trị là hợp lệ;
-    // rỗng CẢ BỐN mới báo lỗi (đây là "và", không phải "hoặc").
+    // Nguồn kiểm TỪNG DÒNG: rỗng CẢ BỐN cột mới mới báo lỗi.
     foreach (var line in lines)
     {
         if (string.IsNullOrWhiteSpace(line.FProvinceCodeNew)
@@ -14633,20 +14626,17 @@ app.MapPost("/api/dlvminutes/patch-batch", async (
             return Results.BadRequest(new { error = "Các cột dữ liệu mới không được để trống toàn bộ!" });
     }
 
-    var minutesNos = lines.Select(l => (l.DlvMinutesNo ?? "").Trim().ToUpperInvariant()).ToHashSet();
-    var vins = lines.Select(l => (l.VIN ?? "").Trim().ToUpperInvariant()).ToHashSet();
-    var rows = await db.DlvMinutesSet
-        .Where(x => x.OrgId == t.OrgId && minutesNos.Contains(x.DlvMinutesNo) && vins.Contains(x.VIN))
-        .ToListAsync();
-
     int updated = 0;
     var notFound = new List<string>();
     foreach (var line in lines)
     {
         var minutesNo = (line.DlvMinutesNo ?? "").Trim().ToUpperInvariant();
         var vin = (line.VIN ?? "").Trim().ToUpperInvariant();
-        // Khoá là CẶP (số biên bản, VIN) — một biên bản chở nhiều xe, mỗi xe một tuyến riêng.
-        var row = rows.FirstOrDefault(x => x.DlvMinutesNo == minutesNo && x.VIN == vin);
+        var row = await db.TranspDlvConfirmCars
+            .Where(c => c.OrgId == t.OrgId && c.VIN.ToUpper() == vin)
+            .Join(db.TranspDlvConfirms.Where(h => h.OrgId == t.OrgId && h.DlvMinutesNo.ToUpper() == minutesNo),
+                  c => c.TranspDlvConfirmId, h => h.Id, (c, h) => c)
+            .FirstOrDefaultAsync();
         if (row is null) { notFound.Add($"{minutesNo}/{vin}"); continue; }
 
         // Cột mới bỏ trống = GIỮ NGUYÊN giá trị cũ, không xoá.
@@ -14662,18 +14652,20 @@ app.MapPost("/api/dlvminutes/patch-batch", async (
     return Results.Ok(new { updated, notFound, message = "Lưu Thành công!" });
 }).RequireAuthorization();
 
-// Hỗ trợ xóa biên bản giao nhận (port 1:1 FrmSupportSto_DlvMinutes_Delete, ERP.V15.2025/Support).
-// TWIN: WS gọi biz `Sto_DlvMinutes_Del_New20181115` (KHÔNG phải `Sto_DlvMinutes_Del` trần).
-// Luật nguồn: chỉ xoá khi biên bản còn CHỜ DUYỆT phía giao — SQL chặn `FDlvMnStatus not in ('P')`
-// với mã lỗi Sto_DlvMinutes_Del_DeliveryFinished (đã giao xong thì cấm xoá).
+// Hỗ trợ xóa biên bản (port 1:1 FrmSupportSto_DlvMinutes_Delete).
+// TWIN: WS gọi biz `Sto_DlvMinutes_Del_New20181115` (KHÔNG phải bản trần).
+// 🔴 Luật nguồn dùng ĐÚNG cột `FDlvMnStatus`: SQL chặn `FDlvMnStatus not in ('P')`
+// ⇒ chỉ xoá khi phía GIAO còn chờ duyệt. Trước hợp nhất, port cũ kiểm cột `Status` tự đặt ("Draft").
 app.MapDelete("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
     if (m is null) return Results.NotFound(new { no });
-    if (m.Status != "Draft")
+    if (m.FDlvMnStatus != "P")
         return Results.BadRequest(new { error = "Biên bản đã giao xong, không thể xóa." });
-    db.DlvMinutesSet.Remove(m);
+    db.DlvMinutesCheckItems.RemoveRange(db.DlvMinutesCheckItems.Where(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id));
+    db.TranspDlvConfirmCars.RemoveRange(db.TranspDlvConfirmCars.Where(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id));
+    db.TranspDlvConfirms.Remove(m);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();

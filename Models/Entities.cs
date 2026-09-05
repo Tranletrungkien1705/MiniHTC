@@ -4555,6 +4555,10 @@ public sealed class BankingTrans
 }
 
 /// <summary>Biên bản giao xe (Sto_DlvMinutes) — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes (2010.HTC/Sales/DlvMinutes). BB giao/vận chuyển xe: VIN, tuyến đi-đến, ĐVVT + lái xe, ngày giao + checklist tình trạng xe (JSON ~25 mục OS/IS/SP/DA).</summary>
+// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (nợ `### C0`, treo từ #14, hợp nhất ở #60).
+// `DlvMinutes` (bảng "DlvMinutesSet") và <see cref="TranspDlvConfirm"/> (+ <see cref="DlvMinutesCheckItem"/>)
+// **cùng map bảng nguồn `Sto_DlvMinutes`**. Cụm `/api/dlvminutes` đã trỏ sang `TranspDlvConfirm`.
+// Giữ lớp này để đọc dữ liệu cũ, **KHÔNG ghi mới**.
 public sealed class DlvMinutes
 {
     public long Id { get; set; }
@@ -5949,6 +5953,18 @@ public sealed class TranspDlvConfirmCar
     public long TranspDlvConfirmId { get; set; }
     public string VIN { get; set; } = "";
     public string ModelCode { get; set; } = "";
+
+    // --- Tuyến vận chuyển: thuộc TỪNG XE, không phải header ---
+    // 🔴 Căn cứ: hàm sửa lô của nguồn khoá theo **CẶP (số biên bản, VIN)** — một biên bản chở nhiều xe,
+    // mỗi xe một tuyến riêng. Bộ thực thể song trùng cũ (`DlvMinutes`) để tuyến ở HEADER + 1 VIN/biên bản
+    // ⇒ mô hình sai, không chở được nhiều xe.
+    public string? FProvinceCode { get; set; }  // tuyến theo XE
+    public string? TProvinceCode { get; set; }
+    public string? FDistrictCode { get; set; }
+    public string? TDistrictCode { get; set; }
+    public string? DriverCode { get; set; }
+    public DateTime? DlvStartDate { get; set; }
+    public DateTime? DlvEndDate { get; set; }
 }
 
 /// <summary>Bản ghi bán hàng cho báo cáo HMC (ReportHMC) — port 1:1 FrmHMCReport.</summary>
