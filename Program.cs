@@ -821,6 +821,96 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Hãng bảo hiểm + khách hàng thuộc hãng (port 1:1 FrmInsuranceCreate/Modify — TCMotor DMSCarSv/Admin) =====
+// Nguồn: ValidateInput() + checkInsuranceExist() + gviewPart_ValidateRow() + mst.SerInsuranceCreate.
+app.MapGet("/api/insurances", async (AppDbContext database, ITenantContext tenant, string? keyword) =>
+{
+    var insuranceQuery = database.ServiceInsurances.Where(insurance => insurance.OrgId == tenant.OrgId);
+    if (!string.IsNullOrWhiteSpace(keyword))
+    {
+        var searchKeyword = keyword.Trim();
+        insuranceQuery = insuranceQuery.Where(insurance =>
+            insurance.InsNo.Contains(searchKeyword) || insurance.InsVieName.Contains(searchKeyword));
+    }
+    var items = await insuranceQuery.OrderBy(insurance => insurance.InsNo)
+        .Select(insurance => new
+        {
+            insurance.Id, insurance.InsNo, insurance.InsVieName, insurance.InsEngName, insurance.Address,
+            insurance.Email, insurance.Telephone, insurance.Fax, insurance.Website, insurance.Taxcode,
+            insurance.Description, insurance.Status,
+            customers = database.ServiceInsuranceCustomers
+                .Count(customer => customer.OrgId == tenant.OrgId && customer.ServiceInsuranceId == insurance.Id)
+        })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext database, ITenantContext tenant) =>
+{
+    // LUẬT 1-3 (ValidateInput): 3 trường bắt buộc, giữ nguyên văn thông báo form gốc.
+    if (string.IsNullOrWhiteSpace(request.InsNo))
+        return Results.BadRequest(new { error = "Phải nhập vào mã hãng bảo hiểm" });
+    if (string.IsNullOrWhiteSpace(request.InsVieName))
+        return Results.BadRequest(new { error = "Phải nhập vào tên tiếng việt" });
+    if (string.IsNullOrWhiteSpace(request.Address))
+        return Results.BadRequest(new { error = "Phải nhập vào địa chỉ" });
+
+    var insuranceNo = request.InsNo.Trim().ToUpperInvariant();
+
+    // LUẬT 4 (checkInsuranceExist): mã hãng BH đã tồn tại thì KHÔNG cho tạo mới.
+    var alreadyExists = await database.ServiceInsurances
+        .AnyAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo == insuranceNo);
+    if (alreadyExists)
+        return Results.BadRequest(new { error = "Hãng bảo hiểm đã tồn tại!" });
+
+    // LUẬT 5 (gviewPart_ValidateRow): mỗi dòng khách hàng phải có CusId, và CusId KHÔNG trùng nhau.
+    var customerRows = request.Customers ?? new List<InsuranceCustomerDto>();
+    var validationError = ValidateInsuranceCustomerRows(customerRows);
+    if (validationError is not null) return Results.BadRequest(new { error = validationError });
+
+    var insuranceCompany = new ServiceInsurance
+    {
+        OrgId = tenant.OrgId,
+        InsNo = insuranceNo,
+        InsVieName = request.InsVieName.Trim(),
+        InsEngName = request.InsEngName,
+        Address = request.Address.Trim(),
+        Email = request.Email, Telephone = request.Telephone, Fax = request.Fax,
+        Website = request.Website, Taxcode = request.Taxcode, Description = request.Description
+    };
+    database.ServiceInsurances.Add(insuranceCompany);
+    await database.SaveChangesAsync();
+
+    foreach (var customerRow in customerRows)
+        database.ServiceInsuranceCustomers.Add(new ServiceInsuranceCustomer
+        {
+            OrgId = tenant.OrgId,
+            ServiceInsuranceId = insuranceCompany.Id,
+            CusId = customerRow.CusId.Trim().ToUpperInvariant(),
+            CusName = customerRow.CusName,
+            Address = customerRow.Address,
+            Mobile = customerRow.Mobile,
+            Description = customerRow.Description
+        });
+    await database.SaveChangesAsync();
+
+    return Results.Ok(new { insuranceCompany.Id, insuranceCompany.InsNo, insuranceCompany.InsVieName, customers = customerRows.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/insurances/{insNo}/customers", async (string insNo, AppDbContext database, ITenantContext tenant) =>
+{
+    var insuranceNo = insNo.Trim().ToUpperInvariant();
+    var insuranceCompany = await database.ServiceInsurances
+        .FirstOrDefaultAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo == insuranceNo);
+    if (insuranceCompany is null) return Results.NotFound(new { error = "Không tồn tại." });
+
+    var customers = await database.ServiceInsuranceCustomers
+        .Where(customer => customer.OrgId == tenant.OrgId && customer.ServiceInsuranceId == insuranceCompany.Id)
+        .Select(customer => new { customer.CusId, customer.CusName, customer.Address, customer.Mobile, customer.Description })
+        .ToListAsync();
+    return Results.Ok(new { insNo = insuranceCompany.InsNo, count = customers.Count, customers });
+}).RequireAuthorization();
+
 // ===== Truy vấn hội viên Hyundai theo đại lý (port 1:1 FrmQuery_LoyaltyMember — TCMotor DMSCarSv/Services) =====
 // Nguồn: btnQuery_Click → LoyaltyService.Map_QueryDealer_Member_Create(dealerCode, memberNo, phone);
 // tra Crd_Member bên Loyalty (WA_Crd_Member_Get) lọc MemberNo + PhoneNo + trạng thái "APPROVE".
@@ -16412,6 +16502,26 @@ app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 
 
 /// <summary>
+/// Kiểm luật lưới khách hàng của hãng bảo hiểm — port từ gviewPart_ValidateRow (FrmInsuranceCreate).
+/// Hai luật: mã khách hàng KHÔNG được trống, và KHÔNG được trùng nhau trong cùng 1 hãng.
+/// </summary>
+/// <returns>null nếu hợp lệ; ngược lại là câu thông báo lỗi.</returns>
+static string? ValidateInsuranceCustomerRows(List<InsuranceCustomerDto> customerRows)
+{
+    var seenCustomerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var customerRow in customerRows)
+    {
+        if (string.IsNullOrWhiteSpace(customerRow.CusId))
+            return "Mã khách hàng không được để trống.";
+
+        var customerId = customerRow.CusId.Trim();
+        if (!seenCustomerIds.Add(customerId))
+            return $"Mã khách hàng '{customerId}' bị trùng trong danh sách.";
+    }
+    return null;
+}
+
+/// <summary>
 /// Kiểm toàn bộ luật per-dòng khi nhập phụ tùng nợ từ Excel (FrmImportSerPartOO.btnImportExcel_Click).
 /// Tách riêng để endpoint chỉ lo điều phối, và mỗi luật kiểm/sửa được độc lập (Single Responsibility).
 /// Giữ NGUYÊN VĂN các câu báo lỗi của form gốc để đối chiếu 1:1.
@@ -16527,6 +16637,23 @@ record QueryLoyaltyMemberDto(
     string MemberNo,     // mã hội viên (bắt buộc)
     string PhoneNo,      // số điện thoại (bắt buộc, chỉ chữ số)
     string? CardNo       // số thẻ trả về từ Loyalty (cc_CardNo), nếu client đã tra được
+);
+
+// ----- Hãng bảo hiểm (FrmInsuranceCreate/Modify) -----
+/// <summary>1 khách hàng thuộc hãng bảo hiểm; CusId bắt buộc và duy nhất trong hãng.</summary>
+record InsuranceCustomerDto(string CusId, string? CusName, string? Address, string? Mobile, string? Description);
+
+/// <summary>
+/// Khai báo hãng bảo hiểm. Ba trường bắt buộc theo ValidateInput() của form gốc:
+/// <paramref name="InsNo"/>, <paramref name="InsVieName"/>, <paramref name="Address"/>.
+/// </summary>
+record ServiceInsuranceDto(
+    string InsNo,          // mã hãng BH (bắt buộc, không trùng)
+    string InsVieName,     // tên tiếng Việt (bắt buộc)
+    string Address,        // địa chỉ (bắt buộc)
+    string? InsEngName, string? Email, string? Telephone, string? Fax,
+    string? Website, string? Taxcode, string? Description,
+    List<InsuranceCustomerDto>? Customers
 );
 
 // ----- Nhập phụ tùng nợ từ Excel (FrmImportSerPartOO) -----

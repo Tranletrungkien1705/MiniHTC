@@ -26,6 +26,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceComplaint> ServiceComplaints => Set<ServiceComplaint>();
     public DbSet<RoDeliveryDateHistory> RoDeliveryDateHistories => Set<RoDeliveryDateHistory>();
     public DbSet<DealerMemberQuery> DealerMemberQueries => Set<DealerMemberQuery>();
+    public DbSet<ServiceInsurance> ServiceInsurances => Set<ServiceInsurance>();
+    public DbSet<ServiceInsuranceCustomer> ServiceInsuranceCustomers => Set<ServiceInsuranceCustomer>();
     public DbSet<MemberVoucher> MemberVouchers => Set<MemberVoucher>();
     public DbSet<RoVoucherUse> RoVoucherUses => Set<RoVoucherUse>();
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();

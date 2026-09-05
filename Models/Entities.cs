@@ -5851,3 +5851,41 @@ public sealed class DealerMemberQuery
     public string MemberStatus { get; set; } = "APPROVE"; // nguồn chỉ tra hội viên đã APPROVE
     public DateTime QueriedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// Hãng bảo hiểm (Ser_Insurance — FrmInsuranceCreate/Modify, TCMotor DMSCarSv/Admin).
+/// Header khai báo hãng BH; kèm lưới khách hàng thuộc hãng (xem <see cref="ServiceInsuranceCustomer"/>).
+/// </summary>
+public sealed class ServiceInsurance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InsNo { get; set; } = "";        // txt_InsNo — mã hãng BH (bắt buộc, KHÔNG trùng)
+    public string InsVieName { get; set; } = "";   // txt_InsVieName — tên tiếng Việt (bắt buộc)
+    public string? InsEngName { get; set; }        // txt_InsEngName — tên tiếng Anh
+    public string Address { get; set; } = "";      // txt_Address — địa chỉ (bắt buộc)
+    public string? Email { get; set; }
+    public string? Telephone { get; set; }
+    public string? Fax { get; set; }
+    public string? Website { get; set; }
+    public string? Taxcode { get; set; }           // txt_Taxcode — mã số thuế
+    public string? Description { get; set; }
+    public string Status { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// Khách hàng thuộc hãng bảo hiểm (Ser_InsuranceCustomer — lưới con của FrmInsuranceCreate).
+/// Luật gốc (gviewPart_ValidateRow): CusId KHÔNG được trống và KHÔNG được trùng trong cùng 1 hãng.
+/// </summary>
+public sealed class ServiceInsuranceCustomer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ServiceInsuranceId { get; set; }
+    public string CusId { get; set; } = "";        // gridCusID — bắt buộc + duy nhất trong hãng
+    public string? CusName { get; set; }           // gridCusName
+    public string? Address { get; set; }           // gridAddress
+    public string? Mobile { get; set; }            // gridTelephone (FieldName = Mobile)
+    public string? Description { get; set; }       // gridDescription
+}
