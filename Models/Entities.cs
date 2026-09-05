@@ -5793,3 +5793,23 @@ public sealed class RoVoucherUse
     public decimal PointVCUse { get; set; }             // gridColPointVCUse — điểm sử dụng lần này
     public DateTime AppliedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// Lịch sử thay đổi thời gian GXDK — dự kiến giao xe của lệnh sửa chữa
+/// (FrmHistoryGXDK — TCMotor DMSCarSv/Services; bảng nguồn Ser_Ro_PlanedDeliveryDate_His).
+/// Mỗi lần đổi ngày dự kiến giao thì ghi thêm 1 dòng; dòng MỚI NHẤT mang FlagCurrent = "1".
+/// Luật gốc: KHÔNG cho xoá dòng FlagCurrent = "1" ("Không được xóa Thời gian GXDK mới nhất.").
+/// </summary>
+public sealed class RoDeliveryDateHistory
+{
+    public long Id { get; set; }                        // ~ cột AUTOID của nguồn
+    public Guid OrgId { get; set; }
+    public long RepairOrderId { get; set; }             // ~ ROID
+    public string RoNo { get; set; } = "";              // gridColRONo — số lệnh sửa chữa
+    public string? PlateNo { get; set; }                // PlateNo — biển số
+    public string? CusName { get; set; }                // gcol_CusName — tên khách hàng
+    public DateTime PlanedDeliveryDate { get; set; }    // gcolDateGXDK — thời gian GXDK (dự kiến giao)
+    public string? Remark { get; set; }                 // gcolNote (FieldName "REMARK") — ghi chú
+    public string FlagCurrent { get; set; } = "1";      // "1" = bản mới nhất (KHÔNG được xoá), "0" = bản cũ
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}

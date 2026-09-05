@@ -821,6 +821,106 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== Lịch sử thời gian GXDK / dự kiến giao xe (port 1:1 FrmHistoryGXDK — TCMotor DMSCarSv/Services) =====
+// Nguồn: Ser_Ro_PlanedDeliveryDate_HisGet / _HisDelete (bảng Ser_Ro_PlanedDeliveryDate_His).
+// Mỗi lần đổi ngày dự kiến giao → ghi 1 dòng lịch sử; dòng mới nhất mang FlagCurrent="1".
+app.MapGet("/api/gxdk", async (
+    AppDbContext database,
+    ITenantContext tenant,
+    string? roNo,
+    string? plateNo,
+    string? cusName,
+    DateTime? fromDate,
+    DateTime? toDate) =>
+{
+    var historyQuery = database.RoDeliveryDateHistories.Where(history => history.OrgId == tenant.OrgId);
+
+    // Nguồn: txtRONo.Text.Replace("BG-","") — bỏ tiền tố số báo giá trước khi khớp số LSC.
+    if (!string.IsNullOrWhiteSpace(roNo))
+    {
+        var searchRoNo = roNo.Trim().ToUpperInvariant().Replace("BG-", "").Trim();
+        historyQuery = historyQuery.Where(history => history.RoNo.Contains(searchRoNo));
+    }
+    if (!string.IsNullOrWhiteSpace(plateNo))
+    {
+        var searchPlateNo = plateNo.Trim().ToUpperInvariant();
+        historyQuery = historyQuery.Where(history => (history.PlateNo ?? "").ToUpper().Contains(searchPlateNo));
+    }
+    if (!string.IsNullOrWhiteSpace(cusName))
+        historyQuery = historyQuery.Where(history => (history.CusName ?? "").Contains(cusName.Trim()));
+    // Khoảng thời gian GXDK (txtPlanedDeliveryDateFrom / txPlanedDeliveryDateTo)
+    if (fromDate.HasValue) historyQuery = historyQuery.Where(history => history.PlanedDeliveryDate >= fromDate.Value);
+    if (toDate.HasValue) historyQuery = historyQuery.Where(history => history.PlanedDeliveryDate <= toDate.Value);
+
+    var historyRows = await historyQuery
+        .OrderByDescending(history => history.PlanedDeliveryDate)
+        .Select(history => new
+        {
+            history.Id, history.RoNo, history.PlateNo, history.CusName,
+            history.PlanedDeliveryDate, history.Remark, history.FlagCurrent,
+            isLatest = history.FlagCurrent == "1"   // bản mới nhất → UI nên khoá nút xoá
+        })
+        .ToListAsync();
+
+    return Results.Ok(new { count = historyRows.Count, items = historyRows });
+}).RequireAuthorization();
+
+// Ghi nhận 1 lần đổi thời gian GXDK: bản cũ bị hạ FlagCurrent="0", bản mới thành "1".
+app.MapPost("/api/gxdk", async (DeliveryDateHistoryDto request, AppDbContext database, ITenantContext tenant) =>
+{
+    if (string.IsNullOrWhiteSpace(request.RoNo))
+        return Results.BadRequest(new { error = "Cần số lệnh sửa chữa (roNo)." });
+
+    var repairOrderNo = request.RoNo.Trim().ToUpperInvariant().Replace("BG-", "").Trim();
+    var repairOrder = await database.RepairOrders
+        .FirstOrDefaultAsync(order => order.OrgId == tenant.OrgId && order.RONo == repairOrderNo);
+    if (repairOrder is null)
+        return Results.NotFound(new { error = $"Không tìm thấy RO {repairOrderNo}." });
+
+    // Hạ cờ mọi bản lịch sử trước đó của RO này (chỉ được tồn tại DUY NHẤT 1 bản FlagCurrent="1").
+    var previousHistories = await database.RoDeliveryDateHistories
+        .Where(history => history.OrgId == tenant.OrgId
+                       && history.RepairOrderId == repairOrder.Id
+                       && history.FlagCurrent == "1")
+        .ToListAsync();
+    foreach (var previousHistory in previousHistories) previousHistory.FlagCurrent = "0";
+
+    var newHistory = new RoDeliveryDateHistory
+    {
+        OrgId = tenant.OrgId,
+        RepairOrderId = repairOrder.Id,
+        RoNo = repairOrder.RONo,
+        PlateNo = request.PlateNo ?? repairOrder.LicensePlate,
+        CusName = request.CusName ?? repairOrder.CusName,
+        PlanedDeliveryDate = request.PlanedDeliveryDate,
+        Remark = request.Remark,
+        FlagCurrent = "1"
+    };
+    database.RoDeliveryDateHistories.Add(newHistory);
+
+    // Đồng bộ luôn ngày dự kiến giao trên chính lệnh sửa chữa.
+    repairOrder.PlanedDeliveryDate = request.PlanedDeliveryDate;
+
+    await database.SaveChangesAsync();
+    return Results.Ok(new { newHistory.Id, newHistory.RoNo, newHistory.PlanedDeliveryDate, newHistory.FlagCurrent });
+}).RequireAuthorization();
+
+// Xoá 1 dòng lịch sử — 🔴 GUARD GỐC: cấm xoá bản mới nhất (FlagCurrent="1").
+app.MapDelete("/api/gxdk/{historyId:long}", async (long historyId, AppDbContext database, ITenantContext tenant) =>
+{
+    var history = await database.RoDeliveryDateHistories
+        .FirstOrDefaultAsync(row => row.OrgId == tenant.OrgId && row.Id == historyId);
+    if (history is null) return Results.NotFound(new { error = "Không tồn tại." });
+
+    // Nguồn btnDel_Click: chỉ xoá khi FLAGCURRENT == "0"; ngược lại báo lỗi và KHÔNG xoá.
+    if (history.FlagCurrent != "0")
+        return Results.BadRequest(new { error = "Không được xóa Thời gian GXDK mới nhất." });
+
+    database.RoDeliveryDateHistories.Remove(history);
+    await database.SaveChangesAsync();
+    return Results.Ok(new { deleted = historyId });
+}).RequireAuthorization();
+
 // ===== Voucher điểm hội viên áp vào LSC (port 1:1 FrmMember_Voucher — TCMotor DMSCarSv/Services) =====
 // Nguồn: LoyaltyService.WA_OSCarSv_Crd_MemberVoucher_Get(memberNo) + serROService.Ser_RO_UpdateMemberVoucher.
 app.MapGet("/api/vouchers", async (AppDbContext db, ITenantContext t, string? memberNo) =>
@@ -16184,6 +16284,18 @@ record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Stat
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
 
+
+/// <summary>
+/// Ghi nhận 1 lần đổi thời gian GXDK (dự kiến giao xe) của lệnh sửa chữa — FrmHistoryGXDK.
+/// PlateNo/CusName để trống thì lấy theo lệnh sửa chữa tương ứng.
+/// </summary>
+record DeliveryDateHistoryDto(
+    string RoNo,
+    DateTime PlanedDeliveryDate,   // thời gian GXDK mới
+    string? PlateNo,
+    string? CusName,
+    string? Remark                 // ghi chú lý do đổi (cột REMARK của lưới gốc)
+);
 
 // ----- Voucher điểm hội viên (FrmMember_Voucher) -----
 /// <summary>1 voucher của hội viên (khớp lưới Crd_MemberVoucher của form gốc).</summary>
