@@ -5441,7 +5441,14 @@ public sealed class DriveTest
     public string DriverLicenseNo { get; set; } = "";
     public string? RangeAge { get; set; }
     public string? Email { get; set; }
-    public string DriverTestStatus { get; set; } = "P";  // P=chờ, A=đã xác nhận KH, R=huỷ (port FrmMngTestDriver)
+    /// <summary>
+    /// Trạng thái lượt lái thử (`Dlr_DriveTest.DriverTestStatus`, `TConst.Stage`): "P" chờ → "A" duyệt / "R" từ chối.
+    /// Mã đã khớp nguồn; GAP nằm ở chỗ nguồn (`DLR_DriveTestApprove_New20181119`) còn **ghi người/ngày duyệt**.
+    /// </summary>
+    public string DriverTestStatus { get; set; } = "P";
+    /// <summary>Ngày/người duyệt (`ApprovedDate`/`ApprovedBy`) — nguồn ghi cho **CẢ hai nhánh** duyệt và từ chối.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

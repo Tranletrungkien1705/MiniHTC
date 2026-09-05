@@ -16479,20 +16479,68 @@ app.MapGet("/api/drivetests", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(d => d.TestModelCode == model);
     if (!string.IsNullOrWhiteSpace(phone)) q = q.Where(d => d.PhoneNo.Contains(phone));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.DriverTestStatus == status);
-    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo, d.DriverTestStatus }).ToListAsync();
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo, d.DriverTestStatus, d.ApprovedBy, d.ApprovedDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.DriverTestStatus == "P"), items });
 }).RequireAuthorization();
 
 // Quản lý lái thử: xác nhận KH (P->A) / huỷ (P->R) — port 1:1 FrmMngTestDriver (DLR_DriveTestApprove).
-app.MapPost("/api/drivetests/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 DUYỆT / TỪ CHỐI — `DLR_DriveTestApprove_New20181119` (Biz.HTC.WH.cs:106928-107045).
+// Nguồn dùng MỘT hàm với cờ **NGHỊCH ĐẢO** `strFlagUnapprove`: `Flag.Inactive("0")` ⇒ **DUYỆT ("A")`,
+// ngược lại ⇒ "R"; và ghi `ApprovedDate`/`ApprovedBy` cho **CẢ HAI** nhánh (port cũ chỉ đổi cờ).
+// Tên action đổi `confirm`→`approve` cho khớp tên hàm nguồn (giữ `confirm` như bí danh để không vỡ UI cũ).
+app.MapPost("/api/drivetests/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("confirm" or "reject")) return Results.BadRequest(new { error = "action = confirm|reject" });
+    if (action is not ("approve" or "confirm" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     var d = await db.DriveTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DriveTestCode == code);
     if (d is null) return Results.NotFound(new { code });
-    if (d.DriverTestStatus != "P") return Results.BadRequest(new { error = "Lượt lái thử không ở trạng thái chờ." });
-    d.DriverTestStatus = action == "confirm" ? "A" : "R";
+    if (d.DriverTestStatus != "P") return Results.BadRequest(new { error = "Lượt lái thử không ở trạng thái chờ (P)." });
+    d.DriverTestStatus = action == "reject" ? "R" : "A";
+    d.ApprovedDate = DateTime.Now;
+    d.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DriveTestCode, d.DriverTestStatus });
+    return Results.Ok(new { d.DriveTestCode, d.DriverTestStatus, d.ApprovedBy, d.ApprovedDate });
+}).RequireAuthorization();
+
+// 🔴 SỬA lượt lái thử — `DLR_DriveTestUpdate_New20181119` (106538-106760).
+// ⚠️ Luật rẽ theo **LOẠI lái thử** (`TConst.DriverTestType`): với loại **"HTC"**, biển số xe lái thử
+//    PHẢI tồn tại trong master `Mst_CarDriverTest` và còn `FlagActive='1'` (lỗi `PlateNoNotFound`);
+//    loại **"DEALER"** thì KHÔNG kiểm. Port cũ không có màn sửa nên mất hẳn luật này.
+app.MapPost("/api/drivetests/{code}", async (string code, DriveTestUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var d = await db.DriveTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DriveTestCode == code);
+    if (d is null) return Results.NotFound(new { code });
+    var plate = (dto.DrvTestPlateNo ?? "").Trim();
+    var model = (dto.TestModelCode ?? d.TestModelCode).Trim();
+    if (string.Equals(d.DriverTestType, "HTC", StringComparison.OrdinalIgnoreCase))
+    {
+        if (plate.Length == 0) return Results.BadRequest(new { error = "Lái thử xe HTC phải chọn biển số xe lái thử." });
+        var okPlate = await db.CarDriverTests.AnyAsync(x => x.OrgId == t.OrgId && x.DrvTestPlateNo == plate && x.ModelCode == model && x.FlagActive == "1");
+        if (!okPlate) return Results.BadRequest(new { error = $"Không tìm thấy xe lái thử biển số {plate} (model {model}) đang hoạt động." });
+    }
+    if (dto.DriveDate is not null && dto.DriveDate.Value.Date > DateTime.Now.Date)
+        return Results.BadRequest(new { error = "Ngày lái thử phải nhỏ hơn hoặc là Ngày hiện tại." });
+    if (plate.Length > 0) d.DrvTestPlateNo = plate;
+    if (!string.IsNullOrWhiteSpace(dto.TestModelCode)) d.TestModelCode = model;
+    if (dto.DriveDate is not null) d.DriveDate = dto.DriveDate.Value;
+    if (dto.CustomerName is not null) d.CustomerName = dto.CustomerName.Trim();
+    if (dto.PhoneNo is not null) d.PhoneNo = dto.PhoneNo.Trim();
+    if (dto.Address is not null) d.Address = dto.Address.Trim();
+    if (dto.Email is not null) d.Email = dto.Email;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { d.DriveTestCode, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate });
+}).RequireAuthorization();
+
+// 🔴 XOÁ — `DLR_DriveTestDel_New20181115` (187383): guard trạng thái **"P,R"** ⇒ lượt **đã duyệt ("A")
+// KHÔNG xoá được**, nhưng lượt đã từ chối thì xoá được.
+app.MapDelete("/api/drivetests/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var d = await db.DriveTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DriveTestCode == code);
+    if (d is null) return Results.NotFound(new { code });
+    if (d.DriverTestStatus is not ("P" or "R"))
+        return Results.BadRequest(new { error = "Chỉ xoá được lượt lái thử đang chờ (P) hoặc đã từ chối (R)." });
+    db.DriveTests.Remove(d);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code });
 }).RequireAuthorization();
 
 app.MapPost("/api/drivetests", async (DriveTestDto dto, AppDbContext db, ITenantContext t) =>
@@ -16508,6 +16556,15 @@ app.MapPost("/api/drivetests", async (DriveTestDto dto, AppDbContext db, ITenant
     if (string.IsNullOrWhiteSpace(dto.DriverLicenseNo)) return Results.BadRequest(new { error = "Phải nhập GPLX." });
     if (dto.DriverLicenseNo.Any(ch => !char.IsLetterOrDigit(ch))) return Results.BadRequest(new { error = "GPLX không được nhập ký tự đặc biệt." });
     if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    // 🔴 Loại "HTC" bắt buộc biển số nằm trong master xe lái thử còn hoạt động (`Mst_CarDriverTest`),
+    //    theo đúng guard `DLR_DriveTestUpdate`; loại "DEALER" không kiểm.
+    if (string.Equals(dto.DriverTestType.Trim(), "HTC", StringComparison.OrdinalIgnoreCase))
+    {
+        var plate0 = (dto.DrvTestPlateNo ?? "").Trim();
+        if (plate0.Length == 0) return Results.BadRequest(new { error = "Lái thử xe HTC phải chọn biển số xe lái thử." });
+        var ok0 = await db.CarDriverTests.AnyAsync(x => x.OrgId == t.OrgId && x.DrvTestPlateNo == plate0 && x.ModelCode == dto.TestModelCode.Trim() && x.FlagActive == "1");
+        if (!ok0) return Results.BadRequest(new { error = $"Không tìm thấy xe lái thử biển số {plate0} (model {dto.TestModelCode.Trim()}) đang hoạt động." });
+    }
     var code = "DT" + DateTime.Now.ToString("yyMMddHHmmssfff");
     var d = new DriveTest
     {
@@ -21468,4 +21525,5 @@ record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
+record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email);
 record RegisterOrgDto(string Name);

@@ -845,6 +845,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Lượt lái thử: nguồn ghi người/ngày duyệt cho cả nhánh duyệt lẫn từ chối
+                "ALTER TABLE public.\"DriveTests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+                "ALTER TABLE public.\"DriveTests\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 // Đề nghị PDI của đại lý: 2 tầng trạng thái + người/ngày duyệt
                 "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
                 "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",

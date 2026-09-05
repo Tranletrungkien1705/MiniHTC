@@ -34,11 +34,14 @@ async function token(){ if(TOKEN) return TOKEN;
   TOKEN=(await r.json()).access_token; return TOKEN; }
 function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
 async function act(code,a){ await token(); const r=await fetch("/api/drivetests/"+code+"/"+a,{method:"POST",headers:Hh()}); const d=await r.json(); if(!r.ok)alert(d.error||r.status); load(); }
+// Xoá lượt lái thử — nguồn guard "P,R": đã duyệt (A) thì không xoá được, đã từ chối thì được.
+async function del(code){ if(!confirm("Xoá lượt lái thử "+code+"?")) return; await token();
+  const r=await fetch("/api/drivetests/"+code,{method:"DELETE",headers:Hh()}); const d=await r.json(); if(!r.ok)alert(d.error||r.status); load(); }
 async function load(){ await token();
   const qs=new URLSearchParams({dealer:F("qDealer").value,model:F("qModel").value,phone:F("qPhone").value,status:F("qStatus").value});
   const r=await fetch("/api/drivetests?"+qs,{headers:Hh()}); const d=await r.json();
   F("kpi").textContent=`${d.count} lượt — đang chờ: ${d.pending}`;
-  F("rows").innerHTML=(d.items||[]).map(o=>{const s=stName[o.driverTestStatus]||['?',''];return `<tr><td><b>${esc(o.driveTestCode)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.driverTestType)}</td><td>${esc(o.drvTestPlateNo)}</td><td>${esc(o.testModelCode)}</td><td>${dt(o.driveDate)}</td><td>${esc(o.customerName)}</td><td>${esc(o.phoneNo)}</td><td><span class="pill ${s[1]}">${s[0]}</span></td><td>${o.driverTestStatus==='P'?`<button class="link" onclick="act('${esc(o.driveTestCode)}','confirm')">Xác nhận</button><button class="link rej" onclick="act('${esc(o.driveTestCode)}','reject')">Huỷ</button>`:''}</td></tr>`;}).join("")||'<tr><td colspan="10" class="muted">Không có lượt lái thử.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>{const s=stName[o.driverTestStatus]||['?',''];return `<tr><td><b>${esc(o.driveTestCode)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.driverTestType)}</td><td>${esc(o.drvTestPlateNo)}</td><td>${esc(o.testModelCode)}</td><td>${dt(o.driveDate)}</td><td>${esc(o.customerName)}</td><td>${esc(o.phoneNo)}</td><td><span class="pill ${s[1]}">${s[0]}</span></td><td>${o.driverTestStatus==='P'?`<button class="link" onclick="act('${esc(o.driveTestCode)}','approve')">Duyệt</button><button class="link rej" onclick="act('${esc(o.driveTestCode)}','reject')">Từ chối</button>`:''}${(o.driverTestStatus==='P'||o.driverTestStatus==='R')?`<button class="link rej" onclick="del('${esc(o.driveTestCode)}')">Xoá</button>`:''}${o.approvedBy?`<div class="muted">${esc(o.approvedBy)}</div>`:''}</td></tr>`;}).join("")||'<tr><td colspan="10" class="muted">Không có lượt lái thử.</td></tr>';
 }
 </script>
 </body></html>
