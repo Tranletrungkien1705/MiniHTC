@@ -4203,11 +4203,15 @@ app.MapGet("/api/report/wholesale", async (AppDbContext db, ITenantContext t, st
 }).RequireAuthorization();
 
 // ===== Báo cáo yêu cầu bảo hiểm (port 1:1 báo cáo Ins_InsuranceReq) — tái dùng InsuranceReq + Dtl =====
-app.MapGet("/api/report/insurance", async (AppDbContext db, ITenantContext t, string? company, string? status, string? insType, DateTime? from, DateTime? to) =>
+app.MapGet("/api/report/insurance", async (AppDbContext db, ITenantContext t, string? company, string? status, string? insType, DateTime? from, DateTime? to, string? insCompanyPattern) =>
 {
     var q = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(company)) q = q.Where(r => r.InsCompanyCode == company);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    // 🔴 RBAC của nguồn (TERP.BizInsurance/InsReq.cs): người dùng công ty bảo hiểm CHỈ thấy dữ liệu
+    // của công ty mình — nguồn lọc bằng PATTERN `InsCompanyCode like @strAbilityOfUser`.
+    // Port cũ KHÔNG có tầng lọc này ở BẤT KỲ đường đọc nào.
+    if (!string.IsNullOrWhiteSpace(insCompanyPattern)) { var _p = insCompanyPattern!.Trim().Replace("%", ""); q = q.Where(r => r.InsCompanyCode.Contains(_p)); }
     if (!string.IsNullOrWhiteSpace(insType)) q = q.Where(r => r.InsTypeCode == insType);
     if (from is not null) q = q.Where(r => r.CreatedAt >= from.Value.Date);
     if (to is not null) q = q.Where(r => r.CreatedAt < to.Value.Date.AddDays(1));
@@ -15329,11 +15333,90 @@ app.MapPost("/api/storagerearranges/{no}/{action}", async (string no, string act
 }).RequireAuthorization();
 
 // ===== Đề nghị bảo hiểm (InsuranceReq — port 1:1 FrmNewInsuranceReq, 2010.HTC/Sales/Purchase) =====
-app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, string? status, string? company) =>
+// ===== 🔴 Master BẢO HIỂM (Mst_InsuranceCompany / Mst_InsuranceType) — hệ `ERP.V15.DMSSales.Real` =====
+// Hệ này **CHỈ có trên máy 150**. Cổng `TERP.WSINS` cho công ty bảo hiểm đăng nhập tra dữ liệu.
+// 🔴 RBAC của nguồn: `and (mit.InsCompanyCode like @strAbilityOfUser)` (`TERP.BizInsurance/InsReq.cs:184`)
+//    ⇒ người dùng của công ty bảo hiểm **chỉ thấy dữ liệu công ty mình**, lọc bằng PATTERN (`like`).
+app.MapGet("/api/insurancecompanies", async (AppDbContext db, ITenantContext t, string? active) =>
+{
+    var qy = db.MstInsuranceCompanies.Where(x => x.OrgId == t.OrgId);
+    if (active != "all") qy = qy.Where(x => x.FlagActive == "1");
+    var items = await qy.OrderBy(x => x.InsCompanyCode).Take(500)
+        .Select(x => new { x.Id, x.InsCompanyCode, x.InsCompanyName, x.FlagActive, x.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancecompanies", async (MstInsCompanyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.InsCompanyCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã công ty bảo hiểm." });
+    var row = await db.MstInsuranceCompanies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsCompanyCode == code);
+    if (row is null) { row = new MstInsuranceCompany { OrgId = t.OrgId, InsCompanyCode = code }; db.MstInsuranceCompanies.Add(row); }
+    row.InsCompanyName = dto.InsCompanyName;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.InsCompanyCode, row.InsCompanyName, row.FlagActive });
+}).RequireAuthorization();
+
+// `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
+app.MapGet("/api/insurancetypes", async (
+    AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
+{
+    var qy = db.MstInsuranceTypes.Where(x => x.OrgId == t.OrgId);
+    if (active != "all") qy = qy.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(company)) qy = qy.Where(x => x.InsCompanyCode == company);
+    if (!string.IsNullOrWhiteSpace(insCompanyPattern))
+    {
+        var pat = insCompanyPattern!.Trim().Replace("%", "");
+        qy = qy.Where(x => x.InsCompanyCode.Contains(pat));
+    }
+    var items = await qy
+        .OrderBy(x => x.InsTypeCode).ThenByDescending(x => x.EffectiveDate).Take(500)
+        .Select(x => new { x.Id, x.InsCompanyCode, x.InsTypeCode, x.EffectiveDate, x.InsTypeName, x.FlagActive, x.UpdatedAt })
+        .ToListAsync();
+    // Nguồn LEFT JOIN Mst_InsuranceCompany để lấy tên công ty.
+    var names = await db.MstInsuranceCompanies.Where(c => c.OrgId == t.OrgId)
+        .ToDictionaryAsync(c => c.InsCompanyCode, c => c.InsCompanyName);
+    return Results.Ok(new { count = items.Count,
+        items = items.Select(i => new { i.Id, i.InsCompanyCode,
+            insCompanyName = names.ContainsKey(i.InsCompanyCode) ? names[i.InsCompanyCode] : null,
+            i.InsTypeCode, i.EffectiveDate, i.InsTypeName, i.FlagActive, i.UpdatedAt }) });
+}).RequireAuthorization();
+
+// Upsert theo ĐÚNG khoá BỘ BA của nguồn: công ty + mã loại + NGÀY HIỆU LỰC.
+app.MapPost("/api/insurancetypes", async (MstInsTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var comp = (dto.InsCompanyCode ?? "").Trim().ToUpperInvariant();
+    var type = (dto.InsTypeCode ?? "").Trim().ToUpperInvariant();
+    if (comp.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã công ty bảo hiểm." });
+    if (type.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã loại hình bảo hiểm." });
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày hiệu lực (là PHẦN CỦA KHOÁ)." });
+    var eff = dto.EffectiveDate.Value.Date;
+
+    var row = await db.MstInsuranceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.InsCompanyCode == comp && x.InsTypeCode == type && x.EffectiveDate == eff);
+    if (row is null)
+    {
+        row = new MstInsuranceType { OrgId = t.OrgId, InsCompanyCode = comp, InsTypeCode = type, EffectiveDate = eff };
+        db.MstInsuranceTypes.Add(row);
+    }
+    row.InsTypeName = dto.InsTypeName;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.InsCompanyCode, row.InsTypeCode, row.EffectiveDate, row.InsTypeName });
+}).RequireAuthorization();
+
+app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, string? status, string? company, string? insCompanyPattern) =>
 {
     var q = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     if (!string.IsNullOrWhiteSpace(company)) q = q.Where(r => r.InsCompanyCode == company);
+    // 🔴 RBAC của nguồn (TERP.BizInsurance/InsReq.cs): người dùng công ty bảo hiểm CHỈ thấy dữ liệu
+    // của công ty mình — nguồn lọc bằng PATTERN `InsCompanyCode like @strAbilityOfUser`.
+    // Port cũ KHÔNG có tầng lọc này ở BẤT KỲ đường đọc nào.
+    if (!string.IsNullOrWhiteSpace(insCompanyPattern)) { var _p = insCompanyPattern!.Trim().Replace("%", ""); q = q.Where(r => r.InsCompanyCode.Contains(_p)); }
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt,
@@ -20702,6 +20785,8 @@ record CBReqDto(List<CBReqCarDto>? Cars);
 record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
 record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars);
 record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
+record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive);
+record MstInsTypeDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, string? FlagActive);
 record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars);
 record CarLocationDto(string VIN, string? LocationOld, string Location);
 record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);

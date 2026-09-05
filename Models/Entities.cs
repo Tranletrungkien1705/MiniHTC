@@ -4860,6 +4860,38 @@ public sealed class StorageRearrangeDetail
 }
 
 /// <summary>Đề nghị bảo hiểm (Ins_InsuranceReq + Dtl) — port 1:1 FrmNewInsuranceReq (2010.HTC/Sales/Purchase). Đề nghị mua bảo hiểm cho lô VIN theo hãng + loại hình.</summary>
+/// <summary>
+/// 🔴 Master CÔNG TY BẢO HIỂM (`Mst_InsuranceCompany` — hệ `ERP.V15.DMSSales.Real`, **chỉ có trên máy 150**).
+/// </summary>
+public sealed class MstInsuranceCompany
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InsCompanyCode { get; set; } = "";
+    public string? InsCompanyName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// 🔴 Master LOẠI HÌNH BẢO HIỂM (`Mst_InsuranceType`).
+/// ⚠️ **Khoá là BỘ BA**: `InsCompanyCode` + `InsTypeCode` + **`EffectiveDate`**
+/// (`TERP.BizInsurance/InsReq.cs:86-97`) ⇒ mỗi công ty BH có nhiều **phiên bản theo NGÀY HIỆU LỰC**
+/// cho cùng một mã loại hình. Bỏ `EffectiveDate` khỏi khoá là **mất lịch sử biểu phí**.
+/// </summary>
+public sealed class MstInsuranceType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InsCompanyCode { get; set; } = "";
+    public string InsTypeCode { get; set; } = "";
+    /// <summary>Ngày hiệu lực — PHẦN CỦA KHOÁ, không phải cột phụ.</summary>
+    public DateTime EffectiveDate { get; set; }
+    public string? InsTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class InsuranceReq
 {
     public long Id { get; set; }
