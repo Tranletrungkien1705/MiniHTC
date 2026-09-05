@@ -5643,6 +5643,16 @@ public sealed class ServiceStockOut
     public string? ReceiverCode { get; set; }
     public DateTime? StockOutDate { get; set; }
     public decimal TotalQty { get; set; }
+
+    /// <summary>Tổng tiền phiếu xuất (cộng Amount các dòng).</summary>
+    public decimal TotalAmount { get; set; }
+
+    /// <summary>
+    /// Loại phiếu xuất (Ser_Inv_StockOut.STOCKOUTTYPE). <b>"2" = PHIẾU XUẤT THƯỜNG</b> —
+    /// CHỈ loại này mới được tính vào doanh thu bán ngoài của báo cáo tổng hợp.
+    /// </summary>
+    public string? StockOutType { get; set; }
+
     public string Status { get; set; } = "Draft"; // Draft -> Confirmed (trừ tồn)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
@@ -5656,6 +5666,15 @@ public sealed class ServiceStockOutLine
     public string PartCode { get; set; } = "";
     public string? PartName { get; set; }
     public decimal Quantity { get; set; }
+
+    /// <summary>Đơn giá xuất (Ser_Inv_StockOutDetail.PRICE) — phiếu xuất thường là nghiệp vụ BÁN nên có tiền.</summary>
+    public decimal Price { get; set; }
+
+    /// <summary>Thuế suất theo PHẦN TRĂM (Ser_Inv_StockOutDetail.VAT), nguồn tính `VAT*0.01`.</summary>
+    public decimal Vat { get; set; }
+
+    /// <summary>Thành tiền dòng = Quantity × Price × (1 + VAT%) — đúng biểu thức doanh thu của nguồn.</summary>
+    public decimal Amount { get; set; }
 }
 
 /// <summary>Phiếu nhập kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockIn (TblSerInvStockIn, TCMotor).</summary>
