@@ -3160,6 +3160,23 @@ public sealed class CampaignContact
     public string? CusName { get; set; }
     public string? Address { get; set; }
     public string ContactStatus { get; set; } = "Pending";  // Pending → Contacted
+    // GAP đã vá 2026-09-05: lưới FrmCamp_CustomerList (màn chọn KH vào chiến dịch) mang 13 cột,
+    // bản port trước chỉ giữ 3 (PlateNo/CusName/Address) — mất sạch thông tin định danh & liên hệ.
+    public string? CusID { get; set; }          // TblSerCustomer.CusID — định danh khách hàng
+    public string? CarID { get; set; }          // TblSerCar.CarID — định danh xe
+    public DateTime? DOB { get; set; }          // TblSerCustomer.DOB — ngày sinh (dùng cho CD sinh nhật)
+    public string? TradeMarkCode { get; set; }  // TblSerCar.TradeMarkCode — hiệu xe
+    public string? ModelName { get; set; }      // TblModel.ModelName — dòng xe
+    public string? Mobile { get; set; }         // TblSerCustomer.Mobile — ĐT khách
+    public string? Email { get; set; }          // TblSerCustomer.Email
+    // Người liên hệ thay mặt khách (bandedGridColCont*) — nguồn lấy từ sourceRow, KHÔNG từ ô lưới
+    public string? ContName { get; set; }       // TblSerCustomer.ContName
+    public string? ContTel { get; set; }        // TblSerCustomer.ContTel
+    public string? ContMobile { get; set; }     // TblSerCustomer.ContMobile
+    public string? ContEmail { get; set; }      // TblSerCustomer.ContEmail
+    // 2 cột của Ser_CamContact được thêm khi đưa KH vào chiến dịch
+    public DateTime? ContactDate { get; set; }  // TblSer_CamContact.ContactDate — ngày đã liên hệ
+    public string? Remark { get; set; }         // TblSer_CamContact.Remark — ghi chú liên hệ
 }
 
 /// <summary>Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice, TCMotor DMSCarSv/Services):

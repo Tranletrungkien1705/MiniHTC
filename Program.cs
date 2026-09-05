@@ -14750,7 +14750,18 @@ app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantCo
     db.Campaigns.Add(c); await db.SaveChangesAsync();
     foreach (var ct in dto.Contacts ?? new())
         if (!string.IsNullOrWhiteSpace(ct.PlateNo) || !string.IsNullOrWhiteSpace(ct.CusName))
-            db.CampaignContacts.Add(new CampaignContact { OrgId = t.OrgId, CampaignId = c.Id, PlateNo = ct.PlateNo, CusName = ct.CusName, Address = ct.Address, ContactStatus = "Pending" });
+            db.CampaignContacts.Add(new CampaignContact
+            {
+                OrgId = t.OrgId, CampaignId = c.Id,
+                PlateNo = ct.PlateNo, CusName = ct.CusName, Address = ct.Address,
+                ContactStatus = "Pending",   // nguồn FrmCamp_CustomerList đặt Status="2" = "Chưa liên hệ"
+                // GAP đã vá: 12 cột lưới FrmCamp_CustomerList trước đây bị bỏ sót
+                CusID = ct.CusID, CarID = ct.CarID, DOB = ct.DOB,
+                TradeMarkCode = ct.TradeMarkCode, ModelName = ct.ModelName,
+                Mobile = ct.Mobile, Email = ct.Email,
+                ContName = ct.ContName, ContTel = ct.ContTel, ContMobile = ct.ContMobile, ContEmail = ct.ContEmail,
+                Remark = ct.Remark
+            });
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CamNo, c.CamName, contacts = (dto.Contacts ?? new()).Count });
 }).RequireAuthorization();
@@ -14761,7 +14772,13 @@ app.MapGet("/api/campaigns/{no}/contacts", async (string no, AppDbContext db, IT
     var c = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
     if (c is null) return Results.NotFound(new { no });
     var contacts = await db.CampaignContacts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id)
-        .Select(x => new { x.Id, x.PlateNo, x.CusName, x.Address, x.ContactStatus }).ToListAsync();
+        .Select(x => new
+        {
+            x.Id, x.PlateNo, x.CusName, x.Address, x.ContactStatus,
+            // GAP đã vá: 12 cột lưới gốc trước đây không được trả về
+            x.CusID, x.CarID, x.DOB, x.TradeMarkCode, x.ModelName, x.Mobile, x.Email,
+            x.ContName, x.ContTel, x.ContMobile, x.ContEmail, x.ContactDate, x.Remark
+        }).ToListAsync();
     return Results.Ok(new { c.CamNo, count = contacts.Count, contacts });
 }).RequireAuthorization();
 
@@ -16828,7 +16845,17 @@ record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate);
-record CampaignContactDto(string? PlateNo, string? CusName, string? Address);
+/// <summary>
+/// 1 khách hàng được chọn vào chiến dịch (lưới FrmCamp_CustomerList).
+/// Nguồn đặt Status="2" (Chưa liên hệ) cho mọi dòng mới thêm.
+/// </summary>
+record CampaignContactDto(string? PlateNo, string? CusName, string? Address,
+    string? CusID = null, string? CarID = null, DateTime? DOB = null,
+    string? TradeMarkCode = null, string? ModelName = null,
+    string? Mobile = null, string? Email = null,
+    // Người liên hệ thay mặt khách
+    string? ContName = null, string? ContTel = null, string? ContMobile = null, string? ContEmail = null,
+    string? Remark = null);
 record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
 record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount, string? PaymentType);
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity);
