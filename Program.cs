@@ -16323,6 +16323,111 @@ app.MapPost("/api/customercares/{no}/close", async (string no, AppDbContext db, 
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();
 
+/// <summary>
+/// Chuẩn hoá ngày sinh nhật về NĂM HIỆN TẠI đúng như nguồn.
+/// 🔴 Luật ngày nhuận: sinh nhật 29/02 mà năm nay KHÔNG nhuận thì lùi về 28/02
+/// (nguồn dùng `date.AddDays(-1).Day`). Thiếu luật này thì dựng DateTime 29/02 của năm thường sẽ NÉM LỖI.
+/// </summary>
+static DateTime NormalizeBirthdayToCurrentYear(DateTime birthday)
+{
+    var currentYear = DateTime.Today.Year;
+    if (birthday.Month == 2 && birthday.Day == 29 && !DateTime.IsLeapYear(currentYear))
+        return new DateTime(currentYear, 2, birthday.AddDays(-1).Day);
+    return new DateTime(currentYear, birthday.Month, birthday.Day);
+}
+
+// ===== CSKH nhân dịp SINH NHẬT (Ser_CustomerCareBth — port 1:1 FrmCSCCustomerCareDOB, TCMotor DMSCarSv/Customer) =====
+// TWIN: WS gọi Ser_CustomerCareBth_Get / _Create / _Update / _Delete (bản trần, không hậu tố ngày).
+
+// Trạng thái liên hệ RIÊNG của luồng sinh nhật — KHÁC bộ PEND/CINFB/CIFB/REJ của CSKH sau dịch vụ.
+var birthdayCareStatusTexts = new Dictionary<string, string>
+{
+    ["0"] = "Chưa liên hệ",
+    ["1"] = "Đã liên hệ",
+    ["2"] = "Không liên hệ",
+};
+
+app.MapGet("/api/customercarebirthdays", async (
+    AppDbContext db, ITenantContext t, string? cusId, string? dealer, string? status, DateTime? from, DateTime? to) =>
+{
+    var q = db.CustomerCareBirthdays.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(cusId)) q = q.Where(x => x.CusId == cusId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    // Nguồn chỉ lấy dòng CÓ ngày sinh nhật (`AND t.DateBth is not null`).
+    q = q.Where(x => x.DateBth != null);
+    if (from.HasValue) q = q.Where(x => x.DateBth >= from);
+    if (to.HasValue) q = q.Where(x => x.DateBth <= to);
+
+    var rows = await q.OrderBy(x => x.DateBth).Take(1000).ToListAsync();
+    var items = rows.Select(x => new
+    {
+        x.CareBthId, x.CusId, x.DealerCode, x.DateBth, x.Status,
+        statusText = birthdayCareStatusTexts.TryGetValue(x.Status, out var text) ? text : x.Status,
+        x.ContactDate, x.Remark, x.CreatedDate
+    }).ToList();
+    // Nguồn trả bảng tóm tắt ("…_Sumary") BÊN CẠNH danh sách chi tiết ⇒ trả cả hai.
+    return Results.Ok(new
+    {
+        count = items.Count,
+        summary = birthdayCareStatusTexts.Select(kv => new
+        {
+            status = kv.Key, statusText = kv.Value, count = items.Count(i => i.Status == kv.Key)
+        }),
+        items
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/customercarebirthdays", async (
+    CustomerCareBirthdayDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var cusId = (dto.CusId ?? "").Trim();
+    if (cusId.Length == 0) return Results.BadRequest(new { error = "Chưa chọn khách hàng." });
+    var status = (dto.Status ?? "0").Trim();
+    if (!birthdayCareStatusTexts.ContainsKey(status))
+        return Results.BadRequest(new { error = "Trạng thái chỉ có thể là 0 (chưa liên hệ), 1 (đã liên hệ) hoặc 2 (không liên hệ)." });
+
+    var actor = user.Identity?.Name;
+    var now = DateTime.Now;
+
+    var careBthId = (dto.CareBthId ?? "").Trim();
+    CustomerCareBirthday? row;
+    if (careBthId.Length > 0)
+    {
+        row = await db.CustomerCareBirthdays.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareBthId == careBthId);
+        if (row is null) return Results.NotFound(new { error = $"Không tìm thấy phiếu '{careBthId}'." });
+    }
+    else
+    {
+        careBthId = "CBT" + now.ToString("yyMMddHHmmssfff");
+        row = new CustomerCareBirthday { OrgId = t.OrgId, CareBthId = careBthId, CreatedDate = now };
+        db.CustomerCareBirthdays.Add(row);
+    }
+
+    row.CusId = cusId;
+    row.DealerCode = dto.DealerCode;
+    row.Status = status;
+    // Ghi chú / ngày liên hệ để TRỐNG thì nguồn set NULL (xoá giá trị cũ), không giữ nguyên.
+    row.Remark = string.IsNullOrWhiteSpace(dto.Remark) ? null : dto.Remark;
+    row.ContactDate = dto.ContactDate;
+    row.DateBth = dto.DateBth.HasValue ? NormalizeBirthdayToCurrentYear(dto.DateBth.Value) : null;
+    row.UpdatedAt = now;
+    row.UpdatedBy = actor;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.CareBthId, row.CusId, row.DateBth, row.Status, statusText = birthdayCareStatusTexts[status] });
+}).RequireAuthorization();
+
+app.MapDelete("/api/customercarebirthdays/{careBthId}", async (string careBthId, AppDbContext db, ITenantContext t) =>
+{
+    careBthId = careBthId.Trim();
+    var row = await db.CustomerCareBirthdays.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareBthId == careBthId);
+    if (row is null) return Results.NotFound(new { careBthId });
+    db.CustomerCareBirthdays.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = careBthId });
+}).RequireAuthorization();
+
 // ===== Khảo sát CSKH sau dịch vụ (Ser_CustomerCare24h/72h — port 1:1 FrmCSCCustomerCare24h/72h, TCMotor DMSCarSv/Customer) =====
 // Bộ 6 câu hỏi + 3 nút kết thúc: "Đã liên hệ, chưa phản hồi" / "Đã liên hệ, đã phản hồi" / "Không liên hệ".
 // Cả 3 nút gọi CÙNG một hàm biz Ser_CustomerCare24h, chỉ khác mã trạng thái truyền vào.
@@ -18062,6 +18167,7 @@ record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? Eng
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);
 /// <summary>Khảo sát CSKH sau dịch vụ — 6 câu trả lời + trạng thái chốt (CINFB/CIFB/REJ).</summary>
+record CustomerCareBirthdayDto(string? CusId, string? DealerCode, DateTime? DateBth, string? Status, DateTime? ContactDate, string? Remark, string? CareBthId = null);
 record CareSurveyDto(
     string? Status, string? RONo, DateTime? FinishedDate, DateTime? ContactDate,
     string? YourCarProblem, string? YourSatisfyQSv, string? FyourCSSH,

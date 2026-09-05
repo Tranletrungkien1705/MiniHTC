@@ -3118,6 +3118,39 @@ public sealed class CustomerCare
 }
 
 /// <summary>
+/// Chăm sóc khách hàng nhân dịp SINH NHẬT (Ser_CustomerCareBth —
+/// port 1:1 FrmCSCCustomerCareDOB / FrmCustomerCareBth, TCMotor DMSCarSv/Customer).
+/// ⚠️ Là BẢNG RIÊNG ở nguồn, KHÔNG phải một loại của <see cref="CustomerCare"/>:
+/// có khoá riêng (CareBthId) và **bộ trạng thái riêng "0/1/2"**, khác hẳn PEND/CINFB/CIFB/REJ.
+/// </summary>
+public sealed class CustomerCareBirthday
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>Khoá của bản ghi ở nguồn (CAREBTHID).</summary>
+    public string? CareBthId { get; set; }
+
+    public string CusId { get; set; } = "";
+    public string? DealerCode { get; set; }
+
+    /// <summary>
+    /// Ngày sinh nhật đã CHUẨN HOÁ VỀ NĂM HIỆN TẠI (DATEBTH) — nguồn không lưu năm sinh gốc ở đây
+    /// mà lưu ngày sinh nhật của năm nay để lọc/nhắc.
+    /// </summary>
+    public DateTime? DateBth { get; set; }
+
+    /// <summary>Trạng thái liên hệ: "0" chưa liên hệ · "1" đã liên hệ · "2" không liên hệ.</summary>
+    public string Status { get; set; } = "0";
+
+    public DateTime? ContactDate { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public string? UpdatedBy { get; set; }
+}
+
+/// <summary>
 /// Phiếu khảo sát chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare24h / Ser_CustomerCare72h —
 /// port 1:1 FrmCSCCustomerCare24h/72h, TCMotor DMSCarSv/Customer).
 /// Mỗi phiếu CSKH (<see cref="CustomerCare"/>) có TỐI ĐA MỘT bản khảo sát: nguồn đọc
