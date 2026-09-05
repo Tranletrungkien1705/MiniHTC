@@ -845,6 +845,19 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Đơn hàng SO: bổ sung cột nguồn + chuyển tên tự đặt sang mã TConst.Stage
+                "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"SPCode\" text NULL",
+                "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedBy1\" text NULL",
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"ColorCode\" text NULL",
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"UnitPriceInit\" numeric NULL",
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"MapVINRanking\" numeric NULL",
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                // "Draft" và "Sent" đều là trạng thái BỊA — nguồn chỉ có "P" chờ duyệt ⇒ gộp cả hai về "P".
+                "UPDATE public.\"SalesOrders\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+                "UPDATE public.\"SalesOrders\" SET \"Status\" = 'P' WHERE \"Status\" = 'Sent'",
+                "UPDATE public.\"SalesOrders\" SET \"Status\" = 'A1' WHERE \"Status\" = 'Approved1'",
+                "UPDATE public.\"SalesOrders\" SET \"Status\" = 'A2' WHERE \"Status\" = 'Approved2'",
+                "UPDATE public.\"SalesOrders\" SET \"Status\" = 'R' WHERE \"Status\" = 'Rejected'",
                 // Phiếu nhập/xuất kho phụ tùng: chuyển tên tự đặt sang mã TConst.Ser_Inv_StockIn/StockOut
                 "UPDATE public.\"PartStockIns\" SET \"Status\" = '1' WHERE \"Status\" = 'Draft'",
                 "UPDATE public.\"PartStockIns\" SET \"Status\" = '3' WHERE \"Status\" = 'Posted'",

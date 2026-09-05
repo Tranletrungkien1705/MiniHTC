@@ -6372,7 +6372,7 @@ app.MapGet("/api/report/order-suggestion", async (AppDbContext db, ITenantContex
     var n = months is > 0 and <= 24 ? months.Value : 6;
     var f = factor is > 0 and <= 6 ? factor.Value : 1m;
     var cutoff = DateTime.Today.AddMonths(-n);
-    var soIds = db.SalesOrders.Where(o => o.OrgId == t.OrgId && o.CreatedAt >= cutoff && (o.Status == "Approved1" || o.Status == "Approved2" || o.Status == "Sent"));
+    var soIds = db.SalesOrders.Where(o => o.OrgId == t.OrgId && o.CreatedAt >= cutoff && (o.Status == "A1" || o.Status == "A2" || o.Status == "P"));
     if (!string.IsNullOrWhiteSpace(dealer)) soIds = soIds.Where(o => o.DealerCode == dealer);
     var lines = await (from l in db.SalesOrderLines.Where(x => x.OrgId == t.OrgId)
                        join o in soIds on l.SalesOrderId equals o.Id
@@ -17060,10 +17060,11 @@ app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITena
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng model." });
     if (lines.Any(l => l.RequestedQuantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
     var no = (type == "Plan" ? "SOP" : "SOU") + DateTime.Now.ToString("yyMMddHHmmss");
-    var o = new SalesOrder { OrgId = t.OrgId, SoCode = no, OrderType = type, PayType = dto.PayType, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "Draft" };
+    var o = new SalesOrder { OrgId = t.OrgId, SoCode = no, OrderType = type, PayType = dto.PayType, // 🔴 Nguồn tạo đơn là "P" (chờ duyệt) NGAY — không có bước nháp/gửi.
+    DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
     db.SalesOrders.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL });
+        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL, ColorCode = l.ColorCode });
     await db.SaveChangesAsync();
     return Results.Ok(new { o.SoCode, o.OrderType, lines = lines.Count, status = o.Status });
 }).RequireAuthorization();
@@ -17074,48 +17075,89 @@ app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITe
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate }).ToListAsync();
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate, l.UnitPriceInit, l.MapVINRanking, l.Remark }).ToListAsync();
     return Results.Ok(new { o.SoCode, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
 }).RequireAuthorization();
 
-app.MapPost("/api/salesorders/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+// ⚠️ ĐÃ BỎ `/api/salesorders/{no}/send`: nguồn KHÔNG có bước "gửi đơn" — `OrderSOCreate_New20181119`
+//    tạo thẳng `SOStatus = "P"`. "Draft"/"Sent" là hai trạng thái port cũ tự đặt.
+
+// 🔴 HUỶ đơn hàng — `OrderSOCancel_New20181119` (Biz.HTC.WH.cs:24674-24782): chỉ từ "P", sang "C".
+//    Nguồn phân biệt **Huỷ ("C")** với **Từ chối ("R")** là hai đường khác nhau; port cũ thiếu hẳn Huỷ.
+app.MapPost("/api/salesorders/{no}/cancel", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Draft") return Results.BadRequest(new { error = "Đơn đã gửi." });
-    o.Status = "Sent"; o.SentAt = DateTime.Now;
+    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ huỷ được đơn đang chờ duyệt (P)." });
+    o.Status = "C"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.SoCode, status = o.Status });
+    return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Huỷ" });
 }).RequireAuthorization();
 
 // Duyệt cấp 1 (FrmOrderApprove): chính sách bán + tháng dự kiến/SX/ngày giao + SL duyệt từng dòng; mọi dòng phải có năm SX
-app.MapPost("/api/salesorders/{no}/approve1", async (string no, SoApprove1Dto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/salesorders/{no}/approve1", async (string no, SoApprove1Dto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Sent") return Results.BadRequest(new { error = "Đơn phải ở trạng thái Đã gửi mới duyệt cấp 1." });
+    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 đơn đang chờ duyệt (P)." });
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id).ToListAsync();
     if (lines.Any(l => string.IsNullOrWhiteSpace(l.YearProduction)))
         return Results.BadRequest(new { error = "Có bản ghi chưa chọn năm sản xuất?" });
-    o.SalesPolicy = dto.SalesPolicy; o.ExpectedMonth = dto.ExpectedMonth; o.ProductionMonth = dto.ProductionMonth; o.LatestDeliveryDate = dto.LatestDeliveryDate;
-    foreach (var l in lines) { l.ApprovedQuantity = l.RequestedQuantity; l.ApprovedDate = dto.ExpectedMonth ?? DateTime.Now; }
-    o.Status = "Approved1"; o.Approved1At = DateTime.Now;
+
+    // 🔴 Nguồn duyệt cấp 1 nhận TOÀN BỘ dòng chi tiết từ người duyệt và guard rất chặt
+    //    (`OrderSOApprove1_new20181119`, Biz.HTC.WH.cs:25389-25485). Port cũ tự gán SL duyệt = SL yêu cầu.
+    var inLines = dto.Lines ?? new();
+    if (inLines.Count != lines.Count)
+        return Results.BadRequest(new { error = $"Số dòng duyệt ({inLines.Count}) không khớp số dòng đơn hàng ({lines.Count})." });
+    // Khoá đối chiếu ĐÚNG nguồn: |SOCode||SpecCode||ModelCode||ColorCode| — ColorCode là một phần khoá.
+    static string LineKey(string so, string? spec, string model, string? color) => $"|{so}||{spec}||{model}||{color}|";
+    var inByKey = new Dictionary<string, SoApprove1LineDto>();
+    foreach (var il in inLines)
+        inByKey[LineKey(o.SoCode, il.SpecCode, il.ModelCode ?? "", il.ColorCode)] = il;
+    foreach (var l in lines)
+    {
+        if (!inByKey.TryGetValue(LineKey(o.SoCode, l.SpecCode, l.ModelCode, l.ColorCode), out var il))
+            return Results.BadRequest(new { error = $"Dòng duyệt không khớp dữ liệu đơn hàng: {l.ModelCode}/{l.SpecCode}/{l.ColorCode}." });
+        if (il.ApprovedQuantity < 0)
+            return Results.BadRequest(new { error = $"Số lượng duyệt của {l.ModelCode} không hợp lệ." });
+        // Nguồn bắt buộc UnitPriceInit **>= 1.0** (không phải chỉ > 0).
+        if (il.UnitPriceInit < 1.0m)
+            return Results.BadRequest(new { error = $"Đơn giá duyệt của {l.ModelCode} phải >= 1." });
+        l.ApprovedQuantity = il.ApprovedQuantity;
+        l.ApprovedDate = il.ApprovedDate;
+        l.UnitPriceInit = il.UnitPriceInit;
+        l.MapVINRanking = 5.0m;   // nguồn gán CỨNG 5.0, cố tình không lấy input (dòng `dr["MapVINRanking"] = 5.0;`)
+        l.Remark = il.Remark;
+    }
+    o.SPCode = dto.SPCode; o.SalesPolicy = dto.SalesPolicy; o.ExpectedMonth = dto.ExpectedMonth;
+    o.ProductionMonth = dto.ProductionMonth; o.LatestDeliveryDate = dto.LatestDeliveryDate;
+    o.Status = "A1"; o.Approved1At = DateTime.Now;
+    o.ApprovedBy1 = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.SoCode, status = o.Status });
+    return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Duyệt cấp 1", approvedLines = lines.Count });
 }).RequireAuthorization();
 
 // Duyệt cấp 2 (duyệt cuối)
-app.MapPost("/api/salesorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 Duyệt cấp 2 — `OrderSOApprove2_New20181119` (Biz.HTC.WH.cs:25698-25813). Vào từ "A1".
+//    Nguồn có **HAI ngả trong CÙNG một hàm**: mặc định → "A2"; nếu `strFlagUnapprove = Flag.Active`
+//    thì **BỎ DUYỆT, trả đơn về "P"**. Port cũ thiếu hẳn ngả bỏ duyệt.
+app.MapPost("/api/salesorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t, bool? unapprove) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "Approved1") return Results.BadRequest(new { error = "Đơn phải duyệt cấp 1 trước." });
-    o.Status = "Approved2"; o.Approved2At = DateTime.Now;
+    if (o.Status != "A1") return Results.BadRequest(new { error = "Đơn phải duyệt cấp 1 (A1) trước." });
+    if (unapprove == true)
+    {
+        o.Status = "P"; o.Approved1At = null; o.Approved2At = null;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Chờ duyệt (đã bỏ duyệt)" });
+    }
+    o.Status = "A2"; o.Approved2At = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.SoCode, status = o.Status });
+    return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Duyệt cấp 2" });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesorders/{no}/reject", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
@@ -17123,8 +17165,10 @@ app.MapPost("/api/salesorders/{no}/reject", async (string no, SoRejectDto dto, A
     no = no.Trim().ToUpperInvariant();
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status is not ("Sent" or "Approved1")) return Results.BadRequest(new { error = "Chỉ từ chối đơn đang chờ duyệt." });
-    o.Status = "Rejected"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
+    // 🔴 Nguồn (`OrderSOReject_New201811119`) guard `strSOStatusListToCheck = Stage.Pending` ⇒ **CHỈ từ "P"**.
+    //    Port cũ cho từ chối cả đơn đã duyệt cấp 1 — guard RỘNG hơn nguồn (sai chiều).
+    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ từ chối được đơn đang chờ duyệt (P)." });
+    o.Status = "R"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { o.SoCode, status = o.Status });
 }).RequireAuthorization();
@@ -17144,12 +17188,12 @@ app.MapPost("/api/dms40/so-root-approvals/run", async (Dms40ApproveDto dto, AppD
 {
     var rule = (dto.RuleType ?? "").Trim();
     if (!_d4OsoraRules.Contains(rule)) return Results.BadRequest(new { error = "Luật không hợp lệ (Rule1|Rule2|Rule2A|Rule3|RuleCancel)." });
-    var pending = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && o.Status == "Sent").ToListAsync();
+    var pending = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && o.Status == "P").ToListAsync();
     var now = DateTime.Now;
     if (rule == "RuleCancel")
-        foreach (var o in pending) { o.Status = "Rejected"; o.RejectReason = "Hủy tự động (" + rule + ")"; o.RejectedAt = now; }
+        foreach (var o in pending) { o.Status = "C"; o.RejectReason = "Hủy tự động (" + rule + ")"; o.RejectedAt = now; }
     else
-        foreach (var o in pending) { o.Status = "Approved2"; o.Approved1At = now; o.Approved2At = now; }
+        foreach (var o in pending) { o.Status = "A2"; o.Approved1At = now; o.Approved2At = now; }
     var no = "D4OSORA" + DateTime.Now.ToString("yyMMddHHmmss");
     var log = new Dms40SoRootApproval { OrgId = t.OrgId, ApprovalNo = no, RuleType = rule, AffectedCount = pending.Count, RunAt = now };
     db.Dms40SoRootApprovals.Add(log);
@@ -17165,7 +17209,7 @@ app.MapPost("/api/salesorders/{no}/rename-code", async (string no, SoRenameDto d
     if (o is null) return Results.NotFound(new { no });
     var newCode = (dto.NewSoCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(newCode)) return Results.BadRequest(new { error = "Chưa nhập số đơn hàng mới." });
-    if (o.Status != "Draft") return Results.BadRequest(new { error = "Chỉ đổi số đơn hàng khi còn nháp (Draft)." });
+    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ đổi số đơn hàng khi đơn còn chờ duyệt (P)." });
     if (newCode != no && await db.SalesOrders.AnyAsync(x => x.OrgId == t.OrgId && x.SoCode == newCode))
         return Results.BadRequest(new { error = $"Số đơn hàng '{newCode}' đã tồn tại." });
     var oldCode = o.SoCode;
@@ -20618,11 +20662,13 @@ record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, str
 record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);
 record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
 record CtTkhqDeleteDto(List<string>? DeclarationNos);
-record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL);
+record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null);
 record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
 record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
-record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate);
+record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate, string? SPCode = null, List<SoApprove1LineDto>? Lines = null);
+// Dòng duyệt cấp 1 do người duyệt nhập — nguồn đối chiếu theo khoá SpecCode/ModelCode/ColorCode.
+record SoApprove1LineDto(string? ModelCode, string? SpecCode, string? ColorCode, int ApprovedQuantity, DateTime? ApprovedDate, decimal UnitPriceInit, string? Remark);
 record SoRejectDto(string? Reason);
 record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);

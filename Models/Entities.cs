@@ -4300,7 +4300,18 @@ public sealed class SalesOrder
     public string OrderType { get; set; } = "Plan";     // Plan (kế hoạch) / UnPlan (ngoài KH)
     public string? PayType { get; set; }                 // VONDAILY / BAOLANH / LC
     public string DealerCode { get; set; } = "";
-    public string Status { get; set; } = "Draft";        // Draft → Sent → Approved1 → Approved2 / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG `TConst.Stage` cua nguon (`Const.Main.cs:113-129`), cột `Ord_SalesOrder.SOStatus`:
+    /// **"P" Chờ duyệt · "A1" Duyệt cấp 1 · "A2" Duyệt cấp 2 · "C" Huỷ · "R" Từ chối**.
+    /// ⚠️ Port cũ `Draft → Sent → …`: **cả "Draft" lẫn "Sent" đều là trạng thái BỊA** — nguồn
+    /// (`OrderSOCreate_New20181119`, Biz.HTC.WH.cs:24581) tạo đơn là **"P" ngay**, không có bước gửi.
+    /// Và port cũ **thiếu hẳn "C" Huỷ** (`OrderSOCancel_New20181119`) — nguồn phân biệt Huỷ với Từ chối.
+    /// </summary>
+    public string Status { get; set; } = "P";
+    /// <summary>Chính sách bán áp cho đơn khi duyệt cấp 1 (`Ord_SalesOrder.SPCode`) — nguồn ghi ở Approve1.</summary>
+    public string? SPCode { get; set; }
+    /// <summary>Người duyệt cấp 1 (`ApprovedBy1`) — nguồn ghi kèm `ApprovedDate1`; port cũ chỉ có thời điểm.</summary>
+    public string? ApprovedBy1 { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }
     // Duyệt (FrmOrderApprove) — cấp 1 nhập chính sách bán/tháng dự kiến/tháng SX/ngày giao; cấp 2 duyệt cuối
@@ -4345,8 +4356,20 @@ public sealed class SalesOrderLine
     public DateTime? RequestedDate { get; set; }
     public decimal UnitPrice { get; set; }
     public string? RemarkDL { get; set; }
-    public int? ApprovedQuantity { get; set; }   // SL duyệt (cấp 1)
+    /// <summary>SL duyệt cấp 1 — nguồn lấy TỪ INPUT người duyệt (chỉ guard `>= 0`), cho phép duyệt
+    /// một phần hoặc duyệt 0. Port cũ gán cứng `= RequestedQuantity` ⇒ mất khả năng duyệt một phần.</summary>
+    public int? ApprovedQuantity { get; set; }
+    /// <summary>Ngày giao duyệt theo TỪNG DÒNG, lấy từ input người duyệt (port cũ gán = ExpectedMonth của header).</summary>
     public DateTime? ApprovedDate { get; set; }
+    /// <summary>🔴 Màu xe — **một phần KHOÁ đối chiếu dòng** của nguồn:
+    /// `|SOCode||SpecCode||ModelCode||ColorCode|` (Biz.HTC.WH.cs:25417). Port cũ thiếu ⇒ khoá hẹp hơn nguồn.</summary>
+    public string? ColorCode { get; set; }
+    /// <summary>Đơn giá duyệt (`UnitPriceInit`) — nguồn bắt buộc **>= 1.0**, không phải chỉ > 0.</summary>
+    public decimal? UnitPriceInit { get; set; }
+    /// <summary>Hạng ưu tiên map VIN — nguồn gán **cứng 5.0**, cố tình KHÔNG lấy input (`MapVINRanking = 5.0;`).</summary>
+    public decimal? MapVINRanking { get; set; }
+    /// <summary>Ghi chú của người duyệt cấp 1 theo dòng (`Ord_SalesOrderDetail.Remark`).</summary>
+    public string? Remark { get; set; }
 }
 
 /// <summary>Giao dịch bán lẻ của đại lý (DealerDeal) — port 1:1 FrmNewDeal/FrmMngDeal (DMSales.Foton/SalesDealer). Đại lý bán xe cho khách: 3 vai trò KH (mua/lái/đứng tên), kiểu bán lẻ, cờ PDI.</summary>

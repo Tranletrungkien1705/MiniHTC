@@ -12,7 +12,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-Draft{color:var(--warn)} .p-Sent{color:#0891b2} .p-Approved1{color:#7c3aed} .p-Approved2{color:var(--ok)} .p-Rejected{color:#dc2626}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .p-P{color:var(--warn)} .p-A1{color:#7c3aed} .p-A2{color:var(--ok)} .p-R{color:#dc2626} .p-C{color:#64748b}
   #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ltbl td,#ltbl th{padding:4px 6px}
 </style></head>
 <body>
@@ -29,7 +29,7 @@
   <button class="sm" style="margin-top:6px" onclick="addLine()">+ Thêm dòng</button>
 </div>
 <div class="bar" style="margin:10px 0">
-  <select id="fst" onchange="load()"><option value="">Tất cả TT</option><option value="Draft">Nháp</option><option value="Sent">Đã gửi</option></select>
+  <select id="fst" onchange="load()"><option value="">Tất cả TT</option><option value="P">Chờ duyệt</option><option value="A1">Duyệt cấp 1</option><option value="A2">Duyệt cấp 2</option><option value="R">Từ chối</option><option value="C">Huỷ</option></select>
   <select id="fty" onchange="load()"><option value="">Tất cả loại</option><option value="Plan">Kế hoạch</option><option value="UnPlan">Ngoài KH</option></select>
   <input id="q" placeholder="Lọc đại lý" oninput="load()" style="width:110px">
 </div>
@@ -37,7 +37,8 @@
 <tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Draft:"Nháp",Sent:"Đã gửi",Approved1:"Duyệt cấp 1",Approved2:"Duyệt cấp 2",Rejected:"Từ chối"}; const TY={Plan:"Kế hoạch",UnPlan:"Ngoài KH"};
+// Mã trạng thái theo TConst.Stage của nguồn (Ord_SalesOrder.SOStatus)
+const LBL={P:"Chờ duyệt",A1:"Duyệt cấp 1",A2:"Duyệt cấp 2",R:"Từ chối",C:"Huỷ"}; const TY={Plan:"Kế hoạch",UnPlan:"Ngoài KH"};
 const PY={VONDAILY:"Vốn ĐL",BAOLANH:"Bảo lãnh",LC:"LC"}; const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
@@ -57,15 +58,17 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/salesorders?status=${F("fst").value}&type=${F("fty").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.soCode}')">Gửi</button> <button class="sm" onclick="rename('${o.soCode}')">Đổi số</button>`
-      :o.status==="Sent"?`<button class="sm" onclick="approve1('${o.soCode}')">Duyệt C1</button> <button class="sm" onclick="reject('${o.soCode}')">Từ chối</button>`
-      :o.status==="Approved1"?`<button class="sm" onclick="approve2('${o.soCode}')">Duyệt C2</button> <button class="sm" onclick="reject('${o.soCode}')">Từ chối</button>`:"";
+    // Luồng nguồn: P → A1 → A2; từ P còn hai ngả riêng là Từ chối (R) và Huỷ (C). Từ A1 có thể BỎ DUYỆT về P.
+    let act=o.status==="P"?`<button class="sm" onclick="approve1('${o.soCode}')">Duyệt C1</button> <button class="sm" onclick="reject('${o.soCode}')">Từ chối</button> <button class="sm" onclick="cancelSo('${o.soCode}')">Huỷ</button> <button class="sm" onclick="rename('${o.soCode}')">Đổi số</button>`
+      :o.status==="A1"?`<button class="sm" onclick="approve2('${o.soCode}')">Duyệt C2</button> <button class="sm" onclick="unapprove('${o.soCode}')">Bỏ duyệt</button>`:"";
     let extra=o.salesPolicy?`<div class="cars">CS: ${o.salesPolicy}${o.expectedMonth?" · DK "+day(o.expectedMonth):""}</div>`:"";
     return `<tr><td><b>${o.soCode}</b> <a href="#" class="cars" onclick="lines('${o.soCode}');return false">xem dòng</a>${extra}</td><td>${TY[o.orderType]||o.orderType}</td><td>${o.dealerCode}</td><td>${PY[o.payType]||""}</td><td>${o.lines}</td><td>${o.qty}</td>
       <td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.soCode}"></tr>`;
   }).join("")||'<tr><td colspan="9" class="muted">Chưa có đơn hàng.</td></tr>';
 }
-async function send(no){ const r=await fetch(`/api/salesorders/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+// Nguồn không có bước "gửi đơn" — đơn tạo ra đã là P (chờ duyệt).
+async function cancelSo(no){ const rs=prompt("Lý do huỷ đơn:",""); if(rs===null) return; const r=await fetch(`/api/salesorders/${no}/cancel`,{method:"POST",headers:H(),body:JSON.stringify({reason:rs})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function unapprove(no){ if(!confirm("Bỏ duyệt cấp 1, trả đơn về Chờ duyệt?")) return; const r=await fetch(`/api/salesorders/${no}/approve2?unapprove=true`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function rename(no){ const nc=prompt("Số đơn hàng mới:",no); if(!nc||nc===no) return;
   const r=await fetch(`/api/salesorders/${no}/rename-code`,{method:"POST",headers:H(),body:JSON.stringify({newSoCode:nc})});
   const j=await r.json(); if(r.ok){ msg("Đã đổi "+j.oldCode+" → "+j.newCode); load(); } else msg("Lỗi: "+(j.error||r.status));
@@ -73,7 +76,19 @@ async function rename(no){ const nc=prompt("Số đơn hàng mới:",no); if(!nc
 async function approve1(no){
   const sp=prompt("Chính sách bán (SPCode):","SP01"); if(sp===null) return;
   const em=prompt("Tháng dự kiến (YYYY-MM-DD):","");
-  const r=await fetch(`/api/salesorders/${no}/approve1`,{method:"POST",headers:H(),body:JSON.stringify({salesPolicy:sp,expectedMonth:em||null,productionMonth:null,latestDeliveryDate:null})});
+  // Nguồn duyệt cấp 1 yêu cầu ĐỦ mọi dòng chi tiết (số dòng phải khớp), khoá theo model/spec/màu,
+  // và mỗi dòng phải có đơn giá duyệt >= 1. Lấy dòng hiện có rồi cho sửa số lượng/đơn giá duyệt.
+  const d=await (await fetch(`/api/salesorders/${no}/lines`,{headers:H()})).json();
+  const src=d.lines||[]; if(!src.length){ msg("Đơn không có dòng chi tiết."); return; }
+  const lines=[];
+  for(const l of src){
+    const qs=prompt(`SL duyệt cho ${l.modelCode}/${l.specCode||""}/${l.colorCode||""} (yêu cầu ${l.requestedQuantity}):`, l.requestedQuantity);
+    if(qs===null) return;
+    const ps=prompt(`Đơn giá duyệt cho ${l.modelCode} (>= 1):`, l.unitPrice||1);
+    if(ps===null) return;
+    lines.push({modelCode:l.modelCode,specCode:l.specCode,colorCode:l.colorCode,approvedQuantity:Number(qs),approvedDate:em||null,unitPriceInit:Number(ps),remark:null});
+  }
+  const r=await fetch(`/api/salesorders/${no}/approve1`,{method:"POST",headers:H(),body:JSON.stringify({spCode:sp,salesPolicy:sp,expectedMonth:em||null,productionMonth:null,latestDeliveryDate:null,lines})});
   const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status));
 }
 async function approve2(no){ const r=await fetch(`/api/salesorders/${no}/approve2`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
