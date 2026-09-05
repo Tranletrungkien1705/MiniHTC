@@ -12482,6 +12482,11 @@ app.MapPost("/api/dlvminutes/{no}/confirm", async (string no, AppDbContext db, I
     return Results.Ok(new { m.DlvMinutesNo, status = m.Status });
 }).RequireAuthorization();
 
+// ⚠️ SINH ĐÔI ENTITY (ghi nhận 2026-09-05, CHƯA hợp nhất): cùng bảng nguồn Sto_DlvMinutes hiện có HAI entity —
+//    `DlvMinutes` (bảng "DlvMinutesSet", theo VIN, checklist dạng JSON) dùng ở cụm Support này, và
+//    `TranspDlvConfirm` (+ `DlvMinutesCheckItem`) dùng ở cụm /api/transpdlv.
+//    Hợp nhất phải làm thành một lượt riêng có di trú dữ liệu; xem sổ theo dõi mục C.
+
 // Hỗ trợ sửa biên bản giao nhận theo lô (port 1:1 FrmSupport_BBGN_UpdateProvinceAndDistrict/FrmSupport_Sto_DlvMinutes_Update, ERP.V15.2025/Support).
 // field = fProvince|tProvince|fDistrict|tDistrict|dlvStartDate.
 app.MapPost("/api/dlvminutes/{no}/patch", async (string no, DlvMinutesPatchDto dto, AppDbContext db, ITenantContext t) =>
@@ -12507,13 +12512,67 @@ app.MapPost("/api/dlvminutes/{no}/patch", async (string no, DlvMinutesPatchDto d
     return Results.Ok(new { m.DlvMinutesNo, field, oldValue = oldVal, newValue = dto.Value.Trim() });
 }).RequireAuthorization();
 
-// Hỗ trợ xóa biên bản giao nhận (port 1:1 FrmSupportSto_DlvMinutes_Delete, ERP.V15.2025/Support). Chỉ xóa được khi còn Draft.
+// Sửa tỉnh/huyện hai đầu tuyến THEO LÔ — port 1:1 btnApply_Click của FrmSupport_BBGN_UpdateProvinceAndDistrict.
+// Form gửi lên MỘT BẢNG nhiều dòng (mỗi dòng = 1 VIN của biên bản) và sửa CẢ 4 CỘT cùng lúc,
+// chứ không phải sửa từng trường một như endpoint /patch ở trên.
+app.MapPost("/api/dlvminutes/patch-batch", async (
+    DlvMinutesBatchPatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lines = (dto.Rows ?? new()).ToList();
+    // Nguồn: lưới không có dòng nào được sửa → "Không có dữ liệu được thay đổi".
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+
+    // Nguồn kiểm TỪNG DÒNG: chỉ cần MỘT trong bốn cột mới có giá trị là hợp lệ;
+    // rỗng CẢ BỐN mới báo lỗi (đây là "và", không phải "hoặc").
+    foreach (var line in lines)
+    {
+        if (string.IsNullOrWhiteSpace(line.FProvinceCodeNew)
+            && string.IsNullOrWhiteSpace(line.FDistrictCodeNew)
+            && string.IsNullOrWhiteSpace(line.TProvinceCodeNew)
+            && string.IsNullOrWhiteSpace(line.TDistrictCodeNew))
+            return Results.BadRequest(new { error = "Các cột dữ liệu mới không được để trống toàn bộ!" });
+    }
+
+    var minutesNos = lines.Select(l => (l.DlvMinutesNo ?? "").Trim().ToUpperInvariant()).ToHashSet();
+    var vins = lines.Select(l => (l.VIN ?? "").Trim().ToUpperInvariant()).ToHashSet();
+    var rows = await db.DlvMinutesSet
+        .Where(x => x.OrgId == t.OrgId && minutesNos.Contains(x.DlvMinutesNo) && vins.Contains(x.VIN))
+        .ToListAsync();
+
+    int updated = 0;
+    var notFound = new List<string>();
+    foreach (var line in lines)
+    {
+        var minutesNo = (line.DlvMinutesNo ?? "").Trim().ToUpperInvariant();
+        var vin = (line.VIN ?? "").Trim().ToUpperInvariant();
+        // Khoá là CẶP (số biên bản, VIN) — một biên bản chở nhiều xe, mỗi xe một tuyến riêng.
+        var row = rows.FirstOrDefault(x => x.DlvMinutesNo == minutesNo && x.VIN == vin);
+        if (row is null) { notFound.Add($"{minutesNo}/{vin}"); continue; }
+
+        // Cột mới bỏ trống = GIỮ NGUYÊN giá trị cũ, không xoá.
+        if (!string.IsNullOrWhiteSpace(line.FProvinceCodeNew)) row.FProvinceCode = line.FProvinceCodeNew.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(line.FDistrictCodeNew)) row.FDistrictCode = line.FDistrictCodeNew.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(line.TProvinceCodeNew)) row.TProvinceCode = line.TProvinceCodeNew.Trim().ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(line.TDistrictCodeNew)) row.TDistrictCode = line.TDistrictCodeNew.Trim().ToUpperInvariant();
+        updated++;
+    }
+
+    if (updated == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi", notFound });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, notFound, message = "Lưu Thành công!" });
+}).RequireAuthorization();
+
+// Hỗ trợ xóa biên bản giao nhận (port 1:1 FrmSupportSto_DlvMinutes_Delete, ERP.V15.2025/Support).
+// TWIN: WS gọi biz `Sto_DlvMinutes_Del_New20181115` (KHÔNG phải `Sto_DlvMinutes_Del` trần).
+// Luật nguồn: chỉ xoá khi biên bản còn CHỜ DUYỆT phía giao — SQL chặn `FDlvMnStatus not in ('P')`
+// với mã lỗi Sto_DlvMinutes_Del_DeliveryFinished (đã giao xong thì cấm xoá).
 app.MapDelete("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var m = await db.DlvMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
     if (m is null) return Results.NotFound(new { no });
-    if (m.Status != "Draft") return Results.BadRequest(new { error = "Biên bản đã xác nhận, không thể xóa." });
+    if (m.Status != "Draft")
+        return Results.BadRequest(new { error = "Biên bản đã giao xong, không thể xóa." });
     db.DlvMinutesSet.Remove(m);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = no });
@@ -17434,6 +17493,12 @@ record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal 
 record SupportPatchDto(string Field, string Value);
 record DlrContractPatchDto(string Field, string Value);
 record DlvMinutesPatchDto(string Field, string Value);
+/// <summary>Một dòng lưới của FrmSupport_BBGN_UpdateProvinceAndDistrict: 1 VIN trong biên bản + 4 cột giá trị mới.</summary>
+record DlvMinutesBatchPatchLineDto(
+    string? DlvMinutesNo, string? VIN,
+    string? FProvinceCodeNew, string? FDistrictCodeNew,
+    string? TProvinceCodeNew, string? TDistrictCodeNew);
+record DlvMinutesBatchPatchDto(List<DlvMinutesBatchPatchLineDto>? Rows);
 record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars);
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
