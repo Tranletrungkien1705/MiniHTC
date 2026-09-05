@@ -5130,13 +5130,19 @@ app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext d
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
     if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng nhập phải lớn hơn 0." });
     var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new ServiceStockIn { OrgId = t.OrgId, StockInNo = no, SupplierCode = dto.SupplierCode, StockInDate = dto.StockInDate ?? DateTime.Now, Status = "Draft" };
+    var h = new ServiceStockIn { OrgId = t.OrgId, StockInNo = no, SupplierCode = dto.SupplierCode, DealerCode = dto.DealerCode, StockInDate = dto.StockInDate ?? DateTime.Now, Status = "Draft" };
     db.ServiceStockIns.Add(h); await db.SaveChangesAsync();
     decimal total = 0m;
     foreach (var l in lines)
     {
-        var amount = l.Quantity * l.Price; total += amount;
-        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, Amount = amount });
+        // Nguồn (báo cáo nhập chi tiết) tách hẳn HAI cột, không gộp:
+        //   Total     = Quantity * Price                (TRƯỚC thuế)
+        //   VATAmount = VAT * Price * Quantity * 0.01   (RIÊNG phần thuế)
+        var totalBeforeVat = l.Quantity * l.Price;
+        var vatAmount = l.Vat * l.Price * l.Quantity * 0.01m;
+        var amount = totalBeforeVat + vatAmount;
+        total += amount;
+        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, ActualLocationCode = l.ActualLocationCode, TotalBeforeVat = totalBeforeVat, VatAmount = vatAmount, Amount = amount });
     }
     h.TotalAmount = total; await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, lines = lines.Count, totalAmount = total });
@@ -5148,7 +5154,7 @@ app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db,
     var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount }).ToListAsync();
     return Results.Ok(new { h.StockInNo, h.Status, h.TotalAmount, count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -10473,6 +10479,42 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
         .Select(g => new { dealerCode = g.Key ?? "(không rõ)", claims = g.Count(), totalAmount = g.Sum(x => x.Amount) })
         .OrderByDescending(x => x.totalAmount).ToListAsync();
     return Results.Ok(new { count = rows.Count, grandTotal = rows.Sum(r => r.totalAmount), rows });
+}).RequireAuthorization();
+
+// Báo cáo NHẬP KHO CHI TIẾT — port 1:1 khối SQL báo cáo nhập của BizCarSv.Inventory.Report.
+// Nguồn trả RIÊNG hai cột tiền: Total (trước thuế) và VATAmount (phần thuế), kèm vị trí THỰC nhập.
+app.MapGet("/api/report/stockin-detail", async (
+    AppDbContext db, ITenantContext t, DateTime? from, DateTime? to, string? dealer, string? supplier) =>
+{
+    // Nguồn lọc: sti.status = 3 (đã duyệt) + khoảng StockInDate + DealerCode + SupplierID.
+    var headers = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
+    if (from.HasValue) headers = headers.Where(o => o.StockInDate >= from);
+    if (to.HasValue) headers = headers.Where(o => o.StockInDate <= to);
+    if (!string.IsNullOrWhiteSpace(dealer)) headers = headers.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(supplier)) headers = headers.Where(o => o.SupplierCode == supplier);
+
+    var rows = await (from line in db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId)
+                      join header in headers on line.ServiceStockInId equals header.Id
+                      orderby header.StockInDate, header.StockInNo
+                      select new
+                      {
+                          line.PartCode, line.PartName,
+                          date = header.StockInDate, header.StockInNo,
+                          header.SupplierCode, header.DealerCode,
+                          line.Quantity, line.Price,
+                          total = line.TotalBeforeVat,
+                          line.Vat, vatAmount = line.VatAmount,
+                          location = line.ActualLocationCode
+                      }).Take(2000).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        totalBeforeVat = rows.Sum(r => r.total),
+        totalVat = rows.Sum(r => r.vatAmount),
+        grandTotal = rows.Sum(r => r.total + r.vatAmount),
+        rows
+    });
 }).RequireAuthorization();
 
 // ===== Báo cáo nhập-xuất-tồn + thẻ kho (report tái-dùng ServiceStockIn/Out — port 1:1 FrmReportInOutStock + FrmReportCardStock, TCMotor) =====
@@ -18530,8 +18572,8 @@ record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email);
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
-record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0);
-record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
+record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null);
+record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null);
 record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);

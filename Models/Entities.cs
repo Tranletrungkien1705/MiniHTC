@@ -5720,6 +5720,10 @@ public sealed class ServiceStockIn
     public Guid OrgId { get; set; }
     public string StockInNo { get; set; } = "";
     public string? SupplierCode { get; set; }
+
+    /// <summary>Đại lý nhập — nguồn lọc báo cáo nhập theo cột này.</summary>
+    public string? DealerCode { get; set; }
+
     public DateTime? StockInDate { get; set; }
     public decimal TotalAmount { get; set; }
     public string Status { get; set; } = "Draft"; // Draft -> Confirmed (cộng tồn)
@@ -5740,6 +5744,20 @@ public sealed class ServiceStockInLine
     /// <summary>Thuế suất dòng nhập theo PHẦN TRĂM (Ser_Inv_PartInstance.SIVAT) — GỒM trong tiền tính giá vốn.</summary>
     public decimal Vat { get; set; }
 
+    /// <summary>
+    /// Vị trí THỰC TẾ nhập vào kho (Ser_Inv_StockInDetail.ACTUALLOCATIONID → Ser_Mst_Location.LOCATIONCODE).
+    /// ⚠️ Là vị trí của TỪNG DÒNG NHẬP, khác vị trí mặc định khai trên master phụ tùng:
+    /// cùng một mã phụ tùng có thể nằm ở nhiều ô kệ qua các lần nhập.
+    /// </summary>
+    public string? ActualLocationCode { get; set; }
+
+    /// <summary>Thành tiền TRƯỚC thuế (nguồn: `Quantity * Price`, cột Total của báo cáo nhập).</summary>
+    public decimal TotalBeforeVat { get; set; }
+
+    /// <summary>RIÊNG phần thuế (nguồn: `VAT * Price * Quantity * 0.01`, cột VATAmount).</summary>
+    public decimal VatAmount { get; set; }
+
+    /// <summary>Thành tiền đã gồm thuế = TotalBeforeVat + VatAmount.</summary>
     public decimal Amount { get; set; }
 }
 
