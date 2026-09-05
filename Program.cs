@@ -11189,26 +11189,34 @@ app.MapGet("/api/partbackorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(plate)) qry = qry.Where(x => x.PlateNo.Contains(plate.ToUpper()));
     if (open == true) qry = qry.Where(x => x.QtyReturned < x.QtyOwed);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PlateNo, x.PartCode, x.PartName, x.CarType, x.StaffCode, x.QtyOwed, x.QtyReturned, remain = x.QtyOwed - x.QtyReturned, x.PromiseDate, x.OrderDate, x.ExpectedDate, x.Note }).ToListAsync();
+    { x.PlateNo, x.PartCode, x.PartName, x.CarType, x.DealerCode, x.StaffCode, x.QtyOwed, x.QtyReturned, remain = x.QtyOwed - x.QtyReturned, x.PromiseDate, x.OrderDate, x.ExpectedDate, x.Note }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Khớp ValidateInput() gốc + upsert theo (PlateNo, PartCode) như UpdateRow() WinForm.
+// Khớp ValidateInput() của form + 3 luật CHỈ CÓ TRONG BIZ (Ser_Part_OO_Create / _Update).
+// Khoá tra cứu (biển số, mã phụ tùng) ĐÃ ĐÚNG với nguồn: biz Update cũng tra theo (PartID, OOPlateNo).
 app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db, ITenantContext t) =>
 {
     var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
     var code = (dto.PartCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa có phụ tùng" });
     if (string.IsNullOrWhiteSpace(plate)) return Results.BadRequest(new { error = "Phải nhập biển số" });
+    // Biz chặn biển số ngoài khoảng 8–10 ký tự (Ser_Part_OO_Create_Invalid_BienSo) — form KHÔNG có luật này.
+    if (plate.Length < 8 || plate.Length > 10) return Results.BadRequest(new { error = "Biển số phải từ 8 đến 10 ký tự!" });
     if (dto.QtyOwed <= 0) return Results.BadRequest(new { error = "Phải nhập số lượng nợ" });
+    // Biz chặn số lượng trả vượt số lượng nợ ở CẢ nhánh tạo lẫn nhánh sửa.
+    if (dto.QtyReturned < 0) return Results.BadRequest(new { error = "Số lượng trả không được âm!" });
+    if (dto.QtyReturned > dto.QtyOwed) return Results.BadRequest(new { error = "Số lượng trả không được lớn hơn số lượng nợ!" });
+
     var row = await db.PartBackorders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate && x.PartCode == code);
     var isNew = row is null;
     if (isNew) { row = new PartBackorder { OrgId = t.OrgId, PlateNo = plate, PartCode = code }; db.PartBackorders.Add(row); }
     row!.PartName = dto.PartName; row.CarType = dto.CarType; row.StaffCode = dto.StaffCode;
+    row.DealerCode = dto.DealerCode;
     row.QtyOwed = dto.QtyOwed; row.QtyReturned = dto.QtyReturned;
     row.PromiseDate = dto.PromiseDate; row.OrderDate = dto.OrderDate; row.ExpectedDate = dto.ExpectedDate; row.Note = dto.Note;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.PlateNo, row.PartCode, row.QtyOwed, row.QtyReturned, isNew });
+    return Results.Ok(new { row.PlateNo, row.PartCode, row.DealerCode, row.QtyOwed, row.QtyReturned, isNew });
 }).RequireAuthorization();
 
 // ===== Thanh toán phí AVN theo tháng (AvnPayment — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase) =====
@@ -17825,7 +17833,7 @@ record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
-record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note);
+record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note, string? DealerCode = null);
 record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);
 record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);
 record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, string? ModelName, string? SpecDescription, string? GpsId, DateTime CostGPSStartDate, DateTime CostGPSEndDate, int DeductDate, decimal PriceGPS, string? ContractGPS);

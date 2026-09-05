@@ -3184,6 +3184,8 @@ public sealed class PartBackorder
     public string? PartName { get; set; }
     public string? CarType { get; set; }
     public string? StaffCode { get; set; }         // CVDV
+    /// <summary>Đại lý ghi nhận khoản nợ phụ tùng (Ser_Part_OO.DealerCode).</summary>
+    public string? DealerCode { get; set; }
     public decimal QtyOwed { get; set; }
     public decimal QtyReturned { get; set; }
     public DateTime? PromiseDate { get; set; }      // NgayHenTra
