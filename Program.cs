@@ -10859,17 +10859,52 @@ app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, IT
     });
 }).RequireAuthorization();
 
+// 🔴 Trạng thái lịch hẹn theo ĐÚNG nguồn (TConst.Ser_App) — port cũ thiếu bước XÁC NHẬN.
+// Nguồn: CREA (mới tạo) → CONF (xác nhận) → ACCE (tiếp nhận, xe đã tới xưởng) · REJ (huỷ).
+// "Confirmed" là bước gọi khách xác nhận TRƯỚC khi tới — thiếu nó thì không phân biệt được
+// lịch mới đặt với lịch khách đã xác nhận sẽ đến (cơ sở để xưởng giữ khoang).
+var appointmentStatusSourceCodes = new Dictionary<string, string>
+{
+    ["Booked"] = "CREA",       // Mới tạo
+    ["Confirmed"] = "CONF",    // Xác nhận  ← port cũ THIẾU
+    ["Arrived"] = "ACCE",      // Tiếp nhận (xe đã tới)
+    ["Cancelled"] = "REJ",     // Huỷ
+    // "Done" KHÔNG có trong TConst.Ser_App — port cũ tự thêm. Giữ cho dữ liệu cũ, đánh dấu rõ.
+    ["Done"] = "(port-only)",
+};
+
+var appointmentTransitions = new Dictionary<string, string[]>
+{
+    ["Booked"] = new[] { "Confirmed", "Arrived", "Cancelled" },
+    ["Confirmed"] = new[] { "Arrived", "Cancelled" },
+    ["Arrived"] = new[] { "Done", "Cancelled" },
+    ["Done"] = Array.Empty<string>(),
+    ["Cancelled"] = Array.Empty<string>(),
+};
+
+app.MapGet("/api/appointments/statuses", () => Results.Ok(new
+{
+    statuses = appointmentStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    transitions = appointmentTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
+    note = "Done không có ở nguồn (TConst.Ser_App chỉ có CREA/CONF/ACCE/REJ) — giữ cho dữ liệu port cũ."
+})).RequireAuthorization();
+
 app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t) =>
 {
     var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (a is null) return Results.NotFound(new { id });
     var s = (dto.Status ?? "").Trim();
-    if (s != "Booked" && s != "Arrived" && s != "Done" && s != "Cancelled") return Results.BadRequest(new { error = "Trạng thái không hợp lệ." });
+    if (!appointmentStatusSourceCodes.ContainsKey(s))
+        return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", appointmentStatusSourceCodes.Keys)}" });
+    // Chỉ cho đi theo bảng chuyển tiếp — port cũ cho nhảy tự do giữa mọi trạng thái.
+    if (!appointmentTransitions.TryGetValue(a.Status, out var allowedNext) || !allowedNext.Contains(s))
+        return Results.BadRequest(new { error = $"Không thể chuyển từ '{a.Status}' sang '{s}'. Cho phép: {string.Join(", ", allowedNext ?? Array.Empty<string>())}" });
     a.Status = s; await db.SaveChangesAsync();
-    return Results.Ok(new { a.Id, a.Status });
+    return Results.Ok(new { a.Id, a.Status, sourceCode = appointmentStatusSourceCodes[s] });
 }).RequireAuthorization();
 
-// Bảng trạng thái khoang/bay theo ngày: mỗi khoang trong danh mục + lịch hẹn còn hiệu lực (Booked/Arrived) của khoang đó.
+// Bảng trạng thái khoang/bay theo ngày: mỗi khoang trong danh mục + lịch hẹn CÒN HIỆU LỰC của khoang đó
+// (Booked/Confirmed/Arrived — tức mọi trạng thái chưa huỷ).
 app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantContext t, DateTime? date) =>
 {
     var d0 = (date ?? DateTime.Today).Date; var d1 = d0.AddDays(1);
