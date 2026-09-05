@@ -827,6 +827,13 @@ public static class Seeder
                 // Bảo lãnh NH: NH giám sát + mã đơn vị KD của NH phát hành — căn cứ RBAC rẽ nhánh theo vai trò
                 "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"BankCodeMonitor\" text NOT NULL DEFAULT ''",
                 "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"BankBUCode\" text NULL",
+                // Cổng ngân hàng: DO + biên bản vận chuyển cũng cần cột ngân hàng để lọc quyền
+                "ALTER TABLE public.\"BankDeliveryOrders\" ADD COLUMN IF NOT EXISTS \"BankCode\" text NOT NULL DEFAULT ''",
+                "ALTER TABLE public.\"BankDeliveryOrders\" ADD COLUMN IF NOT EXISTS \"BankCodeMonitor\" text NOT NULL DEFAULT ''",
+                "ALTER TABLE public.\"BankDeliveryOrders\" ADD COLUMN IF NOT EXISTS \"BankBUCode\" text NULL",
+                "ALTER TABLE public.\"BankDeliveryOrders\" ADD COLUMN IF NOT EXISTS \"GuaranteeType\" text NOT NULL DEFAULT '0'",
+                "ALTER TABLE public.\"BankTransportMinutes\" ADD COLUMN IF NOT EXISTS \"BankBUCode\" text NULL",
+                "ALTER TABLE public.\"BankTransportMinutes\" ADD COLUMN IF NOT EXISTS \"GuaranteeType\" text NOT NULL DEFAULT '0'",
                 "ALTER TABLE public.\"TransportPlans\" ADD COLUMN IF NOT EXISTS \"TransporterAppDate\" timestamp NULL",
                 "ALTER TABLE public.\"TransportPlans\" ADD COLUMN IF NOT EXISTS \"TransporterAppBy\" text NULL",
                 "ALTER TABLE public.\"TransportPlans\" ADD COLUMN IF NOT EXISTS \"FDistrictCode\" text NULL",

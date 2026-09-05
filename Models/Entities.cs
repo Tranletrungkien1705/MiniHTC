@@ -5446,6 +5446,19 @@ public sealed class BankDeliveryOrder
     public string DONo { get; set; } = "";
     public string DealerCode { get; set; } = "";
     public string SOCode { get; set; } = "";
+
+    // 🔴 Port cũ KHÔNG có cột ngân hàng nào trên DO ⇒ **không lọc được DO theo ngân hàng**,
+    // trong khi cổng `TERP.WSBank` cho ngân hàng đăng nhập xem chính bảng này
+    // (`TERP.BizBank/Report.cs:282-294`, hệ `ERP.V15.DMSSales.Real` chỉ có trên máy 150).
+    /// <summary>Ngân hàng PHÁT HÀNH bảo lãnh gắn với DO.</summary>
+    public string BankCode { get; set; } = "";      // DO thuộc ngân hàng nào
+    /// <summary>Ngân hàng GIÁM SÁT (`BankCodeMonitor`) — căn cứ RBAC vai trò "0".</summary>
+    public string BankCodeMonitor { get; set; } = "";
+    /// <summary>Mã đơn vị KD của ngân hàng phát hành (`BankBUCode`) — căn cứ RBAC vai trò "1".</summary>
+    public string? BankBUCode { get; set; }
+    /// <summary>Vai trò ngân hàng áp cho DO: "0" giám sát · "1" phát hành — QUYẾT ĐỊNH nhánh lọc quyền.</summary>
+    public string GuaranteeType { get; set; } = "0";
+
     public string Status { get; set; } = "Open";   // Open -> Confirmed (khi tat ca xe da nhan)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
@@ -5474,6 +5487,11 @@ public sealed class BankTransportMinute
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+    /// <summary>Mã đơn vị KD của ngân hàng phát hành (`BankBUCode`) — căn cứ RBAC vai trò "1"
+    /// (`TERP.BizBank/Report.cs:690-713`). Port cũ đã có `BankCode`/`BankCodeMonitor` nhưng thiếu cột này.</summary>
+    public string? BankBUCode { get; set; }
+    /// <summary>Vai trò ngân hàng: "0" giám sát · "1" phát hành — QUYẾT ĐỊNH nhánh lọc quyền.</summary>
+    public string GuaranteeType { get; set; } = "0";
     public string TransportMinutesNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
     public string BankCode { get; set; } = "";

@@ -2154,12 +2154,17 @@ app.MapPost("/api/salesinvthresholds/{dealer}/{model}/toggle", async (string dea
 
 // ===== Xe thế chấp tại ngân hàng (BankCarMortage — port 1:1 FrmBankCarMortage + FrmDeliveryPlan, cụm Bank) =====
 // Màn 1: tra cứu list xe đang thế chấp (dealer/bank/vin/socode/ngày giao tài sản).
-app.MapGet("/api/bankmortages", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? vin, string? soCode, string? guaranteeType, string? active) =>
+app.MapGet("/api/bankmortages", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? vin, string? soCode, string? guaranteeType, string? active, string? mortageBankPattern) =>
 {
     var q = db.BankCarMortages.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank || m.MortageBankCode == bank);
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(m => m.VIN.Contains(vin!));
+    // 🔴 RBAC của `Bank_CarVIN_Mortage_Get` (TERP.BizBank/Report.cs:1527+) dùng BIẾN THỂ KHÁC:
+    // pattern lấy từ **`MBBankBUPattern`** (KHÔNG phải `MBBankCode`) và lọc theo **ngân hàng đang nhận
+    // thế chấp CỦA XE** (`mb.BankCode = cv.MortageBankCode`) — KHÔNG rẽ nhánh theo vai trò.
+    if (!string.IsNullOrWhiteSpace(mortageBankPattern))
+    { var pmb = mortageBankPattern!.Trim().Replace("%", ""); q = q.Where(m => m.MortageBankCode.Contains(pmb)); }
     if (!string.IsNullOrWhiteSpace(soCode)) q = q.Where(m => m.SOCode == soCode);
     if (!string.IsNullOrWhiteSpace(guaranteeType)) q = q.Where(m => m.GuaranteeType == guaranteeType);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(m => m.FlagActive == active);
@@ -2207,9 +2212,14 @@ app.MapPost("/api/bankmortages/{vin}/toggle", async (string vin, AppDbContext db
 }).RequireAuthorization();
 
 // Màn 2: Kế hoạch giao xe (FrmDeliveryPlan) — pivot đếm xe theo khoảng giao × model, lọc dealer/bank/loại BL.
-app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? guaranteeType) =>
+app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? guaranteeType, string? mortageBankPattern) =>
 {
     var q = db.BankCarMortages.Where(m => m.OrgId == t.OrgId && m.FlagActive == "1");
+    // 🔴 RBAC của `Bank_CarVIN_Mortage_Get` (TERP.BizBank/Report.cs:1527+) dùng BIẾN THỂ KHÁC:
+    // pattern lấy từ **`MBBankBUPattern`** (KHÔNG phải `MBBankCode`) và lọc theo **ngân hàng đang nhận
+    // thế chấp CỦA XE** (`mb.BankCode = cv.MortageBankCode`) — KHÔNG rẽ nhánh theo vai trò.
+    if (!string.IsNullOrWhiteSpace(mortageBankPattern))
+    { var pmb = mortageBankPattern!.Trim().Replace("%", ""); q = q.Where(m => m.MortageBankCode.Contains(pmb)); }
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank || m.MortageBankCode == bank);
     if (!string.IsNullOrWhiteSpace(guaranteeType)) q = q.Where(m => m.GuaranteeType == guaranteeType);
@@ -2231,6 +2241,11 @@ app.MapGet("/api/bankmortages/deliveryplan", async (AppDbContext db, ITenantCont
 // 🔴 Bảo lãnh ngân hàng dùng mã trạng thái của nguồn (TConst.Stage), KHÔNG phải chuỗi tự đặt.
 // WarningPeriod = 3 (TConst.HTCConst.WarningPeriod) — dùng cho cả guard kỳ hạn lẫn công thức kỳ cảnh báo.
 const int BankGrtWarningPeriod = 3;
+
+// Ghi chú chung cho RBAC cổng ngân hàng — dùng cho cả /api/bankdos, /api/banktms, /api/bankgrts.
+const string BankRbacFilterNote = "Cổng ngân hàng (TERP.WSBank) lọc theo VAI TRÒ: '0' giám sát → BankCodeMonitor, '1' phát hành → BankBUCode. Riêng thế chấp VIN lọc theo MortageBankCode với pattern MBBankBUPattern.";
+
+app.MapGet("/api/bank/rbac-note", () => Results.Ok(new { note = BankRbacFilterNote })).RequireAuthorization();
 
 app.MapGet("/api/bankgrts/rbac", () => Results.Ok(new
 {
@@ -2484,15 +2499,23 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
 }).RequireAuthorization();
 
 // ===== Lệnh xuất xe - NH xác nhận nhận xe (BankDeliveryOrder — port 1:1 FrmBankDO, cụm Bank) =====
-app.MapGet("/api/bankdos", async (AppDbContext db, ITenantContext t, string? dealer, string? doNo, string? status) =>
+app.MapGet("/api/bankdos", async (AppDbContext db, ITenantContext t, string? dealer, string? doNo, string? status,
+    string? bankAbilityPattern, string? buAbilityPattern) =>
 {
     var q = db.BankDeliveryOrders.Where(d => d.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(d => d.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(doNo)) q = q.Where(d => d.DONo.Contains(doNo!) || d.SOCode.Contains(doNo!));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.Status == status);
+    // 🔴 RBAC cổng ngân hàng — RẼ NHÁNH THEO VAI TRÒ (TERP.BizBank/Report.cs:282-294).
+    // Port cũ KHÔNG có tầng lọc ⇒ ngân hàng đăng nhập thấy DO của mọi ngân hàng khác.
+    if (!string.IsNullOrWhiteSpace(bankAbilityPattern))
+    { var pm = bankAbilityPattern!.Trim().Replace("%", ""); q = q.Where(d => d.GuaranteeType != "0" || d.BankCodeMonitor.Contains(pm)); }
+    if (!string.IsNullOrWhiteSpace(buAbilityPattern))
+    { var pu = buAbilityPattern!.Trim().Replace("%", ""); q = q.Where(d => d.GuaranteeType != "1" || (d.BankBUCode != null && d.BankBUCode.Contains(pu))); }
     var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
     {
         d.DONo, d.DealerCode, d.SOCode, d.Status, d.CreatedAt, d.ConfirmedAt,
+        d.BankCode, d.BankCodeMonitor, d.BankBUCode, d.GuaranteeType,
         cars = db.BankDoCars.Count(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id),
         confirmed = db.BankDoCars.Count(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id && c.ConfirmStatus == "1")
     }).ToListAsync();
@@ -2507,7 +2530,7 @@ app.MapPost("/api/bankdos", async (BankDoDto dto, AppDbContext db, ITenantContex
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "DO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var d2 = new BankDeliveryOrder { OrgId = t.OrgId, DONo = no, DealerCode = dto.DealerCode.Trim(), SOCode = dto.SOCode ?? "", Status = "Open" };
+    var d2 = new BankDeliveryOrder { OrgId = t.OrgId, DONo = no, BankCode = dto.BankCode ?? "", BankCodeMonitor = dto.BankCodeMonitor ?? "", BankBUCode = dto.BankBUCode, GuaranteeType = dto.GuaranteeType == "1" ? "1" : "0", DealerCode = dto.DealerCode.Trim(), SOCode = dto.SOCode ?? "", Status = "Open" };
     db.BankDeliveryOrders.Add(d2); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.BankDoCars.Add(new BankDoCar { OrgId = t.OrgId, DeliveryOrderId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId ?? "", BankGrtNo = c.BankGrtNo ?? "", SpecCode = c.SpecCode ?? "", ColorCode = c.ColorCode ?? "", DeliveryExpectedDate = c.DeliveryExpectedDate, DeliveryOutDate = c.DeliveryOutDate, ConfirmStatus = "0" });
@@ -2555,16 +2578,23 @@ app.MapPost("/api/bankdos/{no}/confirmall", async (string no, AppDbContext db, I
 }).RequireAuthorization();
 
 // ===== Biên bản vận chuyển (BankTransportMinute — port 1:1 FrmBankTransportMinutes, cụm Bank) =====
-app.MapGet("/api/banktms", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? tmNo, string? status) =>
+app.MapGet("/api/banktms", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? tmNo, string? status,
+    string? bankAbilityPattern, string? buAbilityPattern) =>
 {
     var q = db.BankTransportMinutes.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(m => m.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(m => m.BankCode == bank || m.BankCodeMonitor == bank);
     if (!string.IsNullOrWhiteSpace(tmNo)) q = q.Where(m => m.TransportMinutesNo.Contains(tmNo!));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(bankAbilityPattern))
+    { var pm = bankAbilityPattern!.Trim().Replace("%", ""); q = q.Where(m => m.GuaranteeType != "0" || m.BankCodeMonitor.Contains(pm)); }
+    if (!string.IsNullOrWhiteSpace(buAbilityPattern))
+    { var pu = buAbilityPattern!.Trim().Replace("%", ""); q = q.Where(m => m.GuaranteeType != "1" || (m.BankBUCode != null && m.BankBUCode.Contains(pu))); }
     var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
+    // 🔴 RBAC cổng ngân hàng — cùng mẫu rẽ nhánh vai trò (TERP.BizBank/Report.cs:690-713).
         m.TransportMinutesNo, m.DealerCode, m.BankCode, m.BankCodeMonitor, m.Status, m.DLApprDateTime, m.HTCAppr2DateTime, m.CreatedAt,
+        m.BankBUCode, m.GuaranteeType,
         cars = db.BankTmCars.Count(c => c.OrgId == t.OrgId && c.TransportMinuteId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -20432,7 +20462,7 @@ record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerC
 record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
-record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars);
+record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars, string? BankCode = null, string? BankCodeMonitor = null, string? BankBUCode = null, string? GuaranteeType = null);
 record BankDoConfirmDto(string? Remark);
 record BankTmCarDto(string VIN, string? CarId, string? EngineNo, string? SOCode, string? GuaranteeNo, string? DlrCtrNo, string? ColorCode);
 record BankTmDto(string DealerCode, string? BankCode, string? BankCodeMonitor, List<BankTmCarDto>? Cars);
