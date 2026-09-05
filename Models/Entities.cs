@@ -1533,16 +1533,33 @@ public sealed class SalesManCertificate
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+    /// <summary>
+    /// Số chứng chỉ (SMCERNO) — ĐỊNH DANH THẬT của bản ghi ở nguồn.
+    /// Một NVBH có thể được cấp CÙNG MỘT mã chứng chỉ NHIỀU LẦN (cấp lại / gia hạn),
+    /// mỗi lần là một dòng riêng với khoảng hiệu lực riêng ⇒ khoá phải là SMCerNo,
+    /// KHÔNG phải cặp (SMHyundaiCode, CertificateCode) — khoá cặp sẽ đè mất lịch sử cấp.
+    /// </summary>
+    public string SMCerNo { get; set; } = "";
+
     public string SMHyundaiCode { get; set; } = "";
     public string CertificateCode { get; set; } = "";
     public string? CertificateName { get; set; }
     public string? SMType { get; set; }
     public string? DepartmentCode { get; set; }
     public string? DealerCode { get; set; }                 // đại lý NVBH (TblMst_SalesManCertificate.DealerCode — WinForm line 196)
+
+    /// <summary>Ngày cấp chứng chỉ (EFFSTARTCERTIFICATE) — bắt buộc.</summary>
     public DateTime? EffStartDate { get; set; }
+
+    /// <summary>Ngày kết thúc chứng chỉ (EFFENDCERTIFICATE) — KHÔNG bắt buộc (nguồn đã comment phần bắt buộc).</summary>
     public DateTime? EffEndDate { get; set; }
+
+    public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedAt { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
 }
 
 /// <summary>Khóa đào tạo NVBH (Mst_Training header) — port 1:1 FrmMst_TrainingCreate/Mng/Update (2010.HTC/Admin/Product). Khóa: mã + tên + phòng ban + đại lý + giảng viên. KHÁC catalog "Training" (code/name) — đây là khóa có giảng viên + danh sách tham gia. Upsert-by-TrainingUserCode.</summary>

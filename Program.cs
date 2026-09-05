@@ -6428,25 +6428,115 @@ app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, strin
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(cert)) qry = qry.Where(x => x.CertificateCode == cert);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMHyundaiCode.Contains(q!) || x.CertificateCode.Contains(q!) || x.CertificateName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMCerNo, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.Remark, x.FlagActive, x.UpdatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/salesmancerts", async (SalesManCertificateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/salesmancerts", async (
+    SalesManCertificateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var sm = (dto.SMHyundaiCode ?? "").Trim();
     var cc = (dto.CertificateCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(sm)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH (Hyundai code)." });
-    if (string.IsNullOrWhiteSpace(cc)) return Results.BadRequest(new { error = "Chưa chọn chứng chỉ." });
-    if (dto.EffStartDate is null) return Results.BadRequest(new { error = "Cần EffStartDate (ngày hiệu lực bắt đầu)." });
-    if (dto.EffEndDate.HasValue && dto.EffEndDate < dto.EffStartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
-    var row = await db.SalesManCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm && x.CertificateCode == cc);
-    if (row is null) { row = new SalesManCertificate { OrgId = t.OrgId, SMHyundaiCode = sm, CertificateCode = cc }; db.SalesManCertificates.Add(row); }
-    row.CertificateName = dto.CertificateName; row.SMType = dto.SMType; row.DepartmentCode = dto.DepartmentCode;
-    row.DealerCode = dto.DealerCode; row.EffStartDate = dto.EffStartDate; row.EffEndDate = dto.EffEndDate; row.UpdatedAt = DateTime.Now;
+
+    // Thứ tự + nguyên văn thông báo theo btnSave_Click của FrmMst_SalesManCertificateCreate.
+    if (string.IsNullOrWhiteSpace(sm)) return Results.BadRequest(new { error = "Chưa nhập Mã nhân viên!" });
+    // Nguồn bắt buộc phải "lấy thông tin theo mã nhân viên" trước khi lưu ⇒ NVBH phải có thật.
+    var salesManExists = await db.DlSalesMen.AnyAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm)
+                      || await db.SalesMen.AnyAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm);
+    if (!salesManExists) return Results.BadRequest(new { error = "Chưa lấy thông tin theo Mã nhân viên mới." });
+    if (string.IsNullOrWhiteSpace(dto.DepartmentCode)) return Results.BadRequest(new { error = "Chưa chọn Mã phòng ban!" });
+    if (string.IsNullOrWhiteSpace(dto.SMType)) return Results.BadRequest(new { error = "Chưa chọn Mã loại nhân viên!" });
+    if (string.IsNullOrWhiteSpace(cc)) return Results.BadRequest(new { error = "Chưa chọn Chứng chỉ!" });
+    if (dto.EffStartDate is null) return Results.BadRequest(new { error = "Chưa nhập Ngày cấp chứng chỉ!" });
+    // Ngày kết thúc KHÔNG bắt buộc (nguồn đã comment khối bắt buộc — port dòng ĐANG CHẠY, không port dòng comment).
+    // Khi có nhập thì nguồn chặn bằng ">=" ⇒ hai ngày BẰNG NHAU cũng bị chặn.
+    if (dto.EffEndDate.HasValue && dto.EffStartDate >= dto.EffEndDate)
+        return Results.BadRequest(new { error = "Ngày cấp chứng chỉ > Ngày kết thúc chứng chỉ!" });
+
+    var actor = user.Identity?.Name;
+    var now = DateTime.Now;
+
+    // Khoá là SỐ CHỨNG CHỈ: có SMCerNo → sửa đúng lần cấp đó; không có → lần cấp MỚI.
+    // (Trước đây khoá theo cặp (NVBH, mã chứng chỉ) nên cấp lại sẽ ĐÈ mất lần cấp cũ.)
+    var smCerNo = (dto.SMCerNo ?? "").Trim();
+    SalesManCertificate? row = null;
+    if (smCerNo.Length > 0)
+    {
+        row = await db.SalesManCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCerNo == smCerNo);
+        if (row is null) return Results.NotFound(new { error = $"Không tìm thấy số chứng chỉ '{smCerNo}'." });
+    }
+    else
+    {
+        smCerNo = "SMC" + now.ToString("yyMMddHHmmssfff");
+        row = new SalesManCertificate { OrgId = t.OrgId, SMCerNo = smCerNo, CreatedAt = now, CreatedBy = actor };
+        db.SalesManCertificates.Add(row);
+    }
+
+    row.SMHyundaiCode = sm;
+    row.CertificateCode = cc;
+    row.CertificateName = dto.CertificateName;
+    row.SMType = dto.SMType;
+    row.DepartmentCode = dto.DepartmentCode;
+    row.DealerCode = dto.DealerCode;
+    row.EffStartDate = dto.EffStartDate;
+    row.EffEndDate = dto.EffEndDate;
+    row.Remark = dto.Remark;
+    row.UpdatedAt = now;
+    row.UpdatedBy = actor;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.SMHyundaiCode, row.CertificateCode, row.FlagActive });
+    return Results.Ok(new
+    {
+        row.Id, row.SMCerNo, row.SMHyundaiCode, row.CertificateCode, row.FlagActive,
+        message = "Tạo mới chi tiết chứng chỉ nhân viên thành công!"
+    });
+}).RequireAuthorization();
+
+// Tiến trình cấp chứng chỉ NVBH — port 1:1 FrmQLTienTrinhCapChungChi (2010.HTC/Admin/Product):
+// màn tra cứu + xuất Excel, ghép chứng chỉ với thông tin NVBH, lọc theo đại lý / loại NV / chứng chỉ / khoảng ngày cấp.
+app.MapGet("/api/salesmancerts/progress", async (
+    AppDbContext db, ITenantContext t,
+    string? dealer, string? smType, string? cert, string? sm, DateTime? from, DateTime? to) =>
+{
+    var q = db.SalesManCertificates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(smType)) q = q.Where(x => x.SMType == smType);
+    if (!string.IsNullOrWhiteSpace(cert)) q = q.Where(x => x.CertificateCode == cert);
+    if (!string.IsNullOrWhiteSpace(sm)) q = q.Where(x => x.SMHyundaiCode.Contains(sm!));
+    if (from.HasValue) q = q.Where(x => x.EffStartDate >= from);
+    if (to.HasValue) q = q.Where(x => x.EffStartDate <= to);
+
+    // Lưới nguồn hiển thị kèm TÊN NVBH lấy từ Mst_DlSalesMan (join), nên phải ghép ở đây.
+    var rows = await q.OrderBy(x => x.SMHyundaiCode).ThenBy(x => x.EffStartDate).Take(1000).ToListAsync();
+    var smCodes = rows.Select(r => r.SMHyundaiCode).Distinct().ToList();
+    var smNames = await db.DlSalesMen
+        .Where(x => x.OrgId == t.OrgId && smCodes.Contains(x.SMHyundaiCode))
+        .Select(x => new { x.SMHyundaiCode, x.SMName })
+        .ToListAsync();
+    var nameByCode = smNames
+        .GroupBy(x => x.SMHyundaiCode)
+        .ToDictionary(g => g.Key, g => g.First().SMName);
+
+    var items = rows.Select((r, i) => new
+    {
+        index = i + 1,
+        r.SMCerNo,
+        r.SMHyundaiCode,
+        smName = nameByCode.TryGetValue(r.SMHyundaiCode, out var n) ? n : null,
+        r.SMType,
+        r.CertificateCode,
+        r.CertificateName,
+        effStartCertificate = r.EffStartDate,
+        effEndCertificate = r.EffEndDate,
+        r.DealerCode,
+        r.Remark,
+        r.FlagActive,
+        updateDateTime = r.UpdatedAt
+    }).ToList();
+
+    // Nguồn báo "không tìm thấy kết quả" khi lưới rỗng — trả cờ để client hiện đúng thông báo đó.
+    return Results.Ok(new { count = items.Count, notFound = items.Count == 0, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesmancerts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -17725,7 +17815,7 @@ record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffSt
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
 record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
-record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive);
+record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive, string? SMCerNo = null, string? Remark = null);
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut);
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines);
