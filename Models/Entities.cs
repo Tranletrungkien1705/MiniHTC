@@ -2855,19 +2855,47 @@ public sealed class ExtraWorkLimitationMst
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Gia hạn bảo hành theo VIN (Mst_Warranty_Extension_Date_Mng) — port 1:1 FrmMstWarrantyExtensionDateMng (TCMotor DMSCarSv/Admin). VIN + số RO + loại gia hạn + ngày gia hạn mới + ghi chú. Insert-log, upsert-by-(VIN+RONo).</summary>
+/// <summary>
+/// Gia hạn bảo hành theo VIN — port 1:1 FrmMstWarrantyExtensionDateMng (TCMotor DMSCarSv/Admin).
+/// ⚠️ Tên bảng THẬT ở nguồn là <c>Ser_MST_ROWarrantyRenewal</c> (biz Ser_MST_ROWarrantyRenewal_Save),
+/// không phải "Mst_Warranty_Extension_Date_Mng" — đó chỉ là tên lớp hằng phía client.
+/// Khoá upsert đúng của nguồn là CẶP (VIN, WrtReneCateCode) — mỗi VIN chỉ có MỘT bản gia hạn
+/// cho MỖI LOẠI gia hạn; gia hạn lại cùng loại thì ĐÈ lên dòng cũ.
+/// </summary>
 public sealed class WarrantyExtensionDateLog
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
-    public string? RONo { get; set; }
+
+    /// <summary>
+    /// Khoá tự tăng của nguồn (ROWRID = @@Identity của Ser_MST_ROWarrantyRenewal).
+    /// Nguồn dùng nó cho thao tác XOÁ; giữ lại để đối chiếu dữ liệu nhập từ hệ cũ.
+    /// </summary>
+    public string? ROWRID { get; set; }
+
+    /// <summary>Mã loại gia hạn (WRTRENECATECODE) — nửa còn lại của khoá upsert, BẮT BUỘC.</summary>
     public string? ExtCategoryCode { get; set; }
+
+    /// <summary>Tên loại gia hạn (WRTRENECATENAME).</summary>
     public string? ExtCategoryName { get; set; }
+
+    /// <summary>Ngày gia hạn mới (WRTRENEDATE).</summary>
     public DateTime? ExtensionDate { get; set; }
+
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    public DateTime? CreatedAt { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public string? UpdatedBy { get; set; }
+
+    /// <summary>
+    /// ⚠️ KHÔNG CÒN DÙNG. Bản port trước ánh xạ nhầm cột <c>ROWRID</c> (khoá tự tăng) thành "số RO"
+    /// và lấy nó làm nửa khoá upsert. Bảng nguồn KHÔNG có cột số RO nào. Giữ lại để không mất dữ liệu cũ.
+    /// </summary>
+    public string? RONo { get; set; }
 }
 
 /// <summary>Phân công công đoạn sửa chữa theo RO (Ser_AssignmentWork header) — port 1:1 FrmSer_AssignmentWork (TCMotor DMSCarSv/Services). Header theo RO; 7 công đoạn (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) mỗi công đoạn gán khoang (Cavity) + kế hoạch/thực tế bắt đầu-kết thúc → SerAssignmentWorkStage.</summary>

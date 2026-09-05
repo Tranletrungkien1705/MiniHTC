@@ -655,6 +655,11 @@ public static class Seeder
                 "ALTER TABLE public.\"StockReqs\" ADD COLUMN IF NOT EXISTS \"PlateNo\" text NULL",
                 "ALTER TABLE public.\"StockReqs\" ADD COLUMN IF NOT EXISTS \"FrameNo\" text NULL",
                 "ALTER TABLE public.\"StockReqs\" ADD COLUMN IF NOT EXISTS \"Note\" text NULL",
+                // Gia hạn bảo hành (Ser_MST_ROWarrantyRenewal — FrmMstWarrantyExtensionDateMng, TCMotor): khoá tự tăng nguồn + vết tạo/sửa
+                "ALTER TABLE public.\"WarrantyExtensionDateLogs\" ADD COLUMN IF NOT EXISTS \"ROWRID\" text NULL",
+                "ALTER TABLE public.\"WarrantyExtensionDateLogs\" ADD COLUMN IF NOT EXISTS \"CreatedAt\" timestamp NULL",
+                "ALTER TABLE public.\"WarrantyExtensionDateLogs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"WarrantyExtensionDateLogs\" ADD COLUMN IF NOT EXISTS \"UpdatedBy\" text NULL",
                 // Tham gia đào tạo (Mst_TrainingDtl — FrmQLTienTrinhThamGiaKhoaDT, 2010.HTC): mã bản ghi + tên NV + cờ hiệu lực + vết cập nhật
                 "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"TrainingDtlCode\" text NOT NULL DEFAULT ''",
                 "ALTER TABLE public.\"TrainingParticipants\" ADD COLUMN IF NOT EXISTS \"SMName\" text NULL",

@@ -9671,22 +9671,54 @@ app.MapGet("/api/warrantyextensiondatelogs", async (AppDbContext db, ITenantCont
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(vin)) qry = qry.Where(x => x.VIN.Contains(vin!.ToUpperInvariant()));
     var items = await qry.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.Id, x.VIN, x.RONo, x.ExtCategoryCode, x.ExtCategoryName, x.ExtensionDate, x.Remark, x.FlagActive }).ToListAsync();
+        .Select(x => new
+        {
+            x.Id, x.ROWRID, x.VIN, x.ExtCategoryCode, x.ExtCategoryName, x.ExtensionDate,
+            x.Remark, x.FlagActive, x.CreatedAt, x.CreatedBy, x.UpdatedAt, x.UpdatedBy
+        }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyextensiondatelogs", async (WarrantyExtensionDateLogDto dto, AppDbContext db, ITenantContext t) =>
+// Upsert đúng khoá nguồn: CẶP (VIN, mã loại gia hạn).
+// Nguồn tra `where t.VIN = @VIN and t.WrtReneCateCode = @code`; có → CẬP NHẬT, không → THÊM MỚI.
+app.MapPost("/api/warrantyextensiondatelogs", async (
+    WarrantyExtensionDateLogDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
-    var ro = (dto.RONo ?? "").Trim().ToUpperInvariant();
+    var extCategoryCode = (dto.ExtCategoryCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(vin)) return Results.BadRequest(new { error = "Chưa nhập số VIN." });
+    // Mã loại gia hạn là nửa còn lại của khoá — thiếu thì không xác định được đang gia hạn loại nào.
+    if (string.IsNullOrWhiteSpace(extCategoryCode)) return Results.BadRequest(new { error = "Chưa chọn loại gia hạn bảo hành." });
     if (dto.ExtensionDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày gia hạn." });
-    var row = await db.WarrantyExtensionDateLogs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.RONo == ro);
-    if (row is null) { row = new WarrantyExtensionDateLog { OrgId = t.OrgId, VIN = vin, RONo = ro }; db.WarrantyExtensionDateLogs.Add(row); }
-    row.ExtCategoryCode = dto.ExtCategoryCode; row.ExtCategoryName = dto.ExtCategoryName; row.ExtensionDate = dto.ExtensionDate; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
+
+    var actor = user.Identity?.Name;
+    var now = DateTime.Now;
+
+    var row = await db.WarrantyExtensionDateLogs
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.ExtCategoryCode == extCategoryCode);
+    var isNew = row is null;
+    if (row is null)
+    {
+        row = new WarrantyExtensionDateLog
+        {
+            OrgId = t.OrgId, VIN = vin, ExtCategoryCode = extCategoryCode,
+            FlagActive = "1", CreatedAt = now, CreatedBy = actor,
+            // Tên loại gia hạn chỉ ghi khi THÊM MỚI — nhánh cập nhật của nguồn không đụng cột này.
+            ExtCategoryName = dto.ExtCategoryName
+        };
+        db.WarrantyExtensionDateLogs.Add(row);
+    }
+
+    // Nhánh cập nhật của nguồn chỉ ghi đúng 4 cột: Remark, WrtReneDate, LogLUDateTime, LogLUBy.
+    // Ghi chú để TRỐNG thì nguồn set NULL (xoá ghi chú cũ), chứ không giữ nguyên giá trị cũ.
+    row.Remark = string.IsNullOrWhiteSpace(dto.Remark) ? null : dto.Remark;
+    row.ExtensionDate = dto.ExtensionDate;
+    row.UpdatedAt = now;
+    row.UpdatedBy = actor;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.VIN, row.RONo, row.ExtensionDate, row.FlagActive });
+    return Results.Ok(new { row.Id, row.VIN, row.ExtCategoryCode, row.ExtensionDate, row.FlagActive, created = isNew });
 }).RequireAuthorization();
 
 app.MapPost("/api/warrantyextensiondatelogs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -18022,7 +18054,7 @@ record CompartmentMstDto(string? CompartmentCode, string? CompartmentName, strin
 record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive);
 record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive);
 record ExtraWorkLimitationMstDto(string? ExtraWorkCode, string? ExtraWorkName, string? WarrantyDtlCode, decimal MaxPrice, string? FlagActive);
-record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategoryCode, string? ExtCategoryName, DateTime? ExtensionDate, string? Remark, string? FlagActive);
+record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategoryCode, string? ExtCategoryName, DateTime? ExtensionDate, string? Remark, string? FlagActive, string? ROWRID = null);
 record SerAssignmentWorkStageDto(string? StageCode, string? CavityId, DateTime? PlanStart, DateTime? PlanFinish, DateTime? ActualStart, DateTime? ActualFinish);
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
