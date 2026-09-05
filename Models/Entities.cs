@@ -5229,11 +5229,19 @@ public sealed class ServicePartOO
     public string PartCode { get; set; } = "";
     public string? PartName { get; set; }
     public string? PlateNo { get; set; }
-    public decimal QtyNeeded { get; set; }
-    public decimal QtyFulfilled { get; set; }
-    public string? Note { get; set; }
+    public decimal QtyNeeded { get; set; }             // TblSer_Part_OO.SoLuongNo — SL nợ khách
+    public decimal QtyFulfilled { get; set; }          // TblSer_Part_OO.SoLuongTra — SL đã trả
+    public string? Note { get; set; }                  // TblSer_Part_OO.GhiChu
     public string Status { get; set; } = "Open"; // Open -> Fulfilled
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // GAP đã vá 2026-09-05: 6 cột của TblSer_Part_OO bị bỏ sót ở bản port trước;
+    // lưới FrmImportSerPartOO/FrmMngSerPartOO đều hiển thị các cột này.
+    public string? LoaiXe { get; set; }                // TblSer_Part_OO.LoaiXe — loại/dòng xe
+    public string? CVDV { get; set; }                  // TblSer_Part_OO.CVDV — cố vấn dịch vụ
+    public string? DealerCode { get; set; }            // TblSer_Part_OO.DealerCode — đại lý
+    public DateTime? NgayDatHang { get; set; }         // TblSer_Part_OO.NgayDatHang — ngày đặt hàng
+    public DateTime? NgayVeDuKien { get; set; }        // TblSer_Part_OO.NgayVeDuKien — ngày về dự kiến
+    public DateTime? NgayHenTra { get; set; }          // TblSer_Part_OO.NgayHenTra — ngày hẹn trả khách
 }
 
 /// <summary>Xe khách trong hệ thống dịch vụ (biển số/khung/máy/km/bảo hành) — port 1:1 FrmCarInfo (TblSerCar, TCMotor).</summary>

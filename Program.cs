@@ -4788,6 +4788,75 @@ app.MapPost("/api/servicestockins/{no}/confirm", async (string no, AppDbContext 
     return Results.Ok(new { h.StockInNo, status = h.Status, partsUpdated = updated });
 }).RequireAuthorization();
 
+// ===== Nhập phụ tùng nợ từ Excel (port 1:1 FrmImportSerPartOO — TCMotor DMSCarSv/Services) =====
+// Nguồn: btnImportExcel_Click (validate) + btnSave_Click (gọi partService.SerPartOOCreate từng dòng).
+// ⚠️ Excel gốc đọc bằng ExcelImport.Query(file, "A2") ⇒ HEADER Ở DÒNG 2, không phải dòng 1.
+//    Client phải parse Excel rồi POST danh sách dòng vào đây (API nhận JSON, không nhận file .xls).
+// Đặc tính quan trọng của nguồn: validate TOÀN BỘ các dòng TRƯỚC, chỉ 1 dòng sai là DỪNG HẲN,
+// không lưu dòng nào (all-or-nothing) — tránh nhập nửa vời.
+app.MapPost("/api/servicepartoos/import", async (
+    ImportPartOORequest request,
+    AppDbContext database,
+    ITenantContext tenant) =>
+{
+    var importRows = request.Rows ?? new List<ImportPartOORowDto>();
+    // Nguồn: file rỗng → "File excel import không có dữ liệu"
+    if (importRows.Count == 0)
+        return Results.BadRequest(new { error = "File excel import không có dữ liệu" });
+
+    // --- Pha 1: validate TẤT CẢ các dòng (không ghi gì xuống DB) ---
+    foreach (var row in importRows)
+    {
+        var validationError = ValidatePartOOImportRow(row);
+        if (validationError is not null) return Results.BadRequest(new { error = validationError });
+    }
+
+    // --- Pha 2: mã phụ tùng phải TỒN TẠI trong hệ thống (nguồn tra Mst_Part theo danh sách PartCode) ---
+    var importedPartCodes = importRows
+        .Select(row => row.PartCode.Trim().ToUpperInvariant())
+        .Distinct()
+        .ToList();
+    var knownPartCodes = await database.ServiceParts
+        .Where(part => part.OrgId == tenant.OrgId && importedPartCodes.Contains(part.PartCode))
+        .Select(part => part.PartCode)
+        .ToListAsync();
+
+    if (knownPartCodes.Count == 0)
+        return Results.BadRequest(new { error = "Danh sách phụ tùng import không có trong hệ thống" });
+
+    var knownPartCodeSet = knownPartCodes.ToHashSet();
+    var missingPartCode = importedPartCodes.FirstOrDefault(code => !knownPartCodeSet.Contains(code));
+    if (missingPartCode is not null)
+        return Results.BadRequest(new { error = $"Mã phụ tùng '{missingPartCode}' không có trong hệ thống!" });
+
+    // --- Pha 3: mọi dòng hợp lệ → tạo phụ tùng nợ (nguồn gọi SerPartOOCreate từng dòng) ---
+    var createdCount = 0;
+    foreach (var row in importRows)
+    {
+        database.ServicePartOOs.Add(new ServicePartOO
+        {
+            OrgId = tenant.OrgId,
+            OONo = $"OO-{DateTime.Now:yyMMddHHmmss}-{createdCount + 1:D3}",
+            PartCode = row.PartCode.Trim().ToUpperInvariant(),
+            PlateNo = row.OOPlateNo.Trim().ToUpperInvariant(),
+            QtyNeeded = decimal.Parse(row.SoLuongNo.Trim()),
+            QtyFulfilled = string.IsNullOrWhiteSpace(row.SoLuongTra) ? 0 : decimal.Parse(row.SoLuongTra.Trim()),
+            LoaiXe = row.LoaiXe,
+            CVDV = row.CVDV,
+            Note = row.GhiChu,
+            DealerCode = request.DealerCode?.Trim().ToUpperInvariant(),
+            NgayDatHang = ParseOptionalDate(row.NgayDatHang),
+            NgayVeDuKien = ParseOptionalDate(row.NgayVeDuKien),
+            NgayHenTra = ParseOptionalDate(row.NgayHenTra),
+            Status = "Open"
+        });
+        createdCount++;
+    }
+    await database.SaveChangesAsync();
+
+    return Results.Ok(new { imported = createdCount, message = "Đã tạo phụ tùng nợ thành công" });
+}).RequireAuthorization();
+
 // ===== Phụ tùng nợ/chờ giao theo xe (ServicePartOO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor) =====
 app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, string? part, string? plate, string? status) =>
 {
@@ -4796,7 +4865,14 @@ app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(plate)) query = query.Where(x => x.PlateNo == plate);
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
     var items = await query.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.OONo, x.PartCode, x.PartName, x.PlateNo, x.QtyNeeded, x.QtyFulfilled, remaining = x.QtyNeeded - x.QtyFulfilled, x.Note, x.Status, createdAt = x.CreatedAt.ToString("yyyy-MM-dd") }).ToListAsync();
+        .Select(x => new
+        {
+            x.OONo, x.PartCode, x.PartName, x.PlateNo, x.QtyNeeded, x.QtyFulfilled,
+            remaining = x.QtyNeeded - x.QtyFulfilled, x.Note, x.Status,
+            // GAP đã vá: 6 cột TblSer_Part_OO trước đây không được trả về
+            x.LoaiXe, x.CVDV, x.DealerCode, x.NgayDatHang, x.NgayVeDuKien, x.NgayHenTra,
+            createdAt = x.CreatedAt.ToString("yyyy-MM-dd")
+        }).ToListAsync();
     return Results.Ok(new { count = items.Count, openCount = items.Count(i => i.Status == "Open"), items });
 }).RequireAuthorization();
 
@@ -4807,7 +4883,14 @@ app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db,
     if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số xe." });
     if (dto.QtyNeeded <= 0) return Results.BadRequest(new { error = "Số lượng nợ phải lớn hơn 0." });
     var no = "OO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new ServicePartOO { OrgId = t.OrgId, OONo = no, PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName, PlateNo = dto.PlateNo.Trim(), QtyNeeded = dto.QtyNeeded, QtyFulfilled = 0, Note = dto.Note, Status = "Open" };
+    var r = new ServicePartOO
+    {
+        OrgId = t.OrgId, OONo = no, PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName,
+        PlateNo = dto.PlateNo.Trim(), QtyNeeded = dto.QtyNeeded, QtyFulfilled = 0, Note = dto.Note, Status = "Open",
+        // GAP đã vá: nhận đủ 6 cột TblSer_Part_OO
+        LoaiXe = dto.LoaiXe, CVDV = dto.CVDV, DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        NgayDatHang = dto.NgayDatHang, NgayVeDuKien = dto.NgayVeDuKien, NgayHenTra = dto.NgayHenTra
+    };
     db.ServicePartOOs.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.OONo });
 }).RequireAuthorization();
@@ -16222,6 +16305,49 @@ app.MapPost("/api/orgs/register", async (RegisterOrgDto dto, AppDbContext db) =>
 
 
 /// <summary>
+/// Kiểm toàn bộ luật per-dòng khi nhập phụ tùng nợ từ Excel (FrmImportSerPartOO.btnImportExcel_Click).
+/// Tách riêng để endpoint chỉ lo điều phối, và mỗi luật kiểm/sửa được độc lập (Single Responsibility).
+/// Giữ NGUYÊN VĂN các câu báo lỗi của form gốc để đối chiếu 1:1.
+/// </summary>
+/// <returns>null nếu dòng hợp lệ; ngược lại là câu thông báo lỗi.</returns>
+static string? ValidatePartOOImportRow(ImportPartOORowDto row)
+{
+    // Bắt buộc: biển số xe
+    if (string.IsNullOrWhiteSpace(row.OOPlateNo))
+        return "Chưa nhập Biển số xe";
+
+    // Bắt buộc: mã phụ tùng
+    if (string.IsNullOrWhiteSpace(row.PartCode))
+        return "Chưa nhập mã phụ tùng";
+
+    // Bắt buộc: số lượng nợ khách — vừa không được trống, vừa phải là số
+    if (string.IsNullOrWhiteSpace(row.SoLuongNo))
+        return "Số lượng nợ khách không để trống";
+    if (!decimal.TryParse(row.SoLuongNo.Trim(), out _))
+        return "Số lượng nợ khách không hợp lệ";
+
+    // Tuỳ chọn: số lượng đã trả — có nhập thì phải là số
+    if (!string.IsNullOrWhiteSpace(row.SoLuongTra) && !decimal.TryParse(row.SoLuongTra.Trim(), out _))
+        return "Số lượng đã trả không hợp lệ";
+
+    // Tuỳ chọn: 3 mốc ngày — có nhập thì phải đúng định dạng ngày
+    if (!string.IsNullOrWhiteSpace(row.NgayDatHang) && !DateTime.TryParse(row.NgayDatHang.Trim(), out _))
+        return "Ngày đặt hàng không hợp lệ";
+    if (!string.IsNullOrWhiteSpace(row.NgayVeDuKien) && !DateTime.TryParse(row.NgayVeDuKien.Trim(), out _))
+        return "Ngày về DK không hợp lệ";
+    if (!string.IsNullOrWhiteSpace(row.NgayHenTra) && !DateTime.TryParse(row.NgayHenTra.Trim(), out _))
+        return "Ngày hẹn trả không hợp lệ";
+
+    return null;
+}
+
+/// <summary>Đổi chuỗi ngày tuỳ chọn sang DateTime; trống hoặc sai định dạng → null (đã validate trước đó).</summary>
+static DateTime? ParseOptionalDate(string? rawDate) =>
+    !string.IsNullOrWhiteSpace(rawDate) && DateTime.TryParse(rawDate.Trim(), out var parsedDate)
+        ? parsedDate
+        : null;
+
+/// <summary>
 /// Kiểm 3 luật per-dòng của FrmMember_Voucher.btnApply_Click.
 /// Tách riêng để mỗi luật kiểm được độc lập và endpoint chỉ còn lo điều phối (Single Responsibility).
 /// </summary>
@@ -16284,6 +16410,28 @@ record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Stat
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
 record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
 
+
+// ----- Nhập phụ tùng nợ từ Excel (FrmImportSerPartOO) -----
+/// <summary>
+/// 1 dòng Excel nhập phụ tùng nợ. Để kiểu string đúng như dữ liệu thô đọc từ Excel,
+/// vì nguồn validate chính các chuỗi này (rỗng / parse số / parse ngày) rồi mới đổi kiểu.
+/// ⚠️ Excel gốc có HEADER Ở DÒNG 2 (ExcelImport.Query(file,"A2")) — client parse phải theo đúng vậy.
+/// </summary>
+record ImportPartOORowDto(
+    string OOPlateNo,      // Biển số xe (bắt buộc)
+    string PartCode,       // Mã phụ tùng (bắt buộc, phải tồn tại trong hệ thống)
+    string SoLuongNo,      // SL nợ khách (bắt buộc, phải là số)
+    string? SoLuongTra,    // SL đã trả (tuỳ chọn, nếu có phải là số)
+    string? LoaiXe,        // Loại xe
+    string? CVDV,          // Cố vấn dịch vụ
+    string? GhiChu,        // Ghi chú
+    string? NgayDatHang,   // Ngày đặt hàng (tuỳ chọn, nếu có phải là ngày)
+    string? NgayVeDuKien,  // Ngày về dự kiến (tuỳ chọn)
+    string? NgayHenTra     // Ngày hẹn trả khách (tuỳ chọn)
+);
+
+/// <summary>Yêu cầu nhập hàng loạt phụ tùng nợ; all-or-nothing — 1 dòng sai là huỷ cả lô.</summary>
+record ImportPartOORequest(List<ImportPartOORowDto>? Rows, string? DealerCode);
 
 /// <summary>
 /// Ghi nhận 1 lần đổi thời gian GXDK (dự kiến giao xe) của lệnh sửa chữa — FrmHistoryGXDK.
@@ -16578,7 +16726,7 @@ record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, de
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email);
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
-record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note);
+record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity);
