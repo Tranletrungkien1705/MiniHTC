@@ -17111,11 +17111,63 @@ app.MapPost("/api/stockreqs/{no}/issue", async (string no, AppDbContext db, ITen
 }).RequireAuthorization();
 
 // ===== Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv) =====
+// Luồng chính của lệnh sửa chữa (6 bước đi thẳng).
 string[] _roFlow = { "HasRO", "InGarage", "Repaired", "CheckEnd", "Paid", "Finished" };
-app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
+
+// 🔴 Bộ trạng thái ĐẦY ĐỦ của nguồn (TConst.Ser_ROStatus) — port cũ mới có 6/12.
+// Sáu trạng thái NGOÀI luồng thẳng nhưng có thật trong nghiệp vụ xưởng:
+//   Created (CRE) · PrintedQuote (PRT) · Wait4Part (W4P) · HasPart (HPA) · Rejected (REJ) · NotResponding (NORE)
+// Thiếu chúng thì KHÔNG diễn tả được: RO mới tạo chưa lập lệnh, RO chờ phụ tùng, và đặc biệt là HUỶ RO.
+var roStatusSourceCodes = new Dictionary<string, string>
+{
+    ["Created"] = "CRE",            // Mới tạo
+    ["PrintedQuote"] = "PRT",       // In báo giá
+    ["Wait4Part"] = "W4P",          // Đợi phụ tùng
+    ["HasPart"] = "HPA",            // Đã có phụ tùng
+    ["HasRO"] = "HRO",              // Lập lệnh sửa chữa
+    ["Rejected"] = "REJ",           // Huỷ
+    ["InGarage"] = "INGA",          // Vào sửa chữa
+    ["CheckEnd"] = "CEND",          // Kiểm tra cuối cùng
+    ["Repaired"] = "RPRD",          // Sửa xong
+    ["Paid"] = "PAID",              // Đã thanh toán
+    ["Finished"] = "FNS",           // Đã hoàn thành
+    ["NotResponding"] = "NORE",     // Chưa dùng
+};
+
+// Nhóm trạng thái dùng để TÌM KIẾM (TConst.Ser_RO_Stage4Search) — KHÔNG suy được từ luồng:
+// ⚠️ "Sửa xong" gồm CẢ `Paid`; và nhóm "Hủy, Hẹn lại" gồm Wait4Part/HasPart/NotResponding
+//    nhưng KHÔNG gồm `Rejected` — đúng nguyên văn nguồn, không tự sắp lại cho "hợp lý".
+var roStage4Search = new Dictionary<string, string[]>
+{
+    ["Wait4Repair"] = new[] { "Created", "PrintedQuote", "HasRO" },   // Chờ sửa (CRE,PRT,HRO)
+    ["Repairing"] = new[] { "InGarage" },                             // Đang sửa (INGA)
+    ["Repaired"] = new[] { "Repaired", "Paid" },                      // Sửa xong (RPRD,PAID)
+    ["Finished"] = new[] { "Finished" },                              // Đã giao xe (FNS)
+    ["Cancel"] = new[] { "Wait4Part", "HasPart", "NotResponding" },    // Hủy, Hẹn lại (W4P,HPA,NORE)
+};
+
+/// <summary>
+/// RO được coi là ĐÃ HOÀN TẤT (căn cứ sinh chăm sóc khách hàng, thống kê xe đã làm dịch vụ).
+/// Nguồn dùng đúng cặp `ro.Status in ('PAID','FNS')` — KHÔNG phải chỉ mỗi "Finished".
+/// </summary>
+string[] roCompletedStatuses = { "Paid", "Finished" };
+
+// Danh mục trạng thái RO + nhóm tìm kiếm, để client dựng bộ lọc đúng như WinForm.
+app.MapGet("/api/repairorders/statuses", () => Results.Ok(new
+{
+    flow = _roFlow,
+    statuses = roStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    stage4Search = roStage4Search.Select(kv => new { group = kv.Key, statuses = kv.Value }),
+    completed = roCompletedStatuses
+})).RequireAuthorization();
+
+app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? stage) =>
 {
     var q = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    // Lọc theo NHÓM trạng thái tìm kiếm của nguồn (Wait4Repair/Repairing/Repaired/Finished/Cancel).
+    if (!string.IsNullOrWhiteSpace(stage) && roStage4Search.TryGetValue(stage, out var stageStatuses))
+        q = q.Where(r => stageStatuses.Contains(r.Status));
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.LicensePlate.Contains(plate.ToUpper()));
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
@@ -17227,6 +17279,32 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     if (target == "Finished") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate });
+}).RequireAuthorization();
+
+// Chuyển sang trạng thái NGOÀI luồng thẳng (nguồn có nhưng port cũ thiếu hẳn):
+//   Wait4Part / HasPart  — chờ và đã có phụ tùng (RO tạm dừng giữa chừng)
+//   Rejected             — HUỶ lệnh sửa chữa
+//   NotResponding        — hẹn lại / chưa phản hồi
+// Tách khỏi /advance vì đây KHÔNG phải bước tiến trong chuỗi mà là rẽ nhánh.
+app.MapPost("/api/repairorders/{no}/setstatus", async (
+    string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    var target = (dto.ToStatus ?? "").Trim();
+    string[] offFlowStatuses = { "Created", "PrintedQuote", "Wait4Part", "HasPart", "Rejected", "NotResponding" };
+    if (!offFlowStatuses.Contains(target))
+        return Results.BadRequest(new { error = $"Trạng thái ngoài luồng hợp lệ: {string.Join(", ", offFlowStatuses)}. Muốn tiến theo chuỗi thì dùng /advance." });
+
+    // Đã huỷ hoặc đã hoàn tất thì không rẽ nhánh nữa.
+    if (r.Status == "Rejected") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
+    if (r.Status == "Finished") return Results.BadRequest(new { error = "Lệnh đã hoàn thành, không thể chuyển trạng thái." });
+
+    r.Status = target;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, status = r.Status, sourceCode = roStatusSourceCodes[target] });
 }).RequireAuthorization();
 
 // Từ chối lệnh sửa chữa (port 1:1 FrmROReject, TCMotor DMSCarSv): set Rejected + ghi lý do.
