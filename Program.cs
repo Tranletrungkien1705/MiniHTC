@@ -9447,7 +9447,7 @@ app.MapPost("/api/storearcbs", async (StoRearCBDto dto, AppDbContext db, ITenant
     var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var h = new StoRearCB { OrgId = t.OrgId, StoRearCBNo = "RCB" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, RearCBStatus = "Draft", Remark = dto.Remark, CreatedBy = by };
+    var h = new StoRearCB { OrgId = t.OrgId, StoRearCBNo = "RCB" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, RearCBStatus = "P", Remark = dto.Remark, CreatedBy = by };
     db.StoRearCBs.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.StoRearCBDtls.Add(new StoRearCBDtl { OrgId = t.OrgId, StoRearCBId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(), SpecCode = c.SpecCode, EngineNo = c.EngineNo, ColorCode = c.ColorCode, StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo, ExpectedStartDate = c.ExpectedStartDate, ExpectedEndDate = c.ExpectedEndDate, CBReqNo = c.CBReqNo, TenLoaiThung = c.TenLoaiThung, Remark = c.Remark });
@@ -9460,18 +9460,37 @@ app.MapGet("/api/storearcbs/{no}/cars", async (string no, AppDbContext db, ITena
     var h = await db.StoRearCBs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StoRearCBNo == no);
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.StoRearCBId == h.Id)
-        .Select(c => new { c.VIN, c.SpecCode, c.EngineNo, c.ColorCode, c.StorageCodeFrom, c.StorageCodeTo, c.ExpectedStartDate, c.ExpectedEndDate, c.CBReqNo, c.TenLoaiThung, c.Remark }).ToListAsync();
+        .Select(c => new { c.VIN, c.SpecCode, c.EngineNo, c.ColorCode, c.StorageCodeFrom, c.StorageCodeTo, c.ExpectedStartDate, c.ExpectedEndDate, c.CBReqNo, c.TenLoaiThung, c.Remark, c.RearCBDtlStatus }).ToListAsync();
     return Results.Ok(new { h.StoRearCBNo, h.RearCBStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/storearcbs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storearcbs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     var h = await db.StoRearCBs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StoRearCBNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.RearCBStatus != "Draft") return Results.BadRequest(new { error = "Lệnh không ở trạng thái chờ duyệt." });
-    h.RearCBStatus = action == "approve" ? "Approved" : "Rejected";
+    if (h.RearCBStatus != "P") return Results.BadRequest(new { error = $"Lệnh đang '{h.RearCBStatus}', chỉ duyệt khi 'P'." });
+
+    // 🔴 Guard nguồn khi DUYỆT (Biz.HTC.WH.cs:117925-117940): chặn nếu các VIN của lệnh này
+    // ĐÃ có yêu cầu vận tải (YCVT) còn hiệu lực — nguồn báo: "Đã tồn tại YCVT đóng thùng A".
+    if (action == "approve")
+    {
+        var vinsRc = await db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.StoRearCBId == h.Id)
+            .Select(c => c.VIN).ToListAsync();
+        var clashTr = await db.TransportReqCars
+            .Where(c => c.OrgId == t.OrgId && vinsRc.Contains(c.Vin))
+            .Select(c => c.Vin).FirstOrDefaultAsync();
+        if (clashTr != null)
+            return Results.BadRequest(new { error = "Đã tồn tại YCVT đóng thùng A", vin = clashTr });
+    }
+
+    h.RearCBStatus = action == "approve" ? "A" : "R";
+    h.ApprovedBy = user.Identity?.Name ?? "system";
     if (action == "approve") h.ApprovedDate = DateTime.Now;
+    // Nguồn giữ trạng thái DÒNG riêng — đồng bộ theo header.
+    foreach (var dtl in await db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.StoRearCBId == h.Id).ToListAsync())
+        dtl.RearCBDtlStatus = h.RearCBStatus;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StoRearCBNo, h.RearCBStatus, h.ApprovedDate });
 }).RequireAuthorization();
@@ -9540,7 +9559,7 @@ app.MapPost("/api/stocbreqs", async (StoCBReqDto dto, AppDbContext db, ITenantCo
     var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var h = new StoCBReq { OrgId = t.OrgId, CBReqNo = "CBR" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, CBReqStatus = "Draft", Remark = dto.Remark, CreatedBy = by };
+    var h = new StoCBReq { OrgId = t.OrgId, CBReqNo = "CBR" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, CBReqStatus = "P", Remark = dto.Remark, CreatedBy = by };
     db.StoCBReqs.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, SpecCode = c.SpecCode, EngineNo = c.EngineNo });
@@ -9557,14 +9576,34 @@ app.MapGet("/api/stocbreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     return Results.Ok(new { h.CBReqNo, h.CBReqStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     var h = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.CBReqStatus != "Draft") return Results.BadRequest(new { error = "Đề nghị không ở trạng thái chờ duyệt." });
-    h.CBReqStatus = action == "approve" ? "Approved" : "Rejected";
+    if (h.CBReqStatus != "P") return Results.BadRequest(new { error = $"Đề nghị đang '{h.CBReqStatus}', chỉ duyệt khi 'P'." });
+
+    // 🔴 Guard nguồn khi DUYỆT (Biz.HTC.WH.cs:116100-116128): chặn nếu VIN của đề nghị này
+    // ĐÃ nằm trong một LỆNH SẮP XẾP (đóng thùng) mà dòng đó chưa bị "R"/"C".
+    // Nguồn báo: "Đã tồn tại Lệnh đóng thùng A".
+    if (action == "approve")
+    {
+        var vinsCb = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id)
+            .Select(c => c.VIN).ToListAsync();
+        var clashRc = await db.StoRearCBDtls
+            .Where(c => c.OrgId == t.OrgId && vinsCb.Contains(c.VIN)
+                        && c.RearCBDtlStatus != "R" && c.RearCBDtlStatus != "C")
+            .Select(c => c.VIN).FirstOrDefaultAsync();
+        if (clashRc != null)
+            return Results.BadRequest(new { error = "Đã tồn tại Lệnh đóng thùng A", vin = clashRc });
+    }
+
+    h.CBReqStatus = action == "approve" ? "A" : "R";
+    h.ApprovedBy = user.Identity?.Name ?? "system";
     if (action == "approve") h.ApprovedAt = DateTime.Now;
+    foreach (var dtl in await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id).ToListAsync())
+        dtl.CBReqDtlStatus = h.CBReqStatus;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.CBReqNo, h.CBReqStatus });
 }).RequireAuthorization();

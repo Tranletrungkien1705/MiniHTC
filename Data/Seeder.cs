@@ -840,6 +840,18 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"MemberCarID\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CusID\" text NULL",
+                // Đóng thùng / sắp xếp kho: mã trạng thái đúng nguồn + trạng thái theo DÒNG
+                "ALTER TABLE public.\"StoRearCBs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // Chuyển dữ liệu port cũ sang mã nguồn (TConst.Stage)
+                "UPDATE public.\"StoRearCBs\" SET \"RearCBStatus\" = 'P' WHERE \"RearCBStatus\" = 'Draft'",
+                "UPDATE public.\"StoRearCBs\" SET \"RearCBStatus\" = 'A' WHERE \"RearCBStatus\" = 'Approved'",
+                "UPDATE public.\"StoRearCBs\" SET \"RearCBStatus\" = 'R' WHERE \"RearCBStatus\" = 'Rejected'",
+                "UPDATE public.\"StoCBReqs\" SET \"CBReqStatus\" = 'P' WHERE \"CBReqStatus\" = 'Draft'",
+                "UPDATE public.\"StoCBReqs\" SET \"CBReqStatus\" = 'A' WHERE \"CBReqStatus\" = 'Approved'",
+                "UPDATE public.\"StoCBReqs\" SET \"CBReqStatus\" = 'R' WHERE \"CBReqStatus\" = 'Rejected'",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"StorageCode\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"GpsBoxNo\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"VinReal\" text NULL",

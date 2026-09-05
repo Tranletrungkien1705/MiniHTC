@@ -2428,7 +2428,13 @@ public sealed class StoRearCB
     public Guid OrgId { get; set; }
     public string StoRearCBNo { get; set; } = "";
     public DateTime CreatedDate { get; set; }
-    public string RearCBStatus { get; set; } = "Draft";  // Draft -> Approved / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG mã nguồn (`Sto_RearrangeCB.RearCBStatus`, `TConst.Stage`):
+    /// "P" chờ duyệt → "A" đã duyệt · "R" từ chối · "C" huỷ (SQL nguồn lọc `not in ('R','C')`).
+    /// Port cũ dùng chuỗi tự đặt Draft/Approved/Rejected. Đọc data cũ: Draft→"P", Approved→"A", Rejected→"R".
+    /// </summary>
+    public string RearCBStatus { get; set; } = "P";
+    public string? ApprovedBy { get; set; }
     public string? Remark { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime? ApprovedDate { get; set; }
@@ -2437,6 +2443,9 @@ public sealed class StoRearCB
 /// <summary>Chi tiết xe trong lệnh cân bằng/điều chuyển kho — port 1:1 Sto_RearrangeCBDetail (TCMotor).</summary>
 public sealed class StoRearCBDtl
 {
+    /// <summary>🔴 Trạng thái RIÊNG của DÒNG (`Sto_RearrangeCBDetail.RearCBDtlStatus`) — port cũ thiếu.
+    /// Nguồn dùng chính cột này để chặn trùng: dòng đã có lệnh đóng thùng mà chưa bị "R"/"C" thì cấm tạo lệnh mới.</summary>
+    public string RearCBDtlStatus { get; set; } = "P";
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long StoRearCBId { get; set; }
@@ -2475,7 +2484,12 @@ public sealed class StoCBReq
     public Guid OrgId { get; set; }
     public string CBReqNo { get; set; } = "";
     public DateTime CreatedDate { get; set; }
-    public string CBReqStatus { get; set; } = "Draft";  // Draft -> Approved / Rejected
+    /// <summary>
+    /// 🔴 Trạng thái theo ĐÚNG mã nguồn (`Sto_CBReq.CBReqStatus`, `TConst.Stage`): "P" → "A" · "R" · "C".
+    /// Port cũ dùng chuỗi tự đặt. Đọc data cũ: Draft→"P", Approved→"A", Rejected→"R".
+    /// </summary>
+    public string CBReqStatus { get; set; } = "P";
+    public string? ApprovedBy { get; set; }
     public string? Remark { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime? ApprovedAt { get; set; }
@@ -2484,6 +2498,8 @@ public sealed class StoCBReq
 /// <summary>Chi tiết xe trong đề nghị cân bằng kho — port 1:1 Sto_CBReqDtl (TCMotor).</summary>
 public sealed class StoCBReqDtl
 {
+    /// <summary>🔴 Trạng thái RIÊNG của DÒNG (`Sto_CBReqDetail.CBReqDtlStatus`) — port cũ thiếu.</summary>
+    public string CBReqDtlStatus { get; set; } = "P";
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long StoCBReqId { get; set; }
