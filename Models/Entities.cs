@@ -1113,6 +1113,24 @@ public sealed class RoServiceItem
     /// — quyết định hạng mục này nhận nhóm KTV "sửa chữa chung" hay "đồng sơn".</summary>
     public string? ROType { get; set; }
 
+    /// <summary>
+    /// Hệ số công của hạng mục dịch vụ (Ser_ROServiceItems.FACTOR).
+    /// ⚠️ Với dòng DỊCH VỤ, hệ số đóng vai trò "số lượng": tiền = Factor × Price × (1 + VAT%),
+    /// KHÔNG có cột Quantity riêng.
+    /// ⚠️ Mặc định của nguồn là <b>0</b> (`isnull(sri.Factor,0)`) — khác báo giá phụ tùng dùng mặc định 1.
+    /// Hệ số 0 ⇒ hạng mục thành 0 đồng.
+    /// </summary>
+    public decimal Factor { get; set; }
+
+    /// <summary>Đơn giá công của hạng mục (Ser_ROServiceItems.PRICE).</summary>
+    public decimal Price { get; set; }
+
+    /// <summary>Thuế suất theo PHẦN TRĂM (Ser_ROServiceItems.VAT), nguồn tính `VAT*0.01`.</summary>
+    public decimal Vat { get; set; }
+
+    /// <summary>Giờ công thực tế (ACTMANHOUR).</summary>
+    public decimal? ActManHour { get; set; }
+
     public decimal Amount { get; set; }                // tiền công
 }
 
@@ -1127,6 +1145,19 @@ public sealed class RoPartItem
     public string? Unit { get; set; }
     public decimal NeedQty { get; set; } = 1;
     public decimal UnitPrice { get; set; }
+
+    /// <summary>
+    /// Hệ số của dòng phụ tùng (Ser_ROPartItems.FACTOR) — mặc định nguồn là <b>0</b>.
+    /// Tiền = Factor × Quantity × Price × (1 + VAT%).
+    /// </summary>
+    public decimal Factor { get; set; }
+
+    /// <summary>Thuế suất theo PHẦN TRĂM (Ser_ROPartItems.VAT).</summary>
+    public decimal Vat { get; set; }
+
+    /// <summary>Thành tiền dòng, đã gồm hệ số và thuế.</summary>
+    public decimal Amount { get; set; }
+
     public string? Note { get; set; }
 }
 
