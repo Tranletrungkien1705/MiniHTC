@@ -825,6 +825,29 @@ public sealed class GpsTransaction
     public string? VINAddress { get; set; }
     public DateTime MapDateTime { get; set; } = DateTime.Now;
     public DateTime? UnMapDateTime { get; set; }   // null = đang gắn
+
+    // --- Cột nhật ký của nguồn (`Sto_StoTransactionGPS`, `BizHTC.ZTempGPS.cs:1712-1745`) ---
+    // 🔴 Luồng GỠ MAP TỰ ĐỘNG (#50) trước đây **không ghi dòng nhật ký nào** ⇒ mất audit trail.
+    /// <summary>Kho của thiết bị lúc phát sinh giao dịch (`StorageCode`).</summary>
+    public string? StorageCode { get; set; }
+    /// <summary>Số hộp GPS (`GPSBoxNo`).</summary>
+    public string? GpsBoxNo { get; set; }
+    /// <summary>VIN thật của xe tại thời điểm ghi (`VINReal`).</summary>
+    public string? VinReal { get; set; }
+    /// <summary>Loại giao dịch (`RefType`) — vd `Sto_StoBalanceGPS_UNMapVIN` cho lượt gỡ map.</summary>
+    public string? RefType { get; set; }
+    /// <summary>Mã tham chiếu (`RefCode00`) — nguồn ghi **số lô gỡ map** vào đây.</summary>
+    public string? RefCode00 { get; set; }
+    /// <summary>Tên hàm sinh giao dịch (`FunctionName`, nguồn viết HOA) — dấu vết ai/cái gì tạo dòng này.</summary>
+    public string? FunctionName { get; set; }
+    /// <summary>Trạng thái map SAU giao dịch (`MapStatus`).</summary>
+    public string? MapStatusAfter { get; set; }
+    public string? BlockStatus { get; set; }
+    public string? InStatus { get; set; }
+    public string? UnMapBy { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreateDateTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
 }
 
 /// <summary>Thanh toán phí AVN (áo vỏ nylon) theo tháng (Pmt_PaymentAVN — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase):
@@ -950,6 +973,9 @@ public sealed class GpsInstall
     /// <summary>Số lô GỠ map VIN (`GPSUnMapVINNo`) — nguồn sinh 1 số cho mỗi lượt gỡ.</summary>
     public string? GpsUnMapVINNo { get; set; }
     public DateTime? UnMappedAt { get; set; }
+    /// <summary>Người/hệ thống thực hiện gỡ map (`UnMapBy`) — nguồn ghi cùng `UnMapDateTime`
+    /// (`BizHTC.ZTempGPS.cs:1684-1688`, hệ `ERP.V15.DMSSales.Real` chỉ có trên máy 150).</summary>
+    public string? UnMapBy { get; set; }
 
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;

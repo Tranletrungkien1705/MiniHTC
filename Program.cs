@@ -12985,7 +12985,8 @@ app.MapGet("/api/gpsinstalls/auto-unmap/candidates", async (
 }).RequireAuthorization();
 
 app.MapPost("/api/gpsinstalls/auto-unmap", async (
-    List<GpsOnlineResultDto> results, AppDbContext db, ITenantContext t, string? storageCode) =>
+    List<GpsOnlineResultDto> results, AppDbContext db, ITenantContext t, string? storageCode,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (results is null || results.Count == 0)
         return Results.BadRequest(new { error = "Chưa có kết quả API GPS để xét gỡ map." });
@@ -13000,6 +13001,9 @@ app.MapPost("/api/gpsinstalls/auto-unmap", async (
     var now = DateTime.Now;
     var unmapped = new List<object>();
     var keptOnline = 0;
+    var skippedBlocked = 0;      // thiết bị đang bị KHOÁ (BlockStatus != "0")
+    var skippedInStorage = 0;    // thiết bị vẫn CÒN TRONG KHO (InStatus != "0")
+    var actorUnmap = user.Identity?.Name ?? "system";
 
     foreach (var r in results)
     {
@@ -13014,20 +13018,44 @@ app.MapPost("/api/gpsinstalls/auto-unmap", async (
             keptOnline++;
             continue;
         }
+        // 🔴 BỔ SUNG PARITY (#66, đọc phía SERVER `mySto_StoBalanceGPS_UnMapVINX` — BizHTC.ZTempGPS.cs:1670-1680):
+        // nguồn kiểm **BA** điều kiện qua `Sto_StoBalanceGPS_CheckDB`, không chỉ MapStatus:
+        //   BlockStatus = "0" (thiết bị KHÔNG bị khoá) · InStatus = "0" (thiết bị ĐÃ XUẤT kho) · MapStatus = "1".
+        // Ở #50 tôi mới port điều kiện MapStatus (suy từ job phía client) ⇒ thiếu 2 guard.
+        if (row.BlockStatus != "0") { skippedBlocked++; continue; }
+        if (row.InStatus != "0") { skippedInStorage++; continue; }
+
         unmapped.Add(new { row.GpsNo, vinWas = row.Vin });
         row.MapStatus = "0";
         row.VinAddress = null;
+        row.UnMapBy = actorUnmap;
+
+        // 🔴 Nguồn GHI NHẬT KÝ giao dịch GPS cho mỗi lượt gỡ (Sto_StoTransactionGPS).
+        // Luồng gỡ map tự động ở #50 KHÔNG ghi dòng nào ⇒ mất audit trail.
+        db.GpsTransactions.Add(new GpsTransaction
+        {
+            OrgId = t.OrgId, Vin = row.Vin, GpsDvNo = row.GpsNo, GpsBoxNo = row.GpsBoxNo,
+            StorageCode = row.StorageCode ?? code, VinReal = row.VinReal,
+            VINAddress = null,
+            MapDateTime = row.MappedAt ?? now, UnMapDateTime = now, UnMapBy = actorUnmap,
+            RefType = "Sto_StoBalanceGPS_UNMapVIN",     // TConst.RefTypeGPS
+            RefCode00 = unmapNo,                         // nguồn ghi SỐ LÔ gỡ map vào RefCode00
+            FunctionName = "MYSTO_STOBALANCEGPS_UNMAPVINX",  // nguồn viết HOA tên hàm
+            MapStatusAfter = "0", BlockStatus = row.BlockStatus, InStatus = row.InStatus,
+            CreateDateTime = now, CreateBy = actorUnmap,
+        });
         row.GpsUnMapVINNo = unmapNo;
         row.UnMappedAt = now;
         row.StorageCode ??= code;
     }
 
     if (unmapped.Count == 0)
-        return Results.Ok(new { storageCode = code, unmapped = 0, keptOnline,
+        return Results.Ok(new { storageCode = code, unmapped = 0, keptOnline, skippedBlocked, skippedInStorage,
             note = "Không có thiết bị tháo!" });   // đúng thông điệp của nguồn
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { storageCode = code, gpsUnMapVINNo = unmapNo, unmapped = unmapped.Count, keptOnline, items = unmapped });
+    return Results.Ok(new { storageCode = code, gpsUnMapVINNo = unmapNo, unmapped = unmapped.Count, keptOnline,
+        skippedBlocked, skippedInStorage, items = unmapped });
 }).RequireAuthorization();
 
 // Đồng bộ (khớp btnDongBoNggayXuatKho_Click gốc — mô phỏng gọi Veloca, luôn thành công trên fleet-demo).
