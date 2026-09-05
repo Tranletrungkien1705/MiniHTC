@@ -5235,7 +5235,48 @@ public sealed class VatInvoice
     public string DealerCode { get; set; } = "";
     public string BankCode { get; set; } = "";
     public string SourceInvoiceName { get; set; } = "";   // nguon HD
-    public string OS_HDDT_InvoiceCode { get; set; } = "";  // ma HDDT
+    /// <summary>
+    /// 🔴 MÃ TRA CỨU hoá đơn điện tử (`OS_HDDT_InvoiceCode` — nguồn chú thích thẳng: *"Số tra cứu hóa đơn"*).
+    /// ⚠️ Mã này **do hệ HDDT/TVAN CẤP** qua `OS_MstSvTVAN_MstSv_Seq_Common_Get`
+    /// (`BizHTC.InvoiceHTC_TCG.cs:539-556`) — **KHÔNG được tự sinh**.
+    /// Port cũ tự bịa `"HDDT" + số hoá đơn` lúc phát hành ⇒ mã đó **tra cứu không ra** ở cổng hoá đơn điện tử.
+    /// Còn rỗng = **chưa đẩy sang HDDT** (nguồn KHÔNG có cột trạng thái đẩy riêng — đây là trạng thái ngầm theo dữ liệu).
+    /// </summary>
+    public string OS_HDDT_InvoiceCode { get; set; } = "";
+
+    /// <summary>Số tham chiếu gửi kèm sang hệ HDDT (`OS_HDDT_RefNo`) — port cũ thiếu hẳn.</summary>
+    public string? OS_HDDT_RefNo { get; set; }
+
+    /// <summary>Thời điểm nhận được mã tra cứu từ hệ HDDT.</summary>
+    public DateTime? HddtSyncedAt { get; set; }
+
+    /// <summary>Hình thức thanh toán gửi lên hoá đơn (`TConst.PaymentMethodCode`):
+    /// CK chuyển khoản (nguồn dùng mặc định) · TM tiền mặt · TMCK · DTCN · TTD.</summary>
+    public string PaymentMethodCode { get; set; } = "CK";
+
+    // 🔴 SỐ LIỆU GỬI CƠ QUAN THUẾ — nguồn TÁCH doanh thu theo TỪNG THUẾ SUẤT
+    // (BizHTC.InvoiceHTC_TCG.cs:302-322). Port cũ chỉ có 1 cột `VAT` ⇒ không dựng được
+    // bảng kê thuế và không đối chiếu được với hoá đơn điện tử.
+    /// <summary>Hàng KHÔNG chịu thuế (`ValGoodsNotTaxable`).</summary>
+    public decimal ValGoodsNotTaxable { get; set; }
+    /// <summary>Hàng KHÔNG phải kê khai tính thuế (`ValGoodsNotChargeTax`).</summary>
+    public decimal ValGoodsNotChargeTax { get; set; }
+    /// <summary>Tiền hàng chịu thuế suất 5% (`ValGoodsVAT5`).</summary>
+    public decimal ValGoodsVAT5 { get; set; }
+    /// <summary>Thuế của phần 5% (`ValVAT5`).</summary>
+    public decimal ValVAT5 { get; set; }
+    /// <summary>Tiền hàng chịu thuế suất 10% (`ValGoodsVAT10`).</summary>
+    public decimal ValGoodsVAT10 { get; set; }
+    /// <summary>Thuế của phần 10% (`ValVAT10`).</summary>
+    public decimal ValVAT10 { get; set; }
+    /// <summary>Tổng tiền hàng (`TotalValInvoice`).</summary>
+    public decimal TotalValInvoice { get; set; }
+    /// <summary>Tổng tiền thuế (`TotalValVAT`).</summary>
+    public decimal TotalValVAT { get; set; }
+    /// <summary>Tổng tiền thanh toán (`TotalValPmt`).</summary>
+    public decimal TotalValPmt { get; set; }
+    public string CurrencyCode { get; set; } = "VND";
+    public decimal CurrencyRate { get; set; } = 1;
     public string InvoiceAdjType { get; set; } = "";       // loai dieu chinh (rong=goc)
     public string RootHTCInvoiceNo { get; set; } = "";     // HD goc (khi la HD dieu chinh)
     /// <summary>

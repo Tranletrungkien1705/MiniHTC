@@ -2593,6 +2593,9 @@ app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string?
     {
         v.HTCInvoiceCode, v.HTCInvoiceNo, v.InvoiceIDCode, v.HTCInvoiceDate, v.VAT, v.DealerCode, v.BankCode, v.SourceInvoiceName, v.InvoiceAdjType, v.RootHTCInvoiceNo, v.OS_HDDT_InvoiceCode, v.VatHTCStatus, v.CreatedAt,
         v.ApprovedDate, v.ApprovedBy,
+        v.OS_HDDT_RefNo, v.HddtSyncedAt, v.PaymentMethodCode,
+        v.ValGoodsNotTaxable, v.ValGoodsNotChargeTax, v.ValGoodsVAT5, v.ValVAT5, v.ValGoodsVAT10, v.ValVAT10,
+        v.TotalValInvoice, v.TotalValVAT, v.TotalValPmt, v.CurrencyCode, v.CurrencyRate,
         cars = db.VatInvoiceCars.Count(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id),
         totalPrice = db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id).Sum(c => (decimal?)c.HTCUnitPrice) ?? 0
     }).ToListAsync();
@@ -2613,7 +2616,15 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
         OrgId = t.OrgId, HTCInvoiceCode = code, InvoiceIDCode = dto.InvoiceIDCode.Trim(), VAT = dto.VAT <= 0 ? 10 : dto.VAT, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode ?? "",
         SourceInvoiceName = dto.SourceInvoiceName ?? "", InvoiceAdjType = dto.InvoiceAdjType ?? "", RootHTCInvoiceNo = dto.RootHTCInvoiceNo ?? "",
         // Nguồn tạo ở "P" (chờ duyệt) và để SỐ + NGÀY hoá đơn NULL (Biz.HTC.WH.cs:120616-120619).
-        VatHTCStatus = "P"
+        VatHTCStatus = "P",
+        OS_HDDT_RefNo = dto.OS_HDDT_RefNo,
+        PaymentMethodCode = string.IsNullOrWhiteSpace(dto.PaymentMethodCode) ? "CK" : dto.PaymentMethodCode!.Trim().ToUpperInvariant(),
+        ValGoodsNotTaxable = dto.ValGoodsNotTaxable, ValGoodsNotChargeTax = dto.ValGoodsNotChargeTax,
+        ValGoodsVAT5 = dto.ValGoodsVAT5, ValVAT5 = dto.ValVAT5,
+        ValGoodsVAT10 = dto.ValGoodsVAT10, ValVAT10 = dto.ValVAT10,
+        TotalValInvoice = dto.TotalValInvoice, TotalValVAT = dto.TotalValVAT, TotalValPmt = dto.TotalValPmt,
+        CurrencyCode = string.IsNullOrWhiteSpace(dto.CurrencyCode) ? "VND" : dto.CurrencyCode!.Trim().ToUpperInvariant(),
+        CurrencyRate = dto.CurrencyRate <= 0 ? 1 : dto.CurrencyRate
     };
     db.VatInvoices.Add(v2); await db.SaveChangesAsync();
     foreach (var c in cars)
@@ -2630,6 +2641,70 @@ app.MapGet("/api/vatinvoices/{code}/cars", async (string code, AppDbContext db, 
     var cars = await db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id)
         .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo, c.BrandName, c.CarType, c.InvoiceNoFactory, c.ProductionYear, c.HTCUnitPrice, c.CustomsClearanceDate }).ToListAsync();
     return Results.Ok(new { v.HTCInvoiceCode, v.HTCInvoiceNo, v.DealerCode, v.VatHTCStatus, count = cars.Count, cars });
+}).RequireAuthorization();
+
+// ===== 🔴 ĐẨY HOÁ ĐƠN SANG HỆ HDDT (hoá đơn điện tử) — port BizHTC.InvoiceHTC_TCG.cs =====
+// Mã tra cứu `OS_HDDT_InvoiceCode` do **hệ HDDT/TVAN CẤP** (hàm OS_MstSvTVAN_MstSv_Seq_Common_Get),
+// KHÔNG được tự sinh. Port cũ tự bịa "HDDT"+số ⇒ mã đó tra cứu KHÔNG RA ở cổng hoá đơn điện tử.
+// ⚠️ Nguồn KHÔNG có cột trạng thái đẩy riêng ⇒ ở đây KHÔNG bịa mã trạng thái:
+// "đã đẩy" = đã có mã tra cứu, "chưa đẩy" = mã còn rỗng.
+var paymentMethodNames = new Dictionary<string, string>
+{
+    ["CK"] = "Chuyển khoản",
+    ["TM"] = "Tiền mặt",
+    ["TMCK"] = "Tiền mặt / chuyển khoản",
+    ["DTCN"] = "Đối trừ công nợ",
+    ["TTD"] = "Thanh toán khác",
+};
+
+app.MapGet("/api/vatinvoices/paymentmethods", () => Results.Ok(new
+{
+    methods = paymentMethodNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Nguồn mặc định CK khi đẩy hoá đơn sang HDDT.",
+})).RequireAuthorization();
+
+// Danh sách hoá đơn CHỜ ĐẨY sang HDDT: đã duyệt, đã có số hoá đơn, nhưng chưa có mã tra cứu.
+app.MapGet("/api/vatinvoices/hddt-pending", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    var qy = db.VatInvoices.Where(x => x.OrgId == t.OrgId
+        && x.VatHTCStatus == "F" && x.HTCInvoiceNo != "" && x.OS_HDDT_InvoiceCode == "");
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer);
+    var items = await qy.OrderBy(x => x.Id).Select(x => new
+    {
+        x.HTCInvoiceCode, x.HTCInvoiceNo, x.InvoiceIDCode, x.HTCInvoiceDate, x.DealerCode,
+        x.OS_HDDT_RefNo, x.PaymentMethodCode, x.TotalValInvoice, x.TotalValVAT, x.TotalValPmt,
+        x.ValGoodsNotTaxable, x.ValGoodsNotChargeTax, x.ValGoodsVAT5, x.ValVAT5, x.ValGoodsVAT10, x.ValVAT10,
+        x.CurrencyCode, x.CurrencyRate,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Nhận MÃ TRA CỨU do hệ HDDT cấp về.
+app.MapPost("/api/vatinvoices/{code}/hddt", async (
+    string code, VatHddtDto dto, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
+    if (v is null) return Results.NotFound(new { code });
+
+    // Nguồn chỉ đẩy hoá đơn đã có số; hoá đơn chưa duyệt/đã huỷ thì không đẩy.
+    if (v.VatHTCStatus != "F")
+        return Results.BadRequest(new { error = $"Chỉ đẩy HDDT cho hoá đơn đã duyệt (đang: {v.VatHTCStatus})." });
+    if (string.IsNullOrWhiteSpace(v.HTCInvoiceNo))
+        return Results.BadRequest(new { error = "Hoá đơn chưa được gán số — chưa đẩy HDDT được." });
+
+    var invCode = (dto.OS_HDDT_InvoiceCode ?? "").Trim();
+    if (invCode.Length == 0)
+        return Results.BadRequest(new { error = "Chưa có mã tra cứu do hệ HDDT cấp (không được tự sinh)." });
+    // Đã có mã tra cứu thì KHÔNG ghi đè — tránh mất vết hoá đơn đã phát hành trên cổng HDDT.
+    if (!string.IsNullOrWhiteSpace(v.OS_HDDT_InvoiceCode))
+        return Results.BadRequest(new { error = $"Hoá đơn đã có mã tra cứu HDDT ({v.OS_HDDT_InvoiceCode})." });
+
+    v.OS_HDDT_InvoiceCode = invCode;
+    if (!string.IsNullOrWhiteSpace(dto.OS_HDDT_RefNo)) v.OS_HDDT_RefNo = dto.OS_HDDT_RefNo!.Trim();
+    v.HddtSyncedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { v.HTCInvoiceCode, v.OS_HDDT_InvoiceCode, v.OS_HDDT_RefNo, v.HddtSyncedAt });
 }).RequireAuthorization();
 
 var vatStatusNames = new Dictionary<string, string>
@@ -19758,7 +19833,8 @@ record BankPmCarDto(string VIN, string? CarId, string? ModelCode, string? SpecCo
 record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentNo, string? BankCodeSend, string? BankAccountSend, string? BankAccountReceive, string? Funds, string? BankLending, string? Remark, List<BankPmCarDto>? Cars);
 record VatInvoiceCarDto(string VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? BrandName, string? CarType, string? InvoiceNoFactory, string? ProductionYear, decimal HTCUnitPrice, DateTime? CustomsClearanceDate);
 record VatInvoiceNoDto(string? HTCInvoiceNo, string? InvoiceIDCode, DateTime? HTCInvoiceDate);
-record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars);
+record VatHddtDto(string? OS_HDDT_InvoiceCode, string? OS_HDDT_RefNo);
+record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1);
 record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
 record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars);
 record GrtClaimExtSignDto(string FileName);
