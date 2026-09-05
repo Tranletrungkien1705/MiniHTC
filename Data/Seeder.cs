@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                // HĐ đại lý DMS40: 3 bộ hằng riêng — DlrSignStatus / HTCSignStatus / DlrCtrStatus(NS,S,AJ,C)
+                "UPDATE public.\"DmsDealerContracts\" SET \"DlrSignStatus\" = 'A' WHERE \"DlrSignStatus\" = 'S'",
+                "UPDATE public.\"DmsDealerContracts\" SET \"HTCSignStatus\" = 'A2' WHERE \"HTCSignStatus\" = 'S'",
+                "UPDATE public.\"DmsDealerContracts\" SET \"DlrCtrStatus\" = 'NS' WHERE \"DlrCtrStatus\" = 'Draft'",
+                "UPDATE public.\"DmsDealerContracts\" SET \"DlrCtrStatus\" = 'S' WHERE \"DlrCtrStatus\" = 'Signed'",
+                "UPDATE public.\"DmsDealerContracts\" SET \"DlrCtrStatus\" = 'C' WHERE \"DlrCtrStatus\" = 'Cancelled'",
                 // HĐ đại lý (CT_DealerContract): mã TConst.Stage P/A/R/C/F + người duyệt/ghi chú/ngày nhận HĐ
                 "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",

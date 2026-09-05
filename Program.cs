@@ -15514,43 +15514,69 @@ app.MapPost("/api/dmsdealercontracts", async (DmsDealerContractDto dto, AppDbCon
     var no = string.IsNullOrWhiteSpace(dto.DlrCtrNo) ? "DLC40" + DateTime.Now.ToString("yyMMddHHmmss") : dto.DlrCtrNo.Trim();
     if (await db.DmsDealerContracts.AnyAsync(c => c.OrgId == t.OrgId && c.DlrCtrNo == no))
         return Results.BadRequest(new { error = $"Số hợp đồng {no} đã tồn tại!" });
-    var c = new DmsDealerContract { OrgId = t.OrgId, DlrCtrNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, DlrSignStatus = "P", HTCSignStatus = "P", DlrCtrStatus = "Draft" };
+    var c = new DmsDealerContract { OrgId = t.OrgId, DlrCtrNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, DlrSignStatus = "P", HTCSignStatus = "P", DlrCtrStatus = "NS" };
     db.DmsDealerContracts.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.DlrCtrNo, c.DealerCode });
 }).RequireAuthorization();
 
-// Ký hợp đồng: side = dealer (bên B) / htc (bên A). Khi cả 2 bên ký → Signed
-app.MapPost("/api/dmsdealercontracts/{no}/sign/{side}", async (string no, string side, AppDbContext db, ITenantContext t) =>
+// 🔴 ĐẠI LÝ (bên B) DUYỆT — `DMS40_CT_DealerContract_DlrApprove_New20190531` (0.34.Contract.cs:4069):
+// gán `DlrSignStatus = TConst.DlrSignStatus.**Approved** ("A")` — KHÔNG phải "S" như port cũ.
+app.MapPost("/api/dmsdealercontracts/{no}/dlr-approve", async (string no, AppDbContext db, ITenantContext t) =>
 {
-    if (side is not ("dealer" or "htc")) return Results.BadRequest(new { error = "side = dealer|htc" });
     no = no.Trim();
     var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.DlrCtrStatus == "Cancelled") return Results.BadRequest(new { error = "Trạng thái hợp đồng không hợp lệ!" });
-    if (side == "dealer")
+    if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
+    if (c.DlrSignStatus != "P") return Results.BadRequest(new { error = $"Bên B đang ở trạng thái '{c.DlrSignStatus}' — chỉ duyệt khi đang chờ (P)." });
+    c.DlrSignStatus = "A"; c.DlrApprDTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.DlrCtrStatus });
+}).RequireAuthorization();
+
+// 🔴 HTC (bên A) duyệt **HAI CẤP** — `_HTCApprove1Adjust` (5748) rồi `_HTCApprove2Adjust` (5870),
+// và `_HTCRejectAdjust` (6548). Cấp 2 guard `HTCSignStatus = "A1"` **VÀ** `DlrCtrStatus = "NS"`,
+// sau khi duyệt vẫn **giữ `DlrCtrStatus = "NS"`** — port cũ tự suy "hai bên ký ⇒ Signed" là SAI.
+app.MapPost("/api/dmsdealercontracts/{no}/htc-approve", async (string no, DmsHtcApproveDto? dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
+    var level = dto?.Level ?? 1;
+    if (dto?.Reject == true)
     {
-        if (c.DlrSignStatus == "S") return Results.BadRequest(new { error = "Bên B (đại lý) đã ký." });
-        c.DlrSignStatus = "S"; c.DlrApprDTime = DateTime.Now;
+        if (c.HTCSignStatus is not ("P" or "A1")) return Results.BadRequest(new { error = "Chỉ từ chối khi bên A đang chờ (P) hoặc mới duyệt cấp 1 (A1)." });
+        c.HTCSignStatus = "R";
+    }
+    else if (level == 1)
+    {
+        if (c.HTCSignStatus != "P") return Results.BadRequest(new { error = $"Bên A đang ở '{c.HTCSignStatus}' — duyệt cấp 1 chỉ từ chờ (P)." });
+        c.HTCSignStatus = "A1";
     }
     else
     {
-        if (c.HTCSignStatus == "S") return Results.BadRequest(new { error = "Bên A (HTC) đã ký." });
-        c.HTCSignStatus = "S"; c.HTCAppr2DTime = DateTime.Now;
+        // Guard nguồn: HTCSignStatus phải "A1" VÀ DlrCtrStatus phải "NS".
+        if (c.HTCSignStatus != "A1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 (A1) trước." });
+        if (c.DlrCtrStatus != "NS") return Results.BadRequest(new { error = $"Hợp đồng đang ở '{c.DlrCtrStatus}' — duyệt cấp 2 chỉ khi chưa ký (NS)." });
+        c.HTCSignStatus = "A2"; c.HTCAppr2DTime = DateTime.Now;
+        // ⚠️ Nguồn giữ nguyên DlrCtrStatus = "NS" sau cấp 2 — KHÔNG tự chuyển sang "S".
     }
-    if (c.DlrSignStatus == "S" && c.HTCSignStatus == "S") c.DlrCtrStatus = "Signed";
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.HTCSignStatus, status = c.DlrCtrStatus });
+    return Results.Ok(new { c.DlrCtrNo, c.HTCSignStatus, c.DlrCtrStatus });
 }).RequireAuthorization();
 
+// 🔴 ĐẠI LÝ HUỶ — `DMS40_CT_DealerContract_DlrCancel_New20190404` (5246): gán **cả hai** cột
+// `DlrSignStatus = "C"` và `DlrCtrStatus = "C"` trong cùng một thao tác.
 app.MapPost("/api/dmsdealercontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
     var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.DlrCtrStatus == "Signed") return Results.BadRequest(new { error = "HĐ đã ký đủ 2 bên, không hủy được." });
-    c.DlrCtrStatus = "Cancelled";
+    if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
+    if (c.DlrCtrStatus == "S") return Results.BadRequest(new { error = "HĐ đã ký, không hủy được." });
+    c.DlrSignStatus = "C"; c.DlrCtrStatus = "C";
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, status = c.DlrCtrStatus });
+    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, status = c.DlrCtrStatus });
 }).RequireAuthorization();
 
 // Biên bản hủy hợp đồng đại lý (FrmDMS40_DlrCtr_CancelMinutes) — tạo BB hủy + set HĐ Cancelled
@@ -21573,6 +21599,8 @@ record DealerContractActionDto(string? Remark, string? DealerContractNoUser, Dat
 record DealerContractReceiptDto(DateTime? ReceiptContractDate);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate);
 record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
+// HTC duyệt 2 cấp (Level 1|2) hoặc từ chối — theo TConst.HTCSignStatus.
+record DmsHtcApproveDto(int Level = 1, bool Reject = false);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);

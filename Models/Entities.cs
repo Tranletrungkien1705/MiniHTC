@@ -4944,9 +4944,26 @@ public sealed class DmsDealerContract
     public string DlrCtrNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
     public DateTime? ContractDate { get; set; }
-    public string DlrSignStatus { get; set; } = "P";  // ký bên B (đại lý): P chờ / S đã ký
-    public string HTCSignStatus { get; set; } = "P";  // ký bên A (HTC): P / S
-    public string DlrCtrStatus { get; set; } = "Draft"; // Draft → Signed / Cancelled
+    /// <summary>
+    /// 🔴 Ký bên B — đại lý (`DMS40_CT_DealerContract.DlrSignStatus`) theo `TConst.**DlrSignStatus**`
+    /// (`Const.Main.DMS40.cs:91-99`): "N" · **"P" chờ** · "C" huỷ · **"A" đã duyệt** · "A1" · "A2" · "F".
+    /// ⚠️ Port cũ dùng **"S"** — giá trị KHÔNG thuộc bộ hằng này (nguồn `DlrApprove` gán `Approved` = "A").
+    /// </summary>
+    public string DlrSignStatus { get; set; } = "P";
+    /// <summary>
+    /// 🔴 Ký bên A — HTC (`HTCSignStatus`) theo `TConst.**HTCSignStatus**` (108-117):
+    /// "N" · "P" · "C" · "A" · **"A1" duyệt cấp 1** · **"A2" duyệt cấp 2** · "F" · **"R" từ chối**.
+    /// ⚠️ Port cũ P→"S" một bước: mất **hai cấp duyệt của HTC** và mất cả nhánh **từ chối "R"**.
+    /// </summary>
+    public string HTCSignStatus { get; set; } = "P";
+    /// <summary>
+    /// 🔴 Trạng thái hợp đồng (`DlrCtrStatus`) theo `TConst.**DlrCtrStatus**` (147-153) —
+    /// **KHÁC HẲN** `DlrCtrStatus1` (P/A/C/F) của `Dlr_Contract` ở cụm HĐ bán lẻ:
+    /// **"NS" chưa ký · "S" đã ký · "AJ" đã điều chỉnh · "C" huỷ**.
+    /// ⚠️ Port cũ `Draft/Signed/Cancelled` sai cả ba, và **tự suy** "cả hai bên ký ⇒ Signed";
+    /// nguồn `HTCApprove2` vẫn giữ `DlrCtrStatus = NotSign` sau khi HTC duyệt cấp 2.
+    /// </summary>
+    public string DlrCtrStatus { get; set; } = "NS";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DlrApprDTime { get; set; }
     public DateTime? HTCAppr2DTime { get; set; }
