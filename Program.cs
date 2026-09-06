@@ -9823,12 +9823,63 @@ app.MapPost("/api/atmvnewspecs", async (AtmvNewSpecDto dto, AppDbContext db, ITe
     return Results.Ok(new { code, specs = lines.Count, flagActive = "1" });
 }).RequireAuthorization();
 
+// ===== #189 Thiết lập spec ATMV mới — `Mst_ATMV_NewSpec_Update` (field-mask, CHỈ ĐỂ TẮT) =====
+// Nguồn: `TERP.BizHTC/DMS40/0.01.Master.cs:965` (csproj 122).
+// BƯỚC 3B: md5 CẢ FILE `c690f1f1` KHỚP 2 máy. Đã liệt kê ranh giới hàm: 965 → 1164.
+//
+// 🔴 Cách tìm ra: GIAO của hai danh sách — 36 hàm field-mask (#184) × danh sách `/toggle` (#188).
+//    `Mst_ATMV_NewSpec_Update` là hàm field-mask, và MiniHTC có `/atmvnewspecs/{code}/toggle`.
+//
+// 🔴 HAI GUARD RẤT ĐẶC BIỆT, port cũ không có cái nào:
+//  1. `Update_InvalidFlagActive` — **lệnh này CHỈ ĐỂ TẮT**: đặt `FlagActive = "1"` (hoặc để rỗng) là LỖI.
+//     Nguồn viết `if (bUpd_FlagActive && string.IsNullOrEmpty(strFlagActive) || strFlagActive == Flag.Active)`.
+//     ⚠️ Thiếu ngoặc ⇒ theo ưu tiên toán tử là `(A && B) || C`: nhánh `C` (`= "1"`) **ném lỗi kể cả khi
+//        mask RỖNG**. Giữ nguyên đúng nguồn (cùng cách xử lý guard `&&`/`||` lệch ở #166), ghi rõ ở đây.
+//  2. 🔴 **"Port check 1: Tại 1 thời điểm chỉ có 1 thiết lập active=1"** — SAU khi ghi, nguồn đếm lại
+//     toàn bảng `where FlagActive = '1'`; nếu `> 1` thì **ném lỗi** (giao dịch rollback).
+//     Đây là ràng buộc DUY NHẤT TOÀN BẢNG, không phải guard trên một dòng.
+//
+// ⚠️ `/toggle` đã có **BẬT được** cờ — trái luật nguồn. Giữ `/toggle` cho UI nhưng thêm chặn bật
+//    khi đã có bản khác đang active, và bổ sung `/update` là lệnh 1:1 với nguồn
+//    (luật `C0-ducentesimussexagesimusoctavus`: toggle không thay được _Update).
+app.MapPost("/api/atmvnewspecs/{code}/update", async (string code, AtmvNewSpecUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var h = await db.MstAtmvNewSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ATMVNSCode == code);
+    if (h is null) return Results.NotFound(new { code });
+
+    var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
+    var updFlag = mask.Contains("MST_ATMV_NEWSPEC.FLAGACTIVE");
+    var f = (dto.FlagActive ?? "").Trim();
+
+    // Guard (1) — port đúng biểu thức nguồn `(bUpd && rỗng) || f == "1"`.
+    if ((updFlag && f.Length == 0) || f == "1")
+        return Results.BadRequest(new { error = "Lệnh này chỉ dùng để TẮT thiết lập (FlagActive = \"0\")." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (updFlag) h.FlagActive = f;
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+
+    // Guard (2) — "Port check 1": sau khi ghi, toàn bảng chỉ được có TỐI ĐA MỘT dòng FlagActive = '1'.
+    var activeCount = await db.MstAtmvNewSpecs.CountAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1");
+    if (activeCount > 1)
+        return Results.BadRequest(new { error = $"Đang có {activeCount} thiết lập ATMV cùng hiệu lực — tại một thời điểm chỉ được MỘT.", activeCount });
+
+    return Results.Ok(new { h.ATMVNSCode, h.FlagActive, updatedFlagActive = updFlag, h.LogLUDateTime, h.LogLUBy, activeCount });
+}).RequireAuthorization();
+
 app.MapPost("/api/atmvnewspecs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     code = code.Trim().ToUpperInvariant();
     var h = await db.MstAtmvNewSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ATMVNSCode == code);
     if (h is null) return Results.NotFound(new { code });
-    h.FlagActive = h.FlagActive == "1" ? "0" : "1";
+    var turningOn = h.FlagActive != "1";
+    // 🔴 #189: nguồn ràng buộc "tại 1 thời điểm chỉ có 1 thiết lập active=1" (Port check 1,
+    //    DMS40/0.01.Master.cs:1090). `/toggle` cũ BẬT được vô tội vạ ⇒ vi phạm ràng buộc toàn bảng.
+    if (turningOn && await db.MstAtmvNewSpecs.AnyAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1"))
+        return Results.BadRequest(new { error = "Đã có thiết lập ATMV đang hiệu lực — tại một thời điểm chỉ được MỘT." });
+    h.FlagActive = turningOn ? "1" : "0";
     h.LogLUDateTime = DateTime.Now; h.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.ATMVNSCode, h.FlagActive });
@@ -30120,6 +30171,7 @@ record OrderPlanHtmvDto(DateTime? PeriodDate, string? FlagIsMonth, List<OrderPla
 record OrderPlanHtmvUpdDto(List<OrderPlanHtmvLineDto>? Lines);
 record AtmvNewSpecLineDto(string SpecCode, DateTime? EffDateStart, DateTime? EffDateEnd, decimal QtyMap);
 record AtmvNewSpecDto(string ATMVNSCode, List<AtmvNewSpecLineDto>? Lines);
+record AtmvNewSpecUpdateDto(string? FtColsUpd, string? FlagActive = null);
 
 // ---- #141: DTO chốt tháng nhân sự bán hàng ----
 record SmOfMonthDtlDto(string SMCode, string? SMName, string? SMGender, DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode, string? QualificationCode, string? SMSpecialized, decimal SMYearExperence, DateTime? SMStartDate, DateTime? SMEndDate, string? DepartmentCode, string? SMPosition, string? SMType, string? CertificateCode, string? SMFlagActive, string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? SMStatus, decimal DaysOfService, string? ListDealerHyundai, DateTime? EffEndCertificate, string? AccountHTA, string? BDHStatus, DateTime? ChallengeStartDate, DateTime? ChallengeEndDate, string? QualityRank, string? SMHyundaiCode, string? IdentityCardNo, string? UpdateStatusBy, DateTime? UpdateStatusDtime, decimal ViolateNumber, string? ViolateTypeId, string? ViolateTypeName, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? Remark);
