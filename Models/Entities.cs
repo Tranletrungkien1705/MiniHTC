@@ -11933,6 +11933,32 @@ public sealed class ServiceCar
     /// <summary>Mã khách hàng (`CusID`) — nguồn tra xe theo BỘ BA `DealerCode` + `FrameNo` + `CusID`.</summary>
     public string? CusID { get; set; }
 
+    // ===== #222 parity `CarUpdate` (DMSCarSv — TERP.HTCServiceClient/DbServices/MstCarService.cs:109) =====
+    // Đối chiếu từng trường ở TẦNG SERVICE (luật `C0-trecentesimustricesimusquintus`): nguồn gửi **20 trường**;
+    // entity có 12 khớp tên + 3 lệch tên ⇒ bổ sung 8 trường dưới đây.
+    //
+    // 🔴 BA TRƯỜNG LỆCH TÊN (đã có dữ liệu, KHÔNG đổi tên để tránh vỡ dữ liệu — ghi ánh xạ tại đây,
+    //    theo luật `C0-trecentesimustricesimusquartus`):
+    //      nguồn `TradeMarkCode` → entity `TradeMark`
+    //      nguồn `ModelID`       → entity `ModelCode`
+    //      nguồn `IsActive`      → entity `FlagActive`
+    /// <summary>Mã xe nội bộ của hệ dịch vụ (`CarID`) — khác `FrameNo` (số khung).</summary>
+    public string? CarID { get; set; }
+    /// <summary>Mã xe bên hệ BÁN HÀNG (`SalesCarID`) — cầu nối sang cụm Car_Car.</summary>
+    public string? SalesCarID { get; set; }
+    /// <summary>Ngày mua xe (`DateBuyCar`) — nguồn lưu dạng chuỗi.</summary>
+    public string? DateBuyCar { get; set; }
+    /// <summary>Hãng bảo hiểm của xe (`InsNo`) — trỏ sang cụm SerInsurance.</summary>
+    public string? InsNo { get; set; }
+    /// <summary>Số hợp đồng bảo hiểm (`InsContractNo`).</summary>
+    public string? InsContractNo { get; set; }
+    /// <summary>Ngày bắt đầu hiệu lực bảo hiểm (`InsStartDate`).</summary>
+    public string? InsStartDate { get; set; }
+    /// <summary>Ngày kết thúc hiệu lực bảo hiểm (`InsFinishedDate`).</summary>
+    public string? InsFinishedDate { get; set; }
+    /// <summary>Ghi chú xe (`Note`).</summary>
+    public string? Note { get; set; }
+
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

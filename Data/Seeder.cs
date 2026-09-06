@@ -845,6 +845,15 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #222 parity CarUpdate: 8 truong con thieu cua Ser_Car
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"SalesCarID\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"DateBuyCar\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"InsNo\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"InsContractNo\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"InsStartDate\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"InsFinishedDate\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"Note\" text",
         // #221 parity CustomerCreate/CustomerUpdate: 15 truong con thieu
         "ALTER TABLE public.\"ServiceCustomers\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"ServiceCustomers\" ADD COLUMN IF NOT EXISTS \"ProvinceCode\" text",

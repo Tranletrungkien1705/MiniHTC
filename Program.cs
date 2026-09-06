@@ -10942,6 +10942,8 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
     {
         x.FrameNo, x.PlateNo, x.EngineNo, x.ModelCode, x.ColorCode, x.TradeMark, x.ProductYear, x.CurrentKm, x.CusName, x.CusMobile, x.FlagActive,
         x.MemberCarID, x.DealerCode, x.CusID,
+        // #222 §12: 8 trường mới phải chiếu ở CẢ GET
+        x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note,
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -10958,11 +10960,22 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
     {
         if (dto.CurrentKm < ex.CurrentKm) return Results.BadRequest(new { error = $"Số km mới ({dto.CurrentKm}) không được nhỏ hơn số km hiện tại ({ex.CurrentKm})." });
         ex.PlateNo = dto.PlateNo; ex.EngineNo = dto.EngineNo; ex.ModelCode = dto.ModelCode; ex.ColorCode = dto.ColorCode; ex.TradeMark = dto.TradeMark; ex.ProductYear = dto.ProductYear; ex.CurrentKm = dto.CurrentKm; ex.WarrantyDate = dto.WarrantyDate; ex.CusName = dto.CusName; ex.CusMobile = dto.CusMobile; ex.FlagActive = "1";
+        // ===== #222 parity: 8 trường còn thiếu của `CarUpdate` (tầng service) =====
+        ex.CarID = dto.CarID;
+        ex.SalesCarID = dto.SalesCarID;
+        ex.DateBuyCar = dto.DateBuyCar;
+        ex.InsNo = dto.InsNo;
+        ex.InsContractNo = dto.InsContractNo;
+        ex.InsStartDate = dto.InsStartDate;
+        ex.InsFinishedDate = dto.InsFinishedDate;
+        ex.Note = dto.Note;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.FrameNo, updated = true });
     }
     var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile,
-        MemberCarID = dto.MemberCarID, DealerCode = dto.DealerCode, CusID = dto.CusID, FlagActive = "1" };
+        MemberCarID = dto.MemberCarID, DealerCode = dto.DealerCode, CusID = dto.CusID, FlagActive = "1",
+        // #222 parity: 8 trường của `CarUpdate`
+        CarID = dto.CarID, SalesCarID = dto.SalesCarID, DateBuyCar = dto.DateBuyCar, InsNo = dto.InsNo, InsContractNo = dto.InsContractNo, InsStartDate = dto.InsStartDate, InsFinishedDate = dto.InsFinishedDate, Note = dto.Note };
     db.ServiceCars.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.FrameNo, updated = false });
 }).RequireAuthorization();
@@ -30955,7 +30968,9 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
-record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null);
+record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
+    // #222 parity: 8 trường của CarUpdate
+    string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
 record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
