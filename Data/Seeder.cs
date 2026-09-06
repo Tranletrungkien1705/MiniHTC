@@ -845,6 +845,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #192 parity RQ_BankingTransactions_SignBankFile (64-bit only)
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"SerialNumber\" text",
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         // #191 parity Pmt_GrtClaimExt / _Cancel / _Sign (64-bit only)
         "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"SignBy\" text",
         "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",

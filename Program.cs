@@ -20230,7 +20230,10 @@ app.MapPost("/api/bankingtrans/{no}/bank-update", async (
                 OrgId = t.OrgId, BankingTransId = r.Id, FileIndex = ++idx,
                 FileType = f.FileType, FilePath = f.FilePath, FileName = f.FileName ?? "",
                 DocumentType = f.DocumentType, FileSize = f.FileSize, Remark = f.Remark,
-                BkTransBankStatus = st, SignStatus = f.SignStatus,
+                BkTransBankStatus = st,
+                // 🔴 #192: mặc định `Stage.Pending` ("P") khi client không gửi — nếu để null thì guard
+                //    "chỉ ký file đang chờ ký" của `/files/{index}/sign` không bao giờ mở được.
+                SignStatus = string.IsNullOrWhiteSpace(f.SignStatus) ? "P" : f.SignStatus!.Trim(),
             });
             savedFiles++;
         }
@@ -20248,9 +20251,73 @@ app.MapGet("/api/bankingtrans/{no}/files", async (string no, AppDbContext db, IT
     if (r is null) return Results.NotFound(new { no });
     var files = await db.BankingTransBankFiles.Where(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id)
         .OrderBy(f => f.FileIndex).Select(f => new
-        { f.FileIndex, f.FileName, f.FileType, f.FilePath, f.DocumentType, f.FileSize, f.Remark, f.BkTransBankStatus, f.SignStatus })
+        { f.FileIndex, f.FileName, f.FileType, f.FilePath, f.DocumentType, f.FileSize, f.Remark, f.BkTransBankStatus, f.SignStatus,
+          f.SerialNumber, f.LogLUBy, f.LogLUDateTime })   // #192 §12: cột mới phải chiếu ở CẢ GET
         .ToListAsync();
     return Results.Ok(new { r.SoDeNghi, count = files.Count, totalSize = files.Sum(f => f.FileSize), files });
+}).RequireAuthorization();
+
+// ===== #192 KÝ SỐ FILE NGÂN HÀNG — `RQ_BankingTransactions_SignBankFile` (lệnh WS còn THIẾU HẲN) =====
+// Nguồn: `TERP.BizHTC/BankIntergration/BizHTC.VietinBank.cs:21812` (27732 dòng).
+// BƯỚC 3B: md5 CẢ FILE `2304e4333825a130d61e1510c6296ba2` KHỚP 2 máy, CÙNG dòng 21812
+//   (laptop `ERP.V15.DataWH.Release.20220125` · máy 150 `ERP.V15.DataWH.Release.2025`).
+// TWIN: WS 64-bit gọi (83298 → 83356 `_biz.RQ_BankingTransactions_SignBankFile`); WS 32-bit KHÔNG có lệnh nào
+//   thuộc họ `RQ_*` ⇒ cụm 64-bit-only, không có bản sinh đôi để lệch.
+//
+// 🔴 ĐỐI CHỨNG với #191: cùng motif `*_CheckDB(..., strFlagExistToCheck, strStatusListToCheck, ...)` nhưng ở đây
+//    nguồn dùng ĐÚNG: `Flag.Yes` vào ô Flag, hằng trạng thái vào ô status. ⇒ ba guard dưới đây SỐNG THẬT,
+//    khác hai guard chết câm của cụm GrtClaimExt. (Sweep #192 toàn `TERP.BizHTC`: lớp "hằng trạng thái đổ vào
+//    ô Flag" chỉ có ĐÚNG 2 chỗ, cả hai đã xử ở #191 — nợ này ĐÓNG.)
+//
+// Ba guard của nguồn, theo đúng thứ tự:
+//  1. `SerialNumber` RỖNG ⇒ lỗi riêng `..._CheckDB_SerialNumberEmpty` (kiểm TRƯỚC khi tra DB).
+//  2. `RQ_BankingTransactions_CheckDB(..., Flag.Yes, BkTransStatus.Approve, "")`:
+//     đề nghị phải TỒN TẠI **và** đang ở trạng thái duyệt `"A"`; ô trạng thái NGÂN HÀNG để rỗng ⇒ không kiểm.
+//  3. `RQ_BankingTransBankFile_CheckDB(..., BFileIndex, Flag.Yes, Stage.Pending)`:
+//     dòng file phải TỒN TẠI **và** `SignStatus` đang `"P"` ⇒ **guard idempotent thật: ĐÃ KÝ KHÔNG KÝ LẠI**.
+// Ghi: `SignStatus = Stage.Approved ("A")`, `SerialNumber`, `LogLUBy`, `LogLUDateTime` — trên ĐÚNG một dòng
+//   khớp `(RQ_BankingTransNo, BFileIndex)`; ghi song song `_dbMain` và `_dbWH` (nợ dual-write).
+//
+// ⚠️ Nợ giữ nguyên: `UploadFileNewX` + `MoveFileNewX` (nhận base64, ghi thư mục Temp theo `DealerCode` rồi
+//    CHUYỂN sang thư mục đích lấy từ `BFilePath` sẵn có) thuộc tầng lưu file — chưa có trong MiniHTC;
+//    port nhận sẵn `FilePath` như các lượt trước, KHÔNG bịa tầng file.
+// ⚠️ Nợ TỪ VỰNG (ghi sổ, không sửa ở lượt này vì chạm cả cụm): `BankingTrans.Status` trong MiniHTC đang dùng
+//    Draft/Sent/Approved/Rejected/Cancelled, còn nguồn dùng `TConst.BkTransStatus` P/A/R/C. Guard dưới đây bám
+//    từ vựng ĐANG DÙNG của cụm ("Approved") để không tạo lệch mới.
+app.MapPost("/api/bankingtrans/{no}/files/{index:int}/sign", async (string no, int index,
+    BankFileSignDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    // Guard 1 — SerialNumber rỗng: nguồn kiểm TRƯỚC mọi truy vấn.
+    var serial = (dto.SerialNumber ?? "").Trim();
+    if (serial.Length == 0)
+        return Results.BadRequest(new { error = "Chưa có số serial chứng thư số (SerialNumber)." });
+
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    // Guard 2 — đề nghị phải đang DUYỆT (`BkTransStatus.Approve`).
+    if (r.Status != "Approved")
+        return Results.BadRequest(new { error = $"Đề nghị đang '{r.Status}' — chỉ ký file khi đề nghị đã duyệt." });
+
+    var f = await db.BankingTransBankFiles
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankingTransId == r.Id && x.FileIndex == index);
+    if (f is null) return Results.NotFound(new { no, fileIndex = index });
+
+    // Guard 3 — chỉ ký dòng đang chờ ký (`Stage.Pending`): đã ký thì KHÔNG ký lại.
+    if ((f.SignStatus ?? "") != "P")
+        return Results.BadRequest(new { error = $"File #{index} đang '{f.SignStatus}' — chỉ ký file đang chờ ký (P)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    f.SignStatus = "A";                                   // `Constants.Stage.Approved`
+    f.SerialNumber = serial;
+    if (!string.IsNullOrWhiteSpace(dto.FilePath)) f.FilePath = dto.FilePath!.Trim();   // thay cho MoveFileNewX
+    if (!string.IsNullOrWhiteSpace(dto.FileName)) f.FileName = dto.FileName!.Trim();
+    f.LogLUBy = who; f.LogLUDateTime = now;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.SoDeNghi, fileIndex = f.FileIndex, signStatus = f.SignStatus, f.SerialNumber, f.FilePath, f.LogLUBy, f.LogLUDateTime });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankingtrans/{no}/pushbank", async (string no, AppDbContext db, ITenantContext t) =>
@@ -30245,6 +30312,9 @@ record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string
     string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate);
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
+/// <summary>Ký số một file ngân hàng — nguồn `RQ_BankingTransactions_SignBankFile` nhận
+/// `objRQ_BankingTransNo` + `objBFileIndex` + `objFileName` + base64 + `objSerialNumber`.</summary>
+record BankFileSignDto(string SerialNumber, string? FileName = null, string? FilePath = null);
 record BankingTransFileDto(string? FileName, string? FileType, string? FilePath, string? DocumentType, long FileSize, string? Remark, string? SignStatus);
 record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, string? RefBankCode, string? LDNo, decimal? DisbursementAmount, DateTime? DisbursementDate, string? DisbursementTerm, decimal? DisbursementInterestRate, string? MDNo, decimal? GrtAmount, DateTime? GrtDateStart, DateTime? GrtDateEnd, string? GrtTerm, decimal? GrtFee, DateTime? GrtLatePmtDate, string? LCNo, decimal? LCAmount, DateTime? LCStartDate, DateTime? LCEndDate, List<BankingTransFileDto>? Files);
 record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark, string? DealerCode = null, string? BizResNumber = null);

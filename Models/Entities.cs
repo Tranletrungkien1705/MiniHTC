@@ -11083,6 +11083,12 @@ public sealed class BankingTransBankFile
     public string? BkTransBankStatus { get; set; }
     /// <summary>Trạng thái ký (`TConst.SigningStatus`): P chờ · A đã duyệt · F hoàn tất.</summary>
     public string? SignStatus { get; set; }
+
+    // ===== #192 parity `RQ_BankingTransactions_SignBankFile` (BizHTC.VietinBank.cs:21812) — 64-bit only =====
+    /// <summary>Số serial chứng thư số dùng để ký — nguồn BẮT BUỘC không rỗng, kiểm TRƯỚC khi tra DB.</summary>
+    public string? SerialNumber { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
