@@ -1311,24 +1311,82 @@ app.MapGet("/api/purchaseorders", async (AppDbContext db, ITenantContext t, stri
 
 app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.OrderMonth)) return Results.BadRequest(new { error = "Cần OrderMonth (YYYYMM)." });
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
+    // ===== #174 port TRỌN `OrderPOCreate` (TCMotor DMSCarSv, TERP.BizHTC/BizHTC.Order.cs:2780) =====
+    // BƯỚC 3B — ca "TÊN THƯ MỤC KHÁC, NỘI DUNG GIỐNG": laptop có `DMSCarSv/V20.2023.Release.**V2**`,
+    //   máy 150 có `DMSCarSv/V20.2023.Release` (không hậu tố V2) — **md5 `b1c089a3` GIỐNG HỆT**.
+    //   Laptop còn có `DMSCarSv/V20` md5 y hệt; `DMSales.Foton` là bản KHÁC (`d841d5fb`).
+    // TWIN: `TERP.WSHTC/App_Code/WSHTC.cs` gọi thẳng `_biz.OrderPOCreate` (cụm này chỉ có WS 32-bit).
+    //
+    // 🔴 Cùng khuôn với `OrderPOCommandCreate` đã vá ở #173 — và port cũ mắc **đúng bốn lỗi ấy**:
+    //   1. **Số đơn do NGƯỜI DÙNG nhập** (`strPOCode`), guard `Length >= TConst.HTCConst.MinLengthCode` (=5).
+    //      Port cũ: rỗng thì tự sinh `"PO"+timestamp` ⇒ mã không tra được ở hệ nguồn.
+    //   2. **Ba cột tháng SERVER TỰ TÍNH**: `OrderMonth` = tháng hiện tại · `+1` · `+2`. Port cũ lấy từ DTO.
+    //   3. Nguồn chặn `Quantity < 0` ⇒ **dòng 0 xe HỢP LỆ**; port cũ lọc `> 0` ⇒ vứt âm thầm.
+    //   4. Thiếu `DuplicateKeyDetail` (khoá của nguồn) và hai guard master.
+    // ⚠️ KHÁC #173 một điểm: ở đây nguồn nhận **CẢ `ModelCode` lẫn `SpecCode`** rồi kiểm KHỚP nhau
+    //    (`myCommon_CheckMatchingModelAndSpecCode`) — không suy `ModelCode` ra từ spec như bên POCommand.
     var code = (dto.POCode ?? "").Trim().ToUpperInvariant();
-    if (code.Length == 0) code = "PO" + DateTime.Now.ToString("yyMMddHHmmss");
+    if (code.Length < 5)
+        return Results.BadRequest(new { error = "Số đơn mua phải có ít nhất 5 ký tự." });
     if (await db.PurchaseOrders.AnyAsync(x => x.OrgId == t.OrgId && x.POCode == code))
         return Results.BadRequest(new { error = $"Số đơn mua {code} đã tồn tại!" });
+
+    // `OrderPOCreate_TableDetailBeBlank`
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào." });
+
+    var now = DateTime.Now;
+    var orderMonth = now.ToString("yyyyMM");
+    var productionMonth = now.AddMonths(1).ToString("yyyyMM");
+    var expectedMonth = now.AddMonths(2).ToString("yyyyMM");
+
+    var seen = new HashSet<string>();
+    var built = new List<PurchaseOrderLine>();
+    foreach (var l in lines)
+    {
+        var spec = l.SpecCode.Trim().ToUpperInvariant();
+        var model = (l.ModelCode ?? "").Trim().ToUpperInvariant();
+        var color = (l.ColorCode ?? "").Trim().ToUpperInvariant();
+
+        // `OrderPOCreate_InvalidDetailQuantity`: chặn ÂM, cho phép 0.
+        if (l.Quantity < 0)
+            return Results.BadRequest(new { error = $"Spec {spec}: số lượng không hợp lệ.", specCode = spec });
+
+        // `myCommon_CheckMatchingModelAndSpecCode` — spec phải tồn tại VÀ thuộc đúng model đã khai.
+        var sp = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.FlagActive == "1");
+        if (sp is null) return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", specCode = spec });
+        if (model.Length > 0 && sp.ModelCode != model)
+            return Results.BadRequest(new { error = $"Spec {spec} thuộc model {sp.ModelCode}, không phải {model}.", specCode = spec });
+        if (model.Length == 0) model = sp.ModelCode;
+
+        // `myCommon_CheckMatchingModelAndColor`
+        if (color.Length > 0)
+        {
+            var okColor = await db.MstCarColors.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color && x.FlagActive == "1");
+            if (!okColor) return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", specCode = spec, colorCode = color });
+        }
+
+        // `OrderPOCreate_DuplicateKeyDetail`
+        var key = $"|{code}||{spec}||{model}||{color}|";
+        if (!seen.Add(key))
+            return Results.BadRequest(new { error = $"Dòng trùng khoá (Spec/Model/Màu): {spec}/{model}/{color}.", key });
+
+        built.Add(new PurchaseOrderLine { OrgId = t.OrgId, SpecCode = spec, ModelCode = model, ColorCode = color, Quantity = l.Quantity });
+    }
+
     var o = new PurchaseOrder
     {
-        OrgId = t.OrgId, POCode = code, OrderMonth = dto.OrderMonth.Trim(),
-        ProductionMonth = dto.ProductionMonth, ExpectedMonth = dto.ExpectedMonth,
-        FlagActive = "1", CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        OrgId = t.OrgId, POCode = code,
+        OrderMonth = orderMonth, ProductionMonth = productionMonth, ExpectedMonth = expectedMonth,
+        FlagActive = "1",
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        CreatedAt = now,
     };
     db.PurchaseOrders.Add(o); await db.SaveChangesAsync();
-    foreach (var l in lines)
-        db.PurchaseOrderLines.Add(new PurchaseOrderLine { OrgId = t.OrgId, PurchaseOrderId = o.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, Quantity = l.Quantity });
+    foreach (var b in built) { b.PurchaseOrderId = o.Id; db.PurchaseOrderLines.Add(b); }
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.POCode, o.OrderMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), o.FlagActive });
+    return Results.Ok(new { o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy,
+        lines = built.Count, totalQty = built.Sum(l => l.Quantity) });
 }).RequireAuthorization();
 
 app.MapGet("/api/purchaseorders/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
@@ -28458,7 +28516,7 @@ record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);
 // Đơn mua xe từ hãng (Ord_PurchaseOrder) — nguồn không có trạng thái, chỉ cờ FlagActive.
-record PurchaseOrderDto(string OrderMonth, List<PurchaseOrderLineDto>? Lines, string? POCode = null, string? ProductionMonth = null, string? ExpectedMonth = null);
+record PurchaseOrderDto(string? POCode, List<PurchaseOrderLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
 record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity);
 record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
 record BomLineDto(string PartSku, string? PartName, decimal Qty);
