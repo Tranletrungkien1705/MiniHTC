@@ -7620,32 +7620,18 @@ app.MapPost("/api/transpdlv/{no}/checkitems", async (
     return Results.Ok(new { m.DlvMinutesNo, side, saved = lines.Count });
 }).RequireAuthorization();
 
-// Duyệt biên bản. side=F duyệt phía giao, side=T duyệt phía nhận.
-// 🔴 Nguồn (Sto_DlvMinutes_Approve_New20190416) CHỈ cập nhật FDlvMnStatus/FApprovedDate/FApprovedBy —
-// dòng cập nhật TDlvMnStatus bị comment cố ý (--20131126) ⇒ duyệt phía giao KHÔNG kéo theo phía nhận.
-app.MapPost("/api/transpdlv/{no}/approve", async (
-    string no, DlvApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
-
-    var side = (dto?.Side ?? "F").Trim().ToUpperInvariant();
-    if (side is not ("F" or "T")) return Results.BadRequest(new { error = "Side = F (bên giao) | T (bên nhận)" });
-
-    var currentStatus = side == "F" ? m.FDlvMnStatus : m.TDlvMnStatus;
-    // Nguồn chỉ duyệt khi đang ở P; câu thông báo giữ nguyên chính tả của form gốc ("bàn gian").
-    if (currentStatus != "P")
-        return Results.BadRequest(new { error = "Biên bản bàn gian đã được phê duyệt" });
-
-    var actor = user.Identity?.Name;
-    var now = DateTime.Now;
-    if (side == "F") { m.FDlvMnStatus = "A"; m.FApprovedDate = now; m.FApprovedBy = actor; }
-    else             { m.TDlvMnStatus = "A"; m.TApprovedDate = now; m.TApprovedBy = actor; }
-
-    await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, side, m.FDlvMnStatus, m.TDlvMnStatus });
-}).RequireAuthorization();
+// ⚠️ #200 HỢP NHẤT — ĐÃ BỎ `POST /api/transpdlv/{no}/approve`: **trùng lặp** với
+//    `POST /api/dlvminutes/{no}/approve` (#159). Hai route cùng ghi MỘT bảng (`TranspDlvConfirms`) và cùng
+//    port MỘT hàm nguồn `Sto_DlvMinutes_Approve_New20190416` — vi phạm §1, chỉ lộ ra khi audit nợ sweep #194.
+//    · Bản #159 có **side-effect ghi ngược ngày xuất kho lên 4 chứng từ nguồn**; bản này KHÔNG có ⇒ gọi nhầm
+//      route sẽ duyệt biên bản mà bỏ trắng toàn bộ side-effect.
+//    · Đổi lại, bản này có guard `FDlvMnStatus == "P"` mà #159 thiếu ⇒ đã **mang guard sang bản #159**
+//      trước khi gỡ (đúng luật `C0-ducentesimusnonagesimusprimus`: không được gỡ mất thứ chỉ bản kia có).
+//    · `side=T` là **BỊA**: chữ ký nguồn chỉ có `strDlvMnNo` + `strFromFlagUnapprove`, không có tham số phía;
+//      dòng ghi `TDlvMnStatus` trong nguồn bị comment cố ý (--20131126). Không lệnh nào của WS duyệt phía T.
+//    🔴 TWIN FILE: `Sto_DlvMinutes_Approve_New20190416` có ở CẢ `DataWH/Biz.HTC.WH.cs:138340` LẪN
+//      `DataWH/Biz.HTC.WH.Rel.20230823.cs:130768`; file `.Rel.20230823.cs` **không có trong csproj** ⇒ FILE CHẾT.
+//      Bản LIVE là `Biz.HTC.WH.cs` (csproj dòng 272) — đúng bản #159 đã dùng.
 
 // Sửa thông tin bàn giao cho đại lý — chỉ mở khi CẢ HAI phía đã duyệt (btnUpdateDealer_Click).
 app.MapPost("/api/transpdlv/{no}/updatedealer", async (
@@ -21159,7 +21145,16 @@ app.MapPost("/api/dlvminutes/{no}/approve", async (string no, DlvMinutesApproveD
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
     var outDate = dto.DeliveryOutDate ?? now;
     var unapprove = (dto.FlagUnapprove ?? "0").Trim() == "1";
-    // nguồn: bFromApprove = (FlagUnapprove == Flag.Inactive) ⇒ Approved, ngược lại Rejected.
+
+    // 🔴 #200 GUARD CÒN THIẾU — `// Check DlvMnNo:` (DataWH/Biz.HTC.WH.cs:138651-138675).
+    //    Nguồn kiểm trên bảng tạm: `SDMDlvMnNo is null OR SMDFDlvMnStatus not in ('P')` ⇒ ném
+    //    `Sto_DlvMinutes_Approve_InvalidTransportReqStatus`. Tức biên bản phải tồn tại VÀ đang ở "P".
+    //    🔴 Guard này áp cho **CẢ HAI** nhánh: `strFromFlagUnapprove` chỉ quyết định ghi "A" hay "R",
+    //    KHÔNG nới guard. Nghĩa là nhánh false là **TỪ CHỐI** (P → R), không phải "bỏ duyệt" (A → P).
+    if (m.FDlvMnStatus != "P")
+        return Results.BadRequest(new { error = "Biên bản bàn giao đã được phê duyệt", current = m.FDlvMnStatus });
+
+    // nguồn: bFromApprove = (FlagUnapprove == Flag.Inactive) ⇒ Approved, ngược lại Rejected (TỪ CHỐI).
     m.FDlvMnStatus = unapprove ? "R" : "A";
 
     var vins = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).ToList();
