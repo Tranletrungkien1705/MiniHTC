@@ -14073,6 +14073,12 @@ app.MapGet("/api/tstparts", async (AppDbContext db, ITenantContext t, string? q,
         x.Id, x.TSTPartCode, x.VieNameHTC, x.VieName, x.EngName, x.Unit, x.VAT, x.TSTPrice,
         x.PartGroup, x.PartType, x.FlagActive, x.LUDTime,
         // #245: 16 cột bổ sung (§12 — có ở cả GET lẫn POST)
+        // ===== 🔴 #262 CỘT DB THẬT (`TblTSTMSTPart`) vs CỘT CỦA DATATABLE API (#245) =====
+        // Nhóm dưới đây là **cột DB** theo lớp hằng `TblTSTMSTPart` (DbDefine.cs:695-721, md5 `d373e758`).
+        x.TSTPriceBefore, x.TSTCost, x.DateEffect, x.TSTUnit,
+        x.GroupCode, x.GroupName, x.TypeCode, x.TypeName,
+        x.TSTWarrantyPrice, x.TSTUrgentPrice, x.UpdateBy, x.UpdateDateTime, x.LUBy,
+        // Nhóm dưới là cột của **DataTable trả về từ Bravo** (#245) — giữ để không mất dữ liệu API.
         x.MinOrderQuantity,
         x.TSTPriceList, x.TSTPriceUrgent, x.TSTPriceWarranty, x.TaxRate,
         x.DongAnhStockStatus, x.CaiMepStockStatus, x.HoChiMinhStockStatus,
@@ -14095,6 +14101,20 @@ app.MapPost("/api/tstparts", async (TstPartDto dto, AppDbContext db, ITenantCont
     row.VieNameHTC = dto.VieNameHTC; row.VieName = dto.VieName; row.EngName = dto.EngName; row.Unit = dto.Unit; row.VAT = dto.VAT; row.TSTPrice = dto.TSTPrice; row.PartGroup = dto.PartGroup; row.PartType = dto.PartType; row.UpdatedAt = DateTime.Now;
     // #245: 16 cột bổ sung — chỉ ghi đè khi client CÓ truyền, để lệnh đồng bộ (#212) không xoá mất
     //   dữ liệu do màn nhập tay điền.
+    // #262: 13 cột DB thật — chỉ ghi đè khi client CÓ truyền (giống nhóm #245).
+    if (dto.TSTPriceBefore is not null) row.TSTPriceBefore = dto.TSTPriceBefore;
+    if (dto.TSTCost is not null) row.TSTCost = dto.TSTCost;
+    if (dto.DateEffect is not null) row.DateEffect = dto.DateEffect;
+    if (dto.TSTUnit is not null) row.TSTUnit = dto.TSTUnit;
+    if (dto.GroupCode is not null) row.GroupCode = dto.GroupCode;
+    if (dto.GroupName is not null) row.GroupName = dto.GroupName;
+    if (dto.TypeCode is not null) row.TypeCode = dto.TypeCode;
+    if (dto.TypeName is not null) row.TypeName = dto.TypeName;
+    if (dto.TSTWarrantyPrice is not null) row.TSTWarrantyPrice = dto.TSTWarrantyPrice;
+    if (dto.TSTUrgentPrice is not null) row.TSTUrgentPrice = dto.TSTUrgentPrice;
+    if (dto.UpdateBy is not null) row.UpdateBy = dto.UpdateBy;
+    if (dto.UpdateDateTime is not null) row.UpdateDateTime = dto.UpdateDateTime;
+    if (dto.LUBy is not null) row.LUBy = dto.LUBy;
     if (dto.MinOrderQuantity is not null) row.MinOrderQuantity = dto.MinOrderQuantity;
     if (dto.TSTPriceList is not null) row.TSTPriceList = dto.TSTPriceList;
     if (dto.TSTPriceUrgent is not null) row.TSTPriceUrgent = dto.TSTPriceUrgent;
@@ -33793,7 +33813,13 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     decimal? TSTPriceWarranty = null, decimal? TaxRate = null,
     string? DongAnhStockStatus = null, string? CaiMepStockStatus = null, string? HoChiMinhStockStatus = null,
     string? TSTPartCodeNew = null, string? TSTPartCodeOld = null, string? Remark = null, string? ModelList = null,
-    decimal? Length = null, decimal? Width = null, decimal? Height = null);
+    decimal? Length = null, decimal? Width = null, decimal? Height = null,
+    // #262: 13 cột DB thật của `TblTSTMSTPart`.
+    decimal? TSTPriceBefore = null, decimal? TSTCost = null, DateTime? DateEffect = null,
+    string? TSTUnit = null, string? GroupCode = null, string? GroupName = null,
+    string? TypeCode = null, string? TypeName = null,
+    decimal? TSTWarrantyPrice = null, decimal? TSTUrgentPrice = null,
+    string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);

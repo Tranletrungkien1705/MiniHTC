@@ -2609,7 +2609,35 @@ public sealed class TstPart
     //   · QtyCM→CaiMepStockStatus · QtyHM→HoChiMinhStockStatus · Comment→Remark · Model→ModelList
     //   · List_ItemCode_New→TSTPartCodeNew · List_ItemCode_Old→TSTPartCodeOld
 
-    /// <summary>MinOrderQuantity — số lượng đặt tối thiểu của NCC.</summary>
+    // ===== 🔴 #262 ĐÍNH CHÍNH #245 — phân biệt CỘT DB vs CỘT CỦA DATATABLE API =====
+    // Sweep #261 chỉ ra `TblTSTMSTPart` (DbDefine.cs:695-721) là **lớp hằng của BẢNG DB** `TST_Mst_Part`.
+    // Đối chiếu với bảng ánh xạ Bravo mà #245 dùng (`TST_Mst_Part_Get01`, BizCarSv.Service.cs:18517-18567):
+    //   bảng đó dựng một `DataTable` **TRONG BỘ NHỚ** để TRẢ VỀ client — KHÔNG phải schema bảng DB.
+    // ⇒ Hai hệ tên cho cùng khái niệm:
+    //     DataTable API (#245)      |  CỘT DB THẬT (DbDefine)
+    //     `TSTPriceWarranty`        |  `TSTWarrantyPrice`
+    //     `TSTPriceUrgent`          |  `TSTUrgentPrice`
+    //     `TSTPriceList` (StandardPrice) |  *(không có cột DB tương ứng)*
+    //     `TaxRate`, `*StockStatus`, `TSTPartCodeNew/Old` |  *(không có cột DB — chỉ có ở phản hồi Bravo)*
+    // ⇒ GIỮ các cột #245 (chúng phục vụ dữ liệu trả từ Bravo) nhưng **bổ sung cột DB thật còn thiếu**,
+    //   và ghi rõ nhóm nào là gì để lượt sau không nhầm khi map schema.
+
+    // --- 13 CỘT DB THẬT còn thiếu (TblTSTMSTPart) ---
+    public decimal? TSTPriceBefore { get; set; }     // TSTPRICEBEFORE — giá kỳ trước
+    public decimal? TSTCost { get; set; }            // TSTCOST
+    public DateTime? DateEffect { get; set; }        // DATEEFFECT — ngày hiệu lực giá
+    public string? TSTUnit { get; set; }             // TSTUNIT — đơn vị theo NCC, KHÁC `Unit`
+    public string? GroupCode { get; set; }           // GROUPCODE (MiniHTC đang có `PartGroup` — giữ cả hai)
+    public string? GroupName { get; set; }
+    public string? TypeCode { get; set; }            // TYPECODE (MiniHTC đang có `PartType`)
+    public string? TypeName { get; set; }
+    public decimal? TSTWarrantyPrice { get; set; }   // TSTWARRANTYPRICE — tên DB của giá bảo hành
+    public decimal? TSTUrgentPrice { get; set; }     // TSTURGENTPRICE   — tên DB của giá gấp
+    public string? UpdateBy { get; set; }            // UPDATEBY
+    public DateTime? UpdateDateTime { get; set; }    // UPDATEDATETIME
+    public string? LUBy { get; set; }                // LUBY (đã có LUDTime)
+
+    /// <summary>MinOrderQuantity — số lượng đặt tối thiểu của NCC. (có ở CẢ hai hệ tên)</summary>
     public decimal? MinOrderQuantity { get; set; }
 
     // --- 🔴 BỐN loại giá: port cũ gộp còn MỘT ⇒ mất giá niêm yết / giá gấp / giá bảo hành ---
