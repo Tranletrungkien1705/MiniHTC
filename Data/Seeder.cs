@@ -882,6 +882,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #297 parity TblSerMSTService: 6 cot con thieu (StdManHour = dinh muc goc)
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"SerTypeID\" text",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"StdManHour\" numeric",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"Factor\" numeric",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"Status\" text",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"FlagWarranty\" text",
         // #296 parity TblSerCavity: 7 cot con thieu (StartUseDate/FinishUseDate luu CHUOI)
         "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CavityType\" text",

@@ -12771,7 +12771,34 @@ public sealed class ServiceItemMst
     public string? Model { get; set; }
     public decimal Vat { get; set; }
     public string? Note { get; set; }
-    public string FlagActive { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // ISACTIVE của nguồn
+
+    // ===== 🔴 #297 parity `TblSerMSTService` (DbDefine.cs:748-762): 6 cột port cũ THIẾU =====
+    // 🆕 Từ sweep "Tbl* có CẢ Status LẪN IsActive" (#295/#296).
+    public string? DealerCode { get; set; }
+
+    /// <summary>SERTYPEID — loại dịch vụ (`Ser_Mst_ServiceType`). Nguồn ghi **DBNull khi rỗng**,
+    /// không ghi chuỗi rỗng.</summary>
+    public string? SerTypeID { get; set; }
+
+    /// <summary>🔴 STDMANHOUR — **giờ công ĐỊNH MỨC** của dịch vụ. Đây là nguồn định mức cho các bảng
+    /// dùng lại (`RoServiceItem`/`ServiceQuotationLabor` đã có cột cùng tên); thiếu ở DANH MỤC nghĩa là
+    /// không có chỗ nào khai định mức gốc.</summary>
+    public decimal? StdManHour { get; set; }
+
+    /// <summary>FACTOR — hệ số giá của dịch vụ.</summary>
+    public decimal? Factor { get; set; }
+
+    /// <summary>STATUS — trạng thái nghiệp vụ, **KHÁC `FlagActive`** (cờ bật/tắt bản ghi).</summary>
+    public string? Status { get; set; }
+
+    /// <summary>
+    /// 🔴 FLAGWARRANTY — dịch vụ này là **CÔNG BẢO HÀNH của hãng**. Nguồn mặc định `Inactive` và CHỈ bật
+    /// khi `SerCode` trùng một công bảo hành đang hiệu lực trong `Ser_MST_ROWarrantyWork` — xem luật ghi đè
+    /// ở `POST /api/serviceitems`.
+    /// </summary>
+    public string? FlagWarranty { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -11255,7 +11255,9 @@ app.MapGet("/api/serviceitems", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(x => x.Model == model);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.SerCode).Take(500)
-        .Select(x => new { x.SerCode, x.SerName, x.Cost, x.Price, x.Model, x.Vat, x.Note, x.FlagActive }).ToListAsync();
+        // #297 §12: 6 cột bổ sung có mặt ở CẢ GET lẫn POST
+        .Select(x => new { x.SerCode, x.SerName, x.Cost, x.Price, x.Model, x.Vat, x.Note, x.FlagActive,
+            x.DealerCode, x.SerTypeID, x.StdManHour, x.Factor, x.Status, x.FlagWarranty }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -11272,16 +11274,54 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
         return Results.BadRequest(new { error = "Mã phụ tùng không được phép chứa các ký tự đặc biệt" });
     if (dto.Price < 0 || dto.Cost < 0 || dto.Vat < 0) return Results.BadRequest(new { error = "Giá/vốn/VAT không hợp lệ." });
     var code = dto.SerCode.Trim().ToUpperInvariant();
+
+    // ===== 🔴 #297 LUẬT GHI ĐÈ TỪ DANH MỤC CÔNG BẢO HÀNH CỦA HÃNG =====
+    // Nguồn `Ser_Mst_Service_Create` (`BizCarSv.Service.cs`), chú thích **của chính tác giả**:
+    //   *"Tạo mới nếu mã CV trùng mới mã CV bảo hành của HTV thì lấy từ master CV bảo hàng xuống,
+    //     Đại lý ko dc tạo mới"*
+    // ⇒ nếu `SerCode` trùng một công bảo hành **đang hiệu lực** trong `Ser_MST_ROWarrantyWork` thì **MỌI**
+    //   trường người dùng nhập bị **GHI ĐÈ** bằng giá trị của danh mục hãng, kèm `SerTypeID = "1"` và
+    //   `FlagWarranty` bật. Người dùng nhập gì cũng không có tác dụng — đây là **dữ liệu của HÃNG**.
+    // ⚠️ Ánh xạ cột: `ROWWorkName`→SerName · `RateHour`→StdManHour · `RatePrice`→Cost · `Price`→Price ·
+    //   `VAT`→Vat · `Model`→Model · `Remark`→Note. `FlagWarranty` mặc định TẮT, chỉ bật ở nhánh này.
+    var ww = await db.WarrantyWorkMsts.FirstOrDefaultAsync(w => w.OrgId == t.OrgId
+        && w.ROWWorkCode == code && w.FlagActive == "1");
+
+    var serName = dto.SerName; var cost = dto.Cost; var price = dto.Price;
+    var vat = dto.Vat; var model = dto.Model; var note = dto.Note;
+    var serTypeId = dto.SerTypeID; var stdManHour = dto.StdManHour;
+    var flagWarranty = "0";                       // nguồn: Constants.Flag.Inactive
+    if (ww is not null)
+    {
+        serName = ww.ROWWorkName; serTypeId = "1";
+        stdManHour = ww.RateHour; cost = ww.RatePrice; price = ww.Price;
+        vat = ww.VAT; model = ww.ModelCode; note = ww.Remark;
+        flagWarranty = "1";                       // Constants.Flag.Active
+    }
+
     var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
     if (ex is not null)
     {
-        ex.SerName = dto.SerName; ex.Cost = dto.Cost; ex.Price = dto.Price; ex.Model = dto.Model; ex.Vat = dto.Vat; ex.Note = dto.Note; ex.FlagActive = "1";
+        ex.SerName = serName; ex.Cost = cost; ex.Price = price; ex.Model = model; ex.Vat = vat; ex.Note = note; ex.FlagActive = "1";
+        ex.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+        // Nguồn ghi **DBNull khi rỗng** cho SerTypeID, không ghi chuỗi rỗng.
+        ex.SerTypeID = string.IsNullOrWhiteSpace(serTypeId) ? null : serTypeId;
+        ex.StdManHour = stdManHour; ex.Factor = dto.Factor;
+        ex.Status = dto.Status; ex.FlagWarranty = flagWarranty;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.SerCode, updated = true });
+        return Results.Ok(new { ex.SerCode, updated = true, fromWarrantyWork = ww is not null });
     }
-    var r = new ServiceItemMst { OrgId = t.OrgId, SerCode = code, SerName = dto.SerName, Cost = dto.Cost, Price = dto.Price, Model = dto.Model, Vat = dto.Vat, Note = dto.Note, FlagActive = "1" };
+    var r = new ServiceItemMst
+    {
+        OrgId = t.OrgId, SerCode = code, SerName = serName, Cost = cost, Price = price,
+        Model = model, Vat = vat, Note = note, FlagActive = "1",
+        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        SerTypeID = string.IsNullOrWhiteSpace(serTypeId) ? null : serTypeId,
+        StdManHour = stdManHour, Factor = dto.Factor, Status = dto.Status, FlagWarranty = flagWarranty,
+    };
     db.ServiceItemMsts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.SerCode, updated = false });
+    return Results.Ok(new { r.SerCode, updated = false, fromWarrantyWork = ww is not null,
+        note = ww is not null ? "Mã trùng công bảo hành của hãng — toàn bộ thông tin lấy từ danh mục hãng." : null });
 }).RequireAuthorization();
 
 app.MapPost("/api/serviceitems/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
@@ -35683,7 +35723,10 @@ record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<Ser
 record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
-record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
+record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note,
+    // #297: 5 truong that cua TblSerMSTService (SerName/Cost/Price... bi GHI DE neu ma trung cong bao hanh).
+    string? DealerCode = null, string? SerTypeID = null, decimal? StdManHour = null,
+    decimal? Factor = null, string? Status = null);
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
