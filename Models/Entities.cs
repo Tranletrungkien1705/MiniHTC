@@ -10088,10 +10088,41 @@ public sealed class StoFMaintain
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SfMtnNo { get; set; } = "";       // số phiếu bảo trì
-    public string MtnType { get; set; } = "";        // loại bảo trì (Mst_MaintainType)
-    public string Status { get; set; } = "Draft";    // Draft → Done
+    /// <summary>Loại bảo trì — cột nguồn tên `StoFMtnType` (`insert into StoF_Maintain`,
+    /// `BizHTC.StorageFG.Frm.cs:548`); giữ tên `MtnType` của MiniHTC để không phá dữ liệu đã có.</summary>
+    public string MtnType { get; set; } = "";
+    /// <summary>
+    /// ⛔ #B07 DEPRECATED — `Draft`/`Done` là **trạng thái BỊA**: bảng nguồn `StoF_Maintain` không có cột nào
+    /// tên `Status`. Trục thật là **HAI cột ĐỘC LẬP** <see cref="MtnStatus"/> và <see cref="MtnEvalStatus"/>.
+    /// Giữ cột để không phá dữ liệu cũ; endpoint đã chuyển sang hai trục thật.
+    /// </summary>
+    public string Status { get; set; } = "Draft";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DoneAt { get; set; }
+
+    // ===== #B07 parity `StoF_Maintain` — vòng đời BỐN BƯỚC của nguồn (BizHTC.StorageFG.Frm.cs) =====
+    //   Save (106) → Approve (740) → SaveEval (1011) → ApproveEval (1523).
+    //   Port cũ chỉ có Save + "complete" ⇒ mất 2 bước ĐÁNH GIÁ và toàn bộ vết duyệt.
+    /// <summary>Trục 1 — trạng thái DUYỆT PHIẾU (`MtnStatus`, `TConst.MtnStatus`): "P" chờ → "A" đã duyệt.
+    /// `Approve` guard `MtnStatus="P"` **và** `MtnEvalStatus="P"` (:817-818).</summary>
+    public string MtnStatus { get; set; } = "P";
+    /// <summary>Trục 2 — trạng thái DUYỆT ĐÁNH GIÁ (`MtnEvalStatus`, `TConst.MtnEvalStatus`): "P" → "A".
+    /// `SaveEval`/`ApproveEval` guard `MtnStatus="A"` **và** `MtnEvalStatus="P"` (:1091-1092 / :1601-1602).</summary>
+    public string MtnEvalStatus { get; set; } = "P";
+    /// <summary>Số lượng VIN trong phiếu (`QtyVIN`) — nguồn lưu thành cột, không đếm lại mỗi lần đọc.</summary>
+    public int QtyVIN { get; set; }
+    public DateTime? CreateDateTime { get; set; }
+    public string? CreateBy { get; set; }
+    /// <summary>Mốc sửa cuối (`LUDateTime`/`LUBy`) — nguồn gán **bằng chính mốc duyệt** ở cả hai bước
+    /// duyệt (`t.LUDateTime = f.ApproveDateTime` :874 / `= f.ApproveEvalDateTime` :1657).</summary>
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public string? ApproveEvalBy { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 
     /// <summary>
     /// 🔴 #B06: Thời điểm DUYỆT ĐÁNH GIÁ phiếu bảo trì (`StoF_Maintain.APPROVEEVALDATETIME`).

@@ -25161,33 +25161,51 @@ app.MapPost("/api/salespolicies/cancel-batch", async (SalesPolicyCancelDto dto, 
 }).RequireAuthorization();
 
 // ===== Phiếu bảo trì xe lưu kho bãi (StoFMaintain — port 1:1 FrmMaintenanceSlipList/Detail, 2010.HTC/Maintenance) =====
-app.MapGet("/api/stofmaintains", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
+app.MapGet("/api/stofmaintains", async (AppDbContext db, ITenantContext t, string? status, string? type, string? mtnStatus, string? mtnEvalStatus) =>
 {
     var q = db.StoFMaintains.Where(m => m.OrgId == t.OrgId);
+    // #B07: lọc theo HAI trục thật của nguồn; `status` cũ (Draft/Done) giữ để tương thích ngược.
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.Status == status);
+    if (!string.IsNullOrWhiteSpace(mtnStatus)) q = q.Where(m => m.MtnStatus == mtnStatus);
+    if (!string.IsNullOrWhiteSpace(mtnEvalStatus)) q = q.Where(m => m.MtnEvalStatus == mtnEvalStatus);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(m => m.MtnType == type);
     var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
         m.SfMtnNo, m.MtnType, m.Status, m.CreatedAt, m.DoneAt,
+        // #B07: hai trục trạng thái THẬT + toàn bộ vết tạo/sửa/duyệt của nguồn.
+        m.MtnStatus, m.MtnEvalStatus, m.QtyVIN,
+        m.CreateDateTime, m.CreateBy, m.LUDateTime, m.LUBy,
+        m.ApproveDateTime, m.ApproveBy, m.ApproveEvalDateTime, m.ApproveEvalBy,
+        m.Remark, m.LogLUDateTime, m.LogLUBy,
         cars = db.StoFMaintainMains.Count(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/stofmaintains", async (StoFMaintainDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stofmaintains", async (StoFMaintainDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.MtnType)) return Results.BadRequest(new { error = "Cần loại bảo trì." });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
     var no = "SFM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var m = new StoFMaintain { OrgId = t.OrgId, SfMtnNo = no, MtnType = dto.MtnType.Trim(), Status = "Draft" };
+    // #B07 `StoF_Maintain_Save_New20181115` (BizHTC.StorageFG.Frm.cs:106): phiếu mới ở **HAI trục "P"**,
+    //      `QtyVIN` là CỘT thật (nguồn lưu, không đếm lại), kèm vết tạo/sửa + nhật ký.
+    var m = new StoFMaintain
+    {
+        OrgId = t.OrgId, SfMtnNo = no, MtnType = dto.MtnType.Trim(), Status = "Draft",
+        MtnStatus = "P", MtnEvalStatus = "P", QtyVIN = cars.Count,
+        CreateDateTime = now, CreateBy = who, LUDateTime = now, LUBy = who,
+        LogLUDateTime = now, LogLUBy = who
+    };
     db.StoFMaintains.Add(m); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.StoFMaintainMains.Add(new StoFMaintainMain { OrgId = t.OrgId, StoFMaintainId = m.Id, VIN = c.VIN.Trim().ToUpperInvariant(), MtnTp = c.MtnTp, ModelCode = c.ModelCode, UserCodeMtn = c.UserCodeMtn, StorageCodeInit = c.StorageCodeInit, StorageCodeCurrent = c.StorageCodeCurrent, MtnStatusMain = c.MtnStatusMain ?? "P", Remark = c.Remark });
+        db.StoFMaintainMains.Add(new StoFMaintainMain { OrgId = t.OrgId, StoFMaintainId = m.Id, SfMtnNo = no, VIN = c.VIN.Trim().ToUpperInvariant(), MtnTp = c.MtnTp, ModelCode = c.ModelCode, UserCodeMtn = c.UserCodeMtn, StorageCodeInit = c.StorageCodeInit, StorageCodeCurrent = c.StorageCodeCurrent, MtnStatusMain = c.MtnStatusMain ?? "P", Remark = c.Remark, MtnExtStatusMain = "NG", AfterMtnStatusMain = "0", LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.SfMtnNo, cars = cars.Count });
+    return Results.Ok(new { m.SfMtnNo, cars = cars.Count, m.MtnStatus, m.MtnEvalStatus, m.QtyVIN });
 }).RequireAuthorization();
 
 app.MapGet("/api/stofmaintains/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -25196,21 +25214,97 @@ app.MapGet("/api/stofmaintains/{no}/cars", async (string no, AppDbContext db, IT
     var m = await db.StoFMaintains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no);
     if (m is null) return Results.NotFound(new { no });
     var cars = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id)
-        .Select(c => new { c.VIN, c.MtnTp, c.ModelCode, c.UserCodeMtn, c.StorageCodeInit, c.StorageCodeCurrent, c.MtnStatusMain, c.Remark }).ToListAsync();
-    return Results.Ok(new { m.SfMtnNo, m.MtnType, m.Status, count = cars.Count, cars });
+        .Select(c => new { c.VIN, c.MtnTp, c.ModelCode, c.UserCodeMtn, c.StorageCodeInit, c.StorageCodeCurrent, c.MtnStatusMain, c.Remark,
+            c.MtnExtStatusMain, c.BeforeMtnStatusMain, c.AfterMtnStatusMain, c.UserCodeMtnExt, c.MtnExtStartDTime, c.MtnExtEndDTime, c.MtnExtRemark }).ToListAsync();
+    return Results.Ok(new { m.SfMtnNo, m.MtnType, m.Status, m.MtnStatus, m.MtnEvalStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/stofmaintains/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== #B07 VÒNG ĐỜI THẬT CỦA PHIẾU BẢO TRÌ — BỐN BƯỚC, HAI TRỤC ĐỘC LẬP =====
+// Nguồn `BizHTC.StorageFG.Frm.cs`: `StoF_Maintain_Save` (106) → `_Approve` (740) → `_SaveEval` (1011)
+//   → `_ApproveEval` (1523); WS gọi đúng bốn hàm này (`WSHTC.asmx.cs:16253/16326/16395/16465`).
+// 🔴 Port cũ chỉ có Save + một nút `/complete` **tự chế**: đặt header `Status="Done"` (bảng nguồn KHÔNG có
+//    cột `Status`) và đặt **`MtnStatusMain = "C"`** — `TConst.MtnStatus` chỉ có **"P"/"A"**, không có "C".
+//    Hậu quả THẬT: guard bảo dưỡng gia hạn (#B06) đòi `MtnStatusMain = "A"` ⇒ mọi phiếu đi qua `/complete`
+//    đều **không bao giờ vào được bảo dưỡng gia hạn**. `/complete` đã bị GỠ, thay bằng ba bước dưới đây.
+app.MapPost("/api/stofmaintains/{no}/approve", async (string no, StoFMaintainStepDto? dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var m = await db.StoFMaintains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no);
     if (m is null) return Results.NotFound(new { no });
-    if (m.Status != "Draft") return Results.BadRequest(new { error = "Phiếu đã hoàn tất." });
-    m.Status = "Done"; m.DoneAt = DateTime.Now;
+    // `StoF_Maintain_CheckDB(..., MtnStatus.Pending, MtnEvalStatus.Pending)` (:817-818) — cả HAI trục phải "P".
+    if (m.MtnStatus != "P") return Results.BadRequest(new { error = "Phiếu không ở trạng thái chờ duyệt (MtnStatus phải = 'P')." });
+    if (m.MtnEvalStatus != "P") return Results.BadRequest(new { error = "Phiếu đã duyệt đánh giá (MtnEvalStatus phải = 'P')." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    // 8 cột của `zzB_Update_StoF_Maintain_ClauseSet_zzE` (:872-880) — LU* lấy CHÍNH mốc duyệt.
+    m.MtnStatus = "A"; m.ApproveDateTime = now; m.ApproveBy = who;
+    m.LUDateTime = now; m.LUBy = who; m.LogLUDateTime = now; m.LogLUBy = who;
+    if (!string.IsNullOrWhiteSpace(dto?.Remark)) m.Remark = dto!.Remark;
+    // 🔴 Duyệt phiếu GHI LAN XUỐNG hai bảng con: `MtnStatusMain = MtnStatus` (:898) và
+    //    `MtnStatusMix = MtnStatus` (:919) — port cũ không có bước lan này.
     var mains = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id).ToListAsync();
-    foreach (var c in mains) c.MtnStatusMain = "C";  // hoàn tất bảo trì
+    foreach (var c in mains) { c.MtnStatusMain = "A"; c.LogLUDateTime = now; c.LogLUBy = who; }
+    var mixes = await db.StoFMaintainMixes.Where(c => c.OrgId == t.OrgId && c.SF_MtnNo == no).ToListAsync();
+    foreach (var c in mixes) { c.MtnStatusMix = "A"; c.LogLUDateTime = now; c.LogLUBy = who; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.SfMtnNo, status = m.Status });
+    return Results.Ok(new { m.SfMtnNo, m.MtnStatus, m.MtnEvalStatus, m.ApproveDateTime, m.ApproveBy, mains = mains.Count, mixes = mixes.Count });
+}).RequireAuthorization();
+
+// Nhập kết quả đánh giá (`StoF_Maintain_SaveEval_New20181115`, :1011) — guard MtnStatus="A" + MtnEvalStatus="P".
+app.MapPost("/api/stofmaintains/{no}/save-eval", async (string no, StoFMaintainEvalDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.StoFMaintains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.MtnStatus != "A") return Results.BadRequest(new { error = "Phiếu chưa duyệt (MtnStatus phải = 'A')." });
+    if (m.MtnEvalStatus != "P") return Results.BadRequest(new { error = "Phiếu đã duyệt đánh giá (MtnEvalStatus phải = 'P')." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var mains = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id).ToListAsync();
+    int updated = 0;
+    foreach (var line in dto.Lines ?? new())
+    {
+        if (string.IsNullOrWhiteSpace(line.VIN)) continue;
+        var vin = line.VIN!.Trim().ToUpperInvariant();
+        var c = mains.FirstOrDefault(x => x.VIN == vin);
+        if (c is null) continue;
+        // Nguồn đặt `MtnStatusMain = MtnStatus.Approve` cho dòng đánh giá (:1236).
+        c.MtnStatusMain = "A";
+        c.BeforeMtnStatusMain = line.BeforeMtnStatusMain ?? c.BeforeMtnStatusMain;
+        c.AfterMtnStatusMain = line.AfterMtnStatusMain ?? c.AfterMtnStatusMain;
+        c.UserCodeMtn = line.UserCodeMtn ?? c.UserCodeMtn;
+        c.MapLatitude = line.MapLatitude ?? c.MapLatitude;
+        c.MapLongitude = line.MapLongitude ?? c.MapLongitude;
+        c.Remark = line.Remark ?? c.Remark;
+        c.LogLUDateTime = now; c.LogLUBy = who;
+        updated++;
+    }
+    if (updated == 0) return Results.BadRequest(new { error = "Không có dòng VIN nào khớp phiếu để ghi đánh giá." });
+    m.LUDateTime = now; m.LUBy = who; m.LogLUDateTime = now; m.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.SfMtnNo, updated, m.MtnStatus, m.MtnEvalStatus });
+}).RequireAuthorization();
+
+// Duyệt đánh giá (`StoF_Maintain_ApproveEval_New20181115`, :1523) — guard giống SaveEval.
+app.MapPost("/api/stofmaintains/{no}/approve-eval", async (string no, StoFMaintainStepDto? dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.StoFMaintains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.MtnStatus != "A") return Results.BadRequest(new { error = "Phiếu chưa duyệt (MtnStatus phải = 'A')." });
+    if (m.MtnEvalStatus != "P") return Results.BadRequest(new { error = "Phiếu đã duyệt đánh giá rồi (MtnEvalStatus phải = 'P')." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    // 8 cột của `ClauseSet` (:1655-1663) — LU* lấy chính mốc duyệt đánh giá.
+    m.MtnEvalStatus = "A"; m.ApproveEvalDateTime = now; m.ApproveEvalBy = who;
+    m.LUDateTime = now; m.LUBy = who; m.LogLUDateTime = now; m.LogLUBy = who;
+    if (!string.IsNullOrWhiteSpace(dto?.Remark)) m.Remark = dto!.Remark;
+    // Giữ tương thích ngược với trục BỊA cũ để dữ liệu/khách hàng cũ không vỡ.
+    m.Status = "Done"; m.DoneAt = now;
+    await db.SaveChangesAsync();
+    // ⚠️ NỢ: nguồn còn ghi thêm giao dịch `TConst.RefTypeMtn.Mtn` (:1715) — side-effect chưa port, ghi nợ #B07.
+    return Results.Ok(new { m.SfMtnNo, m.MtnStatus, m.MtnEvalStatus, m.ApproveEvalDateTime, m.ApproveEvalBy,
+        note = "Sau bước này các dòng có MtnStatusMain='A' mới đủ điều kiện vào bảo dưỡng gia hạn (/api/maintext)." });
 }).RequireAuthorization();
 
 // ===== Master xe lái thử (CarDriverTest — port 1:1 FrmMstCarDriverTestHTC/Dealer, DMSales.Foton/RetailContract) =====
@@ -32689,6 +32783,11 @@ record DlrContractQtyDto(List<DlrContractQtyRowDto>? Rows);
 record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);
 record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? UserCodeMtn, string? StorageCodeInit, string? StorageCodeCurrent, string? MtnStatusMain, string? Remark);
 record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
+/// <summary>#B07: tham số chung cho các bước duyệt phiếu bảo trì (nguồn cho sửa `Remark` ở cả 2 bước duyệt).</summary>
+record StoFMaintainStepDto(string? Remark);
+/// <summary>#B07: một dòng kết quả đánh giá bảo trì (`StoF_Maintain_SaveEval_New20181115`).</summary>
+record StoFMaintainEvalLineDto(string? VIN, string? BeforeMtnStatusMain, string? AfterMtnStatusMain, string? UserCodeMtn, decimal? MapLatitude, decimal? MapLongitude, string? Remark);
+record StoFMaintainEvalDto(List<StoFMaintainEvalLineDto>? Lines);
 record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record SalesPolicyCancelDto(List<string>? SPSRCodes);
