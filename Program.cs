@@ -4270,6 +4270,32 @@ app.MapPost("/api/woschedules/{no}/lines/{workOrderNo}/produce", async (string n
 }).RequireAuthorization();
 
 // ===== Giao dịch bán buôn xe ĐL→ĐL (WholesaleDeal — port 1:1 FrmNewDealToDealer, SalesDealer) =====
+// ===== #158: BÁO CÁO GỬI HÃNG HMC (HMC_Report) =====
+// Nguồn: `myDealerSales_GenerateHMCReport` (BizHTC.DealerSales.cs:24, csproj 110, md5 c5cf9085 khớp 2 máy).
+// 🔴 Chuỗi `PerformContents` dài ĐÚNG 54 ký tự — hợp đồng dữ liệu với hãng; nguồn NÉM LỖI nếu khác 54.
+string BuildHmcPerformContents(string? dealerCode, DateTime performDate, string vin, string deliveryType, string? salesType, DateTime createdDate)
+    => "A26AD"                                              // DistributorCode, fix cứng (5)
+     + (dealerCode ?? "").PadRight(10)                      // DealerCode căn TRÁI (10)
+     + performDate.ToString("yyyyMMdd")                     // PerformDate (8)
+     + vin                                                  // VIN (17)
+     + deliveryType                                         // DeliveryType (4)
+     + (salesType ?? "").PadRight(2)                        // SalesType căn TRÁI (2)
+     + createdDate.ToString("yyyyMMdd");                    // CreatedDate (8)
+
+app.MapGet("/api/hmcreports", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? deliveryType) =>
+{
+    var q = db.HmcReports.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(x => x.DealNo == dealNo);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(deliveryType)) q = q.Where(x => x.DeliveryType == deliveryType);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.DealerCode, x.DealNo, x.CarId, x.VIN, x.DeliveryType, x.SalesType, x.PerformDate,
+        x.CreatedDate, x.CreatedBy, x.PerformContents, x.AutoID,
+        contentsLength = x.PerformContents == null ? 0 : x.PerformContents.Length }).ToListAsync();
+    return Results.Ok(new { count = items.Count,
+        invalidLength = items.Count(i => i.contentsLength != 54), items });
+}).RequireAuthorization();
+
 app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, string? buyer, string? no, string? status) =>
 {
     var q = db.WholesaleDeals.Where(d => d.OrgId == t.OrgId);
@@ -4311,6 +4337,51 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
             DeliveryDate = c.DeliveryDate, DeliveryStatus = c.DeliveryStatus,
             FlagCurrent = "1",          // nguồn đánh dấu dòng vừa tạo là dòng hiện hành
             CtrCarId = c.CtrCarId, LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
+    // ===== #158 side-effect: NGUỒN TỰ SINH HỢP ĐỒNG ĐẠI LÝ + BÁO CÁO HÃNG =====
+    // `DealerSalesDealCreate_SellToDealer_New20230306` (Biz.HTC.WH.cs:92880) ghi BẢY bảng, không phải hai:
+    //   DLS_Deal · DLS_DealDetail · Dlr_Contract · Dlr_ContractDtl · Dlr_ContractCar · Dlr_ContractDtlHis · HMC_Report.
+    // Nợ này ghi ở #157, nay trả. Thứ tự đúng như nguồn: hợp đồng trước, dòng/xe, lịch sử, rồi báo cáo hãng.
+    {
+        var nowSe = DateTime.Now;
+        var whoSe = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+        var ctrNo = (dto.DlrContractNo ?? "").Trim();
+        if (ctrNo.Length == 0) ctrNo = "DLRCTR" + nowSe.ToString("yyMMddHHmmss");
+        var versionCurr = nowSe;
+
+        db.DlrContracts.Add(new DlrContract { OrgId = t.OrgId, DlrContractNo = ctrNo,
+            DealerCode = dto.DealerCode, DealerCodeBuyer = dto.BuyerDealerCode,
+            CustomerCode = dto.BuyerDealerCode, DlrContractNoUser = dto.DealNoUser,
+            SalesType = dto.SalesType, SalesManCode = dto.SalesManCode,
+            ContractDate = dto.DealDate ?? nowSe, CreatedAt = nowSe, CreatedBy = whoSe,
+            VersionDTimeCurr = versionCurr, VersionCount = 1, VersionUpdateBy = whoSe,
+            FlagActive = "1", Status = "P", LogLUDateTime = nowSe, LogLUBy = whoSe });
+
+        // Dlr_ContractDtl: nguồn GỘP NHÓM theo (Spec, Model, Color) và lấy SumQty — không phải 1 dòng/xe.
+        foreach (var grp in cars.GroupBy(c => new { c.ModelCode, SpecCode = (string?)null, ColorCode = (string?)null }))
+            db.DlrContractDetails.Add(new DlrContractDetail { OrgId = t.OrgId, DlrContractNo = ctrNo,
+                ModelCode = grp.Key.ModelCode, Qty = grp.Count(),
+                DlvExpectedDate = dto.DealDate ?? nowSe, LogLUDateTime = nowSe, LogLUBy = whoSe });
+
+        // Dlr_ContractCar: một dòng mỗi XE, mang CtrCarId — chính là mốc nối sang DLS_DealDetail.
+        foreach (var c in cars)
+            db.DlrContractCars.Add(new DlrContractCar { OrgId = t.OrgId, DlrContractNo = ctrNo,
+                ModelCode = c.ModelCode, CtrCarId = c.CtrCarId ?? c.VIN,
+                DlvExpectedDate = dto.DealDate ?? nowSe, FlagCancel = "0", FlagDelivery = "0",
+                LogLUDateTime = nowSe, LogLUBy = whoSe });
+
+        // HMC_Report: MỘT dòng mỗi xe. Bán buôn ĐL→ĐL nguồn dùng DeliveryType = "001A"
+        // (HMCRpt_DeliveryToEndUser) — dòng "010A" (DeliveryToDealer) nằm ngay cạnh nhưng ĐÃ BỊ COMMENT.
+        foreach (var c in cars)
+        {
+            var contents = BuildHmcPerformContents(dto.DealerCode, dto.DealDate ?? nowSe,
+                (c.VIN ?? "").Trim().ToUpperInvariant(), "001A", dto.SalesType, nowSe);
+            db.HmcReports.Add(new HmcReport { OrgId = t.OrgId, DealerCode = dto.DealerCode, DealNo = no,
+                CarId = c.CarId, VIN = (c.VIN ?? "").Trim().ToUpperInvariant(), DeliveryType = "001A",
+                SalesType = dto.SalesType, PerformDate = dto.DealDate ?? nowSe,
+                CreatedDate = nowSe, CreatedBy = whoSe, PerformContents = contents });
+        }
+        d2.DlrContractNo = ctrNo;   // gắn số hợp đồng vừa sinh trở lại đầu giao dịch
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { d2.DealNo, cars = cars.Count, totalAmount = d2.TotalAmount });
 }).RequireAuthorization();

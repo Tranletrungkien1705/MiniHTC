@@ -845,6 +845,18 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #158 parity Dlr_Contract: 10 cột nguồn ghi mà port cũ thiếu
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"DealerCodeBuyer\" text",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"VersionDTimeOld\" timestamp",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"VersionCount\" int NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"VersionUpdateBy\" text",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"FlagDealFinish\" text",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"TransactorCode\" text",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "CREATE TABLE IF NOT EXISTS public.\"HmcReports\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"DealerCode\" text, \"DealNo\" text, \"CarId\" text, \"VIN\" text NOT NULL DEFAULT '', \"DeliveryType\" text, \"SalesType\" text, \"PerformDate\" timestamp, \"CreatedDate\" timestamp NOT NULL DEFAULT now(), \"CreatedBy\" text, \"PerformContents\" text, \"AutoID\" bigint)",
         // #157 parity DLS_Deal (+11) / DLS_DealDetail (+11)
         "ALTER TABLE public.\"WholesaleDeals\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"WholesaleDeals\" ADD COLUMN IF NOT EXISTS \"SalesType\" text",

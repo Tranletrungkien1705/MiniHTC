@@ -9315,6 +9315,27 @@ public sealed class DlrContract
     /// <summary>Ngày/người HOÀN THÀNH (`FinishDTime`/`FinishBy`) — đi kèm trạng thái "F".</summary>
     public DateTime? FinishDTime { get; set; }
     public string? FinishBy { get; set; }
+
+    // ===== #158 parity Dlr_Contract (nguồn: DataWH/Biz.HTC.WH.cs, csproj 272 —
+    //   `DealerSalesDealCreate_SellToDealer_New20230306`, khối dt_Dlr_Contract) =====
+    /// <summary>Đại lý MUA (`DealerCodeBuyer`) — có khi hợp đồng sinh từ giao dịch bán buôn ĐL→ĐL.</summary>
+    public string? DealerCodeBuyer { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>
+    /// Bộ ba theo dõi PHIÊN BẢN hợp đồng: mốc cũ / số lần sửa / người sửa
+    /// (`VersionDTimeOld`, `VersionCount`, `VersionUpdateBy`) — đi kèm <see cref="VersionDTimeCurr"/>
+    /// đã có sẵn. Cùng motif "phiên bản định danh bằng mốc thời gian" ở #130/#146.
+    /// </summary>
+    public DateTime? VersionDTimeOld { get; set; }
+    public int VersionCount { get; set; }
+    public string? VersionUpdateBy { get; set; }
+    public string FlagActive { get; set; } = "1";
+    /// <summary>Cờ giao dịch đã HOÀN TẤT (`FlagDealFinish`) — tách khỏi <see cref="Status"/>.</summary>
+    public string? FlagDealFinish { get; set; }
+    /// <summary>Người giao dịch (`TransactorCode`) — khác `SMCode` (nhân viên bán).</summary>
+    public string? TransactorCode { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 /// <summary>
 /// Dòng hợp đồng bán lẻ theo MODEL (`Dlr_ContractDtl` — 2010.HTC `Biz.HTC.WH.cs:93222`,
@@ -10296,6 +10317,43 @@ public sealed class WoScheduleLine
 }
 
 /// <summary>Giao dịch bán buôn xe ĐL→ĐL (Deal To Dealer) — port 1:1 FrmNewDealToDealer. Header.</summary>
+/// <summary>
+/// Bản ghi BÁO CÁO GỬI HÃNG HMC (`HMC_Report`) — nguồn `myDealerSales_GenerateHMCReport`
+/// (BizHTC.DealerSales.cs:24, csproj 110, md5 c5cf9085… khớp 2 máy).
+/// Mỗi lần bán/giao một chiếc xe sinh MỘT dòng; hãng đọc cột <see cref="PerformContents"/>.
+///
+/// 🔴 `PerformContents` là **chuỗi định dạng CỐ ĐỊNH DÀI ĐÚNG 54 KÝ TỰ** — hợp đồng dữ liệu với hãng:
+/// `DistributorCode(5) + DealerCode(10, căn TRÁI) + PerformDate(8, yyyyMMdd) + VIN(17)
+///  + DeliveryType(4) + SalesType(2, căn TRÁI) + CreatedDate(8, yyyyMMdd)` = **54**.
+/// Nguồn **NÉM LỖI** nếu độ dài ≠ 54 (`HMCRpt_TransactionLength`) ⇒ đây là guard, không phải kiểm hình thức.
+/// `DistributorCode` fix cứng **"A26AD"** (`TConst.HTCConst.HMCRpt_DistributorCode`).
+/// `DeliveryType` (`TConst.HTCConst`): **"010A"** giao cho đại lý · **"001A"** giao người dùng cuối ·
+/// **"100C"** đại lý trả · **"010C"** người dùng trả.
+/// </summary>
+public sealed class HmcReport
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? DealNo { get; set; }
+    public string? CarId { get; set; }
+    public string VIN { get; set; } = "";
+    /// <summary>Loại giao dịch gửi hãng (`DeliveryType`) — xem bảng mã ở ghi chú lớp.</summary>
+    public string? DeliveryType { get; set; }
+    public string? SalesType { get; set; }
+    /// <summary>Ngày phát sinh nghiệp vụ (`PerformDate`) — đưa vào chuỗi 54 ký tự dạng yyyyMMdd.</summary>
+    public DateTime? PerformDate { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    /// <summary>🔴 Chuỗi 54 ký tự gửi hãng — xem ghi chú lớp.</summary>
+    public string? PerformContents { get; set; }
+    /// <summary>
+    /// Khoá tự tăng do DB cấp (`AutoID`). ⚠️ Nguồn ghi vào DB Main trước, đọc `select @@Identity`
+    /// rồi **gán lại** trước khi ghi sang DB Warehouse — để hai DB CÙNG một AutoID.
+    /// </summary>
+    public long? AutoID { get; set; }
+}
+
 public sealed class WholesaleDeal
 {
     public long Id { get; set; }

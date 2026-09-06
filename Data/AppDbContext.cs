@@ -430,6 +430,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<FnExpCalcLine> FnExpCalcLines => Set<FnExpCalcLine>();
     public DbSet<WoSchedule> WoSchedules => Set<WoSchedule>();
     public DbSet<WoScheduleLine> WoScheduleLines => Set<WoScheduleLine>();
+    public DbSet<HmcReport> HmcReports => Set<HmcReport>();
     public DbSet<WholesaleDeal> WholesaleDeals => Set<WholesaleDeal>();
     public DbSet<WholesaleDealCar> WholesaleDealCars => Set<WholesaleDealCar>();
     public DbSet<DealRecord> DealRecords => Set<DealRecord>();
