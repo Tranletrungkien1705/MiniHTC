@@ -54,6 +54,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SalesManHistoryInactive> SalesManHistoryInactives => Set<SalesManHistoryInactive>();
     public DbSet<WoScheduleDetailDate> WoScheduleDetailDates => Set<WoScheduleDetailDate>();
     public DbSet<MstMaintainTaskItem> MstMaintainTaskItems => Set<MstMaintainTaskItem>();
+    public DbSet<DlrContractCancel> DlrContractCancels => Set<DlrContractCancel>();
+    public DbSet<DlrContractCancelDtl> DlrContractCancelDtls => Set<DlrContractCancelDtl>();
+    public DbSet<DlrContractCancelCar> DlrContractCancelCars => Set<DlrContractCancelCar>();
     public DbSet<StSettingRptPlanRetail> StSettingRptPlanRetails => Set<StSettingRptPlanRetail>();
     public DbSet<VatHtcInvoiceDeviceDetail> VatHtcInvoiceDeviceDetails => Set<VatHtcInvoiceDeviceDetail>();
     public DbSet<DlsDealAttachFile> DlsDealAttachFiles => Set<DlsDealAttachFile>();

@@ -5950,6 +5950,94 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// PHIẾU HUỶ hợp đồng bán lẻ — phần đầu (`Dlr_ContractCancel` — 2010.HTC `BizHTC.Contract.cs:2976`,
+/// trong `Dlr_ContractCancel_SaveX_**New20230306**` (2375); csproj `&lt;Compile&gt;` 110 ⇒ LIVE).
+/// 🔴 **Bảng ghi bằng `insert into … select`, KHÔNG qua `SaveData`** ⇒ đây là **mỏ mới** mở ở #136:
+/// kiểm kê bằng `grep 'SaveData("…")'` (#117) **không bắt được** nhóm bảng này.
+/// 🔴 **TWIN — cụm `Dlr_ContractCancel_*` CHỈ có ở WS 64-bit** (`_Save`, `_Get_New20230306`,
+/// `_GetWH_New20230306`, `_ApproveMulti`, `_CancelMulti`); WS 32-bit **chỉ có**
+/// `ContractDealerContractCancel_New20181119` — hàm CŨ, gọi `_SaveX` (1726) **không ghi
+/// `Dlr_ContractCancelCar`**. Ca thứ NĂM cùng dạng "chỉ 64-bit", và lặp lại đúng mẫu #129:
+/// bản mới **ghi thêm cả một bảng**.
+/// 🔴 `ContractCancelStatus` theo `TConst.ContractCancelStatus` (`Const.Main.**DMS40**.cs:140-145`):
+/// **"P" chờ duyệt · "A" đã duyệt · "C" huỷ** — hằng nằm ở file DMS40, không phải `Const.Main.cs`.
+/// </summary>
+public sealed class DlrContractCancel
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số phiếu huỷ (khoá nghiệp vụ).</summary>
+    public string ContractCNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    /// <summary>"P" → "A" duyệt / "C" huỷ (TConst.ContractCancelStatus, DMS40).</summary>
+    public string ContractCancelStatus { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// DÒNG phiếu huỷ theo MODEL (`Dlr_ContractCancelDtl` — `BizHTC.Contract.cs:3010`).
+/// Gộp nhóm theo (`SpecCode`, `ModelCode`, `ColorCode`) với `Qty` — **song song với
+/// `Dlr_ContractDtl`** của hợp đồng gốc (#129).
+/// Có trạng thái DÒNG riêng `ContractCancelDtlStatus`, tách khỏi trạng thái phiếu.
+/// </summary>
+public sealed class DlrContractCancelDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractCNo { get; set; } = "";
+    /// <summary>Hợp đồng gốc bị huỷ.</summary>
+    public string DlrContractNo { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? ContractUpdateType { get; set; }
+    public decimal? Qty { get; set; }
+    public string ContractCancelDtlStatus { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// XE bị huỷ trong phiếu (`Dlr_ContractCancelCar` — `BizHTC.Contract.cs:3042`).
+/// 🔴 **CHỈ có ở bản `_SaveX_New20230306`**; bản cũ `_SaveX` (1726) mà WS 32-bit dùng **không ghi bảng này**
+/// — đúng mẫu đã gặp ở #129 (`Dlr_ContractCar`).
+/// `CtrCarId` trỏ về đúng dòng xe của hợp đồng gốc (<see cref="DlrContractCar"/>, #129) ⇒ **huỷ ở mức
+/// TỪNG XE**, không phải huỷ cả nhóm model.
+/// `CtrCType` là **loại huỷ** (master `Mst_ContractCancelType`, join tại dòng 1479);
+/// `CtrCTDNo` là số chứng từ kèm theo.
+/// ⚠️ Nguồn có dòng `drScan["CtrCType"] = null;` (2725) trong một nhánh — loại huỷ **có thể để trống**.
+/// </summary>
+public sealed class DlrContractCancelCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractCNo { get; set; } = "";
+    public string DlrContractNo { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    /// <summary>Trỏ về dòng xe của hợp đồng gốc ("&lt;SốHĐ&gt;.01"…).</summary>
+    public string CtrCarId { get; set; } = "";
+    public DateTime? DlvExpectedDate { get; set; }
+    /// <summary>Loại huỷ (Mst_ContractCancelType) — có thể để trống.</summary>
+    public string? CtrCType { get; set; }
+    /// <summary>Số chứng từ kèm theo lần huỷ.</summary>
+    public string? CtrCTDNo { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// HẠNG MỤC của gói bảo dưỡng (`Mst_MaintainTaskItem` — port 1:1 cụm 4 hàm
 /// `Mst_MaintainTaskItem_Create/_Update/_Delete/_Get_New20181119`, 2010.HTC `Biz.HTC.WH.cs:7236`).
 /// TWIN: cả WS 32-bit lẫn 64-bit **khớp hoàn toàn** (5/5 hàm, kể cả `Mst_MaintainTask_Get` của bảng cha).

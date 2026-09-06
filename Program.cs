@@ -20002,6 +20002,133 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
 }).RequireAuthorization();
 
+// ===== PHIẾU HUỶ hợp đồng bán lẻ (Dlr_ContractCancel + Dtl + Car) =====
+// Nguồn: `BizHTC.Contract.cs` — `Dlr_ContractCancel_SaveX_New20230306` (2375), ghi 3 bảng tại
+// 2976 / 3010 / 3042; csproj `<Compile>` 110 ⇒ LIVE. md5 647641a1 khớp nguyên file 2 máy.
+// 🔴 MỎ MỚI (#136): ba bảng này ghi bằng `insert into … select`, **KHÔNG qua `SaveData`** ⇒ lệnh kiểm kê
+//    ở #117 không bắt được. Mỏ `insert…select` có **241 bảng chưa port**.
+// 🔴 TWIN: cụm `Dlr_ContractCancel_*` **chỉ có ở WS 64-bit**; WS 32-bit chỉ có hàm cũ
+//    `ContractDealerContractCancel_New20181119` → `_SaveX` (1726) **không ghi bảng `…CancelCar`**.
+//    Ca thứ NĂM dạng "chỉ 64-bit", và lặp đúng mẫu #129: bản mới **ghi thêm cả một bảng**.
+// 🔴 `ContractCancelStatus` lấy từ `TConst.ContractCancelStatus` ở **`Const.Main.DMS40.cs:140-145`**
+//    ("P"/"A"/"C") — hằng nằm ở file DMS40, không phải `Const.Main.cs`.
+// 🔴 Huỷ ở **MỨC TỪNG XE**: `…CancelCar.CtrCarId` trỏ về dòng xe của hợp đồng gốc (`Dlr_ContractCar`, #129),
+//    trong khi `…CancelDtl` chỉ gộp nhóm theo model.
+app.MapGet("/api/dlrcontractcancels", async (AppDbContext db, ITenantContext t, string? contractCNo, string? dealerCode, string? status) =>
+{
+    var qy = db.DlrContractCancels.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(contractCNo)) qy = qy.Where(x => x.ContractCNo == contractCNo);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.ContractCancelStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.ContractCNo, x.DealerCode, x.ContractCancelStatus, x.Remark,
+        x.CreatedDate, x.CreatedBy, x.LUDateTime, x.LUBy, x.ApprovedDate, x.ApprovedBy,
+        x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    var nos = items.Select(i => i.ContractCNo).ToList();
+    var dtls = await db.DlrContractCancelDtls.Where(d => d.OrgId == t.OrgId && nos.Contains(d.ContractCNo))
+        .Select(d => new
+        {
+            d.ContractCNo, d.DlrContractNo, d.SpecCode, d.ModelCode, d.ColorCode,
+            d.ContractUpdateType, d.Qty, d.ContractCancelDtlStatus, d.Remark, d.LogLUDateTime, d.LogLUBy,
+        }).ToListAsync();
+    var cars = await db.DlrContractCancelCars.Where(c => c.OrgId == t.OrgId && nos.Contains(c.ContractCNo))
+        .Select(c => new
+        {
+            c.ContractCNo, c.DlrContractNo, c.SpecCode, c.ModelCode, c.ColorCode,
+            c.CtrCarId, c.DlvExpectedDate, c.CtrCType, c.CtrCTDNo, c.Remark, c.LogLUDateTime, c.LogLUBy,
+        }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, details = dtls, cars });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontractcancels/save", async (DlrContractCancelSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.ContractCNo ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số phiếu huỷ rỗng." });
+    if (dealer.Length < 1) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var head = await db.DlrContractCancels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractCNo == no);
+    if (head is not null && head.ContractCancelStatus != "P")
+        return Results.BadRequest(new { error = $"Phiếu đang '{head.ContractCancelStatus}', chỉ sửa được khi 'P'." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var isNew = head is null;
+    if (isNew)
+    {
+        head = new DlrContractCancel
+        {
+            OrgId = t.OrgId, ContractCNo = no, DealerCode = dealer,
+            ContractCancelStatus = "P", CreatedDate = now, CreatedBy = who,
+        };
+        db.DlrContractCancels.Add(head);
+    }
+    head!.Remark = dto.Remark;
+    head.LUDateTime = now; head.LUBy = who;
+    head.LogLUDateTime = now; head.LogLUBy = who;
+
+    // Thay thế trọn bộ dòng của phiếu (nguồn xoá rồi insert … select lại).
+    db.DlrContractCancelDtls.RemoveRange(
+        await db.DlrContractCancelDtls.Where(d => d.OrgId == t.OrgId && d.ContractCNo == no).ToListAsync());
+    db.DlrContractCancelCars.RemoveRange(
+        await db.DlrContractCancelCars.Where(c => c.OrgId == t.OrgId && c.ContractCNo == no).ToListAsync());
+
+    foreach (var d in dto.Details ?? new())
+        db.DlrContractCancelDtls.Add(new DlrContractCancelDtl
+        {
+            OrgId = t.OrgId, ContractCNo = no, DlrContractNo = (d.DlrContractNo ?? "").Trim(),
+            SpecCode = d.SpecCode, ModelCode = d.ModelCode, ColorCode = d.ColorCode,
+            ContractUpdateType = d.ContractUpdateType, Qty = d.Qty,
+            ContractCancelDtlStatus = "P", Remark = d.Remark,
+            LogLUDateTime = now, LogLUBy = who,
+        });
+    foreach (var c in dto.Cars ?? new())
+        db.DlrContractCancelCars.Add(new DlrContractCancelCar
+        {
+            OrgId = t.OrgId, ContractCNo = no, DlrContractNo = (c.DlrContractNo ?? "").Trim(),
+            SpecCode = c.SpecCode, ModelCode = c.ModelCode, ColorCode = c.ColorCode,
+            CtrCarId = (c.CtrCarId ?? "").Trim(), DlvExpectedDate = c.DlvExpectedDate,
+            CtrCType = c.CtrCType,      // loại huỷ — nguồn cho phép để trống (dòng 2725)
+            CtrCTDNo = c.CtrCTDNo, Remark = c.Remark,
+            LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, created = isNew, details = (dto.Details ?? new()).Count, cars = (dto.Cars ?? new()).Count });
+}).RequireAuthorization();
+
+// `ApproveMulti` / `CancelMulti` của nguồn — duyệt/huỷ NHIỀU phiếu trong một lệnh.
+app.MapPost("/api/dlrcontractcancels/approvemulti", async (DlrContractCancelMultiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await DlrCancelSetStatus(dto, "A", db, t, user)).RequireAuthorization();
+
+app.MapPost("/api/dlrcontractcancels/cancelmulti", async (DlrContractCancelMultiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await DlrCancelSetStatus(dto, "C", db, t, user)).RequireAuthorization();
+
+// Thân chung: nguồn có hai hàm riêng nhưng chỉ khác giá trị đích ("A" vs "C"); cả hai đòi phiếu đang "P".
+async Task<IResult> DlrCancelSetStatus(DlrContractCancelMultiDto dto, string target, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user)
+{
+    var nos = (dto.ContractCNos ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn phiếu nào." });
+    var rows = await db.DlrContractCancels.Where(x => x.OrgId == t.OrgId && nos.Contains(x.ContractCNo)).ToListAsync();
+    var missing = nos.Except(rows.Select(r => r.ContractCNo)).ToList();
+    if (missing.Count > 0) return Results.BadRequest(new { error = $"Không có phiếu: {string.Join(", ", missing.Take(10))}." });
+    var bad = rows.Where(r => r.ContractCancelStatus != "P").Select(r => $"{r.ContractCNo}({r.ContractCancelStatus})").ToList();
+    if (bad.Count > 0) return Results.BadRequest(new { error = $"Phiếu không ở 'P': {string.Join(", ", bad.Take(10))}." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    foreach (var r in rows)
+    {
+        r.ContractCancelStatus = target;
+        r.ApprovedDate = now; r.ApprovedBy = who;   // nguồn ghi chung cột này cho cả duyệt lẫn huỷ
+        r.LogLUDateTime = now; r.LogLUBy = who;
+    }
+    var dtls = await db.DlrContractCancelDtls.Where(d => d.OrgId == t.OrgId && nos.Contains(d.ContractCNo)).ToListAsync();
+    foreach (var d in dtls) { d.ContractCancelDtlStatus = target; d.LogLUDateTime = now; d.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { count = rows.Count, status = target, detailsSynced = dtls.Count });
+}
+
 // ===== HẠNG MỤC gói bảo dưỡng (Mst_MaintainTaskItem) =====
 // Port 1:1 cụm 4 hàm `_Create/_Update/_Delete/_Get_New20181119` (Biz.HTC.WH.cs:7236).
 // TWIN: cả hai bit khớp hoàn toàn (5/5 hàm, kể cả `Mst_MaintainTask_Get` của bảng cha).
@@ -25365,6 +25492,11 @@ record MaintainTaskItemDto(string? MtnTkCode, string? MtnTkItemCode, string? Mtn
 record MaintainTaskItemKeyDto(string? MtnTkCode, string? MtnTkItemCode);
 // Kỳ báo cáo KH bán lẻ: PlanTimes do server tự tăng, KHÔNG nhận từ client.
 record SettingRptPlanRetailDto(string? PlanMonth, DateTime? ReportDate);
+// Phiếu huỷ HĐ bán lẻ: Dtl gộp nhóm theo model, Cars huỷ ở mức TỪNG XE (CtrCarId của HĐ gốc).
+record DlrCancelDtlDto(string? DlrContractNo, string? SpecCode, string? ModelCode, string? ColorCode, string? ContractUpdateType, decimal? Qty, string? Remark);
+record DlrCancelCarDto(string? DlrContractNo, string? SpecCode, string? ModelCode, string? ColorCode, string? CtrCarId, DateTime? DlvExpectedDate, string? CtrCType, string? CtrCTDNo, string? Remark);
+record DlrContractCancelSaveDto(string? ContractCNo, string? DealerCode, string? Remark, List<DlrCancelDtlDto>? Details, List<DlrCancelCarDto>? Cars);
+record DlrContractCancelMultiDto(List<string>? ContractCNos);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
