@@ -28176,7 +28176,8 @@ app.MapGet("/api/customercarebirthdays", async (
     {
         x.CareBthId, x.CusId, x.DealerCode, x.DateBth, x.Status,
         statusText = birthdayCareStatusTexts.TryGetValue(x.Status, out var text) ? text : x.Status,
-        x.ContactDate, x.Remark, x.CreatedDate
+        x.ContactDate, x.Remark, x.CreatedDate,
+        x.CreatedBy, x.LogLuDateTime, x.LogLUBy   // #217 §12
     }).ToList();
     // Nguồn trả bảng tóm tắt ("…_Sumary") BÊN CẠNH danh sách chi tiết ⇒ trả cả hai.
     return Results.Ok(new

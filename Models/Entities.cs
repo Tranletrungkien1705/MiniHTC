@@ -4708,8 +4708,17 @@ public sealed class CustomerCareBirthday
     public DateTime? ContactDate { get; set; }
     public string? Remark { get; set; }
     public DateTime? CreatedDate { get; set; }
-    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; }
     public string? UpdatedBy { get; set; }
+
+    // ===== #217 parity `Ser_CustomerCareBth_Update` (BizCarSv.Customer.cs:14982) =====
+    // Đối chiếu từng cột: nguồn ghi 11 cột; entity có 8 ⇒ bổ sung 3 cột dưới đây.
+    /// <summary>Người TẠO phiếu (`CreatedBy`) — nguồn giữ riêng, không dùng chung với `UpdatedBy`.</summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>⚠️ Nguồn viết `LogLuDateTime` (chữ **u** thường ở giữa) — giữ đúng chính tả của nguồn
+    /// để đối chiếu sau này không lệch; các bảng khác dùng `LogLUDateTime`.</summary>
+    public DateTime? LogLuDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
