@@ -19480,6 +19480,106 @@ app.MapPost("/api/hcc/noshow/pushes/{id}/result", async (long id, HccNoShowResul
     return Results.Ok(new { row.Id, row.PushStatus, row.PushDateTime, row.PushNote });
 }).RequireAuthorization();
 
+// ===== 🔴 #287 ĐƠN ĐẶT PHỤ TÙNG GỬI NHÀ CUNG CẤP — `Ser_Part_Order` =====
+// ⚠️ **KHÁC HẲN** `Ser_Order_Part` (đơn TST, đã port thành `OrderPart` ở #234): hai bảng tên **đảo chữ**
+//   của nhau, khác bộ mã trạng thái, khác nghiệp vụ. BƯỚC 2 xác nhận MiniHTC chưa có bảng này.
+//
+// ✅ TRACE TWIN — bốn bản `Ser_Part_OrderGet*`: `_old` (:1608) · bản trần (:1886) · **`_StatusList01` (:2169)**
+//   · `_StatusList` (:2466). WS `WSCarSv.asmx.cs:23686` gọi **`_StatusList`** ⇒ ba bản kia CHẾT.
+//   ⚠️ Bẫy: `_StatusList01` **trông mới hơn** (có hậu tố `01`) và có bộ mã CHỮ đầy đủ
+//   (`CREA/CONF/REJ/FINS/CANC`) — nhưng **KHÔNG được gọi**. Port theo nó là port bộ mã không tồn tại.
+//
+// 🔴 BỘ MÃ TRỘN SỐ + CHỮ trong CÙNG MỘT CỘT (`PartOrder.cs:2614-2623`, bản LIVE):
+//     `'1'` → "Mới tạo" · **`'CONF'`** → "Xác nhận" · `'2'` → "Hàng đang về" · `'3'` → "Hoàn thành"
+//   Chỉ **một** mã chữ xen giữa ba mã số ⇒ dấu vết một đợt đổi sang mã chữ **làm DỞ DANG**.
+//   ⚠️ Nguồn **KHÔNG có nhánh ELSE** ⇒ mã lạ cho **NULL**, không phải chuỗi rỗng. Giữ nguyên.
+//
+// 🔴 TRẠNG THÁI GIAO HÀNG là **TÍNH RA**, không lưu cột — bản `_old` (:1712) và `_StatusList01` (:2294):
+//     `SumDeliveryQuantity <= 0 hoặc NULL`   → "Mới tạo"
+//     `SumDeliveryQuantity <  SumQuantity`   → "Hàng đang về"
+//     `SumDeliveryQuantity >= SumQuantity`   → "Hoàn thành"
+//   ⚠️ Đúng ba nhãn này về sau được **materialize** thành mã `'1'/'2'/'3'` của cột `Status` ở bản LIVE.
+//   ⇒ endpoint trả CẢ HAI: `status` (cột) và `deliveryStatus` (tính lại từ SL) để đối soát lệch.
+var supplierPartOrderStatusNames = new Dictionary<string, string>
+{
+    ["1"] = "Mới tạo", ["CONF"] = "Xác nhận", ["2"] = "Hàng đang về", ["3"] = "Hoàn thành",
+};
+
+app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
+{
+    statuses = supplierPartOrderStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Bộ mã TRỘN số + chữ trong cùng một cột (chỉ CONF là mã chữ). Mã ngoài bốn giá trị ⇒ nhãn NULL (nguồn không có ELSE).",
+})).RequireAuthorization();
+
+app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
+    string? status, string? dealer, string? supplier, string? orderNo) =>
+{
+    var qy = db.SupplierPartOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(supplier)) qy = qy.Where(x => x.SupplierID == supplier);
+    if (!string.IsNullOrWhiteSpace(orderNo)) qy = qy.Where(x => x.OrderNo.Contains(orderNo!) || (x.OrderNoUser != null && x.OrderNoUser.Contains(orderNo!)));
+
+    var heads = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var ids = heads.Select(h => h.Id).ToList();
+    var lines = await db.SupplierPartOrderLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.SupplierPartOrderId)).ToListAsync();
+    var byOrder = lines.GroupBy(l => l.SupplierPartOrderId).ToDictionary(g => g.Key, g => g.ToList());
+
+    var items = heads.Select(h =>
+    {
+        var ls = byOrder.TryGetValue(h.Id, out var v) ? v : new List<SupplierPartOrderLine>();
+        decimal sumQty = ls.Sum(l => l.Quantity);
+        decimal sumDlv = ls.Sum(l => l.DeliveryQuantity);
+        // Đúng thứ tự nhánh của nguồn: <=0 hoặc rỗng trước, rồi < , rồi >=.
+        var deliveryStatus = sumDlv <= 0 ? "Mới tạo" : (sumDlv < sumQty ? "Hàng đang về" : "Hoàn thành");
+        return new
+        {
+            h.OrderNo, h.OrderNoUser, h.CreateDate, h.DealerCode, h.SupplierID,
+            h.Status,
+            statusName = h.Status is not null && supplierPartOrderStatusNames.TryGetValue(h.Status, out var sn) ? sn : null,
+            h.SendDate, h.ReceivePartDate, h.UserCreate, h.UserApproved, h.ApprovedDate,
+            h.TypeOrder, h.HTCConfirm, h.PartialShipment, h.TypeTransport, h.VIN, h.ConfirmNo, h.CusCharges,
+            lineCount = ls.Count, sumQuantity = sumQty, sumDeliveryQuantity = sumDlv,
+            deliveryStatus,
+        };
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Đơn phải có ít nhất 1 dòng phụ tùng." });
+
+    var no = string.IsNullOrWhiteSpace(dto.OrderNo) ? "PO" + DateTime.Now.ToString("yyMMddHHmmss") : dto.OrderNo!.Trim();
+    var h = new SupplierPartOrder
+    {
+        OrgId = t.OrgId, OrderNo = no, OrderNoUser = dto.OrderNoUser,
+        CreateDate = dto.CreateDate ?? DateTime.Now,
+        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        // Nguồn nhận Status từ tham số; mặc định "1" (Mới tạo) đúng bảng mã LIVE.
+        Status = string.IsNullOrWhiteSpace(dto.Status) ? "1" : dto.Status!.Trim(),
+        ReceivePartDate = dto.ReceivePartDate, SendDate = dto.SendDate,
+        SupplierID = dto.SupplierID, UserCreate = dto.UserCreate, UserApproved = dto.UserApproved,
+        ApprovedDate = dto.ApprovedDate, TypeOrder = dto.TypeOrder, HTCConfirm = dto.HTCConfirm,
+        PartialShipment = dto.PartialShipment, TypeTransport = dto.TypeTransport,
+        VIN = dto.VIN?.Trim().ToUpperInvariant(), ConfirmNo = dto.ConfirmNo, CusCharges = dto.CusCharges,
+    };
+    db.SupplierPartOrders.Add(h); await db.SaveChangesAsync();
+
+    foreach (var l in lines)
+        db.SupplierPartOrderLines.Add(new SupplierPartOrderLine
+        {
+            OrgId = t.OrgId, SupplierPartOrderId = h.Id,
+            PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
+            Quantity = l.Quantity, DeliveryQuantity = l.DeliveryQuantity,
+            Price = l.Price, Amount = l.Amount, Note = l.Note,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.OrderNo, h.Status, lines = lines.Count });
+}).RequireAuthorization();
+
 // ===== 🔴 #269 HCC NO-SHOW — khách QUÁ HẠN chưa quay lại xưởng =====
 // Nguồn: `TERP.BizCarSv/HCCIntergration/BizCarSv.HCC.cs:381 HCC_NoShow_CreateOS` + hàm con `…OSX`,
 //   chạy bởi job `Refs/Jobs/DMS.Service.Job.OSHCC` (`DMSServices_OSHCC.HCCNoShowCreateOS`).
@@ -34980,6 +35080,16 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
 record SharePartLineDto(string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, decimal MinQuantity, string? Remark);
 // #272: kết quả một lượt đẩy NoShow sang HCC — "A" xong / "R" lỗi (lỗi BẮT BUỘC ghi lý do).
 record HccNoShowResultDto(string ToStatus, string? Note = null);
+// #287: đơn đặt phụ tùng gửi NCC (`Ser_Part_Order`) — 18 trường header của `Ser_Part_OrderCreate`.
+record SupplierPartOrderDto(string? SupplierID, string? OrderNo = null, string? OrderNoUser = null,
+    DateTime? CreateDate = null, string? DealerCode = null, string? Status = null,
+    DateTime? ReceivePartDate = null, DateTime? SendDate = null,
+    string? UserCreate = null, string? UserApproved = null, DateTime? ApprovedDate = null,
+    string? TypeOrder = null, string? HTCConfirm = null, string? PartialShipment = null,
+    string? TypeTransport = null, string? VIN = null, string? ConfirmNo = null, string? CusCharges = null,
+    List<SupplierPartOrderLineDto>? Lines = null);
+record SupplierPartOrderLineDto(string PartCode, string? PartName, decimal Quantity, decimal DeliveryQuantity,
+    decimal Price, decimal Amount, string? Note);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 // #261: 12 cột của `TblSerMSTPart` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note,

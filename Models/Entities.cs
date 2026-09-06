@@ -13243,6 +13243,70 @@ public sealed class HccNoShowPush
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// 🔴 #287 ĐƠN ĐẶT PHỤ TÙNG GỬI NHÀ CUNG CẤP — bảng `Ser_Part_Order`.
+/// ⚠️ **KHÁC HẲN** `Ser_Order_Part` (đơn đặt phụ tùng TST, đã port thành `OrderPart` ở #234): hai bảng
+/// tên **đảo chữ** của nhau, khác bộ mã trạng thái, khác nghiệp vụ. Đừng gộp.
+/// Nguồn cột: `BizCarSv.PartOrder.cs:756 Ser_Part_OrderCreate` (18 trường header).
+/// </summary>
+public sealed class SupplierPartOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    public string OrderNo { get; set; } = "";
+    /// <summary>ORDERNOUSER — số đơn do NGƯỜI DÙNG đặt, khác số hệ thống sinh.</summary>
+    public string? OrderNoUser { get; set; }
+    public DateTime? CreateDate { get; set; }
+    public string? DealerCode { get; set; }
+
+    /// <summary>
+    /// 🔴 STATUS — **BỘ MÃ TRỘN**: cột này chứa CẢ mã SỐ lẫn mã CHỮ. Nguồn
+    /// (`Ser_Part_OrderGet_StatusList`, `PartOrder.cs:2614-2623`) ánh xạ:
+    ///   `'1'` Mới tạo · `'CONF'` Xác nhận · `'2'` Hàng đang về · `'3'` Hoàn thành
+    /// ⚠️ Chỉ **một** mã chữ (`CONF`) xen giữa ba mã số — dấu vết một đợt đổi sang mã chữ làm DỞ DANG.
+    /// Bản CHẾT `..._StatusList01` có bộ chữ đầy đủ (`CREA/CONF/REJ/FINS/CANC`) nhưng WS **không gọi**.
+    /// ⚠️ Nguồn **KHÔNG có nhánh ELSE** ⇒ mã ngoài bốn giá trị trên cho ra **NULL**, không phải chuỗi rỗng.
+    /// </summary>
+    public string? Status { get; set; }
+
+    public DateTime? ReceivePartDate { get; set; }
+    public DateTime? SendDate { get; set; }
+    public string? SupplierID { get; set; }
+    public string? UserCreate { get; set; }
+    public string? UserApproved { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? TypeOrder { get; set; }
+    public string? HTCConfirm { get; set; }
+    /// <summary>PARTIALSHIPMENT — cho phép giao HÀNG TỪNG PHẦN hay không.</summary>
+    public string? PartialShipment { get; set; }
+    public string? TypeTransport { get; set; }
+    public string? VIN { get; set; }
+    public string? ConfirmNo { get; set; }
+    /// <summary>CUSCHARGES — đơn vị chịu phí (nguồn ghi chú "Đơn vị chịu phí Issue").</summary>
+    public string? CusCharges { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>#287 Dòng của đơn đặt phụ tùng NCC (`Ser_Part_OrderDetail`).</summary>
+public sealed class SupplierPartOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SupplierPartOrderId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    /// <summary>SL ĐẶT.</summary>
+    public decimal Quantity { get; set; }
+    /// <summary>🔴 SL ĐÃ GIAO — cùng với <see cref="Quantity"/> **SINH RA** trạng thái giao hàng,
+    /// xem chú thích ở endpoint (trạng thái đó KHÔNG lưu thành cột).</summary>
+    public decimal DeliveryQuantity { get; set; }
+    public decimal Price { get; set; }
+    public decimal Amount { get; set; }
+    public string? Note { get; set; }
+}
+
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
 public sealed class SharePart
 {
