@@ -32696,6 +32696,32 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
 }).RequireAuthorization();
 
 // Hủy phiếu xuất kho (port 1:1 FrmSOReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
+// #291 XOÁ phiếu XUẤT — cùng luật với phiếu nhập (xem chú thích ở `DELETE /api/stockins/{no}`).
+// Guard nguồn: `CheckStockOutForDelete` (`StockOut.cs:184`) — chỉ `Status` ∈ { "1", "5" }.
+app.MapDelete("/api/stockouts/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+
+    if (h.Status != "1" && h.Status != "5")
+        return Results.BadRequest(new { error = "Chỉ xoá được phiếu xuất ở trạng thái Mới tạo (1) hoặc Huỷ (5).",
+            status = h.Status, statusName = stockOutStatusNames.TryGetValue(h.Status ?? "", out var sn) ? sn : null });
+
+    string? warn = null;
+    if (!string.IsNullOrWhiteSpace(h.OldStockOutID))
+    {
+        var oldExists = await db.PartStockOuts.AnyAsync(x => x.OrgId == t.OrgId && x.StockOutNo == h.OldStockOutID);
+        if (!oldExists) warn = "Không tìm thấy phiếu xuất gốc " + h.OldStockOutID + " mà phiếu này điều chỉnh.";
+    }
+
+    var lines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.StockOutId == h.Id).ToListAsync();
+    db.PartStockOutLines.RemoveRange(lines);
+    db.PartStockOuts.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { stockOutNo = no, deletedLines = lines.Count, warning = warn });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockouts/{no}/reject", async (string no, StockRejectDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -32843,6 +32869,51 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
 }).RequireAuthorization();
 
 // Hủy phiếu nhập kho (port 1:1 FrmSIReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
+// ===== 🔴 #291 XOÁ phiếu kho — `SerStockInDelete` / `SerStockOutDelete` =====
+// 🆕 Tìm ra bằng sweep `_audit/sweep_verb_pair.js` (sinh từ #290): quét **747 hàm WS sống** của
+//   `WSCarSv.asmx.cs`, tìm cùng một GỐC màn mà có **CẶP ĐỘNG TỪ GẦN NGHĨA** ⇒ đúng **4 cặp**:
+//     `Email_ConfigSendAuto_Cancel + _Delete` (đã xử lý #290) · `Email_TempEmail_Cancel + _Delete` (nợ) ·
+//     **`SerStockInReject + SerStockInDelete`** · **`SerStockOutReject + SerStockOutDelete`**
+//   ⇒ hai màn kho ĐÃ PORT nhưng **chỉ có `reject`, THIẾU hẳn `delete`**. Hai việc khác nhau:
+//     `reject` = đổi trạng thái sang "5" (huỷ, **giữ phiếu**) · `delete` = **XOÁ HẲN** cả dòng chi tiết.
+//
+// 🔴 GUARD XOÁ (giống nhau ở cả hai màn): chỉ xoá được khi `Status` ∈ { `"1"` Mới tạo, `"5"` Huỷ }.
+//   Nguồn: `CheckStockInNotPending` (`StockIn.cs:348`) và `CheckStockOutForDelete` (`StockOut.cs:184`).
+//   ⚠️ TÊN GUARD ĐÁNH LỪA: `CheckStockInNotPending` nghe như "kiểm tra KHÔNG phải Pending", thực tế nó ném
+//     khi **không phải Pending VÀ không phải Reject** — tức **BẮT BUỘC** phải là một trong hai.
+//   ⇒ phiếu đang Tiến hành/Kết thúc/Điều chỉnh (2/3/4) **KHÔNG xoá được** — phải huỷ (`reject`) trước.
+//
+// ⚠️ Nguồn xoá **DÒNG CHI TIẾT TRƯỚC** rồi mới xoá đầu phiếu (`SerStockInDetailDelete` → `delete from`
+//   `Ser_Inv_StockIn`), và ghi vào **BA** DB (`_dbMain`, `_dbWH`, `_dbDealer` khi không phải WS Main).
+//   MiniHTC một DB ⇒ xoá một lần, giữ đúng THỨ TỰ chi tiết → đầu phiếu.
+// 📌 Nguồn còn kiểm `OldStockInID`/`OldStockOutID` có tồn tại không (phiếu điều chỉnh trỏ về phiếu gốc) —
+//   chỉ để **báo lỗi nếu phiếu gốc biến mất**, không chặn xoá; port giữ đúng: cảnh báo, không chặn.
+app.MapDelete("/api/stockins/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+
+    if (h.Status != "1" && h.Status != "5")
+        return Results.BadRequest(new { error = "Chỉ xoá được phiếu nhập ở trạng thái Mới tạo (1) hoặc Huỷ (5).",
+            status = h.Status, statusName = stockInStatusNames.TryGetValue(h.Status ?? "", out var sn) ? sn : null });
+
+    // Phiếu điều chỉnh trỏ về phiếu gốc: nguồn CHỈ kiểm tra phiếu gốc còn không, KHÔNG chặn xoá.
+    string? warn = null;
+    if (!string.IsNullOrWhiteSpace(h.OldStockInID))
+    {
+        var oldExists = await db.PartStockIns.AnyAsync(x => x.OrgId == t.OrgId && x.StockInNo == h.OldStockInID);
+        if (!oldExists) warn = "Không tìm thấy phiếu nhập gốc " + h.OldStockInID + " mà phiếu này điều chỉnh.";
+    }
+
+    // Nguồn xoá DÒNG CHI TIẾT trước, rồi mới xoá đầu phiếu.
+    var lines = await db.PartStockInLines.Where(x => x.OrgId == t.OrgId && x.StockInId == h.Id).ToListAsync();
+    db.PartStockInLines.RemoveRange(lines);
+    db.PartStockIns.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { stockInNo = no, deletedLines = lines.Count, warning = warn });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockins/{no}/reject", async (string no, StockRejectDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
 {
     no = no.Trim().ToUpperInvariant();
