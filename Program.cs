@@ -35501,6 +35501,35 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
     if (target == "Finished") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
 
+    // ===== 🔴 #328 BƯỚC THANH TOÁN ghi **13 cột**, port cũ chỉ đổi `Status` =====
+    // Nguồn `SerROStatusUpdatePaid_New20230228` (`Service.RO.cs:5736`) — TRACE TWIN: WS `:11483` gọi bản này;
+    //   bản `_New20230220` ở WS `:11428` **đã bị comment**. Cụm có **7 bản**, hai trong số đó là định nghĩa
+    //   **bị comment cả hàm** (`ZTemp.cs:8946/9753`) ⇒ sweep bỏ qua đúng, nhưng vẫn phải đọc WS mới chắc.
+    //
+    // 🔴 GUARD MỘT-TIỀN-TRẠNG-THÁI: nguồn bắt buộc `strOldStatus == Ser_RO_Stage.CheckEnd`, khác thì NÉM LỖI
+    //   kèm `Status.Valid = CheckEnd`. ⇒ Chỉ đi từ **Kiểm tra cuối cùng** sang **Thanh toán**, không từ đâu
+    //   khác. Luồng `_roFlow` của port cũ cũng cho đúng bước đó, nhưng KHÔNG ghi 12 cột dữ liệu kèm theo.
+    if (target == "Paid")
+    {
+        // ⚠️ Nguồn cắt GIÂY: `Convert.ToDateTime(strStatusDate).ToString("yyyy-MM-dd HH:mm")`.
+        var paidAt = dto.StatusDate ?? DateTime.Now;
+        r.PaidCreatedDate = new DateTime(paidAt.Year, paidAt.Month, paidAt.Day, paidAt.Hour, paidAt.Minute, 0);
+
+        // Nhóm ghi **VÔ ĐIỀU KIỆN** (không guard rỗng) — đúng nguồn: gửi rỗng là XOÁ giá trị cũ.
+        r.IsCusPaymentAll = dto.IsCusPaymentAll;
+        r.AmountFromMC = dto.AmountFromMC;
+        r.PointTotal = dto.PointTotal;                       // điểm tích XÉT HẠNG
+        r.AmountDiscountOther = dto.AmountDiscountOther;
+        r.MemberNo = dto.MemberNo;
+        r.CardNoInv = dto.CardNoInv;
+        r.CardTypeInv = dto.CardTypeInv;
+        r.CardTypeExpectInv = dto.CardTypeExpectInv;
+        r.PointEndInv = dto.PointEndInv;
+        r.PointRankTotalInv = dto.PointRankTotalInv;         // điểm tích TIÊU DÙNG — KHÁC PointTotal
+        r.PointConsumptionPrm = dto.PointConsumptionPrm;
+        r.LogLUDateTime = DateTime.Now; r.LogLUBy = dto.LogLUBy;
+    }
+
     // ===== 🔴 #326 GIAO XE KÉO THEO **BA** VIỆC NỮA — port cũ chỉ đóng dấu mốc =====
     // Nguồn `SerROToFinishedStatusAndUpdateCusCare_New20190621` (`ZTemp.cs:11622`).
     //   TRACE TWIN: WS `:11603` gọi bản `_New20190621` ⇒ bản trần (`Service01.cs:11421`) CHẾT.
@@ -35594,6 +35623,10 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate,
         // #326: các việc kéo theo, trả về để đối chiếu với WinForm.
         carUpdated, careNoCreated,
+        // #328 §12: dữ liệu bước THANH TOÁN có mặt ở CẢ POST lẫn kết quả.
+        r.PaidCreatedDate, r.IsCusPaymentAll, r.AmountFromMC, r.PointTotal, r.AmountDiscountOther,
+        r.MemberNo, r.CardNoInv, r.CardTypeInv, r.CardTypeExpectInv,
+        r.PointEndInv, r.PointRankTotalInv, r.PointConsumptionPrm,
         // #327: số dòng phụ tùng đã được làm mới giá từ danh mục.
         partPriceRefreshed,
         partPriceRefreshedNote = partPriceRefreshed > 1
@@ -37030,7 +37063,12 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
     DateTime? FirstContactDateTime = null, DateTime? LastContactDateTime = null);
 // #326: ToStatus + co "khach tra toan bo?" (nguon: strIsCusPaymentAll).
 //   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
-record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null);
+record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null,
+    // #328 §12: 12 truong bo sung cua buoc THANH TOAN (SerROStatusUpdatePaid_New20230228).
+    DateTime? StatusDate = null, decimal? AmountFromMC = null, decimal? PointTotal = null,
+    decimal? AmountDiscountOther = null, string? MemberNo = null, string? CardNoInv = null,
+    string? CardTypeInv = null, string? CardTypeExpectInv = null, decimal? PointEndInv = null,
+    decimal? PointRankTotalInv = null, decimal? PointConsumptionPrm = null, string? LogLUBy = null);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);

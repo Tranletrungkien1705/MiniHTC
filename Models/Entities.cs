@@ -2265,6 +2265,22 @@ public sealed class RepairOrder
     public decimal? PointRankTotalInv { get; set; }   // POINTRANKTOTALINV — tổng điểm xét hạng
     public decimal? PointConsumptionPrm { get; set; } // POINTCONSUMPTIONPRM — điểm tiêu dùng
 
+    // ===== 🔴 #328 PARITY `SerROStatusUpdatePaid_New20230228` (`Service.RO.cs:5736`) =====
+    // TRACE TWIN: WS `:11483` gọi bản `_New20230228`; bản `_New20230220` ở `:11428` **đã bị comment**
+    //   ⇒ trong 7 bản của cụm này, bản có ngày MỚI NHẤT thắng — nhưng chỉ biết được nhờ đọc WS.
+    /// <summary>PAIDCREATEDDATE — mốc THANH TOÁN. ⚠️ Nguồn lưu `"yyyy-MM-dd HH:mm"` ⇒ **cắt GIÂY**.</summary>
+    public DateTime? PaidCreatedDate { get; set; }
+
+    /// <summary>ISCUSPAYMENTALL — khách có trả TOÀN BỘ không. ⚠️ Cùng cột mà #326 dùng để quyết định
+    /// **ghi nợ hãng bảo hiểm** lúc giao xe; ở bước THANH TOÁN nó được **lưu lên lệnh**.</summary>
+    public string? IsCusPaymentAll { get; set; }
+
+    public decimal? AmountFromMC { get; set; }        // tiền do hãng (MC) chi trả
+    /// <summary>POINTTOTAL — **điểm tích XÉT HẠNG** của hội viên (chú thích nguồn).
+    /// ⚠️ KHÁC `PointRankTotalInv` = **điểm tích TIÊU DÙNG**. Hai loại điểm, tên gần giống nhau.</summary>
+    public decimal? PointTotal { get; set; }
+    public decimal? AmountDiscountOther { get; set; } // giảm giá khác
+
     public string? MemberNo { get; set; }             // MEMBERNO — số hội viên (FrmInvoice.cs:707)
 
     /// <summary>

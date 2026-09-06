@@ -882,6 +882,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #328 parity SerROStatusUpdatePaid_New20230228 (ban LIVE): 5 cot buoc THANH TOAN
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"PaidCreatedDate\" timestamp",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"IsCusPaymentAll\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"AmountFromMC\" numeric",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"PointTotal\" numeric",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"AmountDiscountOther\" numeric",
         // #323 parity Function_UtilsSerApp: nguon tach NGAY/GIO thanh cot rieng
         "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppDateTime\" text",
         "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppTime\" text",
