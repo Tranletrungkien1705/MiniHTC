@@ -28328,12 +28328,90 @@ app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, strin
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #241 SAVE BA VAI cho `Req_PartPrice_Save` + giải nợ cờ `FlagIsCheck` =====
+// Nguồn `BizCarSv.SuggestPrice.cs:604-1180` (md5 8aafd84f, 4213 dòng — khớp 2 máy).
+// Áp cùng khuôn đã port ở #240 cho đơn đặt PT, NHƯNG đã ĐỌC LẠI từng dòng — luật khác nhau:
+//  · Guard trạng thái ở đây là `DMSReqPartPriceStatus` phải `Pending` (không phải OrderPartStatus).
+//  · Nguồn còn `Mst_Dealer_CheckDB(Exist=Yes, Active)` ⇒ **đại lý phải tồn tại VÀ đang hoạt động**
+//    (đơn đặt PT ở #240 KHÔNG có guard này — chớ suy sang nhau).
+//  · Guard TỪNG DÒNG: `Mst_DeliveryForm_CheckDB(Exist=Yes, Active)` cho mỗi dòng, và `DMSPartCode` rỗng
+//    ⇒ "Mã vật tư không được để trống!". Dòng mới đặt `ReqPartPriceDtlStatus = Pending`.
+//
+// 🔴 GIẢI NỢ `strFlagIsCheck` (ghi ở #238) — và nó là một cái bẫy TÊN BIẾN:
+//     `bool bIsCheck = StringEqual(objFlagIsCheck, TConst.Flag.No);`   (:605)
+//   ⇒ `bIsCheck` bật khi cờ = **"N"**, KHÔNG phải "Y". Tên biến ngược nghĩa giá trị.
+//   Khối `if (!bIsDelete && bIsCheck)` (:1140) kiểm: có dòng nào mà `DMSPartCode` khớp
+//   `TST_Mst_Part.TSTPartCode` **và `TSTPrice > 0`** thì ném
+//   "Mã vật tư/Giá bán đã có trong hệ thống bạn kiểm tra lại thông tin!"
+//   ⇒ nghiệp vụ: **không cho xin báo giá thứ ĐÃ CÓ GIÁ**.
 app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
+    var isDelete = string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
+    var reqNoIn = (dto.ReqPartPriceNo ?? "").Trim().ToUpperInvariant();
+
+    ReqPartPrice? existing = reqNoIn.Length == 0 ? null
+        : await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == reqNoIn);
+
+    // Xoá thứ chưa tồn tại ⇒ nguồn goto Done = THÀNH CÔNG im lặng (không 404).
+    if (existing is null && isDelete)
+        return Results.Ok(new { reqNo = reqNoIn, deleted = true, note = "YC không tồn tại — xoá coi như thành công (đúng nguồn)." });
+
+    // Đã tồn tại ⇒ chỉ đụng được khi DMS còn "P".
+    if (existing is not null && existing.DMSStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ sửa/xoá được YC báo giá đang Mới tạo.", dmsStatus = existing.DMSStatus });
+
+    if (isDelete)
+    {
+        var oldL = await db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == existing!.Id).ToListAsync();
+        db.ReqPartPriceLines.RemoveRange(oldL);
+        db.ReqPartPrices.Remove(existing!);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { reqNo = reqNoIn, deleted = true, removedLines = oldL.Count });
+    }
+
+    // Đại lý phải tồn tại + đang hoạt động (Mst_Dealer_CheckDB, :669).
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode))
+    {
+        var dlr = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dto.DealerCode!.Trim());
+        if (dlr is null) return Results.BadRequest(new { error = $"Đại lý {dto.DealerCode} không tồn tại." });
+        if (dlr.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dto.DealerCode} đang ngừng hoạt động." });
+    }
+
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.ReqQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng PT (PartCode + ReqQty > 0)." });
-    var no = "RQ" + DateTime.Now.ToString("yyMMddHHmmss");
+
+    // Guard TỪNG DÒNG (nguồn quét vòng for, :872-905).
+    foreach (var l in lines)
+    {
+        if (string.IsNullOrWhiteSpace(l.PartCode))
+            return Results.BadRequest(new { error = "Mã vật tư không được để trống!" });
+        if (!string.IsNullOrWhiteSpace(l.DeliveryFormCode))
+        {
+            var dfc = l.DeliveryFormCode!.Trim().ToUpperInvariant();
+            var df = await db.Masters.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.Category == "DeliveryForm" && m.Code == dfc);
+            if (df is null || df.Status != "1")
+                return Results.BadRequest(new { error = $"Hình thức giao hàng {dfc} không tồn tại hoặc đã ngừng.", partCode = l.PartCode });
+        }
+    }
+
+    // 🔴 Cờ FlagIsCheck: bật kiểm khi giá trị = "N" (đúng nguồn, tên biến ngược nghĩa).
+    if (string.Equals(dto.FlagIsCheck, "N", StringComparison.OrdinalIgnoreCase))
+    {
+        var codes = lines.Select(l => l.PartCode.Trim().ToUpperInvariant()).ToList();
+        var priced = await db.TstParts
+            .Where(p => p.OrgId == t.OrgId && codes.Contains(p.TSTPartCode) && p.TSTPrice > 0)
+            .Select(p => new { p.TSTPartCode, p.TSTPrice })
+            .FirstOrDefaultAsync();
+        if (priced is not null)
+            return Results.BadRequest(new
+            {
+                error = "Mã vật tư/Giá bán đã có trong hệ thống bạn kiểm tra lại thông tin!",
+                dmsPartCode = priced.TSTPartCode, tstPrice = priced.TSTPrice,
+            });
+    }
+
+    var no = existing?.ReqNo ?? (reqNoIn.Length > 0 ? reqNoIn : "RQ" + DateTime.Now.ToString("yyMMddHHmmss"));
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var r = new ReqPartPrice
     {
@@ -28343,7 +28421,19 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
         DealerCode = dto.DealerCode, Description = dto.Description,
         CreateBy = who, LogLUDateTime = DateTime.Now, LogLUBy = who,
     };
-    db.ReqPartPrices.Add(r); await db.SaveChangesAsync();
+    if (existing is not null)
+    {
+        // SỬA: giữ NGUYÊN CreateDTime/CreateBy của bản ghi cũ (:656-657), thay trọn bộ dòng.
+        r.Id = existing.Id;
+        r.CreatedAt = existing.CreatedAt;
+        r.CreateBy = existing.CreateBy;
+        db.Entry(existing).CurrentValues.SetValues(r);
+        var oldL = await db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == existing.Id).ToListAsync();
+        db.ReqPartPriceLines.RemoveRange(oldL);
+        await db.SaveChangesAsync();
+        r = existing;
+    }
+    else { db.ReqPartPrices.Add(r); await db.SaveChangesAsync(); }
     foreach (var l in lines)
         db.ReqPartPriceLines.Add(new ReqPartPriceLine
         {
@@ -31979,7 +32069,10 @@ record SentTstDto(string? SyncStatus = null, string? SyncDescription = null);
 record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty,
     string? DeliveryFormCode = null, string? VINCode = null, string? Remark = null);
 // #238: `Req_PartPrice_Save` gửi DealerCode + Description.
-record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = null, string? Description = null);
+// #241: `ReqPartPriceNo` (trống = tạo mới) + hai cờ của `Req_PartPrice_Save`.
+//  ⚠️ `FlagIsCheck` bật kiểm "mã đã có giá" khi giá trị = **"N"** — tên ngược nghĩa, đúng nguồn (:605).
+record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = null, string? Description = null,
+    string? ReqPartPriceNo = null, string? FlagIsDelete = null, string? FlagIsCheck = null);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
