@@ -2348,9 +2348,39 @@ public sealed class PartStockOut
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PostedAt { get; set; }
+
+    // `RejectBy`/`RejectDate`/`RejectDescription` của nguồn — port đặt tên `Rejected*`, giữ nguyên.
     public string? RejectReason { get; set; }
     public string? RejectedBy { get; set; }
     public DateTime? RejectedAt { get; set; }
+
+    // ===== 🔴 #264: 13 cột nguồn `TblSerInvStockOut` (DbDefine.cs:1257-1283) mà port cũ THIẾU =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+    public string? StockOutTypeText { get; set; }   // STOCKOUTTYPETEXT — nguồn lưu CẢ NHÃN loại xuất
+    public string? StatusText { get; set; }         // STATUSTEXT — nguồn lưu CẢ NHÃN trạng thái
+    public string? UserCode { get; set; }
+    public string? CusID { get; set; }
+    public string? DealerCode { get; set; }
+
+    // --- khối VẬN CHUYỂN (4 cột) — phiếu xuất có thông tin xe + tài xế ---
+    public string? TruckNo { get; set; }
+    public string? DriverName { get; set; }
+    public string? DriverID { get; set; }
+    public string? DrivingLicense { get; set; }
+
+    /// <summary>
+    /// --- khối ĐIỀU CHỈNH (5 cột) — 🔴 đây là thứ giải thích mã trạng thái **"4" Điều chỉnh**:
+    /// phiếu cũ **không bị sửa tại chỗ** mà bị một phiếu MỚI thay, và phiếu mới trỏ ngược về phiếu cũ
+    /// bằng `OldStockOutID`/`OldStockOutNo`. Thiếu cặp này thì mất dấu vết chuỗi điều chỉnh.
+    /// </summary>
+    public string? AdjustmentBy { get; set; }
+    public DateTime? AdjustmentDate { get; set; }
+    public string? AdjustmentNote { get; set; }
+    public string? OldStockOutID { get; set; }
+    public string? OldStockOutNo { get; set; }
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>
