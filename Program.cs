@@ -34936,6 +34936,68 @@ app.MapGet("/api/auth/app-login-eligibility", (string dealerCode, string userCod
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #321 SỬA LỆNH SỬA CHỮA (`Ser_RO_Update_New20230220`) — nhánh TÁCH khỏi Create =====
+// 🆕 Cụm này do sweep `sweep_twin_column_delta.js` (#320) chỉ ra: **8 bản**, chênh **23 cột**.
+//   TRACE TWIN: WS `:10794` gọi `_New20230220` ⇒ 7 bản còn lại CHẾT.
+//   So tập cột: Update ghi **57**, trong đó **7 cột KHÔNG có ở Create** — các trường phát sinh
+//   TRONG QUÁ TRÌNH sửa chữa (vai trò kỹ thuật + mốc thời gian).
+//
+// 🔴 HAI LUẬT GHI KHÁC NHAU trong CÙNG một hàm — đây là điểm dễ port sai nhất:
+//   (a) **VÔ ĐIỀU KIỆN** — `Assistant` · `Engineer` · `QA` · `Operator` · `QuanDoc` ·
+//       `ScheduleDate` · `CheckInDate` · `PlanedDuration` · `CusRequest` · `CarStatus` …
+//       ⇒ truyền rỗng là **XOÁ** giá trị đang có, KHÔNG phải "giữ nguyên".
+//   (b) **CÓ GUARD RỖNG** — chỉ `StartDate` và `FinishedDate`:
+//       `if (String.IsNullOrEmpty(strStartDate)) { } else { … }` ⇒ rỗng thì **giữ nguyên**.
+//   ⚠️ Vì vậy KHÔNG được viết một vòng lặp "chỉ gán khi khác rỗng" cho tất cả — sẽ mất khả năng
+//     **gỡ người phụ trách** (đặt lại rỗng) mà nguồn cho phép.
+//
+// ⚠️ `Convert.ToDateTime(strScheduleDate)` và `…(strCheckInDate)` **không có guard** ⇒ nguồn **ném
+//   FormatException** khi tham số rỗng. Đây đúng lớp lỗi đã ghi trong hook (`Convert.To*` trên ô rỗng).
+//   Port KHÔNG bắt chước crash: thiếu ngày ⇒ trả `400` có thông điệp, và ghi rõ chỗ lệch này.
+// ⚠️ Nguồn lưu ngày dạng `"yyyy-MM-dd HH:mm"` ⇒ **cắt mất GIÂY**. Port cắt giây y hệt để đối chiếu khớp.
+app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var roNo = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { no = roNo });
+
+    // Nguồn Convert.ToDateTime KHÔNG guard ⇒ crash. Ở đây báo lỗi rõ thay vì crash (khai báo lệch).
+    if (dto.ScheduleDate is null) return Results.BadRequest(new { error = "Thiếu ScheduleDate (nguồn ném FormatException khi rỗng)." });
+    if (dto.CheckInDate is null) return Results.BadRequest(new { error = "Thiếu CheckInDate (nguồn ném FormatException khi rỗng)." });
+
+    // Cắt GIÂY đúng như nguồn ("yyyy-MM-dd HH:mm").
+    static DateTime ToMinute(DateTime v) => new DateTime(v.Year, v.Month, v.Day, v.Hour, v.Minute, 0);
+
+    // (a) nhóm VÔ ĐIỀU KIỆN — rỗng = XOÁ.
+    r.Assistant = dto.Assistant;
+    r.Engineer = dto.Engineer;
+    r.QA = dto.QA;
+    r.Operator = dto.Operator;
+    r.QuanDoc = dto.QuanDoc;
+    r.ScheduleDate = ToMinute(dto.ScheduleDate!.Value);
+    r.CheckInDate = ToMinute(dto.CheckInDate!.Value);
+    r.PlanedDuration = dto.PlanedDuration;
+    r.CusRequest = dto.CusRequest;
+    r.CarStatus = dto.CarStatus;
+
+    // (b) nhóm CÓ GUARD — rỗng = GIỮ NGUYÊN.
+    if (dto.StartDate.HasValue) r.StartDate = ToMinute(dto.StartDate.Value);
+    if (dto.FinishedDate.HasValue) r.FinishedDate = ToMinute(dto.FinishedDate.Value);
+
+    r.ModifyBy = dto.ModifyBy; r.ModifyDate = DateTime.Now;
+    r.LogLUBy = dto.ModifyBy; r.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        r.RONo, r.Assistant, r.Engineer, r.QA, r.Operator, r.QuanDoc,
+        r.ScheduleDate, r.CheckInDate, r.StartDate, r.FinishedDate,
+        r.PlanedDuration, r.CusRequest, r.CarStatus, r.ModifyBy, r.ModifyDate,
+        note = "Năm vai trò kỹ thuật + ScheduleDate/CheckInDate ghi VÔ ĐIỀU KIỆN (rỗng = XOÁ); "
+             + "StartDate/FinishedDate có guard (rỗng = GIỮ NGUYÊN). Ngày cắt tới PHÚT như nguồn.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
@@ -36646,6 +36708,13 @@ record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string?
     DateTime? LogLUDateTime = null,
     // #310 §12: phieu TIEP NHAN sinh ra lenh nay (1-NHIEU) — phai GAN duoc, khong chi doc duoc.
     string? ReceptionFNo = null);
+// #321: DTO sửa lệnh sửa chữa. Hai nhóm ghi khác nhau — xem chú thích ở endpoint.
+record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
+    string? Assistant = null, string? Engineer = null, string? QA = null,
+    string? Operator = null, string? QuanDoc = null,
+    DateTime? StartDate = null, DateTime? FinishedDate = null,
+    decimal? PlanedDuration = null, string? CusRequest = null, string? CarStatus = null,
+    string? ModifyBy = null);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

@@ -2190,6 +2190,34 @@ public sealed class RepairOrder
     public string? LogLUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
 
+    // ===== 🔴 #321 PARITY `Ser_RO_Update_New20230220` (`Service.RO.cs:4069`) =====
+    // Cụm `Ser_RO_Update` có **8 bản**, chênh **23 cột**; WS `:10794` gọi `_New20230220` ⇒ 7 bản kia CHẾT.
+    // Bản Update ghi **7 cột mà bản Create KHÔNG có** — đây là các trường phát sinh TRONG QUÁ TRÌNH sửa.
+
+    /// <summary>🔴 BỐN VAI TRÒ KỸ THUẬT ghi cùng chỗ với `Assistant` (cố vấn dịch vụ, đã có):
+    /// `Engineer` kỹ thuật viên · `QA` kiểm định · `Operator` thợ vận hành · `QuanDoc` **quản đốc**.
+    /// ⚠️ Cả năm ghi **VÔ ĐIỀU KIỆN** (`Rows[0]["X"] = strX` + `alEffectiveColumn.Add`) ⇒ truyền rỗng là
+    ///    **XOÁ** người đang gán, không phải "giữ nguyên". Khác hẳn nhóm ngày bên dưới.</summary>
+    public string? Engineer { get; set; }
+    public string? QA { get; set; }
+    public string? Operator { get; set; }
+    /// <summary>QUANDOC — quản đốc xưởng (nguồn để nguyên tiếng Việt không dấu trong tên cột).</summary>
+    public string? QuanDoc { get; set; }
+
+    /// <summary>
+    /// 🔴 SCHEDULEDATE — ngày HẸN vào xưởng. Ghi **VÔ ĐIỀU KIỆN** qua
+    /// `Convert.ToDateTime(strScheduleDate).ToString("yyyy-MM-dd HH:mm")`.
+    /// ⚠️ **KHÔNG có guard rỗng** ⇒ nguồn **ném `FormatException`** nếu tham số rỗng/không parse được.
+    ///    Cùng rủi ro với `CheckInDate` (cũng vô điều kiện), trong khi `StartDate`/`FinishedDate` thì CÓ guard.
+    ///    Bất đối xứng này CÓ THẬT trong một hàm — xem chú thích ở endpoint.
+    /// ⚠️ Định dạng `"yyyy-MM-dd HH:mm"` ⇒ nguồn **cắt mất GIÂY** khi lưu.
+    /// </summary>
+    public DateTime? ScheduleDate { get; set; }
+
+    /// <summary>STARTDATE — giờ BẮT ĐẦU sửa. Nguồn CÓ guard `if (IsNullOrEmpty) {} else {…}` ⇒ rỗng thì
+    /// **GIỮ NGUYÊN** giá trị cũ (đối xứng với `FinishedDate`).</summary>
+    public DateTime? StartDate { get; set; }
+
     public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
     public string? ColorCode { get; set; }             // #301: ro.ColorCode (BẢN CHỤP), car chỉ dự phòng
 

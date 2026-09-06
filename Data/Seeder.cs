@@ -882,6 +882,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #321 parity Ser_RO_Update_New20230220 (ban LIVE): 6 cot chi co o nhanh Update
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"Engineer\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"QA\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"Operator\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"QuanDoc\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"ScheduleDate\" timestamp",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"StartDate\" timestamp",
         // #320 parity Ser_RO_Create_New20230220 (ban LIVE): 27 cot con thieu
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"AdvisoryCode\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"AdvisoryPhone\" text",
