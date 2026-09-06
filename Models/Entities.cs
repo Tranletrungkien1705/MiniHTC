@@ -2003,6 +2003,11 @@ public sealed class RedeemRequest
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    // --- #140 parity RD_ReqRedeem ---
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng VIN của đề nghị thu hồi (RD_ReqRedeemDtl) — thuộc RedeemRequest. VIN + xe + loại thu hồi (DIRECT=Trực tiếp / GUARANTEE=Bảo lãnh).</summary>
@@ -2037,6 +2042,17 @@ public sealed class RedeemRequestLine
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
     public string? Remark { get; set; }
+
+    // --- #140 parity RD_ReqRedeemDtl ---
+    /// <summary>Ngày đề nghị giải chấp của DÒNG (`DMReqDate`).</summary>
+    public DateTime? DMReqDate { get; set; }
+    /// <summary>
+    /// 🔴 MẮT NỐI sang đề nghị THẾ CHẤP (`ReqRMNo`) — cặp với `RM_ReqMortgageDtl.ReqDMNo`.
+    /// Nhờ cặp này mà duyệt giải chấp biết phải đóng dòng thế chấp nào về "F".
+    /// </summary>
+    public string? ReqRMNo { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đề nghị giao hóa đơn/hồ sơ thu hồi (RD_ReqInvoice header) — port 1:1 FrmNewRDInvoice/FrmMngRDInvoice (2010.HTC/Sales/Redeem). Header: số ĐN + ngày + đại lý; state-machine Created→Approved/Rejected. Chi tiết theo VIN, loại nhận: Đại lý / Ngân hàng BL / Ngân hàng LC.</summary>
@@ -9025,8 +9041,20 @@ public sealed class ReqMortgage
     public DateTime? MortageDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
-    /// <summary>Thời điểm giải chấp xong toàn bộ lô.</summary>
+    /// <summary>Thời điểm giải chấp xong toàn bộ lô (`FinishDate`).</summary>
     public DateTime? FinishedAt { get; set; }
+
+    // --- #140 parity RM_ReqMortgage: 8 cột nguồn ghi mà port cũ thiếu ---
+    public string? CreatedBy { get; set; }
+    /// <summary>Mốc sửa gần nhất (`LUDateTime`/`LUBy`) — tách khỏi `LogLU*` (dấu vết kỹ thuật).</summary>
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public string? ApprovedBy { get; set; }
+    /// <summary>Người xác nhận giải chấp xong (`FinishBy`).</summary>
+    public string? FinishBy { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết xe đề nghị thế chấp (RM_ReqMortgageDtl) — port 1:1 FrmNewRM_ReqMortgage detail.</summary>
@@ -9064,6 +9092,22 @@ public sealed class ReqMortgageCar
 
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
+
+    // --- #140 parity RM_ReqMortgageDtl: 8 cột nguồn ghi mà port cũ thiếu ---
+    public string? CarId { get; set; }
+    /// <summary>Đại lý của XE — nguồn để `DealerCode` ở DÒNG, bảng đầu KHÔNG có cột này.</summary>
+    public string? DealerCode { get; set; }
+    public DateTime? FinishDate { get; set; }
+    public string? FinishBy { get; set; }
+    /// <summary>
+    /// 🔴 MẮT NỐI NGƯỢC sang nghiệp vụ giải chấp (`ReqDMNo`): khi TẠO đề nghị thế chấp nguồn gán
+    /// `DBNull` (BizHTC.GiaiChap.cs:988), chỉ khi có đề nghị GIẢI CHẤP duyệt lên xe này mới điền số.
+    /// Cặp với `RD_ReqRedeemDtl.ReqRMNo` ⇒ hai bảng chi tiết trỏ vào nhau HAI CHIỀU.
+    /// </summary>
+    public string? ReqDMNo { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Yêu cầu chứng từ QC/xuất xưởng (QC_DocReq) — port 1:1 FrmMngQCDocReq (Sales/HTMV). Header.</summary>
