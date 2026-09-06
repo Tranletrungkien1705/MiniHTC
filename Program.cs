@@ -7488,17 +7488,15 @@ app.MapGet("/api/transpdlv/{no}/cars", async (string no, AppDbContext db, ITenan
     return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, count = cars.Count, cars });
 }).RequireAuthorization();
 
-// Nhà vận chuyển xác nhận giao nhận: Pending -> Confirmed (lưu ghi chú + ngày xác nhận).
-app.MapPost("/api/transpdlv/{no}/confirm", async (string no, TranspConfirmDto? body, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
-    if (m.ConfirmStatus == "Confirmed") return Results.BadRequest(new { error = "Biên bản đã được xác nhận." });
-    m.ConfirmStatus = "Confirmed"; m.Remark = body?.Remark ?? ""; m.ConfirmDate = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, status = m.ConfirmStatus });
-}).RequireAuthorization();
+// ⚠️ #199 ĐÃ BỎ `POST /api/transpdlv/{no}/confirm` — **nguồn KHÔNG có lệnh này**. Ba bằng chứng độc lập:
+//   1. Hệ nhà vận chuyển `TERP.WSTransp/App_Code/WSTransp.cs` chỉ có **MỘT** lệnh ghi:
+//      `Sto_TranspPlanApprovedByTransporter` — duyệt **KẾ HOẠCH VẬN CHUYỂN**, không phải biên bản giao nhận.
+//      (Lệnh đó ĐÃ port: `POST /api/transplans/{vinPlan}/transporter-approve`.)
+//   2. Màn gốc `TERP.TranspClient/Views/Transp/FrmMngDlvMinutes.cs` (717 dòng) có đúng **ba** nút:
+//      `btnExport` · `btnSearch` · `btnClose` ⇒ **màn CHỈ ĐỌC**, không có nút xác nhận nào.
+//   3. Grep toàn `TERP.BizHTC`: bảng `Sto_DlvMinutes` **không có cột `ConfirmStatus`**; trục trạng thái
+//      thật là `FDlvMnStatus`/`TDlvMnStatus` (P/A/R) — đã port ở `/api/dlvminutes/{no}/approve` (#159).
+//   ⇒ Cùng cách xử lý với `/dlrcontracts/{no}/finish` (#198) và `/deliver`+`/reject` (#175).
 
 // ===== Biên bản giao nhận xe: duyệt HAI PHÍA + bảng kiểm tra tình trạng xe =====
 // Port 1:1 FrmHTCMngDlvMinutes + FrmHTCNewDlvMinutes (2010.HTC TERP.HTCClient/Views/Sales/DlvMinutes).
@@ -8429,26 +8427,34 @@ app.MapGet("/api/report/transpdlv", async (AppDbContext db, ITenantContext t, st
     var q = db.TranspDlvConfirms.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(transporter)) q = q.Where(r => r.TransporterCode == transporter);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.ConfirmStatus == status);
+    // #199: lọc theo trạng thái phía GIAO (FDlvMnStatus) — cột `ConfirmStatus` không có ở nguồn.
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.FDlvMnStatus == status);
     var reqs = await q.ToListAsync();
     var ids = reqs.Select(r => r.Id).ToHashSet();
     var cars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.TranspDlvConfirmId)).ToListAsync();
     var carByReq = cars.GroupBy(c => c.TranspDlvConfirmId).ToDictionary(g => g.Key, g => g.Count());
     var byTransporter = reqs.GroupBy(r => string.IsNullOrEmpty(r.TransporterCode) ? "(chưa rõ)" : r.TransporterCode)
-        .Select(g => new { transporter = g.Key, minutes = g.Count(), confirmed = g.Count(x => x.ConfirmStatus == "Confirmed"), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
+        .Select(g => new { transporter = g.Key, minutes = g.Count(),
+                           // #199: đếm theo TRỤC THẬT của nguồn (FDlvMnStatus = "A"), không theo cột bịa ConfirmStatus.
+                           confirmed = g.Count(x => x.FDlvMnStatus == "A"), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
         .OrderByDescending(x => x.cars).ToList();
     var byDealer = reqs.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
         .Select(g => new { dealerCode = g.Key, minutes = g.Count(), cars = g.Sum(x => carByReq.TryGetValue(x.Id, out var c) ? c : 0) })
         .OrderByDescending(x => x.cars).ToList();
-    var byStatus = reqs.GroupBy(r => r.ConfirmStatus).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    // #199: nhóm theo CẶP hai phía duyệt — đúng mô hình nguồn (biên bản có HAI trục độc lập).
+    var byStatus = reqs.GroupBy(r => r.FDlvMnStatus + "/" + r.TDlvMnStatus)
+        .Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
     var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.DlvMinutesNo, r.TransporterCode, r.DealerCode, r.ConfirmStatus,
+        r.DlvMinutesNo, r.TransporterCode, r.DealerCode, r.FDlvMnStatus, r.TDlvMnStatus,   // #199 trục thật
         cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0,
         confirmDate = r.ConfirmDate.HasValue ? r.ConfirmDate.Value.ToString("yyyy-MM-dd") : "",
         createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
     }).ToList();
-    return Results.Ok(new { total = reqs.Count, totalCars = cars.Count, confirmed = reqs.Count(r => r.ConfirmStatus == "Confirmed"), byTransporter, byDealer, byStatus, detail });
+    return Results.Ok(new { total = reqs.Count, totalCars = cars.Count,
+        confirmed = reqs.Count(r => r.FDlvMnStatus == "A"),   // #199 trục thật
+        confirmedBothSides = reqs.Count(r => r.FDlvMnStatus == "A" && r.TDlvMnStatus == "A"),
+        byTransporter, byDealer, byStatus, detail });
 }).RequireAuthorization();
 
 // ===== Báo cáo yêu cầu QC/giao hồ sơ xe (port 1:1 báo cáo QcDocReq) — tái dùng QcDocReq + QcDocReqCar =====

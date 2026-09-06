@@ -10952,7 +10952,14 @@ public sealed class TranspDlvConfirm
     public string DlvMinutesNo { get; set; } = "";
     public string TransporterCode { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public string ConfirmStatus { get; set; } = "Pending";   // Pending -> Confirmed (phía nhà vận chuyển)
+    /// <summary>
+    /// ⚠️ #199 KHÔNG CÓ Ở NGUỒN. Bảng nguồn `Sto_DlvMinutes` **không có cột nào tên `ConfirmStatus`**
+    /// (đã grep toàn `TERP.BizHTC`), và hệ nhà vận chuyển `TERP.WSTransp` **không có lệnh ghi nào** cho
+    /// biên bản giao nhận — màn gốc `TERP.TranspClient/Views/Transp/FrmMngDlvMinutes.cs` CHỈ ĐỌC
+    /// (đúng ba nút: Export · Search · Close). Trục xác nhận THẬT là `FDlvMnStatus`/`TDlvMnStatus` (P/A/R).
+    /// Giữ cột để không phá dữ liệu đã ghi, nhưng KHÔNG endpoint nào còn ghi vào nó nữa.
+    /// </summary>
+    public string ConfirmStatus { get; set; } = "Pending";
     public string Remark { get; set; } = "";
     public DateTime? ConfirmDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
