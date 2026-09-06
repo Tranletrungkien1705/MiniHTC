@@ -5050,8 +5050,28 @@ public sealed class OrderPart
 
     public string? TSTID { get; set; }
     public DateTime? SupplierLUDTime { get; set; }
-    public decimal? TotalValOrderAfterVAT { get; set; }  // tổng tiền sau VAT
-    public decimal? ValDiscount { get; set; }            // tiền chiết khấu
+    // ===== 🔴 #236 BA CỘT TỔNG THẬT — đã đối chiếu biz, SỬA suy luận sai ở #235 =====
+    // Nguồn `BizCarSv.A.02.OrderPart.cs:1050-1074` (md5 72e6623f, 5014 dòng — khớp 2 máy) gom từ dòng
+    // rồi `update Ser_Order_Part` **ĐÚNG BA cột**:
+    //     TotalValOrderBeforeDc = Sum(TPBeforeDc)
+    //     TotalValOrderAfterDc  = Sum(TPAfterDc)
+    //     TotalValOrderAfterVAT = Sum(TPAfterVAT)
+    // ⚠️ POCO client `Entities/TST/Ser_Order_Part.cs` **CHỈ khai 1 trong 3** (`TotalValOrderAfterVAT`)
+    //    ⇒ POCO cũng THIẾU CỘT, không phải danh sách đầy đủ của bảng.
+    public decimal? TotalValOrderBeforeDc { get; set; }  // Sum(TPBeforeDc) — tổng trước chiết khấu
+    public decimal? TotalValOrderAfterDc { get; set; }   // Sum(TPAfterDc)  — tổng sau chiết khấu
+    public decimal? TotalValOrderAfterVAT { get; set; }  // Sum(TPAfterVAT) — tổng sau VAT
+
+    /// <summary>
+    /// 🔴 `ValDiscount` — TÊN GÂY NHẦM của nguồn. #235 tôi đoán nó là "tổng tiền chiết khấu của đơn"
+    /// và tính `Sum(TPBeforeDc − TPAfterDc)` — **SAI**. Đối chiếu biz:
+    /// `Ser_Order_PartDtl_Create(... object objValDiscount ...)` ghi thẳng vào
+    /// `dt_OrderPart_Detail.Rows[0]["DiscountRate"]` (BizCarSv.A.02.OrderPart.cs:4913)
+    /// ⇒ `ValDiscount` chỉ là **tên tham số** của `DiscountRate` **CỦA DÒNG**, KHÔNG phải cột tổng đầu đơn.
+    /// Nguồn **không có** cột tổng chiết khấu ở đầu đơn (muốn biết thì lấy
+    /// `TotalValOrderBeforeDc − TotalValOrderAfterDc`). Giữ cột vì POCO có khai, nhưng **không tự tính**.
+    /// </summary>
+    public decimal? ValDiscount { get; set; }
 
     // --- vết ghi/duyệt ---
     public string? CreateBy { get; set; }

@@ -28483,13 +28483,22 @@ static void RecalcOrderPartLine(OrderPartLine l)
     l.TPAfterVAT = l.TPAfterDc.Value + l.ValVAT.Value;
 }
 
-// Tổng của ĐẦU ĐƠN từ các dòng. ⚠️ Nguồn có sẵn hai cột `TotalValOrderAfterVAT` / `ValDiscount` nhưng tôi
-//   KHÔNG tìm thấy chỗ tính chúng trong vùng đã đọc ⇒ đây là SUY LUẬN theo tên cột + công thức dòng,
-//   đã ghi vào manifest là nợ cần đối chiếu.
+// ===== 🔴 #236 SỬA SUY LUẬN SAI CỦA #235 — tổng đầu đơn =====
+// #235 tôi đoán `ValDiscount` = tổng tiền chiết khấu và tính `Sum(TPBeforeDc − TPAfterDc)`. **SAI.**
+// Đối chiếu biz `BizCarSv.A.02.OrderPart.cs` (md5 72e6623f, 5014 dòng — khớp 2 máy):
+//  • :1050-1074 gom từ dòng rồi `update Ser_Order_Part` **ĐÚNG BA cột**:
+//      `TotalValOrderBeforeDc = Sum(TPBeforeDc)` · `TotalValOrderAfterDc = Sum(TPAfterDc)`
+//      · `TotalValOrderAfterVAT = Sum(TPAfterVAT)`
+//  • :4891/:4913 — tham số `objValDiscount` của `Ser_Order_PartDtl_Create` được ghi vào cột
+//      `DiscountRate` **CỦA DÒNG** ⇒ `ValDiscount` chỉ là TÊN THAM SỐ, không phải tổng của đầu đơn.
+// ⇒ Bỏ hẳn phép tính `ValDiscount`; bổ sung 2 cột tổng thật. Muốn biết tiền chiết khấu của đơn thì lấy
+//   hiệu `TotalValOrderBeforeDc − TotalValOrderAfterDc` (bản port trả sẵn ở GET, KHÔNG lưu thành cột).
 static void RecalcOrderPartTotals(OrderPart o, List<OrderPartLine> lines)
 {
+    o.TotalValOrderBeforeDc = lines.Sum(x => x.TPBeforeDc ?? 0m);
+    o.TotalValOrderAfterDc = lines.Sum(x => x.TPAfterDc ?? 0m);
     o.TotalValOrderAfterVAT = lines.Sum(x => x.TPAfterVAT ?? 0m);
-    o.ValDiscount = lines.Sum(x => (x.TPBeforeDc ?? 0m) - (x.TPAfterDc ?? 0m));
+    // ⚠️ KHÔNG gán o.ValDiscount ở đây — xem chú thích lớp OrderPart.
 }
 
 // ===== 🔴 #234 ĐƠN ĐẶT PHỤ TÙNG — parity `Ser_Order_Part` (DMSCarSv/TST) =====
@@ -28551,7 +28560,7 @@ app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? 
         o.EstimatedDeliverDate, o.VIN, o.Remark,
         o.RequestSuppierDate, o.ResponseSuppierDate, o.OrderSuppierNo,
         o.SupplierStatus, o.OrderPartType, o.TSTID, o.SupplierLUDTime,
-        o.TotalValOrderAfterVAT, o.ValDiscount,
+        o.TotalValOrderBeforeDc, o.TotalValOrderAfterDc, o.TotalValOrderAfterVAT, o.ValDiscount,
         o.CreateBy, o.ApprBy, o.FinishBy, o.LogLUDateTime, o.LogLUBy,
         lines = db.OrderPartLines.Count(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id),
         total = db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).Sum(l => (decimal?)(l.OrderQty * l.Price)) ?? 0
@@ -28625,7 +28634,10 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
                             total = lines.Sum(x => x.lineTotal),
                             // #235: tổng THẬT của nguồn là tiền sau VAT, tính từ SL DUYỆT.
                             totalAfterVAT = lines.Sum(x => x.TPAfterVAT ?? 0m),
-                            o.TotalValOrderAfterVAT, o.ValDiscount });
+                            o.TotalValOrderBeforeDc, o.TotalValOrderAfterDc, o.TotalValOrderAfterVAT,
+                            // Tiền chiết khấu của đơn = HIỆU hai cột tổng — nguồn KHÔNG lưu thành cột riêng.
+                            valDiscountOfOrder = (o.TotalValOrderBeforeDc ?? 0m) - (o.TotalValOrderAfterDc ?? 0m),
+                            o.ValDiscount });
 }).RequireAuthorization();
 
 // Gửi NCC (approve) / Hoàn thành (finish) / TỪ CHỐI (reject) — nguồn TConst.OrderPartStatus: P → A → F, và R.

@@ -845,6 +845,11 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #236 parity Ser_Order_Part: 2 cot tong THAT ma POCO client khong khai
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"TotalValOrderBeforeDc\" numeric",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"TotalValOrderAfterDc\" numeric",
+        // #236 xoa gia tri ValDiscount do #235 tinh SAI (no khong phai tong chiet khau dau don)
+        "UPDATE public.\"OrderParts\" SET \"ValDiscount\" = NULL",
         // #235 parity Ser_Order_PartDtl: 17 cot thieu (khoi gia + SL duyet + vet ghi)
         "ALTER TABLE public.\"OrderPartLines\" ADD COLUMN IF NOT EXISTS \"PartID\" text",
         "ALTER TABLE public.\"OrderPartLines\" ADD COLUMN IF NOT EXISTS \"Unit\" text",
