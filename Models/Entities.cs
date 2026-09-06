@@ -13370,6 +13370,27 @@ public sealed class SupplierPartOrder
     /// <summary>CUSCHARGES — đơn vị chịu phí (nguồn ghi chú "Đơn vị chịu phí Issue").</summary>
     public string? CusCharges { get; set; }
 
+    /// <summary>
+    /// 🔴 #298 ISACTIVE — **cờ XOÁ MỀM**, port #287 THIẾU HẲN.
+    /// `Ser_Part_OrderCreate` ghi thẳng `= Constants.Flag.Active` (`PartOrder.cs:944`), và hàm LIVE
+    /// `Ser_Part_OrderGet` lọc `and si.IsActive = '1'` ở **BA** chỗ (temp-table lọc, `#tblTemp`, và bản
+    /// `_StatusList`). Thiếu cột này ⇒ danh sách trả về **CẢ đơn đã xoá**.
+    /// ⚠️ `IsActive` **KHÁC** `Status`: `Status` là bước nghiệp vụ (1/CONF/2/3), `IsActive` là còn/đã xoá.
+    /// Nguồn giữ CẢ HAI trên cùng bảng (luật `C0-quingentesimusquartus`).
+    /// </summary>
+    public string FlagActive { get; set; } = "1";
+
+    // 🔴 #298 `TblSer_Part_Order.NewStatus` là **HẰNG CHẾT** — KHÔNG port thành cột.
+    //   Chứng minh bằng cấu trúc, không phải phỏng đoán: mọi câu SELECT sinh ra nó đều viết
+    //   `select si.* ... case ... end as NewStatus`. Nếu bảng THẬT có cột `NewStatus` thì `si.*` đã trả
+    //   nó rồi ⇒ alias trùng tên, DataTable dựng lên sẽ vỡ. Vậy nó **chỉ là nhãn tính lúc đọc**.
+    //   ⚠️ Và nhãn đó **KHÔNG THỐNG NHẤT** — ba bảng mã khác nhau cho CÙNG cột `Status`:
+    //     (a) sau khi TẠO (`PartOrder.cs:958`):  1=Mới tạo · 2=**Đã gửi** · 3=**Đã duyệt**
+    //     (b) `_StatusList01` (CHẾT, :2286):     CREA/CONF/REJ/FINS/CANC
+    //     (c) LIVE `_StatusList` (:2612):        1=Mới tạo · CONF=Xác nhận · 2=**Hàng đang về** · 3=**Hoàn thành**
+    //   (a) và (c) **mâu thuẫn**: cùng mã '2'/'3' mà nghĩa khác hẳn. #287 đã lấy (c) — giữ nguyên vì đó là
+    //   bảng LIVE của màn danh sách; ghi lại (a) để ai đọc log sau khi TẠO không tưởng là port sai.
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -13386,9 +13407,50 @@ public sealed class SupplierPartOrderLine
     /// <summary>🔴 SL ĐÃ GIAO — cùng với <see cref="Quantity"/> **SINH RA** trạng thái giao hàng,
     /// xem chú thích ở endpoint (trạng thái đó KHÔNG lưu thành cột).</summary>
     public decimal DeliveryQuantity { get; set; }
+    /// <summary>⚠️ `Price`/`Amount` **KHÔNG có trong `Ser_Part_OrderDetail`** — là phát minh của port cũ.
+    /// Tiền thật của nguồn tính từ `Cost` + `VAT` (xem dưới). Giữ hai cột này để không vỡ client cũ.</summary>
     public decimal Price { get; set; }
     public decimal Amount { get; set; }
     public string? Note { get; set; }
+
+    // ===== 🔴 #298 CỘT THẬT CỦA `Ser_Part_OrderDetail` MÀ PORT #287 THIẾU =====
+    // ⚠️ Nguồn cột KHÔNG lấy được từ `TblSer_Part_OrderDetail` (DbDefine): lớp hằng đó **THIẾU 6 tên**
+    //   (`MIP`/`OO`/`BO`/`OH`/`SOQ`/`ICC`) mà `Ser_Part_OrderDetailCreate` (`PartOrder.cs:664-720`) ghi thật.
+    //   ⇒ **DbDefine KHÔNG phải danh sách cột đầy đủ** — phải đối chiếu hàm Create, y như bài học POCO ở #236.
+
+    /// <summary>PARTID — khoá kỹ thuật của phụ tùng; nguồn join `Ser_Mst_Part` **theo PartID**,
+    /// không theo `PartCode` (PartCode chỉ là cột enrich `p.PartCode`).</summary>
+    public string? PartID { get; set; }
+
+    public decimal? Factor { get; set; }        // hệ số
+    public decimal? Cost { get; set; }          // 🔴 ĐƠN GIÁ THẬT dùng để tính tiền (KHÔNG phải Price)
+    public decimal? VAT { get; set; }           // % VAT
+
+    /// <summary>🔴 DISCOUNT — nguồn **ghi cột này nhưng KHÔNG dùng nó ở bất kỳ công thức tiền nào**:
+    /// `BeforeTax = Cost*Quantity` · `AfterTax = Cost*Quantity*(100+VAT)/100` · `Amount = Sum(AfterTax)`.
+    /// Chiết khấu **không được trừ**. Đây là hành vi của nguồn, không phải thiếu sót của port.</summary>
+    public decimal? Discount { get; set; }
+
+    public string? Model { get; set; }
+    public string? HTCConfirm { get; set; }
+    public DateTime? LastDateDelivery { get; set; }   // lần giao gần nhất
+
+    // --- 6 mã KẾ HOẠCH PHỤ TÙNG, chỉ có trong hàm Create (DbDefine không khai) ---
+    public decimal? MIP { get; set; }
+    public decimal? OO { get; set; }
+    public decimal? BO { get; set; }
+    public decimal? OH { get; set; }
+    public decimal? SOQ { get; set; }
+    public decimal? ICC { get; set; }
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    // 🔴 #298 HAI HẰNG CHẾT nữa trong `TblSer_Part_OrderDetail` — KHÔNG port thành cột:
+    //   `PendingDeliveryQty` : nguồn TÍNH lúc đọc (:2044) — `DeliveryQuantity is null` ⇒ lấy trọn `Quantity`;
+
+    //                          `Quantity-DeliveryQuantity <= 0` ⇒ 0; còn lại ⇒ hiệu. (Kẹp sàn 0, không âm.)
+    //   `OrderQuantity`      : mọi chỗ đọc đều viết `0 OrderQuantity` (hằng số 0, :3433) ⇒ chưa từng dùng.
 }
 
 /// <summary>

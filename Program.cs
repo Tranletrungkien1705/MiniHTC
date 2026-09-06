@@ -19774,9 +19774,12 @@ app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
 })).RequireAuthorization();
 
 app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
-    string? status, string? dealer, string? supplier, string? orderNo) =>
+    string? status, string? dealer, string? supplier, string? orderNo, string? includeDeleted) =>
 {
+    // 🔴 #298 XOÁ MỀM: hàm LIVE `Ser_Part_OrderGet` lọc `si.IsActive = '1'` ở BA chỗ. Port cũ trả cả đơn
+    //   đã xoá. `includeDeleted=1` để soi dữ liệu, mặc định theo nguồn.
     var qy = db.SupplierPartOrders.Where(x => x.OrgId == t.OrgId);
+    if (includeDeleted != "1") qy = qy.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(supplier)) qy = qy.Where(x => x.SupplierID == supplier);
@@ -19792,6 +19795,11 @@ app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
         var ls = byOrder.TryGetValue(h.Id, out var v) ? v : new List<SupplierPartOrderLine>();
         decimal sumQty = ls.Sum(l => l.Quantity);
         decimal sumDlv = ls.Sum(l => l.DeliveryQuantity);
+        // 🔴 #298 TIỀN THẬT của nguồn (`#tbl_Amount`, PartOrder.cs:2018-2037) — tính từ `Cost` và `VAT`,
+        //   **KHÔNG** từ cột `Price`/`Amount` mà port cũ tự đặt ra, và **KHÔNG trừ `Discount`**:
+        //     BeforeTax = Cost × Quantity   ·   AfterTax = Cost × Quantity × (100 + VAT) / 100
+        decimal beforeTax = ls.Sum(l => (l.Cost ?? 0m) * l.Quantity);
+        decimal afterTax = ls.Sum(l => (l.Cost ?? 0m) * l.Quantity * (100m + (l.VAT ?? 0m)) / 100m);
         // Đúng thứ tự nhánh của nguồn: <=0 hoặc rỗng trước, rồi < , rồi >=.
         var deliveryStatus = sumDlv <= 0 ? "Mới tạo" : (sumDlv < sumQty ? "Hàng đang về" : "Hoàn thành");
         return new
@@ -19801,13 +19809,56 @@ app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
             statusName = h.Status is not null && supplierPartOrderStatusNames.TryGetValue(h.Status, out var sn) ? sn : null,
             h.SendDate, h.ReceivePartDate, h.UserCreate, h.UserApproved, h.ApprovedDate,
             h.TypeOrder, h.HTCConfirm, h.PartialShipment, h.TypeTransport, h.VIN, h.ConfirmNo, h.CusCharges,
+            h.FlagActive,
             lineCount = ls.Count, sumQuantity = sumQty, sumDeliveryQuantity = sumDlv,
+            beforeTax, afterTax, amount = afterTax,
             deliveryStatus,
+            // #298 PendingDeliveryQty là cột TÍNH, không lưu — kẹp sàn 0 đúng nguồn.
+            pendingDeliveryQty = ls.Sum(l => Math.Max(0m, l.Quantity - l.DeliveryQuantity)),
         };
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #298 XOÁ MỀM đơn đặt phụ tùng NCC — nguồn không xoá vật lý, chỉ hạ `IsActive`.
+app.MapDelete("/api/supplierpartorders/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var code = no.Trim();
+    var h = await db.SupplierPartOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == code);
+    if (h is null) return Results.NotFound(new { orderNo = code });
+    h.FlagActive = "0";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.OrderNo, deleted = true, note = "Xoá mềm (IsActive=0) — bản ghi vẫn còn trong DB." });
+}).RequireAuthorization();
+
+// #298 Đọc DÒNG của một đơn, kèm hai cột TÍNH của nguồn (BeforeTax/AfterTax/PendingDeliveryQty).
+app.MapGet("/api/supplierpartorders/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var code = no.Trim();
+    var h = await db.SupplierPartOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == code);
+    if (h is null) return Results.NotFound(new { orderNo = code });
+    var ls = await db.SupplierPartOrderLines.Where(l => l.OrgId == t.OrgId && l.SupplierPartOrderId == h.Id).ToListAsync();
+    var items = ls.Select(l => new
+    {
+        l.PartCode, l.PartName, l.PartID, l.Quantity, l.DeliveryQuantity,
+        l.Cost, l.VAT, l.Discount, l.Factor, l.Model, l.HTCConfirm, l.LastDateDelivery,
+        l.MIP, l.OO, l.BO, l.OH, l.SOQ, l.ICC, l.Note,
+        beforeTax = (l.Cost ?? 0m) * l.Quantity,
+        afterTax = (l.Cost ?? 0m) * l.Quantity * (100m + (l.VAT ?? 0m)) / 100m,
+        pendingDeliveryQty = Math.Max(0m, l.Quantity - l.DeliveryQuantity),
+    }).ToList();
+    return Results.Ok(new { h.OrderNo, h.Status, h.FlagActive, count = items.Count, items });
+}).RequireAuthorization();
+
+// ⚠️ #298 KHÁC BIỆT CÓ CHỦ ĐÍCH so với nguồn, khai báo rõ để không ai tưởng port sót:
+//  (1) Nguồn `Ser_Part_OrderGet` dùng **INNER JOIN Sys_user ON si.LogLUBy = suser.UserCode AND dealercode**
+//      ⇒ đơn nào có `LogLUBy` rỗng, hoặc người sửa cuối đã bị xoá/đổi đại lý, **BIẾN MẤT khỏi danh sách**.
+//      Cùng lý do với `INNER JOIN Ser_MST_Supplier`. Tác giả **không giải thích** chủ đích ⇒ theo lệ đã
+//      chốt ở #272/#275, KHÔNG bắt chước mất-dữ-liệu-câm; ở đây vẫn trả đơn.
+//      (Chú ý: bản `_StatusList` đã **comment mất** đúng join Sys_user đó ⇒ hai hàm LIVE cùng màn cho ra
+//       số dòng khác nhau — thêm một bằng chứng join này là tai nạn, không phải luật.)
+//  (2) Bộ lọc ngày: `Ser_Part_OrderGet` lọc theo **CreateDate**, còn `_StatusList` lọc theo **SendDate**
+//      với CÙNG tham số `@FromDate/@ToDate`. Endpoint này chưa mở lọc ngày; khi mở phải chọn CỘT rõ ràng.
 app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
@@ -19837,6 +19888,12 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
             PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
             Quantity = l.Quantity, DeliveryQuantity = l.DeliveryQuantity,
             Price = l.Price, Amount = l.Amount, Note = l.Note,
+            // #298 §12: khối cột THẬT của `Ser_Part_OrderDetail` (nguồn chỉ ghi khi tham số KHÁC RỖNG
+            //   — ở đây `null` vào cột `null` nên tương đương).
+            PartID = l.PartID, Factor = l.Factor, Cost = l.Cost, VAT = l.VAT, Discount = l.Discount,
+            Model = l.Model, HTCConfirm = l.HTCConfirm, LastDateDelivery = l.LastDateDelivery,
+            MIP = l.MIP, OO = l.OO, BO = l.BO, OH = l.OH, SOQ = l.SOQ, ICC = l.ICC,
+            LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCreate,
         });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.OrderNo, h.Status, lines = lines.Count });
@@ -35693,7 +35750,13 @@ record EmailConfigSendAutoDto(string? DealerCode = null, string? AutoTime = null
     string? SendMode = null, string? IsActive = null, string? TypeEmail = null,
     DateTime? ConfigDate = null, string? AutoDate = null, string? AutoDay = null);
 record SupplierPartOrderLineDto(string PartCode, string? PartName, decimal Quantity, decimal DeliveryQuantity,
-    decimal Price, decimal Amount, string? Note);
+    decimal Price, decimal Amount, string? Note,
+    // #298: cột THẬT của `Ser_Part_OrderDetail`. `Cost`+`VAT` mới là thứ sinh ra tiền, không phải `Price`.
+    string? PartID = null, decimal? Factor = null, decimal? Cost = null, decimal? VAT = null,
+    decimal? Discount = null, string? Model = null, string? HTCConfirm = null,
+    DateTime? LastDateDelivery = null,
+    decimal? MIP = null, decimal? OO = null, decimal? BO = null,
+    decimal? OH = null, decimal? SOQ = null, decimal? ICC = null);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 // #261: 12 cột của `TblSerMSTPart` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note,
