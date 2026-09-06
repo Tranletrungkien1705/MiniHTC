@@ -45,6 +45,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MrkCampaignDL> MrkCampaignDLs => Set<MrkCampaignDL>();
     public DbSet<SeqCounter> SeqCounters => Set<SeqCounter>();
     public DbSet<MstBank> MstBanks => Set<MstBank>();
+    public DbSet<SysUser> SysUsers => Set<SysUser>();
+    public DbSet<SysGroup> SysGroups => Set<SysGroup>();
     public DbSet<VatTcgInvoice> VatTcgInvoices => Set<VatTcgInvoice>();
     public DbSet<VatTcgInvoiceDetail> VatTcgInvoiceDetails => Set<VatTcgInvoiceDetail>();
     public DbSet<MstDistrict> MstDistricts => Set<MstDistrict>();

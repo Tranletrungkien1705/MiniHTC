@@ -4428,6 +4428,131 @@ app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto,
     return Results.Ok(new { deleted = $"{code}/{vin}" });
 }).RequireAuthorization();
 
+// ===== Người dùng / nhóm hệ thống (Sys_User, Sys_Group — port 1:1 `SysSaveUser`(16095) /
+// `SysResetUserPassword`(15970) / `CommonChangeUserPassword`(30) / `SysSaveGroup`(16285),
+// 2010.HTC Biz.HTC.WH.cs). TWIN: cả WS 32-bit lẫn 64-bit CÙNG bản `_New20181119`. =====
+// 🔴 Luật `PasswordTemplate` = "********" (`TConst.HTCConst`, Const.Main.cs:321): mật khẩu gửi lên
+//    ĐÚNG BẰNG chuỗi mẫu ⇒ nguồn LOẠI cột UserPassword khỏi danh sách ghi, tức KHÔNG đổi mật khẩu.
+//    Port giữ nguyên: form che mật khẩu vẫn lưu được các trường khác.
+// 🔴 KHÁC BIỆT CÓ CHỦ ĐÍCH (C0-bug9): nguồn lưu mật khẩu PLAINTEXT và so sánh trực tiếp
+//    (`StringEqual(strPasswordOld, Rows[0]["UserPassword"])`). MiniHTC lưu **SHA-256**.
+string PasswordTemplate = "********"; // TConst.HTCConst.PasswordTemplate
+static string HashPwd(string raw) =>
+    Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw)));
+
+app.MapGet("/api/sysusers", async (AppDbContext db, ITenantContext t, string? userCode, string? dealerCode, string? flagActive) =>
+{
+    var qy = db.SysUsers.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(userCode)) qy = qy.Where(x => x.UserCode == userCode);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    // KHÔNG trả cột mật khẩu ra ngoài, kể cả dạng hash.
+    var items = await qy.OrderBy(x => x.UserCode).Select(x => new
+    {
+        x.UserCode, x.UserName, x.PartnerCode, x.DealerCode, x.BankCode,
+        x.TransporterCode, x.InsCompanyCode, x.FlagSysAdmin, x.FlagSysViewer, x.FlagActive,
+        HasPassword = x.UserPasswordHash != null,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sysusers/save", async (SysUserSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.UserCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã người dùng rỗng." });
+    var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
+    var isNew = row is null;
+    if (isNew)
+    {
+        row = new SysUser { OrgId = t.OrgId, UserCode = code };
+        db.SysUsers.Add(row);
+    }
+    row!.UserName = dto.UserName;
+    row.PartnerCode = dto.PartnerCode;
+    row.DealerCode = dto.DealerCode;
+    row.BankCode = dto.BankCode;
+    row.TransporterCode = dto.TransporterCode;
+    row.InsCompanyCode = dto.InsCompanyCode;
+    row.FlagSysAdmin = dto.FlagSysAdmin;
+    row.FlagSysViewer = dto.FlagSysViewer;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    // 🔴 Luật PasswordTemplate: đúng bằng chuỗi mẫu ⇒ GIỮ NGUYÊN mật khẩu cũ.
+    var pwd = dto.UserPassword;
+    if (!string.IsNullOrEmpty(pwd) && pwd != PasswordTemplate) row.UserPasswordHash = HashPwd(pwd);
+    else if (isNew && string.IsNullOrEmpty(pwd))
+        return Results.BadRequest(new { error = "Người dùng mới phải có mật khẩu." });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.UserCode, created = isNew, passwordChanged = !string.IsNullOrEmpty(pwd) && pwd != PasswordTemplate });
+}).RequireAuthorization();
+
+// Xoá người dùng — nguồn xử lý nhánh `DataRowState.Deleted` bằng `SaveData(dtDeleted)`, tức XOÁ THẬT.
+app.MapPost("/api/sysusers/delete", async (SysUserKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.UserCode ?? "").Trim();
+    var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có người dùng {code}." });
+    db.SysUsers.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
+// Đặt lại mật khẩu (nguồn `SysResetUserPassword`) — quản trị đặt mật khẩu mới cho người khác.
+app.MapPost("/api/sysusers/reset-password", async (SysUserResetPwdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.UserCode ?? "").Trim();
+    var pwd = dto.PasswordReset ?? "";
+    if (pwd.Length < 1) return Results.BadRequest(new { error = "Mật khẩu mới rỗng." });
+    var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có người dùng {code}." });
+    row.UserPasswordHash = HashPwd(pwd);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.UserCode, reset = true });
+}).RequireAuthorization();
+
+// Tự đổi mật khẩu (nguồn `CommonChangeUserPassword`): phải khớp mật khẩu CŨ mới cho đổi.
+app.MapPost("/api/sysusers/change-password", async (SysUserChangePwdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.UserCode ?? "").Trim();
+    var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có người dùng {code}." });
+    // Nguồn: `if (!StringEqual(strPasswordOld, Rows[0]["UserPassword"])) throw` — so plaintext.
+    // Ở đây so HASH, cùng ngữ nghĩa "phải đúng mật khẩu cũ".
+    if (row.UserPasswordHash != HashPwd(dto.PasswordOld ?? ""))
+        return Results.BadRequest(new { error = "Mật khẩu cũ không đúng." });
+    var pwdNew = dto.PasswordNew ?? "";
+    if (pwdNew.Length < 1) return Results.BadRequest(new { error = "Mật khẩu mới rỗng." });
+    row.UserPasswordHash = HashPwd(pwdNew);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.UserCode, changed = true });
+}).RequireAuthorization();
+
+app.MapGet("/api/sysgroups", async (AppDbContext db, ITenantContext t, string? groupCode, string? flagActive) =>
+{
+    var qy = db.SysGroups.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.GroupCode).Select(x => new
+    { x.GroupCode, x.GroupName, x.PartnerCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 Nguồn lưu nhóm bằng `SaveData("Sys_Group", dt)` KHÔNG truyền alColumnEffective ⇒ ghi TOÀN BỘ cột.
+app.MapPost("/api/sysgroups/save", async (SysGroupSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.GroupCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã nhóm rỗng." });
+    var row = await db.SysGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new SysGroup { OrgId = t.OrgId, GroupCode = code }; db.SysGroups.Add(row); }
+    row!.GroupName = dto.GroupName;
+    row.PartnerCode = dto.PartnerCode;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.GroupCode, created = isNew });
+}).RequireAuthorization();
+
 // ===== Ba master còn nợ: Mst_Bank · Mst_District · Mst_DealerSalesType =====
 // Nguồn: `Mst_Bank_CheckDB` (Biz.HTC.WH.cs:355) · tra `Mst_District` (Biz.HTC.WH.hkt.cs:9076) ·
 // `Mst_DealerSalesType_CheckDB` (BizHTC.DealerSales.cs:138).
@@ -24104,6 +24229,12 @@ record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPost
 record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive);
 record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive);
 record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
+// Người dùng/nhóm hệ thống. `UserPassword` gửi đúng chuỗi mẫu "********" nghĩa là GIỮ NGUYÊN mật khẩu cũ.
+record SysUserSaveDto(string? UserCode, string? UserName, string? UserPassword, string? PartnerCode, string? DealerCode, string? BankCode, string? TransporterCode, string? InsCompanyCode, string? FlagSysAdmin, string? FlagSysViewer, string? FlagActive);
+record SysUserKeyDto(string? UserCode);
+record SysUserResetPwdDto(string? UserCode, string? PasswordReset);
+record SysUserChangePwdDto(string? UserCode, string? PasswordOld, string? PasswordNew);
+record SysGroupSaveDto(string? GroupCode, string? GroupName, string? PartnerCode, string? FlagActive);
 // Hoá đơn TCG: khoá dòng = cặp (TCGInvoiceCode, VIN). TInvoicePrice nguồn luôn ghi 0 nên không nhận từ client.
 record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);

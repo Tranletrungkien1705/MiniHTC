@@ -4656,6 +4656,62 @@ public sealed class VatTcgInvoiceDetail
 }
 
 /// <summary>
+/// NGƯỜI DÙNG hệ thống (`Sys_User` — port 1:1 `SysSaveUser_New20181119` /
+/// `SysResetUserPassword_New20181119` / `CommonChangeUserPassword_New20181119`,
+/// 2010.HTC `TERP.BizHTC/DataWH/Biz.HTC.WH.cs` dòng 16095 / 15970 / 30).
+/// TWIN: **cả WS 32-bit lẫn 64-bit gọi CÙNG bản** `_New20181119` (không lệch như cụm TCG #118).
+/// 🔴 Luật `PasswordTemplate`: nếu giá trị mật khẩu gửi lên **đúng bằng chuỗi mẫu `"********"`**
+/// (`TConst.HTCConst.PasswordTemplate`, `Const.Main.cs:321`) thì nguồn **LOẠI cột `UserPassword`
+/// khỏi danh sách ghi** (`alEffColForNotChangePw.Remove("UserPassword")`) — tức **KHÔNG đổi mật khẩu**.
+/// Đây là cách form che mật khẩu mà vẫn lưu được các trường khác; port giữ nguyên hành vi này.
+/// 🔴 Một lệnh lưu xử lý **BA nhóm thay đổi cùng lúc** theo `DataRowState`: `Deleted` (xoá thật),
+/// `Modified` (tách tiếp thành đổi/không đổi mật khẩu), `Added`.
+/// ⚠️ **KHÁC BIỆT CÓ CHỦ ĐÍCH VỀ AN NINH** — xem `### C0-bug9`: nguồn lưu mật khẩu **PLAINTEXT}
+/// và so sánh trực tiếp (`StringEqual(strPasswordOld, Rows[0]["UserPassword"])`, dòng 90).
+/// MiniHTC **KHÔNG nhân bản lỗ hổng đó**: cột này lưu **SHA-256 của mật khẩu**, đặt tên
+/// `UserPasswordHash` cho rõ nghĩa. Mọi luật nghiệp vụ khác giữ nguyên 1:1.
+/// </summary>
+public sealed class SysUser
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string UserCode { get; set; } = "";
+    public string? UserName { get; set; }
+    /// <summary>🔴 SHA-256, KHÔNG phải plaintext như nguồn (xem C0-bug9).</summary>
+    public string? UserPasswordHash { get; set; }
+    public string? PartnerCode { get; set; }
+    public string? DealerCode { get; set; }
+    public string? BankCode { get; set; }
+    public string? TransporterCode { get; set; }
+    public string? InsCompanyCode { get; set; }
+    /// <summary>Quyền quản trị hệ thống ("1"/"0").</summary>
+    public string? FlagSysAdmin { get; set; }
+    /// <summary>Quyền CHỈ XEM ("1"/"0") — tách riêng khỏi FlagSysAdmin.</summary>
+    public string? FlagSysViewer { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>
+/// NHÓM người dùng (`Sys_Group` — port 1:1 `SysSaveGroup_New20181119`,
+/// 2010.HTC `Biz.HTC.WH.cs:16285`). TWIN: cả 32-bit lẫn 64-bit cùng bản.
+/// 🔴 Nguồn lưu nhóm bằng `SaveData("Sys_Group", dt)` **KHÔNG truyền `alColumnEffective`** —
+/// tức ghi TOÀN BỘ cột của dòng, khác hẳn cách lưu `Sys_User` (có lọc cột). Đó là chủ đích.
+/// Việc gán người dùng vào nhóm và gán quyền nằm ở các bảng map riêng
+/// (`SysSaveMapSysGroupSysUser`, `SysSaveMapSysGroupSysObject`) — **chưa port**, ghi nợ.
+/// </summary>
+public sealed class SysGroup
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupCode { get; set; } = "";
+    public string? GroupName { get; set; }
+    public string? PartnerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Master NGÂN HÀNG (`Mst_Bank` — nguồn `Mst_Bank_CheckDB`, 2010.HTC
 /// `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:355`; khoá là `BankCode`).
 /// 🔴 `BankCodeParent` cho thấy master này có **cấu trúc CHA–CON**: chi nhánh trỏ về ngân hàng mẹ.
