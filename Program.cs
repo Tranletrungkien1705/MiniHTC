@@ -18144,6 +18144,96 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
     return Results.Ok(new { b.SoDeNghi, b.BankCode, b.TransType });
 }).RequireAuthorization();
 
+// ===== #141: CHỐT THÁNG NHÂN SỰ BÁN HÀNG (HR_SalesManOfMonth + Dtl) =====
+// Nguồn: mySql_HR_SalesManOfMonth_ApprAuto() (RptSQLQuery.cs:15105) gọi từ
+// HR_SalesManOfMonth_ApprAuto_New20221026 (DataWH/Biz.HTC.WH.cs:17214).
+// Đây là JOB chụp ảnh dữ liệu, không phải chứng từ ⇒ không có duyệt/huỷ, chỉ có chốt và tra cứu.
+app.MapGet("/api/salesmanofmonth", async (AppDbContext db, ITenantContext t, string? dealer, DateTime? month) =>
+{
+    var q = db.HrSalesManOfMonths.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (month is not null) q = q.Where(x => x.HRMonth == month);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.DealerCode, x.HRMonth, x.QtySMWorking, x.QtySMNoWorking, x.CreatedDateTime, x.CreatedBy,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count,
+        totalWorking = items.Sum(i => i.QtySMWorking), totalNoWorking = items.Sum(i => i.QtySMNoWorking), items });
+}).RequireAuthorization();
+
+app.MapGet("/api/salesmanofmonth/{dealer}/{month}/staff", async (string dealer, DateTime month, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant();
+    var h = await db.HrSalesManOfMonths.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.HRMonth == month);
+    if (h is null) return Results.NotFound(new { dealer, month });
+    var staff = await db.HrSalesManOfMonthDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.HRMonth == month)
+        .OrderBy(x => x.SMCode).Select(x => new {
+            x.SMCode, x.SMName, x.SMGender, x.SMDateOfBirth, x.SMPhoneNo, x.SMEmail, x.SMAddress, x.ProvinceCode,
+            x.QualificationCode, x.SMSpecialized, x.SMYearExperence, x.SMStartDate, x.SMEndDate, x.DepartmentCode,
+            x.SMPosition, x.SMType, x.CertificateCode, x.SMFlagActive, x.WebsiteLink, x.FacebookLink, x.FanpageLink,
+            x.GroupLink, x.ZaloLink, x.SMStatus, x.DaysOfService, x.ListDealerHyundai, x.EffEndCertificate,
+            x.AccountHTA, x.BDHStatus, x.ChallengeStartDate, x.ChallengeEndDate, x.QualityRank, x.SMHyundaiCode,
+            x.IdentityCardNo, x.UpdateStatusBy, x.UpdateStatusDtime, x.ViolateNumber, x.ViolateTypeId,
+            x.ViolateTypeName, x.ViolateDateStart, x.ViolateDateEnd, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.DealerCode, h.HRMonth, h.QtySMWorking, h.QtySMNoWorking,
+        h.CreatedDateTime, h.CreatedBy, h.LogLUDateTime, h.LogLUBy }, count = staff.Count, staff });
+}).RequireAuthorization();
+
+// Chốt 1 đại lý cho 1 tháng.
+// ⚠️ LỆCH NGUỒN CÓ CHỦ Ý: SQL nguồn chỉ `insert…select`, KHÔNG xoá dữ liệu tháng cũ và KHÔNG kiểm
+//    trùng ⇒ chạy job hai lần cùng tháng là **nhân đôi** cả bảng đầu lẫn bảng chi tiết. Ở đây chặn
+//    bằng 409 thay vì âm thầm nhân bản; muốn chốt lại thì DELETE trước (endpoint bên dưới).
+// Hai con số đếm nguồn TỰ TÍNH (đếm nhân viên đang làm / nghỉ trong tháng) — ở đây suy từ chính
+//    danh sách gửi lên theo đúng định nghĩa 20221026: đang làm = SMStatus ∈ {1,2,3}, nghỉ = "0".
+app.MapPost("/api/salesmanofmonth", async (SmOfMonthDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa có mã đại lý." });
+    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.SMCode)).ToList();
+    var dupe = rows.GroupBy(x => x.SMCode.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe is not null) return Results.BadRequest(new { error = $"Nhân viên {dupe.Key} bị trùng trong danh sách." });
+    if (await db.HrSalesManOfMonths.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.HRMonth == dto.HRMonth))
+        return Results.Conflict(new { error = $"Đại lý {dealer} đã chốt tháng này rồi — xoá bản chốt cũ trước khi chốt lại." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.HrSalesManOfMonths.Add(new HrSalesManOfMonth {
+        OrgId = t.OrgId, DealerCode = dealer, HRMonth = dto.HRMonth,
+        QtySMWorking = rows.Count(x => x.SMStatus is "1" or "2" or "3"),
+        QtySMNoWorking = rows.Count(x => x.SMStatus == "0"),
+        CreatedDateTime = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
+    foreach (var r in rows)
+        db.HrSalesManOfMonthDtls.Add(new HrSalesManOfMonthDtl {
+            OrgId = t.OrgId, HRMonth = dto.HRMonth, DealerCode = dealer, SMCode = r.SMCode.Trim().ToUpperInvariant(),
+            SMName = r.SMName, SMGender = r.SMGender, SMDateOfBirth = r.SMDateOfBirth, SMPhoneNo = r.SMPhoneNo,
+            SMEmail = r.SMEmail, SMAddress = r.SMAddress, ProvinceCode = r.ProvinceCode,
+            QualificationCode = r.QualificationCode, SMSpecialized = r.SMSpecialized, SMYearExperence = r.SMYearExperence,
+            SMStartDate = r.SMStartDate, SMEndDate = r.SMEndDate, DepartmentCode = r.DepartmentCode,
+            SMPosition = r.SMPosition, SMType = r.SMType, CertificateCode = r.CertificateCode,
+            SMFlagActive = r.SMFlagActive, WebsiteLink = r.WebsiteLink, FacebookLink = r.FacebookLink,
+            FanpageLink = r.FanpageLink, GroupLink = r.GroupLink, ZaloLink = r.ZaloLink, SMStatus = r.SMStatus,
+            DaysOfService = r.DaysOfService, ListDealerHyundai = r.ListDealerHyundai,
+            EffEndCertificate = r.EffEndCertificate, AccountHTA = r.AccountHTA, BDHStatus = r.BDHStatus,
+            ChallengeStartDate = r.ChallengeStartDate, ChallengeEndDate = r.ChallengeEndDate,
+            QualityRank = r.QualityRank, SMHyundaiCode = r.SMHyundaiCode, IdentityCardNo = r.IdentityCardNo,
+            UpdateStatusBy = r.UpdateStatusBy, UpdateStatusDtime = r.UpdateStatusDtime,
+            ViolateNumber = r.ViolateNumber, ViolateTypeId = r.ViolateTypeId, ViolateTypeName = r.ViolateTypeName,
+            ViolateDateStart = r.ViolateDateStart, ViolateDateEnd = r.ViolateDateEnd, Remark = r.Remark,
+            LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealer, month = dto.HRMonth, staff = rows.Count,
+        working = rows.Count(x => x.SMStatus is "1" or "2" or "3"), noWorking = rows.Count(x => x.SMStatus == "0") });
+}).RequireAuthorization();
+
+app.MapDelete("/api/salesmanofmonth/{dealer}/{month}", async (string dealer, DateTime month, AppDbContext db, ITenantContext t) =>
+{
+    dealer = dealer.Trim().ToUpperInvariant();
+    var h = await db.HrSalesManOfMonths.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.HRMonth == month);
+    if (h is null) return Results.NotFound(new { dealer, month });
+    db.HrSalesManOfMonthDtls.RemoveRange(await db.HrSalesManOfMonthDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.HRMonth == month).ToListAsync());
+    db.HrSalesManOfMonths.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealer, month, deleted = true });
+}).RequireAuthorization();
+
 // ===== #139: 4 HỌ PHIẾU THANH TOÁN DỊCH VỤ THEO XE =====
 // Nguồn: DMS40/0.34.Contract.cs (csproj 125) — Pmt_Payment{GPS,AVN,Storage,PDI}_*.
 // 🔴 Cụm CHỈ có ở WS 64-bit (WS 32-bit không có hàm nào) — ca "chỉ 64-bit" thứ SÁU.
@@ -26699,6 +26789,10 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #141: DTO chốt tháng nhân sự bán hàng ----
+record SmOfMonthDtlDto(string SMCode, string? SMName, string? SMGender, DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode, string? QualificationCode, string? SMSpecialized, decimal SMYearExperence, DateTime? SMStartDate, DateTime? SMEndDate, string? DepartmentCode, string? SMPosition, string? SMType, string? CertificateCode, string? SMFlagActive, string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? SMStatus, decimal DaysOfService, string? ListDealerHyundai, DateTime? EffEndCertificate, string? AccountHTA, string? BDHStatus, DateTime? ChallengeStartDate, DateTime? ChallengeEndDate, string? QualityRank, string? SMHyundaiCode, string? IdentityCardNo, string? UpdateStatusBy, DateTime? UpdateStatusDtime, decimal ViolateNumber, string? ViolateTypeId, string? ViolateTypeName, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? Remark);
+record SmOfMonthDto(string DealerCode, DateTime HRMonth, List<SmOfMonthDtlDto>? Details);
+
 // ---- #139: DTO 4 họ phiếu thanh toán dịch vụ theo xe ----
 record PmtGpsDtlDto(string VIN, string? CarId, string? GPSID, DateTime? GPSStartDate, DateTime? CostGPSStartDate, DateTime? RetailDate, DateTime? CostGPSEndDate, DateTime? PlanCostGPSDate, DateTime? DeductDate, DateTime? ActualCostGPSDate, decimal PriceGPS, decimal AmountGPS, string? ContractGPS);
 record PmtGpsDto(string? PmtMonth, decimal VAT, List<PmtGpsDtlDto>? Details);

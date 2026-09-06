@@ -6341,6 +6341,114 @@ public sealed class PmtGuaranteeAttachFile
 //      `AmountVAT`, `TotalAmountAfterVAT` thay cho cặp `AmountTotal`+`VAT`.
 
 /// <summary>Phiếu thanh toán phí thiết bị GPS theo tháng (`Pmt_PaymentGPS`).</summary>
+// ========== CHỤP DỮ LIỆU NHÂN SỰ BÁN HÀNG THEO THÁNG (#141) ==========
+// Nguồn SQL: `SQLQuery.RptSQLQuery.mySql_HR_SalesManOfMonth_ApprAuto()` (RptSQLQuery.cs:15105),
+// gọi từ `HR_SalesManOfMonth_ApprAuto_New20221026` (DataWH/Biz.HTC.WH.cs:17214, csproj 272).
+//
+// 🔴 TWIN — ca "WS gọi vào FILE CHẾT", lần thứ BA (sau #127, #128) và nặng nhất:
+//    · `_ApprAuto_New20181119` được **CẢ HAI** WS 32-bit và 64-bit gọi, nhưng thân hàm CHỈ tồn tại ở
+//      `DataWH/Delete.Biz.HTC.WH.My.cs` — file khai báo `<None>` trong csproj ⇒ **KHÔNG được build**.
+//    · Bản thật duy nhất là `_ApprAuto_New20221026`, và **chỉ WS 64-bit** gọi.
+//    · Thêm một lớp bẫy: `BizHTC.zzzzCode.cs` (csproj 141, file SỐNG) có `HR_SalesManOfMonth_Save`
+//      + `_ApprAuto_New20181115` cũng ghi đúng 2 bảng này — nhưng **không WS nào gọi** ⇒ xác.
+//    ⇒ Đọc nhầm bất kỳ nhánh nào trong ba nhánh trên đều ra bộ cột THIẾU.
+//
+// Bản chất: **ảnh chụp (snapshot) toàn bộ nhân viên bán hàng theo THÁNG**, không phải chứng từ.
+// Bảng đầu = 2 con số đếm/đại lý; bảng chi tiết = bản sao hồ sơ từng nhân viên tại thời điểm chốt.
+// Ba đợt nâng cấp đọc được ngay trong comment SQL: 20221026 (thêm mã Hyundai, CCCD, thâm niên,
+// chứng chỉ, HTA, BĐH, xếp loại) và **20260316** (thêm dấu vết sửa trạng thái + chế tài vi phạm).
+
+/// <summary>Chốt tháng nhân sự bán hàng theo ĐẠI LÝ (`HR_SalesManOfMonth`).</summary>
+public sealed class HrSalesManOfMonth
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    /// <summary>Tháng chốt (`HRMonth`) — nguồn lấy ngày ĐẦU tháng (`HRMonthStart`).</summary>
+    public DateTime? HRMonth { get; set; }
+    /// <summary>
+    /// Số nhân viên ĐANG làm việc. ⚠️ Nguồn khai kiểu số thực (`IsNull(…, 0.0)`) dù là đếm người —
+    /// giữ `decimal` để port 1:1, không tự đổi sang int.
+    /// </summary>
+    public decimal QtySMWorking { get; set; }
+    /// <summary>Số nhân viên NGHỈ việc trong tháng.</summary>
+    public decimal QtySMNoWorking { get; set; }
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Ảnh chụp hồ sơ TỪNG nhân viên bán hàng tại tháng chốt (`HR_SalesManOfMonthDtl`, 47 cột).
+/// Đây là bản SAO tại thời điểm chốt — cố ý trùng cột với `Mst_SalesMan`, KHÔNG join động.
+/// </summary>
+public sealed class HrSalesManOfMonthDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public DateTime? HRMonth { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string SMCode { get; set; } = "";
+    public string? SMName { get; set; }
+    public string? SMGender { get; set; }
+    public DateTime? SMDateOfBirth { get; set; }
+    public string? SMPhoneNo { get; set; }
+    public string? SMEmail { get; set; }
+    public string? SMAddress { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? QualificationCode { get; set; }
+    public string? SMSpecialized { get; set; }
+    public decimal SMYearExperence { get; set; }
+    public DateTime? SMStartDate { get; set; }
+    public DateTime? SMEndDate { get; set; }
+    public string? DepartmentCode { get; set; }
+    public string? SMPosition { get; set; }
+    public string? SMType { get; set; }
+    public string? CertificateCode { get; set; }
+    public string? SMFlagActive { get; set; }
+    public string? WebsiteLink { get; set; }
+    public string? FacebookLink { get; set; }
+    public string? FanpageLink { get; set; }
+    public string? GroupLink { get; set; }
+    public string? ZaloLink { get; set; }
+    /// <summary>
+    /// Trạng thái nhân viên (`SMStatus`) — comment nguồn ghi rõ:
+    /// **"0" nghỉ việc · "1" chính thức · "2" thử việc · "3" CTV**.
+    /// 🔴 Nâng cấp 20221026 đổi định nghĩa "đang làm việc" thành **1 hoặc 2 hoặc 3** (trước chỉ là "0"
+    /// theo nghĩa cũ) — nên đừng suy trạng thái từ tên cột.
+    /// </summary>
+    public string? SMStatus { get; set; }
+    /// <summary>Số ngày làm việc trong hệ thống (`DaysOfService`).</summary>
+    public decimal DaysOfService { get; set; }
+    /// <summary>Danh sách đại lý Hyundai đã từng làm việc (`ListDealerHyundai`) — nguồn nối chuỗi sẵn.</summary>
+    public string? ListDealerHyundai { get; set; }
+    public DateTime? EffEndCertificate { get; set; }
+    /// <summary>Tài khoản HTA (`AccountHTA`).</summary>
+    public string? AccountHTA { get; set; }
+    /// <summary>Trạng thái BĐH (`BDHStatus`): **"CHALLENGE"** đang thử thách · **"APPOINT"** đã bổ nhiệm.</summary>
+    public string? BDHStatus { get; set; }
+    public DateTime? ChallengeStartDate { get; set; }
+    public DateTime? ChallengeEndDate { get; set; }
+    /// <summary>Xếp loại chất lượng (`QualityRank`): **"PRO"** chuyên nghiệp · **"NORMAL"** thông thường.</summary>
+    public string? QualityRank { get; set; }
+    /// <summary>Mã nhân viên phía Hyundai (`SMHyundaiCode`) — thêm ở đợt 20221026.</summary>
+    public string? SMHyundaiCode { get; set; }
+    public string? IdentityCardNo { get; set; }
+    // --- Đợt nâng cấp 20260316: dấu vết sửa trạng thái + chế tài vi phạm ---
+    public string? UpdateStatusBy { get; set; }
+    public DateTime? UpdateStatusDtime { get; set; }
+    public decimal ViolateNumber { get; set; }
+    public string? ViolateTypeId { get; set; }
+    /// <summary>⚠️ Nguồn chụp CẢ mã lẫn TÊN loại vi phạm — cố ý phi chuẩn hoá vì là ảnh chụp.</summary>
+    public string? ViolateTypeName { get; set; }
+    public DateTime? ViolateDateStart { get; set; }
+    public DateTime? ViolateDateEnd { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class PmtPaymentGps
 {
     public long Id { get; set; }

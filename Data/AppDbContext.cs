@@ -61,7 +61,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<VatHtcInvoiceDeviceDetail> VatHtcInvoiceDeviceDetails => Set<VatHtcInvoiceDeviceDetail>();
     public DbSet<DlsDealAttachFile> DlsDealAttachFiles => Set<DlsDealAttachFile>();
     public DbSet<PmtGuaranteeAttachFile> PmtGuaranteeAttachFiles => Set<PmtGuaranteeAttachFile>();
-            public DbSet<PmtPaymentGps> PmtPaymentGpses => Set<PmtPaymentGps>();
+            public DbSet<HrSalesManOfMonth> HrSalesManOfMonths => Set<HrSalesManOfMonth>();
+    public DbSet<HrSalesManOfMonthDtl> HrSalesManOfMonthDtls => Set<HrSalesManOfMonthDtl>();
+    public DbSet<PmtPaymentGps> PmtPaymentGpses => Set<PmtPaymentGps>();
     public DbSet<PmtPaymentGpsDetail> PmtPaymentGpsDetails => Set<PmtPaymentGpsDetail>();
     public DbSet<PmtPaymentAvn> PmtPaymentAvns => Set<PmtPaymentAvn>();
     public DbSet<PmtPaymentAvnDetail> PmtPaymentAvnDetails => Set<PmtPaymentAvnDetail>();
