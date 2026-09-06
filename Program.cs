@@ -35519,8 +35519,45 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     //       📌 NỢ ĐÃ KHAI: MiniHTC chưa có sổ công nợ bảo hiểm ⇒ lượt này chỉ **đánh dấu cờ** trên lệnh,
     //         chưa sinh bút toán. Ghi rõ để không tưởng đã làm xong.
     string? careNoCreated = null; bool carUpdated = false;
+    int partPriceRefreshed = 0;
     if (target == "Finished")
     {
+        // ===== 🔴 #327 (hoàn tất #326) LÀM MỚI GIÁ PHỤ TÙNG TỪ DANH MỤC KHI GIAO XE =====
+        // Nguồn cùng hàm `SerROToFinishedStatusAndUpdateCusCare_New20190621` (`ZTemp.cs:11740-11795`):
+        //   lấy `ser_mst_part.Price` / `.VAT` (**chỉ phụ tùng `IsActive = '1'`**) rồi ghi đè
+        //   `Ser_ROPartItems.PartPrice` / `.PartVAT` ⇒ **giá trên lệnh được ĐỒNG BỘ LẠI tại thời điểm giao xe**,
+        //   không giữ giá lúc lập lệnh. #326 mới port 3 việc kia, còn thiếu việc này.
+        //
+        // 🔴 LỖI THẬT CỦA NGUỒN — vòng lặp ghi nhầm chỉ số:
+        //     for (int i = 0; i < dtUpd.Rows.Count; i++) {
+        //         dtUpd.Rows[**0**]["PartPrice"] = dtUpd.Rows[**0**]["PartPriceUpd"];   // đáng lẽ Rows[i]
+        //         dtUpd.Rows[**0**]["PartVAT"]   = dtUpd.Rows[**0**]["PartVATUpd"];
+        //     }
+        //   ⇒ lặp N lần nhưng **luôn ghi DÒNG ĐẦU** ⇒ chỉ dòng phụ tùng thứ nhất được làm mới giá,
+        //     các dòng sau **giữ giá cũ**. Tác giả **không** giải thích ⇒ đây là lỗi gõ, không phải luật.
+        //   ⇒ Theo lệ #272/#275: **KHÔNG bắt chước lỗi câm**. Port làm mới **MỌI dòng**, và trả
+        //     `partPriceRefreshed` để ai đối chiếu WinForm biết vì sao số tiền lệch.
+        //
+        // 📌 Đã kiểm và KHÔNG phải lỗi: mệnh đề `--and t.ROID = '@ROID'` ở câu cuối bị comment trông như
+        //   thiếu bộ lọc, nhưng phép `inner join` đi qua `#tblSer_ROPartItems` (vốn đã lọc theo ROID) nên
+        //   kết quả vẫn chỉ gồm dòng của lệnh này ⇒ điều kiện đó **thừa**, không phải bug.
+        var roParts = await db.RoPartItems.Where(pi => pi.OrgId == t.OrgId && pi.RoId == r.Id).ToListAsync();
+        if (roParts.Count > 0)
+        {
+            var codes = roParts.Select(pi => pi.PartCode).Distinct().ToList();
+            var master = (await db.ServiceParts
+                    .Where(mp => mp.OrgId == t.OrgId && codes.Contains(mp.PartCode) && mp.FlagActive == "1")
+                    .ToListAsync())
+                .GroupBy(mp => mp.PartCode).ToDictionary(g => g.Key, g => g.First());
+            foreach (var pi in roParts)
+            {
+                if (!master.TryGetValue(pi.PartCode, out var mp)) continue;   // không có trong danh mục ACTIVE ⇒ bỏ qua
+                pi.UnitPrice = mp.Price;
+                pi.Vat = mp.VAT ?? pi.Vat;
+                partPriceRefreshed++;
+            }
+        }
+
         // (1) cập nhật XE theo số km và ngày hoàn tất của LỆNH
         if (!string.IsNullOrWhiteSpace(r.Vin))
         {
@@ -35557,6 +35594,12 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate,
         // #326: các việc kéo theo, trả về để đối chiếu với WinForm.
         carUpdated, careNoCreated,
+        // #327: số dòng phụ tùng đã được làm mới giá từ danh mục.
+        partPriceRefreshed,
+        partPriceRefreshedNote = partPriceRefreshed > 1
+            ? "Port làm mới MỌI dòng; nguồn có lỗi vòng lặp (Rows[0] thay vì Rows[i]) nên CHỈ làm mới dòng đầu "
+              + "⇒ tổng tiền web có thể khác WinForm. Khác biệt CÓ CHỦ ĐÍCH, xem chú thích #327."
+            : null,
         insuranceDebtDue = target == "Finished" && (string.IsNullOrWhiteSpace(dto.IsCusPaymentAll) || dto.IsCusPaymentAll == "0"),
         note = target == "Finished"
             ? "Giao xe: đã cập nhật CurrentKm/CurrentServiceDate của xe (khoá job NoShow #269) và mở phiếu "
