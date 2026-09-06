@@ -833,6 +833,54 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// ===== Sửa GIÁ dòng giao dịch bán lẻ (Dls_DealDetail_UpdatePrice — 2010.HTC Biz.HTC.WH.hkt.cs:6771) =====
+// 🔴 Luật nguồn: tra bảng xe theo **VIN** để lấy `CarId` rồi mới update — **KHÔNG lấy CarId từ input**;
+//    không tìm thấy xe thì báo lỗi. Update `DLS_DealDetail.Price = PriceNew` theo `DealNo` + `CarId`,
+//    và ghi lịch sử `Dls_DealDetail_HisUpdPrice` (giá cũ + giá mới).
+// ⚠️ Trong MiniHTC `DealerDealDetail.CarId` chính là VIN, nên bước tra xe quy về **kiểm VIN tồn tại**
+//    trong master VIN (`CarVinMasters`).
+// TWIN: chỉ `TERP.WSHTC.64` (27520).
+app.MapGet("/api/dealdetail/price-history", async (AppDbContext db, ITenantContext t, string? dealNo, string? carId) =>
+{
+    var qy = db.DlsDealDetailHisUpdPrices.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(h => h.DealNo == dealNo);
+    if (!string.IsNullOrWhiteSpace(carId)) qy = qy.Where(h => h.CarId == carId.Trim().ToUpperInvariant());
+    var items = await qy.OrderByDescending(h => h.Id).Take(500)
+        .Select(h => new { h.DealNo, h.CarId, h.PriceOld, h.PriceNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealdetail/update-price", async (DealDetailPriceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.VIN) && r.PriceNew is not null).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng nào để sửa giá." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        // Guard nguồn: xe phải tồn tại (nguồn tra Car_Car theo VIN để lấy CarId).
+        var carExists = await db.CarVinMasters.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (!carExists) return Results.BadRequest(new { error = $"Không tìm thấy xe VIN {vin}." });
+
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == r.DealNo);
+        if (d is null) return Results.BadRequest(new { error = $"Không tìm thấy giao dịch {r.DealNo}." });
+        var line = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == vin);
+        if (line is null) return Results.BadRequest(new { error = $"Giao dịch {r.DealNo} không có xe {vin}." });
+
+        db.DlsDealDetailHisUpdPrices.Add(new DlsDealDetailHisUpdPrice
+        {
+            OrgId = t.OrgId, DealNo = r.DealNo!, CarId = vin,
+            PriceOld = line.Price, PriceNew = r.PriceNew, UpdDTime = now, UpdBy = who,
+        });
+        line.Price = r.PriceNew;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, updated });
+}).RequireAuthorization();
+
 // ===== Sửa BIÊN BẢN GIAO XE: ngày xuất kho & tỉnh/huyện tuyến =====
 // Port 1:1 `Support_Sto_DlvMinutes_UpdateDlvStartDateAndDeliveryOutDate` (Biz.HTC.WH.hkt.cs:8155)
 // và `Support_Sto_DlvMinutes_UpdateProvinceAndDistrict` (8856). TWIN: **chỉ `TERP.WSHTC.64`** (99709/99842).
@@ -22036,6 +22084,9 @@ record RegisterOrgDto(string Name);
 record CarDeliveryDateDto(List<CarDeliveryDateRowDto>? Rows);
 // Sửa biên bản giao xe theo LÔ dòng (nguồn nhận bảng `dtInput_Sto_DlvMinutes`).
 record DlvUpdDatesDto(List<DlvUpdDatesRowDto>? Rows);
+// Sửa giá dòng bán lẻ theo LÔ (nguồn nhận bảng `dtInput_DealDetail` nhiều dòng).
+record DealDetailPriceDto(List<DealDetailPriceRowDto>? Rows);
+record DealDetailPriceRowDto(string? DealNo, string? VIN, decimal? PriceNew);
 record DlvUpdDatesRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, DateTime? DateNew);
 record DlvUpdProvinceDto(List<DlvUpdProvinceRowDto>? Rows);
 record DlvUpdProvinceRowDto(string? DlvMnNo, string? VIN, string? FProvinceCodeNew, string? FDistrictCodeNew, string? TProvinceCodeNew, string? TDistrictCodeNew);

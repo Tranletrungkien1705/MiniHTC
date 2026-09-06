@@ -4547,9 +4547,34 @@ public sealed class DealerDealDetail
     public DateTime? CusInvoiceDate { get; set; }
     public string? PlateNo { get; set; }                 // biển số xe (EditDeal sửa)
     public decimal PriceAFVAT { get; set; }              // giá sau VAT
+    /// <summary>
+    /// Giá bán của dòng (`DLS_DealDetail.Price`) — cột RIÊNG, khác `PriceAFVAT`.
+    /// `Dls_DealDetail_UpdatePrice` (Biz.HTC.WH.hkt.cs:6771) sửa đúng cột này và ghi lịch sử
+    /// <see cref="DlsDealDetailHisUpdPrice"/>.
+    /// </summary>
+    public decimal? Price { get; set; }
     /// <summary>Ngày giao xe cho khách (`DLS_DealDetail.DeliveryDate`) — `CarDeliveryDate_Update`
     /// cập nhật cột này theo cặp khoá `DealNo` + `CarId`.</summary>
     public DateTime? DeliveryDate { get; set; }
+}
+
+/// <summary>
+/// Lịch sử sửa GIÁ dòng giao dịch bán lẻ (`Dls_DealDetail_HisUpdPrice` — port 1:1
+/// `Dls_DealDetail_UpdatePrice`, 2010.HTC `Biz.HTC.WH.hkt.cs:6771`).
+/// Luật nguồn: tra `Car_Car` theo **VIN** để lấy `CarId`, **không lấy CarId từ input**; nếu không có xe
+/// thì báo lỗi. Sau đó update `DLS_DealDetail.Price = PriceNew` theo cặp khoá `DealNo` + `CarId`.
+/// TWIN: chỉ `TERP.WSHTC.64` (27520) gọi hàm này.
+/// </summary>
+public sealed class DlsDealDetailHisUpdPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public decimal? PriceOld { get; set; }
+    public decimal? PriceNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
 }
 
 /// <summary>
