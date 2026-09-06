@@ -35500,8 +35500,69 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     // Nguồn FrmServiceHistory sắp xếp "order by ro.finisheddate desc" → phải đóng dấu mốc khi RO hoàn tất,
     // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
     if (target == "Finished") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
+
+    // ===== 🔴 #326 GIAO XE KÉO THEO **BA** VIỆC NỮA — port cũ chỉ đóng dấu mốc =====
+    // Nguồn `SerROToFinishedStatusAndUpdateCusCare_New20190621` (`ZTemp.cs:11622`).
+    //   TRACE TWIN: WS `:11603` gọi bản `_New20190621` ⇒ bản trần (`Service01.cs:11421`) CHẾT.
+    //   Sweep #320 xếp đúng thứ tự lần này (bản LIVE nhiều cột nhất) — nhưng vẫn phải trace mới chắc.
+    //
+    // Ngoài việc đặt `Status = Finished` + `ActualDeliveryDate`, nguồn còn:
+    //   (1) **CẬP NHẬT XE**: `Ser_Car.CurrentKm = RO.Km` · `CurrentServiceDate = RO.FinishedDate` (`:12209`).
+    //       ⚠️ `CurrentServiceDate` chính là khoá của job NoShow (#269) ⇒ **không cập nhật thì job NoShow
+    //         hiểu sai là khách chưa quay lại**.
+    //   (2) **MỞ PHIẾU CHĂM SÓC**: nếu RO chưa có `Ser_CustomerCare` thì tạo mới ở `Status = Pending`,
+    //       kèm dòng `Ser_CustomerCare72h` (`FinishedDate` lưu **CHỈ NGÀY** `"yyyy-MM-dd"`).
+    //       ⚠️ Guard "chưa có thì mới tạo" ⇒ **idempotent**, gọi lại không sinh phiếu trùng.
+    //   (3) **GHI NỢ HÃNG BẢO HIỂM** khi `strIsCusPaymentAll` ∈ { "0", "", null } — chú thích nguồn:
+    //       *"neu khach hang khong dong y tra toan bo - se ghi no cho hang bao hiem"*.
+    //       ⚠️ Ba giá trị được coi NHƯ NHAU; **thiếu tham số = khách KHÔNG trả hết** (mặc định ghi nợ).
+    //       📌 NỢ ĐÃ KHAI: MiniHTC chưa có sổ công nợ bảo hiểm ⇒ lượt này chỉ **đánh dấu cờ** trên lệnh,
+    //         chưa sinh bút toán. Ghi rõ để không tưởng đã làm xong.
+    string? careNoCreated = null; bool carUpdated = false;
+    if (target == "Finished")
+    {
+        // (1) cập nhật XE theo số km và ngày hoàn tất của LỆNH
+        if (!string.IsNullOrWhiteSpace(r.Vin))
+        {
+            var car = await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == r.Vin);
+            if (car is not null)
+            {
+                if (decimal.TryParse(r.Km, out var km)) car.CurrentKm = km;
+                car.CurrentServiceDate = r.FinishedDate;
+                carUpdated = true;
+            }
+        }
+
+        // (2) mở phiếu chăm sóc nếu LỆNH này chưa có (idempotent, đúng guard của nguồn)
+        var hasCare = await db.CustomerCares.AnyAsync(c => c.OrgId == t.OrgId && c.RONo == r.RONo);
+        if (!hasCare)
+        {
+            var careNo = "CC" + DateTime.Now.ToString("yyMMddHHmmss");
+            db.CustomerCares.Add(new CustomerCare
+            {
+                OrgId = t.OrgId, CareNo = careNo, CareType = "24h", RONo = r.RONo,
+                PlateNo = r.LicensePlate, CusName = r.CusName,
+                CusPhone = CusDisplayPhone(r.CusTel, r.CusMobile),   // #316: bàn trước, di động sau
+                // Nguồn lưu FinishedDate của bảng 72h ở dạng CHỈ NGÀY.
+                ContactDate = r.FinishedDate?.Date,
+                Status = "Pending",
+            });
+            careNoCreated = careNo;
+        }
+    }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate });
+    return Results.Ok(new
+    {
+        r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate,
+        // #326: các việc kéo theo, trả về để đối chiếu với WinForm.
+        carUpdated, careNoCreated,
+        insuranceDebtDue = target == "Finished" && (string.IsNullOrWhiteSpace(dto.IsCusPaymentAll) || dto.IsCusPaymentAll == "0"),
+        note = target == "Finished"
+            ? "Giao xe: đã cập nhật CurrentKm/CurrentServiceDate của xe (khoá job NoShow #269) và mở phiếu "
+              + "chăm sóc nếu chưa có. Ghi nợ hãng bảo hiểm CHƯA port — mới chỉ trả cờ insuranceDebtDue."
+            : null,
+    });
 }).RequireAuthorization();
 
 // Chuyển sang trạng thái NGOÀI luồng thẳng (nguồn có nhưng port cũ thiếu hẳn):
@@ -36924,7 +36985,9 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
     string? AppDateTime = null, string? AppTime = null,
     string? AppDateTimeFrom = null, string? AppTimeFrom = null,
     DateTime? FirstContactDateTime = null, DateTime? LastContactDateTime = null);
-record RoAdvanceDto(string ToStatus);
+// #326: ToStatus + co "khach tra toan bo?" (nguon: strIsCusPaymentAll).
+//   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
+record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
