@@ -9394,14 +9394,30 @@ app.MapPost("/api/smsbatches/{batchId}/cancel", async (
 
 // ===== Gửi email + log (EmailSend — port 1:1 FrmSendEmail, TCMotor) — tích hợp EmailTemplate + ServiceCustomer =====
 // Kiểm tra định dạng email cơ bản (giống ràng buộc gửi mail WinForm): có @ + tên miền có dấu chấm.
+// ===== 🔴 #251 REGEX EMAIL — port ĐÚNG biểu thức của nguồn, thay cho suy luận cũ =====
+// Nguồn: `Views/SendEmail/FrmSendEmail.cs:379` (và :741 cho tô màu ô lỗi) — md5 `75cbc7ea`, KHỚP 2 máy:
+//     `new Regex(@"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*")`
+//   `checkMailTo()` đếm số dòng có `IsMatch == false`; >0 ⇒ báo
+//   "Địa chỉ mail không hợp lệ. Đề nghị kiểm tra lại."
+//
+// 🔴 ĐÍNH CHÍNH BẢN ĐỒ #249: tôi gộp 2 màn SendEmail vào danh sách "dùng regex của lớp cha `FrmMdiBase`".
+//    SAI — hai màn này khai **regex CỤC BỘ** và **NGƯỢC NGHĨA**:
+//      · regex lớp cha `[^a-zA-Z0-9._-]`: `IsMatch == true` ⇒ **CÓ ký tự đặc biệt** ⇒ LỖI.
+//      · regex email ở đây:             `IsMatch == true` ⇒ **HỢP LỆ**.
+//    Vá theo bản đồ mà không đọc thì sẽ **chặn sạch mọi email** (email luôn chứa `@` nên luôn khớp
+//    regex lớp cha).
+//
+// 🔴 BA khác biệt so với hàm suy luận cũ của tôi — đều theo nguồn:
+//  1. Nguồn dùng `IsMatch` **KHÔNG anchor** (`^…$`) ⇒ **khớp một phần là đủ**: chuỗi `"abc def@x.com"`
+//     vẫn hợp lệ. Hàm cũ chặn vì có khoảng trắng ⇒ chặt hơn nguồn.
+//  2. Phần trước `@` cho phép `- + . '` (dấu nháy đơn) — hàm cũ không xét.
+//  3. Tên miền bắt buộc có ít nhất một dấu chấm — điểm này hàm cũ làm đúng.
 static bool IsValidEmail(string? raw)
 {
     if (string.IsNullOrWhiteSpace(raw)) return false;
-    var s = raw.Trim();
-    var at = s.IndexOf('@');
-    if (at <= 0 || at != s.LastIndexOf('@') || at == s.Length - 1) return false;
-    var dom = s.Substring(at + 1);
-    return dom.Contains('.') && !dom.StartsWith('.') && !dom.EndsWith('.') && !s.Contains(' ');
+    // giữ NGUYÊN biểu thức của nguồn, kể cả việc không anchor
+    return System.Text.RegularExpressions.Regex.IsMatch(
+        raw, @"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*");
 }
 
 app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? email, string? status, string? batch) =>
@@ -9465,6 +9481,8 @@ app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenant
     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     foreach (var e in emails)
     {
+        // #251: thông điệp của nguồn khi có dòng email sai — "Địa chỉ mail không hợp lệ. Đề nghị kiểm tra lại."
+        //   (nguồn ĐẾM số dòng sai rồi báo MỘT lần; port vẫn ghi từng dòng lỗi để tra được dòng nào).
         if (!IsValidEmail(e)) { invalid++; invalids.Add(e); db.EmailSends.Add(new EmailSend { OrgId = t.OrgId, BatchNo = no, Email = e ?? "", EmailType = emailType,
             Subject = subject, Body = body, Status = "0", InvalidEmail = true,
             FromAddress = dto.FromAddress, DealerCode = dto.DealerCode, UserName = dto.SendBy,
