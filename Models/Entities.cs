@@ -4553,6 +4553,53 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Lịch sử sửa NGÀY XUẤT KHO của biên bản giao xe
+/// (`Sto_DlvMinutes_UpdateDlvStartDateAndDeliveryOutDate_His` — port 1:1
+/// `Support_Sto_DlvMinutes_UpdateDlvStartDateAndDeliveryOutDate`, 2010.HTC `Biz.HTC.WH.hkt.cs:8155`).
+/// 🔴 Cùng lớp với <see cref="CarDeliveryDateHisUpd"/>: **một giá trị `DateNew` ghi vào HAI bảng, HAI tên cột**
+/// — `Sto_DlvMinutes.DlvStartDate` (join `DlvMnNo`+`VIN`) và
+/// `Car_DeliveryOrderDetail.DeliveryOutDate` (join `DeliveryOrderNo`+`DeliveryVIN`).
+/// </summary>
+public sealed class DlvMinutesUpdDateHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DlvMnNo { get; set; }
+    public string? DeliveryOrderNo { get; set; }
+    public string VIN { get; set; } = "";
+    public DateTime? DlvStartDateOld { get; set; }
+    public DateTime? DlvStartDateNew { get; set; }
+    public DateTime? DeliveryOutDateOld { get; set; }
+    public DateTime? DeliveryOutDateNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
+/// Lịch sử sửa TỈNH/HUYỆN tuyến giao (`Sto_DlvMinutes_UpdateProvinceAndDistrict_His` — port 1:1
+/// `Support_Sto_DlvMinutes_UpdateProvinceAndDistrict`, `Biz.HTC.WH.hkt.cs:8856`).
+/// ⚠️ Nguồn **kiểm tồn tại cặp tỉnh–huyện mới trong `Mst_District`** cho CẢ hai đầu tuyến (F và T)
+/// trước khi cập nhật; lưu giá trị cũ/mới của cả 4 cột.
+/// </summary>
+public sealed class DlvMinutesUpdProvinceHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DlvMnNo { get; set; }
+    public string VIN { get; set; } = "";
+    public string? FProvinceCodeOld { get; set; }
+    public string? FProvinceCodeNew { get; set; }
+    public string? FDistrictCodeOld { get; set; }
+    public string? FDistrictCodeNew { get; set; }
+    public string? TProvinceCodeOld { get; set; }
+    public string? TProvinceCodeNew { get; set; }
+    public string? TDistrictCodeOld { get; set; }
+    public string? TDistrictCodeNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử cập nhật NGÀY GIAO XE (`CarDeliveryDate_HisUpd` — port 1:1 `CarDeliveryDate_Update`,
 /// 2010.HTC `Biz.HTC.WH.cs:139603`).
 /// 🔴 Một hành động sửa ngày giao ghi vào **BA bảng** với **ba tên cột khác nhau** nhưng **cùng một giá trị**:
@@ -6465,6 +6512,14 @@ public sealed class TranspDlvConfirm
     /// <summary>Ngày xuất kho / ngày giao đến (DLVSTARTDATE / DLVENDDATE).</summary>
     public DateTime? DlvStartDate { get; set; }
     public DateTime? DlvEndDate { get; set; }
+
+    /// <summary>Tuyến giao theo BIÊN BẢN (`Sto_DlvMinutes`): `FProvinceCode`/`FDistrictCode` nơi đi,
+    /// `TProvinceCode`/`TDistrictCode` nơi đến — `Support_Sto_DlvMinutes_UpdateProvinceAndDistrict`
+    /// sửa đúng 4 cột này (khác cặp tỉnh/huyện theo XE ở entity khác).</summary>
+    public string? FProvinceCode { get; set; }
+    public string? FDistrictCode { get; set; }
+    public string? TProvinceCode { get; set; }
+    public string? TDistrictCode { get; set; }
 
     /// <summary>Xe tải + lái xe lúc GIAO (PLATENO/DRIVERID) và lúc NHẬN (TPLATENO/TDRIVERID) — có thể đổi giữa đường.</summary>
     public string? PlateNo { get; set; }

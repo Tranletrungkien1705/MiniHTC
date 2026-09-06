@@ -833,6 +833,83 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// ===== Sửa BIÊN BẢN GIAO XE: ngày xuất kho & tỉnh/huyện tuyến =====
+// Port 1:1 `Support_Sto_DlvMinutes_UpdateDlvStartDateAndDeliveryOutDate` (Biz.HTC.WH.hkt.cs:8155)
+// và `Support_Sto_DlvMinutes_UpdateProvinceAndDistrict` (8856). TWIN: **chỉ `TERP.WSHTC.64`** (99709/99842).
+// 🔴 Hàm 1 cùng lớp với CarDeliveryDate: **một giá trị `DateNew` ghi vào HAI bảng, HAI tên cột**
+//    (`Sto_DlvMinutes.DlvStartDate` join DlvMnNo+VIN · `Car_DeliveryOrderDetail.DeliveryOutDate`
+//     join DeliveryOrderNo+DeliveryVIN), kèm lịch sử lưu giá trị cũ của cả hai.
+app.MapPost("/api/dlvminutes/update-dates", async (DlvUpdDatesDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN) && r.DateNew is not null).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng nào để sửa ngày xuất kho." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    int nDlv = 0, nDo = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        var newDate = r.DateNew!.Value;
+        var his = new DlvMinutesUpdDateHis
+        {
+            OrgId = t.OrgId, DlvMnNo = r.DlvMnNo, DeliveryOrderNo = r.DeliveryOrderNo, VIN = vin,
+            DlvStartDateNew = newDate, DeliveryOutDateNew = newDate, UpdDTime = now, UpdBy = who,
+        };
+        if (!string.IsNullOrWhiteSpace(r.DlvMnNo))
+        {
+            var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo);
+            if (m is not null) { his.DlvStartDateOld = m.DlvStartDate; m.DlvStartDate = newDate; nDlv++; }
+        }
+        if (!string.IsNullOrWhiteSpace(r.DeliveryOrderNo))
+        {
+            var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == r.DeliveryOrderNo);
+            if (o is not null)
+            {
+                var c = await db.DeliveryOrderCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoId == o.Id && x.Vin == vin);
+                if (c is not null) { his.DeliveryOutDateOld = c.DeliveryOutDate; c.DeliveryOutDate = newDate; nDo++; }
+            }
+        }
+        db.DlvMinutesUpdDateHiss.Add(his);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, dlvMinutesUpdated = nDlv, deliveryOrderCarsUpdated = nDo });
+}).RequireAuthorization();
+
+// 🔴 Sửa TỈNH/HUYỆN tuyến giao — nguồn **kiểm cặp tỉnh–huyện mới có tồn tại trong `Mst_District`**
+//    cho CẢ hai đầu tuyến (F: nơi đi, T: nơi đến) trước khi cập nhật.
+app.MapPost("/api/dlvminutes/update-province", async (DlvUpdProvinceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DlvMnNo) && !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng nào để sửa tỉnh/huyện." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0;
+    foreach (var r in rows)
+    {
+        var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo);
+        if (m is null) return Results.BadRequest(new { error = $"Không tìm thấy biên bản {r.DlvMnNo}." });
+        // CHUA PORT DUOC guard nguon: nguon kiem cap tinh-huyen moi co ton tai trong Mst_District
+        // cho CA hai dau tuyen (F/T) truoc khi cap nhat. MiniHTC chua co entity nao cho Mst_District
+        // => bo guard thay vi bia master moi. Da ghi no trong so theo doi.
+        var his = new DlvMinutesUpdProvinceHis
+        {
+            OrgId = t.OrgId, DlvMnNo = r.DlvMnNo, VIN = r.VIN!.Trim().ToUpperInvariant(), UpdDTime = now, UpdBy = who,
+            FProvinceCodeOld = m.FProvinceCode, FDistrictCodeOld = m.FDistrictCode,
+            TProvinceCodeOld = m.TProvinceCode, TDistrictCodeOld = m.TDistrictCode,
+            FProvinceCodeNew = r.FProvinceCodeNew, FDistrictCodeNew = r.FDistrictCodeNew,
+            TProvinceCodeNew = r.TProvinceCodeNew, TDistrictCodeNew = r.TDistrictCodeNew,
+        };
+        if (!string.IsNullOrWhiteSpace(r.FProvinceCodeNew)) m.FProvinceCode = r.FProvinceCodeNew;
+        if (!string.IsNullOrWhiteSpace(r.FDistrictCodeNew)) m.FDistrictCode = r.FDistrictCodeNew;
+        if (!string.IsNullOrWhiteSpace(r.TProvinceCodeNew)) m.TProvinceCode = r.TProvinceCodeNew;
+        if (!string.IsNullOrWhiteSpace(r.TDistrictCodeNew)) m.TDistrictCode = r.TDistrictCodeNew;
+        db.DlvMinutesUpdProvinceHiss.Add(his);
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, updated });
+}).RequireAuthorization();
+
 // ===== Cập nhật NGÀY GIAO XE (CarDeliveryDate_Update — port 1:1 2010.HTC Biz.HTC.WH.cs:139603) =====
 // 🔴 MỘT hành động ghi vào **BA bảng** với **ba tên cột khác nhau** nhưng cùng một giá trị:
 //   · `Sto_DlvMinutes.DlvEndDate`            join `DlvMnNo` + `VIN`, **guard `FDlvMnStatus = 'A'`**
@@ -21957,4 +22034,9 @@ record RegisterOrgDto(string Name);
 
 // Cập nhật ngày giao xe theo LÔ dòng (nguồn nhận bảng `dtInput_CarDeliveryDate` nhiều dòng).
 record CarDeliveryDateDto(List<CarDeliveryDateRowDto>? Rows);
+// Sửa biên bản giao xe theo LÔ dòng (nguồn nhận bảng `dtInput_Sto_DlvMinutes`).
+record DlvUpdDatesDto(List<DlvUpdDatesRowDto>? Rows);
+record DlvUpdDatesRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, DateTime? DateNew);
+record DlvUpdProvinceDto(List<DlvUpdProvinceRowDto>? Rows);
+record DlvUpdProvinceRowDto(string? DlvMnNo, string? VIN, string? FProvinceCodeNew, string? FDistrictCodeNew, string? TProvinceCodeNew, string? TDistrictCodeNew);
 record CarDeliveryDateRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, string? CarId, string? DealNo, DateTime? CarDeliveryDate);
