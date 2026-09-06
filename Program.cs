@@ -29137,9 +29137,46 @@ app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, total = items.Sum(x => x.Amount), approved = items.Where(x => x.Status == "A").Sum(x => x.Amount), items });
 }).RequireAuthorization();
 
+// ===== 🔴 #243 SAVE BA VAI cho `Ser_SupplierPayment_Save` + SỬA lỗi `PaymentDate` của #237 =====
+// Nguồn `BizCarSv.Inventory.StockOut.cs:15633` → hàm làm việc thật `Ser_SupplierPayment_SaveX` (:15782).
+// BƯỚC 3B: md5 `8e73ba77` — KHỚP 2 máy.
+//
+// Ba vai giống #240/#241/#242, guard trạng thái ở đây là `SupplierPaymentStatus` phải `Pending`.
+// 🔴 KHÁC BIỆT phải ghi: hàm này **KHÔNG có `Mst_Dealer_CheckDB`** — giống đơn đặt PT (#240),
+//    khác YC báo giá (#241) và khiếu nại (#242) vốn bắt đại lý phải tồn tại + đang hoạt động.
+//    Bốn hàm cùng khuôn, hai hàm có guard đại lý, hai hàm không ⇒ tuyệt đối không suy sang nhau.
+//
+// 🔴 SỬA LỖI CỦA #237: bảng `MyBuildDBDT_Common` của nguồn (:15925-15935) ghi
+//      `null, // PaymentDTime`   và   `null, // PaymentBy`
+//    ⇒ **lúc lưu, ngày/người thanh toán để RỖNG**. #237 tôi đặt `PaymentDate = DateTime.Now` với lý do
+//    "server tự đặt" — SAI: server cũng KHÔNG đặt. Và `Ser_SupplierPayment_Appr` (:16578) chỉ ghi
+//    `ApprDTime`/`ApprBy`/`SupplierPaymentStatus=Approved`, **cũng không** chạm hai cột đó.
+//    ⇒ Trong vùng đã đọc, `PaymentDTime`/`PaymentBy` **không được ghi ở đâu cả** — để NULL và ghi nợ,
+//      KHÔNG tự đoán mốc (luật `C0-trecentesimussexagesimusquintus`).
 app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
+    var isDeleteP = string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
+    var payNoIn = (dto.SupplierPaymentNo ?? "").Trim().ToUpperInvariant();
+
+    SupplierPayment? existingP = payNoIn.Length == 0 ? null
+        : await db.SupplierPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == payNoIn);
+
+    if (existingP is null && isDeleteP)
+        return Results.Ok(new { paymentNo = payNoIn, deleted = true, note = "Phiếu không tồn tại — xoá coi như thành công (đúng nguồn)." });
+
+    if (existingP is not null && existingP.Status != "P")
+        return Results.BadRequest(new { error = "Chỉ sửa/xoá được phiếu thanh toán đang Mới tạo.", status = existingP.Status });
+
+    if (isDeleteP)
+    {
+        var oldPl = await db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == payNoIn).ToListAsync();
+        db.SupplierPaymentLines.RemoveRange(oldPl);
+        db.SupplierPayments.Remove(existingP!);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { paymentNo = payNoIn, deleted = true, removedLines = oldPl.Count });
+    }
+
     // Guard của nguồn (FrmSer_SupplierPayment.cs:664/:740) — giữ nguyên thông điệp.
     if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp" });
     // :746 — ngưỡng 1000, KHÁC 256 của khiếu nại (#233) và 200 của địa điểm giao hàng (#232).
@@ -29168,22 +29205,36 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
     if (paymentLines.Count > 0) amount = paymentLines.Sum(l => l.QtyPay * l.Price * (1 + l.Vat / 100m));
 
     if (amount <= 0) return Results.BadRequest(new { error = "Cần số tiền > 0." });
-    var no = "SP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var no = existingP?.PaymentNo ?? (payNoIn.Length > 0 ? payNoIn : "SP" + DateTime.Now.ToString("yyMMddHHmmss"));
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var p = new SupplierPayment
     {
         OrgId = t.OrgId, PaymentNo = no,
         SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(),
         OrderPartNo = orderNo, DealerCode = dto.DealerCode, Amount = amount,
-        // ⚠️ Ngày thanh toán do SERVER đặt — service của nguồn comment dòng truyền PaymentDTime.
-        PaymentDate = DateTime.Now,
+        // 🔴 #243 SỬA #237: nguồn ghi `null` cho `PaymentDTime` VÀ `PaymentBy` lúc lưu
+        //    (MyBuildDBDT_Common, BizCarSv.Inventory.StockOut.cs:15925-15935), và bước duyệt cũng
+        //    KHÔNG chạm hai cột đó. #237 tôi đặt DateTime.Now là SAI. Để NULL, ghi nợ.
+        PaymentDate = null,
         Status = "P",
         SupplierID = dto.SupplierID, Address = dto.Address, TSTRequestNo = dto.TSTRequestNo,
         PaymentType = string.IsNullOrWhiteSpace(dto.PaymentType) ? "PMT" : dto.PaymentType!.Trim().ToUpperInvariant(),
         Description = dto.Description,
         CreateBy = who, LogLUDTime = DateTime.Now, LogLUBy = who,
     };
-    db.SupplierPayments.Add(p);
+    if (existingP is not null)
+    {
+        // SỬA: giữ NGUYÊN CreateDTime/CreateBy của bản ghi cũ (:15891-15892), thay trọn bộ dòng.
+        p.Id = existingP.Id;
+        p.CreatedAt = existingP.CreatedAt;
+        p.CreateBy = existingP.CreateBy;
+        db.Entry(existingP).CurrentValues.SetValues(p);
+        var oldPl2 = await db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == no).ToListAsync();
+        db.SupplierPaymentLines.RemoveRange(oldPl2);
+        await db.SaveChangesAsync();
+        p = existingP;
+    }
+    else db.SupplierPayments.Add(p);
     foreach (var l in paymentLines)
         db.SupplierPaymentLines.Add(new SupplierPaymentLine
         {
@@ -32689,7 +32740,11 @@ record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay
     decimal? QtyInventory = null, string? LocationID = null);
 // #237: 5 trường của `Ser_SupplierPayment_Save`. ⚠️ `PaymentDate` giữ trong chữ ký cho tương thích nhưng
 //   **KHÔNG còn được dùng** — nguồn comment dòng truyền `PaymentDTime`, server tự đặt.
+// #243: `SupplierPaymentNo` (trống = tạo mới) + `FlagIsDelete`.
+//  ⚠️ `PaymentDate` giữ trong chữ ký cho tương thích nhưng **KHÔNG được dùng**: nguồn ghi NULL lúc lưu
+//    và bước duyệt cũng không đặt (xem chú thích ở endpoint).
 record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate, List<SupplierPaymentLineDto>? Lines = null, string? DealerCode = null,
+    string? SupplierPaymentNo = null, string? FlagIsDelete = null,
     string? SupplierID = null, string? Address = null, string? TSTRequestNo = null,
     string? PaymentType = null, string? Description = null);
 // #238: 3 cột bổ sung mà đại lý nhập. KHÔNG nhận `TSTPartCode`/`DateEffect`/`TSTPrice` — phía TST điền.
