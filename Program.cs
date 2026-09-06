@@ -286,6 +286,10 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
     var dealer = (dto.DealerCode ?? "").Trim();
     var name = (dto.DeliveryLocationName ?? "").Trim();
     if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã địa điểm giao hàng." });
+    // 🔴 #249 GUARD KÝ TỰ ĐẶC BIỆT — `FrmMst_DeliveryLocation.cs` kiểm `regex.IsMatch(deliveryLocationCode)`.
+    //    #232 port màn này mà BỎ SÓT guard; sweep "màn nào dùng regex của lớp cha" mới lộ ra.
+    if (HasSpecialChar(code))
+        return Results.BadRequest(new { error = "Mã địa điểm giao hàng không được phép chứa các ký tự đặc biệt", code });
     if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
     if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên địa điểm giao hàng." });
     if (name.Length > 200) return Results.BadRequest(new { error = "Tên địa điểm không được nhập quá dài!" });
@@ -13764,6 +13768,9 @@ app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext
 {
     var code = (dto.TSTPartCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng TST." });
+    // #249: `FrmTST_Mst_Exchange_Unit.cs` kiểm `regex.IsMatch(strTSTPartCode)` / `(tstPartCode)`
+    if (HasSpecialChar(code))
+        return Results.BadRequest(new { error = "Mã vật tư không được phép chứa các ký tự đặc biệt", code });
     if (dto.ExchangeRate <= 0) return Results.BadRequest(new { error = "Tỷ lệ quy đổi phải > 0." });
     var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
     if (row is null) { row = new TstExchangeUnit { OrgId = t.OrgId, TSTPartCode = code }; db.TstExchangeUnits.Add(row); }
@@ -13790,8 +13797,11 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 //   ⚠️ Nghĩa là **khoảng trắng** và **chữ tiếng Việt có dấu** cũng bị coi là ký tự đặc biệt.
 //   ⚠️ Vì regex nằm ở lớp cha nên **mọi màn kế thừa `FrmMdiBase` đều dùng chung** — khi port màn khác
 //      thấy `this.regex.IsMatch(...)` thì đây chính là quy tắc đó.
-// (top-level statements khong cho `static readonly` field -> dung bien cuc bo)
-var SpecialCharRegex = new System.Text.RegularExpressions.Regex("[^a-zA-Z0-9._-]");
+// 🔴 #249: phải là LOCAL FUNCTION, không phải biến cục bộ — nhiều endpoint dùng nó nằm **TRƯỚC** chỗ này
+//    trong Program.cs (vd `/api/deliverylocations` ở đầu file). Local function gọi trước khi khai đều được;
+//    biến cục bộ thì không (và `static readonly` field thì CS0106 — xem #248).
+static bool HasSpecialChar(string? s) =>
+    !string.IsNullOrEmpty(s) && System.Text.RegularExpressions.Regex.IsMatch(s, "[^a-zA-Z0-9._-]");
 
 // ===== 🔴 #247 BẢNG TẠM PHỤ TÙNG TST — `TST_Mst_Part_Temp_Get` (BizCarSv.Bravo.cs:223) =====
 // BƯỚC 3B: `BizCarSv.Bravo.cs` md5 `44509215` (469 dòng) — KHỚP 2 máy (đã đo ở #212).
@@ -13870,6 +13880,9 @@ app.MapPost("/api/tstparts", async (TstPartDto dto, AppDbContext db, ITenantCont
 {
     var code = (dto.TSTPartCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng TST." });
+    // #249: `FrmTST_Mst_Exchange_Unit.cs` kiểm `regex.IsMatch(strTSTPartCode)` / `(tstPartCode)`
+    if (HasSpecialChar(code))
+        return Results.BadRequest(new { error = "Mã vật tư không được phép chứa các ký tự đặc biệt", code });
     if (dto.TSTPrice < 0 || dto.VAT < 0) return Results.BadRequest(new { error = "Giá/VAT không được âm." });
     var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
     if (row is null) { row = new TstPart { OrgId = t.OrgId, TSTPartCode = code }; db.TstParts.Add(row); }
@@ -20476,6 +20489,9 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
 {
     if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "Chưa nhập mã khoang." });
     if (string.IsNullOrWhiteSpace(dto.CavityName)) return Results.BadRequest(new { error = "Chưa nhập tên khoang." });
+    // #249: `FrmCavityCreate.cs:93` `regex.IsMatch(txtCavityNo.Text)`
+    if (HasSpecialChar(dto.CavityNo!.Trim()))
+        return Results.BadRequest(new { error = "Mã khoang không được phép chứa các ký tự đặc biệt" });
     var code = dto.CavityNo.Trim().ToUpperInvariant();
     var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code);
     if (ex is not null)
@@ -28869,6 +28885,9 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
 {
     if (string.IsNullOrWhiteSpace(dto.GroupRCode) || string.IsNullOrWhiteSpace(dto.GroupRName))
         return Results.BadRequest(new { error = "Cần GroupRCode và GroupRName." });
+    // #249: `FrmGroupRepairCreate.cs:92` `regex.IsMatch(txtGroupRNo.Text)`
+    if (HasSpecialChar(dto.GroupRCode.Trim()))
+        return Results.BadRequest(new { error = "Mã nhóm sửa chữa không được phép chứa các ký tự đặc biệt" });
     var code = dto.GroupRCode.Trim().ToUpperInvariant();
     var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == code);
     if (g is null) { g = new GroupRepair { OrgId = t.OrgId, GroupRCode = code }; db.GroupRepairs.Add(g); }
@@ -28999,7 +29018,7 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
         if (string.IsNullOrWhiteSpace(l.PartCode))
             return Results.BadRequest(new { error = "Mã vật tư không được để trống!" });
         var pc = l.PartCode.Trim();
-        if (SpecialCharRegex.IsMatch(pc))
+        if (HasSpecialChar(pc))
             return Results.BadRequest(new { error = "Mã vật tư không được phép chứa các ký tự đặc biệt", partCode = pc });
         if (pc.Length > 24)
             return Results.BadRequest(new { error = "Mã vật tư không được > 24 ký tự", partCode = pc });
@@ -29008,7 +29027,7 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
         if (!string.IsNullOrWhiteSpace(l.VINCode))
         {
             var vin = l.VINCode!.Trim();
-            if (SpecialCharRegex.IsMatch(vin))
+            if (HasSpecialChar(vin))
                 return Results.BadRequest(new { error = "Số VIN không được phép chứa các ký tự đặc biệt", partCode = pc });
             if (vin.Length > 24)
                 return Results.BadRequest(new { error = "VIN không được > 24 ký tự", partCode = pc });
