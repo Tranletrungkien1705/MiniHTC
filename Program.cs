@@ -28849,13 +28849,93 @@ app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #240 SAVE = UPSERT + XOÁ, và 8 GUARD của `Ser_Order_Part_Save` =====
+// Nguồn: `TERP.BizCarSv/BizCarSv.A.02.OrderPart.cs:193-405` (md5 72e6623f, 5014 dòng — khớp 2 máy).
+// Port cũ coi POST là "luôn tạo mới": tự sinh `OrderPartNo`, không có đường sửa, không có đường xoá,
+// và chỉ kiểm 2 điều kiện. Nguồn thì `Ser_Order_Part_Save` là **một hàm ba vai**:
+//
+//  A. `bIsDelete = (FlagIsDelete == "Y")` (:235).
+//  B. `Ser_Order_Part_CheckDB` → **CHƯA tồn tại**:
+//       · đang XOÁ ⇒ `goto MyCodeLabel_Done` = **THÀNH CÔNG im lặng** (xoá thứ không có = idempotent,
+//         KHÔNG báo lỗi 404). Giữ đúng.
+//       · không xoá ⇒ tạo mới.
+//  C. **ĐÃ tồn tại** ⇒ 🔴 `OrderPartStatus` **phải là `Pending`**, khác ⇒ `Save_InvalidOrderPartStatus`.
+//       ⇒ đơn đã duyệt/hoàn thành/từ chối thì **không sửa và không xoá được**.
+//  D. Khi sửa: `CreateDTime`/`CreateBy` **giữ NGUYÊN của bản ghi cũ** (:293-294), không ghi đè.
+//
+// TÁM guard, giữ nguyên thông điệp tiếng Việt của nguồn:
+//  1. `PartGroupID` rỗng ⇒ "Phân nhóm vật tư không được để trống!" (:336)
+//  2. `SupplierID` rỗng ⇒ "Nhà cung cấp không được để trống!" (:350)
+//  3. `SupplierID` không có trong `Ser_Mst_Supplier` ⇒ **CÙNG thông điệp** "Nhà cung cấp không được để trống!"
+//     (:375 — nguồn dùng lại đúng câu đó dù nghĩa là "không tồn tại"; giữ nguyên, không "sửa cho đúng").
+//  4-5. Khi `OrderPartType == "TST"`: `Mst_DeliveryForm_CheckDB(Exist=Yes, Active)` ⇒ hình thức giao hàng
+//     phải TỒN TẠI và ĐANG HOẠT ĐỘNG.
+//  6. 🔴 `DeliveryFormCode == TConst.DeliveryFormCode.BAOHANH` ⇒ **VIN bắt buộc**:
+//     "Hình thức Bảo hành VIN bắt buộc nhập!" — ⚠️ hằng `BAOHANH` có giá trị **"2"**, KHÔNG phải chuỗi
+//     "BAOHANH" (Const.Main.cs:628-631). So sánh nhầm bằng tên hằng = guard chết câm.
+//  7-8. Hai guard sẵn có (nhà cung cấp, ít nhất 1 dòng).
+//
+// ⚠️ KHÔNG port guard `EstimatedDeliverDate >= hôm nay`: cả khối bị **COMMENT** ở nguồn (:390-403).
 app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
+    var isDelete = string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
+    var reqNo = (dto.OrderPartNo ?? "").Trim().ToUpperInvariant();
+
+    // (B) tra bản ghi cũ theo số đơn (trống = tạo mới)
+    OrderPart? existing = reqNo.Length == 0 ? null
+        : await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == reqNo);
+
+    if (existing is null && isDelete)
+        // Xoá đơn chưa tồn tại: nguồn goto Done ⇒ THÀNH CÔNG im lặng, không 404.
+        return Results.Ok(new { orderPartNo = reqNo, deleted = true, note = "Đơn không tồn tại — xoá coi như thành công (đúng nguồn)." });
+
+    // (C) đã tồn tại thì chỉ đụng được khi còn "P"
+    if (existing is not null && existing.OrderPartStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ sửa/xoá được đơn đặt đang Mới tạo.", orderPartStatus = existing.OrderPartStatus });
+
+    if (isDelete)
+    {
+        var oldLines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == existing!.Id).ToListAsync();
+        db.OrderPartLines.RemoveRange(oldLines);
+        db.OrderParts.Remove(existing!);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { orderPartNo = reqNo, deleted = true, removedLines = oldLines.Count });
+    }
+
     if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Cần SupplierCode (nhà cung cấp)." });
+
+    // guard 1: phân nhóm vật tư
+    if (string.IsNullOrWhiteSpace(dto.PartGroupID))
+        return Results.BadRequest(new { error = "Phân nhóm vật tư không được để trống!" });
+    // guard 2 + 3: nhà cung cấp — CÙNG thông điệp cho cả "rỗng" lẫn "không tồn tại" (đúng nguồn)
+    if (string.IsNullOrWhiteSpace(dto.SupplierID))
+        return Results.BadRequest(new { error = "Nhà cung cấp không được để trống!" });
+    var supId = dto.SupplierID!.Trim();
+    // Nguồn kiểm bằng `select * from Ser_Mst_Supplier where SupplierID = @strSupplierID`
+    //   ⇒ đúng bảng `SerMstSuppliers` của MiniHTC (khoá lưu ở cột `SupplierCode`).
+    if (!await db.SerMstSuppliers.AnyAsync(s => s.OrgId == t.OrgId && s.SupplierCode == supId))
+        return Results.BadRequest(new { error = "Nhà cung cấp không được để trống!", supplierId = supId });
+
+    var opType = string.IsNullOrWhiteSpace(dto.OrderPartType) ? null : dto.OrderPartType!.Trim().ToUpperInvariant();
+    if (opType == "TST")
+    {
+        // guard 4-5: hình thức giao hàng phải tồn tại + đang hoạt động (Mst_DeliveryForm nằm trong catalog chung)
+        var dfCode = (dto.DeliveryFormCode ?? "").Trim().ToUpperInvariant();
+        if (dfCode.Length == 0)
+            return Results.BadRequest(new { error = "Chưa chọn hình thức giao hàng." });
+        var df = await db.Masters.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.Category == "DeliveryForm" && m.Code == dfCode);
+        if (df is null || df.Status != "1")
+            return Results.BadRequest(new { error = $"Hình thức giao hàng {dfCode} không tồn tại hoặc đã ngừng.", deliveryFormCode = dfCode });
+
+        // guard 6: 🔴 mã BẢO HÀNH là "2" (TConst.DeliveryFormCode.BAOHANH), KHÔNG phải chuỗi "BAOHANH"
+        if (dfCode == "2" && string.IsNullOrWhiteSpace(dto.VIN))
+            return Results.BadRequest(new { error = "Hình thức Bảo hành VIN bắt buộc nhập!" });
+    }
+
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.OrderQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + OrderQty > 0)." });
-    var no = "OP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var no = existing?.OrderPartNo ?? (reqNo.Length > 0 ? reqNo : "OP" + DateTime.Now.ToString("yyMMddHHmmss"));
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     // ⚠️ Chỉ gán 9 trường mà `Ser_Order_Part_Save` thực sự gửi (+ vết ghi). Ba trường ngày/số đơn NCC
     //    KHÔNG gán ở đây — nguồn chỉ nhận chúng ở bước DUYỆT (`_Appr`).
@@ -28872,7 +28952,19 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
         SupplierStatus = "1",   // TConst.SupplierStatus.SS_1 — chờ NCC duyệt
         CreateBy = who, LogLUDateTime = DateTime.Now, LogLUBy = who,
     };
-    db.OrderParts.Add(o); await db.SaveChangesAsync();
+    if (existing is not null)
+    {
+        // (D) SỬA: nguồn GIỮ NGUYÊN CreateDTime/CreateBy của bản ghi cũ (:293-294), chỉ thay phần còn lại.
+        o.Id = existing.Id;
+        o.CreatedAt = existing.CreatedAt;
+        o.CreateBy = existing.CreateBy;
+        db.Entry(existing).CurrentValues.SetValues(o);
+        var oldLines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == existing.Id).ToListAsync();
+        db.OrderPartLines.RemoveRange(oldLines);   // Save thay TRỌN bộ dòng
+        await db.SaveChangesAsync();
+        o = existing;
+    }
+    else { db.OrderParts.Add(o); await db.SaveChangesAsync(); }
     var newLines = new List<OrderPartLine>();
     foreach (var l in lines)
     {
@@ -31774,7 +31866,10 @@ record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, dec
     decimal? QtyAppr = null, decimal? UPBeforeDc = null, decimal? DiscountRate = null, decimal? VAT = null);
 record OrderPartLineStatusDto(string? ToStatus);
 // #234: 8 trường mà `Ser_Order_Part_Save` gửi lên, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
+// #240: `OrderPartNo` (trống = tạo mới) + `FlagIsDelete` ("Y" = xoá) — nguồn dùng CHUNG một hàm
+//   `Ser_Order_Part_Save` cho cả tạo/sửa/xoá.
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines,
+    string? OrderPartNo = null, string? FlagIsDelete = null,
     string? DealerCode = null, string? SupplierID = null, string? PartGroupID = null,
     string? DeliveryFormCode = null, string? DeliveryLocationCode = null,
     DateTime? EstimatedDeliverDate = null, string? VIN = null, string? Remark = null,
