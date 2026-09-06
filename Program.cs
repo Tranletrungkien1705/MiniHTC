@@ -28407,6 +28407,80 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
 }).RequireAuthorization();
 
 // Tạo bản ghi MACE (WinForm gốc chỉ search vì nguồn phát sinh từ hãng — thêm POST để nhập tay tương đương)
+// ===== 🔴 #219 BÁO CÁO TỔNG HỢP CSKH (5 nhóm) — `Ser_CustomerCareRpt` =====
+// Màn gốc: `Views/Customer/FrmCustomerCareReport.cs` (178 dòng, DMSCarSv) — 2 nút `btnSearch` · `btnThoat`.
+// Nguồn: `TERP.BizCarSv/BizCarSv.Customer.cs:17534`. 3B: md5 CẢ FILE `44c7c87b` KHỚP 2 máy.
+//
+// Nguồn đếm 4 chỉ tiêu (`Total` · `Pending` · `IsContact` · `IsNotContact`) cho **5 nhóm** CSKH.
+// 🔴 MỖI NHÓM DÙNG **BẢNG MÃ KHÁC NHAU** — đây là chỗ dễ port sai nhất, đã đối chiếu từng dòng SQL:
+//     `#tblCustomerCareMace` (bảo dưỡng) : Pending=`'0'` · IsContact=`'1'` · IsNotContact=`'2'`
+//     `#tblCustomerCareBth`  (sinh nhật) : Pending=`'0'` · IsContact=`'1'` · IsNotContact=`'2'`
+//     `#tblCustomerCare72h`             : Pending=`'PEND'` · IsContact=`'CINFB' OR 'CIFB'` · IsNotContact=`'REJ'`
+//     `#tblCustomerCare24h`             : (giống 72h)
+//     `#tblCustomerCareCamp` (chiến dịch): 🔴 **Pending=`'2'` · IsContact=`'1'` · IsNotContact=`'3'`**
+//        ⇒ nhóm chiến dịch **ĐẢO** so với Mace/Bth: mã `'2'` ở đây là "chưa liên hệ", không phải "không liên hệ".
+//
+// ⚠️ MiniHTC lưu 24h/72h trên CÙNG bảng `CustomerCares`, phân biệt bằng `CareType` (CARE24H/CARE72H)
+//    ⇒ tách hai nhóm bằng CareType, đúng ngữ nghĩa nguồn (nguồn tách bằng hai bảng tạm).
+app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    // --- nhóm 1+2: 24h / 72h trên bảng CustomerCares (mã PEND / CINFB|CIFB / REJ) ---
+    var cares = await db.CustomerCares.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    if (from.HasValue) cares = cares.Where(x => x.ContactDate == null || x.ContactDate.Value.Date >= from.Value).ToList();
+    if (to.HasValue) cares = cares.Where(x => x.ContactDate == null || x.ContactDate.Value.Date <= to.Value).ToList();
+
+    object CareGroup(string label, IEnumerable<CustomerCare> src)
+    {
+        var l = src.ToList();
+        return new
+        {
+            group = label,
+            total = l.Count,
+            pending = l.Count(x => x.Status == "PEND"),
+            isContact = l.Count(x => x.Status == "CINFB" || x.Status == "CIFB"),
+            isNotContact = l.Count(x => x.Status == "REJ")
+        };
+    }
+
+    var g24 = CareGroup("CARE24H", cares.Where(x => x.CareType == "CARE24H"));
+    var g72 = CareGroup("CARE72H", cares.Where(x => x.CareType == "CARE72H"));
+
+    // --- nhóm 3: nhắc bảo dưỡng (mã 0/1/2) ---
+    var maces = await db.CustomerCareMaces.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    if (from.HasValue) maces = maces.Where(x => x.ContactDate == null || x.ContactDate.Value.Date >= from.Value).ToList();
+    if (to.HasValue) maces = maces.Where(x => x.ContactDate == null || x.ContactDate.Value.Date <= to.Value).ToList();
+    var gMace = new { group = "MACE", total = maces.Count,
+        pending = maces.Count(x => x.Status == "0"),
+        isContact = maces.Count(x => x.Status == "1"),
+        isNotContact = maces.Count(x => x.Status == "2") };
+
+    // --- nhóm 4: sinh nhật (mã 0/1/2) ---
+    var bths = await db.CustomerCareBirthdays.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) bths = bths.Where(x => x.DealerCode == dealerCode).ToList();
+    if (from.HasValue) bths = bths.Where(x => x.ContactDate == null || x.ContactDate.Value.Date >= from.Value).ToList();
+    if (to.HasValue) bths = bths.Where(x => x.ContactDate == null || x.ContactDate.Value.Date <= to.Value).ToList();
+    var gBth = new { group = "BIRTHDAY", total = bths.Count,
+        pending = bths.Count(x => x.Status == "0"),
+        isContact = bths.Count(x => x.Status == "1"),
+        isNotContact = bths.Count(x => x.Status == "2") };
+
+    // --- nhóm 5: chiến dịch — 🔴 bảng mã ĐẢO: 2 = chưa liên hệ, 1 = đã liên hệ, 3 = không liên hệ ---
+    var camps = await db.CampaignContacts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var gCamp = new { group = "CAMPAIGN", total = camps.Count,
+        pending = camps.Count(x => x.ContactStatus == "2"),
+        isContact = camps.Count(x => x.ContactStatus == "1"),
+        isNotContact = camps.Count(x => x.ContactStatus == "3") };
+
+    var groups = new List<object> { g24, g72, gMace, gBth, gCamp };
+    return Results.Ok(new { fromDate = from, toDate = to, groups,
+        note = "Mỗi nhóm dùng bảng mã RIÊNG (24h/72h: PEND/CINFB|CIFB/REJ · Mace+Bth: 0/1/2 · Campaign: 2/1/3 — đảo).",
+        skipped = "Nguồn lọc thêm theo DealerCode cho mọi nhóm; MiniHTC chỉ có DealerCode trên nhóm sinh nhật, các nhóm khác chưa lưu ⇒ KHÔNG bịa." });
+}).RequireAuthorization();
+
 // ===== 🔴 #218 NHẮC BẢO DƯỠNG theo phiếu CSKH — `Ser_CustomerCareMaintance` =====
 // Màn gốc: `Views/Customer/FrmCSCCustomerCareMaintance.cs` (238 dòng, DMSCarSv) —
 //   bốn nút: `btnThoat` · `btnContactedIFeedB` · `btnContactedINoFB` · `btnReject`.
