@@ -4217,6 +4217,129 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Master của module Marketing (port 1:1 các hàm `*_Get` trong BizHTC.Marketing.cs:
+// Mst_KPI(7662) · Mst_KPIType(7949) · MRK_Mst_AreaMarket(11828) · Mst_DocType(12238) ·
+// Mst_EvenType(12490) · Mst_Quater(12749) · Mst_FileType(13008) · Mst_Disbursment(13256) ·
+// Mst_Doc Get(13515)/Create(13726)/Delete(13904)). TWIN: cả WS 32-bit lẫn 64-bit. =====
+// 🔴 Ba master Mst_KPI / Mst_KPIType / MRK_Mst_AreaMarket dùng cột cờ tên `FlagAcitve` —
+//    SAI CHÍNH TẢ NGUYÊN VĂN trong DB nguồn (dòng 7808 / 8080 / 11961). Giữ nguyên, không "sửa".
+// Đây là các master mà những lượt trước phải ghi nợ vì MiniHTC chưa có
+// (Mst_KPI #112 · Mst_Quater #110 · Mst_EvenType + Mst_FileType #111).
+app.MapGet("/api/mstkpis", async (AppDbContext db, ITenantContext t, string? kpiCode, string? kpiType, string? flagAcitve) =>
+{
+    var qy = db.MstKpis.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(kpiCode)) qy = qy.Where(x => x.KPICode == kpiCode);
+    if (!string.IsNullOrWhiteSpace(kpiType)) qy = qy.Where(x => x.KPIType == kpiType);
+    if (!string.IsNullOrWhiteSpace(flagAcitve)) qy = qy.Where(x => x.FlagAcitve == flagAcitve);
+    var items = await qy.OrderBy(x => x.KPIType).ThenBy(x => x.KPICode)
+        .Select(x => new { x.KPICode, x.KPIType, x.FlagAcitve }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstkpitypes", async (AppDbContext db, ITenantContext t, string? kpiType, string? flagAcitve) =>
+{
+    var qy = db.MstKpiTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(kpiType)) qy = qy.Where(x => x.KPIType == kpiType);
+    if (!string.IsNullOrWhiteSpace(flagAcitve)) qy = qy.Where(x => x.FlagAcitve == flagAcitve);
+    var items = await qy.OrderBy(x => x.KPIType).Select(x => new { x.KPIType, x.FlagAcitve }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mrkareamarkets", async (AppDbContext db, ITenantContext t, string? mrkamCode, string? flagAcitve) =>
+{
+    var qy = db.MrkMstAreaMarkets.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(mrkamCode)) qy = qy.Where(x => x.MRKAMCode == mrkamCode);
+    if (!string.IsNullOrWhiteSpace(flagAcitve)) qy = qy.Where(x => x.FlagAcitve == flagAcitve);
+    var items = await qy.OrderBy(x => x.MRKAMCode).Select(x => new { x.MRKAMCode, x.FlagAcitve }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Nguồn sắp xếp theo `Seq`, không theo mã.
+app.MapGet("/api/mstdoctypes", async (AppDbContext db, ITenantContext t, string? docType) =>
+{
+    var qy = db.MstDocTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(docType)) qy = qy.Where(x => x.DocType == docType);
+    var items = await qy.OrderBy(x => x.Seq).Select(x => new { x.DocType, x.Seq }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ⚠️ Quirk nguồn: lọc theo `EvenType` nhưng select ra `DocType` — giữ cả hai cột.
+app.MapGet("/api/msteventypes", async (AppDbContext db, ITenantContext t, string? evenType) =>
+{
+    var qy = db.MstEvenTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(evenType)) qy = qy.Where(x => x.EvenType == evenType);
+    var items = await qy.OrderBy(x => x.EvenType).Select(x => new { x.EvenType, x.DocType }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstquaters", async (AppDbContext db, ITenantContext t, string? quaterCode) =>
+{
+    var qy = db.MstQuaters.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(quaterCode)) qy = qy.Where(x => x.QuaterCode == quaterCode);
+    var items = await qy.OrderBy(x => x.QuaterCode).Select(x => new { x.QuaterCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstfiletypes", async (AppDbContext db, ITenantContext t, string? fileType) =>
+{
+    var qy = db.MstFileTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(fileType)) qy = qy.Where(x => x.FileType == fileType);
+    var items = await qy.OrderBy(x => x.FileType).Select(x => new { x.FileType }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstdisbursments", async (AppDbContext db, ITenantContext t, string? disbursmentCode) =>
+{
+    var qy = db.MstDisbursments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(disbursmentCode)) qy = qy.Where(x => x.DisbursmentCode == disbursmentCode);
+    var items = await qy.OrderBy(x => x.DisbursmentCode).Select(x => new { x.DisbursmentCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tài liệu marketing: Get + Create + Delete (Delete là XOÁ THẬT).
+app.MapGet("/api/mstdocs", async (AppDbContext db, ITenantContext t, string? docType, string? flagActive) =>
+{
+    var qy = db.MstDocs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(docType)) qy = qy.Where(x => x.DocType == docType);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderByDescending(x => x.Id)
+        .Select(x => new { x.Id, x.DocName, x.DocType, x.FileNameActual, x.FilePath, x.FlagActive, x.Remark })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdocs/create", async (MstDocCreateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var name = (dto.DocName ?? "").Trim();
+    var docType = (dto.DocType ?? "").Trim();
+    if (name.Length < 1) return Results.BadRequest(new { error = "Tên tài liệu rỗng." });
+    if (docType.Length < 1) return Results.BadRequest(new { error = "Chưa chọn loại tài liệu." });
+    // Guard nguồn Mst_DocType_CheckDB: loại tài liệu phải tồn tại.
+    if (!await db.MstDocTypes.AnyAsync(x => x.OrgId == t.OrgId && x.DocType == docType))
+        return Results.BadRequest(new { error = $"Loại tài liệu {docType} không tồn tại." });
+
+    db.MstDocs.Add(new MstDoc
+    {
+        OrgId = t.OrgId, DocName = name, DocType = docType,
+        FileNameActual = dto.FileNameActual, FilePath = dto.FilePath,
+        FlagActive = "1",
+        // 🔴 C0-bug8: nguồn gán `Remark = TConst.Flag.Active` (ghi cờ "1" vào cột ghi chú, bỏ quên
+        //    tham số `strRemark`). Ở đây ghi ĐÚNG ghi chú người dùng nhập.
+        Remark = dto.Remark,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { docName = name, docType });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdocs/delete", async (MstDocKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.MstDocs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == dto.Id);
+    if (row is null) return Results.NotFound(new { error = $"Không có tài liệu id {dto.Id}." });
+    db.MstDocs.Remove(row); // nguồn XOÁ THẬT
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = dto.Id });
+}).RequireAuthorization();
+
 // ===== Chiến dịch ĐẠI LÝ theo quý (MRK_CampaignDL — port 1:1 cụm 7 hàm: Get(8517) / Save(9042) /
 // Update(10724) / Approve(10368) + 3 hàm đọc chi tiết RegisterDtl(10989) / ActualDtl(11252) /
 // QuarterKPI(11516), 2010.HTC BizHTC.Marketing.cs). TWIN: 7/7, cả WS 32-bit lẫn 64-bit. =====
@@ -23573,6 +23696,9 @@ record MrkCampaignDLSaveDto(string? FlagIsDelete, string? DealerCode, string? MR
 // Update chỉ nhận ba trường sửa được — cột điểm do hệ thống tính, không nhận từ client.
 record MrkCampaignDLUpdateDto(string? DealerCode, string? MRKCamDLYear, string? MRKCamDLQuarter, decimal? BonusPoint, string? ObligationKPI, string? KPIRank);
 record MrkCampaignDLKeyDto(string? DealerCode, string? MRKCamDLYear, string? MRKCamDLQuarter);
+// Tài liệu marketing (Mst_Doc): chỉ có Create và Delete, không có Update.
+record MstDocCreateDto(string? DocName, string? DocType, string? FileNameActual, string? FilePath, string? Remark);
+record MstDocKeyDto(long Id);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

@@ -4559,6 +4559,122 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Master **KPI** (`Mst_KPI` — port 1:1 `Mst_KPI_Get_New20181115`, 2010.HTC
+/// `BizHTC.Marketing.cs:7662`; `Mst_KPI_CheckDB` tại 7590 khoá theo cặp (`KPICode`, `KPIType`)).
+/// 🔴 Cột cờ hoạt động của ba master `Mst_KPI` / `Mst_KPIType` / `MRK_Mst_AreaMarket` tên là
+/// **`FlagAcitve`** — **sai chính tả NGUYÊN VĂN trong DB** (Acitve thay vì Active), xác nhận ở
+/// `BizHTC.Marketing.cs` dòng 7808 / 8080 / 11961. Giữ nguyên, KHÔNG "sửa" thành `FlagActive`
+/// kẻo lệch tên cột với hệ nguồn.
+/// </summary>
+public sealed class MstKpi
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string KPICode { get; set; } = "";
+    public string KPIType { get; set; } = "";
+    /// <summary>🔴 Sai chính tả nguyên văn của nguồn: "FlagAcitve".</summary>
+    public string FlagAcitve { get; set; } = "1";
+}
+
+/// <summary>Master LOẠI KPI (`Mst_KPIType` — `Mst_KPIType_Get_New20181115`, dòng 7949). Cờ cũng là `FlagAcitve`.</summary>
+public sealed class MstKpiType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string KPIType { get; set; } = "";
+    public string FlagAcitve { get; set; } = "1";
+}
+
+/// <summary>
+/// Master VÙNG THỊ TRƯỜNG marketing (`MRK_Mst_AreaMarket` — `MRK_Mst_AreaMarket_Get_New20181115`,
+/// dòng 11828). Cờ cũng là `FlagAcitve` (sai chính tả nguyên văn).
+/// Master này là đích của `Mst_Dealer_UpdateMRKAMCode` (gán vùng cho đại lý) — hàm đó **chưa port**.
+/// </summary>
+public sealed class MrkMstAreaMarket
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKAMCode { get; set; } = "";
+    public string FlagAcitve { get; set; } = "1";
+}
+
+/// <summary>Master LOẠI TÀI LIỆU (`Mst_DocType` — dòng 12238). Có cột `Seq` để sắp thứ tự hiển thị.</summary>
+public sealed class MstDocType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DocType { get; set; } = "";
+    /// <summary>Thứ tự hiển thị — nguồn `order by mdt.Seq`.</summary>
+    public int? Seq { get; set; }
+}
+
+/// <summary>
+/// Master LOẠI SỰ KIỆN (`Mst_EvenType` — `Mst_EvenType_Get`, dòng 12490).
+/// ⚠️ Tên bảng nguồn **thiếu chữ t**: "EvenType" (đúng phải là EventType).
+/// ⚠️ Quirk nguồn: bộ lọc chạy trên cột `met.EvenType` nhưng câu select lại lấy ra `met.DocType`
+/// — hai cột khác nhau. Port giữ cả hai cột để không mất dữ liệu bên nào.
+/// </summary>
+public sealed class MstEvenType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string EvenType { get; set; } = "";
+    /// <summary>Nguồn select ra cột này (xem quirk ở phần mô tả lớp).</summary>
+    public string? DocType { get; set; }
+}
+
+/// <summary>
+/// Master QUÝ (`Mst_Quater` — `Mst_Quater_Get`, dòng 12749).
+/// ⚠️ Tên bảng thiếu chữ r ("Quater" thay vì Quarter), và tên cột trong câu select viết
+/// **`Quatercode`** (chữ c thường) trong khi bộ lọc viết `QuaterCode`. SQL Server không phân biệt
+/// hoa-thường nên nguồn chạy được; Postgres thì có, nên ở đây thống nhất dùng **`QuaterCode`**.
+/// </summary>
+public sealed class MstQuater
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string QuaterCode { get; set; } = "";
+}
+
+/// <summary>Master LOẠI FILE (`Mst_FileType` — `Mst_FileType_Get_New20181115`, dòng 13008).</summary>
+public sealed class MstFileType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string FileType { get; set; } = "";
+}
+
+/// <summary>
+/// Master ĐỢT GIẢI NGÂN (`Mst_Disbursment` — `Mst_Disbursment_Get`, dòng 13256).
+/// ⚠️ Nguồn LỆCH chính tả giữa hai chỗ trong CÙNG một hàm: câu select lấy `md.DisbursmentCode`
+/// (có s) còn bộ lọc dựng trên `DisburmentCode` (**thiếu s**). Ở đây dùng dạng của câu select.
+/// </summary>
+public sealed class MstDisbursment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DisbursmentCode { get; set; } = "";
+}
+
+/// <summary>
+/// TÀI LIỆU marketing (`Mst_Doc` — port 1:1 `Mst_Doc_Get/Create/Delete_New20181115`,
+/// dòng 13515 / 13726 / 13904). `Delete` là **XOÁ THẬT** (`DataRow.Delete()`).
+/// ⚠️ Xem `### C0-bug8`: hàm `Create` của nguồn gán `Remark = TConst.Flag.Active` — ghi cờ "1" vào
+/// cột GHI CHÚ, làm mất ghi chú người dùng nhập (`strRemark` bị bỏ không dùng). Port ghi đúng `strRemark`.
+/// </summary>
+public sealed class MstDoc
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DocName { get; set; } = "";
+    public string DocType { get; set; } = "";
+    public string? FileNameActual { get; set; }
+    public string? FilePath { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+}
+
+/// <summary>
 /// CHIẾN DỊCH ĐẠI LÝ theo quý — phần đầu (`MRK_CampaignDL` — port 1:1 cụm 7 hàm
 /// `MRK_CampaignDL_Get/Save/Update/Approve` + `MRK_CampaignDLRegisterDtl_Get` +
 /// `MRK_CampaignDLActualDtl_Get` + `MRK_CampaignDLQuarterKPI_Get`, tất cả `_New20181115`;

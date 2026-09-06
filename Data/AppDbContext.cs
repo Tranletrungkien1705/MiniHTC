@@ -43,6 +43,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MrkKpiDisbursment> MrkKpiDisbursments => Set<MrkKpiDisbursment>();
     public DbSet<MrkCampaign> MrkCampaigns => Set<MrkCampaign>();
     public DbSet<MrkCampaignDL> MrkCampaignDLs => Set<MrkCampaignDL>();
+    public DbSet<MstKpi> MstKpis => Set<MstKpi>();
+    public DbSet<MstKpiType> MstKpiTypes => Set<MstKpiType>();
+    public DbSet<MrkMstAreaMarket> MrkMstAreaMarkets => Set<MrkMstAreaMarket>();
+    public DbSet<MstDocType> MstDocTypes => Set<MstDocType>();
+    public DbSet<MstEvenType> MstEvenTypes => Set<MstEvenType>();
+    public DbSet<MstQuater> MstQuaters => Set<MstQuater>();
+    public DbSet<MstFileType> MstFileTypes => Set<MstFileType>();
+    public DbSet<MstDisbursment> MstDisbursments => Set<MstDisbursment>();
+    public DbSet<MstDoc> MstDocs => Set<MstDoc>();
     public DbSet<MrkCampaignDLRegister> MrkCampaignDLRegisters => Set<MrkCampaignDLRegister>();
     public DbSet<MrkCampaignDLRegisterDtl> MrkCampaignDLRegisterDtls => Set<MrkCampaignDLRegisterDtl>();
     public DbSet<MrkCampaignDLActual> MrkCampaignDLActuals => Set<MrkCampaignDLActual>();
