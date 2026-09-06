@@ -845,6 +845,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #204 doi ten cot NVBH ve dung nguon (Mst_SalesMan) + migrate tu vung BDHStatus
+        "ALTER TABLE public.\"DlSalesMen\" ADD COLUMN IF NOT EXISTS \"SMGender\" text",
+        "ALTER TABLE public.\"DlSalesMen\" ADD COLUMN IF NOT EXISTS \"SMPhoneNo\" text",
+        "UPDATE public.\"DlSalesMen\" SET \"SMGender\" = \"Sex\" WHERE \"SMGender\" IS NULL AND \"Sex\" IS NOT NULL",
+        "UPDATE public.\"DlSalesMen\" SET \"SMPhoneNo\" = \"PhoneNo\" WHERE \"SMPhoneNo\" IS NULL AND \"PhoneNo\" IS NOT NULL",
+        "UPDATE public.\"DealerSalesMen\" SET \"BDHStatus\" = 'CHALLENGE' WHERE \"BDHStatus\" = 'Pending'",
+        "UPDATE public.\"DealerSalesMen\" SET \"BDHStatus\" = 'APPOINT' WHERE \"BDHStatus\" = 'Approved'",
         // #202 migrate TU VUNG phieu thanh toan: nguon dung TConst.Stage (P/A/R), khong phai Draft/Approved/Rejected
         "UPDATE public.\"BankPayments\" SET \"PaymentStatus\" = 'P' WHERE \"PaymentStatus\" = 'Draft'",
         "UPDATE public.\"BankPayments\" SET \"PaymentStatus\" = 'A' WHERE \"PaymentStatus\" = 'Approved'",

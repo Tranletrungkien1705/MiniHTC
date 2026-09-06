@@ -1952,8 +1952,15 @@ public sealed class SalesManViolate
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>NVBH đại lý (Mst_DlSalesMan — port 1:1 FrmMngSalesManHTC/FrmMngSalesManApproved, SalesDealer):
-/// NVBH tại đại lý; duyệt = cấp SMHyundaiCode (mã Hyundai). SMStatus: THUVIEC/CHINGTHUC/CTVIEN/NGHIVIEC.</summary>
+/// <summary>
+/// #204 parity — bảng nguồn THẬT là `Mst_SalesMan` (tên `Mst_DlSalesMan` trong tài liệu cũ KHÔNG tồn tại;
+/// nguồn chỉ có `Mst_SalesMan` và `Dlr_SalesMan`). Khoá của cả hai là `SMCode`; `SMHyundaiCode` thuộc
+/// `Mst_SalesMan` (xác minh qua alias `msm.SMHyundaiCode` trong BizHTC.Contract.cs).
+/// 🔴 NỢ HỢP NHẤT: <see cref="DealerSalesMan"/> cũng map CHÍNH bảng này (cùng khoá `SMCode`, cùng `SMStatus`)
+/// ⇒ hai entity một bảng. Chưa gộp ở lượt này để giữ "một biến" (xem luật `C0-trecentesimus`).
+/// Port 1:1 FrmMngSalesManHTC / FrmMngSalesManApproved (SalesDealer): NVBH tại đại lý;
+/// duyệt = cấp SMHyundaiCode (mã Hyundai). SMStatus: THUVIEC/CHINGTHUC/CTVIEN/NGHIVIEC.
+/// </summary>
 public sealed class DlSalesMan
 {
     public long Id { get; set; }
@@ -1963,9 +1970,11 @@ public sealed class DlSalesMan
     public string DealerCode { get; set; } = "";
     public string? SMHyundaiCode { get; set; }        // mã Hyundai cấp (có = đã duyệt)
     public string SMStatus { get; set; } = "THUVIEC"; // THUVIEC/CHINGTHUC/CTVIEN/NGHIVIEC
-    public string? Sex { get; set; }                  // 0=Nam, 1=Nữ
+    // 🔴 #204: nguồn dùng `SMGender` và `SMPhoneNo`. Tên cũ `Sex` **0 hit** trên toàn `TERP.BizHTC`
+    //    (tên tự đặt), `PhoneNo` có hit nhưng thuộc bảng khách hàng — không phải cột của NVBH.
+    public string? SMGender { get; set; }             // 0=Nam, 1=Nữ
     public DateTime? DateOfBirth { get; set; }
-    public string? PhoneNo { get; set; }
+    public string? SMPhoneNo { get; set; }
     public string? IdentityCardNo { get; set; }
     public DateTime? StartDate { get; set; }    // ngày bắt đầu công tác — port FrmQuanLyLSCongTac
     public DateTime? EndDate { get; set; }      // ngày kết thúc công tác
@@ -2827,7 +2836,12 @@ public sealed class DealerSalesMan
     public DateTime? StartDate { get; set; }
     public DateTime? EndDate { get; set; }
     public string SMStatus { get; set; } = "THUVIEC";   // THUVIEC/CHINHTHUC/NGHIVIEC/CTVIEN
-    public string BDHStatus { get; set; } = "Pending";   // Pending → Approved / Rejected (BĐH duyệt)
+    /// <summary>
+    /// 🔴 #204 — `TConst.BDHStatus` (Const.Main.cs:1227) chỉ có HAI giá trị: **`CHALLENGE`** (đang thử thách)
+    /// và **`APPOINT`** (đã bổ nhiệm). Bộ `Pending/Approved/Rejected` của port cũ KHÔNG có ở nguồn, và ý nghĩa
+    /// cũng khác: đây là trạng thái **BỔ NHIỆM**, không phải một vòng duyệt có nhánh từ chối.
+    /// </summary>
+    public string BDHStatus { get; set; } = "CHALLENGE";
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
 }

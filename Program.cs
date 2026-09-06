@@ -12122,7 +12122,7 @@ app.MapPost("/api/dealersalesmen", async (DealerSalesManDto dto, AppDbContext db
     if (!smWorkStatuses.Contains(work)) return Results.BadRequest(new { error = "Trạng thái làm việc không hợp lệ (THUVIEC/CHINHTHUC/NGHIVIEC/CTVIEN)." });
     if (!string.IsNullOrWhiteSpace(dto.SMEmail) && !(dto.SMEmail!.Contains('@') && dto.SMEmail.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
     var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
-    if (row is null) { row = new DealerSalesMan { OrgId = t.OrgId, SMCode = code, BDHStatus = "Pending" }; db.DealerSalesMen.Add(row); }
+    if (row is null) { row = new DealerSalesMan { OrgId = t.OrgId, SMCode = code, BDHStatus = "CHALLENGE" }; db.DealerSalesMen.Add(row); }   // #204
     row.SMHyundaiCode = dto.SMHyundaiCode; row.SMName = dto.SMName; row.DealerCode = dto.DealerCode; row.SMEmail = dto.SMEmail; row.SMPhoneNo = dto.SMPhoneNo; row.IdentityCardNo = dto.IdentityCardNo; row.SMGender = dto.SMGender; row.ProvinceCode = dto.ProvinceCode; row.QualificationCode = dto.QualificationCode; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.SMStatus = work; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.SMCode, row.SMName, row.SMStatus, row.BDHStatus });
@@ -12132,9 +12132,16 @@ app.MapPost("/api/dealersalesmen/{id}/{action}", async (long id, string action, 
 {
     var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
-    var target = action.ToLowerInvariant() switch { "approve" => "Approved", "reject" => "Rejected", _ => "" };
-    if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (approve/reject)." });
-    if (row.BDHStatus != "Pending") return Results.BadRequest(new { error = $"NVBH đã ở trạng thái duyệt '{row.BDHStatus}', chỉ duyệt khi 'Pending'." });
+    // 🔴 #204 BỔ NHIỆM, KHÔNG PHẢI DUYỆT — `TConst.BDHStatus` (Const.Main.cs:1227) chỉ có `CHALLENGE`
+    //    (đang thử thách) và `APPOINT` (đã bổ nhiệm). Nguồn KHÔNG có nhánh "từ chối" cho trục này ⇒ bỏ
+    //    `reject`, và `approve` đổi thành `appoint` cho đúng nghiệp vụ (giữ `approve` làm bí danh để client cũ
+    //    không vỡ — cùng cách xử lý "giữ đường dẫn, đổi ngữ nghĩa bên dưới" ở #203).
+    var act = action.ToLowerInvariant();
+    if (act == "reject")
+        return Results.BadRequest(new { error = "Nguồn không có bước từ chối bổ nhiệm — chỉ CHALLENGE → APPOINT." });
+    var target = act is "appoint" or "approve" ? "APPOINT" : "";
+    if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (appoint)." });
+    if (row.BDHStatus != "CHALLENGE") return Results.BadRequest(new { error = $"NVBH đang ở '{row.BDHStatus}' — chỉ bổ nhiệm khi đang CHALLENGE." });
     row.BDHStatus = target; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.BDHStatus });
@@ -28854,7 +28861,7 @@ app.MapGet("/api/dlsalesmen", async (AppDbContext db, ITenantContext t, string? 
     if (approved == "1") q = q.Where(s => s.SMHyundaiCode != null && s.SMHyundaiCode != "");
     else if (approved == "0") q = q.Where(s => s.SMHyundaiCode == null || s.SMHyundaiCode == "");
     var items = await q.OrderBy(s => s.SMCode).Take(500).Select(s => new
-    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.Sex, s.DateOfBirth, s.PhoneNo, s.IdentityCardNo, s.StartDate, s.EndDate, s.SMReason, s.SMDesc,
+    { s.SMCode, s.SMName, s.DealerCode, s.SMHyundaiCode, s.SMStatus, s.SMGender, s.DateOfBirth, s.SMPhoneNo, s.IdentityCardNo, s.StartDate, s.EndDate, s.SMReason, s.SMDesc,
       s.BDHStatus, s.ChallengeStartDate, s.ChallengeEndDate, s.QualityRank, s.AccountHTA }).ToListAsync();
     return Results.Ok(new { count = items.Count, approved = items.Count(x => !string.IsNullOrEmpty(x.SMHyundaiCode)), items });
 }).RequireAuthorization();
@@ -28885,7 +28892,7 @@ app.MapPost("/api/dlsalesmen", async (DlSalesManDto dto, AppDbContext db, ITenan
     var s = await db.DlSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
     if (s is null) { s = new DlSalesMan { OrgId = t.OrgId, SMCode = code }; db.DlSalesMen.Add(s); }
     s.SMName = dto.SMName; s.DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
-    s.Sex = dto.Sex; s.DateOfBirth = dto.DateOfBirth; s.PhoneNo = dto.PhoneNo; s.IdentityCardNo = dto.IdentityCardNo;
+    s.SMGender = dto.Sex; s.DateOfBirth = dto.DateOfBirth; s.SMPhoneNo = dto.PhoneNo; s.IdentityCardNo = dto.IdentityCardNo;   // #204: cột đúng nguồn SMGender/SMPhoneNo
     if (!string.IsNullOrWhiteSpace(dto.SMStatus))
     {
         var st = dto.SMStatus.Trim().ToUpperInvariant();
