@@ -6036,6 +6036,106 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #330 DUYỆT BÁO CÁO KPI (`Report_KPIApproved`, `zzzzCode.cs:1635`) =====
+// 🔴 "DUYỆT" Ở ĐÂY **KHÔNG ĐỔI TRẠNG THÁI** — chỉ đóng dấu người/thời điểm:
+//   `Report_KPICreate` đã đặt `Status = Stage.Finished` (**"F"**) **NGAY LÚC TẠO** (`zzzzCode.cs:`1285`);
+//   `Report_KPIApproved` đặt lại **đúng giá trị đó** rồi ghi `ApprovedDate` / `ApprovedBy` / LogLU*.
+//   ⇒ Không có luồng Pending→Approved cho báo cáo KPI, dù tên hàm gợi ý thế. Port giữ đúng: không dựng
+//     trạng thái trung gian, chỉ đóng dấu.
+// ⚠️ KHOÁ tra là **cặp (DealerCode, DateReport)**, KHÔNG phải Id.
+// ⚠️ `ApprovedDate` dùng `"yyyy-MM-dd HH:mm:ss"` ⇒ **GIỮ GIÂY** — khác các mốc của lệnh sửa chữa vốn cắt
+//   tới PHÚT (#321/#328). Độ chính xác thời gian **không đồng nhất** giữa các màn; port theo từng chỗ.
+app.MapPost("/api/reportkpis/approve", async (ReportKpiApproveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealer.Length == 0 || dto.DateReport is null)
+        return Results.BadRequest(new { error = "Cần DealerCode và DateReport (khoá tra của nguồn)." });
+
+    var rows = await db.ReportKpis.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+        && x.DateReport == dto.DateReport).ToListAsync();
+    if (rows.Count == 0) return Results.NotFound(new { dealer, dto.DateReport });
+
+    var now = DateTime.Now;   // giữ GIÂY, đúng nguồn
+    foreach (var r in rows)
+    {
+        r.Status = "F";                 // Stage.Finished — vốn đã là "F" từ lúc tạo
+        r.ApprovedDate = now;
+        r.ApprovedBy = dto.ApprovedBy;
+        r.LogLUDateTime = now;
+        r.LogLUBy = dto.ApprovedBy;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        dealerCode = dealer, dto.DateReport, approved = rows.Count,
+        status = "F",
+        note = "Duyệt KPI chỉ đóng dấu ApprovedDate/ApprovedBy — Status đã là \"F\" từ lúc TẠO, không đổi.",
+    });
+}).RequireAuthorization();
+
+// ===== 🔴 #330 SINH BÁO CÁO KPI TỰ ĐỘNG — hai job LIVE, **ghi KHÁC SỐ CỘT** =====
+// TRACE TWIN cả hai (WS `:30350` và `:30418`) rồi lần tiếp xuống hàm chúng gọi:
+//   `Report_KPICreate_AutoAllDealer`        (LIVE) → gọi `Report_KPICreateX`            ⇒ **61 cột**
+//   `Report_KPICreate_AutoDealer_New20221101` (LIVE) → gọi `Report_KPICreateX_New20221101` ⇒ **105 cột**
+//   (`Report_KPICreate_AutoDealer` bản trần KHÔNG được WS gọi ⇒ chết.)
+// 🔴 ⇒ **Chạy job "TẤT CẢ đại lý" ghi 61 cột; chạy job "MỘT đại lý" ghi 105 cột — cùng bảng `Report_KPI`.**
+//   Báo cáo sinh hàng loạt **thiếu 44 cột** so với sinh lẻ. Đây là bất nhất CÓ THẬT trong nguồn,
+//   không phải port sót — trả cờ `columnSetNote` để người đối chiếu thấy ngay.
+//
+// ⚠️ GUARD NGÀY BÁO CÁO (chỉ có ở `AutoAllDealer`):
+//   `if (strDateReport.CompareTo(DateTime.Now.ToString("yyyy-MM-01")) > 0) throw …_InvalidDateReport`
+//   ⇒ **so CHUỖI**, không phải so ngày: chỉ cho sinh báo cáo cho **kỳ ≤ ngày 1 tháng hiện tại**.
+//   Port so chuỗi y hệt để biên giới trùng khớp với nguồn.
+app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.DateReport is null) return Results.BadRequest(new { error = "Cần DateReport." });
+    var dateStr = dto.DateReport.Value.ToString("yyyy-MM-dd");
+    var boundary = DateTime.Now.ToString("yyyy-MM-01");
+    // so CHUỖI đúng như nguồn (CompareTo trên chuỗi "yyyy-MM-dd")
+    if (string.CompareOrdinal(dateStr, boundary) > 0)
+        return Results.BadRequest(new
+        {
+            error = "Kỳ báo cáo không hợp lệ: chỉ sinh cho kỳ ≤ ngày 1 tháng hiện tại.",
+            dateReport = dateStr, boundary,
+        });
+
+    var oneDealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var allDealers = oneDealer.Length == 0;
+
+    var dealers = allDealers
+        ? await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => d.DealerCode).ToListAsync()
+        : new List<string> { oneDealer };
+
+    var created = 0;
+    foreach (var d in dealers)
+    {
+        // Không sinh trùng kỳ cho cùng đại lý.
+        if (await db.ReportKpis.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == d
+                && x.DateReport == dto.DateReport)) continue;
+        db.ReportKpis.Add(new ReportKpi
+        {
+            OrgId = t.OrgId, DealerCode = d, DateReport = dto.DateReport,
+            Status = "F",                       // nguồn đặt Finished ngay lúc tạo
+            CreatedBy = dto.CreatedBy,
+        });
+        created++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        dateReport = dateStr, mode = allDealers ? "AutoAllDealer" : "AutoDealer",
+        dealers = dealers.Count, created,
+        // 📌 NỢ ĐÃ KHAI: hai job của nguồn TÍNH số liệu KPI từ dữ liệu xưởng rồi mới ghi;
+        //   ở đây mới tạo BẢN GHI KHUNG (đại lý + kỳ + trạng thái). Phần tính 98 chỉ tiêu chưa port.
+        computedFigures = false,
+        columnSetNote = allDealers
+            ? "Nguồn: job TẤT CẢ đại lý gọi Report_KPICreateX (61 cột) — THIẾU 44 cột so với job một đại lý."
+            : "Nguồn: job MỘT đại lý gọi Report_KPICreateX_New20221101 (105 cột) — bộ đầy đủ.",
+        note = "Guard kỳ báo cáo so CHUỖI với ngày 1 tháng hiện tại, đúng như nguồn.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
 {
     // Nguồn không chặn trường nào ở mức biz ⇒ KHÔNG tự thêm validate (lệ #299).
@@ -37711,6 +37811,11 @@ record MrkScopeLimitRowDto(string? DealerCode, decimal? Amount1QuaterScopeLimit,
 record MrkScopeLimitSaveDto(string? FlagIsDelete, string? MRKScopeLimitNo, string? MRKScopeLimitYear, List<MrkScopeLimitRowDto>? Details);
 record MrkScopeLimitKeyDto(string? MRKScopeLimitNo);
 // KPI/giải ngân marketing: một lệnh Save kiêm cả xoá (FlagIsDelete = "1") lẫn upsert.
+// #330: duyet bao cao KPI — khoa tra la CAP (DealerCode, DateReport), khong phai Id.
+record ReportKpiApproveDto(string? DealerCode, DateTime? DateReport, string? ApprovedBy = null);
+// #330: sinh bao cao KPI tu dong. DealerCode rong = che do TAT CA dai ly.
+record ReportKpiAutoDto(DateTime? DateReport, string? DealerCode = null, string? CreatedBy = null);
+
 // #329: bao cao KPI xuong dich vu — 98 truong cua Report_KPICreate_New20221101 (ban LIVE).
 record ReportKpiDto(
     decimal? AccessoryAmountAfterVAT = null, decimal? AccessoryAmountOut = null, decimal? AdvisoryNumber = null, string? ApprovedBy = null,
