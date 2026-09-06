@@ -875,6 +875,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"FinishDTime\" timestamp NULL",
                 // Xe dịch vụ ↔ hội viên Loyalty (Ser_Car.MemberCarID — hệ DMS-Loyalty, chỉ có trên máy 150)
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"MemberCarID\" text NULL",
+                // #332 mau bien so (trang/vang/xanh) — thuoc tinh phap ly, thieu o phia dich vu
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"PlateColorCode\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CusID\" text NULL",
                 // Đóng thùng / sắp xếp kho: mã trạng thái đúng nguồn + trạng thái theo DÒNG

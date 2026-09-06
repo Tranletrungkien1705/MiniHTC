@@ -12345,6 +12345,7 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
         x.MemberCarID, x.DealerCode, x.CusID,
         // #222 §12: 8 trường mới phải chiếu ở CẢ GET
         x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note,
+        x.PlateColorCode,   // #332 §12
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -12377,13 +12378,15 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
         ex.InsStartDate = dto.InsStartDate;
         ex.InsFinishedDate = dto.InsFinishedDate;
         ex.Note = dto.Note;
+        ex.PlateColorCode = dto.PlateColorCode;   // #332 §12 — phải có ở CẢ nhánh sửa lẫn nhánh tạo
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.FrameNo, updated = true });
     }
     var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile,
         MemberCarID = dto.MemberCarID, DealerCode = dto.DealerCode, CusID = dto.CusID, FlagActive = "1",
         // #222 parity: 8 trường của `CarUpdate`
-        CarID = dto.CarID, SalesCarID = dto.SalesCarID, DateBuyCar = dto.DateBuyCar, InsNo = dto.InsNo, InsContractNo = dto.InsContractNo, InsStartDate = dto.InsStartDate, InsFinishedDate = dto.InsFinishedDate, Note = dto.Note };
+        CarID = dto.CarID, SalesCarID = dto.SalesCarID, DateBuyCar = dto.DateBuyCar, InsNo = dto.InsNo, InsContractNo = dto.InsContractNo, InsStartDate = dto.InsStartDate, InsFinishedDate = dto.InsFinishedDate, Note = dto.Note,
+        PlateColorCode = dto.PlateColorCode };   // #332 §12
     db.ServiceCars.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.FrameNo, updated = false });
 }).RequireAuthorization();
@@ -33371,6 +33374,90 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
 }).RequireAuthorization();
 
 // Nhập khách hàng hàng loạt từ Excel (port 1:1 FrmImportCustomer) — tái dùng ServiceCustomer.
+// ===== 🔴 #332 TẠO KHÁCH **KÈM DANH SÁCH XE** trong một lời gọi (kênh máy tính bảng) =====
+// Nguồn `CarSv_Ser_CustomerCar_Create_*` (`BizCarSv.Tab.cs`). MiniHTC vốn chỉ có hai cổng RỜI
+//   (`POST /api/servicecustomers` và `POST /api/servicecars`) ⇒ thiếu cổng gộp mà máy tính bảng dùng.
+//
+// 🔴 TRACE TWIN — **HAI đường LIVE gọi HAI bản KHÁC NHAU**, không phải một bản thắng:
+//   `Ser_CustomerService.cs:54`  (đi qua WS, **máy tính bảng**) → WS `WSCarSvTab.asmx.cs:1972`
+//                                                              → `…_New20190924`
+//   `Ser_CustomerService.cs:142` (gọi `biz` **trực tiếp, tại chỗ**) → `…_New20220926`
+//   Bản trần `CarSv_Ser_CustomerCar_Create` (`:13123`) KHÔNG ai gọi ⇒ CHẾT.
+//   ⇒ Không thể chọn "bản mới nhất" làm bản đúng: **cả hai đều đang chạy**, khác nhau theo ĐƯỜNG GỌI.
+//
+// 🔴 ĐỘ LỆCH giữa hai bản LIVE — đo bằng tập cột ghi, đúng **MỘT** cột: **`PlateColorCode`**.
+//   Khách + xe đều ghi y hệt nhau; chỉ bản 2022 nhận thêm `strPlateColorCode` và gọi
+//   `SerCarCreateX20220926` thay cho `SerCarCreateX` (helper cũng chỉ hơn đúng cột đó).
+//   ⇒ **Xe tạo từ MÁY TÍNH BẢNG mất phân loại màu biển**; xe tạo tại chỗ thì có. Cùng bảng `Ser_Car`.
+//   MiniHTC không chia hai đường ⇒ port **đường đầy đủ (2022)**, và trả `plateColorNote` để chỗ nào
+//   đối chiếu với máy tính bảng còn biết vì sao dữ liệu web đầy hơn.
+//
+// ⚠️ BƯỚC 3B: `BizCarSv.Tab.cs` **md5 KHÁC nhau** giữa laptop và máy 150 (15341 vs 15323 dòng) —
+//   nhưng năm hàm của cụm này dịch đều **+18 dòng** và md5 của trọn vùng `12431-13847` (laptop) ≡
+//   `12449-13865` (150) ⇒ **vùng này giống hệt**; chênh lệch nằm ở đoạn trên (đã xử lý ở #319).
+//   Ghi lại vì file khác md5 mà vùng cần đọc lại giống nhau là trường hợp dễ kết luận vội cả hai chiều.
+//
+// 🔴 GUARD GIỚI TÍNH — bạch danh sách đúng HAI giá trị:
+//   `if (!IsNullOrEmpty(strGender) && strGender != Flag.Active && strGender != Flag.Inactive) throw`
+//   ⇒ `Sex` nhận **rỗng · "1" · "0"** (KHÔNG phải "M"/"F"), rỗng vẫn hợp lệ.
+//   ⚠️ Guard này chỉ có ở họ `*_CustomerCar_*Create` (Tab · Sales · MBS), **KHÔNG** có ở
+//     `Ser_Customer_Create` trần ⇒ **không** thêm guard vào `POST /api/servicecustomers` đang có
+//     (lệ #299: không tự chế luật cho cổng mà nguồn không chặn).
+app.MapPost("/api/servicecustomers/with-cars", async (CustomerWithCarsDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Cần DealerCode." });
+
+    var gender = (dto.Gender ?? "").Trim();
+    if (gender.Length > 0 && gender != "1" && gender != "0")
+        return Results.BadRequest(new { error = "Giới tính không hợp lệ: chỉ nhận rỗng, \"1\" hoặc \"0\".", gender });
+
+    var now = DateTime.Now;
+    var cusId = "TAB" + now.ToString("yyMMddHHmmssfff");
+    var c = new ServiceCustomer
+    {
+        OrgId = t.OrgId, CusCode = cusId, DealerCode = dealer,
+        CusName = dto.CusName!.Trim(), Address = dto.Address, Mobile = dto.Mobile,
+        ContName = dto.ContName, ContAddress = dto.ContAddress, ContTel = dto.ContPhone,
+        ProvinceCode = dto.ProvinceCode, DistrictCode = dto.DistrictCode,
+        Sex = gender.Length == 0 ? null : gender,
+        // Nguồn ghi `IDCardNo` ở ĐÂY — ngược hẳn kênh TVO (#331) vốn nhận rồi bỏ rơi.
+        //   Cùng một trường, hai kênh đối xử khác nhau ⇒ không suy từ kênh này sang kênh kia.
+        IDCardNo = dto.IDCardNo,
+        IsContact = "1", FlagActive = "1", UpdatedAt = now,
+    };
+    db.ServiceCustomers.Add(c);
+
+    // Nguồn chuẩn hoá đúng 6 trường mỗi dòng xe (`StdDataInTable`) và truyền `null` cho mọi trường còn
+    //   lại của helper (EngineNo · ProductYear · NgàyMua · Km · Bảo hiểm · SalesCarID · Note).
+    //   ⇒ cổng máy tính bảng CHỈ ghi được 6 trường xe + `IsActive="1"`; không tự mở rộng.
+    var made = new List<object>();
+    foreach (var row in dto.Cars ?? new List<CustomerWithCarsCarDto>())
+    {
+        var frame = (row.FrameNo ?? "").Trim().ToUpperInvariant();
+        if (frame.Length == 0) continue;
+        var carId = "TABC" + now.ToString("yyMMddHHmmssfff") + made.Count.ToString("00");
+        db.ServiceCars.Add(new ServiceCar
+        {
+            OrgId = t.OrgId, CarID = carId, CusID = cusId, DealerCode = dealer,
+            FrameNo = frame, PlateNo = row.PlateNo, PlateColorCode = row.PlateColorCode,
+            ModelCode = row.ModelID, ColorCode = row.ColorCode, TradeMark = row.TradeMarkCode,
+            CusName = dto.CusName!.Trim(), CusMobile = dto.Mobile,
+            FlagActive = "1",
+        });
+        made.Add(new { carId, frameNo = frame, row.PlateNo, row.PlateColorCode });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        cusId, cusCode = cusId, dealerCode = dealer, cars = made,
+        plateColorNote = "Cổng này ghi PlateColorCode (đường biz 2022). Máy tính bảng của nguồn đi qua WS "
+            + "gọi bản 2019 nên KHÔNG ghi được cột này — chênh lệch duy nhất giữa hai đường LIVE.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rows = dto.Rows ?? new();
@@ -38147,7 +38234,7 @@ record ServicePartDto(string PartCode, string? PartName, string? EngName, string
     decimal? TotalPrice = null, string? BalanceLocationId = null, decimal? FreqUsed = null,
     DateTime? PriceEffect = null, decimal? TSTPrice = null, decimal? TSTPriceBefore = null,
     string? FlagInTST = null);
-record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
+record ServiceCarDto(string FrameNo, string? PlateColorCode, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate
     string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
 record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);
@@ -38158,6 +38245,15 @@ record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email,
     string? PlateNo = null,
     string? ContName = null, string? ContAddress = null);
+// #332: tao khach KEM danh sach xe (kenh may tinh bang). Gender: rong | "1" | "0".
+record CustomerWithCarsDto(string? CusName, string? DealerCode, string? Address = null,
+    string? Mobile = null, string? ContName = null, string? ContAddress = null, string? ContPhone = null,
+    string? ProvinceCode = null, string? DistrictCode = null, string? Gender = null,
+    string? IDCardNo = null, List<CustomerWithCarsCarDto>? Cars = null);
+// 6 truong xe ma nguon chuan hoa; moi truong khac helper nhan null.
+record CustomerWithCarsCarDto(string? FrameNo, string? PlateNo = null, string? PlateColorCode = null,
+    string? ModelID = null, string? ColorCode = null, string? TradeMarkCode = null);
+
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null);

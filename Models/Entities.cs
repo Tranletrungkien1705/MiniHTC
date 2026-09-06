@@ -13460,6 +13460,11 @@ public sealed class ServiceCar
     //      nguồn `TradeMarkCode` → entity `TradeMark`
     //      nguồn `ModelID`       → entity `ModelCode`
     //      nguồn `IsActive`      → entity `FlagActive`
+    /// <summary>🔴 #332 PLATECOLORCODE — **màu biển số** (trắng / vàng / xanh). Ở VN màu biển phân loại
+    /// xe **cá nhân · kinh doanh vận tải · công vụ** ⇒ đây là thuộc tính PHÁP LÝ, không phải màu sắc.
+    /// Bản `CustomerCar` (phía bán hàng) đã có cột này từ lâu; `ServiceCar` (`Ser_Car`, phía dịch vụ)
+    /// **thiếu** — chính là toàn bộ độ lệch giữa hai đường ghi LIVE của `CarSv_Ser_CustomerCar_Create`.</summary>
+    public string? PlateColorCode { get; set; }
     /// <summary>Mã xe nội bộ của hệ dịch vụ (`CarID`) — khác `FrameNo` (số khung).</summary>
     public string? CarID { get; set; }
     /// <summary>Mã xe bên hệ BÁN HÀNG (`SalesCarID`) — cầu nối sang cụm Car_Car.</summary>
