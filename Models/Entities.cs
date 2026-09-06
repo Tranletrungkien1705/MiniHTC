@@ -4373,17 +4373,38 @@ public sealed class CarDocRequestCar
     public DateTime? DeliveryStartDate { get; set; }
 }
 
-/// <summary>Packing List (PL) — port 1:1 FrmNewPL/FrmMngPL (DMSales.Foton). Danh sách đóng gói lô xe lên tàu theo LC, cảng, ngày lên tàu/đến cảng.</summary>
+/// <summary>
+/// Packing List (PL) — port 1:1 FrmNewPL/FrmMngPL. Danh sách đóng gói lô xe lên tàu theo LC, cảng,
+/// ngày lên tàu / đến cảng.
+/// 🔴 **#123 đối chiếu với bảng nguồn `CT_PackingList`** (2010.HTC `Biz.HTC.WH.cs:34698`,
+/// hàm `ContractPackingListCreate_New20190923`; hàm duyệt `ContractPackingListApproved_New20181115`
+/// ở `BizHTC.Contract.cs:396`). Cột nguồn ↔ cột port cũ lệch tên, **giữ tên port cũ để không phá API**
+/// nhưng ghi rõ tại đây: `PackingListNo`→`PLNo`, `LCNo`→`LcNo`, `CreatedDate`→`CreatedAt`.
+/// GAP đã vá ở #123: bổ sung `ShippingDateEnd` và `PLStatus`.
+/// 🔴 `ShippingDateEnd` (ngày đến cảng THỰC TẾ) khi tạo được nguồn **gán BẰNG**
+/// `ShippingDateEndExpected` (dòng 34688-34689) — không để trống chờ cập nhật sau.
+/// 🔴 `PLStatus` = `TConst.Stage.Finished` (**"F"**) **ngay khi tạo**. Nhánh phân biệt theo
+/// `PLType != HTMV` (đặt "P") **đã bị COMMENT** ở nguồn (34691-34693) ⇒ hiện mọi PL đều "F" ngay.
+/// Đây là dấu vết đổi nghiệp vụ, giữ nguyên hành vi hiện hành.
+/// `PLType` theo `TConst.PLType` (`Const.Main.cs:877`): **HTMV · HMC** (HMI/CNTCG đã bị comment).
+/// </summary>
 public sealed class PackingList
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+    /// <summary>Cột nguồn: `PackingListNo`.</summary>
     public string PLNo { get; set; } = "";
+    /// <summary>Cột nguồn: `LCNo`.</summary>
     public string LcNo { get; set; } = "";
     public string? PortCode { get; set; }
+    /// <summary>HTMV | HMC (TConst.PLType).</summary>
     public string? PLType { get; set; }
     public DateTime ShippingDateStart { get; set; }        // ngày lên tàu
     public DateTime ShippingDateEndExpected { get; set; }  // ngày DK đến cảng
+    /// <summary>Ngày đến cảng THỰC TẾ — nguồn gán bằng ngày dự kiến khi tạo.</summary>
+    public DateTime? ShippingDateEnd { get; set; }
+    /// <summary>"F" ngay khi tạo (nhánh đặt "P" theo PLType đã bị comment ở nguồn).</summary>
+    public string PLStatus { get; set; } = "F";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 /// <summary>
@@ -6454,13 +6475,26 @@ public sealed class DealerContract
     /// <summary>Ngày nhận hợp đồng (`ReceiptContractDate`) — nguồn cập nhật ở `ContractDealerContractUpdate`.</summary>
     public DateTime? ReceiptContractDate { get; set; }
 }
+/// <summary>
+/// Dòng hợp đồng đại lý (`CT_DealerContractDetail` — 2010.HTC `Biz.HTC.WH.cs:30962-30971`,
+/// trong `ContractDealerContractCreate_New20181119` (30719)).
+/// 🔴 GAP đã vá ở #123: nguồn khoá dòng bằng **`DealerContractNo`** (số hợp đồng, kiểu chuỗi),
+/// port cũ chỉ có `DealerContractId` (khoá nội bộ) ⇒ **không map được dữ liệu thật** khi import
+/// từ SQL 228. Nay giữ cả hai: `DealerContractId` cho liên kết nội bộ, `DealerContractNo` khớp nguồn.
+/// 🔴 GAP thứ hai: nguồn có **`ContractDetailStatus`** riêng cho từng DÒNG (đặt `Stage.Pending` = "P"
+/// khi tạo), tách khỏi `ContractStatus` của phần đầu — port cũ **thiếu hẳn trục trạng thái này**.
+/// </summary>
 public sealed class DealerContractDetail
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long DealerContractId { get; set; }
+    /// <summary>Số hợp đồng — khoá dòng của nguồn (`CT_DealerContractDetail.DealerContractNo`).</summary>
+    public string? DealerContractNo { get; set; }
     public string CarId { get; set; } = "";
     public decimal UnitPrice { get; set; }
+    /// <summary>Trạng thái DÒNG, "P" khi tạo — tách khỏi ContractStatus của phần đầu.</summary>
+    public string ContractDetailStatus { get; set; } = "P";
 }
 
 /// <summary>Biên bản hủy hợp đồng đại lý DMS40 (DMS40_DlrCtr_CancelMinutes) — port 1:1 FrmDMS40_DlrCtr_CancelMinutes (2010.HTC/Sales/DMS40). Hủy HĐ đại lý theo DlrCtrNo.</summary>

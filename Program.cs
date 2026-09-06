@@ -18487,7 +18487,10 @@ app.MapPost("/api/dealercontracts", async (DealerContractDto dto, AppDbContext d
     var c2 = new DealerContract { OrgId = t.OrgId, DealerContractNo = no, DealerContractNoUser = dto.DealerContractNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, TotalAmount = total, Status = "P" };
     db.DealerContracts.Add(c2); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.DealerContractDetails.Add(new DealerContractDetail { OrgId = t.OrgId, DealerContractId = c2.Id, CarId = c.CarId.Trim().ToUpperInvariant(), UnitPrice = c.UnitPrice });
+        db.DealerContractDetails.Add(new DealerContractDetail { OrgId = t.OrgId, DealerContractId = c2.Id,
+            // 🔴 #123 parity: nguồn khoá dòng bằng SỐ hợp đồng (CT_DealerContractDetail.DealerContractNo)
+            //    và có trạng thái DÒNG riêng, đặt "P" khi tạo (Biz.HTC.WH.cs:30965-30968).
+            DealerContractNo = c2.DealerContractNo, ContractDetailStatus = "P", CarId = c.CarId.Trim().ToUpperInvariant(), UnitPrice = c.UnitPrice });
     await db.SaveChangesAsync();
     return Results.Ok(new { c2.DealerContractNo, cars = cars.Count, total });
 }).RequireAuthorization();
@@ -18498,7 +18501,7 @@ app.MapGet("/api/dealercontracts/{no}/cars", async (string no, AppDbContext db, 
     var c = await db.DealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerContractNo == no);
     if (c is null) return Results.NotFound(new { no });
     var cars = await db.DealerContractDetails.Where(l => l.OrgId == t.OrgId && l.DealerContractId == c.Id)
-        .Select(l => new { l.CarId, l.UnitPrice }).ToListAsync();
+        .Select(l => new { l.DealerContractNo, l.CarId, l.UnitPrice, l.ContractDetailStatus }).ToListAsync();
     return Results.Ok(new { c.DealerContractNo, c.DealerCode, c.TotalAmount, c.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -20895,7 +20898,7 @@ app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(port)) query = query.Where(p => p.PortCode == port);
     var items = await query.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.ShippingDateStart, p.ShippingDateEndExpected, p.CreatedAt,
+        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.ShippingDateStart, p.ShippingDateEndExpected, p.ShippingDateEnd, p.PLStatus, p.CreatedAt,
         vins = db.PackingListVins.Count(v => v.OrgId == t.OrgId && v.PLId == p.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -20911,7 +20914,11 @@ app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITe
     var dupe = vins.GroupBy(v => v.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "PL" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new PackingList { OrgId = t.OrgId, PLNo = no, LcNo = dto.LcNo.Trim(), PortCode = dto.PortCode, PLType = dto.PLType, ShippingDateStart = dto.ShippingDateStart.Value, ShippingDateEndExpected = dto.ShippingDateEndExpected.Value };
+    var p = new PackingList { OrgId = t.OrgId, PLNo = no, LcNo = dto.LcNo.Trim(), PortCode = dto.PortCode, PLType = dto.PLType, ShippingDateStart = dto.ShippingDateStart.Value, ShippingDateEndExpected = dto.ShippingDateEndExpected.Value,
+        // 🔴 #123 parity CT_PackingList: nguồn gán ngày đến cảng THỰC TẾ bằng ngày dự kiến ngay khi tạo
+        // (Biz.HTC.WH.cs:34688-34689), và đặt PLStatus = Stage.Finished ("F") NGAY — nhánh đặt "P" theo
+        // PLType != HTMV đã bị COMMENT ở nguồn (34691-34693).
+        ShippingDateEnd = dto.ShippingDateEndExpected.Value, PLStatus = "F" };
     db.PackingLists.Add(p); await db.SaveChangesAsync();
     foreach (var v in vins)
         db.PackingListVins.Add(new PackingListVin { OrgId = t.OrgId, PLId = p.Id, Vin = v.Vin.Trim().ToUpperInvariant(), CrateType = v.CrateType });
