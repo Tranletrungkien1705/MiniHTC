@@ -882,6 +882,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #275 parity UpdateTransBankFile (ERP.DMS.HTC.VPBank.WS - CHI CO TREN MAY 150)
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"PageIdx\" bigint",
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"ElementX\" numeric",
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"ElementY\" numeric",
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"ElementWidth\" numeric",
+        "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"ElementHeight\" numeric",
         // #274 parity VAT_HTCInvoiceImportNew_New20190816: loai ky hieu hoa don
         "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDType\" text NOT NULL DEFAULT 'HTC'",
         // #273 parity payload Crd_Member_AddAndApprByDMS (BizHTC.HCC.cs:3856, chi co tren may 150)

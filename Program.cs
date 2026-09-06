@@ -22375,15 +22375,79 @@ app.MapPost("/api/bankingtrans/{no}/bank-update", async (
         internalStatusSynced = st == "F" || st == "C" || st == "R", savedFiles });
 }).RequireAuthorization();
 
+// ===== 🔴 #275 NGÂN HÀNG LẤY FILE CHỜ KÝ và BÁO VỊ TRÍ Ô CHỮ KÝ =====
+// Nguồn: `ERP.DMS.HTC.VPBank.WS/TERP.BizHTC/BizHTC.VPBank.cs` — hai hàm `GetTransBankFile` (:6144) và
+//   `UpdateTransBankFile` (:6285), đều được `TERP.WSHTC/App_Code/WSHTC.cs` phơi ra làm `[WebMethod]`.
+// 🔴 **Cây `ERP.DMS.HTC.VPBank.WS` CHỈ CÓ TRÊN MÁY 150** — laptop không có thư mục này, nên không đối
+//   chiếu 2 máy thì không thấy cả cụm tích hợp ngân hàng (6849 dòng).
+// ✅ TRACE TWIN: `BizHTC.VPBank.cs` có **BA** bản `HTVSalesBankTrans_BankTransactionUpdate`
+//   (bản trần · `_New20221018` · `_New20230710`); WS gọi **`_New20230710`** ⇒ hai bản kia CHẾT.
+//
+// Luồng hai bước: ngân hàng gọi GET lấy các file `SignStatus = 'P'`, rồi gọi POST báo lại
+//   **trang số mấy + toạ độ/kích thước ô ký** để hệ thống đặt chữ ký đúng chỗ.
+app.MapGet("/api/bankingtrans/{no}/bank-files-pending", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Thiếu số đề nghị giao dịch (nguồn: ..._RQBankingTransNoEmpty)." });
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    // Nguồn lọc `and t.SignStatus in ('P')` — CHỈ file đang chờ ký.
+    var items = await db.BankingTransBankFiles
+        .Where(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id && f.SignStatus == "P")
+        .OrderBy(f => f.FileIndex)
+        .Select(f => new { f.FileIndex, f.FileType, f.FileName, f.FilePath, f.DocumentType, f.FileSize,
+            f.SignStatus, f.PageIdx, f.ElementX, f.ElementY, f.ElementWidth, f.ElementHeight })
+        .ToListAsync();
+    return Results.Ok(new { rqBankingTransNo = no, count = items.Count, items });
+}).RequireAuthorization();
+
+// #275 Ngân hàng báo VỊ TRÍ ô chữ ký cho một file.
+// ⚠️ Nguồn kiểm `PageIdx` bằng `IsInteger64` nhưng bốn giá trị toạ độ bằng `IsNumeric` (cho thập phân) —
+//   **bất đối xứng có chủ ý**, giữ nguyên.
+// ☠️ KHÔNG TÌM THẤY thì nguồn `goto MyCodeLabel_Done` — **COMMIT rồi trả về BÌNH THƯỜNG, không báo lỗi**;
+//   lệnh `throw ..._RQBankingTransFileNotFound` nằm ngay đó nhưng **đã bị comment**, kèm chú thích của tác
+//   giả: *"Nếu không phải là file chưa ký thì bỏ qua không làm gì cả"* ⇒ **im lặng là CỐ Ý**, không phải
+//   sót. Port giữ đúng: trả 200 với `updated = false` (không trả 404), nhưng NÓI RÕ lý do để bên gọi biết.
+app.MapPost("/api/bankingtrans/{no}/files/{index:int}/sign-placement", async (
+    string no, int index, BankFileSignPlacementDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Thiếu số đề nghị giao dịch." });
+    if (dto.PageIdx is null) return Results.BadRequest(new { error = "Thiếu PageIdx." });
+    if (dto.ElementX is null) return Results.BadRequest(new { error = "Thiếu ElementX." });
+    if (dto.ElementY is null) return Results.BadRequest(new { error = "Thiếu ElementY." });
+    if (dto.ElementWidth is null) return Results.BadRequest(new { error = "Thiếu ElementWidth." });
+    if (dto.ElementHeight is null) return Results.BadRequest(new { error = "Thiếu ElementHeight." });
+
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    // Khoá tra của nguồn: (RQ_BankingTransNo, BFileIndex) **và** SignStatus in ('P').
+    var f = await db.BankingTransBankFiles.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.BankingTransId == r.Id && x.FileIndex == index && x.SignStatus == "P");
+    if (f is null)
+        return Results.Ok(new { rqBankingTransNo = no, fileIndex = index, updated = false,
+            note = "File không tồn tại hoặc không còn ở trạng thái chờ ký (P) — nguồn CỐ Ý bỏ qua, không báo lỗi." });
+
+    f.PageIdx = dto.PageIdx; f.ElementX = dto.ElementX; f.ElementY = dto.ElementY;
+    f.ElementWidth = dto.ElementWidth; f.ElementHeight = dto.ElementHeight;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rqBankingTransNo = no, fileIndex = index, updated = true,
+        f.PageIdx, f.ElementX, f.ElementY, f.ElementWidth, f.ElementHeight });
+}).RequireAuthorization();
+
 app.MapGet("/api/bankingtrans/{no}/files", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
     var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (r is null) return Results.NotFound(new { no });
+    // #275 §12: cột vị trí ô ký có mặt ở CẢ GET lẫn POST
     var files = await db.BankingTransBankFiles.Where(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id)
         .OrderBy(f => f.FileIndex).Select(f => new
         { f.FileIndex, f.FileName, f.FileType, f.FilePath, f.DocumentType, f.FileSize, f.Remark, f.BkTransBankStatus, f.SignStatus,
-          f.SerialNumber, f.LogLUBy, f.LogLUDateTime })   // #192 §12: cột mới phải chiếu ở CẢ GET
+          f.SerialNumber, f.LogLUBy, f.LogLUDateTime,   // #192 §12: cột mới phải chiếu ở CẢ GET
+          f.PageIdx, f.ElementX, f.ElementY, f.ElementWidth, f.ElementHeight })   // #275 §12
         .ToListAsync();
     return Results.Ok(new { r.RQ_BankingTransNo, count = files.Count, totalSize = files.Sum(f => f.FileSize), files });
 }).RequireAuthorization();
@@ -34653,6 +34717,9 @@ record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? Fl
 /// `objRQ_BankingTransNo` + `objBFileIndex` + `objFileName` + base64 + `objSerialNumber`.</summary>
 record BankFileSignDto(string SerialNumber, string? FileName = null, string? FilePath = null);
 record BankingTransFileDto(string? FileName, string? FileType, string? FilePath, string? DocumentType, long FileSize, string? Remark, string? SignStatus);
+// #275: ngan hang bao vi tri o chu ky. `PageIdx` nguon kiem IsInteger64; bon gia tri con lai IsNumeric
+//   (cho thap phan) - bat doi xung CO Y cua nguon, giu nguyen.
+record BankFileSignPlacementDto(long? PageIdx, decimal? ElementX, decimal? ElementY, decimal? ElementWidth, decimal? ElementHeight);
 record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, string? RefBankCode, string? LDNo, decimal? DisbursementAmount, DateTime? DisbursementDate, string? DisbursementTerm, decimal? DisbursementInterestRate, string? MDNo, decimal? GrtAmount, DateTime? GrtDateStart, DateTime? GrtDateEnd, string? GrtTerm, decimal? GrtFee, DateTime? GrtLatePmtDate, string? LCNo, decimal? LCAmount, DateTime? LCStartDate, DateTime? LCEndDate, List<BankingTransFileDto>? Files);
 record BankingTransDto(string BankCode, string BkTransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark, string? DealerCode = null, string? BizResNumber = null);
 // ---- #137: DTO 12 bảng vệ tinh của đề nghị GD ngân hàng (RQ_BankingTransactions_SaveX_20220817) ----

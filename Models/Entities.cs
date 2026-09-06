@@ -12057,6 +12057,22 @@ public sealed class BankingTransBankFile
     public string? SerialNumber { get; set; }
     public string? LogLUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
+
+    // ===== 🔴 #275: VỊ TRÍ ĐẶT Ô CHỮ KÝ trên file, do NGÂN HÀNG báo ngược về =====
+    // Nguồn: `ERP.DMS.HTC.VPBank.WS/TERP.BizHTC/BizHTC.VPBank.cs:6285 UpdateTransBankFile` —
+    //   cây `ERP.DMS.HTC.VPBank.WS` **CHỈ CÓ TRÊN MÁY 150** (laptop không có thư mục này).
+    // Luồng hai bước: ngân hàng gọi `GetTransBankFile` lấy các file `SignStatus = 'P', rồi gọi
+    //   `UpdateTransBankFile` báo lại **trang số mấy và toạ độ/kích thước ô ký**.
+    /// <summary>PAGEIDX — trang đặt chữ ký. Nguồn kiểm `IsInteger64` (**số nguyên**).</summary>
+    public long? PageIdx { get; set; }
+    /// <summary>ELEMENTX/Y/WIDTH/HEIGHT — toạ độ và kích thước ô ký.
+    /// ⚠️ Nguồn kiểm bốn giá trị này bằng `IsNumeric` (**cho phép thập phân**), KHÁC `PageIdx` — đừng
+    /// "làm cho đồng bộ" thành số nguyên hết.</summary>
+    public decimal? ElementX { get; set; }
+    public decimal? ElementY { get; set; }
+    public decimal? ElementWidth { get; set; }
+    public decimal? ElementHeight { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
