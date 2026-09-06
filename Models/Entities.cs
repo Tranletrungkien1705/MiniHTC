@@ -5067,10 +5067,39 @@ public sealed class OrderPartLine
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long OrderPartId { get; set; }
-    public string PartCode { get; set; } = "";
-    public string? PartName { get; set; }
-    public decimal OrderQty { get; set; } = 1;
-    public decimal Price { get; set; }
+    public string PartCode { get; set; } = "";     // part_PartCode (enrich từ Mst_Part)
+    public string? PartName { get; set; }          // part_VieName  (enrich từ Mst_Part)
+    public decimal OrderQty { get; set; } = 1;     // QtyOrd — số lượng ĐẶT
+    public decimal Price { get; set; }             // Price
+
+    // ===== 🔴 #235: cột nguồn `Ser_Order_PartDtl` mà port cũ THIẾU =====
+    // Nguồn `Entities/TST/Ser_Order_PartDtl.cs` (md5 b85c8e5f, khớp 2 máy) — 28 tên, chia BA nhóm:
+    //  (a) 18 cột thật của bảng · (b) 4 cột enrich prefix `part_` (lấy từ `Mst_Part` qua join)
+    //  (c) 5 cột TỒN KHO tính sẵn cho lưới, chú thích "Cột L/Q/N/M/P" = vị trí cột file Excel xuất ra.
+
+    public string? PartID { get; set; }            // PartID — khoá kỹ thuật, KHÁC part_PartCode
+    public string? Unit { get; set; }              // part_Unit (enrich)
+    public decimal? MinQuantity { get; set; }      // part_MinQuantity (enrich) — SL đặt tối thiểu
+    public string? Remark { get; set; }
+
+    /// <summary>QtyAppr — 🔴 SỐ LƯỢNG DUYỆT. **Mọi thành tiền tính theo cột này, KHÔNG theo `QtyOrd`**
+    /// (xem công thức ở `RecalcOrderPartLine` trong Program.cs).</summary>
+    public decimal? QtyAppr { get; set; }
+
+    // --- khối giá: 3 cột NHẬP (UPBeforeDc · DiscountRate · VAT) + 5 cột DẪN XUẤT ---
+    public decimal? UPBeforeDc { get; set; }       // đơn giá trước chiết khấu   (NHẬP)
+    public decimal? DiscountRate { get; set; }     // % chiết khấu               (NHẬP)
+    public decimal? VAT { get; set; }              // % VAT                      (NHẬP)
+    public decimal? TPBeforeDc { get; set; }       // thành tiền trước CK        (dẫn xuất)
+    public decimal? UPAfterDc { get; set; }        // đơn giá sau CK             (dẫn xuất)
+    public decimal? TPAfterDc { get; set; }        // thành tiền sau CK          (dẫn xuất)
+    public decimal? ValVAT { get; set; }           // tiền VAT                   (dẫn xuất)
+    public decimal? TPAfterVAT { get; set; }       // tổng tiền sau VAT          (dẫn xuất)
+
+    public string? OrderSuppierNo { get; set; }    // số đơn NCC (nguồn viết thiếu chữ "l")
+    public string? TSTID { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 
     /// <summary>
     /// Trạng thái RIÊNG của TỪNG DÒNG đơn đặt (Ser_Order_PartDtl.ORDERPARTSTATUSDTL) —

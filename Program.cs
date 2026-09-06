@@ -28460,6 +28460,38 @@ app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action
 }).RequireAuthorization();
 
 // ===== Đơn đặt phụ tùng từ NCC (Ser_Order_Part — port 1:1 FrmSer_Order_Part) =====
+// ===== 🔴 #235 CÔNG THỨC GIÁ DÒNG ĐƠN ĐẶT PHỤ TÙNG — `Ser_Order_PartDtl` =====
+// Nguồn: `FrmSer_Order_Part_Detail.cs:1088-1114` (khối tính trong `bandedGridView`).
+// 🔴 BẪY DÒNG COMMENT: ngay cạnh hai dòng ACTIVE có hai dòng bị comment dùng `QtyOrd`:
+//      `//dTPBeforeDc = dQtyOrd * dUPBeforeDc;`   ← CHẾT
+//      `dTPBeforeDc = dQtyAppr * dUPBeforeDc;`    ← SỐNG
+//    ⇒ thành tiền tính theo **SỐ LƯỢNG DUYỆT (`QtyAppr`)**, KHÔNG phải số lượng đặt.
+//    Port nhầm sang `QtyOrd` thì đơn duyệt thiếu vẫn tính đủ tiền — sai tiền, im lặng.
+// ⚠️ Khối tính chỉ chạy khi `!isTST` (phía TST không tính lại) — bản port tính ở server cho mọi đường ghi
+//    của đại lý, vì đó là nơi duy nhất còn giữ được ràng buộc.
+static void RecalcOrderPartLine(OrderPartLine l)
+{
+    var qtyAppr = l.QtyAppr ?? 0m;          // 🔴 QtyAppr, KHÔNG phải OrderQty
+    var upBefore = l.UPBeforeDc ?? 0m;
+    var discountRate = l.DiscountRate ?? 0m;
+    var vat = l.VAT ?? 0m;
+
+    l.TPBeforeDc = qtyAppr * upBefore;
+    l.UPAfterDc = upBefore * (1 - discountRate / 100m);
+    l.TPAfterDc = qtyAppr * l.UPAfterDc.Value;
+    l.ValVAT = l.TPAfterDc.Value * (vat / 100m);
+    l.TPAfterVAT = l.TPAfterDc.Value + l.ValVAT.Value;
+}
+
+// Tổng của ĐẦU ĐƠN từ các dòng. ⚠️ Nguồn có sẵn hai cột `TotalValOrderAfterVAT` / `ValDiscount` nhưng tôi
+//   KHÔNG tìm thấy chỗ tính chúng trong vùng đã đọc ⇒ đây là SUY LUẬN theo tên cột + công thức dòng,
+//   đã ghi vào manifest là nợ cần đối chiếu.
+static void RecalcOrderPartTotals(OrderPart o, List<OrderPartLine> lines)
+{
+    o.TotalValOrderAfterVAT = lines.Sum(x => x.TPAfterVAT ?? 0m);
+    o.ValDiscount = lines.Sum(x => (x.TPBeforeDc ?? 0m) - (x.TPAfterDc ?? 0m));
+}
+
 // ===== 🔴 #234 ĐƠN ĐẶT PHỤ TÙNG — parity `Ser_Order_Part` (DMSCarSv/TST) =====
 // Màn: `Views/TST/FrmSer_Order_PartMng.cs` (1290 dòng) + `FrmSer_Order_Part_Detail.cs` (1466 dòng).
 // Tầng ghi `Ser_Order_PartService.cs`: `_Save` (:141) gửi **9 trường**, `_Appr` (:182) gửi **7 trường**
@@ -28551,8 +28583,27 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
         CreateBy = who, LogLUDateTime = DateTime.Now, LogLUBy = who,
     };
     db.OrderParts.Add(o); await db.SaveChangesAsync();
+    var newLines = new List<OrderPartLine>();
     foreach (var l in lines)
-        db.OrderPartLines.Add(new OrderPartLine { OrgId = t.OrgId, OrderPartId = o.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, OrderQty = l.OrderQty, Price = l.Price });
+    {
+        var line = new OrderPartLine
+        {
+            OrgId = t.OrgId, OrderPartId = o.Id,
+            PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
+            OrderQty = l.OrderQty, Price = l.Price,
+            // #235: khối giá + ngữ cảnh phụ tùng
+            PartID = l.PartID, Unit = l.Unit, MinQuantity = l.MinQuantity, Remark = l.Remark,
+            // ⚠️ Lúc TẠO chưa có số duyệt: nguồn khoá ô `QtyAppr` ở lưới tạo và chỉ mở khi duyệt.
+            //    Mặc định lấy bằng số đặt để tổng tiền không ra 0; bước duyệt sẽ ghi đè.
+            QtyAppr = l.QtyAppr ?? l.OrderQty,
+            UPBeforeDc = l.UPBeforeDc ?? l.Price, DiscountRate = l.DiscountRate, VAT = l.VAT,
+            LogLUDateTime = DateTime.Now, LogLUBy = who,
+        };
+        RecalcOrderPartLine(line);
+        db.OrderPartLines.Add(line);
+        newLines.Add(line);
+    }
+    RecalcOrderPartTotals(o, newLines);
     await db.SaveChangesAsync();
     return Results.Ok(new { o.OrderPartNo, o.SupplierCode, lines = lines.Count, status = o.OrderPartStatus });
 }).RequireAuthorization();
@@ -28563,8 +28614,18 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
     var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.OrderQty, l.Price, l.OrderPartStatusDtl, lineTotal = l.OrderQty * l.Price }).ToListAsync();
-    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, count = lines.Count, lines, total = lines.Sum(x => x.lineTotal) });
+        .Select(l => new { l.PartCode, l.PartName, l.OrderQty, l.Price, l.OrderPartStatusDtl,
+                           // #235: 17 cột bổ sung (§12 — có ở cả GET lẫn POST)
+                           l.PartID, l.Unit, l.MinQuantity, l.Remark, l.QtyAppr,
+                           l.UPBeforeDc, l.DiscountRate, l.VAT,
+                           l.TPBeforeDc, l.UPAfterDc, l.TPAfterDc, l.ValVAT, l.TPAfterVAT,
+                           l.OrderSuppierNo, l.TSTID, l.LogLUDateTime, l.LogLUBy,
+                           lineTotal = l.OrderQty * l.Price }).ToListAsync();
+    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, count = lines.Count, lines,
+                            total = lines.Sum(x => x.lineTotal),
+                            // #235: tổng THẬT của nguồn là tiền sau VAT, tính từ SL DUYỆT.
+                            totalAfterVAT = lines.Sum(x => x.TPAfterVAT ?? 0m),
+                            o.TotalValOrderAfterVAT, o.ValDiscount });
 }).RequireAuthorization();
 
 // Gửi NCC (approve) / Hoàn thành (finish) / TỪ CHỐI (reject) — nguồn TConst.OrderPartStatus: P → A → F, và R.
@@ -28596,6 +28657,31 @@ app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, Or
         if (dto?.ResponseSuppierDate is not null) o.ResponseSuppierDate = dto.ResponseSuppierDate;
         if (!string.IsNullOrWhiteSpace(dto?.OrderSuppierNo)) o.OrderSuppierNo = dto!.OrderSuppierNo!.Trim();
         if (!string.IsNullOrWhiteSpace(dto?.Remark)) o.Remark = dto!.Remark;
+
+        // 🔴 #235: `Ser_Order_Part_Appr` gửi kèm CẢ BỘ DÒNG (`ds_Ser_Order_PartDtl`) — duyệt là lúc nhập
+        //    `QtyAppr` / `UPBeforeDc` / `DiscountRate` / `VAT` rồi tính lại 5 cột dẫn xuất.
+        //    (lưới của nguồn KHOÁ `QtyOrd` và `Price`, chỉ mở đúng mấy ô này — `_lstColNotAllowEdit`,
+        //     FrmSer_Order_Part_Detail.cs:505)
+        if (dto?.Lines is { Count: > 0 })
+        {
+            var byCode = await db.OrderPartLines.Where(x => x.OrgId == t.OrgId && x.OrderPartId == o.Id).ToListAsync();
+            foreach (var d in dto.Lines)
+            {
+                if (string.IsNullOrWhiteSpace(d.PartCode)) continue;
+                var code = d.PartCode.Trim().ToUpperInvariant();
+                var line = byCode.FirstOrDefault(x => x.PartCode == code);
+                if (line is null) continue;
+                if (d.QtyAppr is not null) line.QtyAppr = d.QtyAppr;
+                if (d.UPBeforeDc is not null) line.UPBeforeDc = d.UPBeforeDc;
+                if (d.DiscountRate is not null) line.DiscountRate = d.DiscountRate;
+                if (d.VAT is not null) line.VAT = d.VAT;
+                if (!string.IsNullOrWhiteSpace(d.Remark)) line.Remark = d.Remark;
+                line.OrderSuppierNo = o.OrderSuppierNo;
+                line.LogLUDateTime = DateTime.Now; line.LogLUBy = who;
+                RecalcOrderPartLine(line);
+            }
+            RecalcOrderPartTotals(o, byCode);
+        }
     }
     else if (action == "finish")
     {
@@ -31387,7 +31473,12 @@ record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
 record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
     // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
     string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
-record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
+// #235: khối giá + ngữ cảnh phụ tùng, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
+//  KHÔNG nhận 5 cột dẫn xuất (TPBeforeDc/UPAfterDc/TPAfterDc/ValVAT/TPAfterVAT): server tính,
+//  đúng như lưới nguồn KHOÁ 5 ô đó (`_lstColNotAllowEdit`).
+record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price,
+    string? PartID = null, string? Unit = null, decimal? MinQuantity = null, string? Remark = null,
+    decimal? QtyAppr = null, decimal? UPBeforeDc = null, decimal? DiscountRate = null, decimal? VAT = null);
 record OrderPartLineStatusDto(string? ToStatus);
 // #234: 8 trường mà `Ser_Order_Part_Save` gửi lên, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines,
@@ -31398,7 +31489,9 @@ record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLi
 
 // #234: 5 trường mà `Ser_Order_Part_Appr` gửi lên — CHỈ dùng cho action "approve".
 record OrderPartActionDto(DateTime? EstimatedDeliverDate = null, DateTime? RequestSuppierDate = null,
-    DateTime? ResponseSuppierDate = null, string? OrderSuppierNo = null, string? Remark = null);
+    DateTime? ResponseSuppierDate = null, string? OrderSuppierNo = null, string? Remark = null,
+    // #235: `_Appr` gửi kèm cả bộ dòng ⇒ duyệt cập nhật được SL duyệt và khối giá.
+    List<OrderPartLineDto>? Lines = null);
 // #233: bổ sung 13 trường mà `Ser_OrderComplain_Save` gửi lên (thêm ở CUỐI ⇒ không vỡ lời gọi cũ).
 //  KHÔNG có TSTOrderComplainNo/TSTEmployeeCode/TSTSolution/2 trạng thái: nguồn không cho client gửi.
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content,
