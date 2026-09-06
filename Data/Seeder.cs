@@ -845,6 +845,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #175 parity DMS40_Car_DeliveryOrder_CreateAuto_New20190125
+        "CREATE TABLE IF NOT EXISTS public.\"AutoDoDealers\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"D4CDONo\" text NOT NULL DEFAULT '', \"DealerCode\" text NOT NULL DEFAULT '')",
+        "CREATE TABLE IF NOT EXISTS public.\"AutoDoCars\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"D4CDONo\" text NOT NULL DEFAULT '', \"DealerCode\" text NOT NULL DEFAULT '', \"CarId\" text NOT NULL DEFAULT '', \"VIN\" text NOT NULL DEFAULT '', \"StorageCode\" text)",
+        "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"DeliveryAddress\" text",
+        "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"TransportCompanyName\" text",
+        "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"TransportCompanyPhoneNo\" text",
+        "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"TransportCompanyFaxNo\" text",
+        "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"D4CDONo\" text",
+        "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"D4CDOType\" text",
+        "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"CarId\" text",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"StorageCodeCurrent\" text",
         // #172 parity cum Pmt_GrtClaim_* (SignStatus la truc trang thai HEADER that)
         "ALTER TABLE public.\"GrtClaimDetails\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         "ALTER TABLE public.\"GrtClaimDetails\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",

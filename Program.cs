@@ -25318,6 +25318,7 @@ app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.DeliveredAt, o.Approved1At, o.Approved2At, o.RejectReason,
+        o.DeliveryAddress, o.TransportCompanyName, o.TransportCompanyPhoneNo, o.TransportCompanyFaxNo, o.D4CDONo, o.D4CDOType,
         cars = db.DeliveryOrderCars.Count(c => c.OrgId == t.OrgId && c.DoId == o.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -25340,13 +25341,98 @@ app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db,
     return Results.Ok(new { o.DoNo, o.DealerCode, cars = vins.Count, status = o.Status });
 }).RequireAuthorization();
 
+// ===== #175 TỰ SINH LỆNH GIAO XE HÀNG LOẠT — `DMS40_Car_DeliveryOrder_CreateAuto_New20190125` =====
+// Nguồn: `TERP.BizHTC/DMS40/zTemp.0.31.Car.cs:4601` (csproj 280).
+// BƯỚC 3B: md5 CẢ FILE `9a2ec524` KHỚP 2 máy. TWIN: WS 32-bit và 64-bit gọi CÙNG bản `_New20190125`.
+//
+// 🔴 Đây là lệnh CUỐI CÙNG còn thiếu của cụm `Car_DeliveryOrder` — MiniHTC đã có
+//    Create/Approve1/Approve2/DetailUpdate/DetailDelete, chỉ thiếu bản TỰ SINH.
+//
+// Nghiệp vụ: từ một **đợt tự sinh** (`D4CDONo`) đã gom sẵn danh sách đại lý (`Auto_Car_DeliveryOrder_Dealer`)
+// và danh sách xe theo đại lý (`Auto_Car_DeliveryOrder_Car`), hàm **duyệt TỪNG đại lý** và với mỗi đại lý:
+//   1. xin một số lệnh giao mới (`SequenceGetForDMS_MyGet`, `SequenceTypeDMS.CarDeliveryOrder`);
+//   2. lấy địa chỉ giao = `Mst_Dealer.DealerAddress01` (KHÔNG nhập tay);
+//   3. lấy xe của đại lý đó, mỗi dòng gồm `CarId` + `StorageCode` = **`Car_VIN.StorageCodeCurrent`**
+//      (kho HIỆN TẠI của xe, không phải kho khai báo) + `DeliveryVIN`, còn `DeliveryOutDate`/`DeliveryRemark`
+//      để **NULL** (điền ở bước giao thực tế);
+//   4. gọi liền chuỗi **Create → Approve1 → Approve2** ⇒ lệnh giao ra đời **đã duyệt cấp 2 ngay**.
+//
+// 🔴 `D4CDOType` bắt buộc (`CreateAuto_InvalidD4CDOType`) và chỉ nhận **"RULE1"** hoặc **"RULE2"**
+//    (`TConst.D4CDOType`). Khác biệt: RULE1 dùng `CarDeliveryOrderCreateX`, RULE2 dùng
+//    `CarDeliveryOrderCreate_Rule2X`; **cả hai nhánh đều duyệt tiếp 1 rồi 2**.
+// ⚠️ Nguồn gọi Approve2 với `dtimeTDate.AddSeconds(2)` — cố ý để mốc duyệt cấp 2 SAU cấp 1, tránh hai
+//    mốc trùng giây. Đã giữ.
+app.MapPost("/api/deliveryorders/create-auto", async (DoCreateAutoDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var batchNo = (dto.D4CDONo ?? "").Trim().ToUpperInvariant();
+    if (batchNo.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số đợt tự sinh (D4CDONo)." });
+    var ruleType = (dto.D4CDOType ?? "").Trim().ToUpperInvariant();
+    if (ruleType is not ("RULE1" or "RULE2"))
+        return Results.BadRequest(new { error = "Loại tự sinh chỉ nhận RULE1 hoặc RULE2." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // Danh sách đại lý của đợt.
+    var dealerCodes = await db.AutoDoDealers.Where(x => x.OrgId == t.OrgId && x.D4CDONo == batchNo)
+        .Select(x => x.DealerCode).Distinct().ToListAsync();
+    if (dealerCodes.Count == 0)
+        return Results.BadRequest(new { error = $"Đợt {batchNo} chưa có đại lý nào.", d4cdoNo = batchNo });
+
+    var created = new List<object>();
+    foreach (var dealerCode in dealerCodes)
+    {
+        // Địa chỉ giao lấy từ MASTER đại lý, không nhập tay.
+        var dlr = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode);
+        if (dlr is null) return Results.BadRequest(new { error = $"Đại lý {dealerCode} không tồn tại.", dealerCode });
+
+        var cars = await db.AutoDoCars.Where(x => x.OrgId == t.OrgId && x.D4CDONo == batchNo && x.DealerCode == dealerCode).ToListAsync();
+        if (cars.Count == 0) continue;   // đại lý không có xe trong đợt thì bỏ qua
+
+        var doNo = "DO" + now.ToString("yyMMddHHmmss") + created.Count.ToString("00");
+        var o = new DeliveryOrder
+        {
+            OrgId = t.OrgId, DoNo = doNo, DealerCode = dealerCode,
+            DeliveryAddress = dlr.DealerAddress01,
+            // chuỗi Create → Approve1 → Approve2 chạy liền ⇒ trạng thái cuối là "A2"
+            Status = "A2", CreatedAt = now,
+            Approved1At = now, ApprovedBy1 = who,
+            Approved2At = now.AddSeconds(2), ApprovedBy2 = who,   // nguồn cộng 2 giây, giữ nguyên
+            // Ba cot don vi van chuyen: nguon truyen vao CarDeliveryOrderCreateX qua tham so.
+            TransportCompanyName = dto.TransportCompanyName, TransportCompanyPhoneNo = dto.TransportCompanyPhoneNo,
+            TransportCompanyFaxNo = dto.TransportCompanyFaxNo,
+            D4CDONo = batchNo, D4CDOType = ruleType,
+        };
+        db.DeliveryOrders.Add(o);
+        await db.SaveChangesAsync();
+
+        foreach (var c in cars)
+        {
+            // `StorageCode` lấy từ `Car_VIN.StorageCodeCurrent` — kho HIỆN TẠI của xe.
+            var vinRow = await db.CarVinMasters.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.VIN == c.VIN);
+            db.DeliveryOrderCars.Add(new DeliveryOrderCar
+            {
+                OrgId = t.OrgId, DoId = o.Id, Vin = c.VIN, CarId = c.CarId,
+                StorageCode = vinRow?.StorageCodeCurrent ?? c.StorageCode,
+                DeliveryOutDate = null, DeliveryRemark = null,   // nguồn để NULL, điền ở bước giao thực tế
+                ConfirmStatus = "P",
+            });
+        }
+        await db.SaveChangesAsync();
+        created.Add(new { doNo, dealerCode, cars = cars.Count });
+    }
+
+    return Results.Ok(new { d4cdoNo = batchNo, d4cdoType = ruleType, dealers = dealerCodes.Count,
+        ordersCreated = created.Count, orders = created });
+}).RequireAuthorization();
+
 app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryOutDate, c.DeliveryRemark, c.ConfirmStatus }).ToListAsync();
+        .Select(c => new { c.Vin, c.CarId, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryOutDate, c.DeliveryRemark, c.ConfirmStatus }).ToListAsync();
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -28769,6 +28855,7 @@ record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
 record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);
 record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate);
 record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars);
+record DoCreateAutoDto(string? D4CDONo, string? D4CDOType, string? TransportCompanyName = null, string? TransportCompanyPhoneNo = null, string? TransportCompanyFaxNo = null);
 record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 // Duyệt lệnh giao: nguồn dùng MỘT hàm cho cả duyệt và không-duyệt (cờ `bApprove`).
 record DoApproveDto(bool Approve = true, string? Reason = null);

@@ -380,6 +380,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<Tkhq> Tkhqs => Set<Tkhq>();
     public DbSet<TkhqPL> TkhqPLs => Set<TkhqPL>();
     public DbSet<DeliveryOrder> DeliveryOrders => Set<DeliveryOrder>();
+    public DbSet<AutoDoDealer> AutoDoDealers => Set<AutoDoDealer>();
+    public DbSet<AutoDoCar> AutoDoCars => Set<AutoDoCar>();
     public DbSet<DeliveryOrderCar> DeliveryOrderCars => Set<DeliveryOrderCar>();
     public DbSet<DocReq> DocReqs => Set<DocReq>();
     public DbSet<DocReqCar> DocReqCars => Set<DocReqCar>();

@@ -5159,6 +5159,34 @@ public sealed class TkhqPL
 
 /// <summary>Lệnh giao xe cho đại lý (DeliveryOrder — port 1:1 FrmNewDO/FrmMngDO, TCMotor DMSales.Foton):
 /// giao lô xe từ kho tới đại lý. Draft(Nháp)→Delivered(Đã giao).</summary>
+/// <summary>
+/// Đại lý thuộc một ĐỢT tự sinh lệnh giao (`Auto_Car_DeliveryOrder_Dealer`) — nguồn
+/// `DMS40_Car_DeliveryOrder_CreateAuto_New20190125` duyệt bảng này để biết cần sinh lệnh cho những đại lý nào.
+/// </summary>
+public sealed class AutoDoDealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string D4CDONo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+}
+
+/// <summary>
+/// Xe thuộc một ĐỢT tự sinh lệnh giao (`Auto_Car_DeliveryOrder_Car`), khoá `(D4CDONo, DealerCode, CarId)`.
+/// ⚠️ Bảng nguồn chỉ có `CarId`; `VIN`/`StorageCode` được nguồn lấy bằng join `Car_Car` → `Car_VIN`.
+/// MiniHTC giữ sẵn `VIN` để tra kho hiện tại, có ghi rõ nguồn gốc.
+/// </summary>
+public sealed class AutoDoCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string D4CDONo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? StorageCode { get; set; }
+}
+
 public sealed class DeliveryOrder
 {
     public long Id { get; set; }
@@ -5184,6 +5212,18 @@ public sealed class DeliveryOrder
     public string? ApprovedBy2 { get; set; }
     public string? RejectReason { get; set; }
     public DateTime? RejectedAt { get; set; }
+
+    // ===== #175 parity `DMS40_Car_DeliveryOrder_CreateAuto_New20190125` (DMS40/zTemp.0.31.Car.cs:4601, csproj 280) =====
+    /// <summary>Địa chỉ giao — nguồn lấy từ `Mst_Dealer.DealerAddress01`, KHÔNG nhập tay.</summary>
+    public string? DeliveryAddress { get; set; }
+    /// <summary>Đơn vị vận chuyển ghi trên lệnh giao (`TransportCompanyName/PhoneNo/FaxNo`).</summary>
+    public string? TransportCompanyName { get; set; }
+    public string? TransportCompanyPhoneNo { get; set; }
+    public string? TransportCompanyFaxNo { get; set; }
+    /// <summary>🔴 Số ĐỢT tự sinh (`D4CDONo`) và loại luật (`D4CDOType`: "RULE1"/"RULE2") đã sinh ra lệnh này —
+    /// null nghĩa là lệnh lập tay. Nhờ hai cột này mới truy được lệnh giao nào thuộc đợt nào.</summary>
+    public string? D4CDONo { get; set; }
+    public string? D4CDOType { get; set; }
 }
 
 /// <summary>Dòng xe trong DO (DoDetail): VIN + model + màu + kho + ngày giao dự kiến.</summary>
@@ -5215,6 +5255,10 @@ public sealed class DeliveryOrderCar
     /// <summary>Nhật ký sửa cuối của DÒNG lệnh xuất xe.</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#175 — `Car_DeliveryOrderDetail.CarId`: nguồn dựng dòng chi tiết bằng `CarId` (join `Car_Car`),
+    /// VIN chỉ là cột đi kèm. Không có cột này thì không nối được về xe theo đúng khoá của nguồn.</summary>
+    public string? CarId { get; set; }
 }
 
 /// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):
@@ -9428,6 +9472,10 @@ public sealed class CarVinMaster
     public string? DlrCtrNo { get; set; }
     /// <summary>Cờ "xe đã thuộc hợp đồng đại lý DMS40" (`FlagDealerContractDMS40`) — nguồn gán cứng "1".</summary>
     public string? FlagDealerContractDMS40 { get; set; }
+
+    /// <summary>#175 — Kho HIỆN TẠI của xe (`Car_VIN.StorageCodeCurrent`). Bước tự sinh lệnh giao lấy
+    /// kho của dòng chi tiết TỪ CỘT NÀY, không phải kho khai báo trên phiếu.</summary>
+    public string? StorageCodeCurrent { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
