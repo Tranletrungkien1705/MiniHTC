@@ -2170,6 +2170,16 @@ public sealed class RepairOrder
     /// (:1634 còn trừ tiếp `AmountFromMC` khi tính tổng sau sửa chữa.)
     /// </summary>
     public decimal? PointVoucher { get; set; }
+
+    /// <summary>
+    /// 🔴 #271 `Ser_RO.SyncVelocaFlag` — LSC này đã đồng bộ sang hệ **Veloca** hay chưa ("1" = rồi).
+    /// Nguồn (`BizCarSv.ZTemp.cs:17559`) chỉ cho lấy LSC **chưa đồng bộ**:
+    ///   `and (t.SyncVelocaFlag is null or t.SyncVelocaFlag = '0')`
+    /// kèm chú thích của tác giả: *"trước phục vụ test nên mở cho 1 RO được đồng bộ nhiều lần"* ⇒ cờ này
+    /// là **chốt chống đồng bộ lặp**, không phải cột trang trí.
+    /// ⚠️ Cờ chỉ có ở nhánh LẤY MỘT LSC; nhánh TÌM KIẾM danh sách **không** lọc cờ này.
+    /// </summary>
+    public string? SyncVelocaFlag { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
@@ -2304,6 +2314,16 @@ public sealed class Reception
     public string? CusRequest { get; set; }
     public string? RONO { get; set; }                  // RO liên kết (nếu đã lập lệnh)
     public string Status { get; set; } = "Pending";    // Pending(Tiếp nhận) → Approved(Giao xe)
+
+    /// <summary>
+    /// 🔴 #271 LỊCH HẸN mà phiếu tiếp nhận này thực hiện (`AppId` của nguồn).
+    /// Nguồn `Ser_ReceptionF_Reception_New20210727` (`BizCarSv.ZTemp.cs:19627`) — khối **CHỈ CÓ TRÊN
+    /// MÁY 150** — sau khi tiếp nhận xong thì gọi `HCC_Appointment_FinishOSX` **khi và chỉ khi**
+    /// `AppId` khác rỗng ⇒ khách vãng lai (không hẹn trước) KHÔNG đẩy gì sang HCC.
+    /// Cặp đôi với `HCC_Appointment_AddOSX` lúc TẠO lịch hẹn (#270): mở ở đó, đóng ở đây.
+    /// </summary>
+    public string? AppNo { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DeliveredAt { get; set; }
 }
@@ -12941,6 +12961,16 @@ public sealed class ServiceAppointment
     public string? HCCPushStatus { get; set; }
     public DateTime? HCCPushDateTime { get; set; }
     public string? HCCPushNote { get; set; }
+
+    /// <summary>
+    /// 🔴 #271 Trục ĐÓNG lịch hẹn ở HCC (`HCC_Appointment_FinishOSX`), TÁCH RIÊNG khỏi trục MỞ
+    /// (<see cref="HCCPushStatus"/>) vì nguồn gọi ở **hai hàm khác nhau, hai thời điểm khác nhau**:
+    /// mở lúc tạo lịch hẹn (`Ser_App_Create_ForTab`), đóng lúc TIẾP NHẬN XE
+    /// (`Ser_ReceptionF_Reception_New20210727`). Dùng chung một cột sẽ mất dấu một trong hai.
+    /// Cùng bộ mã "P"/"A"/"R".
+    /// </summary>
+    public string? HCCFinishStatus { get; set; }
+    public DateTime? HCCFinishDateTime { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

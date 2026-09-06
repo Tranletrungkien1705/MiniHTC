@@ -31870,6 +31870,47 @@ app.MapGet("/api/partstock", async (AppDbContext db, ITenantContext t, string? w
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #271 LSC CHỜ ĐỒNG BỘ SANG VELOCA =====
+// Nguồn: `BizCarSv.ZTemp.cs:17199` (tìm danh sách) và `:17556` (lấy một LSC).
+// 🔴 **THAY ĐỔI 20260323 CHỈ CÓ TRÊN MÁY 150** — bản laptop vẫn là dòng cũ, dòng cũ nay bị comment lại:
+//     cũ : `Status not in ('CRE', 'REJ', 'NORE', 'PAID', 'FNS')`
+//     mới: `Status not in ('CRE', 'REJ', 'NORE',         'FNS')`   // 20260323
+//   ⇒ **LSC ĐÃ THANH TOÁN (`PAID`) NAY ĐƯỢC ĐỒNG BỘ**, trước đây bị loại. Đây là nới điều kiện nghiệp vụ,
+//     không phải sửa lỗi cú pháp — port theo bản 150 (canonical, xem #269).
+// ⚠️ Bốn mã bị loại KHÔNG phải "trạng thái xấu": `FNS` (đã giao xe) bị loại vì đã xong hẳn, còn `CRE`
+//   (mới tạo) vì chưa có gì để đồng bộ. Đừng suy từ tên trạng thái.
+// ⚠️ Cờ `SyncVelocaFlag` CHỈ được lọc ở nhánh LẤY MỘT LSC (chống đồng bộ lặp), nhánh tìm danh sách
+//   **không** lọc — giữ đúng sự bất đối xứng đó, tham số `unsynced` để chọn.
+app.MapGet("/api/repairorders/veloca-pending", async (AppDbContext db, ITenantContext t,
+    string? ro, DateTime? checkInFrom, DateTime? checkInTo, bool? unsynced) =>
+{
+    // Bốn mã bị loại — nguyên văn nguồn bản 150 (KHÔNG còn PAID).
+    var excluded = new[] { "Created", "Rejected", "NotResponding", "Finished" };
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && !excluded.Contains(x.Status));
+    if (!string.IsNullOrWhiteSpace(ro)) qy = qy.Where(x => x.RONo == ro!.Trim().ToUpperInvariant());
+    if (checkInFrom.HasValue) qy = qy.Where(x => x.CheckInDate >= checkInFrom.Value);
+    if (checkInTo.HasValue) qy = qy.Where(x => x.CheckInDate <= checkInTo.Value);
+    // Chống đồng bộ lặp: chỉ nhánh lấy một LSC của nguồn mới có điều kiện này.
+    if (unsynced == true) qy = qy.Where(x => x.SyncVelocaFlag == null || x.SyncVelocaFlag == "0");
+
+    var items = await qy.OrderBy(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.RONo, x.LicensePlate, x.Vin, x.CusName, x.Status, x.CheckInDate, x.SyncVelocaFlag,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, excludedStatuses = excluded, items });
+}).RequireAuthorization();
+
+// #271 Đánh dấu đã đồng bộ Veloca (bộ đồng bộ gọi lại). Nguồn không có hàm riêng — cờ được ghi trong
+//   chính luồng đồng bộ; MiniHTC chưa port tầng gọi Veloca (đã ghi nợ) nên tách ra một endpoint.
+app.MapPost("/api/repairorders/{no}/veloca-synced", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no.Trim().ToUpperInvariant());
+    if (r is null) return Results.NotFound(new { no });
+    r.SyncVelocaFlag = "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.SyncVelocaFlag });
+}).RequireAuthorization();
+
 // ===== Phiếu tiếp nhận xe dịch vụ (Ser_ReceptionF — port 1:1 FrmSerReceptionFMng) =====
 app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
 {
@@ -31877,7 +31918,7 @@ app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.PlateNo.Contains(plate.ToUpper()));
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    { r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest, r.RONO, r.Status, r.CreatedAt, r.DeliveredAt }).ToListAsync();
+    { r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest, r.RONO, r.AppNo, r.Status, r.CreatedAt, r.DeliveredAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
 }).RequireAuthorization();
 
@@ -31888,10 +31929,24 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
     var r = new Reception
     {
         OrgId = t.OrgId, ReceptionFNo = no, PlateNo = dto.PlateNo.Trim().ToUpperInvariant(), ModelName = dto.ModelName,
-        CusName = dto.CusName, CusAddress = dto.CusAddress, CusPhoneNo = dto.CusPhoneNo, CusRequest = dto.CusRequest, Status = "Pending"
+        CusName = dto.CusName, CusAddress = dto.CusAddress, CusPhoneNo = dto.CusPhoneNo, CusRequest = dto.CusRequest, Status = "Pending",
+        AppNo = string.IsNullOrWhiteSpace(dto.AppNo) ? null : dto.AppNo!.Trim(),
     };
-    db.Receptions.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, r.PlateNo, status = r.Status });
+    db.Receptions.Add(r);
+
+    // 🔴 #271 ĐÓNG LỊCH HẸN Ở HCC — nguồn gọi `HCC_Appointment_FinishOSX` ngay trong hàm tiếp nhận,
+    //   **có điều kiện `if (!IsNullOrEmpty(strAppId))`** ⇒ khách vãng lai (không hẹn trước) không đẩy gì.
+    //   Đây là vế ĐÓNG của cặp mở/đóng: mở khi tạo lịch hẹn (#270), đóng khi xe thật sự tới.
+    string? appPush = null;
+    if (r.AppNo is not null)
+    {
+        var app = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == r.AppNo);
+        if (app is null) return Results.BadRequest(new { error = "Không tìm thấy lịch hẹn: " + r.AppNo });
+        app.HCCFinishStatus = "P";      // chờ đẩy lệnh đóng sang HCC
+        appPush = app.HCCFinishStatus;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFNo, r.PlateNo, status = r.Status, r.AppNo, hccFinishStatus = appPush });
 }).RequireAuthorization();
 
 // Gắn RO (kiểm tra RO tồn tại — tích hợp RepairOrder)
@@ -33570,7 +33625,9 @@ record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
-record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
+// #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
+record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest,
+    string? AppNo = null);
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
 // #265 §12: 12 trường bổ sung. Khối ĐIỀU CHỈNH (`IsAdjustment`/`Adjustment*`/`OldStockInID`) CỐ Ý

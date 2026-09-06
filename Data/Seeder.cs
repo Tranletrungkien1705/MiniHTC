@@ -882,6 +882,11 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #271 parity BizCarSv.ZTemp.cs (delta may 150): co dong bo Veloca + truc dong lich hen HCC
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"SyncVelocaFlag\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"AppNo\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"HCCFinishStatus\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"HCCFinishDateTime\" timestamp",
         // #270 parity Ser_App_Create_ForTab -> HCC_Appointment_AddOSX (khoi CHI CO TREN MAY 150)
         "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
