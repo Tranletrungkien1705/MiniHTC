@@ -150,9 +150,28 @@ public sealed class PdiRequest
     public DateTime? InspectedAt { get; set; }
 }
 
-/// <summary>Thu hồi xe (FrmMngCarRetrieve / FrmNewCarRetrieve) — thu hồi xe từ đại lý về kho HTC.</summary>
+/// <summary>
+/// Thu hồi xe (FrmMngCarRetrieve / FrmNewCarRetrieve) — thu hồi xe từ đại lý về kho HTC.
+/// 🔴 **#117 đối chiếu với biz nguồn** `StorageCarRetrieveCreate/Approve/DetailUpdate/DetailDel_New20181119`
+/// (`TERP.BizHTC/DataWH/Biz.HTC.WH.cs` 69175 / 69828 / 70205 / 70418) — bảng nguồn là **CẶP**
+/// `Sto_CarRetrieve` (đầu) + `Sto_CarRetrieveDetail` (dòng theo xe).
+/// Bản MiniHTC này là dạng **PHẲNG** (một dòng = một xe) nên các cột đầu/dòng được gộp chung;
+/// GAP đã vá ở #117: bổ sung `RetrieveOrderNo` (số lệnh — nhiều xe chung một lệnh ở nguồn),
+/// `RetrieveDtlStatus`, `DeliveryOrderNo`, `CreatedBy`, `ApprovedBy`, và **sửa mã trạng thái**.
+/// 🔴 `Status` cũ dùng chuỗi dài "Pending"/"Approved"/"Rejected" — **SAI so với `TConst.Stage`**
+/// của nguồn: **"P" / "A" / "R"**. Đã đổi ở #117 kèm UPDATE dữ liệu cũ trong Seeder.
+/// ⚠️ Nguồn ghi SONG SONG `_dbMain` + `_dbWH` (69489/69492, 69947/69948) — nợ `_dbWH` chung fleet.
+/// </summary>
 public sealed class CarRetrieve
 {
+    /// <summary>Số LỆNH thu hồi — ở nguồn là khoá của `Sto_CarRetrieve`, nhiều xe dùng chung một lệnh.</summary>
+    public string? RetrieveOrderNo { get; set; }
+    /// <summary>Trạng thái DÒNG (`Sto_CarRetrieveDetail.RetrieveDtlStatus`), tách khỏi trạng thái đầu.</summary>
+    public string RetrieveDtlStatus { get; set; } = "P";
+    /// <summary>Nguồn ghi rỗng khi tạo; chỉ `DetailUpdate` mới đặt giá trị.</summary>
+    public string? DeliveryOrderNo { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? ApprovedBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string Code { get; set; } = "";
@@ -163,7 +182,8 @@ public sealed class CarRetrieve
     public DateTime? ExpectedEndDate { get; set; }       // ngày dự kiến kết thúc thu hồi (BẮT BUỘC)
     public string? FlagEarlyCancel { get; set; }         // cờ xe sắp hủy (từ Car, read-only)
     public string? RetrieveRemark { get; set; }          // ghi chú (TblCarRetrieveDetail.Remark)
-    public string Status { get; set; } = "Pending";      // Pending → Approved / Rejected (Stage.Pending nguồn)
+    /// <summary>🔴 TConst.Stage: "P" chờ duyệt → "A" duyệt / "R" từ chối (sửa ở #117).</summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
 }

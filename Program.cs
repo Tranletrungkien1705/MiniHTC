@@ -542,47 +542,104 @@ app.MapPost("/api/pdi/{code}/{action}", async (string code, string action, PdiRe
     return Results.Ok(new { p.Code, p.Vin, status = p.Status, p.Inspector, p.Result });
 }).RequireAuthorization();
 
-// ===== Thu hồi xe (port 1:1 FrmMngCarRetrieve) =====
 // ===== Thu hồi xe (port 1:1 FrmMngCarRetrieve / FrmNewCarRetrieve) =====
-// Audit #17: thêm StorageCode/ExpectedStartDate/ExpectedEndDate/FlagEarlyCancel/RetrieveRemark; fix status Pending/Approved/Rejected
-app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? status) =>
+// Audit #17: thêm StorageCode/ExpectedStartDate/ExpectedEndDate/FlagEarlyCancel/RetrieveRemark.
+// 🔴 #117 parity với biz nguồn `StorageCarRetrieveCreate/Approve/DetailUpdate/DetailDel_New20181119`
+//    (Biz.HTC.WH.cs 69175 / 69828 / 70205 / 70418), bảng nguồn là CẶP Sto_CarRetrieve + …Detail.
+//    GAP đã vá: (a) mã trạng thái "Pending/Approved/Rejected" → **"P"/"A"/"R"** theo `TConst.Stage`;
+//    (b) thêm `RetrieveOrderNo` (số lệnh, nhiều xe chung một lệnh ở nguồn), `RetrieveDtlStatus`,
+//    `DeliveryOrderNo`, `CreatedBy`, `ApprovedBy`; (c) thêm guard xe của nguồn (`myCar_CheckCar`)
+//    và guard `SPL_SPSupportRetail`; (d) thêm endpoint sửa/xoá dòng.
+// ⚠️ Nguồn ghi song song `_dbMain` + `_dbWH` — MiniHTC một DB, nợ `_dbWH` chung fleet.
+app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? status, string? orderNo) =>
 {
     var q = db.CarRetrieves.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(orderNo)) q = q.Where(r => r.RetrieveOrderNo == orderNo);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    { r.Code, r.Vin, r.DealerCode, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate, r.FlagEarlyCancel, r.RetrieveRemark, r.Status, r.CreatedAt, r.ApprovedAt }).ToListAsync();
+    { r.Code, r.RetrieveOrderNo, r.Vin, r.DealerCode, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate,
+      r.FlagEarlyCancel, r.RetrieveRemark, r.DeliveryOrderNo, r.Status, r.RetrieveDtlStatus,
+      r.CreatedAt, r.CreatedBy, r.ApprovedAt, r.ApprovedBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
     if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Hãy nhập mã kho." });
     if (dto.ExpectedStartDate is null) return Results.BadRequest(new { error = "Hãy nhập ngày thu hồi dự kiến." });
     if (dto.ExpectedEndDate is null) return Results.BadRequest(new { error = "Hãy nhập ngày kết thúc thu hồi DK." });
+    var vin = dto.Vin.Trim().ToUpperInvariant();
+    // ⚠️ Guard `myCar_CheckCar` của nguồn (Biz.HTC.WH.cs:69303-69315) đòi xe thoả BỐN điều kiện:
+    //    tồn tại + Active · `DeliveryStatus = "F"` (ĐÃ GIAO tới đại lý) · `FlagAllowChangeVIN = "0"` ·
+    //    `VINFreeStatus = "0"` (đã map VIN). MiniHTC CHƯA có entity xe mang bốn cột này
+    //    ⇒ GHI NỢ, không bịa cột. (Nguồn cố ý KHÔNG kiểm đại lý: "Không check Đại lý (nâng cấp sau)".)
+    // 🔴 Guard nguồn (69448-69466) ĐÃ port được vì có sẵn entity: xe đang có hỗ trợ bán lẻ
+    //    (`SPL_SPSupportRetail`) thì KHÔNG được thu hồi.
+    if (await db.SPSupportRetails.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin))
+        return Results.BadRequest(new { error = $"Xe {vin} đang có hỗ trợ bán lẻ (SPL_SPSupportRetail), không thu hồi được." });
+
     var code = "TH" + DateTime.Now.ToString("yyMMddHHmmss");
     var r = new CarRetrieve
     {
-        OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(),
+        OrgId = t.OrgId, Code = code,
+        // Số LỆNH của nguồn: nhiều xe có thể dùng chung một lệnh; không truyền thì dùng chính mã phiếu.
+        RetrieveOrderNo = string.IsNullOrWhiteSpace(dto.RetrieveOrderNo) ? code : dto.RetrieveOrderNo!.Trim(),
+        Vin = vin,
         DealerCode = dto.DealerCode ?? "", StorageCode = dto.StorageCode.Trim().ToUpperInvariant(),
         ExpectedStartDate = dto.ExpectedStartDate, ExpectedEndDate = dto.ExpectedEndDate,
         FlagEarlyCancel = dto.FlagEarlyCancel, RetrieveRemark = dto.RetrieveRemark,
-        Status = "Pending"
+        DeliveryOrderNo = "", // nguồn luôn ghi rỗng khi tạo
+        Status = "P", RetrieveDtlStatus = "P",
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
     };
     db.CarRetrieves.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.Code, r.Vin, r.StorageCode, status = r.Status });
+    return Results.Ok(new { r.Code, r.RetrieveOrderNo, r.Vin, r.StorageCode, status = r.Status });
 }).RequireAuthorization();
 
-app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
     if (r is null) return Results.NotFound(new { code });
-    if (r.Status != "Pending") return Results.BadRequest(new { error = "Sai trạng thái (cần Pending)." });
-    r.Status = action == "approve" ? "Approved" : "Rejected"; r.ApprovedAt = DateTime.Now;
+    // 🔴 Mã trạng thái theo `TConst.Stage` của nguồn: "P" → "A" / "R" (sửa ở #117).
+    if (r.Status != "P") return Results.BadRequest(new { error = $"Sai trạng thái (đang '{r.Status}', cần 'P')." });
+    r.Status = action == "approve" ? "A" : "R";
+    r.RetrieveDtlStatus = r.Status; // bản phẳng: đầu và dòng là một, đồng bộ luôn
+    r.ApprovedAt = DateTime.Now;
+    r.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { r.Code, r.Vin, status = r.Status });
+}).RequireAuthorization();
+
+// Sửa dòng thu hồi — nguồn `StorageCarRetrieveDetailUpdate` (Biz.HTC.WH.cs:70205) ghi
+// StorageCode / ExpectedStartDate / ExpectedEndDate / Remark, và `DeliveryOrderNo` (chỉ ở đây mới có giá trị).
+app.MapPost("/api/retrieves/{code}/detail", async (string code, RetrieveDetailDto dto, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (r is null) return Results.NotFound(new { code });
+    if (r.Status != "P") return Results.BadRequest(new { error = $"Đang '{r.Status}', chỉ sửa được khi 'P'." });
+    if (!string.IsNullOrWhiteSpace(dto.StorageCode)) r.StorageCode = dto.StorageCode!.Trim().ToUpperInvariant();
+    if (dto.ExpectedStartDate is not null) r.ExpectedStartDate = dto.ExpectedStartDate;
+    if (dto.ExpectedEndDate is not null) r.ExpectedEndDate = dto.ExpectedEndDate;
+    r.DeliveryOrderNo = dto.DeliveryOrderNo;
+    r.RetrieveRemark = dto.RetrieveRemark;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Code, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate, r.DeliveryOrderNo });
+}).RequireAuthorization();
+
+// Xoá dòng thu hồi — nguồn `StorageCarRetrieveDetailDel` (Biz.HTC.WH.cs:70418).
+app.MapPost("/api/retrieves/{code}/detail-delete", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
+    if (r is null) return Results.NotFound(new { code });
+    if (r.Status != "P") return Results.BadRequest(new { error = $"Đang '{r.Status}', chỉ xoá được khi 'P'." });
+    db.CarRetrieves.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
 // ===== Hủy xe (port 1:1 FrmCarCancel / FrmMngCarCancel) =====
@@ -23469,7 +23526,9 @@ record SalesManUpdDeptDto(List<SalesManUpdDeptRowDto>? Rows);
 record SalesManUpdDeptRowDto(string? SMCode, string? DepartmentCodeNew, string? SMTypeNew);
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
-record RetrieveDto(string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);
+record RetrieveDto(string? RetrieveOrderNo, string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);
+// #117: sửa dòng thu hồi (nguồn StorageCarRetrieveDetailUpdate).
+record RetrieveDetailDto(string? StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? DeliveryOrderNo, string? RetrieveRemark);
 record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
