@@ -9560,6 +9560,19 @@ public sealed class CarVinMaster
     /// </summary>
     public string? FlagAllowChangeVIN { get; set; }
 
+    // ===== #201 parity `CarCarCancel_New20181119` (59995) / `CarCarReActive_New20181119` (60200) =====
+    /// <summary>
+    /// 🔴 Huỷ xe ở nguồn KHÔNG ghi vào bảng riêng — ghi thẳng **5 cột của `Car_Car`**:
+    /// `FlagActive` ("0" khi huỷ / "1" khi kích hoạt lại), `CarCancelType` ("NONE" khi kích hoạt lại),
+    /// `CarCancelRemark`, `CarCancelDate`, `CarCancelBy` (hai cột sau bị đặt NULL khi kích hoạt lại).
+    /// Đặt ở đây theo tiền lệ #164/#197 (`CarVinMaster` đang giữ các cột của `Car_Car`).
+    /// </summary>
+    public string? FlagActive { get; set; }
+    public string? CarCancelType { get; set; }
+    public string? CarCancelRemark { get; set; }
+    public DateTime? CarCancelDate { get; set; }
+    public string? CarCancelBy { get; set; }
+
     /// <summary>#175 — Kho HIỆN TẠI của xe (`Car_VIN.StorageCodeCurrent`). Bước tự sinh lệnh giao lấy
     /// kho của dòng chi tiết TỪ CỘT NÀY, không phải kho khai báo trên phiếu.</summary>
     public string? StorageCodeCurrent { get; set; }

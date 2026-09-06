@@ -650,14 +650,46 @@ app.MapGet("/api/cancels", async (AppDbContext db, ITenantContext t, string? sta
     var q = db.CarCancels.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.Code, c.Vin, c.CancelTypeCode, c.CarCancelRemark, c.FlagEarlyCancel, c.FlagMapVIN, c.Status, c.CreatedAt, c.ApprovedAt }).ToListAsync();
+    { c.Code, c.Vin, c.CancelTypeCode, c.CarCancelRemark, c.FlagEarlyCancel, c.FlagMapVIN, c.Status, c.CreatedAt, c.ApprovedAt,
+      // #201 §12: trạng thái THẬT của xe nằm ở `Car_Car.FlagActive`, không phải cột Status của nhật ký.
+      flagActive = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagActive).FirstOrDefault(),
+      carCancelDate = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.CarCancelDate).FirstOrDefault() }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #201 HUỶ XE — `CarCarCancel_New20181119` (DataWH/Biz.HTC.WH.cs:59995) =====
+// BƯỚC 3B: md5 **vùng hàm** 59995-60400 = `38788ac1` KHỚP 2 máy (file này có lệch ở chỗ khác — xem #196/#197).
+// TWIN: **cả hai bit** WSHTC 32 và 64 cùng gọi `_New20181119` ⇒ không lệch. Cặp lệnh của nguồn đúng HAI cái:
+//   `CarCarCancel_New20181119` (huỷ) và `CarCarReActive_New20181119` (60200, kích hoạt lại) — KHÔNG có
+//   lệnh duyệt/từ chối nào ⇒ `/api/cancels/{code}/{action}` cũ là BỊA (đã gỡ, xem ghi chú bên dưới).
+//
+// 🔴 Nguồn KHÔNG có bảng huỷ riêng: ghi thẳng **5 cột của `Car_Car`** —
+//   huỷ: `FlagActive="0"`, `CarCancelType`, `CarCancelRemark`, `CarCancelDate=hôm nay`, `CarCancelBy`;
+//   kích hoạt lại: `FlagActive="1"`, `CarCancelType="NONE"`, `CarCancelRemark`, hai cột mốc về **NULL**.
+//   Bảng `CarCancels` của port cũ giữ lại làm NHẬT KÝ, nhưng nay phải ghi kèm 5 cột thật.
+//
+// BỐN GUARD của nguồn (60064-60140), port đủ:
+//  1. `CarCancelType` rỗng ⇒ `CarCarCancel_InvalidCarCancelType`;
+//  2. xe phải tồn tại và đang `FlagActive = Active`;
+//  3. 🔴 **tổng thanh toán phải bằng 0** — còn dòng `Pmt_PaymentDetail` ⇒ `CarCarCancel_PaymentMustBeZero`;
+//  4. 🔴 **không được có lệnh giao xe** — còn dòng `Car_DeliveryOrderDetail` ⇒ `CarCarCancel_CarDeliveryOrderExisting`.
+app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
     if (string.IsNullOrWhiteSpace(dto.CancelTypeCode)) return Results.BadRequest(new { error = "Cần loại hủy (CancelTypeCode)." });
+
+    var vinC = dto.Vin.Trim().ToUpperInvariant();
+    var cvmC = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vinC);
+    // guard 2 — xe phải tồn tại và đang hoạt động (nguồn: strFlagActiveListToCheck = Flag.Active).
+    if (cvmC is null) return Results.NotFound(new { error = $"Không tìm thấy xe {vinC}.", vin = vinC });
+    if ((cvmC.FlagActive ?? "1") != "1")
+        return Results.BadRequest(new { error = $"Xe {vinC} đang không hoạt động — không huỷ lại được." });
+    // guard 3 — còn phát sinh thanh toán thì KHÔNG huỷ.
+    if (await db.PmtLines.AnyAsync(x => x.OrgId == t.OrgId && x.RefNo == vinC))
+        return Results.BadRequest(new { error = $"Xe {vinC} đã phát sinh thanh toán — tổng thanh toán phải bằng 0." });
+    // guard 4 — đã nằm trong lệnh giao xe thì KHÔNG huỷ.
+    if (await db.DeliveryOrderCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinC))
+        return Results.BadRequest(new { error = $"Xe {vinC} đang nằm trong lệnh giao xe — không huỷ được." });
     var code = "HX" + DateTime.Now.ToString("yyMMddHHmmss");
     var c = new CarCancel
     {
@@ -666,21 +698,26 @@ app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContex
         FlagEarlyCancel = dto.FlagEarlyCancel, FlagMapVIN = dto.FlagMapVIN,
         Status = "Requested"
     };
-    db.CarCancels.Add(c); await db.SaveChangesAsync();
-    return Results.Ok(new { c.Code, c.Vin, status = c.Status });
+    db.CarCancels.Add(c);
+    // #201: ghi 5 cột THẬT của `Car_Car` — đây mới là chỗ nguồn lưu trạng thái huỷ.
+    cvmC.FlagActive = "0";
+    cvmC.CarCancelType = dto.CancelTypeCode.Trim();
+    cvmC.CarCancelRemark = dto.CarCancelRemark;
+    cvmC.CarCancelDate = DateTime.Now;
+    cvmC.CarCancelBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    cvmC.LogLUDateTime = DateTime.Now; cvmC.LogLUBy = cvmC.CarCancelBy;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Code, c.Vin, status = c.Status, flagActive = cvmC.FlagActive,
+                            cvmC.CarCancelType, cvmC.CarCancelDate, cvmC.CarCancelBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/cancels/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t) =>
-{
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
-    code = code.Trim().ToUpperInvariant();
-    var c = await db.CarCancels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
-    if (c is null) return Results.NotFound(new { code });
-    if (c.Status != "Requested") return Results.BadRequest(new { error = "Đã xử lý." });
-    c.Status = action == "approve" ? "Approved" : "Rejected"; c.ApprovedAt = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { c.Code, c.Vin, status = c.Status });
-}).RequireAuthorization();
+// ⚠️ #201 ĐÃ BỎ `POST /api/cancels/{code}/{action}` (approve|reject) — **nguồn KHÔNG có lệnh duyệt huỷ xe**.
+//    Đã quét CẢ HAI cổng `TERP.WSHTC` (32-bit) và `TERP.WSHTC.64` (đúng luật `C0-ducentesimusnonagesimusquartus`):
+//    toàn hệ chỉ có **hai** lệnh cho việc này — `CarCarCancel_New20181119` và `CarCarReActive_New20181119`.
+//    Huỷ xe có hiệu lực NGAY khi gọi lệnh (ghi `Car_Car.FlagActive="0"`), không qua bước duyệt nào;
+//    "kích hoạt lại" là lệnh RIÊNG, không phải trạng thái của phiếu huỷ.
+//    ⇒ Từ vựng `Requested/Approved/Rejected` của port cũ cũng không có ở nguồn; cột `CarCancel.Status`
+//    nay chỉ còn là nhãn nhật ký nội bộ, trạng thái thật nằm ở `CarVinMaster.FlagActive`.
 
 // ===== Cấu hình hệ thống (port 1:1 FrmMngConfig*/Setup) =====
 app.MapGet("/api/configs", async (AppDbContext db, ITenantContext t, string? q) =>
@@ -14773,6 +14810,17 @@ app.MapPost("/api/carreactivations", async (CarReactivationDto dto, AppDbContext
         db.CarReactivations.Add(new CarReactivation { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, ColorCode = c.ColorCode, Reason = dto.Reason, ReactivatedBy = by, ReactivatedAt = now });
         reactivated++;
         // đảo trạng thái hủy đã duyệt (nếu có) → Reactivated
+        // #201 `CarCarReActive_New20181119` (60200): guard `FlagActive = Inactive` (chỉ kích hoạt lại xe ĐANG huỷ),
+        //   rồi ghi `FlagActive="1"`, `CarCancelType="NONE"`, `CarCancelRemark`, và **NULL hoá** hai cột mốc huỷ.
+        var cvmR = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (cvmR is not null && (cvmR.FlagActive ?? "1") == "0")
+        {
+            cvmR.FlagActive = "1";
+            cvmR.CarCancelType = "NONE";
+            cvmR.CarCancelRemark = dto.Reason;
+            cvmR.CarCancelDate = null; cvmR.CarCancelBy = null;
+            cvmR.LogLUDateTime = now; cvmR.LogLUBy = by;
+        }
         var cancels = await db.CarCancels.Where(x => x.OrgId == t.OrgId && x.Vin == vin && x.Status == "Approved").ToListAsync();
         foreach (var cn in cancels) { cn.Status = "Reactivated"; cancelReverted++; }
     }

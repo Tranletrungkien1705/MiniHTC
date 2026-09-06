@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #201 parity CarCarCancel / CarCarReActive: 5 cot cua Car_Car
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelRemark\" text",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelDate\" timestamp",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelBy\" text",
         // #197 parity CarDeliveryOrderApprove1: co cho phep doi VIN tro lai
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagAllowChangeVIN\" text",
         // #196 parity OSHCC_DLS_Deal_UpdCtmCareFlag: moc duyet kiem chung ban le
