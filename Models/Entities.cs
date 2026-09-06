@@ -2133,6 +2133,12 @@ public sealed class RepairOrder
     // Bổ sung 2026-09-05 cho màn Lịch sử dịch vụ (FrmServiceHistory) — lưới gốc hiển thị các cột này;
     // nguồn `Ser_ServiceHistory_Get` (BizCarSv.Service01.cs:432) select `ro.*` join Ser_Customer + Ser_Car.
     public string? DealerCode { get; set; }            // Ser_RO.DealerCode — dùng cho luật CanShowDetail
+
+    /// <summary>
+    /// 🔴 #283 CREATOR — người lập lệnh sửa chữa (`Ser_RO.Creator`). Cần cho màn tra CHÉO ĐẠI LÝ của tổng
+    /// đài iCIC: cột này bị **CHE thành `******`** khi đại lý gọi API xem lệnh của đại lý khác.
+    /// </summary>
+    public string? Creator { get; set; }
     public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
     public string? ColorCode { get; set; }             // Ser_Car.ColorCode — màu xe
     public string? Assistant { get; set; }             // Ser_RO.Assistant — cố vấn dịch vụ

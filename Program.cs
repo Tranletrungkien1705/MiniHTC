@@ -32768,6 +32768,74 @@ var roStage4Search = new Dictionary<string, string[]>
 string[] roCompletedStatuses = { "Paid", "Finished" };
 
 // Danh mục trạng thái RO + nhóm tìm kiếm, để client dựng bộ lọc đúng như WinForm.
+// ===== 🔴 #283 TRA LỆNH SỬA CHỮA CHÉO ĐẠI LÝ (tổng đài iCIC) — `Ser_RO_GetStatusHistoryList_New20180622` =====
+// Nguồn: `ERP.ICIC/TERP.BizCarSv/BizCarSv.Customer.cs:2869` (hệ **CHỈ CÓ TRÊN LAPTOP**).
+// TRACE TWIN: ba bản — bản trần (:2362) · `_Old` (:2611) · `_New20180622` (:2869);
+//   WS `WSCarSv_ICIC.cs:2399` gọi bản `_New20180622` ⇒ hai bản kia CHẾT.
+// 🆕 SWEEP vỏ rỗng (sinh từ #282): WS iCIC có **51 `[WebMethod]` / 50 lời gọi `_biz.` sống / 1 bị comment**
+//   ⇒ đúng MỘT endpoint vỏ rỗng là `Ser_App_Create_ForWeb`; 50 cái còn lại đều có ruột.
+//
+// ⚠️ TÊN HÀM ĐÁNH LỪA: "GetStatusHistoryList" **KHÔNG phải nhật ký đổi trạng thái của một lệnh** — nó là
+//   **TÌM lệnh sửa chữa CHÉO ĐẠI LÝ** kèm trạng thái hiện tại. Nhật ký thật của LSC là chuyện khác.
+//
+// 🔴 LUẬT CHE DỮ LIỆU CHÉO ĐẠI LÝ (thứ dễ mất nhất khi port):
+//     `CASE tpro.DealerCode WHEN '@strCallerDealerCode' THEN ('LS-'+RONo) ELSE '******' END NormalizedRONo`
+//     `CASE tpro.DealerCode WHEN '@strCallerDealerCode' THEN tpro.Creator ELSE '******' END NormalizedCreator`
+//   ⇒ đại lý gọi API **chỉ thấy số lệnh và người lập của CHÍNH MÌNH**; của đại lý khác bị che `******`.
+//   Port bỏ qua luật này = **lộ số lệnh + người lập của mọi đại lý** cho bất kỳ ai gọi được API.
+//   ⚠️ Dòng `RORONo = 'BG-' + RONo` thì **KHÔNG che** — tiền tố `BG-` (báo giá) hiện với mọi đại lý.
+//
+// ⚠️ HAI TIỀN TỐ khác nhau trên cùng một `RONo`: `BG-` (báo giá) và `LS-` (lệnh sửa chữa) — khớp đúng luật
+//   bóc tiền tố đã port ở `/api/stockreqs`.
+// ⚠️ `TOP 500` + `ORDER BY ro.CheckInDate DESC` đặt ở **truy vấn LỌC ĐẦU TIÊN**, trước mọi join ⇒ cắt theo
+//   ngày tiếp nhận, không phải cắt sau khi ghép dữ liệu.
+app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantContext t,
+    string? callerDealerCode, string? dealers, string? status, string? plateNo, string? frameNo,
+    string? cusName, DateTime? checkInDate) =>
+{
+    var caller = (callerDealerCode ?? "").Trim().ToUpperInvariant();
+
+    var qy = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
+    var dealerList = (dealers ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
+    if (dealerList.Count > 0) qy = qy.Where(r => r.DealerCode != null && dealerList.Contains(r.DealerCode));
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(r => r.LicensePlate.Contains(plateNo!.ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(r => r.Vin != null && r.Vin.Contains(frameNo!.ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(r => r.CusName != null && r.CusName.Contains(cusName!));
+    if (checkInDate.HasValue)
+    {
+        var d0 = checkInDate.Value.Date; var d1 = d0.AddDays(1);
+        qy = qy.Where(r => r.CheckInDate != null && r.CheckInDate >= d0 && r.CheckInDate < d1);
+    }
+
+    // TOP 500 + sắp theo ngày tiếp nhận GIẢM DẦN — đúng vị trí của nguồn: cắt TRƯỚC khi ghép dữ liệu.
+    var rows = await qy.OrderByDescending(r => r.CheckInDate).Take(500).ToListAsync();
+
+    const string MASK = "******";
+    var items = rows.Select(r =>
+    {
+        var own = caller.Length > 0 && string.Equals(r.DealerCode, caller, StringComparison.OrdinalIgnoreCase);
+        return new
+        {
+            r.RONo,
+            roRONo = "BG-" + r.RONo,                                  // tiền tố BÁO GIÁ — KHÔNG che
+            normalizedRONo = own ? "LS-" + r.RONo : MASK,             // tiền tố LỆNH SỬA CHỮA — CHE nếu khác đại lý
+            normalizedCreator = own ? r.Creator : MASK,
+            r.DealerCode, r.LicensePlate, r.Vin, r.CusName, r.Status,
+            r.CheckInDate, r.TrademarkNameModel,
+            isOwnDealer = own,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        callerDealerCode = caller.Length == 0 ? null : caller,
+        note = "Số lệnh (LS-) và người lập bị che ****** khi lệnh thuộc đại lý KHÁC đại lý gọi; tiền tố BG- không che.",
+        count = items.Count, items,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statuses", () => Results.Ok(new
 {
     flow = _roFlow,
@@ -32788,7 +32856,7 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status, r.RejectNote,
         // #266 §12: 10 cột thẻ hội viên / điểm
-        r.FlagCardExist, r.FlagIsDLQuery,
+        r.FlagCardExist, r.FlagIsDLQuery, r.Creator,   // #283 §12
         r.CardNoInv, r.CardTypeInv, r.CardTypeExpectInv,
         r.PointEndInv, r.PointRankTotalInv, r.PointConsumptionPrm,
         r.MemberNo, r.PointVoucher,

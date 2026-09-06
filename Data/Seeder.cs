@@ -882,6 +882,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #283 parity Ser_RO_GetStatusHistoryList: nguoi lap lenh (bi che khi tra cheo dai ly)
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"Creator\" text",
         // #282 parity TblSerAppRO (DbDefine.cs:878-903): 8 cot that cua Ser_App con thieu
         "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"Creator\" text",
         "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CusAddress\" text",
