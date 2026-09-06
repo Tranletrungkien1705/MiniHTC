@@ -6235,6 +6235,299 @@ public sealed class PmtGuaranteeAttachFile
 /// ⚠️ Tiền tố cột là **`BkTrans…`** (`BkTransFileType`/`BkTransFilePath`/`BkTransFileName`).
 /// ⚠️ Không WS nào gọi trực tiếp: ghi bên trong luồng tích hợp VietinBank.
 /// </summary>
+// ================= 12 BẢNG VỆ TINH của đề nghị GD ngân hàng (#137) =================
+// Nguồn: BizHTC.VietinBank.cs — `RQ_BankingTransactions_SaveX_20220817` (7638), csproj <Compile> 311.
+// 🔴 TWIN: `RQ_BankingTransactions_SaveX` (5196) là bản CHẾT (không ai gọi; caller duy nhất ở 5129 gọi
+//    bản _20220817). Bản chết ghi 10 bảng, bản LIVE ghi **14** — 4 bảng LC (GrtLC/GrtLCDtl/PmtLC/PmtLCDtl)
+//    CHỈ CÓ ở bản LIVE ⇒ lặp lần thứ 3 mẫu "bản mới ghi thêm cả một nhóm bảng" (#129, #136).
+// Cấu trúc: 1 đề nghị (RQ_BankingTransactions) → 3 nhánh nghiệp vụ, mỗi nhánh 1 bảng "đầu" + 1 bảng chi tiết:
+//    Pmt (giải ngân) · Grt (bảo lãnh) · Wrt (bảo đảm/tài sản) — và bản LIVE thêm 2 nhánh L/C: PmtLC, GrtLC.
+//    Ctr / WrtCtr = danh sách HỢP ĐỒNG đại lý gắn vào đề nghị (WrtCtr có thêm LTV + GrtValue).
+
+/// <summary>Nhánh GIẢI NGÂN của đề nghị (`RQ_BankingTransPmt`).</summary>
+public sealed class RqBankingTransPmt
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? PaymentNo { get; set; }
+    public string? PaymentType { get; set; }
+    public string? DisbursementType { get; set; }
+    public decimal TransferAmount { get; set; }
+    public int LoanPeriod { get; set; }
+    public DateTime? LoanPeriodDate { get; set; }
+    public string? TransferRemark { get; set; }
+    public decimal InterestRate { get; set; }
+    public string? ReceivingUnit { get; set; }
+    public string? BankAccountReceive { get; set; }
+    public string? BankNameReceive { get; set; }
+    public string? ProvinceName { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? DisbursementRequestDate { get; set; }
+    public DateTime? FirstInterestPmtDate { get; set; }
+    public string? CreditContractNo { get; set; }
+    public DateTime? CreditContractDate { get; set; }
+    public string? Purpose { get; set; }
+    public string? InvoiceNo { get; set; }
+    public string? Representative { get; set; }
+    /// <summary>Có uỷ quyền hay không — cờ "1"/"0" (luật `dmssales-flag-values-1-0-not-yn`).</summary>
+    public string? FlagAuthority { get; set; }
+    public string? AuthorityInfo { get; set; }
+    public string? PaymentAccount { get; set; }
+    public string? PaymentBankCode { get; set; }
+    public decimal LoanLimit { get; set; }
+    public decimal AmountDisbursed { get; set; }
+    public string BkTransPmtStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Chi tiết theo XE của nhánh giải ngân (`RQ_BankingTransPmtDtl`).</summary>
+public sealed class RqBankingTransPmtDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    /// <summary>Khoá dòng XE của hợp đồng đại lý (`CarId`) — cùng hệ khoá với `Dlr_ContractCar` (#129).</summary>
+    public string? CarId { get; set; }
+    public string? DlrCtrNo { get; set; }
+    public decimal PmtPercent { get; set; }
+    public decimal PmtAmount { get; set; }
+    public decimal AmountActual { get; set; }
+    public string? HTCInvoiceNo { get; set; }
+    public string BkTransPmtDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Nhánh giải ngân theo L/C (`RQ_BankingTransPmtLC`) — CHỈ có ở bản LIVE _20220817.</summary>
+public sealed class RqBankingTransPmtLC
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? PaymentType { get; set; }
+    public string? DisbursementType { get; set; }
+    public int LoanPeriod { get; set; }
+    public DateTime? LoanPeriodDate { get; set; }
+    public decimal InterestRate { get; set; }
+    public string? Remark { get; set; }
+    public string BkTransPmtLCStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Chi tiết nhánh giải ngân L/C (`RQ_BankingTransPmtLCDtl`) — CHỈ có ở bản LIVE.
+/// 🔴 Khác hẳn các bảng `*Dtl` còn lại: KHÔNG chi tiết theo xe/hợp đồng mà theo **thư bảo lãnh**
+///    (`BankGuaranteeNo` + DealerCode + BankCode + hạn mở/hết hạn + 3 mức tiền).
+/// </summary>
+public sealed class RqBankingTransPmtLCDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? BankGuaranteeNo { get; set; }
+    public string? DealerCode { get; set; }
+    public string? BankCode { get; set; }
+    public DateTime? DateOpen { get; set; }
+    public DateTime? DateExpired { get; set; }
+    public decimal Amount { get; set; }
+    public decimal AmountPmt { get; set; }
+    public decimal AmountDisbursement { get; set; }
+    public string BkTransPmtLCDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Nhánh BẢO LÃNH của đề nghị (`RQ_BankingTransGrt`).</summary>
+public sealed class RqBankingTransGrt
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? GuaranteeType { get; set; }
+    public decimal TotalAmount { get; set; }
+    public DateTime? DateExpiredValue { get; set; }
+    public string? GrtForm { get; set; }
+    public string? GrtReceive { get; set; }
+    public string? GrtReceiveAddress { get; set; }
+    public string? BizResNumber { get; set; }
+    public string? GrtRecPerson { get; set; }
+    public string? GrtRecPosition { get; set; }
+    public string? GrtRecDepartment { get; set; }
+    public string? GrtRecPersonAddress { get; set; }
+    public DateTime? DisbursementRequestDate { get; set; }
+    public string BkTransGrtStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Chi tiết theo XE của nhánh bảo lãnh (`RQ_BankingTransGrtDtl`).</summary>
+public sealed class RqBankingTransGrtDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? CarId { get; set; }
+    public string? DlrCtrNo { get; set; }
+    public decimal GrtPercent { get; set; }
+    public decimal GrtAmount { get; set; }
+    public decimal AmountActual { get; set; }
+    public string BkTransGrtDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Nhánh bảo lãnh theo L/C (`RQ_BankingTransGrtLC`) — CHỈ có ở bản LIVE.
+/// Hai vế UT (trả trước) / UP (trả sau): mỗi vế có tiền + tỉ lệ + ngày TTC + ngày hiệu lực riêng.
+/// </summary>
+public sealed class RqBankingTransGrtLC
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? GrtLCType { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string? PaymentNo { get; set; }
+    public decimal AmountLCUT { get; set; }
+    public decimal ProportionLCUT { get; set; }
+    public DateTime? DateTTCLCUTValue { get; set; }
+    public DateTime? DateLCUTValue { get; set; }
+    public string? BankCodeLCUT { get; set; }
+    public string? BankAccountLCUT { get; set; }
+    public decimal AmountLCUP { get; set; }
+    public decimal ProportionLCUP { get; set; }
+    public DateTime? DateTTCLCUPValue { get; set; }
+    public DateTime? DateLCUPValue { get; set; }
+    public DateTime? DateStart { get; set; }
+    public DateTime? DateEnd { get; set; }
+    public string? ValidBank { get; set; }
+    public string? GrtLCReceive { get; set; }
+    public string? GrtLCReceiveAddress { get; set; }
+    public string? BizResNumber { get; set; }
+    public string? GrtLCRecPersonAddress { get; set; }
+    public string BkTransGrtLCStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Chi tiết theo XE của nhánh bảo lãnh L/C (`RQ_BankingTransGrtLCDtl`) — CHỈ có ở bản LIVE.</summary>
+public sealed class RqBankingTransGrtLCDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? CarId { get; set; }
+    public string? DlrCtrNo { get; set; }
+    public decimal GrtPercent { get; set; }
+    public decimal GrtAmount { get; set; }
+    public decimal AmountActual { get; set; }
+    public string BkTransGrtLCDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Nhánh BẢO ĐẢM / tài sản (`RQ_BankingTransWrt`) — 3 khoản cộng thêm, mỗi khoản một bộ
+/// cờ + số tiền + ghi chú (ký quỹ bổ sung · hạn mức tín dụng · khoản khác).
+/// </summary>
+public sealed class RqBankingTransWrt
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? BkTransType { get; set; }
+    public string? AdditionalMarginFlag { get; set; }
+    /// <summary>⚠️ Tên cột nguồn viết SAI chính tả: `AdditionalMarginAmout` (thiếu chữ "n") — GIỮ NGUYÊN để port 1:1.</summary>
+    public decimal AdditionalMarginAmout { get; set; }
+    public string? AdditionalMarginRemark { get; set; }
+    public string? CreditAmountFlag { get; set; }
+    public decimal CreditAmount { get; set; }
+    public string? CreditAmountRemark { get; set; }
+    public string? OtherFlag { get; set; }
+    public decimal OtherAmount { get; set; }
+    public string? OtherRemark { get; set; }
+    public string? AssetGrtFlag { get; set; }
+    public decimal TotalAssetAmount { get; set; }
+    public decimal TotalAssetGrtAmount { get; set; }
+    public string BkTransWrtStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Chi tiết theo XE của nhánh bảo đảm (`RQ_BankingTransWrtDtl`).</summary>
+public sealed class RqBankingTransWrtDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>⚠️ Nguồn liệt kê `BkTransType` TRƯỚC `RQ_BankingTransNo` ở bảng này (thứ tự cột khác 13 bảng kia).</summary>
+    public string? BkTransType { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? CarId { get; set; }
+    public string? DlrCtrNo { get; set; }
+    public decimal AmountActual { get; set; }
+    public string BkTransWrtDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Hợp đồng đại lý gắn vào đề nghị (`RQ_BankingTransCtr`).</summary>
+public sealed class RqBankingTransCtr
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? DlrCtrNo { get; set; }
+    public string? SpecCode { get; set; }
+    public DateTime? ContractDate { get; set; }
+    public string? BkTransCtrPcpNo { get; set; }
+    public DateTime? BkTransCtrPcpDate { get; set; }
+    public string? AssemblyStatus { get; set; }
+    public decimal Qty { get; set; }
+    public decimal UnitPrice { get; set; }
+    public decimal Amount { get; set; }
+    public string BkTransCtrStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Hợp đồng đại lý gắn vào NHÁNH BẢO ĐẢM (`RQ_BankingTransWrtCtr`) — cùng bộ cột với
+/// `RQ_BankingTransCtr` nhưng có THÊM `LTV`, `GrtValue`, `BkTransCtrDate`.
+/// </summary>
+public sealed class RqBankingTransWrtCtr
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public string? DlrCtrNo { get; set; }
+    public string? SpecCode { get; set; }
+    public DateTime? ContractDate { get; set; }
+    public string? BkTransCtrPcpNo { get; set; }
+    public DateTime? BkTransCtrPcpDate { get; set; }
+    public string? AssemblyStatus { get; set; }
+    public decimal Qty { get; set; }
+    public decimal UnitPrice { get; set; }
+    public decimal Amount { get; set; }
+    /// <summary>Tỉ lệ cho vay trên giá trị tài sản (loan-to-value).</summary>
+    public decimal LTV { get; set; }
+    public decimal GrtValue { get; set; }
+    public DateTime? BkTransCtrDate { get; set; }
+    public string BkTransWrtCtrStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class RqBankingTransAttachFile
 {
     public long Id { get; set; }
@@ -6787,6 +7080,21 @@ public sealed class BankingTrans
     /// </summary>
     public string BankStatus { get; set; } = "P";
     public DateTime? PushedToBankAt { get; set; }
+
+    // --- #137 parity RQ_BankingTransactions: 9 cột nguồn ghi mà port cũ THIẾU ---
+    /// <summary>Đại lý đứng tên đề nghị (`DealerCode`).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Số ĐKKD của đại lý (`BizResNumber`) — nguồn ghi ở CẢ bảng đầu lẫn nhánh bảo lãnh.</summary>
+    public string? BizResNumber { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? ApprovedBy { get; set; }
+    /// <summary>Hoàn tất (`FinishDate`/`FinishBy`) — trạng thái CUỐI, khác `ApprovedDate`.</summary>
+    public DateTime? FinishDate { get; set; }
+    public string? FinishBy { get; set; }
+    public DateTime? CancelDate { get; set; }
+    public string? CancelBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 
     /// <summary>Mã tham chiếu do ngân hàng cấp khi báo kết quả về (`RefBankCode`).</summary>
     public string? RefBankCode { get; set; }

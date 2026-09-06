@@ -17944,7 +17944,10 @@ app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string
             b.RefBankCode, b.BankRemark, b.BankUpdatedAt,
             b.LDNo, b.DisbursementTerm, b.DisbursementInterestRate,
             b.MDNo, b.GrtAmount, b.GrtDateStart, b.GrtDateEnd, b.GrtTerm, b.GrtFee, b.GrtLatePmtDate,
-            b.LCNo, b.LCAmount, b.LCStartDate, b.LCEndDate }).ToListAsync();
+            b.LCNo, b.LCAmount, b.LCStartDate, b.LCEndDate,
+            // #137 parity: nguồn ghi 9 cột này ở RQ_BankingTransactions mà port cũ thiếu.
+            b.DealerCode, b.BizResNumber, b.CreatedBy, b.ApprovedBy,
+            b.FinishDate, b.FinishBy, b.CancelDate, b.CancelBy, b.LogLUDateTime, b.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -18097,7 +18100,7 @@ app.MapDelete("/api/bankingtrans/{no}", async (string no, AppDbContext db, ITena
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
-app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng." });
     if (string.IsNullOrWhiteSpace(dto.TransType) || !_bankTransTypes.Contains(dto.TransType))
@@ -18107,10 +18110,94 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
     var b = new BankingTrans
     {
         OrgId = t.OrgId, SoDeNghi = no, BankCode = dto.BankCode.Trim().ToUpperInvariant(), TransType = dto.TransType.Trim(),
-        DisbursementDate = dto.DisbursementDate, AmountDisbursed = dto.AmountDisbursed, TotalAmount = dto.TotalAmount == 0 ? dto.AmountDisbursed : dto.TotalAmount, Remark = dto.Remark, Status = "Draft"
+        DisbursementDate = dto.DisbursementDate, AmountDisbursed = dto.AmountDisbursed, TotalAmount = dto.TotalAmount == 0 ? dto.AmountDisbursed : dto.TotalAmount, Remark = dto.Remark, Status = "Draft",
+        // #137 parity RQ_BankingTransactions.
+        DealerCode = dto.DealerCode, BizResNumber = dto.BizResNumber,
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
     };
     db.BankingTranses.Add(b); await db.SaveChangesAsync();
     return Results.Ok(new { b.SoDeNghi, b.BankCode, b.TransType });
+}).RequireAuthorization();
+
+// ---- #137: 12 nhánh chi tiết của đề nghị GD ngân hàng ----
+// Nguồn ghi CẢ 14 bảng trong MỘT lệnh (`RQ_BankingTransactions_SaveX_20220817`), theo kiểu nạp bảng tạm
+// `#input_*` rồi `insert…select` — nên ở đây cũng lưu TRỌN GÓI: xoá sạch 12 nhánh cũ rồi ghi lại.
+// ⚠️ Ghi nhận lỗi NGUỒN (không port): khối "Clear for debug" quên `Drop table #input_RQ_BankingTransGrtLC`
+//    và `…GrtLCDtl` ⇒ hai bảng tạm này rò lại trong phiên; MiniHTC không có bảng tạm nên không tái hiện.
+app.MapPost("/api/bankingtrans/{no}/detail", async (string no, RqBtDetailDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    if (b.Status is not ("Draft" or "Rejected")) return Results.BadRequest(new { error = "Chỉ sửa chi tiết khi đề nghị còn ở trạng thái nháp/bị từ chối." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    db.RqBankingTransPmts.RemoveRange(await db.RqBankingTransPmts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransPmtDtls.RemoveRange(await db.RqBankingTransPmtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransPmtLCs.RemoveRange(await db.RqBankingTransPmtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransPmtLCDtls.RemoveRange(await db.RqBankingTransPmtLCDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransGrts.RemoveRange(await db.RqBankingTransGrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransGrtDtls.RemoveRange(await db.RqBankingTransGrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransGrtLCs.RemoveRange(await db.RqBankingTransGrtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransGrtLCDtls.RemoveRange(await db.RqBankingTransGrtLCDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransWrts.RemoveRange(await db.RqBankingTransWrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransWrtDtls.RemoveRange(await db.RqBankingTransWrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransCtrs.RemoveRange(await db.RqBankingTransCtrs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+    db.RqBankingTransWrtCtrs.RemoveRange(await db.RqBankingTransWrtCtrs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync());
+
+    if (dto.Pmt is { } p)
+        db.RqBankingTransPmts.Add(new RqBankingTransPmt { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = p.BkTransType, PaymentNo = p.PaymentNo, PaymentType = p.PaymentType, DisbursementType = p.DisbursementType, TransferAmount = p.TransferAmount, LoanPeriod = p.LoanPeriod, LoanPeriodDate = p.LoanPeriodDate, TransferRemark = p.TransferRemark, InterestRate = p.InterestRate, ReceivingUnit = p.ReceivingUnit, BankAccountReceive = p.BankAccountReceive, BankNameReceive = p.BankNameReceive, ProvinceName = p.ProvinceName, Remark = p.Remark, DisbursementRequestDate = p.DisbursementRequestDate, FirstInterestPmtDate = p.FirstInterestPmtDate, CreditContractNo = p.CreditContractNo, CreditContractDate = p.CreditContractDate, Purpose = p.Purpose, InvoiceNo = p.InvoiceNo, Representative = p.Representative, FlagAuthority = p.FlagAuthority, AuthorityInfo = p.AuthorityInfo, PaymentAccount = p.PaymentAccount, PaymentBankCode = p.PaymentBankCode, LoanLimit = p.LoanLimit, AmountDisbursed = p.AmountDisbursed, LogLUDateTime = now, LogLUBy = who });
+    foreach (var d in dto.PmtDtls ?? new())
+        db.RqBankingTransPmtDtls.Add(new RqBankingTransPmtDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, CarId = d.CarId, DlrCtrNo = d.DlrCtrNo, PmtPercent = d.PmtPercent, PmtAmount = d.PmtAmount, AmountActual = d.AmountActual, HTCInvoiceNo = d.HTCInvoiceNo, LogLUDateTime = now, LogLUBy = who });
+    if (dto.PmtLC is { } pl)
+        db.RqBankingTransPmtLCs.Add(new RqBankingTransPmtLC { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = pl.BkTransType, PaymentType = pl.PaymentType, DisbursementType = pl.DisbursementType, LoanPeriod = pl.LoanPeriod, LoanPeriodDate = pl.LoanPeriodDate, InterestRate = pl.InterestRate, Remark = pl.Remark, LogLUDateTime = now, LogLUBy = who });
+    foreach (var d in dto.PmtLCDtls ?? new())
+        db.RqBankingTransPmtLCDtls.Add(new RqBankingTransPmtLCDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, BankGuaranteeNo = d.BankGuaranteeNo, DealerCode = d.DealerCode, BankCode = d.BankCode, DateOpen = d.DateOpen, DateExpired = d.DateExpired, Amount = d.Amount, AmountPmt = d.AmountPmt, AmountDisbursement = d.AmountDisbursement, LogLUDateTime = now, LogLUBy = who });
+    if (dto.Grt is { } g)
+        db.RqBankingTransGrts.Add(new RqBankingTransGrt { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = g.BkTransType, GuaranteeType = g.GuaranteeType, TotalAmount = g.TotalAmount, DateExpiredValue = g.DateExpiredValue, GrtForm = g.GrtForm, GrtReceive = g.GrtReceive, GrtReceiveAddress = g.GrtReceiveAddress, BizResNumber = g.BizResNumber, GrtRecPerson = g.GrtRecPerson, GrtRecPosition = g.GrtRecPosition, GrtRecDepartment = g.GrtRecDepartment, GrtRecPersonAddress = g.GrtRecPersonAddress, DisbursementRequestDate = g.DisbursementRequestDate, LogLUDateTime = now, LogLUBy = who });
+    foreach (var d in dto.GrtDtls ?? new())
+        db.RqBankingTransGrtDtls.Add(new RqBankingTransGrtDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, CarId = d.CarId, DlrCtrNo = d.DlrCtrNo, GrtPercent = d.GrtPercent, GrtAmount = d.GrtAmount, AmountActual = d.AmountActual, LogLUDateTime = now, LogLUBy = who });
+    if (dto.GrtLC is { } gl)
+        db.RqBankingTransGrtLCs.Add(new RqBankingTransGrtLC { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = gl.BkTransType, GrtLCType = gl.GrtLCType, TotalAmount = gl.TotalAmount, PaymentNo = gl.PaymentNo, AmountLCUT = gl.AmountLCUT, ProportionLCUT = gl.ProportionLCUT, DateTTCLCUTValue = gl.DateTTCLCUTValue, DateLCUTValue = gl.DateLCUTValue, BankCodeLCUT = gl.BankCodeLCUT, BankAccountLCUT = gl.BankAccountLCUT, AmountLCUP = gl.AmountLCUP, ProportionLCUP = gl.ProportionLCUP, DateTTCLCUPValue = gl.DateTTCLCUPValue, DateLCUPValue = gl.DateLCUPValue, DateStart = gl.DateStart, DateEnd = gl.DateEnd, ValidBank = gl.ValidBank, GrtLCReceive = gl.GrtLCReceive, GrtLCReceiveAddress = gl.GrtLCReceiveAddress, BizResNumber = gl.BizResNumber, GrtLCRecPersonAddress = gl.GrtLCRecPersonAddress, LogLUDateTime = now, LogLUBy = who });
+    foreach (var d in dto.GrtLCDtls ?? new())
+        db.RqBankingTransGrtLCDtls.Add(new RqBankingTransGrtLCDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, CarId = d.CarId, DlrCtrNo = d.DlrCtrNo, GrtPercent = d.GrtPercent, GrtAmount = d.GrtAmount, AmountActual = d.AmountActual, LogLUDateTime = now, LogLUBy = who });
+    if (dto.Wrt is { } w)
+        db.RqBankingTransWrts.Add(new RqBankingTransWrt { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = w.BkTransType, AdditionalMarginFlag = w.AdditionalMarginFlag, AdditionalMarginAmout = w.AdditionalMarginAmout, AdditionalMarginRemark = w.AdditionalMarginRemark, CreditAmountFlag = w.CreditAmountFlag, CreditAmount = w.CreditAmount, CreditAmountRemark = w.CreditAmountRemark, OtherFlag = w.OtherFlag, OtherAmount = w.OtherAmount, OtherRemark = w.OtherRemark, AssetGrtFlag = w.AssetGrtFlag, TotalAssetAmount = w.TotalAssetAmount, TotalAssetGrtAmount = w.TotalAssetGrtAmount, LogLUDateTime = now, LogLUBy = who });
+    foreach (var d in dto.WrtDtls ?? new())
+        db.RqBankingTransWrtDtls.Add(new RqBankingTransWrtDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, CarId = d.CarId, DlrCtrNo = d.DlrCtrNo, AmountActual = d.AmountActual, LogLUDateTime = now, LogLUBy = who });
+    foreach (var c in dto.Ctrs ?? new())
+        db.RqBankingTransCtrs.Add(new RqBankingTransCtr { OrgId = t.OrgId, RQ_BankingTransNo = no, DlrCtrNo = c.DlrCtrNo, SpecCode = c.SpecCode, ContractDate = c.ContractDate, BkTransCtrPcpNo = c.BkTransCtrPcpNo, BkTransCtrPcpDate = c.BkTransCtrPcpDate, AssemblyStatus = c.AssemblyStatus, Qty = c.Qty, UnitPrice = c.UnitPrice, Amount = c.Amount, LogLUDateTime = now, LogLUBy = who });
+    foreach (var c in dto.WrtCtrs ?? new())
+        db.RqBankingTransWrtCtrs.Add(new RqBankingTransWrtCtr { OrgId = t.OrgId, RQ_BankingTransNo = no, DlrCtrNo = c.DlrCtrNo, SpecCode = c.SpecCode, ContractDate = c.ContractDate, BkTransCtrPcpNo = c.BkTransCtrPcpNo, BkTransCtrPcpDate = c.BkTransCtrPcpDate, AssemblyStatus = c.AssemblyStatus, Qty = c.Qty, UnitPrice = c.UnitPrice, Amount = c.Amount, LTV = c.LTV, GrtValue = c.GrtValue, BkTransCtrDate = c.BkTransCtrDate, LogLUDateTime = now, LogLUBy = who });
+
+    b.LogLUDateTime = now; b.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, pmtDtls = (dto.PmtDtls ?? new()).Count, grtDtls = (dto.GrtDtls ?? new()).Count, grtLCDtls = (dto.GrtLCDtls ?? new()).Count, pmtLCDtls = (dto.PmtLCDtls ?? new()).Count, wrtDtls = (dto.WrtDtls ?? new()).Count, ctrs = (dto.Ctrs ?? new()).Count, wrtCtrs = (dto.WrtCtrs ?? new()).Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankingtrans/{no}/detail", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    if (b is null) return Results.NotFound(new { no });
+    return Results.Ok(new
+    {
+        header = new { b.SoDeNghi, b.BankCode, b.TransType, b.Status, b.DealerCode, b.BizResNumber, b.CreatedBy, b.ApprovedBy, b.FinishDate, b.FinishBy, b.CancelDate, b.CancelBy, b.LogLUDateTime, b.LogLUBy },
+        pmt = await db.RqBankingTransPmts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentNo, x.PaymentType, x.DisbursementType, x.TransferAmount, x.LoanPeriod, x.LoanPeriodDate, x.TransferRemark, x.InterestRate, x.ReceivingUnit, x.BankAccountReceive, x.BankNameReceive, x.ProvinceName, x.Remark, x.DisbursementRequestDate, x.FirstInterestPmtDate, x.CreditContractNo, x.CreditContractDate, x.Purpose, x.InvoiceNo, x.Representative, x.FlagAuthority, x.AuthorityInfo, x.PaymentAccount, x.PaymentBankCode, x.LoanLimit, x.AmountDisbursed, x.BkTransPmtStatus }).FirstOrDefaultAsync(),
+        pmtDtls = await db.RqBankingTransPmtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.PmtPercent, x.PmtAmount, x.AmountActual, x.HTCInvoiceNo, x.BkTransPmtDtlStatus }).ToListAsync(),
+        pmtLC = await db.RqBankingTransPmtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentType, x.DisbursementType, x.LoanPeriod, x.LoanPeriodDate, x.InterestRate, x.Remark, x.BkTransPmtLCStatus }).FirstOrDefaultAsync(),
+        pmtLCDtls = await db.RqBankingTransPmtLCDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.BankGuaranteeNo, x.DealerCode, x.BankCode, x.DateOpen, x.DateExpired, x.Amount, x.AmountPmt, x.AmountDisbursement, x.BkTransPmtLCDtlStatus }).ToListAsync(),
+        grt = await db.RqBankingTransGrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.GuaranteeType, x.TotalAmount, x.DateExpiredValue, x.GrtForm, x.GrtReceive, x.GrtReceiveAddress, x.BizResNumber, x.GrtRecPerson, x.GrtRecPosition, x.GrtRecDepartment, x.GrtRecPersonAddress, x.DisbursementRequestDate, x.BkTransGrtStatus }).FirstOrDefaultAsync(),
+        grtDtls = await db.RqBankingTransGrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.GrtPercent, x.GrtAmount, x.AmountActual, x.BkTransGrtDtlStatus }).ToListAsync(),
+        grtLC = await db.RqBankingTransGrtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.GrtLCType, x.TotalAmount, x.PaymentNo, x.AmountLCUT, x.ProportionLCUT, x.DateTTCLCUTValue, x.DateLCUTValue, x.BankCodeLCUT, x.BankAccountLCUT, x.AmountLCUP, x.ProportionLCUP, x.DateTTCLCUPValue, x.DateLCUPValue, x.DateStart, x.DateEnd, x.ValidBank, x.GrtLCReceive, x.GrtLCReceiveAddress, x.BizResNumber, x.GrtLCRecPersonAddress, x.BkTransGrtLCStatus }).FirstOrDefaultAsync(),
+        grtLCDtls = await db.RqBankingTransGrtLCDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.GrtPercent, x.GrtAmount, x.AmountActual, x.BkTransGrtLCDtlStatus }).ToListAsync(),
+        wrt = await db.RqBankingTransWrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.AdditionalMarginFlag, x.AdditionalMarginAmout, x.AdditionalMarginRemark, x.CreditAmountFlag, x.CreditAmount, x.CreditAmountRemark, x.OtherFlag, x.OtherAmount, x.OtherRemark, x.AssetGrtFlag, x.TotalAssetAmount, x.TotalAssetGrtAmount, x.BkTransWrtStatus }).FirstOrDefaultAsync(),
+        wrtDtls = await db.RqBankingTransWrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.AmountActual, x.BkTransWrtDtlStatus }).ToListAsync(),
+        ctrs = await db.RqBankingTransCtrs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.DlrCtrNo, x.SpecCode, x.ContractDate, x.BkTransCtrPcpNo, x.BkTransCtrPcpDate, x.AssemblyStatus, x.Qty, x.UnitPrice, x.Amount, x.BkTransCtrStatus }).ToListAsync(),
+        wrtCtrs = await db.RqBankingTransWrtCtrs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.DlrCtrNo, x.SpecCode, x.ContractDate, x.BkTransCtrPcpNo, x.BkTransCtrPcpDate, x.AssemblyStatus, x.Qty, x.UnitPrice, x.Amount, x.LTV, x.GrtValue, x.BkTransCtrDate, x.BkTransWrtCtrStatus }).ToListAsync()
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankingtrans/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
@@ -26012,7 +26099,22 @@ record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
 record BankingTransFileDto(string? FileName, string? FileType, string? FilePath, string? DocumentType, long FileSize, string? Remark, string? SignStatus);
 record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, string? RefBankCode, string? LDNo, decimal? DisbursementAmount, DateTime? DisbursementDate, string? DisbursementTerm, decimal? DisbursementInterestRate, string? MDNo, decimal? GrtAmount, DateTime? GrtDateStart, DateTime? GrtDateEnd, string? GrtTerm, decimal? GrtFee, DateTime? GrtLatePmtDate, string? LCNo, decimal? LCAmount, DateTime? LCStartDate, DateTime? LCEndDate, List<BankingTransFileDto>? Files);
-record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark);
+record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark, string? DealerCode = null, string? BizResNumber = null);
+// ---- #137: DTO 12 bảng vệ tinh của đề nghị GD ngân hàng (RQ_BankingTransactions_SaveX_20220817) ----
+record RqBtPmtDto(string? BkTransType, string? PaymentNo, string? PaymentType, string? DisbursementType, decimal TransferAmount, int LoanPeriod, DateTime? LoanPeriodDate, string? TransferRemark, decimal InterestRate, string? ReceivingUnit, string? BankAccountReceive, string? BankNameReceive, string? ProvinceName, string? Remark, DateTime? DisbursementRequestDate, DateTime? FirstInterestPmtDate, string? CreditContractNo, DateTime? CreditContractDate, string? Purpose, string? InvoiceNo, string? Representative, string? FlagAuthority, string? AuthorityInfo, string? PaymentAccount, string? PaymentBankCode, decimal LoanLimit, decimal AmountDisbursed);
+record RqBtPmtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal PmtPercent, decimal PmtAmount, decimal AmountActual, string? HTCInvoiceNo);
+record RqBtPmtLCDto(string? BkTransType, string? PaymentType, string? DisbursementType, int LoanPeriod, DateTime? LoanPeriodDate, decimal InterestRate, string? Remark);
+record RqBtPmtLCDtlDto(string? BkTransType, string? BankGuaranteeNo, string? DealerCode, string? BankCode, DateTime? DateOpen, DateTime? DateExpired, decimal Amount, decimal AmountPmt, decimal AmountDisbursement);
+record RqBtGrtDto(string? BkTransType, string? GuaranteeType, decimal TotalAmount, DateTime? DateExpiredValue, string? GrtForm, string? GrtReceive, string? GrtReceiveAddress, string? BizResNumber, string? GrtRecPerson, string? GrtRecPosition, string? GrtRecDepartment, string? GrtRecPersonAddress, DateTime? DisbursementRequestDate);
+record RqBtGrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal GrtPercent, decimal GrtAmount, decimal AmountActual);
+record RqBtGrtLCDto(string? BkTransType, string? GrtLCType, decimal TotalAmount, string? PaymentNo, decimal AmountLCUT, decimal ProportionLCUT, DateTime? DateTTCLCUTValue, DateTime? DateLCUTValue, string? BankCodeLCUT, string? BankAccountLCUT, decimal AmountLCUP, decimal ProportionLCUP, DateTime? DateTTCLCUPValue, DateTime? DateLCUPValue, DateTime? DateStart, DateTime? DateEnd, string? ValidBank, string? GrtLCReceive, string? GrtLCReceiveAddress, string? BizResNumber, string? GrtLCRecPersonAddress);
+record RqBtGrtLCDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal GrtPercent, decimal GrtAmount, decimal AmountActual);
+record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal AdditionalMarginAmout, string? AdditionalMarginRemark, string? CreditAmountFlag, decimal CreditAmount, string? CreditAmountRemark, string? OtherFlag, decimal OtherAmount, string? OtherRemark, string? AssetGrtFlag, decimal TotalAssetAmount, decimal TotalAssetGrtAmount);
+record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
+record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
+record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+record RqBtDetailDto(RqBtPmtDto? Pmt, List<RqBtPmtDtlDto>? PmtDtls, RqBtPmtLCDto? PmtLC, List<RqBtPmtLCDtlDto>? PmtLCDtls, RqBtGrtDto? Grt, List<RqBtGrtDtlDto>? GrtDtls, RqBtGrtLCDto? GrtLC, List<RqBtGrtLCDtlDto>? GrtLCDtls, RqBtWrtDto? Wrt, List<RqBtWrtDtlDto>? WrtDtls, List<RqBtCtrDto>? Ctrs, List<RqBtWrtCtrDto>? WrtCtrs);
+
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
 record HtmvPdiDto(List<HtmvPdiCarDto>? Cars, string? Remark = null);
