@@ -31184,18 +31184,44 @@ app.MapDelete("/api/discounts/{effectiveDate}", async (DateTime effectiveDate, A
 }).RequireAuthorization();
 
 // ===== Xe kho bảo dưỡng gia hạn (StoF_MaintainMain — port 1:1 FrmMaintenanceWarehouse) =====
-app.MapGet("/api/maintext", async (AppDbContext db, ITenantContext t, string? status, string? storage) =>
+// ⛔ #B06 HỢP NHẤT THỰC THỂ SONG TRÙNG (ca sau #56 `RD_ReqInvoice`, #60 `Sto_DlvMinutes`):
+//    cụm này trước đây ghi vào `MaintainExt` RIÊNG, trong khi `StoFMaintainMain` cũng port
+//    **cùng bảng nguồn `StoF_MaintainMain`**. Giữ `StoFMaintainMain` (đúng khoá + có `MtnStatusMain`,
+//    `UserCodeMtn`, kho đầu/hiện tại) và mang trọn nhóm `MtnExt*` sang. `MaintainExt` NGƯNG ghi.
+// Trace twin LIVE: `btnSave_Click` → `MaintenanceService.StoF_MaintainMain_UpdMtnExtIn` → WS
+//   (`WSHTC.asmx.cs:16546`) → **`_biz.StoF_MaintainMain_UpdMtnExtIn_New20181115`**
+//   (`BizHTC.StorageFG.Frm.cs:2139`); `btnOutWarehouse_Click` → `…_UpdMtnExtOut_New20181115` (:2414).
+//   Bản CHẾT: `Delete.BizHTC.Report.cs:160877/161149` (WS không gọi).
+app.MapGet("/api/maintext", async (AppDbContext db, ITenantContext t, string? status, string? storage, string? sfMtnNo) =>
 {
-    var q = db.MaintainExts.Where(m => m.OrgId == t.OrgId);
+    var q = db.StoFMaintainMains.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(m => m.MtnExtStatusMain == status);
-    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(m => m.StorageCode == storage);
-    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
-    { m.Vin, m.ModelCode, m.StorageCode, m.MtnExtStartDTime, m.MtnExtEndDTime, m.MtnExtRemark, m.MtnExtStatusMain, m.UserCodeMtnExt }).ToListAsync();
+    // Nguồn `StoF_MaintainMain_Get(cboStorage)` lọc theo KHO HIỆN TẠI của xe.
+    if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(m => m.StorageCodeCurrent == storage);
+    if (!string.IsNullOrWhiteSpace(sfMtnNo)) q = q.Where(m => m.SfMtnNo == sfMtnNo);
+    var rows = await q.OrderByDescending(m => m.Id).Take(500).ToListAsync();
+    var slipNos = rows.Select(r => r.SfMtnNo).Distinct().ToList();
+    // 🔴 Luật HIỂN THỊ của nguồn (`FrmMaintenanceWarehouse.cs:99`): `MtnExtStartDTime` bị GHI ĐÈ bằng
+    //    `APPROVEEVALDATETIME` của phiếu bảo trì cùng `SF_MtnNo` — KHÔNG phải giờ bấm nút.
+    var slips = await db.StoFMaintains.Where(s => s.OrgId == t.OrgId && slipNos.Contains(s.SfMtnNo))
+        .Select(s => new { s.SfMtnNo, s.ApproveEvalDateTime }).ToListAsync();
+    var items = rows.Select(m => new
+    {
+        sfMtnNo = m.SfMtnNo, vin = m.VIN, m.MtnTp, m.ModelCode,
+        m.StorageCodeInit, m.StorageCodeCurrent, m.UserCodeMtn, m.UserCodeMtnExt,
+        mtnExtStartDTime = slips.FirstOrDefault(s => s.SfMtnNo == m.SfMtnNo)?.ApproveEvalDateTime ?? m.MtnExtStartDTime,
+        mtnExtStartDTimeStored = m.MtnExtStartDTime,     // giá trị THẬT trong DB, tách khỏi giá trị hiển thị
+        m.MtnExtEndDTime, m.MtnExtRemark,
+        // rỗng ⇒ ép "NG" (FrmMaintenanceWarehouse.cs:95-96)
+        mtnExtStatusMain = string.IsNullOrWhiteSpace(m.MtnExtStatusMain) ? "NG" : m.MtnExtStatusMain,
+        m.MtnStatusMain, m.BeforeMtnStatusMain, m.AfterMtnStatusMain,
+        m.MapLatitude, m.MapLongitude, m.Remark, m.LogLUDateTime, m.LogLUBy
+    }).ToList();
     return Results.Ok(new
     {
         count = items.Count,
-        inProgress = items.Count(x => x.MtnExtStatusMain == "IN"),
-        done = items.Count(x => x.MtnExtStatusMain == "OUT"),
+        inProgress = items.Count(x => x.mtnExtStatusMain == "IN"),
+        done = items.Count(x => x.mtnExtStatusMain == "OUT"),
         items
     });
 }).RequireAuthorization();
@@ -31203,35 +31229,65 @@ app.MapGet("/api/maintext", async (AppDbContext db, ITenantContext t, string? st
 app.MapPost("/api/maintext", async (MaintExtDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    if (string.IsNullOrWhiteSpace(dto.SfMtnNo)) return Results.BadRequest(new { error = "Cần SfMtnNo — nguồn khoá theo cặp (SF_MtnNo, VIN)." });
     var vin = dto.Vin.Trim().ToUpperInvariant();
-    var m = await db.MaintainExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
-    if (m is null) { m = new MaintainExt { OrgId = t.OrgId, Vin = vin, MtnExtStatusMain = "NG" }; db.MaintainExts.Add(m); }
-    m.ModelCode = dto.ModelCode; m.StorageCode = dto.StorageCode; m.MtnExtRemark = dto.MtnExtRemark; m.UserCodeMtnExt = dto.UserCodeMtnExt; m.UpdatedAt = DateTime.Now;
+    var no = dto.SfMtnNo!.Trim().ToUpperInvariant();
+    var m = await db.StoFMaintainMains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no && x.VIN == vin);
+    if (m is null)
+    {
+        var slip = await db.StoFMaintains.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.SfMtnNo == no);
+        m = new StoFMaintainMain { OrgId = t.OrgId, SfMtnNo = no, VIN = vin, StoFMaintainId = slip?.Id ?? 0, MtnExtStatusMain = "NG" };
+        db.StoFMaintainMains.Add(m);
+    }
+    m.ModelCode = dto.ModelCode; m.StorageCodeCurrent = dto.StorageCode;
+    // `gvMaintenanceWarehouse_ShowingEditor` chỉ cho sửa tay 3 cột: UserCodeMtnExt / MtnExtStatusMain / MtnExtRemark.
+    m.MtnExtRemark = dto.MtnExtRemark; m.UserCodeMtnExt = dto.UserCodeMtnExt;
+    m.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.Vin, status = m.MtnExtStatusMain });
+    return Results.Ok(new { m.SfMtnNo, vin = m.VIN, status = m.MtnExtStatusMain });
 }).RequireAuthorization();
 
-// Vào (MtnExtIn) / Ra (MtnExtOut) bảo dưỡng gia hạn
-app.MapPost("/api/maintext/{vin}/{action}", async (string vin, string action, MaintExtActionDto? dto, AppDbContext db, ITenantContext t) =>
+// Vào (MtnExtIn) / Ra (MtnExtOut) bảo dưỡng gia hạn — port guard của
+// `StoF_MaintainMain_UpdMtnExtIn_New20181115` (:2244-2263) và `…Out…` (:2515-2536).
+app.MapPost("/api/maintext/{vin}/{action}", async (string vin, string action, MaintExtActionDto? dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("in" or "out")) return Results.BadRequest(new { error = "action = in|out" });
     vin = vin.Trim().ToUpperInvariant();
-    var m = await db.MaintainExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
-    if (m is null) return Results.NotFound(new { vin });
+    var no = (dto?.SfMtnNo ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Cần SfMtnNo — nguồn khoá theo cặp (SF_MtnNo, VIN)." });
+    var m = await db.StoFMaintainMains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SfMtnNo == no && x.VIN == vin);
+    // `StoF_MaintainMain_CheckDB(..., strFlagExistToCheck = Flag.Yes)`
+    if (m is null) return Results.NotFound(new { sfMtnNo = no, vin });
+    // `strMtnStatusMainToCheck = TConst.MtnStatus.Approve` ⇒ chỉ dòng đã DUYỆT bảo trì ("A").
+    if (m.MtnStatusMain != "A") return Results.BadRequest(new { error = "Dòng bảo trì chưa duyệt (MtnStatusMain phải = 'A')." });
+    // `strAfterMtnStatusMainToCheck = TConst.Flag.Inactive` ⇒ trạng thái SAU bảo trì phải = "0".
+    if ((m.AfterMtnStatusMain ?? "0") != "0") return Results.BadRequest(new { error = "AfterMtnStatusMain phải = '0'." });
+    // 🔴 CẢ HAI hàm (In lẫn Out) đều ném `…_UpdMtnExtOut_InvalidMtnExtEndDTime` khi DB **đã có** `MtnExtEndDTime`.
+    if (m.MtnExtEndDTime is not null)
+        return Results.BadRequest(new { error = $"Xe đã có ngày ra bảo dưỡng gia hạn ({m.MtnExtEndDTime:yyyy-MM-dd}) — không thao tác tiếp được." });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
     if (action == "in")
     {
         if (m.MtnExtStatusMain == "IN") return Results.BadRequest(new { error = "Xe đang trong BD gia hạn." });
-        m.MtnExtStatusMain = "IN"; m.MtnExtStartDTime = DateTime.Now; m.MtnExtEndDTime = null;
+        m.MtnExtStatusMain = "IN";
+        // Nguồn nhận mốc từ LƯỚI (client) chứ không tự đặt; không gửi thì lấy `now`.
+        m.MtnExtStartDTime = dto?.MtnExtStartDTime ?? now;
+        m.MtnExtEndDTime = null;
     }
-    else // out
+    else
     {
         if (m.MtnExtStatusMain != "IN") return Results.BadRequest(new { error = "Xe chưa vào BD gia hạn (IN)." });
-        m.MtnExtStatusMain = "OUT"; m.MtnExtEndDTime = DateTime.Now;
+        m.MtnExtStatusMain = "OUT";
+        m.MtnExtEndDTime = dto?.MtnExtEndDTime ?? now;
     }
-    if (!string.IsNullOrWhiteSpace(dto?.UserCodeMtnExt)) m.UserCodeMtnExt = dto.UserCodeMtnExt;
-    m.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto?.UserCodeMtnExt)) m.UserCodeMtnExt = dto!.UserCodeMtnExt;
+    if (!string.IsNullOrWhiteSpace(dto?.MtnExtRemark)) m.MtnExtRemark = dto!.MtnExtRemark;
+    // 7 cột của `zzB_Update_StoF_MaintainMain_ClauseSet_zzE` (:2325-2333) — LogLU* nằm trong đó.
+    m.LogLUDateTime = now; m.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.Vin, status = m.MtnExtStatusMain, m.MtnExtStartDTime, m.MtnExtEndDTime, m.UserCodeMtnExt });
+    return Results.Ok(new { m.SfMtnNo, vin = m.VIN, status = m.MtnExtStatusMain, m.MtnExtStartDTime, m.MtnExtEndDTime, m.UserCodeMtnExt, m.LogLUDateTime, m.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Bảo dưỡng xe tồn kho theo kỳ (VIN_MaintainPeriodHist — port 1:1 FrmMaintenanceHistory) =====
@@ -32359,8 +32415,8 @@ record DlWorkHistoryDto(List<DlWorkHistoryRowDto>? Rows);
 record DlGrantDto(string SMHyundaiCode);
 record DlStatusDto(string SMStatus);
 record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
-record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark, string? UserCodeMtnExt);
-record MaintExtActionDto(string? UserCodeMtnExt);
+record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark, string? UserCodeMtnExt, string? SfMtnNo = null);
+record MaintExtActionDto(string? UserCodeMtnExt, string? SfMtnNo = null, DateTime? MtnExtStartDTime = null, DateTime? MtnExtEndDTime = null, string? MtnExtRemark = null);
 record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status);
 record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);

@@ -2031,6 +2031,12 @@ public sealed class CarMaintenance
 
 /// <summary>Xe trong kho bảo dưỡng gia hạn (StoF_MaintainMain — port 1:1 FrmMaintenanceWarehouse, Maintenance):
 /// theo dõi xe vào/ra bảo dưỡng gia hạn. MtnExtStatusMain: NG(chưa)→IN(đang BD gia hạn)→OUT(xong ra kho).</summary>
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG** (ca thứ 4, phát hiện #B06). Lớp này và
+/// <see cref="StoFMaintainMain"/> **cùng port bảng nguồn `StoF_MaintainMain`**. Đã hợp nhất về
+/// <see cref="StoFMaintainMain"/> (đúng khoá nguồn `SF_MtnNo` + `VIN`, có `MtnStatusMain`/`UserCodeMtn`/kho).
+/// `/api/maintext` KHÔNG còn ghi vào lớp này; giữ lại để không phá dữ liệu đã lưu.
+/// </summary>
 public sealed class MaintainExt
 {
     public long Id { get; set; }
@@ -10086,12 +10092,29 @@ public sealed class StoFMaintain
     public string Status { get; set; } = "Draft";    // Draft → Done
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DoneAt { get; set; }
+
+    /// <summary>
+    /// 🔴 #B06: Thời điểm DUYỆT ĐÁNH GIÁ phiếu bảo trì (`StoF_Maintain.APPROVEEVALDATETIME`).
+    /// `FrmMaintenanceWarehouse.cs:99` ghi đè **giá trị hiển thị** của `MtnExtStartDTime` bằng chính cột này:
+    /// `item.MtnExtStartDTime = listStoF_Maintain.Where(x => x.SF_MTNNO == item.SF_MtnNo).First().APPROVEEVALDATETIME;`
+    /// ⇒ "ngày vào bảo dưỡng gia hạn" mà người dùng thấy là **ngày duyệt đánh giá của phiếu**, KHÔNG phải
+    /// giờ bấm nút. Port cũ đặt `DateTime.Now` ⇒ sai nghiệp vụ.
+    /// ⚠️ NỢ: `StoF_Maintain` của nguồn còn ~12 cột nữa mà lớp này chưa có (MTNSTATUS, MTNEVALSTATUS,
+    ///    APPROVEDATETIME/BY, APPROVEEVALBY, CREATE*/LU*, QTYVIN, STOFMTNTYPE, REMARK, LOGLU*) —
+    ///    thuộc phạm vi màn `FrmMaintenanceSlipList`, ghi nợ để lượt sau audit riêng.
+    /// </summary>
+    public DateTime? ApproveEvalDateTime { get; set; }
 }
 public sealed class StoFMaintainMain
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long StoFMaintainId { get; set; }
+    /// <summary>🔴 #B06: Số phiếu bảo trì (`SF_MtnNo`). Nguồn khoá dòng bằng **CẶP (`SF_MtnNo`, `VIN`)**
+    /// — `update … on t.SF_MtnNo = f.SF_MtnNo and t.VIN = f.VIN`
+    /// (`BizHTC.StorageFG.Frm.cs:2344-2345`) — nên chỉ có `VIN` là **khoá HẸP HƠN nguồn**:
+    /// một VIN vào bảo trì nhiều lần thì port cũ ghi đè lẫn nhau.</summary>
+    public string SfMtnNo { get; set; } = "";
     public string VIN { get; set; } = "";
     public string? MtnTp { get; set; }               // loại BT dòng
     public string? ModelCode { get; set; }
@@ -10100,6 +10123,31 @@ public sealed class StoFMaintainMain
     public string? StorageCodeCurrent { get; set; }  // kho hiện tại
     public string? MtnStatusMain { get; set; }       // trạng thái bảo trì
     public string? Remark { get; set; }
+
+    // ===== #B06 HỢP NHẤT THỰC THỂ SONG TRÙNG (ca tiếp theo sau #56 `RD_ReqInvoice` và #60 `Sto_DlvMinutes`) =====
+    // `MaintainExt` (endpoint `/api/maintext`) và lớp này **cùng port bảng nguồn `StoF_MaintainMain`**:
+    // `MaintainExt` mang nhánh "bảo dưỡng GIA HẠN" của `FrmMaintenanceWarehouse`, lớp này mang nhánh
+    // "dòng xe của phiếu bảo trì" của `FrmMaintenanceSlipDetail`. Giữ lớp này (đúng khoá + có
+    // `MtnStatusMain`/`UserCodeMtn`/kho) và mang trọn nhóm `MtnExt*` sang.
+    /// <summary>Người phụ trách bảo dưỡng gia hạn (`UserCodeMtnExt`) — khác <see cref="UserCodeMtn"/>.</summary>
+    public string? UserCodeMtnExt { get; set; }
+    public DateTime? MtnExtStartDTime { get; set; }
+    public DateTime? MtnExtEndDTime { get; set; }
+    public string? MtnExtRemark { get; set; }
+    /// <summary>Trạng thái bảo dưỡng gia hạn (`MtnExtStatusMain`): NG chưa · IN đang · OUT xong.
+    /// Nguồn hiển thị: rỗng ⇒ ép về **"NG"** (`FrmMaintenanceWarehouse.cs:95-96`).</summary>
+    public string MtnExtStatusMain { get; set; } = "NG";
+    /// <summary>🔴 Hai trục trạng thái RIÊNG của nguồn mà port cũ không có — `StoF_MaintainMain_CheckDB`
+    /// nhận `strBeforeMtnStatusMainToCheck` và `strAfterMtnStatusMainToCheck` như hai danh sách ĐỘC LẬP
+    /// (`BizHTC.StorageFG.Frm.cs:1781-1875`); vào/ra bảo dưỡng gia hạn **đòi `AfterMtnStatusMain = "0"`**.</summary>
+    public string? BeforeMtnStatusMain { get; set; }
+    public string? AfterMtnStatusMain { get; set; }
+    public decimal? MapLatitude { get; set; }
+    public decimal? MapLongitude { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    // ⚠️ `CV_STOREDATE`/`CV_STORAGECODEINIT`/`CV_STORAGECODECURRENT` đọc ở form KHÔNG phải cột của bảng này:
+    //    prefix `CV_` = enrich từ `Car_VIN` (luật C0-trecentesimussexagesimusquartus) ⇒ không tạo cột.
 }
 
 /// <summary>Master xe lái thử (Mst_CarDriverTest) — port 1:1 FrmMstCarDriverTestHTC/Dealer (DMSales.Foton/RetailContract). Xe dùng cho lái thử, biển số/VIN/model + hỗ trợ.</summary>
