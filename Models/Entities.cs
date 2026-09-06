@@ -72,6 +72,14 @@ public sealed class Dealer
     public string? FlagAutoLXX { get; set; }
     public string? FlagAutoMapVIN { get; set; }
     public string? FlagAutoSOAppr { get; set; }
+
+    // ===== 🔴 #269: hai mã ĐĂNG KÝ VỚI HỆ HCC (`Mst_Dealer.OrgHCCID` / `NetworkHCCID`) =====
+    /// <summary>`OrgHCCID` — mã tổ chức bên HCC. **Cổng chặn của cả job NoShow**: nguồn lọc
+    /// `and md.OrgHCCID is not null` ở CẢ HAI câu (chọn đại lý và ghép dữ liệu) ⇒ đại lý chưa đăng ký
+    /// HCC thì không bao giờ được đẩy.</summary>
+    public string? OrgHCCID { get; set; }
+    /// <summary>`NetworkHCCID` — mã mạng lưới bên HCC (khác `NetworkID` của bảng `CmCt_Mst_Network`).</summary>
+    public string? NetworkHCCID { get; set; }
 }
 
 /// <summary>Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice: giá theo Model/Spec/Color.</summary>
@@ -5275,6 +5283,11 @@ public sealed class ServiceCustomer
     public string? Note { get; set; }
 
     public string? ContEmail { get; set; }
+
+    /// <summary>#269 `Ser_Customer.IsActive` (đặt tên `FlagActive` theo lệ của `ServiceCar`).
+    /// Job NoShow lọc **theo cờ của KHÁCH HÀNG**, không phải cờ của XE — đọc kỹ alias trong nguồn:
+    /// `and cus.IsActive = @strIsActive`.</summary>
+    public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -12780,6 +12793,14 @@ public sealed class ServiceCar
     public string? InsFinishedDate { get; set; }
     /// <summary>Ghi chú xe (`Note`).</summary>
     public string? Note { get; set; }
+
+    /// <summary>
+    /// 🔴 #269 `Ser_Car.CurrentServiceDate` — **lần vào xưởng GẦN NHẤT**. Là khoá của job NoShow:
+    /// xe có ngày này rơi vào cửa sổ quá khứ ⇒ khách **quá hạn chưa quay lại**.
+    /// Nguồn: `TERP.BizCarSv/HCCIntergration/BizCarSv.HCC.cs:381 HCC_NoShow_CreateOS` —
+    /// hàm **CHỈ CÓ TRÊN MÁY 150**, laptop grep ra 0 dòng.
+    /// </summary>
+    public DateTime? CurrentServiceDate { get; set; }
 
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;

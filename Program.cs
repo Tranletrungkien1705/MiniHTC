@@ -19231,6 +19231,85 @@ app.MapGet("/api/report/service-payments", async (AppDbContext db, ITenantContex
     return Results.Ok(new { count = rows.Count, total = rows.Sum(r => r.PaymentAmount), rows });
 }).RequireAuthorization();
 
+// ===== 🔴 #269 HCC NO-SHOW — khách QUÁ HẠN chưa quay lại xưởng =====
+// Nguồn: `TERP.BizCarSv/HCCIntergration/BizCarSv.HCC.cs:381 HCC_NoShow_CreateOS` + hàm con `…OSX`,
+//   chạy bởi job `Refs/Jobs/DMS.Service.Job.OSHCC` (`DMSServices_OSHCC.HCCNoShowCreateOS`).
+// ⚠️ **CẢ CỤM NÀY CHỈ CÓ TRÊN MÁY 150** — grep `HCC_NoShow_CreateOS` trên laptop ra **0 dòng**, và cả
+//   project job `DMS.Service.Job.OSHCC` (30 file) cũng chỉ có ở 150. Không đối chiếu 2 máy thì không
+//   bao giờ thấy tính năng này. (Đo toàn cây ở #269: laptop ⊂ 150, 0 file riêng của laptop.)
+//
+// ===== 🔴 HAI CỬA SỔ THỜI GIAN KHÔNG GIAO NHAU =====
+//   `months = 6`  ⇒ NoShowType "6Month"  · lần vào xưởng gần nhất trong **[nay−12 tháng, nay−6 tháng]**
+//   `months = 12` ⇒ NoShowType "12Month" · lần vào xưởng gần nhất trong **[nay−24 tháng, nay−12 tháng]**
+//   Job gọi đúng hai lần: `HCCNoShowCreateOS(6)` rồi `(12)`. Hai cửa sổ **rời nhau** nên một xe chỉ rơi
+//   vào một nhóm — không nhân đôi.
+// ⚠️ Cận dưới **HỞ** (`>`), cận trên **ĐÓNG** (`<=`) — giữ đúng, đừng "làm cho đối xứng".
+// ⚠️ Nguồn **KHÔNG có nhánh else**: truyền số khác 6/12 thì cả ba biến (`NoShowType`, from, to) ở lại
+//   `null` ⇒ câu SQL lọc bằng NULL, trả rỗng, **không báo lỗi**. Port CHẶN THẲNG thay vì im lặng —
+//   đây là sai lệch CỐ Ý, ghi rõ để không bị coi là port sai.
+//
+// ⚠️ Lọc `IsActive` là của **KHÁCH HÀNG** (`cus.IsActive`), KHÔNG phải của xe — dễ đọc nhầm alias.
+// ⚠️ `OrgHCCID is not null` xuất hiện ở **hai** câu (chọn đại lý, rồi ghép dữ liệu) — cổng chặn kép.
+//
+// 📌 NỢ (không bịa): (1) lời gọi HTTP sang HCC (`HCCService.Login` rồi đẩy `RQ_HCC_NoShow`) chưa port —
+//   endpoint này mới dựng đúng DANH SÁCH ứng viên, là phần nghiệp vụ; (2) job gốc lặp qua mọi mạng lưới
+//   trong `CmCt_Mst_Network` và **bỏ qua `NetworkID == "HTC"`** (tổng công ty tự nó không có khách) —
+//   MiniHTC một tenant nên tham số `dealer` thay cho vòng lặp đó.
+app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? dealer, int? months) =>
+{
+    var m = months ?? 6;
+    if (m != 6 && m != 12)
+        return Results.BadRequest(new { error = "months chỉ nhận 6 hoặc 12 (nguồn chỉ định nghĩa hai mốc)." });
+
+    var now = DateTime.Now;
+    var noShowType = m == 6 ? "6Month" : "12Month";
+    // ⚠️ KHONG dat ten bien la `from`/`to`: `from` la tu khoa ngu canh cua LINQ query syntax,
+    //    `car.CurrentServiceDate > from` bi phan tich thanh menh de query (CS1525).
+    var fromDate = now.AddMonths(m == 6 ? -12 : -24).Date;                          // 00:00:00
+    var toDate = now.AddMonths(m == 6 ? -6 : -12).Date.AddDays(1).AddSeconds(-1);    // 23:59:59
+
+    // Đại lý phải đã đăng ký HCC (OrgHCCID is not null).
+    var dealers = db.Dealers.Where(d => d.OrgId == t.OrgId && d.OrgHCCID != null);
+    if (!string.IsNullOrWhiteSpace(dealer)) dealers = dealers.Where(d => d.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var dealerList = await dealers.ToListAsync();
+    if (dealerList.Count == 0)
+        return Results.Ok(new { noShowType, from = fromDate, to = toDate, count = 0, items = Array.Empty<object>(), note = "Không đại lý nào có OrgHCCID." });
+    var codes = dealerList.Select(d => d.DealerCode).ToList();
+
+    var rows = await (from car in db.ServiceCars
+                      join cus in db.ServiceCustomers on car.CusID equals cus.CusCode
+                      where car.OrgId == t.OrgId && cus.OrgId == t.OrgId
+                            && car.CurrentServiceDate > fromDate && car.CurrentServiceDate <= toDate
+                            && cus.DealerCode != null && codes.Contains(cus.DealerCode)
+                            && cus.FlagActive == "1"
+                      select new { car, cus }).ToListAsync();
+
+    var byCode = dealerList.ToDictionary(d => d.DealerCode);
+    var items = rows.Select(r => new
+    {
+        NoShowType = noShowType,
+        OrgID = r.cus.DealerCode != null && byCode.ContainsKey(r.cus.DealerCode) ? byCode[r.cus.DealerCode].OrgHCCID : null,
+        NetworkID = r.cus.DealerCode != null && byCode.ContainsKey(r.cus.DealerCode) ? byCode[r.cus.DealerCode].NetworkHCCID : null,
+        DealerCode = r.cus.DealerCode,
+        CustomerCode = r.cus.CusCode, CustomerName = r.cus.CusName,
+        CustomerAddress = r.cus.Address, CustomerEmail = r.cus.Email, CustomerPhone = r.cus.Mobile,
+        ContactName = r.cus.ContName, ContactAddress = r.cus.ContAddress,
+        ContactEmail = r.cus.ContEmail, ContactPhone = r.cus.ContMobile,
+        PlateNo = r.car.PlateNo, ModelCode = r.car.ModelCode, ModelName = (string?)null,
+        VIN = r.car.FrameNo,
+        DeliveryDTimeUTC = r.car.CurrentServiceDate.HasValue ? r.car.CurrentServiceDate.Value.ToString("yyyy-MM-dd HH:mm:ss") : null,
+        Km = r.car.CurrentKm,
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        noShowType,
+        from = fromDate.ToString("yyyy-MM-dd HH:mm:ss"),
+        to = toDate.ToString("yyyy-MM-dd HH:mm:ss"),
+        count = items.Count, items,
+    });
+}).RequireAuthorization();
+
 // ===== Chia sẻ phụ tùng giữa đại lý (SharePart — port 1:1 FrmSharePart/ShareDealer, TCMotor) =====
 app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part, string? status) =>
 {
