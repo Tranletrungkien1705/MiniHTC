@@ -8518,6 +8518,113 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #148: LOG SỬA MỐC NGÀY CỦA ĐƠN HÀNG (Ord_SalesOrder_SupportLog + …Detail_SupportLog) =====
+// Nguồn: DataWH/Biz.HTC.WH.My.cs (csproj 273) — Ord_SalesOrder_UpdateMulti (19901), ghi log tại 20466/20538.
+// 🔴 Chỉ có ở WS 64-bit. Mô hình: cặp Old/New cho từng mốc ngày — bảng log lưu SONG SONG giá trị
+//    trước và sau, nên truy được "ai đổi ngày duyệt từ bao giờ sang bao giờ".
+// ⚠️ Nguồn hiện chỉ THỰC SỰ sửa ApprovedDate: hai dòng DepositDutyEndDate / CarDueDate trong bảng tạm
+//    đầu vào ĐÃ BỊ COMMENT (Biz.HTC.WH.My.cs:20083-20084). Endpoint dưới đây giữ nguyên hành vi đó:
+//    nhận đủ 4 mốc để không mất dữ liệu client gửi, nhưng CHỈ ghi log cặp Old/New cho các mốc
+//    thực sự thay đổi, và ghi chú rõ mốc nào nguồn chưa bật.
+app.MapPost("/api/salesorders/support-update", async (SoSupportUpdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var so = (dto.SOCode ?? "").Trim().ToUpperInvariant();
+    if (so.Length == 0) return Results.BadRequest(new { error = "Thiếu số đơn hàng (SOCode)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+
+    // Đầu đơn: chỉ ghi log khi có ÍT NHẤT một mốc đổi (nguồn join #tblOrd_SalesOrderOld để lấy giá trị cũ).
+    var head = await db.OrdSalesOrderSupportLogs
+        .Where(x => x.OrgId == t.OrgId && x.SOCode == so).OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    var old1 = head?.ApprovedDate1; var old2 = head?.ApprovedDate2;
+    var headChanged = dto.ApprovedDate1 != old1 || dto.ApprovedDate2 != old2;
+    if (headChanged)
+        db.OrdSalesOrderSupportLogs.Add(new OrdSalesOrderSupportLog { OrgId = t.OrgId, SOCode = so,
+            UpdDTime = now, UpdBy = who, DealerCode = dto.DealerCode,
+            ApprovedDate1Old = old1, ApprovedDate1 = dto.ApprovedDate1,
+            ApprovedDate2Old = old2, ApprovedDate2 = dto.ApprovedDate2,
+            LogLUDateTime = now, LogLUBy = who });
+
+    int lineLogs = 0;
+    foreach (var l in dto.Lines ?? new())
+    {
+        var model = (l.ModelCode ?? "").Trim().ToUpperInvariant();
+        var spec = (l.SpecCode ?? "").Trim().ToUpperInvariant();
+        var color = (l.ColorCode ?? "").Trim().ToUpperInvariant();
+        var prev = await db.OrdSalesOrderDetailSupportLogs
+            .Where(x => x.OrgId == t.OrgId && x.SOCode == so && x.ModelCode == model && x.SpecCode == spec && x.ColorCode == color)
+            .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+        var changed = l.ApprovedDate != prev?.ApprovedDate
+            || l.DepositDutyEndDate != prev?.DepositDutyEndDate
+            || l.GrtEndDate != prev?.GrtEndDate
+            || l.CarDueDate != prev?.CarDueDate;
+        if (!changed) continue;
+        db.OrdSalesOrderDetailSupportLogs.Add(new OrdSalesOrderDetailSupportLog { OrgId = t.OrgId, SOCode = so,
+            UpdDTime = now, UpdBy = who, ModelCode = model, SpecCode = spec, ColorCode = color,
+            ApprovedDateOld = prev?.ApprovedDate, ApprovedDate = l.ApprovedDate,
+            DepositDutyEndDateOld = prev?.DepositDutyEndDate, DepositDutyEndDate = l.DepositDutyEndDate,
+            GrtEndDateOld = prev?.GrtEndDate, GrtEndDate = l.GrtEndDate,
+            CarDueDateOld = prev?.CarDueDate, CarDueDate = l.CarDueDate,
+            LogLUDateTime = now, LogLUBy = who });
+        lineLogs++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { soCode = so, headerLogged = headChanged, lineLogs,
+        note = "Nguồn hiện chỉ bật sửa ApprovedDate; DepositDutyEndDate/CarDueDate đang bị comment ở bảng tạm đầu vào." });
+}).RequireAuthorization();
+
+app.MapGet("/api/salesorders/{so}/support-history", async (string so, AppDbContext db, ITenantContext t) =>
+{
+    so = so.Trim().ToUpperInvariant();
+    var header = await db.OrdSalesOrderSupportLogs.Where(x => x.OrgId == t.OrgId && x.SOCode == so)
+        .OrderByDescending(x => x.Id).Select(x => new { x.UpdDTime, x.UpdBy, x.DealerCode,
+            x.ApprovedDate1Old, x.ApprovedDate1, x.ApprovedDate2Old, x.ApprovedDate2,
+            x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var lines = await db.OrdSalesOrderDetailSupportLogs.Where(x => x.OrgId == t.OrgId && x.SOCode == so)
+        .OrderByDescending(x => x.Id).Select(x => new { x.UpdDTime, x.UpdBy, x.ModelCode, x.SpecCode, x.ColorCode,
+            x.ApprovedDateOld, x.ApprovedDate, x.DepositDutyEndDateOld, x.DepositDutyEndDate,
+            x.GrtEndDateOld, x.GrtEndDate, x.CarDueDateOld, x.CarDueDate,
+            x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { soCode = so, headerCount = header.Count, lineCount = lines.Count, header, lines });
+}).RequireAuthorization();
+
+// ===== #148: CẤU HÌNH BẬT/TẮT JOB NỀN (Mst_SettingRunJob) =====
+// Nguồn: DataWH/BizHTC.zTemp.cs (csproj 276) tại 56576. Chỉ có ở WS 64-bit (_Get / _Save).
+app.MapGet("/api/settingrunjobs", async (AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var q = db.MstSettingRunJobs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.JobCode).Select(x => new {
+        x.JobCode, x.JobName, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, active = items.Count(i => i.FlagActive == "1"), items });
+}).RequireAuthorization();
+
+// UPSERT theo JobCode (nguồn chỉ có một hàm _Save cho cả thêm lẫn sửa).
+app.MapPost("/api/settingrunjobs", async (SettingRunJobDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.JobCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã job." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var x = await db.MstSettingRunJobs.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.JobCode == code);
+    var created = x is null;
+    if (x is null) { x = new MstSettingRunJob { OrgId = t.OrgId, JobCode = code }; db.MstSettingRunJobs.Add(x); }
+    x.JobName = dto.JobName ?? x.JobName;
+    x.FlagActive = (dto.FlagActive ?? "1").Trim() == "0" ? "0" : "1";
+    x.LogLUDateTime = now; x.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.JobCode, x.JobName, x.FlagActive, created });
+}).RequireAuthorization();
+
+app.MapPost("/api/settingrunjobs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.MstSettingRunJobs.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.JobCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { x.JobCode, x.FlagActive });
+}).RequireAuthorization();
+
 // ===== #147: TỈ LỆ DUYỆT ĐƠN TỐI ĐA THEO (ĐẠI LÝ, DÒNG XE) — Mst_SORateMax =====
 // Nguồn: DMS40/0.01.Master.cs (csproj 122) — Mst_SORateMax_AddMultiX (6936) ghi tại 7120.
 // 🔴 Chỉ có ở WS 64-bit. Nguồn CHỈ THÊM MỚI, không có hàm sửa/xoá.
@@ -27327,6 +27434,11 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #148: DTO log sửa mốc ngày đơn hàng + cấu hình chạy job ----
+record SoSupportLineDto(string? ModelCode, string? SpecCode, string? ColorCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
+record SoSupportUpdDto(string SOCode, string? DealerCode, DateTime? ApprovedDate1, DateTime? ApprovedDate2, List<SoSupportLineDto>? Lines);
+record SettingRunJobDto(string JobCode, string? JobName, string? FlagActive);
+
 // ---- #147: DTO tỉ lệ duyệt đơn tối đa ----
 record SoRateMaxLineDto(string DealerCode, string ModelCode, decimal Rate);
 record SoRateMaxAddDto(List<SoRateMaxLineDto>? Lines);

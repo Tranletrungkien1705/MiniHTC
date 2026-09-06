@@ -532,6 +532,82 @@ public sealed class Quota
 /// Nguồn CHỈ THÊM MỚI: `Mst_SORateMax_CheckDB(…, TConst.Flag.No)` bắt cặp (đại lý, model)
 /// **phải CHƯA tồn tại**; đại lý và model đều phải tồn tại và đang Active; `Rate` không được âm.
 /// </summary>
+// ========== LOG SỬA MỐC NGÀY CỦA ĐƠN HÀNG + CẤU HÌNH CHẠY JOB (#148) ==========
+// Nguồn log: DataWH/Biz.HTC.WH.My.cs (csproj **273**, md5 7ef389d0… — verify 2 máy ở #142)
+//   `Ord_SalesOrder_UpdateMulti` (19901) ghi 2 bảng log tại 20466 / 20538.
+// Nguồn cấu hình job: DataWH/BizHTC.zTemp.cs (csproj **276**, md5 dbb71f7d…) tại 56576.
+// 🔴 Cả hai cụm **chỉ có ở WS 64-bit** (`_biz.Ord_SalesOrder_UpdateMulti`,
+//    `_biz.Ord_SalesOrder_SupportHistory`, `_biz.Mst_SettingRunJob_Get/_Save`).
+//
+// Mô hình log: **cặp Old/New cho từng MỐC NGÀY** (motif đã gặp ở #91–99) — bảng log lưu song song
+// giá trị trước và sau, nên tra được "ai đổi ngày duyệt từ bao giờ sang bao giờ".
+
+/// <summary>
+/// Log sửa mốc ngày ở ĐẦU đơn hàng (`Ord_SalesOrder_SupportLog`).
+/// Chụp cặp Old/New của **hai mốc duyệt** `ApprovedDate1`/`ApprovedDate2`.
+/// </summary>
+public sealed class OrdSalesOrderSupportLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SOCode { get; set; } = "";
+    /// <summary>Thời điểm/người sửa (`UpdDTime`/`UpdBy`) — nguồn lấy chính `LogLUDateTime`/`LogLUBy` của lượt sửa.</summary>
+    public DateTime? UpdDTime { get; set; }
+    public string? UpdBy { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? ApprovedDate1Old { get; set; }
+    public DateTime? ApprovedDate1 { get; set; }
+    public DateTime? ApprovedDate2Old { get; set; }
+    public DateTime? ApprovedDate2 { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Log sửa mốc ngày ở DÒNG đơn hàng (`Ord_SalesOrderDetail_SupportLog`) — khoá dòng là bộ ba
+/// (ModelCode, SpecCode, ColorCode), chụp cặp Old/New của **bốn mốc**:
+/// duyệt · hạn nghĩa vụ đặt cọc · hạn bảo lãnh · hạn giao xe.
+/// ⚠️ Nguồn khai bảng tạm đầu vào chỉ có `SOCode`+`ApprovedDate`; hai dòng
+/// `DepositDutyEndDate` và `CarDueDate` **ĐÃ BỊ COMMENT** (Biz.HTC.WH.My.cs:20083-20084)
+/// ⇒ hiện tại hàm **chỉ thực sự sửa `ApprovedDate`**; bốn cặp cột log vẫn giữ đủ vì bảng có sẵn.
+/// </summary>
+public sealed class OrdSalesOrderDetailSupportLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SOCode { get; set; } = "";
+    public DateTime? UpdDTime { get; set; }
+    public string? UpdBy { get; set; }
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public DateTime? ApprovedDateOld { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public DateTime? DepositDutyEndDateOld { get; set; }
+    public DateTime? DepositDutyEndDate { get; set; }
+    public DateTime? GrtEndDateOld { get; set; }
+    public DateTime? GrtEndDate { get; set; }
+    public DateTime? CarDueDateOld { get; set; }
+    public DateTime? CarDueDate { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Cấu hình bật/tắt từng JOB nền (`Mst_SettingRunJob`) — nguồn DataWH/BizHTC.zTemp.cs:56576.
+/// Chỉ 3 cột nghiệp vụ: mã job, tên job, cờ bật. Là công tắc để tắt job mà không phải sửa lịch.
+/// </summary>
+public sealed class MstSettingRunJob
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string JobCode { get; set; } = "";
+    public string? JobName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class MstSoRateMax
 {
     public long Id { get; set; }

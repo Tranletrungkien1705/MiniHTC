@@ -142,6 +142,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();
     public DbSet<InsuranceFee> InsuranceFees => Set<InsuranceFee>();
     public DbSet<Quota> Quotas => Set<Quota>();
+    public DbSet<OrdSalesOrderSupportLog> OrdSalesOrderSupportLogs => Set<OrdSalesOrderSupportLog>();
+    public DbSet<OrdSalesOrderDetailSupportLog> OrdSalesOrderDetailSupportLogs => Set<OrdSalesOrderDetailSupportLog>();
+    public DbSet<MstSettingRunJob> MstSettingRunJobs => Set<MstSettingRunJob>();
     public DbSet<MstSoRateMax> MstSoRateMaxes => Set<MstSoRateMax>();
     public DbSet<MngQuota> MngQuotas => Set<MngQuota>();
     public DbSet<MngQuotaHis> MngQuotaHiss => Set<MngQuotaHis>();
