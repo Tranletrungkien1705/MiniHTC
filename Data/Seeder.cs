@@ -882,6 +882,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #299 Ser_SMSTemplate: moi dai ly co bo mau RIENG (port cu thieu => ghi de cheo)
+        "ALTER TABLE public.\"SmsTemplates\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         // #298 parity Ser_Part_Order/Detail: co xoa mem + khoi cot tien that
         "ALTER TABLE public.\"SupplierPartOrders\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
         "ALTER TABLE public.\"SupplierPartOrderLines\" ADD COLUMN IF NOT EXISTS \"PartID\" text",

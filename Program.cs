@@ -9185,7 +9185,12 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
     if (!string.IsNullOrWhiteSpace(dto.SmsType))
     {
         smsType = dto.SmsType.Trim().ToUpperInvariant();
-        var tpl = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == smsType && x.FlagActive == "1");
+        // #299: mẫu là của TỪNG đại lý ⇒ ưu tiên mẫu của đại lý gửi, không có thì lấy mẫu không gán đại lý.
+        var dealerSend = dto.DealerCode?.Trim().ToUpperInvariant();
+        var tpl = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == smsType
+                      && x.FlagActive == "1" && x.DealerCode == dealerSend)
+                  ?? await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == smsType
+                      && x.FlagActive == "1" && x.DealerCode == null);
         if (tpl is null) return Results.BadRequest(new { error = $"Không tìm thấy mẫu SMS đang bật cho loại {smsType}." });
         content = tpl.SmsBody;
     }
@@ -11124,13 +11129,27 @@ app.MapPost("/api/emailtemplates/{type}/toggle", async (string type, AppDbContex
 }).RequireAuthorization();
 
 // ===== Mẫu tin nhắn SMS (SmsTemplate — port 1:1 FrmSMSTemplate, TCMotor) =====
-app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+// 🔴 #299 Nhãn `IsActive` CỦA RIÊNG MÀN NÀY — nguồn `Master.cs:8078/8254/8370` (ba khối, giống hệt nhau).
+//   Từ vựng **"Kích hoạt"**, KHÁC màn khách hàng (`Customer.cs:2213`) vốn dùng **"Hoạt động"** cho cùng cột.
+//   Nhánh `else` gộp mọi giá trị lạ **và NULL** về "Không kích hoạt" ⇒ đây là **blacklist một phía**,
+//   không phải whitelist trả NULL như `Ser_Part_Order.Status` (#287/#298).
+static string SmsTemplateActiveLabel(string? v) => v == "1" ? "Kích hoạt" : "Không kích hoạt";
+
+app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string? q, string? active, string? dealer) =>
 {
     var query = db.SmsTemplates.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.SmsType.Contains(q!.ToUpper()) || (x.SmsName != null && x.SmsName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
-    var items = await query.OrderBy(x => x.SmsType).Take(500)
-        .Select(x => new { x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"), length = x.SmsBody.Length }).ToListAsync();
+    // #299: nguồn `SerSMSTemplateGet` có `strDealerCodeConditionList` — mẫu là của TỪNG đại lý.
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var rows = await query.OrderBy(x => x.DealerCode).ThenBy(x => x.SmsType).Take(500)
+        .Select(x => new { x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode, x.UpdatedAt }).ToListAsync();
+    var items = rows.Select(x => new
+    {
+        tempId = x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode,
+        newIsActive = SmsTemplateActiveLabel(x.FlagActive),
+        updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"), length = (x.SmsBody ?? "").Length,
+    }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -11138,29 +11157,47 @@ app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string
 app.MapPost("/api/smstemplates", async (SmsTemplateDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SmsType)) return Results.BadRequest(new { error = "Chưa chọn loại SMS." });
-    if (string.IsNullOrWhiteSpace(dto.SmsBody)) return Results.BadRequest(new { error = "Chưa nhập nội dung SMS." });
+    // ⚠️ #299 BỎ chặn "chưa nhập nội dung": nguồn ghi `SMSBody = DBNull` khi rỗng (`Master.cs:8045`) và
+    //   KHÔNG báo lỗi — mẫu trống là trạng thái hợp lệ (soạn dở). Chặn ở port là luật TỰ NGHĨ RA.
     var type = dto.SmsType.Trim().ToUpperInvariant();
-    var body = dto.SmsBody.Trim();
-    var ex = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == type);
+    var body = dto.SmsBody?.Trim() ?? "";
+    var dealer = dto.DealerCode?.Trim().ToUpperInvariant();
+    // 🔴 #299 KHOÁ = (đại lý, loại), KHÔNG phải loại-toàn-cục. Trước đây đại lý A lưu là ĐÈ mẫu đại lý B.
+    var ex = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SmsType == type && x.DealerCode == dealer);
     if (ex is not null)
     {
-        ex.SmsName = dto.SmsName; ex.SmsBody = body; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+        // ⚠️ Nguồn `SerSMSTemplateUpdate` chỉ đưa BA cột vào `alEffectiveColumn`: DealerCode · SMSBody ·
+        //   IsActive ⇒ **`SMSType` KHÔNG sửa được sau khi tạo**. Ở đây type là khoá tra nên tự nhiên giữ.
+        ex.SmsName = dto.SmsName; ex.SmsBody = body;
+        ex.FlagActive = string.IsNullOrWhiteSpace(dto.IsActive) ? ex.FlagActive : dto.IsActive!.Trim();
+        ex.UpdatedAt = DateTime.Now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.SmsType, updated = true, length = body.Length, multipart = body.Length > 160 });
+        return Results.Ok(new { tempId = ex.Id, ex.SmsType, ex.DealerCode, updated = true,
+            newIsActive = SmsTemplateActiveLabel(ex.FlagActive), length = body.Length, multipart = body.Length > 160 });
     }
-    var r = new SmsTemplate { OrgId = t.OrgId, SmsType = type, SmsName = dto.SmsName, SmsBody = body, FlagActive = "1" };
+    var r = new SmsTemplate
+    {
+        OrgId = t.OrgId, SmsType = type, SmsName = dto.SmsName, SmsBody = body, DealerCode = dealer,
+        // #299: nguồn ghi DBNull khi rỗng ⇒ mẫu tạo ra ở trạng thái TẮT (nhãn else = "Không kích hoạt"),
+        //   chứ không tự bật như port cũ.
+        FlagActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "0" : dto.IsActive!.Trim(),
+    };
     db.SmsTemplates.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.SmsType, updated = false, length = body.Length, multipart = body.Length > 160 });
+    return Results.Ok(new { tempId = r.Id, r.SmsType, r.DealerCode, updated = false,
+        newIsActive = SmsTemplateActiveLabel(r.FlagActive), length = body.Length, multipart = body.Length > 160 });
 }).RequireAuthorization();
 
-app.MapPost("/api/smstemplates/{type}/toggle", async (string type, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/smstemplates/{type}/toggle", async (string type, AppDbContext db, ITenantContext t, string? dealer) =>
 {
     type = type.Trim().ToUpperInvariant();
-    var x = await db.SmsTemplates.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SmsType == type);
-    if (x is null) return Results.NotFound(new { type });
+    var d = dealer?.Trim().ToUpperInvariant();
+    // #299: phải chỉ rõ đại lý, nếu không sẽ bật/tắt nhầm mẫu của đại lý khác.
+    var x = await db.SmsTemplates.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SmsType == type && v.DealerCode == d);
+    if (x is null) return Results.NotFound(new { type, dealer = d });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.SmsType, flagActive = x.FlagActive });
+    return Results.Ok(new { x.SmsType, x.DealerCode, flagActive = x.FlagActive, newIsActive = SmsTemplateActiveLabel(x.FlagActive) });
 }).RequireAuthorization();
 
 // ===== Vị trí kho phụ tùng (PartLocation — port 1:1 FrmImportLocation, TCMotor) =====
@@ -35792,7 +35829,10 @@ record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Pri
     decimal? Factor = null, string? Status = null);
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
-record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
+// #299: bốn trường nghiệp vụ THẬT của `Ser_SMSTemplate` + `SmsName` (port cũ tự thêm).
+// `IsActive` rỗng ⇒ tạo mới ở trạng thái TẮT (nguồn ghi DBNull), sửa thì GIỮ NGUYÊN.
+record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody,
+    string? DealerCode = null, string? IsActive = null);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsBatchStatusDto(string? ToStatus);
 
@@ -35865,7 +35905,9 @@ static class SmsCost
 // #229: 6 trường đầu lô/người gửi thêm ở CUỐI record (tham số tuỳ chọn ⇒ không vỡ lời gọi cũ).
 //  SenderKind chỉ nhận đúng 2 giá trị hằng của nguồn: "BrandName" hoặc "Đầu số" (SmsSendKey, Constants.cs:441).
 record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers, bool? FlagANSI = null, string? TelCo = null, string? BatchType = null, string? CostType = null, string? ProjectCode = null, decimal UnitPrice = 0,
-    string? SenderKind = null, string? BrandName = null, string? SupplierPhoneNo = null, string? AccountCode = null, string? CreatedBy = null, DateTime? EffectDTime = null);
+    string? SenderKind = null, string? BrandName = null, string? SupplierPhoneNo = null, string? AccountCode = null, string? CreatedBy = null, DateTime? EffectDTime = null,
+    // #299: chon mau SMS theo DAI LY gui (mau la cua tung dai ly), khong con lay mau toan cuc.
+    string? DealerCode = null);
 
 // #229: ngữ cảnh người nhận dùng để thay biến nội dung + đổ 7 cặp A10..A16 của nguồn.
 record SmsCtx(string? CusCode, string? CusName, string? Address, string? CarId, string? PlateNo, string? TradeMark, string? ModelCode);

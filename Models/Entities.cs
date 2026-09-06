@@ -12734,12 +12734,39 @@ public sealed class EmailTemplate
 /// <summary>Mẫu tin nhắn SMS theo loại nghiệp vụ (nội dung + trạng thái) — port 1:1 FrmSMSTemplate (TblSMS_Template, TCMotor).</summary>
 public sealed class SmsTemplate
 {
-    public long Id { get; set; }
+    public long Id { get; set; }                // = TempID của nguồn (identity)
     public Guid OrgId { get; set; }
     public string SmsType { get; set; } = "";   // loại: MAINT/BIRTHDAY/PROMO/...
+
+    /// <summary>
+    /// 🔴 #299 DEALERCODE — port cũ THIẾU HẲN, và đây là **lỗi ghi đè chéo đại lý**.
+    /// Nguồn `SerSMSTemplateCreate`/`Update` (`BizCarSv.Master.cs:7982/8156`) đều nhận `strDealerCode` và
+    /// `SerSMSTemplateGet` lọc theo `strDealerCodeConditionList` ⇒ **mỗi đại lý có bộ mẫu SMS RIÊNG**.
+    /// Port cũ upsert theo `SmsType` trong một `OrgId` ⇒ đại lý A sửa mẫu là **ĐÈ mẫu của đại lý B**.
+    /// </summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>⚠️ `SmsName` **KHÔNG có trong `Ser_SMSTemplate`** — phát minh của port cũ. Nguồn chỉ có
+    /// bốn trường nghiệp vụ: `DealerCode` · `SMSType` · `SMSBody` · `IsActive`. Giữ để không vỡ client cũ.</summary>
     public string? SmsName { get; set; }
+
+    /// <summary>⚠️ Nguồn cho `SMSBody` = **DBNull** khi rỗng (`Master.cs:8045`), KHÔNG chặn.</summary>
     public string SmsBody { get; set; } = "";
+
+    /// <summary>
+    /// 🔴 #299 ISACTIVE — ba điểm lệch với port cũ:
+    ///  (1) Nguồn ghi **DBNull khi tham số rỗng**, không ép "1". Port cũ luôn ép `"1"` ⇒ **không tạo được
+    ///      mẫu đang TẮT**, phải tạo rồi toggle.
+    ///  (2) Nhãn của nguồn so **SỐ không nháy** (`when 0` / `when 1`), khác mọi chỗ khác trong hệ so `'1'` chuỗi.
+    ///  (3) Có nhánh `else N'Không kích hoạt'` ⇒ **NULL hiển thị là "Không kích hoạt"**, không phải nhãn rỗng.
+    /// ⚠️ Từ vựng nhãn theo MÀN (luật `C0-...` #286/#289): màn này là **"Kích hoạt/Không kích hoạt"**,
+    ///    còn `Ser_Customer` (`Customer.cs:2213`) dùng **"Hoạt động/Không hoạt động"** cho CÙNG cột `IsActive`.
+    /// </summary>
     public string FlagActive { get; set; } = "1";
+
+    // 🔴 #299 `NewIsActive` là **HẰNG CHẾT** (cùng dạng `NewStatus` ở #298): nguồn viết
+    //   `select tmp.* , case tmp.IsActive … end as NewIsActive` — nếu bảng có cột thật thì `tmp.*` đã trả
+    //   rồi ⇒ trùng tên cột, DataTable vỡ. Vậy nó chỉ là nhãn tính lúc đọc. KHÔNG port thành cột.
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
