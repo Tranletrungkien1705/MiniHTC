@@ -845,6 +845,21 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #191 parity Pmt_GrtClaimExt / _Cancel / _Sign (64-bit only)
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"SignBy\" text",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"CancelDateTime\" timestamp",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"LUDateTime\" timestamp",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"LUBy\" text",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"GrtClaimExts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"GrtClaimExtCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"GrtClaimExtCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        // #191 migrate TỪ VỰNG: port cũ dùng "S" cho đã ký — nguồn dùng "A" (TConst.GrtClaimExtStatus).
+        "UPDATE public.\"GrtClaimExts\" SET \"SignStatus\" = 'A' WHERE \"SignStatus\" = 'S'",
+        "UPDATE public.\"GrtClaimExtCars\" SET \"SignStatusDtl\" = 'A' WHERE \"SignStatusDtl\" = 'S'",
         // #190 parity Car_TestCar_Finished / Dtl_Cancel / Dtl_Reject (64-bit only)
         "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"FinishedDate\" timestamp",
         "ALTER TABLE public.\"CarTestCars\" ADD COLUMN IF NOT EXISTS \"FinishedBy\" text",

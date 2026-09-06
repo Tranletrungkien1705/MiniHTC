@@ -10468,6 +10468,21 @@ public sealed class GrtClaimExt
     public string FileName { get; set; } = "";            // file da ky (guard idempotent)
     public DateTime? SignDateTime { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #191 parity `Pmt_GrtClaimExt` (Biz.HTC.PaymentGrtExt.cs) — cụm CHỈ có ở WS 64-bit =====
+    // ⚠️ `SignStatus` ở đây chính là cột `GrtClaimExtStatus` của nguồn; từ vựng ĐÚNG là P/A/C
+    //    (`TConst.GrtClaimExtStatus`): P=Pending, A=Approved(đã ký), C=Cancel. Giá trị "S" của port cũ
+    //    KHÔNG có trong nguồn — đã migrate S → A ở Seeder.
+    public string? SignBy { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>Nguồn ghi ĐÈ `Remark` ở cả `_SaveX`, `_SignX` và `_CancelX`.</summary>
+    public string? Remark { get; set; }
+    public DateTime? CancelDateTime { get; set; }
+    public string? CancelBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết công văn gia hạn theo VIN (Pmt_GrtClaimExtDtl) — port 1:1 FrmMngGrtClaimPM detail.</summary>
@@ -10479,7 +10494,10 @@ public sealed class GrtClaimExtCar
     public string CarId { get; set; } = "";
     public string VIN { get; set; } = "";
     public string GuaranteeNo { get; set; } = "";
+    /// <summary>Cột `GrtClaimExtStatusDtl` của nguồn — đi theo header (P/A/C), do `_SignX`/`_CancelX` ghi.</summary>
     public string SignStatusDtl { get; set; } = "P";
+    public DateTime? LogLUDateTime { get; set; }   // #191 parity: nguồn cập nhật LogLU* trên CẢ dòng chi tiết
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Bản ghi hỗ trợ sửa dữ liệu (Deal/HĐ theo VIN) — port 1:1 cụm Support (FrmSupportUpdatePrice/CarDeliveryDate/SMCode/BankCode).</summary>

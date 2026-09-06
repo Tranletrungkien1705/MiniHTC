@@ -4039,13 +4039,14 @@ app.MapGet("/api/grtclaimexts", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(sign)) q = q.Where(g => g.SignStatus == sign);
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
-        g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.CreatedAt,
+        g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
+        g.Remark, g.CancelDateTime, g.CancelBy, g.LUDateTime, g.LUBy,   // #191 §12: cột mới phải chiếu ở CẢ GET
         cars = db.GrtClaimExtCars.Count(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/grtclaimexts", async (GrtClaimExtDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/grtclaimexts", async (GrtClaimExtDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
@@ -4054,6 +4055,11 @@ app.MapPost("/api/grtclaimexts", async (GrtClaimExtDto dto, AppDbContext db, ITe
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "CVGH" + DateTime.Now.ToString("yyMMddHHmmss");
     var g2 = new GrtClaimExt { OrgId = t.OrgId, GrtClaimExtNo = no, DealerCode = dto.DealerCode.Trim(), NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt <= 0 ? 1 : dto.NumberOfGuaranteeExt, TotalCarNoStart = cars.Count, SignStatus = "P" };
+    // #191 parity: nguồn `_SaveX_New20200522` ghi kèm CreatedBy/Remark/LU*/LogLU* ngay khi tạo.
+    var whoNew = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowNew = DateTime.Now;
+    g2.CreatedBy = whoNew; g2.Remark = (dto.Remark ?? "").Trim();
+    g2.LUDateTime = nowNew; g2.LUBy = whoNew; g2.LogLUDateTime = nowNew; g2.LogLUBy = whoNew;
     db.GrtClaimExts.Add(g2); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.GrtClaimExtCars.Add(new GrtClaimExtCar { OrgId = t.OrgId, GrtClaimExtId = g2.Id, CarId = c.CarId ?? "", VIN = c.VIN.Trim().ToUpperInvariant(), GuaranteeNo = c.GuaranteeNo ?? "", SignStatusDtl = "P" });
@@ -4067,23 +4073,79 @@ app.MapGet("/api/grtclaimexts/{no}/cars", async (string no, AppDbContext db, ITe
     var g = await db.GrtClaimExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimExtNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
-        .Select(c => new { c.CarId, c.VIN, c.GuaranteeNo, c.SignStatusDtl }).ToListAsync();
-    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.SignStatus, g.FileName, count = cars.Count, cars });
+        .Select(c => new { c.CarId, c.VIN, c.GuaranteeNo, c.SignStatusDtl, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.SignStatus, g.FileName, g.Remark, g.CancelDateTime, g.CancelBy, count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Ký công văn gia hạn (upload file đã ký). Guard idempotent theo FileName (đã ký thì không ký lại).
-app.MapPost("/api/grtclaimexts/{no}/sign", async (string no, GrtClaimExtSignDto body, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/grtclaimexts/{no}/sign", async (string no, GrtClaimExtSignDto body, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.GrtClaimExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimExtNo == no);
     if (g is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(body.FileName)) return Results.BadRequest(new { error = "Chưa có file ký." });
     if (!string.IsNullOrWhiteSpace(g.FileName)) return Results.BadRequest(new { error = "Công văn đã được ký (đã có file), không ký lại." });
-    g.FileName = body.FileName.Trim(); g.SignDateTime = DateTime.Now; g.SignStatus = "S";
+    // 🔴 #191: nguồn `_SignX`(3201) đặt `GrtClaimExtStatus = Approved ("A")` — KHÔNG phải "S";
+    //    ghi kèm `SignBy`, `Remark`, `LU*`, `LogLU*`, và `GrtClaimExtStatusDtl` của CHI TIẾT theo header.
+    //    (Guard trạng thái của nguồn ở đây cũng CHẾT CÂM — xem ghi chú ở `/cancel`; giữ guard idempotent
+    //     theo FileName mà port cũ đã có, vì nó chặn thật.)
+    var whoSign = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowSign = DateTime.Now;
+    g.FileName = body.FileName.Trim(); g.SignDateTime = nowSign; g.SignBy = whoSign; g.SignStatus = "A";
+    g.Remark = (body.Remark ?? g.Remark ?? "").Trim();
+    g.LUDateTime = nowSign; g.LUBy = whoSign; g.LogLUDateTime = nowSign; g.LogLUBy = whoSign;
     var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id).ToListAsync();
-    foreach (var c in cars) c.SignStatusDtl = "S";
+    foreach (var c in cars) { c.SignStatusDtl = "A"; c.LogLUDateTime = nowSign; c.LogLUBy = whoSign; }
     await db.SaveChangesAsync();
     return Results.Ok(new { g.GrtClaimExtNo, signStatus = g.SignStatus, g.FileName, signedCars = cars.Count });
+}).RequireAuthorization();
+
+// ===== #191 Huỷ công văn gia hạn bảo lãnh — `Pmt_GrtClaimExt_Cancel` (LỆNH CÒN THIẾU HẲN) =====
+// Nguồn: `TERP.BizHTC/Biz.HTC.PaymentGrtExt.cs` — `_CancelX`(4159) / `_Cancel`(4379);
+//   họ hàng: `_SaveX_New20200522`(1297) · `_SaveX_New20201210`(2007) · `_SignX`(3201) · `_CheckDB`(25).
+// BƯỚC 3B: md5 CẢ FILE `fc962972` KHỚP 2 máy — dù TÊN THƯ MỤC KHÁC NHAU
+//   (laptop: `ERP.V15.DataWH.Release.20220125` · máy 150: `ERP.V15.DataWH.Release.2025`).
+//
+// 🔴 TWIN (loại mới): HAI đường ghi cùng bảng dùng HAI phiên bản `SaveX` KHÁC NHAU, **cả hai đều LIVE**:
+//   · nhập tay  : WS64 `Pmt_GrtClaimExt_Save_New20200522` → `_SaveX_New20200522`;
+//   · tự sinh   : WS64 `Pmt_GrtClaimExt_GenAuto_New20201210` → `_GenAutoX_New20201210` → `_SaveX_New20201210`.
+//   ⇒ "hàm version cao hơn = hàm sống" là SAI ở đây; phải trace THEO TỪNG ĐƯỜNG.
+//   Cả cụm `Pmt_GrtClaimExt_*` CHỈ có ở WS 64-bit; WS 32-bit không có lệnh nào.
+//
+// 🔴 GUARD CHẾT CÂM CỦA NGUỒN (giữ nguyên hành vi, chỉ ghi rõ — cùng cách xử lý ở #189):
+//   `_CheckDB(..., strFlagExistToCheck, strStatusListToCheck, ...)`: tham số 1 CHỈ so với `Flag.Active`("1")
+//   / `Flag.Inactive`("0"); tham số 2 mới là danh sách trạng thái. `_CancelX`(4211) truyền
+//   `GrtClaimExtStatus.Approved`("A") vào **tham số 1** và để tham số 2 RỖNG ⇒ không nhánh nào khớp
+//   ⇒ **không kiểm gì cả**: huỷ được ở MỌI trạng thái, và cũng KHÔNG kiểm bản ghi có tồn tại.
+//   `_SignX`(3259) mắc y hệt với `Pending`("P"). Cách dùng ĐÚNG (`Flag.Yes`) nằm ở 3532 và 3922.
+//   ⇒ Port giữ đúng hành vi nguồn: KHÔNG chặn theo trạng thái. (NotFound ở đây là do tra cứu bản ghi,
+//     không phải guard của nguồn.)
+//
+// 🔴 TAXONOMY (`TConst.GrtClaimExtStatus`, Const.Main.DMS40.cs:81): `P` Pending → `A` Approved → `C` Cancel.
+//   Port cũ dùng `"S"` cho ĐÃ KÝ — SAI TỪ VỰNG (không có "S" trong nguồn); đã đổi + migration `S → A`.
+// Nguồn ghi khi huỷ: `GrtClaimExtStatus="C"`, `Remark`, `CancelDateTime`, `CancelBy`, `LUDateTime/LUBy`,
+//   `LogLUDateTime/LogLUBy`; và **cập nhật CHI TIẾT** `Pmt_GrtClaimExtDtl.GrtClaimExtStatusDtl = "C"`
+//   + `LogLUDateTime/LogLUBy` (join qua `GrtClaimExtNo`). Ghi song song `_dbMain` và `_dbWH` (nợ dual-write).
+app.MapPost("/api/grtclaimexts/{no}/cancel", async (string no, GrtClaimExtCancelDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.GrtClaimExts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimExtNo == no);
+    if (g is null) return Results.NotFound(new { no });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    g.SignStatus = "C";                       // cột `GrtClaimExtStatus` của nguồn
+    g.Remark = (dto.Remark ?? "").Trim();     // nguồn ghi ĐÈ Remark bằng chuỗi truyền vào (kể cả rỗng)
+    g.CancelDateTime = now; g.CancelBy = who;
+    g.LUDateTime = now; g.LUBy = who;
+    g.LogLUDateTime = now; g.LogLUBy = who;
+
+    var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id).ToListAsync();
+    foreach (var c in cars) { c.SignStatusDtl = "C"; c.LogLUDateTime = now; c.LogLUBy = who; }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GrtClaimExtNo, status = g.SignStatus, g.Remark, g.CancelDateTime, g.CancelBy, cancelledCars = cars.Count });
 }).RequireAuthorization();
 
 // Xóa công văn gia hạn (port 1:1 FrmQLCVanGiaHan_PhatHanhBL btnDelete_Click) — chỉ khi SignStatus=P (chưa ký).
@@ -29693,8 +29755,10 @@ record VatInvoiceNoDto(string? HTCInvoiceNo, string? InvoiceIDCode, DateTime? HT
 record VatHddtDto(string? OS_HDDT_InvoiceCode, string? OS_HDDT_RefNo);
 record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1);
 record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
-record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars);
-record GrtClaimExtSignDto(string FileName);
+record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars, string? Remark = null);
+record GrtClaimExtSignDto(string FileName, string? Remark = null);
+/// <summary>Huỷ công văn gia hạn — nguồn `Pmt_GrtClaimExt_Cancel` chỉ nhận `objGrtClaimExtNo` + `objRemark`.</summary>
+record GrtClaimExtCancelDto(string? Remark = null);
 record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal Price, DateTime? DeliveryDate, string? SalesManCode, string? BankCode);
 record SupportPatchDto(string Field, string Value);
 record DlrContractPatchDto(string Field, string Value);
