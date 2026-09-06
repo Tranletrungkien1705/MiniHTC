@@ -2377,18 +2377,62 @@ app.MapGet("/api/transreqs/{no}/cars", async (string no, AppDbContext db, ITenan
 
 app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    // ===== #178 DUYỆT / BỎ DUYỆT yêu cầu vận chuyển — `Sto_TranspReq_Approve_New20181119` =====
+    // Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:110578` (csproj 272).
+    // BƯỚC 3B: hàm bắt đầu **KHÁC DÒNG** giữa hai máy (laptop 110578 / máy 150 110583) — căn theo MỐC HÀM
+    //   như luật #156, vùng 323 dòng md5 `2965c767` KHỚP. TWIN: WS 32-bit và 64-bit gọi CÙNG bản.
+    //
+    // 🔴 Nguồn KHÔNG có hai lệnh riêng: một hàm, hai ngả qua cờ `strFlagUnapprove`
+    //    (`bApprove = (strFlagUnapprove == Flag.Inactive)`), và ba khác biệt mà port cũ bỏ hết:
+    //   1. Trạng thái đích: `bApprove ? TConst.Stage.Approved ("A") : TConst.Stage.**Rejected ("R")**`.
+    //      ⚠️ Port cũ gán **"C"** (Cancel) cho nhánh reject — SAI MÃ; "C" và "R" là hai mã khác nhau
+    //      trong `TConst.Stage`, và cụm này dùng "R".
+    //   2. 🔴 **Guard KHÁC NHAU giữa hai ngả** — đây là điểm nặng nhất:
+    //      · duyệt   ⇒ yêu cầu liên quan phải `in ('P')`;
+    //      · BỎ DUYỆT ⇒ chấp nhận `in ('A','P')`, kèm comment nguồn *"reject: Được hủy các YCVT A khi
+    //        chưa có BBGN"* ⇒ **bỏ duyệt được yêu cầu ĐÃ DUYỆT**. Port cũ chặn cả hai ngả bằng
+    //        `Status != "P"` ⇒ yêu cầu đã duyệt **không bao giờ gỡ ra được**.
+    //   3. Guard riêng của ngả bỏ duyệt: đã tồn tại **Biên bản giao nhận** (`Sto_DlvMinutes` với
+    //      `FDlvMnStatus in ('P','A')`) thì CHẶN (`Sto_TranspReq_Approve_InvalidStoDLV`) — xe đã lên
+    //      đường thì không rút lại lệnh được.
+    if (action is not ("approve" or "unapprove")) return Results.BadRequest(new { error = "action = approve|unapprove" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối yêu cầu đang chờ duyệt (P)." });
+
+    var bApprove = action == "approve";
+    if (bApprove)
+    {
+        if (r.Status != "P")
+            return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ duyệt khi còn chờ duyệt (P)." });
+    }
+    else
+    {
+        // Ngả bỏ duyệt chấp nhận CẢ "A" lẫn "P".
+        if (r.Status is not ("A" or "P"))
+            return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ bỏ duyệt khi đang chờ duyệt (P) hoặc đã duyệt (A)." });
+
+        // `Sto_TranspReq_Approve_InvalidStoDLV`: đã có BBGN ở trạng thái P/A thì không gỡ được.
+        var vins = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
+            .Select(c => c.Vin).ToListAsync();
+        var dlv = await db.TranspDlvConfirms.Where(m => m.OrgId == t.OrgId
+                && (m.FDlvMnStatus == "P" || m.FDlvMnStatus == "A")
+                && db.TranspDlvConfirmCars.Any(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id && vins.Contains(c.VIN)))
+            .Select(m => m.DlvMinutesNo).FirstOrDefaultAsync();
+        if (dlv is not null)
+            return Results.BadRequest(new { error = $"Đã tồn tại biên bản giao nhận {dlv} — không bỏ duyệt được yêu cầu vận chuyển.", dlvMinutesNo = dlv });
+    }
+
     var whoTR = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    r.Status = action == "approve" ? "A" : "C"; r.DecidedAt = DateTime.Now;   // #142 parity: mã nguồn
-    r.ApprovedBy = whoTR; r.LogLUDateTime = DateTime.Now; r.LogLUBy = whoTR;
+    var nowTR = DateTime.Now;
+    // `strSRTReqStatus = bApprove ? Approved : Rejected`
+    r.Status = bApprove ? "A" : "R";
+    r.DecidedAt = nowTR; r.ApprovedBy = whoTR;
+    r.LogLUDateTime = nowTR; r.LogLUBy = whoTR;
     foreach (var c in await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id).ToListAsync())
-    { c.TransportReqDtlStatus = r.Status; c.LogLUDateTime = DateTime.Now; c.LogLUBy = whoTR; }
+    { c.TransportReqDtlStatus = r.Status; c.LogLUDateTime = nowTR; c.LogLUBy = whoTR; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.TranspReqNo, status = r.Status });
+    return Results.Ok(new { r.TranspReqNo, status = r.Status, unapprove = !bApprove });
 }).RequireAuthorization();
 
 // ===== Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2) =====
