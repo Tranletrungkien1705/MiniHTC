@@ -8353,6 +8353,13 @@ public sealed class InvoiceSetup
     public string FlagInvoiceTCG { get; set; } = "0";
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #185 parity cum `Mst_InvoiceSetup_*` (DataWH/Biz.HTC.WH.cs, csproj 272) =====
+    /// <summary>Nhật ký sửa cuối — nguồn ghi ở CẢ `_CreateMulti` lẫn `_Update`.
+    /// ⚠️ Nguồn `_Update` ghi cột này bằng format **"yyyyMMddHH:mm:ss"** (thiếu gạch/khoảng trắng);
+    /// toàn hệ dùng "yyyy-MM-dd HH:mm:ss" ở 671 chỗ, format kia chỉ 10 chỗ ⇒ lỗi gõ của nguồn.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Ngưỡng tồn kho bán hàng (Mst_MngRateTonKhoBanHang) — port 1:1 FrmMstSalesInventoryThreshold (2010.HTC/Admin/Product). Ngưỡng bán hàng (NguongBH) theo đại lý + model.</summary>

@@ -2992,7 +2992,7 @@ app.MapGet("/api/invoicesetups", async (AppDbContext db, ITenantContext t, strin
     var q = db.InvoiceSetups.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(s => s.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(s => s.ModelCode == model);
-    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new { s.ModelCode, s.FlagInvoiceHTMV, s.FlagInvoiceTCG, s.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new { s.ModelCode, s.FlagInvoiceHTMV, s.FlagInvoiceTCG, s.FlagActive, s.LogLUDateTime, s.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -3005,6 +3005,77 @@ app.MapPost("/api/invoicesetups", async (InvoiceSetupDto dto, AppDbContext db, I
     var s2 = new InvoiceSetup { OrgId = t.OrgId, ModelCode = md, FlagInvoiceHTMV = dto.FlagInvoiceHTMV == "1" ? "1" : "0", FlagInvoiceTCG = dto.FlagInvoiceTCG == "1" ? "1" : "0", FlagActive = "1" };
     db.InvoiceSetups.Add(s2); await db.SaveChangesAsync();
     return Results.Ok(new { s2.ModelCode, updated = false });
+}).RequireAuthorization();
+
+// ===== #185 THIẾT LẬP HOÁ ĐƠN theo model — cụm `Mst_InvoiceSetup_*` =====
+// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs` (csproj 272) — `_CreateMulti` (206588), `_Update` (207257).
+// BƯỚC 3B: hàm `_Update` bắt đầu **KHÁC DÒNG** (laptop 207257 / máy 150 207262) — căn theo MỐC HÀM
+//   (luật #156), vùng 160 dòng md5 `5cdaec42` KHỚP. Đã liệt kê ranh giới hàm: 207257 → 207415.
+// 🔴 TWIN: cụm này **CHỈ có ở WS 64-bit** (`_CreateMulti` · `_Get` · `_Update`); WS 32-bit **không có hàm nào**.
+//
+// 🔴 Cách tìm ra: danh sách 36 hàm field-mask (#184). Đây là hàm thứ BA được port.
+//    Port cũ chỉ có POST upsert đơn — **ghi CẢ HAI cờ mỗi lần gọi**, tức rộng hơn nguồn.
+//
+// 🔴 `_CreateMulti` — tạo HÀNG LOẠT, ba guard mỗi dòng:
+//    · `Mst_InvoiceSetup_CheckDB(..., Flag.No)` — model **CHƯA có** thiết lập (chặn trùng);
+//    · `Mst_CarModel_CheckDB_New20210604(..., Flag.Yes)` — model phải TỒN TẠI trong master xe;
+//    · hai cờ phải là **đúng "0" hoặc "1"**, rỗng cũng là lỗi
+//      (`CreateMulti_InvalidFlagInvoiceHTMV` / `_InvalidFlagInvoiceTCG`).
+//      ⚠️ Port cũ dùng `dto.X == "1" ? "1" : "0"` ⇒ **nuốt mọi giá trị rác thành "0"** thay vì báo lỗi.
+app.MapPost("/api/invoicesetups/create-multi", async (InvoiceSetupMultiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Items ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.ModelCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng thiết lập nào." });   // CreateMulti_TableBlank
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var built = new List<InvoiceSetup>();
+    foreach (var r in rows)
+    {
+        var md = r.ModelCode!.Trim().ToUpperInvariant();
+        if (await db.InvoiceSetups.AnyAsync(s => s.OrgId == t.OrgId && s.ModelCode == md))
+            return Results.BadRequest(new { error = $"Model {md} đã có thiết lập hoá đơn.", modelCode = md });
+        if (!await db.CarModelStds.AnyAsync(m => m.OrgId == t.OrgId && m.ModelCode == md))
+            return Results.BadRequest(new { error = $"Model {md} không tồn tại trong danh mục xe.", modelCode = md });
+        // Hai cờ PHẢI là "0" hoặc "1" — rỗng/giá trị lạ đều là LỖI, không tự quy về "0".
+        if (r.FlagInvoiceHTMV is not ("0" or "1"))
+            return Results.BadRequest(new { error = $"Model {md}: cờ hoá đơn HTMV phải là \"0\" hoặc \"1\".", modelCode = md });
+        if (r.FlagInvoiceTCG is not ("0" or "1"))
+            return Results.BadRequest(new { error = $"Model {md}: cờ hoá đơn TCG phải là \"0\" hoặc \"1\".", modelCode = md });
+        built.Add(new InvoiceSetup { OrgId = t.OrgId, ModelCode = md,
+            FlagInvoiceHTMV = r.FlagInvoiceHTMV!, FlagInvoiceTCG = r.FlagInvoiceTCG!,
+            FlagActive = "1", CreatedAt = now, LogLUDateTime = now, LogLUBy = who });
+    }
+    db.InvoiceSetups.AddRange(built);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = built.Count, models = built.Select(x => x.ModelCode) });
+}).RequireAuthorization();
+
+// 🔴 `_Update` (207257) — FIELD-MASK hai cờ:
+//    `bUpd_FlagInvoiceHTMV = mask.Contains("Mst_InvoiceSetup.FlagInvoiceHTMV".ToUpper())`
+//    `bUpd_FlagInvoiceTCG  = mask.Contains("Mst_InvoiceSetup.FlagInvoiceTCG".ToUpper())`
+//    Chỉ cờ có trong mask mới được ghi; `LogLUDateTime`/`LogLUBy` **luôn** ghi.
+//    Guard duy nhất: `Mst_InvoiceSetup_CheckDB(..., Flag.Yes)` — bản ghi phải tồn tại.
+//    ⚠️ **KHÔNG có guard theo cột** ở lệnh này (khác #184) — mask chỉ chọn cột, không kéo theo kiểm tra.
+// ⚠️ LỆCH CÓ CHỦ ĐÍCH: nguồn ghi `LogLUDateTime` với format **"yyyyMMddHH:mm:ss"** (thiếu dấu gạch/khoảng
+//    trắng) — toàn hệ dùng "yyyy-MM-dd HH:mm:ss" ở **671** chỗ, format kia chỉ **10** chỗ ⇒ lỗi gõ của nguồn,
+//    không phải quy ước. Ghi mốc bằng `DateTime` chuẩn (luật `C0-ducentesimustricesimussecundus`).
+app.MapPost("/api/invoicesetups/{model}/update", async (string model, InvoiceSetupUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    model = model.Trim().ToUpperInvariant();
+    var s = await db.InvoiceSetups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model);
+    if (s is null) return Results.NotFound(new { model });
+
+    var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
+    var updHTMV = mask.Contains("MST_INVOICESETUP.FLAGINVOICEHTMV");
+    var updTCG = mask.Contains("MST_INVOICESETUP.FLAGINVOICETCG");
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (updHTMV) s.FlagInvoiceHTMV = (dto.FlagInvoiceHTMV ?? "").Trim();
+    if (updTCG) s.FlagInvoiceTCG = (dto.FlagInvoiceTCG ?? "").Trim();
+    s.LogLUDateTime = DateTime.Now; s.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { s.ModelCode, updatedHTMV = updHTMV, updatedTCG = updTCG,
+        s.FlagInvoiceHTMV, s.FlagInvoiceTCG, s.LogLUDateTime, s.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/invoicesetups/{model}/toggle", async (string model, AppDbContext db, ITenantContext t) =>
@@ -29353,6 +29424,9 @@ record SalesPolicyCancelDto(List<string>? SPSRCodes);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
+record InvoiceSetupItemDto(string? ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
+record InvoiceSetupMultiDto(List<InvoiceSetupItemDto>? Items);
+record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, string? FlagInvoiceTCG = null);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
 record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
