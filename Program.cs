@@ -27442,6 +27442,104 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
     return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P" });
 }).RequireAuthorization();
 
+// ===== 🔴 #279 BÁO CÁO SSI (Sales Satisfaction Index) — `RptSSI_ICIC_New2011119` =====
+// Chuỗi gọi 3 tầng: WS iCIC `Sales_ReportSSI_New20180622` (`ERP.ICIC/BizSalesSv.DlsDeal.cs:4681`, hệ CHỈ
+//   CÓ TRÊN LAPTOP) → proxy sang `WSHTC64.RptSSI_ICIC` → biz thật `BizHTC.DealerSales.cs:6504` (cây
+//   `ERP.V15.DataWH.Release.2025`, file này KHỚP 2 máy — xem bảng đo toàn cây #273).
+//
+// ⚠️ TRACE TWIN — chú thích `// Used` ĐÁNH LỪA: cả `Sales_ReportSSI` lẫn `Sales_ReportSSI_New20180622`
+//   đều được tác giả ghi `// Used`, nhưng WS chỉ gọi bản `_New20180622` ⇒ bản kia CHẾT. Chú thích của
+//   người viết KHÔNG thay được việc trace lời gọi.
+// ⚠️ Bản biz thật cũng có nhiều bản trong `TERP.BizHTC/Backup/` và `Delete.BizHTC.*` — sweep .csproj cho
+//   thấy **106 file CHẾT** trong TERP.BizHTC (cả thư mục `Backup/` không được biên dịch).
+//
+// 🔴 CÔNG THỨC `Mytotal` = SỐ CÂU ĐÃ TRẢ LỜI, đếm trên **Survey1..Survey29**:
+//   `case when (Survey{i} is null or Survey{i} = '' or Survey{i} = 0) then 0 else 1 end` rồi CỘNG lại.
+//   ⇒ trả lời **"0" cũng bị coi là CHƯA trả lời** (nguồn so cột text với số 0 — ép kiểu ngầm).
+//
+// 🔴 BỘ LỌC `StatusAnswer` (`TConst.SurveyStage`) — và **hai nhánh CHỒNG NHAU**:
+//   `ALLANSWERED` ⇒ `Mytotal >= 12` · `ANSWERED` ⇒ `Mytotal >= 0 and < 12` · `NOANSWER` ⇒ `Mytotal = 0`
+//   ⚠️ `Mytotal = 0` **thoả CẢ `ANSWERED` LẪN `NOANSWER`** (vì `>= 0`). Giữ nguyên hành vi nguồn.
+//   ⚠️ Tên hằng `ALLANSWERED` ĐÁNH LỪA: ngưỡng là **12**, không phải 29 — "trả lời hết" ở đây nghĩa là
+//      **từ 12 câu trở lên**. Đọc tên hằng mà không tra ngưỡng là port sai.
+//
+// 🔴 HAI ĐIỀU KIỆN LỌC GIAO DỊCH:
+//   `and dd.DealerCodeBuyer is null` — **KHÔNG tính giao dịch bán ngang** (đại lý bán cho đại lý), nguồn
+//     ghi chú `-- Không tính giao dịch bán ngang 20170703`.
+//   `and dd.FlagInitDeal = '0'` — loại giao dịch khởi tạo.
+// ⚠️ Dòng `-- and dd.CtmCareFlag = '1'` **ĐÃ BỊ COMMENT** kèm ghi chú *"Báo cáo SSI: Hiện nay dữ liệu chỉ
+//   hiển thị các kiểm chứng trạng thái A"* ⇒ **KHÔNG lọc theo cờ kiểm chứng**. Port theo dòng ĐANG CHẠY.
+app.MapGet("/api/report/ssi", async (AppDbContext db, ITenantContext t,
+    string? dealer, DateTime? deliveryFrom, DateTime? deliveryTo,
+    DateTime? ctmCareFrom, DateTime? ctmCareTo, string? statusAnswer) =>
+{
+    var stage = (statusAnswer ?? "").Trim().ToUpperInvariant();
+    if (stage.Length > 0 && stage is not ("ALLANSWERED" or "ANSWERED" or "NOANSWER"))
+        return Results.BadRequest(new { error = "StatusAnswer phải là ALLANSWERED | ANSWERED | NOANSWER." });
+
+    var deals = db.DealerDeals.Where(d => d.OrgId == t.OrgId
+        // Không tính giao dịch BÁN NGANG (đại lý bán cho đại lý) — nguồn: 20170703.
+        && (d.DealerCodeBuyer == null || d.DealerCodeBuyer == "")
+        // Loại giao dịch khởi tạo.
+        && (d.FlagInitDeal == null || d.FlagInitDeal == "0"));
+    if (!string.IsNullOrWhiteSpace(dealer)) deals = deals.Where(d => d.DealerCode == dealer!.Trim().ToUpperInvariant());
+    if (ctmCareFrom.HasValue) deals = deals.Where(d => d.CtmCareUpdDate != null && d.CtmCareUpdDate >= ctmCareFrom.Value);
+    if (ctmCareTo.HasValue) deals = deals.Where(d => d.CtmCareUpdDate != null && d.CtmCareUpdDate <= ctmCareTo.Value);
+    var dealList = await deals.ToListAsync();
+    var dealIds = dealList.Select(d => d.Id).ToList();
+
+    var lines = await db.DealerDealDetails
+        .Where(x => x.OrgId == t.OrgId && dealIds.Contains(x.DealId)
+                    && (deliveryFrom == null || (x.DeliveryDate != null && x.DeliveryDate >= deliveryFrom))
+                    && (deliveryTo == null || (x.DeliveryDate != null && x.DeliveryDate <= deliveryTo)))
+        .ToListAsync();
+
+    var vins = lines.Select(l => l.CarId).Distinct().ToList();
+    var surveys = await db.DlsVinSurveys.Where(s => s.OrgId == t.OrgId && vins.Contains(s.VIN)).ToListAsync();
+
+    // Đúng công thức nguồn: rỗng/null/"0" ⇒ CHƯA trả lời.
+    static int Answered(string? v) => string.IsNullOrWhiteSpace(v) || v.Trim() == "0" ? 0 : 1;
+    int MyTotal(DlsVinSurvey s) =>
+        Answered(s.Survey1) +        Answered(s.Survey2) +        Answered(s.Survey3) +        Answered(s.Survey4) +        Answered(s.Survey5) +        Answered(s.Survey6) +        Answered(s.Survey7) +        Answered(s.Survey8) +        Answered(s.Survey9) +        Answered(s.Survey10) +        Answered(s.Survey11) +        Answered(s.Survey12) +        Answered(s.Survey13) +        Answered(s.Survey14) +        Answered(s.Survey15) +        Answered(s.Survey16) +        Answered(s.Survey17) +        Answered(s.Survey18) +        Answered(s.Survey19) +        Answered(s.Survey20) +        Answered(s.Survey21) +        Answered(s.Survey22) +        Answered(s.Survey23) +        Answered(s.Survey24) +        Answered(s.Survey25) +        Answered(s.Survey26) +        Answered(s.Survey27) +        Answered(s.Survey28) +        Answered(s.Survey29);
+
+    var totals = surveys.ToDictionary(s => s.VIN, s => MyTotal(s));
+    var dealById = dealList.ToDictionary(d => d.Id);
+
+    var rows = lines.Select(l =>
+    {
+        var d = dealById[l.DealId];
+        var my = totals.TryGetValue(l.CarId, out var m) ? m : 0;
+        return new
+        {
+            dealNo = d.DealNo, carId = l.CarId, plateNo = l.PlateNo,
+            deliveryDate = l.DeliveryDate, cusInvoiceNo = l.CusInvoiceNo, cusInvoiceDate = l.CusInvoiceDate,
+            dealerCode = d.DealerCode, ctmCareFlag = d.CtmCareFlag, ctmCareUpdDate = d.CtmCareUpdDate,
+            ctmCareUpdBy = d.CtmCareUpdBy, ctmCareRemark = d.CtmCareRemark,
+            myTotal = my,
+        };
+    })
+    // Ba nhánh nguyên văn nguồn — KHÔNG sửa chỗ chồng nhau của ANSWERED/NOANSWER.
+    .Where(r => stage.Length == 0
+             || (stage == "ALLANSWERED" && r.myTotal >= 12)
+             || (stage == "ANSWERED" && r.myTotal >= 0 && r.myTotal < 12)
+             || (stage == "NOANSWER" && r.myTotal == 0))
+    .OrderByDescending(r => r.deliveryDate).Take(500).ToList();
+
+    return Results.Ok(new
+    {
+        statusAnswer = stage.Length == 0 ? null : stage,
+        allAnsweredThreshold = 12,        // ngưỡng THẬT của nguồn (KHÔNG phải 29)
+        surveyQuestionCount = 29,
+        summary = new
+        {
+            total = rows.Count,
+            allAnswered = rows.Count(r => r.myTotal >= 12),
+            noAnswer = rows.Count(r => r.myTotal == 0),
+        },
+        count = rows.Count, rows,
+    });
+}).RequireAuthorization();
+
 // ===== KHẢO SÁT bán lẻ: theo GIAO DỊCH (DLS_DealSurvey) và theo XE/VIN (DLS_VINSurvey) =====
 // Port 1:1 `DealerSalesDealUpdate_Survey_New20190424` (BizHTC.DealerSales.cs:5225) và
 // `DlsVINSurvey_Update_New20190424` (7214). TWIN: đã diff TOÀN BỘ danh sách hàm của cụm ở cả hai WS —
@@ -27673,7 +27771,8 @@ app.MapGet("/api/editdeal/dealinfo", async (AppDbContext db, ITenantContext t, s
     var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.Id, x.DealNo, x.DealNoUser, x.DealerCode, dealDate = x.DealDate.ToString("yyyy-MM-dd"), x.CtmCareFlag,
-        x.CtmCareUpdDate, x.CtmCareUpdBy, x.CtmCareRemark   // #196 §12
+        x.CtmCareUpdDate, x.CtmCareUpdBy, x.CtmCareRemark,   // #196 §12
+        x.FlagInitDeal   // #279 §12
     }).ToListAsync();
     return Results.Ok(new { count = rows.Count, rows });
 }).RequireAuthorization();

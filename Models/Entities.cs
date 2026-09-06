@@ -6405,6 +6405,14 @@ public sealed class DealerDeal
     public string? DlrContractNo { get; set; }
     public string? BankCode { get; set; }                // mã ngân hàng tài trợ (Support sửa)
     public string? CtmCareFlag { get; set; }             // cờ kiểm chứng CSKH (EditDeal_KiemChung)
+    /// <summary>
+    /// 🔴 #279 `FlagInitDeal` — cờ giao dịch KHỞI TẠO. Báo cáo SSI loại các dòng này
+    /// (`and dd.FlagInitDeal = '0'`, `BizHTC.DealerSales.cs:6601`).
+    /// ⚠️ `WholesaleDeal` đã có cột cùng tên từ trước — **khác bảng, khác nghiệp vụ**; grep thấy tên cột
+    /// "đã có" mà kết luận không cần thêm là bẫy (xem #277 với `ROType`).
+    /// </summary>
+    public string? FlagInitDeal { get; set; }
+
     // ===== #196 parity `OSHCC_DLS_Deal_UpdCtmCareFlagX_New20260805` (HCC/BizHTC.HCC.cs:3654, CHỈ có trên máy 150) =====
     /// <summary>Mốc DUYỆT kiểm chứng — nguồn ghi cùng lúc 3 cột này với `CtmCareFlag`.</summary>
     public DateTime? CtmCareUpdDate { get; set; }
