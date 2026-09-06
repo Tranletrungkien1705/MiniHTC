@@ -12598,7 +12598,7 @@ app.MapGet("/api/unitpricegps", async (AppDbContext db, ITenantContext t, string
     var qry = db.MstUnitPriceGpsItems.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractNo.Contains(q!));
-    var items = await qry.OrderBy(x => x.ContractNo).Take(500).Select(x => new { x.Id, x.ContractNo, x.UnitPrice, x.EffStartDate, x.FlagActive, x.UpdatedAt }).ToListAsync();
+    var items = await qry.OrderBy(x => x.ContractNo).Take(500).Select(x => new { x.Id, x.ContractNo, x.UnitPrice, x.EffStartDate, x.FlagActive, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -12619,6 +12619,51 @@ app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db,
 // 🔴 XOÁ đơn giá GPS — port nhánh `bIsDelete` của nguồn (Biz.HTC.WH.cs:190873-190900).
 // Luật: **CẤM xoá nếu số hợp đồng đã được dùng** ở chi tiết thanh toán GPS
 // (nguồn join `Pmt_PaymentGPSDetail.ContractGPS`) — tránh mất căn cứ tính tiền của phiếu đã lập.
+// ===== #187 SỬA đơn giá GPS — `Mst_UnitPriceGPS_Update` (field-mask BA cột) =====
+// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:196766` (csproj 272).
+// BƯỚC 3B: hàm bắt đầu **KHÁC DÒNG** (laptop 196766 / máy 150 196771) — căn theo MỐC HÀM (luật #156),
+//   vùng 180 dòng md5 `62f46e9f` KHỚP. Đã liệt kê ranh giới hàm: 196766 → 196944.
+//
+// 🔴 Hàm thứ TƯ trong danh sách 36 hàm field-mask (#184). Port cũ chỉ có POST upsert —
+//    **ghi cả `UnitPrice` lẫn `EffStartDate` mỗi lần gọi**, tức rộng hơn nguồn.
+//
+// FIELD-MASK ba cột (`Mst_UnitPriceGPS.` + `ContractNo` / `UnitPrice` / `EffStartDate`).
+// ⚠️ Nguồn còn một dòng mask thứ TƯ cho `StorageCode` nhưng **bị COMMENT** cả ở chỗ khai lẫn chỗ ghi
+//    ⇒ cột đó KHÔNG sửa được qua lệnh này. Giữ đúng: không mở thêm cột (luật "port dòng ACTIVE").
+//
+// 🔴 GUARD `Mst_UnitPriceGPS_CreateMulti_InvalidUnitPrice`: `dblUnitPrice < 0` thì ném lỗi —
+//    và guard này nằm **NGOÀI** mọi `if (bUpd_*)`, tức **luôn chạy** kể cả khi mask không có `UnitPrice`.
+//    (Khác #184 nơi guard nằm trong nhánh mask.) Đây là lý do phải đọc vị trí guard, không suy từ mask.
+app.MapPost("/api/unitpricegps/{id}/update", async (long id, UnitPriceGpsUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+
+    // Guard đơn giá LUÔN chạy — nguồn đặt nó trước cả khối mask.
+    if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không hợp lệ (phải >= 0)." });
+
+    var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
+    var updContract = mask.Contains("MST_UNITPRICEGPS.CONTRACTNO");
+    var updPrice = mask.Contains("MST_UNITPRICEGPS.UNITPRICE");
+    var updEff = mask.Contains("MST_UNITPRICEGPS.EFFSTARTDATE");
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (updContract)
+    {
+        var no = (dto.ContractNo ?? "").Trim();
+        if (no.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng." });
+        row.ContractNo = no;
+    }
+    if (updPrice) row.UnitPrice = dto.UnitPrice;
+    if (updEff) row.EffStartDate = dto.EffStartDate;
+    row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ContractNo, row.UnitPrice, row.EffStartDate, row.FlagActive,
+        updatedContractNo = updContract, updatedUnitPrice = updPrice, updatedEffStartDate = updEff,
+        row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/unitpricegps/{id}/delete", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -29746,6 +29791,7 @@ record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Facto
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
+record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);
 record StockOutOrderStatusDto(string? ToStatus);
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);

@@ -2543,6 +2543,11 @@ public sealed class MstUnitPriceGPS
     public DateTime? EffStartDate { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #187 parity `Mst_UnitPriceGPS_Update` (DataWH/Biz.HTC.WH.cs:196766, csproj 272) =====
+    /// <summary>Nhật ký sửa cuối — nguồn ghi ở lệnh `_Update` (field-mask ba cột).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Lệnh xuất kho phụ tùng theo đơn KH (Ser_InvStockOutOrder header) — port 1:1 FrmStockOutOrderCreate (TCMotor DMSCarSv/Inventory). Header: số lệnh + ngày + khách hàng; state-machine Created→CreateStockOut/Finished/Rejected. KHÁC phiếu xuất thẳng (/api/stockouts).</summary>

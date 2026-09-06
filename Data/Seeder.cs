@@ -845,6 +845,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #187 parity Mst_UnitPriceGPS_Update (field-mask 3 cot)
+        "ALTER TABLE public.\"MstUnitPriceGpsItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"MstUnitPriceGpsItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #186 SUA BUG: GuaranteeType la BL/LCTC/LCUP/EPLC, KHONG phai co 0/1
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"NumberOfDaysDeferredPayment\" integer",
         "UPDATE public.\"BankGuarantees\" SET \"GuaranteeType\" = 'BL' WHERE \"GuaranteeType\" IN ('0','1')",
