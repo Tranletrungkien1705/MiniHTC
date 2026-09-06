@@ -20698,6 +20698,81 @@ app.MapPost("/api/dlvminutes/{no}/inputfee", async (string no, DlvInputFeeDto dt
 // Ghi `CorrectDate`/`CorrectBy` + đè lại danh mục tình trạng xe (bảng con `DlvMinutesCheckItems`, cột `TStatus`)
 // và thông tin vận tải nơi nhận. Nguồn lưu danh mục thành 36 cột phẳng `TStatus_OS_*`/`_IS_*`/`_SP_*`/`_DA_*`;
 // MiniHTC đã TÁCH thành bảng con — ánh xạ 1:1 theo `ItemCode`.
+// ===== #171 XÁC NHẬN QUYỀN QUẢN TRỊ — `Sto_DlvMinutes_Confirm_sysadmin_New20190416` =====
+// Nguồn: `TERP.BizHTC/BizHTC.Storage.DlvMinutes.cs:6701` (csproj 120). BƯỚC 3B: md5 cả file `0b3b957d` KHỚP 2 máy.
+// 🔴 Đây là bản SONG SONG của `_Confirm` (#169), khác ĐÚNG MỘT điểm: **toàn bộ khối LUẬT 12 GIỜ TRƯA
+//    bị comment** (nguồn 6957-6990) ⇒ quản trị viên nhập được ngày nhận BẤT KỲ trong quá khứ,
+//    không bị chặn bởi "chỉ lùi qua ngày nghỉ" hay "sau 12h phải là hôm nay".
+//    Ba guard còn lại và CÔNG THỨC PHẠT thì **giữ nguyên** — bộ mã lỗi cũng đổi thành `*_sysadmin`.
+// ⚠️ Vì bỏ chốt thời gian nên đây là endpoint đặc quyền: đặt route riêng để không lẫn với `/confirm`.
+app.MapPost("/api/dlvminutes/{no}/confirm-sysadmin", async (string no, DlvConfirmDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    var plate = (dto.TPlateNo ?? "").Trim(); var drvId = (dto.TDriverId ?? "").Trim(); var drvNm = (dto.TDriverName ?? "").Trim();
+    if (plate.Length == 0 || drvId.Length == 0 || drvNm.Length == 0)
+        return Results.BadRequest(new { error = "Thiếu thông tin vận tải tại nơi nhận (biển số / CMND lái xe / tên lái xe)." });
+    if (m.FDlvMnStatus != "A" || m.TDlvMnStatus != "P")
+        return Results.BadRequest(new { error = $"Trạng thái không cho xác nhận (đầu gửi='{m.FDlvMnStatus}', đầu nhận='{m.TDlvMnStatus}')." });
+    if (dto.DlvEndDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày nhận xe." });
+    var endDate = dto.DlvEndDate.Value;
+    if (m.DlvStartDate is not null && m.DlvStartDate.Value > endDate)
+        return Results.BadRequest(new { error = $"Ngày nhận xe ({endDate:yyyy-MM-dd}) không được trước ngày xuất kho ({m.DlvStartDate:yyyy-MM-dd})." });
+
+    // 🔴 KHÔNG có luật 12h ở đây — đúng nguồn. Đây là điểm KHÁC DUY NHẤT so với `/confirm`.
+
+    var pen = await db.TranspFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FlagPenaltyVer == "1");
+    if (pen is null) return Results.BadRequest(new { error = "Chưa thiết lập bản biểu phạt trễ hạn đang hiệu lực." });
+
+    var firstVin = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+        .Select(c => c.VIN).FirstOrDefaultAsync();
+    string? modelCode = firstVin is null ? null
+        : await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.VIN == firstVin).Select(v => v.ModelCode).FirstOrDefaultAsync();
+    var fee = modelCode is null ? null : await db.TranspFees.FirstOrDefaultAsync(f => f.OrgId == t.OrgId
+        && f.TFVCode == m.TFVCode && f.ProvinceCodeFrom == m.FProvinceCode && f.ProvinceCodeTo == m.TProvinceCode
+        && f.DistrictCodeFrom == m.FDistrictCode && f.DistrictCodeTo == m.TDistrictCode
+        && f.TransporterCode == m.TransporterCode && f.ModelCode == modelCode);
+
+    decimal penalty = 0m;
+    int lateDays = 0;
+    if (fee is not null && m.DlvStartDate is not null)
+    {
+        var span = (endDate.Date - m.DlvStartDate.Value.Date).Days;
+        lateDays = span - fee.ExpectedDays;
+        for (int i = lateDays; i > 0; i--) penalty += pen.ValBased + (i - 1) * pen.ValEx;
+        if (lateDays < 0) lateDays = 0;
+    }
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    m.TDlvMnStatus = "A";
+    m.TApprovedDate = now.Date; m.TApprovedBy = who;
+    m.DlvEndDate = endDate;
+    m.DlvEndDateTime = now; m.DlvEndBy = who;
+    m.TPValSys = penalty; m.TPValReal = penalty;
+    m.TPVCode = pen.TPVCode;
+    m.TPlateNo = plate; m.TDriverId = drvId; m.TDriverName = drvNm;
+    m.TGPSDvStatus = dto.TGPSDvStatus; m.TRemark = dto.TRemark; m.TStatusIaRemark = dto.TStatusIaRemark;
+    if (dto.TStatusIaKm is not null) m.TStatusIaKm = dto.TStatusIaKm;
+    m.GPSDvNo = dto.GPSDvNo; m.GPSDvAddress = dto.GPSDvAddress; m.GPSDvResponse = dto.GPSDvResponse;
+    if (!string.IsNullOrWhiteSpace(dto.GPSDvNo)) { m.DlvEndGPSDateTime = now; m.DlvEndGPSBy = who; }
+    m.LogLUDateTime = now; m.LogLUBy = who;
+
+    int items = 0;
+    foreach (var it in dto.Items ?? new())
+    {
+        var row = await db.DlvMinutesCheckItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id && x.ItemCode == it.ItemCode);
+        if (row is null) return Results.BadRequest(new { error = $"Danh mục '{it.ItemCode}' không thuộc biên bản {no}." });
+        row.TStatus = it.TStatus; items++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.TDlvMnStatus, m.TApprovedDate, m.TApprovedBy, m.DlvEndDate,
+        m.DlvEndDateTime, m.DlvEndBy, m.TPValSys, m.TPValReal, m.TPVCode, expectedDays = fee?.ExpectedDays,
+        lateDays, m.GPSDvNo, m.GPSDvAddress, itemsUpdated = items, sysadmin = true });
+}).RequireAuthorization();
+
 app.MapPost("/api/dlvminutes/{no}/correct", async (string no, DlvCorrectDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -20782,10 +20857,19 @@ app.MapDelete("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenant
     no = no.Trim().ToUpperInvariant();
     var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
     if (m is null) return Results.NotFound(new { no });
-    // ⚠️ Guard trạng thái ĐÃ BỎ: nguồn `Sto_DlvMinutes_DeleteSupport` (Biz.HTC.WH.cs:139257) có hai dòng
-    //    `and t.FDlvMnStatus in ('P','A')` / `= 'P'` nhưng **cả hai đều bị COMMENT OUT**; dòng ACTIVE chỉ
-    //    guard "biên bản phải tồn tại". Guard cũ của port chặt hơn nguồn (sai chiều) — đã gỡ theo luật
-    //    "port dòng ACTIVE, không port dòng comment".
+    // ===== #171 🔴 VÁ LẠI GUARD — sửa một KẾT LUẬN SAI của lượt trước =====
+    // Lượt trước đọc trong SQL của `Sto_DlvMinutes_DeleteSupport` (Biz.HTC.WH.cs:139330-139338) hai dòng
+    //   `--and t.FDlvMnStatus in ('P', 'A')` và `--and t.FDlvMnStatus = 'P'` **bị comment**,
+    // rồi kết luận "nguồn không guard trạng thái" và GỠ guard đi. SAI: guard không biến mất, nó được
+    // **VIẾT LẠI BẰNG C# ngay bên dưới** (139358-139385) và **throw thật**:
+    //   · `FDlvMnStatus` phải là "P" hoặc "A"  ⇒ `DeleteSupport_FDlvMnStatusInvalid`
+    //   · `TDlvMnStatus` phải là "P"           ⇒ `DeleteSupport_TDlvMnStatusInvalid`
+    // ⇒ chỉ xoá được biên bản mà **đầu nhận chưa xác nhận**. Đã khôi phục đúng nguồn.
+    // 🔴 TWIN: `_DeleteSupport` CHỈ có ở WS 64-bit (`WSHTC.asmx.cs:36313`), WS 32-bit không có lệnh này.
+    if (m.FDlvMnStatus is not ("P" or "A"))
+        return Results.BadRequest(new { error = $"Đầu gửi đang ở '{m.FDlvMnStatus}' — chỉ xoá được khi P hoặc A." });
+    if (m.TDlvMnStatus != "P")
+        return Results.BadRequest(new { error = $"Đầu nhận đang ở '{m.TDlvMnStatus}' — chỉ xoá được khi đầu nhận CHƯA xác nhận (P)." });
     var carCount = await db.TranspDlvConfirmCars.CountAsync(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id);
     // 🔴 Nguồn CHÉP TOÀN BỘ dòng (69 cột) sang `Sto_DlvMinutes_HisDel` TRƯỚC khi xoá — port cũ xoá trắng.
     db.DlvMinutesHisDels.Add(new DlvMinutesHisDel
