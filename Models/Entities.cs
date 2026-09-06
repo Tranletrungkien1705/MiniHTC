@@ -10453,6 +10453,15 @@ public sealed class VatInvoiceCar
     public string ProductionYear { get; set; } = "";
     public decimal HTCUnitPrice { get; set; }
     public DateTime? CustomsClearanceDate { get; set; }
+
+    // ===== #194 parity `VAT_HTCInvoiceApproveX` (HDDTIntergration/BizHTC.HDDTIntergration.cs:5562, bản máy 150) =====
+    // 🔴 Duyệt/huỷ duyệt hoá đơn KHÔNG chỉ đổi header: nguồn update MỌI dòng chi tiết
+    //    (`F` khi duyệt kèm `ApprovedDate`/`ApprovedBy`, `C` khi huỷ duyệt — nhánh huỷ KHÔNG ghi mốc duyệt).
+    public string HTCStatusDetail { get; set; } = "P";
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công văn gia hạn bảo lãnh (Pmt_GrtClaimExt) — port 1:1 FrmMngGrtClaimPM. Header + ký.</summary>

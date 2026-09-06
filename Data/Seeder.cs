@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #194 parity VAT_HTCInvoiceApproveX: trang thai DONG chi tiet hoa don VAT
+        "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"HTCStatusDetail\" text NOT NULL DEFAULT 'P'",
+        "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp",
+        "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text",
+        "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #192 parity RQ_BankingTransactions_SignBankFile (64-bit only)
         "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"SerialNumber\" text",
         "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",

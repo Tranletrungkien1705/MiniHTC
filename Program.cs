@@ -3847,7 +3847,8 @@ app.MapGet("/api/vatinvoices/{code}/cars", async (string code, AppDbContext db, 
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
     if (v is null) return Results.NotFound(new { code });
     var cars = await db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id)
-        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo, c.BrandName, c.CarType, c.InvoiceNoFactory, c.ProductionYear, c.HTCUnitPrice, c.CustomsClearanceDate }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo, c.BrandName, c.CarType, c.InvoiceNoFactory, c.ProductionYear, c.HTCUnitPrice, c.CustomsClearanceDate,
+                           c.HTCStatusDetail, c.ApprovedDate, c.ApprovedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #194 §12
     return Results.Ok(new { v.HTCInvoiceCode, v.HTCInvoiceNo, v.DealerCode, v.VatHTCStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -3981,10 +3982,18 @@ app.MapPost("/api/vatinvoices/{code}/approve", async (
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
     if (v is null) return Results.NotFound(new { code });
     if (v.VatHTCStatus != "P") return Results.BadRequest(new { error = $"Chỉ duyệt được hoá đơn đang chờ duyệt (đang: {v.VatHTCStatus})." });
+    // 🔴 #194 CASCADE DÒNG CHI TIẾT — nguồn `VAT_HTCInvoiceApproveX` (BizHTC.HDDTIntergration.cs:5562,
+    //    **bản máy 150**; md5 laptop `b61052b7` ≠ 150 `2933a7fa`, bản 150 mới hơn 93 dòng ⇒ canonical).
+    //    Lệnh này chạm 4 bảng ở nguồn; port cũ chỉ chạm header ⇒ dòng chi tiết đứng yên ở "P" mãi mãi.
+    var whoAp = user.Identity?.Name ?? "system";
+    var nowAp = DateTime.Now;
     v.VatHTCStatus = "F";
-    v.ApprovedDate = DateTime.Now; v.ApprovedBy = user.Identity?.Name ?? "system";
+    v.ApprovedDate = nowAp; v.ApprovedBy = whoAp;
+    var carsAp = await db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id).ToListAsync();
+    foreach (var c in carsAp)
+    { c.HTCStatusDetail = "F"; c.ApprovedDate = nowAp; c.ApprovedBy = whoAp; c.LogLUDateTime = nowAp; c.LogLUBy = whoAp; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { v.HTCInvoiceCode, status = v.VatHTCStatus, v.ApprovedDate, v.ApprovedBy });
+    return Results.Ok(new { v.HTCInvoiceCode, status = v.VatHTCStatus, v.ApprovedDate, v.ApprovedBy, detailRows = carsAp.Count });
 }).RequireAuthorization();
 
 // 🔴 HUỶ DUYỆT — CHỈ từ "F" (nguồn dùng CHUNG hàm với cờ FlagUnapprove; huỷ đưa về Stage.Cancel).
@@ -3995,14 +4004,23 @@ app.MapPost("/api/vatinvoices/{code}/unapprove", async (
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
     if (v is null) return Results.NotFound(new { code });
     if (v.VatHTCStatus != "F") return Results.BadRequest(new { error = $"Chỉ huỷ được hoá đơn đã duyệt (đang: {v.VatHTCStatus})." });
+    // 🔴 #194: nhánh `!bApprove` của nguồn đặt dòng chi tiết = "C" và **CHỈ ghi LogLU\***,
+    //    KHÔNG ghi `ApprovedDate`/`ApprovedBy` trên dòng — khác hẳn nhánh duyệt. Giữ đúng sự khác biệt đó.
+    var whoUn = user.Identity?.Name ?? "system";
+    var nowUn = DateTime.Now;
     v.VatHTCStatus = "C";
     if (!string.IsNullOrWhiteSpace(reason)) v.DeleteReason = reason!.Trim();
-    v.ApprovedDate = DateTime.Now; v.ApprovedBy = user.Identity?.Name ?? "system";
+    v.ApprovedDate = nowUn; v.ApprovedBy = whoUn;
+    var carsUn = await db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id).ToListAsync();
+    foreach (var c in carsUn) { c.HTCStatusDetail = "C"; c.LogLUDateTime = nowUn; c.LogLUBy = whoUn; }
     await db.SaveChangesAsync();
-    return Results.Ok(new { v.HTCInvoiceCode, status = v.VatHTCStatus, v.DeleteReason });
+    return Results.Ok(new { v.HTCInvoiceCode, status = v.VatHTCStatus, v.DeleteReason, detailRows = carsUn.Count });
 }).RequireAuthorization();
 
 // TỪ CHỐI hoá đơn chờ duyệt — nguồn có mã "R" (SQL lọc `not in ('R','C')`).
+// ⚠️ #194: `VAT_HTCInvoiceApproveX` CHỈ có hai nhánh `bApprove` (F) và `!bApprove` (C) — **không có nhánh R**.
+//    Vì vậy KHÔNG cascade dòng chi tiết ở đây (không bịa hành vi nguồn không có); ghi nợ: cần tìm lệnh nào
+//    thực sự đặt "R" rồi đối chiếu riêng.
 app.MapPost("/api/vatinvoices/{code}/reject", async (
     string code, string? reason, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
