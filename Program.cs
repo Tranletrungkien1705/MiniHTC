@@ -19917,7 +19917,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) return Results.BadRequest(new { error = "Phải nhập số hợp đồng người dùng." });
     if (string.IsNullOrWhiteSpace(dto.SalesManCode)) return Results.BadRequest(new { error = "Hãy chọn nhân viên bán hàng." });
@@ -19939,14 +19939,58 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
         SignDate = dto.SignDate.Value, BankCode = dto.BankCode
     };
     db.DlrContracts.Add(c); await db.SaveChangesAsync();
+    var whoCtr = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var ctrCarSeq = 1;   // đếm chung toàn hợp đồng, đúng mẫu "{SốHĐ}.{j:00}" của nguồn
     foreach (var l in lines)
     {
         var amountVat = l.Price * l.Qty * l.VAT / 100m;
         var totalAfter = l.Price * l.Qty + amountVat;
-        db.DlrContractDetails.Add(new DlrContractDetail { OrgId = t.OrgId, ContractId = c.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ColorCode = l.ColorCode, Qty = l.Qty, DlvExpectedDate = l.DlvExpectedDate, Price = l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter });
+        // 🔴 #129 parity Dlr_ContractDtl: bổ sung khoá nghiệp vụ + loại cập nhật + dấu vết sửa
+        //    (Biz.HTC.WH.cs:93222-93238, bản SellToDealer_New20230306).
+        db.DlrContractDetails.Add(new DlrContractDetail
+        {
+            OrgId = t.OrgId, ContractId = c.Id,
+            DlrContractNo = c.DlrContractNo,
+            ContractUpdateType = null,          // nguồn để NULL khi tạo
+            ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ColorCode = l.ColorCode,
+            Qty = l.Qty, DlvExpectedDate = l.DlvExpectedDate,
+            Price = l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter,
+            LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
+        });
+
+        // 🔴 #129 NỞ DÒNG THEO TỪNG XE sang `Dlr_ContractCar` (Biz.HTC.WH.cs:93240-93280) —
+        //    bảng này CHỈ có ở bản SellToDealer_New20230306 mà WS 64-bit gọi; bản 2018 (WS 32-bit) không có.
+        //    Một dòng Dtl có Qty = 3 ⇒ sinh 3 dòng ở đây, `CtrCarId` = "<SốHĐ>.01/.02/.03" (2 chữ số).
+        for (var j = 1; j <= l.Qty; j++)
+            db.DlrContractCars.Add(new DlrContractCar
+            {
+                OrgId = t.OrgId, DlrContractNo = c.DlrContractNo,
+                CtrCarId = $"{c.DlrContractNo}.{ctrCarSeq++:00}",
+                SpecCode = l.SpecCode, ModelCode = l.ModelCode.Trim(), ColorCode = l.ColorCode,
+                DlvExpectedDate = l.DlvExpectedDate,
+                FlagCancel = "0", FlagDelivery = "0",   // TConst.Flag.Inactive
+                LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
+            });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 #129: XE trong hợp đồng (`Dlr_ContractCar`) — nở dòng theo từng xe, CtrCarId "<SốHĐ>.01/.02…".
+// Bảng này CHỈ có ở bản `SellToDealer_New20230306` (WS 64-bit); bản 2018 mà WS 32-bit gọi không ghi.
+// `FlagCancel`/`FlagDelivery` = "0" khi tạo — đây là nơi theo dõi trạng thái TỪNG XE của hợp đồng.
+app.MapGet("/api/dlrcontracts/{no}/cars", async (string no, AppDbContext db, ITenantContext t, string? flagDelivery, string? flagCancel) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var qy = db.DlrContractCars.Where(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (!string.IsNullOrWhiteSpace(flagDelivery)) qy = qy.Where(x => x.FlagDelivery == flagDelivery);
+    if (!string.IsNullOrWhiteSpace(flagCancel)) qy = qy.Where(x => x.FlagCancel == flagCancel);
+    var cars = await qy.OrderBy(x => x.CtrCarId).Select(x => new
+    {
+        x.DlrContractNo, x.CtrCarId, x.SpecCode, x.ModelCode, x.ColorCode,
+        x.DlvExpectedDate, x.FlagCancel, x.FlagDelivery, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { no, count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -19955,7 +19999,9 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
     if (c is null) return Results.NotFound(new { no });
     var lines = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate, l.Price, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT }).ToListAsync();
+        .Select(l => new { l.DlrContractNo, l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate,
+            l.Price, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT,
+            l.ContractUpdateType, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SignDate, c.Status, count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
 }).RequireAuthorization();
 

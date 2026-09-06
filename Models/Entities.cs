@@ -5950,6 +5950,36 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// XE trong hợp đồng bán lẻ (`Dlr_ContractCar` — 2010.HTC `Biz.HTC.WH.cs:93277`, **chỉ có ở bản
+/// `DealerSalesDealCreate_SellToDealer_New20230306`**, bản 2018 mà WS 32-bit gọi KHÔNG ghi bảng này).
+/// 🔴 **NỞ DÒNG THEO TỪNG XE**: một dòng `Dlr_ContractDtl` có `Qty = 3` sẽ sinh **3 dòng** ở đây.
+/// 🔴 `CtrCarId` do nguồn **TỰ SINH** theo mẫu `string.Format("{0}.{1:00}", DlrContractNo, j)`
+/// (dòng 93244) ⇒ dạng **`&lt;SốHĐ&gt;.01`, `.02`, `.03`…** — số thứ tự **2 chữ số**, đếm từ 1.
+/// KHÔNG nhận từ client.
+/// 🔴 Hai cờ khởi tạo `TConst.Flag.Inactive` (**"0"**): `FlagCancel` (đã huỷ chưa) và
+/// `FlagDelivery` (đã giao chưa) — đây là nơi theo dõi từng xe của hợp đồng.
+/// ⚠️ Nguồn ghi cả `_dbMain` lẫn `_dbWH` (93277-93280), dòng `_dbWH` **không bị comment**.
+/// </summary>
+public sealed class DlrContractCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrContractNo { get; set; } = "";
+    /// <summary>Nguồn tự sinh: "&lt;SốHĐ&gt;.01", ".02"… (2 chữ số).</summary>
+    public string CtrCarId { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public DateTime? DlvExpectedDate { get; set; }
+    /// <summary>"1" = đã huỷ; khởi tạo "0".</summary>
+    public string FlagCancel { get; set; } = "0";
+    /// <summary>"1" = đã giao; khởi tạo "0".</summary>
+    public string FlagDelivery { get; set; } = "0";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử sửa NGÂN HÀNG của HĐ bán lẻ (`Dlr_Contract_UpdateBankCode_His` — port 1:1
 /// `Support_Dlr_Contract_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.cs:114595`).
 /// ✅ Guard mã ngân hàng mới phải có trong `Mst_Bank` ĐÃ port ở #116 (master bổ sung ở #115).
@@ -7206,11 +7236,29 @@ public sealed class DlrContract
     public DateTime? FinishDTime { get; set; }
     public string? FinishBy { get; set; }
 }
+/// <summary>
+/// Dòng hợp đồng bán lẻ theo MODEL (`Dlr_ContractDtl` — 2010.HTC `Biz.HTC.WH.cs:93222`,
+/// trong `DealerSalesDealCreate_SellToDealer_**New20230306**` (92880)).
+/// 🔴 **#129 parity + TWIN lệch bit:** WS 32-bit gọi `…SellToDealer_New20181119` (92140), WS 64-bit gọi
+/// `…_New20230306` — **bản 2023 ghi THÊM bảng `Dlr_ContractCar`** mà bản 2018 không có
+/// (2018 ghi `Dlr_Contract` + `Dlr_ContractDtl`; 2023 ghi thêm `Dlr_ContractCar`).
+/// ⇒ Canonical = bản 64-bit/2023; chọn bản 2018 sẽ **mất hẳn một bảng nghiệp vụ**.
+/// 🔴 Dòng này là **GỘP NHÓM** theo (`SpecCode`, `ModelCode`, `ColorCode`) với `Qty` = tổng
+/// (`dtDetail_groupBy`, cột `SumQty`) — KHÔNG phải một dòng một xe.
+/// GAP #129: bổ sung `DlrContractNo` (khoá nghiệp vụ của nguồn — port cũ chỉ có `ContractId` nội bộ,
+/// đúng mẫu C0-centesimusvigesimussextus), `ContractUpdateType`, `LogLUDateTime`, `LogLUBy`.
+/// </summary>
 public sealed class DlrContractDetail
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long ContractId { get; set; }
+    /// <summary>Khoá nghiệp vụ của nguồn (`Dlr_ContractDtl.DlrContractNo`).</summary>
+    public string? DlrContractNo { get; set; }
+    /// <summary>Loại cập nhật hợp đồng — nguồn để NULL khi tạo (`DBNull.Value`, dòng 93236).</summary>
+    public string? ContractUpdateType { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
     public string ModelCode { get; set; } = "";
     public string? SpecCode { get; set; }
     public string? ColorCode { get; set; }
