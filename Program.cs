@@ -4428,6 +4428,174 @@ app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto,
     return Results.Ok(new { deleted = $"{code}/{vin}" });
 }).RequireAuthorization();
 
+// ===== Hợp đồng ngoại (CT_ContractOversea) · L/C (CT_LC) · Proforma Invoice
+// (Ord_PerformanceInvoice + Detail) — port 1:1 `ContractContractOverseaCreate`(32211)/`Delete`(32497),
+// `ContractLCCreate`(33077)/`Delete`(33273), 2010.HTC Biz.HTC.WH.cs.
+// TWIN: cả WS 32-bit lẫn 64-bit CÙNG bản `_New20181119`. =====
+// 🔴 Bảng hợp đồng ngoại chỉ có 3 cột nghiệp vụ — nội dung thật nằm ở `Ord_PerformanceInvoiceDetail`.
+//    MỘT lệnh Create ghi CẢ HAI bảng và **gán `ContractNo` xuống từng dòng PI** (dòng 32485-32486)
+//    ⇒ dòng PI chưa gắn hợp đồng thì `ContractNo` rỗng; đó là cách phân biệt PI đã/chưa vào hợp đồng.
+// ⚠️ Tên bảng nguồn là "Performance" nhưng nghiệp vụ là **Proforma** Invoice — giữ nguyên tên nguồn.
+// ⚠️ Nguồn ghi song song `_dbMain` + `_dbWH` — nợ `_dbWH` chung fleet; RBAC `CheckHTCDirect` chưa port.
+app.MapGet("/api/contractoverseas", async (AppDbContext db, ITenantContext t, string? contractNo) =>
+{
+    var qy = db.CtContractOverseas.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(contractNo)) qy = qy.Where(x => x.ContractNo == contractNo);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.ContractNo, x.CreatedDate, x.CreatedBy }).ToListAsync();
+    var nos = items.Select(i => i.ContractNo).ToList();
+    var lines = await db.OrdPerformanceInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && d.ContractNo != null && nos.Contains(d.ContractNo))
+        .Select(d => new
+        {
+            d.ContractNo, d.RefNo, d.LCTemp, d.SpecCode, d.ModelCode, d.ColorCode,
+            d.WorkOrderNo, d.PortCode, d.PlantCode, d.Quantity,
+        }).ToListAsync();
+    var lcs = await db.CtLcs.Where(x => x.OrgId == t.OrgId && nos.Contains(x.ContractNo))
+        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, piLines = lines, lcs });
+}).RequireAuthorization();
+
+// 🔴 Ký hợp đồng ngoại: tạo bản ghi hợp đồng VÀ gán ContractNo xuống các dòng PI được chọn.
+app.MapPost("/api/contractoverseas/create", async (CtContractOverseaCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.ContractNo ?? "").Trim();
+    // Guard nguồn: MinLengthCode = 5 (TConst.HTCConst, Const.Main.cs:322).
+    if (no.Length < 5) return Results.BadRequest(new { error = "Số hợp đồng ngắn hơn MinLengthCode (5)." });
+    if (await db.CtContractOverseas.AnyAsync(x => x.OrgId == t.OrgId && x.ContractNo == no))
+        return Results.BadRequest(new { error = $"Hợp đồng {no} đã tồn tại." });
+    var refs = (dto.PiRefNos ?? new()).Select(r => (r ?? "").Trim()).Where(r => r.Length > 0).Distinct().ToList();
+    // Guard nguồn: bảng chi tiết đầu vào KHÔNG được rỗng.
+    if (refs.Count == 0) return Results.BadRequest(new { error = "Bảng dòng Proforma Invoice rỗng." });
+
+    var lines = await db.OrdPerformanceInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && refs.Contains(d.RefNo)).ToListAsync();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không tìm thấy dòng PI nào theo danh sách gửi lên." });
+    // Dòng đã thuộc hợp đồng khác thì không gán lại — giữ ngữ nghĩa "ContractNo rỗng = chưa vào hợp đồng".
+    var taken = lines.Where(d => !string.IsNullOrWhiteSpace(d.ContractNo) && d.ContractNo != no)
+                     .Select(d => $"{d.RefNo}→{d.ContractNo}").Distinct().ToList();
+    if (taken.Count > 0)
+        return Results.BadRequest(new { error = $"Có dòng PI đã thuộc hợp đồng khác: {string.Join(", ", taken.Take(10))}." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.CtContractOverseas.Add(new CtContractOversea
+    {
+        OrgId = t.OrgId, ContractNo = no, CreatedDate = DateTime.Now, CreatedBy = who,
+    });
+    foreach (var d in lines) d.ContractNo = no; // 🔴 nguồn gán xuống từng dòng PI
+    await db.SaveChangesAsync();
+    return Results.Ok(new { contractNo = no, piLinesLinked = lines.Count });
+}).RequireAuthorization();
+
+// Xoá hợp đồng ngoại — gỡ luôn ContractNo khỏi các dòng PI để chúng trở lại trạng thái "chưa vào hợp đồng".
+app.MapPost("/api/contractoverseas/delete", async (CtContractOverseaKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = (dto.ContractNo ?? "").Trim();
+    var row = await db.CtContractOverseas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
+    if (row is null) return Results.NotFound(new { error = $"Không có hợp đồng {no}." });
+    if (await db.CtLcs.AnyAsync(x => x.OrgId == t.OrgId && x.ContractNo == no))
+        return Results.BadRequest(new { error = $"Hợp đồng {no} đã có L/C, không xoá được." });
+    var lines = await db.OrdPerformanceInvoiceDetails.Where(d => d.OrgId == t.OrgId && d.ContractNo == no).ToListAsync();
+    foreach (var d in lines) d.ContractNo = null;
+    db.CtContractOverseas.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no, piLinesUnlinked = lines.Count });
+}).RequireAuthorization();
+
+// ⚠️ Route là `/api/ctlcs`, KHÔNG phải `/api/lcs`: `/api/lcs` đã thuộc L/C của DMSales.Foton
+//    (entity `LettersOfCredit`, ~dòng 21400) — BẢNG KHÁC HẲN với `CT_LC` của 2010.HTC, không được gộp.
+app.MapGet("/api/ctlcs", async (AppDbContext db, ITenantContext t, string? lcNo, string? contractNo) =>
+{
+    var qy = db.CtLcs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(lcNo)) qy = qy.Where(x => x.LCNo == lcNo);
+    if (!string.IsNullOrWhiteSpace(contractNo)) qy = qy.Where(x => x.ContractNo == contractNo);
+    var items = await qy.OrderByDescending(x => x.Id)
+        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/ctlcs/create", async (CtLcCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var lcNo = (dto.LCNo ?? "").Trim();
+    var no = (dto.ContractNo ?? "").Trim();
+    if (lcNo.Length < 1) return Results.BadRequest(new { error = "Số L/C rỗng." });
+    if (await db.CtLcs.AnyAsync(x => x.OrgId == t.OrgId && x.LCNo == lcNo))
+        return Results.BadRequest(new { error = $"L/C {lcNo} đã tồn tại." });
+    if (!await db.CtContractOverseas.AnyAsync(x => x.OrgId == t.OrgId && x.ContractNo == no))
+        return Results.BadRequest(new { error = $"Hợp đồng ngoại {no} không tồn tại." });
+    db.CtLcs.Add(new CtLc
+    {
+        OrgId = t.OrgId, LCNo = lcNo, ContractNo = no, BankName = dto.BankName,
+        CreatedDate = DateTime.Now,
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { lcNo, contractNo = no });
+}).RequireAuthorization();
+
+// Nguồn `ContractLCDelete` là XOÁ THẬT (`Rows[0].Delete()`).
+app.MapPost("/api/ctlcs/delete", async (CtLcKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lcNo = (dto.LCNo ?? "").Trim();
+    var row = await db.CtLcs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LCNo == lcNo);
+    if (row is null) return Results.NotFound(new { error = $"Không có L/C {lcNo}." });
+    db.CtLcs.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = lcNo });
+}).RequireAuthorization();
+
+// Proforma Invoice — phần đầu + dòng. `ContractNo` của dòng do lệnh ký hợp đồng ngoại gán, KHÔNG nhận ở đây.
+app.MapGet("/api/performanceinvoices", async (AppDbContext db, ITenantContext t, string? refNo, string? modelCode, bool? unlinkedOnly) =>
+{
+    var qy = db.OrdPerformanceInvoices.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(refNo)) qy = qy.Where(x => x.RefNo == refNo);
+    if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(x => x.ModelCode == modelCode);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.RefNo, x.ModelCode, x.OrderMonth, x.ProductionMonth, x.ExpectedMonth,
+        x.FlagAutoPL, x.CreatedDate, x.CreatedBy,
+    }).ToListAsync();
+    var refs = items.Select(i => i.RefNo).ToList();
+    var dq = db.OrdPerformanceInvoiceDetails.Where(d => d.OrgId == t.OrgId && refs.Contains(d.RefNo));
+    // Tiện dụng: chỉ lấy dòng CHƯA vào hợp đồng nào.
+    if (unlinkedOnly == true) dq = dq.Where(d => d.ContractNo == null || d.ContractNo == "");
+    var details = await dq.Select(d => new
+    {
+        d.RefNo, d.LCTemp, d.SpecCode, d.ModelCode, d.ColorCode,
+        d.WorkOrderNo, d.PortCode, d.PlantCode, d.Quantity, d.ContractNo,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, details });
+}).RequireAuthorization();
+
+app.MapPost("/api/performanceinvoices/create", async (OrdPiCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var refNo = (dto.RefNo ?? "").Trim();
+    if (refNo.Length < 1) return Results.BadRequest(new { error = "Số PI rỗng." });
+    if (await db.OrdPerformanceInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.RefNo == refNo))
+        return Results.BadRequest(new { error = $"PI {refNo} đã tồn tại." });
+    var rows = dto.Details ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng dòng PI rỗng." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.OrdPerformanceInvoices.Add(new OrdPerformanceInvoice
+    {
+        OrgId = t.OrgId, RefNo = refNo, ModelCode = dto.ModelCode,
+        OrderMonth = dto.OrderMonth, ProductionMonth = dto.ProductionMonth, ExpectedMonth = dto.ExpectedMonth,
+        FlagAutoPL = dto.FlagAutoPL, CreatedDate = DateTime.Now, CreatedBy = who,
+    });
+    foreach (var r in rows)
+        db.OrdPerformanceInvoiceDetails.Add(new OrdPerformanceInvoiceDetail
+        {
+            OrgId = t.OrgId, RefNo = refNo, LCTemp = r.LCTemp,
+            SpecCode = r.SpecCode, ModelCode = r.ModelCode, ColorCode = r.ColorCode,
+            WorkOrderNo = r.WorkOrderNo, PortCode = r.PortCode, PlantCode = r.PlantCode,
+            Quantity = r.Quantity,
+            ContractNo = null, // 🔴 chỉ lệnh ký hợp đồng ngoại mới gán cột này
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { refNo, details = rows.Count });
+}).RequireAuthorization();
+
 // ===== Danh mục MÀN HÌNH / CHỨC NĂNG (Sys_Object) — mảnh cuối của bộ RBAC =====
 // Cột theo `mySql_GetClauseColumnForSysObjectInfo` (2010.HTC BizHTC.Common.cs:1547).
 // 🔴 Bảng này KHÔNG có hàm ghi trong biz nguồn (danh mục tĩnh do DBA nạp) — MiniHTC vẫn mở endpoint
@@ -24403,6 +24571,13 @@ record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows);
 record MapSgSoSaveDto(string? GroupCode, List<string>? ObjectCodes);
 // Danh mục màn hình/chức năng. ObjectType: WS | WSFUNC | APP | MENU | SCR | BTN.
 record SysObjectSaveDto(string? ObjectCode, string? ObjectType, string? ObjectName, string? ObjectCodeParent, string? ObjectCodeExec, string? PhysicalAssembly, string? PhysicalClass, string? FlagExecModal, string? PartnerCode, string? FlagActive);
+// Hợp đồng ngoại / L/C / Proforma Invoice. ContractNo của dòng PI do lệnh ký hợp đồng gán, không nhận từ client.
+record CtContractOverseaCreateDto(string? ContractNo, List<string>? PiRefNos);
+record CtContractOverseaKeyDto(string? ContractNo);
+record CtLcCreateDto(string? LCNo, string? ContractNo, string? BankName);
+record CtLcKeyDto(string? LCNo);
+record OrdPiRowDto(string? LCTemp, string? SpecCode, string? ModelCode, string? ColorCode, string? WorkOrderNo, string? PortCode, string? PlantCode, decimal? Quantity);
+record OrdPiCreateDto(string? RefNo, string? ModelCode, string? OrderMonth, string? ProductionMonth, string? ExpectedMonth, string? FlagAutoPL, List<OrdPiRowDto>? Details);
 // Hoá đơn TCG: khoá dòng = cặp (TCGInvoiceCode, VIN). TInvoicePrice nguồn luôn ghi 0 nên không nhận từ client.
 record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);

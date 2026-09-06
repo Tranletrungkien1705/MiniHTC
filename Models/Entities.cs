@@ -4656,6 +4656,94 @@ public sealed class VatTcgInvoiceDetail
 }
 
 /// <summary>
+/// HỢP ĐỒNG NGOẠI — nhập khẩu xe (`CT_ContractOversea` — port 1:1
+/// `ContractContractOverseaCreate_New20181119` / `…Delete_New20181119`, 2010.HTC
+/// `TERP.BizHTC/DataWH/Biz.HTC.WH.cs` dòng 32211 / 32497).
+/// TWIN: cả WS 32-bit (`WSHTC.cs:6069`) lẫn 64-bit (`WSHTC.64:7980`) **cùng bản**.
+/// 🔴 Bảng đầu chỉ có **3 cột nghiệp vụ** (`ContractNo`, `CreatedDate`, `CreatedBy`) — toàn bộ
+/// nội dung hợp đồng nằm ở **`Ord_PerformanceInvoiceDetail`**: một lệnh `Create` ghi CẢ HAI bảng,
+/// và gán `ContractNo` xuống từng dòng PI detail (dòng 32485-32486).
+/// ⇒ Đây là quan hệ **hợp đồng ngoại ↔ dòng Proforma Invoice**, không phải header/detail thông thường.
+/// 🔴 Guard: `ContractNo` phải dài ít nhất `MinLengthCode` (**5**, `Const.Main.cs:322`);
+/// bảng `Ord_PILCTemp` đầu vào **không được rỗng**; khoá chi tiết **không trùng**.
+/// RBAC nguồn `myCommon_CheckHTCDirect` — nợ chung fleet.
+/// ⚠️ Nguồn ghi song song `_dbMain` + `_dbWH` — nợ `_dbWH` chung fleet.
+/// </summary>
+public sealed class CtContractOversea
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ContractNo { get; set; } = "";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
+/// THƯ TÍN DỤNG L/C (`CT_LC` — port 1:1 `ContractLCCreate_New20181119` (33077) /
+/// `ContractLCDelete_New20181119` (33273)). TWIN: cả hai bit cùng bản.
+/// Khoá là `LCNo`; `ContractNo` trỏ về <see cref="CtContractOversea"/>.
+/// 🔴 `Delete` là **XOÁ THẬT** (`dt_CT_LC.Rows[0].Delete()`, dòng 33348).
+/// </summary>
+public sealed class CtLc
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string LCNo { get; set; } = "";
+    public string ContractNo { get; set; } = "";
+    public string? BankName { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
+/// PROFORMA INVOICE — phần đầu (`Ord_PerformanceInvoice`, 2010.HTC `Biz.HTC.WH.cs:29435`).
+/// ⚠️ Tên bảng nguồn dùng **"Performance"** nhưng nghiệp vụ là **Proforma Invoice** (PI) — giữ nguyên
+/// tên cột theo nguồn, đừng "sửa" thành Proforma.
+/// `FlagAutoPL` cho biết có tự sinh Packing List hay không (`ContractPackingListCreateAuto_New20190923`).
+/// Ba cột tháng tách bạch: `OrderMonth` (tháng đặt) · `ProductionMonth` (tháng sản xuất) ·
+/// `ExpectedMonth` (tháng dự kiến về).
+/// </summary>
+public sealed class OrdPerformanceInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RefNo { get; set; } = "";
+    public string? ModelCode { get; set; }
+    public string? OrderMonth { get; set; }
+    public string? ProductionMonth { get; set; }
+    public string? ExpectedMonth { get; set; }
+    /// <summary>Có tự sinh Packing List hay không ("1"/"0").</summary>
+    public string? FlagAutoPL { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
+/// DÒNG Proforma Invoice (`Ord_PerformanceInvoiceDetail`) — nơi chứa nội dung thật của hợp đồng ngoại.
+/// 🔴 `ContractNo` **KHÔNG do người dùng nhập** ở lệnh tạo PI: nó được
+/// `ContractContractOverseaCreate` **gán xuống** khi ký hợp đồng ngoại (dòng 32485).
+/// Dòng chưa gắn hợp đồng thì cột này rỗng — đó là cách hệ nguồn phân biệt PI đã/chưa vào hợp đồng.
+/// `LCTemp` là mã L/C tạm ghi trên dòng, khác với <see cref="CtLc"/> (L/C thật đã phát hành).
+/// </summary>
+public sealed class OrdPerformanceInvoiceDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RefNo { get; set; } = "";
+    /// <summary>Mã L/C TẠM ghi trên dòng (khác CT_LC đã phát hành).</summary>
+    public string? LCTemp { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    public string? WorkOrderNo { get; set; }
+    public string? PortCode { get; set; }
+    public string? PlantCode { get; set; }
+    public decimal? Quantity { get; set; }
+    /// <summary>Do ContractContractOverseaCreate gán xuống, không phải người dùng nhập.</summary>
+    public string? ContractNo { get; set; }
+}
+
+/// <summary>
 /// Danh mục MÀN HÌNH / CHỨC NĂNG hệ thống (`Sys_Object`) — mảnh cuối của bộ RBAC
 /// (`Sys_User` #119 → `Map_SG_SU`/`Map_SG_SO` #120 → `Sys_Object` ở đây).
 /// Cột lấy theo `mySql_GetClauseColumnForSysObjectInfo` (2010.HTC `BizHTC.Common.cs:1547`).
