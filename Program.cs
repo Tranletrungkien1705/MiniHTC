@@ -18830,14 +18830,32 @@ app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, IT
 // Nguồn: CREA (mới tạo) → CONF (xác nhận) → ACCE (tiếp nhận, xe đã tới xưởng) · REJ (huỷ).
 // "Confirmed" là bước gọi khách xác nhận TRƯỚC khi tới — thiếu nó thì không phân biệt được
 // lịch mới đặt với lịch khách đã xác nhận sẽ đến (cơ sở để xưởng giữ khoang).
+// ===== 🔴 #285 ĐÍNH CHÍNH MÃ TRẠNG THÁI LỊCH HẸN: là SỐ "1".."4", KHÔNG phải CREA/CONF/ACCE/REJ =====
+// Lượt trước lấy mã từ lớp hằng `TConst.Ser_App` (`Create="CREA"` · `Confirm="CONF"` · `Accept="ACCE"` ·
+//   `Reject="REJ"`). Kiểm lại bằng BA nguồn bằng chứng thì lớp hằng đó **SAI/CHẾT**:
+//   1. **GHI**: `dt_Ser_App.Rows[0]["AppStatus"] = "1";` — ghi thẳng CHỮ SỐ
+//      (`BizCarSv.TVO.cs:1697` và `:2410`).
+//   2. **ĐỌC/LỌC**: `"AppStatus", "=", "1"` trong tham số truy vấn (`BizCarSv.Tab.cs:5131`, `TVO.cs:2509`).
+//   3. **HIỂN THỊ**: `case ro.AppStatus when '1' then N'Mới tạo' when '2' then N'Xác nhận'`
+//      `when '3' then N'Tiếp nhận' when '4' then N'Hủy' end as StatusName`
+//      (`BizCarSv.Appointment.cs:1497-1502`, hàm `Ser_App_GetStatusList` — lặp lại ở 4 chỗ).
+//   4. Grep TOÀN CÂY (đã loại file chết): `TConst.Ser_App.Create/Confirm/Accept/Reject` **KHÔNG được dùng
+//      ở BẤT KỲ ĐÂU** ⇒ lớp hằng CHẾT, chỉ còn là tài liệu sai.
+// ⇒ Giữ tên trạng thái nội bộ của port, nhưng **mã nguồn ánh xạ về CHỮ SỐ**, và bổ sung **NHÃN hiển thị**.
 var appointmentStatusSourceCodes = new Dictionary<string, string>
 {
-    ["Booked"] = "CREA",       // Mới tạo
-    ["Confirmed"] = "CONF",    // Xác nhận  ← port cũ THIẾU
-    ["Arrived"] = "ACCE",      // Tiếp nhận (xe đã tới)
-    ["Cancelled"] = "REJ",     // Huỷ
-    // "Done" KHÔNG có trong TConst.Ser_App — port cũ tự thêm. Giữ cho dữ liệu cũ, đánh dấu rõ.
+    ["Booked"] = "1",          // Mới tạo
+    ["Confirmed"] = "2",       // Xác nhận
+    ["Arrived"] = "3",         // Tiếp nhận (xe đã tới)
+    ["Cancelled"] = "4",       // Hủy
+    // "Done" KHÔNG có trong nguồn (CASE chỉ có 1..4) — port cũ tự thêm. Giữ cho dữ liệu cũ, đánh dấu rõ.
     ["Done"] = "(port-only)",
+};
+
+// Nhãn hiển thị nguyên văn nguồn. Nguồn **KHÔNG có nhánh ELSE** ⇒ mã lạ cho ra NULL, không phải chuỗi rỗng.
+var appointmentStatusDisplayNames = new Dictionary<string, string>
+{
+    ["1"] = "Mới tạo", ["2"] = "Xác nhận", ["3"] = "Tiếp nhận", ["4"] = "Hủy",
 };
 
 var appointmentTransitions = new Dictionary<string, string[]>
@@ -18851,9 +18869,16 @@ var appointmentTransitions = new Dictionary<string, string[]>
 
 app.MapGet("/api/appointments/statuses", () => Results.Ok(new
 {
-    statuses = appointmentStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    statuses = appointmentStatusSourceCodes.Select(kv => new
+    {
+        status = kv.Key, sourceCode = kv.Value,
+        // #285: nhãn hiển thị nguyên văn nguồn; mã "(port-only)" không có nhãn.
+        displayName = appointmentStatusDisplayNames.TryGetValue(kv.Value, out var dn) ? dn : null,
+    }),
     transitions = appointmentTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
-    note = "Done không có ở nguồn (TConst.Ser_App chỉ có CREA/CONF/ACCE/REJ) — giữ cho dữ liệu port cũ."
+    note = "#285: mã nguồn của AppStatus là CHỮ SỐ 1..4 (kiểm bằng lệnh GHI, tham số LỌC và CASE hiển thị). "
+         + "Lớp hằng TConst.Ser_App (CREA/CONF/ACCE/REJ) KHÔNG được dùng ở đâu trong cây ⇒ hằng chết. "
+         + "Done không có ở nguồn — giữ cho dữ liệu port cũ."
 })).RequireAuthorization();
 
 app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t) =>
