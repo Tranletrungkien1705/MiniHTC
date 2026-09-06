@@ -4952,6 +4952,41 @@ public sealed class ServiceCustomer
     public string? ContName { get; set; }              // người liên hệ (tổ chức)
     public string? ContMobile { get; set; }
     public string? ContTel { get; set; }
+
+    // ===== #221 parity `CustomerCreate` / `CustomerUpdate` (DMSCarSv —
+    //       TERP.HTCServiceClient/DbServices/MstCustomerService.cs:72 / :249) =====
+    // Đối chiếu từng trường: nguồn gửi **28 trường**; entity có 13 ⇒ bổ sung 15 trường dưới đây.
+    /// <summary>Đại lý quản lý khách hàng.</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Tỉnh/thành.</summary>
+    public string? ProvinceCode { get; set; }
+    /// <summary>Quận/huyện.</summary>
+    public string? DistrictCode { get; set; }
+    /// <summary>Số fax của khách.</summary>
+    public string? Fax { get; set; }
+    /// <summary>Website (khách doanh nghiệp).</summary>
+    public string? Website { get; set; }
+    /// <summary>Số CMND/CCCD.</summary>
+    public string? IDCardNo { get; set; }
+    /// <summary>Ngân hàng giao dịch.</summary>
+    public string? Bank { get; set; }
+    /// <summary>Số tài khoản ngân hàng.</summary>
+    public string? BankAccountNo { get; set; }
+    /// <summary>Loại hình tổ chức (khách doanh nghiệp).</summary>
+    public string? OrgTypeID { get; set; }
+    /// <summary>Cờ khách LẺ (form FrmCustomerNormal truyền riêng, nguồn nhận cả ở Create lẫn Update).</summary>
+    public string? IsNormal { get; set; }
+    /// <summary>Cờ có người liên hệ đại diện.</summary>
+    public string? IsContact { get; set; }
+    /// <summary>Địa chỉ người liên hệ.</summary>
+    public string? ContAddress { get; set; }
+    /// <summary>Fax người liên hệ.</summary>
+    public string? ContFax { get; set; }
+    /// <summary>Giới tính người liên hệ.</summary>
+    public string? ContSex { get; set; }
+    /// <summary>Ghi chú.</summary>
+    public string? Note { get; set; }
+
     public string? ContEmail { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

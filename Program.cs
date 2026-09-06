@@ -28009,7 +28009,10 @@ app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, st
         query = query.Where(c => c.CusName.Contains(q) || c.CusCode.Contains(q.ToUpper())
             || (c.Mobile != null && c.Mobile.Contains(q)) || (c.Tel != null && c.Tel.Contains(q)) || (c.TaxCode != null && c.TaxCode.Contains(q)));
     var items = await query.OrderBy(c => c.CusName).Take(500).Select(c => new
-    { c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode, c.Sex, c.DOB, c.ContName, c.ContMobile }).ToListAsync();
+    { c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode, c.Sex, c.DOB, c.ContName, c.ContMobile,
+      // #221 §12: 15 trường mới phải chiếu ở CẢ GET
+      c.DealerCode, c.ProvinceCode, c.DistrictCode, c.Fax, c.Website, c.IDCardNo, c.Bank, c.BankAccountNo,
+      c.OrgTypeID, c.IsNormal, c.IsContact, c.ContAddress, c.ContFax, c.ContSex, c.Note }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -28023,6 +28026,22 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     c.CusName = dto.CusName; c.CusTypeID = dto.CusTypeID; c.Address = dto.Address; c.Mobile = dto.Mobile; c.Tel = dto.Tel;
     c.Email = dto.Email; c.TaxCode = dto.TaxCode; c.Sex = dto.Sex; c.DOB = dto.DOB;
     c.ContName = dto.ContName; c.ContMobile = dto.ContMobile; c.ContTel = dto.ContTel; c.ContEmail = dto.ContEmail; c.UpdatedAt = DateTime.Now;
+    // ===== #221 parity: 15 trường còn thiếu của `CustomerCreate`/`CustomerUpdate` =====
+    c.DealerCode = dto.DealerCode;
+    c.ProvinceCode = dto.ProvinceCode;
+    c.DistrictCode = dto.DistrictCode;
+    c.Fax = dto.Fax;
+    c.Website = dto.Website;
+    c.IDCardNo = dto.IDCardNo;
+    c.Bank = dto.Bank;
+    c.BankAccountNo = dto.BankAccountNo;
+    c.OrgTypeID = dto.OrgTypeID;
+    c.IsNormal = dto.IsNormal;
+    c.IsContact = dto.IsContact;
+    c.ContAddress = dto.ContAddress;
+    c.ContFax = dto.ContFax;
+    c.ContSex = dto.ContSex;
+    c.Note = dto.Note;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CusCode, c.CusName });
 }).RequireAuthorization();
@@ -30588,7 +30607,9 @@ record DlvCorrectDto(string? TPlateNo, string? TDriverId, string? TDriverName, s
 record TransportInsPaymentDto(DateTime? PmtMonth, List<TransportInsPaymentLineDto>? Lines);
 record TransportInsPaymentEditLineDto(string? Vin, decimal TFValReal, decimal TPValReal, decimal InsuranceCost);
 record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
-record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail);
+record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
+    // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
+    string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartLineStatusDto(string? ToStatus);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
