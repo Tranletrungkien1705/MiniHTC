@@ -18352,6 +18352,33 @@ app.MapPost("/api/serassignmentworks/{roNo}/engineers", async (
     return Results.Ok(new { roNo, engineers = lines.Count, itemEngineersDerived = derivedCount });
 }).RequireAuthorization();
 
+// ===== 🔴 #309 CHỐNG TRÙNG KHOANG (cavity) KHI PHÂN CÔNG — port cũ THIẾU HẲN =====
+// Nguồn `BizCarSv.AssignmentOfWork.cs`. TRACE TWIN: bảy lời gọi ở `:248-254` dùng
+//   `MyCheck_SerAssignmentWork_PlanDateTime_Cavity_**20211007**` ⇒ hai bản `…_Cavityxxx` (`:2587`) và
+//   `…_Cavity_Old` (`:2641`) **KHÔNG ai gọi** — CHẾT. (Lại một lần "tên mới nhất chưa chắc là bản sống,
+//   phải xem ai GỌI".)
+// 🆕 Tìm ra nhờ sweep `top 1` **không có order by** (#308): 7 hit trong file này đều là **guard kiểm tra
+//   tồn tại** (`select top 1 t.* … where <điều kiện chồng giờ>`) — ở đó thiếu `order by` là **vô hại**,
+//   vì chỉ cần biết "có dòng nào không". Nhưng chính chúng chỉ ra một luật nghiệp vụ chưa port.
+//
+// 🔴 HAI luật KHÁC NHAU, đừng gộp:
+//  (1) KIỂM THEO KẾ HOẠCH (`_20211007`): so **ĐÚNG CẶP** — khoang của công đoạn X chỉ đối chiếu với giờ
+//      kế hoạch của **chính công đoạn X** (`SCCCavityID` ↔ `SCCPlanStart/Finish`, `SCD` ↔ `SCD` …).
+//  (2) KIỂM THEO THỰC TẾ (`_ActualStartDTime_Cavity` / `_ActualFinishDTime_Cavity`): dạng **CŨ và LỎNG hơn** —
+//      `(khoang của BẤT KỲ công đoạn nào = @cav) AND (giờ thực tế của BẤT KỲ công đoạn nào chứa @mốc)`.
+//      ⇒ khoang của công đoạn A bị đối chiếu với giờ của công đoạn B. **Chéo cặp.** Đây là hành vi LIVE,
+//        giữ nguyên; nhưng ghi rõ để ai thấy kết quả lạ biết đây là nguồn, không phải port sai.
+//
+// ⚠️ VỊ TỪ CHỒNG GIỜ CỦA NGUỒN **KHÔNG ĐẦY ĐỦ**:
+//     `(s < X and f > X)` với X = mốc bắt đầu, rồi X = mốc kết thúc.
+//   Nó BỎ SÓT trường hợp khoảng mới **BAO TRÙM** khoảng cũ (mới.start < cũ.start và mới.finish > cũ.finish):
+//   không mốc nào của khoảng mới nằm trong khoảng cũ ⇒ **không bị chặn**. Đây là lỗ hổng CÓ THẬT của nguồn.
+//   Port giữ **nguyên vị từ đó** (luật 1:1) và trả cờ `overlapRuleIncomplete` để không ai tưởng port sót.
+// ⚠️ Mốc rỗng ⇒ nguồn **bỏ qua kiểm** (tham số rỗng thì câu `where` không khớp gì).
+
+// Vị từ chồng giờ ĐÚNG NHƯ NGUỒN — chỉ xét hai MỐC, không xét bao trùm.
+static bool SourceOverlap(DateTime? s, DateTime? f, DateTime mark) => s.HasValue && f.HasValue && s < mark && f > mark;
+
 app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
@@ -18359,6 +18386,54 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
     if (!assignmentWorkStages.Contains(stageCode)) return Results.BadRequest(new { error = "Mã công đoạn không hợp lệ (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS)." });
     if (dto.PlanStart.HasValue && dto.PlanFinish.HasValue && dto.PlanFinish < dto.PlanStart) return Results.BadRequest(new { error = "Kế hoạch kết thúc trước kế hoạch bắt đầu." });
     if (dto.ActualStart.HasValue && dto.ActualFinish.HasValue && dto.ActualFinish < dto.ActualStart) return Results.BadRequest(new { error = "Thực tế kết thúc trước thực tế bắt đầu." });
+
+    // ---- #309 kiểm TRÙNG KHOANG, chỉ khi có chỉ định khoang ----
+    if (!string.IsNullOrWhiteSpace(dto.CavityId))
+    {
+        var cav = dto.CavityId!.Trim();
+        // Mọi công đoạn (của MỌI lệnh khác) đang chiếm cùng khoang.
+        var busy = await db.SerAssignmentWorkStages
+            .Where(x => x.OrgId == t.OrgId && x.CavityId == cav)
+            .ToListAsync();
+        // Loại chính công đoạn đang sửa (cùng lệnh + cùng mã công đoạn).
+        var selfHeader = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+        if (selfHeader is not null)
+            busy = busy.Where(x => !(x.AssignmentWorkId == selfHeader.Id && x.StageCode == stageCode)).ToList();
+
+        // (1) KẾ HOẠCH — so ĐÚNG CẶP: chỉ đối chiếu với công đoạn CÙNG MÃ.
+        if (dto.PlanStart.HasValue || dto.PlanFinish.HasValue)
+        {
+            var samePlan = busy.Where(x => x.StageCode == stageCode);
+            var hit = samePlan.FirstOrDefault(x =>
+                (dto.PlanStart.HasValue && SourceOverlap(x.PlanStart, x.PlanFinish, dto.PlanStart!.Value))
+                || (dto.PlanFinish.HasValue && SourceOverlap(x.PlanStart, x.PlanFinish, dto.PlanFinish!.Value)));
+            if (hit is not null)
+                return Results.BadRequest(new
+                {
+                    error = "Khoang đã có kế hoạch khác trong khoảng thời gian này!",
+                    cavityId = cav, stageCode,
+                    conflictWith = new { hit.AssignmentWorkId, hit.StageCode, hit.PlanStart, hit.PlanFinish },
+                    rule = "plan: so ĐÚNG CẶP công đoạn (nguồn _20211007)",
+                    overlapRuleIncomplete = true,
+                });
+        }
+
+        // (2) THỰC TẾ — dạng LỎNG của nguồn: khoang của BẤT KỲ công đoạn nào, giờ của BẤT KỲ công đoạn nào.
+        foreach (var mark in new[] { dto.ActualStart, dto.ActualFinish })
+        {
+            if (!mark.HasValue) continue;
+            var hit = busy.FirstOrDefault(x => SourceOverlap(x.ActualStart, x.ActualFinish, mark!.Value));
+            if (hit is not null)
+                return Results.BadRequest(new
+                {
+                    error = "Khoang đang được dùng trong khoảng thời gian thực tế này!",
+                    cavityId = cav, stageCode, mark,
+                    conflictWith = new { hit.AssignmentWorkId, hit.StageCode, hit.ActualStart, hit.ActualFinish },
+                    rule = "actual: nguồn so CHÉO CẶP (khoang công đoạn A vs giờ công đoạn B) — giữ đúng nguồn",
+                    overlapRuleIncomplete = true,
+                });
+        }
+    }
     var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
     if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
     var stage = await db.SerAssignmentWorkStages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id && x.StageCode == stageCode);
@@ -18366,7 +18441,9 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
     stage.CavityId = dto.CavityId; stage.PlanStart = dto.PlanStart; stage.PlanFinish = dto.PlanFinish; stage.ActualStart = dto.ActualStart; stage.ActualFinish = dto.ActualFinish;
     h.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { roNo, stageCode, stage.CavityId, stage.PlanStart, stage.PlanFinish, stage.ActualStart, stage.ActualFinish });
+    return Results.Ok(new { roNo, stageCode, stage.CavityId, stage.PlanStart, stage.PlanFinish, stage.ActualStart, stage.ActualFinish,
+        overlapNote = "Đã kiểm trùng khoang theo đúng nguồn. Vị từ của nguồn chỉ xét HAI MỐC nên KHÔNG chặn "
+                    + "được khoảng mới BAO TRÙM khoảng cũ — lỗ hổng có thật của nguồn, giữ 1:1." });
 }).RequireAuthorization();
 
 // ===== Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
