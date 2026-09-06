@@ -19496,10 +19496,37 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         var hasCavityMaster = await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId);
         if (hasCavityMaster && !await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId && c.CavityName == cavity))
             return Results.BadRequest(new { error = "Khoang/bay không có trong danh mục: " + cavity });
-        // Chống đặt chồng giờ cùng 1 khoang (bỏ qua lệnh đã hủy).
-        var overlap = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity && x.Status != "Cancelled"
-            && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
-        if (overlap) return Results.BadRequest(new { error = "Khoang " + cavity + " đã có lịch trùng khung giờ." });
+        // ===== 🔴 #325 CHỐNG CHỒNG GIỜ CÙNG KHOANG — đối chiếu `MyCheck_DateTime_Cavity` (`ZTemp.cs:23125`) =====
+        // TRACE TWIN: bản `…_Cavityxxx` (`:23078`) CHẾT; bản LIVE nhận thêm tham số `dbAction`.
+        //
+        // 🔴 SỬA 1 — KHOÁ SAI CỘT: nguồn lọc `t.CavityID = @strCavityID` (**khoá**), port cũ lọc theo
+        //   `CavityName` (**tên hiển thị**) ⇒ hai lịch hẹn cùng khoang nhưng ghi tên khác chính tả
+        //   (“Bay 1” vs “BAY 1”) **KHÔNG bị coi là trùng** ⇒ đặt chồng lọt lưới.
+        //   Nay khoá theo `CavityID`; chỉ khi thiếu `CavityID` mới lùi về tên (dữ liệu cũ), và ghi rõ.
+        //
+        // ⚠️ SO SÁNH HAI GUARD CHỒNG GIỜ TRONG CÙNG HỆ — mức đầy đủ KHÁC NHAU:
+        //   • **Lịch hẹn** (đây): nguồn có **BA** nhánh — hai nhánh mốc + nhánh
+        //     `(cũ.From >= mới.From AND cũ.To <= mới.To)` ⇒ bắt được cả ca **khoảng mới BAO TRÙM khoảng cũ**
+        //     ⇒ **ĐẦY ĐỦ**.
+        //   • **Phân công công việc** (#309): chỉ **HAI** nhánh mốc ⇒ **BỎ SÓT** ca bao trùm.
+        //   ⇒ Cùng khái niệm "khoang bận", một chỗ đã vá, một chỗ chưa. Xác nhận lỗ hổng ghi ở #309 là
+        //     **bất nhất có thật của nguồn**, không phải thiết kế chung.
+        //   Vị từ của MiniHTC (`x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo`) **tương đương** ba nhánh
+        //   của nguồn ⇒ giữ nguyên, đúng bản LIVE.
+        //
+        // ⚠️ Nguồn loại `AppStatus != '4'` (Hủy) — **blacklist đúng MỘT mã**, mã lạ/NULL **vẫn tính là bận**.
+        var cavityId = (dto.CavityID ?? "").Trim();
+        var overlap = cavityId.Length > 0
+            ? await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavityId
+                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo)
+            // lùi về TÊN chỉ khi chưa có CavityID (dữ liệu cũ) — kém chính xác, đã khai báo.
+            : await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity
+                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
+        if (overlap) return Results.BadRequest(new
+        {
+            error = "Khoang " + (cavityId.Length > 0 ? cavityId : cavity) + " đã có lịch trùng khung giờ.",
+            matchedBy = cavityId.Length > 0 ? "CavityID (đúng nguồn)" : "CavityName (dữ liệu cũ, kém chính xác)",
+        });
     }
     var engineerNo = (dto.EngineerNo ?? "").Trim().ToUpperInvariant();
     if (engineerNo != "" && !await db.ServiceEngineers.AnyAsync(e => e.OrgId == t.OrgId && e.EngineerNo == engineerNo))
@@ -34996,6 +35023,64 @@ app.MapPut("/api/os/appointments/{no}", async (string no, OsAppointmentUpdateDto
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #325 TẠO LỊCH HẸN TỪ HCC (`OS_Ser_App_Create_ForHCC`, `BizCarSv.Tab.cs:4836`) =====
+// Đây là WebMethod đối tác **DUY NHẤT còn lại** có biz riêng (4/5 kia dùng chung hàm nội bộ — #324).
+//
+// 🔴 KHÁC bản nội bộ ở cách ghi `AppDateTime` — CÙNG MỘT CỘT, HAI CÁCH GHI:
+//   `Function_UtilsSerApp` (nội bộ/OS-Update): `Convert.ToDateTime(str).ToString("yyyy-MM-dd")` ⇒ chuẩn hoá
+//   `OS_Ser_App_Create_ForHCC` (đây):          `= strAppDateTime` **THÔ**, không convert, không kiểm
+//   ⇒ Cùng cột `AppDateTime` có thể chứa "2024-03-05" (đường nội bộ) hoặc bất kỳ chuỗi gì HCC gửi.
+//     Giữ đúng nguồn; đọc cột này phải chấp nhận cả hai dạng.
+// ⚠️ `CreatedDate` thì NGƯỢC lại: có guard rỗng **và** `Convert…ToString("yyyy-MM-dd HH:mm")` ⇒ cắt GIÂY.
+// ⚠️ Guard trùng số lịch hẹn: nguồn gọi `CheckExistAppNo` trước khi ghi.
+// ⚠️ Chống chồng giờ: gọi `MyCheck_DateTime_Cavity` — cùng guard với đường nội bộ (xem chú thích ở POST).
+app.MapPost("/api/os/appointments/for-hcc", async (OsAppointmentForHccDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var appNo = (dto.AppNo ?? "").Trim().ToUpperInvariant();
+    if (appNo.Length == 0) return Results.BadRequest(new { error = "Thiếu số lịch hẹn (AppNo)." });
+    // CheckExistAppNo của nguồn.
+    if (await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.AppNo == appNo))
+        return Results.BadRequest(new { error = "Số lịch hẹn đã tồn tại: " + appNo });
+
+    var cavityId = (dto.CavityID ?? "").Trim();
+    if (cavityId.Length > 0 && dto.AppFrom.HasValue && dto.AppTo.HasValue)
+    {
+        var busy = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavityId
+            && x.Status != "Cancelled" && x.AppFrom < dto.AppTo!.Value && dto.AppFrom!.Value < x.AppTo);
+        if (busy) return Results.BadRequest(new { error = "Khoang " + cavityId + " đã có lịch trùng khung giờ." });
+    }
+
+    var a = new ServiceAppointment
+    {
+        OrgId = t.OrgId, AppNo = appNo,
+        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        Creator = dto.Creator, CusID = dto.CusID, CusRequest = dto.CusRequest,
+        CarID = dto.CarID, InsNo = dto.InsNo, Note = dto.Note,
+        CVDVCode = dto.CVDVCode, CavityID = cavityId.Length == 0 ? null : cavityId,
+        AppTypeCode = dto.AppTypeCode, Source = dto.Source?.Trim().ToUpperInvariant(),
+        // ⚠️ AppDateTime ghi THÔ (không convert) — đúng nhánh ForHCC.
+        AppDateTime = dto.AppDateTime, AppTime = dto.AppTime,
+        AppDateTimeFrom = dto.AppDateTimeFrom, AppTimeFrom = dto.AppTimeFrom,
+        Status = string.IsNullOrWhiteSpace(dto.AppStatus) ? "Booked" : dto.AppStatus!.Trim(),
+        AppFrom = dto.AppFrom ?? DateTime.Now, AppTo = dto.AppTo ?? DateTime.Now,
+        // CreatedDate của nguồn: có guard + cắt tới PHÚT.
+        CreatedAt = dto.CreatedDate.HasValue
+            ? new DateTime(dto.CreatedDate.Value.Year, dto.CreatedDate.Value.Month, dto.CreatedDate.Value.Day,
+                           dto.CreatedDate.Value.Hour, dto.CreatedDate.Value.Minute, 0)
+            : DateTime.Now,
+    };
+    db.ServiceAppointments.Add(a);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        a.AppNo, a.DealerCode, a.CavityID, a.CarID, a.Status, a.CreatedAt,
+        a.AppDateTime, a.AppTime, a.AppDateTimeFrom, a.AppTimeFrom,
+        note = "AppDateTime ghi THÔ (nhánh ForHCC không convert) — khác đường nội bộ vốn chuẩn hoá "
+             + "về \"yyyy-MM-dd\". CreatedDate cắt tới PHÚT như nguồn.",
+    });
+}).RequireAuthorization();
+
 // #324 Bản đồ 5 WebMethod đối tác → hàm biz thật, để client biết cái nào dùng chung đường nội bộ.
 app.MapGet("/api/os/appointments/surface", () => Results.Ok(new
 {
@@ -36824,6 +36909,15 @@ record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
     decimal? PlanedDuration = null, string? CusRequest = null, string? CarStatus = null,
     string? ModifyBy = null);
 // #324: cap nhat lich hen tu API DOI TAC (OS_Ser_App_Update). Rong = GIU NGUYEN (helper Function_UtilsSerApp).
+// #325: tao lich hen tu HCC (OS_Ser_App_Create_ForHCC). AppDateTime ghi THO, CreatedDate cat toi PHUT.
+record OsAppointmentForHccDto(string? AppNo, string? DealerCode = null, string? Creator = null,
+    DateTime? CreatedDate = null, string? CusID = null, string? CusRequest = null,
+    string? CarID = null, string? InsNo = null, string? AppStatus = null,
+    string? AppDateTime = null, string? Note = null, string? CVDVCode = null,
+    string? AppTime = null, string? AppDateTimeFrom = null, string? AppTimeFrom = null,
+    string? CavityID = null, string? AppTypeCode = null, string? Source = null,
+    DateTime? AppFrom = null, DateTime? AppTo = null);
+
 record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, string? CusRequest = null,
     string? Creator = null, string? InsNo = null, string? CarID = null, string? Note = null,
     string? CVDVCode = null, string? CavityID = null, string? AppTypeCode = null,
