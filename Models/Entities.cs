@@ -4559,6 +4559,64 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// CHIẾN DỊCH marketing — phần đầu (`MRK_Campaign` — port 1:1 cụm 3 hàm
+/// `MRK_Campaign_Get/Save/Approve_New20181115`, 2010.HTC `BizHTC.Marketing.cs`
+/// dòng 15916 / 16167 / 16628).
+/// 🔴 Hằng trạng thái riêng `TConst.MRKCampaignStatus` (`Const.Main.cs:832`): chỉ `Pending = "P"`
+/// và `Approve = "A"` — giống cấu trúc `MRKScopLimitStatus` của #109 nhưng là **lớp hằng khác**.
+/// 🔴 `Save` mang cờ `strFlagIsDelete`: "1" thì **chỉ xoá**, ngược lại là **upsert** (xoá rồi chèn lại
+/// cả đầu lẫn chi tiết). Sửa bản ghi đã có thì nó **phải đang "P"**.
+/// 🔴 `Approve` cập nhật **CẢ HAI bảng**: `MRKCampaignStatus` ở đầu và `MRKCampaignStatusDetail` từng dòng.
+/// ⚠️ Chi tiết ghi nhận trong nguồn: hàm `Approve` gán `MRKCampaignStatus = TConst.MRKScopLimitStatus.Approve`
+/// — dùng nhầm hằng của cụm ScopeLimit. Vô hại vì cả hai đều là "A", nhưng là copy-paste lệch.
+/// ⚠️ Guard `Mst_EvenType_CheckDB` (loại sự kiện) CHƯA port — MiniHTC không có master `Mst_EvenType`
+/// (tên nguồn thiếu chữ t: "EvenType"). Ghi nợ, không bịa master rỗng.
+/// </summary>
+public sealed class MrkCampaign
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKCampaignNo { get; set; } = "";
+    public string MRKCampaignName { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    /// <summary>Loại sự kiện (`Mst_EvenType` — nguồn viết thiếu chữ t).</summary>
+    public string? EvenType { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    /// <summary>"P" chờ duyệt / "A" đã duyệt (TConst.MRKCampaignStatus).</summary>
+    public string MRKCampaignStatus { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// FILE của chiến dịch marketing (`MRK_CampaignDetail`). Mỗi dòng là một file kèm theo chiến dịch.
+/// ⚠️ Guard `Mst_FileType_CheckDB` (loại file) CHƯA port — MiniHTC không có master `Mst_FileType`.
+/// </summary>
+public sealed class MrkCampaignDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKCampaignNo { get; set; } = "";
+    public string? FileType { get; set; }
+    public string? FileNameActual { get; set; }
+    public string? FilePath { get; set; }
+    /// <summary>Đồng bộ từ phần đầu khi duyệt.</summary>
+    public string MRKCampaignStatusDetail { get; set; } = "P";
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Hồ sơ KPI / giải ngân marketing theo quý của đại lý (`MRK_KPIDisbursment` — port 1:1 cụm 2 hàm
 /// `MRK_KPIDisbursment_Get/Save_New20181115`, 2010.HTC `BizHTC.Marketing.cs` dòng 15243 / 15545).
 /// Khoá nghiệp vụ = bộ **BỐN**: (`KPIDisbursmentYear`, `QuaterCode`, `DealerCode`, `KPIDisbursmentType`).

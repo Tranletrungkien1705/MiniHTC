@@ -4217,6 +4217,113 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Chiến dịch marketing (MRK_Campaign — port 1:1 cụm 3 hàm Get(15916) / Save(16167) /
+// Approve(16628), 2010.HTC BizHTC.Marketing.cs). TWIN: 3/3, cả WS 32-bit lẫn 64-bit. =====
+// 🔴 Hằng trạng thái riêng `TConst.MRKCampaignStatus` (Const.Main.cs:832): chỉ "P" và "A".
+// 🔴 `Save` mang cờ `strFlagIsDelete` (luật C0-centesimusdecimus): "1" thì CHỈ XOÁ; ngược lại UPSERT.
+//    Sửa bản ghi đã có thì nó phải đang "P".
+// 🔴 `Approve` cập nhật CẢ HAI bảng: đầu + đồng bộ `MRKCampaignStatusDetail` từng dòng.
+// ⚠️ Guard `Mst_EvenType_CheckDB` và `Mst_FileType_CheckDB` chưa port — MiniHTC chưa có hai master đó.
+app.MapGet("/api/mrkcampaigns", async (AppDbContext db, ITenantContext t, string? no, string? dealerCode, string? status) =>
+{
+    var qy = db.MrkCampaigns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) qy = qy.Where(x => x.MRKCampaignNo == no);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.MRKCampaignStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Select(x => new
+    {
+        x.MRKCampaignNo, x.MRKCampaignName, x.DealerCode, x.EvenType, x.StartDate, x.EndDate,
+        x.MRKCampaignStatus, x.Remark, x.CreatedDateTime, x.CreatedBy,
+        x.LUDateTime, x.LUBy, x.ApproveDateTime, x.ApproveBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    var nos = items.Select(i => i.MRKCampaignNo).ToList();
+    var dtls = await db.MrkCampaignDetails.Where(d => d.OrgId == t.OrgId && nos.Contains(d.MRKCampaignNo))
+        .Select(d => new
+        {
+            d.MRKCampaignNo, d.FileType, d.FileNameActual, d.FilePath,
+            d.MRKCampaignStatusDetail, d.LUDateTime, d.LUBy, d.LogLUDateTime, d.LogLUBy,
+        }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, details = dtls });
+}).RequireAuthorization();
+
+app.MapPost("/api/mrkcampaigns/save", async (MrkCampaignSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.MRKCampaignNo ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số chiến dịch rỗng." });
+    var cur = await db.MrkCampaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKCampaignNo == no);
+
+    // 🔴 Nhánh XOÁ: nguồn không đòi bảng chi tiết; không có bản ghi thì coi là thành công.
+    if ((dto.FlagIsDelete ?? "").Trim() == "1")
+    {
+        if (cur is null) return Results.Ok(new { deleted = 0, no, note = "Không có bản ghi — nguồn coi là thành công." });
+        if (cur.MRKCampaignStatus != "P")
+            return Results.BadRequest(new { error = $"Chiến dịch {no} đang {cur.MRKCampaignStatus}, chỉ xoá được khi 'P'." });
+        var curDtls = await db.MrkCampaignDetails.Where(d => d.OrgId == t.OrgId && d.MRKCampaignNo == no).ToListAsync();
+        db.MrkCampaignDetails.RemoveRange(curDtls);
+        db.MrkCampaigns.Remove(cur);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { deleted = 1, detailsDeleted = curDtls.Count, no });
+    }
+
+    var name = (dto.MRKCampaignName ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    if (name.Length < 1) return Results.BadRequest(new { error = "Tên chiến dịch rỗng." });
+    if (dealer.Length < 1) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+
+    var createdAt = DateTime.Now;
+    var createdBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (cur is not null)
+    {
+        if (cur.MRKCampaignStatus != "P")
+            return Results.BadRequest(new { error = $"Chiến dịch {no} đang {cur.MRKCampaignStatus}, chỉ sửa được khi 'P'." });
+        createdAt = cur.CreatedDateTime; createdBy = cur.CreatedBy ?? createdBy;
+        db.MrkCampaignDetails.RemoveRange(
+            await db.MrkCampaignDetails.Where(d => d.OrgId == t.OrgId && d.MRKCampaignNo == no).ToListAsync());
+        db.MrkCampaigns.Remove(cur);
+        await db.SaveChangesAsync();
+    }
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.MrkCampaigns.Add(new MrkCampaign
+    {
+        OrgId = t.OrgId, MRKCampaignNo = no, MRKCampaignName = name, DealerCode = dealer,
+        EvenType = dto.EvenType, StartDate = dto.StartDate, EndDate = dto.EndDate,
+        MRKCampaignStatus = "P", Remark = dto.Remark,
+        CreatedDateTime = createdAt, CreatedBy = createdBy,
+        LUDateTime = now, LUBy = who, LogLUDateTime = now, LogLUBy = who,
+    });
+    var files = dto.Details ?? new();
+    foreach (var f in files)
+        db.MrkCampaignDetails.Add(new MrkCampaignDetail
+        {
+            OrgId = t.OrgId, MRKCampaignNo = no,
+            FileType = f.FileType, FileNameActual = f.FileNameActual, FilePath = f.FilePath,
+            MRKCampaignStatusDetail = "P",
+            LUDateTime = now, LUBy = who, LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, details = files.Count, status = "P" });
+}).RequireAuthorization();
+
+app.MapPost("/api/mrkcampaigns/approve", async (MrkCampaignKeyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.MRKCampaignNo ?? "").Trim();
+    var row = await db.MrkCampaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKCampaignNo == no);
+    if (row is null) return Results.NotFound(new { error = $"Không có chiến dịch {no}." });
+    if (row.MRKCampaignStatus != "P")
+        return Results.BadRequest(new { error = $"Chiến dịch đang {row.MRKCampaignStatus}, chỉ duyệt được khi 'P'." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.MRKCampaignStatus = "A";
+    row.ApproveDateTime = now; row.ApproveBy = who; row.LogLUDateTime = now; row.LogLUBy = who;
+    var dtls = await db.MrkCampaignDetails.Where(d => d.OrgId == t.OrgId && d.MRKCampaignNo == no).ToListAsync();
+    foreach (var d in dtls) { d.MRKCampaignStatusDetail = "A"; d.LogLUDateTime = now; d.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, status = "A", detailsSynced = dtls.Count });
+}).RequireAuthorization();
+
 // ===== Hồ sơ KPI / giải ngân marketing theo quý (MRK_KPIDisbursment — port 1:1 cụm 2 hàm
 // Get(15243) / Save(15545), 2010.HTC BizHTC.Marketing.cs). TWIN: 2/2, cả WS 32-bit lẫn 64-bit. =====
 // 🔴 MỘT hàm Save làm CẢ HAI việc: `strFlagIsDelete = "1"` thì CHỈ XOÁ; ngược lại là UPSERT
@@ -4338,6 +4445,21 @@ app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbCo
     var year = (dto.MRKScopeLimitYear ?? "").Trim();
     if (no.Length < 1) return Results.BadRequest(new { error = "Số hạn mức rỗng." });
     if (year.Length < 1) return Results.BadRequest(new { error = "Năm hạn mức rỗng." });
+    // 🔴 Cờ `FlagIsDelete` của nguồn (`strFlagIsDelete == "1"`): CHỈ XOÁ, không đòi bảng chi tiết.
+    // Bản ghi không tồn tại thì nguồn `goto MyCodeLabel_Done` — coi là THÀNH CÔNG, không báo lỗi.
+    if ((dto.FlagIsDelete ?? "").Trim() == "1")
+    {
+        var cur = await db.MrkScopeLimits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKScopeLimitNo == no);
+        if (cur is null) return Results.Ok(new { deleted = 0, no, note = "Không có bản ghi — nguồn coi là thành công." });
+        if (cur.MRKScopeLimitStatus != "P")
+            return Results.BadRequest(new { error = $"Hạn mức {no} đang {cur.MRKScopeLimitStatus}, chỉ xoá được khi 'P'." });
+        var curDtls = await db.MrkScopeLimitDetails.Where(d => d.OrgId == t.OrgId && d.MRKScopeLimitNo == no).ToListAsync();
+        db.MrkScopeLimitDetails.RemoveRange(curDtls);
+        db.MrkScopeLimits.Remove(cur);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { deleted = 1, detailsDeleted = curDtls.Count, no });
+    }
+
     var rows = (dto.Details ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealerCode)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
 
@@ -23187,10 +23309,14 @@ record MktFeeAttachSaveDto(string? MKTFeeCode, string? MKTActivityCode, string? 
 record MktFeeAttachDecisionDto(string? MKTFeeCode, string? MKTActivityCode, string? FileAttachType, string? RemarkImage);
 // Hạn mức ngân sách marketing: 4 quý hạn mức + 6 đợt giải ngân (bất đối xứng theo nguồn).
 record MrkScopeLimitRowDto(string? DealerCode, decimal? Amount1QuaterScopeLimit, decimal? Amount2QuaterScopeLimit, decimal? Amount3QuaterScopeLimit, decimal? Amount4QuaterScopeLimit, decimal? Amount1DisbursmentCash, decimal? Amount2DisbursmentCash, decimal? Amount3DisbursmentCash, decimal? Amount4DisbursmentCash, decimal? Amount5DisbursmentCash, decimal? Amount6DisbursmentCash, string? Remark);
-record MrkScopeLimitSaveDto(string? MRKScopeLimitNo, string? MRKScopeLimitYear, List<MrkScopeLimitRowDto>? Details);
+record MrkScopeLimitSaveDto(string? FlagIsDelete, string? MRKScopeLimitNo, string? MRKScopeLimitYear, List<MrkScopeLimitRowDto>? Details);
 record MrkScopeLimitKeyDto(string? MRKScopeLimitNo);
 // KPI/giải ngân marketing: một lệnh Save kiêm cả xoá (FlagIsDelete = "1") lẫn upsert.
 record MrkKpiDisbursmentSaveDto(string? FlagIsDelete, string? KPIDisbursmentYear, string? QuaterCode, string? DealerCode, string? KPIDisbursmentType, string? FileNameActual, string? FilePath);
+// Chiến dịch marketing: Save kiêm xoá (FlagIsDelete = "1"), chi tiết là danh sách FILE kèm theo.
+record MrkCampaignFileDto(string? FileType, string? FileNameActual, string? FilePath);
+record MrkCampaignSaveDto(string? FlagIsDelete, string? MRKCampaignNo, string? MRKCampaignName, string? DealerCode, string? EvenType, DateTime? StartDate, DateTime? EndDate, string? Remark, List<MrkCampaignFileDto>? Details);
+record MrkCampaignKeyDto(string? MRKCampaignNo);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
