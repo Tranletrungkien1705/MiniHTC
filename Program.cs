@@ -288,8 +288,11 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
     if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã địa điểm giao hàng." });
     // 🔴 #249 GUARD KÝ TỰ ĐẶC BIỆT — `FrmMst_DeliveryLocation.cs` kiểm `regex.IsMatch(deliveryLocationCode)`.
     //    #232 port màn này mà BỎ SÓT guard; sweep "màn nào dùng regex của lớp cha" mới lộ ra.
+    // #257: dùng ĐÚNG hằng của nguồn `MSG_WARNING_KEYSPE_DELIVERYLOCATIONCODE` (Constants.cs:40) =
+    //   "Mã **địa điểm** không được phép chứa các ký tự đặc biệt" — #249 tôi tự chế thành
+    //   "Mã địa điểm **giao hàng**…", sai chữ so với nguồn.
     if (HasSpecialChar(code))
-        return Results.BadRequest(new { error = "Mã địa điểm giao hàng không được phép chứa các ký tự đặc biệt", code });
+        return Results.BadRequest(new { error = "Mã địa điểm không được phép chứa các ký tự đặc biệt", code });
     if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
     if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên địa điểm giao hàng." });
     if (name.Length > 200) return Results.BadRequest(new { error = "Tên địa điểm không được nhập quá dài!" });
@@ -5560,6 +5563,19 @@ app.MapPost("/api/sysusers/save", async (SysUserSaveDto dto, AppDbContext db, IT
 app.MapPost("/api/sysusers/delete", async (SysUserKeyDto dto, AppDbContext db, ITenantContext t, bool? soft) =>
 {
     var code = (dto.UserCode ?? "").Trim();
+
+    // ===== 🔴 #257 CẤM XOÁ NGƯỜI DÙNG "sysadmin" =====
+    // Nguồn `Views/Auth/FrmMngUser.cs:385-389` (md5 `c58f3de5` — KHỚP 2 máy):
+    //     `if (strUserCode.ToUpper().Equals("SYSADMIN")) { ShowWarningMsgBox(MSG_WARNING_USER_SYSADMIN_NOTDELETE); return; }`
+    //   `MSG_WARNING_USER_SYSADMIN_NOTDELETE` = "Không được phép xóa người dùng 'sysadmin'".
+    // 🔴 So sánh **KHÔNG phân biệt hoa/thường** (nguồn `ToUpper()`) ⇒ "SysAdmin", "sysadmin" đều bị chặn.
+    // ⚠️ Guard nằm ở `btnDelete_Click` nên áp cho **CẢ HAI** đường xoá (thật và mềm) — port cũng vậy.
+    // ⚠️ Comment "// Không delete user current" (:395) **GÂY HIỂU NHẦM**: đoạn dưới nó chỉ gỡ dòng
+    //    CHƯA LƯU khỏi lưới (`gviewUser.DeleteRow`), KHÔNG phải luật "không xoá user đang đăng nhập".
+    //    Đã đọc kỹ — KHÔNG port thành guard.
+    if (string.Equals(code, "SYSADMIN", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "Không được phép xóa người dùng 'sysadmin'" });
+
     var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
     if (row is null) return Results.NotFound(new { error = $"Không có người dùng {code}." });
     if (soft == true)
