@@ -21476,6 +21476,73 @@ app.MapGet("/api/dmsdealercontracts/{no}/lines", async (string no, AppDbContext 
     return Results.Ok(new { c.DlrCtrNo, c.DlrCtrStatus, c.HTCSignStatus, c.DlrSignStatus, c.DlrApprDTime, c.DlrApprBy, c.FilePath, c.Remark, count = lines.Count, lines, cars });
 }).RequireAuthorization();
 
+// ===== #184 SỬA hợp đồng đại lý DMS40 — `DMS40_CT_DealerContract_Update_New20200130` =====
+// Nguồn: `TERP.BizHTC/DMS40/0.34.Contract.cs:3486` (csproj 125).
+// BƯỚC 3B: md5 CẢ FILE `e2f3680f` KHỚP 2 máy. TWIN: có ở CẢ HAI bit, cùng bản `_New20200130`.
+// Đã liệt kê ranh giới hàm trước khi đọc: 3486 → 3783 (hàm kế tiếp `_UpdateBankCodeMDAndSendMail` ở 3784).
+//
+// 🔴 Cách tìm ra: biến mô-tip field-mask (#183) thành phép quét — `grep -rl "Ft_Cols_Upd"` toàn biz ra
+//    **36 hàm** dùng cơ chế này. Đây là hàm thứ hai được port, và là lệnh còn thiếu của cụm
+//    `DMS40_CT_DealerContract` (bề mặt WS 16 lệnh, #164–#166 đã đóng 6 cặp `_X`/`_XAdjust`).
+//
+// 🔴 FIELD-MASK với **HAI** cột (khác #183 chỉ một):
+//    `bUpd_BankCodeMD = mask.Contains("DMS40_CT_DealerContract.BankCodeMD".ToUpper())`
+//    `bUpd_FilePath   = mask.Contains("DMS40_CT_DealerContract.FilePath".ToUpper())`
+//    Chỉ cột có trong mask mới vào `alColumnEffective`; `LogLUDateTime`/`LogLUBy` **luôn** được ghi.
+//
+// 🔴 GUARD THEO CỘT — chỉ chạy khi `bUpd_BankCodeMD`, gồm BỐN lớp:
+//    1. `CheckDB(..., DlrSignStatus=Approved, HTCSignStatus=Approved2, DlrCtrStatus=Signed)`
+//       ⇒ chỉ gán ngân hàng bảo lãnh MD cho hợp đồng **đã ký đủ hai bên và đã ở trạng thái Đã ký**;
+//    2. `Update_InvalidExistBankCodeMD` — hợp đồng **đã có** `BankCodeMD` thì CHẶN
+//       (muốn đổi phải qua biên bản huỷ NH bảo lãnh, xem #182);
+//    3. `Mst_BankDealer_CheckDB(..., FlagActive, FlagBankGrt)` — ngân hàng phải tồn tại, còn hoạt động
+//       và **được phép bảo lãnh**;
+//    4. `Update_ExistCancelMinutesNoNotCancel` — nếu hợp đồng còn **biên bản huỷ chưa ở trạng thái huỷ**
+//       thì CHẶN (không gán NH mới khi tiến trình huỷ đang dở).
+//    ⇒ Nhánh `bUpd_FilePath` KHÔNG có guard nào — sửa file lúc nào cũng được.
+app.MapPost("/api/dmsdealercontracts/{no}/update", async (string no, DealerContractUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (c is null) return Results.NotFound(new { no });
+
+    var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
+    var updBank = mask.Contains("DMS40_CT_DEALERCONTRACT.BANKCODEMD");
+    var updFile = mask.Contains("DMS40_CT_DEALERCONTRACT.FILEPATH");
+
+    if (updBank)
+    {
+        // (1) ba trục phải đủ
+        if (c.DlrSignStatus != "A" || c.HTCSignStatus != "A2" || c.DlrCtrStatus != "S")
+            return Results.BadRequest(new { error = $"Chỉ gán ngân hàng bảo lãnh MD cho hợp đồng đã ký đủ (đang: đại lý '{c.DlrSignStatus}', bên A '{c.HTCSignStatus}', hợp đồng '{c.DlrCtrStatus}')." });
+        // (2) đã có NH thì chặn — muốn đổi phải qua biên bản huỷ NH bảo lãnh
+        if (!string.IsNullOrWhiteSpace(c.BankCodeMD))
+            return Results.BadRequest(new { error = $"Hợp đồng đã có ngân hàng bảo lãnh '{c.BankCodeMD}' — muốn đổi phải lập biên bản huỷ NH bảo lãnh trước.", bankCodeMD = c.BankCodeMD });
+        // (3) ngân hàng phải tồn tại, còn hoạt động và ĐƯỢC PHÉP BẢO LÃNH
+        var bank = (dto.BankCodeMD ?? "").Trim().ToUpperInvariant();
+        if (bank.Length == 0) return Results.BadRequest(new { error = "Chưa chọn ngân hàng bảo lãnh MD." });
+        var bd = await db.DealerBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == bank && x.DealerCode == c.DealerCode);
+        if (bd is null) return Results.BadRequest(new { error = $"Ngân hàng {bank} không thuộc danh sách của đại lý {c.DealerCode}.", bankCode = bank });
+        if (bd.FlagActive != "1") return Results.BadRequest(new { error = $"Ngân hàng {bank} đã ngừng hoạt động.", bankCode = bank });
+        if (bd.FlagBankGrt != "1") return Results.BadRequest(new { error = $"Ngân hàng {bank} không được phép bảo lãnh.", bankCode = bank });
+        // (4) còn biên bản huỷ NH chưa ở trạng thái huỷ ⇒ chặn
+        var pending = await db.DmsCancelMinutesSet
+            .Where(x => x.OrgId == t.OrgId && x.DlrCtrNo == no && x.CancelMinutesStatus != "C")
+            .Select(x => new { x.CancelMinutesNo, x.CancelMinutesStatus }).FirstOrDefaultAsync();
+        if (pending is not null)
+            return Results.BadRequest(new { error = $"Còn biên bản huỷ {pending.CancelMinutesNo} ở trạng thái '{pending.CancelMinutesStatus}' — chưa gán ngân hàng mới được.", cancelMinutesNo = pending.CancelMinutesNo });
+    }
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (updFile) c.FilePath = (dto.FilePath ?? "").Trim();      // nhánh này KHÔNG có guard, đúng nguồn
+    if (updBank) c.BankCodeMD = (dto.BankCodeMD ?? "").Trim().ToUpperInvariant();
+    c.LogLUDateTime = now; c.LogLUBy = who;                     // luôn ghi, kể cả mask rỗng
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, updatedBankCodeMD = updBank, updatedFilePath = updFile,
+        c.BankCodeMD, c.FilePath, c.LogLUDateTime, c.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/dmsdealercontracts/{no}/selectbankmd", async (string no, DmsSelectBankMDDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
@@ -29893,6 +29960,7 @@ record DealerContractActionDto(string? Remark, string? DealerContractNoUser, Dat
 record DealerContractReceiptDto(DateTime? ReceiptContractDate);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate, List<DmsDealerContractLineDto>? Lines = null, string? DCPType = null, string? Remark = null, bool FlagIsDelete = false);
 record DmsDealerContractLineDto(string? CarId, string? OriginNo, double ProductionYear = 0, decimal UnitPrice = 0, DateTime? ApprovedDate = null, string? FlagDepositPmt = null, string? Remark = null);
+record DealerContractUpdateDto(string? FtColsUpd, string? BankCodeMD = null, string? FilePath = null);
 record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 // HTC duyệt 2 cấp (Level 1|2) hoặc từ chối — theo TConst.HTCSignStatus.
 record DmsHtcApproveDto(int Level = 1, bool Reject = false, string? Remark = null, string? FilePath = null);
