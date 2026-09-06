@@ -20054,6 +20054,135 @@ app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== KHẢO SÁT bán lẻ: theo GIAO DỊCH (DLS_DealSurvey) và theo XE/VIN (DLS_VINSurvey) =====
+// Port 1:1 `DealerSalesDealUpdate_Survey_New20190424` (BizHTC.DealerSales.cs:5225) và
+// `DlsVINSurvey_Update_New20190424` (7214). TWIN: đã diff TOÀN BỘ danh sách hàm của cụm ở cả hai WS —
+// **khớp hoàn toàn**, không có hàm nào lệch bit (khác cụm KH đại lý ở #124).
+// 🔴 29 câu hỏi `Survey1`..`Survey29` là **cột RỜI**, không phải bảng con — giữ nguyên dạng để khớp
+//    schema khi import dữ liệu thật từ SQL 228.
+// 🔴 KHÁC BIỆT dual-write giữa HAI bảng anh em: `DLS_DealSurvey` ghi CẢ `_dbMain` lẫn `_dbWH`
+//    (5225-5226), còn `DLS_VINSurvey` có dòng `_dbWH` **BỊ COMMENT** (7215, 7538) ⇒ chỉ ghi `_dbMain`.
+//    Đừng suy hành vi từ bảng này sang bảng kia.
+// 🔴 Cả hai là **UPSERT theo khoá** (DealNo / VIN): nguồn có nhánh tạo mới và nhánh cập nhật riêng
+//    (5225 vs 5276; 7214 vs 7537).
+app.MapGet("/api/dealsurveys", async (AppDbContext db, ITenantContext t, string? dealNo) =>
+{
+    var qy = db.DlsDealSurveys.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(x => x.DealNo == dealNo);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.DealNo, x.Note, x.ContactDate,
+        x.Survey1, x.Survey2, x.Survey3, x.Survey4, x.Survey5, x.Survey6, x.Survey7, x.Survey8, x.Survey9, x.Survey10, x.Survey11, x.Survey12, x.Survey13, x.Survey14, x.Survey15, x.Survey16, x.Survey17, x.Survey18, x.Survey19, x.Survey20, x.Survey21, x.Survey22, x.Survey23, x.Survey24, x.Survey25, x.Survey26, x.Survey27, x.Survey28, x.Survey29,
+        x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealsurveys/save", async (DlsDealSurveyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.DealNo ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số giao dịch rỗng." });
+    var row = await db.DlsDealSurveys.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    var isNew = row is null;
+    if (isNew) { row = new DlsDealSurvey { OrgId = t.OrgId, DealNo = no }; db.DlsDealSurveys.Add(row); }
+    row!.Note = dto.Note;
+    row.ContactDate = dto.ContactDate;
+    row.Survey1 = dto.Survey1;
+    row.Survey2 = dto.Survey2;
+    row.Survey3 = dto.Survey3;
+    row.Survey4 = dto.Survey4;
+    row.Survey5 = dto.Survey5;
+    row.Survey6 = dto.Survey6;
+    row.Survey7 = dto.Survey7;
+    row.Survey8 = dto.Survey8;
+    row.Survey9 = dto.Survey9;
+    row.Survey10 = dto.Survey10;
+    row.Survey11 = dto.Survey11;
+    row.Survey12 = dto.Survey12;
+    row.Survey13 = dto.Survey13;
+    row.Survey14 = dto.Survey14;
+    row.Survey15 = dto.Survey15;
+    row.Survey16 = dto.Survey16;
+    row.Survey17 = dto.Survey17;
+    row.Survey18 = dto.Survey18;
+    row.Survey19 = dto.Survey19;
+    row.Survey20 = dto.Survey20;
+    row.Survey21 = dto.Survey21;
+    row.Survey22 = dto.Survey22;
+    row.Survey23 = dto.Survey23;
+    row.Survey24 = dto.Survey24;
+    row.Survey25 = dto.Survey25;
+    row.Survey26 = dto.Survey26;
+    row.Survey27 = dto.Survey27;
+    row.Survey28 = dto.Survey28;
+    row.Survey29 = dto.Survey29;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.DealNo, created = isNew });
+}).RequireAuthorization();
+
+app.MapGet("/api/vinsurveys", async (AppDbContext db, ITenantContext t, string? vin) =>
+{
+    var qy = db.DlsVinSurveys.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(x => x.VIN == vin);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.VIN, x.Note, x.ContactDate, x.SurveyGmail,
+        x.Survey1, x.Survey2, x.Survey3, x.Survey4, x.Survey5, x.Survey6, x.Survey7, x.Survey8, x.Survey9, x.Survey10, x.Survey11, x.Survey12, x.Survey13, x.Survey14, x.Survey15, x.Survey16, x.Survey17, x.Survey18, x.Survey19, x.Survey20, x.Survey21, x.Survey22, x.Survey23, x.Survey24, x.Survey25, x.Survey26, x.Survey27, x.Survey28, x.Survey29,
+        x.SurveyDateTime, x.SurveyPosition, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/vinsurveys/save", async (DlsVinSurveyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    if (vin.Length < 1) return Results.BadRequest(new { error = "VIN rỗng." });
+    var row = await db.DlsVinSurveys.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    var isNew = row is null;
+    if (isNew) { row = new DlsVinSurvey { OrgId = t.OrgId, VIN = vin }; db.DlsVinSurveys.Add(row); }
+    row!.Note = dto.Note;
+    row.ContactDate = dto.ContactDate;
+    row.SurveyGmail = dto.SurveyGmail;
+    row.Survey1 = dto.Survey1;
+    row.Survey2 = dto.Survey2;
+    row.Survey3 = dto.Survey3;
+    row.Survey4 = dto.Survey4;
+    row.Survey5 = dto.Survey5;
+    row.Survey6 = dto.Survey6;
+    row.Survey7 = dto.Survey7;
+    row.Survey8 = dto.Survey8;
+    row.Survey9 = dto.Survey9;
+    row.Survey10 = dto.Survey10;
+    row.Survey11 = dto.Survey11;
+    row.Survey12 = dto.Survey12;
+    row.Survey13 = dto.Survey13;
+    row.Survey14 = dto.Survey14;
+    row.Survey15 = dto.Survey15;
+    row.Survey16 = dto.Survey16;
+    row.Survey17 = dto.Survey17;
+    row.Survey18 = dto.Survey18;
+    row.Survey19 = dto.Survey19;
+    row.Survey20 = dto.Survey20;
+    row.Survey21 = dto.Survey21;
+    row.Survey22 = dto.Survey22;
+    row.Survey23 = dto.Survey23;
+    row.Survey24 = dto.Survey24;
+    row.Survey25 = dto.Survey25;
+    row.Survey26 = dto.Survey26;
+    row.Survey27 = dto.Survey27;
+    row.Survey28 = dto.Survey28;
+    row.Survey29 = dto.Survey29;
+    // 🔴 Nguồn tự đặt thời điểm khảo sát = DateTime.Now, KHÔNG nhận từ client (dòng 7213).
+    row.SurveyDateTime = DateTime.Now;
+    row.SurveyPosition = dto.SurveyPosition;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.VIN, created = isNew });
+}).RequireAuthorization();
+
 // 🔴 #124 Sửa KH đại lý — port `DealerSalesDealerCustomerUpdateAll_New20210109` (Biz.HTC.WH.cs:108188).
 // TWIN: WS 64-bit gọi bản 2021 này, WS 32-bit vẫn gọi bản 2018 — canonical là bản 2021 ("Nâng cấp ghi log").
 // Sau khi ghi bản chính, nguồn **chụp SNAPSHOT toàn bộ bản ghi** sang `DLS_DealerCustomer_Upd`
@@ -24502,6 +24631,9 @@ record DlrPdiApproveDto(string? Remark);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
 // #124: sửa KH đại lý. IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng, đúng như nguồn.
 record DealerCustomerUpdateDto(string? CustomerCode, string? FullName, string? FullNameEN, string? Gender, string? Address, string? PhoneNo, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? CusBaseCode, DateTime? DateOfBirth, string? Email, string? RepresentName, string? Position, string? CusAccountBank, string? IDCardType, string? IDCardNo);
+// Khảo sát bán lẻ: 29 câu cột rời, đúng schema nguồn. SurveyDateTime do server đặt, không nhận từ client.
+record DlsDealSurveyDto(string? DealNo, string? Note, DateTime? ContactDate, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29);
+record DlsVinSurveyDto(string? VIN, string? Note, DateTime? ContactDate, string? SurveyGmail, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29, string? SurveyPosition);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).

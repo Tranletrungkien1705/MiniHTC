@@ -7210,6 +7210,112 @@ public sealed class DealerCustomer
 }
 
 /// <summary>
+/// KHẢO SÁT theo GIAO DỊCH bán lẻ (`DLS_DealSurvey` — port 1:1 `DealerSalesDealUpdate_Survey_New20190424`,
+/// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:5225`). Khoá là `DealNo`.
+/// TWIN: cả WS 32-bit lẫn 64-bit **cùng bản** (đã diff TOÀN BỘ danh sách hàm của cụm theo luật
+/// C0-centesimusvigesimusquartus — cụm này chỉ có 3 hàm và **khớp hoàn toàn**).
+/// 🔴 **29 câu hỏi** `Survey1`..`Survey29` là **cột RỜI**, không phải bảng con — nguồn gán tuần tự
+/// từng cột (dòng 5163-5222). Port giữ nguyên dạng cột rời để khớp schema khi import dữ liệu thật.
+/// ⚠️ Nguồn ghi **CẢ HAI** DB: `_dbMain` + `_dbWH` (5225-5226) — khác hẳn <see cref="DlsVinSurvey"/>.
+/// </summary>
+public sealed class DlsDealSurvey
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string? Note { get; set; }
+    public DateTime? ContactDate { get; set; }
+    public string? Survey1 { get; set; }
+    public string? Survey2 { get; set; }
+    public string? Survey3 { get; set; }
+    public string? Survey4 { get; set; }
+    public string? Survey5 { get; set; }
+    public string? Survey6 { get; set; }
+    public string? Survey7 { get; set; }
+    public string? Survey8 { get; set; }
+    public string? Survey9 { get; set; }
+    public string? Survey10 { get; set; }
+    public string? Survey11 { get; set; }
+    public string? Survey12 { get; set; }
+    public string? Survey13 { get; set; }
+    public string? Survey14 { get; set; }
+    public string? Survey15 { get; set; }
+    public string? Survey16 { get; set; }
+    public string? Survey17 { get; set; }
+    public string? Survey18 { get; set; }
+    public string? Survey19 { get; set; }
+    public string? Survey20 { get; set; }
+    public string? Survey21 { get; set; }
+    public string? Survey22 { get; set; }
+    public string? Survey23 { get; set; }
+    public string? Survey24 { get; set; }
+    public string? Survey25 { get; set; }
+    public string? Survey26 { get; set; }
+    public string? Survey27 { get; set; }
+    public string? Survey28 { get; set; }
+    public string? Survey29 { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// KHẢO SÁT theo XE/VIN (`DLS_VINSurvey` — port 1:1 `DlsVINSurvey_Update_New20190424`,
+/// `BizHTC.DealerSales.cs:7214`; hàm đọc `DLSVINSurveyGet_ICIC_New20181115`). Khoá là `VIN`.
+/// Cùng bộ **29 câu** `Survey1`..`Survey29` như <see cref="DlsDealSurvey"/>, nhưng có thêm
+/// `SurveyGmail` (email người khảo sát), `SurveyDateTime` (thời điểm khảo sát, nguồn tự đặt
+/// `DateTime.Now`) và `SurveyPosition` (vị trí/chức danh người khảo sát).
+/// 🔴 **KHÁC BIỆT ĐÁNG CHÚ Ý so với `DLS_DealSurvey`**: dòng ghi `_dbWH` ở đây **BỊ COMMENT**
+/// (`//_dbWH.SaveData("DLS_VINSurvey", …)`, dòng 7215 và 7538) ⇒ bảng này **CHỈ ghi `_dbMain`**,
+/// không đồng bộ sang DB Warehouse. Hai bảng khảo sát anh em nhưng **hành vi dual-write khác nhau** —
+/// đừng suy từ bảng này sang bảng kia. (Ghi chú cho lượt trả nợ `_dbWH` sau này.)
+/// </summary>
+public sealed class DlsVinSurvey
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? Note { get; set; }
+    public DateTime? ContactDate { get; set; }
+    /// <summary>Email người khảo sát (chỉ có ở bảng VIN, không có ở bảng Deal).</summary>
+    public string? SurveyGmail { get; set; }
+    public string? Survey1 { get; set; }
+    public string? Survey2 { get; set; }
+    public string? Survey3 { get; set; }
+    public string? Survey4 { get; set; }
+    public string? Survey5 { get; set; }
+    public string? Survey6 { get; set; }
+    public string? Survey7 { get; set; }
+    public string? Survey8 { get; set; }
+    public string? Survey9 { get; set; }
+    public string? Survey10 { get; set; }
+    public string? Survey11 { get; set; }
+    public string? Survey12 { get; set; }
+    public string? Survey13 { get; set; }
+    public string? Survey14 { get; set; }
+    public string? Survey15 { get; set; }
+    public string? Survey16 { get; set; }
+    public string? Survey17 { get; set; }
+    public string? Survey18 { get; set; }
+    public string? Survey19 { get; set; }
+    public string? Survey20 { get; set; }
+    public string? Survey21 { get; set; }
+    public string? Survey22 { get; set; }
+    public string? Survey23 { get; set; }
+    public string? Survey24 { get; set; }
+    public string? Survey25 { get; set; }
+    public string? Survey26 { get; set; }
+    public string? Survey27 { get; set; }
+    public string? Survey28 { get; set; }
+    public string? Survey29 { get; set; }
+    /// <summary>Nguồn tự đặt `DateTime.Now` khi lưu, không nhận từ client.</summary>
+    public DateTime? SurveyDateTime { get; set; }
+    /// <summary>Vị trí/chức danh người khảo sát.</summary>
+    public string? SurveyPosition { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// NHẬT KÝ sửa khách hàng đại lý (`DLS_DealerCustomer_Upd` — 2010.HTC `Biz.HTC.WH.cs:108538`,
 /// trong `DealerSalesDealerCustomerUpdateAll_New20210109`).
 /// 🔴 **Khác hẳn họ bảng `*_His` đã port ở #91-#99**: các bảng kia lưu **cặp Old/New** từng cột,
