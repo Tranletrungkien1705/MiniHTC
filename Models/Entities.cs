@@ -5048,8 +5048,46 @@ public sealed class OrderComplain
     /// </summary>
     public string TSTStatus { get; set; } = "1";
 
+    /// <summary>`TSTSolution` — phương án xử lý do phía NCC/TST nhập (client KHÔNG gửi lên).</summary>
     public string? Resolution { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;   // CreateDTime
+
+    // ===== 🔴 #233: 16 cột nguồn `Ser_OrderComplain` mà port cũ THIẾU =====
+    // Nguồn: `Entities/TST/Ser_OrderComplain.cs` + `Ser_OrderComplainService.Ser_OrderComplain_Save`
+    // (Ser_OrderComplainService.cs:104 — 17 trường client GỬI LÊN).
+
+    /// <summary>DealerCode — đại lý khiếu nại. Port cũ không có ⇒ không biết khiếu nại của ai.</summary>
+    public string? DealerCode { get; set; }
+
+    // --- vật tư bị khiếu nại (4 cột, đều BẮT BUỘC ở form) ---
+    public string? PartCode { get; set; }        // Mã vật tư
+    public string? VieName { get; set; }         // Tên vật tư
+    public decimal? Quantity { get; set; }       // Số lượng — form bắt buộc LÀ SỐ và > 0
+    public string? VINCode { get; set; }         // Số VIN
+
+    /// <summary>RequestOrderNo — số yêu cầu giao hàng (BẮT BUỘC), khác `OrderPartNo` là đơn đặt hàng.</summary>
+    public string? RequestOrderNo { get; set; }
+
+    // --- phía NCC/TST: server ghi, client KHÔNG gửi (không nằm trong Ser_OrderComplain_Save) ---
+    public string? TSTOrderComplainNo { get; set; }   // Số khiếu nại bên NCC
+    public string? TSTEmployeeCode { get; set; }      // Nhân viên NCC xử lý
+
+    // --- 🔴 KHỐI GIAO NHẬN + LẮP ĐẶT (7 cột) — port cũ thiếu TRỌN mảng nghiệp vụ này ---
+    // ⚠️ Bất đối xứng của form (`checkForm`, FrmSer_OrderComplain_Detail.cs:466-493):
+    //    `DeliveryDateTime` · `DeliveryBy` · `TransportUnit` **BẮT BUỘC**;
+    //    `DeliveryLocation` · `ReceiveBy` · `AssembleDateTime` · `AssembleBy` **KHÔNG** bị kiểm. Giữ đúng.
+    public DateTime? DeliveryDateTime { get; set; }   // Ngày giao nhận (bắt buộc)
+    public string? DeliveryBy { get; set; }           // Người giao nhận (bắt buộc)
+    public string? TransportUnit { get; set; }        // Đơn vị vận tải (bắt buộc)
+    public string? DeliveryLocation { get; set; }     // Địa điểm giao hàng — tra `Mst_DeliveryLocation` (#232)
+    public string? ReceiveBy { get; set; }            // Người nhận
+    public DateTime? AssembleDateTime { get; set; }   // Ngày lắp đặt
+    public string? AssembleBy { get; set; }           // Người lắp đặt
+
+    // --- vết ghi ---
+    public string? CreateBy { get; set; }             // CreateBy
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment, TCMotor DMSCarSv/TST):

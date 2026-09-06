@@ -28313,20 +28313,78 @@ app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(tst)) q = q.Where(c => c.TSTStatus == tst);
     if (!string.IsNullOrWhiteSpace(order)) q = q.Where(c => c.OrderPartNo.Contains(order.ToUpper()));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.ComplainNo, c.OrderPartNo, c.ComplainType, c.Content, c.DMSStatus, c.TSTStatus, c.Resolution, c.CreatedAt }).ToListAsync();
+    { c.ComplainNo, c.OrderPartNo, c.ComplainType, c.Content, c.DMSStatus, c.TSTStatus, c.Resolution, c.CreatedAt,
+      // #233: 16 cột bổ sung — §12 yêu cầu có mặt ở CẢ GET lẫn POST.
+      c.DealerCode, c.PartCode, c.VieName, c.Quantity, c.VINCode, c.RequestOrderNo,
+      c.TSTOrderComplainNo, c.TSTEmployeeCode,
+      c.DeliveryDateTime, c.DeliveryBy, c.TransportUnit, c.DeliveryLocation,
+      c.ReceiveBy, c.AssembleDateTime, c.AssembleBy,
+      c.CreateBy, c.LogLUDTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #233 KHIẾU NẠI ĐƠN PHỤ TÙNG — parity với `FrmSer_OrderComplain_Detail.cs` (875 dòng, DMSCarSv/TST)
+// Tầng ghi: `Ser_OrderComplainService.Ser_OrderComplain_Save` (:104) gửi lên **17 trường**.
+// BƯỚC 3B: `FrmSer_OrderComplain_Detail.cs` md5 `5dd58edf` và `Ser_OrderComplainService.cs` md5 `5ef43541`
+//          — KHỚP laptop (V20.2023.Release.V2) và máy 150 (V20.2023.Release).
+//
+// 🔴 Port cũ chỉ có 4 trường nghiệp vụ (OrderPartNo/ComplainType/Content + 2 trạng thái) ⇒ thiếu 16 cột,
+//    trong đó có **trọn khối GIAO NHẬN + LẮP ĐẶT** (7 cột) — cả một mảng nghiệp vụ biến mất.
+//
+// MƯỜI HAI guard của `checkForm()` (FrmSer_OrderComplain_Detail.cs:373-493) — port đủ, đúng thứ tự:
+//  phân loại · ngày tạo (rỗng/sai định dạng) · mã vật tư · tên vật tư ·
+//  số lượng (rỗng / không phải số / phải > 0) · VIN · số yêu cầu giao hàng · đơn hàng đặt hàng ·
+//  tình trạng hỏng (rỗng / **> 256 ký tự**) · ngày giao nhận (rỗng/sai định dạng) · người giao nhận ·
+//  đơn vị vận tải.
+// ⚠️ BẤT ĐỐI XỨNG cố ý: `DeliveryLocation` · `ReceiveBy` · `AssembleDateTime` · `AssembleBy` **KHÔNG** bị kiểm
+//    dù cùng khối giao nhận — form chỉ bắt buộc 3 trường đầu. Giữ nguyên, không "siết cho đều".
+// ⚠️ `TSTOrderComplainNo` · `TSTEmployeeCode` · `TSTSolution` · hai cột trạng thái KHÔNG nằm trong
+//    `Ser_OrderComplain_Save` ⇒ client **không gửi được**; phía NCC/TST ghi. Không nhận từ DTO.
+app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.OrderPartNo)) return Results.BadRequest(new { error = "Cần OrderPartNo." });
     var orderNo = dto.OrderPartNo.Trim().ToUpperInvariant();
     var exists = await db.OrderParts.AnyAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == orderNo);
     if (!exists) return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt {orderNo}." });
+
+    // --- 12 guard của checkForm(), giữ NGUYÊN THÔNG ĐIỆP tiếng Việt của nguồn ---
+    if (string.IsNullOrWhiteSpace(dto.ComplainType)) return Results.BadRequest(new { error = "Chưa chọn phân loại khiếu nại" });
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Mã vật tư không được trống" });
+    if (string.IsNullOrWhiteSpace(dto.VieName)) return Results.BadRequest(new { error = "Tên vật tư không được trống" });
+    if (dto.Quantity is null) return Results.BadRequest(new { error = "Số lượng không được trống" });
+    if (dto.Quantity <= 0) return Results.BadRequest(new { error = "Số lượng > 0" });
+    if (string.IsNullOrWhiteSpace(dto.VINCode)) return Results.BadRequest(new { error = "VIN không được trống" });
+    if (string.IsNullOrWhiteSpace(dto.RequestOrderNo)) return Results.BadRequest(new { error = "Số yêu cầu giao hàng không được trống" });
+    var content = (dto.Content ?? "").Trim();
+    if (content.Length == 0) return Results.BadRequest(new { error = "Tình trạng hỏng và NN ban đầu không được trống" });
+    // 🔴 Ngưỡng 256 lấy từ biến `int iLength = 256` (dòng 451), KHÔNG phải 200 như Mst_DeliveryLocation.
+    if (content.Length > 256) return Results.BadRequest(new { error = "Tình trạng hỏng và NN ban đầu không được > 256 ký tự" });
+    if (dto.DeliveryDateTime is null) return Results.BadRequest(new { error = "Ngày giao nhận không được trống" });
+    if (string.IsNullOrWhiteSpace(dto.DeliveryBy)) return Results.BadRequest(new { error = "Người giao nhận không được trống" });
+    if (string.IsNullOrWhiteSpace(dto.TransportUnit)) return Results.BadRequest(new { error = "Đơn vị vận tải không được trống" });
+
     var no = "CMP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var c = new OrderComplain { OrgId = t.OrgId, ComplainNo = no, OrderPartNo = orderNo, ComplainType = dto.ComplainType, Content = dto.Content, DMSStatus = "P", TSTStatus = "1" };   // nguồn set TSTStatus=1 (Chờ duyệt) NGAY khi tạo, không để rỗng
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var c = new OrderComplain
+    {
+        OrgId = t.OrgId, ComplainNo = no, OrderPartNo = orderNo,
+        ComplainType = dto.ComplainType, Content = content,
+        DMSStatus = "P", TSTStatus = "1",   // nguồn set TSTStatus=1 (Chờ duyệt) NGAY khi tạo, không để rỗng
+        DealerCode = dto.DealerCode,
+        PartCode = dto.PartCode, VieName = dto.VieName, Quantity = dto.Quantity, VINCode = dto.VINCode,
+        RequestOrderNo = dto.RequestOrderNo,
+        DeliveryDateTime = dto.DeliveryDateTime, DeliveryBy = dto.DeliveryBy, TransportUnit = dto.TransportUnit,
+        // 4 trường không bắt buộc của khối giao nhận/lắp đặt
+        DeliveryLocation = dto.DeliveryLocation, ReceiveBy = dto.ReceiveBy,
+        AssembleDateTime = dto.AssembleDateTime, AssembleBy = dto.AssembleBy,
+        CreateBy = who, LogLUDTime = DateTime.Now, LogLUBy = who,
+    };
     db.OrderComplains.Add(c); await db.SaveChangesAsync();
-    return Results.Ok(new { c.ComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus });
+    return Results.Ok(new { c.ComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
+                            c.DealerCode, c.PartCode, c.VieName, c.Quantity, c.VINCode, c.RequestOrderNo,
+                            c.DeliveryDateTime, c.DeliveryBy, c.TransportUnit, c.DeliveryLocation,
+                            c.ReceiveBy, c.AssembleDateTime, c.AssembleBy, c.CreateBy });
 }).RequireAuthorization();
 
 // DMS gửi (P→A); TST tiếp nhận/xử lý/giải quyết
@@ -31246,7 +31304,14 @@ record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, st
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartLineStatusDto(string? ToStatus);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
-record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content);
+// #233: bổ sung 13 trường mà `Ser_OrderComplain_Save` gửi lên (thêm ở CUỐI ⇒ không vỡ lời gọi cũ).
+//  KHÔNG có TSTOrderComplainNo/TSTEmployeeCode/TSTSolution/2 trạng thái: nguồn không cho client gửi.
+record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content,
+    string? DealerCode = null, string? PartCode = null, string? VieName = null, decimal? Quantity = null,
+    string? VINCode = null, string? RequestOrderNo = null,
+    DateTime? DeliveryDateTime = null, string? DeliveryBy = null, string? TransportUnit = null,
+    string? DeliveryLocation = null, string? ReceiveBy = null,
+    DateTime? AssembleDateTime = null, string? AssembleBy = null);
 record OrderComplainActDto(string? Resolution);
 record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay, decimal Price, decimal Vat);
 record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate, List<SupplierPaymentLineDto>? Lines = null, string? DealerCode = null);
