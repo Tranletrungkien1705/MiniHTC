@@ -13783,13 +13783,43 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 }).RequireAuthorization();
 
 // ===== Master phụ tùng TST (TstPart — port 1:1 FrmTST_Mst_Part, TCMotor DMSCarSv) =====
-app.MapGet("/api/tstparts", async (AppDbContext db, ITenantContext t, string? q, string? group, bool? all) =>
+// ===== 🔴 #245 TRA PHỤ TÙNG TST THEO NHIỀU MÃ — `TST_Mst_Part_Get01` (BizCarSv.Service.cs:18409) =====
+// Màn: `Views/TST/FrmTSTPart_Search.cs` (744 dòng, DMSCarSv/TST). BƯỚC 3B: md5 `5e5d6f20` — KHỚP 2 máy.
+//
+// 🔴 Ô `txtPartCodeMulti` cho nhập **NHIỀU MÃ, mỗi mã một DÒNG**; form `Split("\r\n")` rồi **nối lại bằng
+//    `", "`** thành một chuỗi gửi đi (:311-327). Nếu API lỗi, nguồn báo đúng câu:
+//    "Mã phụ tùng ngăn cách nhau bởi dấu phẩy!" (:18500).
+//    ⇒ endpoint nhận `codes` và **tách theo cả dấu phẩy LẪN xuống dòng**, giữ đúng cách người dùng nhập.
+// ⚠️ Nguồn gọi **API Bravo** (GetToken → CallBravo) chứ không query DB; MiniHTC tra bảng `TstParts` đã đồng
+//    bộ sẵn (#212 `/api/tstparts/sync-all`) — nợ lớp gọi Bravo trực tiếp vẫn còn.
+app.MapGet("/api/tstparts", async (AppDbContext db, ITenantContext t, string? q, string? group, bool? all,
+    string? codes) =>
 {
     var qry = db.TstParts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(group)) qry = qry.Where(x => x.PartGroup == group);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TSTPartCode.Contains(q!) || x.VieName!.Contains(q!) || x.VieNameHTC!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieNameHTC, x.VieName, x.EngName, x.Unit, x.VAT, x.TSTPrice, x.PartGroup, x.PartType, x.FlagActive, x.LUDTime }).ToListAsync();   // #212 §12
+    if (!string.IsNullOrWhiteSpace(codes))
+    {
+        // tách theo dấu phẩy, xuống dòng, chấm phẩy — người dùng dán từ Excel hay gõ tay đều nhận
+        var list = codes.Split(new[] { ',', '\n', '\r', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(x => x.Trim().ToUpperInvariant())
+                        .Where(x => x.Length > 0).Distinct().ToList();
+        if (list.Count == 0)
+            return Results.BadRequest(new { error = "Mã phụ tùng ngăn cách nhau bởi dấu phẩy!" });
+        qry = qry.Where(x => list.Contains(x.TSTPartCode));
+    }
+    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new
+    {
+        x.Id, x.TSTPartCode, x.VieNameHTC, x.VieName, x.EngName, x.Unit, x.VAT, x.TSTPrice,
+        x.PartGroup, x.PartType, x.FlagActive, x.LUDTime,
+        // #245: 16 cột bổ sung (§12 — có ở cả GET lẫn POST)
+        x.MinOrderQuantity,
+        x.TSTPriceList, x.TSTPriceUrgent, x.TSTPriceWarranty, x.TaxRate,
+        x.DongAnhStockStatus, x.CaiMepStockStatus, x.HoChiMinhStockStatus,
+        x.TSTPartCodeNew, x.TSTPartCodeOld, x.Remark, x.ModelList,
+        x.Length, x.Width, x.Height,
+    }).ToListAsync();   // #212 §12 + #245
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -13801,6 +13831,23 @@ app.MapPost("/api/tstparts", async (TstPartDto dto, AppDbContext db, ITenantCont
     var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
     if (row is null) { row = new TstPart { OrgId = t.OrgId, TSTPartCode = code }; db.TstParts.Add(row); }
     row.VieNameHTC = dto.VieNameHTC; row.VieName = dto.VieName; row.EngName = dto.EngName; row.Unit = dto.Unit; row.VAT = dto.VAT; row.TSTPrice = dto.TSTPrice; row.PartGroup = dto.PartGroup; row.PartType = dto.PartType; row.UpdatedAt = DateTime.Now;
+    // #245: 16 cột bổ sung — chỉ ghi đè khi client CÓ truyền, để lệnh đồng bộ (#212) không xoá mất
+    //   dữ liệu do màn nhập tay điền.
+    if (dto.MinOrderQuantity is not null) row.MinOrderQuantity = dto.MinOrderQuantity;
+    if (dto.TSTPriceList is not null) row.TSTPriceList = dto.TSTPriceList;
+    if (dto.TSTPriceUrgent is not null) row.TSTPriceUrgent = dto.TSTPriceUrgent;
+    if (dto.TSTPriceWarranty is not null) row.TSTPriceWarranty = dto.TSTPriceWarranty;
+    if (dto.TaxRate is not null) row.TaxRate = dto.TaxRate;
+    if (dto.DongAnhStockStatus is not null) row.DongAnhStockStatus = dto.DongAnhStockStatus;
+    if (dto.CaiMepStockStatus is not null) row.CaiMepStockStatus = dto.CaiMepStockStatus;
+    if (dto.HoChiMinhStockStatus is not null) row.HoChiMinhStockStatus = dto.HoChiMinhStockStatus;
+    if (dto.TSTPartCodeNew is not null) row.TSTPartCodeNew = dto.TSTPartCodeNew;
+    if (dto.TSTPartCodeOld is not null) row.TSTPartCodeOld = dto.TSTPartCodeOld;
+    if (dto.Remark is not null) row.Remark = dto.Remark;
+    if (dto.ModelList is not null) row.ModelList = dto.ModelList;
+    if (dto.Length is not null) row.Length = dto.Length;
+    if (dto.Width is not null) row.Width = dto.Width;
+    if (dto.Height is not null) row.Height = dto.Height;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.TSTPartCode, row.TSTPrice, row.FlagActive });
@@ -33296,7 +33343,13 @@ record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
-record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
+// #245: 16 trường của `TST_Mst_Part_Get01` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
+record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive,
+    decimal? MinOrderQuantity = null, decimal? TSTPriceList = null, decimal? TSTPriceUrgent = null,
+    decimal? TSTPriceWarranty = null, decimal? TaxRate = null,
+    string? DongAnhStockStatus = null, string? CaiMepStockStatus = null, string? HoChiMinhStockStatus = null,
+    string? TSTPartCodeNew = null, string? TSTPartCodeOld = null, string? Remark = null, string? ModelList = null,
+    decimal? Length = null, decimal? Width = null, decimal? Height = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);

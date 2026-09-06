@@ -2559,7 +2559,47 @@ public sealed class TstPart
     public string? EngName { get; set; }
     public string? Unit { get; set; }
     public decimal VAT { get; set; }
+
+    /// <summary>
+    /// 🔴 #245: nguồn có **BỐN loại giá** (xem dưới); cột này tương ứng `TSTPriceNormal` (giá thường).
+    /// Giữ tên `TSTPrice` để không vỡ dữ liệu + lệnh đồng bộ đã có (#212).
+    /// </summary>
     public decimal TSTPrice { get; set; }
+
+    // ===== 🔴 #245: 16 cột nguồn `TST_Mst_Part_Get01` mà port cũ THIẾU =====
+    // Nguồn `BizCarSv.Service.cs:18409` (md5 5e5d6f20 — khớp 2 máy) gọi API Bravo rồi **ánh xạ tên**
+    // từ trường Bravo sang cột DMS. Bảng ánh xạ (:18545-18567) — tên hai bên KHÁC HẲN nhau:
+    //   ItemCode→TSTPartCode · ItemName→VieName · StandardPrice→TSTPriceList · UnitPrice→TSTPriceNormal
+    //   · UrgentPrice→TSTPriceUrgent · WarrantyPrice→TSTPriceWarranty · QtyDA→DongAnhStockStatus
+    //   · QtyCM→CaiMepStockStatus · QtyHM→HoChiMinhStockStatus · Comment→Remark · Model→ModelList
+    //   · List_ItemCode_New→TSTPartCodeNew · List_ItemCode_Old→TSTPartCodeOld
+
+    /// <summary>MinOrderQuantity — số lượng đặt tối thiểu của NCC.</summary>
+    public decimal? MinOrderQuantity { get; set; }
+
+    // --- 🔴 BỐN loại giá: port cũ gộp còn MỘT ⇒ mất giá niêm yết / giá gấp / giá bảo hành ---
+    public decimal? TSTPriceList { get; set; }       // StandardPrice — giá niêm yết
+    public decimal? TSTPriceUrgent { get; set; }     // UrgentPrice   — giá đặt GẤP
+    public decimal? TSTPriceWarranty { get; set; }   // WarrantyPrice — giá dùng cho BẢO HÀNH
+
+    /// <summary>TaxRate — thuế suất do NCC trả về (khác `VAT` vốn của bảng PT nội bộ).</summary>
+    public decimal? TaxRate { get; set; }
+
+    // --- 🔴 tồn kho theo BA KHO của NCC (tên cột nguồn là *StockStatus* nhưng giá trị là Qty*) ---
+    public string? DongAnhStockStatus { get; set; }      // QtyDA
+    public string? CaiMepStockStatus { get; set; }       // QtyCM
+    public string? HoChiMinhStockStatus { get; set; }    // QtyHM
+
+    // --- mã thay thế: NCC trả về DANH SÁCH mã mới/cũ của cùng phụ tùng ---
+    public string? TSTPartCodeNew { get; set; }
+    public string? TSTPartCodeOld { get; set; }
+
+    public string? Remark { get; set; }      // Comment
+    public string? ModelList { get; set; }   // Model — danh sách xe áp dụng
+    public decimal? Length { get; set; }
+    public decimal? Width { get; set; }
+    public decimal? Height { get; set; }
+
     public string? PartGroup { get; set; }
     public string? PartType { get; set; }
     public string FlagActive { get; set; } = "1";
