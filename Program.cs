@@ -22625,10 +22625,13 @@ app.MapGet("/api/pmtpayments", async (AppDbContext db, ITenantContext t, string?
         x.Funds, x.BankLending, x.PmtBakingStatus, x.BulkDetailId,
         x.CreatedDate, x.CreatedBy, x.ApprovedDate, x.ApprovedBy,
         x.PaymentEndDate, x.ConfirmDate, x.ConfirmBy,
+        // #155 parity Pmt_Payment: 4 cột nguồn ghi mà port cũ thiếu.
+        x.Remark, x.TransferType, x.LoanPeriod, x.InterestRate,
     }).ToListAsync();
     var nos = items.Select(i => i.PaymentNo).ToList();
     var details = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && nos.Contains(d.PaymentNo))
-        .Select(d => new { d.PaymentNo, d.CarId, d.GuaranteeNo, d.DlrCtrNo, d.Amount }).ToListAsync();
+        .Select(d => new { d.PaymentNo, d.CarId, d.GuaranteeNo, d.DlrCtrNo, d.Amount,
+            d.LoanPeriod, d.InterestRate }).ToListAsync();   // #155 parity Pmt_PaymentDetail
     return Results.Ok(new { count = items.Count, items, details });
 }).RequireAuthorization();
 
@@ -22660,12 +22663,23 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
         ApprovedDate = null, ApprovedBy = null,
         PaymentEndDate = null, ConfirmDate = null, ConfirmBy = null,
         CreatedDate = DateTime.Now, CreatedBy = who,
+        // #155 parity Pmt_Payment.
+        Remark = dto.Remark, TransferType = dto.TransferType,
+        LoanPeriod = dto.LoanPeriod, InterestRate = dto.InterestRate,
     });
+    // 🔴 #155 luật nguồn (MBBank.cs:3490-3502): từ 20220325 kỳ hạn vay / lãi suất KHÔNG lấy từ dòng nữa
+    //    (hai dòng gán ở bảng chi tiết đã bị COMMENT kèm ghi chú "lấy theo MST ko cho sửa ở Dtl nữa")
+    //    mà RÓT XUỐNG từ bảng đầu, và phụ thuộc cờ Funds:
+    //    Funds == "1" (TConst.Flag.Yes) ⇒ để NULL; ngược lại ⇒ lấy giá trị của phiếu.
+    var isFunds = (dto.Funds ?? "").Trim() == "1";
+    var loanPeriodLine = isFunds ? (decimal?)null : dto.LoanPeriod;
+    var interestRateLine = isFunds ? (decimal?)null : dto.InterestRate;
     foreach (var r in rows)
         db.PmtPaymentDetails.Add(new PmtPaymentDetail
         {
             OrgId = t.OrgId, PaymentNo = no,   // khoá nối về đầu là SỐ phiếu, không phải Id
             CarId = r.CarId!.Trim(), GuaranteeNo = r.GuaranteeNo, DlrCtrNo = r.DlrCtrNo, Amount = r.Amount,
+            LoanPeriod = loanPeriodLine, InterestRate = interestRateLine,   // #155: rót từ bảng đầu theo cờ Funds
         });
     await db.SaveChangesAsync();
     return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P" });
@@ -26615,6 +26629,36 @@ app.MapPost("/api/gpsouts/{no}/approve", async (string no, AppDbContext db, ITen
 }).RequireAuthorization();
 
 // ===== Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng) =====
+// ===== #155 parity: LỊCH SỬ LÔ CHUYỂN TIỀN NGÂN HÀNG (Pmt_Payment_BulkDetailIHist) =====
+// Nguồn: BankIntergration/BizHTC.MBBank.cs (csproj 310, md5 ec9f1442… khớp 2 máy) —
+//        `MBBank_MakeBulkPayment_v2_1` (4002) ghi tại 4574.
+// Mỗi lần đẩy một LÔ lệnh chi sang MB Bank sinh một dòng cho từng phiếu trong lô;
+// `BulkDetailId` giữ lại để đối soát ngược khi ngân hàng báo kết quả về.
+app.MapGet("/api/pmtbulkhist", async (AppDbContext db, ITenantContext t, string? paymentNo, string? bulkInfo) =>
+{
+    var q = db.PmtPaymentBulkDetailIHists.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(paymentNo)) q = q.Where(x => x.PaymentNo == paymentNo);
+    if (!string.IsNullOrWhiteSpace(bulkInfo)) q = q.Where(x => x.BulkInfo != null && x.BulkInfo.Contains(bulkInfo!));
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.BulkInfo, x.BulkDetailId, x.PaymentNo, x.TransferType, x.TotalAmount,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.TotalAmount), items });
+}).RequireAuthorization();
+
+app.MapPost("/api/pmtbulkhist", async (List<PmtBulkHistDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var lines = (rows ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.PaymentNo)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lô không có phiếu chi nào." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    foreach (var l in lines)
+        db.PmtPaymentBulkDetailIHists.Add(new PmtPaymentBulkDetailIHist { OrgId = t.OrgId,
+            BulkInfo = l.BulkInfo, BulkDetailId = l.BulkDetailId,
+            PaymentNo = l.PaymentNo.Trim().ToUpperInvariant(), TransferType = l.TransferType,
+            TotalAmount = l.TotalAmount, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { logged = lines.Count, totalAmount = lines.Sum(l => l.TotalAmount) });
+}).RequireAuthorization();
+
 // ===== #154: FILE ĐÍNH KÈM YÊU CẦU BẢO HÀNH GPS (GPSF_GPSClaimAttachFile) =====
 // Nguồn: StorageFG/BizHTC.ZTempGPS.cs (csproj 153, md5 cd3c409e khớp 2 máy) — ghi tại 5900 và 6763.
 // TWIN: cụm GPSF_GPSClaim* có ở CẢ HAI WS ⇒ không lệch.
@@ -27403,7 +27447,7 @@ record DlsDealSurveyDto(string? DealNo, string? Note, DateTime? ContactDate, str
 record DlsVinSurveyDto(string? VIN, string? Note, DateTime? ContactDate, string? SurveyGmail, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29, string? SurveyPosition);
 // Phiếu thanh toán đại lý: dòng nối về đầu bằng SỐ phiếu (PaymentNo), không phải khoá nội bộ.
 record PmtPaymentRowDto(string? CarId, string? GuaranteeNo, string? DlrCtrNo, decimal? Amount);
-record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details);
+record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details, string? Remark = null, string? TransferType = null, decimal? LoanPeriod = null, decimal? InterestRate = null);
 // Tồn kho tối thiểu: nguồn nhận BẢNG nhiều dòng ở lệnh tạo (CreateMulti).
 record MinInventoryRowDto(string? SpecCode, string? ModelCode, decimal? QtyInv, string? FlagActive);
 record MinInventoryCreateDto(List<MinInventoryRowDto>? Rows);
@@ -27967,6 +28011,9 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #155: DTO lịch sử lô chuyển tiền ngân hàng ----
+record PmtBulkHistDto(string PaymentNo, string? BulkInfo, string? BulkDetailId, string? TransferType, decimal TotalAmount);
+
 // ---- #153: DTO định mức tồn tối thiểu (bảng đầu + 2 bảng con thật) ----
 record MinInvBalanceFullDto(decimal TotalQty, string? FlagAllDealer, string? Remark, List<string>? Specs, List<string>? Dealers);
 

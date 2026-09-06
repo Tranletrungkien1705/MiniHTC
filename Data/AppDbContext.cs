@@ -94,6 +94,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DlrContractDtlHis> DlrContractDtlHiss => Set<DlrContractDtlHis>();
     public DbSet<PmtPayment> PmtPayments => Set<PmtPayment>();
     public DbSet<PmtPaymentDetail> PmtPaymentDetails => Set<PmtPaymentDetail>();
+    public DbSet<PmtPaymentBulkDetailIHist> PmtPaymentBulkDetailIHists => Set<PmtPaymentBulkDetailIHist>();
     public DbSet<DlsVinSurvey> DlsVinSurveys => Set<DlsVinSurvey>();
     public DbSet<CtContractOversea> CtContractOverseas => Set<CtContractOversea>();
     public DbSet<CtLc> CtLcs => Set<CtLc>();

@@ -845,6 +845,14 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #155 parity Pmt_Payment (+4) / Pmt_PaymentDetail (+2) + bảng lịch sử lô chuyển tiền
+        "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
+        "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TransferType\" text",
+        "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"LoanPeriod\" numeric",
+        "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"InterestRate\" numeric",
+        "ALTER TABLE public.\"PmtPaymentDetails\" ADD COLUMN IF NOT EXISTS \"LoanPeriod\" numeric",
+        "ALTER TABLE public.\"PmtPaymentDetails\" ADD COLUMN IF NOT EXISTS \"InterestRate\" numeric",
+        "CREATE TABLE IF NOT EXISTS public.\"PmtPaymentBulkDetailIHists\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BulkInfo\" text, \"BulkDetailId\" text, \"PaymentNo\" text NOT NULL DEFAULT '', \"TransferType\" text, \"TotalAmount\" numeric NOT NULL DEFAULT 0, \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         // #154 parity Pmt_TransportInsDetail (17 cột) + Plan_EstimateOrderDtl (24 cột) + bảng đính kèm GPS claim
         "ALTER TABLE public.\"TransportInsPaymentLines\" ADD COLUMN IF NOT EXISTS \"TotalPrice\" numeric NOT NULL DEFAULT 0",
         "ALTER TABLE public.\"TransportInsPaymentLines\" ADD COLUMN IF NOT EXISTS \"FProvinceRemark\" text",

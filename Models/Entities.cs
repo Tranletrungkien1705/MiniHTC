@@ -9406,6 +9406,22 @@ public sealed class PmtPayment
     public DateTime? PaymentEndDate { get; set; }
     public DateTime? ConfirmDate { get; set; }
     public string? ConfirmBy { get; set; }
+
+    // ===== #155 parity Pmt_Payment (nguồn: BankIntergration/BizHTC.MBBank.cs, csproj 310,
+    //       md5 ec9f1442… khớp 2 máy) — `Pmt_Payment_Save_New20230306` (2818), gán cột tại 3428-3455.
+    // 🔴 TWIN: `Pmt_Payment_Save` CHỈ có ở WS 64-bit, và WS gọi HAI bản
+    //    (`_New20191202`, `_New20230306`); bản `_New20191202` **đã bị COMMENT** (MBBank.cs:575)
+    //    ⇒ chỉ `_New20230306` là bản sống. Lại một ca "WS gọi vào hàm đã bị comment".
+    public string? Remark { get; set; }
+    /// <summary>Hình thức chuyển tiền (`TransferType`).</summary>
+    public string? TransferType { get; set; }
+    /// <summary>
+    /// Kỳ hạn vay và lãi suất ở BẢNG ĐẦU (`LoanPeriod`/`InterestRate`).
+    /// 🔴 Từ 20220325 nguồn **lấy theo bảng đầu, KHÔNG cho sửa ở dòng** (hai dòng gán ở
+    /// <see cref="PmtPaymentDetail"/> đã bị comment) — xem luật `Funds` ở endpoint lưu.
+    /// </summary>
+    public decimal? LoanPeriod { get; set; }
+    public decimal? InterestRate { get; set; }
 }
 
 /// <summary>
@@ -9414,6 +9430,26 @@ public sealed class PmtPayment
 /// 🔴 Cột chỉ gồm **5**: `PaymentNo`, `CarId`, `GuaranteeNo`, `DlrCtrNo`, `Amount` — nguồn
 /// **không** ghi VIN, không ghi trạng thái dòng. Khoá nối về đầu là `PaymentNo` (chuỗi), không phải Id.
 /// </summary>
+/// <summary>
+/// Lịch sử lô chuyển tiền gửi ngân hàng (`Pmt_Payment_BulkDetailIHist`) —
+/// nguồn `MBBank_MakeBulkPayment_v2_1` (BizHTC.MBBank.cs:4002) ghi tại 4574.
+/// Mỗi lần đẩy một LÔ lệnh chi sang MB Bank sinh một dòng cho từng phiếu trong lô,
+/// giữ lại `BulkDetailId` để đối soát ngược khi ngân hàng báo kết quả.
+/// </summary>
+public sealed class PmtPaymentBulkDetailIHist
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Thông tin lô (`BulkInfo`) — cùng khái niệm với `OsMBankLog.BulkInfo` (#149).</summary>
+    public string? BulkInfo { get; set; }
+    public string? BulkDetailId { get; set; }
+    public string PaymentNo { get; set; } = "";
+    public string? TransferType { get; set; }
+    public decimal TotalAmount { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class PmtPaymentDetail
 {
     public long Id { get; set; }
@@ -9425,6 +9461,17 @@ public sealed class PmtPaymentDetail
     /// <summary>Số hợp đồng đại lý.</summary>
     public string? DlrCtrNo { get; set; }
     public decimal? Amount { get; set; }
+
+    // ===== #155 parity Pmt_PaymentDetail (MBBank.cs:3484-3510) =====
+    /// <summary>
+    /// 🔴 Kỳ hạn vay / lãi suất của DÒNG — nguồn KHÔNG lấy từ đầu vào của dòng nữa:
+    /// hai dòng `dr["LoanPeriod"] = …Input…` đã bị **comment** kèm ghi chú
+    /// *"20220325. lấy theo MST ko cho sửa ở Dtl nữa"*.
+    /// Giá trị được **rót xuống từ bảng đầu** và phụ thuộc cờ `Funds`:
+    /// `Funds != "1"` ⇒ lấy `LoanPeriod`/`InterestRate` của phiếu; `Funds == "1"` ⇒ **để NULL**.
+    /// </summary>
+    public decimal? LoanPeriod { get; set; }
+    public decimal? InterestRate { get; set; }
 }
 
 /// <summary>
