@@ -11254,7 +11254,17 @@ app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, AppDbCo
         if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã dịch vụ." }); continue; }
         if (string.IsNullOrWhiteSpace(r.SerName)) { errors.Add(new { line, code, error = "Thiếu tên dịch vụ." }); continue; }
         if (r.Price < 0 || r.Cost < 0) { errors.Add(new { line, code, error = "Giá/vốn không hợp lệ." }); continue; }
-        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã dịch vụ bị trùng trong file nhập." }); continue; }
+
+        // ===== 🔴 #256 GUARD SỐNG ở nguồn — `FrmImportService.cs:97` (md5 `2c16d21b`, KHỚP 2 máy) =====
+        // `if (this.regex.IsMatch(strSerCode)) ShowWarningMsgBox(MSG_WARNING_KEYSPE_SERCODE)`
+        //   ⇒ "Mã công việc không được phép chứa các ký tự đặc biệt".
+        // ⚠️ ĐỐI CHIẾU với `FrmImportPart.cs:110-114`: guard y hệt nhưng **BỊ COMMENT TOÀN BỘ**
+        //    ⇒ import PHỤ TÙNG **cố ý KHÔNG kiểm** ký tự đặc biệt. Xem chú thích ở /api/serviceparts/import.
+        if (HasSpecialChar(code))
+        { errors.Add(new { line, code, error = "Mã công việc không được phép chứa các ký tự đặc biệt" }); continue; }
+
+        // Thông điệp trùng mã đổi về ĐÚNG nguồn: `MSG_WARNING_DUPLICATE_SERCODE` = "Mã công việc trùng nhau".
+        if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã công việc trùng nhau" }); continue; }
         var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
         if (ex is not null) { ex.SerName = r.SerName; ex.Cost = r.Cost; ex.Price = r.Price; ex.Model = r.Model; ex.Vat = r.Vat; ex.Note = r.Note; ex.FlagActive = "1"; updated++; }
         else { db.ServiceItemMsts.Add(new ServiceItemMst { OrgId = t.OrgId, SerCode = code, SerName = r.SerName, Cost = r.Cost, Price = r.Price, Model = r.Model, Vat = r.Vat, Note = r.Note, FlagActive = "1" }); created++; }
@@ -11715,7 +11725,15 @@ app.MapPost("/api/serviceparts/import", async (ServicePartImportDto dto, AppDbCo
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
     var errors = new List<object>();
-    // Phát hiện trùng mã trong lô nhập (giống guard MSG_WARNING_DUPLICATE_PARTCODE).
+    // Phát hiện trùng mã trong lô nhập — nguồn `MSG_WARNING_DUPLICATE_PARTCODE` = "Mã phụ tùng trùng nhau".
+    // ===== 🔴 #256 CỐ Ý KHÔNG thêm guard ký tự đặc biệt ở đây =====
+    // Bản đồ regex #249 liệt kê `FrmImportPart.cs` là màn "dùng `regex.IsMatch`". Nhưng mở ra đọc
+    // (:110-114) thì **cả khối guard BỊ COMMENT**:
+    //     `//if (this.regex.IsMatch(strPartCode))`
+    //     `//{ Util.ShowWarningMsgBox(ErrorMessage.MSG_WARNING_KEYSPE_PARTCODE); return; }`
+    // ⇒ nguồn **cố ý tắt** kiểm ký tự đặc biệt cho import PHỤ TÙNG (khác `FrmImportService` vốn còn SỐNG,
+    //   và khác `FrmPartPriceImport` cũng còn SỐNG). Thêm guard ở đây = **chặt hơn nguồn**, chặn nhầm
+    //   mã phụ tùng hợp lệ của NCC. Giữ nguyên, không vá. (md5 `cbd2ec62` — KHỚP 2 máy.)
     var seen = new HashSet<string>();
     int created = 0, updated = 0;
     for (int i = 0; i < rows.Count; i++)
@@ -31086,6 +31104,11 @@ app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? 
 app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Cần PartCode." });
+    // 🔴 #256: `Views/Inventory/FrmPartPriceImport.cs:125` — guard **SỐNG** (khác `FrmImportPart` bị comment):
+    //   `if (this.regex.IsMatch(strPartCode)) ShowWarningMsgBox(MSG_WARNING_KEYSPE_PARTCODE)`
+    //   md5 `3874df4a` — KHỚP 2 máy.
+    if (HasSpecialChar(dto.PartCode.Trim()))
+        return Results.BadRequest(new { error = "Mã phụ tùng không được phép chứa các ký tự đặc biệt" });
     if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
     var code = dto.PartCode.Trim().ToUpperInvariant();
     var ed = dto.EffectiveDate.Value.Date;
