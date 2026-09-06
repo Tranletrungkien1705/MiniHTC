@@ -13783,6 +13783,16 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 }).RequireAuthorization();
 
 // ===== Master phụ tùng TST (TstPart — port 1:1 FrmTST_Mst_Part, TCMotor DMSCarSv) =====
+// ===== 🔴 #248 KÝ TỰ ĐẶC BIỆT — regex DÙNG CHUNG của nguồn =====
+// Nguồn đặt ở **LỚP CHA** `Views/FrmMdiBase.cs:46-47`:
+//     `static string pattern = "[^a-zA-Z0-9._-]"; public Regex regex = new Regex(pattern);`
+// ⇒ "ký tự đặc biệt" = **mọi ký tự KHÔNG thuộc** [a-z A-Z 0-9 . _ -].
+//   ⚠️ Nghĩa là **khoảng trắng** và **chữ tiếng Việt có dấu** cũng bị coi là ký tự đặc biệt.
+//   ⚠️ Vì regex nằm ở lớp cha nên **mọi màn kế thừa `FrmMdiBase` đều dùng chung** — khi port màn khác
+//      thấy `this.regex.IsMatch(...)` thì đây chính là quy tắc đó.
+// (top-level statements khong cho `static readonly` field -> dung bien cuc bo)
+var SpecialCharRegex = new System.Text.RegularExpressions.Regex("[^a-zA-Z0-9._-]");
+
 // ===== 🔴 #247 BẢNG TẠM PHỤ TÙNG TST — `TST_Mst_Part_Temp_Get` (BizCarSv.Bravo.cs:223) =====
 // BƯỚC 3B: `BizCarSv.Bravo.cs` md5 `44509215` (469 dòng) — KHỚP 2 máy (đã đo ở #212).
 //
@@ -28969,13 +28979,46 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     }
 
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.ReqQty > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng PT (PartCode + ReqQty > 0)." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lưới thông tin vật tư trống" });
 
-    // Guard TỪNG DÒNG (nguồn quét vòng for, :872-905).
+    // ===== 🔴 #248 GUARD TỪNG DÒNG của FORM — `FrmReq_PartPrice_Detail.checkForm()` =====
+    // Nguồn `Views/TST/FrmReq_PartPrice_Detail.cs:337-416` (md5 `f0de0f9a` — KHỚP 2 máy).
+    // #241 mới port guard của BIZ (mã rỗng + hình thức giao hàng tồn tại). Form còn **5 guard nữa**
+    // mà biz KHÔNG có — đúng lớp "hai tầng lệch nhau" (luật `C0-trecentesimusseptuagesimusseptimus`):
+    //   · `DMSPartCode`: ký tự đặc biệt · **> 24** ký tự
+    //   · `VieName`: **> 192** (chỉ kiểm khi CÓ nhập)
+    //   · `VINCode`: ký tự đặc biệt · **> 24** (chỉ kiểm khi CÓ nhập)
+    //   · `Remark`: **> 254** (chỉ kiểm khi CÓ nhập)
+    // ⚠️ Ba ngưỡng 24/192/254 là của RIÊNG màn này — không suy sang màn khác
+    //    (luật `C0-trecentesimussexagesimus`).
+    // ⚠️ Lưới rỗng ⇒ "Lưới thông tin vật tư trống" (nguồn :415) — port cũ báo câu khác, nay giữ đúng nguồn
+    //    ở guard đếm dòng phía trên.
+    // Guard TỪNG DÒNG (nguồn quét vòng for, biz :872-905 + form :341-408).
     foreach (var l in lines)
     {
         if (string.IsNullOrWhiteSpace(l.PartCode))
             return Results.BadRequest(new { error = "Mã vật tư không được để trống!" });
+        var pc = l.PartCode.Trim();
+        if (SpecialCharRegex.IsMatch(pc))
+            return Results.BadRequest(new { error = "Mã vật tư không được phép chứa các ký tự đặc biệt", partCode = pc });
+        if (pc.Length > 24)
+            return Results.BadRequest(new { error = "Mã vật tư không được > 24 ký tự", partCode = pc });
+        if (!string.IsNullOrWhiteSpace(l.PartName) && l.PartName!.Trim().Length > 192)
+            return Results.BadRequest(new { error = "Tên vật tư không được > 192 ký tự", partCode = pc });
+        if (!string.IsNullOrWhiteSpace(l.VINCode))
+        {
+            var vin = l.VINCode!.Trim();
+            if (SpecialCharRegex.IsMatch(vin))
+                return Results.BadRequest(new { error = "Số VIN không được phép chứa các ký tự đặc biệt", partCode = pc });
+            if (vin.Length > 24)
+                return Results.BadRequest(new { error = "VIN không được > 24 ký tự", partCode = pc });
+        }
+        if (!string.IsNullOrWhiteSpace(l.Remark) && l.Remark!.Trim().Length > 254)
+            return Results.BadRequest(new { error = "Ghi chú không được > 254 ký tự", partCode = pc });
+
+        // 🔴 Form BẮT BUỘC hình thức đặt hàng ở TỪNG DÒNG (:377-381) — biz chỉ kiểm khi có giá trị.
+        if (string.IsNullOrWhiteSpace(l.DeliveryFormCode))
+            return Results.BadRequest(new { error = "Chưa chọn hình thức đặt hàng", partCode = pc });
         if (!string.IsNullOrWhiteSpace(l.DeliveryFormCode))
         {
             var dfc = l.DeliveryFormCode!.Trim().ToUpperInvariant();
