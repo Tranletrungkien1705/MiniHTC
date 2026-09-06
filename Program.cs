@@ -5515,6 +5515,15 @@ app.MapPost("/api/sysusers/save", async (SysUserSaveDto dto, AppDbContext db, IT
 {
     var code = (dto.UserCode ?? "").Trim();
     if (code.Length < 1) return Results.BadRequest(new { error = "Mã người dùng rỗng." });
+    // ===== 🔴 #254 UserCode — guard ký tự đặc biệt (bản đồ regex #249) =====
+    // Nguồn DMSCarSv `Views/Auth/FrmMngUser.cs:422` (md5 `c58f3de5` — KHỚP 2 máy):
+    //   `if (this.regex.IsMatch(strUserCodeToCheck)) ShowWarningMsgBox(MSG_WARNING_USERCODE_NOTSPE)`
+    // Thông điệp gọi tên CẢ HAI thứ: "không được nhập **tiếng việt** hoặc chứa các ký tự đặc biệt"
+    //   — đúng với pattern `[^a-zA-Z0-9._-]` vốn coi chữ có dấu là ký tự đặc biệt.
+    // ⚠️ Ở nguồn, guard này nằm TRONG `try { … } catch (Exception){}` **nuốt lỗi** (:416-428):
+    //    cột `User_Code` thiếu hay lỗi ép kiểu thì guard **im lặng bỏ qua**. Port KHÔNG nuốt lỗi.
+    if (HasSpecialChar(code))
+        return Results.BadRequest(new { error = "Mã người dùng không được nhập tiếng việt hoặc chứa các ký tự đặc biệt" });
     var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
     var isNew = row is null;
     if (isNew)
@@ -5540,15 +5549,29 @@ app.MapPost("/api/sysusers/save", async (SysUserSaveDto dto, AppDbContext db, IT
     return Results.Ok(new { row.UserCode, created = isNew, passwordChanged = !string.IsNullOrEmpty(pwd) && pwd != PasswordTemplate });
 }).RequireAuthorization();
 
-// Xoá người dùng — nguồn xử lý nhánh `DataRowState.Deleted` bằng `SaveData(dtDeleted)`, tức XOÁ THẬT.
-app.MapPost("/api/sysusers/delete", async (SysUserKeyDto dto, AppDbContext db, ITenantContext t) =>
+// Xoá người dùng — nguồn 2010.HTC xử lý nhánh `DataRowState.Deleted` bằng `SaveData(dtDeleted)`, tức XOÁ THẬT.
+//
+// ===== 🔴 #254 HAI HỆ, HAI CÁCH XOÁ KHÁC NHAU — không được gộp =====
+// · **2010.HTC** (nguồn của endpoint này): xoá THẬT bản ghi.
+// · **TCMotor DMSCarSv** `FrmMngUser.cs:451-455`: nhánh `EditStatus.ITEM_VALUE_STT_DELETE` đặt
+//   `dtRow[TblCommon.FlagActive] = "0"` rồi `SetModified()` ⇒ **XOÁ MỀM**, bản ghi vẫn còn.
+// ⇒ Giữ mặc định = xoá thật (đúng nguồn của endpoint), thêm cờ `soft` cho đường DMSCarSv.
+//   KHÔNG đổi mặc định: làm thế sẽ sai với hệ 2010.HTC vốn đang đúng.
+app.MapPost("/api/sysusers/delete", async (SysUserKeyDto dto, AppDbContext db, ITenantContext t, bool? soft) =>
 {
     var code = (dto.UserCode ?? "").Trim();
     var row = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
     if (row is null) return Results.NotFound(new { error = $"Không có người dùng {code}." });
+    if (soft == true)
+    {
+        // đường DMSCarSv: chỉ tắt cờ, giữ bản ghi
+        row.FlagActive = "0";
+        await db.SaveChangesAsync();
+        return Results.Ok(new { deactivated = code, flagActive = row.FlagActive, mode = "soft (DMSCarSv)" });
+    }
     db.SysUsers.Remove(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = code });
+    return Results.Ok(new { deleted = code, mode = "hard (2010.HTC)" });
 }).RequireAuthorization();
 
 // Đặt lại mật khẩu (nguồn `SysResetUserPassword`) — quản trị đặt mật khẩu mới cho người khác.
