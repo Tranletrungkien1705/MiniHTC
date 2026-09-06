@@ -13057,6 +13057,34 @@ public sealed class ServiceAppointment
     public string? HCCFinishStatus { get; set; }
     public DateTime? HCCFinishDateTime { get; set; }
 
+    // ===== 🔴 #282 PARITY `TblSerAppRO` (DbDefine.cs:878-903, md5 `d373e758` — KHỚP 2 máy): 8 cột THẬT
+    //   của bảng `Ser_App` mà port cũ thiếu. Đối chiếu **đủ 23 hằng** của lớp, không lấy theo lưới màn hình.
+
+    /// <summary>CREATOR — người tạo lịch hẹn. Nguồn truyền riêng, KHÁC tài khoản đăng nhập.</summary>
+    public string? Creator { get; set; }
+
+    public string? CusAddress { get; set; }    // CUSADDRESS
+    public string? CusTel { get; set; }        // CUSTEL — số bàn, KHÁC `Mobile` đã có
+    public string? InsNo { get; set; }         // INSNO — số đơn bảo hiểm gắn theo lịch hẹn
+
+    /// <summary>CAVITYID — **khoá** của khoang/bay. Port cũ chỉ có `CavityName` (nhãn hiển thị);
+    /// nguồn ghi khoá này xuống DB.</summary>
+    public string? CavityID { get; set; }
+
+    /// <summary>
+    /// 🔴 SOURCE — **NGUỒN TẠO** lịch hẹn, là cột THẬT trong DB (`TblSerAppRO.Source`).
+    /// ⚠️ Tham số `Channel` mà port thêm ở #270 (để quyết định có đẩy HCC hay không) là **do port tự đặt**,
+    /// không có trong nguồn; nay `Channel` được ghi xuống chính cột `Source` này khi client không gửi
+    /// `Source` riêng — để dữ liệu port khớp cột nguồn thay vì sinh khái niệm mới.
+    /// </summary>
+    public string? Source { get; set; }
+
+    /// <summary>🔴 FIRSTCONTACTDATETIME / LASTCONTACTDATETIME — mốc liên hệ **LẦN ĐẦU** và **GẦN NHẤT**
+    /// với khách của lịch hẹn. Đây là phần nghiệp vụ TỔNG ĐÀI: một lịch hẹn có thể phải gọi nhiều lần,
+    /// giữ cả hai mốc mới đo được "bao lâu mới liên hệ được lần đầu".</summary>
+    public DateTime? FirstContactDateTime { get; set; }
+    public DateTime? LastContactDateTime { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -18666,6 +18666,9 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
         // #270 §12: cot bo sung co mat o CA GET lan POST
         x.DealerCode, x.CusID, x.Vin, x.HCCPushStatus, x.HCCPushDateTime,
+        // #282 §12
+        x.Creator, x.CusAddress, x.CusTel, x.InsNo, x.CavityID, x.Source,
+        x.FirstContactDateTime, x.LastContactDateTime,
         serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
         partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
     }).ToListAsync();
@@ -18711,6 +18714,11 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked",
         EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest,
         DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(), CusID = dto.CusID, Vin = dto.Vin?.Trim().ToUpperInvariant(),
+        // #282 §12: 8 cột thật của `TblSerAppRO`. `Source` là cột NGUỒN; `Channel` (#270, port tự đặt)
+        //   được ghi vào chính cột đó khi client không gửi `Source` riêng.
+        Creator = dto.Creator, CusAddress = dto.CusAddress, CusTel = dto.CusTel, InsNo = dto.InsNo,
+        CavityID = dto.CavityID,
+        Source = string.IsNullOrWhiteSpace(dto.Source) ? (string.IsNullOrWhiteSpace(dto.Channel) ? null : dto.Channel!.Trim().ToUpperInvariant()) : dto.Source!.Trim().ToUpperInvariant(),
         HCCPushStatus = isTab ? "P" : null };
     db.ServiceAppointments.Add(a);
 
@@ -18741,6 +18749,22 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
 // ⚠️ Nguồn chặn trước: `AppId` rỗng ⇒ ném `HCC_Appointment_AddOSX_InvalidAppId`.
 // 📌 NỢ: lời gọi HTTP thật (`HCCService.Login` → đẩy `RQ_HCC_Appointment`) chưa port; endpoint này dựng
 //   payload + trục trạng thái, phần còn lại là tầng vận chuyển.
+// 🔴 #282 GHI MỐC LIÊN HỆ KHÁCH của lịch hẹn (`FirstContactDateTime` / `LastContactDateTime`).
+// Nguồn giữ **HAI** mốc chứ không phải một: lần liên hệ ĐẦU TIÊN không bao giờ bị ghi đè, lần GẦN NHẤT
+//   cập nhật mỗi lần gọi ⇒ đo được "bao lâu mới liên hệ được khách lần đầu" và "liên hệ gần nhất khi nào".
+//   Gộp một cột là mất hẳn chỉ tiêu thứ nhất.
+app.MapPost("/api/appointments/{no}/contact", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no.Trim());
+    if (a is null) return Results.NotFound(new { no });
+    var now = DateTime.Now;
+    var isFirst = a.FirstContactDateTime is null;
+    if (isFirst) a.FirstContactDateTime = now;   // chỉ ghi MỘT lần, không đè
+    a.LastContactDateTime = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.AppNo, firstContact = a.FirstContactDateTime, lastContact = a.LastContactDateTime, isFirstContact = isFirst });
+}).RequireAuthorization();
+
 app.MapGet("/api/appointments/{no}/hcc-payload", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
@@ -35075,7 +35099,10 @@ record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngNam
 // #270: `Channel` = kenh tao lich hen. Nguon chi day HCC o nhanh `Ser_App_Create_ForTab` (may tinh bang)
 //   => chi `Channel == "TAB"` moi dat co cho day.
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null,
-    string? Channel = null, string? DealerCode = null, string? CusID = null, string? Vin = null);
+    string? Channel = null, string? DealerCode = null, string? CusID = null, string? Vin = null,
+    // #282: 8 truong that cua TblSerAppRO. Source la cot NGUON; Channel (#270) la tham so do port tu dat.
+    string? Creator = null, string? CusAddress = null, string? CusTel = null, string? InsNo = null,
+    string? CavityID = null, string? Source = null);
 record AppointmentStatusDto(string Status);
 // #270: `ToStatus` "A" thanh cong / "R" loi - cung bo ma voi truc HMC cua de nghi bao hanh.
 record AppointmentHccPushDto(string ToStatus, string? Note = null);

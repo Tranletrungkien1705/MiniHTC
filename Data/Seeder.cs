@@ -882,6 +882,15 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #282 parity TblSerAppRO (DbDefine.cs:878-903): 8 cot that cua Ser_App con thieu
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"Creator\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CusAddress\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CusTel\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"InsNo\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CavityID\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"Source\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"FirstContactDateTime\" timestamp",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"LastContactDateTime\" timestamp",
         // #280 parity Rpt_DMS_CSI_Dashboard: doi tuong thanh toan tren DONG cua LENH SUA CHUA
         "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
