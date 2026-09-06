@@ -17846,6 +17846,70 @@ app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext
     return Results.Ok(new { totalCustomer = cus.Sum(r => r.balance), totalInsurance = ins.Sum(r => r.balance), grandTotal = all.Sum(r => r.balance), rows = all });
 }).RequireAuthorization();
 
+// ===== 🔴 #214 CÔNG NỢ BẢO HIỂM theo KỲ — `Ser_InvReportInsuranceDebitRpt_New20210618` =====
+// Màn gốc: `Views/Debit/FrmReportTotalInsDebit.cs` (303 dòng, DMSCarSv) — 4 nút Search/Print/Export/Thoát.
+// Nguồn: `TERP.BizCarSv/BizCarSv.Service.Report.cs:2392`. md5 CẢ FILE `b7ecca4c` KHỚP 2 máy.
+//
+// 🔴 TWIN + FILE CHẾT (bắt được nhờ trace, không theo tên):
+//   · Biz có HAI hàm cùng tên: `Ser_InvReportInsuranceDebitRpt` (2184) và `..._New20210618` (2392).
+//   · Thư mục WS có BA file: `WSCarSv.asmx.20210208.cs` · `WSCarSv.asmx.20210412.cs` · `WSCarSv.asmx.cs`;
+//     csproj chỉ `<Compile Include="WSCarSv.asmx.cs">` ⇒ hai file có ngày trong tên là **FILE CHẾT**.
+//   · Hai file chết gọi bản 2184; **bản LIVE (13080) gọi `_New20210618`** ⇒ port theo 2392.
+//
+// Báo cáo theo KỲ (FromDate..ToDate), mỗi hãng bảo hiểm 4 chỉ tiêu:
+//   `TGD` dư đầu kỳ  = (nợ phát sinh TRƯỚC FromDate) − (thu TRƯỚC FromDate)
+//   `PST` phát sinh tăng = nợ trong kỳ          `PSG` phát sinh giảm = thu trong kỳ
+//   `TGC` dư cuối kỳ = TGD + PST − PSG
+// 🔴 Thu của nhánh BẢO HIỂM lọc `PaymentType = '2'` — khác nhánh KHÁCH HÀNG dùng `'1'` (xem #213).
+//    Hai mã này là hai loại phiếu thu khác nhau, KHÔNG được dùng lẫn.
+// 🔴 Guard cuối của nguồn: `where (deb.InsNo is not null or dk.InsNo is not null)` — hãng nào **không có
+//    phát sinh trong kỳ VÀ không có dư đầu kỳ** thì KHÔNG lên báo cáo (khác với lọc `số dư != 0` ở #213).
+app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+    if (from > to) return Results.BadRequest(new { error = "Từ ngày phải nhỏ hơn hoặc bằng đến ngày." });
+
+    var debits = await db.InsDebits.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var pays = await (from p in db.InsDebitPayments.Where(x => x.OrgId == t.OrgId)
+                      join h in db.InsDebits.Where(x => x.OrgId == t.OrgId) on p.InsDebitId equals h.Id
+                      select new { h.InsNo, h.InsName, p.PaymentAmount, p.PayDate }).ToListAsync();
+
+    var keys = debits.Select(d => new { d.InsNo, d.InsName })
+        .Concat(pays.Select(p => new { p.InsNo, p.InsName }))
+        .Distinct().ToList();
+
+    var rows = new List<object>();
+    decimal sTGD = 0, sPST = 0, sPSG = 0, sTGC = 0;
+    foreach (var k in keys)
+    {
+        // dư ĐẦU KỲ: mọi phát sinh TRƯỚC FromDate (nguồn: substring(...) < @FromDate).
+        var debBefore = debits.Where(d => d.InsNo == k.InsNo && d.DebitDate.HasValue && d.DebitDate.Value.Date < from).Sum(d => d.DebitAmount);
+        var payBefore = pays.Where(p => p.InsNo == k.InsNo && p.PayDate.HasValue && p.PayDate.Value.Date < from).Sum(p => p.PaymentAmount);
+        var tgd = debBefore - payBefore;
+
+        // trong kỳ
+        var pst = debits.Where(d => d.InsNo == k.InsNo && d.DebitDate.HasValue && d.DebitDate.Value.Date >= from && d.DebitDate.Value.Date <= to).Sum(d => d.DebitAmount);
+        var psg = pays.Where(p => p.InsNo == k.InsNo && p.PayDate.HasValue && p.PayDate.Value.Date >= from && p.PayDate.Value.Date <= to).Sum(p => p.PaymentAmount);
+
+        // guard của nguồn: không có phát sinh trong kỳ VÀ không có dư đầu kỳ thì bỏ hẳn dòng.
+        var hasInPeriod = pst != 0 || psg != 0;
+        if (!hasInPeriod && tgd == 0) continue;
+
+        var tgc = tgd + pst - psg;
+        sTGD += tgd; sPST += pst; sPSG += psg; sTGC += tgc;
+        rows.Add(new { insNo = k.InsNo, insName = k.InsName, tgd, pst, psg, tgc });
+    }
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to,
+        totalTGD = sTGD, totalPST = sPST, totalPSG = sPSG, totalTGC = sTGC,
+        count = rows.Count, rows,
+        note = "PSG chỉ gồm phiếu thu loại bảo hiểm (nguồn lọc PaymentType='2'); nhánh khách hàng dùng '1'."
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #213 CÔNG NỢ PHẢI THU tại thời điểm — `Ser_ReportReceivableDebitRpt` =====
 // Màn gốc: `TERP.HTCServiceClient/Views/Debit/FrmReportTotalReceivableDebit.cs` (274 dòng, DMSCarSv) —
 //   bốn nút `btnSearch` · `btnPrint` · `btnExportExcel` · `btnThoat` (đã grep KHÔNG phân biệt hoa/thường).
