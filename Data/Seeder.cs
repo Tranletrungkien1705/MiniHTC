@@ -845,6 +845,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #188 parity Mst_DeviceType_Spec_Update / _Delete (64-bit only)
+        "ALTER TABLE public.\"DeviceTypeSpecs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"DeviceTypeSpecs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #187 parity Mst_UnitPriceGPS_Update (field-mask 3 cot)
         "ALTER TABLE public.\"MstUnitPriceGpsItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         "ALTER TABLE public.\"MstUnitPriceGpsItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",

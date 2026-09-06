@@ -3109,6 +3109,13 @@ public sealed class DeviceTypeSpec
     public string? SpecDescription { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #188 parity `Mst_DeviceType_Spec_Update` / `_Delete` (DataWH/Biz.HTC.WH.cs, csproj 272) =====
+    /// <summary>Nhật ký sửa cuối — nguồn `_Update` luôn ghi cặp này (field-mask một cột `FlagActive`).
+    /// 🔴 Bảng này là master mà #162 dùng để SUY RA thiết bị của xe khi lập packing list
+    /// (`JOIN Mst_DeviceType_Spec` theo `ActualSpec`, lọc `FlagActive='1'`).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Số tiền chiết khấu TT được duyệt theo VIN (PRD_PaymentReqDiscount_VIN) — port 1:1 FrmImportExl_PaymentReqDiscount (2010.HTC). Import số tiền HTC duyệt cho từng VIN trong đề nghị chiết khấu; upsert theo (PRDiscountNo × VIN).

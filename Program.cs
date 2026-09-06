@@ -13529,7 +13529,7 @@ app.MapGet("/api/devicetypespecs", async (AppDbContext db, ITenantContext t, str
     if (all != true) q = q.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(deviceType)) q = q.Where(x => x.DeviceTypeCode == deviceType);
     if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
-    var items = await q.OrderBy(x => x.DeviceTypeCode).ThenBy(x => x.SpecCode).Take(500).Select(x => new { x.Id, x.DeviceTypeCode, x.DeviceTypeName, x.SpecCode, x.SpecDescription, x.FlagActive }).ToListAsync();
+    var items = await q.OrderBy(x => x.DeviceTypeCode).ThenBy(x => x.SpecCode).Take(500).Select(x => new { x.Id, x.DeviceTypeCode, x.DeviceTypeName, x.SpecCode, x.SpecDescription, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -13545,6 +13545,59 @@ app.MapPost("/api/devicetypespecs", async (DeviceTypeSpecDto dto, AppDbContext d
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.DeviceTypeCode, row.SpecCode, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== #188 Loại thiết bị theo Spec — `Mst_DeviceType_Spec_Update` + `_Delete` =====
+// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs` (csproj 272) — `_Delete` (204278), `_Update` (204414).
+// BƯỚC 3B: `_Update` bắt đầu **KHÁC DÒNG** (laptop 204414 / máy 150 204419) — căn theo MỐC HÀM (luật #156),
+//   vùng 162 dòng md5 `6b5517ff` KHỚP. Đã liệt kê ranh giới hàm: 204278 → 204413 → 204574.
+// 🔴 TWIN: **CẢ HAI cụm** `Mst_DeviceType_Spec_*` và `Mst_DevicePrice_Spec_*` **CHỈ có ở WS 64-bit**;
+//    WS 32-bit **không có hàm nào**.
+//
+// 🔴 Hàm thứ NĂM trong danh sách 36 hàm field-mask (#184). Bảng này chính là master mà #162 dùng để
+//    **suy ra thiết bị của xe** khi lập packing list (`JOIN Mst_DeviceType_Spec` theo `ActualSpec`,
+//    lọc `FlagActive='1'`) ⇒ sửa sai cờ ở đây là hỏng dữ liệu lắp thiết bị ở đó.
+//
+// 🔴 `_Update` — FIELD-MASK **một cột**: `Mst_DeviceType_Spec.FlagActive`.
+//    Guard duy nhất: `CheckDB(..., Flag.Yes)` — bản ghi phải tồn tại; **không** có guard theo cột
+//    (giống #185, khác #184/#187) — lại một biến thể nữa của bộ ba mask/guard/vị-trí-guard.
+// ⚠️ KHÁC `/toggle` đã có: nguồn **ĐẶT** cờ theo giá trị truyền vào, **không đảo**.
+//    `toggle` là thao tác mù (client không biết trạng thái cuối), `_Update` là **idempotent**.
+//    Giữ cả hai: `/toggle` là tiện ích UI, `/update` mới là lệnh 1:1 với nguồn.
+app.MapPost("/api/devicetypespecs/{id}/update", async (long id, DeviceTypeSpecUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var row = await db.DeviceTypeSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+
+    var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
+    var updFlag = mask.Contains("MST_DEVICETYPE_SPEC.FLAGACTIVE");
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (updFlag)
+    {
+        var f = (dto.FlagActive ?? "").Trim();
+        if (f is not ("0" or "1"))
+            return Results.BadRequest(new { error = "Cờ hiệu lực phải là \"0\" hoặc \"1\"." });
+        row.FlagActive = f;      // ĐẶT theo giá trị, KHÔNG đảo như /toggle
+    }
+    row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DeviceTypeCode, row.SpecCode, row.FlagActive,
+        updatedFlagActive = updFlag, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+// 🔴 `_Delete` (204278): XOÁ CỨNG (`dt.Rows[0].Delete()`), khoá là **cặp** `(DeviceTypeCode, SpecCode)`,
+//    guard duy nhất là bản ghi phải tồn tại — nguồn **không** kiểm bảng nào đang dùng.
+//    ⚠️ Vẫn chặn nếu spec đó đang có xe đã gắn thiết bị (`DeviceCar`) — **ĐÃ GHI NỢ**, không tự thêm:
+//    nguồn không có guard này nên thêm vào là **chặt hơn nguồn**.
+app.MapDelete("/api/devicetypespecs/{id}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.DeviceTypeSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    db.DeviceTypeSpecs.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = new { row.DeviceTypeCode, row.SpecCode } });
 }).RequireAuthorization();
 
 app.MapPost("/api/devicetypespecs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -29832,6 +29885,7 @@ record RegistrationInfoDto(string? RegistYear, string? ProvinceCode, string? Pro
 record CabinCertificateDto(string? CabinCertificateNo, string? CarType, string? FlagActive);
 record DeviceTypeDto(string? DeviceTypeCode, string? DeviceTypeName, string? FlagActive);
 record DeviceTypeSpecDto(string? DeviceTypeCode, string? DeviceTypeName, string? SpecCode, string? SpecDescription, string? FlagActive);
+record DeviceTypeSpecUpdateDto(string? FtColsUpd, string? FlagActive = null);
 record PRDiscountImportDto(List<PRDiscountRowDto>? Rows);
 record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr);
 record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, string? SpecDescription, DateTime? DeliveryOutDate, DateTime? DeliveryEndDate, DateTime? DeliveryDate, string? DlrContractNo, string? SMName, DateTime? CusInvoiceDate, decimal UnitPriceActual, decimal AmountDealerRequest, string? CustomerName, DateTime? HTCApprDate);
