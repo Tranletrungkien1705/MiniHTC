@@ -28460,27 +28460,96 @@ app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action
 }).RequireAuthorization();
 
 // ===== Đơn đặt phụ tùng từ NCC (Ser_Order_Part — port 1:1 FrmSer_Order_Part) =====
-app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? status, string? supplier) =>
+// ===== 🔴 #234 ĐƠN ĐẶT PHỤ TÙNG — parity `Ser_Order_Part` (DMSCarSv/TST) =====
+// Màn: `Views/TST/FrmSer_Order_PartMng.cs` (1290 dòng) + `FrmSer_Order_Part_Detail.cs` (1466 dòng).
+// Tầng ghi `Ser_Order_PartService.cs`: `_Save` (:141) gửi **9 trường**, `_Appr` (:182) gửi **7 trường**
+//   — hai bộ KHÁC NHAU (xem chú thích ở endpoint duyệt).
+// BƯỚC 3B: `Ser_Order_PartService.cs` md5 `a5dd9a0f` · `Entities/TST/Ser_Order_Part.cs` md5 `bc2a2708` ·
+//   `TERP.Constants/Const.Main.cs` md5 `84bb208f` — cả ba KHỚP laptop và máy 150.
+//
+// 🔴 GAP TRẠNG THÁI: port cũ lưu chuỗi dài ở header nhưng mã 1 ký tự ở dòng chi tiết ⇒ hai bộ mã lệch nhau.
+//    Nay header dùng `TConst.OrderPartStatus` = "P"/"A"/"F"/"R"; bộ lọc chấp nhận CẢ tên cũ (ánh xạ dưới).
+var orderPartLegacyStatusMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["Pending"] = "P", ["Approved"] = "A", ["Finished"] = "F", ["Rejected"] = "R",
+};
+
+var orderPartStatusNames = new Dictionary<string, string>
+{
+    ["P"] = "Mới tạo", ["A"] = "Đã duyệt / gửi NCC", ["F"] = "Hoàn thành", ["R"] = "Từ chối",
+};
+
+// 🔴 Trạng thái phía NCC là CỘT RIÊNG, mã SỐ NHẢY (TConst.SupplierStatus, Const.Main.cs:544) — không có 3/5/6.
+var orderPartSupplierStatusNames = new Dictionary<string, string>
+{
+    ["1"] = "Chờ duyệt",
+    ["2"] = "Đã duyệt, chờ hoàn thiện",
+    ["4"] = "Đã hoàn thiện",
+    ["7"] = "Đơn lỗi, chờ kinh doanh điều chỉnh",
+};
+
+app.MapGet("/api/orderparts/statuses", () => Results.Ok(new
+{
+    orderPartStatus = orderPartStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    supplierStatus = orderPartSupplierStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    orderPartType = new[] { "TST", "OTHER" },
+    legacyMap = orderPartLegacyStatusMap.Select(kv => new { legacy = kv.Key, code = kv.Value }),
+    note = "Mã NCC nhảy 1/2/4/7 — KHÔNG liên tục; đừng suy ra 3/5/6.",
+})).RequireAuthorization();
+
+app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? status, string? supplier,
+    string? dealerCode, string? supplierStatus, string? orderPartType) =>
 {
     var q = db.OrderParts.Where(o => o.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.OrderPartStatus == status);
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        // chấp nhận cả tên dài của port cũ lẫn mã 1 ký tự của nguồn
+        var code = orderPartLegacyStatusMap.TryGetValue(status.Trim(), out var mapped) ? mapped : status.Trim();
+        q = q.Where(o => o.OrderPartStatus == code);
+    }
     if (!string.IsNullOrWhiteSpace(supplier)) q = q.Where(o => o.SupplierCode == supplier);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(o => o.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(supplierStatus)) q = q.Where(o => o.SupplierStatus == supplierStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(orderPartType)) q = q.Where(o => o.OrderPartType == orderPartType!.Trim().ToUpperInvariant());
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.OrderPartNo, o.SupplierCode, o.WarehouseCode, o.OrderPartStatus, o.CreatedAt, o.SentAt, o.FinishedAt,
+        // #234: 22 cột bổ sung (§12 — có mặt ở cả GET lẫn POST)
+        o.DealerCode, o.SupplierID, o.PartGroupID, o.DeliveryFormCode, o.DeliveryLocationCode,
+        o.EstimatedDeliverDate, o.VIN, o.Remark,
+        o.RequestSuppierDate, o.ResponseSuppierDate, o.OrderSuppierNo,
+        o.SupplierStatus, o.OrderPartType, o.TSTID, o.SupplierLUDTime,
+        o.TotalValOrderAfterVAT, o.ValDiscount,
+        o.CreateBy, o.ApprBy, o.FinishBy, o.LogLUDateTime, o.LogLUBy,
         lines = db.OrderPartLines.Count(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id),
         total = db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).Sum(l => (decimal?)(l.OrderQty * l.Price)) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Cần SupplierCode (nhà cung cấp)." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.OrderQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + OrderQty > 0)." });
     var no = "OP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var o = new OrderPart { OrgId = t.OrgId, OrderPartNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), WarehouseCode = dto.WarehouseCode, OrderPartStatus = "Pending" };
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    // ⚠️ Chỉ gán 9 trường mà `Ser_Order_Part_Save` thực sự gửi (+ vết ghi). Ba trường ngày/số đơn NCC
+    //    KHÔNG gán ở đây — nguồn chỉ nhận chúng ở bước DUYỆT (`_Appr`).
+    var o = new OrderPart
+    {
+        OrgId = t.OrgId, OrderPartNo = no,
+        SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(),
+        WarehouseCode = dto.WarehouseCode,
+        OrderPartStatus = "P",
+        DealerCode = dto.DealerCode, SupplierID = dto.SupplierID, PartGroupID = dto.PartGroupID,
+        DeliveryFormCode = dto.DeliveryFormCode, DeliveryLocationCode = dto.DeliveryLocationCode,
+        EstimatedDeliverDate = dto.EstimatedDeliverDate, VIN = dto.VIN, Remark = dto.Remark,
+        OrderPartType = string.IsNullOrWhiteSpace(dto.OrderPartType) ? null : dto.OrderPartType!.Trim().ToUpperInvariant(),
+        SupplierStatus = "1",   // TConst.SupplierStatus.SS_1 — chờ NCC duyệt
+        CreateBy = who, LogLUDateTime = DateTime.Now, LogLUBy = who,
+    };
     db.OrderParts.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.OrderPartLines.Add(new OrderPartLine { OrgId = t.OrgId, OrderPartId = o.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, OrderQty = l.OrderQty, Price = l.Price });
@@ -28501,31 +28570,48 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
 // Gửi NCC (approve) / Hoàn thành (finish) / TỪ CHỐI (reject) — nguồn TConst.OrderPartStatus: P → A → F, và R.
 // 🔴 Port cũ thiếu hẳn `Rejected`(R) ⇒ không có đường từ chối đơn đặt phụ tùng.
 // Thao tác ở header ĐỒNG BỘ xuống trạng thái từng dòng, đúng cách nguồn ghi OrderPartStatusDtl.
-app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 #234 DUYỆT NHẬN THÊM DỮ LIỆU: `Ser_Order_Part_Appr` (Ser_Order_PartService.cs:182) gửi
+//    `EstimatedDeliverDate` · `RequestSuppierDate` · `ResponseSuppierDate` · `OrderSuppierNo` · `Remark`,
+//    trong đó **ba trường giữa KHÔNG có trong `_Save`** ⇒ chỉ nhập được lúc DUYỆT. Port cũ coi duyệt là
+//    thao tác "đổi trạng thái trơn" nên mất hẳn bước nhập số đơn NCC và hai mốc ngày.
+//    (đúng lớp lỗi đã ghi: "Save→Approve split rớt bước hậu-duyệt")
+app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, OrderPartActionDto? dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "finish" or "reject")) return Results.BadRequest(new { error = "action = approve|finish|reject" });
     no = no.Trim().ToUpperInvariant();
     var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
     if (o is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
 
     string lineStatus;
     if (action == "approve")
     {
-        if (o.OrderPartStatus != "Pending") return Results.BadRequest(new { error = "Chỉ gửi NCC đơn Mới tạo." });
-        o.OrderPartStatus = "Approved"; o.SentAt = DateTime.Now; lineStatus = "A";
+        if (o.OrderPartStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi NCC đơn Mới tạo." });
+        o.OrderPartStatus = "A"; o.SentAt = DateTime.Now; o.ApprBy = who; lineStatus = "A";
+        o.SupplierStatus = "2";   // SS_2: đã duyệt, chờ NCC hoàn thiện
+        // 5 trường mà _Appr gửi lên (chỉ ghi khi client có truyền — không xoá dữ liệu cũ)
+        if (dto?.EstimatedDeliverDate is not null) o.EstimatedDeliverDate = dto.EstimatedDeliverDate;
+        if (dto?.RequestSuppierDate is not null) o.RequestSuppierDate = dto.RequestSuppierDate;
+        if (dto?.ResponseSuppierDate is not null) o.ResponseSuppierDate = dto.ResponseSuppierDate;
+        if (!string.IsNullOrWhiteSpace(dto?.OrderSuppierNo)) o.OrderSuppierNo = dto!.OrderSuppierNo!.Trim();
+        if (!string.IsNullOrWhiteSpace(dto?.Remark)) o.Remark = dto!.Remark;
     }
     else if (action == "finish")
     {
-        if (o.OrderPartStatus != "Approved") return Results.BadRequest(new { error = "Chỉ hoàn thành đơn Đã gửi NCC." });
-        o.OrderPartStatus = "Finished"; o.FinishedAt = DateTime.Now; lineStatus = "F";
+        if (o.OrderPartStatus != "A") return Results.BadRequest(new { error = "Chỉ hoàn thành đơn Đã gửi NCC." });
+        o.OrderPartStatus = "F"; o.FinishedAt = DateTime.Now; o.FinishBy = who; lineStatus = "F";
+        o.SupplierStatus = "4";   // SS_4: đã hoàn thiện
     }
     else
     {
         // Từ chối được khi đơn CHƯA hoàn thành.
-        if (o.OrderPartStatus == "Finished") return Results.BadRequest(new { error = "Đơn đã hoàn thành, không từ chối được." });
-        if (o.OrderPartStatus == "Rejected") return Results.BadRequest(new { error = "Đơn đã bị từ chối." });
-        o.OrderPartStatus = "Rejected"; lineStatus = "R";
+        if (o.OrderPartStatus == "F") return Results.BadRequest(new { error = "Đơn đã hoàn thành, không từ chối được." });
+        if (o.OrderPartStatus == "R") return Results.BadRequest(new { error = "Đơn đã bị từ chối." });
+        o.OrderPartStatus = "R"; lineStatus = "R";
+        o.SupplierStatus = "7";   // SS_7: đơn lỗi, chờ kinh doanh điều chỉnh
     }
+    o.LogLUDateTime = DateTime.Now; o.LogLUBy = who;
 
     // Đồng bộ trạng thái từng dòng (nguồn ghi OrderPartStatusDtl trong cùng thao tác).
     var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).ToListAsync();
@@ -31303,7 +31389,16 @@ record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, st
     string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price);
 record OrderPartLineStatusDto(string? ToStatus);
-record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines);
+// #234: 8 trường mà `Ser_Order_Part_Save` gửi lên, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
+record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines,
+    string? DealerCode = null, string? SupplierID = null, string? PartGroupID = null,
+    string? DeliveryFormCode = null, string? DeliveryLocationCode = null,
+    DateTime? EstimatedDeliverDate = null, string? VIN = null, string? Remark = null,
+    string? OrderPartType = null);
+
+// #234: 5 trường mà `Ser_Order_Part_Appr` gửi lên — CHỈ dùng cho action "approve".
+record OrderPartActionDto(DateTime? EstimatedDeliverDate = null, DateTime? RequestSuppierDate = null,
+    DateTime? ResponseSuppierDate = null, string? OrderSuppierNo = null, string? Remark = null);
 // #233: bổ sung 13 trường mà `Ser_OrderComplain_Save` gửi lên (thêm ở CUỐI ⇒ không vỡ lời gọi cũ).
 //  KHÔNG có TSTOrderComplainNo/TSTEmployeeCode/TSTSolution/2 trạng thái: nguồn không cho client gửi.
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content,

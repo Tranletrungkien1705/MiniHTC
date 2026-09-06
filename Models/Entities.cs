@@ -5000,10 +5000,65 @@ public sealed class OrderPart
     public string OrderPartNo { get; set; } = "";
     public string SupplierCode { get; set; } = "";
     public string? WarehouseCode { get; set; }
-    public string OrderPartStatus { get; set; } = "Pending"; // Pending → Approved → Finished
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? SentAt { get; set; }
-    public DateTime? FinishedAt { get; set; }
+
+    /// <summary>
+    /// 🔴 #234 Trạng thái đơn theo `TConst.OrderPartStatus` (Const.Main.cs:536) — **MỘT KÝ TỰ**:
+    /// "P" Mới tạo · "A" Đã duyệt/gửi NCC · "F" Hoàn thành · "R" Từ chối.
+    /// ⚠️ Port cũ lưu chuỗi dài ("Pending"/"Approved"/"Finished"/"Rejected") trong khi **dòng chi tiết**
+    ///    `OrderPartLine.OrderPartStatusDtl` lại lưu "A"/"F"/"R" ⇒ header và dòng dùng **hai bộ mã khác nhau**,
+    ///    lọc theo trạng thái sẽ trượt. Nay thống nhất về mã 1 ký tự của nguồn; dữ liệu cũ đọc được
+    ///    qua bảng ánh xạ `orderPartLegacyStatusMap` trong Program.cs.
+    /// </summary>
+    public string OrderPartStatus { get; set; } = "P";
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;   // CreateDTime
+    public DateTime? SentAt { get; set; }                     // ` ApprDTime
+    public DateTime? FinishedAt { get; set; }                 // ` FinishDTime
+
+    // ===== 🔴 #234: cột nguồn `Ser_Order_Part` mà port cũ THIẾU =====
+    // Nguồn: `Entities/TST/Ser_Order_Part.cs` (md5 bc2a2708) + chữ ký `Ser_Order_Part_Save` / `_Appr`
+    // (Ser_Order_PartService.cs:141 / :182).
+
+    /// <summary>DealerCode — đại lý đặt hàng. Port cũ không có ⇒ không biết đơn của đại lý nào.</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>SupplierID — 🔴 KHÁC `SupplierCode`: nguồn gửi `SupplierID` trong `_Save`,
+    /// còn `SupplierName` lấy qua join (`msp_SupplierName`). Giữ cả hai, không gộp.</summary>
+    public string? SupplierID { get; set; }
+
+    public string? PartGroupID { get; set; }            // nhóm phụ tùng
+    public string? DeliveryFormCode { get; set; }       // hình thức giao hàng (Mst_DeliveryForm)
+    public string? DeliveryLocationCode { get; set; }   // địa điểm giao hàng — tra Mst_DeliveryLocation (#232)
+    public DateTime? EstimatedDeliverDate { get; set; } // ngày giao dự kiến
+    public string? VIN { get; set; }
+    public string? Remark { get; set; }
+
+    // --- ba trường CHỈ nhập lúc DUYỆT (`Ser_Order_Part_Appr` gửi, `_Save` KHÔNG gửi) ---
+    public DateTime? RequestSuppierDate { get; set; }   // ngày yêu cầu NCC (nguồn viết thiếu chữ "l": Suppier)
+    public DateTime? ResponseSuppierDate { get; set; }  // ngày NCC phản hồi
+    public string? OrderSuppierNo { get; set; }         // số đơn đặt phía NCC
+
+    /// <summary>
+    /// SupplierStatus — 🔴 trạng thái phía NCC, **cột RIÊNG** với `OrderPartStatus`.
+    /// Mã là SỐ NHẢY (`TConst.SupplierStatus`, Const.Main.cs:544): "1" Chờ duyệt · "2" Đã duyệt, chờ hoàn
+    /// thiện · "4" Đã hoàn thiện · "7" Đơn lỗi, chờ kinh doanh điều chỉnh. **Không có 3/5/6.**
+    /// </summary>
+    public string? SupplierStatus { get; set; }
+
+    /// <summary>OrderPartType (`TConst.OrderPartType`): "TST" · "OTHER".</summary>
+    public string? OrderPartType { get; set; }
+
+    public string? TSTID { get; set; }
+    public DateTime? SupplierLUDTime { get; set; }
+    public decimal? TotalValOrderAfterVAT { get; set; }  // tổng tiền sau VAT
+    public decimal? ValDiscount { get; set; }            // tiền chiết khấu
+
+    // --- vết ghi/duyệt ---
+    public string? CreateBy { get; set; }
+    public string? ApprBy { get; set; }
+    public string? FinishBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng đặt (Ser_Order_Part_Dtl): mã PT + SL đặt + đơn giá.</summary>
