@@ -4559,6 +4559,164 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// CHIẾN DỊCH ĐẠI LÝ theo quý — phần đầu (`MRK_CampaignDL` — port 1:1 cụm 7 hàm
+/// `MRK_CampaignDL_Get/Save/Update/Approve` + `MRK_CampaignDLRegisterDtl_Get` +
+/// `MRK_CampaignDLActualDtl_Get` + `MRK_CampaignDLQuarterKPI_Get`, tất cả `_New20181115`;
+/// 2010.HTC `BizHTC.Marketing.cs` dòng 8517 / 9042 / 10724 / 10368 / 10989 / 11252 / 11516).
+/// Đây là **cụm lớn nhất của module Marketing: SÁU bảng** ghi trong một lệnh `Save`.
+/// Khoá nghiệp vụ = bộ **BA**: (`DealerCode`, `MRKCamDLYear`, `MRKCamDLQuarter`).
+/// 🔴 Trạng thái dùng `TConst.MRKCampaignStatus` — **dùng CHUNG với cụm `MRK_Campaign`** (#111),
+/// chỉ "P"/"A". Nhưng tên CỘT thì mỗi bảng một kiểu: `MRKCamDLStatus` · `…StatusRegister` ·
+/// `…StatusRegisterDtl` · `…StatusActual` · `…StatusActualDtl` · `…StatusQKPI`.
+/// 🔴 `Approve` đồng bộ trạng thái xuống **CẢ NĂM bảng con**, không chỉ phần đầu.
+/// 🔴 `Save` mang cờ `strFlagIsDelete` (luật C0-centesimusdecimus) và xoá **cả sáu bảng** trước khi chèn lại.
+/// 🔴 `Update` **chỉ sửa BA trường**: `BonusPoint`, `ObligationKPI`, `KPIRank` — mọi cột điểm khác
+/// (`SalePromotionPoint`, `BrandingPoint`, `TotalRealPoint`, `TotalRegisterPoint`, `DegreeCompletionKPI`)
+/// được **đọc lại từ DB và ghi nguyên**, tức là do hệ thống tính, người dùng không sửa được.
+/// ⚠️ Tên cột `CreateDateTime`/`CreateBy` ở bảng này **KHÔNG có chữ d** (khác `CreatedDateTime`/`CreatedBy`
+/// của mọi cụm khác trong cùng file) — giữ nguyên theo nguồn.
+/// ⚠️ Guard `Mst_KPI_CheckDB` chưa port — MiniHTC không có master `Mst_KPI`.
+/// </summary>
+public sealed class MrkCampaignDL
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string MRKCamDLYear { get; set; } = "";
+    public string MRKCamDLQuarter { get; set; } = "";
+    /// <summary>Điểm khuyến mãi — hệ thống tính, Update không sửa.</summary>
+    public decimal? SalePromotionPoint { get; set; }
+    /// <summary>Điểm thương hiệu — hệ thống tính, Update không sửa.</summary>
+    public decimal? BrandingPoint { get; set; }
+    /// <summary>Điểm thưởng — MỘT trong ba trường Update sửa được.</summary>
+    public decimal? BonusPoint { get; set; }
+    public decimal? TotalRealPoint { get; set; }
+    public decimal? TotalRegisterPoint { get; set; }
+    public decimal? DegreeCompletionKPI { get; set; }
+    /// <summary>KPI nghĩa vụ — Update sửa được.</summary>
+    public string? ObligationKPI { get; set; }
+    /// <summary>Hạng KPI — Update sửa được.</summary>
+    public string? KPIRank { get; set; }
+    public string? RegisterFilePath { get; set; }
+    public string? ResultFilePath { get; set; }
+    public string MRKCamDLStatus { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    /// <summary>Nguồn đặt tên KHÔNG có chữ d: `CreateDateTime`.</summary>
+    public DateTime CreateDateTime { get; set; } = DateTime.Now;
+    /// <summary>Nguồn đặt tên KHÔNG có chữ d: `CreateBy`.</summary>
+    public string? CreateBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Phiếu ĐĂNG KÝ của chiến dịch đại lý (`MRK_CampaignDLRegister`).</summary>
+public sealed class MrkCampaignDLRegister
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKCamDLRegisterNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string MRKCamDLYear { get; set; } = "";
+    public string MRKCamDLQuarter { get; set; } = "";
+    /// <summary>Tên phiếu đăng ký (nguồn: `MRKPICamDLRegisterName`, có chèn "PI" giữa tên).</summary>
+    public string? MRKPICamDLRegisterName { get; set; }
+    public string? RegisterFilePath { get; set; }
+    public string? ReportFilePath { get; set; }
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    public DateTime? ReportDateEnd { get; set; }
+    public string MRKCamDLStatusRegister { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng KPI ĐĂNG KÝ (`MRK_CampaignDLRegisterDtl`) — số lượng và chất lượng cam kết.</summary>
+public sealed class MrkCampaignDLRegisterDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKCamDLRegisterNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string MRKCamDLYear { get; set; } = "";
+    public string MRKCamDLQuarter { get; set; } = "";
+    public string KPICode { get; set; } = "";
+    public string? KPIType { get; set; }
+    public decimal? QtyRegister { get; set; }
+    public decimal? ValQualityRegister { get; set; }
+    public string MRKCamDLStatusRegisterDtl { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Phiếu THỰC HIỆN của chiến dịch đại lý (`MRK_CampaignDLActual`).</summary>
+public sealed class MrkCampaignDLActual
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKCamDLActualNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string MRKCamDLYear { get; set; } = "";
+    public string MRKCamDLQuarter { get; set; } = "";
+    public string? MRKPICamDLActualName { get; set; }
+    public string? RegisterFilePath { get; set; }
+    public string? ReportFilePath { get; set; }
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    public DateTime? ReportDateEnd { get; set; }
+    public string MRKCamDLStatusActual { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng KPI THỰC HIỆN (`MRK_CampaignDLActualDtl`) — số lượng và chất lượng đạt được.</summary>
+public sealed class MrkCampaignDLActualDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKCamDLActualNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string MRKCamDLYear { get; set; } = "";
+    public string MRKCamDLQuarter { get; set; } = "";
+    public string KPICode { get; set; } = "";
+    public string? KPIType { get; set; }
+    public decimal? QtyActual { get; set; }
+    public decimal? ValQualityActual { get; set; }
+    public string MRKCamDLStatusActualDtl { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// TỔNG HỢP KPI theo quý (`MRK_CampaignDLQuarterKPI`) — nơi đối chiếu đăng ký với thực hiện:
+/// `TotalQtyRegister` vs `TotalQtyActual`, và quy ra `ActualPoint` trên `RegisterStandardPoint`.
+/// </summary>
+public sealed class MrkCampaignDLQuarterKPI
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string MRKCamDLYear { get; set; } = "";
+    public string MRKCamDLQuarter { get; set; } = "";
+    public string KPICode { get; set; } = "";
+    public string? KPIType { get; set; }
+    public decimal? RegisterStandardPoint { get; set; }
+    public decimal? TotalQtyRegister { get; set; }
+    public decimal? TotalQtyActual { get; set; }
+    public decimal? AvgValQualityActual { get; set; }
+    public decimal? ActualPoint { get; set; }
+    public string MRKCamDLStatusQKPI { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// CHIẾN DỊCH marketing — phần đầu (`MRK_Campaign` — port 1:1 cụm 3 hàm
 /// `MRK_Campaign_Get/Save/Approve_New20181115`, 2010.HTC `BizHTC.Marketing.cs`
 /// dòng 15916 / 16167 / 16628).

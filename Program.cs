@@ -4217,6 +4217,252 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Chiến dịch ĐẠI LÝ theo quý (MRK_CampaignDL — port 1:1 cụm 7 hàm: Get(8517) / Save(9042) /
+// Update(10724) / Approve(10368) + 3 hàm đọc chi tiết RegisterDtl(10989) / ActualDtl(11252) /
+// QuarterKPI(11516), 2010.HTC BizHTC.Marketing.cs). TWIN: 7/7, cả WS 32-bit lẫn 64-bit. =====
+// 🔴 Cụm LỚN NHẤT module: MỘT lệnh Save ghi SÁU bảng. Khoá nghiệp vụ = bộ BA
+//    (DealerCode, MRKCamDLYear, MRKCamDLQuarter).
+// 🔴 Trạng thái dùng CHUNG `TConst.MRKCampaignStatus` với cụm MRK_Campaign (#111) — chỉ "P"/"A" —
+//    nhưng tên CỘT mỗi bảng một khác: MRKCamDLStatus / …StatusRegister / …StatusRegisterDtl /
+//    …StatusActual / …StatusActualDtl / …StatusQKPI.
+// 🔴 Approve đồng bộ xuống CẢ NĂM bảng con.
+// 🔴 Update CHỈ sửa BA trường: BonusPoint, ObligationKPI, KPIRank. Các cột điểm còn lại do hệ thống
+//    tính (nguồn đọc lại từ DB rồi ghi nguyên) — người dùng không sửa được.
+// ⚠️ Cột `CreateDateTime`/`CreateBy` ở bảng này KHÔNG có chữ d, khác mọi cụm khác trong cùng file.
+// ⚠️ Guard `Mst_KPI_CheckDB` chưa port — MiniHTC không có master Mst_KPI.
+app.MapGet("/api/mrkcampaigndls", async (AppDbContext db, ITenantContext t, string? dealerCode, string? year, string? quarter, string? status) =>
+{
+    var qy = db.MrkCampaignDLs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.MRKCamDLYear == year);
+    if (!string.IsNullOrWhiteSpace(quarter)) qy = qy.Where(x => x.MRKCamDLQuarter == quarter);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.MRKCamDLStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Select(x => new
+    {
+        x.DealerCode, x.MRKCamDLYear, x.MRKCamDLQuarter,
+        x.SalePromotionPoint, x.BrandingPoint, x.BonusPoint,
+        x.TotalRealPoint, x.TotalRegisterPoint, x.DegreeCompletionKPI,
+        x.ObligationKPI, x.KPIRank, x.RegisterFilePath, x.ResultFilePath,
+        x.MRKCamDLStatus, x.Remark, x.LUDateTime, x.LUBy,
+        x.CreateDateTime, x.CreateBy, x.ApproveDateTime, x.ApproveBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Ba hàm đọc chi tiết riêng của nguồn — giữ nguyên thành ba endpoint riêng.
+app.MapGet("/api/mrkcampaigndls/registerdtl", async (AppDbContext db, ITenantContext t, string? dealerCode, string? year, string? quarter) =>
+{
+    var qy = db.MrkCampaignDLRegisterDtls.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.MRKCamDLYear == year);
+    if (!string.IsNullOrWhiteSpace(quarter)) qy = qy.Where(x => x.MRKCamDLQuarter == quarter);
+    var items = await qy.OrderBy(x => x.KPICode).Select(d => new
+    {
+        d.MRKCamDLRegisterNo, d.DealerCode, d.MRKCamDLYear, d.MRKCamDLQuarter,
+        d.KPICode, d.KPIType, d.QtyRegister, d.ValQualityRegister,
+        d.MRKCamDLStatusRegisterDtl, d.LogLUDateTime, d.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mrkcampaigndls/actualdtl", async (AppDbContext db, ITenantContext t, string? dealerCode, string? year, string? quarter) =>
+{
+    var qy = db.MrkCampaignDLActualDtls.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.MRKCamDLYear == year);
+    if (!string.IsNullOrWhiteSpace(quarter)) qy = qy.Where(x => x.MRKCamDLQuarter == quarter);
+    var items = await qy.OrderBy(x => x.KPICode).Select(d => new
+    {
+        d.MRKCamDLActualNo, d.DealerCode, d.MRKCamDLYear, d.MRKCamDLQuarter,
+        d.KPICode, d.KPIType, d.QtyActual, d.ValQualityActual,
+        d.MRKCamDLStatusActualDtl, d.LogLUDateTime, d.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mrkcampaigndls/quarterkpi", async (AppDbContext db, ITenantContext t, string? dealerCode, string? year, string? quarter) =>
+{
+    var qy = db.MrkCampaignDLQuarterKPIs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.MRKCamDLYear == year);
+    if (!string.IsNullOrWhiteSpace(quarter)) qy = qy.Where(x => x.MRKCamDLQuarter == quarter);
+    var items = await qy.OrderBy(x => x.KPICode).Select(d => new
+    {
+        d.DealerCode, d.MRKCamDLYear, d.MRKCamDLQuarter, d.KPICode, d.KPIType,
+        d.RegisterStandardPoint, d.TotalQtyRegister, d.TotalQtyActual,
+        d.AvgValQualityActual, d.ActualPoint, d.MRKCamDLStatusQKPI, d.Remark,
+        d.LogLUDateTime, d.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 Save: cờ FlagIsDelete = "1" thì xoá CẢ SÁU bảng; ngược lại xoá rồi chèn lại cả sáu.
+app.MapPost("/api/mrkcampaigndls/save", async (MrkCampaignDLSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var year = (dto.MRKCamDLYear ?? "").Trim();
+    var quarter = (dto.MRKCamDLQuarter ?? "").Trim();
+    if (dealer.Length < 1) return Results.BadRequest(new { error = "Mã đại lý rỗng." });
+    if (year.Length < 1) return Results.BadRequest(new { error = "Năm rỗng." });
+    if (quarter.Length < 1) return Results.BadRequest(new { error = "Quý rỗng." });
+
+    var cur = await db.MrkCampaignDLs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter);
+    if (cur is not null && cur.MRKCamDLStatus != "P")
+        return Results.BadRequest(new { error = $"Chiến dịch đại lý đang {cur.MRKCamDLStatus}, chỉ sửa/xoá được khi 'P'." });
+
+    // Gom sẵn bản ghi cũ của cả sáu bảng theo khoá ba.
+    var oldReg = await db.MrkCampaignDLRegisters.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    var oldRegDtl = await db.MrkCampaignDLRegisterDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    var oldAct = await db.MrkCampaignDLActuals.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    var oldActDtl = await db.MrkCampaignDLActualDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    var oldQKPI = await db.MrkCampaignDLQuarterKPIs.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+
+    var isDelete = (dto.FlagIsDelete ?? "").Trim() == "1";
+    if (isDelete && cur is null)
+        return Results.Ok(new { deleted = 0, note = "Không có bản ghi — nguồn coi là thành công." });
+
+    var createdAt = cur?.CreateDateTime ?? DateTime.Now;
+    var createdBy = cur?.CreateBy;
+    db.MrkCampaignDLRegisters.RemoveRange(oldReg);
+    db.MrkCampaignDLRegisterDtls.RemoveRange(oldRegDtl);
+    db.MrkCampaignDLActuals.RemoveRange(oldAct);
+    db.MrkCampaignDLActualDtls.RemoveRange(oldActDtl);
+    db.MrkCampaignDLQuarterKPIs.RemoveRange(oldQKPI);
+    if (cur is not null) db.MrkCampaignDLs.Remove(cur);
+    if (isDelete)
+    {
+        await db.SaveChangesAsync();
+        return Results.Ok(new { deleted = 1, dealer, year, quarter });
+    }
+    await db.SaveChangesAsync();
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.MrkCampaignDLs.Add(new MrkCampaignDL
+    {
+        OrgId = t.OrgId, DealerCode = dealer, MRKCamDLYear = year, MRKCamDLQuarter = quarter,
+        BonusPoint = dto.BonusPoint, ObligationKPI = dto.ObligationKPI, KPIRank = dto.KPIRank,
+        RegisterFilePath = dto.RegisterFilePath, ResultFilePath = dto.ResultFilePath,
+        MRKCamDLStatus = "P", Remark = dto.Remark,
+        LUDateTime = now, LUBy = who,
+        CreateDateTime = createdAt, CreateBy = createdBy ?? who,
+        LogLUDateTime = now, LogLUBy = who,
+    });
+    foreach (var r in dto.Registers ?? new())
+        db.MrkCampaignDLRegisters.Add(new MrkCampaignDLRegister
+        {
+            OrgId = t.OrgId, MRKCamDLRegisterNo = (r.MRKCamDLRegisterNo ?? "").Trim(),
+            DealerCode = dealer, MRKCamDLYear = year, MRKCamDLQuarter = quarter,
+            MRKPICamDLRegisterName = r.MRKPICamDLRegisterName,
+            RegisterFilePath = r.RegisterFilePath, ReportFilePath = r.ReportFilePath,
+            EffDateStart = r.EffDateStart, EffDateEnd = r.EffDateEnd, ReportDateEnd = r.ReportDateEnd,
+            MRKCamDLStatusRegister = "P", Remark = r.Remark, LogLUDateTime = now, LogLUBy = who,
+        });
+    foreach (var r in dto.RegisterDtls ?? new())
+        db.MrkCampaignDLRegisterDtls.Add(new MrkCampaignDLRegisterDtl
+        {
+            OrgId = t.OrgId, MRKCamDLRegisterNo = (r.MRKCamDLRegisterNo ?? "").Trim(),
+            DealerCode = dealer, MRKCamDLYear = year, MRKCamDLQuarter = quarter,
+            KPICode = (r.KPICode ?? "").Trim(), KPIType = r.KPIType,
+            QtyRegister = r.QtyRegister, ValQualityRegister = r.ValQualityRegister,
+            MRKCamDLStatusRegisterDtl = "P", LogLUDateTime = now, LogLUBy = who,
+        });
+    foreach (var r in dto.Actuals ?? new())
+        db.MrkCampaignDLActuals.Add(new MrkCampaignDLActual
+        {
+            OrgId = t.OrgId, MRKCamDLActualNo = (r.MRKCamDLActualNo ?? "").Trim(),
+            DealerCode = dealer, MRKCamDLYear = year, MRKCamDLQuarter = quarter,
+            MRKPICamDLActualName = r.MRKPICamDLActualName,
+            RegisterFilePath = r.RegisterFilePath, ReportFilePath = r.ReportFilePath,
+            EffDateStart = r.EffDateStart, EffDateEnd = r.EffDateEnd, ReportDateEnd = r.ReportDateEnd,
+            MRKCamDLStatusActual = "P", Remark = r.Remark, LogLUDateTime = now, LogLUBy = who,
+        });
+    foreach (var r in dto.ActualDtls ?? new())
+        db.MrkCampaignDLActualDtls.Add(new MrkCampaignDLActualDtl
+        {
+            OrgId = t.OrgId, MRKCamDLActualNo = (r.MRKCamDLActualNo ?? "").Trim(),
+            DealerCode = dealer, MRKCamDLYear = year, MRKCamDLQuarter = quarter,
+            KPICode = (r.KPICode ?? "").Trim(), KPIType = r.KPIType,
+            QtyActual = r.QtyActual, ValQualityActual = r.ValQualityActual,
+            MRKCamDLStatusActualDtl = "P", LogLUDateTime = now, LogLUBy = who,
+        });
+    foreach (var r in dto.QuarterKPIs ?? new())
+        db.MrkCampaignDLQuarterKPIs.Add(new MrkCampaignDLQuarterKPI
+        {
+            OrgId = t.OrgId, DealerCode = dealer, MRKCamDLYear = year, MRKCamDLQuarter = quarter,
+            KPICode = (r.KPICode ?? "").Trim(), KPIType = r.KPIType,
+            RegisterStandardPoint = r.RegisterStandardPoint,
+            TotalQtyRegister = r.TotalQtyRegister, TotalQtyActual = r.TotalQtyActual,
+            AvgValQualityActual = r.AvgValQualityActual, ActualPoint = r.ActualPoint,
+            MRKCamDLStatusQKPI = "P", Remark = r.Remark, LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        dealer, year, quarter, status = "P",
+        registers = (dto.Registers ?? new()).Count, registerDtls = (dto.RegisterDtls ?? new()).Count,
+        actuals = (dto.Actuals ?? new()).Count, actualDtls = (dto.ActualDtls ?? new()).Count,
+        quarterKPIs = (dto.QuarterKPIs ?? new()).Count,
+    });
+}).RequireAuthorization();
+
+// 🔴 Update CHỈ sửa ba trường; các cột điểm do hệ thống tính nên KHÔNG nhận từ client.
+app.MapPost("/api/mrkcampaigndls/update", async (MrkCampaignDLUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var year = (dto.MRKCamDLYear ?? "").Trim();
+    var quarter = (dto.MRKCamDLQuarter ?? "").Trim();
+    var row = await db.MrkCampaignDLs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter);
+    if (row is null) return Results.NotFound(new { error = $"Không có chiến dịch đại lý {dealer}/{year}/{quarter}." });
+    if (row.MRKCamDLStatus != "P")
+        return Results.BadRequest(new { error = $"Đang {row.MRKCamDLStatus}, chỉ sửa được khi 'P'." });
+
+    row.BonusPoint = dto.BonusPoint;
+    row.ObligationKPI = dto.ObligationKPI;
+    row.KPIRank = dto.KPIRank;
+    row.LUDateTime = DateTime.Now;
+    row.LUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.LogLUDateTime = row.LUDateTime.Value; row.LogLUBy = row.LUBy;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealer, year, quarter, row.BonusPoint, row.ObligationKPI, row.KPIRank });
+}).RequireAuthorization();
+
+// 🔴 Approve đồng bộ trạng thái xuống CẢ NĂM bảng con.
+app.MapPost("/api/mrkcampaigndls/approve", async (MrkCampaignDLKeyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var year = (dto.MRKCamDLYear ?? "").Trim();
+    var quarter = (dto.MRKCamDLQuarter ?? "").Trim();
+    var row = await db.MrkCampaignDLs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter);
+    if (row is null) return Results.NotFound(new { error = $"Không có chiến dịch đại lý {dealer}/{year}/{quarter}." });
+    if (row.MRKCamDLStatus != "P")
+        return Results.BadRequest(new { error = $"Đang {row.MRKCamDLStatus}, chỉ duyệt được khi 'P'." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.MRKCamDLStatus = "A"; row.ApproveDateTime = now; row.ApproveBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    var reg = await db.MrkCampaignDLRegisters.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    foreach (var r in reg) { r.MRKCamDLStatusRegister = "A"; r.LogLUDateTime = now; r.LogLUBy = who; }
+    var regDtl = await db.MrkCampaignDLRegisterDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    foreach (var r in regDtl) { r.MRKCamDLStatusRegisterDtl = "A"; r.LogLUDateTime = now; r.LogLUBy = who; }
+    var act = await db.MrkCampaignDLActuals.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    foreach (var r in act) { r.MRKCamDLStatusActual = "A"; r.LogLUDateTime = now; r.LogLUBy = who; }
+    var actDtl = await db.MrkCampaignDLActualDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    foreach (var r in actDtl) { r.MRKCamDLStatusActualDtl = "A"; r.LogLUDateTime = now; r.LogLUBy = who; }
+    var qkpi = await db.MrkCampaignDLQuarterKPIs.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
+    foreach (var r in qkpi) { r.MRKCamDLStatusQKPI = "A"; r.LogLUDateTime = now; r.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        dealer, year, quarter, status = "A",
+        synced = new { registers = reg.Count, registerDtls = regDtl.Count, actuals = act.Count, actualDtls = actDtl.Count, quarterKPIs = qkpi.Count },
+    });
+}).RequireAuthorization();
+
 // ===== Chiến dịch marketing (MRK_Campaign — port 1:1 cụm 3 hàm Get(15916) / Save(16167) /
 // Approve(16628), 2010.HTC BizHTC.Marketing.cs). TWIN: 3/3, cả WS 32-bit lẫn 64-bit. =====
 // 🔴 Hằng trạng thái riêng `TConst.MRKCampaignStatus` (Const.Main.cs:832): chỉ "P" và "A".
@@ -23317,6 +23563,16 @@ record MrkKpiDisbursmentSaveDto(string? FlagIsDelete, string? KPIDisbursmentYear
 record MrkCampaignFileDto(string? FileType, string? FileNameActual, string? FilePath);
 record MrkCampaignSaveDto(string? FlagIsDelete, string? MRKCampaignNo, string? MRKCampaignName, string? DealerCode, string? EvenType, DateTime? StartDate, DateTime? EndDate, string? Remark, List<MrkCampaignFileDto>? Details);
 record MrkCampaignKeyDto(string? MRKCampaignNo);
+// Chiến dịch đại lý theo quý: MỘT lệnh Save mang theo năm bảng con.
+record MrkCampaignDLRegisterDto(string? MRKCamDLRegisterNo, string? MRKPICamDLRegisterName, string? RegisterFilePath, string? ReportFilePath, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? ReportDateEnd, string? Remark);
+record MrkCampaignDLRegisterDtlDto(string? MRKCamDLRegisterNo, string? KPICode, string? KPIType, decimal? QtyRegister, decimal? ValQualityRegister);
+record MrkCampaignDLActualDto(string? MRKCamDLActualNo, string? MRKPICamDLActualName, string? RegisterFilePath, string? ReportFilePath, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? ReportDateEnd, string? Remark);
+record MrkCampaignDLActualDtlDto(string? MRKCamDLActualNo, string? KPICode, string? KPIType, decimal? QtyActual, decimal? ValQualityActual);
+record MrkCampaignDLQuarterKPIDto(string? KPICode, string? KPIType, decimal? RegisterStandardPoint, decimal? TotalQtyRegister, decimal? TotalQtyActual, decimal? AvgValQualityActual, decimal? ActualPoint, string? Remark);
+record MrkCampaignDLSaveDto(string? FlagIsDelete, string? DealerCode, string? MRKCamDLYear, string? MRKCamDLQuarter, decimal? BonusPoint, string? ObligationKPI, string? KPIRank, string? RegisterFilePath, string? ResultFilePath, string? Remark, List<MrkCampaignDLRegisterDto>? Registers, List<MrkCampaignDLRegisterDtlDto>? RegisterDtls, List<MrkCampaignDLActualDto>? Actuals, List<MrkCampaignDLActualDtlDto>? ActualDtls, List<MrkCampaignDLQuarterKPIDto>? QuarterKPIs);
+// Update chỉ nhận ba trường sửa được — cột điểm do hệ thống tính, không nhận từ client.
+record MrkCampaignDLUpdateDto(string? DealerCode, string? MRKCamDLYear, string? MRKCamDLQuarter, decimal? BonusPoint, string? ObligationKPI, string? KPIRank);
+record MrkCampaignDLKeyDto(string? DealerCode, string? MRKCamDLYear, string? MRKCamDLQuarter);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
