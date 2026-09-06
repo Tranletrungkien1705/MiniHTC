@@ -20330,17 +20330,73 @@ app.MapPost("/api/bankingtrans/{no}/pushbank", async (string no, AppDbContext db
     return Results.Ok(new { b.SoDeNghi, b.BankStatus });
 }).RequireAuthorization();
 
-// Hủy đề nghị (port 1:1 btnCancel_Click) — chỉ khi Status='Approved' (A) và BankStatus thuộc A1/A2/A3.
-app.MapPost("/api/bankingtrans/{no}/cancel-request", async (string no, AppDbContext db, ITenantContext t) =>
+// 🔴 #193 HUỶ ĐỀ NGHỊ GD NGÂN HÀNG — port lại theo `RQ_BankingTransactions_Cancel`
+// Nguồn: `BankIntergration/BizHTC.VietinBank.cs:11539` (md5 CẢ FILE `2304e433…` khớp 2 máy — xem #192).
+// TWIN: WS64 gọi ở 82998; WS32 không có lệnh `RQ_*` nào ⇒ 64-bit-only.
+//
+// Port cũ chỉ đổi `Status = "Cancelled"` — ĐÚNG guard nhưng SAI hành vi: nguồn huỷ theo kiểu **CASCADE**,
+// một lệnh chạm 11 bảng. Guard của nguồn (`_CheckDB(..., Flag.Active, "A", "A1,A2,A3")`) trùng với guard
+// port cũ, nên lỗi này KHÔNG lộ qua đường kiểm trạng thái — chỉ lộ khi đọc phần ghi.
+//
+// Nguồn ghi trên HEADER `RQ_BankingTransactions`: `BkTransStatus = BkTransStatus.Cancel ("C")`,
+//   **và cả** `BkTransBankStatus = BkTransBankStatus.Cancel ("C")` — nguồn chú thích thẳng trong SQL:
+//   "Bank không đẩy lại trạng thái nên đổi trạng thái luôn"; kèm `CancelDate`, `CancelBy`, `LogLUDateTime`, `LogLUBy`.
+//
+// 🔴 CASCADE 10 BẢNG CON, mỗi bảng một TÊN CỘT TRẠNG THÁI KHÁC NHAU (chính vì khác tên nên port từng
+//    nhánh riêng lẻ không ai thấy — cùng motif với #159):
+//      RQ_BankingTransPmt → BkTransPmtStatus · PmtDtl → BkTransPmtDtlStatus
+//      RQ_BankingTransPmtLC → BkTransPmtLCStatus · PmtLCDtl → BkTransPmtLCDtlStatus
+//      RQ_BankingTransGrt → BkTransGrtStatus · GrtDtl → BkTransGrtDtlStatus
+//      RQ_BankingTransWrt → BkTransWrtStatus · WrtDtl → BkTransWrtDtlStatus
+//      RQ_BankingTransCtr → BkTransCtrStatus · WrtCtr → BkTransWrtCtrStatus
+//    Mỗi bảng con còn được ghi `LogLUDateTime`/`LogLUBy`.
+//
+// ⚠️ GIỮ ĐÚNG NGUỒN, KHÔNG "sửa hộ": nguồn cascade **10** bảng, **BỎ SÓT `RQ_BankingTransGrtLC` và
+//    `RQ_BankingTransGrtLCDtl`** — dù hai bảng này được `_SaveX_20220817` ghi bình thường (MiniHTC đã port
+//    ở #137). Đúng cặp bảng mà nguồn cũng quên `drop table #input_…` trong khối "Clear for debug" (ghi ở #137).
+//    Hai lần quên cùng một cặp bảng ⇒ nhiều khả năng là thiếu sót thật của nguồn, nhưng port 1:1 giữ nguyên
+//    và ghi nợ để người nghiệp vụ quyết.
+app.MapPost("/api/bankingtrans/{no}/cancel-request", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
     if (b is null) return Results.NotFound(new { no });
     if (!(b.Status == "Approved" && (b.BankStatus == "A1" || b.BankStatus == "A2" || b.BankStatus == "A3")))
         return Results.BadRequest(new { error = "Không thể hủy nếu 2 trạng thái khác 'A' - 'A1'/'A2'/'A3'!" });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
     b.Status = "Cancelled";
+    b.BankStatus = "C";                       // nguồn đổi LUÔN trạng thái ngân hàng, không chờ bank đẩy lại
+    b.CancelDate = now; b.CancelBy = who;
+    b.LogLUDateTime = now; b.LogLUBy = who;
+
+    var n = 0;
+    foreach (var r in await db.RqBankingTransPmts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransPmtStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransPmtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransPmtDtlStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransPmtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransPmtLCStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransPmtLCDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransPmtLCDtlStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransGrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransGrtStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransGrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransGrtDtlStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransWrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransWrtStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransWrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransWrtDtlStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransCtrs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransCtrStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    foreach (var r in await db.RqBankingTransWrtCtrs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+    { r.BkTransWrtCtrStatus = "C"; r.LogLUDateTime = now; r.LogLUBy = who; n++; }
+    // KHÔNG chạm RqBankingTransGrtLCs / RqBankingTransGrtLCDtls — đúng như nguồn (xem ghi chú trên).
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.SoDeNghi, b.Status });
+    return Results.Ok(new { b.SoDeNghi, status = b.Status, bankStatus = b.BankStatus, b.CancelDate, b.CancelBy, cancelledDetailRows = n });
 }).RequireAuthorization();
 
 // Xóa đề nghị (port 1:1 btnDelete_Click) — chỉ khi Status='Draft' (P) và BankStatus='P'.
