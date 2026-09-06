@@ -13726,6 +13726,9 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
 {
     var no = (dto.InContractNo ?? "").Trim();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng bảo hiểm." });
+    // #250: `FrmInsuranceContractCreate.cs` kiểm `regex.IsMatch(txtInContractNo.Text)`.
+    if (HasSpecialChar(no))
+        return Results.BadRequest(new { error = "Số hợp đồng bảo hiểm không được phép chứa các ký tự đặc biệt", no });
     if (string.IsNullOrWhiteSpace((dto.TypePayment ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập loại thanh toán." });
     if (dto.PaymentLimit < 0) return Results.BadRequest(new { error = "Hạn mức thanh toán không hợp lệ." });
     if (dto.StartDate.HasValue && dto.FinishDate.HasValue && dto.FinishDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
@@ -19005,6 +19008,10 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
     if (string.IsNullOrWhiteSpace(dto.Remark)) return Results.BadRequest(new { error = "Chưa nhập nội dung thông báo." });
     // Biz chặn thiếu số bản tin hãng (Blt_Bulletin_InvalidBulletinNoHMC) — form không có luật này.
     if (string.IsNullOrWhiteSpace(dto.BulletinNoHMC)) return Results.BadRequest(new { error = "Chưa nhập số bản tin HMC!" });
+    // #250: `FrmBulletinHTCCreate.cs` và `FrmBulletinHTCModify.cs` đều kiểm `regex.IsMatch(txtBulletinNo.Text)`.
+    //   ⚠️ Ô bị kiểm là `BulletinNo` (số bản tin của TA), KHÔNG phải `BulletinNoHMC` (số của hãng).
+    if (HasSpecialChar((dto.BulletinNo ?? "").Trim()))
+        return Results.BadRequest(new { error = "Số bản tin không được phép chứa các ký tự đặc biệt" });
 
     var vinLines = dto.Vins ?? new();
     foreach (var line in vinLines)
@@ -19493,7 +19500,8 @@ app.MapPost("/api/filepathvideos", async (SerFilePathVideoDto dto, AppDbContext 
 {
     var code = (dto.FilePathVideoCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã video." });
-    if (System.Text.RegularExpressions.Regex.IsMatch(code, "[^a-zA-Z0-9_-]")) return Results.BadRequest(new { error = "Mã video không được nhập ký tự đặc biệt." });
+    // 🔴 #250 PATTERN SAI (cùng lỗi thiếu dấu chấm như `/api/engineers`).
+    if (HasSpecialChar(code)) return Results.BadRequest(new { error = "Mã video không được nhập ký tự đặc biệt." });
     if (string.IsNullOrWhiteSpace((dto.FilePathVideoName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên video." });
     if (string.IsNullOrWhiteSpace((dto.FilePathVideo ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập link video." });
     var row = await db.SerFilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == code);
@@ -28822,6 +28830,9 @@ app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantCo
 {
     if (string.IsNullOrWhiteSpace(dto.CamNo) || string.IsNullOrWhiteSpace(dto.CamName))
         return Results.BadRequest(new { error = "Cần CamNo và CamName." });
+    // #250: `FrmCampaignCreate.cs` kiểm `regex.IsMatch(txtCamNo.Text)` (bản đồ regex #249).
+    if (HasSpecialChar(dto.CamNo.Trim()))
+        return Results.BadRequest(new { error = "Mã chương trình không được phép chứa các ký tự đặc biệt" });
     if (dto.StartDate is null) return Results.BadRequest(new { error = "Cần StartDate." });
     if (dto.FinishDate is DateTime fd && fd < dto.StartDate.Value)
         return Results.BadRequest(new { error = "Ngày kết thúc phải ≥ ngày bắt đầu." });   // guard gốc FrmCampaignCreate
@@ -28912,7 +28923,10 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     if (string.IsNullOrWhiteSpace(dto.EngineerNo) || string.IsNullOrWhiteSpace(dto.EngineerName))
         return Results.BadRequest(new { error = "Cần EngineerNo và EngineerName." });
     var no = dto.EngineerNo.Trim().ToUpperInvariant();
-    if (System.Text.RegularExpressions.Regex.IsMatch(no, "[^a-zA-Z0-9_-]")) return Results.BadRequest(new { error = "Mã nhân viên không được nhập ký tự đặc biệt." });
+    // 🔴 #250 PATTERN SAI: guard này dùng `[^a-zA-Z0-9_-]` — **THIẾU dấu chấm**. Pattern thật của nguồn
+    //    (`FrmMdiBase.cs:46`) là `[^a-zA-Z0-9._-]` ⇒ mã có dấu chấm (vd `NV.01`) bị chặn NHẦM.
+    //    Nay dùng helper chung `HasSpecialChar` để mọi nơi cùng một pattern.
+    if (HasSpecialChar(no)) return Results.BadRequest(new { error = "Mã nhân viên không được nhập ký tự đặc biệt." });
     if (dto.StartWorkDate.HasValue && dto.FinishWorkDate.HasValue && dto.FinishWorkDate < dto.StartWorkDate)
         return Results.BadRequest(new { error = "Ngày bắt đầu làm việc không được lớn hơn ngày kết thúc làm việc." });
     var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
