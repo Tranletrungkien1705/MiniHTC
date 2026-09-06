@@ -180,6 +180,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RetrieveReqCar> RetrieveReqCars => Set<RetrieveReqCar>();
     public DbSet<VinPacking> VinPackings => Set<VinPacking>();
     public DbSet<GpsClaim> GpsClaims => Set<GpsClaim>();
+    public DbSet<GpsClaimAttachFile> GpsClaimAttachFiles => Set<GpsClaimAttachFile>();
     public DbSet<GpsIn> GpsIns => Set<GpsIn>();
     public DbSet<GpsInDetail> GpsInDetails => Set<GpsInDetail>();
     public DbSet<GpsOut> GpsOuts => Set<GpsOut>();

@@ -14425,7 +14425,16 @@ app.MapPost("/api/estimateorders", async (EstimateOrderDto dto, AppDbContext db,
     var h = new EstimateOrder { OrgId = t.OrgId, EstOrderNo = no, DealerCode = dto.DealerCode, MonthEstimate = dto.MonthEstimate, HtcStaffInCharge = dto.HtcStaffInCharge, Status = "P" };
     db.EstimateOrders.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.EstimateOrderLines.Add(new EstimateOrderLine { OrgId = t.OrgId, EstimateOrderId = h.Id, ModelCode = l.ModelCode!.Trim(), SpecCode = l.SpecCode, Quantity = l.Quantity });
+        db.EstimateOrderLines.Add(new EstimateOrderLine { OrgId = t.OrgId, EstimateOrderId = h.Id, ModelCode = l.ModelCode!.Trim(), SpecCode = l.SpecCode, Quantity = l.Quantity ,
+            // #154 parity Plan_EstimateOrderDtl.
+            QtySellCustomer = l.QtySellCustomer, QtySellDealer = l.QtySellDealer, QtyInStock = l.QtyInStock,
+            QtyOnWay = l.QtyOnWay, QtyBuyDealer = l.QtyBuyDealer, QtyUnKnown = l.QtyUnKnown,
+            QtyBOChuaXuatKho = l.QtyBOChuaXuatKho, QtyBOKhongVINQuaKhu = l.QtyBOKhongVINQuaKhu,
+            QtyBOKhongVINHienTai = l.QtyBOKhongVINHienTai, QtyBOKhongVINTuongLai = l.QtyBOKhongVINTuongLai,
+            QtyOrdCarID = l.QtyOrdCarID, QtyOrdNotCarID = l.QtyOrdNotCarID, QtyEOrdN1 = l.QtyEOrdN1,
+            QtyESellCusN0 = l.QtyESellCusN0, QtyESellCusN1 = l.QtyESellCusN1,
+            QtyESellCusN2 = l.QtyESellCusN2, QtyESellCusN3 = l.QtyESellCusN3,
+            PLEOrdDtlStatus = "P", LUDateTime = DateTime.Now, LogLUDateTime = DateTime.Now });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.EstOrderNo, lines = lines.Count });
 }).RequireAuthorization();
@@ -14435,7 +14444,13 @@ app.MapGet("/api/estimateorders/{id}/lines", async (long id, AppDbContext db, IT
     var h = await db.EstimateOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.EstimateOrderLines.Where(l => l.OrgId == t.OrgId && l.EstimateOrderId == id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.Quantity }).ToListAsync();
+        .Select(l => new { l.ModelCode, l.SpecCode, l.Quantity,
+            // #154 parity Plan_EstimateOrderDtl — 20 loại số lượng + trạng thái dòng + dấu vết.
+            l.QtySellCustomer, l.QtySellDealer, l.QtyInStock, l.QtyOnWay, l.QtyBuyDealer, l.QtyUnKnown,
+            l.QtyBOChuaXuatKho, l.QtyBOKhongVINQuaKhu, l.QtyBOKhongVINHienTai, l.QtyBOKhongVINTuongLai,
+            l.QtyOrdCarID, l.QtyOrdNotCarID, l.QtyEOrdN1,
+            l.QtyESellCusN0, l.QtyESellCusN1, l.QtyESellCusN2, l.QtyESellCusN3,
+            l.PLEOrdDtlStatus, l.LUDateTime, l.LUBy, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { h.EstOrderNo, h.DealerCode, h.MonthEstimate, h.Status, lines });
 }).RequireAuthorization();
 
@@ -17862,7 +17877,12 @@ app.MapGet("/api/transportinspayments/{no}", async (string no, AppDbContext db, 
     var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.TransportInsPaymentLines.Where(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == h.Id).Select(l => new
-    { l.Vin, l.CarId, l.DlvMnNo, l.TProvinceName, l.ExpectedDlvEndDate, l.DlvEndDate, l.TFValReal, l.TPValReal, l.PriceCar, l.InsuranceCost, l.ValTransport, l.Remark }).ToListAsync();
+    { l.Vin, l.CarId, l.DlvMnNo, l.TProvinceName, l.ExpectedDlvEndDate, l.DlvEndDate, l.TFValReal, l.TPValReal, l.PriceCar, l.InsuranceCost, l.ValTransport, l.Remark,
+      // #154 parity Pmt_TransportInsDetail.
+      l.TotalPrice, l.FProvinceRemark, l.StandardRemark, l.TrasportInsDtlStatus,
+      l.FStorageCode, l.FProvinceName, l.TStorageCode, l.InvStartDate, l.InvEndDate,
+      l.ExpectedDays, l.DelayDate, l.DelayPenaty, l.TransportCost, l.InsurancePercent,
+      l.TranspReqType, l.InsuranceContractNo, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
 }).RequireAuthorization();
 
@@ -26595,6 +26615,36 @@ app.MapPost("/api/gpsouts/{no}/approve", async (string no, AppDbContext db, ITen
 }).RequireAuthorization();
 
 // ===== Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng) =====
+// ===== #154: FILE ĐÍNH KÈM YÊU CẦU BẢO HÀNH GPS (GPSF_GPSClaimAttachFile) =====
+// Nguồn: StorageFG/BizHTC.ZTempGPS.cs (csproj 153, md5 cd3c409e khớp 2 máy) — ghi tại 5900 và 6763.
+// TWIN: cụm GPSF_GPSClaim* có ở CẢ HAI WS ⇒ không lệch.
+app.MapGet("/api/gpsclaims/{no}/files", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var items = await db.GpsClaimAttachFiles.Where(x => x.OrgId == t.OrgId && x.GPSClaimNo == no)
+        .OrderBy(x => x.FileIndex).Select(x => new { x.FileIndex, x.GPSFilePath, x.GPSFileName,
+            x.GPSFileType, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { gpsClaimNo = no, count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsclaims/{no}/files", async (string no, List<GpsClaimFileDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var files = (rows ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.GPSFileName) || !string.IsNullOrWhiteSpace(x.GPSFilePath)).ToList();
+    if (files.Count == 0) return Results.BadRequest(new { error = "Không có file nào." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    // nguồn ghi lại toàn bộ danh sách file của yêu cầu trong mỗi lượt lưu.
+    db.GpsClaimAttachFiles.RemoveRange(await db.GpsClaimAttachFiles.Where(x => x.OrgId == t.OrgId && x.GPSClaimNo == no).ToListAsync());
+    var idx = 0;
+    foreach (var f in files)
+        db.GpsClaimAttachFiles.Add(new GpsClaimAttachFile { OrgId = t.OrgId, GPSClaimNo = no,
+            FileIndex = f.FileIndex > 0 ? f.FileIndex : ++idx, GPSFilePath = f.GPSFilePath,
+            GPSFileName = f.GPSFileName, GPSFileType = f.GPSFileType, Remark = f.Remark,
+            LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { gpsClaimNo = no, saved = files.Count });
+}).RequireAuthorization();
+
 app.MapGet("/api/gpsclaims", async (AppDbContext db, ITenantContext t, string? claimStatus, string? device) =>
 {
     var q = db.GpsClaims.Where(g => g.OrgId == t.OrgId);
@@ -27801,7 +27851,8 @@ record DRActionDto(string Action, string? Note);
 record EstimateOrderDto(string? DealerCode, string MonthEstimate, string? HtcStaffInCharge, List<EstOrderLineDto>? Lines);
 // Nguồn duyệt THEO LÔ: bảng Plan_EstimateOrder nhiều dòng, lặp theo PLEOrdNo.
 record EstOrderApproveDto(List<string>? OrderNos);
-record EstOrderLineDto(string ModelCode, string? SpecCode, int Quantity);
+record EstOrderLineDto(string ModelCode, string? SpecCode, int Quantity, decimal QtySellCustomer = 0, decimal QtySellDealer = 0, decimal QtyInStock = 0, decimal QtyOnWay = 0, decimal QtyBuyDealer = 0, decimal QtyUnKnown = 0, decimal QtyBOChuaXuatKho = 0, decimal QtyBOKhongVINQuaKhu = 0, decimal QtyBOKhongVINHienTai = 0, decimal QtyBOKhongVINTuongLai = 0, decimal QtyOrdCarID = 0, decimal QtyOrdNotCarID = 0, decimal QtyEOrdN1 = 0, decimal QtyESellCusN0 = 0, decimal QtyESellCusN1 = 0, decimal QtyESellCusN2 = 0, decimal QtyESellCusN3 = 0);
+record GpsClaimFileDto(string GPSClaimNo, int FileIndex, string? GPSFilePath, string? GPSFileName, string? GPSFileType, string? Remark);
 record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? Description, string? SoCode, string? WorkOrderNoTemp);
 record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, int Q2, int Q3, int Q4);
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);

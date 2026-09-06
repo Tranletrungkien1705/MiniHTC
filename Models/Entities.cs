@@ -1362,6 +1362,26 @@ public sealed class VinPacking
 
 /// <summary>Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng, StoFGPS):
 /// 3 chiều trạng thái. Claim: Pending→Approved; Received: ''→Progress→Finished (nhận TB về sửa); Fix: ''→Finished.</summary>
+/// <summary>
+/// File đính kèm của yêu cầu bảo hành thiết bị GPS (`GPSF_GPSClaimAttachFile`) —
+/// nguồn StorageFG/BizHTC.ZTempGPS.cs (csproj **153**, md5 cd3c409e… khớp 2 máy), ghi tại 5900 và 6763.
+/// TWIN: cụm `GPSF_GPSClaim*` có ở **CẢ HAI** WS ⇒ không lệch.
+/// </summary>
+public sealed class GpsClaimAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GPSClaimNo { get; set; } = "";
+    public int FileIndex { get; set; }
+    public string? GPSFilePath { get; set; }
+    public string? GPSFileName { get; set; }
+    /// <summary>Loại file (`GPSFileType`) — phân biệt ảnh trước/sau sửa, biên bản…</summary>
+    public string? GPSFileType { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class GpsClaim
 {
     public long Id { get; set; }
@@ -1801,7 +1821,36 @@ public sealed class TransportInsPaymentLine
     public decimal TPValReal { get; set; }      // phạt trễ hạn
     public decimal PriceCar { get; set; }
     public decimal InsuranceCost { get; set; }  // phí bảo hiểm
-    public decimal ValTransport { get; set; }   // tự tính = TFValReal + InsuranceCost - TPValReal
+    /// <summary>⚠️ Cột RIÊNG MiniHTC (nguồn không có) — tổng tiền dòng do bản port tự tính.</summary>
+    public decimal ValTransport { get; set; }
+
+    // ===== #154 parity Pmt_TransportInsDetail: 17 cột nguồn ghi mà port cũ thiếu =====
+    // Nguồn: DMS40/0.34.Contract.cs (csproj 125, md5 e2f3680f… verify 2 máy ở #139) — ghi tại 15703.
+    /// <summary>Tổng giá trị dòng (`TotalPrice`).</summary>
+    public decimal TotalPrice { get; set; }
+    /// <summary>Ghi chú tỉnh ĐI (`FProvinceRemark`) và ghi chú theo chuẩn (`StandardRemark`) — hai ghi chú RIÊNG, khác `Remark`.</summary>
+    public string? FProvinceRemark { get; set; }
+    public string? StandardRemark { get; set; }
+    /// <summary>⚠️ Tên cột nguồn SAI CHÍNH TẢ: `TrasportInsDtlStatus` (thiếu chữ "n") — giữ 1:1.</summary>
+    public string TrasportInsDtlStatus { get; set; } = "P";
+    public string? FStorageCode { get; set; }
+    public string? FProvinceName { get; set; }
+    public string? TStorageCode { get; set; }
+    /// <summary>Mốc bắt đầu/kết thúc bảo hiểm (`InvStartDate`/`InvEndDate`).</summary>
+    public DateTime? InvStartDate { get; set; }
+    public DateTime? InvEndDate { get; set; }
+    public decimal ExpectedDays { get; set; }
+    /// <summary>Số ngày TRỄ (`DelayDate`) và tiền phạt trễ — ⚠️ nguồn viết `DelayPenaty` (thiếu chữ "l"), giữ 1:1.</summary>
+    public decimal DelayDate { get; set; }
+    public decimal DelayPenaty { get; set; }
+    public decimal TransportCost { get; set; }
+    /// <summary>Tỉ lệ phí bảo hiểm (`InsurancePercent`).</summary>
+    public decimal InsurancePercent { get; set; }
+    /// <summary>Loại yêu cầu vận chuyển (`TranspReqType`) — cùng bảng mã với cụm vận chuyển (#142).</summary>
+    public string? TranspReqType { get; set; }
+    public string? InsuranceContractNo { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }   // tự tính = TFValReal + InsuranceCost - TPValReal
     public string? Remark { get; set; }
 }
 
@@ -3471,6 +3520,43 @@ public sealed class EstimateOrderLine
     public string ModelCode { get; set; } = "";
     public string? SpecCode { get; set; }
     public int Quantity { get; set; }
+    // ===== #154 parity Plan_EstimateOrderDtl: 20 cột số lượng + trục trạng thái/dấu vết =====
+    // Nguồn: DataWH/BizHTC.zTemp.cs (csproj 276, md5 dbb71f7d… verify 2 máy ở #142) — ghi tại 53087.
+    // 🔴 Port cũ chỉ có `Quantity` (một con số) — nguồn có **20 loại số lượng** đặt cạnh nhau để
+    //    người lập kế hoạch so sánh; `Quantity` là cột BỊA, giữ để đọc dữ liệu cũ.
+    /// <summary>Đã bán cho KHÁCH (`QtySellCustomer`) và bán cho ĐẠI LÝ (`QtySellDealer`) — hai kênh tách riêng.</summary>
+    public decimal QtySellCustomer { get; set; }
+    public decimal QtySellDealer { get; set; }
+    public decimal QtyInStock { get; set; }
+    /// <summary>Đang trên đường về (`QtyOnWay`).</summary>
+    public decimal QtyOnWay { get; set; }
+    public decimal QtyBuyDealer { get; set; }
+    /// <summary>Chưa xác định (`QtyUnKnown`) — ⚠️ nguồn viết hoa chữ "K" giữa từ, giữ 1:1.</summary>
+    public decimal QtyUnKnown { get; set; }
+    // --- Bốn nhóm back-order, tên cột nguồn viết bằng TIẾNG VIỆT không dấu — giữ nguyên 1:1 ---
+    /// <summary>BO chưa xuất kho (`QtyBOChuaXuatKho`).</summary>
+    public decimal QtyBOChuaXuatKho { get; set; }
+    /// <summary>BO không VIN, kỳ QUÁ KHỨ (`QtyBOKhongVINQuaKhu`).</summary>
+    public decimal QtyBOKhongVINQuaKhu { get; set; }
+    public decimal QtyBOKhongVINHienTai { get; set; }
+    public decimal QtyBOKhongVINTuongLai { get; set; }
+    /// <summary>Đã đặt CÓ mã xe (`QtyOrdCarID`) và KHÔNG có mã xe (`QtyOrdNotCarID`).</summary>
+    public decimal QtyOrdCarID { get; set; }
+    public decimal QtyOrdNotCarID { get; set; }
+    /// <summary>Dự kiến đặt kỳ N+1 (`QtyEOrdN1`).</summary>
+    public decimal QtyEOrdN1 { get; set; }
+    /// <summary>Dự kiến bán cho khách kỳ N+0…N+3 (`QtyESellCusN0..N3`) — chuỗi dự báo 4 kỳ.</summary>
+    public decimal QtyESellCusN0 { get; set; }
+    public decimal QtyESellCusN1 { get; set; }
+    public decimal QtyESellCusN2 { get; set; }
+    public decimal QtyESellCusN3 { get; set; }
+    /// <summary>Trạng thái DÒNG (`PLEOrdDtlStatus`) — bám theo `PLEOrdStatus` của bảng đầu ("P"/"A1"/"A2").</summary>
+    public string PLEOrdDtlStatus { get; set; } = "P";
+    /// <summary>Mốc sửa gần nhất (`LUDateTime`/`LUBy`) — TÁCH khỏi `LogLU*`.</summary>
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Ánh xạ xe ↔ đơn hàng SX (màu/mô tả/số SO) — port 1:1 FrmWO_Mapping (TblWOMapping, 2010.HTC/Sales).</summary>
