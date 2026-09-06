@@ -4217,6 +4217,153 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== File đính kèm của dòng chi phí marketing (MKT_MarketingFeeDetailAttach — port 1:1 cụm 4 hàm
+// Get(4990) / Save(5169) / Approved(5603) / Rejected(5888), 2010.HTC BizHTC.Marketing.cs).
+// TWIN: 4/4 hàm, cả WS 32-bit lẫn 64-bit. Đây là mắt xích ghi `Status*` mà `Finished` (#106) và
+// `UpdateHTCLimit` (#107) chỉ ĐỌC. =====
+// 🔴 TỪ CHỐI hồ sơ ghi trạng thái **"M" (Stage.Modify)**, KHÔNG phải "R" — đúng chỗ mà hằng số
+//    `Stage.Modify` chú thích "Chỉ dùng cho Marketing". Nghĩa là *trả lại cho đại lý sửa*, không phải bác bỏ.
+// 🔴 `Save` XOÁ rồi INSERT lại **theo TỪNG LOẠI hồ sơ**: nộp lại ảnh thiết kế không đụng hợp đồng/hoá đơn.
+//    Sau khi lưu, loại nào có file thì `Status<Loại>` về **"P"** kèm ghi chú của đại lý.
+// 🔴 Đã duyệt thì KHÔNG nộp lại được: `Save` chặn nếu `Status<Loại>` đang "A".
+string[] MktAttachTypes = { "DESIGNIMAGE", "ACTUALIMAGE", "CONTRACT", "INVOICE" };
+
+app.MapGet("/api/mktfeeattaches", async (AppDbContext db, ITenantContext t, string? feeCode, string? activityCode, string? fileAttachType) =>
+{
+    var qy = db.MktFeeDetailAttaches.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(feeCode)) qy = qy.Where(x => x.MKTFeeCode == feeCode);
+    if (!string.IsNullOrWhiteSpace(activityCode)) qy = qy.Where(x => x.MKTActivityCode == activityCode);
+    if (!string.IsNullOrWhiteSpace(fileAttachType)) qy = qy.Where(x => x.FileAttachType == fileAttachType.Trim().ToUpperInvariant());
+    var items = await qy.OrderBy(x => x.FileAttachType).ThenBy(x => x.Idx).Select(x => new
+    {
+        x.MKTFeeCode, x.MKTActivityCode, x.FileAttachType, x.Idx,
+        x.FilePath, x.FileDesc, x.FileType, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Nộp hồ sơ MỘT loại: thay thế trọn bộ file của đúng loại đó.
+app.MapPost("/api/mktfeeattaches/save", async (MktFeeAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var kind = (dto.FileAttachType ?? "").Trim().ToUpperInvariant();
+    if (!MktAttachTypes.Contains(kind))
+        return Results.BadRequest(new { error = $"Loại hồ sơ không hợp lệ. Cho phép: {string.Join(", ", MktAttachTypes)}." });
+
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    if (fee.MKTStatus != "P" && fee.MKTStatus != "A")
+        return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ nộp hồ sơ khi 'P' hoặc 'A'." });
+    var row = await db.MktFeeDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act);
+    if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
+    if (row.MKTFeeDetailStatus != "P" && row.MKTFeeDetailStatus != "A")
+        return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ nộp hồ sơ khi 'P' hoặc 'A'." });
+
+    var files = (dto.Files ?? new()).ToList();
+    // 🔴 Guard nguồn: loại hồ sơ đã được duyệt thì không nộp lại được nữa.
+    var curStatus = kind switch
+    {
+        "DESIGNIMAGE" => row.StatusDesignImage,
+        "ACTUALIMAGE" => row.StatusActualImage,
+        "CONTRACT" => row.StatusContract,
+        _ => row.StatusInvoice,
+    };
+    if (files.Count > 0 && curStatus == "A")
+        return Results.BadRequest(new { error = "Hồ sơ loại này đã được duyệt, không nộp lại được." });
+
+    var seen = new HashSet<string>();
+    foreach (var f in files)
+    {
+        if (string.IsNullOrWhiteSpace(f.FilePath)) return Results.BadRequest(new { error = "Có file thiếu đường dẫn." });
+        if (!seen.Add($"|{code}||{act}||{kind}||{f.Idx}|"))
+            return Results.BadRequest(new { error = $"Số thứ tự file {f.Idx} bị lặp trong loại {kind}." });
+    }
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    // Xoá rồi chèn lại — CHỈ đúng loại hồ sơ này.
+    var old = await db.MktFeeDetailAttaches
+        .Where(x => x.OrgId == t.OrgId && x.MKTFeeCode == code && x.MKTActivityCode == act && x.FileAttachType == kind)
+        .ToListAsync();
+    db.MktFeeDetailAttaches.RemoveRange(old);
+    foreach (var f in files)
+        db.MktFeeDetailAttaches.Add(new MktFeeDetailAttach
+        {
+            OrgId = t.OrgId, MKTFeeCode = code, MKTActivityCode = act, FileAttachType = kind,
+            Idx = f.Idx ?? 0, FilePath = f.FilePath!.Trim(), FileDesc = f.FileDesc, FileType = f.FileType,
+            LogLUDateTime = now, LogLUBy = who,
+        });
+
+    // Có nộp file thì trạng thái loại đó về "P" kèm ghi chú của đại lý.
+    if (files.Count > 0)
+        switch (kind)
+        {
+            case "DESIGNIMAGE": row.StatusDesignImage = "P"; row.RemarkDlrDesignImage = dto.RemarkDlr; break;
+            case "ACTUALIMAGE": row.StatusActualImage = "P"; row.RemarkDlrActualImage = dto.RemarkDlr; break;
+            case "CONTRACT": row.StatusContract = "P"; row.RemarkDlrContract = dto.RemarkDlr; break;
+            default: row.StatusInvoice = "P"; row.RemarkDlrInvoice = dto.RemarkDlr; break;
+        }
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, act, kind, removed = old.Count, saved = files.Count });
+}).RequireAuthorization();
+
+// Duyệt / trả lại hồ sơ một loại. 🔴 TRẢ LẠI ghi "M" (Modify), KHÔNG phải "R".
+app.MapPost("/api/mktfeeattaches/approve", async (MktFeeAttachDecisionDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await MktAttachDecide(dto, "A", db, t, user)).RequireAuthorization();
+
+app.MapPost("/api/mktfeeattaches/reject", async (MktFeeAttachDecisionDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await MktAttachDecide(dto, "M", db, t, user)).RequireAuthorization();
+
+// Thân chung của duyệt/trả lại: nguồn tách hai hàm nhưng chỉ khác giá trị đích ("A" vs "M").
+// Cả hai đòi phiếu "A", dòng "A", và trạng thái loại hồ sơ đang "P".
+async Task<IResult> MktAttachDecide(MktFeeAttachDecisionDto dto, string target, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user)
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var kind = (dto.FileAttachType ?? "").Trim().ToUpperInvariant();
+    if (!MktAttachTypes.Contains(kind))
+        return Results.BadRequest(new { error = $"Loại hồ sơ không hợp lệ. Cho phép: {string.Join(", ", MktAttachTypes)}." });
+
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    if (fee.MKTStatus != "A") return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ xét hồ sơ khi phiếu 'A'." });
+    var row = await db.MktFeeDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act);
+    if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
+    if (row.MKTFeeDetailStatus != "A") return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ xét hồ sơ khi dòng 'A'." });
+
+    var cur = kind switch
+    {
+        "DESIGNIMAGE" => row.StatusDesignImage,
+        "ACTUALIMAGE" => row.StatusActualImage,
+        "CONTRACT" => row.StatusContract,
+        _ => row.StatusInvoice,
+    };
+    if (cur != "P") return Results.BadRequest(new { error = $"Hồ sơ loại {kind} đang ở '{cur}', chỉ xét được khi 'P'." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    switch (kind)
+    {
+        case "DESIGNIMAGE":
+            row.StatusDesignImage = target; row.RemarkHTCDesignImage = dto.RemarkImage;
+            row.ApprovedDateDesignImage = now; row.ApprovedByDesignImage = who; break;
+        case "ACTUALIMAGE":
+            row.StatusActualImage = target; row.RemarkHTCActualImage = dto.RemarkImage;
+            row.ApprovedDateActualImage = now; row.ApprovedByActualImage = who; break;
+        case "CONTRACT":
+            row.StatusContract = target; row.RemarkHTCContract = dto.RemarkImage;
+            row.ApprovedDateContract = now; row.ApprovedByContract = who; break;
+        default:
+            row.StatusInvoice = target; row.RemarkHTCInvoice = dto.RemarkImage;
+            row.ApprovedDateInvoice = now; row.ApprovedByInvoice = who; break;
+    }
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, act, kind, status = target });
+}
+
 // ===== Dòng chi phí marketing (MKT_MarketingFeeDetail — port 1:1 cụm 6 hàm
 // Create(4157) / Update(3858) / UpdateHTCLimit(3608) / Approved(4555) / Rejected(4696) / Delete(4400),
 // 2010.HTC BizHTC.Marketing.cs). TWIN: 6/6 hàm, cả WS 32-bit lẫn 64-bit. =====
@@ -4373,6 +4520,10 @@ app.MapGet("/api/mktfees", async (AppDbContext db, ITenantContext t, string? fee
             d.MKTFeeCode, d.MKTActivityCode, d.Qty, d.Price, d.Remark, d.MKTFeeDetailStatus,
             d.StatusDesignImage, d.StatusActualImage, d.StatusContract, d.StatusInvoice,
             d.TotalHTCSuport, d.ApprovedDetailDate, d.ApprovedDetailBy, d.LogLUDateTime, d.LogLUBy,
+            d.RemarkDlrDesignImage, d.RemarkHTCDesignImage, d.ApprovedDateDesignImage, d.ApprovedByDesignImage,
+            d.RemarkDlrActualImage, d.RemarkHTCActualImage, d.ApprovedDateActualImage, d.ApprovedByActualImage,
+            d.RemarkDlrContract, d.RemarkHTCContract, d.ApprovedDateContract, d.ApprovedByContract,
+            d.RemarkDlrInvoice, d.RemarkHTCInvoice, d.ApprovedDateInvoice, d.ApprovedByInvoice,
         }).ToListAsync();
     return Results.Ok(new { count = items.Count, items, details = dtls });
 }).RequireAuthorization();
@@ -22840,6 +22991,10 @@ record MktFeeDetailCreateDto(string? MKTFeeCode, string? MKTActivityCode, int? Q
 record MktFeeDetailUpdateDto(string? MKTFeeCode, string? MKTActivityCode, int? Qty, decimal? Price, string? Remark);
 record MktFeeDetailLimitDto(string? MKTFeeCode, string? MKTActivityCode, decimal? TotalHTCSuport);
 record MktFeeDetailKeyDto(string? MKTFeeCode, string? MKTActivityCode);
+// Hồ sơ đính kèm: mỗi lần nộp là TRỌN BỘ file của MỘT loại (nguồn xoá rồi chèn lại theo loại).
+record MktFeeAttachFileDto(int? Idx, string? FilePath, string? FileDesc, string? FileType);
+record MktFeeAttachSaveDto(string? MKTFeeCode, string? MKTActivityCode, string? FileAttachType, string? RemarkDlr, List<MktFeeAttachFileDto>? Files);
+record MktFeeAttachDecisionDto(string? MKTFeeCode, string? MKTActivityCode, string? FileAttachType, string? RemarkImage);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

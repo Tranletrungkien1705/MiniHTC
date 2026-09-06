@@ -4559,6 +4559,33 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// FILE ĐÍNH KÈM của dòng chi phí marketing (`MKT_MarketingFeeDetailAttach` — port 1:1 cụm 4 hàm
+/// `MKT_MarketingFeeDetailAttachGet/Save/Approved/Rejected_New20181115`, 2010.HTC
+/// `BizHTC.Marketing.cs` dòng 4990 / 5169 / 5603 / 5888).
+/// Khoá dòng = bộ **BỐN**: (`MKTFeeCode`, `MKTActivityCode`, `FileAttachType`, `Idx`) — nguồn dựng
+/// chuỗi `"|{0}||{1}||{2}||{3}|"` để bắt trùng ngay trong bảng đầu vào.
+/// 🔴 `FileAttachType` theo `TConst.MKTFileAttachType`: **DESIGNIMAGE · ACTUALIMAGE · CONTRACT · INVOICE**.
+/// 🔴 `Save` **XOÁ rồi INSERT lại theo TỪNG LOẠI hồ sơ** (`delete … where MKTFeeCode + MKTActivityCode
+/// + FileAttachType`) — nộp lại ảnh thiết kế không đụng gì tới hợp đồng hay hoá đơn.
+/// </summary>
+public sealed class MktFeeDetailAttach
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MKTFeeCode { get; set; } = "";
+    public string MKTActivityCode { get; set; } = "";
+    /// <summary>DESIGNIMAGE | ACTUALIMAGE | CONTRACT | INVOICE.</summary>
+    public string FileAttachType { get; set; } = "";
+    /// <summary>Số thứ tự file trong cùng một loại hồ sơ.</summary>
+    public int Idx { get; set; }
+    public string FilePath { get; set; } = "";
+    public string? FileDesc { get; set; }
+    public string? FileType { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// PHIẾU chi phí marketing — phần đầu (`MKT_MarketingFee` — port 1:1 cụm 7 hàm
 /// `MKT_MarketingFeeGet/Create/Update/Finished/Delete/ForceDelete/Approve_New20181115`, 2010.HTC
 /// `TERP.BizHTC/BizHTC.Marketing.cs` dòng 6764 / 6259 / 6582 / 2981 / 7037 / 7235 / 7395).
@@ -4622,6 +4649,30 @@ public sealed class MktFeeDetail
     public DateTime? ApprovedDetailDate { get; set; }
     /// <summary>Người chốt dòng — cũng dùng chung cho duyệt lẫn từ chối.</summary>
     public string? ApprovedDetailBy { get; set; }
+    /// <summary>Ghi chú của ĐẠI LÝ khi nộp ảnh thiết kế.</summary>
+    public string? RemarkDlrDesignImage { get; set; }
+    /// <summary>Ghi chú của HTC khi duyệt/trả lại ảnh thiết kế.</summary>
+    public string? RemarkHTCDesignImage { get; set; }
+    public DateTime? ApprovedDateDesignImage { get; set; }
+    public string? ApprovedByDesignImage { get; set; }
+    /// <summary>Ghi chú của ĐẠI LÝ khi nộp ảnh thực tế.</summary>
+    public string? RemarkDlrActualImage { get; set; }
+    /// <summary>Ghi chú của HTC khi duyệt/trả lại ảnh thực tế.</summary>
+    public string? RemarkHTCActualImage { get; set; }
+    public DateTime? ApprovedDateActualImage { get; set; }
+    public string? ApprovedByActualImage { get; set; }
+    /// <summary>Ghi chú của ĐẠI LÝ khi nộp hợp đồng.</summary>
+    public string? RemarkDlrContract { get; set; }
+    /// <summary>Ghi chú của HTC khi duyệt/trả lại hợp đồng.</summary>
+    public string? RemarkHTCContract { get; set; }
+    public DateTime? ApprovedDateContract { get; set; }
+    public string? ApprovedByContract { get; set; }
+    /// <summary>Ghi chú của ĐẠI LÝ khi nộp hoá đơn.</summary>
+    public string? RemarkDlrInvoice { get; set; }
+    /// <summary>Ghi chú của HTC khi duyệt/trả lại hoá đơn.</summary>
+    public string? RemarkHTCInvoice { get; set; }
+    public DateTime? ApprovedDateInvoice { get; set; }
+    public string? ApprovedByInvoice { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
