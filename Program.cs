@@ -19603,6 +19603,77 @@ app.MapPost("/api/gpsinstalls/{device}/recover-map", async (
     });
 }).RequireAuthorization();
 
+// ===== #B02 BÁO CÁO THIẾT BỊ ĐÃ THÁO (UNMAP) NHƯNG CHƯA NHẬP KHO =====
+// Port 1:1 `FrmRptThietBiUnMapChuaNhapKho` (2010.HTC TERP.HTCClient/Views/StoFGPS).
+// Trace twin LIVE: btnSearch_Click → `ReportStoFGPSService.Rpt_GPSDvUnMapButNotInSto_ForGPS` (:166) —
+//   hàm này rẽ theo cờ `checkWH` của form: `dataWH=false` → WS `..._ForGPS` (WSHTC.asmx.cs:53656)
+//   → `_biz.Rpt_GPSDvUnMapButNotInSto_ForGPS_New20181017` (BizHTC.ZTempGPS.cs:8192, chạy `_dbMain`);
+//   `dataWH=true` → WS `..._ForGPS_WH` (:73213) → `..._ForGPS_WH_New20181119` (Biz.HTC.WH.cs:156521, `_dbWH`).
+//   `diff` hai hàm: **SQL GIỐNG HỆT**, chỉ khác `_dbMain` vs `_dbWH` ⇒ MiniHTC 1 DB nên cờ chỉ được ghi lại.
+// 🔴 Báo cáo này ĐỌC ĐÚNG hai cột `VINUnMap` + `UnMapDateTime` mà #B01 vừa bổ sung — trước #B01 không thể port.
+app.MapGet("/api/reports/gps-unmap-not-instock", async (
+    AppDbContext db, ITenantContext t,
+    string? gpsDvNo, DateTime? fromUnMapDate, DateTime? toUnMapDate, string? dataWH, string? buPattern) =>
+{
+    // Bộ lọc gốc trên `#tbl_Sto_StoBalanceGPS` (BizHTC.ZTempGPS.cs:8226-8232): ba điều kiện CỨNG.
+    var q = db.GpsInstalls.Where(x => x.OrgId == t.OrgId
+        && x.MapStatus == "0"            // đã tháo
+        && x.UnMappedAt != null          // `ssbgps.UnMapDateTime is not null`
+        && x.InStatus == "0");           // chưa nhập kho lại
+    // `Util.GenLikeCondition2Percent` ⇒ LIKE '%…%' (form :113)
+    if (!string.IsNullOrWhiteSpace(gpsDvNo)) { var k = gpsDvNo.Trim().ToUpperInvariant(); q = q.Where(x => x.GpsNo.Contains(k)); }
+    // Form ép biên ngày: from + " 00:00:00", to + " 23:59:59" (:114-115)
+    if (fromUnMapDate is not null) { var f = fromUnMapDate.Value.Date; q = q.Where(x => x.UnMappedAt >= f); }
+    if (toUnMapDate is not null) { var e = toUnMapDate.Value.Date.AddDays(1).AddSeconds(-1); q = q.Where(x => x.UnMappedAt <= e); }
+
+    // `inner join Sto_StoTransactionGPS ... RefType = 'GPSMAPVIN'` khớp theo StorageCode + GPSDvNo
+    // (:8237-8250 + :8272-8273) — thiết bị KHÔNG có giao dịch map nào thì bị LOẠI (inner join).
+    q = q.Where(x => db.GpsTransactions.Any(s => s.OrgId == t.OrgId && s.RefType == "GPSMAPVIN"
+        && s.StorageCode == x.StorageCode && s.GpsDvNo == x.GpsNo));
+
+    var rows = await q.OrderByDescending(x => x.UnMappedAt).Take(2000)
+        .Select(x => new { x.GpsNo, x.StorageCode, x.UnMappedAt, x.UnMapBy, Vin = x.VinUnMap }).ToListAsync();
+
+    // Chuỗi ra đại lý của nguồn: `Car_Car`(VIN=VINUnMap) → `Dls_DealDetail`(FlagCurrent='1')
+    // → `DLS_Deal`(FlagInitDeal='0') → `Mst_Dealer` (+ `md.BUCode like @strBUPatternOfUser`).
+    // ⚠️ MiniHTC KHÔNG có `Car_Car`/`Dls_DealDetail`/`DLS_Deal` ⇒ **XẤP XỈ CÓ NHÃN**: lấy
+    //    `Car_VIN.DealerCode` (`CarVinMaster`). Đây KHÔNG phải cột nguồn — xem `dealerCodeSource` dưới.
+    //    Nợ đã ghi log #B02; tuyệt đối không coi đây là parity đầy đủ.
+    var vins = rows.Where(r => r.Vin != null).Select(r => r.Vin!).Distinct().ToList();
+    var carMap = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.DealerCode }).ToListAsync();
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+
+    var items = new List<object>();
+    var droppedNoCar = 0; var droppedNoDealer = 0;
+    foreach (var r in rows)
+    {
+        var car = carMap.FirstOrDefault(c => c.VIN == r.Vin);
+        if (car is null) { droppedNoCar++; continue; }                 // `inner join Car_Car`
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == car.DealerCode);
+        if (dl is null) { droppedNoDealer++; continue; }               // `inner join Mst_Dealer`
+        // `md.BUCode like @strBUPatternOfUser` — MiniHTC chưa có tầng ability ⇒ nhận pattern từ query.
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedNoDealer++; continue; }
+        items.Add(new
+        {
+            storageCode = r.StorageCode, gpsDvNo = r.GpsNo, vin = r.Vin,
+            unMapDateTime = r.UnMappedAt, unMapBy = r.UnMapBy, mdDealerCode = dl.DealerCode
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        dataWH = dataWH == "1" || dataWH == "true",
+        dataWHNote = "Nguồn có 2 hàm (Main/WH) nhưng SQL GIỐNG HỆT, chỉ khác DB đích; MiniHTC 1 DB ⇒ cờ không đổi kết quả.",
+        dealerCodeSource = "XẤP XỈ: Car_VIN.DealerCode. Nguồn dùng Car_Car→Dls_DealDetail(FlagCurrent='1')→DLS_Deal(FlagInitDeal='0')→Mst_Dealer — 3 bảng này chưa có trong MiniHTC.",
+        droppedNoCar, droppedNoDealer,
+        note = items.Count == 0 ? "Lưới danh sách thiết bị trống!" : null   // đúng thông điệp form (:152)
+    });
+}).RequireAuthorization();
+
 // Đồng bộ (khớp btnDongBoNggayXuatKho_Click gốc — mô phỏng gọi Veloca, luôn thành công trên fleet-demo).
 app.MapPost("/api/gpsinstalls/sync", async (AppDbContext db, ITenantContext t) =>
 {
