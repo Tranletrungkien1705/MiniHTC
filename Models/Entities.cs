@@ -4656,6 +4656,20 @@ public sealed class CustomerCare
     /// Giữ thêm Pending/Contacted/Closed cho dữ liệu cũ đã tạo trước khi vá.</summary>
     public string Status { get; set; } = "PEND";
     public string? Result { get; set; }                  // kết quả liên hệ
+
+    // ===== #210 parity `Ser_CustomerCare_Update` / `Ser_CustomerCare72h_UpdateStatus_New20180622`
+    //       (DMSCarSv V20.2023.Release.V2 — TERP.BizCarSv/BizCarSv.Customer.cs:11958 / 15728) =====
+    // 🔴 Nguồn KHÔNG cập nhật `Status` trong lệnh sửa thường: trạng thái liên hệ được biểu diễn bằng
+    //    HAI CỜ ĐỘC LẬP `IsCall` (đã gọi) và `IsFeedback` (đã phản hồi) — đúng bằng taxonomy
+    //    `SerCareStatus`: PEND (chưa gọi) · CINFB (gọi rồi, chưa phản hồi) · CIFB (gọi rồi, đã phản hồi).
+    //    `Status` chỉ được ghi trực tiếp bởi `Ser_CustomerCareStatusUpdate*` (caller truyền vào) và khi TẠO (PEND).
+    public string? IsCall { get; set; }
+    public string? IsFeedback { get; set; }
+    /// <summary>Nội dung khách phản hồi (`CusFeedback`) — nguồn tách riêng với `Note`.</summary>
+    public string? CusFeedback { get; set; }
+    public string? IsSendmail { get; set; }
+    public string? Note { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ContactedAt { get; set; }
 }

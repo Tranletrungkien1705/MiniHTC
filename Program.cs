@@ -27827,7 +27827,8 @@ app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo != null && c.PlateNo.Contains(plate.ToUpper()));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt }).ToListAsync();
+    { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt,
+      c.IsCall, c.IsFeedback, c.CusFeedback, c.IsSendmail, c.Note }).ToListAsync();   // #210 §12
     // "Chưa liên hệ" nhận cả mã nguồn PEND lẫn giá trị Pending của dữ liệu tạo trước khi vá mã trạng thái.
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status is "PEND" or "Pending"), items });
 }).RequireAuthorization();
@@ -27849,28 +27850,55 @@ app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, I
     return Results.Ok(new { c.CareNo, c.CareType, status = c.Status });
 }).RequireAuthorization();
 
-// Ghi nhận đã liên hệ (kết quả) → Contacted
+// ===== 🔴 #210 LIÊN HỆ KHÁCH — `Ser_CustomerCare_Update` (BizCarSv.Customer.cs:11958) =====
+// Nguồn: hệ **TCMotor DMSCarSv**, bản `V20.2023.Release.V2` (laptop) ≡ `V20.2023.Release` (máy 150) —
+//   md5 `44c7c87b`, 22241 dòng, GIỐNG HỆT, chỉ khác TÊN THƯ MỤC. (`V20` là bản cũ 18081 dòng.)
+//
+// 🔴 Nguồn KHÔNG ghi `Status` trong lệnh sửa: trạng thái là **tổ hợp hai cờ** `IsCall` + `IsFeedback`,
+//   khớp đúng taxonomy `TConst.SerCareStatus` (Const.Main.cs:357):
+//     PEND  = chưa liên hệ            (IsCall != "1")
+//     CINFB = đã liên hệ, CHƯA phản hồi (IsCall = "1", IsFeedback != "1")
+//     CIFB  = đã liên hệ, ĐÃ phản hồi   (IsCall = "1", IsFeedback  = "1")
+//     REJ   = không cần liên hệ, bỏ qua
+//   Từ vựng `Pending/Contacted/Closed` của port cũ KHÔNG có ở nguồn ⇒ đã đổi + migration.
+//
+// ⚠️ NỢ: lệnh đầy đủ `Ser_CustomerCare72h_UpdateStatus_New20180622` (15728) còn nhận **bộ khảo sát**
+//   (`Survey1..9`, `FyourCSSH`, `WFBasicNeeds`, `YourCarProblem`, `YourRIWN`, `YourSatisfyQSv`,
+//   `YourHopeOfOur`) — cụm khảo sát CSKH 72h, để lượt riêng, KHÔNG bịa cột ở đây.
 app.MapPost("/api/customercares/{no}/contact", async (string no, CareContactDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.Status == "Closed") return Results.BadRequest(new { error = "Phiếu đã đóng." });
-    c.Status = "Contacted"; c.Result = dto.Result; c.ContactedAt = DateTime.Now;
+    if (c.Status == "REJ") return Results.BadRequest(new { error = "Phiếu đã đánh dấu KHÔNG cần liên hệ (REJ)." });
+
+    var now = DateTime.Now;
+    c.IsCall = "1";                                     // đã gọi
+    c.CusFeedback = dto.Result;                         // nguồn ghi nội dung phản hồi vào `CusFeedback`
+    c.Result = dto.Result;                              // giữ cột cũ của port cho tương thích
+    c.IsFeedback = string.IsNullOrWhiteSpace(dto.Result) ? c.IsFeedback : "1";
+    // Trạng thái = tổ hợp hai cờ, đúng SerCareStatus.
+    c.Status = c.IsFeedback == "1" ? "CIFB" : "CINFB";
+    c.ContactedAt = now;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CareNo, status = c.Status });
+    return Results.Ok(new { c.CareNo, status = c.Status, c.IsCall, c.IsFeedback, c.CusFeedback, c.ContactedAt });
 }).RequireAuthorization();
 
-// Đóng phiếu → Closed
+// 🔴 #210: nguồn KHÔNG có bước "đóng phiếu". Mã cuối của `SerCareStatus` là **REJ = "không cần liên hệ,
+//   bỏ qua"** — nguồn ghi nó ở `Ser_CustomerCareStatusUpdate` (13199) và loại khỏi danh sách cần gọi
+//   (`and t.Status not in ('REJ')`, dòng 10545). Đây là **bỏ qua**, không phải "kết thúc sau khi đã liên hệ",
+//   nên guard cũ (chỉ đóng phiếu ĐÃ liên hệ) là ngược nghĩa: REJ đặt được từ phiếu CHƯA gọi.
+//   Giữ đường dẫn `/close` cho client cũ (như #203/#204), đổi ngữ nghĩa bên dưới cho đúng nguồn.
 app.MapPost("/api/customercares/{no}/close", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.Status != "Contacted") return Results.BadRequest(new { error = "Chỉ đóng phiếu Đã liên hệ." });
-    c.Status = "Closed";
+    if (c.Status == "REJ") return Results.BadRequest(new { error = "Phiếu đã ở trạng thái REJ." });
+    c.Status = "REJ";                                   // TConst.SerCareStatus.Reject
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CareNo, status = c.Status });
+    return Results.Ok(new { c.CareNo, status = c.Status, note = "REJ = không cần liên hệ (đúng nguồn), không phải 'đã đóng sau khi liên hệ'." });
 }).RequireAuthorization();
 
 /// <summary>

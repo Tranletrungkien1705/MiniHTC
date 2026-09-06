@@ -845,6 +845,15 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #210 parity Ser_CustomerCare: 5 cot that + migrate tu vung sang SerCareStatus
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"IsCall\" text",
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"IsFeedback\" text",
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"CusFeedback\" text",
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"IsSendmail\" text",
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"Note\" text",
+        "UPDATE public.\"CustomerCares\" SET \"Status\" = 'PEND'  WHERE \"Status\" = 'Pending'",
+        "UPDATE public.\"CustomerCares\" SET \"Status\" = 'CINFB' WHERE \"Status\" = 'Contacted'",
+        "UPDATE public.\"CustomerCares\" SET \"Status\" = 'REJ'   WHERE \"Status\" = 'Closed'",
         // #209 parity CarDocReqDtlReject: trang thai + moc tu choi o muc DONG
         "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"DRDtlStatus\" text",
         "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"RejectDate\" timestamp",
