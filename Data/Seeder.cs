@@ -882,6 +882,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #247 parity TST_Mst_Part_Temp (bang TAM, chi co duong DOC trong DMSCarSv)
+        "CREATE TABLE IF NOT EXISTS public.\"TstPartTemps\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"TSTPartCode\" text NOT NULL DEFAULT '', \"TSTVieName\" text)",
         // #245 parity TST_Mst_Part_Get01: 4 loai gia + ton 3 kho + ma thay the + kich thuoc
         "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"MinOrderQuantity\" numeric",
         "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"TSTPriceList\" numeric",

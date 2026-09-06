@@ -13783,6 +13783,39 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 }).RequireAuthorization();
 
 // ===== Master phụ tùng TST (TstPart — port 1:1 FrmTST_Mst_Part, TCMotor DMSCarSv) =====
+// ===== 🔴 #247 BẢNG TẠM PHỤ TÙNG TST — `TST_Mst_Part_Temp_Get` (BizCarSv.Bravo.cs:223) =====
+// BƯỚC 3B: `BizCarSv.Bravo.cs` md5 `44509215` (469 dòng) — KHỚP 2 máy (đã đo ở #212).
+//
+// 🔴 ĐÍNH CHÍNH SWEEP #246: tôi liệt kê "5 hàm gọi `CallBravo`" và xếp `TST_Mst_Part_Temp_Get` vào đó.
+//    SAI. Dòng `CallBravo(` trong file này (:374) là **ĐỊNH NGHĨA hàm**
+//    (`public UtilBravo.RT_Bravo CallBravo(...)`), không phải lời gọi — bộ lọc của sweep chỉ loại
+//    `static`/`private` nên định nghĩa `public` lọt lưới, rồi awk gán nhầm cho hàm `public DataSet` liền trước.
+//    ⇒ Số hàm THẬT SỰ gọi Bravo là **BỐN**, và **cả bốn đã port**:
+//      `Ser_Order_Part_Appr` (#246) · `TST_Mst_Part_Get01` (#245) · `Req_PartPrice_SentTST` (#239)
+//      · `Ser_OrderComplain_SentTST` (#239).  Nợ "hàm Bravo thứ 5" ghi ở #246 là **không tồn tại**.
+//
+// Hàm này chỉ `select t.* from TST_Mst_Part_Temp` với hai bộ lọc khớp **CHÍNH XÁC**
+//   (`TSTPartCode`, `TSTVieName`; rỗng = bỏ lọc — mẫu `('@x' = N'' or t.Col = '@x')`).
+// ⚠️ Toàn solution DMSCarSv **KHÔNG có nơi GHI** bảng này và **không màn client nào gọi**
+//    (chỉ lộ ra ở gateway `WSCarSv.asmx.cs:40231`) ⇒ dữ liệu do hệ NGOÀI nạp; đây là API phục vụ hệ ngoài.
+//    Vì thế port **CHỈ đường đọc** — không bịa POST.
+app.MapGet("/api/tstparts/temp", async (AppDbContext db, ITenantContext t,
+    string? tstPartCode, string? tstVieName) =>
+{
+    var qy = db.TstPartTemps.Where(x => x.OrgId == t.OrgId);
+    // khớp CHÍNH XÁC (nguồn dùng "=" chứ không phải like)
+    if (!string.IsNullOrWhiteSpace(tstPartCode)) qy = qy.Where(x => x.TSTPartCode == tstPartCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(tstVieName)) qy = qy.Where(x => x.TSTVieName == tstVieName!.Trim());
+
+    var items = await qy.OrderBy(x => x.TSTPartCode).Take(1000)
+        .Select(x => new { x.Id, x.TSTPartCode, x.TSTVieName }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        note = "Bảng TẠM: DMSCarSv chỉ ĐỌC, dữ liệu do hệ ngoài nạp. Hai cột là bộ đã xác nhận (nguồn select *).",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #245 TRA PHỤ TÙNG TST THEO NHIỀU MÃ — `TST_Mst_Part_Get01` (BizCarSv.Service.cs:18409) =====
 // Màn: `Views/TST/FrmTSTPart_Search.cs` (744 dòng, DMSCarSv/TST). BƯỚC 3B: md5 `5e5d6f20` — KHỚP 2 máy.
 //

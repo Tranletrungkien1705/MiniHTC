@@ -2549,6 +2549,24 @@ public sealed class TstExchangeUnit
 /// Mã + tên HTC/Việt/Anh + đơn vị + VAT + giá TST + nhóm/loại.
 /// #212: đồng bộ cả bảng từ hệ TST/Bravo qua `TST_SavePartAll` (BizCarSv.Bravo.cs:79) — xem
 /// `POST /api/tstparts/sync-all`. Lệnh đó chỉ ghi `TSTPartCode` · `TSTPrice` · `LUDTime`.</summary>
+/// <summary>
+/// #247 BẢNG TẠM PHỤ TÙNG TST `TST_Mst_Part_Temp` — nguồn `TST_Mst_Part_Temp_Get`
+/// (BizCarSv.Bravo.cs:223, md5 `44509215` — khớp 2 máy).
+/// 🔴 KHÁC `TST_Mst_Part` (lớp <see cref="TstPart"/>): đây là bảng **TẠM**, và trong TOÀN BỘ solution
+///    DMSCarSv **chỉ có đường ĐỌC** — không hàm nào ghi vào nó, không màn client nào gọi.
+///    ⇒ dữ liệu do hệ NGOÀI nạp; API này phục vụ hệ ngoài qua gateway `WSCarSv.asmx.cs:40231`.
+/// ⚠️ Nguồn `select t.*` nên chỉ **hai cột được xác nhận** (từ hai bộ lọc): `TSTPartCode` · `TSTVieName`.
+///    KHÔNG bịa thêm cột (luật `C0-trecentesimusquadragesimusseptimus`).
+/// ⚠️ Tên cột tên-tiếng-Việt ở đây là `TSTVieName`, KHÁC `VieName` của bảng chính.
+/// </summary>
+public sealed class TstPartTemp
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public string? TSTVieName { get; set; }
+}
+
 public sealed class TstPart
 {
     public long Id { get; set; }
