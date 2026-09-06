@@ -12588,11 +12588,18 @@ app.MapGet("/api/warrantyclaims/hmcapistatuses", () => Results.Ok(new
 /// <summary>
 /// Đổi số lần gửi lại thành chữ cái theo nguồn (`CUtils.SoSangChuCai`): 1→A, 2→B, …
 /// Dùng cho số serial claim khi đẩy lại sang HMC.
+///
+/// 🔴 #270 VÁ LỖI PARITY. Nguồn thật (`TERP.Utils/Utils.cs:337` — hàm này **CHỈ CÓ TRÊN MÁY 150**,
+/// laptop không có nên lượt port trước phải suy đoán):
+/// <code>if (so &lt; 1 || so &gt; 26) return ""; return ((char)(so + 96)).ToString();</code>
+/// ⇒ **quá 26 thì trả CHUỖI RỖNG**, KHÔNG cuộn vòng về "A". Bản port cũ dùng `% 26` nên lần gửi thứ 27
+/// lại ra "A", **trùng số serial với lần thứ 2** — hai claim khác nhau cùng một `clmNoSrl` ở phía HMC.
+/// (Nguồn trả chữ THƯỜNG, chỗ gọi mới `.ToUpper()`; port trả sẵn chữ hoa — cùng kết quả.)
 /// </summary>
 static string ResendSuffixLetter(int resendCount)
 {
-    if (resendCount <= 0) return "";
-    return ((char)('A' + (resendCount - 1) % 26)).ToString();
+    if (resendCount < 1 || resendCount > 26) return "";
+    return ((char)('A' + resendCount - 1)).ToString();
 }
 
 // Ghi kết quả đồng bộ HMC (bộ đẩy API gọi lại sau khi có phản hồi của hãng).
@@ -18657,9 +18664,15 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
             return Results.BadRequest(new { error = "Phụ tùng không có trong kho!" });
 
     var no = "APP" + DateTime.Now.ToString("yyMMddHHmmss");
+    // 🔴 #270 KÊNH TẠO quyết định có đẩy HCC hay không: nguồn chỉ gắn `HCC_Appointment_AddOSX` vào
+    //   `Ser_App_Create_ForTab` (kênh máy tính bảng), KHÔNG gắn vào nhánh tạo thường.
+    //   ⇒ `Channel == "TAB"` mới đặt cờ chờ đẩy; mặc định để `null` = không thuộc diện đẩy.
+    var isTab = string.Equals((dto.Channel ?? "").Trim(), "TAB", StringComparison.OrdinalIgnoreCase);
     var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
         CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked",
-        EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest };
+        EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest,
+        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(), CusID = dto.CusID, Vin = dto.Vin?.Trim().ToUpperInvariant(),
+        HCCPushStatus = isTab ? "P" : null };
     db.ServiceAppointments.Add(a);
 
     foreach (var line in serviceItems)
@@ -18677,10 +18690,61 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
             Unit = line.Unit, Quantity = line.Quantity, Note = line.Note
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { a.Id, a.AppNo, a.Status, serviceItems = serviceItems.Count, partItems = partItems.Count });
+    return Results.Ok(new { a.Id, a.AppNo, a.Status, a.HCCPushStatus, serviceItems = serviceItems.Count, partItems = partItems.Count });
 }).RequireAuthorization();
 
 // Nội dung đặt trước của lịch hẹn: danh sách dịch vụ + phụ tùng khách yêu cầu.
+// 🔴 #270 PAYLOAD ĐẨY LỊCH HẸN SANG HCC — dựng đúng 24 trường của nguồn
+//   (`HCCIntergration/BizCarSv.HCC.cs:71-107`, câu `----- HCC_Appointment:`).
+// ⚠️ `AppointmentSourceCode` là **hằng chuỗi `'DMS'`** ngay trong câu SQL, không phải cột nào cả.
+// ⚠️ `AppointmentDTimeUTC` = `CONCAT(sa.AppDateTimeFrom, ' ', sa.AppTimeFrom)` — nguồn tách NGÀY và GIỜ
+//   thành hai cột rồi mới ghép; MiniHTC lưu một `DateTime` nên định dạng lại cho khớp.
+// ⚠️ Nguồn chặn trước: `AppId` rỗng ⇒ ném `HCC_Appointment_AddOSX_InvalidAppId`.
+// 📌 NỢ: lời gọi HTTP thật (`HCCService.Login` → đẩy `RQ_HCC_Appointment`) chưa port; endpoint này dựng
+//   payload + trục trạng thái, phần còn lại là tầng vận chuyển.
+app.MapGet("/api/appointments/{no}/hcc-payload", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    if (no == "") return Results.BadRequest(new { error = "Thiếu số lịch hẹn." });
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no);
+    if (a is null) return Results.NotFound(new { no });
+
+    var d = a.DealerCode == null ? null : await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == a.DealerCode);
+    var cus = a.CusID == null ? null : await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == a.CusID);
+    var car = a.Vin == null ? null : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == a.Vin);
+
+    return Results.Ok(new
+    {
+        OrgID = d?.OrgHCCID, NetworkID = d?.NetworkHCCID, DealerCode = a.DealerCode,
+        AppointmentCode = a.AppNo, AppointmentType = a.AppType,
+        AppointmentDTimeUTC = a.AppFrom.ToString("yyyy-MM-dd HH:mm:ss"),
+        UserCodeOwner = a.EngineerNo,
+        AppointmentSourceCode = "DMS",
+        CustomerCode = cus?.CusCode ?? a.CusID, CustomerName = cus?.CusName ?? a.CusName,
+        CustomerPhone = cus?.Mobile ?? a.Mobile, CustomerEmail = cus?.Email, CustomerAddress = cus?.Address,
+        ProvinceCode = cus?.ProvinceCode, DistrictCode = cus?.DistrictCode,
+        ContactName = cus?.ContName, ContactPhone = cus?.ContMobile,
+        ContactEmail = cus?.ContEmail, ContactAddress = cus?.ContAddress,
+        PlateNo = car?.PlateNo ?? a.PlateNo, TradeMarkCode = car?.TradeMark,
+        ModelCode = car?.ModelCode, VIN = a.Vin,
+        AppointmentRequest = a.CusRequest,
+        pushStatus = a.HCCPushStatus,
+    });
+}).RequireAuthorization();
+
+// #270 Ghi kết quả đẩy HCC (bộ đẩy gọi lại) — cùng lệ với `/api/warrantyclaims/{id}/hmcsync`.
+app.MapPost("/api/appointments/{no}/hccpush", async (string no, AppointmentHccPushDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no.Trim());
+    if (a is null) return Results.NotFound(new { no });
+    var to = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+    if (to != "A" && to != "R") return Results.BadRequest(new { error = "ToStatus chỉ nhận A (thành công) hoặc R (lỗi)." });
+    if (a.HCCPushStatus is null) return Results.BadRequest(new { error = "Lịch hẹn này không thuộc diện đẩy HCC (chỉ kênh TAB)." });
+    a.HCCPushStatus = to; a.HCCPushDateTime = DateTime.Now; a.HCCPushNote = dto.Note;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.AppNo, a.HCCPushStatus, a.HCCPushDateTime });
+}).RequireAuthorization();
+
 app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
