@@ -4559,6 +4559,58 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Kế hoạch bán lẻ theo tháng (`Rpt_PlanRetail` — port 1:1 `Rpt_PlanRetail_Create/Approve/Cancel`,
+/// 2010.HTC `BizHTC.Report.cs:33001/33644/33900`).
+/// 🔴 Trạng thái theo `TConst.PRStatus` (`Const.Main.DMS40.cs:826-831`):
+/// **"P" mới tạo · "A" duyệt · "C" từ chối**.
+/// ⚠️ Guard phản trực giác: **duyệt vào từ "P" HOẶC "C"** (bản đã từ chối vẫn duyệt lại được),
+/// còn **từ chối chỉ vào từ "P"**.
+/// 📌 Khoá nghiệp vụ là bộ ba `PlanMonth` + `PlanTimes` (lần lập trong tháng) + `DealerCode`;
+/// `PlanTimesPrev` trỏ về lần lập trước để so sánh.
+/// ⚠️ Phần SINH DỮ LIỆU của nguồn là một câu SQL tổng hợp rất lớn
+/// (`RptSQLQuery.mySql_Rpt_PlanRetail_Create`) — **chưa port**, đã ghi nợ; endpoint tạo ở đây nhận
+/// dữ liệu dòng từ client.
+/// </summary>
+public sealed class PlanRetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PlanMonth { get; set; } = "";
+    public string PlanTimes { get; set; } = "";
+    public string? PlanTimesPrev { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string PRStatus { get; set; } = "P";
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? CancelDate { get; set; }
+    public string? CancelBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>Dòng chi tiết kế hoạch bán lẻ (`Rpt_PlanRetailDtl`).</summary>
+public sealed class PlanRetailDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PlanRetailId { get; set; }
+    public string? ModelCode { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ColorCode { get; set; }
+    public int Quantity { get; set; }
+}
+
+/// <summary>Kế hoạch bán lẻ gộp theo MODEL (`Rpt_PlanRetailModel`) — nguồn ghi cùng lúc với bảng chi tiết.</summary>
+public sealed class PlanRetailModel
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long PlanRetailId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public int Quantity { get; set; }
+}
+
+/// <summary>
 /// Lịch sử ĐẨY Sổ Bảo Hành online (`Rpt_PushSBHOnline_History` — port 1:1 `SBHOnline_HistoryCreate`,
 /// 2010.HTC `BizHTC.DealerSales.cs:~4310`, được `RePush_SBHOnline` gọi).
 /// 📌 Hàm ghi lịch sử nằm ở **file KHÁC** với hàm đẩy, và là `public void` (không phải `DataSet`) —

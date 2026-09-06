@@ -4217,6 +4217,90 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Kế hoạch bán lẻ theo tháng (Rpt_PlanRetail — port 1:1 Rpt_PlanRetail_Create/Approve/Cancel,
+// 2010.HTC BizHTC.Report.cs:33001/33644/33900). TWIN: chỉ `TERP.WSHTC.64` (95765/95832/95901). =====
+// 🔴 Trạng thái `TConst.PRStatus`: "P" mới tạo · "A" duyệt · "C" từ chối.
+// ⚠️ Guard phản trực giác: **duyệt vào từ "P" HOẶC "C"** (bản đã từ chối duyệt lại được);
+//    **từ chối chỉ vào từ "P"**.
+// ⚠️ Phần sinh dữ liệu tổng hợp (`mySql_Rpt_PlanRetail_Create`) CHƯA port — endpoint nhận dòng từ client.
+app.MapGet("/api/planretails", async (AppDbContext db, ITenantContext t, string? month, string? dealer, string? status) =>
+{
+    var qy = db.PlanRetails.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(month)) qy = qy.Where(x => x.PlanMonth == month);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.PRStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.PlanMonth, x.PlanTimes, x.PlanTimesPrev, x.DealerCode, x.PRStatus,
+        x.ApprovedBy, x.ApprovedDate, x.CancelBy, x.CancelDate, x.CreatedBy, x.CreatedAt,
+        lines = db.PlanRetailDtls.Count(l => l.OrgId == t.OrgId && l.PlanRetailId == x.Id),
+        totalQty = db.PlanRetailDtls.Where(l => l.OrgId == t.OrgId && l.PlanRetailId == x.Id).Sum(l => (int?)l.Quantity) ?? 0
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/planretails", async (PlanRetailDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PlanMonth)) return Results.BadRequest(new { error = "Cần PlanMonth (YYYY-MM)." });
+    if (string.IsNullOrWhiteSpace(dto.PlanTimes)) return Results.BadRequest(new { error = "Cần PlanTimes (lần lập trong tháng)." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
+    var month = dto.PlanMonth.Trim(); var times = dto.PlanTimes.Trim(); var dealer = dto.DealerCode.Trim().ToUpperInvariant();
+    // Khoá nghiệp vụ của nguồn: PlanMonth + PlanTimes + DealerCode.
+    if (await db.PlanRetails.AnyAsync(x => x.OrgId == t.OrgId && x.PlanMonth == month && x.PlanTimes == times && x.DealerCode == dealer))
+        return Results.BadRequest(new { error = $"Kế hoạch {month} lần {times} của đại lý {dealer} đã tồn tại!" });
+
+    var h = new PlanRetail
+    {
+        OrgId = t.OrgId, PlanMonth = month, PlanTimes = times, PlanTimesPrev = dto.PlanTimesPrev,
+        DealerCode = dealer, PRStatus = "P",
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    };
+    db.PlanRetails.Add(h); await db.SaveChangesAsync();
+    var lines = (dto.Lines ?? new()).Where(l => l.Quantity > 0).ToList();
+    foreach (var l in lines)
+        db.PlanRetailDtls.Add(new PlanRetailDtl { OrgId = t.OrgId, PlanRetailId = h.Id, ModelCode = l.ModelCode, SpecCode = l.SpecCode, ColorCode = l.ColorCode, Quantity = l.Quantity });
+    // Nguồn ghi CÙNG LÚC bảng gộp theo model (Rpt_PlanRetailModel) — gộp từ chi tiết.
+    foreach (var g in lines.Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).GroupBy(l => l.ModelCode!.Trim().ToUpperInvariant()))
+        db.PlanRetailModels.Add(new PlanRetailModel { OrgId = t.OrgId, PlanRetailId = h.Id, ModelCode = g.Key, Quantity = g.Sum(x => x.Quantity) });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.DealerCode, status = h.PRStatus, lines = lines.Count });
+}).RequireAuthorization();
+
+app.MapGet("/api/planretails/{id}/lines", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var lines = await db.PlanRetailDtls.Where(l => l.OrgId == t.OrgId && l.PlanRetailId == id)
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Quantity }).ToListAsync();
+    var byModel = await db.PlanRetailModels.Where(m => m.OrgId == t.OrgId && m.PlanRetailId == id)
+        .Select(m => new { m.ModelCode, m.Quantity }).ToListAsync();
+    return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.DealerCode, h.PRStatus, count = lines.Count, lines, byModel });
+}).RequireAuthorization();
+
+app.MapPost("/api/planretails/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (action is not ("approve" or "cancel")) return Results.BadRequest(new { error = "action = approve|cancel" });
+    var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (action == "approve")
+    {
+        // Guard nguồn `Rpt_PlanRetail_Approve`: strPRStatusListToCheck = "P, C".
+        if (h.PRStatus is not ("P" or "C"))
+            return Results.BadRequest(new { error = $"Kế hoạch đang ở '{h.PRStatus}' — chỉ duyệt khi mới tạo (P) hoặc đã từ chối (C)." });
+        h.PRStatus = "A"; h.ApprovedDate = DateTime.Now; h.ApprovedBy = who;
+    }
+    else
+    {
+        // Guard nguồn `Rpt_PlanRetail_Cancel`: PRStatus.Pending ⇒ CHỈ từ "P".
+        if (h.PRStatus != "P")
+            return Results.BadRequest(new { error = $"Kế hoạch đang ở '{h.PRStatus}' — chỉ từ chối khi còn mới tạo (P)." });
+        h.PRStatus = "C"; h.CancelDate = DateTime.Now; h.CancelBy = who;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, status = h.PRStatus });
+}).RequireAuthorization();
+
 // Tra LỊCH SỬ đẩy SBH online (`Rpt_PushSBHOnline_History`).
 app.MapGet("/api/sbhonline/push-history", async (AppDbContext db, ITenantContext t, string? vin, string? dealNo) =>
 {
@@ -21938,6 +22022,9 @@ record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? D
 record DealPatchDto(string Field, string Value);
 record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate, DateTime? WarrantyExpiresDate = null);
 record SbhBatchDto(List<string>? Vins);
+// Kế hoạch bán lẻ: khoá nghiệp vụ PlanMonth + PlanTimes + DealerCode.
+record PlanRetailDto(string PlanMonth, string PlanTimes, string DealerCode, List<PlanRetailLineDto>? Lines, string? PlanTimesPrev = null);
+record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
 record TranspDlvCarDto(string VIN, string? ModelCode);
