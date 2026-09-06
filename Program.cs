@@ -8518,6 +8518,126 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #146: HẠN MỨC PHÂN BỔ THEO SPEC (Mng_Quota + Mng_QuotaHis) =====
+// Nguồn: DMS40/0.01.Master.cs (csproj 122) — Mng_Quota_UpdMultiX_New20230306 (6158).
+// 🔴 CHỈ có ở WS 64-bit (_biz.Mng_Quota_Get, _biz.Mng_Quota_UpdMulti); WS 32-bit không có hàm nào.
+// Khoá kép (DealerCode, SpecCode). Nguồn CHỈ SỬA dòng đã có (guard CheckDB với Flag.Yes), không thêm mới.
+app.MapGet("/api/mngquotas", async (AppDbContext db, ITenantContext t, string? dealer, string? spec, string? flagActive) =>
+{
+    var q = db.MngQuotas.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.SpecCode).Take(2000).Select(x => new {
+        x.DealerCode, x.SpecCode, x.QtyQuota, x.FlagActive, x.UpdateDTime, x.UpdateBy,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, totalQty = items.Sum(i => i.QtyQuota), items });
+}).RequireAuthorization();
+
+// Tạo dòng hạn mức (nguồn không có hàm thêm mới — bổ sung để dữ liệu có thể khởi tạo được;
+// mọi thao tác SỬA vẫn đi qua /api/mngquotas/upd-multi đúng như nguồn).
+app.MapPost("/api/mngquotas", async (MngQuotaLineDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var spec = (dto.SpecCode ?? "").Trim().ToUpperInvariant();
+    if (dealer.Length == 0 || spec.Length == 0) return Results.BadRequest(new { error = "Cần cả DealerCode và SpecCode (khoá kép)." });
+    if (await db.MngQuotas.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.SpecCode == spec))
+        return Results.Conflict(new { error = $"Hạn mức {dealer}/{spec} đã tồn tại — dùng /api/mngquotas/upd-multi để sửa." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.MngQuotas.Add(new MngQuota { OrgId = t.OrgId, DealerCode = dealer, SpecCode = spec, QtyQuota = dto.QtyQuota,
+        FlagActive = "1", UpdateDTime = now, UpdateBy = who, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealer, spec, dto.QtyQuota });
+}).RequireAuthorization();
+
+// Sửa hàng loạt — port 1:1 `Mng_Quota_UpdMultiX_New20230306`.
+// 🔴 Ba điểm của nguồn đã port nguyên:
+//   1) guard `Mng_Quota_CheckDB_New20230306(..., TConst.Flag.Yes)` ⇒ dòng PHẢI đã tồn tại, không tự thêm.
+//   2) lệnh update LUÔN ép `FlagActive = '1'` ⇒ mọi lần sửa đều **BẬT LẠI** dòng đang tắt.
+//   3) `QtyQuota` chỉ được ghi khi cờ `bUpd_QtyQuota` bật (ở đây là `UpdQtyQuota`).
+// Sau khi update mới chụp `Mng_QuotaHis` ⇒ lịch sử lưu giá trị **SAU** thay đổi, và
+// `VesionCode` = chính chuỗi `LogLUDateTime` của lượt sửa.
+app.MapPost("/api/mngquotas/upd-multi", async (MngQuotaUpdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var lines = (dto.Lines ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.DealerCode) && !string.IsNullOrWhiteSpace(x.SpecCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để sửa." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var version = now.ToString("yyyy-MM-dd HH:mm:ss");   // nguồn dùng chính chuỗi LogLUDateTime làm VesionCode
+    var missing = new List<string>(); var changed = 0;
+    foreach (var l in lines)
+    {
+        var dealer = l.DealerCode.Trim().ToUpperInvariant();
+        var spec = l.SpecCode.Trim().ToUpperInvariant();
+        var row = await db.MngQuotas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.SpecCode == spec);
+        if (row is null) { missing.Add($"{dealer}/{spec}"); continue; }
+        row.LogLUDateTime = now; row.LogLUBy = who;
+        row.UpdateDTime = now; row.UpdateBy = who;
+        row.FlagActive = "1";                                   // nguồn ép cứng
+        if (dto.UpdQtyQuota) row.QtyQuota = l.QtyQuota;
+        // ảnh chụp SAU update
+        db.MngQuotaHiss.Add(new MngQuotaHis { OrgId = t.OrgId, VesionCode = version, DealerCode = dealer,
+            SpecCode = spec, QtyQuota = row.QtyQuota, FlagActive = row.FlagActive,
+            FunctionName = "Mng_Quota_UpdMultiX", UpdateDTime = now, UpdateBy = who,
+            LogLUDateTime = now, LogLUBy = who });
+        changed++;
+    }
+    if (missing.Count > 0 && changed == 0)
+        return Results.BadRequest(new { error = "Không dòng nào tồn tại để sửa.", missing });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { version, changed, missing });
+}).RequireAuthorization();
+
+app.MapGet("/api/mngquotas/history", async (AppDbContext db, ITenantContext t, string? dealer, string? spec, string? version) =>
+{
+    var q = db.MngQuotaHiss.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
+    if (!string.IsNullOrWhiteSpace(version)) q = q.Where(x => x.VesionCode == version);
+    var items = await q.OrderByDescending(x => x.Id).Take(2000).Select(x => new {
+        x.VesionCode, x.DealerCode, x.SpecCode, x.QtyQuota, x.FlagActive, x.FunctionName,
+        x.UpdateDTime, x.UpdateBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== #146: CHƯƠNG TRÌNH HẠN MỨC ĐIỀU KIỆN – KHUYẾN MÃI (Mst_Quota) =====
+// Nguồn: 0.01.Master.cs — Mst_Quota_AddMultiX_New20220406 (4262) ghi tại 4621.
+// 🔴 Port cũ hiểu SAI bảng này thành "hạn mức theo model/kỳ"; xem ghi chú ở entity Quota.
+app.MapGet("/api/mstquotas", async (AppDbContext db, ITenantContext t, string? dealer, string? code, string? flagActive) =>
+{
+    var q = db.Quotas.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(code)) q = q.Where(x => x.QuotaCode == code);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.QuotaCode).Take(1000).Select(x => new {
+        x.DealerCode, x.QuotaCode, x.QuotaName, x.ModelCondition, x.ModelPromotion,
+        x.SpecCodeCondition, x.SpecCodePromotion, x.QtyCondition, x.QtyPromotion,
+        x.SOApprDateFrom, x.SOApprDateTo, x.SOApprDateToInit, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstquotas", async (MstQuotaDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var code = (dto.QuotaCode ?? "").Trim().ToUpperInvariant();
+    if (dealer.Length == 0 || code.Length == 0) return Results.BadRequest(new { error = "Cần cả DealerCode và QuotaCode." });
+    if (dto.SOApprDateFrom is not null && dto.SOApprDateTo is not null && dto.SOApprDateTo < dto.SOApprDateFrom)
+        return Results.BadRequest(new { error = "Ngày kết thúc nhỏ hơn ngày bắt đầu." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var h = await db.Quotas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.QuotaCode == code);
+    var created = h is null;
+    if (h is null) { h = new Quota { OrgId = t.OrgId, DealerCode = dealer, QuotaCode = code }; db.Quotas.Add(h); }
+    h.QuotaName = dto.QuotaName; h.ModelCondition = dto.ModelCondition; h.ModelPromotion = dto.ModelPromotion;
+    h.SpecCodeCondition = dto.SpecCodeCondition; h.SpecCodePromotion = dto.SpecCodePromotion;
+    h.QtyCondition = dto.QtyCondition; h.QtyPromotion = dto.QtyPromotion;
+    h.SOApprDateFrom = dto.SOApprDateFrom; h.SOApprDateTo = dto.SOApprDateTo;
+    // SOApprDateToInit: chỉ đặt LẦN ĐẦU — về sau giữ nguyên để còn biết hạn gốc trước khi gia hạn.
+    if (created) h.SOApprDateToInit = dto.SOApprDateTo;
+    h.FlagActive = (dto.FlagActive ?? "1").Trim() == "0" ? "0" : "1";
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealer, code, created, h.SOApprDateToInit });
+}).RequireAuthorization();
+
 // ===== #145: DANH MỤC MÀU XE + SPEC ÁP DỤNG (Mst_CarColor + Mst_CarColorSpec) =====
 // Nguồn: BizHTC.MasterData.cs (csproj 115) — Mst_CarColor_Save (3382) → _SaveX (3552).
 // 🔴 TWIN "đọc ở cả hai, GHI chỉ 64-bit": WS 32-bit chỉ có _Get_New20181119; _Save chỉ ở WS 64-bit.
@@ -27161,6 +27281,11 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #146: DTO hạn mức phân bổ theo spec + chương trình điều kiện/khuyến mãi ----
+record MngQuotaLineDto(string DealerCode, string SpecCode, decimal QtyQuota);
+record MngQuotaUpdDto(List<MngQuotaLineDto>? Lines, bool UpdQtyQuota = true);
+record MstQuotaDto(string DealerCode, string QuotaCode, string? QuotaName, string? ModelCondition, string? ModelPromotion, string? SpecCodeCondition, string? SpecCodePromotion, decimal QtyCondition, decimal QtyPromotion, DateTime? SOApprDateFrom, DateTime? SOApprDateTo, string? FlagActive);
+
 // ---- #145: DTO danh mục màu xe ----
 record CarColorSpecLineDto(string? SpecCode);
 record CarColorDto(string ModelCode, string ColorCode, string? ColorExtType, string? ColorExtCode, string? ColorExtName, string? ColorExtNameVN, string? ColorIntCode, string? ColorIntName, string? ColorIntNameVN, decimal ColorFee, string? FlagActive, string? Remark, List<CarColorSpecLineDto>? Specs);

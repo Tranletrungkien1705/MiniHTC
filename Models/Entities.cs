@@ -474,17 +474,97 @@ public sealed class InsuranceFee
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Hạn mức phân bổ xe (Mst_Quota — port 1:1 FrmMngQuota): số lượng xe theo đại lý/model/kỳ.</summary>
+/// <summary>
+/// Chương trình **hạn mức có ĐIỀU KIỆN – KHUYẾN MÃI** (`Mst_Quota`) —
+/// nguồn: DMS40/0.01.Master.cs (csproj 122), `Mst_Quota_AddMultiX_New20220406` (4262) ghi tại 4621.
+///
+/// 🔴 #146 SỬA HIỂU SAI NGHIỆP VỤ: port cũ đọc bảng này là "số lượng xe theo đại lý/model/KỲ"
+/// (`ModelCode`+`Period`+`Qty`+`UsedQty`) — **không có cột nào trong bốn cột đó tồn tại ở nguồn**.
+/// Bảng thật là **cặp ĐIỀU KIỆN → KHUYẾN MÃI**: mua đủ `QtyCondition` của
+/// `ModelCondition`/`SpecCodeCondition` thì được `QtyPromotion` của
+/// `ModelPromotion`/`SpecCodePromotion`, hiệu lực theo **ngày DUYỆT đơn hàng** (`SOApprDate*`).
+/// Bốn cột cũ giữ lại để đọc dữ liệu đã ghi, **KHÔNG ghi mới**.
+/// </summary>
 public sealed class Quota
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string DealerCode { get; set; } = "";
+
+    // ===== #146 parity Mst_Quota: 12 cột thật của nguồn =====
+    /// <summary>Mã chương trình (`QuotaCode`) — khoá nghiệp vụ cùng với `DealerCode`.</summary>
+    public string? QuotaCode { get; set; }
+    public string? QuotaName { get; set; }
+    /// <summary>Dòng xe phải mua để đạt điều kiện (`ModelCondition`).</summary>
+    public string? ModelCondition { get; set; }
+    /// <summary>Dòng xe được thưởng (`ModelPromotion`).</summary>
+    public string? ModelPromotion { get; set; }
+    public string? SpecCodeCondition { get; set; }
+    public string? SpecCodePromotion { get; set; }
+    public decimal QtyCondition { get; set; }
+    public decimal QtyPromotion { get; set; }
+    /// <summary>Hiệu lực tính theo **ngày DUYỆT đơn hàng** (`SOApprDateFrom`/`SOApprDateTo`).</summary>
+    public DateTime? SOApprDateFrom { get; set; }
+    public DateTime? SOApprDateTo { get; set; }
+    /// <summary>Ngày kết thúc **ban đầu** (`SOApprDateToInit`) — giữ lại khi chương trình được gia hạn.</summary>
+    public DateTime? SOApprDateToInit { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+
+    // --- ⛔ Bốn cột dưới đây KHÔNG có ở nguồn (port cũ hiểu sai). Giữ để đọc dữ liệu cũ, không ghi mới. ---
     public string ModelCode { get; set; } = "";
     public string Period { get; set; } = "";   // YYYYMM
     public int Qty { get; set; }
     public int UsedQty { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// Hạn mức phân bổ theo SPEC (`Mng_Quota`) — khoá kép (DealerCode, SpecCode).
+/// Nguồn: `Mng_Quota_UpdMultiX_New20230306` (0.01.Master.cs:6158) — **chỉ có ở WS 64-bit**.
+/// 🔴 Đây mới là bảng "hạn mức số lượng" thật; `Mst_Quota` là chương trình điều kiện–khuyến mãi.
+/// </summary>
+public sealed class MngQuota
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    /// <summary>Số lượng hạn mức (`QtyQuota`) — nguồn khai kiểu `float` trong bảng tạm.</summary>
+    public decimal QtyQuota { get; set; }
+    /// <summary>
+    /// Cờ hiệu lực (`FlagActive`). ⚠️ Lệnh update của nguồn **luôn ép về "1"** —
+    /// tức mọi lần sửa hạn mức đều **BẬT LẠI** dòng đang tắt.
+    /// </summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime? UpdateDTime { get; set; }
+    public string? UpdateBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Lịch sử hạn mức (`Mng_QuotaHis`) — ảnh chụp dòng `Mng_Quota` **SAU** mỗi lần sửa.
+/// 🔴 `VesionCode` (nguồn viết **thiếu chữ "r"**, giữ nguyên để port 1:1) = **chính chuỗi thời gian**
+/// `LogLUDateTime` của lượt sửa ⇒ mỗi lượt sửa là một "phiên bản" định danh bằng mốc thời gian
+/// (cùng motif với `VersionDTimeCurr` ở #130).
+/// 🔴 `FunctionName` ghi TÊN HÀM đã gây ra thay đổi (`"Mng_Quota_UpdMultiX"`) — dấu vết nguồn gốc.
+/// </summary>
+public sealed class MngQuotaHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? VesionCode { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public decimal QtyQuota { get; set; }
+    public string? FlagActive { get; set; }
+    public string? FunctionName { get; set; }
+    public DateTime? UpdateDTime { get; set; }
+    public string? UpdateBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
