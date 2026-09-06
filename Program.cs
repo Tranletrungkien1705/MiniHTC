@@ -13886,6 +13886,22 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 //   ⚠️ Nghĩa là **khoảng trắng** và **chữ tiếng Việt có dấu** cũng bị coi là ký tự đặc biệt.
 //   ⚠️ Vì regex nằm ở lớp cha nên **mọi màn kế thừa `FrmMdiBase` đều dùng chung** — khi port màn khác
 //      thấy `this.regex.IsMatch(...)` thì đây chính là quy tắc đó.
+// ===== 🔴 #259 CHUẨN HOÁ CHUỖI — `Util.StandardizedString` =====
+// Nguồn `TERP.HTCServiceClient/Common/Util.cs:553` (bản DMSCarSv) / `TERP.HTCClient/Common/Util.cs:597`:
+//     `str = Object.ToString().Trim();`
+//     `while (str.Contains("  ")) str = str.Replace("  ", " ");`
+// ⇒ `Trim()` + **gộp mọi khoảng trắng liên tiếp thành MỘT**.
+// ⚠️ Nguồn chỉ gộp **dấu cách đôi**, KHÔNG đụng tới tab/xuống dòng — giữ đúng, không "chuẩn hoá" thêm.
+// ⚠️ Nguồn chỉ chuẩn hoá ở nhánh **HỢP LỆ** của ô (sau khi qua guard độ dài), không chuẩn hoá trước khi kiểm
+//    ⇒ chuỗi 1001 ký tự có nhiều dấu cách vẫn **bị chặn**, không được rút gọn rồi cho qua.
+static string StandardizeText(string? s)
+{
+    if (string.IsNullOrEmpty(s)) return s ?? "";
+    var str = s.Trim();
+    while (str.Contains("  ")) str = str.Replace("  ", " ");
+    return str;
+}
+
 // ===== 🔴 #258 BIỂN SỐ XE — HAI mẫu hợp lệ của nguồn =====
 // `Views/ExcelUtil/FrmImportCustomer.cs:143-149` (md5 `fb5df1f7` — KHỚP 2 máy):
 //     `re1 = ^[1-9]{1}[0-9]{0,1}[A-Z]{1,2}[-]{1}[0-9]{4,5}$`   (biển thường, vd 29A-12345)
@@ -30115,6 +30131,19 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
 
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.OrderQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + OrderQty > 0)." });
+
+    // ===== 🔴 #259 GHI CHÚ DÒNG > 1000 — `Ser_Order_PartDtl.Remark` =====
+    // `FrmSer_Order_Part_Detail.cs:1274-1278` (md5 `51b5a41f` — KHỚP 2 máy):
+    //     `int maxlength_Remark = 1000;`
+    //     `e.ErrorText = string.Format("Ghi chú không được > {0} ký tự", maxlength_Remark);`
+    // ⚠️ MÂU THUẪN NGƯỠNG lần thứ hai (tiếp #258) cho **cùng cột** `Ser_Order_PartDtl.Remark`:
+    //   · **1000** ở màn chi tiết đơn đặt PT (đường nhập chính) ← port theo mức này
+    //   · **400** ở lưới trong màn thanh toán NCC (`FrmSer_SupplierPayment.cs:1424`, md5 `98b8c976`)
+    //   Theo luật đã chốt ở #258: giữ ngưỡng của ĐƯỜNG NHẬP CHÍNH, không siết xuống mức lưới sửa nhanh.
+    // ⚠️ Nguồn dùng `string.Format` với chính biến ngưỡng ⇒ thông điệp luôn khớp số; port giữ nguyên dạng đó.
+    foreach (var l in lines)
+        if (!string.IsNullOrEmpty(l.Remark) && l.Remark!.Length > 1000)
+            return Results.BadRequest(new { error = "Ghi chú không được > 1000 ký tự", partCode = l.PartCode });
     var no = existing?.OrderPartNo ?? (reqNo.Length > 0 ? reqNo : "OP" + DateTime.Now.ToString("yyMMddHHmmss"));
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     // ⚠️ Chỉ gán 9 trường mà `Ser_Order_Part_Save` thực sự gửi (+ vết ghi). Ba trường ngày/số đơn NCC
@@ -30154,7 +30183,9 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
             PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
             OrderQty = l.OrderQty, Price = l.Price,
             // #235: khối giá + ngữ cảnh phụ tùng
-            PartID = l.PartID, Unit = l.Unit, MinQuantity = l.MinQuantity, Remark = l.Remark,
+            PartID = l.PartID, Unit = l.Unit, MinQuantity = l.MinQuantity,
+            // 🔴 #259: chuẩn hoá đúng như nguồn làm ở nhánh hợp lệ (StandardizedString).
+            Remark = StandardizeText(l.Remark),
             // ⚠️ Lúc TẠO chưa có số duyệt: nguồn khoá ô `QtyAppr` ở lưới tạo và chỉ mở khi duyệt.
             //    Mặc định lấy bằng số đặt để tổng tiền không ra 0; bước duyệt sẽ ghi đè.
             QtyAppr = l.QtyAppr ?? l.OrderQty,
@@ -30264,7 +30295,7 @@ app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, Or
                 if (d.UPBeforeDc is not null) line.UPBeforeDc = d.UPBeforeDc;
                 if (d.DiscountRate is not null) line.DiscountRate = d.DiscountRate;
                 if (d.VAT is not null) line.VAT = d.VAT;
-                if (!string.IsNullOrWhiteSpace(d.Remark)) line.Remark = d.Remark;
+                if (!string.IsNullOrWhiteSpace(d.Remark)) line.Remark = StandardizeText(d.Remark);
                 line.OrderSuppierNo = o.OrderSuppierNo;
                 line.LogLUDateTime = DateTime.Now; line.LogLUBy = who;
                 RecalcOrderPartLine(line);
