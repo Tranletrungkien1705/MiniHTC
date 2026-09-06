@@ -25631,24 +25631,88 @@ app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? 
 
 app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.OrderMonth)) return Results.BadRequest(new { error = "Cần OrderMonth (YYYYMM)." });
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
-    var no = "POC" + DateTime.Now.ToString("yyMMddHHmmss");
-    // 🔴 Nguồn `OrderPOCommandCreate_New20181119` (Biz.HTC.WH.cs:28472-28478) ghi đủ
-    //    ProductionMonth / ExpectedMonth / CreatedBy / FlagActive="1" — port cũ chỉ có OrderMonth.
+    // ===== #173 port TRỌN `OrderPOCommandCreate_New20181119` (DataWH/Biz.HTC.WH.cs:28295, csproj 272) =====
+    // BƯỚC 3B: hàm bắt đầu **cùng dòng 28295 ở CẢ HAI máy**, vùng 266 dòng md5 `076e3384` KHỚP.
+    // TWIN: WS 32-bit (`App_Code/WSHTC.cs:5377`) và 64-bit (`WSHTC.asmx.cs:7286`) gọi **cùng** bản.
+    // ⚠️ Lượt trước grep `_biz.Ord_POCommand` ra mỗi `_Get`/`_GetWH` rồi tưởng cụm chỉ có đọc —
+    //    tên lệnh thật là `OrderPOCommandCreate` (KHÔNG có tiền tố `Ord_`). Lại đúng lớp "grep sai tên".
+    //
+    // 🔴 BỐN sai chiều của port cũ, sửa hết trong lượt này:
+    //   1. **Số lệnh do NGƯỜI DÙNG nhập** (`strPOCommandCode`), guard `Length >= TConst.HTCConst.MinLengthCode` (=5).
+    //      Port cũ tự sinh `"POC"+timestamp` ⇒ mã không khớp hệ nguồn (cùng lỗi đã gặp ở phiếu điều chỉnh).
+    //   2. **Ba cột tháng do SERVER TỰ TÍNH**, không lấy input:
+    //      `OrderMonth` = tháng hiện tại · `ProductionMonth` = +1 tháng · `ExpectedMonth` = +2 tháng.
+    //   3. **`ModelCode` SUY RA từ `SpecCode`** qua `myCommon_CheckSpecCode` (`dr["ModelCode"] = dt_Mst_CarSpec...`),
+    //      KHÔNG lấy từ input; và cặp model–màu phải khớp master (`myCommon_CheckMatchingModelAndColor`).
+    //   4. Nguồn chỉ chặn `Quantity < 0` ⇒ **dòng số lượng 0 là HỢP LỆ**. Port cũ lọc `Quantity > 0`,
+    //      tức âm thầm **vứt bỏ** các dòng đặt 0 xe — sai dữ liệu, không sai build.
+    var code = (dto.PoCmdCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length < 5)
+        return Results.BadRequest(new { error = "Số lệnh đặt xe phải có ít nhất 5 ký tự." });
+    if (await db.POCommands.AnyAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == code))
+        return Results.BadRequest(new { error = $"Số lệnh {code} đã tồn tại!" });
+
+    // `TableDetailBeBlank`
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào." });
+
+    var now = DateTime.Now;
+    var orderMonth = now.ToString("yyyyMM");
+    var productionMonth = now.AddMonths(1).ToString("yyyyMM");
+    var expectedMonth = now.AddMonths(2).ToString("yyyyMM");
+
+    // Quét từng dòng: khoá trùng · số lượng · spec · cặp model–màu.
+    var seen = new HashSet<string>();
+    var built = new List<POCommandLine>();
+    foreach (var l in lines)
+    {
+        var spec = l.SpecCode!.Trim().ToUpperInvariant();
+        var color = (l.ColorCode ?? "").Trim().ToUpperInvariant();
+        var lcTemp = (l.LCTemp ?? "").Trim().ToUpperInvariant();
+
+        // `InvalidDetailQuantity`: nguồn chặn ÂM, cho phép 0.
+        if (l.Quantity < 0)
+            return Results.BadRequest(new { error = $"Spec {spec}: số lượng không hợp lệ.", specCode = spec });
+
+        // `myCommon_CheckSpecCode(..., Flag.Active)` ⇒ lấy ModelCode TỪ MASTER.
+        var sp = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.FlagActive == "1");
+        if (sp is null) return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", specCode = spec });
+        var model = sp.ModelCode;
+
+        // `myCommon_CheckMatchingModelAndColor` — cặp model–màu phải có trong master màu.
+        if (color.Length > 0)
+        {
+            var okColor = await db.MstCarColors.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color && x.FlagActive == "1");
+            if (!okColor) return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", specCode = spec, colorCode = color });
+        }
+
+        // `DuplicateKeyDetail` — khoá NĂM phần của nguồn: |POCommandCode||LCTemp||SpecCode||ModelCode||ColorCode|
+        var key = $"|{code}||{lcTemp}||{spec}||{model}||{color}|";
+        if (!seen.Add(key))
+            return Results.BadRequest(new { error = $"Dòng trùng khoá (LCTemp/Spec/Model/Màu): {lcTemp}/{spec}/{model}/{color}.", key });
+
+        built.Add(new POCommandLine
+        {
+            OrgId = t.OrgId, SpecCode = spec, SpecDesc = sp.SpecDesc,
+            ModelCode = model,          // suy ra từ master, KHÔNG lấy input
+            ColorCode = color, PortCode = l.PortCode, PlantCode = l.PlantCode,
+            LCTemp = lcTemp, Quantity = l.Quantity
+        });
+    }
+
     var o = new POCommand
     {
-        OrgId = t.OrgId, PoCmdCode = no, OrderMonth = dto.OrderMonth.Trim(),
-        ProductionMonth = dto.ProductionMonth, ExpectedMonth = dto.ExpectedMonth,
+        OrgId = t.OrgId, PoCmdCode = code,
+        OrderMonth = orderMonth, ProductionMonth = productionMonth, ExpectedMonth = expectedMonth,
         CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        CreatedAt = now,
         FlagActive = "1", Status = "Draft",
     };
     db.POCommands.Add(o); await db.SaveChangesAsync();
-    foreach (var l in lines)
-        db.POCommandLines.Add(new POCommandLine { OrgId = t.OrgId, PoCmdId = o.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), SpecDesc = l.SpecDesc, ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, LCTemp = l.LCTemp, Quantity = l.Quantity });
+    foreach (var b in built) { b.PoCmdId = o.Id; db.POCommandLines.Add(b); }
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), status = o.Status });
+    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.CreatedBy, o.FlagActive,
+        lines = built.Count, totalQty = built.Sum(l => l.Quantity) });
 }).RequireAuthorization();
 
 app.MapGet("/api/pocommands/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -28639,7 +28703,7 @@ record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount
     decimal PointTotal = 0,            // txtPointTotal — tổng điểm tích
     string? CardTypeExpect = null);    // txtCardTypeExpect — hạng thẻ dự kiến sau tích
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null);
-record POCommandDto(string OrderMonth, List<POCommandLineDto>? Lines, string? ProductionMonth = null, string? ExpectedMonth = null);
+record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
