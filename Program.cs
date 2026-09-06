@@ -4279,12 +4279,15 @@ app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
     {
         d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.SalesManCode, d.Status, d.TotalAmount, d.CreatedAt, d.ConfirmedAt,
+        // #157 parity DLS_Deal.
+        d.DealerCode, d.SalesType, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver,
+        d.CreatedBy, d.FlagInitDeal, d.DlrContractNo, d.LogLUDateTime, d.LogLUBy,
         cars = db.WholesaleDealCars.Count(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealNoUser)) return Results.BadRequest(new { error = "Phải nhập số giao dịch người dùng" });
     if (string.IsNullOrWhiteSpace(dto.BuyerDealerCode)) return Results.BadRequest(new { error = "Hãy chọn đại lý mua" });
@@ -4293,10 +4296,21 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "DTD" + DateTime.Now.ToString("yyMMddHHmmss");
-    var d2 = new WholesaleDeal { OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser.Trim(), BuyerDealerCode = dto.BuyerDealerCode.Trim(), SalesManCode = dto.SalesManCode ?? "", Status = "Draft", TotalAmount = cars.Sum(c => c.UnitPrice) };
+    var d2 = new WholesaleDeal { OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser.Trim(), BuyerDealerCode = dto.BuyerDealerCode.Trim(), SalesManCode = dto.SalesManCode ?? "", Status = "Draft", TotalAmount = cars.Sum(c => c.UnitPrice) ,
+        // #157 parity DLS_Deal.
+        DealerCode = dto.DealerCode, SalesType = dto.SalesType, DealDate = dto.DealDate,
+        CustomerCodeBuyer = dto.BuyerDealerCode,   // nguồn: CustomerCodeBuyer = DealerCodeBuyer
+        CustomerCodeHolder = dto.CustomerCodeHolder, CustomerCodeDriver = dto.CustomerCodeDriver,
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", FlagInitDeal = dto.FlagInitDeal, DlrContractNo = dto.DlrContractNo,
+        LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.WholesaleDeals.Add(d2); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.WholesaleDealCars.Add(new WholesaleDealCar { OrgId = t.OrgId, WholesaleDealId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", UnitPrice = c.UnitPrice });
+        db.WholesaleDealCars.Add(new WholesaleDealCar { OrgId = t.OrgId, WholesaleDealId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", UnitPrice = c.UnitPrice ,
+            // #157 parity DLS_DealDetail.
+            CarId = c.CarId, DealNoPrevious = c.DealNoPrevious, PlateNo = c.PlateNo,
+            DeliveryDate = c.DeliveryDate, DeliveryStatus = c.DeliveryStatus,
+            FlagCurrent = "1",          // nguồn đánh dấu dòng vừa tạo là dòng hiện hành
+            CtrCarId = c.CtrCarId, LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
     await db.SaveChangesAsync();
     return Results.Ok(new { d2.DealNo, cars = cars.Count, totalAmount = d2.TotalAmount });
 }).RequireAuthorization();
@@ -4307,7 +4321,7 @@ app.MapGet("/api/wholesaledeals/{no}/cars", async (string no, AppDbContext db, I
     var d = await db.WholesaleDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.WholesaleDealCars.Where(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
-        .Select(c => new { c.VIN, c.ModelCode, c.UnitPrice }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.UnitPrice , c.CarId, c.DealNoPrevious, c.PlateNo, c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.Status, d.TotalAmount, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -27549,8 +27563,8 @@ record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineD
 record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct);
 record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
-record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice);
-record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars);
+record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice, string? CarId = null, string? DealNoPrevious = null, string? PlateNo = null, DateTime? DeliveryDate = null, string? DeliveryStatus = null, string? CtrCarId = null);
+record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars, string? DealerCode = null, string? SalesType = null, DateTime? DealDate = null, string? CustomerCodeHolder = null, string? CustomerCodeDriver = null, string? FlagInitDeal = null, string? DlrContractNo = null);
 record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? DealDate, string? PlateNo, string? SalesType, string? WarrantyNo, string? CustomerCode, string? VerifyStatus);
 record DealPatchDto(string Field, string Value);
 record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate, DateTime? WarrantyExpiresDate = null);

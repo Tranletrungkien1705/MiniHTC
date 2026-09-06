@@ -10308,6 +10308,32 @@ public sealed class WholesaleDeal
     public decimal TotalAmount { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
+
+    // ===== #157 parity DLS_Deal (nguồn: DataWH/Biz.HTC.WH.cs, csproj 272) —
+    //   `DealerSalesDealCreate_SellToDealer_New20230306` (92880), gán cột tại 93333-93350.
+    // 🔴 TWIN: WS 32-bit chỉ có `_New20181119`; WS 64-bit có THÊM `_New20230306` ⇒ bản mới là canonical.
+    //   (Các bản trong `Delete.BizHTC.*` — `_New20180928`, `_New20181017`, `_New20181115` — là XÁC.)
+    /// <summary>Đại lý BÁN (`DealerCode`) — port cũ chỉ có bên MUA.</summary>
+    public string? DealerCode { get; set; }
+    public string? SalesType { get; set; }
+    public DateTime? DealDate { get; set; }
+    /// <summary>
+    /// Ba vai khách hàng của giao dịch (`CustomerCodeBuyer`/`Holder`/`Driver`).
+    /// ⚠️ Với bán buôn ĐL→ĐL nguồn gán `CustomerCodeBuyer = DealerCodeBuyer` (chính đại lý mua).
+    /// </summary>
+    public string? CustomerCodeBuyer { get; set; }
+    public string? CustomerCodeHolder { get; set; }
+    public string? CustomerCodeDriver { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>Cờ giao dịch KHỞI TẠO (`FlagInitDeal`).</summary>
+    public string? FlagInitDeal { get; set; }
+    /// <summary>
+    /// 🔴 Số hợp đồng đại lý (`DlrContractNo`) do chính lượt bán buôn này SINH RA — xem nợ ghi ở
+    /// endpoint `/api/dealerdeals/todealer`.
+    /// </summary>
+    public string? DlrContractNo { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Xe trên giao dịch bán buôn ĐL→ĐL — port 1:1 FrmNewDealToDealer detail.</summary>
@@ -10319,6 +10345,26 @@ public sealed class WholesaleDealCar
     public string VIN { get; set; } = "";
     public string ModelCode { get; set; } = "";
     public decimal UnitPrice { get; set; }
+
+    // ===== #157 parity DLS_DealDetail (Biz.HTC.WH.cs:93352-93366) =====
+    /// <summary>Khoá dòng xe (`CarId`) — nguồn định danh xe bằng CarId, VIN chỉ là thông tin hiển thị.</summary>
+    public string? CarId { get; set; }
+    /// <summary>
+    /// 🔴 Số giao dịch TRƯỚC ĐÓ của cùng chiếc xe (`DealNoPrevious`) — chuỗi chuyền tay
+    /// ĐL→ĐL nối lại được nhờ cột này. Port cũ mất hẳn, nên không truy được lịch sử sang tay.
+    /// </summary>
+    public string? DealNoPrevious { get; set; }
+    public string? PlateNo { get; set; }
+    public DateTime? DeliveryDate { get; set; }
+    public string? DeliveryStatus { get; set; }
+    public DateTime? ConfirmDate { get; set; }
+    public string? ConfirmBy { get; set; }
+    /// <summary>Cờ dòng HIỆN HÀNH (`FlagCurrent`) — chỉ một dòng của mỗi xe là "đang có hiệu lực".</summary>
+    public string? FlagCurrent { get; set; }
+    /// <summary>Khoá dòng xe bên HỢP ĐỒNG đại lý (`CtrCarId`) — nối sang `Dlr_ContractCar`.</summary>
+    public string? CtrCarId { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Bản ghi giao dịch bán xe để sửa field — port 1:1 cụm FrmEditDeal_* (DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung).</summary>
