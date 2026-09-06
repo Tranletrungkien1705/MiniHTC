@@ -28396,6 +28396,19 @@ app.MapPost("/api/customercares/{no}/survey", async (
     if (string.Equals(care.Status, newStatus, StringComparison.OrdinalIgnoreCase))
         return Results.BadRequest(new { error = $"Phiếu đã ở trạng thái '{careSurveyStatusTexts[newStatus]}'." });
 
+    // ===== 🔴 #225 GUARD NGÀY LIÊN HỆ — bất đối xứng theo nhánh =====
+    // Nguồn: `Views/Customer/FrmCSCCustomerCare72h.cs` (455 dòng, DMSCarSv) — 5 nút:
+    //   `btnThoat` · `btnContactedIFeedB` · `btnContactedINoFB` · `btnReject` · `btnMakeAppointment`.
+    // 🔴 Hai handler ĐÃ LIÊN HỆ (`btnContactedIFeedB` 284, `btnContactedINoFB` 331) mở đầu bằng
+    //   `if (GetDateEditStringValue(dedContactDate) == "") { … dedContactDate.Focus(); return; }`
+    //   ⇒ **BẮT BUỘC** có ngày liên hệ mới cho lưu.
+    //   Handler `btnReject` (377) **KHÔNG** có guard đó — từ chối liên hệ thì không cần ngày.
+    //   ⇒ Guard áp cho CINFB/CIFB, KHÔNG áp cho REJ. Giữ đúng bất đối xứng này.
+    // ⚠️ `btnMakeAppointment` chỉ MỞ form `FrmQuotationApp` (điều hướng), không gọi service ⇒ không phải
+    //   một lệnh ghi, không port thành endpoint.
+    if (newStatus is "CINFB" or "CIFB" && dto.ContactDate is null)
+        return Results.BadRequest(new { error = "Phải nhập ngày liên hệ trước khi ghi nhận đã liên hệ.", field = "ContactDate" });
+
     // Bỏ trống được (form có thể chưa chọn), nhưng đã nhập thì phải thuộc danh sách đáp án của câu đó.
     foreach (var (questionKey, allowedAnswers) in careSurveyAnswerOptions)
     {
