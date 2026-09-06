@@ -12431,6 +12431,16 @@ public sealed class EmailSend
     /// chỉ khi gửi xong mới cập nhật "1" (`BizCarSv.SendMail.cs:616`). Port cũ đánh dấu
     /// "Sent" NGAY LÚC TẠO ⇒ không phân biệt được "đã xếp hàng" với "đã gửi".
     /// Giữ đọc được dữ liệu cũ: "Sent" ⇒ "1", "Invalid" ⇒ "0" + <see cref="InvalidEmail"/>.
+    ///
+    /// 🔴 #300 SỬA LẠI: trạng thái **KHÔNG chỉ có hai giá trị**. Báo cáo LIVE
+    /// `Email_ReportCusReceivedEmail` (`SendMail.cs:4630`) ánh xạ **BA**:
+    ///   `'0'` Chưa gửi · `'1'` Thành công · `'2'` **Thất bại**  (whitelist — **không có `else`**
+    ///   ⇒ mã lạ và NULL cho ra **nhãn NULL**, ô trống trên lưới).
+    /// Giá trị do **người gọi truyền vào** (`:322` `strStatus`, `:520` `strStatusNew`) nên `'2'` là giá trị
+    /// hợp lệ mà job ghi khi gửi hỏng. Mô hình cũ chỉ mô tả "0"/"1" ⇒ **không có chỗ ghi GỬI HỎNG**,
+    /// mọi lần gửi thất bại bị kẹt ở "0" (trông như còn trong hàng đợi).
+    /// ⚠️ Nguồn ghi **DBNull khi tham số rỗng** (`:318`) ⇒ NULL cũng là giá trị thật.
+    /// ⚠️ ĐỪNG lẫn với <see cref="EmailSendAutoTemp.Status"/>: bảng kia dùng SỐ và có mã **-1**.
     /// </summary>
     public string Status { get; set; } = "0";
 
@@ -12455,6 +12465,58 @@ public sealed class EmailSend
     public string? Note { get; set; }
 
     public DateTime SendDate { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// 🔴 #300 BẢNG TẠM GỬI EMAIL TỰ ĐỘNG — `Email_SendEmailAutoTemp` (`BizCarSv.SendMail.cs:3829/4052`),
+/// **chưa từng port**. Đây là **hàng đợi NGƯỜI NHẬN** của một lô gửi tự động: mỗi khách một dòng, dựng
+/// sẵn `Subject`/`Body` đã ghép biến, rồi job mới đọc ra gửi và ghi kết quả sang `EmailSend`.
+/// Thiếu bảng này thì **không biết một lô nhắm tới bao nhiêu khách**, chỉ biết đã gửi được bao nhiêu.
+///
+/// Hai `[WebMethod]` LIVE: `Email_SendEmailAutoTemp_Create` (`WSCarSv.asmx.cs:22308`) ·
+/// `_Update` (`:22396`). Hai hàm đọc LIVE: `Temp_Email_Get` (`:22929`) · `Temp_Email_Get_Detail`.
+/// ⚠️ Bảng nằm ở DB `@strDBName_CommonCenter` (dùng chung), không phải DB đại lý.
+/// </summary>
+public sealed class EmailSendAutoTemp
+{
+    public long Id { get; set; }                 // AutoTempID
+    public Guid OrgId { get; set; }
+
+    /// <summary>BATCHID — lô mà dòng này thuộc về. ⚠️ **KHÔNG có trong chữ ký `_Create`**: nguồn gán ở
+    /// chỗ khác (lúc dựng lô), nên dòng vừa tạo có thể còn mồ côi.</summary>
+    public string? BatchId { get; set; }
+
+    public string? DealerCode { get; set; }
+    public string? CusID { get; set; }
+    public string? CusEmail { get; set; }
+    public string? Subject { get; set; }
+    public string? Body { get; set; }
+
+    /// <summary>CURRENTDATE — ngày ghi nhận dòng (nguồn nhận dạng CHUỖI).</summary>
+    public string? CurrentDate { get; set; }
+
+    /// <summary>TYPEEMAIL — 1..7, cùng bảng mã với `EmailSend.EmailType`.</summary>
+    public string? TypeEmail { get; set; }
+
+    /// <summary>CONFIGAUTOID — cấu hình gửi tự động sinh ra dòng này.</summary>
+    public string? ConfigAutoID { get; set; }
+
+    /// <summary>
+    /// 🔴 STATUS — **bảng mã SỐ, có mã ÂM**, khác hẳn cờ "1"/"0" của <see cref="EmailSend"/>:
+    ///   `1` Thành công · `-1` **Thất bại** · `0` Chưa gửi · **`else` ⇒ "Lỗi"**
+    /// (`Temp_Email_Get_Detail`, `SendMail.cs:5497` — viết `when 1`/`when -1`/`when 0` KHÔNG nháy).
+    /// ⚠️ Có nhánh `else` ⇒ **blacklist**: NULL và mọi mã lạ đều hiện "Lỗi", không phải ô trống.
+    /// ⚠️ Nguồn ghi **DBNull khi tham số rỗng** (`:3960`/`:4191`) ⇒ NULL là giá trị THẬT, hiển thị "Lỗi".
+    /// </summary>
+    public string? Status { get; set; }
+
+    /// <summary>SENDTYPE — kiểu gửi của dòng.</summary>
+    public string? SendType { get; set; }
+
+    /// <summary>REMARK — ghi chú/lý do lỗi, `Temp_Email_Get_Detail` trả kèm trạng thái.</summary>
+    public string? Remark { get; set; }
+
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 }
 
 /// <summary>

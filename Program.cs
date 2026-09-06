@@ -9503,6 +9503,18 @@ static bool IsValidEmail(string? raw)
         raw, @"\w+([-+.']\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*");
 }
 
+// 🔴 #300 Nhãn `TypeEmail` có HAI biến thể trong cùng file nguồn:
+//   `SendMail.cs:1300/1540/1815` (+2) — **không `else`** ⇒ mã lạ ra nhãn NULL;
+//   `SendMail.cs:5315` và `:5502`     — **`else N'Không xác định'`** ⇒ mã lạ ra "Không xác định".
+//   Hai màn tra cùng cột mà một bên để trống, một bên ghi "Không xác định". Hàm này theo bản CÓ else vì
+//   nó là bản dùng cho hàng đợi tự động (`Temp_Email_Get`/`_Get_Detail`).
+static string EmailTypeLabelAuto(string? v) => v switch
+{
+    "1" => "Thông báo chiến dịch", "2" => "Nhắc bảo dưỡng", "3" => "Mừng sinh nhật",
+    "4" => "Hẹn khách hàng", "5" => "Khuyến mại", "6" => "Thông báo sửa xong", "7" => "Khác",
+    _ => "Không xác định",
+};
+
 app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? email, string? status, string? batch) =>
 {
     var q = db.EmailSends.Where(x => x.OrgId == t.OrgId);
@@ -9610,11 +9622,109 @@ app.MapPost("/api/emailsends/{batchNo}/status", async (
     return Results.Ok(new { batchNo = no, status = to, changed, skippedAlreadySent = rows.Count - changed });
 }).RequireAuthorization();
 
+// 🔴 #300 BA trạng thái, không phải hai — theo báo cáo LIVE `Email_ReportCusReceivedEmail` (:4630).
+//   Khối **KHÔNG có `else`** ⇒ whitelist: mã lạ / NULL cho ra nhãn NULL (ô trống), KHÔNG gộp về "Lỗi".
+var emailSendStatusNames = new Dictionary<string, string>
+{
+    ["0"] = "Chưa gửi", ["1"] = "Thành công", ["2"] = "Thất bại",
+};
+static string? EmailSendStatusLabel(Dictionary<string, string> m, string? v)
+    => v is not null && m.TryGetValue(v, out var n) ? n : null;
+
+// 🔴 #300 Bảng mã của `Email_SendEmailAutoTemp` — **KHÁC HẲN**: số, có mã ÂM, và có `else`.
+//   `Temp_Email_Get_Detail` (:5497) viết `when 1` / `when -1` / `when 0` **không nháy**, rồi `else N'Lỗi'`.
+//   ⇒ blacklist: NULL và mọi mã lạ hiện **"Lỗi"**, không phải ô trống. Hai bảng email, hai từ vựng.
+var emailAutoTempStatusNames = new Dictionary<string, string>
+{
+    ["1"] = "Thành công", ["-1"] = "Thất bại", ["0"] = "Chưa gửi",
+};
+static string EmailAutoTempStatusLabel(Dictionary<string, string> m, string? v)
+    => v is not null && m.TryGetValue(v, out var n) ? n : "Lỗi";
+
 app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
 {
-    statuses = new[] { new { code = "0", name = "Chưa gửi (trong hàng đợi)" }, new { code = "1", name = "Đã gửi" } },
-    note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
+    statuses = emailSendStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Ba trạng thái theo báo cáo LIVE. Mã lạ/NULL ⇒ nhãn rỗng (nguồn KHÔNG có nhánh else). "
+         + "Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
+    autoTempStatuses = emailAutoTempStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    autoTempNote = "Bảng Email_SendEmailAutoTemp dùng SỐ (có mã -1) và CÓ nhánh else ⇒ mã lạ/NULL hiện \"Lỗi\".",
 })).RequireAuthorization();
+
+// ===== #300 HÀNG ĐỢI NGƯỜI NHẬN của lô gửi tự động (Email_SendEmailAutoTemp) =====
+app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
+    string? batchId, string? dealer, string? typeEmail, string? status) =>
+{
+    var qy = db.EmailSendAutoTemps.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(batchId)) qy = qy.Where(x => x.BatchId == batchId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(typeEmail)) qy = qy.Where(x => x.TypeEmail == typeEmail);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var items = rows.Select(x => new
+    {
+        autoTempId = x.Id, x.BatchId, x.DealerCode, x.CusID, x.CusEmail, x.Subject,
+        x.TypeEmail, newTypeEmail = EmailTypeLabelAuto(x.TypeEmail),
+        x.ConfigAutoID, x.SendType, x.Remark, x.CurrentDate, x.Status,
+        statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, x.Status),
+        createdDate = x.CreatedDate,
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/emailautotemps", async (EmailAutoTempDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // ⚠️ Nguồn `_Create` KHÔNG bắt buộc trường nào — rỗng thì ghi DBNull. Không tự thêm chặn (luật #299).
+    var r = new EmailSendAutoTemp
+    {
+        OrgId = t.OrgId, BatchId = dto.BatchId,
+        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        CusID = dto.CusID, CusEmail = dto.CusEmail, Subject = dto.Subject, Body = dto.Body,
+        CurrentDate = dto.CurrentDate, TypeEmail = dto.TypeEmail, ConfigAutoID = dto.ConfigAutoID,
+        Status = dto.Status, SendType = dto.SendType, Remark = dto.Remark,
+    };
+    db.EmailSendAutoTemps.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { autoTempId = r.Id, r.BatchId, r.Status,
+        statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, r.Status) });
+}).RequireAuthorization();
+
+// #300 `_Update`: nguồn đưa ĐÚNG 10 cột vào `alEffectiveColumn` (:4214-4223) — **`BatchId` và `Remark`
+//   KHÔNG nằm trong đó** ⇒ sửa dòng KHÔNG đổi được lô, cũng không ghi đè được ghi chú.
+app.MapPut("/api/emailautotemps/{id:long}", async (long id, EmailAutoTempDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.EmailSendAutoTemps.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { autoTempId = id });
+    r.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+    r.CusID = dto.CusID; r.Body = dto.Body; r.Subject = dto.Subject;
+    r.CurrentDate = dto.CurrentDate; r.TypeEmail = dto.TypeEmail; r.ConfigAutoID = dto.ConfigAutoID;
+    r.Status = dto.Status; r.CusEmail = dto.CusEmail; r.SendType = dto.SendType;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { autoTempId = r.Id, r.Status,
+        statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, r.Status),
+        note = "BatchId và Remark KHÔNG sửa được — đúng alEffectiveColumn của nguồn." });
+}).RequireAuthorization();
+
+// ===== #300 TỔNG HỢP MỘT LÔ — nguồn `Temp_Email_Get` (`SendMail.cs:5307-5327`) =====
+// 🔴 Nguồn trả `0 SoLuongLoi` — **hằng số 0 gõ thẳng vào SQL**, nên cột "số lượng lỗi" trên màn
+//   **luôn bằng 0** dù có bao nhiêu mail hỏng. Tác giả **không giải thích** ⇒ theo lệ #272/#275 KHÔNG bắt
+//   chước cái sai câm: ở đây đếm THẬT từ `EmailSend.Status == "2"` và trả kèm `errorCountSourceAlwaysZero`
+//   để ai đối chiếu với WinForm biết vì sao hai bên lệch.
+app.MapGet("/api/emailbatches/{batchId}/summary", async (string batchId, AppDbContext db, ITenantContext t) =>
+{
+    var recipients = await db.EmailSendAutoTemps.CountAsync(x => x.OrgId == t.OrgId && x.BatchId == batchId);
+    var sends = await db.EmailSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == batchId).ToListAsync();
+    var failed = sends.Count(x => x.Status == "2");
+    return Results.Ok(new
+    {
+        batchId,
+        soLuongKhachHang = recipients,
+        soLuongDaGui = sends.Count,
+        // Nguồn: recipients − sends (KHÔNG xét trạng thái) ⇒ giữ đúng phép trừ đó.
+        soLuongChuaGui = recipients - sends.Count,
+        soLuongLoi = failed,
+        errorCountSourceAlwaysZero = true,
+        note = "Nguồn gõ cứng SoLuongLoi = 0; ở đây đếm thật theo EmailSend.Status = '2' (Thất bại).",
+    });
+}).RequireAuthorization();
 
 // ===== #153 parity: ĐỊNH MỨC TỒN TỐI THIỂU — bảng đầu + HAI BẢNG CON THẬT =====
 // Nguồn: DMS40/0.01.Master.cs (csproj 122) — St_MinInvBalance_AddX (10130) ghi 3 bảng tại
@@ -35831,6 +35941,13 @@ record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, deci
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 // #299: bốn trường nghiệp vụ THẬT của `Ser_SMSTemplate` + `SmsName` (port cũ tự thêm).
 // `IsActive` rỗng ⇒ tạo mới ở trạng thái TẮT (nguồn ghi DBNull), sửa thì GIỮ NGUYÊN.
+// #300: 10 trường của `Email_SendEmailAutoTemp_Create` + `BatchId`/`Remark` (chỉ dùng lúc TẠO —
+//   nguồn không đưa hai cột đó vào `alEffectiveColumn` của `_Update`).
+record EmailAutoTempDto(string? BatchId = null, string? DealerCode = null, string? CusID = null,
+    string? CusEmail = null, string? Subject = null, string? Body = null, string? CurrentDate = null,
+    string? TypeEmail = null, string? ConfigAutoID = null, string? Status = null,
+    string? SendType = null, string? Remark = null);
+
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody,
     string? DealerCode = null, string? IsActive = null);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);

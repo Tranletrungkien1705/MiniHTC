@@ -19,14 +19,23 @@ for (const f of process.argv.slice(2)) {
         // 'case <col>' hoac 'case' tran
         const mCase = /\bcase\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+|[A-Za-z0-9_]+)?\s*$/i.exec(l.trim());
         if (mCase) { cur = { col: (mCase[1] || '?').toLowerCase(), file: path.basename(f), line: i + 1, pairs: [] }; continue; }
+        // #300b: cho phep MA AM (vd "when -1 then N'That bai'"). Regex cu nuot dau tru nen chu ky
+        //   khoi SendMail.cs:5497 mat cap -1 => hai khoi khac nghia bi coi la gan giong nhau.
         // 'when <x> = 'v'' hoac 'when 'v''  +  then N'...'
-        const mWhen = /\bwhen\s+(?:([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\s*(?:=|is)\s*)?'?([A-Za-z0-9_]*)'?\s*(?:is\s+null)?\s*then\s+N'([^']*)'/i.exec(l);
+        const mWhen = /\bwhen\s+(?:([A-Za-z0-9_]+\.[A-Za-z0-9_]+)\s*(?:=|is)\s*)?'?(-?[A-Za-z0-9_]*)'?\s*(?:is\s+null)?\s*then\s+N'([^']*)'/i.exec(l);
         if (mWhen && cur) {
             if (mWhen[1]) cur.col = mWhen[1].toLowerCase();
             const isNull = /is\s+null/i.test(l);
             cur.pairs.push([isNull ? '(null)' : mWhen[2], mWhen[3]]);
             continue;
         }
+        // #300 (bài học C0-quingentesimusquintusdecimus): PHẢI bắt nhánh ELSE.
+        //   Có ELSE  = BLACKLIST một phía -> NULL/mã lạ hiển thị NHƯ dữ liệu bình thường (nguy hiểm).
+        //   Không ELSE = WHITELIST        -> mã lạ cho ra NULL, người dùng thấy ô trống (an toàn hơn).
+        //   Chính sweep này ở #289 đã BỎ SÓT nhánh đó: khối Customer.cs:2213 hiện ra như chỉ có 1 nhãn,
+        //   thực tế còn "else N'Không hoạt động'" -> kết luận phân kỳ bị hiểu sai một nửa.
+        const mElse = /\belse\s+N?'([^']*)'/i.exec(l);
+        if (cur && mElse && !/\bwhen\b/i.test(l)) { cur.els = mElse[1]; }
         if (cur && cur.pairs.length && /\bend\b/i.test(l)) { blocks.push(cur); cur = null; }
     }
 }
@@ -45,8 +54,10 @@ for (const [col, bs] of [...byCol.entries()].sort()) {
     const sigs = new Map();
     for (const b of bs) {
         const sig = b.pairs.map(p => p[0] + '=' + p[1]).sort().join(' | ');
-        if (!sigs.has(sig)) sigs.set(sig, []);
-        sigs.get(sig).push(b.file + ':' + b.line);
+        // #300: ELSE là MỘT PHẦN của chữ ký — cùng bộ when mà khác else = KHÁC NGHĨA.
+        const sigE = sig + (b.els ? " | else=" + b.els : " | (KHONG else)");
+        if (!sigs.has(sigE)) sigs.set(sigE, []);
+        sigs.get(sigE).push(b.file + ':' + b.line);
     }
     if (sigs.size > 1) {
         diverge++;

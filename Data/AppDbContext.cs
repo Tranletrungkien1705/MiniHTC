@@ -508,6 +508,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SupplierDebitPayment> SupplierDebitPayments => Set<SupplierDebitPayment>();
     public DbSet<SmsAutoConfig> SmsAutoConfigs => Set<SmsAutoConfig>();
     public DbSet<EmailSend> EmailSends => Set<EmailSend>();
+    // #300: hàng đợi NGƯỜI NHẬN của lô gửi tự động (Email_SendEmailAutoTemp)
+    public DbSet<EmailSendAutoTemp> EmailSendAutoTemps => Set<EmailSendAutoTemp>();
     public DbSet<EmailAutoConfig> EmailAutoConfigs => Set<EmailAutoConfig>();
     public DbSet<DeliveryLocation> DeliveryLocations => Set<DeliveryLocation>();   // #232
     public DbSet<ServiceCampaign> ServiceCampaigns => Set<ServiceCampaign>();
