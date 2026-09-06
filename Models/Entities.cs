@@ -4559,6 +4559,45 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Hạn mức & thanh toán marketing theo NĂM của từng đại lý (`Rpt_Marketing` — port 1:1 cụm 5 hàm
+/// `Rpt_MarketingGet/Create/UpdateMulti/Update/Approve_New20181115`, 2010.HTC
+/// `TERP.BizHTC/BizHTC.Marketing.cs` dòng 1617 / 1811 / 2182 / 2567 / 2822).
+/// Khoá nghiệp vụ = cặp (`MKTYear`, `DealerCode`); bốn quý `Limit1..4` (hạn mức) và `Payment1..4` (đã chi).
+/// 🔴 `RptStatus` theo `TConst.Stage`: tạo mới = **"P"** (Pending), duyệt = **"A"** (Approved).
+/// Lưu ý `Stage.Modify = "M"` được hằng số ghi rõ **"Chỉ dùng cho Marketing"** nhưng cụm 5 hàm này
+/// KHÔNG dùng tới — thuộc các hàm `MKT_MarketingFee*` khác, chưa port.
+/// 🔴 **Duyệt theo NĂM, không theo đại lý**: `Rpt_MarketingApprove` chạy
+/// `update … set RptStatus='A' where MKTYear=@strMKTYear` — duyệt một phát cả năm.
+/// 🔴 **`UpdateMulti` = XOÁ TRẮNG cả năm rồi INSERT lại**, không phải sửa từng dòng; các dòng mới
+/// quay về trạng thái "P". Guard: toàn bộ năm phải đang "P".
+/// ⚠️ RBAC nguồn: `myCommon_CheckHTCDirect` (chỉ HTC trực tiếp được ghi) + `myCommon_CheckAccessDealerData`
+/// theo `BUPattern` — nợ RBAC chung toàn fleet, chưa port.
+/// </summary>
+public sealed class RptMarketing
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Năm 4 chữ số, nguồn chặn ngoài khoảng 1900..2100.</summary>
+    public string MKTYear { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public decimal? Limit1 { get; set; }
+    public decimal? Limit2 { get; set; }
+    public decimal? Limit3 { get; set; }
+    public decimal? Limit4 { get; set; }
+    public decimal? Payment1 { get; set; }
+    public decimal? Payment2 { get; set; }
+    public decimal? Payment3 { get; set; }
+    public decimal? Payment4 { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>"P" = chờ duyệt, "A" = đã duyệt (TConst.Stage).</summary>
+    public string RptStatus { get; set; } = "P";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Nhật ký gọi API **SBHOnline** (`OS_SBHOnline_Log` — port 1:1 `OS_SBHOnline_Log_Create`,
 /// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:4433`).
 /// 🔴 Hai trục tên KHÁC NHAU, đừng lẫn:

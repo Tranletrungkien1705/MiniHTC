@@ -4217,6 +4217,153 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Hạn mức & thanh toán marketing theo năm/đại lý (Rpt_Marketing — port 1:1 cụm 5 hàm
+// Rpt_MarketingGet/Create/UpdateMulti/Update/Approve_New20181115, 2010.HTC BizHTC.Marketing.cs
+// 1617 / 1811 / 2182 / 2567 / 2822). TWIN: cả WS 32-bit lẫn 64-bit gọi cùng bản _New20181115. =====
+// 🔴 RptStatus theo TConst.Stage: tạo = "P", duyệt = "A".
+// 🔴 DUYỆT THEO NĂM, không theo đại lý: nguồn chạy `where MKTYear = @strMKTYear` — một phát cả năm.
+// 🔴 UpdateMulti = XOÁ TRẮNG cả năm rồi INSERT lại (không sửa từng dòng); dòng mới về "P".
+// ⚠️ RBAC nguồn (CheckHTCDirect + CheckAccessDealerData theo BUPattern) chưa port — nợ chung toàn fleet.
+static bool MktYearValid(string y) =>
+    y.Length == 4 && int.TryParse(y, out var n) && n >= 1900 && n <= 2100;
+
+app.MapGet("/api/rptmarketing", async (AppDbContext db, ITenantContext t, string? mktYear, string? dealerCode, string? rptStatus) =>
+{
+    var qy = db.RptMarketings.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(mktYear)) qy = qy.Where(x => x.MKTYear == mktYear);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(rptStatus)) qy = qy.Where(x => x.RptStatus == rptStatus);
+    var items = await qy.OrderBy(x => x.MKTYear).ThenBy(x => x.DealerCode).Select(x => new
+    {
+        x.Id, x.MKTYear, x.DealerCode,
+        x.Limit1, x.Limit2, x.Limit3, x.Limit4,
+        x.Payment1, x.Payment2, x.Payment3, x.Payment4,
+        x.Remark, x.RptStatus, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+        LimitTotal = (x.Limit1 ?? 0) + (x.Limit2 ?? 0) + (x.Limit3 ?? 0) + (x.Limit4 ?? 0),
+        PaymentTotal = (x.Payment1 ?? 0) + (x.Payment2 ?? 0) + (x.Payment3 ?? 0) + (x.Payment4 ?? 0),
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Kiểm tra Limit/Payment âm — nguồn ném 8 mã lỗi riêng InvalidLimit1..4 / InvalidPayment1..4.
+static string? MktNegative(RptMarketingRowDto r)
+{
+    if (r.Limit1 < 0) return "Limit1 âm."; if (r.Limit2 < 0) return "Limit2 âm.";
+    if (r.Limit3 < 0) return "Limit3 âm."; if (r.Limit4 < 0) return "Limit4 âm.";
+    if (r.Payment1 < 0) return "Payment1 âm."; if (r.Payment2 < 0) return "Payment2 âm.";
+    if (r.Payment3 < 0) return "Payment3 âm."; if (r.Payment4 < 0) return "Payment4 âm.";
+    return null;
+}
+
+app.MapPost("/api/rptmarketing/create", async (RptMarketingCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var year = (dto.MKTYear ?? "").Trim();
+    if (!MktYearValid(year)) return Results.BadRequest(new { error = "Năm không hợp lệ (4 chữ số, 1900..2100)." });
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealerCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng Rpt_Marketing đầu vào rỗng." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var neg = MktNegative(r);
+        if (neg is not null) return Results.BadRequest(new { error = $"Đại lý {r.DealerCode}: {neg}" });
+        // 🔴 Guard nguồn Rpt_MarketingActive_CheckDB với FlagExistToCheck = "N": cặp (năm, đại lý) PHẢI CHƯA có.
+        var dup = await db.RptMarketings.AnyAsync(x => x.OrgId == t.OrgId && x.MKTYear == year && x.DealerCode == r.DealerCode);
+        if (dup) return Results.BadRequest(new { error = $"Năm {year} đã có dòng cho đại lý {r.DealerCode}." });
+    }
+    foreach (var r in rows)
+        db.RptMarketings.Add(new RptMarketing
+        {
+            OrgId = t.OrgId, MKTYear = year, DealerCode = r.DealerCode!.Trim(),
+            Limit1 = r.Limit1, Limit2 = r.Limit2, Limit3 = r.Limit3, Limit4 = r.Limit4,
+            Payment1 = r.Payment1, Payment2 = r.Payment2, Payment3 = r.Payment3, Payment4 = r.Payment4,
+            Remark = r.Remark, RptStatus = "P",
+            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = rows.Count, mktYear = year, rptStatus = "P" });
+}).RequireAuthorization();
+
+// 🔴 Nguồn XOÁ TRẮNG cả năm rồi insert lại — thay thế toàn bộ, không merge theo đại lý.
+app.MapPost("/api/rptmarketing/updatemulti", async (RptMarketingCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var year = (dto.MKTYear ?? "").Trim();
+    if (!MktYearValid(year)) return Results.BadRequest(new { error = "Năm không hợp lệ (4 chữ số, 1900..2100)." });
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealerCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng Rpt_Marketing đầu vào rỗng." });
+    foreach (var r in rows)
+    {
+        var neg = MktNegative(r);
+        if (neg is not null) return Results.BadRequest(new { error = $"Đại lý {r.DealerCode}: {neg}" });
+    }
+    var old = await db.RptMarketings.Where(x => x.OrgId == t.OrgId && x.MKTYear == year).ToListAsync();
+    // Guard nguồn Rpt_MarketingActive_CheckDB_Year: cả năm phải đang chờ duyệt.
+    var notPending = old.Where(x => x.RptStatus != "P").Select(x => x.DealerCode).Distinct().ToList();
+    if (notPending.Count > 0)
+        return Results.BadRequest(new { error = $"Năm {year} đã duyệt/khoá ở các đại lý: {string.Join(", ", notPending.Take(10))}." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    db.RptMarketings.RemoveRange(old);
+    foreach (var r in rows)
+        db.RptMarketings.Add(new RptMarketing
+        {
+            OrgId = t.OrgId, MKTYear = year, DealerCode = r.DealerCode!.Trim(),
+            Limit1 = r.Limit1, Limit2 = r.Limit2, Limit3 = r.Limit3, Limit4 = r.Limit4,
+            Payment1 = r.Payment1, Payment2 = r.Payment2, Payment3 = r.Payment3, Payment4 = r.Payment4,
+            Remark = r.Remark, RptStatus = "P",
+            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = old.Count, created = rows.Count, mktYear = year });
+}).RequireAuthorization();
+
+// Sửa MỘT dòng: nguồn chỉ ghi cột có giá trị parse được (alColumnEffective); Remark luôn ghi đè.
+app.MapPost("/api/rptmarketing/update", async (RptMarketingUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var year = (dto.MKTYear ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var row = await db.RptMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTYear == year && x.DealerCode == dealer);
+    if (row is null) return Results.NotFound(new { error = $"Không có dòng marketing năm {year} cho đại lý {dealer}." });
+    // Guard nguồn: chỉ sửa được khi còn chờ duyệt.
+    if (row.RptStatus != "P") return Results.BadRequest(new { error = $"Dòng đang ở trạng thái {row.RptStatus}, chỉ sửa được khi 'P'." });
+    var neg = MktNegative(new RptMarketingRowDto(dealer, dto.Limit1, dto.Limit2, dto.Limit3, dto.Limit4, dto.Payment1, dto.Payment2, dto.Payment3, dto.Payment4, dto.Remark));
+    if (neg is not null) return Results.BadRequest(new { error = neg });
+
+    if (dto.Limit1 is not null) row.Limit1 = dto.Limit1;
+    if (dto.Limit2 is not null) row.Limit2 = dto.Limit2;
+    if (dto.Limit3 is not null) row.Limit3 = dto.Limit3;
+    if (dto.Limit4 is not null) row.Limit4 = dto.Limit4;
+    if (dto.Payment1 is not null) row.Payment1 = dto.Payment1;
+    if (dto.Payment2 is not null) row.Payment2 = dto.Payment2;
+    if (dto.Payment3 is not null) row.Payment3 = dto.Payment3;
+    if (dto.Payment4 is not null) row.Payment4 = dto.Payment4;
+    row.Remark = dto.Remark; // nguồn luôn ghi Remark, kể cả rỗng
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.MKTYear, row.DealerCode, row.RptStatus });
+}).RequireAuthorization();
+
+// 🔴 Duyệt CẢ NĂM một phát (nguồn: update … where MKTYear = @strMKTYear), không nhận DealerCode.
+app.MapPost("/api/rptmarketing/approve", async (RptMarketingApproveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var year = (dto.MKTYear ?? "").Trim();
+    if (!MktYearValid(year)) return Results.BadRequest(new { error = "Năm không hợp lệ (4 chữ số, 1900..2100)." });
+    var rows = await db.RptMarketings.Where(x => x.OrgId == t.OrgId && x.MKTYear == year).ToListAsync();
+    if (rows.Count == 0) return Results.BadRequest(new { error = $"Năm {year} chưa có dòng marketing nào." });
+    var notPending = rows.Where(x => x.RptStatus != "P").Select(x => x.DealerCode).Distinct().ToList();
+    if (notPending.Count > 0)
+        return Results.BadRequest(new { error = $"Năm {year} có dòng không ở trạng thái 'P': {string.Join(", ", notPending.Take(10))}." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    foreach (var r in rows) { r.RptStatus = "A"; r.LogLUDateTime = now; r.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { approved = rows.Count, mktYear = year, rptStatus = "A" });
+}).RequireAuthorization();
+
 // ===== Nhật ký gọi API SBHOnline (OS_SBHOnline_Log — port 1:1 OS_SBHOnline_Log_Create,
 // 2010.HTC BizHTC.DealerSales.cs:4433; 17 điểm gọi ở Biz.HTC.WH.cs + Biz.HTC.WH.hkt.cs) =====
 // 🔴 HAI trục tên khác nhau: `FuncCall` = hàm nghiệp vụ ERP kích hoạt (DealerSalesDealCreate /
@@ -22189,6 +22336,11 @@ record GpsCallLogDto(string? LogId, string? LogType, string? Status, string? Exc
 record CarSvLogDto(string? DealNo, string? DealerCode, string? CarId, string? VIN, string? FuncCode, string? ErrCode);
 // Nhật ký gọi API SBHOnline: FuncCall = hàm ERP, FuncCode = lệnh API; ErrCode khác "0" là thông điệp lỗi.
 record SbhOnlineApiLogDto(string? FuncCall, string? FuncCode, string? RQ, string? RT, string? DealNo, string? CarId, string? ErrCode);
+// Hạn mức/thanh toán marketing theo năm; nguồn nhận cả BẢNG nhiều dòng cho một năm.
+record RptMarketingRowDto(string? DealerCode, decimal? Limit1, decimal? Limit2, decimal? Limit3, decimal? Limit4, decimal? Payment1, decimal? Payment2, decimal? Payment3, decimal? Payment4, string? Remark);
+record RptMarketingCreateDto(string? MKTYear, List<RptMarketingRowDto>? Rows);
+record RptMarketingUpdateDto(string? MKTYear, string? DealerCode, decimal? Limit1, decimal? Limit2, decimal? Limit3, decimal? Limit4, decimal? Payment1, decimal? Payment2, decimal? Payment3, decimal? Payment4, string? Remark);
+record RptMarketingApproveDto(string? MKTYear);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
