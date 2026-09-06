@@ -361,6 +361,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<OrderPart> OrderParts => Set<OrderPart>();
     public DbSet<OrderPartLine> OrderPartLines => Set<OrderPartLine>();
     public DbSet<WarrantyClaimPartItem> WarrantyClaimPartItems => Set<WarrantyClaimPartItem>();
+    // #303: dòng CÔNG của đề nghị bảo hành (Ser_ROWarrantyReportServiceItems)
+    public DbSet<WarrantyClaimServiceItem> WarrantyClaimServiceItems => Set<WarrantyClaimServiceItem>();
     public DbSet<StorageTransaction> StorageTransactions => Set<StorageTransaction>();
     public DbSet<BusinessPlanDtl> BusinessPlanDtls => Set<BusinessPlanDtl>();
     public DbSet<BankingTransBankFile> BankingTransBankFiles => Set<BankingTransBankFile>();

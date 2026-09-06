@@ -5047,6 +5047,51 @@ public sealed class ServiceWarrantyClaim
 /// ĐÚNG 1 phụ tùng, không có số lượng / đơn giá / VAT / nguồn gốc PT ⇒ mất toàn bộ chiều chi tiết
 /// và mọi luật kiểm tra theo dòng của nguồn (BizCarSv.WarrantyReport.cs:960-1290, máy 150 canonical).
 /// </summary>
+/// <summary>
+/// 🔴 #303 DÒNG CÔNG của đề nghị bảo hành — `Ser_ROWarrantyReportServiceItems`, **chưa từng port**.
+/// Port cũ chỉ có dòng PHỤ TÙNG (<see cref="WarrantyClaimPartItem"/>) ⇒ đề nghị bảo hành **chỉ có
+/// tiền phụ tùng, không có tiền công** — báo cáo chấp thuận bảo hành thiếu hẳn một nửa số tiền.
+/// Cột lấy từ bản đồ ghi thật `lstMapFN` (`WarrantyReport.cs:206-217`), không lấy theo lưới.
+/// </summary>
+public sealed class WarrantyClaimServiceItem
+{
+    public long Id { get; set; }                 // ItemID
+    public Guid OrgId { get; set; }
+    /// <summary>ROWID — khoá về đề nghị bảo hành.</summary>
+    public long ClaimId { get; set; }
+
+    public string? SerID { get; set; }           // khoá dịch vụ (join `Ser_MST_Service` lấy mã + tên)
+    public string? SerCode { get; set; }
+    public string? SerName { get; set; }
+
+    /// <summary>
+    /// 🔴 ROWSerType (`TConst.ROWSerType`, `Const.Main.cs:483`): **"CVC" công việc chính** · "CVPSN".
+    /// Báo cáo chấp thuận chỉ lấy **MỘT** dòng đại diện — `top 1 itemid … where ROWSerType = 'CVC'`.
+    /// ⚠️ Cột này **KHÔNG có trong `lstMapFN` của hàm Create** ⇒ nguồn không ghi nó lúc tạo, nhưng báo cáo
+    ///    LẠI LỌC theo nó. Dòng nào chưa được đặt "CVC" ở đâu đó sẽ **không bao giờ ra báo cáo**.
+    /// </summary>
+    public string? ROWSerType { get; set; }
+
+    public decimal Factor { get; set; } = 1;
+    public decimal Price { get; set; }
+    public decimal VAT { get; set; }
+    /// <summary>Giờ công định mức, nguồn lấy qua join `ser_mst_service.StdManHour` (xem #297).</summary>
+    public decimal? StdManHour { get; set; }
+
+    /// <summary>Trạng thái RIÊNG của dòng. ⚠️ Báo cáo chấp thuận **KHÔNG lọc theo cột này**
+    /// (`--AND rwrs.WarrantyStatus = 'ACCE'` đã bị comment) — xem chú thích ở endpoint báo cáo.</summary>
+    public string? WarrantyStatus { get; set; }
+
+    public string? Note { get; set; }
+    /// <summary>BULLETINID — bản tin kỹ thuật. ⚠️ Nguồn coi chuỗi **"0" như RỖNG** (bỏ qua, không ghi).</summary>
+    public string? BulletinID { get; set; }
+
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class WarrantyClaimPartItem
 {
     public long Id { get; set; }
