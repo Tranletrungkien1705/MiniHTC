@@ -8745,11 +8745,54 @@ app.MapGet("/api/smspricesends/effective", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #230 BRANDNAME CỦA TÀI KHOẢN — `Acc_BrandName_Get` (BizSMS.Account.cs:1729) =====
+// Màn dùng: `Views/SMS/FrmSendSMSAdvertisement.cs` (:238) và `FrmSendSMSOther.cs` (:238) đổ combo người gửi;
+//   `SMS_Batch_Send` (SmsOutService.cs:133) lấy dòng ĐẦU TIÊN để ghi vào `Sms_Send.BranchName`.
+// BƯỚC 3B: hệ `SMS.V10` CHỈ có trên máy 150 ⇒ đọc bản 150; `BizSMS.Account.cs` md5 `0135096b` (2753 dòng).
+// Cột: BRANDNAME (khoá — nguồn `select distinct abn.BrandName`) · ACCOUNTCODE · LUDTIME · LUBY.
+//
+// 🔴 HÀNG RÀO DỮ LIỆU THEO TÀI KHOẢN (khác hẳn #228): nguồn thay
+//    `zzzzClauseWhere_FilterAbilityOfUser` = `(abn.AccountCode = @strAccountCode) and` khi **KHÔNG** phải SA,
+//    `-- Nothing.` khi LÀ SA. Trong khi `Mst_PriceSend_Get` để `-- Nothing.` ở **cả hai** nhánh (bảng giá
+//    ai cũng xem được). ⇒ Cùng một khuôn hàm sinh mã nhưng hàng rào quyền KHÁC NHAU, phải đọc từng hàm.
+app.MapGet("/api/smsbrandnames", async (AppDbContext db, ITenantContext t, string? accountCode, string? brandName) =>
+{
+    var qy = db.SmsBrandNames.Where(x => x.OrgId == t.OrgId);
+
+    // Áp đúng hàng rào của nguồn: tài khoản KHÔNG phải SysAdmin thì chỉ thấy brandname của chính nó.
+    var code = accountCode?.Trim();
+    if (!string.IsNullOrWhiteSpace(code))
+    {
+        var acc = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountCode == code);
+        var isSa = acc != null && acc.FlagSysAdmin == "1";
+        if (!isSa) qy = qy.Where(x => x.AccountCode == code);
+    }
+    if (!string.IsNullOrWhiteSpace(brandName)) qy = qy.Where(x => x.BrandName == brandName!.Trim());
+
+    var items = await qy.OrderBy(x => x.BrandName)      // nguồn: order by abn.BrandName asc
+        .Select(x => new { x.Id, x.BrandName, x.AccountCode, x.LuDTime, x.LuBy })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        note = "Không truyền accountCode = xem tất cả (tương ứng tài khoản SysAdmin của nguồn).",
+    });
+}).RequireAuthorization();
+
+// ⚠️ CỐ Ý không có POST: gateway `SMS.WS/App_Code/WSSMS.cs` chỉ khai `Acc_BrandName_Get` (dòng 621) và
+//    `Acc_Balance_Get` (dòng 551) — không có lệnh ghi nào cho hai bảng này. Số dư chỉ đổi qua
+//    `Acc_Transaction` (đã có `POST /api/smsaccounts/{name}/tx`).
+
 // ===== Tài khoản SMS trả trước + sổ giao dịch (SmsAccount — port 1:1 FrmSMSAccountMng, TCMotor) =====
 app.MapGet("/api/smsaccounts", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.SmsAccounts.Where(a => a.OrgId == t.OrgId).OrderBy(a => a.AccountName)
-        .Select(a => new { a.AccountName, a.Balance, txCount = db.SmsAccountTxs.Count(x => x.OrgId == t.OrgId && x.SmsAccountId == a.Id) }).ToListAsync();
+        .Select(a => new { a.AccountCode, a.AccountName, a.Balance,
+                           // #230: hạn mức thấu chi + hai cờ của Acc_Account (nguồn Acc_Balance_Get).
+                           a.OverdraftThreshold,
+                           availableBalance = a.Balance + a.OverdraftThreshold,
+                           a.FlagActive, a.FlagSysAdmin,
+                           txCount = db.SmsAccountTxs.Count(x => x.OrgId == t.OrgId && x.SmsAccountId == a.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalBalance = items.Sum(i => i.Balance), items });
 }).RequireAuthorization();
 
@@ -8761,26 +8804,48 @@ app.MapPost("/api/smsaccounts", async (SmsAccountDto dto, AppDbContext db, ITena
     if (await db.SmsAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountName == name))
         return Results.BadRequest(new { error = $"Tài khoản {name} đã tồn tại." });
     var init = dto.InitBalance < 0 ? 0 : dto.InitBalance;
-    var a2 = new SmsAccount { OrgId = t.OrgId, AccountName = name, Balance = init };
+    var a2 = new SmsAccount
+    {
+        OrgId = t.OrgId, AccountName = name, Balance = init,
+        // #230: AccountCode là KHOÁ thật của nguồn; không truyền thì lấy tên làm mã (giữ tương thích dữ liệu cũ).
+        AccountCode = string.IsNullOrWhiteSpace(dto.AccountCode) ? name : dto.AccountCode!.Trim(),
+        OverdraftThreshold = dto.OverdraftThreshold < 0 ? 0 : dto.OverdraftThreshold,
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim(),
+        FlagSysAdmin = string.IsNullOrWhiteSpace(dto.FlagSysAdmin) ? "0" : dto.FlagSysAdmin!.Trim(),
+    };
     db.SmsAccounts.Add(a2); await db.SaveChangesAsync();
     if (init > 0) db.SmsAccountTxs.Add(new SmsAccountTx { OrgId = t.OrgId, SmsAccountId = a2.Id, TRefType = "Topup", Value = init, BalanceAfter = init, Note = "Số dư khởi tạo" });
     await db.SaveChangesAsync();
-    return Results.Ok(new { a2.AccountName, a2.Balance });
+    return Results.Ok(new { a2.AccountCode, a2.AccountName, a2.Balance, a2.OverdraftThreshold, a2.FlagActive, a2.FlagSysAdmin });
 }).RequireAuthorization();
 
-// Nạp/trừ số dư (TRefType = Topup|Deduct). Trừ không được vượt số dư.
+// Nạp/trừ số dư — port `myAcc_Transaction_Exec` (SMS.V10/SMS.Biz/BizSMS.Account.cs:180).
 app.MapPost("/api/smsaccounts/{name}/tx", async (string name, SmsAccountTxDto dto, AppDbContext db, ITenantContext t) =>
 {
     name = name.Trim();
     var a = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountName == name);
     if (a is null) return Results.NotFound(new { name });
+    // Nguồn chặn đúng một giá trị: `dblValue == 0` ⇒ CmApp_Acc_Transaction_Exec_InvalidValue.
     if (dto.Value <= 0) return Results.BadRequest(new { error = "Giá trị phải lớn hơn 0." });
     var type = dto.TRefType == "Deduct" ? "Deduct" : "Topup";
-    if (type == "Deduct" && dto.Value > a.Balance) return Results.BadRequest(new { error = $"Số dư không đủ (còn {a.Balance})." });
+
+    // ===== 🔴 #230 HẠN MỨC THẤU CHI — GAP đã vá =====
+    // Nguồn KHÔNG chặn ở số dư 0: nó tính `MyCheck = Balance_sau + OverdraftThreshold` và chỉ báo lỗi
+    // `CmApp_Acc_Transaction_Exec_OverOverdraft` khi `MyCheck < 0` (BizSMS.Account.cs:212 và :282).
+    // ⇒ tài khoản có hạn mức nợ vẫn được trừ xuống ÂM tới ngưỡng. Guard cũ (`Value > Balance`) chặn nhầm.
+    // ⚠️ Nguồn còn kiểm CHỈ khi `bCheckDebitOverdraft && dblValue < 0` — tức chỉ khi TRỪ, không kiểm lúc nạp.
+    // ⚠️ Khác biệt CỐ Ý về thứ tự: nguồn GHI TRƯỚC rồi mới kiểm và dựa vào transaction rollback
+    //    (mô-típ đã gây sự cố RefType/TopUp). Ở đây kiểm TRƯỚC khi ghi — an toàn hơn, kết quả nghiệp vụ y hệt.
+    if (type == "Deduct" && (a.Balance - dto.Value) + a.OverdraftThreshold < 0)
+        return Results.BadRequest(new
+        {
+            error = $"Vượt hạn mức thấu chi (số dư {a.Balance}, hạn mức {a.OverdraftThreshold}, được trừ tối đa {a.Balance + a.OverdraftThreshold}).",
+            balance = a.Balance, overdraftThreshold = a.OverdraftThreshold,
+        });
     a.Balance += type == "Topup" ? dto.Value : -dto.Value;
     db.SmsAccountTxs.Add(new SmsAccountTx { OrgId = t.OrgId, SmsAccountId = a.Id, TRefType = type, Value = dto.Value, BalanceAfter = a.Balance, Note = dto.Note });
     await db.SaveChangesAsync();
-    return Results.Ok(new { a.AccountName, type, a.Balance });
+    return Results.Ok(new { a.AccountName, type, a.Balance, a.OverdraftThreshold, availableBalance = a.Balance + a.OverdraftThreshold });
 }).RequireAuthorization();
 
 app.MapGet("/api/smsaccounts/{name}/transactions", async (string name, AppDbContext db, ITenantContext t) =>
@@ -31611,7 +31676,9 @@ record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate
 record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);
 record ServiceCampaignPartDto(string PartCode, string? PartName, decimal PercentDiscount);
 record ServiceCampaignStatusDto(string Status);
-record SmsAccountDto(string AccountName, decimal InitBalance);
+// #230: 4 trường của `Acc_Balance`/`Acc_Account` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
+record SmsAccountDto(string AccountName, decimal InitBalance,
+    string? AccountCode = null, decimal OverdraftThreshold = 0, string? FlagActive = null, string? FlagSysAdmin = null);
 record SmsAccountTxDto(string TRefType, decimal Value, string? Note);
 record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
 record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);

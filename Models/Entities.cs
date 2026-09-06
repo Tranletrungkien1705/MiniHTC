@@ -11522,6 +11522,46 @@ public sealed class SmsAccount
     public string AccountName { get; set; } = "";
     public decimal Balance { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #230: bổ sung theo `Acc_Balance_Get` (SMS.V10/SMS.Biz/BizSMS.Account.cs:1431) =====
+    // Nguồn trả `Acc_Balance` (ACCOUNTCODE · BALANCE · OVERDRAFTTHRESHOLD) + left join `Acc_Account`
+    // (AAACCOUNTNAME · AAFLAGACTIVE · AAFLAGSYSADMIN). Port cũ chỉ có tên + số dư.
+
+    /// <summary>ACCOUNTCODE — **khoá thật** của tài khoản SMS; `AccountName` chỉ là tên hiển thị
+    /// (nguồn lấy từ bảng khác: `Acc_Account.AccountName`).</summary>
+    public string? AccountCode { get; set; }
+
+    /// <summary>
+    /// OVERDRAFTTHRESHOLD — 🔴 **HẠN MỨC THẤU CHI**: số dư được phép ÂM tới ngưỡng này.
+    /// Nguồn kiểm bằng `(ab.Balance + ab.OverdraftThreshold) MyCheck` và chỉ báo lỗi khi `MyCheck &lt; 0`
+    /// (BizSMS.Account.cs:212, :282). ⇒ chặn ở mốc `-OverdraftThreshold`, **KHÔNG** chặn ở 0.
+    /// </summary>
+    public decimal OverdraftThreshold { get; set; }
+
+    /// <summary>AAFLAGACTIVE — cờ "1"/"0" của `Acc_Account`.</summary>
+    public string FlagActive { get; set; } = "1";
+
+    /// <summary>AAFLAGSYSADMIN — tài khoản quản trị SMS. 🔴 Quyết định **hàng rào dữ liệu**: nguồn thay
+    /// `zzzzClauseWhere_FilterAbilityOfUser` bằng `(ab.AccountCode = @strAccountCode) and` khi KHÔNG phải SA,
+    /// còn SA thì `-- Nothing.` (thấy hết). Xem `/api/smsbrandnames`.</summary>
+    public string FlagSysAdmin { get; set; } = "0";
+}
+
+/// <summary>
+/// #230 BRANDNAME CỦA TÀI KHOẢN SMS `Acc_BrandName` — nguồn `Acc_BrandName_Get`
+/// (SMS.V10/SMS.Biz/BizSMS.Account.cs:1729, hệ **chỉ có trên máy 150**).
+/// Dùng ở `FrmSendSMSAdvertisement` (:238) và `FrmSendSMSOther` (:238) để đổ danh sách người gửi,
+/// và ở `SMS_Batch_Send` (:133) để lấy giá trị ghi vào `Sms_Send.BranchName`.
+/// Cột theo `BuildColumns`: BRANDNAME (khoá, `select distinct abn.BrandName`) · ACCOUNTCODE · LUDTIME · LUBY.
+/// </summary>
+public sealed class SmsBrandName
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BrandName { get; set; } = "";
+    public string? AccountCode { get; set; }
+    public DateTime? LuDTime { get; set; }
+    public string? LuBy { get; set; }
 }
 
 /// <summary>Giao dịch tài khoản SMS (nạp/trừ) — port 1:1 FrmSMSAccountMng ledger (Acc_Transaction, TCMotor).</summary>

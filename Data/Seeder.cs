@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #230 parity Acc_BrandName + 4 cot Acc_Balance/Acc_Account thieu cua SmsAccounts
+        "CREATE TABLE IF NOT EXISTS public.\"SmsBrandNames\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BrandName\" text NOT NULL DEFAULT '', \"AccountCode\" text, \"LuDTime\" timestamp, \"LuBy\" text)",
+        "ALTER TABLE public.\"SmsAccounts\" ADD COLUMN IF NOT EXISTS \"AccountCode\" text",
+        "ALTER TABLE public.\"SmsAccounts\" ADD COLUMN IF NOT EXISTS \"OverdraftThreshold\" numeric NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"SmsAccounts\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+        "ALTER TABLE public.\"SmsAccounts\" ADD COLUMN IF NOT EXISTS \"FlagSysAdmin\" text NOT NULL DEFAULT '0'",
         // #229 parity Sms_Batch (dau lo tin nhan) + 11 cot thieu cua Sms_Send
         "CREATE TABLE IF NOT EXISTS public.\"SmsBatches\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchId\" text NOT NULL DEFAULT '', \"AccountCode\" text, \"BatchType\" text NOT NULL DEFAULT 'CSKH', \"ContentsTemplate\" text, \"EffectDTime\" timestamp NOT NULL DEFAULT now(), \"EffectStatus\" text NOT NULL DEFAULT 'P', \"Remark\" text, \"CostInit\" numeric NOT NULL DEFAULT 0, \"CostActual\" numeric NOT NULL DEFAULT 0, \"CreatedDTime\" timestamp NOT NULL DEFAULT now(), \"CreatedBy\" text, \"CancelDTime\" timestamp, \"CancelBy\" text)",
         "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"SendId\" text",
