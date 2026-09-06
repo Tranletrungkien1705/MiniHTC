@@ -9552,6 +9552,14 @@ public sealed class CarVinMaster
     /// <summary>Cờ "xe đã thuộc hợp đồng đại lý DMS40" (`FlagDealerContractDMS40`) — nguồn gán cứng "1".</summary>
     public string? FlagDealerContractDMS40 { get; set; }
 
+    // ===== #197 parity `CarDeliveryOrderApprove1_New20181119` (DataWH/Biz.HTC.WH.cs:50318) =====
+    /// <summary>
+    /// 🔴 Cờ "xe được phép ĐỔI VIN" (`Car_Car.FlagAllowChangeVIN`). Nguồn BẬT cờ này ("1") khi lệnh giao
+    /// xe bị **TỪ CHỐI** ở duyệt cấp 1, và khi **XOÁ dòng xe** khỏi lệnh giao — tức trả xe về trạng thái
+    /// còn đổi VIN được. Đặt ở đây theo tiền lệ #164 (`CarVinMaster` đang giữ cả các cột của `Car_Car`).
+    /// </summary>
+    public string? FlagAllowChangeVIN { get; set; }
+
     /// <summary>#175 — Kho HIỆN TẠI của xe (`Car_VIN.StorageCodeCurrent`). Bước tự sinh lệnh giao lấy
     /// kho của dòng chi tiết TỪ CỘT NÀY, không phải kho khai báo trên phiếu.</summary>
     public string? StorageCodeCurrent { get; set; }

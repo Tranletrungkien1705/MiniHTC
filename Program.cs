@@ -26481,7 +26481,9 @@ app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, I
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
-        .Select(c => new { c.Vin, c.CarId, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryOutDate, c.DeliveryRemark, c.ConfirmStatus }).ToListAsync();
+        .Select(c => new { c.Vin, c.CarId, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryOutDate, c.DeliveryRemark, c.ConfirmStatus,
+                           c.LogLUDateTime, c.LogLUBy,   // #197 §12
+                           flagAllowChangeVIN = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagAllowChangeVIN).FirstOrDefault() }).ToListAsync();
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -26537,11 +26539,32 @@ app.MapPost("/api/deliveryorders/{no}/approve1", async (string no, DoApproveDto?
     if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 lệnh đang chờ duyệt (P)." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var ok = dto?.Approve ?? true;
+    var now1 = DateTime.Now;
     o.Status = ok ? "A1" : "R";
-    o.Approved1At = DateTime.Now; o.ApprovedBy1 = who;
-    if (!ok) { o.RejectReason = dto?.Reason; o.RejectedAt = DateTime.Now; }
+    o.Approved1At = now1; o.ApprovedBy1 = who;
+    if (!ok) { o.RejectReason = dto?.Reason; o.RejectedAt = now1; }
+
+    // 🔴 #197 CASCADE khi TỪ CHỐI — khối `if (!bApprove)` của nguồn (Biz.HTC.WH.cs:50424-50470).
+    //    Vùng hàm 50318-50630 md5 `c5ffcc37` KHỚP 2 máy (file này CÓ lệch ở chỗ khác — dòng `65379 —
+    //    nên phải đo md5 THEO VÙNG HÀM, không theo cả file; xem luật `C0-ducentesimusoctogesimusprimus`).
+    //    Nguồn làm HAI việc mà port cũ bỏ cả hai:
+    //      (a) mọi dòng xe của lệnh → `ConfirmStatus = "R"` + `LogLU*`;
+    //      (b) 🔴 `Car_Car.FlagAllowChangeVIN = "1"` cho từng xe — **trả xe về trạng thái còn đổi VIN được**.
+    //    Nhánh DUYỆT (`bApprove`) KHÔNG cascade gì — giữ đúng sự bất đối xứng đó.
+    var rejectedRows = 0; var vinsFreed = 0;
+    if (!ok)
+    {
+        var doCars = await db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId && x.DoId == o.Id).ToListAsync();
+        foreach (var dc in doCars)
+        { dc.ConfirmStatus = "R"; dc.LogLUDateTime = now1; dc.LogLUBy = who; rejectedRows++; }
+        var vins = doCars.Select(x => x.Vin).ToList();
+        foreach (var cv in await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync())
+        { cv.FlagAllowChangeVIN = "1"; cv.LogLUDateTime = now1; cv.LogLUBy = who; vinsFreed++; }
+    }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.DoNo, status = o.Status, statusName = ok ? "Duyệt cấp 1" : "Từ chối" });
+    return Results.Ok(new { o.DoNo, status = o.Status, statusName = ok ? "Duyệt cấp 1" : "Từ chối",
+                            rejectedRows, vinsFreed });
 }).RequireAuthorization();
 
 // 🔴 Duyệt cấp 2 — `CarDeliveryOrderApprove2_New20181119` (50523-50626). Vào từ "A1".
@@ -26578,7 +26601,7 @@ app.MapPost("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vin,
 // 🔴 Xoá dòng xe khỏi lệnh — `CarDeliveryOrderDetailDelete_New20181119` (51059-51400).
 //    Nguồn chặn xoá bằng **4 ràng buộc hạ nguồn** rồi mới xoá; xoá xong nếu lệnh KHÔNG còn dòng nào
 //    thì **xoá luôn header** (kỹ thuật lọc ngược trong SQL), và trả xe về cho phép đổi VIN.
-app.MapDelete("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vin, AppDbContext db, ITenantContext t) =>
+app.MapDelete("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vin, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
@@ -26607,9 +26630,19 @@ app.MapDelete("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vi
     var left = await db.DeliveryOrderCars.CountAsync(x => x.OrgId == t.OrgId && x.DoId == o.Id);
     var headerRemoved = false;
     if (left == 0) { db.DeliveryOrders.Remove(o); headerRemoved = true; await db.SaveChangesAsync(); }
-    // ⚠️ CHƯA port: nguồn còn `update Car_Car set FlagAllowChangeVIN = '1'` (trả xe về cho phép đổi VIN).
-    //    MiniHTC chưa có entity cho `Car_Car` với cột này ⇒ đã ghi nợ, KHÔNG tự bịa cột.
-    return Results.Ok(new { no, vin, carsLeft = left, headerRemoved });
+    // ✅ #197 TRẢ NỢ: nguồn còn `update Car_Car set FlagAllowChangeVIN = '1'` (trả xe về cho phép đổi VIN).
+    //    Cột đã có ở `CarVinMaster` từ lượt này ⇒ ghi thật thay vì để nợ.
+    var freed = false;
+    var cvm = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    if (cvm is not null)
+    {
+        cvm.FlagAllowChangeVIN = "1";
+        cvm.LogLUDateTime = DateTime.Now;
+        cvm.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+        freed = true;
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(new { no, vin, carsLeft = left, headerRemoved, flagAllowChangeVinSet = freed });
 }).RequireAuthorization();
 
 // ===== Tờ khai hải quan (Tkhq — port 1:1 FrmNewTKHQ/FrmMngTKHQ, DMSales.Foton) =====
