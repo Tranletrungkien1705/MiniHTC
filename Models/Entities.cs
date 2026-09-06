@@ -11461,6 +11461,29 @@ public sealed class InventoryCost
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// #232 ĐỊA ĐIỂM GIAO HÀNG `Mst_DeliveryLocation` — port 1:1 `FrmMst_DeliveryLocationMng` (525 dòng) +
+/// `FrmMst_DeliveryLocation` (278 dòng, TCMotor DMSCarSv/TST); biz `BizCarSv.Master.cs:11108`
+/// (`Mst_DeliveryLocation_GetX`) / `:11386` (`_Add`).
+/// 🔴 **KHOÁ LÀ CẶP** `DeliveryLocationCode` + `DealerCode` — bằng chứng: `Mst_DeliveryLocation_Delete` và
+///    `_Update` đều truyền CẢ HAI (Mst_DeliveryLocationService.cs:73, :99), và `Mst_DeliveryLocation_CheckDB`
+///    nhận cả hai. ⇒ Mỗi đại lý có bộ địa điểm RIÊNG, hai đại lý được trùng mã.
+/// ⚠️ Vì thế màn này KHÔNG hợp với catalog `MasterItem` chung (khoá chỉ `Category+Code`) — đã gỡ khỏi
+///    `MasterCatalog` và port thành entity riêng, theo đúng tiền lệ BOM/ExtraWork.
+/// Sáu cột của nguồn (danh sách `MyBuildDBDT_Common` + `insert into`, BizCarSv.Master.cs:11536).
+/// </summary>
+public sealed class DeliveryLocation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeliveryLocationCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string DeliveryLocationName { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).</summary>
 public sealed class ServiceCampaign
 {

@@ -165,7 +165,9 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng: WRTRENECATE) [TCMotor]"),
     // (BOM đã port dedicated /api/boms — bỏ stub dup; ExtraWork/ExtraParts có cột giá/VAT → port dedicated; gỡ ~38 generic bịa + 15 TCMotor bịa)
     ("CostType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
-    ("DeliveryLocation", "Địa điểm giao hàng (FrmMst_DeliveryLocation/Mng) [TCMotor]"),
+    // #232: GỠ "DeliveryLocation" khỏi catalog chung — khoá thật của nguồn là CẶP (Code, DealerCode)
+    //       mà `MasterItem` chỉ khoá `Category+Code` ⇒ hai đại lý trùng mã sẽ ĐÈ nhau.
+    //       Đã port thành entity riêng + `/api/deliverylocations` (tiền lệ BOM/ExtraWork).
     ("DeliveryForm", "Hình thức giao hàng (FrmMst_DeliveryFormMng) [TCMotor]"),
     ("OrderComplainType", "Loại khiếu nại đơn PT (FrmMst_OrderComplainTypeMng) [TCMotor]"),
     ("OrderComplainImageType", "Loại ảnh khiếu nại (FrmMst_OrderComplainImageTypeMng) [TCMotor]"),
@@ -223,6 +225,107 @@ app.MapDelete("/api/master/{cat}/{code}", async (string cat, string code, AppDbC
     if (m is null) return Results.NotFound(new { cat, code });
     db.Masters.Remove(m); await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
+// ===== 🔴 #232 ĐỊA ĐIỂM GIAO HÀNG — `Mst_DeliveryLocation` (TCMotor DMSCarSv/TST) =====
+// Màn: `Views/TST/FrmMst_DeliveryLocationMng.cs` (525 dòng, tra cứu + mở màn tạo) và
+//      `FrmMst_DeliveryLocation.cs` (278 dòng, nhập liệu). Tầng service `Mst_DeliveryLocationService.cs`
+//      (Get/Add/Update/Delete) → WS `WSCarSv.asmx.cs:39369` → biz `BizCarSv.Master.cs:11256`
+//      (hàm làm việc thật là `Mst_DeliveryLocation_GetX` :11108).
+// BƯỚC 3B: `BizCarSv.Master.cs` md5 `90585079` (12871 dòng) — KHỚP laptop và máy 150 (đã đo ở #227).
+//
+// 🔴 KHOÁ LÀ CẶP (DeliveryLocationCode, DealerCode) — xem chú thích entity.
+// 🔴 BỐN bộ lọc của nguồn (`SqlUtils.BuildClause`, :11202-11205): DeliveryLocationCode · DealerCode ·
+//    DeliveryLocationName · FlagActive. Tầng service bọc `%…%` cho **mã** và **tên**
+//    (`GenLikeCondition2Percent`) nhưng để `=` cho DealerCode và FlagActive (`GenEqualCondition2`)
+//    ⇒ mã và tên khớp CHỨA, hai cái kia khớp CHÍNH XÁC. Giữ đúng bất đối xứng này.
+// ⚠️ Nguồn nối `inner join Mst_Dealer` để lấy `DealerName` ⇒ địa điểm trỏ tới đại lý KHÔNG tồn tại sẽ
+//    **bị loại khỏi kết quả** (không phải left join). Giữ đúng.
+//
+// 🔴 LỖI CỦA NGUỒN — ĐÃ SỬA, có ghi lại: `#tbl_..._Filter_Draft` chỉ `select distinct DeliveryLocationCode`
+//    (thiếu DealerCode) rồi bước cuối join lại `on t.DeliveryLocationCode = mdl.DeliveryLocationCode` —
+//    cũng thiếu DealerCode. Vì khoá là CẶP, hai đại lý trùng mã sẽ làm kết quả **NỞ DÒNG**, và lọc theo
+//    `DealerCode` (chỉ áp ở bước Draft) **không cứu được** vì join cuối đã kéo lại mọi đại lý.
+//    Bản port lọc và khớp theo ĐỦ CẶP. Đây là sai lệch CỐ Ý so với nguồn, dựa trên chính khoá mà
+//    `_Update`/`_Delete`/`CheckDB` của nguồn dùng.
+app.MapGet("/api/deliverylocations", async (AppDbContext db, ITenantContext t,
+    string? deliveryLocationCode, string? dealerCode, string? deliveryLocationName, string? flagActive) =>
+{
+    var qy = from d in db.DeliveryLocations.Where(x => x.OrgId == t.OrgId)
+             join dl in db.Dealers.Where(x => x.OrgId == t.OrgId) on d.DealerCode equals dl.DealerCode
+             select new { d, dealerName = dl.DealerName };
+
+    // khớp CHỨA (nguồn bọc %…%)
+    if (!string.IsNullOrWhiteSpace(deliveryLocationCode))
+        qy = qy.Where(x => x.d.DeliveryLocationCode.ToLower().Contains(deliveryLocationCode!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(deliveryLocationName))
+        qy = qy.Where(x => x.d.DeliveryLocationName.ToLower().Contains(deliveryLocationName!.Trim().ToLower()));
+    // khớp CHÍNH XÁC (nguồn dùng GenEqualCondition2)
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.d.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.d.FlagActive == flagActive!.Trim());
+
+    var items = await qy.OrderBy(x => x.d.DeliveryLocationCode).ThenBy(x => x.d.DealerCode)
+        .Select(x => new { x.d.DeliveryLocationCode, x.d.DealerCode, x.dealerName,
+                           x.d.DeliveryLocationName, x.d.FlagActive, x.d.LogLUDateTime, x.d.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Thêm/sửa — port `Mst_DeliveryLocation_Add` (BizCarSv.Master.cs:11386) và `_Update`.
+// NĂM guard của `_Add`, port đủ:
+//  1. `DeliveryLocationCode` rỗng ⇒ `Add_InvalidDeliveryLocationCode`
+//  2. `DealerCode` rỗng ⇒ `Add_InvalidDealerCode`
+//  3. `Mst_Dealer_CheckDB(FlagExist=Yes, FlagActiveList=Active)` ⇒ đại lý phải TỒN TẠI **và ĐANG HOẠT ĐỘNG**
+//  4. `Mst_DeliveryLocation_CheckDB(code, dealerCode, FlagExistToCheck = **No**)` ⇒ cặp khoá **không được trùng**
+//  5. Tên rỗng ⇒ lỗi; tên **> 200 ký tự** ⇒ lỗi ("Tên địa điểm không được nhập quá dài!")
+// ⚠️ `_Add` đặt `FlagActive = Active` CỨNG (không nhận từ client); chỉ `_Update` mới đổi được cờ.
+app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.DeliveryLocationCode ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var name = (dto.DeliveryLocationName ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã địa điểm giao hàng." });
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên địa điểm giao hàng." });
+    if (name.Length > 200) return Results.BadRequest(new { error = "Tên địa điểm không được nhập quá dài!" });
+
+    var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer);
+    if (d is null) return Results.BadRequest(new { error = $"Đại lý {dealer} không tồn tại." });
+    if (d.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dealer} đang ngừng hoạt động." });
+
+    var row = await db.DeliveryLocations.FirstOrDefaultAsync(
+        x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealer);
+    var isNew = row is null;
+    if (row is null)
+    {
+        row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer };
+        db.DeliveryLocations.Add(row);
+        row.FlagActive = "1";   // _Add đặt cứng Active; client không đổi được lúc tạo
+    }
+    else if (!string.IsNullOrWhiteSpace(dto.FlagActive))
+    {
+        row.FlagActive = dto.FlagActive!.Trim();   // chỉ _Update mới nhận cờ
+    }
+    row.DeliveryLocationName = name;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.DeliveryLocationCode, row.DealerCode, row.DeliveryLocationName,
+                            row.FlagActive, row.LogLUDateTime, row.LogLUBy, created = isNew });
+}).RequireAuthorization();
+
+// Xoá — nguồn `Mst_DeliveryLocation_Delete` truyền ĐỦ CẶP (code, dealerCode).
+app.MapDelete("/api/deliverylocations/{dealerCode}/{code}", async (
+    string dealerCode, string code, AppDbContext db, ITenantContext t) =>
+{
+    dealerCode = dealerCode.Trim(); code = code.Trim();
+    var row = await db.DeliveryLocations.FirstOrDefaultAsync(
+        x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealerCode);
+    if (row is null) return Results.NotFound(new { dealerCode, code });
+    db.DeliveryLocations.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code, dealerCode });
 }).RequireAuthorization();
 
 // ===== Đại lý (Mst_Dealer) — port 1:1 FrmDealer =====
@@ -30885,6 +30988,8 @@ static string? ValidateVoucherLine(MemberVoucher voucher, decimal pointUsed, Dat
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
+// #232: `FlagActive` CHỈ có tác dụng khi SỬA — `Mst_DeliveryLocation_Add` đặt cứng Active.
+record DeliveryLocationDto(string? DeliveryLocationCode, string? DealerCode, string? DeliveryLocationName, string? FlagActive = null);
 record MasterDto(string Code, string Name, string? ParentCode, string? Status);
 record ImportDealerRowDto(string? DealerCode, string? DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode,
     string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress, string? TaxCode,

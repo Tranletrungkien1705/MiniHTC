@@ -492,6 +492,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SmsAutoConfig> SmsAutoConfigs => Set<SmsAutoConfig>();
     public DbSet<EmailSend> EmailSends => Set<EmailSend>();
     public DbSet<EmailAutoConfig> EmailAutoConfigs => Set<EmailAutoConfig>();
+    public DbSet<DeliveryLocation> DeliveryLocations => Set<DeliveryLocation>();   // #232
     public DbSet<ServiceCampaign> ServiceCampaigns => Set<ServiceCampaign>();
     public DbSet<ServiceCampaignPart> ServiceCampaignParts => Set<ServiceCampaignPart>();
     public DbSet<SmsAccount> SmsAccounts => Set<SmsAccount>();
