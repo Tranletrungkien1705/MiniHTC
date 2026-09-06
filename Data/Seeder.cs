@@ -882,6 +882,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #260 parity Ser_SupplierPaymentDtl: 3 cot con thieu sau #237
+        "ALTER TABLE public.\"SupplierPaymentLines\" ADD COLUMN IF NOT EXISTS \"InStockQuantity\" numeric",
+        "ALTER TABLE public.\"SupplierPaymentLines\" ADD COLUMN IF NOT EXISTS \"LocationCode\" text",
+        "ALTER TABLE public.\"SupplierPaymentLines\" ADD COLUMN IF NOT EXISTS \"LocationName\" text",
         // #253 parity Ser_RO_Attachment (anh dinh kem lenh sua chua)
         "CREATE TABLE IF NOT EXISTS public.\"RoAttachments\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"RONo\" text NOT NULL DEFAULT '', \"ImageName\" text NOT NULL DEFAULT '', \"ImagePath\" text, \"CreatedAt\" timestamp NOT NULL DEFAULT now())",
         // #247 parity TST_Mst_Part_Temp (bang TAM, chi co duong DOC trong DMSCarSv)

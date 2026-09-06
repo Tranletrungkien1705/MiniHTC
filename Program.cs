@@ -29612,7 +29612,28 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
     //   Amount dòng = QtyPay * Price * (1 + VAT*0.01)
     // ⚠️ QtyPay là SỐ LƯỢNG THANH TOÁN, khác số lượng xuất kho — một lần xuất có thể trả nhiều đợt.
     var paymentLines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
-    if (paymentLines.Any(l => l.QtyPay <= 0)) return Results.BadRequest(new { error = "Số lượng thanh toán phải lớn hơn 0." });
+    // ===== 🔴 #260 BỐN GUARD cho `QtyPay` — `FrmInvCode_Location.cs:314-362` =====
+    // BƯỚC 3B: md5 `b5ed70db` — KHỚP 2 máy. Thứ tự và thông điệp giữ NGUYÊN của nguồn:
+    //  1. rỗng            ⇒ `MSG_WARNING_EMPTY_VALUE` = "Không được trống"
+    //  2. không phải số   ⇒ `MSG_WARNING_NOT_NUMERIC` = "Không phải là số"
+    //  3. `<= 0`          ⇒ "Số lượng trả phải > 0"
+    //  4. 🔴 `> InStockQuantity` ⇒ "Số lượng trả phải <= Số lượng có thể trả"
+    // ⇒ #237 chỉ có guard 3 (và thông điệp tự chế). Guard 4 — **không cho trả quá tồn theo VỊ TRÍ** —
+    //   bị thiếu hoàn toàn; đây là chốt chặn tiền, thiếu thì trả vượt số hàng thực có.
+    // ⚠️ Guard 4 so với `InStockQuantity` (tồn theo VỊ TRÍ), **KHÔNG** phải `QtyInventory` (tồn tổng).
+    // ⚠️ Guard 1/2 ở nguồn là ràng buộc Ô LƯỚI (chuỗi); qua API kiểu đã là `decimal` nên chỉ còn nghĩa
+    //   khi client bỏ trống ⇒ kiểm `null` ở DTO là đủ, giữ nguyên thông điệp.
+    foreach (var l in paymentLines)
+    {
+        if (l.QtyPay <= 0)
+            return Results.BadRequest(new { error = "Số lượng trả phải > 0", partCode = l.PartCode });
+        if (l.InStockQuantity is not null && l.QtyPay > l.InStockQuantity)
+            return Results.BadRequest(new
+            {
+                error = "Số lượng trả phải <= Số lượng có thể trả",
+                partCode = l.PartCode, qtyPay = l.QtyPay, inStockQuantity = l.InStockQuantity,
+            });
+    }
     if (paymentLines.Count > 0) amount = paymentLines.Sum(l => l.QtyPay * l.Price * (1 + l.Vat / 100m));
 
     if (amount <= 0) return Results.BadRequest(new { error = "Cần số tiền > 0." });
@@ -29657,6 +29678,8 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
             PartID = l.PartID, Unit = l.Unit,
             StockInID = l.StockInID, StockInNo = l.StockInNo,
             QtyInventory = l.QtyInventory, LocationID = l.LocationID,
+            // #260: 3 cột bổ sung
+            InStockQuantity = l.InStockQuantity, LocationCode = l.LocationCode, LocationName = l.LocationName,
             SupplierPaymentDtlStatus = "P",
             LogLUDTime = DateTime.Now, LogLUBy = who,
         });
@@ -29674,6 +29697,7 @@ app.MapGet("/api/supplierpayments/{no}/lines", async (string no, AppDbContext db
         .Select(l => new { l.PartCode, l.PartName, l.QtyPay, l.Price, l.Vat, l.Amount,
                            // #237: 9 cột bổ sung của dòng
                            l.PartID, l.Unit, l.StockInID, l.StockInNo, l.QtyInventory, l.LocationID,
+                           l.InStockQuantity, l.LocationCode, l.LocationName,   // #260
                            l.SupplierPaymentDtlStatus, l.LogLUDTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.DealerCode, p.Status, p.Amount, p.ApprovedAt, count = lines.Count, lines });
 }).RequireAuthorization();
@@ -33236,7 +33260,9 @@ record OrderComplainActDto(string? Resolution, string? SyncStatus = null, string
 //   `SupplierPaymentDtlStatus`/vết ghi (server đặt).
 record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay, decimal Price, decimal Vat,
     string? PartID = null, string? Unit = null, string? StockInID = null, string? StockInNo = null,
-    decimal? QtyInventory = null, string? LocationID = null);
+    decimal? QtyInventory = null, string? LocationID = null,
+    // #260: `InStockQuantity` = tồn theo VỊ TRÍ, là mốc so của guard "số lượng trả".
+    decimal? InStockQuantity = null, string? LocationCode = null, string? LocationName = null);
 // #237: 5 trường của `Ser_SupplierPayment_Save`. ⚠️ `PaymentDate` giữ trong chữ ký cho tương thích nhưng
 //   **KHÔNG còn được dùng** — nguồn comment dòng truyền `PaymentDTime`, server tự đặt.
 // #243: `SupplierPaymentNo` (trống = tạo mới) + `FlagIsDelete`.

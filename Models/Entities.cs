@@ -5392,8 +5392,22 @@ public sealed class SupplierPaymentLine
     public string? StockInID { get; set; }
     public string? StockInNo { get; set; }
 
-    public decimal? QtyInventory { get; set; }   // tồn tại thời điểm lập phiếu
+    public decimal? QtyInventory { get; set; }   // tồn tại thời điểm lập phiếu (tổng)
     public string? LocationID { get; set; }      // vị trí kho
+
+    // ===== 🔴 #260: 3 cột nguồn `Ser_SupplierPaymentDtl` mà #237 còn THIẾU =====
+    // `DbDefine.cs:3150-3152` — ba cột này nằm TÁCH RIÊNG dưới khối chính của lớp hằng nên dễ bỏ sót.
+
+    /// <summary>
+    /// 🔴 `InStockQuantity` — chú thích NGUYÊN VĂN của nguồn (DbDefine.cs:3152):
+    /// "Tồn kho theo **vị trí**, dùng để check số lượng trả ko đc vượt quá".
+    /// ⚠️ KHÁC <see cref="QtyInventory"/> (tồn TỔNG tại thời điểm lập phiếu). Guard "số lượng trả"
+    ///    so với cột NÀY, không phải cột kia.
+    /// </summary>
+    public decimal? InStockQuantity { get; set; }
+
+    public string? LocationCode { get; set; }    // enrich theo LocationID
+    public string? LocationName { get; set; }
 
     /// <summary>SupplierPaymentDtlStatus — trạng thái RIÊNG của dòng (`TConst.SupplierPaymentStatus` P/A).</summary>
     public string SupplierPaymentDtlStatus { get; set; } = "P";
