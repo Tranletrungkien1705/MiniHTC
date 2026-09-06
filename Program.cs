@@ -833,6 +833,20 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// Tra ẢNH CHỤP biên bản giao xe đã xoá (`Sto_DlvMinutes_HisDel`).
+app.MapGet("/api/dlvminutes/deleted-history", async (AppDbContext db, ITenantContext t, string? no) =>
+{
+    var qy = db.DlvMinutesHisDels.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) qy = qy.Where(h => h.DlvMinutesNo == no.Trim().ToUpperInvariant());
+    var items = await qy.OrderByDescending(h => h.Id).Take(500).Select(h => new
+    {
+        h.DlvMinutesNo, h.DealerCode, h.TransporterCode, h.FDlvMnStatus, h.TDlvMnStatus, h.ConfirmStatus,
+        h.DlvStartDate, h.DlvEndDate, h.FProvinceCode, h.FDistrictCode, h.TProvinceCode, h.TDistrictCode,
+        h.Remark, h.CarCount, h.DelDTime, h.DelBy
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // Tra LỊCH SỬ sửa HĐ bán lẻ theo từng trường (3 bảng `Dlr_Contract_Update*_His` của nguồn).
 app.MapGet("/api/dlrcontracts/{no}/change-history", async (string no, AppDbContext db, ITenantContext t) =>
 {
@@ -15452,18 +15466,32 @@ app.MapPost("/api/dlvminutes/patch-batch", async (
 // TWIN: WS gọi biz `Sto_DlvMinutes_Del_New20181115` (KHÔNG phải bản trần).
 // 🔴 Luật nguồn dùng ĐÚNG cột `FDlvMnStatus`: SQL chặn `FDlvMnStatus not in ('P')`
 // ⇒ chỉ xoá khi phía GIAO còn chờ duyệt. Trước hợp nhất, port cũ kiểm cột `Status` tự đặt ("Draft").
-app.MapDelete("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapDelete("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
     if (m is null) return Results.NotFound(new { no });
-    if (m.FDlvMnStatus != "P")
-        return Results.BadRequest(new { error = "Biên bản đã giao xong, không thể xóa." });
+    // ⚠️ Guard trạng thái ĐÃ BỎ: nguồn `Sto_DlvMinutes_DeleteSupport` (Biz.HTC.WH.cs:139257) có hai dòng
+    //    `and t.FDlvMnStatus in ('P','A')` / `= 'P'` nhưng **cả hai đều bị COMMENT OUT**; dòng ACTIVE chỉ
+    //    guard "biên bản phải tồn tại". Guard cũ của port chặt hơn nguồn (sai chiều) — đã gỡ theo luật
+    //    "port dòng ACTIVE, không port dòng comment".
+    var carCount = await db.TranspDlvConfirmCars.CountAsync(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id);
+    // 🔴 Nguồn CHÉP TOÀN BỘ dòng (69 cột) sang `Sto_DlvMinutes_HisDel` TRƯỚC khi xoá — port cũ xoá trắng.
+    db.DlvMinutesHisDels.Add(new DlvMinutesHisDel
+    {
+        OrgId = t.OrgId, DlvMinutesNo = m.DlvMinutesNo, DealerCode = m.DealerCode,
+        TransporterCode = m.TransporterCode, FDlvMnStatus = m.FDlvMnStatus, TDlvMnStatus = m.TDlvMnStatus,
+        ConfirmStatus = m.ConfirmStatus, DlvStartDate = m.DlvStartDate, DlvEndDate = m.DlvEndDate,
+        FProvinceCode = m.FProvinceCode, FDistrictCode = m.FDistrictCode,
+        TProvinceCode = m.TProvinceCode, TDistrictCode = m.TDistrictCode,
+        Remark = m.Remark, CarCount = carCount,
+        DelDTime = DateTime.Now, DelBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    });
     db.DlvMinutesCheckItems.RemoveRange(db.DlvMinutesCheckItems.Where(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id));
     db.TranspDlvConfirmCars.RemoveRange(db.TranspDlvConfirmCars.Where(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id));
     db.TranspDlvConfirms.Remove(m);
     await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = no });
+    return Results.Ok(new { deleted = no, snapshotSaved = true, carCount });
 }).RequireAuthorization();
 
 // ===== Đề nghị nhận xe/PDI (HtmvPdi — port 1:1 FrmNewPDI, 2010.HTC/Sales/HTMV) =====

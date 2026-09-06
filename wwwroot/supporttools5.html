@@ -41,11 +41,12 @@ async function doPatch(){ await token();
 }
 async function del(no){ await token();
   const r=await fetch("/api/dlvminutes/"+encodeURIComponent(no),{method:"DELETE",headers:Hh()});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã xóa "+d.deleted); load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; }
+  say("Đã xóa "+d.deleted+" ("+d.carCount+" xe) — đã lưu ảnh chụp vào lịch sử xoá."); load();
 }
 async function load(){ await token();
   const r=await fetch("/api/dlvminutes?status="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.dlvMinutesNo)}</b></td><td>${esc(o.vin)}</td><td>${esc(o.fProvinceCode)}→${esc(o.tProvinceCode)}</td><td>${esc(o.transporterCode)}</td><td><span class="pill">${esc(o.status)}</span></td><td>${o.status==='Draft'?`<button class="link warn" onclick="del('${esc(o.dlvMinutesNo)}')">Xóa</button>`:''}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có BBGN.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.dlvMinutesNo)}</b></td><td>${esc(o.vin)}</td><td>${esc(o.fProvinceCode)}→${esc(o.tProvinceCode)}</td><td>${esc(o.transporterCode)}</td><td><span class="pill">${esc(o.status)}</span></td><td><button class="link warn" onclick="del('${esc(o.dlvMinutesNo)}')">Xóa</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Không có BBGN.</td></tr>';
 }
 </script>
 </body></html>

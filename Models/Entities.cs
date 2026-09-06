@@ -4559,6 +4559,36 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Ảnh chụp biên bản giao xe TRƯỚC KHI XOÁ (`Sto_DlvMinutes_HisDel` — port 1:1
+/// `Sto_DlvMinutes_DeleteSupport`, 2010.HTC `Biz.HTC.WH.cs:139257`).
+/// 🔴 Kiểu lịch sử **KHÁC** họ `*_Upd*_His`: không lưu cặp cũ/mới mà **sao chép TOÀN BỘ dòng**
+/// (nguồn chép **69 cột**) sang bảng này rồi mới `delete` khỏi `Sto_DlvMinutes`.
+/// ⚠️ MiniHTC chỉ giữ được các cột đang có trên <see cref="TranspDlvConfirm"/> — phần còn lại đã ghi nợ.
+/// </summary>
+public sealed class DlvMinutesHisDel
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlvMinutesNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? TransporterCode { get; set; }
+    public string? FDlvMnStatus { get; set; }
+    public string? TDlvMnStatus { get; set; }
+    public string? ConfirmStatus { get; set; }
+    public DateTime? DlvStartDate { get; set; }
+    public DateTime? DlvEndDate { get; set; }
+    public string? FProvinceCode { get; set; }
+    public string? FDistrictCode { get; set; }
+    public string? TProvinceCode { get; set; }
+    public string? TDistrictCode { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>Số xe trong biên bản lúc xoá (bảng con bị xoá theo, không giữ được từng dòng).</summary>
+    public int CarCount { get; set; }
+    public DateTime DelDTime { get; set; } = DateTime.Now;
+    public string? DelBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử sửa NGÂN HÀNG của HĐ bán lẻ (`Dlr_Contract_UpdateBankCode_His` — port 1:1
 /// `Support_Dlr_Contract_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.cs:114595`).
 /// ⚠️ Nguồn còn guard mã ngân hàng mới phải có trong `Mst_Bank` — MiniHTC **chưa có master ngân hàng**
