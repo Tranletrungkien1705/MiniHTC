@@ -5212,8 +5212,32 @@ public sealed class SupplierPayment
 
     public DateTime? PaymentDate { get; set; }
     public string Status { get; set; } = "P";          // P → A (SupplierPaymentStatus)
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;   // CreateDTime
     public DateTime? ApprovedAt { get; set; }          // ApprDTime
+
+    // ===== 🔴 #237: cột nguồn `Ser_SupplierPayment` mà port cũ THIẾU =====
+    // Nguồn `Entities/TST/Ser_SupplierPayment.cs` (md5 0c9f1037) + chữ ký
+    // `Ser_SupplierPayment_Save` (Ser_SupplierPaymentService.cs:140) — client gửi **8 trường**.
+
+    /// <summary>SupplierID — 🔴 KHÁC `SupplierCode`; `_Save` gửi `SupplierID`.</summary>
+    public string? SupplierID { get; set; }
+
+    public string? Address { get; set; }        // địa chỉ NCC in trên phiếu
+    public string? TSTRequestNo { get; set; }   // số yêu cầu phía TST
+
+    /// <summary>PaymentType (`TConst.PaymentType`, Const.Main.cs:100): "PMT" Thanh toán ·
+    /// "PMC" Cấn trừ · "PMA" Điều chỉnh. Port cũ KHÔNG có ⇒ ba loại phiếu bị gộp làm một.</summary>
+    public string? PaymentType { get; set; }
+
+    /// <summary>Description — form chặn **> 1000 ký tự** (FrmSer_SupplierPayment.cs:746).</summary>
+    public string? Description { get; set; }
+
+    // vết ghi/duyệt
+    public string? PaymentBy { get; set; }
+    public string? CreateBy { get; set; }
+    public string? ApprBy { get; set; }
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -5242,8 +5266,28 @@ public sealed class SupplierPaymentLine
     /// <summary>Thuế suất theo PHẦN TRĂM (nguồn tính `VAT*0.01`).</summary>
     public decimal Vat { get; set; }
 
-    /// <summary>Thành tiền dòng = QtyPay × Price × (1 + VAT%).</summary>
+    /// <summary>Thành tiền dòng = QtyPay × Price × (1 + VAT%).
+    /// #237: tương ứng cột nguồn `PriceAfterVAT` (giữ tên `Amount` để không vỡ dữ liệu cũ).</summary>
     public decimal Amount { get; set; }
+
+    // ===== 🔴 #237: cột nguồn `Ser_SupplierPaymentDtl` mà port cũ THIẾU =====
+    // Bộ dòng client gửi lên đọc từ `FrmSer_SupplierPayment.cs:702-718` (12 cột).
+    public string? PartID { get; set; }
+    public string? Unit { get; set; }
+
+    /// <summary>🔴 `StockInID` / `StockInNo` — dòng thanh toán **gắn với MỘT LẦN NHẬP KHO cụ thể**.
+    /// Thiếu cặp này thì không đối chiếu được phiếu trả tiền với lô hàng đã nhập.</summary>
+    public string? StockInID { get; set; }
+    public string? StockInNo { get; set; }
+
+    public decimal? QtyInventory { get; set; }   // tồn tại thời điểm lập phiếu
+    public string? LocationID { get; set; }      // vị trí kho
+
+    /// <summary>SupplierPaymentDtlStatus — trạng thái RIÊNG của dòng (`TConst.SupplierPaymentStatus` P/A).</summary>
+    public string SupplierPaymentDtlStatus { get; set; } = "P";
+
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng, TCMotor DMSCarSv/TST):

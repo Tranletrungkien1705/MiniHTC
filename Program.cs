@@ -12354,7 +12354,10 @@ app.MapPost("/api/warrantyclaims/{id}/parts", async (
 
         // Guard 5 (nguồn): đơn hàng phải TỒN TẠI và đã được duyệt/hoàn thành, có đúng dòng phụ tùng này.
         var order = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == partOrderNo);
-        if (order is null || (order.OrderPartStatus != "Approved" && order.OrderPartStatus != "Finished"))
+        // 🔴 #237 GUARD CHẾT CÂM (do #234 đổi từ vựng): guard này so với "Approved"/"Finished" trong khi
+        //    #234 đã chuyển `OrderPartStatus` sang mã 1 ký tự "A"/"F" ⇒ điều kiện LUÔN ĐÚNG ⇒ **mọi số đơn
+        //    hàng TST đều bị báo "không hợp lệ"**. Grep của #234 chỉ tìm `== "Finished"` nên trượt dạng `!=`.
+        if (order is null || (order.OrderPartStatus != "A" && order.OrderPartStatus != "F"))
             return Results.BadRequest(new { error = "Số đơn hàng không hợp lệ!" });
         var line = await db.OrderPartLines
             .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartId == order.Id && x.PartCode == partCode);
@@ -28235,19 +28238,56 @@ app.MapPost("/api/reqpartprices/{no}/reject", async (string no, AppDbContext db,
 }).RequireAuthorization();
 
 // ===== Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment) =====
-app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, string? status, string? supplier) =>
+// ===== 🔴 #237 THANH TOÁN NCC — parity `Ser_SupplierPayment` + `Ser_SupplierPaymentDtl` (DMSCarSv/TST) =====
+// Màn ghi: `Views/TST/FrmSer_SupplierPayment.cs` (:723 Save, :838 Appr); màn tra `FrmSer_SupplierPaymentMng.cs`.
+// BƯỚC 3B: Service md5 `b3a175a1` · POCO header `0c9f1037` · POCO dòng `84053d99` — KHỚP 2 máy.
+//
+// 🔴 `Ser_SupplierPayment_Save` (:140) gửi **8 trường**: SupplierPaymentNo · DealerCode · SupplierID ·
+//    Address · PaymentType · TSTRequestNo · OrderPartNo · Description (+ bộ dòng + FlagIsDelete).
+// ⚠️ BẪY COMMENT: dòng truyền `PaymentDTime` bị **comment cố ý** ở service (:167) dù form CÓ gán nó vào
+//    object (:691) ⇒ **ngày thanh toán KHÔNG do client gửi**, server tự đặt. Không nhận từ DTO.
+// ⚠️ `Ser_SupplierPayment_Appr` (:181) chỉ gửi **SupplierPaymentNo** — KHÁC hẳn `Ser_Order_Part_Appr` (#234)
+//    vốn gửi 7 trường. Khẳng định: phải ĐO chữ ký từng hàm, không suy từ màn anh em.
+// ⚠️ Nguồn **không có** cột tổng tiền ở đầu phiếu; `Amount` của bản port là tổng tính từ dòng (ghi rõ để
+//    lượt sau không đi tìm cột tương ứng — bài học #236).
+var supplierPaymentTypeNames = new Dictionary<string, string>
+{
+    ["PMT"] = "Thanh toán", ["PMC"] = "Cấn trừ", ["PMA"] = "Điều chỉnh",
+};
+
+app.MapGet("/api/supplierpayments/types", () => Results.Ok(new
+{
+    paymentTypes = supplierPaymentTypeNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    statuses = new[] { new { code = "P", name = "Mới tạo" }, new { code = "A", name = "Đã duyệt" } },
+    note = "TConst.PaymentType (Const.Main.cs:100) + TConst.SupplierPaymentStatus (:603).",
+})).RequireAuthorization();
+
+app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, string? status, string? supplier,
+    string? dealerCode, string? paymentType) =>
 {
     var q = db.SupplierPayments.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
     if (!string.IsNullOrWhiteSpace(supplier)) q = q.Where(p => p.SupplierCode == supplier);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(p => p.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(paymentType)) q = q.Where(p => p.PaymentType == paymentType!.Trim().ToUpperInvariant());
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
-    { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.DealerCode, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt, lines = db.SupplierPaymentLines.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo) }).ToListAsync();
+    { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.DealerCode, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt,
+      // #237: 10 cột bổ sung của đầu phiếu
+      p.SupplierID, p.Address, p.TSTRequestNo, p.PaymentType, p.Description,
+      p.PaymentBy, p.CreateBy, p.ApprBy, p.LogLUDTime, p.LogLUBy,
+      lines = db.SupplierPaymentLines.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, total = items.Sum(x => x.Amount), approved = items.Where(x => x.Status == "A").Sum(x => x.Amount), items });
 }).RequireAuthorization();
 
-app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Cần SupplierCode." });
+    // Guard của nguồn (FrmSer_SupplierPayment.cs:664/:740) — giữ nguyên thông điệp.
+    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp" });
+    // :746 — ngưỡng 1000, KHÁC 256 của khiếu nại (#233) và 200 của địa điểm giao hàng (#232).
+    if ((dto.Description ?? "").Length > 1000) return Results.BadRequest(new { error = "Mô tả không được vượt quá 1000 ký tự" });
+    if (!string.IsNullOrWhiteSpace(dto.PaymentType) && !supplierPaymentTypeNames.ContainsKey(dto.PaymentType!.Trim().ToUpperInvariant()))
+        return Results.BadRequest(new { error = "Loại phiếu hợp lệ: PMT (Thanh toán) · PMC (Cấn trừ) · PMA (Điều chỉnh)." });
     decimal amount = dto.Amount;
     string? orderNo = null;
     if (!string.IsNullOrWhiteSpace(dto.OrderPartNo))
@@ -28255,7 +28295,9 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
         orderNo = dto.OrderPartNo.Trim().ToUpperInvariant();
         var order = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == orderNo);
         if (order is null) return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt {orderNo}." });
-        if (order.OrderPartStatus != "Finished") return Results.BadRequest(new { error = "Chỉ thanh toán đơn đã Hoàn thành." });
+        // 🔴 #237 GUARD CHẾT CÂM thứ hai (cùng nguyên nhân): chặn MỌI phiếu thanh toán vì không đơn nào
+        //    còn mang giá trị "Finished" sau #234.
+        if (order.OrderPartStatus != "F") return Results.BadRequest(new { error = "Chỉ thanh toán đơn đã Hoàn thành." });
         // amount mặc định = tổng đơn nếu không nhập
         if (amount <= 0)
             amount = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == order.Id).SumAsync(l => (decimal?)(l.OrderQty * l.Price)) ?? 0;
@@ -28269,7 +28311,20 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
 
     if (amount <= 0) return Results.BadRequest(new { error = "Cần số tiền > 0." });
     var no = "SP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new SupplierPayment { OrgId = t.OrgId, PaymentNo = no, SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(), OrderPartNo = orderNo, DealerCode = dto.DealerCode, Amount = amount, PaymentDate = dto.PaymentDate ?? DateTime.Now, Status = "P" };
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var p = new SupplierPayment
+    {
+        OrgId = t.OrgId, PaymentNo = no,
+        SupplierCode = dto.SupplierCode.Trim().ToUpperInvariant(),
+        OrderPartNo = orderNo, DealerCode = dto.DealerCode, Amount = amount,
+        // ⚠️ Ngày thanh toán do SERVER đặt — service của nguồn comment dòng truyền PaymentDTime.
+        PaymentDate = DateTime.Now,
+        Status = "P",
+        SupplierID = dto.SupplierID, Address = dto.Address, TSTRequestNo = dto.TSTRequestNo,
+        PaymentType = string.IsNullOrWhiteSpace(dto.PaymentType) ? "PMT" : dto.PaymentType!.Trim().ToUpperInvariant(),
+        Description = dto.Description,
+        CreateBy = who, LogLUDTime = DateTime.Now, LogLUBy = who,
+    };
     db.SupplierPayments.Add(p);
     foreach (var l in paymentLines)
         db.SupplierPaymentLines.Add(new SupplierPaymentLine
@@ -28277,7 +28332,13 @@ app.MapPost("/api/supplierpayments", async (SupplierPaymentDto dto, AppDbContext
             OrgId = t.OrgId, PaymentNo = no,
             PartCode = l.PartCode!.Trim().ToUpperInvariant(), PartName = l.PartName,
             QtyPay = l.QtyPay, Price = l.Price, Vat = l.Vat,
-            Amount = l.QtyPay * l.Price * (1 + l.Vat / 100m)
+            Amount = l.QtyPay * l.Price * (1 + l.Vat / 100m),   // = PriceAfterVAT của nguồn
+            // #237: 8 cột bổ sung mà form gửi lên (FrmSer_SupplierPayment.cs:702-718)
+            PartID = l.PartID, Unit = l.Unit,
+            StockInID = l.StockInID, StockInNo = l.StockInNo,
+            QtyInventory = l.QtyInventory, LocationID = l.LocationID,
+            SupplierPaymentDtlStatus = "P",
+            LogLUDTime = DateTime.Now, LogLUBy = who,
         });
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.Amount, lines = paymentLines.Count, status = p.Status });
@@ -28290,17 +28351,26 @@ app.MapGet("/api/supplierpayments/{no}/lines", async (string no, AppDbContext db
     var p = await db.SupplierPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
     var lines = await db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == no)
-        .Select(l => new { l.PartCode, l.PartName, l.QtyPay, l.Price, l.Vat, l.Amount }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.QtyPay, l.Price, l.Vat, l.Amount,
+                           // #237: 9 cột bổ sung của dòng
+                           l.PartID, l.Unit, l.StockInID, l.StockInNo, l.QtyInventory, l.LocationID,
+                           l.SupplierPaymentDtlStatus, l.LogLUDTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.DealerCode, p.Status, p.Amount, p.ApprovedAt, count = lines.Count, lines });
 }).RequireAuthorization();
 
-app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.SupplierPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
     if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt phiếu Mới tạo." });
-    p.Status = "A"; p.ApprovedAt = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    p.Status = "A"; p.ApprovedAt = DateTime.Now; p.ApprBy = who;
+    p.LogLUDTime = DateTime.Now; p.LogLUBy = who;
+    // Dòng có trạng thái RIÊNG (SupplierPaymentDtlStatus) — đồng bộ theo đầu phiếu.
+    var payLines = await db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == no).ToListAsync();
+    foreach (var l in payLines) { l.SupplierPaymentDtlStatus = "A"; l.LogLUDTime = DateTime.Now; l.LogLUBy = who; }
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PaymentNo, status = p.Status });
 }).RequireAuthorization();
@@ -31513,8 +31583,16 @@ record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Conten
     string? DeliveryLocation = null, string? ReceiveBy = null,
     DateTime? AssembleDateTime = null, string? AssembleBy = null);
 record OrderComplainActDto(string? Resolution);
-record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay, decimal Price, decimal Vat);
-record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate, List<SupplierPaymentLineDto>? Lines = null, string? DealerCode = null);
+// #237: 6 cột bổ sung mà form gửi lên. KHÔNG nhận `PriceAfterVAT` (server tính) và
+//   `SupplierPaymentDtlStatus`/vết ghi (server đặt).
+record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay, decimal Price, decimal Vat,
+    string? PartID = null, string? Unit = null, string? StockInID = null, string? StockInNo = null,
+    decimal? QtyInventory = null, string? LocationID = null);
+// #237: 5 trường của `Ser_SupplierPayment_Save`. ⚠️ `PaymentDate` giữ trong chữ ký cho tương thích nhưng
+//   **KHÔNG còn được dùng** — nguồn comment dòng truyền `PaymentDTime`, server tự đặt.
+record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate, List<SupplierPaymentLineDto>? Lines = null, string? DealerCode = null,
+    string? SupplierID = null, string? Address = null, string? TSTRequestNo = null,
+    string? PaymentType = null, string? Description = null);
 record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty);
 record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
