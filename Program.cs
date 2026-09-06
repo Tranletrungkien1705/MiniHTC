@@ -35049,6 +35049,12 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
             statusName = RoStatusDisplayName(r.Status),   // #284 nhãn hiển thị của nguồn
             r.CheckInDate, r.ActualDeliveryDate,
             isOwnDealer = own,
+            // #320 §12: 27 cột mới có mặt ở CẢ GET lẫn POST
+            r.AdvisoryCode, r.AdvisoryPhone, r.CarID, r.CarWashRequested, r.CusTypeID, r.DlrPDIReqNo,
+            r.EngineerID, r.FlagOnlyPoint, r.FlagPause, r.IDCardNo, r.InsNo, r.InsuranceDeductible,
+            r.InvoiceBy, r.LevelOfInspection, r.ModifyBy, r.ModifyDate, r.PayByCard, r.PlanedDuration,
+            r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.ServiceStatus, r.TermsOfRepair,
+            r.UseSHPart, r.WorkDoneSoon, r.CreatedBy, r.LogLUBy, r.LogLUDateTime,
 
             // --- #301: chuỗi dự phòng ĐÚNG THỨ TỰ NGUỒN ---
             r.CusID,
@@ -35142,7 +35148,18 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         //     các cột `*Inv` và `PointVoucher` do luồng LẬP HOÁ ĐƠN (`FrmInvoice`) chốt — chưa port,
         //     KHÔNG cho client tự đặt (tránh sửa được số liệu đã chốt trên hoá đơn).
         MemberNo = dto.MemberNo,
-        ReceptionFNo = string.IsNullOrWhiteSpace(dto.ReceptionFNo) ? null : dto.ReceptionFNo!.Trim().ToUpperInvariant(),   // #310 §12 FlagCardExist = dto.FlagCardExist
+        ReceptionFNo = string.IsNullOrWhiteSpace(dto.ReceptionFNo) ? null : dto.ReceptionFNo!.Trim().ToUpperInvariant(),   // #310 §12
+        // #320 §12: gán 27 cột của bản LIVE.
+        AdvisoryCode = dto.AdvisoryCode, AdvisoryPhone = dto.AdvisoryPhone, CarID = dto.CarID,
+        CarWashRequested = dto.CarWashRequested, CusTypeID = dto.CusTypeID, DlrPDIReqNo = dto.DlrPDIReqNo,
+        EngineerID = dto.EngineerID, FlagOnlyPoint = dto.FlagOnlyPoint, FlagPause = dto.FlagPause,
+        IDCardNo = dto.IDCardNo, InsNo = dto.InsNo, InsuranceDeductible = dto.InsuranceDeductible,
+        InvoiceBy = dto.InvoiceBy, LevelOfInspection = dto.LevelOfInspection,
+        ModifyBy = dto.ModifyBy, ModifyDate = dto.ModifyDate, PayByCard = dto.PayByCard,
+        PlanedDuration = dto.PlanedDuration, ReminderMaintanceDate = dto.ReminderMaintanceDate,
+        ReminderMaintanceKm = dto.ReminderMaintanceKm, ServiceStatus = dto.ServiceStatus,
+        TermsOfRepair = dto.TermsOfRepair, UseSHPart = dto.UseSHPart, WorkDoneSoon = dto.WorkDoneSoon,
+        CreatedBy = dto.CreatedBy, LogLUBy = dto.LogLUBy, LogLUDateTime = dto.LogLUDateTime, FlagCardExist = dto.FlagCardExist
     };
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     foreach (var s in dto.Services ?? new())
@@ -36616,6 +36633,17 @@ record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQt
 //   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
     string? MemberNo = null, string? FlagCardExist = null,
+    // #320 §12: 27 cot cua ban LIVE Ser_RO_Create_New20230220 — phai GAN duoc, khong chi DOC duoc.
+    string? AdvisoryCode = null, string? AdvisoryPhone = null, string? CarID = null,
+    string? CarWashRequested = null, string? CusTypeID = null, string? DlrPDIReqNo = null,
+    string? EngineerID = null, string? FlagOnlyPoint = null, string? FlagPause = null,
+    string? IDCardNo = null, string? InsNo = null, decimal? InsuranceDeductible = null,
+    string? InvoiceBy = null, string? LevelOfInspection = null, string? ModifyBy = null,
+    DateTime? ModifyDate = null, string? PayByCard = null, decimal? PlanedDuration = null,
+    DateTime? ReminderMaintanceDate = null, decimal? ReminderMaintanceKm = null,
+    string? ServiceStatus = null, string? TermsOfRepair = null, string? UseSHPart = null,
+    string? WorkDoneSoon = null, string? CreatedBy = null, string? LogLUBy = null,
+    DateTime? LogLUDateTime = null,
     // #310 §12: phieu TIEP NHAN sinh ra lenh nay (1-NHIEU) — phai GAN duoc, khong chi doc duoc.
     string? ReceptionFNo = null);
 record RoAdvanceDto(string ToStatus);

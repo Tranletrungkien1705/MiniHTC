@@ -2156,6 +2156,40 @@ public sealed class RepairOrder
     /// </summary>
     public string? ReceptionFNo { get; set; }
 
+    // ===== 🔴 #320 PARITY VỚI BẢN LIVE `Ser_RO_Create_New20230220` (`Service.RO.cs:3001`) =====
+    // 🆕 Tìm bằng sweep MỚI `_audit/sweep_twin_column_delta.js`: so **TẬP CỘT ĐƯỢC GHI** giữa các bản
+    //   cùng gốc. Cụm `Ser_RO_Create` có **9 bản**, chênh tới **28 cột**: bản LIVE ghi **61** cột,
+    //   bản trần chỉ **51**. Port cũ có 50 ⇒ thiếu 30 (3 trong đó chỉ là đổi tên).
+    // ⚠️ TRACE TWIN đã làm: WS `:10603` gọi `_New20230220` ⇒ 8 bản còn lại CHẾT.
+    public string? AdvisoryCode { get; set; }        // CVDV tư vấn
+    public string? AdvisoryPhone { get; set; }
+    /// <summary>CARID — khoá kỹ thuật của xe, **KHÁC** `Vin` (số khung). Nguồn ghép xe theo cột này.</summary>
+    public string? CarID { get; set; }
+    public string? CarWashRequested { get; set; }    // khách yêu cầu rửa xe
+    public string? CusTypeID { get; set; }           // loại KH — bản chụp trên lệnh (chuỗi isnull #301)
+    public string? DlrPDIReqNo { get; set; }         // số yêu cầu PDI của đại lý
+    public string? EngineerID { get; set; }
+    public string? FlagOnlyPoint { get; set; }
+    public string? FlagPause { get; set; }           // tạm dừng sửa chữa
+    public string? IDCardNo { get; set; }            // CMND/CCCD — bản chụp trên lệnh (chuỗi isnull #301)
+    public string? InsNo { get; set; }               // số đơn bảo hiểm
+    public decimal? InsuranceDeductible { get; set; }// mức khấu trừ bảo hiểm
+    public string? InvoiceBy { get; set; }
+    public string? LevelOfInspection { get; set; }   // mức kiểm tra
+    public string? ModifyBy { get; set; }
+    public DateTime? ModifyDate { get; set; }
+    public string? PayByCard { get; set; }
+    public decimal? PlanedDuration { get; set; }     // thời lượng dự kiến
+    public DateTime? ReminderMaintanceDate { get; set; }  // nhắc bảo dưỡng (nguồn viết thiếu chữ "e": Maintance)
+    public decimal? ReminderMaintanceKm { get; set; }
+    public string? ServiceStatus { get; set; }       // ⚠️ KHÁC `Status` (trạng thái lệnh) — trục riêng
+    public string? TermsOfRepair { get; set; }
+    public string? UseSHPart { get; set; }           // dùng phụ tùng SH
+    public string? WorkDoneSoon { get; set; }        // yêu cầu làm nhanh
+    public string? CreatedBy { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+
     public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
     public string? ColorCode { get; set; }             // #301: ro.ColorCode (BẢN CHỤP), car chỉ dự phòng
 
