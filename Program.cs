@@ -4292,6 +4292,142 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== HOÁ ĐƠN TCG (VAT_TCGInvoice + Detail) =====
+// 🔴 TWIN đã trace kỹ (bảng này được ghi ở BỐN file khác nhau — không chọn theo file, phải theo WS):
+//    WS 32-bit (WSHTC.cs:34444) gọi `..._New20181119`, WS 64-bit (WSHTC.64:46231) gọi
+//    `VAT_TCGInvoiceCreate_New20201210` ở FILE KHÁC: HDDTIntergration/BizHTC.HDDTIntergration.cs:20115
+//    → `VAT_TCGInvoiceCreateX_20201210` (14549). Canonical = bản 64-bit/2020 (mới hơn 2 năm).
+// 🔴 `VatTCGStatus` KHÔNG dùng "A"/"R": tạo = "P", **duyệt = "F"** (Stage.Finished),
+//    **không duyệt = "C"** (Stage.Cancel) — `VAT_TCGInvoiceApproveX` (19061, dòng +132).
+// 🔴 Số hoá đơn (`TCGInvoiceNo`/`TCGInvoiceDate`) và mã HĐĐT (`OS_HDDT_*`) nguồn để **NULL lúc tạo**,
+//    chỉ điền về sau — port giữ đúng, không sinh số ngay khi tạo.
+// ⚠️ Nguồn ghi song song `_dbMain` + `_dbWH` — nợ `_dbWH` chung fleet.
+app.MapGet("/api/tcginvoices", async (AppDbContext db, ITenantContext t, string? code, string? status, string? refNo) =>
+{
+    var qy = db.VatTcgInvoices.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(code)) qy = qy.Where(x => x.TCGInvoiceCode == code);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.VatTCGStatus == status);
+    if (!string.IsNullOrWhiteSpace(refNo)) qy = qy.Where(x => x.RefNo == refNo);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.TCGInvoiceCode, x.SourceInvoiceCode, x.InvoiceAdjType, x.InvoiceIDType, x.RefNo,
+        x.VatTCGStatus, x.TCGInvoiceNo, x.TCGInvoiceDate, x.OS_HDDT_InvoiceCode, x.OS_HDDT_RefNo,
+        x.VAT, x.FlagView, x.TInvoiceCode, x.FlagImport,
+        x.CreatedDate, x.CreatedBy, x.ApprovedDate, x.ApprovedBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    var codes = items.Select(i => i.TCGInvoiceCode).ToList();
+    var dtls = await db.VatTcgInvoiceDetails.Where(d => d.OrgId == t.OrgId && codes.Contains(d.TCGInvoiceCode))
+        .Select(d => new
+        {
+            d.TCGInvoiceCode, d.VIN, d.TCGUnitPrice, d.TCGVAT, d.TInvoicePrice,
+            d.BrandName, d.CarType, d.CustomsClearanceDate,
+            d.InvoiceNoFactory, d.InvoiceFactorySearch, d.ProductionMonth,
+            d.TCGStatusDetail, d.LogLUDateTime, d.LogLUBy,
+        }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, details = dtls });
+}).RequireAuthorization();
+
+app.MapPost("/api/tcginvoices/create", async (TcgInvoiceCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.TCGInvoiceCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã hoá đơn TCG rỗng." });
+    if (await db.VatTcgInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.TCGInvoiceCode == code))
+        return Results.BadRequest(new { error = $"Hoá đơn {code} đã tồn tại." });
+    var rows = (dto.Details ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
+    var seen = new HashSet<string>();
+    foreach (var r in rows)
+        if (!seen.Add(r.VIN!.Trim().ToUpperInvariant()))
+            return Results.BadRequest(new { error = $"VIN {r.VIN} bị lặp trong hoá đơn." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    db.VatTcgInvoices.Add(new VatTcgInvoice
+    {
+        OrgId = t.OrgId, TCGInvoiceCode = code,
+        SourceInvoiceCode = dto.SourceInvoiceCode, InvoiceAdjType = dto.InvoiceAdjType,
+        InvoiceIDType = dto.InvoiceIDType, RefNo = dto.RefNo,
+        VatTCGStatus = "P",
+        // 🔴 Nguồn để NULL lúc tạo — số hoá đơn và mã HĐĐT chỉ có về sau.
+        TCGInvoiceNo = null, TCGInvoiceDate = null,
+        OS_HDDT_InvoiceCode = null, OS_HDDT_RefNo = null,
+        VAT = dto.VAT, FlagView = dto.FlagView, TInvoiceCode = dto.TInvoiceCode, FlagImport = dto.FlagImport,
+        CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+    });
+    foreach (var r in rows)
+        db.VatTcgInvoiceDetails.Add(new VatTcgInvoiceDetail
+        {
+            OrgId = t.OrgId, TCGInvoiceCode = code, VIN = r.VIN!.Trim().ToUpperInvariant(),
+            TCGUnitPrice = r.TCGUnitPrice, TCGVAT = r.TCGVAT,
+            TInvoicePrice = 0m, // 🔴 nguồn LUÔN ghi 0 khi tạo, không lấy từ đầu vào
+            BrandName = r.BrandName, CarType = r.CarType,
+            CustomsClearanceDate = r.CustomsClearanceDate,
+            InvoiceNoFactory = r.InvoiceNoFactory, InvoiceFactorySearch = r.InvoiceFactorySearch,
+            ProductionMonth = r.ProductionMonth,
+            TCGStatusDetail = "P", LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, details = rows.Count, status = "P" });
+}).RequireAuthorization();
+
+// 🔴 Duyệt → "F" (Finished), từ chối → "C" (Cancel). Nguồn dùng CHUNG một hàm, cờ `bApprove` quyết định.
+app.MapPost("/api/tcginvoices/approve", async (TcgInvoiceApproveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.TCGInvoiceCode ?? "").Trim();
+    var row = await db.VatTcgInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TCGInvoiceCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có hoá đơn {code}." });
+    if (row.VatTCGStatus != "P")
+        return Results.BadRequest(new { error = $"Hoá đơn đang '{row.VatTCGStatus}', chỉ duyệt được khi 'P'." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var approve = dto.Approve != false;
+    row.VatTCGStatus = approve ? "F" : "C";
+    row.ApprovedDate = now; row.ApprovedBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    // Số hoá đơn chỉ được điền khi DUYỆT (nguồn sinh qua Seq_PrintVAT — xem /api/seqcommon/get TCGIV).
+    if (approve && !string.IsNullOrWhiteSpace(dto.TCGInvoiceNo))
+    {
+        row.TCGInvoiceNo = dto.TCGInvoiceNo!.Trim();
+        row.TCGInvoiceDate = dto.TCGInvoiceDate ?? now;
+    }
+    var dtls = await db.VatTcgInvoiceDetails.Where(d => d.OrgId == t.OrgId && d.TCGInvoiceCode == code).ToListAsync();
+    foreach (var d in dtls) { d.TCGStatusDetail = row.VatTCGStatus; d.LogLUDateTime = now; d.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, status = row.VatTCGStatus, row.TCGInvoiceNo, detailsSynced = dtls.Count });
+}).RequireAuthorization();
+
+// Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
+app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TCGInvoiceCode ?? "").Trim();
+    var row = await db.VatTcgInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TCGInvoiceCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có hoá đơn {code}." });
+    if (row.VatTCGStatus != "P")
+        return Results.BadRequest(new { error = $"Hoá đơn đang '{row.VatTCGStatus}', chỉ xoá được khi 'P'." });
+    var dtls = await db.VatTcgInvoiceDetails.Where(d => d.OrgId == t.OrgId && d.TCGInvoiceCode == code).ToListAsync();
+    db.VatTcgInvoiceDetails.RemoveRange(dtls);
+    db.VatTcgInvoices.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code, detailsDeleted = dtls.Count });
+}).RequireAuthorization();
+
+// Xoá MỘT dòng xe khỏi hoá đơn (nguồn `VAT_TCGInvoiceDetailDelete`).
+app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TCGInvoiceCode ?? "").Trim();
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    var head = await db.VatTcgInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TCGInvoiceCode == code);
+    if (head is null) return Results.NotFound(new { error = $"Không có hoá đơn {code}." });
+    if (head.VatTCGStatus != "P")
+        return Results.BadRequest(new { error = $"Hoá đơn đang '{head.VatTCGStatus}', chỉ sửa được khi 'P'." });
+    var row = await db.VatTcgInvoiceDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.TCGInvoiceCode == code && d.VIN == vin);
+    if (row is null) return Results.NotFound(new { error = $"Hoá đơn {code} không có VIN {vin}." });
+    db.VatTcgInvoiceDetails.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = $"{code}/{vin}" });
+}).RequireAuthorization();
+
 // ===== Ba master còn nợ: Mst_Bank · Mst_District · Mst_DealerSalesType =====
 // Nguồn: `Mst_Bank_CheckDB` (Biz.HTC.WH.cs:355) · tra `Mst_District` (Biz.HTC.WH.hkt.cs:9076) ·
 // `Mst_DealerSalesType_CheckDB` (BizHTC.DealerSales.cs:138).
@@ -23968,6 +24104,12 @@ record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPost
 record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive);
 record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive);
 record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
+// Hoá đơn TCG: khoá dòng = cặp (TCGInvoiceCode, VIN). TInvoicePrice nguồn luôn ghi 0 nên không nhận từ client.
+record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
+record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);
+record TcgInvoiceApproveDto(string? TCGInvoiceCode, bool? Approve, string? TCGInvoiceNo, DateTime? TCGInvoiceDate);
+record TcgInvoiceKeyDto(string? TCGInvoiceCode);
+record TcgInvoiceDetailKeyDto(string? TCGInvoiceCode, string? VIN);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

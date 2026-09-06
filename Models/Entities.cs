@@ -4582,6 +4582,80 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// HOÁ ĐƠN TCG — phần đầu (`VAT_TCGInvoice`).
+/// 🔴 **BẪY TWIN LỚN, đã trace kỹ:** WS 32-bit và 64-bit gọi **HAI BẢN KHÁC HẲN NHAU**:
+/// · `TERP.WSHTC/App_Code/WSHTC.cs:34444` → `VAT_TCGInvoiceCreate_**New20181119**`;
+/// · `TERP.WSHTC.64/WSHTC.asmx.cs:46231` → `VAT_TCGInvoiceCreate_**New20201210**`.
+/// Bản 64-bit (mới hơn 2 năm) nằm ở **FILE KHÁC**: `TERP.BizHTC/HDDTIntergration/
+/// BizHTC.HDDTIntergration.cs:20115` → gọi tiếp `VAT_TCGInvoiceCreateX_20201210` (14549).
+/// Khớp memory `dmssales-biz-wh-not-always-authoritative-trace-ws`: bảng này được ghi ở **4 file**
+/// (`BizHTC.InvoiceHTC_TCG.cs`, `Biz.HTC.WH.cs`, `HDDTIntergration.cs`, `…_TCG_20160924.cs`)
+/// nên **không được chọn theo file, phải trace từ WS**. Canonical đã chọn = **bản 64-bit / 2020**.
+/// 🔴 `VatTCGStatus` KHÔNG dùng cặp "A"/"R" như đa số cụm khác: tạo = **"P"** (Pending),
+/// **duyệt = "F" (Stage.Finished)**, **không duyệt = "C" (Stage.Cancel)** — xem `VAT_TCGInvoiceApproveX`
+/// (`HDDTIntergration.cs:19061`, dòng +132: `bApprove ? Stage.Finished : Stage.Cancel`).
+/// ⚠️ Nguồn ghi song song `_dbMain` + `_dbWH` — nợ `_dbWH` chung fleet; có hàm đọc `_GetWH` riêng.
+/// </summary>
+public sealed class VatTcgInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TCGInvoiceCode { get; set; } = "";
+    /// <summary>Hoá đơn gốc khi đây là hoá đơn điều chỉnh.</summary>
+    public string? SourceInvoiceCode { get; set; }
+    /// <summary>Loại điều chỉnh (`InvoiceAdjType`).</summary>
+    public string? InvoiceAdjType { get; set; }
+    public string? InvoiceIDType { get; set; }
+    public string? RefNo { get; set; }
+    /// <summary>"P" tạo → "F" duyệt / "C" huỷ (KHÔNG phải A/R).</summary>
+    public string VatTCGStatus { get; set; } = "P";
+    /// <summary>Số hoá đơn — nguồn để NULL lúc tạo, chỉ điền khi duyệt.</summary>
+    public string? TCGInvoiceNo { get; set; }
+    public DateTime? TCGInvoiceDate { get; set; }
+    /// <summary>Mã hoá đơn phía hệ thống HĐĐT — NULL lúc tạo.</summary>
+    public string? OS_HDDT_InvoiceCode { get; set; }
+    public string? OS_HDDT_RefNo { get; set; }
+    public string? VAT { get; set; }
+    public string? FlagView { get; set; }
+    public string? TInvoiceCode { get; set; }
+    public string? FlagImport { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// DÒNG hoá đơn TCG theo xe (`VAT_TCGInvoiceDetail`). Khoá dòng = cặp (`TCGInvoiceCode`, `VIN`).
+/// 🔴 `TInvoicePrice` nguồn **luôn ghi 0** khi tạo (`dr["TInvoicePrice"] = 0;`), không lấy từ đầu vào.
+/// 🔴 `TCGStatusDetail` = "P" khi tạo — trạng thái DÒNG tách khỏi `VatTCGStatus` của phần đầu.
+/// `ProductionMonth` đi qua `StandardizeMonth` (chuẩn hoá tháng sản xuất), `CustomsClearanceDate`
+/// qua `StandardizeDateOrDBNull` nên rỗng thì thành NULL chứ không phải ngày mặc định.
+/// </summary>
+public sealed class VatTcgInvoiceDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TCGInvoiceCode { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public decimal? TCGUnitPrice { get; set; }
+    public decimal? TCGVAT { get; set; }
+    /// <summary>Nguồn luôn ghi 0 khi tạo.</summary>
+    public decimal TInvoicePrice { get; set; }
+    public string? BrandName { get; set; }
+    public string? CarType { get; set; }
+    public DateTime? CustomsClearanceDate { get; set; }
+    public string? InvoiceNoFactory { get; set; }
+    public string? InvoiceFactorySearch { get; set; }
+    public string? ProductionMonth { get; set; }
+    public string TCGStatusDetail { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Master NGÂN HÀNG (`Mst_Bank` — nguồn `Mst_Bank_CheckDB`, 2010.HTC
 /// `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:355`; khoá là `BankCode`).
 /// 🔴 `BankCodeParent` cho thấy master này có **cấu trúc CHA–CON**: chi nhánh trỏ về ngân hàng mẹ.
