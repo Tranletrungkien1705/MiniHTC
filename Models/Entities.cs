@@ -4559,6 +4559,81 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// HẠN MỨC ngân sách marketing theo năm — phần đầu (`MRK_ScopeLimit` — port 1:1 cụm 4 hàm
+/// `MRK_ScopeLimit_Get/Save/Approve` + `MRK_ScopeLimitDetail_Get`, 2010.HTC
+/// `BizHTC.Marketing.cs` dòng 14570 / 14092 / 14808 / 15031).
+/// 🔴 Cụm này có **hằng trạng thái RIÊNG** `TConst.MRKScopLimitStatus` (chú ý tên hằng **thiếu chữ e**:
+/// "ScopLimit"), chỉ hai giá trị: `Pending = "P"` · `Approve = "A"` — **không dùng `TConst.Stage`**
+/// như cụm chi phí marketing (#106-#108), nên không có "R"/"F"/"M" ở đây.
+/// 🔴 `Save` là **XOÁ TRẮNG rồi INSERT lại** cả phần đầu lẫn chi tiết; nếu bản ghi đã tồn tại thì
+/// **phải đang "P"**, và `CreatedDateTime`/`CreatedBy` gốc được **giữ nguyên**, không bị đặt lại.
+/// 🔴 `Approve` cập nhật **CẢ HAI bảng**: `MRKScopeLimitStatus` ở phần đầu và đồng bộ xuống
+/// `MRKScopeLimitStatusDetail` của từng dòng.
+/// </summary>
+public sealed class MrkScopeLimit
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKScopeLimitNo { get; set; } = "";
+    public string MRKScopeLimitYear { get; set; } = "";
+    /// <summary>"P" chờ duyệt / "A" đã duyệt (TConst.MRKScopLimitStatus).</summary>
+    public string MRKScopeLimitStatus { get; set; } = "P";
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// DÒNG hạn mức ngân sách marketing theo đại lý (`MRK_ScopeLimitDetail`).
+/// Khoá dòng = cặp (`MRKScopeLimitNo`, `DealerCode`).
+/// 🔴 **Bất đối xứng có chủ đích của nghiệp vụ: 4 QUÝ hạn mức nhưng 6 ĐỢT giải ngân**
+/// (`Amount1..4QuaterScopeLimit` vs `Amount1..6DisbursmentCash`) — không phải lỗi đánh máy, đừng "sửa"
+/// thành 4/4. Tên cột giữ nguyên chính tả nguồn: **`Quater`** (đúng phải là Quarter) và
+/// **`Disbursment`** (đúng phải là Disbursement).
+/// 🔴 Guard nguồn: **cả 10 số tiền đều không được âm** (một điều kiện `||` gộp, một mã lỗi chung
+/// `MRK_ScopeLimit_Save_InvalidAmount`).
+/// </summary>
+public sealed class MrkScopeLimitDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MRKScopeLimitNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    /// <summary>Hạn mức quý 1.</summary>
+    public decimal Amount1QuaterScopeLimit { get; set; }
+    /// <summary>Hạn mức quý 2.</summary>
+    public decimal Amount2QuaterScopeLimit { get; set; }
+    /// <summary>Hạn mức quý 3.</summary>
+    public decimal Amount3QuaterScopeLimit { get; set; }
+    /// <summary>Hạn mức quý 4.</summary>
+    public decimal Amount4QuaterScopeLimit { get; set; }
+    /// <summary>Tiền giải ngân đợt 1.</summary>
+    public decimal Amount1DisbursmentCash { get; set; }
+    /// <summary>Tiền giải ngân đợt 2.</summary>
+    public decimal Amount2DisbursmentCash { get; set; }
+    /// <summary>Tiền giải ngân đợt 3.</summary>
+    public decimal Amount3DisbursmentCash { get; set; }
+    /// <summary>Tiền giải ngân đợt 4.</summary>
+    public decimal Amount4DisbursmentCash { get; set; }
+    /// <summary>Tiền giải ngân đợt 5.</summary>
+    public decimal Amount5DisbursmentCash { get; set; }
+    /// <summary>Tiền giải ngân đợt 6.</summary>
+    public decimal Amount6DisbursmentCash { get; set; }
+    /// <summary>Đồng bộ từ phần đầu khi duyệt.</summary>
+    public string MRKScopeLimitStatusDetail { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// FILE ĐÍNH KÈM của dòng chi phí marketing (`MKT_MarketingFeeDetailAttach` — port 1:1 cụm 4 hàm
 /// `MKT_MarketingFeeDetailAttachGet/Save/Approved/Rejected_New20181115`, 2010.HTC
 /// `BizHTC.Marketing.cs` dòng 4990 / 5169 / 5603 / 5888).

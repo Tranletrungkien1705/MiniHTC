@@ -4217,6 +4217,123 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Hạn mức ngân sách marketing theo năm (MRK_ScopeLimit — port 1:1 cụm 4 hàm
+// Get(14570) / Save(14092) / Approve(14808) / Detail_Get(15031), 2010.HTC BizHTC.Marketing.cs).
+// TWIN: 4/4 hàm, cả WS 32-bit lẫn 64-bit. =====
+// 🔴 Cụm này dùng hằng trạng thái RIÊNG `TConst.MRKScopLimitStatus` (tên hằng thiếu chữ e) — chỉ
+//    "P" (chờ duyệt) và "A" (đã duyệt). KHÔNG có "R"/"F"/"M" như cụm chi phí marketing.
+// 🔴 4 QUÝ hạn mức nhưng 6 ĐỢT giải ngân — bất đối xứng đúng theo nghiệp vụ, không phải lỗi.
+//    Tên cột giữ nguyên chính tả nguồn: `Quater` (Quarter) và `Disbursment` (Disbursement).
+app.MapGet("/api/mrkscopelimits", async (AppDbContext db, ITenantContext t, string? no, string? year, string? status) =>
+{
+    var qy = db.MrkScopeLimits.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) qy = qy.Where(x => x.MRKScopeLimitNo == no);
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.MRKScopeLimitYear == year);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.MRKScopeLimitStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Select(x => new
+    {
+        x.MRKScopeLimitNo, x.MRKScopeLimitYear, x.MRKScopeLimitStatus,
+        x.CreatedDateTime, x.CreatedBy, x.LUDateTime, x.LUBy,
+        x.ApproveDateTime, x.ApproveBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Tương ứng `MRK_ScopeLimitDetail_Get` — nguồn tách thành hàm đọc riêng cho phần chi tiết.
+app.MapGet("/api/mrkscopelimitdetails", async (AppDbContext db, ITenantContext t, string? no, string? dealerCode) =>
+{
+    var qy = db.MrkScopeLimitDetails.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) qy = qy.Where(x => x.MRKScopeLimitNo == no);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    var items = await qy.OrderBy(x => x.DealerCode).Select(d => new
+    {
+        d.MRKScopeLimitNo, d.DealerCode,
+        d.Amount1QuaterScopeLimit, d.Amount2QuaterScopeLimit, d.Amount3QuaterScopeLimit, d.Amount4QuaterScopeLimit,
+        d.Amount1DisbursmentCash, d.Amount2DisbursmentCash, d.Amount3DisbursmentCash, d.Amount4DisbursmentCash, d.Amount5DisbursmentCash, d.Amount6DisbursmentCash,
+        d.MRKScopeLimitStatusDetail, d.Remark, d.LUDateTime, d.LUBy, d.LogLUDateTime, d.LogLUBy,
+        QuaterTotal = d.Amount1QuaterScopeLimit + d.Amount2QuaterScopeLimit + d.Amount3QuaterScopeLimit + d.Amount4QuaterScopeLimit,
+        DisbursmentTotal = d.Amount1DisbursmentCash + d.Amount2DisbursmentCash + d.Amount3DisbursmentCash + d.Amount4DisbursmentCash + d.Amount5DisbursmentCash + d.Amount6DisbursmentCash,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 Save = XOÁ TRẮNG rồi INSERT lại cả đầu lẫn chi tiết. Bản ghi đã có thì PHẢI đang "P",
+//    và `CreatedDateTime`/`CreatedBy` gốc được GIỮ NGUYÊN (nguồn đọc lại từ DB trước khi xoá).
+app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.MRKScopeLimitNo ?? "").Trim();
+    var year = (dto.MRKScopeLimitYear ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số hạn mức rỗng." });
+    if (year.Length < 1) return Results.BadRequest(new { error = "Năm hạn mức rỗng." });
+    var rows = (dto.Details ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealerCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
+
+    var seen = new HashSet<string>();
+    foreach (var r in rows)
+    {
+        if (!seen.Add(r.DealerCode!.Trim()))
+            return Results.BadRequest(new { error = $"Đại lý {r.DealerCode} bị lặp trong bảng chi tiết." });
+        // Guard nguồn: cả 10 số tiền đều không được âm (một mã lỗi chung).
+        if (r.Amount1QuaterScopeLimit < 0m || r.Amount2QuaterScopeLimit < 0m || r.Amount3QuaterScopeLimit < 0m || r.Amount4QuaterScopeLimit < 0m || r.Amount1DisbursmentCash < 0m || r.Amount2DisbursmentCash < 0m || r.Amount3DisbursmentCash < 0m || r.Amount4DisbursmentCash < 0m || r.Amount5DisbursmentCash < 0m || r.Amount6DisbursmentCash < 0m)
+            return Results.BadRequest(new { error = $"Đại lý {r.DealerCode}: có số tiền âm." });
+    }
+
+    var old = await db.MrkScopeLimits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKScopeLimitNo == no);
+    var createdAt = DateTime.Now;
+    var createdBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (old is not null)
+    {
+        if (old.MRKScopeLimitStatus != "P")
+            return Results.BadRequest(new { error = $"Hạn mức {no} đang {old.MRKScopeLimitStatus}, chỉ sửa được khi 'P'." });
+        // Giữ nguyên dấu vết tạo ban đầu.
+        createdAt = old.CreatedDateTime; createdBy = old.CreatedBy ?? createdBy;
+        db.MrkScopeLimitDetails.RemoveRange(
+            await db.MrkScopeLimitDetails.Where(d => d.OrgId == t.OrgId && d.MRKScopeLimitNo == no).ToListAsync());
+        db.MrkScopeLimits.Remove(old);
+        await db.SaveChangesAsync();
+    }
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.MrkScopeLimits.Add(new MrkScopeLimit
+    {
+        OrgId = t.OrgId, MRKScopeLimitNo = no, MRKScopeLimitYear = year, MRKScopeLimitStatus = "P",
+        CreatedDateTime = createdAt, CreatedBy = createdBy,
+        LUDateTime = now, LUBy = who, LogLUDateTime = now, LogLUBy = who,
+    });
+    foreach (var r in rows)
+        db.MrkScopeLimitDetails.Add(new MrkScopeLimitDetail
+        {
+            OrgId = t.OrgId, MRKScopeLimitNo = no, DealerCode = r.DealerCode!.Trim(),
+            Amount1QuaterScopeLimit = r.Amount1QuaterScopeLimit ?? 0m, Amount2QuaterScopeLimit = r.Amount2QuaterScopeLimit ?? 0m, Amount3QuaterScopeLimit = r.Amount3QuaterScopeLimit ?? 0m, Amount4QuaterScopeLimit = r.Amount4QuaterScopeLimit ?? 0m,
+            Amount1DisbursmentCash = r.Amount1DisbursmentCash ?? 0m, Amount2DisbursmentCash = r.Amount2DisbursmentCash ?? 0m, Amount3DisbursmentCash = r.Amount3DisbursmentCash ?? 0m, Amount4DisbursmentCash = r.Amount4DisbursmentCash ?? 0m, Amount5DisbursmentCash = r.Amount5DisbursmentCash ?? 0m, Amount6DisbursmentCash = r.Amount6DisbursmentCash ?? 0m,
+            MRKScopeLimitStatusDetail = "P", Remark = r.Remark,
+            LUDateTime = now, LUBy = who, LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, year, details = rows.Count, status = "P" });
+}).RequireAuthorization();
+
+// 🔴 Duyệt cập nhật CẢ HAI bảng: phần đầu và đồng bộ xuống MRKScopeLimitStatusDetail của từng dòng.
+app.MapPost("/api/mrkscopelimits/approve", async (MrkScopeLimitKeyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.MRKScopeLimitNo ?? "").Trim();
+    var row = await db.MrkScopeLimits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKScopeLimitNo == no);
+    if (row is null) return Results.NotFound(new { error = $"Không có hạn mức {no}." });
+    if (row.MRKScopeLimitStatus != "P")
+        return Results.BadRequest(new { error = $"Hạn mức đang {row.MRKScopeLimitStatus}, chỉ duyệt được khi 'P'." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.MRKScopeLimitStatus = "A";
+    row.ApproveDateTime = now; row.ApproveBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    var dtls = await db.MrkScopeLimitDetails.Where(d => d.OrgId == t.OrgId && d.MRKScopeLimitNo == no).ToListAsync();
+    foreach (var d in dtls) { d.MRKScopeLimitStatusDetail = "A"; d.LogLUDateTime = now; d.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, status = "A", detailsSynced = dtls.Count });
+}).RequireAuthorization();
+
 // ===== File đính kèm của dòng chi phí marketing (MKT_MarketingFeeDetailAttach — port 1:1 cụm 4 hàm
 // Get(4990) / Save(5169) / Approved(5603) / Rejected(5888), 2010.HTC BizHTC.Marketing.cs).
 // TWIN: 4/4 hàm, cả WS 32-bit lẫn 64-bit. Đây là mắt xích ghi `Status*` mà `Finished` (#106) và
@@ -22995,6 +23112,10 @@ record MktFeeDetailKeyDto(string? MKTFeeCode, string? MKTActivityCode);
 record MktFeeAttachFileDto(int? Idx, string? FilePath, string? FileDesc, string? FileType);
 record MktFeeAttachSaveDto(string? MKTFeeCode, string? MKTActivityCode, string? FileAttachType, string? RemarkDlr, List<MktFeeAttachFileDto>? Files);
 record MktFeeAttachDecisionDto(string? MKTFeeCode, string? MKTActivityCode, string? FileAttachType, string? RemarkImage);
+// Hạn mức ngân sách marketing: 4 quý hạn mức + 6 đợt giải ngân (bất đối xứng theo nguồn).
+record MrkScopeLimitRowDto(string? DealerCode, decimal? Amount1QuaterScopeLimit, decimal? Amount2QuaterScopeLimit, decimal? Amount3QuaterScopeLimit, decimal? Amount4QuaterScopeLimit, decimal? Amount1DisbursmentCash, decimal? Amount2DisbursmentCash, decimal? Amount3DisbursmentCash, decimal? Amount4DisbursmentCash, decimal? Amount5DisbursmentCash, decimal? Amount6DisbursmentCash, string? Remark);
+record MrkScopeLimitSaveDto(string? MRKScopeLimitNo, string? MRKScopeLimitYear, List<MrkScopeLimitRowDto>? Details);
+record MrkScopeLimitKeyDto(string? MRKScopeLimitNo);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
