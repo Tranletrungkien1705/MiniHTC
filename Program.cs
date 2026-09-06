@@ -8518,6 +8518,152 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #144: KẾ HOẠCH ĐẶT HÀNG GỬI NHÀ MÁY HTMV (Ord_OrderPlan_HTMV + Detail) =====
+// Nguồn: DMS40/zTemp.0.30.Order.cs (csproj 128) — _Create (9461) / _Update (10585). Chỉ có ở WS 64-bit.
+// ⛔ NỢ ghi rõ: `_Create` là JOB TỰ SINH — chỉ nhận `strFlagIsMonth` rồi TỰ TÍNH 8 loại số lượng
+//    (BO đã duyệt / đơn chờ / tồn HTC / BO nhà máy / tồn đại lý / kế hoạch / đơn thực / nhà máy duyệt)
+//    từ nhiều bảng. Vòng này port VÒNG ĐỜI kế hoạch (nhập số liệu sẵn có, sửa, tra cứu);
+//    THUẬT TOÁN tính để một vòng riêng — không bịa công thức.
+// ✅ Nguồn `_Create` XOÁ theo OrderPlanNo trước khi ghi (delete-then-insert) ⇒ idempotent;
+//    khác `HR_SalesManOfMonth` (#141) vốn không xoá và nhân đôi khi chạy lại.
+app.MapGet("/api/orderplanhtmv", async (AppDbContext db, ITenantContext t, string? no, string? flagIsMonth) =>
+{
+    var q = db.OrdOrderPlanHtmvs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.OrderPlanNo.Contains(no!));
+    if (!string.IsNullOrWhiteSpace(flagIsMonth)) q = q.Where(x => x.FlagIsMonth == flagIsMonth);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.OrderPlanNo, x.PeriodDate, x.FlagIsMonth, x.CreatedDate, x.CreatedBy, x.UpdateDTime, x.UpdateBy,
+        x.LogLUDateTime, x.LogLUBy,
+        specs = db.OrdOrderPlanHtmvDetails.Count(d => d.OrgId == t.OrgId && d.OrderPlanNo == x.OrderPlanNo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/orderplanhtmv/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.OrdOrderPlanHtmvs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPlanNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var lines = await db.OrdOrderPlanHtmvDetails.Where(x => x.OrgId == t.OrgId && x.OrderPlanNo == no)
+        .OrderBy(x => x.SpecCode).Select(x => new { x.SpecCode, x.ModelCode, x.QtyBOApp, x.QtySalesOrderP,
+            x.QtyStock, x.QtyBOHTMV, x.QtyStockDealer, x.QtySalesOrderPlan, x.QtySalesOrder, x.QtyHTMVApp,
+            x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.OrderPlanNo, h.PeriodDate, h.FlagIsMonth, h.CreatedDate,
+        h.CreatedBy, h.UpdateDTime, h.UpdateBy, h.LogLUDateTime, h.LogLUBy }, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/orderplanhtmv", async (OrderPlanHtmvDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var flag = (dto.FlagIsMonth ?? "1").Trim();
+    if (flag is not ("1" or "0")) return Results.BadRequest(new { error = "FlagIsMonth = \"1\" (kỳ theo tháng) | \"0\"." });
+    var lines = (dto.Lines ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.SpecCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Kế hoạch phải có ít nhất 1 dòng spec." });
+    var dupe = lines.GroupBy(x => x.SpecCode.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe is not null) return Results.BadRequest(new { error = $"Spec {dupe.Key} bị trùng trong kế hoạch." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var no = "ORP" + now.ToString("yyMMddHHmmss");
+    db.OrdOrderPlanHtmvs.Add(new OrdOrderPlanHtmv { OrgId = t.OrgId, OrderPlanNo = no,
+        PeriodDate = dto.PeriodDate ?? now, FlagIsMonth = flag, CreatedDate = now, CreatedBy = who,
+        LogLUDateTime = now, LogLUBy = who });
+    foreach (var l in lines)
+        db.OrdOrderPlanHtmvDetails.Add(new OrdOrderPlanHtmvDetail { OrgId = t.OrgId, OrderPlanNo = no,
+            SpecCode = l.SpecCode.Trim().ToUpperInvariant(), ModelCode = l.ModelCode,
+            QtyBOApp = l.QtyBOApp, QtySalesOrderP = l.QtySalesOrderP, QtyStock = l.QtyStock,
+            QtyBOHTMV = l.QtyBOHTMV, QtyStockDealer = l.QtyStockDealer, QtySalesOrderPlan = l.QtySalesOrderPlan,
+            QtySalesOrder = l.QtySalesOrder, QtyHTMVApp = l.QtyHTMVApp, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { orderPlanNo = no, periodDate = dto.PeriodDate ?? now, flagIsMonth = flag, specs = lines.Count });
+}).RequireAuthorization();
+
+// Sửa số liệu kế hoạch. Nguồn `_Update` KHÔNG xoá-ghi lại mà chỉ update từng dòng
+// (trong cả hàm không có `delete`/`insert` nào) và ghi cặp UpdateDTime/UpdateBy ở bảng đầu.
+app.MapPut("/api/orderplanhtmv/{no}", async (string no, OrderPlanHtmvUpdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.OrdOrderPlanHtmvs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPlanNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var rows = await db.OrdOrderPlanHtmvDetails.Where(x => x.OrgId == t.OrgId && x.OrderPlanNo == no).ToListAsync();
+    int changed = 0; var unknown = new List<string>();
+    foreach (var l in dto.Lines ?? new())
+    {
+        var spec = (l.SpecCode ?? "").Trim().ToUpperInvariant();
+        var row = rows.FirstOrDefault(x => x.SpecCode == spec);
+        if (row is null) { unknown.Add(spec); continue; }   // nguồn chỉ SỬA, không thêm dòng mới
+        row.ModelCode = l.ModelCode ?? row.ModelCode;
+        row.QtyBOApp = l.QtyBOApp; row.QtySalesOrderP = l.QtySalesOrderP; row.QtyStock = l.QtyStock;
+        row.QtyBOHTMV = l.QtyBOHTMV; row.QtyStockDealer = l.QtyStockDealer;
+        row.QtySalesOrderPlan = l.QtySalesOrderPlan; row.QtySalesOrder = l.QtySalesOrder;
+        row.QtyHTMVApp = l.QtyHTMVApp; row.LogLUDateTime = now; row.LogLUBy = who; changed++;
+    }
+    h.UpdateDTime = now; h.UpdateBy = who; h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.OrderPlanNo, changed, unknownSpecs = unknown });
+}).RequireAuthorization();
+
+// ===== #144: BỘ QUY ĐỔI SPEC MỚI ATMV (Mst_ATMV_NewSpec + Dtl) =====
+// Nguồn: DMS40/0.01.Master.cs (csproj 122) — _Add (512) / _Update (965). Chỉ có ở WS 64-bit.
+app.MapGet("/api/atmvnewspecs", async (AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var q = db.MstAtmvNewSpecs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.ATMVNSCode, x.CreateDTime, x.CreateBy, x.FlagActive, x.LogLUDateTime, x.LogLUBy,
+        specs = db.MstAtmvNewSpecDtls.Count(d => d.OrgId == t.OrgId && d.ATMVNSCode == x.ATMVNSCode) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/atmvnewspecs/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var h = await db.MstAtmvNewSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ATMVNSCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    var lines = await db.MstAtmvNewSpecDtls.Where(x => x.OrgId == t.OrgId && x.ATMVNSCode == code)
+        .OrderBy(x => x.SpecCode).Select(x => new { x.SpecCode, x.EffDateStart, x.EffDateEnd, x.QtyMap,
+            x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.ATMVNSCode, h.CreateDTime, h.CreateBy, h.FlagActive,
+        h.LogLUDateTime, h.LogLUBy }, count = lines.Count, lines });
+}).RequireAuthorization();
+
+app.MapPost("/api/atmvnewspecs", async (AtmvNewSpecDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.ATMVNSCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã bộ quy đổi." });
+    // guard nguồn: Mst_ATMV_NewSpec_CheckDB(..., TConst.Flag.Inactive) ⇒ mã phải CHƯA tồn tại.
+    if (await db.MstAtmvNewSpecs.AnyAsync(x => x.OrgId == t.OrgId && x.ATMVNSCode == code))
+        return Results.Conflict(new { error = $"Mã bộ quy đổi {code} đã tồn tại." });
+    var lines = (dto.Lines ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.SpecCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Bộ quy đổi phải có ít nhất 1 spec." });
+    // guard nguồn (0.01.Master.cs:177…): CẢ HAI mốc hiệu lực đều BẮT BUỘC.
+    var bad = lines.FirstOrDefault(x => x.EffDateStart is null || x.EffDateEnd is null);
+    if (bad is not null) return Results.BadRequest(new { error = $"Spec {bad.SpecCode}: phải có cả ngày bắt đầu và ngày kết thúc hiệu lực." });
+    var rev = lines.FirstOrDefault(x => x.EffDateEnd < x.EffDateStart);
+    if (rev is not null) return Results.BadRequest(new { error = $"Spec {rev.SpecCode}: ngày kết thúc nhỏ hơn ngày bắt đầu." });
+    var dupe = lines.GroupBy(x => x.SpecCode.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe is not null) return Results.BadRequest(new { error = $"Spec {dupe.Key} bị trùng." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.MstAtmvNewSpecs.Add(new MstAtmvNewSpec { OrgId = t.OrgId, ATMVNSCode = code, CreateDTime = now,
+        CreateBy = who, FlagActive = "1", LogLUDateTime = now, LogLUBy = who });   // nguồn tạo luôn ở "1"
+    foreach (var l in lines)
+        db.MstAtmvNewSpecDtls.Add(new MstAtmvNewSpecDtl { OrgId = t.OrgId, ATMVNSCode = code,
+            SpecCode = l.SpecCode.Trim().ToUpperInvariant(),
+            // nguồn chuẩn hoá bằng StdDate ⇒ lưu NGÀY, bỏ phần giờ.
+            EffDateStart = l.EffDateStart!.Value.Date, EffDateEnd = l.EffDateEnd!.Value.Date,
+            QtyMap = l.QtyMap, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, specs = lines.Count, flagActive = "1" });
+}).RequireAuthorization();
+
+app.MapPost("/api/atmvnewspecs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var h = await db.MstAtmvNewSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ATMVNSCode == code);
+    if (h is null) return Results.NotFound(new { code });
+    h.FlagActive = h.FlagActive == "1" ? "0" : "1";
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.ATMVNSCode, h.FlagActive });
+}).RequireAuthorization();
+
 // #143: chi tiết một lô — trả CẢ BỐN nhánh người nhận/đính kèm của nguồn.
 app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
@@ -26931,6 +27077,13 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #144: DTO kế hoạch đặt hàng nhà máy + quy đổi spec ATMV ----
+record OrderPlanHtmvLineDto(string SpecCode, string? ModelCode, decimal QtyBOApp, decimal QtySalesOrderP, decimal QtyStock, decimal QtyBOHTMV, decimal QtyStockDealer, decimal QtySalesOrderPlan, decimal QtySalesOrder, decimal QtyHTMVApp);
+record OrderPlanHtmvDto(DateTime? PeriodDate, string? FlagIsMonth, List<OrderPlanHtmvLineDto>? Lines);
+record OrderPlanHtmvUpdDto(List<OrderPlanHtmvLineDto>? Lines);
+record AtmvNewSpecLineDto(string SpecCode, DateTime? EffDateStart, DateTime? EffDateEnd, decimal QtyMap);
+record AtmvNewSpecDto(string ATMVNSCode, List<AtmvNewSpecLineDto>? Lines);
+
 // ---- #141: DTO chốt tháng nhân sự bán hàng ----
 record SmOfMonthDtlDto(string SMCode, string? SMName, string? SMGender, DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode, string? QualificationCode, string? SMSpecialized, decimal SMYearExperence, DateTime? SMStartDate, DateTime? SMEndDate, string? DepartmentCode, string? SMPosition, string? SMType, string? CertificateCode, string? SMFlagActive, string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? SMStatus, decimal DaysOfService, string? ListDealerHyundai, DateTime? EffEndCertificate, string? AccountHTA, string? BDHStatus, DateTime? ChallengeStartDate, DateTime? ChallengeEndDate, string? QualityRank, string? SMHyundaiCode, string? IdentityCardNo, string? UpdateStatusBy, DateTime? UpdateStatusDtime, decimal ViolateNumber, string? ViolateTypeId, string? ViolateTypeName, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? Remark);
 record SmOfMonthDto(string DealerCode, DateTime HRMonth, List<SmOfMonthDtlDto>? Details);

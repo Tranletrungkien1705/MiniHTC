@@ -61,7 +61,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<VatHtcInvoiceDeviceDetail> VatHtcInvoiceDeviceDetails => Set<VatHtcInvoiceDeviceDetail>();
     public DbSet<DlsDealAttachFile> DlsDealAttachFiles => Set<DlsDealAttachFile>();
     public DbSet<PmtGuaranteeAttachFile> PmtGuaranteeAttachFiles => Set<PmtGuaranteeAttachFile>();
-            public DbSet<HrSalesManOfMonth> HrSalesManOfMonths => Set<HrSalesManOfMonth>();
+            public DbSet<OrdOrderPlanHtmv> OrdOrderPlanHtmvs => Set<OrdOrderPlanHtmv>();
+    public DbSet<OrdOrderPlanHtmvDetail> OrdOrderPlanHtmvDetails => Set<OrdOrderPlanHtmvDetail>();
+    public DbSet<MstAtmvNewSpec> MstAtmvNewSpecs => Set<MstAtmvNewSpec>();
+    public DbSet<MstAtmvNewSpecDtl> MstAtmvNewSpecDtls => Set<MstAtmvNewSpecDtl>();
+    public DbSet<HrSalesManOfMonth> HrSalesManOfMonths => Set<HrSalesManOfMonth>();
     public DbSet<HrSalesManOfMonthDtl> HrSalesManOfMonthDtls => Set<HrSalesManOfMonthDtl>();
     public DbSet<PmtPaymentGps> PmtPaymentGpses => Set<PmtPaymentGps>();
     public DbSet<PmtPaymentGpsDetail> PmtPaymentGpsDetails => Set<PmtPaymentGpsDetail>();

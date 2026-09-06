@@ -6430,6 +6430,109 @@ public sealed class PmtGuaranteeAttachFile
 // chứng chỉ, HTA, BĐH, xếp loại) và **20260316** (thêm dấu vết sửa trạng thái + chế tài vi phạm).
 
 /// <summary>Chốt tháng nhân sự bán hàng theo ĐẠI LÝ (`HR_SalesManOfMonth`).</summary>
+// ========== KẾ HOẠCH ĐẶT HÀNG GỬI NHÀ MÁY + QUY ĐỔI SPEC MỚI (#144) ==========
+// Nguồn: DMS40/zTemp.0.30.Order.cs (csproj <Compile> **128**) — `Ord_OrderPlan_HTMV_Create` (9461)
+//        DMS40/0.01.Master.cs      (csproj <Compile> **122**) — `Mst_ATMV_NewSpec_Add` (512)
+// md5 2d05c7d2… / c690f1f1… — khớp nguyên file trên CẢ HAI máy.
+//
+// 🔴 TWIN: cả HAI cụm **chỉ có ở WS 64-bit** (`TERP.WSHTC.64/WSHTC.asmx.cs`); WS 32-bit
+//    (`TERP.WSHTC/App_Code/WSHTC.cs` — mã thật của bit 32 nằm trong **App_Code**, không ở gốc project)
+//    KHÔNG có hàm nào ⇒ ca "chỉ 64-bit" thứ **BẢY**.
+// ⚠️ Bẫy phụ đã tránh: hai file `TERP.WSHTC.64/BK.WSHTC/WSHTC.asmx.20210208.cs` và
+//    `WSHTC.asmx - Copy.cs` cũng chứa các hàm này nhưng KHÔNG có trong csproj ⇒ bản sao lưu.
+
+/// <summary>
+/// Kế hoạch đặt hàng gửi nhà máy HTMV (`Ord_OrderPlan_HTMV`) — bảng đầu.
+/// 🔴 Nguồn **TỰ SINH** kế hoạch: `Ord_OrderPlan_HTMV_Create` chỉ nhận đúng một tham số nghiệp vụ
+/// (`strFlagIsMonth`) rồi tính toàn bộ số liệu từ BO / tồn kho / đơn hàng và ghi cả header lẫn chi tiết.
+/// Số phiếu lấy từ bộ sinh mã `TConst.SequenceTypeDMS40.ORPNo`.
+/// </summary>
+public sealed class OrdOrderPlanHtmv
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderPlanNo { get; set; } = "";
+    /// <summary>Kỳ kế hoạch (`PeriodDate`).</summary>
+    public DateTime? PeriodDate { get; set; }
+    /// <summary>
+    /// Cờ kỳ tính theo THÁNG (`FlagIsMonth`) — "1"/"0" (luật `dmssales-flag-values-1-0-not-yn`).
+    /// Đây là **tham số nghiệp vụ DUY NHẤT** của hàm sinh kế hoạch.
+    /// </summary>
+    public string? FlagIsMonth { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    /// <summary>Mốc sửa gần nhất (`UpdateDTime`/`UpdateBy`) — `_Update` chỉ sửa số, không xoá-ghi lại.</summary>
+    public DateTime? UpdateDTime { get; set; }
+    public string? UpdateBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Dòng kế hoạch theo SPEC (`Ord_OrderPlan_HTMVDetail`) — **8 loại số lượng** đặt cạnh nhau
+/// để người duyệt so sánh trước khi chốt số gửi nhà máy.
+/// </summary>
+public sealed class OrdOrderPlanHtmvDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderPlanNo { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    /// <summary>Số lượng back-order ĐÃ DUYỆT (`QtyBOApp`).</summary>
+    public decimal QtyBOApp { get; set; }
+    /// <summary>Số lượng đơn hàng đang chờ (`QtySalesOrderP`).</summary>
+    public decimal QtySalesOrderP { get; set; }
+    /// <summary>Tồn kho HTC (`QtyStock`).</summary>
+    public decimal QtyStock { get; set; }
+    /// <summary>Back-order phía nhà máy (`QtyBOHTMV`).</summary>
+    public decimal QtyBOHTMV { get; set; }
+    /// <summary>Tồn kho ĐẠI LÝ (`QtyStockDealer`) — tách riêng khỏi tồn HTC.</summary>
+    public decimal QtyStockDealer { get; set; }
+    public decimal QtySalesOrderPlan { get; set; }
+    public decimal QtySalesOrder { get; set; }
+    /// <summary>Số lượng nhà máy DUYỆT (`QtyHTMVApp`) — con số chốt cuối cùng.</summary>
+    public decimal QtyHTMVApp { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Bộ quy đổi spec mới ATMV (`Mst_ATMV_NewSpec`) — bảng đầu: chỉ mã + cờ hiệu lực.
+/// Nguồn khi thêm mới bắt buộc mã **CHƯA tồn tại** (`CheckDB(…, Flag.Inactive)`) và đặt `FlagActive = "1"`.
+/// </summary>
+public sealed class MstAtmvNewSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ATMVNSCode { get; set; } = "";
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    /// <summary>Cờ hiệu lực (`FlagActive`) — "1"/"0"; nguồn tạo luôn ở "1".</summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Dòng quy đổi (`Mst_ATMV_NewSpecDtl`): mỗi spec có **khoảng hiệu lực riêng** + số lượng quy đổi.
+/// 🔴 Nguồn bắt buộc CẢ HAI mốc `EffDateStart`/`EffDateEnd` không được rỗng (0.01.Master.cs:177…),
+/// và chuẩn hoá bằng `StdDate` — tức lưu **NGÀY**, không kèm giờ.
+/// </summary>
+public sealed class MstAtmvNewSpecDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ATMVNSCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    /// <summary>Số lượng quy đổi (`QtyMap`).</summary>
+    public decimal QtyMap { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class HrSalesManOfMonth
 {
     public long Id { get; set; }
