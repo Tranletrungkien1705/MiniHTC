@@ -142,6 +142,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();
     public DbSet<InsuranceFee> InsuranceFees => Set<InsuranceFee>();
     public DbSet<Quota> Quotas => Set<Quota>();
+    public DbSet<SysSessionHist> SysSessionHists => Set<SysSessionHist>();
+    public DbSet<SysValidateId> SysValidateIds => Set<SysValidateId>();
+    public DbSet<OsMBankLog> OsMBankLogs => Set<OsMBankLog>();
     public DbSet<OrdSalesOrderSupportLog> OrdSalesOrderSupportLogs => Set<OrdSalesOrderSupportLog>();
     public DbSet<OrdSalesOrderDetailSupportLog> OrdSalesOrderDetailSupportLogs => Set<OrdSalesOrderDetailSupportLog>();
     public DbSet<MstSettingRunJob> MstSettingRunJobs => Set<MstSettingRunJob>();
@@ -533,6 +536,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DriveTest> DriveTests => Set<DriveTest>();
     protected override void OnModelCreating(ModelBuilder b)
     {
+        // #149: Sys_ValidateId — nguồn dùng CHÍNH khoá chính làm khoá chống trùng lệnh.
+        b.Entity<SysValidateId>().HasKey(x => new { x.OrgId, x.ValidateId });
         b.Entity<Org>().HasIndex(x => x.ApiKey).IsUnique();
         b.Entity<Area>().HasIndex(x => new { x.OrgId, x.AreaCode }).IsUnique();
         b.Entity<MasterItem>().HasIndex(x => new { x.OrgId, x.Category, x.Code }).IsUnique();

@@ -8518,6 +8518,85 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #149: LỊCH SỬ PHIÊN (Sys_SessionHist) =====
+// Nguồn: BizHTC.System.cs (csproj 133) — Sys_SessionHist_AddX (2269). Cả hai WS đều gọi _Add_New20181115.
+app.MapGet("/api/sessionhists", async (AppDbContext db, ITenantContext t, string? userCode, string? service, string? fn) =>
+{
+    var q = db.SysSessionHists.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(userCode)) q = q.Where(x => x.UserCode == userCode);
+    if (!string.IsNullOrWhiteSpace(service)) q = q.Where(x => x.ServiceCode == service);
+    if (!string.IsNullOrWhiteSpace(fn)) q = q.Where(x => x.FunctionName == fn);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.SessionId, x.RootSvCode, x.RootUserCode, x.ServiceCode, x.UserCode, x.FunctionName, x.LanguageCode,
+        x.DateTimeLogin, x.InfoInternal, x.InfoExternal, x.CreatedDateTime, x.CreatedBy,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sessionhists", async (SessionHistDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var sid = (dto.SessionId ?? "").Trim();
+    if (sid.Length == 0) return Results.BadRequest(new { error = "Thiếu SessionId (nguồn ghi chú: chính là Tid của lượt gọi)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.SysSessionHists.Add(new SysSessionHist { OrgId = t.OrgId, SessionId = sid,
+        RootSvCode = dto.RootSvCode, RootUserCode = dto.RootUserCode, ServiceCode = dto.ServiceCode,
+        UserCode = dto.UserCode, FunctionName = dto.FunctionName, LanguageCode = dto.LanguageCode,
+        DateTimeLogin = dto.DateTimeLogin ?? now, InfoInternal = dto.InfoInternal, InfoExternal = dto.InfoExternal,
+        CreatedDateTime = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { sessionId = sid, dto.ServiceCode, dto.UserCode });
+}).RequireAuthorization();
+
+// ===== #149: CHỐNG TRÙNG LỆNH (Sys_ValidateId) =====
+// 🔴 Port ĐÚNG CƠ CHẾ của nguồn: `insert into Sys_ValidateId values (@Id);` — KHÔNG select trước.
+//    Trùng Id ⇒ vi phạm KHOÁ CHÍNH ⇒ nguồn `catch` và ném mã lỗi "Id không hợp lệ".
+//    Ở đây trả **409** thay vì 200, để client phân biệt "đã xử lý rồi" với "vừa chiếm được".
+//    Chủ ý dùng chính ràng buộc khoá làm khoá chống đua — KHÔNG đổi thành "kiểm tra rồi ghi"
+//    (mẫu đó hở race condition khi hai lượt gọi vào cùng lúc).
+// ⚠️ Nguồn ghi vào CẢ HAI DB (myUtils_ValidateId + _WH); MiniHTC một DB nên chỉ ghi một lần —
+//    ghi nhận khác biệt, không phải thiếu sót.
+app.MapPost("/api/validateids", async (ValidateIdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var id = (dto.Id ?? "").Trim();
+    if (id.Length == 0) return Results.BadRequest(new { error = "Thiếu Id cần chiếm." });
+    db.SysValidateIds.Add(new SysValidateId { OrgId = t.OrgId, ValidateId = id });
+    try { await db.SaveChangesAsync(); }
+    catch (DbUpdateException)
+    {
+        db.ChangeTracker.Clear();
+        return Results.Conflict(new { id, claimed = false, error = "Id đã được dùng — lệnh này đã xử lý trước đó." });
+    }
+    return Results.Ok(new { id, claimed = true });
+}).RequireAuthorization();
+
+app.MapGet("/api/validateids/{id}", async (string id, AppDbContext db, ITenantContext t) =>
+{
+    id = id.Trim();
+    var used = await db.SysValidateIds.AnyAsync(x => x.OrgId == t.OrgId && x.ValidateId == id);
+    return Results.Ok(new { id, used });
+}).RequireAuthorization();
+
+// ===== #149: LOG GỌI API NGÂN HÀNG (OS_MBankLog) =====
+// Nguồn ghi từ CẢ HAI tích hợp: BizHTC.MBBank.cs:4539 và BizHTC.VietinBank.cs:499.
+app.MapGet("/api/mbanklogs", async (AppDbContext db, ITenantContext t, string? fn, string? bulk) =>
+{
+    var q = db.OsMBankLogs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(fn)) q = q.Where(x => x.Functionname == fn);
+    if (!string.IsNullOrWhiteSpace(bulk)) q = q.Where(x => x.BulkInfo != null && x.BulkInfo.Contains(bulk!));
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.BulkInfo, x.Functionname, x.RQ, x.RS, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mbanklogs", async (MBankLogDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.OsMBankLogs.Add(new OsMBankLog { OrgId = t.OrgId, BulkInfo = dto.BulkInfo,
+        Functionname = dto.Functionname, RQ = dto.RQ, RS = dto.RS, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { logged = true, dto.Functionname });
+}).RequireAuthorization();
+
 // ===== #148: LOG SỬA MỐC NGÀY CỦA ĐƠN HÀNG (Ord_SalesOrder_SupportLog + …Detail_SupportLog) =====
 // Nguồn: DataWH/Biz.HTC.WH.My.cs (csproj 273) — Ord_SalesOrder_UpdateMulti (19901), ghi log tại 20466/20538.
 // 🔴 Chỉ có ở WS 64-bit. Mô hình: cặp Old/New cho từng mốc ngày — bảng log lưu SONG SONG giá trị
@@ -27434,6 +27513,11 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #149: DTO hạ tầng phiên / chống trùng / log ngân hàng ----
+record SessionHistDto(string SessionId, string? RootSvCode, string? RootUserCode, string? ServiceCode, string? UserCode, string? FunctionName, string? LanguageCode, DateTime? DateTimeLogin, string? InfoInternal, string? InfoExternal);
+record ValidateIdDto(string Id);
+record MBankLogDto(string? BulkInfo, string? Functionname, string? RQ, string? RS);
+
 // ---- #148: DTO log sửa mốc ngày đơn hàng + cấu hình chạy job ----
 record SoSupportLineDto(string? ModelCode, string? SpecCode, string? ColorCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
 record SoSupportUpdDto(string SOCode, string? DealerCode, DateTime? ApprovedDate1, DateTime? ApprovedDate2, List<SoSupportLineDto>? Lines);

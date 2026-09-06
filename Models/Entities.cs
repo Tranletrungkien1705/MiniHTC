@@ -546,6 +546,74 @@ public sealed class Quota
 /// Log sửa mốc ngày ở ĐẦU đơn hàng (`Ord_SalesOrder_SupportLog`).
 /// Chụp cặp Old/New của **hai mốc duyệt** `ApprovedDate1`/`ApprovedDate2`.
 /// </summary>
+// ========== HẠ TẦNG PHIÊN · CHỐNG TRÙNG LỆNH · LOG TÍCH HỢP NGÂN HÀNG (#149) ==========
+// Nguồn: BizHTC.System.cs (csproj **133**, md5 b605132a… khớp 2 máy) — `Sys_SessionHist_AddX` (2269)
+//        BizHTC.Common.cs (csproj **109**) — `myUtils_ValidateId` / `_WH`
+//        BankIntergration/BizHTC.MBBank.cs (csproj 310, md5 ec9f1442… khớp 2 máy)
+// ⚠️ BƯỚC 3B: `BizHTC.Common.cs` **md5 KHÁC nhau giữa laptop và máy 150** (46c01560 / 68adf4ce,
+//    3888 vs 3905 dòng) — đã đối chiếu riêng vùng `Sys_ValidateId`: **nội dung khớp**, chỉ lệch số dòng
+//    (laptop 534/559, máy 150 551/576) và cùng modifier `public`/`private`.
+// TWIN: `_biz.Sys_SessionHist_Add_New20181115` được **CẢ HAI** WS gọi ⇒ không lệch.
+
+/// <summary>Lịch sử phiên đăng nhập dịch vụ (`Sys_SessionHist`).</summary>
+public sealed class SysSessionHist
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Mã phiên — nguồn ghi chú thẳng trên cột: `-- Tid`, tức **SessionId CHÍNH LÀ Tid** của lượt gọi.</summary>
+    public string SessionId { get; set; } = "";
+    /// <summary>Dịch vụ/người dùng GỐC đứng tên phiên (`RootSvCode`/`RootUserCode`) — khác cặp gọi trực tiếp bên dưới.</summary>
+    public string? RootSvCode { get; set; }
+    public string? RootUserCode { get; set; }
+    public string? ServiceCode { get; set; }
+    public string? UserCode { get; set; }
+    public string? FunctionName { get; set; }
+    public string? LanguageCode { get; set; }
+    public DateTime? DateTimeLogin { get; set; }
+    /// <summary>Thông tin phía TRONG hệ (`InfoInternal`) và phía NGOÀI (`InfoExternal`) — tách đôi có chủ ý.</summary>
+    public string? InfoInternal { get; set; }
+    public string? InfoExternal { get; set; }
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Bảng CHỐNG TRÙNG LỆNH (`Sys_ValidateId`) — **đúng MỘT cột**.
+/// 🔴 Cơ chế của nguồn rất đáng chú ý: `insert into Sys_ValidateId values (@Id);` **không** SELECT trước.
+/// Nếu Id đã tồn tại thì **ràng buộc khoá chính ném lỗi**, và `catch` biến nó thành mã lỗi "Id không hợp lệ"
+/// (BizHTC.Common.cs — `myUtils_ValidateId`). Tức là dùng **chính khoá chính làm khoá chống đua**,
+/// không dùng "kiểm tra rồi ghi" (vốn hở race condition).
+/// ⚠️ Nguồn ghi vào **CẢ HAI** DB: `myUtils_ValidateId` (Main) và `myUtils_ValidateId_WH` (Warehouse).
+/// </summary>
+public sealed class SysValidateId
+{
+    /// <summary>Chính là Id chống trùng — nguồn dùng nó làm KHOÁ, không có cột phụ nào khác.</summary>
+    public string ValidateId { get; set; } = "";
+    public Guid OrgId { get; set; }
+}
+
+/// <summary>
+/// Log gọi API ngân hàng (`OS_MBankLog`) — ghi từ cả MB Bank và VietinBank.
+/// Lưu nguyên văn request/response để đối soát khi ngân hàng báo lệch.
+/// </summary>
+public sealed class OsMBankLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Thông tin lô/ngữ cảnh gọi (`BulkInfo`).</summary>
+    public string? BulkInfo { get; set; }
+    /// <summary>⚠️ Tên cột nguồn viết **thường chữ "n"**: `Functionname` (không phải "FunctionName") — giữ 1:1.</summary>
+    public string? Functionname { get; set; }
+    /// <summary>Nguyên văn request gửi đi (`RQ`).</summary>
+    public string? RQ { get; set; }
+    /// <summary>Nguyên văn response nhận về (`RS`).</summary>
+    public string? RS { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class OrdSalesOrderSupportLog
 {
     public long Id { get; set; }
