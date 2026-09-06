@@ -2508,7 +2508,10 @@ public sealed class TstExchangeUnit
     public DateTime UpdatedAt { get; set; }
 }
 
-/// <summary>Master phụ tùng TST (TST_Mst_Part) — port 1:1 FrmTST_Mst_Part (TCMotor DMSCarSv). Mã + tên HTC/Việt/Anh + đơn vị + VAT + giá TST + nhóm/loại.</summary>
+/// <summary>Master phụ tùng TST (TST_Mst_Part) — port 1:1 FrmTST_Mst_Part (TCMotor DMSCarSv).
+/// Mã + tên HTC/Việt/Anh + đơn vị + VAT + giá TST + nhóm/loại.
+/// #212: đồng bộ cả bảng từ hệ TST/Bravo qua `TST_SavePartAll` (BizCarSv.Bravo.cs:79) — xem
+/// `POST /api/tstparts/sync-all`. Lệnh đó chỉ ghi `TSTPartCode` · `TSTPrice` · `LUDTime`.</summary>
 public sealed class TstPart
 {
     public long Id { get; set; }
@@ -2523,10 +2526,12 @@ public sealed class TstPart
     public string? PartGroup { get; set; }
     public string? PartType { get; set; }
     public string FlagActive { get; set; } = "1";
-    public DateTime UpdatedAt { get; set; }
+    /// <summary>#212 parity: nguồn ghi mốc đồng bộ vào `LUDTime` (không phải `UpdatedAt` của port).</summary>
+    public DateTime? LUDTime { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Hợp đồng bảo hiểm dịch vụ (Ser_InsuranceContract) — port 1:1 FrmInsuranceContractCreate/Search (TCMotor DMSCarSv/Admin). Theo mã HĐ (auto): số HĐ + loại thanh toán + hiệu lực + hãng BH (InsNo→SerInsurance) + hạn mức.</summary>
+/// <summary>Thư viện kỹ thuật (Ser_InsuranceContract) — port 1:1 FrmInsuranceContractCreate/Search (TCMotor DMSCarSv/Admin). Theo mã HĐ (auto): số HĐ + loại thanh toán + hiệu lực + hãng BH (InsNo→SerInsurance) + hạn mức.</summary>
 public sealed class SerInsuranceContract
 {
     public long Id { get; set; }

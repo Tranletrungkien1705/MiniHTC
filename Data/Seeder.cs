@@ -845,6 +845,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #212 parity TST_SavePartAll: moc dong bo tu he TST/Bravo
+        "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"LUDTime\" timestamp",
         // #211 parity Ser_CustomerCare72h: 5 cot ho so + Survey1..28
         "ALTER TABLE public.\"CustomerCareSurveys\" ADD COLUMN IF NOT EXISTS \"CusCareType\" text",
         "ALTER TABLE public.\"CustomerCareSurveys\" ADD COLUMN IF NOT EXISTS \"OrderID\" text",

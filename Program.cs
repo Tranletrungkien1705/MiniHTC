@@ -13006,7 +13006,7 @@ app.MapGet("/api/tstparts", async (AppDbContext db, ITenantContext t, string? q,
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(group)) qry = qry.Where(x => x.PartGroup == group);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TSTPartCode.Contains(q!) || x.VieName!.Contains(q!) || x.VieNameHTC!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieNameHTC, x.VieName, x.EngName, x.Unit, x.VAT, x.TSTPrice, x.PartGroup, x.PartType, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieNameHTC, x.VieName, x.EngName, x.Unit, x.VAT, x.TSTPrice, x.PartGroup, x.PartType, x.FlagActive, x.LUDTime }).ToListAsync();   // #212 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -13021,6 +13021,53 @@ app.MapPost("/api/tstparts", async (TstPartDto dto, AppDbContext db, ITenantCont
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.TSTPartCode, row.TSTPrice, row.FlagActive });
+}).RequireAuthorization();
+
+// ===== 🔴 #212 ĐỒNG BỘ TOÀN BỘ PHỤ TÙNG TỪ HỆ TST/BRAVO — `TST_SavePartAll` =====
+// Nguồn: DMSCarSv `V20.2023.Release.V2/TERP.BizCarSv/BizCarSv.Bravo.cs:79` (469 dòng).
+// BƯỚC 3B: md5 CẢ FILE `44509215` (469 dòng) KHỚP 2 máy (laptop `.Release.V2` ≡ máy 150 `.Release`).
+// Màn gốc: `TERP.HTCServiceClient/Views/Bravo/FrmBravo.cs` (95 dòng) — ba nút:
+//   `btnCancel` · `btnGetAll` (gọi `TST_GetAllPart` lấy dữ liệu từ hệ TST) · `BtnUpdateTSTPart` (ghi xuống DB).
+//   ⚠️ Nút thứ ba viết HOA đầu (`Btn...`) nên grep `"private void btn"` bỏ sót — đã ghi thành luật.
+//
+// 🔴 HAI ĐIỂM CỐT TỬ của nguồn:
+//  1. **Guard TOÀN LÔ trước, xoá sau**: duyệt hết mọi dòng, dòng nào `TSTPartCode` rỗng thì ném
+//     `TST_SavePartAll_InvalidTSTPartCode` — kiểm XONG mới tới bước xoá. Một dòng hỏng ⇒ **huỷ cả lô**,
+//     bảng cũ còn nguyên.
+//  2. **REPLACE-ALL, KHÔNG phải upsert**: nguồn `delete t from TST_Mst_Part` (xoá SẠCH bảng) rồi insert lại
+//     toàn bộ. ⇒ mã nào không có trong lô mới sẽ **BIẾN MẤT**. Đây là chủ ý của nguồn, không phải thiếu sót.
+//
+// Nguồn chỉ ghi **3 cột**: `TSTPartCode` · `TSTPrice` · `LUDTime` (các cột tên/đơn vị/nhóm KHÔNG được ghi
+//   ở lệnh này — chúng do màn `FrmTST_Mst_Part` nhập tay, tức `POST /api/tstparts`). Ghi song song `_dbWH` (nợ).
+// ⚠️ Form gốc còn chặn bằng **key cứng** (`strKeyFix` nhập tay trên form) — đó là bảo vệ ở tầng client,
+//   KHÔNG port thành tham số API; API đã có `RequireAuthorization()`.
+app.MapPost("/api/tstparts/sync-all", async (List<TstPartSyncDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    rows ??= new List<TstPartSyncDto>();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Lô đồng bộ rỗng." });
+
+    // (1) guard TOÀN LÔ — kiểm hết trước khi chạm dữ liệu.
+    for (var i = 0; i < rows.Count; i++)
+        if (string.IsNullOrWhiteSpace(rows[i].TSTPartCode))
+            return Results.BadRequest(new { error = "Mã phụ tùng TST không được rỗng — huỷ toàn bộ lô.", rowIndex = i });
+
+    // (2) REPLACE-ALL: xoá sạch rồi ghi lại, đúng như nguồn.
+    var old = await db.TstParts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    db.TstParts.RemoveRange(old);
+
+    var now = DateTime.Now;
+    foreach (var r in rows)
+        db.TstParts.Add(new TstPart
+        {
+            OrgId = t.OrgId,
+            TSTPartCode = r.TSTPartCode!.Trim(),
+            TSTPrice = r.TSTPrice,
+            LUDTime = now
+        });
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = old.Count, inserted = rows.Count, luDTime = now,
+        note = "REPLACE-ALL đúng nguồn: mã không có trong lô mới sẽ biến mất." });
 }).RequireAuthorization();
 
 app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -30644,6 +30691,7 @@ record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, 
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
+record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
