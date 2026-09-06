@@ -4559,6 +4559,70 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// PHIẾU chi phí marketing — phần đầu (`MKT_MarketingFee` — port 1:1 cụm 7 hàm
+/// `MKT_MarketingFeeGet/Create/Update/Finished/Delete/ForceDelete/Approve_New20181115`, 2010.HTC
+/// `TERP.BizHTC/BizHTC.Marketing.cs` dòng 6764 / 6259 / 6582 / 2981 / 7037 / 7235 / 7395).
+/// 🔴 Vòng đời `MKTStatus` (`TConst.Stage`): **"P"** tạo → **"A"** duyệt / **"R"** từ chối → **"F"** kết thúc.
+/// 🔴 **HAI cách xoá khác hẳn nhau:**
+/// · `Delete` chỉ khi phiếu còn **"P"**, và **chặn nếu có dòng chi tiết đã "A"**;
+/// · `ForceDelete` ngược lại — chỉ khi phiếu **đã "A"**, có RBAC `CheckHTCDirect`, và **xoá dây chuyền**
+///   `MKT_MarketingFeeDetailAttach` + `MKT_MarketingFeeDetail` trước rồi mới xoá phần đầu.
+/// (Câu xoá `MKT_MarketingFeeAttach` trong nguồn đang **bị comment** — chưa port, ghi nợ.)
+/// 🔴 `Finished` đòi phiếu đang "A", mọi dòng chi tiết đã chốt, và với mỗi dòng "A": ba cờ hồ sơ của
+/// hoạt động (`FlagDesignImage/FlagActualImage/FlagContract` = "1") thì trạng thái hồ sơ tương ứng phải "A";
+/// riêng **`StatusInvoice` KHÔNG có cờ gate — LUÔN bắt buộc "A"**.
+/// ⚠️ Xem `### C0-bug6` trong sổ nâng cấp: guard "A hoặc R" của `Finished` viết `!= A || != R` (luôn đúng).
+/// </summary>
+public sealed class MktFee
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MKTFeeCode { get; set; } = "";
+    public string MKTFeeName { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime? DateStart { get; set; }
+    public DateTime? DateEnd { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>"P" → "A"/"R" → "F".</summary>
+    public string MKTStatus { get; set; } = "P";
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// DÒNG chi phí marketing (`MKT_MarketingFeeDetail`). Khoá dòng = cặp (`MKTFeeCode`, `MKTActivityCode`) —
+/// nguồn dựng khoá `"|{MKTFeeCode}||{MKTActivityCode}|"` để bắt trùng ngay trong bảng đầu vào.
+/// 🔴 Guard nguồn khi tạo: `Qty` **không null và > 0**, `Price` **không null và > 0.0**, và
+/// `MKTActivityCode` phải là hoạt động **đang Active** (`Mst_MarketingActivity_CheckDB` với Flag.Active).
+/// Bốn cột trạng thái hồ sơ (`StatusDesignImage/ActualImage/Contract/Invoice`) do cụm
+/// `MKT_MarketingFeeDetail*` ghi — **chưa port**, ở đây khai báo sẵn vì `Finished` phải ĐỌC chúng.
+/// </summary>
+public sealed class MktFeeDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MKTFeeCode { get; set; } = "";
+    public string MKTActivityCode { get; set; } = "";
+    public int Qty { get; set; }
+    public decimal Price { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>"P" → "A"/"R" (TConst.Stage).</summary>
+    public string MKTFeeDetailStatus { get; set; } = "P";
+    public string? StatusDesignImage { get; set; }
+    public string? StatusActualImage { get; set; }
+    public string? StatusContract { get; set; }
+    public string? StatusInvoice { get; set; }
+    /// <summary>Tổng tiền HTC hỗ trợ (nguồn viết thiếu chữ p: `TotalHTCSuport`).</summary>
+    public decimal? TotalHTCSuport { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Master **LOẠI hoạt động marketing** (`Mst_MarketingActivityType` — port 1:1 cụm 4 hàm
 /// `Mst_MarketingActivityTypeGet/_Create/_Update/_Delete_New20181115`, 2010.HTC
 /// `TERP.BizHTC/BizHTC.Marketing.cs` dòng 90 / 260 / 416 / 579).
