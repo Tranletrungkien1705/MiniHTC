@@ -21889,7 +21889,8 @@ app.MapGet("/api/dmscancelminutes", async (AppDbContext db, ITenantContext t, st
 {
     var q = db.DmsCancelMinutesSet.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(m => m.DlrCtrNo == dlrCtrNo);
-    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelMinutesNo, m.DlrCtrNo, m.Remark, m.FlagIsDelete, m.CancelMinutesStatus, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CreatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelMinutesNo, m.DlrCtrNo, m.Remark, m.FlagIsDelete, m.CancelMinutesStatus, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CreatedAt,
+        m.FilePath, m.LogLUDateTime, m.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -21917,6 +21918,46 @@ app.MapPost("/api/dmscancelminutes", async (DmsCancelMinutesDto dto, AppDbContex
 //   · `_HTCAppr2`   (8328): Dlr="A", HTC="A1" ⇒ HTC="A", biên bản **"S"**,
 //        **và huỷ luôn HỢP ĐỒNG** (`DMS40_CT_DealerContract.DlrCtrStatus = "C"`) — hiệu ứng LAN SANG BẢNG KHÁC
 //   · `_Reject`     (8779): Dlr="A" ⇒ HTC="R" **và** biên bản "C"
+// ===== #183 SỬA biên bản huỷ HĐ đại lý — `DMS40_DlrCtr_CancelMinutes_Update_New20181115` =====
+// Nguồn: `TERP.BizHTC/DMS40/0.34.Contract.cs:7378` (csproj 125).
+// BƯỚC 3B: md5 CẢ FILE `e2f3680f` KHỚP 2 máy. TWIN: lệnh có ở CẢ HAI bit, cùng bản `_New20181115`.
+// Đã liệt kê ranh giới hàm trước khi đọc: vùng 7378–8700 chứa đúng 5 hàm của cụm.
+//
+// 🔴 Lệnh cuối còn thiếu của cụm `DMS40_DlrCtr_CancelMinutes` (nguồn 7 lệnh; MiniHTC đã có
+//    dlr-approve / dlr-cancel / htc-appr1 / htc-appr2 / reject + POST tạo).
+//
+// 🔴 MÔ-TIP "CẬP NHẬT CÓ CHỌN CỘT" (field-mask) — lần đầu gặp trong hệ:
+//    nguồn nhận tham số `objFt_Cols_Upd` là **chuỗi liệt kê cột được phép sửa**, rồi
+//    `bUpd_FilePath = strFt_Cols_Upd.Contains("DMS40_DlrCtr_CancelMinutes.FilePath".ToUpper())`.
+//    Chỉ cột nào **được liệt kê** mới vào `alColumnEffective` và mới được ghi.
+//    ⇒ Không phải "sửa hết những gì client gửi": client phải **khai báo trước** cột định sửa.
+//    Hiện nguồn chỉ hỗ trợ đúng MỘT cột: `FilePath`.
+//
+// 🔴 GUARD PHỤ THEO CỘT: `DlrSignCcMnStatus = Approved` **chỉ kiểm KHI có sửa `FilePath`**
+//    (nằm trong `if (bUpd_FilePath)`), không phải guard chung của lệnh. Nếu mask rỗng thì lệnh
+//    chỉ đụng `LogLUDateTime`/`LogLUBy` và không cần đại lý đã ký.
+app.MapPost("/api/dmscancelminutes/{no}/update", async (string no, CancelMinutesUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var m = await db.DmsCancelMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CancelMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    // `strFt_Cols_Upd` — mask cột, so khớp KHÔNG phân biệt hoa thường đúng như nguồn (`.ToUpper()`).
+    var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
+    var updFilePath = mask.Contains("DMS40_DLRCTR_CANCELMINUTES.FILEPATH");
+
+    if (updFilePath && m.DlrSignCcMnStatus != "A")
+        return Results.BadRequest(new { error = $"Đại lý đang ở '{m.DlrSignCcMnStatus}' — chỉ sửa file khi đại lý đã ký (A)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (updFilePath) m.FilePath = (dto.FilePath ?? "").Trim();
+    // Hai cột nhật ký LUÔN được ghi, kể cả khi mask rỗng.
+    m.LogLUDateTime = now; m.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.CancelMinutesNo, updatedFilePath = updFilePath, m.FilePath, m.LogLUDateTime, m.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/dmscancelminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
     if (action is not ("dlr-approve" or "dlr-cancel" or "htc-appr1" or "htc-appr2" or "reject"))
@@ -29857,6 +29898,7 @@ record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 record DmsHtcApproveDto(int Level = 1, bool Reject = false, string? Remark = null, string? FilePath = null);
 record DmsDlrApproveDto(string? Remark = null, string? FilePath = null, bool SendMail = false);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
+record CancelMinutesUpdateDto(string? FtColsUpd, string? FilePath);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record CancelBankMDActionDto(string? RemarkDlr = null, bool SendMail = false);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);

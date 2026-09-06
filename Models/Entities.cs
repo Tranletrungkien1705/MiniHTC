@@ -8861,6 +8861,14 @@ public sealed class DmsCancelMinutes
     /// </summary>
     public string HTCSignCcMnStatus { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #183 parity `DMS40_DlrCtr_CancelMinutes_Update_New20181115` (DMS40/0.34.Contract.cs:7378) =====
+    /// <summary>Đường dẫn file biên bản (`FilePath`) — cột DUY NHẤT mà lệnh `_Update` cho phép sửa,
+    /// và chỉ khi client khai báo nó trong mask `Ft_Cols_Upd`.</summary>
+    public string? FilePath { get; set; }
+    /// <summary>Nhật ký sửa cuối — `_Update` LUÔN ghi cặp này, kể cả khi mask rỗng.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hủy NH phát hành bảo lãnh MD của HĐ đại lý DMS40 (DMS40_DlrCtr_CancelBankMD) — port 1:1 FrmDMS40_DlrCtr_CancelBankMD (2010.HTC/Sales/DMS40).</summary>

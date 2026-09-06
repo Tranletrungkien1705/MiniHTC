@@ -845,6 +845,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #183 parity DMS40_DlrCtr_CancelMinutes_Update_New20181115
+        "ALTER TABLE public.\"DmsCancelMinutesSet\" ADD COLUMN IF NOT EXISTS \"FilePath\" text",
+        "ALTER TABLE public.\"DmsCancelMinutesSet\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"DmsCancelMinutesSet\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #182 parity cum DMS40_DlrCtr_CancelBankMD_*
         "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"CancelBankMDStatus\" text NOT NULL DEFAULT 'P'",
         "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"FinishDTime\" timestamp",
