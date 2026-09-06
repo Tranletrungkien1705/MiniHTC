@@ -32598,18 +32598,57 @@ app.MapPost("/api/orderparts/{no}/lines/{partCode}/status", async (
 }).RequireAuthorization();
 
 // ===== Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo) =====
+// ===== 🔴 #316 SỐ ĐIỆN THOẠI HIỂN THỊ: `isnull(Tel, Mobile)` — port cũ THIẾU =====
+// Nguồn dùng luật này ở **34 chỗ** trên 6 file (`Customer` · `Debit` · `Inventory.Quote` ·
+//   `Inventory.StockOut` · `Service.Report` · `WH`), alias đủ kiểu: `CusPhone` · `Phone` · `phone` ·
+//   `cusphone` · `CusTel` — và **KHÔNG có lấy một chỗ nào theo chiều ngược** (`isnull(Mobile, Tel)`).
+//   ⇒ Đây là luật **thống nhất toàn hệ**: ĐIỆN THOẠI BÀN đứng trước, DI ĐỘNG là dự phòng.
+//   Port cũ trả `Mobile` và `Tel` thành hai cột rời, không có cột "số để gọi" ⇒ client tự chọn, dễ chọn
+//   ngược với WinForm.
+//
+// ⚠️ BIẾN THỂ **BA CẤP** ở 4 chỗ (`Appointment.cs:1496/1691` · `TVO.cs:958` · `WH.cs:3227`):
+//   `isnull(cus.Tel, isnull(cus.mobile, cus.contTel))` — thêm ĐT người liên hệ làm cấp 3.
+//
+// 🔴 KHÔNG ÁP DỤNG CHO PAYLOAD ĐỐI TÁC — luật ở đó KHÁC HẲN, đã kiểm:
+//   `ZTemp.cs:15666`  : `Isnull(sc.Tel, '')`  ⇒ **chỉ Tel**, hết thì CHUỖI RỖNG, không rơi sang Mobile.
+//   `Inventory.StockIn.cs:8960/9436` và `StockOut.cs:18959/19635` : `'' CustomerPhoneNo` ⇒ **hằng rỗng**,
+//     payload xuất kho **không gửi số điện thoại** chút nào.
+//   ⇒ Ba luật khác nhau cho cùng khái niệm "số điện thoại khách". Đừng gom một helper dùng chung.
+//
+// ⚠️ BẪY ĐẶT TÊN của nguồn: `Inventory.Quote.cs:2047` đặt alias là **`cusMobile`** cho giá trị
+//   `isnull(cus.Tel, cus.mobile)` — tên nói "mobile" nhưng giá trị **ưu tiên Tel**. Đọc tên mà suy ra cột
+//   là sai (cùng lớp `C0-…tricesimusoctavus`).
+// ⚠️ `Customer.cs:17839` còn bọc `Replace(…, ' ', '')` — **bỏ khoảng trắng** trong số, chỉ ở chỗ đó.
+
+// Số điện thoại HIỂN THỊ theo nguồn: bàn trước, di động sau.
+static string? CusDisplayPhone(string? tel, string? mobile)
+    => !string.IsNullOrWhiteSpace(tel) ? tel : (!string.IsNullOrWhiteSpace(mobile) ? mobile : null);
+// Biến thể BA CẤP (lịch hẹn / TVO / WH): thêm ĐT người liên hệ làm dự phòng cuối.
+static string? CusDisplayPhone3(string? tel, string? mobile, string? contTel)
+    => CusDisplayPhone(tel, mobile) ?? (!string.IsNullOrWhiteSpace(contTel) ? contTel : null);
+
 app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, string? q) =>
 {
     var query = db.ServiceCustomers.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q))
         query = query.Where(c => c.CusName.Contains(q) || c.CusCode.Contains(q.ToUpper())
             || (c.Mobile != null && c.Mobile.Contains(q)) || (c.Tel != null && c.Tel.Contains(q)) || (c.TaxCode != null && c.TaxCode.Contains(q)));
-    var items = await query.OrderBy(c => c.CusName).Take(500).Select(c => new
+    var rows = await query.OrderBy(c => c.CusName).Take(500).ToListAsync();
+    var items = rows.Select(c => new
     { c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode, c.Sex, c.DOB, c.ContName, c.ContMobile,
       // #221 §12: 15 trường mới phải chiếu ở CẢ GET
       c.DealerCode, c.ProvinceCode, c.DistrictCode, c.Fax, c.Website, c.IDCardNo, c.Bank, c.BankAccountNo,
-      c.OrgTypeID, c.IsNormal, c.IsContact, c.ContAddress, c.ContFax, c.ContSex, c.Note }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+      c.OrgTypeID, c.IsNormal, c.IsContact, c.ContAddress, c.ContFax, c.ContSex, c.Note,
+      // #316: số ĐỂ GỌI theo đúng nguồn (bàn trước, di động sau) + biến thể 3 cấp.
+      cusPhone = CusDisplayPhone(c.Tel, c.Mobile),
+      cusPhone3 = CusDisplayPhone3(c.Tel, c.Mobile, c.ContTel),
+      // Bỏ khoảng trắng — nguồn chỉ làm ở MỘT chỗ (Customer.cs:17839), trả riêng để không đổi cột chính.
+      cusPhoneNoSpace = CusDisplayPhone(c.Tel, c.Mobile)?.Replace(" ", ""),
+    }).ToList();
+    return Results.Ok(new { count = items.Count,
+        phoneNote = "cusPhone = isnull(Tel, Mobile) — luật hiển thị của nguồn (34 chỗ, không có chiều ngược). "
+                  + "KHÔNG dùng cho payload đối tác: ZTemp dùng isnull(Tel,'') và payload xuất/nhập kho gửi rỗng.",
+        items });
 }).RequireAuthorization();
 
 // ===== 🔴 #226 DANH SÁCH KHÁCH HÀNG KÈM XE (phân trang) — `SerCustomerCarGetPagingALL` =====
