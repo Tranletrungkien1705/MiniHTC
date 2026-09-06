@@ -2133,7 +2133,7 @@ app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbCont
         return Results.Ok(new { r.RONo, canShowDetail = 0, mode = "PartsOnly", partCount = parts.Count, parts });
 
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType }).ToListAsync();   // #280 §12
     return Results.Ok(new { r.RONo, canShowDetail = 1, mode = "Full", services, partCount = parts.Count, parts });
 }).RequireAuthorization();
 
@@ -27442,6 +27442,94 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
     return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P" });
 }).RequireAuthorization();
 
+// ===== 🔴 #280 CSI DASHBOARD — `Rpt_DMS_CSI_Dashboard` (`ERP.ICIC/ZTemp.cs:7107`) =====
+// WS `WSCarSv_ICIC.cs:2591` gọi bản **KHÔNG hậu tố**; bản `_Old` (:6601) CHẾT. Hệ `ERP.ICIC` **chỉ có
+//   trên LAPTOP** ⇒ laptop là canonical cho cụm này (#277).
+//
+// 🔴 10 CHỈ TIÊU / ĐẠI LÝ = 5 loại × 2 cách đếm (kể trùng biển số ↔ **bỏ trùng** `count(distinct PlateNo)`).
+//   Nguồn ghi thẳng hai nhãn trong SQL: `----Không bỏ trùng biển số trong kỳ tìm kiếm` và
+//   `----Bỏ trùng biển số trong kỳ tìm kiếm` ⇒ **cùng một tập dòng, hai cách đếm**, không phải hai bộ lọc.
+//
+// 🔴 TÊN CHỈ TIÊU ĐÁNH LỪA — `NoLocal`/`NoInsurance` KHÔNG phải "loại trừ":
+//   `TotalRONoLocal`     = có ROINSURANCE **HOẶC** ROREPAIR **HOẶC** ROWARRANTY  ← là phép HỢP, không phải
+//     "không có LOCAL". Một LSC vừa có LOCAL vừa có ROREPAIR **VẪN được đếm**.
+//   `TotalRONoInsurance` = có LOCAL **HOẶC** ROREPAIR **HOẶC** ROWARRANTY
+//   `TotalRORepair100`   = có ROREPAIR
+//   `TotalROLocal100`    = có LOCAL **VÀ KHÔNG** có ROINSURANCE/ROREPAIR/ROWARRANTY  ← chỉ cái này mới là
+//     điều kiện loại trừ thật; hậu tố **100** mới mang nghĩa "100% loại đó".
+// ⚠️ Mã thứ 5 `GENERAL` (`TConst.Ser_ROType`) **không xuất hiện trong bất kỳ chỉ tiêu con nào** ⇒ LSC chỉ có
+//   dòng GENERAL vẫn vào `TotalRO` nhưng KHÔNG vào 4 chỉ tiêu còn lại. Giữ đúng, đừng "bổ sung cho đủ".
+//
+// Bốn điều kiện lọc dùng chung với màn CSKH 72h (#278): loại lệnh SỬA LẠI · loại PDI (vế `is null` vẫn lấy) ·
+//   danh sách đại lý bị loại · `IsROFinish` chỉ nhận "1"/"0".
+app.MapGet("/api/report/csi-dashboard", async (AppDbContext db, ITenantContext t,
+    string? dealer, string? isRoFinish, string? rejectDealers) =>
+{
+    if (!string.IsNullOrWhiteSpace(isRoFinish) && isRoFinish != "1" && isRoFinish != "0")
+        return Results.BadRequest(new { error = "IsROFinish chỉ nhận 1 hoặc 0.", isRoFinish });
+
+    var ros = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && (r.IsReRepair == null || r.IsReRepair == "0")
+        && (r.ROType == null || r.ROType != "PDI"));
+    if (!string.IsNullOrWhiteSpace(dealer)) ros = ros.Where(r => r.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var reject = (rejectDealers ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
+    if (reject.Count > 0) ros = ros.Where(r => r.DealerCode == null || !reject.Contains(r.DealerCode));
+    var roList = await ros.Select(r => new { r.Id, r.RONo, r.DealerCode, r.LicensePlate }).ToListAsync();
+    var roIds = roList.Select(r => r.Id).ToList();
+
+    // Đối tượng thanh toán gom từ CẢ dòng công LẪN dòng phụ tùng của lệnh (nguồn dò trên bảng chi phí của RO).
+    var svcTypes = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId) && x.ExpenseType != null)
+        .Select(x => new { x.RoId, x.ExpenseType }).ToListAsync();
+    var partTypes = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId) && x.ExpenseType != null)
+        .Select(x => new { x.RoId, x.ExpenseType }).ToListAsync();
+    var byRo = svcTypes.Concat(partTypes)
+        .GroupBy(x => x.RoId)
+        .ToDictionary(g => g.Key,
+            g => new HashSet<string>(g.Select(x => x.ExpenseType!.Trim().ToUpperInvariant())));
+
+    bool Has(long roId, string code) => byRo.TryGetValue(roId, out var s) && s.Contains(code);
+
+    var rows = roList.Select(r => new
+    {
+        r.DealerCode, r.LicensePlate,
+        local = Has(r.Id, "LOCAL"), ins = Has(r.Id, "ROINSURANCE"),
+        rep = Has(r.Id, "ROREPAIR"), war = Has(r.Id, "ROWARRANTY"),
+    }).ToList();
+
+    var report = rows.GroupBy(x => x.DealerCode ?? "").Select(g =>
+    {
+        var noLocal = g.Where(x => x.ins || x.rep || x.war).ToList();
+        var noIns = g.Where(x => x.local || x.rep || x.war).ToList();
+        var rep100 = g.Where(x => x.rep).ToList();
+        var local100 = g.Where(x => x.local && !x.ins && !x.rep && !x.war).ToList();
+        int Dup(IEnumerable<string?> p) => p.Where(v => !string.IsNullOrWhiteSpace(v)).Distinct().Count();
+        return new
+        {
+            dealerCode = g.Key,
+            // --- kể trùng biển số ---
+            totalRO = g.Count(),
+            totalRONoLocal = noLocal.Count,
+            totalRONoInsurance = noIns.Count,
+            totalRORepair100 = rep100.Count,
+            totalROLocal100 = local100.Count,
+            // --- bỏ trùng biển số ---
+            totalRO_NoDup = Dup(g.Select(x => x.LicensePlate)),
+            totalRONoLocal_NoDup = Dup(noLocal.Select(x => x.LicensePlate)),
+            totalRONoInsurance_NoDup = Dup(noIns.Select(x => x.LicensePlate)),
+            totalRORepair100_NoDup = Dup(rep100.Select(x => x.LicensePlate)),
+            totalROLocal100_NoDup = Dup(local100.Select(x => x.LicensePlate)),
+        };
+    }).OrderBy(x => x.dealerCode).ToList();
+
+    return Results.Ok(new
+    {
+        expenseTypes = new[] { "ROREPAIR", "ROINSURANCE", "ROWARRANTY", "LOCAL", "GENERAL" },
+        note = "NoLocal/NoInsurance là phép HỢP của ba loại còn lại, KHÔNG phải loại trừ; chỉ *100 mới loại trừ. GENERAL không vào chỉ tiêu con nào.",
+        count = report.Count, rows = report,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #279 BÁO CÁO SSI (Sales Satisfaction Index) — `RptSSI_ICIC_New2011119` =====
 // Chuỗi gọi 3 tầng: WS iCIC `Sales_ReportSSI_New20180622` (`ERP.ICIC/BizSalesSv.DlsDeal.cs:4681`, hệ CHỈ
 //   CÓ TRÊN LAPTOP) → proxy sang `WSHTC64.RptSSI_ICIC` → biz thật `BizHTC.DealerSales.cs:6504` (cây
@@ -32670,7 +32758,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType }).ToListAsync();   // #280 §12
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
         .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note }).ToListAsync();
     return Results.Ok(new

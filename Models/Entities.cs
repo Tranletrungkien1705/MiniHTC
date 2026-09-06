@@ -2227,6 +2227,16 @@ public sealed class RoServiceItem
     public decimal? ActManHour { get; set; }
 
     public decimal Amount { get; set; }                // tiền công
+
+    /// <summary>
+    /// 🔴 #280 `ExpenseType` — **ĐỐI TƯỢNG THANH TOÁN** của dòng công (`TConst.Ser_ROType`):
+    /// `ROREPAIR` · `ROINSURANCE` · `ROWARRANTY` · `LOCAL` · `GENERAL`.
+    /// Toàn bộ phân loại của báo cáo CSI và màn chăm sóc 72h dựa vào cột này (nguồn dò bằng bốn phép
+    /// `select top 1 … where ROID = @… and ExpenseType = '<mã>'`).
+    /// ⚠️ Dòng BÁO GIÁ (`ServiceQuotationLabor`/`ServiceQuotationPart`) đã có cột cùng tên từ trước —
+    /// đó là **tầng báo giá**, khác tầng LỆNH SỬA CHỮA này.
+    /// </summary>
+    public string? ExpenseType { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
@@ -2271,6 +2281,10 @@ public sealed class RoPartItem
     public decimal Amount { get; set; }
 
     public string? Note { get; set; }
+
+    /// <summary>#280 `ExpenseType` — đối tượng thanh toán của dòng phụ tùng, cùng bộ mã
+    /// <see cref="RoServiceItem.ExpenseType"/>.</summary>
+    public string? ExpenseType { get; set; }
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):

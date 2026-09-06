@@ -882,6 +882,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #280 parity Rpt_DMS_CSI_Dashboard: doi tuong thanh toan tren DONG cua LENH SUA CHUA
+        "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
+        "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
         // #279 parity RptSSI_ICIC: co giao dich khoi tao (bao cao SSI loai cac dong nay)
         "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"FlagInitDeal\" text",
         // #278 parity iCIC: dai ly cua phieu CSKH (loc danh sach dai ly bi loai)
