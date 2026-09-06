@@ -13218,6 +13218,7 @@ app.MapGet("/api/paymentreqdiscounts", async (AppDbContext db, ITenantContext t,
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
     { x.PRDiscountNo, x.DealerCode, x.SPCode, x.AreaCode, x.Remark, x.Status,
       x.CreatedAt, x.CreatedBy, x.Appr1By, x.Appr2By, x.CancelBy, x.LogLUDateTime, x.LogLUBy,
+      x.Approve1At, x.Approve2At, x.CancelledAt,
       lines = db.PaymentReqDiscountVins.Count(l => l.OrgId == t.OrgId && l.PRDiscountNo == x.PRDiscountNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -13277,30 +13278,131 @@ app.MapPost("/api/paymentreqdiscounts", async (PaymentReqDiscountDto dto, AppDbC
     return Results.Ok(new { h.PRDiscountNo, h.Status, lines = lines.Count });
 }).RequireAuthorization();
 
-// Duyệt cấp 1 / cấp 2 / Hủy (HTC) — khớp btnApprove1/btnApprove2/btnCancel gốc, đúng thứ tự tuần tự.
-app.MapPost("/api/paymentreqdiscounts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// ===== #167 bốn lệnh của HTC trên đề nghị chiết khấu — `PRD_PaymentReqDiscount_*` =====
+// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.My.cs` (csproj 273) — BƯỚC 3B: md5 CẢ FILE `7ef389d0` KHỚP 2 máy.
+//   `_Approve1` (4267) · `_Approve2` (4526) · `_Cancel` (4783) · `_Delete` (4131).
+// TWIN: WS 64-bit và 32-bit gọi CÙNG bản cho bốn lệnh này (khác `_Create`/`_Get`/`_UpdateMulti` có bản mới).
+//
+// 🔴 SỬA BUG CÂM (cùng lớp #140/#161, lần thứ BA). Lượt #128 đã sửa `POST` tạo sang đúng
+//    `TConst.PRDiscountStatus` ("P"/"A1"/"A2"/"C") **nhưng bỏ quên endpoint duyệt**, nơi vẫn giữ bộ tự đặt
+//    "Draft"/"Approved1"/"Approved2"/"Cancelled" ⇒ đề nghị vừa tạo ("P") **không bao giờ duyệt được**.
+//
+// 🔴 VÀ "Cancel" KHÔNG PHẢI HUỶ. Nguồn (4783) guard `PRDiscountStatus = "A1"` rồi ghi
+//    `PRDiscountStatus = TConst.PRDiscountStatus.**Pending**` kèm `CancelDate`/`CancelBy`
+//    ⇒ đây là **BỎ DUYỆT cấp 1, trả về chờ duyệt**. Hằng `PRDiscountStatus.Cancel = "C"`
+//    **không có đường vào** trong cả cụm — đúng motif `C0-ducentesimusquintusdecimus`.
+//
+// Bảng trạng thái thật:  _Approve1: "P"→"A1"  ·  _Approve2: "A1"→"A2"  ·  _Cancel: "A1"→**"P"**  ·  _Delete: "P"→xoá.
+// Cả bốn đều gọi `myCommon_CheckHTCDirect` (thao tác của HTC) — **nợ RBAC chung fleet**.
+app.MapPost("/api/paymentreqdiscounts/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("approve1" or "approve2" or "cancel")) return Results.NotFound();
+    if (action is not ("approve1" or "approve2" or "unapprove1" or "delete")) return Results.NotFound();
     no = no.Trim();
     var h = await db.PaymentReqDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == no);
     if (h is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
     if (action == "approve1")
     {
-        if (h.Status != "Draft") return Results.BadRequest(new { error = "Chỉ có thể duyệt cấp 1 khi trạng thái là Draft" });
-        h.Status = "Approved1"; h.Approve1At = DateTime.Now;
+        if (h.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang ở '{h.Status}' — chỉ duyệt cấp 1 khi còn chờ duyệt (P)." });
+        h.Status = "A1"; h.Approve1At = now; h.Appr1By = who;
     }
     else if (action == "approve2")
     {
-        if (h.Status != "Approved1") return Results.BadRequest(new { error = "Chỉ có thể duyệt cấp 2 khi đã duyệt cấp 1" });
-        h.Status = "Approved2"; h.Approve2At = DateTime.Now;
+        if (h.Status != "A1") return Results.BadRequest(new { error = $"Đề nghị đang ở '{h.Status}' — phải duyệt cấp 1 (A1) trước." });
+        h.Status = "A2"; h.Approve2At = now; h.Appr2By = who;
+    }
+    else if (action == "unapprove1")
+    {
+        // `_Cancel`: vào từ "A1", ra "P" — BỎ DUYỆT, không phải huỷ. Đặt tên endpoint theo NGHĨA THẬT.
+        if (h.Status != "A1") return Results.BadRequest(new { error = $"Đề nghị đang ở '{h.Status}' — chỉ bỏ duyệt được bản đã duyệt cấp 1 (A1)." });
+        h.Status = "P"; h.CancelledAt = now; h.CancelBy = who;
     }
     else
     {
-        if (h.Status == "Approved2" || h.Status == "Cancelled") return Results.BadRequest(new { error = "Không thể hủy khi đã duyệt cấp 2 hoặc đã hủy" });
-        h.Status = "Cancelled"; h.CancelledAt = DateTime.Now;
+        // `_Delete`: guard "P" — chỉ xoá được đề nghị còn chờ duyệt; xoá luôn dòng VIN.
+        if (h.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang ở '{h.Status}' — chỉ xoá được khi còn chờ duyệt (P)." });
+        var dead = await db.PaymentReqDiscountVins.Where(l => l.OrgId == t.OrgId && l.PRDiscountNo == no).ToListAsync();
+        db.PaymentReqDiscountVins.RemoveRange(dead);
+        db.PaymentReqDiscounts.Remove(h);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { PRDiscountNo = no, deleted = 1, lines = dead.Count });
     }
+    h.LogLUDateTime = now; h.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.PRDiscountNo, h.Status });
+    return Results.Ok(new { h.PRDiscountNo, h.Status, h.Approve1At, h.Appr1By, h.Approve2At, h.Appr2By, h.CancelledAt, h.CancelBy });
+}).RequireAuthorization();
+
+// 🔴 `PRD_PaymentReqDiscount_Save` (Biz.HTC.WH.My.cs:3209) — lệnh RIÊNG, khác `_Create`:
+//    sửa lại **bộ dòng VIN** của đề nghị khi còn chờ duyệt (guard `PRDiscountStatus = "P"`),
+//    và bắt `AmountDealerRequest` hợp lệ (`Save_InvalidAmountDealerRequest`).
+app.MapPost("/api/paymentreqdiscounts/{no}/lines", async (string no, PaymentReqDiscountDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var h = await db.PaymentReqDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang ở '{h.Status}' — chỉ sửa dòng khi còn chờ duyệt (P)." });
+    var lines = dto.Lines ?? new List<PaymentReqDiscountVinDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dữ liệu" });
+    foreach (var l in lines)
+    {
+        if (string.IsNullOrWhiteSpace(l.Vin)) return Results.BadRequest(new { error = "Có dòng chưa nhập số khung." });
+        if (l.AmountDealerRequest <= 0) return Results.BadRequest(new { error = $"VIN {l.Vin}: số tiền đại lý đề nghị không hợp lệ." });
+    }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var old = await db.PaymentReqDiscountVins.Where(l => l.OrgId == t.OrgId && l.PRDiscountNo == no).ToListAsync();
+    db.PaymentReqDiscountVins.RemoveRange(old);
+    foreach (var l in lines)
+        db.PaymentReqDiscountVins.Add(new PaymentReqDiscountVin
+        {
+            OrgId = t.OrgId, PRDiscountNo = no, VIN = l.Vin!.Trim().ToUpperInvariant(), CarId = l.CarId,
+            SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, DeliveryOutDate = l.DeliveryOutDate,
+            DeliveryEndDate = l.DeliveryEndDate, DeliveryDate = l.DeliveryDate, DlrContractNo = l.DlrContractNo,
+            SMName = l.SMName, CusInvoiceDate = l.CusInvoiceDate, UnitPriceActual = l.UnitPriceActual,
+            AmountDealerRequest = l.AmountDealerRequest, CustomerName = l.CustomerName,
+            AmountHTCAppr = null, HTCApprDate = l.HTCApprDate,   // nguồn vẫn để trống số tiền HTC duyệt ở bước này
+            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who, UpdatedAt = now
+        });
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PRDiscountNo, h.Status, replaced = old.Count, lines = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 `PRD_PaymentReqDiscount_UpdateMulti_New20190809` (3725) — 🔴 TWIN lệch bit: WS 64-bit gọi bản
+//    **2019**, WS 32-bit gọi bản trần. Đây là chỗ DUY NHẤT điền `AmountHTCAppr` (số tiền HTC duyệt):
+//    guard `PRDiscountStatus ∈ **{"A1","A2"}**` — tức chỉ sửa được **SAU KHI** đã duyệt, ngược với `_Save`.
+//    Khoá dòng của nguồn là `(PRDiscountNo, VIN)`.
+app.MapPost("/api/paymentreqdiscounts/{no}/htc-amounts", async (string no, PrdHtcAmountDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var h = await db.PaymentReqDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status is not ("A1" or "A2"))
+        return Results.BadRequest(new { error = $"Đề nghị đang ở '{h.Status}' — chỉ cập nhật số tiền HTC duyệt sau khi đã duyệt (A1 hoặc A2)." });
+    var rows = dto.Lines ?? new List<PrdHtcAmountLineDto>();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dữ liệu" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    int updated = 0;
+    foreach (var r in rows)
+    {
+        var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
+        var l = await db.PaymentReqDiscountVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == no && x.VIN == vin);
+        if (l is null) return Results.BadRequest(new { error = $"VIN {vin} không thuộc đề nghị {no}.", vin });
+        // `UpdateMulti_InvalidAmountHTCAppr`
+        if (r.AmountHTCAppr < 0) return Results.BadRequest(new { error = $"VIN {vin}: số tiền HTC duyệt không hợp lệ.", vin });
+        l.AmountHTCAppr = r.AmountHTCAppr;
+        l.HTCApprDate = r.HTCApprDate ?? now;
+        if (!string.IsNullOrWhiteSpace(r.CustomerName)) l.CustomerName = r.CustomerName;
+        if (r.AmountDealerRequest is not null) l.AmountDealerRequest = r.AmountDealerRequest.Value;
+        l.LogLUDateTime = now; l.LogLUBy = who; l.UpdatedAt = now;
+        updated++;
+    }
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PRDiscountNo, h.Status, updated });
 }).RequireAuthorization();
 
 // ===== Hỗ trợ bán lẻ theo VIN (SPSupportRetail — port 1:1 FrmPolicySales_Mng, 2010.HTC/Sales) =====
@@ -28526,6 +28628,8 @@ record PRDiscountImportDto(List<PRDiscountRowDto>? Rows);
 record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr);
 record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, string? SpecDescription, DateTime? DeliveryOutDate, DateTime? DeliveryEndDate, DateTime? DeliveryDate, string? DlrContractNo, string? SMName, DateTime? CusInvoiceDate, decimal UnitPriceActual, decimal AmountDealerRequest, string? CustomerName, DateTime? HTCApprDate);
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines, string? AreaCode);
+record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
+record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode);
 record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);
