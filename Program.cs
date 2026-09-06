@@ -34173,9 +34173,37 @@ app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? 
     var q = db.Receptions.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.PlateNo.Contains(plate.ToUpper()));
-    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    { r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest, r.RONO, r.AppNo, r.Status, r.CreatedAt, r.DeliveredAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+    var rows = await q.OrderByDescending(r => r.Id).Take(500).ToListAsync();
+
+    // ===== 🔴 #310 MỘT PHIẾU TIẾP NHẬN có thể sinh NHIỀU LỆNH SỬA CHỮA =====
+    // Nguồn `Ser_ReceptionF_Delivery` (`Tab.cs:8487`) KHÔNG đọc một cột lệnh đã lưu; nó TÍNH:
+    //   `select top 1 t_ro.RONo from Ser_RO t_ro where t.ReceptionFNo = t_ro.ReceptionFNo`
+    //   `order by t_ro.CreatedDate desc`
+    // ⇒ màn giao xe luôn hiện **lệnh TẠO GẦN NHẤT** của phiếu, không phải lệnh được gắn tay lần cuối.
+    // ⚠️ Dòng đọc thẳng `--, ro.RONo` nằm ngay trên và **đã bị comment** — luật B: port dòng ĐANG CHẠY.
+    // 🆕 Tìm ra nhờ sweep `top 1` lệch trục (#308) sau khi **sửa regex bắt `order by` xuống dòng** (#310).
+    // ⚠️ `RONO` (cột cũ, gắn tay qua `/linkro`) GIỮ LẠI để không vỡ client; `roNoLatest` mới là số nguồn hiện.
+    var recNos = rows.Select(r => r.ReceptionFNo).ToList();
+    var roByReception = (await db.RepairOrders
+            .Where(x => x.OrgId == t.OrgId && x.ReceptionFNo != null && recNos.Contains(x.ReceptionFNo))
+            .Select(x => new { x.ReceptionFNo, x.RONo, x.CreatedAt })
+            .ToListAsync())
+        .GroupBy(x => x.ReceptionFNo!)
+        // #310d: giữ CẢ NHÓM, không chỉ dòng đầu — vì quan hệ là 1-NHIỀU thì số lượng cũng là thông tin.
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.CreatedAt).ToList());
+
+    var items = rows.Select(r => new
+    {
+        r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest,
+        r.RONO, r.AppNo, r.Status, r.CreatedAt, r.DeliveredAt,
+        // ⚠️ #310d: `roCount` phải là SỐ THẬT. Bản đầu tôi trả 0/1 theo "có mặt trong Dictionary" —
+        //   tên trường hứa một phép ĐẾM mà giá trị chỉ là cờ tồn tại (đúng lớp lỗi C0-…tricesimusoctavus).
+        roNoLatest = roByReception.TryGetValue(r.ReceptionFNo, out var lr) ? lr[0].RONo : null,
+        roCount = roByReception.TryGetValue(r.ReceptionFNo, out var all) ? all.Count : 0,
+    }).ToList();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"),
+        note = "roNoLatest = lệnh TẠO GẦN NHẤT của phiếu (đúng nguồn); RONO là cột gắn tay cũ, giữ cho client cũ.",
+        items });
 }).RequireAuthorization();
 
 app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenantContext t) =>
@@ -34216,8 +34244,12 @@ app.MapPost("/api/receptions/{no}/linkro", async (string no, ReceptionLinkDto dt
     var roExists = await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
     if (!roExists) return Results.BadRequest(new { error = $"Không tìm thấy RO {roNo}." });
     r.RONO = roNo;
+    // #310: ghi CẢ CHIỀU NGƯỢC lên lệnh — nguồn tra theo `Ser_RO.ReceptionFNo`, không theo cột trên phiếu.
+    //   Thiếu bước này thì `roNoLatest` luôn rỗng dù đã gắn lệnh.
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is not null) ro.ReceptionFNo = r.ReceptionFNo;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, r.RONO });
+    return Results.Ok(new { r.ReceptionFNo, r.RONO, linkedOnRo = ro is not null });
 }).RequireAuthorization();
 
 // Giao xe (Approved) — cần đã gắn RO
@@ -34227,10 +34259,15 @@ app.MapPost("/api/receptions/{no}/deliver", async (string no, AppDbContext db, I
     var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
     if (r is null) return Results.NotFound(new { no });
     if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ giao xe cho phiếu Tiếp nhận." });
-    if (string.IsNullOrWhiteSpace(r.RONO)) return Results.BadRequest(new { error = "Chưa gắn RO, không thể giao xe." });
+    // #310: "đã có lệnh" xét theo NGUỒN (có lệnh nào mang ReceptionFNo này) chứ không chỉ theo cột gắn tay.
+    var latest = await db.RepairOrders
+        .Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == r.ReceptionFNo)
+        .OrderByDescending(x => x.CreatedAt).FirstOrDefaultAsync();
+    if (string.IsNullOrWhiteSpace(r.RONO) && latest is null)
+        return Results.BadRequest(new { error = "Chưa gắn RO, không thể giao xe." });
     r.Status = "Approved"; r.DeliveredAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, status = r.Status });
+    return Results.Ok(new { r.ReceptionFNo, status = r.Status, roNoLatest = latest?.RONo, r.RONO });
 }).RequireAuthorization();
 
 // ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
@@ -34721,7 +34758,8 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         //  ⚠️ Nhóm hậu tố `Inv` là SNAPSHOT lúc lập hoá đơn ⇒ CHỈ nhận `MemberNo`/`FlagCardExist` lúc tạo LSC;
         //     các cột `*Inv` và `PointVoucher` do luồng LẬP HOÁ ĐƠN (`FrmInvoice`) chốt — chưa port,
         //     KHÔNG cho client tự đặt (tránh sửa được số liệu đã chốt trên hoá đơn).
-        MemberNo = dto.MemberNo, FlagCardExist = dto.FlagCardExist
+        MemberNo = dto.MemberNo,
+        ReceptionFNo = string.IsNullOrWhiteSpace(dto.ReceptionFNo) ? null : dto.ReceptionFNo!.Trim().ToUpperInvariant(),   // #310 §12 FlagCardExist = dto.FlagCardExist
     };
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     foreach (var s in dto.Services ?? new())
@@ -36194,7 +36232,9 @@ record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQt
 // #266: chỉ nhận `MemberNo` + `FlagCardExist` lúc tạo LSC. Nhóm `*Inv` và `PointVoucher` do luồng lập
 //   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
-    string? MemberNo = null, string? FlagCardExist = null);
+    string? MemberNo = null, string? FlagCardExist = null,
+    // #310 §12: phieu TIEP NHAN sinh ra lenh nay (1-NHIEU) — phai GAN duoc, khong chi doc duoc.
+    string? ReceptionFNo = null);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

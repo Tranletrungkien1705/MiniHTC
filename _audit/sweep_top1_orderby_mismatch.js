@@ -18,7 +18,7 @@ function readText(p) {
 }
 const bare = c => (c || '').split('.').pop().toLowerCase();
 
-let nMismatch = 0, nNoOrder = 0, nOk = 0;
+let nMismatch = 0, nNoOrder = 0, nOk = 0, nGuard = 0;
 for (const f of process.argv.slice(2)) {
     const raw = readText(f).split(/\r?\n/);
     // bo phan sau '--' (bai hoc #305: dong comment la luat DA CHET)
@@ -42,15 +42,56 @@ for (const f of process.argv.slice(2)) {
         // tim 'order by' trong pham vi khoi (toi da 25 dong, dung khi gap ')' ket khoi con)
         let ordCol = null, depth = 0, closed = false;
         for (let k = i; k < Math.min(i + 25, lines.length); k++) {
-            const m = /\border\s+by\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+|[A-Za-z0-9_]+)/i.exec(lines[k]);
+            // #310c: `order by` rat hay xuong dong — cot nam o DONG KE TIEP:
+            //     order by
+            //         f.StockInDate desc
+            //   Regex cu doi cot CUNG DONG => bao nham 12 subquery trong Inventory.Report.cs la
+            //   "khong co order by". Nay: bat `order by` truoc, thieu cot thi lay dong ke tiep.
+            if (/\border\s+by\b/i.test(lines[k])) {
+                let m = /\border\s+by\s+([A-Za-z0-9_]+\.[A-Za-z0-9_]+|[A-Za-z0-9_]+)/i.exec(lines[k]);
+                if (!m) {
+                    for (let z = k + 1; z < Math.min(k + 4, lines.length); z++) {
+                        const t2 = lines[z].trim();
+                        if (!t2) continue;
+                        m = /^([A-Za-z0-9_]+\.[A-Za-z0-9_]+|[A-Za-z0-9_]+)/.exec(t2);
+                        break;
+                    }
+                }
+                if (m) { ordCol = m[1]; break; }
+            }
+            const m = null;
             if (m) { ordCol = m[1]; break; }
             depth += (lines[k].match(/\(/g) || []).length - (lines[k].match(/\)/g) || []).length;
             if (k > i && depth < 0) { closed = true; break; }
         }
 
+        // #310 (bai hoc C0-quingentesimusquadragesimussecundus): PHAN LOAI theo NGU CANH DUNG ket qua.
+        //   'top 1' khong order by chi NGUY HIEM khi co doc noi dung dong; neu chi hoi 'co dong nao khong'
+        //   thi vo hai. #309 do 7/7 hit trong AssignmentOfWork.cs deu la guard => khong phai no.
+        //   Doc 40 dong C# sau khoi SQL: co Rows[0][...] / .Rows[0]. => DOC NOI DUNG (that su khong tat dinh)
+        //                                chi co Rows.Count / Any()  => GUARD (bo qua)
+        let usesRow = false, checksCount = false;
+        for (let k = i; k < Math.min(i + 40, lines.length); k++) {
+            const c = raw[k];
+            // #310b: doc Rows[0][...] BEN TRONG nhanh BAO LOI van la GUARD — no chi lay du lieu de ghi
+            //   vao thong bao (vd "Check.ROID"), khong dung lam du lieu nghiep vu.
+            //   Nhan dien: quanh do (±6 dong) co AddRange/throw/CMyException/TError.
+            if (/Rows\s*\[\s*0\s*\]\s*\[/.test(c)) {
+                const lo = Math.max(0, k - 6), hi = Math.min(raw.length, k + 7);
+                const ctx = raw.slice(lo, hi).join(" ");
+                if (!/AddRange|throw |CMyException|\.Raise\(|TError\./.test(ctx)) usesRow = true;
+            }
+            if (/Rows\.Count|\.Any\(\)|Rows\.Count\s*>\s*0/.test(c)) checksCount = true;
+        }
+        const kind = usesRow ? 'DOC-DONG' : (checksCount ? 'GUARD' : 'CHUA-RO');
+
         const where = path.basename(f) + ':' + (i + 1);
         if (!ordCol) {
-            if (closed) { nNoOrder++; console.log('🟡 KHONG ORDER BY  ' + where + '   select top 1 ' + selCol); }
+            if (!closed) continue;
+            if (kind === 'GUARD') { nGuard++; continue; }          // vo hai, khong dem la no
+            nNoOrder++;
+            console.log((kind === 'DOC-DONG' ? '🟠 KHONG ORDER BY + DOC DONG  ' : '🟡 KHONG ORDER BY (chua ro)  ')
+                + where + '   select top 1 ' + selCol);
             continue;
         }
         if (bare(selCol) === bare(ordCol)) { nOk++; continue; }
@@ -58,4 +99,5 @@ for (const f of process.argv.slice(2)) {
         console.log('🔴 LECH TRUC  ' + where + '   select ' + selCol + '   |   order by ' + ordCol);
     }
 }
-console.log('\nTONG: ' + nMismatch + ' LECH, ' + nNoOrder + ' khong order by, ' + nOk + ' khop truc');
+console.log('\nTONG: ' + nMismatch + ' LECH, ' + nNoOrder + ' khong-order-by DANG LO, '
+    + nGuard + ' guard (vo hai, da loai), ' + nOk + ' khop truc');

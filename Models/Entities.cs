@@ -2145,6 +2145,17 @@ public sealed class RepairOrder
     /// đài iCIC: cột này bị **CHE thành `******`** khi đại lý gọi API xem lệnh của đại lý khác.
     /// </summary>
     public string? Creator { get; set; }
+
+    /// <summary>
+    /// 🔴 #310 RECEPTIONFNO — phiếu TIẾP NHẬN sinh ra lệnh này. Port cũ chỉ có chiều ngược
+    /// (<c>Reception.RONO</c>) và là **một cột đơn** ⇒ mô hình hoá quan hệ **1-1**.
+    /// Nguồn là **1-nhiều**: `Ser_ReceptionF_Delivery` (`Tab.cs:8487`) lấy số lệnh bằng
+    ///   `select top 1 t_ro.RONo from Ser_RO t_ro where t.ReceptionFNo = t_ro.ReceptionFNo order by t_ro.CreatedDate desc`
+    /// ⇒ **một phiếu tiếp nhận có thể sinh NHIỀU lệnh**, màn giao xe hiện **lệnh TẠO GẦN NHẤT**.
+    /// ⚠️ Ngay trên đó, dòng đọc thẳng `--, ro.RONo` **đã bị comment** — luật B: port dòng ĐANG CHẠY.
+    /// </summary>
+    public string? ReceptionFNo { get; set; }
+
     public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
     public string? ColorCode { get; set; }             // #301: ro.ColorCode (BẢN CHỤP), car chỉ dự phòng
 
