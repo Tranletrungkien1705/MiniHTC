@@ -387,6 +387,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ForeignContractLine> ForeignContractLines => Set<ForeignContractLine>();
     public DbSet<CarDocRequest> CarDocRequests => Set<CarDocRequest>();
     public DbSet<CarDocRequestCar> CarDocRequestCars => Set<CarDocRequestCar>();
+    public DbSet<VinMyStatus> VinMyStatuses => Set<VinMyStatus>();
     public DbSet<PackingList> PackingLists => Set<PackingList>();
     public DbSet<PackingListVin> PackingListVins => Set<PackingListVin>();
     public DbSet<CtTkhq> CtTkhqs => Set<CtTkhq>();

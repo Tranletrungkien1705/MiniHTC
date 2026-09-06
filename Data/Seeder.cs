@@ -845,6 +845,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #162 side-effect ContractPackingListCreate_New20190923
+        "CREATE TABLE IF NOT EXISTS public.\"VinMyStatuses\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"VIN\" text NOT NULL DEFAULT '', \"MapDateTime\" timestamp, \"DeliveryOutDate\" timestamp, \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
+        "ALTER TABLE public.\"DeviceCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"DeviceCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #161 parity RD_ReqInvoiceCreate_New20240617 (bản 2024, chỉ WS 64-bit)
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"RedeemDate\" timestamp",
         "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"CarDocReqTypeCRR\" text",

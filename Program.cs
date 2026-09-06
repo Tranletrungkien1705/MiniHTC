@@ -23984,6 +23984,20 @@ app.MapPost("/api/salesorders/{no}/rename-code", async (string no, SoRenameDto d
 }).RequireAuthorization();
 
 // ===== Packing List (PackingList/PL — port 1:1 FrmNewPL/FrmMngPL, DMSales.Foton) =====
+// ===== #162: MỐC VÒNG ĐỜI XE THEO VIN (VIN_MyStatus) =====
+// Nguồn: DataWH/Biz.HTC.WH.cs:33899 (csproj 272) — ContractPackingListCreate_New20190923, ghi tại 35533.
+// BƯỚC 3B: hàm bắt đầu cùng dòng 33899 ở CẢ HAI máy, vùng 1767 dòng md5 d5407aae KHỚP.
+app.MapGet("/api/vinmystatus", async (AppDbContext db, ITenantContext t, string? vin, string? pending) =>
+{
+    var q = db.VinMyStatuses.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN == vin!.Trim().ToUpperInvariant());
+    // "pending=1": xe đã dựng mốc nhưng CHƯA map VIN và CHƯA xuất kho — đúng trạng thái nguồn tạo ra.
+    if (pending == "1") q = q.Where(x => x.MapDateTime == null && x.DeliveryOutDate == null);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.VIN, x.MapDateTime, x.DeliveryOutDate, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string? lc, string? port) =>
 {
     var query = db.PackingLists.Where(p => p.OrgId == t.OrgId);
@@ -23997,7 +24011,7 @@ app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LcNo)) return Results.BadRequest(new { error = "Cần số LC." });
     if (dto.ShippingDateStart is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày lên tàu." });
@@ -24015,6 +24029,34 @@ app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITe
     db.PackingLists.Add(p); await db.SaveChangesAsync();
     foreach (var v in vins)
         db.PackingListVins.Add(new PackingListVin { OrgId = t.OrgId, PLId = p.Id, Vin = v.Vin.Trim().ToUpperInvariant(), CrateType = v.CrateType });
+    // ===== #162 side-effect: nguồn `ContractPackingListCreate_New20190923` ghi BỐN bảng =====
+    //   CT_PackingList · Car_VIN · VIN_MyStatus · Mng_Device_Car — port cũ chỉ có hai bảng đầu.
+    foreach (var v in vins)
+    {
+        var whoPl = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var nowPl = DateTime.Now;
+        var vinUp = (v.Vin ?? "").Trim().ToUpperInvariant();
+        // (1) dựng MỐC vòng đời cho VIN, hai mốc để NULL đúng như nguồn (điền ở bước sau).
+        if (vinUp.Length > 0 && !await db.VinMyStatuses.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vinUp))
+            db.VinMyStatuses.Add(new VinMyStatus { OrgId = t.OrgId, VIN = vinUp,
+                MapDateTime = null, DeliveryOutDate = null, LogLUDateTime = nowPl, LogLUBy = whoPl });
+
+        // (2) gắn THIẾT BỊ của xe: nguồn KHÔNG nhận từ đầu vào mà JOIN Mst_DeviceType_Spec
+        //     theo Car_VIN.ActualSpec (lọc FlagActive='1') ⇒ suy ra theo SPEC THỰC TẾ của xe.
+        var carVin = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == vinUp);
+        if (carVin is not null)
+        {
+            var devTypes = await db.DeviceTypeSpecs
+                .Where(d => d.OrgId == t.OrgId && d.SpecCode == carVin.SpecCode && d.FlagActive == "1")
+                .Select(d => d.DeviceTypeCode).Distinct().ToListAsync();
+            foreach (var dt in devTypes)
+            {
+                if (await db.DeviceCars.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vinUp && x.DeviceTypeCode == dt)) continue;
+                db.DeviceCars.Add(new DeviceCar { OrgId = t.OrgId, VIN = vinUp, ModelCode = carVin.ModelCode,
+                    SpecCode = carVin.SpecCode, DeviceTypeCode = dt,
+                    LogLUDateTime = nowPl, LogLUBy = whoPl });
+            }
+        }
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PLNo, p.LcNo, vins = vins.Count });
 }).RequireAuthorization();

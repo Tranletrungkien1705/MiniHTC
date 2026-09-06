@@ -5310,6 +5310,28 @@ public sealed class CarDocRequestCar
 /// Đây là dấu vết đổi nghiệp vụ, giữ nguyên hành vi hiện hành.
 /// `PLType` theo `TConst.PLType` (`Const.Main.cs:877`): **HTMV · HMC** (HMI/CNTCG đã bị comment).
 /// </summary>
+/// <summary>
+/// Mốc theo dõi vòng đời XE theo VIN (`VIN_MyStatus`) — nguồn
+/// `ContractPackingListCreate_New20190923` (DataWH/Biz.HTC.WH.cs:33899, csproj 272) ghi tại 35533.
+/// 🔴 TWIN: `_Create`/`_CreateAuto` bản **20190923 CHỈ có ở WS 64-bit**; WS 32-bit vẫn `_New20181119`.
+///
+/// Nguồn tạo dòng NGAY khi lập packing list, với `MapDateTime` và `DeliveryOutDate` **để NULL** —
+/// hai mốc này được điền ở các bước sau của vòng đời (map VIN, xuất kho). Tức đây là **bảng mốc rỗng
+/// dựng sẵn**, không phải bảng ghi khi sự kiện xảy ra.
+/// </summary>
+public sealed class VinMyStatus
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    /// <summary>Mốc map VIN (`MapDateTime`) — nguồn để NULL lúc tạo.</summary>
+    public DateTime? MapDateTime { get; set; }
+    /// <summary>Mốc xuất kho (`DeliveryOutDate`) — nguồn để NULL lúc tạo.</summary>
+    public DateTime? DeliveryOutDate { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class PackingList
 {
     public long Id { get; set; }
@@ -9100,6 +9122,13 @@ public sealed class DeviceCar
     public string? InputInvoiceNo { get; set; }
     public DateTime? InputInvoiceDate { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    // ===== #162 parity Mng_Device_Car (Biz.HTC.WH.cs:35606) =====
+    // 🔴 Nguồn KHÔNG nhận thiết bị từ đầu vào: nó JOIN `Mst_DeviceType_Spec` theo `Car_VIN.ActualSpec`
+    //    (lọc `FlagActive = '1'`) để SUY RA thiết bị của xe. Tức lập packing list là tự gắn thiết bị
+    //    theo spec THỰC TẾ của xe, không phải spec đặt hàng.
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
