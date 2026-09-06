@@ -18975,6 +18975,91 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
 }).RequireAuthorization();
 
 // #303 Dòng CÔNG của một đề nghị bảo hành.
+// ===== 🔴 #308 LẦN SỬA GẦN NHẤT TRƯỚC ĐÓ của CÙNG XE + CÙNG PHỤ TÙNG (bảo hành LẶP) =====
+// Nguồn: `Ser_ROWarrantyReportHTC_Get_OnlyOneROWID` (`WarrantyReport.cs:17800`), khối
+//   `select top 1 … into #tblSer_ROActualDeliveryDate`. Xuất hiện **6 chỗ** trong hai file
+//   (`WarrantyReport.cs` ×4 · `WH.cs` ×2) — cùng một luật, dùng ở nhiều màn bảo hành.
+//
+// 🆕 Tìm ra nhờ **sweep `top 1` lệch trục** (`_audit/sweep_top1_orderby_mismatch.js`, sinh từ bài học
+//   `C0-quingentesimustricesimusseptimus` ở #307). Ở ĐÂY lệch trục là **CHỦ ĐÍCH**, không phải lỗi:
+//   `select sr.ROID … order by sr.ActualDeliveryDate desc` = "lấy LỆNH của lần GIAO XE gần nhất".
+//   (Khác hẳn `StockInDateLastest` của #307 — chỗ đó order/select thật sự lệch ý nghĩa.)
+//
+// 🔴 BỐN điều kiện, bỏ cái nào cũng sai:
+//   1. `t.ROID > sr.ROID` — chú thích nguồn: *"Chỉ lấy những báo giá trước đó"*.
+//      ⚠️ Nguồn dùng **thứ tự KHOÁ TĂNG DẦN thay cho thứ tự thời gian** (ROID nhỏ hơn = cũ hơn),
+//        KHÔNG so ngày. Port bằng `Id` để giữ đúng ngữ nghĩa đó.
+//   2. `inner join Ser_ROPartItems on sr.ROID = srpart.ROID AND t.PartID = srpart.PartID`
+//      ⇒ chỉ tính lần sửa **có dùng ĐÚNG phụ tùng đang xét** — đây là cốt lõi của "bảo hành lặp".
+//   3. `sr.ActualDeliveryDate is not null` — phải **đã giao xe** mới tính là một lần sửa hoàn tất.
+//   4. `sr.Status not in ('REJ')` — **BLACKLIST đúng MỘT mã** (lệnh huỷ), không phải whitelist
+//      danh sách trạng thái hợp lệ. Mã lạ/NULL **vẫn được tính**.
+//
+// ⚠️ Ghép xe theo **FrameNo** (số khung) rồi mới sang `CarID` — không ghép thẳng `CarID`.
+// ⚠️ `ActualDeliveryDate` nguồn `convert(varchar, …, 23)` ⇒ trả **CHUỖI `yyyy-MM-dd`**.
+// ⚠️ Trả kèm `Km` — cùng với ngày giao, đây là hai số để tính "lặp sau bao lâu / bao nhiêu km".
+app.MapGet("/api/warrantyclaims/{id:long}/previous-repair", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { claimId = id });
+
+    // Lệnh sửa chữa của chính đề nghị này (mốc để so "trước đó").
+    var curRo = c.ROID is not null
+        ? await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.Id.ToString() == c.ROID)
+        : null;
+    curRo ??= c.RONo is not null
+        ? await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.RONo == c.RONo)
+        : null;
+    if (curRo is null) return Results.Ok(new { claimId = id, found = false, reason = "Chưa xác định được lệnh sửa chữa của đề nghị." });
+
+    var vin = curRo.Vin ?? c.Vin;
+    if (string.IsNullOrWhiteSpace(vin))
+        return Results.Ok(new { claimId = id, found = false, reason = "Đề nghị/lệnh không có số khung." });
+
+    // Phụ tùng của đề nghị — chỉ xét lần sửa nào có dùng ĐÚNG một trong các mã này.
+    var partCodes = await db.WarrantyClaimPartItems
+        .Where(p => p.OrgId == t.OrgId && p.ClaimId == c.Id)
+        .Select(p => p.PartCode).Distinct().ToListAsync();
+    if (partCodes.Count == 0)
+        return Results.Ok(new { claimId = id, found = false, reason = "Đề nghị chưa có dòng phụ tùng." });
+
+    // Các lệnh TRƯỚC ĐÓ của cùng xe: theo THỨ TỰ KHOÁ (Id < Id hiện tại), đúng như nguồn.
+    var priorRoIds = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId && r.Vin == vin
+                    && r.Id < curRo.Id
+                    && r.ActualDeliveryDate != null
+                    && r.Status != "Rejected")            // blacklist đúng MỘT mã, đúng nguồn
+        .Select(r => r.Id).ToListAsync();
+    if (priorRoIds.Count == 0)
+        return Results.Ok(new { claimId = id, found = false, reason = "Xe chưa có lần sửa nào trước đó đã giao." });
+
+    // Lọc tiếp: lệnh đó phải có dùng đúng phụ tùng đang xét.
+    var matchedRoIds = await db.RoPartItems
+        .Where(pi => pi.OrgId == t.OrgId && priorRoIds.Contains(pi.RoId) && partCodes.Contains(pi.PartCode))
+        .Select(pi => pi.RoId).Distinct().ToListAsync();
+    if (matchedRoIds.Count == 0)
+        return Results.Ok(new { claimId = id, found = false, reason = "Chưa từng thay đúng phụ tùng này ở lần sửa trước." });
+
+    // top 1 theo NGÀY GIAO XE giảm dần (lệch trục có chủ đích — xem chú thích đầu khối).
+    var prev = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId && matchedRoIds.Contains(r.Id))
+        .OrderByDescending(r => r.ActualDeliveryDate)
+        .FirstOrDefaultAsync();
+    if (prev is null) return Results.Ok(new { claimId = id, found = false });
+
+    return Results.Ok(new
+    {
+        claimId = id, found = true,
+        roId = prev.Id, prev.RONo, prev.Km,
+        actualDeliveryDate = prev.ActualDeliveryDate?.ToString("yyyy-MM-dd"),   // convert(varchar,…,23)
+        daysSincePrevious = prev.ActualDeliveryDate.HasValue
+            ? (int?)(DateTime.Now.Date - prev.ActualDeliveryDate.Value.Date).TotalDays : null,
+        partCodes,
+        note = "Lần sửa TRƯỚC ĐÓ (theo thứ tự khoá, đúng nguồn) của cùng xe và có dùng đúng phụ tùng đang xét; "
+             + "đã giao xe và không phải lệnh huỷ. Dùng để xét bảo hành LẶP.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/warrantyclaims/{id:long}/serviceitems", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var items = await db.WarrantyClaimServiceItems.Where(i => i.OrgId == t.OrgId && i.ClaimId == id)
