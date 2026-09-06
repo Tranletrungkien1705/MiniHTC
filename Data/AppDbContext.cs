@@ -40,6 +40,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MktFeeDetail> MktFeeDetails => Set<MktFeeDetail>();
     public DbSet<MktFeeDetailAttach> MktFeeDetailAttaches => Set<MktFeeDetailAttach>();
     public DbSet<MrkScopeLimit> MrkScopeLimits => Set<MrkScopeLimit>();
+    public DbSet<MrkKpiDisbursment> MrkKpiDisbursments => Set<MrkKpiDisbursment>();
     public DbSet<MrkScopeLimitDetail> MrkScopeLimitDetails => Set<MrkScopeLimitDetail>();
     public DbSet<PlanRetail> PlanRetails => Set<PlanRetail>();
     public DbSet<PlanRetailDtl> PlanRetailDtls => Set<PlanRetailDtl>();

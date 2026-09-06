@@ -4559,6 +4559,40 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Hồ sơ KPI / giải ngân marketing theo quý của đại lý (`MRK_KPIDisbursment` — port 1:1 cụm 2 hàm
+/// `MRK_KPIDisbursment_Get/Save_New20181115`, 2010.HTC `BizHTC.Marketing.cs` dòng 15243 / 15545).
+/// Khoá nghiệp vụ = bộ **BỐN**: (`KPIDisbursmentYear`, `QuaterCode`, `DealerCode`, `KPIDisbursmentType`).
+/// 🔴 Một hàm `Save` LÀM CẢ HAI VIỆC: tham số `strFlagIsDelete = "1"` thì **chỉ xoá**; ngược lại là
+/// **upsert** (xoá theo khoá bốn rồi chèn lại). Không có hàm Delete riêng.
+/// 🔴 `KPIDisbursmentType` theo `TConst.KPIDisburmentType` — ⚠️ **tên lớp hằng thiếu chữ s**
+/// ("Disburment") trong khi tên cột lại có ("Disbursment"), và bản thân cả hai đều sai so với
+/// "Disbursement" chuẩn. Ba giá trị: `KPICommit = "KPICOMMIT"` (cam kết KPI) ·
+/// `KPIResult = "KPIRESULT"` (kết quả KPI) · `KPIDBTable = "KPIDBTable"` (bảng giải ngân).
+/// ⚠️ Giá trị thứ ba **KHÔNG viết hoa toàn bộ** như hai giá trị kia — nguồn so sánh bằng
+/// `StringEqualIgnoreCase` nên vẫn khớp, nhưng **giá trị ghi xuống DB thì giữ nguyên dạng gốc**.
+/// ⚠️ Guard `Mst_Quater_CheckDB` (mã quý phải tồn tại và Active) CHƯA port — MiniHTC không có
+/// master `Mst_Quater`; ghi nợ chứ không bịa master rỗng.
+/// </summary>
+public sealed class MrkKpiDisbursment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string KPIDisbursmentYear { get; set; } = "";
+    public string QuaterCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    /// <summary>KPICOMMIT | KPIRESULT | KPIDBTable.</summary>
+    public string KPIDisbursmentType { get; set; } = "";
+    public string? FileNameActual { get; set; }
+    public string? FilePath { get; set; }
+    /// <summary>Nguồn luôn ghi "1" khi lưu (TConst.Flag.Active).</summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// HẠN MỨC ngân sách marketing theo năm — phần đầu (`MRK_ScopeLimit` — port 1:1 cụm 4 hàm
 /// `MRK_ScopeLimit_Get/Save/Approve` + `MRK_ScopeLimitDetail_Get`, 2010.HTC
 /// `BizHTC.Marketing.cs` dòng 14570 / 14092 / 14808 / 15031).

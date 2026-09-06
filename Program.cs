@@ -4217,6 +4217,79 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Hồ sơ KPI / giải ngân marketing theo quý (MRK_KPIDisbursment — port 1:1 cụm 2 hàm
+// Get(15243) / Save(15545), 2010.HTC BizHTC.Marketing.cs). TWIN: 2/2, cả WS 32-bit lẫn 64-bit. =====
+// 🔴 MỘT hàm Save làm CẢ HAI việc: `strFlagIsDelete = "1"` thì CHỈ XOÁ; ngược lại là UPSERT
+//    (xoá theo khoá bốn rồi chèn lại). Nguồn KHÔNG có hàm Delete riêng — port giữ đúng hình dạng đó.
+// 🔴 `KPIDisbursmentType` (TConst.KPIDisburmentType — tên lớp hằng thiếu chữ s so với tên cột):
+//    KPICOMMIT (cam kết KPI) · KPIRESULT (kết quả KPI) · KPIDBTable (bảng giải ngân).
+//    Giá trị thứ ba KHÔNG viết hoa toàn bộ; nguồn so sánh IgnoreCase nhưng ghi xuống DB giữ nguyên dạng.
+// ⚠️ Guard `Mst_Quater_CheckDB` chưa port: MiniHTC không có master Mst_Quater (ghi nợ, không bịa master).
+string[] MrkKpiDisbTypes = { "KPICOMMIT", "KPIRESULT", "KPIDBTable" };
+
+app.MapGet("/api/mrkkpidisbursments", async (AppDbContext db, ITenantContext t, string? year, string? quaterCode, string? dealerCode, string? type) =>
+{
+    var qy = db.MrkKpiDisbursments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.KPIDisbursmentYear == year);
+    if (!string.IsNullOrWhiteSpace(quaterCode)) qy = qy.Where(x => x.QuaterCode == quaterCode);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(type)) qy = qy.Where(x => x.KPIDisbursmentType == type);
+    var items = await qy.OrderBy(x => x.KPIDisbursmentYear).ThenBy(x => x.QuaterCode).ThenBy(x => x.DealerCode)
+        .Select(x => new
+        {
+            x.KPIDisbursmentYear, x.QuaterCode, x.DealerCode, x.KPIDisbursmentType,
+            x.FileNameActual, x.FilePath, x.FlagActive,
+            x.CreatedDateTime, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+        }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mrkkpidisbursments/save", async (MrkKpiDisbursmentSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var year = (dto.KPIDisbursmentYear ?? "").Trim();
+    var quater = (dto.QuaterCode ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var type = (dto.KPIDisbursmentType ?? "").Trim();
+    if (year.Length < 1) return Results.BadRequest(new { error = "Năm rỗng." });
+    if (quater.Length < 1) return Results.BadRequest(new { error = "Mã quý rỗng." });
+    if (dealer.Length < 1) return Results.BadRequest(new { error = "Mã đại lý rỗng." });
+    // So sánh KHÔNG phân biệt hoa thường, đúng như `StringEqualIgnoreCase` của nguồn.
+    var matched = MrkKpiDisbTypes.FirstOrDefault(x => string.Equals(x, type, StringComparison.OrdinalIgnoreCase));
+    if (matched is null)
+        return Results.BadRequest(new { error = $"Loại KPI/giải ngân không hợp lệ. Cho phép: {string.Join(", ", MrkKpiDisbTypes)}." });
+
+    // Khoá bốn — dùng chung cho cả nhánh xoá lẫn nhánh upsert.
+    var old = await db.MrkKpiDisbursments.Where(x => x.OrgId == t.OrgId
+        && x.KPIDisbursmentYear == year && x.QuaterCode == quater
+        && x.DealerCode == dealer && x.KPIDisbursmentType == matched).ToListAsync();
+
+    var isDelete = (dto.FlagIsDelete ?? "").Trim() == "1"; // TConst.Flag.Yes
+    if (isDelete)
+    {
+        db.MrkKpiDisbursments.RemoveRange(old);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { deleted = old.Count, year, quater, dealer, type = matched });
+    }
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    // Giữ nguyên dấu vết tạo của bản ghi cũ, đúng như nguồn đọc lại CreatedDateTime/CreatedBy trước khi xoá.
+    var createdAt = old.Count > 0 ? old[0].CreatedDateTime : now;
+    var createdBy = old.Count > 0 ? (old[0].CreatedBy ?? who) : who;
+    db.MrkKpiDisbursments.RemoveRange(old);
+    db.MrkKpiDisbursments.Add(new MrkKpiDisbursment
+    {
+        OrgId = t.OrgId, KPIDisbursmentYear = year, QuaterCode = quater,
+        DealerCode = dealer, KPIDisbursmentType = matched,
+        FileNameActual = dto.FileNameActual, FilePath = dto.FilePath,
+        FlagActive = "1", // nguồn luôn ghi Flag.Active khi lưu
+        CreatedDateTime = createdAt, CreatedBy = createdBy,
+        LogLUDateTime = now, LogLUBy = who,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { saved = 1, replaced = old.Count, year, quater, dealer, type = matched });
+}).RequireAuthorization();
+
 // ===== Hạn mức ngân sách marketing theo năm (MRK_ScopeLimit — port 1:1 cụm 4 hàm
 // Get(14570) / Save(14092) / Approve(14808) / Detail_Get(15031), 2010.HTC BizHTC.Marketing.cs).
 // TWIN: 4/4 hàm, cả WS 32-bit lẫn 64-bit. =====
@@ -23116,6 +23189,8 @@ record MktFeeAttachDecisionDto(string? MKTFeeCode, string? MKTActivityCode, stri
 record MrkScopeLimitRowDto(string? DealerCode, decimal? Amount1QuaterScopeLimit, decimal? Amount2QuaterScopeLimit, decimal? Amount3QuaterScopeLimit, decimal? Amount4QuaterScopeLimit, decimal? Amount1DisbursmentCash, decimal? Amount2DisbursmentCash, decimal? Amount3DisbursmentCash, decimal? Amount4DisbursmentCash, decimal? Amount5DisbursmentCash, decimal? Amount6DisbursmentCash, string? Remark);
 record MrkScopeLimitSaveDto(string? MRKScopeLimitNo, string? MRKScopeLimitYear, List<MrkScopeLimitRowDto>? Details);
 record MrkScopeLimitKeyDto(string? MRKScopeLimitNo);
+// KPI/giải ngân marketing: một lệnh Save kiêm cả xoá (FlagIsDelete = "1") lẫn upsert.
+record MrkKpiDisbursmentSaveDto(string? FlagIsDelete, string? KPIDisbursmentYear, string? QuaterCode, string? DealerCode, string? KPIDisbursmentType, string? FileNameActual, string? FilePath);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
