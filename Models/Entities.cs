@@ -10342,6 +10342,8 @@ public sealed class BankTmCar
 }
 
 /// <summary>
+/// ⚠️ #203 ENTITY CHẾT — không route nào còn dùng. Cụm `/api/bankpms` đã chuyển sang <see cref="PmtPayment"/>
+/// và <see cref="PmtPaymentDetail"/>. Giữ class để dữ liệu cũ trong DB không mất; sẽ xoá khi đã di trú.
 /// ⚠️ #202 TRÙNG LẶP — thực thể này và <see cref="PmtPayment"/> là **CÙNG MỘT BẢNG NGUỒN** `Pmt_Payment`.
 /// · Tên bảng ghi trong tài liệu cũ (`Pmt_PM` / `Pmt_PMDetail`) **KHÔNG TỒN TẠI** ở nguồn — đã grep toàn
 ///   `TERP.BizHTC`: họ `Pmt_*` chỉ có Payment / PaymentDetail / PaymentAVN / PaymentGPS / PaymentPDI /

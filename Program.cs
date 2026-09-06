@@ -3689,16 +3689,27 @@ app.MapPost("/api/banktms/{no}/cancel", async (string no, AppDbContext db, ITena
 }).RequireAuthorization();
 
 // ===== Phiếu thanh toán ngân hàng (BankPayment — port 1:1 FrmMngPM, cụm Bank) =====
+// ===== 🔴 #203 HỢP NHẤT `/api/bankpms` về đúng bảng nguồn `Pmt_Payment` =====
+// Tiếp nợ #202 (đã ghi CÓ DANH SÁCH). Đối chiếu nguồn xong:
+//  · `PaymentPaymentCreate_New20191202` (BankIntergration/BizHTC.MBBank.cs:446-460) ghi `Pmt_PaymentDetail`
+//    đúng **5 cột**: `PaymentNo` · `CarId` · `GuaranteeNo` · `DlrCtrNo` · `Amount`. Không hơn.
+//  · 11 cột "thừa" của `BankPaymentCar` KHÔNG thuộc bảng chi tiết mà là **dữ liệu DẪN XUẤT / của bảng khác**:
+//    `AmountAccum` = `Sum(pmpd_Accum.Amount)` trong báo cáo (DataWH/Biz.HTC.WH.My.cs:1871);
+//    `UnitPriceActual` là cột của `Car_Car` (`cc.UnitPriceActual`); VIN/ModelCode/SpecCode/ColorCode lấy bằng
+//    JOIN `Car_Car`→`Car_VIN`. Port cũ đã **lưu cứng dữ liệu dẫn xuất vào bảng chi tiết**.
+//  ⇒ `PmtPayment`/`PmtPaymentDetail` (#155) là bản ĐÚNG; cụm này chuyển sang dùng chúng.
+//    `BankPayment`/`BankPaymentCar` trở thành entity CHẾT (giữ class để không phá dữ liệu cũ).
 app.MapGet("/api/bankpms", async (AppDbContext db, ITenantContext t, string? dealer, string? pmNo, string? status) =>
 {
-    var q = db.BankPayments.Where(p => p.OrgId == t.OrgId);
+    var q = db.PmtPayments.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
-    if (!string.IsNullOrWhiteSpace(pmNo)) q = q.Where(p => p.PaymentNo.Contains(pmNo!) || p.BankPaymentNo.Contains(pmNo!));
+    if (!string.IsNullOrWhiteSpace(pmNo)) q = q.Where(p => p.PaymentNo.Contains(pmNo!) || (p.BankPaymentNo != null && p.BankPaymentNo.Contains(pmNo!)));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.PaymentStatus == status);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo, p.CreatedAt, p.ApprovedAt, p.InterestRate, p.LoanPeriod,
-        cars = db.BankPaymentCars.Count(c => c.OrgId == t.OrgId && c.PaymentId == p.Id)
+        p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount,
+        p.PaymentStatus, p.AccountingRecordNo, p.CreatedDate, p.ApprovedDate, p.InterestRate, p.LoanPeriod,
+        cars = db.PmtPaymentDetails.Count(c => c.OrgId == t.OrgId && c.PaymentNo == p.PaymentNo)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -3712,15 +3723,26 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "PTT" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p2 = new BankPayment
+    var p2 = new PmtPayment
     {
-        OrgId = t.OrgId, PaymentNo = no, BankPaymentNo = dto.BankPaymentNo ?? "", DealerCode = dto.DealerCode.Trim(),
-        BankCodeSend = dto.BankCodeSend ?? "", BankCodeReceive = dto.BankCodeReceive.Trim(), BankAccountSend = dto.BankAccountSend ?? "", BankAccountReceive = dto.BankAccountReceive ?? "",
-        Funds = dto.Funds ?? "", BankLending = dto.BankLending ?? "", Remark = dto.Remark ?? "", PaymentStatus = "P"   /* #202: TConst.Stage.Pending */, TotalAmount = cars.Sum(c => c.AmountCurrent)
+        OrgId = t.OrgId, PaymentNo = no, BankPaymentNo = dto.BankPaymentNo, DealerCode = dto.DealerCode.Trim(),
+        BankCodeSend = dto.BankCodeSend, BankCodeReceive = dto.BankCodeReceive.Trim(),
+        BankAccountSend = dto.BankAccountSend, BankAccountReceive = dto.BankAccountReceive,
+        Funds = dto.Funds, BankLending = dto.BankLending, Remark = dto.Remark,
+        PaymentStatus = "P",                      // TConst.Stage.Pending
+        TotalAmount = cars.Sum(c => c.AmountCurrent)
     };
-    db.BankPayments.Add(p2); await db.SaveChangesAsync();
+    db.PmtPayments.Add(p2);
     foreach (var c in cars)
-        db.BankPaymentCars.Add(new BankPaymentCar { OrgId = t.OrgId, PaymentId = p2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId ?? "", ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", SOCode = c.SOCode ?? "", ColorCode = c.ColorCode ?? "", AmountAccum = c.AmountAccum, PercentAccum = c.PercentAccum, UnitPriceActual = c.UnitPriceActual, AmountCurrent = c.AmountCurrent, PercentCurrent = c.PercentCurrent, GuaranteeNo = c.GuaranteeNo ?? "", BankGuaranteeNo = c.BankGuaranteeNo ?? "", DlrCtrNo = c.DlrCtrNo ?? "" });
+        // #203: chi tiết chỉ giữ ĐÚNG 5 cột của `Pmt_PaymentDetail`. Các trường VIN/ModelCode/SpecCode/
+        //   ColorCode/SOCode/AmountAccum/PercentAccum/UnitPriceActual/PercentCurrent/BankGuaranteeNo mà DTO
+        //   còn nhận là **dữ liệu dẫn xuất** — nguồn KHÔNG lưu ở đây, GET dựng lại bằng join (xem `/cars`).
+        db.PmtPaymentDetails.Add(new PmtPaymentDetail
+        {
+            OrgId = t.OrgId, PaymentNo = no,
+            CarId = string.IsNullOrWhiteSpace(c.CarId) ? c.VIN.Trim().ToUpperInvariant() : c.CarId!.Trim(),
+            GuaranteeNo = c.GuaranteeNo, DlrCtrNo = c.DlrCtrNo, Amount = c.AmountCurrent
+        });
     await db.SaveChangesAsync();
     return Results.Ok(new { p2.PaymentNo, cars = cars.Count, totalAmount = p2.TotalAmount });
 }).RequireAuthorization();
@@ -3728,10 +3750,18 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
 app.MapGet("/api/bankpms/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
-    var cars = await db.BankPaymentCars.Where(c => c.OrgId == t.OrgId && c.PaymentId == p.Id)
-        .Select(c => new { c.VIN, c.CarId, c.ModelCode, c.SOCode, c.ColorCode, c.AmountAccum, c.PercentAccum, c.UnitPriceActual, c.AmountCurrent, c.PercentCurrent, c.GuaranteeNo, c.BankGuaranteeNo }).ToListAsync();
+    // #203: 5 cột thật của `Pmt_PaymentDetail`; ModelCode/SpecCode lấy bằng JOIN đúng như nguồn
+    //   (`Pmt_PaymentDetail.CarId` → `Car_Car` → `Car_VIN`), KHÔNG lưu cứng trong bảng chi tiết.
+    var cars = await db.PmtPaymentDetails.Where(c => c.OrgId == t.OrgId && c.PaymentNo == no)
+        .Select(c => new
+        {
+            c.CarId, c.GuaranteeNo, c.DlrCtrNo, c.Amount,
+            vin       = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.VIN).FirstOrDefault(),
+            modelCode = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.ModelCode).FirstOrDefault(),
+            specCode  = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.SpecCode).FirstOrDefault()
+        }).ToListAsync();
     return Results.Ok(new { p.PaymentNo, p.DealerCode, p.PaymentStatus, p.TotalAmount, p.AccountingRecordNo, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -3740,7 +3770,7 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
-    var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
     // 🔴 #202 TỪ VỰNG: nguồn ghi `PaymentStatus` bằng `TConst.Stage` (P/A/R/C) — đã grep mọi chỗ gán
     //    `["PaymentStatus"] =` trong `TERP.BizHTC`: tất cả đều là `TConst.Stage.*`. Bộ Draft/Approved/Rejected
@@ -3750,7 +3780,7 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
     if (p.PaymentStatus != "P") return Results.BadRequest(new { error = "Phiếu thanh toán không ở trạng thái chờ duyệt.", current = p.PaymentStatus });
     if (action == "approve")
     {
-        p.PaymentStatus = "A"; p.ApprovedAt = DateTime.Now;
+        p.PaymentStatus = "A"; p.ApprovedDate = DateTime.Now;   // #203: tên cột đúng nguồn
         p.AccountingRecordNo = string.IsNullOrWhiteSpace(accNo) ? "GS" + DateTime.Now.ToString("yyMMddHHmmss") : accNo!.Trim();
     }
     else p.PaymentStatus = "R";
@@ -3762,7 +3792,7 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
 app.MapPost("/api/bankpms/{no}/ctkt", async (string no, BankPmCtktDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.NewAccountingRecordNo)) return Results.BadRequest(new { error = "Chưa nhập số chứng từ kế toán mới." });
     if (p.PaymentStatus != "Approved") return Results.BadRequest(new { error = "Chỉ cập nhật chứng từ trên phiếu đã duyệt." });
@@ -3790,7 +3820,7 @@ app.MapPost("/api/bankpms/interest-rate", async (BankPmInterestDto dto, AppDbCon
     foreach (var r in rows)
     {
         var no = r.PaymentNo!.Trim().ToUpperInvariant();
-        var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+        var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
         if (p is null) { notFound.Add(no); continue; }
         p.InterestRate = r.InterestRate; p.LoanPeriod = r.LoanPeriod;
         updated++;
@@ -3803,7 +3833,7 @@ app.MapPost("/api/bankpms/interest-rate", async (BankPmInterestDto dto, AppDbCon
 // Import danh sách (PaymentNo, AccountingRecordNo, PaymentEndDate) -> cập nhật từng phiếu tìm theo PaymentNo; báo matched/notFound.
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
 {
-    var qry = db.BankPayments.Where(p => p.OrgId == t.OrgId);
+    var qry = db.PmtPayments.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(p => p.PaymentNo.Contains(q!) || p.AccountingRecordNo.Contains(q!));
     var items = await qry.OrderByDescending(p => p.Id).Take(500)
         .Select(p => new { p.PaymentNo, p.DealerCode, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo, p.PaymentEndDate }).ToListAsync();
@@ -3815,7 +3845,7 @@ app.MapPost("/api/bankpms/confirm-enddate", async (PmConfirmEndDateDto dto, AppD
     var lines = (dto.Lines ?? new List<PmEndDateRowDto>()).Where(l => !string.IsNullOrWhiteSpace(l.PaymentNo)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Phải có ít nhất 1 dòng." });
     var nos = lines.Select(l => l.PaymentNo!.Trim().ToUpperInvariant()).ToHashSet();
-    var rows = await db.BankPayments.Where(p => p.OrgId == t.OrgId && nos.Contains(p.PaymentNo)).ToListAsync();
+    var rows = await db.PmtPayments.Where(p => p.OrgId == t.OrgId && nos.Contains(p.PaymentNo)).ToListAsync();
     var byNo = rows.ToDictionary(p => p.PaymentNo.ToUpperInvariant(), p => p);
     int matched = 0; var notFound = new List<string>();
     foreach (var l in lines)
@@ -7909,7 +7939,7 @@ app.MapGet("/api/report/summary", async (AppDbContext db, ITenantContext t) =>
     // Bảo lãnh ngân hàng
     var grt = await db.BankGuarantees.Where(g => g.OrgId == org).Select(g => new { g.Status, g.FlagSettled, g.TotalAmount }).ToListAsync();
     // Phiếu thanh toán
-    var pm = await db.BankPayments.Where(p => p.OrgId == org).Select(p => new { p.PaymentStatus, p.TotalAmount }).ToListAsync();
+    var pm = await db.PmtPayments.Where(p => p.OrgId == org).Select(p => new { p.PaymentStatus, p.TotalAmount }).ToListAsync();
     // Hợp đồng đại lý bán lẻ
     var dc = await db.DlrContracts.Where(c => c.OrgId == org).CountAsync();
     // Back-order
@@ -7966,12 +7996,12 @@ app.MapGet("/api/report/grtvalidity", async (AppDbContext db, ITenantContext t, 
 // ===== Báo cáo phiếu thanh toán ngân hàng (port 1:1 báo cáo Pmt_PM) — tái dùng BankPayment =====
 app.MapGet("/api/report/payment", async (AppDbContext db, ITenantContext t, string? bank, string? status, string? dealer, DateTime? from, DateTime? to) =>
 {
-    var q = db.BankPayments.Where(p => p.OrgId == t.OrgId);
+    var q = db.PmtPayments.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(p => p.BankCodeReceive == bank || p.BankCodeSend == bank);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.PaymentStatus == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
-    if (from is not null) q = q.Where(p => p.CreatedAt >= from.Value.Date);
-    if (to is not null) q = q.Where(p => p.CreatedAt < to.Value.Date.AddDays(1));
+    if (from is not null) q = q.Where(p => p.CreatedDate >= from.Value.Date);
+    if (to is not null) q = q.Where(p => p.CreatedDate < to.Value.Date.AddDays(1));
     var recs = await q.ToListAsync();
     var byBank = recs.GroupBy(p => string.IsNullOrEmpty(p.BankCodeReceive) ? "(chưa rõ)" : p.BankCodeReceive)
         .Select(g => new { bankCode = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount), approved = g.Count(x => x.PaymentStatus == "Approved") })
@@ -7981,7 +8011,7 @@ app.MapGet("/api/report/payment", async (AppDbContext db, ITenantContext t, stri
     var detail = recs.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
         p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo,
-        createdAt = p.CreatedAt.ToString("yyyy-MM-dd")
+        createdAt = p.CreatedDate.ToString("yyyy-MM-dd")
     }).ToList();
     return Results.Ok(new { total = recs.Count, totalAmount = recs.Sum(p => p.TotalAmount), approvedAmount = recs.Where(p => p.PaymentStatus == "Approved").Sum(p => p.TotalAmount), byBank, byStatus, byFunds, detail });
 }).RequireAuthorization();
