@@ -592,6 +592,92 @@ public sealed class Quota
 /// Gói bảo trì theo dòng xe (`Mst_MaintainType`) — khoá kép (`MtnTp`, `ModelCode`).
 /// Nguồn khi thêm bắt cặp khoá **phải CHƯA tồn tại** (`Mst_MaintainType_CheckDB(…, TConst.Flag.No)`).
 /// </summary>
+// ========== BA BẢNG VỆ TINH CÒN THIẾU CỦA CÁC CỤM ĐÃ PORT (#152) ==========
+// Nguồn: TCFIntergration/BizHTC.TCFIntergration.cs (csproj **328**, md5 a4c9ec29… khớp 2 máy) — 1564 / 5412
+//        BizHTC.Storage.DlvMinutes.cs            (csproj **120**, md5 0b3b957d… khớp 2 máy) — 4804 / 8698
+//        HDDTIntergration/BizHTC.HDDTIntergration.cs (csproj **282**) — `Seq_Invoice_PrintNo` (20836) ghi tại 20906
+// ⚠️ BƯỚC 3B: file HDDT **md5 cả file lệch 2 máy** (48140bda / 2933a7fa) nhưng **cùng 24 770 dòng** và
+//    **vùng 20800–21000 md5 KHỚP** (444cc59f…) ⇒ dùng bản laptop, đúng quy trình so-VÙNG (C0-…septuagesimusquartus).
+
+/// <summary>
+/// Lịch sử file đính kèm thư bảo lãnh (`Pmt_GuaranteeAttachFileHis`).
+/// 🔴 Là bảng **KHÁC** <see cref="PmtGuaranteeAttachFile"/> (bản hiện hành, đã port trước) — cùng bộ cột
+/// nhưng lưu các bản đã bị thay thế. Nguồn ghi từ tích hợp TCF (`BizHTC.TCFIntergration.cs` 1564 / 5412).
+/// ⚠️ Cột `AutoId` trong danh sách `insert` **đã bị comment** (`--AutoId,`) ⇒ để DB tự sinh, không port.
+/// </summary>
+public sealed class PmtGuaranteeAttachFileHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GuaranteeNo { get; set; } = "";
+    public int FileIndex { get; set; }
+    public string? GrtFilePath { get; set; }
+    public string? GrtFileName { get; set; }
+    /// <summary>Kích thước file tính bằng BYTE (`FileSizeInBytes`) — tên cột nói rõ đơn vị.</summary>
+    public long FileSizeInBytes { get; set; }
+    public string? GrtFileRemark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Vị trí GPS lúc KẾT THÚC giao xe theo biên bản (`GPS_DlvMinutesAddress`) — bảng vệ tinh của cụm
+/// biên bản giao xe đã port. Nguồn: `BizHTC.Storage.DlvMinutes.cs` 4804 / 8698;
+/// WS gọi `_biz.GPS_DlvMinutesAddress_UpdateAuto_New20181119` (job tự cập nhật).
+/// </summary>
+public sealed class GpsDlvMinutesAddress
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlvMnNo { get; set; } = "";
+    public string? StorageCode { get; set; }
+    public string? GPSDvNo { get; set; }
+    public string VIN { get; set; } = "";
+    /// <summary>Điểm nhận xe đã đăng ký (`PointRegisCode`) — đối chiếu với toạ độ thực tế bên dưới.</summary>
+    public string? PointRegisCode { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? DlvEndGPSDateTime { get; set; }
+    public decimal? MapLongitude { get; set; }
+    public decimal? MapLatitude { get; set; }
+    /// <summary>Địa chỉ do dịch vụ GPS trả về (`GPSAddress`).</summary>
+    public string? GPSAddress { get; set; }
+    /// <summary>Trạng thái dữ liệu GPS (`GPSStatus`).</summary>
+    public string? GPSStatus { get; set; }
+    /// <summary>Trạng thái của LẦN GỌI dịch vụ GPS (`CallGPSStatus`) — tách riêng khỏi <see cref="GPSStatus"/>.</summary>
+    public string? CallGPSStatus { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Bộ CẤP SỐ IN hoá đơn (`Seq_Invoice_PrintNo`) — nguồn `Seq_Invoice_PrintNo` (HDDTIntergration:20836).
+/// Khoá nghiệp vụ: bộ ba (`InvoiceIDType`, `SourceInvoiceCode`, `YearPrint`).
+/// 🔴 BẪY TÊN CỘT: `YearPrint` **KHÔNG phải năm** — nguồn gán `dtimeTDate.ToString("yyyy-MM-dd")`
+///    ⇒ giá trị là **NGÀY đầy đủ**, tức bộ đếm được cấp lại **THEO NGÀY**, không phải theo năm.
+/// 🔴 Cách cấp số của nguồn (không phải identity DB):
+///    · chưa có dòng cho bộ ba ⇒ `insert … select … left join … where f.InvoiceIDType is null` với `LastPrintNo = '0'`;
+///    · đọc `LastPrintNo`, **+1**, rồi `update` ghi lại;
+///    · số in trả về ghép theo `string.Format("{0:000}.{1}/{2}/{3}", next, ddMMyy, "19HTC", hậu tố)`
+///      — `"19HTC"` là **mẫu số fix cứng trong code** (nguồn ghi chú: "Nguyễn Kiều Ngân báo fix cứng"),
+///      hậu tố: `SourceInvoiceCode` = INVOICEREPLACE ⇒ "BBTHHĐ", = INVOICEADJ ⇒ "BBĐCHĐ", còn lại rỗng.
+/// </summary>
+public sealed class SeqInvoicePrintNo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string InvoiceIDType { get; set; } = "";
+    /// <summary>⚠️ Xem ghi chú lớp: đây là **NGÀY** ("yyyy-MM-dd"), không phải năm.</summary>
+    public string YearPrint { get; set; } = "";
+    /// <summary>`TConst.SourceInvoiceCode`: "INVOICEROOT" · "INVOICEREPLACE" · "INVOICEADJ".</summary>
+    public string SourceInvoiceCode { get; set; } = "";
+    /// <summary>Số in cuối đã cấp (`LastPrintNo`) — nguồn khởi tạo bằng chuỗi '0' và đọc bằng `Convert.ToDouble`.</summary>
+    public decimal LastPrintNo { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class MstMaintainType
 {
     public long Id { get; set; }

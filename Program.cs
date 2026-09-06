@@ -8518,6 +8518,113 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #152: LỊCH SỬ FILE ĐÍNH KÈM THƯ BẢO LÃNH (Pmt_GuaranteeAttachFileHis) =====
+// Nguồn: TCFIntergration/BizHTC.TCFIntergration.cs (csproj 328) — 1564 / 5412.
+// 🔴 Bảng KHÁC Pmt_GuaranteeAttachFile (bản hiện hành, đã port): cùng bộ cột nhưng lưu bản đã bị thay thế.
+app.MapGet("/api/grtattachfilehis", async (AppDbContext db, ITenantContext t, string? grtNo) =>
+{
+    var q = db.PmtGuaranteeAttachFileHiss.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(grtNo)) q = q.Where(x => x.GuaranteeNo == grtNo);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.GuaranteeNo, x.FileIndex, x.GrtFilePath, x.GrtFileName, x.FileSizeInBytes, x.GrtFileRemark,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/grtattachfilehis", async (GrtAttachFileHisDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.GuaranteeNo ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Thiếu số thư bảo lãnh." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.PmtGuaranteeAttachFileHiss.Add(new PmtGuaranteeAttachFileHis { OrgId = t.OrgId, GuaranteeNo = no,
+        FileIndex = dto.FileIndex, GrtFilePath = dto.GrtFilePath, GrtFileName = dto.GrtFileName,
+        FileSizeInBytes = dto.FileSizeInBytes, GrtFileRemark = dto.GrtFileRemark,
+        LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { guaranteeNo = no, dto.FileIndex, dto.GrtFileName });
+}).RequireAuthorization();
+
+// ===== #152: VỊ TRÍ GPS LÚC KẾT THÚC GIAO XE (GPS_DlvMinutesAddress) =====
+// Nguồn: BizHTC.Storage.DlvMinutes.cs (csproj 120) — 4804 / 8698;
+// WS: _biz.GPS_DlvMinutesAddress_UpdateAuto_New20181119 (job tự cập nhật, cả hai bit đều không có — chỉ 64-bit).
+app.MapGet("/api/gpsdlvaddresses", async (AppDbContext db, ITenantContext t, string? dlvMnNo, string? vin, string? gpsStatus) =>
+{
+    var q = db.GpsDlvMinutesAddresses.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dlvMnNo)) q = q.Where(x => x.DlvMnNo == dlvMnNo);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(gpsStatus)) q = q.Where(x => x.GPSStatus == gpsStatus);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.DlvMnNo, x.VIN, x.StorageCode, x.GPSDvNo, x.PointRegisCode, x.DealerCode, x.DlvEndGPSDateTime,
+        x.MapLongitude, x.MapLatitude, x.GPSAddress, x.GPSStatus, x.CallGPSStatus, x.Remark,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsdlvaddresses", async (GpsDlvAddressDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.DlvMnNo ?? "").Trim().ToUpperInvariant();
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0 || vin.Length == 0) return Results.BadRequest(new { error = "Cần cả số biên bản giao xe và VIN." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    // nguồn là job cập nhật theo (DlvMnNo, VIN) ⇒ upsert theo đúng cặp đó.
+    var x = await db.GpsDlvMinutesAddresses.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DlvMnNo == no && v.VIN == vin);
+    var created = x is null;
+    if (x is null) { x = new GpsDlvMinutesAddress { OrgId = t.OrgId, DlvMnNo = no, VIN = vin }; db.GpsDlvMinutesAddresses.Add(x); }
+    x.StorageCode = dto.StorageCode; x.GPSDvNo = dto.GPSDvNo; x.PointRegisCode = dto.PointRegisCode;
+    x.DealerCode = dto.DealerCode; x.DlvEndGPSDateTime = dto.DlvEndGPSDateTime;
+    x.MapLongitude = dto.MapLongitude; x.MapLatitude = dto.MapLatitude; x.GPSAddress = dto.GPSAddress;
+    x.GPSStatus = dto.GPSStatus; x.CallGPSStatus = dto.CallGPSStatus; x.Remark = dto.Remark;
+    x.LogLUDateTime = now; x.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dlvMnNo = no, vin, created });
+}).RequireAuthorization();
+
+// ===== #152: CẤP SỐ IN HOÁ ĐƠN (Seq_Invoice_PrintNo) =====
+// Nguồn: HDDTIntergration/BizHTC.HDDTIntergration.cs (csproj 282) — hàm `Seq_Invoice_PrintNo` (20836).
+// 🔴 Ba điểm của nguồn, port nguyên:
+//   (1) `YearPrint` KHÔNG phải năm — nguồn gán `dtimeTDate.ToString("yyyy-MM-dd")` ⇒ bộ đếm cấp lại THEO NGÀY;
+//   (2) chưa có dòng cho bộ ba (InvoiceIDType, SourceInvoiceCode, YearPrint) ⇒ tạo với LastPrintNo = 0;
+//       rồi đọc, **+1**, rồi ghi lại — KHÔNG dùng identity của DB;
+//   (3) số in trả về ghép `{0:000}.{ddMMyy}/{19HTC}/{hậu tố}`; "19HTC" là **mẫu số fix cứng trong code**
+//       (nguồn ghi chú: "Nguyễn Kiều Ngân báo fix cứng"); hậu tố theo SourceInvoiceCode:
+//       INVOICEREPLACE ⇒ "BBTHHĐ", INVOICEADJ ⇒ "BBĐCHĐ", còn lại rỗng.
+app.MapGet("/api/invoiceprintno", async (AppDbContext db, ITenantContext t, string? invoiceIdType, string? sourceCode) =>
+{
+    var q = db.SeqInvoicePrintNos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(invoiceIdType)) q = q.Where(x => x.InvoiceIDType == invoiceIdType);
+    if (!string.IsNullOrWhiteSpace(sourceCode)) q = q.Where(x => x.SourceInvoiceCode == sourceCode);
+    var items = await q.OrderByDescending(x => x.Id).Take(1000).Select(x => new {
+        x.InvoiceIDType, x.YearPrint, x.SourceInvoiceCode, x.LastPrintNo, x.Remark,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoiceprintno/next", async (InvoicePrintNoDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var idType = (dto.InvoiceIDType ?? "").Trim().ToUpperInvariant();
+    var src = (dto.SourceInvoiceCode ?? "").Trim().ToUpperInvariant();
+    if (idType.Length == 0 || src.Length == 0) return Results.BadRequest(new { error = "Cần InvoiceIDType và SourceInvoiceCode." });
+    if (src is not ("INVOICEROOT" or "INVOICEREPLACE" or "INVOICEADJ"))
+        return Results.BadRequest(new { error = "SourceInvoiceCode = INVOICEROOT | INVOICEREPLACE | INVOICEADJ (TConst.SourceInvoiceCode)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var yearPrint = now.ToString("yyyy-MM-dd");     // nguồn gán NGÀY vào cột tên "YearPrint"
+    var row = await db.SeqInvoicePrintNos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.InvoiceIDType == idType && x.SourceInvoiceCode == src && x.YearPrint == yearPrint);
+    if (row is null)
+    {
+        row = new SeqInvoicePrintNo { OrgId = t.OrgId, InvoiceIDType = idType, SourceInvoiceCode = src,
+            YearPrint = yearPrint, LastPrintNo = 0, Remark = dto.Remark, LogLUDateTime = now, LogLUBy = who };
+        db.SeqInvoicePrintNos.Add(row);
+    }
+    var next = row.LastPrintNo + 1;
+    row.LastPrintNo = next; row.LogLUDateTime = now; row.LogLUBy = who;
+    if (dto.Remark is not null) row.Remark = dto.Remark;
+    await db.SaveChangesAsync();
+    var suffix = src == "INVOICEREPLACE" ? "BBTHHĐ" : src == "INVOICEADJ" ? "BBĐCHĐ" : "";
+    var printNo = string.Format("{0:000}.{1}/{2}/{3}", next, dto.InvoiceDate.ToString("ddMMyy"), "19HTC", suffix);
+    return Results.Ok(new { invoiceIdType = idType, sourceInvoiceCode = src, yearPrint, lastPrintNo = next, printNo });
+}).RequireAuthorization();
+
 // ===== #151: GÓI BẢO TRÌ THEO DÒNG XE (Mst_MaintainType + MtnTp_MaintainTaskItem + MtnTp_Part) =====
 // Nguồn: DataWH/Biz.HTC.WH.cs (csproj 272) — _Add_New20181119 (7711) ghi 3 bảng tại 8068/8093/8119;
 //        _Update_New20181119 (8213) ghi lại 2 bảng con tại 8602/8628.
@@ -27708,6 +27815,11 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #152: DTO ba bảng vệ tinh (lịch sử file bảo lãnh · vị trí GPS giao xe · cấp số in hoá đơn) ----
+record GrtAttachFileHisDto(string GuaranteeNo, int FileIndex, string? GrtFilePath, string? GrtFileName, long FileSizeInBytes, string? GrtFileRemark);
+record GpsDlvAddressDto(string DlvMnNo, string VIN, string? StorageCode, string? GPSDvNo, string? PointRegisCode, string? DealerCode, DateTime? DlvEndGPSDateTime, decimal? MapLongitude, decimal? MapLatitude, string? GPSAddress, string? GPSStatus, string? CallGPSStatus, string? Remark);
+record InvoicePrintNoDto(string InvoiceIDType, string SourceInvoiceCode, DateTime InvoiceDate, string? Remark);
+
 // ---- #151: DTO gói bảo trì theo dòng xe + kết quả theo hạng mục ----
 record MtnTypeTaskDto(string? MtnTkCode, string MtnTkItemCode);
 record MtnTypePartDto(string PartCode, decimal Qty);
