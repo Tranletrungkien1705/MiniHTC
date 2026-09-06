@@ -33358,7 +33358,7 @@ app.MapGet("/api/stockouts/veloca-pending", async (AppDbContext db, ITenantConte
         items = rows.Select(x => new
         {
             x.Id, x.StockOutNo, x.DealerCode, x.WarehouseCode, x.Status,
-            x.StockOutDate, x.StockOutDateTime, x.FlagSyncVeloca,
+            x.StockOutDate, x.StockOutDateTime, x.FlagSyncVeloca, x.SyncVelocaDTime,
             velocaInvCode = VelocaInvCode(velocaDealerInv, x.DealerCode),
         }),
     });
@@ -33409,8 +33409,9 @@ app.MapPost("/api/stockouts/{id:long}/veloca-synced", async (long id, AppDbConte
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { stockOutId = id });
     h.FlagSyncVeloca = "1";
+    h.SyncVelocaDTime = DateTime.Now;   // #305: #304 quên mốc thời gian đi kèm cờ
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.StockOutNo, h.FlagSyncVeloca });
+    return Results.Ok(new { h.Id, h.StockOutNo, h.FlagSyncVeloca, h.SyncVelocaDTime });
 }).RequireAuthorization();
 
 app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -33612,11 +33613,120 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
         DealerCode = dto.DealerCode, SupplierID = dto.SupplierID,
         TSTRequestNo = dto.TSTRequestNo, BillNo = dto.BillNo,
     };
+    // #305: phiếu nhập mới luôn ở trạng thái CHƯA đồng bộ Veloca (đối xứng chiều xuất, #304).
+    h.FlagSyncVeloca = "0"; h.SyncVelocaDTime = null;
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
+}).RequireAuthorization();
+
+// ===== 🔴 #305 ĐỒNG BỘ PHIẾU NHẬP SANG VELOCA (`OSVeloca_Ser_Inv_StockIn_*`) — chưa từng port =====
+// Đóng nốt trục Veloca mở ở #304 (chiều XUẤT). TRACE TWIN: WS `:15286` gọi
+//   `..._GetByStockInID_**New20240606**` ⇒ bản `_GetByStockInID` (`StockIn.cs:8691`) CHẾT.
+//
+// 🔴 ĐIỀU KIỆN LỌC CỨNG của nguồn (`StockIn.cs:8586`): **`and sisi.Status = '3'`** — CHỈ phiếu nhập ở
+//   trạng thái **Kết thúc** mới được đẩy sang Veloca. Đây là điều kiện KHÔNG THAM SỐ HOÁ, luôn áp.
+// ⚠️ Ngay trên nó có `--and sisi.StockInType = '1'` **đã bị comment**, kèm chú thích của tác giả:
+//   *"20240203. HuongTTT: Chị Đông không quan tâm đến Loại nhập kho nữa."* ⇒ **ĐỪNG khôi phục** bộ lọc
+//   loại nhập kho; đây là quyết định nghiệp vụ có ghi lý do (lệ #275).
+//
+// ⚠️ Mọi bộ lọc dùng thành ngữ `( '' = @p or col = @p )` ⇒ **rỗng nghĩa là LẤY TẤT**, không phải bỏ lọc
+//   một cách tình cờ. Riêng `FlagSyncVeloca` vì thế có **ba** trạng thái đầu vào: "0" · "1" · "" (cả hai).
+//
+// 📌 Đã kiểm và KHÔNG phải lỗi: khối `//, "@strFlagSyncVeloca", …` bị comment chỉ là danh sách thay thế
+//   lúc DỰNG câu (`StringUtils.Replace`); tham số thật vẫn được bind ở `ExecQuery` (`StockIn.cs:8636`).
+//   (Nếu không đọc tiếp sẽ tưởng là bẫy [BAKE-PARAM-MIX] guard-chết-câm.)
+app.MapGet("/api/stockins/veloca-pending", async (AppDbContext db, ITenantContext t,
+    string? flagSync, string? stockInNo, string? supplier, string? userCode,
+    DateTime? stockInDateFrom, DateTime? stockInDateTo,
+    DateTime? syncFrom, DateTime? syncTo) =>
+{
+    // Điều kiện CỨNG: chỉ phiếu đã Kết thúc.
+    var qy = db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "3");
+    if (!string.IsNullOrEmpty(flagSync)) qy = qy.Where(x => x.FlagSyncVeloca == flagSync);
+    if (!string.IsNullOrWhiteSpace(stockInNo)) qy = qy.Where(x => x.StockInNo == stockInNo);
+    if (!string.IsNullOrWhiteSpace(supplier)) qy = qy.Where(x => x.SupplierID == supplier);
+    if (!string.IsNullOrWhiteSpace(userCode)) qy = qy.Where(x => x.UserCode == userCode);
+    if (stockInDateFrom.HasValue) qy = qy.Where(x => x.StockInDate >= stockInDateFrom);
+    if (stockInDateTo.HasValue) qy = qy.Where(x => x.StockInDate <= stockInDateTo);
+    if (syncFrom.HasValue) qy = qy.Where(x => x.SyncVelocaDTime >= syncFrom);
+    if (syncTo.HasValue) qy = qy.Where(x => x.SyncVelocaDTime <= syncTo);
+
+    var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        note = "CHỈ phiếu Status=3 (Kết thúc) mới đủ điều kiện đẩy Veloca — điều kiện cứng của nguồn. "
+             + "flagSync rỗng ⇒ lấy CẢ đã và chưa đồng bộ.",
+        items = rows.Select(x => new
+        {
+            x.Id, x.StockInNo, x.DealerCode, x.WarehouseCode, x.SupplierID, x.UserCode,
+            x.StockInDate, x.Status, x.FlagSyncVeloca, x.SyncVelocaDTime,
+            velocaInvCode = VelocaInvCode(velocaDealerInv, x.DealerCode),
+        }),
+    });
+}).RequireAuthorization();
+
+// #305 Payload đẩy MỘT phiếu nhập sang Veloca (`..._GetByStockInID_New20240606`).
+// ⚠️ Cùng bản đồ đại lý → kho gõ CỨNG như chiều XUẤT (#304) — **dùng lại**, không chép đôi.
+//   Nguồn phải lặp khối `case` tới **6 lần** trong một câu (SQL không có biến); port gom một `Dictionary`.
+// 🔴 Nguồn dựng **BA cấp** kho: cấp 2 = KHO (`InvCode` = mã kho ánh xạ), cấp 3 = VỊ TRÍ
+//   (`InvCode` = `LocationCode`, `InvCodeParent` = kho ánh xạ, `InvBUCode` = `I.<kho>.<vị trí>`).
+// 🔴 `InvCodeIn` (thêm 20240606) = kho ĐÍCH của phiếu nhập.
+app.MapGet("/api/stockins/{id:long}/veloca-payload", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { stockInId = id });
+    var inv = VelocaInvCode(velocaDealerInv, h.DealerCode);
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
+
+    return Results.Ok(new
+    {
+        // cấp 2 — KHO
+        inventory = new
+        {
+            h.DealerCode, InvCode = inv, InvCodeParent = "I",
+            InvBUCode = "I." + inv, InvBUPattern = "I." + inv + "%",
+            InvLevel = "2", InvName = inv,
+            InvAddress = (string?)null, InvContactName = (string?)null,
+            InvContactPhone = (string?)null, InvContactEmail = (string?)null, Remark = (string?)null,
+            FlagIn_Out = "1", FlagActive = "1",
+        },
+        // cấp 3 — VỊ TRÍ trong kho (nguồn lấy từ Ser_Mst_Location của từng dòng)
+        locations = lines.Where(l => !string.IsNullOrWhiteSpace(l.Location))
+            .Select(l => l.Location!).Distinct().Select(loc => new
+            {
+                InvCode = loc, InvCodeParent = inv,
+                InvBUCode = "I." + inv + "." + loc, InvBUPattern = "I." + inv + "." + loc + "%",
+                InvLevel = "3", InvName = loc,
+            }),
+        stockIn = new
+        {
+            h.Id, h.StockInNo, h.DealerCode, h.WarehouseCode, h.SupplierID, h.Status,
+            InvCodeIn = inv,                    // 20240606: kho ĐÍCH
+            CreateBy = h.UserCode, ApprBy = h.UserCode,
+            // 🔴 giờ UTC của trục Veloca = giờ địa phương − 7 (xem #304; trục HCC KHÔNG trừ)
+            CreateDTimeUTC = VelocaUtc(h.CreatedAt),
+            ApprDTimeUTC = VelocaUtc(h.PostedAt ?? h.CreatedAt),
+            h.FlagSyncVeloca, h.SyncVelocaDTime,
+        },
+        lineCount = lines.Count,
+    });
+}).RequireAuthorization();
+
+// #305 Đánh dấu ĐÃ đồng bộ (`OSVeloca_Ser_Inv_StockIn_UpdFlagSyncVeloca`).
+// ⚠️ Nguồn ghi CỜ **và** MỐC THỜI GIAN, nhưng **cố ý KHÔNG** đụng `LogLUDateTime`/`LogLUBy`
+//   (hai dòng đó bị comment ngay trong câu `update`) ⇒ đẩy sang đối tác **không tính là người dùng sửa**.
+app.MapPost("/api/stockins/{id:long}/veloca-synced", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { stockInId = id });
+    h.FlagSyncVeloca = "1";
+    h.SyncVelocaDTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.StockInNo, h.FlagSyncVeloca, h.SyncVelocaDTime });
 }).RequireAuthorization();
 
 app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>

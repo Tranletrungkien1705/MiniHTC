@@ -2415,6 +2415,24 @@ public sealed class PartStockIn
     // ===== 🔴 #265: 16 cột nguồn `TblSerInvStockIn` (DbDefine.cs:1122-1148) mà port cũ THIẾU =====
     // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
     public string? StockInID { get; set; }
+
+    /// <summary>
+    /// 🔴 #305 FLAGSYNCVELOCA — cờ đã đồng bộ phiếu NHẬP sang Veloca ("0" chưa · "1" đã).
+    /// Bộ lọc nguồn nhận **ba** giá trị: rỗng = **LẤY CẢ HAI** (`'' = @strFlagSyncVeloca or …`).
+    /// </summary>
+    public string FlagSyncVeloca { get; set; } = "0";
+
+    /// <summary>
+    /// 🔴 #305 SYNCVELOCADTIME — **THỜI ĐIỂM** đồng bộ, cột RIÊNG với cờ.
+    /// `OSVeloca_Ser_Inv_StockIn_UpdFlagSyncVeloca` (`StockIn.cs:9716`) ghi **cả hai cùng lúc**:
+    /// `set t.FlagSyncVeloca = '1', t.SyncVelocaDTime = @strLogLUDateTime`.
+    /// ⚠️ Và nguồn cho **lọc theo khoảng** `SyncVelocaDTimeFrom/To` ⇒ không phải cột trang trí:
+    /// thiếu nó thì không tra được "đã đẩy những phiếu nào trong khung giờ X".
+    /// ⚠️ Nguồn **cố ý KHÔNG** đụng `LogLUDateTime`/`LogLUBy` (hai dòng đó bị comment) — đồng bộ sang
+    /// đối tác **không tính là người dùng sửa chứng từ**.
+    /// </summary>
+    public DateTime? SyncVelocaDTime { get; set; }
+
     public string? StatusText { get; set; }     // nguồn lưu CẢ NHÃN trạng thái
     public string? Description { get; set; }
     public string? UserCode { get; set; }
@@ -2518,6 +2536,10 @@ public sealed class PartStockOut
     /// (`StockOut.cs:18468` + mệnh đề `( '' = @strFlagSyncVeloca or siso.FlagSyncVeloca = @… )`).
     /// </summary>
     public string FlagSyncVeloca { get; set; } = "0";
+
+    /// <summary>🔴 #305 SYNCVELOCADTIME — #304 port cờ nhưng **THIẾU mốc thời gian đi kèm**.
+    /// Nguồn `UpdFlagSyncVeloca` ghi CẢ HAI cùng lúc và cho lọc theo khoảng thời gian đồng bộ.</summary>
+    public DateTime? SyncVelocaDTime { get; set; }
 
     /// <summary>#304 STOCKOUTDATETIME — mốc thời gian dùng để tính giá vốn bình quân và để đẩy sang
     /// Veloca (`ApprDTimeUTC`). Khác <see cref="StockOutDate"/> ở chỗ có GIỜ.</summary>

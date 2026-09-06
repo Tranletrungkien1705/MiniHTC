@@ -34,10 +34,15 @@ for (const f of process.argv.slice(2)) {
     const lines = readText(f).split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
         const l = lines[i];
+        // #305 (blind spot ghi nhan o #304): BO QUA dong SQL bi comment.
+        //   Moi hit "StockOutDateTime -> StockOutTime" cua #304 deu nam sau "--" => la luat DA CHET.
+        //   Luat B: chi doc dong DANG CHAY. Cat phan sau "--" truoc khi do khop.
+        const code = l.replace(/--.*$/, "");
+        if (!/isnull/i.test(code)) continue;
         let m;
         RE3.lastIndex = 0;
         const seen3 = [];
-        while ((m = RE3.exec(l))) {
+        while ((m = RE3.exec(code))) {
             seen3.push(m[0]);
             hits.push({
                 file: path.basename(f), line: i + 1, doc: m[1].toLowerCase(), col: m[2],
@@ -45,7 +50,7 @@ for (const f of process.argv.slice(2)) {
             });
         }
         RE2.lastIndex = 0;
-        while ((m = RE2.exec(l))) {
+        while ((m = RE2.exec(code))) {
             // bo qua neu nam trong mot khop 3-cap da bat o tren
             if (seen3.some(s => s.includes(m[0]))) continue;
             hits.push({

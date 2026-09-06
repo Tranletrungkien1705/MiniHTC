@@ -882,6 +882,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #305 dong bo phieu NHAP sang Veloca + moc thoi gian dong bo cho ca hai chieu
+        "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"FlagSyncVeloca\" text NOT NULL DEFAULT '0'",
+        "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"SyncVelocaDTime\" timestamp",
+        "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"SyncVelocaDTime\" timestamp",
         // #304 dong bo phieu xuat sang Veloca
         "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"FlagSyncVeloca\" text NOT NULL DEFAULT '0'",
         "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"StockOutDateTime\" timestamp",
