@@ -882,6 +882,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #244 parity Ser_Inv_StockIn (4 cot) + Ser_Inv_StockInDetail.Unit
+        "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"SupplierID\" text",
+        "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"TSTRequestNo\" text",
+        "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"BillNo\" text",
+        "ALTER TABLE public.\"PartStockInLines\" ADD COLUMN IF NOT EXISTS \"Unit\" text",
         // #238 parity Req_PartPrice + Req_PartPriceDtl
         "ALTER TABLE public.\"ReqPartPrices\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"ReqPartPrices\" ADD COLUMN IF NOT EXISTS \"Description\" text",

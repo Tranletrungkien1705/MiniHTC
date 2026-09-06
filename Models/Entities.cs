@@ -2274,6 +2274,13 @@ public sealed class PartStockIn
     public string? RejectReason { get; set; }
     public string? RejectedBy { get; set; }
     public DateTime? RejectedAt { get; set; }
+
+    // ===== 🔴 #244: 4 cột nguồn `Ser_Inv_StockIn` mà màn tra PT-cho-phiếu-thanh-toán CẦN =====
+    // Nguồn `Ser_Mst_Part_GetForSupplierPayment` (BizCarSv.Inventory.StockOut.cs:14890) select đủ 4 cột này.
+    public string? DealerCode { get; set; }
+    public string? SupplierID { get; set; }
+    public string? TSTRequestNo { get; set; }   // số yêu cầu xuất NCC
+    public string? BillNo { get; set; }         // số hoá đơn NCC
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
@@ -2288,6 +2295,9 @@ public sealed class PartStockInLine
     public decimal Quantity { get; set; } = 1;
     public decimal Price { get; set; }
     public decimal VAT { get; set; }
+
+    /// <summary>#244: đơn vị tính — nguồn lấy từ `Ser_MST_Part.Unit` qua join, màn tra hiển thị cột này.</summary>
+    public string? Unit { get; set; }
 }
 
 /// <summary>Tồn kho phụ tùng (Ser_Inv_PartStock): số tồn theo kho + mã PT + vị trí. Cập nhật khi Post phiếu nhập/xuất.</summary>

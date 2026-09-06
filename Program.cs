@@ -29096,6 +29096,53 @@ app.MapPost("/api/reqpartprices/{no}/reject", async (string no, AppDbContext db,
 }).RequireAuthorization();
 
 // ===== Thanh toán nhà cung cấp (Ser_SupplierPayment — port 1:1 FrmSer_SupplierPayment) =====
+// ===== 🔴 #244 TRA PHỤ TÙNG ĐỂ LẬP PHIẾU THANH TOÁN — `Ser_Mst_Part_GetForSupplierPayment` =====
+// Màn: `Views/TST/FrmSer_SupplierPayment_Part_Search.cs` (471 dòng, DMSCarSv/TST) — chọn PT **đã nhập kho**
+//   để đưa vào phiếu thanh toán NCC. Biz `BizCarSv.Inventory.StockOut.cs:14890` (md5 8e73ba77, khớp 2 máy).
+//
+// Nguồn join `Ser_Inv_StockIn` × `Ser_Inv_StockInDetail` × `Ser_MST_Part` và:
+//  🔴 `and si.Status = '3'` — **CHỈ phiếu nhập ĐÃ KẾT THÚC**. Đây là hard-code định nghĩa màn,
+//     KHÔNG phải bộ lọc tuỳ chọn: chưa kết thúc nhập thì chưa có gì để trả tiền.
+//     (mã "3" = Kết thúc theo `TConst.Ser_Inv_StockIn` — xem chú thích `PartStockIn.Status`.)
+//  · Lọc CHÍNH XÁC: `DealerCode` · `SupplierID` · khoảng `StockInDate`.
+//  · Lọc CHỨA: `PartCode` · `StockInNo` (nguồn nối chuỗi `like '%…%'`).
+//  ⚠️ Form nối `" 23:59:59"` vào ngày ĐẾN ⇒ bao TRỌN ngày; bản port dùng `< ngày+1` cho tương đương.
+//  ⚠️ Nguồn chạy trên `_dbDealer` (DB đại lý), không phải DB Main — nợ dual-DB fleet-wide.
+//  ⚠️ Nguồn nối chuỗi thẳng vào SQL (`like '%" + pattern + "%'`) ⇒ **có bề mặt SQL injection**;
+//     bản port dùng LINQ tham số hoá, CỐ Ý không port lỗi này.
+app.MapGet("/api/supplierpayments/parts-search", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? supplierId, string? partCode, string? stockInNo,
+    DateTime? stockInDateFrom, DateTime? stockInDateTo) =>
+{
+    var qy = from si in db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "3")
+             join l in db.PartStockInLines.Where(x => x.OrgId == t.OrgId) on si.Id equals l.StockInId
+             select new { si, l };
+
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.si.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(supplierId)) qy = qy.Where(x => x.si.SupplierID == supplierId!.Trim());
+    if (stockInDateFrom is not null) qy = qy.Where(x => x.si.StockInDate >= stockInDateFrom);
+    // ngày ĐẾN bao trọn ngày (nguồn nối " 23:59:59")
+    if (stockInDateTo is not null) qy = qy.Where(x => x.si.StockInDate < stockInDateTo.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(partCode))
+        qy = qy.Where(x => x.l.PartCode.ToLower().Contains(partCode!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(stockInNo))
+        qy = qy.Where(x => x.si.StockInNo.ToLower().Contains(stockInNo!.Trim().ToLower()));
+
+    var items = await qy.OrderByDescending(x => x.si.StockInDate).ThenBy(x => x.l.PartCode).Take(1000)
+        .Select(x => new
+        {
+            x.si.DealerCode,
+            x.l.PartCode, vieName = x.l.PartName, x.l.Unit,
+            x.l.Quantity, x.l.Price, x.l.VAT,
+            x.si.StockInNo, x.si.StockInDate, x.si.TSTRequestNo, x.si.BillNo,
+        }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        note = "Chỉ phiếu nhập Status=3 (Kết thúc) — hard-code của nguồn, không phải bộ lọc.",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #237 THANH TOÁN NCC — parity `Ser_SupplierPayment` + `Ser_SupplierPaymentDtl` (DMSCarSv/TST) =====
 // Màn ghi: `Views/TST/FrmSer_SupplierPayment.cs` (:723 Save, :838 Appr); màn tra `FrmSer_SupplierPaymentMng.cs`.
 // BƯỚC 3B: Service md5 `b3a175a1` · POCO header `0c9f1037` · POCO dòng `84053d99` — KHỚP 2 máy.
@@ -29275,8 +29322,18 @@ app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext
     if (p is null) return Results.NotFound(new { no });
     if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt phiếu Mới tạo." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    p.Status = "A"; p.ApprovedAt = DateTime.Now; p.ApprBy = who;
-    p.LogLUDTime = DateTime.Now; p.LogLUBy = who;
+    var nowAppr = DateTime.Now;   // nguồn dùng CÙNG một dtimeSys cho mọi cột dưới đây
+    p.Status = "A"; p.ApprovedAt = nowAppr; p.ApprBy = who;
+    p.LogLUDTime = nowAppr; p.LogLUBy = who;
+
+    // ===== 🔴 #244 GIẢI NỢ `PaymentDTime`/`PaymentBy` (ghi nợ ở #243) =====
+    // Quét toàn biz tìm nơi GHI hai cột (không chỉ nơi select): `BizCarSv.Inventory.StockOut.cs:16839-16840`
+    //   `, t.PaymentDTime = f.ApprDTime`
+    //   `, t.PaymentBy   = f.ApprBy`
+    // ⇒ **ngày/người thanh toán = ngày/người DUYỆT**, đặt tại bước duyệt chứ không phải lúc lưu.
+    //   Kết luận ở #243 ("không ai ghi cả") là do mới đọc HAI hàm; quét cả file mới ra.
+    p.PaymentDate = nowAppr;
+    p.PaymentBy = who;
     // Dòng có trạng thái RIÊNG (SupplierPaymentDtlStatus) — đồng bộ theo đầu phiếu.
     var payLines = await db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == no).ToListAsync();
     foreach (var l in payLines) { l.SupplierPaymentDtlStatus = "A"; l.LogLUDTime = DateTime.Now; l.LogLUBy = who; }
