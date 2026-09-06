@@ -833,6 +833,19 @@ app.MapPost("/api/wclaims/{no}/{action}", async (string no, string action, AppDb
     return Results.Ok(new { c.ClaimNo, status = c.Status });
 }).RequireAuthorization();
 
+// Tra LỊCH SỬ sửa HĐ bán lẻ theo từng trường (3 bảng `Dlr_Contract_Update*_His` của nguồn).
+app.MapGet("/api/dlrcontracts/{no}/change-history", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var bank = await db.DlrContractUpdBankCodeHiss.Where(h => h.OrgId == t.OrgId && h.DlrContractNo == no)
+        .OrderByDescending(h => h.Id).Select(h => new { h.BankCodeOld, h.BankCodeNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    var salesType = await db.DlrContractUpdSalesTypeHiss.Where(h => h.OrgId == t.OrgId && h.DlrContractNo == no)
+        .OrderByDescending(h => h.Id).Select(h => new { h.SalesTypeOld, h.SalesTypeNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    var smCode = await db.DlrContractUpdSMCodeHiss.Where(h => h.OrgId == t.OrgId && h.DlrContractNo == no)
+        .OrderByDescending(h => h.Id).Select(h => new { h.SMCodeOld, h.SMCodeNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    return Results.Ok(new { no, bankCode = bank, salesType, salesManCode = smCode });
+}).RequireAuthorization();
+
 // ===== Sửa GIÁ dòng giao dịch bán lẻ (Dls_DealDetail_UpdatePrice — 2010.HTC Biz.HTC.WH.hkt.cs:6771) =====
 // 🔴 Luật nguồn: tra bảng xe theo **VIN** để lấy `CarId` rồi mới update — **KHÔNG lấy CarId từ input**;
 //    không tìm thấy xe thì báo lỗi. Update `DLS_DealDetail.Price = PriceNew` theo `DealNo` + `CarId`,
@@ -17196,7 +17209,7 @@ app.MapPost("/api/dlrcontracts/{no}/finish", async (string no, AppDbContext db, 
 
 // Hỗ trợ sửa HĐ đại lý theo lô (port 1:1 FrmSupportDlr_Contract_UpdateBankCode/UpdateSalesType/UpdateSMCode, ERP.V15.2025/Support).
 // field = bankCode|salesType|salesManCode.
-app.MapPost("/api/dlrcontracts/{no}/patch", async (string no, DlrContractPatchDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dlrcontracts/{no}/patch", async (string no, DlrContractPatchDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
@@ -17204,15 +17217,39 @@ app.MapPost("/api/dlrcontracts/{no}/patch", async (string no, DlrContractPatchDt
     var field = (dto.Field ?? "").Trim();
     if (field is not ("bankCode" or "salesType" or "salesManCode")) return Results.BadRequest(new { error = "Field không hợp lệ (bankCode|salesType|salesManCode)." });
     if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+    // 🔴 Nguồn (`Support_Dlr_Contract_Update{BankCode,SalesType,SMCode}`) ghi **BẢNG LỊCH SỬ RIÊNG**
+    //    cho từng trường, lưu giá trị cũ + mới — port cũ sửa xong không để lại dấu vết nào.
+    //    TWIN: cả ba hàm **chỉ có ở `TERP.WSHTC.64`** (99511 / 99577 / 99775).
+    var newVal = dto.Value.Trim().ToUpperInvariant();
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     string oldVal;
     switch (field)
     {
-        case "bankCode": oldVal = c.BankCode ?? ""; c.BankCode = dto.Value.Trim().ToUpperInvariant(); break;
-        case "salesType": oldVal = c.SalesType; c.SalesType = dto.Value.Trim().ToUpperInvariant(); break;
-        default: oldVal = c.SalesManCode; c.SalesManCode = dto.Value.Trim().ToUpperInvariant(); break;
+        case "bankCode":
+            // ⚠️ CHƯA port guard nguồn: mã NH mới phải có trong `Mst_Bank` — MiniHTC chưa có master
+            //    ngân hàng ⇒ bỏ guard thay vì bịa master. Đã ghi nợ.
+            oldVal = c.BankCode ?? ""; c.BankCode = newVal;
+            db.DlrContractUpdBankCodeHiss.Add(new DlrContractUpdBankCodeHis { OrgId = t.OrgId, DlrContractNo = c.DlrContractNo, BankCodeOld = oldVal, BankCodeNew = newVal, UpdDTime = now, UpdBy = who });
+            break;
+        case "salesType":
+            // ⚠️ CHƯA port guard nguồn: kiểu bán mới phải có trong `Mst_DealerSalesType` (chưa có master).
+            oldVal = c.SalesType; c.SalesType = newVal;
+            db.DlrContractUpdSalesTypeHiss.Add(new DlrContractUpdSalesTypeHis { OrgId = t.OrgId, DlrContractNo = c.DlrContractNo, SalesTypeOld = oldVal, SalesTypeNew = newVal, UpdDTime = now, UpdBy = who });
+            break;
+        default:
+            // 🔴 Guard nguồn ĐÃ port: NVBH mới phải tồn tại, đang hoạt động ("1") và đúng loại "TVBH".
+            var sm = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == newVal);
+            if (sm is null) return Results.BadRequest(new { error = $"Không tìm thấy nhân viên bán hàng {newVal}." });
+            if (sm.Status != "1") return Results.BadRequest(new { error = $"Nhân viên {newVal} không còn hoạt động (SMStatus != 1)." });
+            if (!string.Equals(sm.SalesType, "TVBH", StringComparison.OrdinalIgnoreCase))
+                return Results.BadRequest(new { error = $"Nhân viên {newVal} không phải loại TVBH (SMType = '{sm.SalesType}')." });
+            oldVal = c.SalesManCode; c.SalesManCode = newVal;
+            db.DlrContractUpdSMCodeHiss.Add(new DlrContractUpdSMCodeHis { OrgId = t.OrgId, DlrContractNo = c.DlrContractNo, SMCodeOld = oldVal, SMCodeNew = newVal, UpdDTime = now, UpdBy = who });
+            break;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrContractNo, field, oldValue = oldVal, newValue = dto.Value.Trim().ToUpperInvariant() });
+    return Results.Ok(new { c.DlrContractNo, field, oldValue = oldVal, newValue = newVal });
 }).RequireAuthorization();
 
 // ===== Khách hàng đại lý (DealerCustomer — port 1:1 FrmNewCustomer/FrmMngCustomer, DMSales.Foton/SalesDealer) =====

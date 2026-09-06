@@ -4559,6 +4559,57 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Lịch sử sửa NGÂN HÀNG của HĐ bán lẻ (`Dlr_Contract_UpdateBankCode_His` — port 1:1
+/// `Support_Dlr_Contract_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.cs:114595`).
+/// ⚠️ Nguồn còn guard mã ngân hàng mới phải có trong `Mst_Bank` — MiniHTC **chưa có master ngân hàng**
+/// nên guard đó CHƯA port (đã ghi nợ, không bịa master).
+/// </summary>
+public sealed class DlrContractUpdBankCodeHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrContractNo { get; set; } = "";
+    public string? BankCodeOld { get; set; }
+    public string? BankCodeNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
+/// Lịch sử sửa KIỂU BÁN của HĐ bán lẻ (`Dlr_Contract_UpdateSalesType_His` — port 1:1
+/// `Support_Dlr_Contract_UpdateSalesType`, `Biz.HTC.WH.cs:114292`).
+/// ⚠️ Guard nguồn: kiểu bán mới phải có trong `Mst_DealerSalesType` — MiniHTC **chưa có master này**
+/// ⇒ CHƯA port guard (đã ghi nợ).
+/// </summary>
+public sealed class DlrContractUpdSalesTypeHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrContractNo { get; set; } = "";
+    public string? SalesTypeOld { get; set; }
+    public string? SalesTypeNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
+/// Lịch sử sửa NHÂN VIÊN BÁN HÀNG của HĐ bán lẻ (`Dlr_Contract_UpdateSMCode_His` — port 1:1
+/// `Support_Dlr_Contract_UpdateSMCode`, `Biz.HTC.WH.hkt.cs:8563`).
+/// 🔴 Guard nguồn (ĐÃ port được vì MiniHTC có đủ cột): NVBH mới phải tồn tại,
+/// **`SMStatus = "1"`** và **`SMType = "TVBH"`** — không phải NVBH nào cũng gán được.
+/// </summary>
+public sealed class DlrContractUpdSMCodeHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrContractNo { get; set; } = "";
+    public string? SMCodeOld { get; set; }
+    public string? SMCodeNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử sửa GIÁ dòng giao dịch bán lẻ (`Dls_DealDetail_HisUpdPrice` — port 1:1
 /// `Dls_DealDetail_UpdatePrice`, 2010.HTC `Biz.HTC.WH.hkt.cs:6771`).
 /// Luật nguồn: tra `Car_Car` theo **VIN** để lấy `CarId`, **không lấy CarId từ input**; nếu không có xe

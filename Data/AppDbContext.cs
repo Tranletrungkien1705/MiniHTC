@@ -25,6 +25,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarDeliveryDateHisUpd> CarDeliveryDateHisUpds => Set<CarDeliveryDateHisUpd>();
     public DbSet<DlvMinutesUpdDateHis> DlvMinutesUpdDateHiss => Set<DlvMinutesUpdDateHis>();
     public DbSet<DlsDealDetailHisUpdPrice> DlsDealDetailHisUpdPrices => Set<DlsDealDetailHisUpdPrice>();
+    public DbSet<DlrContractUpdBankCodeHis> DlrContractUpdBankCodeHiss => Set<DlrContractUpdBankCodeHis>();
+    public DbSet<DlrContractUpdSalesTypeHis> DlrContractUpdSalesTypeHiss => Set<DlrContractUpdSalesTypeHis>();
+    public DbSet<DlrContractUpdSMCodeHis> DlrContractUpdSMCodeHiss => Set<DlrContractUpdSMCodeHis>();
     public DbSet<DlvMinutesUpdProvinceHis> DlvMinutesUpdProvinceHiss => Set<DlvMinutesUpdProvinceHis>();
     public DbSet<PurchaseOrderLine> PurchaseOrderLines => Set<PurchaseOrderLine>();
     public DbSet<Bom> Boms => Set<Bom>();
