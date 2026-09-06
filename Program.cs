@@ -4217,6 +4217,101 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Ba master còn nợ: Mst_Bank · Mst_District · Mst_DealerSalesType =====
+// Nguồn: `Mst_Bank_CheckDB` (Biz.HTC.WH.cs:355) · tra `Mst_District` (Biz.HTC.WH.hkt.cs:9076) ·
+// `Mst_DealerSalesType_CheckDB` (BizHTC.DealerSales.cs:138).
+// Ba master này đã chặn guard ở #92 (tỉnh/huyện biên bản giao xe), #94 và #98 (mã ngân hàng,
+// loại hình bán) — khi đó tôi ghi nợ thay vì bịa master rỗng; nay bổ sung để mở khoá.
+// 🔴 `Mst_District` khoá là CẶP (ProvinceCode, DistrictCode) — nguồn luôn lọc đồng thời cả hai.
+// 🔴 `Mst_DealerSalesType`: guard nguồn tra theo CẶP (SalesType, FlagActive) trong cùng một lệnh,
+//    nên loại hình đã ngưng bị coi là KHÔNG TỒN TẠI, không phải "tồn tại nhưng khoá".
+app.MapGet("/api/mstbanks", async (AppDbContext db, ITenantContext t, string? bankCode, string? parent, string? flagActive) =>
+{
+    var qy = db.MstBanks.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(bankCode)) qy = qy.Where(x => x.BankCode == bankCode);
+    if (!string.IsNullOrWhiteSpace(parent)) qy = qy.Where(x => x.BankCodeParent == parent);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.BankCode)
+        .Select(x => new { x.BankCode, x.BankName, x.BankCodeParent, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstbanks", async (MstBankDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.BankCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã ngân hàng rỗng." });
+    if (await db.MstBanks.AnyAsync(x => x.OrgId == t.OrgId && x.BankCode == code))
+        return Results.BadRequest(new { error = $"Ngân hàng {code} đã tồn tại." });
+    var parent = (dto.BankCodeParent ?? "").Trim();
+    // Có khai báo ngân hàng mẹ thì mẹ phải tồn tại (cấu trúc cha–con của master này).
+    if (parent.Length > 0 && !await db.MstBanks.AnyAsync(x => x.OrgId == t.OrgId && x.BankCode == parent))
+        return Results.BadRequest(new { error = $"Ngân hàng mẹ {parent} không tồn tại." });
+    db.MstBanks.Add(new MstBank
+    {
+        OrgId = t.OrgId, BankCode = code, BankName = dto.BankName,
+        BankCodeParent = parent.Length > 0 ? parent : null,
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { bankCode = code });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstdistricts", async (AppDbContext db, ITenantContext t, string? provinceCode, string? districtCode, string? flagActive) =>
+{
+    var qy = db.MstDistricts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(provinceCode)) qy = qy.Where(x => x.ProvinceCode == provinceCode);
+    if (!string.IsNullOrWhiteSpace(districtCode)) qy = qy.Where(x => x.DistrictCode == districtCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.ProvinceCode).ThenBy(x => x.DistrictCode)
+        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdistricts", async (MstDistrictDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var prov = (dto.ProvinceCode ?? "").Trim();
+    var dist = (dto.DistrictCode ?? "").Trim();
+    if (prov.Length < 1) return Results.BadRequest(new { error = "Mã tỉnh rỗng." });
+    if (dist.Length < 1) return Results.BadRequest(new { error = "Mã quận/huyện rỗng." });
+    // 🔴 Khoá là CẶP — cùng mã huyện ở tỉnh khác vẫn hợp lệ.
+    if (await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov && x.DistrictCode == dist))
+        return Results.BadRequest(new { error = $"Quận/huyện {dist} của tỉnh {prov} đã tồn tại." });
+    db.MstDistricts.Add(new MstDistrict
+    {
+        OrgId = t.OrgId, ProvinceCode = prov, DistrictCode = dist, DistrictName = dto.DistrictName,
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { provinceCode = prov, districtCode = dist });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstdealersalestypes", async (AppDbContext db, ITenantContext t, string? salesType, string? salesGroupType, string? flagActive) =>
+{
+    var qy = db.MstDealerSalesTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(salesType)) qy = qy.Where(x => x.SalesType == salesType);
+    if (!string.IsNullOrWhiteSpace(salesGroupType)) qy = qy.Where(x => x.SalesGroupType == salesGroupType);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.SalesType)
+        .Select(x => new { x.SalesType, x.SalesTypeNameVN, x.SalesGroupType, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdealersalestypes", async (MstDealerSalesTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.SalesType ?? "").Trim();
+    if (type.Length < 1) return Results.BadRequest(new { error = "Mã loại hình bán rỗng." });
+    if (await db.MstDealerSalesTypes.AnyAsync(x => x.OrgId == t.OrgId && x.SalesType == type))
+        return Results.BadRequest(new { error = $"Loại hình bán {type} đã tồn tại." });
+    db.MstDealerSalesTypes.Add(new MstDealerSalesType
+    {
+        OrgId = t.OrgId, SalesType = type, SalesTypeNameVN = dto.SalesTypeNameVN,
+        SalesGroupType = dto.SalesGroupType,
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { salesType = type });
+}).RequireAuthorization();
+
 // ===== Gán VÙNG THỊ TRƯỜNG cho đại lý (Mst_Dealer_UpdateMRKAMCode — port 1:1
 // `Mst_Dealer_UpdateMRKAMCode_New20181115`, 2010.HTC BizHTC.Marketing.cs:12035).
 // TWIN: WSHTC.cs:37369 và WSHTC.64:50350. =====
@@ -23784,6 +23879,10 @@ record MstDocKeyDto(long Id);
 record DealerMrkamCodeDto(string? DealerCode, string? MRKAMCode);
 // Sinh mã dùng chung: SequenceType + tiền tố/hậu tố do người gọi truyền.
 record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPostfix);
+// Ba master còn nợ. Mst_District khoá là CẶP (ProvinceCode, DistrictCode).
+record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive);
+record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive);
+record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

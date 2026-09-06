@@ -4562,6 +4562,58 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Master NGÂN HÀNG (`Mst_Bank` — nguồn `Mst_Bank_CheckDB`, 2010.HTC
+/// `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:355`; khoá là `BankCode`).
+/// 🔴 `BankCodeParent` cho thấy master này có **cấu trúc CHA–CON**: chi nhánh trỏ về ngân hàng mẹ.
+/// Master này là thứ đã chặn guard ở **#94** và **#98** (sửa mã ngân hàng của hợp đồng / của giao dịch
+/// bán lẻ) — nay đã có, các guard đó mở khoá được.
+/// </summary>
+public sealed class MstBank
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BankCode { get; set; } = "";
+    public string? BankName { get; set; }
+    /// <summary>Mã ngân hàng mẹ — rỗng nghĩa là bản ghi gốc, không phải chi nhánh.</summary>
+    public string? BankCodeParent { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>
+/// Master QUẬN/HUYỆN (`Mst_District` — nguồn tra tại `Biz.HTC.WH.hkt.cs:9076`).
+/// 🔴 Khoá là **CẶP** (`ProvinceCode`, `DistrictCode`), không phải mình `DistrictCode` —
+/// nguồn luôn lọc đồng thời cả hai (`and t.ProvinceCode = @… and t.DistrictCode = @…`).
+/// Master này đã chặn guard ở **#92** (sửa tỉnh/huyện của biên bản giao xe).
+/// </summary>
+public sealed class MstDistrict
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ProvinceCode { get; set; } = "";
+    public string DistrictCode { get; set; } = "";
+    public string? DistrictName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>
+/// Master LOẠI HÌNH BÁN của đại lý (`Mst_DealerSalesType` — nguồn `Mst_DealerSalesType_CheckDB`,
+/// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:138`; khoá `SalesType`).
+/// 🔴 Guard của nguồn tra theo **CẶP** (`SalesType`, `FlagActive`) trong cùng một lệnh
+/// `GetTableContents` — tức loại hình đã ngưng thì coi như KHÔNG tồn tại, không phải "tồn tại nhưng khoá".
+/// `SalesGroupType` gom các loại hình thành nhóm. Master này đã chặn guard ở **#94**.
+/// </summary>
+public sealed class MstDealerSalesType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SalesType { get; set; } = "";
+    public string? SalesTypeNameVN { get; set; }
+    /// <summary>Nhóm loại hình bán.</summary>
+    public string? SalesGroupType { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>
 /// Bộ đếm sinh mã dùng chung (`Seq_*` — port 1:1 `Seq_Common_Get_New20181115` /
 /// `Seq_Common_MyGet` / `Seq_Common_Raw`, 2010.HTC `BizHTC.Marketing.cs` dòng 16924 / 16868 / 16854).
 /// 🔴 Nguồn KHÔNG có một bảng đếm duy nhất: mỗi loại mã trỏ tới **một bảng `Seq_*` riêng**
