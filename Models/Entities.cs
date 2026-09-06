@@ -10176,6 +10176,14 @@ public sealed class BankGuarantee
     /// <summary>Người duyệt/từ chối (`ApprovedBy`) — nguồn ghi ở CẢ hai nhánh.</summary>
     public string? ApprovedBy { get; set; }
     public DateTime? SettledAt { get; set; }
+
+    // ===== #186 parity `PaymentGuaranteeCreate_New20191217` (DataWH/BizHTC.zTemp.cs:14110, csproj 276) =====
+    /// <summary>
+    /// 🔴 Số ngày trả chậm (`NumberOfDaysDeferredPayment`) — nguồn **BẮT BUỘC** khi
+    /// `GuaranteeType = LCUP` (LC Upas) và phải >= 0, thiếu thì ném
+    /// `PaymentGuaranteeCreate_InvalidNumberOfDaysDeferredPayment`. Các loại khác không dùng.
+    /// </summary>
+    public int? NumberOfDaysDeferredPayment { get; set; }
 }
 
 /// <summary>Chi tiết bảo lãnh theo VIN (Pmt_GuaranteeDetail) — port 1:1 FrmBankGrt detail.</summary>

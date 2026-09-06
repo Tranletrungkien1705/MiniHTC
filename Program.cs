@@ -3148,7 +3148,15 @@ app.MapPost("/api/bankmortages", async (BankMortageDto dto, AppDbContext db, ITe
 {
     if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
     if (string.IsNullOrWhiteSpace(dto.MortageBankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng nhận thế chấp." });
-    var gt = dto.GuaranteeType == "1" ? "1" : "0";
+    // 🔴 #186 SỬA BUG DỮ LIỆU: `GuaranteeType` KHÔNG phải cờ 0/1 mà là **loại bảo lãnh**
+    //    (`TConst.GuaranteeType`, Const.Main.cs:1139): **"BL"** bảo lãnh · **"LCTC"** LC trả chậm
+    //    · **"LCUP"** LC Upas · **"EPLC"**. Port cũ ép `dto.GuaranteeType == "1" ? "1" : "0"`
+    //    ⇒ MỌI loại bảo lãnh đều thành "0"/"1" và guard ở #161 (`grtType == "BL"` ⇒ BANKBL,
+    //    `LCTC`/`LCUP` ⇒ BANKLC) **KHÔNG BAO GIỜ khớp** — bug câm LIÊN CỤM.
+    var gtIn = (dto.GuaranteeType ?? "").Trim().ToUpperInvariant();
+    if (gtIn is not ("BL" or "LCTC" or "LCUP" or "EPLC"))
+        return Results.BadRequest(new { error = "Loại bảo lãnh phải là BL | LCTC | LCUP | EPLC." });
+    var gt = gtIn;
     var range = dto.DeliveryRangeType is "DlvThisWeek" or "DlvNextWeek" ? dto.DeliveryRangeType : "DlvImmediate";
     var vin = dto.VIN.Trim().ToUpperInvariant();
     var ex = await db.BankCarMortages.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.VIN == vin);
@@ -3276,11 +3284,23 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có chi tiết xe bảo lãnh." });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var gtype = dto.GuaranteeType == "1" ? "1" : "0";
+    // 🔴 #186 SỬA BUG DỮ LIỆU: `GuaranteeType` KHÔNG phải cờ 0/1 mà là **loại bảo lãnh**
+    //    (`TConst.GuaranteeType`, Const.Main.cs:1139): **"BL"** bảo lãnh · **"LCTC"** LC trả chậm
+    //    · **"LCUP"** LC Upas · **"EPLC"**. Port cũ ép `dto.GuaranteeType == "1" ? "1" : "0"`
+    //    ⇒ MỌI loại bảo lãnh đều thành "0"/"1" và guard ở #161 (`grtType == "BL"` ⇒ BANKBL,
+    //    `LCTC`/`LCUP` ⇒ BANKLC) **KHÔNG BAO GIỜ khớp** — bug câm LIÊN CỤM.
+    var gtIn = (dto.GuaranteeType ?? "").Trim().ToUpperInvariant();
+    if (gtIn is not ("BL" or "LCTC" or "LCUP" or "EPLC"))
+        return Results.BadRequest(new { error = "Loại bảo lãnh phải là BL | LCTC | LCUP | EPLC." });
+    var gtype = gtIn;
+    // 🔴 `LCUP` BẮT BUỘC có số ngày trả chậm >= 0 (`_InvalidNumberOfDaysDeferredPayment`).
+    if (gtype == "LCUP" && (dto.NumberOfDaysDeferredPayment is null || dto.NumberOfDaysDeferredPayment < 0))
+        return Results.BadRequest(new { error = "Bảo lãnh LC Upas (LCUP) phải có số ngày trả chậm >= 0." });
     var no = "BLNH" + DateTime.Now.ToString("yyMMddHHmmss");
     var g2 = new BankGuarantee
     {
         OrgId = t.OrgId, GuaranteeNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode.Trim(),
+        NumberOfDaysDeferredPayment = dto.NumberOfDaysDeferredPayment,
         BankGuaranteeNo = dto.BankGuaranteeNo ?? "", GuaranteeType = gtype, Term = dto.Term,
         BankCodeMonitor = dto.BankCodeMonitor ?? "", BankBUCode = dto.BankBUCode,
         DateOpen = dto.DateOpen, DateExpired = dto.DateExpired, DateEnd = dto.DateEnd, Remark = dto.Remark ?? "",
@@ -3500,7 +3520,7 @@ app.MapPost("/api/bankdos", async (BankDoDto dto, AppDbContext db, ITenantContex
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "DO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var d2 = new BankDeliveryOrder { OrgId = t.OrgId, DONo = no, BankCode = dto.BankCode ?? "", BankCodeMonitor = dto.BankCodeMonitor ?? "", BankBUCode = dto.BankBUCode, GuaranteeType = dto.GuaranteeType == "1" ? "1" : "0", DealerCode = dto.DealerCode.Trim(), SOCode = dto.SOCode ?? "", Status = "Open" };
+    var d2 = new BankDeliveryOrder { OrgId = t.OrgId, DONo = no, BankCode = dto.BankCode ?? "", BankCodeMonitor = dto.BankCodeMonitor ?? "", BankBUCode = dto.BankBUCode, GuaranteeType = (dto.GuaranteeType ?? "").Trim().ToUpperInvariant(), DealerCode = dto.DealerCode.Trim(), SOCode = dto.SOCode ?? "", Status = "Open" };
     db.BankDeliveryOrders.Add(d2); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.BankDoCars.Add(new BankDoCar { OrgId = t.OrgId, DeliveryOrderId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId ?? "", BankGrtNo = c.BankGrtNo ?? "", SpecCode = c.SpecCode ?? "", ColorCode = c.ColorCode ?? "", DeliveryExpectedDate = c.DeliveryExpectedDate, DeliveryOutDate = c.DeliveryOutDate, ConfirmStatus = "0" });
@@ -29429,7 +29449,7 @@ record InvoiceSetupMultiDto(List<InvoiceSetupItemDto>? Items);
 record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, string? FlagInvoiceTCG = null);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
 record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
-record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
+record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
 record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars, string? BankCode = null, string? BankCodeMonitor = null, string? BankBUCode = null, string? GuaranteeType = null);
 record BankDoConfirmDto(string? Remark);
