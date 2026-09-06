@@ -10374,6 +10374,18 @@ public sealed class VatInvoice
     public string DealerCode { get; set; } = "";
     public string BankCode { get; set; } = "";
     public string SourceInvoiceName { get; set; } = "";   // nguon HD
+
+    // ===== #195 parity `VAT_HTCInvoiceCreate_Special_New20190816` (BizHTC.HDDTIntergration.cs:8329) =====
+    /// <summary>
+    /// Loại nguồn hoá đơn (`TConst.SourceInvoiceCode`): `INVOICEROOT` · `INVOICEADJ` · `INVOICEREPLACE`.
+    /// Chỉ `INVOICEREPLACE` mới kích hoạt luật huỷ hoá đơn GỐC (xem `POST /api/vatinvoices`).
+    /// </summary>
+    public string? SourceInvoiceCode { get; set; }
+    /// <summary>Mã hoá đơn GỐC bị thay thế/điều chỉnh (`RefNo`) — trỏ tới `HTCInvoiceCode` khác.</summary>
+    public string? RefNo { get; set; }
+    // #195b: nguồn ghi `LogLUDateTime`/`LogLUBy` trên CHÍNH bảng `VAT_HTCInvoice` (khối huỷ hoá đơn gốc).
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     /// <summary>
     /// 🔴 MÃ TRA CỨU hoá đơn điện tử (`OS_HDDT_InvoiceCode` — nguồn chú thích thẳng: *"Số tra cứu hóa đơn"*).
     /// ⚠️ Mã này **do hệ HDDT/TVAN CẤP** qua `OS_MstSvTVAN_MstSv_Seq_Common_Get`

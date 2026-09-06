@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #195 parity VAT_HTCInvoiceCreate_Special: hoa don thay the / dieu chinh
+        "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"SourceInvoiceCode\" text",
+        "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"RefNo\" text",
+        // #195b
+        "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #194 parity VAT_HTCInvoiceApproveX: trang thai DONG chi tiet hoa don VAT
         "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"HTCStatusDetail\" text NOT NULL DEFAULT 'P'",
         "ALTER TABLE public.\"VatInvoiceCars\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp",
