@@ -33810,20 +33810,74 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
     // TOP 500 + sắp theo ngày tiếp nhận GIẢM DẦN — đúng vị trí của nguồn: cắt TRƯỚC khi ghép dữ liệu.
     var rows = await qy.OrderByDescending(r => r.CheckInDate).Take(500).ToListAsync();
 
+    // ===== 🔴 #301 BẢN CHỤP TRÊN LỆNH, MASTER CHỈ LÀ DỰ PHÒNG =====
+    // Nguồn trả **mọi** cột khách/xe qua `isnull(ro.X, <master>.X)` ⇒ lệnh giữ dữ liệu **tại thời điểm
+    //   tiếp nhận**; sửa hồ sơ khách/xe hôm nay KHÔNG được làm đổi lệnh cũ. Port cũ đọc thẳng cột lệnh
+    //   ⇒ lệnh nào chưa chụp thì ra rỗng, và không có đường lấy dự phòng.
+    // ⚠️ Thứ tự dự phòng của nguồn **KHÔNG đối xứng** — phải chép đúng, đừng "chuẩn hoá":
+    //     CusName   : ro.CusName   → cus.**ContName** → cus.CusName      (người liên hệ ĐỨNG TRƯỚC)
+    //     CusAddress: ro.CusAddress→ cus.**Address**  → cus.ContAddress  (địa chỉ KH đứng trước — NGƯỢC LẠI)
+    //     CusTel    : ro.CusTel    → cus.Tel          → cus.ContTel
+    //     CusMobile : ro.CusMobile → cus.Mobile       → cus.ContMobile
+    //     CusTaxCode: ro.CusTaxCode→ cus.TaxCode                          (chỉ HAI cấp)
+    // ⚠️ `OwnerName = cus.CusName` lấy THẲNG, không dự phòng: đó là **chủ xe**, khác `CusName` (người mang xe đến).
+    var cusIds = rows.Select(r => r.CusID).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    var vins = rows.Select(r => r.Vin).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    var cusMap = cusIds.Count == 0 ? new Dictionary<string, ServiceCustomer>()
+        : (await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusIds.Contains(c.CusCode)).ToListAsync())
+            .GroupBy(c => c.CusCode).ToDictionary(g => g.Key, g => g.First());
+    // ⚠️ XẤP XỈ ĐÃ KHAI: nguồn ghép xe theo `ro.CarID = car.CarID`; MiniHTC chưa có `CarID` trên lệnh nên
+    //   ghép theo số khung. Trùng khung trong cùng đại lý là bất thường ⇒ chấp nhận được, nhưng ghi rõ.
+    var carMap = vins.Count == 0 ? new Dictionary<string, ServiceCar>()
+        : (await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync())
+            .GroupBy(c => c.FrameNo).ToDictionary(g => g.Key, g => g.First());
+
+    static string? Co(params string?[] vs) { foreach (var v in vs) if (!string.IsNullOrWhiteSpace(v)) return v; return null; }
+
     const string MASK = "******";
     var items = rows.Select(r =>
     {
         var own = caller.Length > 0 && string.Equals(r.DealerCode, caller, StringComparison.OrdinalIgnoreCase);
+        var cus = r.CusID is not null && cusMap.TryGetValue(r.CusID, out var c0) ? c0 : null;
+        var car = r.Vin is not null && carMap.TryGetValue(r.Vin, out var v0) ? v0 : null;
         return new
         {
             r.RONo,
             roRONo = "BG-" + r.RONo,                                  // tiền tố BÁO GIÁ — KHÔNG che
             normalizedRONo = own ? "LS-" + r.RONo : MASK,             // tiền tố LỆNH SỬA CHỮA — CHE nếu khác đại lý
             normalizedCreator = own ? r.Creator : MASK,
-            r.DealerCode, r.LicensePlate, r.Vin, r.CusName, r.Status,
+            r.DealerCode, r.Status,
             statusName = RoStatusDisplayName(r.Status),   // #284 nhãn hiển thị của nguồn
-            r.CheckInDate, r.ActualDeliveryDate, r.TrademarkNameModel,
+            r.CheckInDate, r.ActualDeliveryDate,
             isOwnDealer = own,
+
+            // --- #301: chuỗi dự phòng ĐÚNG THỨ TỰ NGUỒN ---
+            r.CusID,
+            ownerName = cus?.CusName,                                        // CHỦ XE (không dự phòng)
+            cusName = Co(r.CusName, cus?.ContName, cus?.CusName),            // người MANG XE ĐẾN
+            cusAddress = Co(r.CusAddress, cus?.Address, cus?.ContAddress),
+            cusTel = Co(r.CusTel, cus?.Tel, cus?.ContTel),
+            cusMobile = Co(r.CusMobile, cus?.Mobile, cus?.ContMobile),
+            cusTaxCode = Co(r.CusTaxCode, cus?.TaxCode),
+            modelID = Co(r.ModelID, car?.ModelCode),
+            licensePlate = Co(r.LicensePlate, car?.PlateNo),
+            frameNo = Co(r.Vin, car?.FrameNo),
+            vin = Co(r.Vin, car?.FrameNo),
+            engineNo = Co(r.EngineNo, car?.EngineNo),
+            colorCode = Co(r.ColorCode, car?.ColorCode),
+            tradeMarkCode = Co(r.TradeMarkCode, car?.TradeMark),
+            r.BatteryNo, r.SerialNo,
+            warrantyRegistrationDate = r.WarrantyRegistrationDate ?? car?.WarrantyRegistrationDate,
+            warrantyExpiresDate = r.WarrantyExpiresDate,
+            r.WarrantyKM,
+
+            // 🔴 #301 KHÔNG NHẤT QUÁN CỦA NGUỒN, giữ nguyên + khai báo:
+            //   `TradeMarkNameModel = tm.TradeMarkName + ' - ' + mdl.ModelName` ghép từ **hiệu/dòng của XE**
+            //   (`tm`/`mdl` join theo `car`), **bỏ qua** bản chụp `ro.TradeMarkCode`/`ro.ModelID` mà chính
+            //   truy vấn đó vừa ưu tiên ở các cột `isnull(...)` bên trên. Nên cột ghép có thể mâu thuẫn với
+            //   hai cột thành phần. Thêm nữa: nguồn nối bằng `+` nên **một vế NULL ⇒ CẢ CHUỖI NULL**.
+            r.TrademarkNameModel,
+            trademarkNameModelNote = "Nguồn ghép từ hiệu/dòng của XE, bỏ qua bản chụp trên lệnh; + với NULL ⇒ NULL.",
         };
     }).ToList();
 
@@ -33832,7 +33886,10 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
         callerDealerCode = caller.Length == 0 ? null : caller,
         note = "Số lệnh (LS-) và người lập bị che ****** khi lệnh thuộc đại lý KHÁC đại lý gọi; tiền tố BG- không che.",
         // #284: nguồn DMSCarSv gộp biển số thành MỘT chuỗi ngăn bằng dấu phẩy (STUFF … FOR XML PATH).
-        plateNoList = string.Join(",", rows.Select(r => r.LicensePlate).Where(p => !string.IsNullOrWhiteSpace(p)).Distinct()),
+        // #301: biển số cũng phải qua dự phòng, nếu không lệnh chưa chụp sẽ mất khỏi danh sách này.
+        plateNoList = string.Join(",", rows
+            .Select(r => Co(r.LicensePlate, r.Vin is not null && carMap.TryGetValue(r.Vin, out var cc) ? cc.PlateNo : null))
+            .Where(p => !string.IsNullOrWhiteSpace(p)).Distinct()),
         count = items.Count, items,
     });
 }).RequireAuthorization();

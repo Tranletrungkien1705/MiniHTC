@@ -2118,7 +2118,13 @@ public sealed class RepairOrder
     public string RONo { get; set; } = "";
     public string LicensePlate { get; set; } = "";     // biển số
     public string? Vin { get; set; }
-    public string? CusName { get; set; }               // chủ xe
+    /// <summary>
+    /// ⚠️ #301 SỬA CHÚ THÍCH SAI: đây **KHÔNG phải "chủ xe"**. Nguồn tách hẳn hai khái niệm:
+    ///   `CusName   = isnull(ro.CusName, isnull(cus.ContName, cus.CusName))` — **người mang xe đến**
+    ///   `OwnerName = cus.CusName` (thẳng, không dự phòng)                   — **chủ xe** trên hồ sơ
+    /// Xe công ty đi bảo dưỡng thì hai tên này khác nhau; gộp làm một là mất thông tin đối chiếu.
+    /// </summary>
+    public string? CusName { get; set; }
     public string? Km { get; set; }                    // số km
     public DateTime? CheckInDate { get; set; }         // khách tới
     public DateTime? PlanedDeliveryDate { get; set; }  // dự kiến giao
@@ -2140,7 +2146,26 @@ public sealed class RepairOrder
     /// </summary>
     public string? Creator { get; set; }
     public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
-    public string? ColorCode { get; set; }             // Ser_Car.ColorCode — màu xe
+    public string? ColorCode { get; set; }             // #301: ro.ColorCode (BẢN CHỤP), car chỉ dự phòng
+
+    // ===== 🔴 #301 BẢN CHỤP KHÁCH + XE TRÊN CHÍNH LỆNH SỬA CHỮA =====
+    // Nguồn LIVE `Ser_RO_GetStatusList02_WH_New20230220` (`BizCarSv.Service.RO.cs:840`, đọc ở :990-1035)
+    // trả **mọi** thông tin khách/xe qua `isnull(ro.X, <master>.X)` ⇒ **lệnh giữ bản chụp của riêng nó,
+    // bảng master chỉ là DỰ PHÒNG**. Sửa hồ sơ khách/xe hôm nay **không được** làm đổi lệnh của năm ngoái.
+    // Port cũ đọc thẳng cột của lệnh, không có cột chụp nào trong số này ⇒ mất cả bản chụp lẫn dự phòng.
+    public string? CusID { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusTel { get; set; }
+    public string? CusMobile { get; set; }
+    public string? CusTaxCode { get; set; }
+    public string? ModelID { get; set; }
+    public string? EngineNo { get; set; }
+    public string? TradeMarkCode { get; set; }
+    public string? BatteryNo { get; set; }
+    public string? SerialNo { get; set; }
+    public DateTime? WarrantyRegistrationDate { get; set; }
+    public DateTime? WarrantyExpiresDate { get; set; }
+    public decimal? WarrantyKM { get; set; }
     public string? Assistant { get; set; }             // Ser_RO.Assistant — cố vấn dịch vụ
     public DateTime? ActualDeliveryDate { get; set; }  // Ser_RO.ActualDeliveryDate — "Giờ giao xe thực tế"
     public DateTime? FinishedDate { get; set; }        // Ser_RO.FinishedDate — khoá sắp xếp (order by desc)
@@ -5357,6 +5382,8 @@ public sealed class ServiceCustomer
     public string? ContName { get; set; }              // người liên hệ (tổ chức)
     public string? ContMobile { get; set; }
     public string? ContTel { get; set; }
+    // #301: ContAddress ĐÃ CÓ sẵn phía dưới (dòng ~5415) — không khai lại. Nguồn dùng nó làm
+    //   DỰ PHÒNG CẤP 3 cho địa chỉ trên lệnh sửa chữa: isnull(ro.CusAddress, isnull(cus.Address, cus.ContAddress)).
 
     // ===== #221 parity `CustomerCreate` / `CustomerUpdate` (DMSCarSv —
     //       TERP.HTCServiceClient/DbServices/MstCustomerService.cs:72 / :249) =====
