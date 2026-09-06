@@ -845,6 +845,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #228 parity Mst_PriceSend (bang gia gui tin, SMS.V10 - chi co tren may 150)
+        "CREATE TABLE IF NOT EXISTS public.\"SmsPriceSends\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"CostType\" text NOT NULL DEFAULT '', \"SupplierCode\" text NOT NULL DEFAULT '', \"TelCoCode\" text NOT NULL DEFAULT '', \"BatchType\" text, \"EffectDate\" timestamp NOT NULL DEFAULT now(), \"UnitPrice\" numeric NOT NULL DEFAULT 0, \"LuDTime\" timestamp, \"LuBy\" text, \"CostTypeName\" text, \"SupplierName\" text, \"TelCoName\" text)",
         // #227 parity Mst_Province (danh muc tinh/thanh, DMSCarSv)
         "CREATE TABLE IF NOT EXISTS public.\"MstProvinces\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"ProvinceCode\" text NOT NULL DEFAULT '', \"ProvinceName\" text, \"AreaCode\" text, \"FlagActive\" text NOT NULL DEFAULT '1', \"CreatedDate\" timestamp, \"CreatedBy\" text)",
         // #222 parity CarUpdate: 8 truong con thieu cua Ser_Car

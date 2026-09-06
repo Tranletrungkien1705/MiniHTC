@@ -11487,6 +11487,33 @@ public sealed class ServiceCampaignPart
     public decimal PercentDiscount { get; set; }
 }
 
+/// <summary>
+/// #228 BẢNG GIÁ GỬI TIN `Mst_PriceSend` — nguồn `SMS.V10/SMS.Biz/BizSMS.MasterData.cs:851`
+/// (`Mst_PriceSend_Get`, hệ SMS.V10 **CHỈ có trên máy 150**).
+/// Khoá nghiệp vụ **4 phần**: `CostType` + `SupplierCode` + `TelCoCode` + `EffectDate`
+/// (đúng `select distinct` và `on` của nguồn). ⚠️ `BatchType` là cột thật nhưng **KHÔNG thuộc khoá**.
+/// Ba cột tên (`CostTypeName`/`SupplierName`/`TelCoName`) ở nguồn lấy bằng `left join` sang
+/// `Mst_CostType` / `Mst_Supplier` / `Mst_TelCo` — MiniHTC chưa port 3 master đó nên giữ dạng
+/// phi chuẩn hoá (NỢ đã ghi manifest), không bịa ra 3 bảng master.
+/// </summary>
+public sealed class SmsPriceSend
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CostType { get; set; } = "";        // MPS.COSTTYPE   — loại tin (NM/BN…)
+    public string SupplierCode { get; set; } = "";    // MPS.SUPPLIERCODE — nhà cung cấp SMS
+    public string TelCoCode { get; set; } = "";       // MPS.TELCOCODE  — mạng nhận (VIETTEL…)
+    public string? BatchType { get; set; }            // MPS.BATCHTYPE  — CSKH/QC, KHÔNG thuộc khoá
+    public DateTime EffectDate { get; set; }          // MPS.EFFECTDATE — ngày bắt đầu hiệu lực
+    public decimal UnitPrice { get; set; }            // MPS.UNITPRICE  — đơn giá 1 PHẦN tin
+    public DateTime? LuDTime { get; set; }            // MPS.LUDTIME
+    public string? LuBy { get; set; }                 // MPS.LUBY
+    // ba cột enrich (nguồn lấy qua left join, xem chú thích lớp)
+    public string? CostTypeName { get; set; }
+    public string? SupplierName { get; set; }
+    public string? TelCoName { get; set; }
+}
+
 /// <summary>Tài khoản SMS trả trước (số dư) — port 1:1 FrmSMSAccountMng (TblSMS_Account, TCMotor).</summary>
 public sealed class SmsAccount
 {

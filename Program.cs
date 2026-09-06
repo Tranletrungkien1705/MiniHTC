@@ -8677,6 +8677,74 @@ app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db
     return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴 #228 BẢNG GIÁ GỬI TIN — `Mst_PriceSend_Get` (SMS.V10/SMS.Biz/BizSMS.MasterData.cs:851) =====
+// Màn gốc: `Views/SMS/FrmSMSPriceDealer.cs` (194 dòng, TCMotor DMSCarSv) — đại lý XEM bảng giá gửi tin.
+// ⚠️ Màn **CHỈ ĐỌC**: `FrmParam_Load` đặt `btnLuu/btnThem/btnEdit/btnReload/btnDelete.Visible = false` và
+//    thân `btnLuu_Click` **rỗng** ⇒ không có lệnh ghi nào để port. Đã quét CẢ gateway `SMS.WS/App_Code/WSSMS.cs`:
+//    chỉ có `Mst_PriceSend_Get` + `Mst_PriceSend_GetEx01`, **không tồn tại lệnh Create/Update/Delete** trong
+//    toàn bộ SMS.V10 (bảng giá do NCC/DBA nạp thẳng vào DB) ⇒ CỐ Ý không thêm POST (không bịa lệnh ghi).
+//
+// BƯỚC 3B: hệ `SMS.V10` **CHỈ tồn tại trên máy 150**, laptop KHÔNG có ⇒ đã đọc bản 150.
+//    `BizSMS.MasterData.cs` md5 `1bf83667` (1258 dòng).
+//
+// 🔴 Cột thật lấy từ `SqlUtils.BuildColumns` của biz (KHÔNG lấy từ lớp hằng `TblMst_PriceSend` phía client —
+//    lớp đó chỉ liệt kê 5/8 cột, THIẾU `BATCHTYPE`/`LUDTIME`/`LUBY`):
+//    COSTTYPE · SUPPLIERCODE · TELCOCODE · BATCHTYPE · EFFECTDATE · UNITPRICE · LUDTIME · LUBY
+//    + 3 cột enrich qua left join: MCTCOSTTYPENAME · MSSUPPLIERNAME · MTCTELCONAME.
+// Client truyền cả 5 bộ lọc = chuỗi RỖNG và `strLimitColList = "*"` ⇒ **lấy TOÀN BỘ bảng, đủ cột**.
+// Nguồn `order by mps.CostType asc`.
+app.MapGet("/api/smspricesends", async (AppDbContext db, ITenantContext t,
+    string? costType, string? supplierCode, string? telCoCode, string? batchType) =>
+{
+    var qy = db.SmsPriceSends.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(costType)) qy = qy.Where(x => x.CostType == costType!.Trim());
+    if (!string.IsNullOrWhiteSpace(supplierCode)) qy = qy.Where(x => x.SupplierCode == supplierCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(telCoCode)) qy = qy.Where(x => x.TelCoCode == telCoCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(batchType)) qy = qy.Where(x => x.BatchType == batchType!.Trim());
+
+    var items = await qy.OrderBy(x => x.CostType).ThenBy(x => x.SupplierCode).ThenBy(x => x.TelCoCode)
+        .ThenByDescending(x => x.EffectDate)
+        .Select(x => new { x.Id, x.CostType, x.SupplierCode, x.TelCoCode, x.BatchType, x.EffectDate,
+                           x.UnitPrice, x.LuDTime, x.LuBy, x.CostTypeName, x.SupplierName, x.TelCoName })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 GIÁ ĐANG HIỆU LỰC — port 1:1 khối `#tbl_Mst_PriceSend_Effect` (BizSMS.SMS.cs:279-295), là chỗ DUY NHẤT
+//    trong nguồn thực sự CHỌN giá để tính tiền lô tin:
+//      `inner join (select CostType, SupplierCode, TelCoCode, Max(EffectDate) …`
+//       `where EffectDate <= @strDateEffect group by CostType, SupplierCode, TelCoCode)`
+//    ⇒ giá hiệu lực = dòng có `EffectDate` LỚN NHẤT nhưng **≤ ngày mốc**, nhóm theo BỘ BA
+//      (CostType, SupplierCode, TelCoCode).
+// 🔴 HAI BẪY của quy tắc này:
+//  1. Ngày mốc là `Sms_Batch.EffectDTime` — **ngày hiệu lực của LÔ TIN**, KHÔNG phải ngày hiện tại.
+//     ⇒ tham số `effectDate` bắt buộc do gọi truyền vào; mặc định `DateTime.Now` chỉ là tiện dụng.
+//  2. `BatchType` **KHÔNG** nằm trong `group by` lẫn điều kiện join ⇒ giá **không** đổi theo loại lô
+//     (CSKH/QC), dù bảng có cột đó. Đừng "sửa cho hợp lý" thành lọc theo BatchType.
+app.MapGet("/api/smspricesends/effective", async (AppDbContext db, ITenantContext t,
+    string? costType, string? supplierCode, string? telCoCode, DateTime? effectDate) =>
+{
+    var mark = effectDate ?? DateTime.Now;
+    var qy = db.SmsPriceSends.Where(x => x.OrgId == t.OrgId && x.EffectDate <= mark);
+    if (!string.IsNullOrWhiteSpace(costType)) qy = qy.Where(x => x.CostType == costType!.Trim());
+    if (!string.IsNullOrWhiteSpace(supplierCode)) qy = qy.Where(x => x.SupplierCode == supplierCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(telCoCode)) qy = qy.Where(x => x.TelCoCode == telCoCode!.Trim());
+
+    var rows = await qy.ToListAsync();
+    var items = rows
+        .GroupBy(x => new { x.CostType, x.SupplierCode, x.TelCoCode })   // đúng group by của nguồn
+        .Select(g => g.OrderByDescending(x => x.EffectDate).First())     // Max(EffectDate)
+        .OrderBy(x => x.CostType).ThenBy(x => x.SupplierCode).ThenBy(x => x.TelCoCode)
+        .Select(x => new { x.CostType, x.SupplierCode, x.TelCoCode, x.BatchType, x.EffectDate,
+                           x.UnitPrice, x.CostTypeName, x.SupplierName, x.TelCoName })
+        .ToList();
+    return Results.Ok(new
+    {
+        markDate = mark, count = items.Count, items,
+        note = "Ngày mốc phải là ngày hiệu lực của LÔ TIN (Sms_Batch.EffectDTime), không phải ngày gửi.",
+    });
+}).RequireAuthorization();
+
 // ===== Tài khoản SMS trả trước + sổ giao dịch (SmsAccount — port 1:1 FrmSMSAccountMng, TCMotor) =====
 app.MapGet("/api/smsaccounts", async (AppDbContext db, ITenantContext t) =>
 {
