@@ -20959,9 +20959,38 @@ app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITen
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.PartQuoteLines.Where(l => l.OrgId == t.OrgId && l.PartQuoteId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Factor, l.PartPriceId, l.Note, l.AmountBeforeVat, l.Amount }).ToListAsync();
-    return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, h.SumAmountNoFactor, count = lines.Count, lines });
+    // ===== 🔴 #313 TIỀN DÒNG BÁO GIÁ: nguồn TÍNH LÚC ĐỌC, không lưu =====
+    // 🆕 Tìm ra nhờ sweep `_audit/sweep_stored_vs_derived.js` (sinh từ sự cố #312) rồi **kiểm tay**:
+    //   `Amount`/`AmountBeforeVAT` chỉ xuất hiện làm alias trong `Inventory.Quote.cs:2070-2071` và
+    //   **không có chỗ nào GHI** (đã grep `Rows[0][…]` / `strFN` / `alColumnEffective` — rỗng).
+    // Công thức nguồn (Issue 813 — hệ số nhân vào CẢ phần gốc LẪN phần thuế):
+    //   `Amount          = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor`
+    //   `AmountBeforeVAT = Qty*Price*Factor`
+    // ⚠️ MiniHTC tính lúc GHI rồi lưu. **Không** phải lỗ hổng như #312 (DTO không nhận hai cột này),
+    //   nhưng vẫn LỆCH PHA được nếu về sau có đường sửa Qty/Price/Factor/Vat mà quên tính lại.
+    //   ⇒ Đọc thì TÍNH LẠI như nguồn; trả kèm giá trị LƯU + cờ `amountStale` để phát hiện lệch.
+    var rows = await db.PartQuoteLines.Where(l => l.OrgId == t.OrgId && l.PartQuoteId == h.Id).ToListAsync();
+    var lines = rows.Select(l =>
+    {
+        var beforeVat = l.Quantity * l.UnitPrice * l.Factor;
+        var amount = beforeVat + l.Quantity * l.UnitPrice * 0.01m * l.Vat * l.Factor;
+        return new
+        {
+            l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Factor, l.PartPriceId, l.Note,
+            amountBeforeVat = beforeVat, amount,
+            // giá trị đang LƯU — để đối chiếu, không dùng để hiển thị
+            amountBeforeVatStored = l.AmountBeforeVat, amountStored = l.Amount,
+            amountStale = l.Amount != amount || l.AmountBeforeVat != beforeVat,
+        };
+    }).ToList();
+    return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, h.SumAmountNoFactor,
+        count = lines.Count,
+        // Tổng TÍNH LẠI từ dòng — nếu khác `TotalAmount` đang lưu thì dữ liệu đã lệch pha.
+        totalAmountRecomputed = lines.Sum(x => x.amount),
+        anyStale = lines.Any(x => x.amountStale),
+        note = "Tiền dòng TÍNH LẠI theo nguồn (Issue 813: hệ số nhân cả phần gốc lẫn phần thuế). "
+             + "amountStale = true nghĩa là giá trị đang lưu đã lệch so với Qty/Price/Factor/Vat hiện tại.",
+        lines });
 }).RequireAuthorization();
 
 // Chuyển trạng thái báo giá: Draft->Sent->Approved (hoặc cancel).

@@ -13927,7 +13927,20 @@ public sealed class PartQuoteLine
 
     public string? Note { get; set; }
 
-    /// <summary>Thành tiền TRƯỚC thuế, đã nhân hệ số (nguồn trả cột AmountBeforeVAT).</summary>
+    /// <summary>
+    /// Thành tiền TRƯỚC thuế, đã nhân hệ số.
+    /// 🔴 #313 PHÂN LOẠI: nguồn **KHÔNG lưu** hai cột tiền này. `Ser_Inv_QuotePartItems` chỉ có
+    /// `Quantity`/`Price`/`Factor`/`VAT`; `Amount` và `AmountBeforeVAT` được **TÍNH lúc ĐỌC**
+    /// (`BizCarSv.Inventory.Quote.cs:2070-2071`, Issue 813):
+    ///   `Amount          = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor`
+    ///   `AmountBeforeVAT = Qty*Price*Factor`
+    /// Đã kiểm: **không có** chỗ nào ghi hai tên này (`Rows[0][…]` / `strFN` / `alColumnEffective`).
+    ///
+    /// MiniHTC tính lúc GHI rồi LƯU lại. Khác #312 ở chỗ **client không gửi được** (DTO không nhận),
+    /// nên không có lỗ hổng "gửi gì cũng thành tiền". Rủi ro còn lại là **LỆCH PHA**: nếu sau này có
+    /// đường sửa `Quantity`/`UnitPrice`/`Factor`/`Vat` mà quên tính lại thì hai cột này ôi.
+    /// ⇒ Endpoint đọc nay **TÍNH LẠI** như nguồn và trả kèm giá trị lưu để đối chiếu.
+    /// </summary>
     public decimal AmountBeforeVat { get; set; }
 
     public decimal Amount { get; set; }
