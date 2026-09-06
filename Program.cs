@@ -398,6 +398,63 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     return Results.Ok(new { s.SalesManCode, s.SalesManName, s.Status });
 }).RequireAuthorization();
 
+// ===== Sửa PHÒNG BAN / LOẠI NVBH theo lô (Support_Mst_SalesMan_UpdateDepartmentAndSMType —
+// 2010.HTC Biz.HTC.WH.hkt.cs:7470). TWIN: chỉ `TERP.WSHTC.64` (99643). =====
+// 🔴 Nguồn có **BA nhánh update** tuỳ trường nào thực sự đổi (cả hai / chỉ phòng ban / chỉ loại) —
+//    chỉ ghi đúng cột đã đổi, không đụng cột kia. Giá trị mới để trống ⇒ **giữ giá trị hiện tại**.
+// 🔴 Guard nguồn: cặp (`DepartmentCode`, `SMType`) mới phải tồn tại trong `Mst_SalesManType`
+//    (master khoá kép) — MiniHTC CÓ master này nên guard đã port đủ.
+app.MapGet("/api/salesmen/dept-smtype-history", async (AppDbContext db, ITenantContext t, string? smCode) =>
+{
+    var qy = db.SalesManUpdDeptSMTypeHiss.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(smCode)) qy = qy.Where(h => h.SMCode == smCode.Trim().ToUpperInvariant());
+    var items = await qy.OrderByDescending(h => h.Id).Take(500)
+        .Select(h => new { h.SMCode, h.DepartmentCodeOld, h.DepartmentCodeNew, h.SMTypeOld, h.SMTypeNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesmen/update-dept-smtype", async (SalesManUpdDeptDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SMCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn nhân viên nào." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    int changedDept = 0, changedType = 0, skipped = 0;
+    foreach (var r in rows)
+    {
+        var code = r.SMCode!.Trim().ToUpperInvariant();
+        var sm = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code);
+        if (sm is null) return Results.BadRequest(new { error = $"Không tìm thấy nhân viên {code}." });
+
+        var deptOld = sm.DepartmentCode ?? "";
+        var typeOld = sm.SalesType ?? "";
+        // Giá trị mới để trống ⇒ giữ nguyên giá trị hiện tại (nguồn gán lại từ DB).
+        var deptNew = string.IsNullOrWhiteSpace(r.DepartmentCodeNew) ? deptOld : r.DepartmentCodeNew!.Trim().ToUpperInvariant();
+        var typeNew = string.IsNullOrWhiteSpace(r.SMTypeNew) ? typeOld : r.SMTypeNew!.Trim().ToUpperInvariant();
+
+        var deptChanged = !string.Equals(deptOld, deptNew, StringComparison.OrdinalIgnoreCase);
+        var typeChanged = !string.Equals(typeOld, typeNew, StringComparison.OrdinalIgnoreCase);
+        if (!deptChanged && !typeChanged) { skipped++; continue; }
+
+        // Guard: cặp (phòng ban, loại NVBH) phải có trong master khoá kép.
+        var okPair = await db.SalesManTypes.AnyAsync(x => x.OrgId == t.OrgId && x.DepartmentCode == deptNew && x.SMType == typeNew);
+        if (!okPair) return Results.BadRequest(new { error = $"Cặp phòng ban/loại NVBH ({deptNew}/{typeNew}) không có trong danh mục." });
+
+        db.SalesManUpdDeptSMTypeHiss.Add(new SalesManUpdDeptSMTypeHis
+        {
+            OrgId = t.OrgId, SMCode = code,
+            DepartmentCodeOld = deptOld, DepartmentCodeNew = deptNew,
+            SMTypeOld = typeOld, SMTypeNew = typeNew,
+            UpdDTime = now, UpdBy = who,
+        });
+        // Ba nhánh của nguồn: chỉ ghi đúng cột đã đổi.
+        if (deptChanged) { sm.DepartmentCode = deptNew; changedDept++; }
+        if (typeChanged) { sm.SalesType = typeNew; changedType++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, changedDept, changedType, skipped });
+}).RequireAuthorization();
+
 app.MapDelete("/api/salesmen/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -21359,6 +21416,9 @@ record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode
     string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,
     DateTime? StartDate, DateTime? EndDate, string? Position, string? PositionCode, string? CertificateCode, string? SMHyundaiCode, string? IdentityCardNo,
     string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? AccountHTA);
+// Sửa phòng ban / loại NVBH theo LÔ (nguồn nhận bảng `dtInput_SaleMan` nhiều dòng).
+record SalesManUpdDeptDto(List<SalesManUpdDeptRowDto>? Rows);
+record SalesManUpdDeptRowDto(string? SMCode, string? DepartmentCodeNew, string? SMTypeNew);
 record PdiDto(string Vin, string? DealerCode);
 record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);

@@ -4559,6 +4559,27 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Lịch sử sửa PHÒNG BAN / LOẠI NVBH (`Mst_SalesMan_UpdateDepartmentAndSMType_His` — port 1:1
+/// `Support_Mst_SalesMan_UpdateDepartmentAndSMType`, 2010.HTC `Biz.HTC.WH.hkt.cs:7470`).
+/// 🔴 Nguồn có **BA nhánh update khác nhau** tuỳ trường nào thực sự đổi:
+/// cả hai đổi ⇒ ghi `DepartmentCode`+`SMType`; chỉ phòng ban đổi ⇒ chỉ ghi `DepartmentCode`;
+/// chỉ loại đổi ⇒ chỉ ghi `SMType`. Giá trị mới để trống ⇒ **giữ nguyên giá trị hiện tại trong DB**
+/// (không ghi rỗng đè lên). Lịch sử luôn lưu đủ cả 4 giá trị cũ/mới.
+/// </summary>
+public sealed class SalesManUpdDeptSMTypeHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SMCode { get; set; } = "";
+    public string? DepartmentCodeOld { get; set; }
+    public string? DepartmentCodeNew { get; set; }
+    public string? SMTypeOld { get; set; }
+    public string? SMTypeNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
 /// Ảnh chụp biên bản giao xe TRƯỚC KHI XOÁ (`Sto_DlvMinutes_HisDel` — port 1:1
 /// `Sto_DlvMinutes_DeleteSupport`, 2010.HTC `Biz.HTC.WH.cs:139257`).
 /// 🔴 Kiểu lịch sử **KHÁC** họ `*_Upd*_His`: không lưu cặp cũ/mới mà **sao chép TOÀN BỘ dòng**
