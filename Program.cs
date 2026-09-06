@@ -19471,6 +19471,8 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
         x.CarID,          // #319 §12: phải có ở CẢ GET lẫn POST
+        // #323 §12: 4 cột ngày/giờ THÔ + 2 mã gốc — trả kèm để đối chiếu với AppFrom/AppTo đã gộp.
+        x.AppDateTime, x.AppTime, x.AppDateTimeFrom, x.AppTimeFrom, x.AppTypeCode, x.CVDVCode,
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
         // #270 §12: cot bo sung co mat o CA GET lan POST
         x.DealerCode, x.CusID, x.Vin, x.HCCPushStatus, x.HCCPushDateTime,
@@ -19535,6 +19537,16 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         //   khoanh được đúng chỗ chèn bằng **độ dịch dòng từng hàm** — quy trình 3 tầng của #318).
         //   MiniHTC đã có 4/5 (`AppFrom`≈AppDateTime · `Status` · `InsNo` · `Note`); **thiếu `CarID`** ⇒ bổ sung.
         CarID = dto.CarID,
+        // ===== 🔴 #323 bốn cột NGÀY/GIỜ THÔ + hai mã của nguồn =====
+        // Nguồn ghi mỗi cột dưới một guard RIÊNG ⇒ cho phép có ngày mà không giờ (và ngược lại).
+        //   Rỗng thì **KHÔNG ghi** (giữ nguyên) — khác nhóm "rỗng = xoá" ở #321, phải đọc từng hàm.
+        // Không có giá trị truyền lên ⇒ dựng lại từ `AppFrom`/`AppTo` để dữ liệu hai bên không rời nhau.
+        AppDateTime = string.IsNullOrWhiteSpace(dto.AppDateTime) ? dto.AppTo.ToString("yyyy-MM-dd") : dto.AppDateTime!.Trim(),
+        AppTime = string.IsNullOrWhiteSpace(dto.AppTime) ? dto.AppTo.ToString("HH:mm") : dto.AppTime!.Trim(),
+        AppDateTimeFrom = string.IsNullOrWhiteSpace(dto.AppDateTimeFrom) ? dto.AppFrom.ToString("yyyy-MM-dd") : dto.AppDateTimeFrom!.Trim(),
+        AppTimeFrom = string.IsNullOrWhiteSpace(dto.AppTimeFrom) ? dto.AppFrom.ToString("HH:mm") : dto.AppTimeFrom!.Trim(),
+        AppTypeCode = string.IsNullOrWhiteSpace(dto.AppTypeCode) ? dto.AppType : dto.AppTypeCode!.Trim(),
+        CVDVCode = string.IsNullOrWhiteSpace(dto.CVDVCode) ? engineerNo : dto.CVDVCode!.Trim(),   // nguồn .Trim()
         Source = string.IsNullOrWhiteSpace(dto.Source) ? (string.IsNullOrWhiteSpace(dto.Channel) ? null : dto.Channel!.Trim().ToUpperInvariant()) : dto.Source!.Trim().ToUpperInvariant(),
         HCCPushStatus = isTab ? "P" : null };
     db.ServiceAppointments.Add(a);
@@ -37639,7 +37651,11 @@ record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, stri
     string? Creator = null, string? CusAddress = null, string? CusTel = null, string? InsNo = null,
     string? CavityID = null, string? Source = null,
     // #319 §12: hai truong bo sung sau khi so ban 150 cua Ser_App_Create_ForTab.
-    string? CarID = null, string? AppStatus = null);
+    string? CarID = null, string? AppStatus = null,
+    // #323 §12: 4 cot NGAY/GIO THO cua nguon (tach roi) + 2 ma goc.
+    string? AppDateTime = null, string? AppTime = null,
+    string? AppDateTimeFrom = null, string? AppTimeFrom = null,
+    string? AppTypeCode = null, string? CVDVCode = null);
 record AppointmentStatusDto(string Status);
 // #270: `ToStatus` "A" thanh cong / "R" loi - cung bo ma voi truc HMC cua de nghi bao hanh.
 record AppointmentHccPushDto(string ToStatus, string? Note = null);

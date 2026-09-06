@@ -13489,6 +13489,31 @@ public sealed class ServiceAppointment
     /// </summary>
     public string? CarID { get; set; }
 
+    // ===== 🔴 #323 NGUỒN TÁCH **NGÀY** VÀ **GIỜ** THÀNH HAI CỘT RIÊNG — hai cặp =====
+    // Nguồn ghi qua helper dùng chung `Function_UtilsSerApp` (`ZTemp.cs:23228`, 16 cột):
+    //   `AppDateTime`     = `Convert.ToDateTime(str).ToString("yyyy-MM-dd")`  ⇒ **CHỈ NGÀY**
+    //   `AppTime`         = ghi **CHUỖI THÔ**, không convert, không kiểm định dạng
+    //   `AppDateTimeFrom` / `AppTimeFrom` = cặp thứ hai, cùng quy tắc
+    //
+    // 🔴 **TÊN CỘT NÓI DỐI**: `AppDateTime` nghe như có cả giờ, thực tế **chỉ chứa NGÀY**.
+    //    Giờ nằm ở `AppTime` dạng chuỗi tự do (nguồn không parse ⇒ có thể là "08:30", "8h30"…).
+    // 🔴 Hai cột ghi **ĐỘC LẬP** (mỗi cột một guard `if (!IsEmpty(...))`) ⇒ nguồn cho phép
+    //    **có ngày mà không có giờ**, hoặc ngược lại. Port cũ gộp thành `AppFrom`/`AppTo` kiểu `DateTime`
+    //    ⇒ **không biểu diễn được** hai trạng thái đó, và ép chuỗi giờ tự do phải parse được.
+    // ⇒ Giữ 4 cột THÔ đúng như nguồn; `AppFrom`/`AppTo` vẫn là tiện ích đã dùng, không bỏ.
+    public string? AppDateTime { get; set; }        // CHỈ ngày, "yyyy-MM-dd"
+    public string? AppTime { get; set; }            // giờ, CHUỖI THÔ
+    public string? AppDateTimeFrom { get; set; }    // CHỈ ngày, "yyyy-MM-dd"
+    public string? AppTimeFrom { get; set; }        // giờ, CHUỖI THÔ
+
+    /// <summary>APPTYPECODE — mã loại hẹn của nguồn. ⚠️ MiniHTC đã có `AppType` (nhãn/loại do port đặt);
+    /// giữ CẢ HAI để không mất mã gốc.</summary>
+    public string? AppTypeCode { get; set; }
+
+    /// <summary>CVDVCODE — mã cố vấn dịch vụ, nguồn `.Trim()` trước khi ghi.
+    /// ⚠️ MiniHTC đã có `EngineerNo` (cùng vai trò, tên khác); giữ cả hai, không gộp.</summary>
+    public string? CVDVCode { get; set; }
+
     /// <summary>
     /// Trạng thái đẩy lịch hẹn sang HCC — cùng bộ mã với trục HMC của đề nghị bảo hành:
     /// "P" chờ đẩy · "A" đẩy thành công · "R" đẩy lỗi. `null` = không thuộc diện đẩy.

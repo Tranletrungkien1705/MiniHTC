@@ -882,6 +882,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #323 parity Function_UtilsSerApp: nguon tach NGAY/GIO thanh cot rieng
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppDateTime\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppTime\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppDateTimeFrom\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppTimeFrom\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"AppTypeCode\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CVDVCode\" text",
         // #322 parity Ser_ROWarrantyReport_Update_V2 (ban LIVE, 34 cot): ban chup khach+xe
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CusName\" text",
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CusAddress\" text",
