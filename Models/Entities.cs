@@ -6182,6 +6182,24 @@ public sealed class MstBank
 /// nguồn luôn lọc đồng thời cả hai (`and t.ProvinceCode = @… and t.DistrictCode = @…`).
 /// Master này đã chặn guard ở **#92** (sửa tỉnh/huyện của biên bản giao xe).
 /// </summary>
+/// <summary>
+/// #227 parity `Mst_Province` — danh mục TỈNH/THÀNH (DMSCarSv, `BizCarSv.Master.cs:8588` `Mst_Province_Get`).
+/// Nguồn `select mpg.*` và lọc theo 6 cột: `ProvinceCode` · `ProvinceName` · `FlagActive` ·
+/// `CreatedDate` · `CreatedBy` · `AreaCode` ⇒ đó là bộ cột của bảng.
+/// ⚠️ `AreaCode` (vùng/miền) là cột **có lọc riêng ở nguồn** — không phải cột trang trí.
+/// </summary>
+public sealed class MstProvince
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ProvinceCode { get; set; } = "";
+    public string? ProvinceName { get; set; }
+    public string? AreaCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+}
+
 public sealed class MstDistrict
 {
     public long Id { get; set; }

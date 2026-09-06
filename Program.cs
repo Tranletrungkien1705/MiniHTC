@@ -5540,6 +5540,53 @@ app.MapPost("/api/mstbanks", async (MstBankDto dto, AppDbContext db, ITenantCont
     return Results.Ok(new { bankCode = code });
 }).RequireAuthorization();
 
+// ===== 🔴 #227 DANH MỤC TỈNH/THÀNH — `Mst_Province_Get` (BizCarSv.Master.cs:8588) =====
+// Màn dùng: `Views/Customer/FrmCustomerDetailInfo.cs` (1059 dòng, DMSCarSv) nạp tỉnh (144) và huyện (161)
+//   để đổ combobox địa chỉ khách hàng. BƯỚC 3B: md5 CẢ FILE `90585079` (12871 dòng) KHỚP 2 máy.
+// 🔴 GAP: MiniHTC đã có `/api/mstdistricts` (huyện) nhưng **thiếu hẳn bảng TỈNH** — chỉ dùng `ProvinceCode`
+//    làm tham số lọc ở vài báo cáo, không có danh mục để tra tên. Nay bổ sung entity + DbSet + Seeder + API.
+// Nguồn lọc theo 6 cột (`BuildClause`): ProvinceCode · ProvinceName · FlagActive · CreatedDate · CreatedBy ·
+//   `AreaCode` — cả sáu đều là cột thật của bảng (nguồn `select mpg.*`).
+// ⚠️ `BuildClause` với chuỗi rỗng = **bỏ hẳn điều kiện** (luật `C0-trecentesimusvicesimusquartus`)
+//    ⇒ không truyền tham số nghĩa là lấy TẤT CẢ, kể cả bản ghi đã tắt.
+app.MapGet("/api/mstprovinces", async (AppDbContext db, ITenantContext t,
+    string? provinceCode, string? provinceName, string? areaCode, string? flagActive) =>
+{
+    var qy = db.MstProvinces.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(provinceCode)) qy = qy.Where(x => x.ProvinceCode == provinceCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(areaCode)) qy = qy.Where(x => x.AreaCode == areaCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+    if (!string.IsNullOrWhiteSpace(provinceName))
+        qy = qy.Where(x => x.ProvinceName != null && x.ProvinceName.ToLower().Contains(provinceName!.Trim().ToLower()));
+
+    var items = await qy.OrderBy(x => x.ProvinceName).Take(500)
+        .Select(x => new { x.Id, x.ProvinceCode, x.ProvinceName, x.AreaCode, x.FlagActive, x.CreatedDate, x.CreatedBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstprovinces", async (MstProvinceDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.ProvinceCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã tỉnh/thành." });
+    var row = await db.MstProvinces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == code);
+    var isNew = row is null;
+    if (row is null)
+    {
+        row = new MstProvince { OrgId = t.OrgId, ProvinceCode = code,
+                                CreatedDate = DateTime.Now,
+                                CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
+        db.MstProvinces.Add(row);
+    }
+    // upsert: cả HAI nhánh cùng gán bộ cột nghiệp vụ (luật `C0-trecentesimustricesimusseptimus`).
+    row.ProvinceName = dto.ProvinceName;
+    row.AreaCode = dto.AreaCode;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ProvinceCode, row.ProvinceName, row.AreaCode, row.FlagActive, created = isNew });
+}).RequireAuthorization();
+
 app.MapGet("/api/mstdistricts", async (AppDbContext db, ITenantContext t, string? provinceCode, string? districtCode, string? flagActive) =>
 {
     var qy = db.MstDistricts.Where(x => x.OrgId == t.OrgId);
@@ -31032,6 +31079,7 @@ record DealerMrkamCodeDto(string? DealerCode, string? MRKAMCode);
 record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPostfix);
 // Ba master còn nợ. Mst_District khoá là CẶP (ProvinceCode, DistrictCode).
 record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive);
+record MstProvinceDto(string? ProvinceCode, string? ProvinceName = null, string? AreaCode = null, string? FlagActive = null);
 record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive);
 record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
 // Người dùng/nhóm hệ thống. `UserPassword` gửi đúng chuỗi mẫu "********" nghĩa là GIỮ NGUYÊN mật khẩu cũ.

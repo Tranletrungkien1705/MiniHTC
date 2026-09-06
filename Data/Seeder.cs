@@ -845,6 +845,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #227 parity Mst_Province (danh muc tinh/thanh, DMSCarSv)
+        "CREATE TABLE IF NOT EXISTS public.\"MstProvinces\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"ProvinceCode\" text NOT NULL DEFAULT '', \"ProvinceName\" text, \"AreaCode\" text, \"FlagActive\" text NOT NULL DEFAULT '1', \"CreatedDate\" timestamp, \"CreatedBy\" text)",
         // #222 parity CarUpdate: 8 truong con thieu cua Ser_Car
         "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"SalesCarID\" text",
