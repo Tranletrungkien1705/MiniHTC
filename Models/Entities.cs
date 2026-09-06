@@ -8649,11 +8649,16 @@ public sealed class BankingTrans
     public DateTime? DisbursementDate { get; set; }   // ngày giải ngân
     public decimal AmountDisbursed { get; set; }      // số tiền giải ngân
     public decimal TotalAmount { get; set; }
-    public string Status { get; set; } = "Draft";     // Draft → Sent → Approved / Rejected
+    // ===== #206 parity: đối chiếu TỪNG CỘT với `RQ_BankingTransactions_SaveX_20220817`
+    //       (BankIntergration/BizHTC.VietinBank.cs:7808-7852) — nguồn ghi ĐÚNG 19 cột. =====
+    /// <summary>Trạng thái nội bộ (`BkTransStatus`) — tên cũ `Status` không phải tên cột nguồn.</summary>
+    public string BkTransStatus { get; set; } = "Draft";     // Draft → Sent → Approved / Rejected
     public string? Remark { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;   // #206: nguồn `CreatedDate`
+    /// <summary>⚠️ #206: nguồn KHÔNG có cột này — mốc "đã gửi" là của port. Giữ, đánh dấu rõ.</summary>
     public DateTime? SentAt { get; set; }
-    public DateTime? ApprovedAt { get; set; }
+    public DateTime? ApprovedDate { get; set; }                  // #206: nguồn `ApprovedDate`
+    // ✅ #206: `RefBankCode` và `BankRemark` ĐÃ CÓ sẵn ở cuối class này — kiểm lại thấy đủ, không thêm trùng.
     /// <summary>
     /// Trạng thái bên NGÂN HÀNG (`BkTransBankStatus`, `TConst.BkTransBankStatus` — hệ `ERP.DMS.HTC.VPBank.WS`,
     /// **chỉ có trên máy 150**): "N" · "P" · "C" · **"A0".."A5"** các mức duyệt · "F" hoàn tất · "R" từ chối.
