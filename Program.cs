@@ -4428,6 +4428,98 @@ app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto,
     return Results.Ok(new { deleted = $"{code}/{vin}" });
 }).RequireAuthorization();
 
+// ===== Map PHÂN QUYỀN: nhóm↔người dùng (Map_SG_SU) và nhóm↔màn hình (Map_SG_SO) =====
+// Port 1:1 `SysSaveMapSysGroupSysUser_New20181119` (Biz.HTC.WH.cs:16421) và
+// `SysSaveMapSysGroupSysObject_New20181119` (16587). TWIN: cả WS 32-bit lẫn 64-bit CÙNG bản.
+// 🔴 Cả hai lưu theo kiểu **XOÁ TRẮNG THEO NHÓM rồi CHÈN LẠI**: bảng gửi lên phải là TOÀN BỘ
+//    thành viên / quyền của nhóm đó. Gửi thiếu = MẤT quyền của phần không gửi. Đây là ngữ nghĩa
+//    "thay thế trọn bộ", không phải "thêm dần" — port giữ nguyên và ghi rõ trong phản hồi API.
+// 🔴 Nguồn ép `PartnerCode = "DESKTOPAPPHTC"` (TConst.Sys_Partner.Desktop) cho mọi dòng ghi vào.
+// ⚠️ C0-bug10: nhánh Map_SG_SO của nguồn dựng WHERE bằng NỐI CHUỖI (SQL injection) trong khi nhánh
+//    Map_SG_SU dùng `BuildClauseConditionList` an toàn. MiniHTC tham số hoá qua EF, không nhân bản.
+string SysPartnerDesktop = "DESKTOPAPPHTC"; // TConst.Sys_Partner.Desktop
+
+app.MapGet("/api/sysgroupusers", async (AppDbContext db, ITenantContext t, string? groupCode, string? userCode) =>
+{
+    var qy = db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode);
+    if (!string.IsNullOrWhiteSpace(userCode)) qy = qy.Where(x => x.UserCode == userCode);
+    var items = await qy.OrderBy(x => x.GroupCode).ThenBy(x => x.UserCode)
+        .Select(x => new { x.GroupCode, x.UserCode, x.PartnerCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 THAY THẾ TRỌN BỘ thành viên của (các) nhóm nêu trong `GroupCodes`.
+app.MapPost("/api/sysgroupusers/save", async (MapSgSuSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var groups = (dto.GroupCodes ?? new()).Select(g => (g ?? "").Trim()).Where(g => g.Length > 0).Distinct().ToList();
+    if (groups.Count == 0) return Results.BadRequest(new { error = "Chưa chỉ định nhóm cần lưu." });
+    var rows = (dto.Rows ?? new())
+        .Where(r => !string.IsNullOrWhiteSpace(r.GroupCode) && !string.IsNullOrWhiteSpace(r.UserCode)).ToList();
+    // Mọi dòng gửi lên phải thuộc đúng các nhóm đang lưu — tránh ghi lén sang nhóm khác.
+    var stray = rows.Select(r => r.GroupCode!.Trim()).Where(g => !groups.Contains(g)).Distinct().ToList();
+    if (stray.Count > 0)
+        return Results.BadRequest(new { error = $"Có dòng thuộc nhóm ngoài danh sách lưu: {string.Join(", ", stray)}." });
+
+    var old = await db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode)).ToListAsync();
+    db.MapSysGroupSysUsers.RemoveRange(old);
+    var seen = new HashSet<string>();
+    var added = 0;
+    foreach (var r in rows)
+    {
+        var key = $"{r.GroupCode!.Trim()}|{r.UserCode!.Trim()}";
+        if (!seen.Add(key)) continue; // bỏ trùng trong chính bảng đầu vào
+        db.MapSysGroupSysUsers.Add(new MapSysGroupSysUser
+        {
+            OrgId = t.OrgId, GroupCode = r.GroupCode!.Trim(), UserCode = r.UserCode!.Trim(),
+            PartnerCode = SysPartnerDesktop, // nguồn ép giá trị này, không lấy từ đầu vào
+        });
+        added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { groups, removed = old.Count, added, note = "Thay thế trọn bộ thành viên của các nhóm nêu trên." });
+}).RequireAuthorization();
+
+app.MapGet("/api/sysgroupobjects", async (AppDbContext db, ITenantContext t, string? groupCode, string? objectCode) =>
+{
+    var qy = db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode);
+    if (!string.IsNullOrWhiteSpace(objectCode)) qy = qy.Where(x => x.ObjectCode == objectCode);
+    var items = await qy.OrderBy(x => x.GroupCode).ThenBy(x => x.ObjectCode)
+        .Select(x => new { x.GroupCode, x.ObjectCode, x.PartnerCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 THAY THẾ TRỌN BỘ quyền màn hình của MỘT nhóm (nguồn nhận đúng một `strGroupCodeList` cho nhánh này).
+app.MapPost("/api/sysgroupobjects/save", async (MapSgSoSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var group = (dto.GroupCode ?? "").Trim();
+    if (group.Length < 1) return Results.BadRequest(new { error = "Chưa chỉ định nhóm." });
+    var codes = (dto.ObjectCodes ?? new()).Select(c => (c ?? "").Trim()).Where(c => c.Length > 0).Distinct().ToList();
+
+    var old = await db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId && x.GroupCode == group).ToListAsync();
+    db.MapSysGroupSysObjects.RemoveRange(old);
+    foreach (var c in codes)
+        db.MapSysGroupSysObjects.Add(new MapSysGroupSysObject
+        {
+            OrgId = t.OrgId, GroupCode = group, ObjectCode = c, PartnerCode = SysPartnerDesktop,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { group, removed = old.Count, added = codes.Count, note = "Thay thế trọn bộ quyền màn hình của nhóm." });
+}).RequireAuthorization();
+
+// Tiện tra cứu: quyền màn hình HIỆU LỰC của một người dùng = hợp của mọi nhóm người đó thuộc về.
+// (Nguồn có hàm riêng `SysGetMapSysUserSysObjectForCurrentUser` — đây là bản rút gọn theo dữ liệu đã port.)
+app.MapGet("/api/sysusers/{userCode}/objects", async (string userCode, AppDbContext db, ITenantContext t) =>
+{
+    userCode = userCode.Trim();
+    var groups = await db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId && x.UserCode == userCode)
+        .Select(x => x.GroupCode).Distinct().ToListAsync();
+    var objects = await db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode))
+        .Select(x => x.ObjectCode).Distinct().OrderBy(x => x).ToListAsync();
+    return Results.Ok(new { userCode, groups, objects, count = objects.Count });
+}).RequireAuthorization();
+
 // ===== Người dùng / nhóm hệ thống (Sys_User, Sys_Group — port 1:1 `SysSaveUser`(16095) /
 // `SysResetUserPassword`(15970) / `CommonChangeUserPassword`(30) / `SysSaveGroup`(16285),
 // 2010.HTC Biz.HTC.WH.cs). TWIN: cả WS 32-bit lẫn 64-bit CÙNG bản `_New20181119`. =====
@@ -24235,6 +24327,10 @@ record SysUserKeyDto(string? UserCode);
 record SysUserResetPwdDto(string? UserCode, string? PasswordReset);
 record SysUserChangePwdDto(string? UserCode, string? PasswordOld, string? PasswordNew);
 record SysGroupSaveDto(string? GroupCode, string? GroupName, string? PartnerCode, string? FlagActive);
+// Map phân quyền — lưu theo kiểu THAY THẾ TRỌN BỘ theo nhóm, không phải thêm dần.
+record MapSgSuRowDto(string? GroupCode, string? UserCode);
+record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows);
+record MapSgSoSaveDto(string? GroupCode, List<string>? ObjectCodes);
 // Hoá đơn TCG: khoá dòng = cặp (TCGInvoiceCode, VIN). TInvoicePrice nguồn luôn ghi 0 nên không nhận từ client.
 record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);

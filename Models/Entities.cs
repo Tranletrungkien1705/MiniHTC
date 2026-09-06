@@ -4656,6 +4656,46 @@ public sealed class VatTcgInvoiceDetail
 }
 
 /// <summary>
+/// Map NHÓM ↔ NGƯỜI DÙNG (`Map_SG_SU` — port 1:1 `SysSaveMapSysGroupSysUser_New20181119`,
+/// 2010.HTC `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:16421`; hàm đọc `SysGetMapSysGroupSysUser`
+/// ở `BizHTC.System.cs:659`). TWIN: cả WS 32-bit lẫn 64-bit **cùng bản** `_New20181119`.
+/// 🔴 Lưu theo kiểu **XOÁ TRẮNG rồi CHÈN LẠI theo NHÓM**: nguồn `delete from Map_SG_SU where GroupCode
+/// in (danh sách)` rồi `ResetAllDataRowState(Added)` + `SaveData` — nghĩa là bảng gửi lên phải là
+/// **TOÀN BỘ thành viên của (các) nhóm đó**, gửi thiếu là **mất quyền** người không có trong danh sách.
+/// 🔴 Nguồn **ép `PartnerCode = TConst.Sys_Partner.Desktop` ("DESKTOPAPPHTC")** cho MỌI dòng ghi vào
+/// (`MyForceNewColumn` + vòng gán, dòng 16529-16533) — không lấy từ đầu vào. Bản ghi tạo từ web
+/// (`"WEBHTC"`) sẽ **không** sinh ra qua hàm này.
+/// </summary>
+public sealed class MapSysGroupSysUser
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupCode { get; set; } = "";
+    public string UserCode { get; set; } = "";
+    /// <summary>Nguồn LUÔN ghi "DESKTOPAPPHTC" (TConst.Sys_Partner.Desktop).</summary>
+    public string? PartnerCode { get; set; }
+}
+
+/// <summary>
+/// Map NHÓM ↔ QUYỀN MÀN HÌNH (`Map_SG_SO` — port 1:1 `SysSaveMapSysGroupSysObject_New20181119`,
+/// `Biz.HTC.WH.cs:16587`; hàm đọc `SysGetMapSysGroupSysObject` ở `BizHTC.System.cs:1188`).
+/// `ObjectCode` trỏ sang `Sys_Object` (danh mục màn hình/chức năng) — bảng đó **chưa port**, ghi nợ.
+/// 🔴 Cùng kiểu **xoá trắng theo nhóm rồi chèn lại** như `Map_SG_SU`.
+/// ⚠️ Xem `### C0-bug10`: nhánh này của nguồn dựng mệnh đề WHERE bằng **NỐI CHUỖI** thay vì
+/// `BuildClauseConditionList` như nhánh `Map_SG_SU` — lỗ hổng SQL injection ngay trong hàm gán QUYỀN.
+/// MiniHTC dùng tham số hoá của EF nên **không nhân bản lỗ hổng**.
+/// </summary>
+public sealed class MapSysGroupSysObject
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupCode { get; set; } = "";
+    /// <summary>Mã màn hình/chức năng (`Sys_Object.ObjectCode` — bảng đó chưa port).</summary>
+    public string ObjectCode { get; set; } = "";
+    public string? PartnerCode { get; set; }
+}
+
+/// <summary>
 /// NGƯỜI DÙNG hệ thống (`Sys_User` — port 1:1 `SysSaveUser_New20181119` /
 /// `SysResetUserPassword_New20181119` / `CommonChangeUserPassword_New20181119`,
 /// 2010.HTC `TERP.BizHTC/DataWH/Biz.HTC.WH.cs` dòng 16095 / 15970 / 30).
