@@ -19523,6 +19523,108 @@ app.MapPost("/api/hcc/noshow/pushes/{id}/result", async (long id, HccNoShowResul
     return Results.Ok(new { row.Id, row.PushStatus, row.PushDateTime, row.PushNote });
 }).RequireAuthorization();
 
+// ===== 🔴 #290 CẤU HÌNH GỬI EMAIL TỰ ĐỘNG — `Email_ConfigSendAuto` =====
+// Nguồn: `BizCarSv.SendMail.cs:1124 Email_ConfigSendAuto_Create`. Năm `[WebMethod]` sống
+//   (Create · Update · Delete · Get · Cancel — `WSCarSv.asmx.cs:21500-21827`).
+// 🆕 Tìm ra từ hàng đợi #289 (cột `typeemail` có 2 bộ nhãn ⇒ có màn chưa port).
+//
+// 🔴 HAI BỘ NHÃN cho cùng cột `TypeEmail` (luật nhãn-theo-màn #286):
+//   • Màn CẤU HÌNH (`SendMail.cs:1301`): 7 mã `1..7`, mã `3` = **"Mừng sinh nhật"**.
+//   • Màn LỊCH SỬ GỬI (`SendMail.cs:4635`): thêm mã **`0` với nhãn RỖNG** (`then N''`), và mã `3` đổi
+//     thành **"Chúc mừng SN"** (viết tắt cho vừa cột lưới).
+//   ⚠️ Nhãn RỖNG **KHÁC** NULL: mã `0` **có** nhánh, trả về chuỗi rỗng — nghĩa là "chưa phân loại",
+//     một giá trị hợp lệ. Bỏ nhánh này thì mã `0` rơi vào NULL và lẫn với mã lạ.
+var emailTypeNamesByScreen = new Dictionary<string, Dictionary<string, string>>
+{
+    // Màn CẤU HÌNH gửi tự động.
+    ["config"] = new()
+    {
+        ["1"] = "Thông báo chiến dịch", ["2"] = "Nhắc bảo dưỡng", ["3"] = "Mừng sinh nhật",
+        ["4"] = "Hẹn khách hàng", ["5"] = "Khuyến mại", ["6"] = "Thông báo sửa xong", ["7"] = "Khác",
+    },
+    // Màn LỊCH SỬ GỬI — có thêm mã 0 (nhãn RỖNG) và viết tắt mã 3.
+    ["history"] = new()
+    {
+        ["0"] = "", ["1"] = "Thông báo chiến dịch", ["2"] = "Nhắc bảo dưỡng", ["3"] = "Chúc mừng SN",
+        ["4"] = "Hẹn khách hàng", ["5"] = "Khuyến mại", ["6"] = "Thông báo sửa xong", ["7"] = "Khác",
+    },
+};
+
+// SENDMODE — quyết định ý nghĩa của AutoDate / AutoDay.
+var emailSendModeNames = new Dictionary<string, string>
+{
+    ["1"] = "Gửi một lần", ["2"] = "Gửi hàng ngày", ["3"] = "Gửi hàng tuần",
+};
+
+app.MapGet("/api/emailconfigsendauto/vocab", (string? screen) =>
+{
+    var key = string.IsNullOrWhiteSpace(screen) ? "config" : screen!.Trim().ToLowerInvariant();
+    if (!emailTypeNamesByScreen.TryGetValue(key, out var map))
+        return Results.BadRequest(new { error = "screen phải là config | history.", screen = key });
+    return Results.Ok(new
+    {
+        screen = key,
+        typeEmail = map.Select(kv => new { code = kv.Key, name = kv.Value }),
+        sendMode = emailSendModeNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+        isActive = new[] { new { code = "0", name = "Không kích hoạt" }, new { code = "1", name = "Kích hoạt" } },
+        note = "Màn history có thêm mã 0 với nhãn RỖNG (\"chưa phân loại\") và viết tắt mã 3 = \"Chúc mừng SN\".",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/emailconfigsendauto", async (AppDbContext db, ITenantContext t,
+    string? dealer, string? typeEmail, string? isActive) =>
+{
+    var qy = db.EmailConfigSendAutos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(typeEmail)) qy = qy.Where(x => x.TypeEmail == typeEmail);
+    if (!string.IsNullOrWhiteSpace(isActive)) qy = qy.Where(x => x.IsActive == isActive);
+    var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var cfg = emailTypeNamesByScreen["config"];
+    var items = rows.Select(x => new
+    {
+        x.Id, x.DealerCode, x.AutoTime, x.StartDate, x.EndDate, x.Description,
+        x.SendMode,
+        sendModeName = x.SendMode is not null && emailSendModeNames.TryGetValue(x.SendMode, out var sm) ? sm : null,
+        x.IsActive, x.TypeEmail,
+        typeEmailName = x.TypeEmail is not null && cfg.TryGetValue(x.TypeEmail, out var te) ? te : null,
+        x.ConfigDate, x.AutoDate, x.AutoDay,
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/emailconfigsendauto", async (EmailConfigSendAutoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var mode = (dto.SendMode ?? "").Trim();
+    if (mode.Length > 0 && !emailSendModeNames.ContainsKey(mode))
+        return Results.BadRequest(new { error = "SendMode phải là 1 (một lần) | 2 (hàng ngày) | 3 (hàng tuần)." });
+    var type = (dto.TypeEmail ?? "").Trim();
+    if (type.Length > 0 && !emailTypeNamesByScreen["history"].ContainsKey(type))
+        return Results.BadRequest(new { error = "TypeEmail phải nằm trong 0..7 (0 = chưa phân loại)." });
+
+    var row = new EmailConfigSendAuto
+    {
+        OrgId = t.OrgId, DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        AutoTime = dto.AutoTime, StartDate = dto.StartDate, EndDate = dto.EndDate,
+        Description = dto.Description, SendMode = mode.Length == 0 ? null : mode,
+        IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim(),
+        TypeEmail = type.Length == 0 ? null : type,
+        ConfigDate = dto.ConfigDate ?? DateTime.Now,
+        AutoDate = dto.AutoDate, AutoDay = dto.AutoDay,
+    };
+    db.EmailConfigSendAutos.Add(row); await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SendMode, row.TypeEmail, row.IsActive });
+}).RequireAuthorization();
+
+// Nguồn có `Email_ConfigSendAuto_Cancel` RIÊNG, tách khỏi `_Delete` ⇒ huỷ = **tắt cờ**, không xoá bản ghi.
+app.MapPost("/api/emailconfigsendauto/{id:long}/cancel", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.EmailConfigSendAutos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.IsActive = "0";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.IsActive, note = "Nguồn tách Cancel khỏi Delete ⇒ huỷ là TẮT CỜ, không xoá." });
+}).RequireAuthorization();
+
 // ===== 🔴 #287 ĐƠN ĐẶT PHỤ TÙNG GỬI NHÀ CUNG CẤP — `Ser_Part_Order` =====
 // ⚠️ **KHÁC HẲN** `Ser_Order_Part` (đơn TST, đã port thành `OrderPart` ở #234): hai bảng tên **đảo chữ**
 //   của nhau, khác bộ mã trạng thái, khác nghiệp vụ. BƯỚC 2 xác nhận MiniHTC chưa có bảng này.
@@ -35189,6 +35291,11 @@ record SupplierPartOrderDto(string? SupplierID, string? OrderNo = null, string? 
     string? TypeOrder = null, string? HTCConfirm = null, string? PartialShipment = null,
     string? TypeTransport = null, string? VIN = null, string? ConfirmNo = null, string? CusCharges = null,
     List<SupplierPartOrderLineDto>? Lines = null);
+// #290: cấu hình gửi email tự động — 11 trường của `Email_ConfigSendAuto_Create`.
+record EmailConfigSendAutoDto(string? DealerCode = null, string? AutoTime = null,
+    DateTime? StartDate = null, DateTime? EndDate = null, string? Description = null,
+    string? SendMode = null, string? IsActive = null, string? TypeEmail = null,
+    DateTime? ConfigDate = null, string? AutoDate = null, string? AutoDay = null);
 record SupplierPartOrderLineDto(string PartCode, string? PartName, decimal Quantity, decimal DeliveryQuantity,
     decimal Price, decimal Amount, string? Note);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);

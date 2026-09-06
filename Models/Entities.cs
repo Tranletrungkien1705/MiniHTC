@@ -13307,6 +13307,45 @@ public sealed class SupplierPartOrderLine
     public string? Note { get; set; }
 }
 
+/// <summary>
+/// 🔴 #290 CẤU HÌNH GỬI EMAIL TỰ ĐỘNG — `Email_ConfigSendAuto` (`BizCarSv.SendMail.cs:1124`).
+/// Năm `[WebMethod]` sống: Create · Update · Delete · Get · Cancel (`WSCarSv.asmx.cs:21500-21827`).
+/// Cột lấy từ **chữ ký `Email_ConfigSendAuto_Create`** (11 trường nghiệp vụ), không lấy theo lưới.
+/// </summary>
+public sealed class EmailConfigSendAuto
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+
+    /// <summary>AUTOTIME — GIỜ gửi trong ngày. Nguồn hiển thị `right(AutoTime, 11)` ⇒ cột lưu chuỗi dài hơn
+    /// phần hiển thị; port giữ nguyên chuỗi, KHÔNG tự cắt.</summary>
+    public string? AutoTime { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? Description { get; set; }
+
+    /// <summary>SENDMODE — `1` Gửi một lần · `2` Gửi hàng ngày · `3` Gửi hàng tuần.</summary>
+    public string? SendMode { get; set; }
+
+    /// <summary>ISACTIVE — `0` Không kích hoạt · `1` Kích hoạt.</summary>
+    public string? IsActive { get; set; }
+
+    /// <summary>
+    /// TYPEEMAIL — loại email tự động: `1`..`7` (xem bảng nhãn ở endpoint).
+    /// ⚠️ Màn LỊCH SỬ GỬI còn có mã `0` với **nhãn RỖNG** (`then N''`) và gọi mã `3` là "Chúc mừng SN"
+    /// thay vì "Mừng sinh nhật" — hai bảng nhãn khác nhau cho cùng cột (luật nhãn-theo-màn #286).
+    /// </summary>
+    public string? TypeEmail { get; set; }
+
+    public DateTime? ConfigDate { get; set; }
+    /// <summary>AUTODATE / AUTODAY — NGÀY trong tháng và THỨ trong tuần để chạy; đi kèm `SendMode`.</summary>
+    public string? AutoDate { get; set; }
+    public string? AutoDay { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
 public sealed class SharePart
 {
