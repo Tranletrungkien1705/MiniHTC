@@ -882,6 +882,14 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #267 parity SP_SharePart(_Detail): tran chia se + FlagLatest + so YEU CAU goc
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"MinQuantity\" numeric NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"QuantityShareRequested\" numeric NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"FlagLatest\" text NOT NULL DEFAULT '1'",
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"Note\" text",
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #266 parity TblSerRO: 10 cot the hoi vien / diem (khoi phu cuoi lop hang)
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"FlagCardExist\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"FlagIsDLQuery\" text",

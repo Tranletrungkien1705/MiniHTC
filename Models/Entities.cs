@@ -12997,10 +12997,33 @@ public sealed class SharePart
     public string? PartName { get; set; }
     public string? Unit { get; set; }
     public decimal InStock { get; set; }        // INSTOCKQUANTITY: tồn hiện tại
-    public decimal QuantityShare { get; set; }  // SL sẵn sàng chia sẻ
+    public decimal QuantityShare { get; set; }  // SL sẵn sàng chia sẻ (đã KẸP — xem #267)
     public string? Remark { get; set; }
     public string Status { get; set; } = "Open"; // Open -> Closed
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== 🔴 #267: cột/luật nguồn `SP_SharePart` + `SP_SharePart_Detail` mà port cũ THIẾU =====
+    // Nguồn: `BizCarSv.PartOrder.cs:4702 SP_SharePartCreate` (md5 `9483ca4a` — KHỚP 2 máy)
+    //      + `Views/PartOrder/FrmSharePart.cs:222 btnShare_Click` (md5 `0b8022ef` — KHỚP 2 máy).
+
+    /// <summary>MINQUANTITY — **tồn tối thiểu** của phụ tùng, CHỐT lúc đăng chia sẻ.
+    /// Đây là chân kia của công thức trần chia sẻ: `SoLuongDcChiaSe = InStock − MinQuantity`.</summary>
+    public decimal MinQuantity { get; set; }
+
+    /// <summary>🔴 SL đại lý **YÊU CẦU** trước khi bị kẹp. Nguồn ghi đè thẳng `QuantityShare` bằng
+    /// `SoLuongChiaSeThucTe` (`UPDATE … SET QuantityShare = t.SoLuongChiaSeThucTe`) nên **mất dấu số gốc**;
+    /// port giữ lại số gốc để đối soát được vì sao SL lưu khác SL gửi.</summary>
+    public decimal QuantityShareRequested { get; set; }
+
+    /// <summary>🔴 FLAGLATEST — nguồn ghi `Flag.Active` khi tạo. Cột này **KHÔNG có trong lớp hằng**
+    /// `TblSPSharePart` (DbDefine.cs:283-292) — chỉ lộ ra ở câu INSERT. Lại một bằng chứng: lớp `Tbl*`
+    /// KHÔNG phải danh sách cột đầy đủ, câu ghi mới là nguồn sự thật.</summary>
+    public string FlagLatest { get; set; } = "1";
+
+    public string? Note { get; set; }              // NOTE — ghi chú ở MASTER (TblSPSharePart.Note)
+    public string? CreatedBy { get; set; }         // CREATEDBY
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thông báo kỹ thuật (bulletin) — số/nội dung/PT-DV liên quan/hết hạn/file — port 1:1 FrmBulletinHTCCreate (Tbl_Blt_Bulletin, TCMotor).</summary>

@@ -19205,21 +19205,106 @@ app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode.Contains(part!.ToUpper()) || (x.PartName != null && x.PartName.Contains(part!)));
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
     var items = await query.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.ShareNo, x.DealerCode, x.PartCode, x.PartName, x.Unit, x.InStock, x.QuantityShare, x.Remark, x.Status, createdAt = x.CreatedAt.ToString("yyyy-MM-dd") }).ToListAsync();
+        // #267 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
+        .Select(x => new { x.ShareNo, x.DealerCode, x.PartCode, x.PartName, x.Unit, x.InStock, x.MinQuantity,
+            x.QuantityShare, x.QuantityShareRequested, x.FlagLatest, x.Remark, x.Note, x.Status,
+            x.CreatedBy, x.LogLUBy, createdAt = x.CreatedAt.ToString("yyyy-MM-dd") }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Đăng chia sẻ 1 phụ tùng (SL chia sẻ không vượt tồn).
+// 🔴 #267 ĐĂNG CHIA SẺ PHỤ TÙNG — port 1:1 `SP_SharePartCreate` + `FrmSharePart.btnShare_Click`.
+//
+// ===== LUẬT TRẦN CHIA SẺ (thứ port cũ THIẾU HẲN) =====
+//   `SoLuongDcChiaSe     = InStock − MinQuantity`      (tồn hiện có TRỪ tồn tối thiểu)
+//   `SoLuongChiaSeThucTe = CASE`
+//       `WHEN yêu-cầu >= trần AND trần    >= 0 THEN trần`
+//       `WHEN yêu-cầu <  trần AND yêu-cầu >= 0 THEN yêu-cầu`
+//       `ELSE 0`
+//   ⇒ đại lý **không được chia sẻ phần tồn tối thiểu**; tồn đã dưới mức tối thiểu (trần âm) ⇒ chia sẻ = 0.
+//   Nguồn KHÔNG tin số client gửi: sau khi `InsertHuge` nó còn `UPDATE … SET QuantityShare =`
+//   `SoLuongChiaSeThucTe` đè lên. Port làm đúng vậy: **kẹp ở server**, giữ số gốc ở `QuantityShareRequested`.
+//
+// ⚠️ Form CÒN chặn trước ở client (`FrmSharePart.cs:243`): `if (checksl <= slt - slttt || checksl == 0)`
+//    ngược lại báo **"Số lượng chia sẻ vượt quá quy định!"** — giữ NGUYÊN VĂN câu này. Lưu ý `== 0` được
+//    cho qua: gửi 0 nghĩa là **thôi chia sẻ** phụ tùng đó, KHÔNG phải lỗi.
+//    ⇒ bỏ hai guard cũ `QuantityShare <= 0` và `QuantityShare > InStock`: cả hai đều SAI so với nguồn
+//      (nguồn cho 0, và trần là `InStock − MinQuantity` chứ không phải `InStock`).
+//
+// ===== LUẬT "BẢN MỚI THAY BẢN CŨ" =====
+//   Nguồn xoá mọi bản ghi cũ CÙNG ĐẠI LÝ khác `SharePartID` vừa tạo (`delete t from SP_SharePart t inner`
+//   `join #tbl_..._Filter f` …), và ghi `FlagLatest = Flag.Active` cho bản mới ⇒ **mỗi đại lý chỉ có MỘT
+//   đợt chia sẻ đang hiệu lực**. Vì vậy POST nhận CẢ DANH SÁCH (`Lines`) trong một lần — gửi từng phụ tùng
+//   một sẽ xoá mất phụ tùng gửi trước, đúng như nguồn.
+//
+// ☠️ BẪY CODE CHẾT ĐÃ TRÁNH: region "Save on DB old" dựng chuỗi `strSql_SaveOnDB_01` chứa
+//   `DELETE FROM SP_SharePart_Detail;` / `DELETE FROM SP_SharePart;` **KHÔNG CÓ WHERE** (xoá sạch bảng).
+//   Chuỗi đó **dựng xong rồi vứt — không hàm Exec* nào nhận nó**. Bản CHẠY là `strSql_SaveOnDB`, đã
+//   thêm `where SharePartID <> @… and DealerCode = @…`. Port theo block chết = viết API xoá sạch bảng.
+//   (Hai block còn khác nhau ở CASE: bản chạy thêm `AND trần >= 0` / `and yêu-cầu >= 0`.)
+//
+// 📌 NỢ: nguồn `ExecNonQuery` **hai lần** — `_dbMain` rồi `_dbWH` (ghi kép Main/WH). MiniHTC một DB.
 app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
-    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa chọn phụ tùng." });
-    if (dto.QuantityShare <= 0) return Results.BadRequest(new { error = "Số lượng chia sẻ phải lớn hơn 0." });
-    if (dto.QuantityShare > dto.InStock) return Results.BadRequest(new { error = "Số lượng chia sẻ không được vượt quá tồn kho." });
+
+    // Một dòng phẳng (tương thích ngược) HOẶC cả danh sách — nguồn luôn gửi cả bảng chi tiết.
+    var lines = dto.Lines is { Count: > 0 }
+        ? dto.Lines
+        : new List<SharePartLineDto> { new(dto.PartCode, dto.PartName, dto.Unit, dto.InStock, dto.QuantityShare, dto.MinQuantity, dto.Remark) };
+    if (lines.Any(l => string.IsNullOrWhiteSpace(l.PartCode))) return Results.BadRequest(new { error = "Chưa chọn phụ tùng." });
+
+    // Trùng phụ tùng trong một đợt: nguồn ném SP_SharePart_Create_DuplicateKeyDetail (khoá "|PartID|").
+    var dupe = lines.GroupBy(l => l.PartCode.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe is not null) return Results.BadRequest(new { error = "Phụ tùng bị lặp trong danh sách chia sẻ: " + dupe.Key });
+
+    var dealer = dto.DealerCode.Trim().ToUpperInvariant();
     var no = "SP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new SharePart { OrgId = t.OrgId, ShareNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName, Unit = dto.Unit, InStock = dto.InStock, QuantityShare = dto.QuantityShare, Remark = dto.Remark, Status = "Open" };
-    db.ShareParts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ShareNo, r.PartCode });
+    var now = DateTime.Now;
+    var rows = new List<SharePart>();
+
+    foreach (var l in lines)
+    {
+        var code = l.PartCode.Trim().ToUpperInvariant();
+        // Tồn / tồn tối thiểu lấy từ DANH MỤC PHỤ TÙNG khi có — nguồn tính SLC từ Ser_Inv_PartInstance
+        //   và MinQuantity từ Ser_Mst_Part, KHÔNG lấy số client gửi. Không có trong danh mục thì mới dùng
+        //   số client gửi (MiniHTC chưa port tầng partInstance — đã ghi nợ).
+        var mp = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code);
+        var inStock = mp?.Quantity ?? l.InStock;
+        var minQty = mp?.MinQuantity ?? l.MinQuantity;
+        var room = inStock - minQty;              // SoLuongDcChiaSe
+        var req = l.QuantityShare;
+
+        // Chặn phía client của nguồn — giữ nguyên văn câu thông báo.
+        if (!(req <= room || req == 0))
+            return Results.BadRequest(new { error = "Số lượng chia sẻ vượt quá quy định!", partCode = code });
+
+        // Kẹp phía server (CASE của nguồn) — vẫn chạy dù guard trên đã qua, đúng như nguồn làm hai lớp.
+        var actual = (req >= room && room >= 0) ? room
+                   : (req < room && req >= 0) ? req
+                   : 0m;
+
+        rows.Add(new SharePart
+        {
+            OrgId = t.OrgId, ShareNo = no, DealerCode = dealer, PartCode = code,
+            PartName = l.PartName ?? mp?.PartName, Unit = l.Unit ?? mp?.Unit,
+            InStock = inStock, MinQuantity = minQty,
+            QuantityShareRequested = req, QuantityShare = actual,
+            Remark = l.Remark, Note = dto.Note, Status = "Open", FlagLatest = "1",
+            CreatedBy = dto.CreatedBy, LogLUDateTime = now, LogLUBy = dto.CreatedBy,
+        });
+    }
+
+    // Bản mới THAY bản cũ: nguồn XOÁ hẳn các bản ghi cũ của chính đại lý đó (không phải chỉ hạ cờ).
+    var old = await db.ShareParts.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ShareNo != no).ToListAsync();
+    if (old.Count > 0) db.ShareParts.RemoveRange(old);
+
+    db.ShareParts.AddRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        shareNo = no, replaced = old.Count,
+        items = rows.Select(x => new { x.PartCode, requested = x.QuantityShareRequested, shared = x.QuantityShare, room = x.InStock - x.MinQuantity }),
+    });
 }).RequireAuthorization();
 
 // Đóng tin chia sẻ (Open -> Closed).
@@ -33793,7 +33878,11 @@ record BulletinDtlDto(string? SerCode, string? SerName, string? PartCode, string
 record BulletinVinDto(string? VinNo, string? DealerCode, string? Status);
 record BulletinVinStatusDto(string? Status);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
-record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
+// #267: `Lines` = bảng chi tiết `SP_SharePart_Detail` của nguồn. Các trường phẳng giữ lại cho tương thích
+//   ngược, được coi là đợt chia sẻ 1 dòng.
+record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
+    decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record SharePartLineDto(string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, decimal MinQuantity, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 // #261: 12 cột của `TblSerMSTPart` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note,
