@@ -6425,6 +6425,13 @@ public sealed class DealerDealDetail
     /// <summary>Ngày giao xe cho khách (`DLS_DealDetail.DeliveryDate`) — `CarDeliveryDate_Update`
     /// cập nhật cột này theo cặp khoá `DealNo` + `CarId`.</summary>
     public DateTime? DeliveryDate { get; set; }
+
+    /// <summary>
+    /// 🔴 #273 `Dls_DealDetail.WarrantyExpiresDate` — ngày hết hạn bảo hành của CHIẾC XE trong hợp đồng.
+    /// Cần cho payload tạo hội viên Loyalty (`WarrantyExpiryDate`) ở bước duyệt kiểm chứng bán lẻ.
+    /// Nguồn: `TERP.BizHTC/HCC/BizHTC.HCC.cs:3856` (hàm `..._New20260805` — **chỉ có trên máy 150**).
+    /// </summary>
+    public DateTime? WarrantyExpiresDate { get; set; }
 }
 
 /// <summary>

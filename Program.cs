@@ -27919,24 +27919,57 @@ app.MapPost("/api/dealerdeals/{no}/verify-ctmcare", async (string no, VerifyCtmC
     await db.SaveChangesAsync();
 
     // Dữ liệu hội viên đúng phép map của nguồn — CHƯA gọi API (ghi nợ tầng tích hợp Loyalty).
+    //
+    // 🔴 #273 ĐỐI CHIẾU LẠI TỪNG TRƯỜNG với `objCrd_Member` của nguồn (`BizHTC.HCC.cs:3895-3915` —
+    //   đọc được nhờ cách so 2 máy xác lập ở #269-#272). Nguồn gán **20 trường**, port cũ mới có 16
+    //   ⇒ **THIẾU 6**: `VIN` · `ModelCode` · `ModelName` · `WarrantyExpiryDate` · `MemberActiveDate` ·
+    //   `RegistrationDate`.
+    //
+    // 🔴 `RegistrationDate` và `MemberActiveDate` LẤY CÙNG MỘT CỘT `ddd.DeliveryDate` — nguồn select nó
+    //   HAI LẦN với hai alias (`:3864-3865`). Không phải chép nhầm: hội viên **đăng ký và có hiệu lực**
+    //   cùng thời điểm giao xe. Thiếu một trong hai thì bên Loyalty mất mốc tính kỳ.
+    // ⚠️ Nguồn join `Car_Car cc on ddd.CarId = cc.CarId` rồi lấy `cc.VIN`/`cc.ModelCode` ⇒ ở nguồn
+    //   `CarId` **KHÁC** VIN. MiniHTC lưu VIN ngay trong `DealerDealDetail.CarId` nên phép join co lại
+    //   thành tra `CarVinMaster` theo VIN; tra không ra thì để `vin = CarId`, `modelCode/modelName = null`
+    //   — **KHÔNG bịa giá trị**.
+    // ⚠️ `carId` không có trong payload nguồn (nguồn chỉ dùng nó để join) — giữ lại, đánh dấu là trường THÊM.
     var cust = await db.DealerCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CustomerCode == d.CustomerCodeBuyer);
-    var loyaltyPayload = lines.Select(l => new
+
+    var carIds = lines.Select(x => x.CarId).Distinct().ToList();
+    var vinRows = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && carIds.Contains(v.VIN)).ToListAsync();
+    var vinMap = vinRows.GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First());
+    var modelCodes = vinRows.Where(v => v.ModelCode != null).Select(v => v.ModelCode!).Distinct().ToList();
+    var modelRows = await db.CarModelStds.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToListAsync();
+    var modelMap = modelRows.GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    var loyaltyPayload = lines.Select(l =>
     {
-        dealNo = d.DealNo,
-        customerCode = d.CustomerCodeBuyer,
-        memberName = cust?.FullName,
-        phoneNo = cust?.PhoneNo,
-        memberGender = (cust?.Gender ?? "") == "0" ? "1" : "0",   // 🔴 nguồn ĐẢO cờ giới tính, giữ nguyên
-        dateOfBirth = cust?.DateOfBirth,
-        provinceCode = cust?.ProvinceCode,
-        districtCode = cust?.DistrictCode,
-        memAddress = cust?.Address,
-        idCardNo = cust?.IDCardNo,
-        carId = l.CarId,
-        carNo = l.PlateNo,
-        tradeMarkCode = "HYUNDAI",                                 // nguồn ghi CỨNG
-        dlCodeRegis = d.DealerCode,
-        invoiceDate = l.CusInvoiceDate,
+        var cv = vinMap.TryGetValue(l.CarId, out var v) ? v : null;
+        var mCode = cv?.ModelCode;
+        return new
+        {
+            dealNo = d.DealNo,
+            customerCode = d.CustomerCodeBuyer,
+            memberName = cust?.FullName,
+            phoneNo = cust?.PhoneNo,
+            memberGender = (cust?.Gender ?? "") == "0" ? "1" : "0",   // 🔴 nguồn ĐẢO cờ giới tính, giữ nguyên
+            dateOfBirth = cust?.DateOfBirth,
+            provinceCode = cust?.ProvinceCode,
+            districtCode = cust?.DistrictCode,
+            memAddress = cust?.Address,
+            idCardNo = cust?.IDCardNo,
+            carId = l.CarId,                                          // trường THÊM của port, nguồn không gửi
+            carNo = l.PlateNo,
+            vin = cv?.VIN ?? l.CarId,                                 // #273 cc.VIN
+            tradeMarkCode = "HYUNDAI",                                // nguồn ghi CỨNG
+            modelCode = mCode,                                        // #273 cc.ModelCode
+            modelName = mCode != null && modelMap.TryGetValue(mCode, out var mn) ? mn : null, // #273 mcm.ModelName
+            dlCodeRegis = d.DealerCode,
+            warrantyExpiryDate = l.WarrantyExpiresDate,               // #273 ddd.WarrantyExpiresDate
+            memberActiveDate = l.DeliveryDate,                        // #273 ddd.DeliveryDate (alias 1)
+            registrationDate = l.DeliveryDate,                        // #273 ddd.DeliveryDate (alias 2 — CÙNG cột)
+            invoiceDate = l.CusInvoiceDate,
+        };
     }).ToList();
 
     return Results.Ok(new { d.DealNo, ctmCareFlag = d.CtmCareFlag, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark,
