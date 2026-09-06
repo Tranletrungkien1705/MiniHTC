@@ -4559,6 +4559,26 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Lịch sử sửa NGÂN HÀNG tài trợ của giao dịch bán lẻ (`DLS_Deal_UpdateBankCode_His` — port 1:1
+/// `Support_DLS_Deal_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.hkt.cs:7848`).
+/// 🔴 Guard đặc thù của nguồn: `DLS_Deal.DealerCodeBuyer` **phải RỖNG** — nếu giao dịch là bán cho
+/// ĐẠI LÝ khác thì báo lỗi `Support_DLS_Deal_UpdateBankCode_DealerCodeBuyerInvalid`;
+/// tức chỉ sửa ngân hàng cho giao dịch **bán khách lẻ**.
+/// ⚠️ Nguồn còn guard mã NH mới có trong `Mst_Bank` — MiniHTC chưa có master ngân hàng (nợ từ #94)
+/// nên guard đó CHƯA port.
+/// </summary>
+public sealed class DealUpdBankCodeHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string? BankCodeOld { get; set; }
+    public string? BankCodeNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử sửa SỐ/NGÀY HOÁ ĐƠN KHÁCH của dòng bán lẻ (`Dls_DealDetailCusInvoice_HisUpd` — port 1:1
 /// `Dls_DealDetailCusInvoice_Update`, 2010.HTC `Biz.HTC.WH.hkt.cs:7116`).
 /// 🔴 Cùng mẫu ba nhánh với <see cref="SalesManUpdDeptSMTypeHis"/>: chỉ ghi cột **thực sự đổi**

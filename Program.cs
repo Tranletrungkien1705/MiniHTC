@@ -917,6 +917,51 @@ app.MapGet("/api/dlrcontracts/{no}/change-history", async (string no, AppDbConte
     return Results.Ok(new { no, bankCode = bank, salesType, salesManCode = smCode });
 }).RequireAuthorization();
 
+// ===== Sửa NGÂN HÀNG tài trợ của giao dịch bán lẻ (Support_DLS_Deal_UpdateBankCode —
+// 2010.HTC Biz.HTC.WH.hkt.cs:7848). TWIN: chỉ `TERP.WSHTC.64` (99643). =====
+// 🔴 Guard đặc thù: `DealerCodeBuyer` **phải RỖNG** — giao dịch bán cho ĐẠI LÝ khác thì KHÔNG sửa được
+//    ngân hàng (nguồn ném `..._DealerCodeBuyerInvalid`). Chỉ áp dụng cho giao dịch bán khách lẻ.
+// ⚠️ Guard `Mst_Bank` của nguồn CHƯA port: MiniHTC không có master ngân hàng (nợ chung từ #94).
+app.MapGet("/api/deals/bankcode-history", async (AppDbContext db, ITenantContext t, string? dealNo) =>
+{
+    var qy = db.DealUpdBankCodeHiss.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(h => h.DealNo == dealNo);
+    var items = await qy.OrderByDescending(h => h.Id).Take(500)
+        .Select(h => new { h.DealNo, h.BankCodeOld, h.BankCodeNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/deals/update-bankcode", async (DealUpdBankCodeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.BankCodeNew)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng nào để sửa ngân hàng." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    int updated = 0, skipped = 0;
+    foreach (var r in rows)
+    {
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == r.DealNo);
+        if (d is null) return Results.BadRequest(new { error = $"Không tìm thấy giao dịch {r.DealNo}." });
+        // 🔴 Guard nguồn: bán cho đại lý khác ⇒ không được sửa ngân hàng.
+        if (!string.IsNullOrWhiteSpace(d.DealerCodeBuyer))
+            return Results.BadRequest(new { error = $"Giao dịch {r.DealNo} bán cho đại lý {d.DealerCodeBuyer} — không sửa được ngân hàng tài trợ." });
+
+        var oldVal = d.BankCode;
+        var newVal = r.BankCodeNew!.Trim().ToUpperInvariant();
+        if (string.Equals(oldVal ?? "", newVal, StringComparison.OrdinalIgnoreCase)) { skipped++; continue; }
+
+        db.DealUpdBankCodeHiss.Add(new DealUpdBankCodeHis
+        {
+            OrgId = t.OrgId, DealNo = r.DealNo!, BankCodeOld = oldVal, BankCodeNew = newVal,
+            UpdDTime = now, UpdBy = who,
+        });
+        d.BankCode = newVal;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, updated, skipped });
+}).RequireAuthorization();
+
 // ===== Sửa SỐ/NGÀY HOÁ ĐƠN KHÁCH của dòng bán lẻ (Dls_DealDetailCusInvoice_Update —
 // 2010.HTC Biz.HTC.WH.hkt.cs:7116). TWIN: chỉ `TERP.WSHTC.64` (27587). =====
 // 🔴 Ba nhánh update theo trường **thực sự đổi**; giá trị mới trống ⇒ giữ nguyên giá trị hiện tại;
@@ -22272,6 +22317,9 @@ record DlvUpdDatesDto(List<DlvUpdDatesRowDto>? Rows);
 record DealDetailPriceDto(List<DealDetailPriceRowDto>? Rows);
 // Sửa số/ngày hoá đơn khách theo LÔ (nguồn nhận bảng `dtInput_DealDetail` nhiều dòng).
 record DealDetailCusInvoiceDto(List<DealDetailCusInvoiceRowDto>? Rows);
+// Sửa ngân hàng tài trợ theo LÔ (nguồn nhận bảng `dtInput_DLS_Deal` nhiều dòng).
+record DealUpdBankCodeDto(List<DealUpdBankCodeRowDto>? Rows);
+record DealUpdBankCodeRowDto(string? DealNo, string? BankCodeNew);
 record DealDetailCusInvoiceRowDto(string? DealNo, string? CarId, string? CusInvoiceNoNew, DateTime? CusInvoiceDateNew);
 record DealDetailPriceRowDto(string? DealNo, string? VIN, decimal? PriceNew);
 record DlvUpdDatesRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, DateTime? DateNew);
