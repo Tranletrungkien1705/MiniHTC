@@ -2568,50 +2568,7 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
 //                      (Car_TransportMinutes_HTCAprrSpecial_New20190122:57193)
 //    htc-cancel     : → HTC="C" + Tổng="C"       (…_HTCCancelX:56696)
 //    Endpoint cũ (approve/reject, một trục, từ vựng "Pending"/"Approved") đã được THAY hẳn.
-// ===== #180 HTC HUỶ biên bản vận chuyển — `Car_TransportMinutes_HTCCancel_New20190122` =====
-// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:57440` (csproj 272), thân thật ở `_HTCCancelX` (56696).
-// BƯỚC 3B: hàm bắt đầu **cùng dòng 57440 ở CẢ HAI máy**, vùng 261 dòng md5 `f5edd068` KHỚP.
-// TWIN: WS 32-bit và 64-bit đều có `_HTCCancel_New20190122`.
-//
-// 🔴 Lệnh này MiniHTC chưa có. Bề mặt WS 64-bit của cụm `Car_TransportMinutes` có **13 lệnh**;
-//    MiniHTC mới phủ 4 route. Đây là lệnh **lùi trạng thái** duy nhất của cụm.
-//
-// Guard nguồn (`Car_TransportMinutes_CheckDB`) — **BA trục cùng lúc**, khớp đúng mô hình 3 trục đã port:
-//   · `DLTransportMinutesStatus` = **"A"** (đại lý đã duyệt)
-//   · `HTCTransportMinutesStatus` ∈ **{"P","A1"}** ⇒ huỷ được khi bên A **chưa duyệt** hoặc **mới duyệt cấp 1**;
-//     đã duyệt cấp 2 ("A2") thì KHÔNG huỷ được nữa.
-//   · `TransportMinutesStatus` (trục tổng) = **"P"**
-// Ghi: `HTCTransportMinutesStatus = Cancel ("C")` **và** trục tổng `TransportMinutesStatus = Cancel ("C")`;
-//   dòng chi tiết nhận `TransportMinutesDtlStatus = ` **trục tổng** (không phải trục HTC).
-app.MapPost("/api/transminutes/{no}/htc-cancel", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
-
-    if (m.DLTransportMinutesStatus != "A")
-        return Results.BadRequest(new { error = $"Trục đại lý đang '{m.DLTransportMinutesStatus}' — chỉ huỷ khi đại lý đã duyệt (A)." });
-    if (m.HTCTransportMinutesStatus is not ("P" or "A1"))
-        return Results.BadRequest(new { error = $"Trục HTC đang '{m.HTCTransportMinutesStatus}' — chỉ huỷ khi bên A còn chờ (P) hoặc mới duyệt cấp 1 (A1)." });
-    if (m.Status != "P")
-        return Results.BadRequest(new { error = $"Trục tổng đang '{m.Status}' — chỉ huỷ khi còn chờ (P)." });
-
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var now = DateTime.Now;
-    // Nguồn ghi ĐỒNG THỜI hai trục: trục HTC và trục TỔNG, cùng nhận Cancel.
-    m.HTCTransportMinutesStatus = "C";
-    m.Status = "C";
-    m.DecidedAt = now; m.HTCCancelDateTime = now; m.HTCCancelBy = who;   // nguon ghi cap moc huy rieng cua ben A
-    m.LogLUDateTime = now; m.LogLUBy = who;
-    // `ctmd.TransportMinutesDtlStatus = f.TransportMinutesStatus` — dòng lấy theo TRỤC TỔNG.
-    var cars = await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync();
-    foreach (var c in cars) { c.DtlStatus = m.Status; c.LogLUDateTime = now; c.LogLUBy = who; }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { m.TransportMinutesNo, htcStatus = m.HTCTransportMinutesStatus, status = m.Status,
-        linesUpdated = cars.Count });
-}).RequireAuthorization();
-
-app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, TmActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
@@ -2645,19 +2602,42 @@ app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, 
             m.DLTransportMinutesStatus = "A"; m.DLApprDateTime = now; m.DLApprBy = who;
             m.HTCTransportMinutesStatus = "A1"; m.HTCAppr1DateTime = now; m.HTCAppr1By = who;
             break;
+// 🔴 #181 HTC DUYỆT CẤP 2 + KÝ FILE + GỬI MAIL — `Car_TransportMinutes_HTCAppr2AndSignAndSendMail_New20190531`
+//    (`DataWH/BizHTC.zTemp.cs:6848`, thân thật ở `...X_New20190531` dòng **6567**, csproj 276).
+//    BƯỚC 3B: hàm `_DLAppr_New20190531` mốc 6448 **cùng dòng ở CẢ HAI máy**, vùng 273 dòng md5 `129917ed` KHỚP.
+//    🔴 TWIN: lệnh này **CHỈ có ở WS 64-bit**; WS 32-bit dừng ở `_HTCAppr2_New20190122`.
+//    Guard giống hệt `htc-appr2` thường: (DL="A", HTC="A1", tổng="P") — điểm KHÁC DUY NHẤT là
+//    nó **upload file biên bản đã ký** vào `FolderUpload.BBBG_Temp` rồi **MOVE** sang thư mục đích
+//    và ghi `FilePath`, sau đó xếp lô gửi mail.
+//    ⚠️ NỢ: MiniHTC chưa có tầng lưu file lẫn tầng gửi mail ⇒ nhận sẵn `FilePath` từ client, KHÔNG bịa.
+case "htc-appr2-sign":
+    err = Need("A", "A1", "P"); if (err is not null) return Results.BadRequest(new { error = err });
+    if (string.IsNullOrWhiteSpace(dto?.FilePath))
+        return Results.BadRequest(new { error = "Chưa có file biên bản đã ký (FilePath)." });
+    m.HTCTransportMinutesStatus = "A2"; m.HTCAppr2DateTime = now; m.HTCAppr2By = who;
+    m.Status = "A"; m.DecidedAt = now;
+    m.FilePath = dto!.FilePath!.Trim();
+    foreach (var c in await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync())
+    { c.DtlStatus = "A"; c.LogLUDateTime = now; c.LogLUBy = who; }
+    break;
         case "htc-cancel":
-            if (m.Status != "P") return Results.BadRequest(new { error = $"Chỉ huỷ khi trục tổng còn \"P\" (đang \"{m.Status}\")." });
+            // 🔴 #181 VÁ GUARD — `Car_TransportMinutes_HTCCancelX` (Biz.HTC.WH.cs:56696) kiểm BA TRỤC,
+            //    port cũ chỉ kiểm trục tổng. Trục HTC ∈ {"P","A1"}: đã duyệt cấp 2 thì KHÔNG huỷ được nữa.
+            err = Need("A", m.HTCTransportMinutesStatus == "A1" ? "A1" : "P", "P");
+            if (m.HTCTransportMinutesStatus is not ("P" or "A1"))
+                err = $"Trục HTC đang \"{m.HTCTransportMinutesStatus}\" — chỉ huỷ khi bên A còn chờ (P) hoặc mới duyệt cấp 1 (A1).";
+            if (err is not null) return Results.BadRequest(new { error = err });
             m.HTCTransportMinutesStatus = "C"; m.HTCCancelDateTime = now; m.HTCCancelBy = who;
             m.Status = "C"; m.DecidedAt = now;
             foreach (var c in await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync())
             { c.DtlStatus = "R"; c.CancelDateTime = now; c.CancelBy = who; c.LogLUDateTime = now; c.LogLUBy = who; }
             break;
         default:
-            return Results.BadRequest(new { error = "action = dl-appr | htc-appr1 | htc-appr2 | htc-appr-special | htc-cancel" });
+            return Results.BadRequest(new { error = "action = dl-appr | htc-appr1 | htc-appr2 | htc-appr2-sign | htc-appr-special | htc-cancel" });
     }
     m.LogLUDateTime = now; m.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.TransportMinutesNo, dl = m.DLTransportMinutesStatus, htc = m.HTCTransportMinutesStatus, status = m.Status });
+    return Results.Ok(new { m.TransportMinutesNo, dl = m.DLTransportMinutesStatus, htc = m.HTCTransportMinutesStatus, status = m.Status, m.FilePath });
 }).RequireAuthorization();
 
 // ===== Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2) =====
@@ -28955,6 +28935,7 @@ record TranspFeeVersionDto(List<TranspFeeDto>? Rows);
 record TranspFeeVerDeleteDto(List<string>? TFVCodes);
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
+record TmActionDto(string? FilePath = null);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null);
