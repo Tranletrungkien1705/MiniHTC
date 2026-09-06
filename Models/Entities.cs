@@ -3913,6 +3913,14 @@ public sealed class Dms40SoRoot
     public string? FinishBy { get; set; }
     /// <summary>🔴 Mã đơn bán (`Ord_SalesOrder.SOCode`) mà bước hoàn tất TỰ SINH ra từ đơn gốc này.</summary>
     public string? GeneratedSoCode { get; set; }
+
+    // ===== #208 parity `DMS40_Ord_SalesOrderRoot_Cancel1/Cancel2_New20181119`
+    //       (DataWH/Biz.HTC.WH.cs:78681 / 79242) — hai lệnh ghi CÙNG bộ cột dưới đây. =====
+    /// <summary>Mốc HUỶ đơn gốc (`CancelDTime`/`CancelBy`) — port cũ chỉ đổi trạng thái, không ghi dấu vết.</summary>
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng model/spec/color trong đơn hàng gốc DMS40 — port 1:1 grid FrmUpgradeOrderApprovePlan (DMS40_Ord_SalesOrderRootDetail).</summary>
@@ -3940,6 +3948,9 @@ public sealed class Dms40SoRootDetail
     public DateTime? Approved2Date { get; set; }
     /// <summary>Trạng thái RIÊNG của dòng (`SORStatusDtl`) — nguồn cập nhật theo trạng thái header ở bước hoàn tất.</summary>
     public string? SORStatusDtl { get; set; }
+    // #208: nguồn cascade `SORStatusDtl` kèm `LogLU*` trên dòng chi tiết khi huỷ.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>

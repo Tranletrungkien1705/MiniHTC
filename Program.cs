@@ -14578,16 +14578,40 @@ app.MapPost("/api/dms40/soroots/{no}/finish", async (string no, AppDbContext db,
     return Results.Ok(new { h.SORCode, h.Status, h.FinishDTime, h.FinishBy, generatedSoCode = generated, soLines = srcLines.Count });
 }).RequireAuthorization();
 
-// Từ chối P→C hoặc A→C (khớp DMS40_Ord_SalesOrderRoot_Cancel1/Cancel2 gốc)
-app.MapPost("/api/dms40/soroots/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #208 HUỶ ĐƠN GỐC — `DMS40_Ord_SalesOrderRoot_Cancel1` (78681) / `Cancel2` (79242) =====
+// Nguồn: `DataWH/Biz.HTC.WH.cs` (csproj <Compile> 272). TWIN FILE: hai hàm này CÒN ở
+//   `DataWH/Biz.HTC.WH.Rel.20230823.cs` (74835/75396) — file đó KHÔNG có trong csproj ⇒ **FILE CHẾT** (xác định ở #200).
+//
+// 🔴 BƯỚC 3B — bài học đo đúng: md5 theo SỐ DÒNG cố định (78681-79800) cho kết quả LỆCH giữa 2 máy
+//   (`2325b86e` vs `07dfeaa7`), nhưng diff cho thấy chỉ là **lệch offset 5 dòng** — bản 150 có thêm 5 dòng
+//   ở TRƯỚC vùng này. Căn lại theo **MỐC HÀM** (150 tại 78686): md5 = `2325b86e` **KHỚP**. Nội dung y hệt.
+//
+// Hai lệnh, hai guard khác nhau — port cũ gộp thành một điều kiện `P or A` (đúng về TẬP HỢP, nên giữ),
+//   nhưng bỏ sót phần GHI:
+//     `Cancel1`: guard `SORStatus = SORStatus.Pending` ("P")   → `SORStatus = "C"`
+//     `Cancel2`: guard `SORStatus = SORStatus.Approved` ("A")  → `SORStatus = "C"`
+//   Cả hai đều ghi `CancelDTime` · `CancelBy` · `LogLUDateTime` · `LogLUBy`,
+//   và 🔴 **CASCADE** `DMS40_Ord_SalesOrderRootDetail.SORStatusDtl = "C"` + `LogLU*` trên MỌI dòng chi tiết.
+app.MapPost("/api/dms40/soroots/{no}/cancel", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.Dms40SoRoots.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SORCode == no);
     if (h is null) return Results.NotFound(new { no });
+    // Giữ điều kiện gộp: `Cancel1` nhận "P", `Cancel2` nhận "A" — hợp lại đúng bằng tập {P, A}.
     if (h.Status is not ("P" or "A")) return Results.BadRequest(new { error = "Chỉ có thể hủy khi trạng thái là P hoặc A." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var branch = h.Status == "P" ? "Cancel1" : "Cancel2";   // ghi lại nhánh nguồn tương ứng
     h.Status = "C";
+    h.CancelDTime = now; h.CancelBy = who;
+    h.LogLUDateTime = now; h.LogLUBy = who;
+
+    var dtls = await db.Dms40SoRootDetails.Where(x => x.OrgId == t.OrgId && x.SoRootId == h.Id).ToListAsync();
+    foreach (var d in dtls) { d.SORStatusDtl = "C"; d.LogLUDateTime = now; d.LogLUBy = who; }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.SORCode, h.Status });
+    return Results.Ok(new { h.SORCode, h.Status, h.CancelDTime, h.CancelBy, branch, cancelledDetailRows = dtls.Count });
 }).RequireAuthorization();
 
 // ===== Mẫu hợp đồng của đại lý (DealerContractForm — port 1:1 FrmDlr_Mst_DealerContractForm, 2010.HTC) =====

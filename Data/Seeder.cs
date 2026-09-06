@@ -845,6 +845,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #208 parity DMS40_Ord_SalesOrderRoot_Cancel1/Cancel2
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text",
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #207 parity DMS40_CT_DealerContract: 2 cot moc huy
         "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp",
         "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text",
