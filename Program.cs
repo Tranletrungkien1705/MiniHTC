@@ -24094,7 +24094,40 @@ app.MapPost("/api/dlrcontractcancels/save", async (DlrContractCancelSaveDto dto,
             LogLUDateTime = now, LogLUBy = who,
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { no, created = isNew, details = (dto.Details ?? new()).Count, cars = (dto.Cars ?? new()).Count });
+
+    // ===== 🔴 #198 SIDE-EFFECT bị bỏ sót: HỢP ĐỒNG TỰ CHUYỂN "HOÀN THÀNH" =====
+    // Nguồn: `TERP.BizHTC/BizHTC.Contract.cs` — khối `// Upd: Dlr_Contract.DlrCtrStatus.` (3244-3298)
+    //   nằm BÊN TRONG `Dlr_ContractCancel_SaveX_New20230306` (2375).
+    //   BƯỚC 3B: md5 cả file `647641a1`, md5 vùng hàm 2375-3310 `6c93a6b1` — KHỚP 2 máy.
+    //
+    // 🔴 `DlrCtrStatus = "F"` KHÔNG PHẢI một hành động người dùng bấm: đây là **chỗ DUY NHẤT** trong toàn
+    //    `TERP.BizHTC` đặt giá trị "F" (đã grep: 3282 là hit duy nhất; các chỗ khác chỉ đặt P/A/C).
+    //    Hợp đồng tự "hoàn thành" khi lưu phiếu huỷ xe mà SAU đó hợp đồng **không còn xe nào chưa xử lý**.
+    //
+    // Điều kiện của nguồn, dịch từ 3 bảng tạm:
+    //   `#tblDlr_Contract`        = các `DlrContractNo` xuất hiện trong DANH SÁCH XE của phiếu vừa lưu;
+    //   `#tblDlr_Contract_NotUpd` = trong số đó, HĐ nào CÒN ít nhất một xe `FlagCancel <> '1'`
+    //                               **và** `FlagDelivery <> '1'` (xe chưa huỷ và cũng chưa giao);
+    //   `#tblDlr_Contract_Upd`    = phần còn lại ⇒ set `DlrCtrStatus = 'F'` + `LogLUBy`/`LogLUDateTime`.
+    //   ⇒ Chỉ xét các HĐ CÓ MẶT trên phiếu này, không quét toàn bảng.
+    var finishedContracts = new List<string>();
+    var ctrNos = (dto.Cars ?? new()).Select(c => (c.DlrContractNo ?? "").Trim())
+                                    .Where(x => x.Length > 0).Distinct().ToList();
+    foreach (var ctrNo in ctrNos)
+    {
+        var stillOpen = await db.DlrContractCars.AnyAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == ctrNo
+                                                            && x.FlagCancel != "1" && x.FlagDelivery != "1");
+        if (stillOpen) continue;
+        var ctr = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == ctrNo);
+        if (ctr is null) continue;
+        ctr.Status = "F";                       // `TConst.DlrCtrStatus1.Finish`
+        ctr.LogLUDateTime = now; ctr.LogLUBy = who;
+        finishedContracts.Add(ctrNo);
+    }
+    if (finishedContracts.Count > 0) await db.SaveChangesAsync();
+
+    return Results.Ok(new { no, created = isNew, details = (dto.Details ?? new()).Count,
+                            cars = (dto.Cars ?? new()).Count, finishedContracts });
 }).RequireAuthorization();
 
 // `ApproveMulti` / `CancelMulti` của nguồn — duyệt/huỷ NHIỀU phiếu trong một lệnh.
@@ -24725,19 +24758,13 @@ app.MapPost("/api/dlrcontracts/{action}-multi", async (string action, DlrContrac
     return Results.Ok(new { action, affected = rows.Count, status = rows[0].Status });
 }).RequireAuthorization();
 
-// Đánh dấu HOÀN THÀNH ("F") — trạng thái thứ tư của `DlrCtrStatus1`, đi kèm `FinishDTime`/`FinishBy`.
-// Nguồn chỉ cho HĐ đã xác nhận mới đi tiếp; port theo đúng thứ tự P → A → F.
-app.MapPost("/api/dlrcontracts/{no}/finish", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
-    if (c is null) return Results.NotFound(new { no });
-    if (c.Status != "A") return Results.BadRequest(new { error = "Chỉ hoàn thành được HĐ đã xác nhận (A)." });
-    c.Status = "F"; c.FinishDTime = DateTime.Now;
-    c.FinishBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrContractNo, status = c.Status, statusName = "Hoàn thành" });
-}).RequireAuthorization();
+// ⚠️ #198 ĐÃ BỎ `/api/dlrcontracts/{no}/finish` — **nguồn KHÔNG có lệnh này**.
+//    Grep toàn `TERP.BizHTC`: chỉ MỘT chỗ đặt `DlrCtrStatus = 'F'` (BizHTC.Contract.cs:3282), và nó nằm
+//    bên trong `Dlr_ContractCancel_SaveX_New20230306` — tức "hoàn thành" là **hệ quả tự động** của việc
+//    lưu phiếu huỷ xe khi hợp đồng không còn xe nào chưa xử lý, KHÔNG phải nút bấm.
+//    Port cũ dựng một endpoint bấm tay với guard `Status == "A"` — guard đó không tồn tại ở nguồn.
+//    Cùng cách xử lý với `/deliver` và `/reject` đã bỏ ở cụm lệnh giao xe (#175).
+//    ⇒ Xem side-effect thật ở `POST /api/dlrcontractcancels/save`.
 
 // Hỗ trợ sửa HĐ đại lý theo lô (port 1:1 FrmSupportDlr_Contract_UpdateBankCode/UpdateSalesType/UpdateSMCode, ERP.V15.2025/Support).
 // field = bankCode|salesType|salesManCode.
