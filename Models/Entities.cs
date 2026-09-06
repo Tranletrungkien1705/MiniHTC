@@ -1329,6 +1329,24 @@ public sealed class RetrieveRequest
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DecidedAt { get; set; }
     public string TranspReqType { get; set; } = "Retrieve"; // Retrieve|StorageRearrCB|StorageRearrange — port FrmMngRearCBTranspReq/FrmMngRearrangeTranspReq (dùng chung bảng StoTranspReq)
+
+    // ===== #156 parity Sto_TranspReq (nguồn: DataWH/Biz.HTC.WH.cs, csproj 272) —
+    //       `Sto_TranspReq_Create_New20181119` (laptop 109410 / máy 150 109415) ghi tại 110501 / 110506.
+    // TWIN: cả hai WS gọi cùng bộ `_Create/_Approve/_Del/_Get/_GetWH_New20181119` ⇒ không lệch.
+    /// <summary>Số hợp đồng vận chuyển (`TransportContractNo`).</summary>
+    public string? TransportContractNo { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+
+    /// <summary>
+    /// ⚠️ #156 — cột RIÊNG MiniHTC. 🔴 Ở NGUỒN `TranspReqType` nằm ở **BẢNG CHI TIẾT**
+    /// (<see cref="RetrieveReqCar.TranspReqType"/>), tức **mỗi XE một loại** — một phiếu có thể trộn
+    /// nhiều loại. Port cũ nâng nó lên bảng đầu (một loại cho cả phiếu) ⇒ lệch mô hình.
+    /// Giữ lại để đọc dữ liệu cũ và làm giá trị mặc định khi tạo dòng.
+    /// </summary>
+    public string? TranspReqTypeHeaderOnly { get; set; }
 }
 
 /// <summary>Dòng xe trong YC thu hồi (StoTranspReqDtl): VIN + kho nhận về.</summary>
@@ -1340,6 +1358,24 @@ public sealed class RetrieveReqCar
     public string Vin { get; set; } = "";
     public string? StorageCode { get; set; }
     public string DtlStatus { get; set; } = "Pending";
+
+    // ===== #156 parity Sto_TranspReqDtl (Biz.HTC.WH.cs:110501) =====
+    /// <summary>
+    /// 🔴 Loại yêu cầu vận chuyển ở MỨC DÒNG (`TranspReqType`, `TConst.TranspReqType`,
+    /// Const.Main.cs:633-640): **"CARTRANSPORT" · "STORAGEREARRANGE" · "CARRETRIEVE" · "STORAGEREARRCB"**.
+    /// Đây mới là chỗ nguồn lưu loại — KHÔNG phải ở bảng đầu.
+    /// </summary>
+    public string? TranspReqType { get; set; }
+    /// <summary>Số chứng từ tham chiếu (`RefOrdNo`) — với "CARTRANSPORT" nguồn nối về `DeliveryOrderNo`.</summary>
+    public string? RefOrdNo { get; set; }
+    /// <summary>
+    /// 🔴 Khoá dòng xe (`CarId`). Nguồn RẼ NHÁNH theo loại (Biz.HTC.WH.cs:109610-109619):
+    /// loại **STORAGEREARRANGE** hoặc **STORAGEREARRCB** ⇒ đặt `DBNull` (điều chuyển kho **không gắn xe cụ thể**);
+    /// các loại còn lại ⇒ lấy từ đầu vào.
+    /// </summary>
+    public string? CarId { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Trạng thái đóng thùng xe (Car_VIN packing — port 1:1 FrmUpdateVIN_TypeCB → CarVINUpdate_TypeCB, Phase2):
