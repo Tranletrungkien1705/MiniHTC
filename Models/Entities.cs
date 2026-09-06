@@ -13650,7 +13650,32 @@ public sealed class Cavity
     public string? StartWorkTime { get; set; }      // giờ bắt đầu ca
     public string? FinishWorkTime { get; set; }     // giờ kết thúc ca
     public string? Note { get; set; }
-    public string FlagActive { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // ISACTIVE của nguồn (đặt tên theo lệ port)
+
+    // ===== 🔴 #296 parity `TblSerCavity` (DbDefine.cs:1621-1632): 5 cột port cũ THIẾU =====
+    // 🆕 Tìm qua sweep "lớp Tbl* có CẢ `Status` LẪN `IsActive`" (sinh từ #295) — 6 lớp, đây là một.
+    public string? DealerCode { get; set; }
+
+    /// <summary>CAVITYTYPE — loại khoang theo nguồn.
+    /// ⚠️ Port cũ có `CompartmentType` (từ `Tbl_Mst_Compartment`) — **KHÁC cột này**; giữ cả hai.</summary>
+    public string? CavityType { get; set; }
+
+    /// <summary>STATUS — trạng thái nghiệp vụ của khoang, **KHÁC `FlagActive`** (cờ bật/tắt bản ghi).
+    /// Nguồn giữ CẢ HAI (luật `C0-quingentesimusquartus`).</summary>
+    public string? Status { get; set; }
+
+    /// <summary>
+    /// 🔴 STARTUSEDATE / FINISHUSEDATE — **ngày ĐƯA VÀO / NGỪNG sử dụng khoang**.
+    /// ⚠️ **KHÔNG PHẢI** `StartWorkTime`/`FinishWorkTime` đã có (giờ bắt đầu/kết thúc CA làm việc) — hai
+    /// khái niệm khác hẳn, rất dễ tưởng "đã có rồi". (`StartWorkTime` thậm chí KHÔNG có trong `DbDefine`.)
+    /// ⚠️ Nguồn so sánh CẢ `is null` LẪN `= ''` ⇒ cột lưu kiểu **CHUỖI**, không phải date.
+    /// </summary>
+    public string? StartUseDate { get; set; }
+    public string? FinishUseDate { get; set; }
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -882,6 +882,14 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #296 parity TblSerCavity: 7 cot con thieu (StartUseDate/FinishUseDate luu CHUOI)
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CavityType\" text",
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"Status\" text",
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"StartUseDate\" text",
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"FinishUseDate\" text",
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #295 parity TblSer_Inv_PartPrice: Remark + IsActive (IsActive KHAC Status)
         "ALTER TABLE public.\"PartPrices\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
         "ALTER TABLE public.\"PartPrices\" ADD COLUMN IF NOT EXISTS \"IsActive\" text",

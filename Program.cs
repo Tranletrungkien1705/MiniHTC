@@ -21499,6 +21499,66 @@ app.MapDelete("/api/transportinspayments/{no}", async (string no, AppDbContext d
 }).RequireAuthorization();
 
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
+// ===== 🔴 #296 KHOANG ĐANG / KHÔNG CÒN SỬ DỤNG — `Ser_CavityGetStatus` (`BizCarSv.Service.cs:13360`) =====
+// Trạng thái sử dụng **KHÔNG lưu thành cột** — nguồn TÍNH từ cặp `StartUseDate`/`FinishUseDate` so với
+//   `GetDate()`, và so cả `is null` LẪN `= ''` (cột lưu kiểu CHUỖI):
+//
+//   ĐANG dùng  ⇔  `StartUseDate` rỗng/null
+//                 HOẶC (`StartUseDate <= nay` VÀ `FinishUseDate` rỗng/null)
+//                 HOẶC (`StartUseDate <= nay` VÀ `FinishUseDate >= nay`)
+//   KHÔNG dùng ⇔  `StartUseDate > nay`   HOẶC   (`FinishUseDate` khác rỗng VÀ `< nay`)
+//
+// 🔴 ĐIỂM DỄ PORT SAI: **"chưa tới ngày bắt đầu" (`StartUseDate > nay`) bị xếp vào nhóm KHÔNG CÒN SỬ DỤNG**,
+//   chung với "đã hết hạn". Nguồn chỉ có HAI nhóm, không tách "chưa hiệu lực" thành nhóm thứ ba.
+app.MapGet("/api/cavities/usestatus", async (AppDbContext db, ITenantContext t, string? inUse) =>
+{
+    var rows = await db.Cavities.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var now = DateTime.Now;
+    static bool Empty(string? v) => string.IsNullOrWhiteSpace(v);
+    static DateTime? D(string? v) => DateTime.TryParse(v, out var d) ? d : null;
+
+    bool InUse(Cavity c)
+    {
+        if (Empty(c.StartUseDate)) return true;
+        var s = D(c.StartUseDate);
+        if (s is null || s > now) return false;          // chưa tới ngày bắt đầu ⇒ KHÔNG dùng
+        if (Empty(c.FinishUseDate)) return true;
+        var f = D(c.FinishUseDate);
+        return f is not null && f >= now;
+    }
+
+    var items = rows.Select(c => new
+    {
+        c.CavityNo, c.CavityName, c.CavityType, c.DealerCode, c.Status, c.FlagActive,
+        c.StartUseDate, c.FinishUseDate,
+        inUse = InUse(c),
+    }).ToList();
+    if (inUse == "1") items = items.Where(x => x.inUse).ToList();
+    else if (inUse == "0") items = items.Where(x => !x.inUse).ToList();
+
+    return Results.Ok(new { count = items.Count, items,
+        note = "Chưa tới ngày bắt đầu được xếp vào nhóm KHÔNG CÒN sử dụng (đúng nguồn — chỉ có 2 nhóm)." });
+}).RequireAuthorization();
+
+// #296 SỬA khoang — nguồn có `Ser_CavityUpdate` riêng (`Service.cs:12971`), port cũ chỉ có upsert + toggle.
+app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = code.Trim().ToUpperInvariant();
+    var c = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == no);
+    if (c is null) return Results.NotFound(new { code = no });
+
+    c.CavityName = dto.CavityName; c.CavityType = dto.CavityType;
+    c.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+    // Nguồn chỉ ghi Note/IsActive/Status khi tham số KHÁC RỖNG (xem Ser_CavityCreate:12813-12827).
+    if (!string.IsNullOrWhiteSpace(dto.Note)) c.Note = dto.Note;
+    if (!string.IsNullOrWhiteSpace(dto.IsActive)) c.FlagActive = dto.IsActive!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.Status)) c.Status = dto.Status!.Trim();
+    c.StartUseDate = dto.StartUseDate; c.FinishUseDate = dto.FinishUseDate;
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = dto.LogLUBy;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CavityNo, c.Status, c.FlagActive, c.StartUseDate, c.FinishUseDate });
+}).RequireAuthorization();
+
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
     var query = db.Cavities.Where(x => x.OrgId == t.OrgId);
@@ -21506,7 +21566,9 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(compartment)) query = query.Where(x => x.CompartmentType == compartment);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.CavityNo).Take(500)
-        .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartWorkTime, x.FinishWorkTime, x.Note, x.FlagActive }).ToListAsync();
+        // #296 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
+        .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartWorkTime, x.FinishWorkTime, x.Note, x.FlagActive,
+            x.DealerCode, x.CavityType, x.Status, x.StartUseDate, x.FinishUseDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -35552,7 +35614,14 @@ record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Pho
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
-record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
+record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note,
+    // #296: 5 trường thật của `TblSerCavity` mà DTO cũ thiếu.
+    string? DealerCode = null, string? CavityType = null, string? Status = null,
+    string? StartUseDate = null, string? FinishUseDate = null);
+// #296: sửa khoang (`Ser_CavityUpdate`). `Note`/`IsActive`/`Status` rỗng ⇒ GIỮ NGUYÊN (đúng nguồn).
+record CavityUpdateDto(string? CavityName = null, string? CavityType = null, string? DealerCode = null,
+    string? Note = null, string? IsActive = null, string? Status = null,
+    string? StartUseDate = null, string? FinishUseDate = null, string? LogLUBy = null);
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
