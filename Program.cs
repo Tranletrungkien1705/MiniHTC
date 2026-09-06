@@ -19994,6 +19994,139 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
 }).RequireAuthorization();
 
+// ===== TỒN KHO TỐI THIỂU theo dòng xe (Mst_MinInventory) =====
+// Port 1:1 cụm 4 hàm: `_CreateMulti_New20210604` (Biz.HTC.WH.cs:201728) / `_Update_New20210605` /
+// `_Delete_New20210605` (202688) / `_Get_New20210605`.
+// 🔴 CA TWIN KIỂU MỚI: cụm này **CHỈ có ở WS 64-bit**; WS 32-bit KHÔNG có hàm nào (màn thêm năm 2021,
+//    sau khi bản 32-bit ngừng cập nhật). Không phải "hai bit hai bản" như #118/#124/#127/#129.
+// 🔴 `CreateMulti` ghi bằng `insert … select from #tbl_*` chứ KHÔNG qua `SaveData` ⇒ nếu chỉ tra
+//    bảng bằng `SaveData("…")` sẽ không thấy hàm tạo. Đây là lý do bảng suýt bị bỏ sót.
+app.MapGet("/api/mininventories", async (AppDbContext db, ITenantContext t, string? specCode, string? modelCode, string? flagActive) =>
+{
+    var qy = db.MstMinInventories.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(specCode)) qy = qy.Where(x => x.SpecCode == specCode);
+    if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(x => x.ModelCode == modelCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.ModelCode).ThenBy(x => x.SpecCode).Select(x => new
+    { x.SpecCode, x.ModelCode, x.QtyInv, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// `CreateMulti` — nguồn nhận BẢNG nhiều dòng trong một lệnh.
+app.MapPost("/api/mininventories/createmulti", async (MinInventoryCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SpecCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng đầu vào rỗng." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var seen = new HashSet<string>();
+    foreach (var r in rows)
+    {
+        var spec = r.SpecCode!.Trim();
+        if (!seen.Add(spec)) return Results.BadRequest(new { error = $"Mã spec {spec} bị lặp trong bảng." });
+        if (await db.MstMinInventories.AnyAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec))
+            return Results.BadRequest(new { error = $"Đã có định mức tồn tối thiểu cho spec {spec}." });
+    }
+    foreach (var r in rows)
+        db.MstMinInventories.Add(new MstMinInventory
+        {
+            OrgId = t.OrgId, SpecCode = r.SpecCode!.Trim(), ModelCode = r.ModelCode,
+            QtyInv = r.QtyInv,
+            FlagActive = string.IsNullOrWhiteSpace(r.FlagActive) ? "1" : r.FlagActive!,
+            LogLUDateTime = DateTime.Now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = rows.Count });
+}).RequireAuthorization();
+
+app.MapPost("/api/mininventories/update", async (MinInventoryRowDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var spec = (dto.SpecCode ?? "").Trim();
+    var row = await db.MstMinInventories.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec);
+    if (row is null) return Results.NotFound(new { error = $"Không có định mức cho spec {spec}." });
+    row.ModelCode = dto.ModelCode;
+    row.QtyInv = dto.QtyInv;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.SpecCode, row.QtyInv, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/mininventories/delete", async (MinInventoryKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var spec = (dto.SpecCode ?? "").Trim();
+    var row = await db.MstMinInventories.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec);
+    if (row is null) return Results.NotFound(new { error = $"Không có định mức cho spec {spec}." });
+    db.MstMinInventories.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = spec });
+}).RequireAuthorization();
+
+// ===== LỊCH LÀM VIỆC (Mst_Calendar) =====
+// Port 1:1 `Mst_Calendar_Get/_ResetYear/_UpdateStatusValue_New20181119` + `_GetForDepositDuty_New20181115`
+// (Biz.HTC.WH.cs:15776 / 15917). TWIN: cả hai bit khớp hoàn toàn (4/4 hàm).
+// 🔴 Khoá là CẶP (`CalendarType`, `Date`) — cùng một ngày có thể mang nhiều loại lịch.
+// 🔴 `ResetYear` SINH TOÀN BỘ NGÀY của một năm: quét từng ngày và đặt `StatusValue` theo **thứ trong
+//    tuần** (`htDayOfWeek[dtimeScan.DayOfWeek]`, dòng 15772) — người dùng khai giá trị cho T2…CN rồi
+//    hệ thống trải ra cả năm; `UpdateStatusValue` sửa từng ngày lẻ sau đó.
+// ⚠️ Lịch này dùng để TÍNH HẠN NGHĨA VỤ ĐẶT CỌC (`_GetForDepositDuty`) — sửa một ngày là đổi hạn tính tiền.
+app.MapGet("/api/calendars", async (AppDbContext db, ITenantContext t, string? calendarType, int? year, string? statusValue) =>
+{
+    var qy = db.MstCalendars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(calendarType)) qy = qy.Where(x => x.CalendarType == calendarType);
+    if (year is not null) qy = qy.Where(x => x.Date.Year == year);
+    if (!string.IsNullOrWhiteSpace(statusValue)) qy = qy.Where(x => x.StatusValue == statusValue);
+    var items = await qy.OrderBy(x => x.CalendarType).ThenBy(x => x.Date)
+        .Select(x => new { x.CalendarType, x.Date, x.StatusValue }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 Sinh lại cả năm theo giá trị của TỪNG THỨ trong tuần, đúng như `Mst_Calendar_ResetYear`.
+app.MapPost("/api/calendars/resetyear", async (CalendarResetYearDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.CalendarType ?? "").Trim();
+    if (type.Length < 1) return Results.BadRequest(new { error = "Loại lịch rỗng." });
+    if (dto.Year is null || dto.Year < 1900 || dto.Year > 2100)
+        return Results.BadRequest(new { error = "Năm không hợp lệ (1900..2100)." });
+    var year = dto.Year.Value;
+
+    // Bảng tra theo thứ trong tuần — đúng vai trò `htDayOfWeek` của nguồn.
+    var byDow = new Dictionary<DayOfWeek, string?>
+    {
+        [DayOfWeek.Monday] = dto.Monday, [DayOfWeek.Tuesday] = dto.Tuesday,
+        [DayOfWeek.Wednesday] = dto.Wednesday, [DayOfWeek.Thursday] = dto.Thursday,
+        [DayOfWeek.Friday] = dto.Friday, [DayOfWeek.Saturday] = dto.Saturday,
+        [DayOfWeek.Sunday] = dto.Sunday,
+    };
+
+    var old = await db.MstCalendars.Where(x => x.OrgId == t.OrgId && x.CalendarType == type && x.Date.Year == year).ToListAsync();
+    db.MstCalendars.RemoveRange(old);
+    var d = new DateTime(year, 1, 1);
+    var n = 0;
+    while (d.Year == year)
+    {
+        db.MstCalendars.Add(new MstCalendar
+        {
+            OrgId = t.OrgId, CalendarType = type, Date = d, StatusValue = byDow[d.DayOfWeek],
+        });
+        d = d.AddDays(1); n++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { calendarType = type, year, removed = old.Count, created = n });
+}).RequireAuthorization();
+
+// Sửa trạng thái MỘT ngày lẻ (nguồn `Mst_Calendar_UpdateStatusValue`, ghi đúng 1 cột `StatusValue`).
+app.MapPost("/api/calendars/updatestatus", async (CalendarUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.CalendarType ?? "").Trim();
+    if (dto.Date is null) return Results.BadRequest(new { error = "Chưa chọn ngày." });
+    var row = await db.MstCalendars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CalendarType == type && x.Date == dto.Date);
+    if (row is null) return Results.NotFound(new { error = $"Không có ngày {dto.Date:yyyy-MM-dd} trong lịch {type}." });
+    row.StatusValue = dto.StatusValue;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.CalendarType, row.Date, row.StatusValue });
+}).RequireAuthorization();
+
 // 🔴 #130: LỊCH SỬ DÒNG hợp đồng (`Dlr_ContractDtlHis`) — nhóm theo `VersionDTimeCurr`.
 // Đây là kiểu lịch sử THỨ BA trong hệ nguồn: không phải cặp Old/New (#91-#99), cũng không phải snapshot
 // bản ghi đơn (#124), mà là **snapshot bảng dòng theo từng phiên bản**.
@@ -24840,6 +24973,13 @@ record DlsVinSurveyDto(string? VIN, string? Note, DateTime? ContactDate, string?
 // Phiếu thanh toán đại lý: dòng nối về đầu bằng SỐ phiếu (PaymentNo), không phải khoá nội bộ.
 record PmtPaymentRowDto(string? CarId, string? GuaranteeNo, string? DlrCtrNo, decimal? Amount);
 record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details);
+// Tồn kho tối thiểu: nguồn nhận BẢNG nhiều dòng ở lệnh tạo (CreateMulti).
+record MinInventoryRowDto(string? SpecCode, string? ModelCode, decimal? QtyInv, string? FlagActive);
+record MinInventoryCreateDto(List<MinInventoryRowDto>? Rows);
+record MinInventoryKeyDto(string? SpecCode);
+// Lịch làm việc: ResetYear khai giá trị cho TỪNG THỨ rồi trải ra cả năm.
+record CalendarResetYearDto(string? CalendarType, int? Year, string? Monday, string? Tuesday, string? Wednesday, string? Thursday, string? Friday, string? Saturday, string? Sunday);
+record CalendarUpdateDto(string? CalendarType, DateTime? Date, string? StatusValue);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).

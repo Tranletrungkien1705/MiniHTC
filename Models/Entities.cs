@@ -5950,6 +5950,54 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// TỒN KHO TỐI THIỂU theo dòng xe (`Mst_MinInventory` — port 1:1 cụm 4 hàm
+/// `Mst_MinInventory_CreateMulti_New20210604` (`Biz.HTC.WH.cs:201728`) / `_Update_New20210605` /
+/// `_Delete_New20210605` (202688) / `_Get_New20210605`).
+/// 🔴 **CA TWIN KIỂU MỚI — màn CHỈ TỒN TẠI Ở WS 64-bit:** `TERP.WSHTC.64/WSHTC.asmx.cs` có đủ 4 hàm,
+/// còn `TERP.WSHTC/App_Code/WSHTC.cs` (32-bit) **KHÔNG có hàm nào** của cụm này.
+/// Không phải "hai bit gọi hai bản khác nhau" (#118, #124, #127, #129) mà là **thiếu hẳn ở một bit** —
+/// màn được thêm năm **2021**, sau khi bản 32-bit ngừng cập nhật. ⇒ Luật C0-centesimustricesimusprimus.
+/// 🔴 `CreateMulti` ghi bằng **`insert … select from #tbl_Mst_MinInventory`** (201984-202001),
+/// không qua `SaveData` ⇒ tra bảng nguồn bằng `SaveData("…")` sẽ **KHÔNG thấy** hàm tạo, chỉ thấy
+/// hàm `Delete` (202773). Đây là lý do bảng này suýt bị bỏ sót.
+/// ⚠️ Nguồn ghi cả `_dbMain` lẫn `_dbWH` (202003-202008, hai lệnh `ExecQuery` riêng).
+/// </summary>
+public sealed class MstMinInventory
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SpecCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    /// <summary>Số lượng tồn tối thiểu cần giữ.</summary>
+    public decimal? QtyInv { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// LỊCH LÀM VIỆC (`Mst_Calendar` — port 1:1 `Mst_Calendar_Get/_ResetYear/_UpdateStatusValue_New20181119`
+/// và `_GetForDepositDuty_New20181115`, `Biz.HTC.WH.cs:15776` / `15917`).
+/// TWIN: cả WS 32-bit lẫn 64-bit **khớp hoàn toàn** (4/4 hàm, đã diff toàn bộ danh sách).
+/// 🔴 Khoá là **CẶP** (`CalendarType`, `Date`) — một ngày có thể mang nhiều loại lịch khác nhau.
+/// 🔴 `ResetYear` **sinh toàn bộ ngày của một năm**: quét từng ngày rồi đặt `StatusValue` theo
+/// **thứ trong tuần** (`htDayOfWeek[dtimeScan.DayOfWeek]`, dòng 15772) — tức người dùng khai báo
+/// giá trị cho Thứ 2…Chủ nhật rồi hệ thống trải ra cả năm. `UpdateStatusValue` sửa **từng ngày** lẻ sau đó.
+/// 🔴 Hàm `_GetForDepositDuty` cho thấy lịch này dùng để **tính hạn nghĩa vụ đặt cọc** — không phải
+/// lịch trang trí: sửa một ngày là đổi hạn tính tiền.
+/// </summary>
+public sealed class MstCalendar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Loại lịch — một phần của khoá cặp.</summary>
+    public string CalendarType { get; set; } = "";
+    public DateTime Date { get; set; }
+    /// <summary>Giá trị trạng thái ngày (làm việc / nghỉ…), `ResetYear` đặt theo thứ trong tuần.</summary>
+    public string? StatusValue { get; set; }
+}
+
+/// <summary>
 /// XE trong hợp đồng bán lẻ (`Dlr_ContractCar` — 2010.HTC `Biz.HTC.WH.cs:93277`, **chỉ có ở bản
 /// `DealerSalesDealCreate_SellToDealer_New20230306`**, bản 2018 mà WS 32-bit gọi KHÔNG ghi bảng này).
 /// 🔴 **NỞ DÒNG THEO TỪNG XE**: một dòng `Dlr_ContractDtl` có `Qty = 3` sẽ sinh **3 dòng** ở đây.
