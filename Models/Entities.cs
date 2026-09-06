@@ -9246,6 +9246,16 @@ public sealed class StoragePdiVin
     public string? BatteryNo { get; set; }      // số ắc quy
     public string FlagActive { get; set; } = "1";
     public string? Remark { get; set; }
+
+    /// <summary>
+    /// 🔴 #B03: Thời điểm HOÀN TẤT PDI = "thời gian nhập kho" (`PDI_VIN.FinishDTime`).
+    /// Là bộ lọc **BẮT BUỘC** của báo cáo *Xe nhập kho và lắp GPS*
+    /// (`Rpt_CarInStoAndMapGPS_New20181115`, `BizHTC.ZTempGPS.cs:9198`; form chặn rỗng:
+    /// *"Chưa chọn Thời gian nhập kho!"*), và là cột hiển thị của lưới. Port trước không có ⇒
+    /// báo cáo đó không thể tồn tại.
+    /// </summary>
+    public DateTime? FinishDTime { get; set; }
+
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

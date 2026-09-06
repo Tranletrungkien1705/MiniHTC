@@ -843,6 +843,8 @@ public static class Seeder
                 "ALTER TABLE public.\"GpsInstalls\" ADD COLUMN IF NOT EXISTS \"FlagRealSale\" text NOT NULL DEFAULT '0'",
                 "ALTER TABLE public.\"GpsInstalls\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"GpsInstalls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #B03 Báo cáo xe nhập kho và lắp GPS (FrmRptXeNhapKhoVaLapGPS): `PDI_VIN.FinishDTime`
+                "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"FinishDTime\" timestamp NULL",
                 // Xe dịch vụ ↔ hội viên Loyalty (Ser_Car.MemberCarID — hệ DMS-Loyalty, chỉ có trên máy 150)
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"MemberCarID\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",

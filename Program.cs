@@ -22831,7 +22831,7 @@ app.MapGet("/api/storagepdivins", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(c => c.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(c => c.FlagActive == active);
     var items = await q.OrderByDescending(c => c.Id).Take(500)
-        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.UpdatedAt }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.FinishDTime, c.UpdatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -22846,11 +22846,144 @@ app.MapPost("/api/storagepdivins", async (List<StoragePdiVinDto> dto, AppDbConte
     {
         var vin = c.VIN.Trim().ToUpperInvariant();
         var ex = await db.StoragePdiVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark }); inserted++; }
-        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.UpdatedAt = DateTime.Now; updated++; }
+        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark, FinishDTime = c.FinishDTime }); inserted++; }
+        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.FinishDTime = c.FinishDTime ?? ex.FinishDTime; ex.UpdatedAt = DateTime.Now; updated++; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
+}).RequireAuthorization();
+
+// ===== #B03 BÁO CÁO XE NHẬP KHO VÀ LẮP GPS (port 1:1 FrmRptXeNhapKhoVaLapGPS, 2010.HTC/StoFGPS) =====
+// Trace twin LIVE: btnSearch_Click → `ReportStoFGPSService.Rpt_CarInStoAndMapGPS` (:364) rẽ theo `checkWH`:
+//   false → WS `Rpt_CarInStoAndMapGPS` (WSHTC.asmx.cs:45569) → `_biz.Rpt_CarInStoAndMapGPS_New20181115`
+//           (BizHTC.ZTempGPS.cs:9198, `_dbMain`)
+//   true  → WS `Rpt_CarInStoAndMapGPS_WH` (:69653) → `..._WH_New20181119` (Biz.HTC.WH.cs:150689, `_dbWH`)
+//   Hai hàm CÙNG THUẬT TOÁN, chỉ khác DB đích.
+// 🔴 Báo cáo này KHÔNG chạy được chỉ bằng dữ liệu DMS: giữa hai bước SQL nguồn **gọi web-service NHÀ MÁY**
+//    `WSNM.WS.MMS_Rpt_CarInStoAndMapGPS(...)` để lấy bảng (VIN, VINReal, GPSNo) rồi mới ghép ra kết quả.
+//    MiniHTC không có đường tới MMS ⇒ tách làm HAI bước như luồng auto-unmap GPS đã làm:
+//      B1 GET  …/mms-payload  → trả đúng `#tbl_Return` để đem gọi MMS
+//      B2 POST …              → nhận kết quả MMS (body) và ghép ra báo cáo
+//    Đây là XẤP XỈ CÓ NHÃN ở tầng vận chuyển, **thuật toán ghép giữ nguyên 1:1**.
+static (DateTime from, DateTime to, string? err) RptCarInStoRange(DateTime? finishFrom, DateTime? finishTo)
+{
+    // Form chặn rỗng: "Chưa chọn Thời gian nhập kho!" (FrmRptXeNhapKhoVaLapGPS.cs:95-99)
+    if (finishFrom is null) return (default, default, "Chưa chọn Thời gian nhập kho!");
+    // `deFinishDTimeFrom.Properties.MinValue = new DateTime(2018, 10, 1)` (:52) — biên cứng của màn.
+    if (finishFrom.Value < new DateTime(2018, 10, 1)) return (default, default, "Thời gian nhập kho phải từ 01/10/2018 trở đi.");
+    // To rỗng ⇒ nguồn lấy giờ SERVER hiện tại (:103-105), không phải cuối ngày.
+    return (finishFrom.Value, finishTo ?? DateTime.Now, null);
+}
+
+// Bước 1 — dựng `#tbl_PDI_VIN_Filter_Draft` → `#tbl_Return` (BizHTC.ZTempGPS.cs SQL khối 1).
+app.MapGet("/api/reports/car-insto-and-mapgps/mms-payload", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? finishFrom, DateTime? finishTo, DateTime? mapFrom, DateTime? mapTo, string? vin, string? gpsDvNo) =>
+{
+    var (ff, ft, err) = RptCarInStoRange(finishFrom, finishTo);
+    if (err is not null) return Results.BadRequest(new { error = err });
+
+    var vinKey = string.IsNullOrWhiteSpace(vin) ? null : vin.Trim().ToUpperInvariant();
+    var gpsKey = string.IsNullOrWhiteSpace(gpsDvNo) ? null : gpsDvNo.Trim().ToUpperInvariant();
+
+    // `from PDI_VIN pdiv left join Sto_StoTransactionGPS sstgps on pdiv.VIN = sstgps.VIN
+    //  left join Sto_StoBalanceGPS ssbgps on sstgps.StorageCode = ssbgps.StorageCode and GPSDvNo = GPSDvNo`
+    // ⚠️ nguồn so `=` TUYỆT ĐỐI cho VIN và GPSDvNo (KHÔNG phải LIKE) — khác màn #B02.
+    var draft = await (
+        from p in db.StoragePdiVins.Where(x => x.OrgId == t.OrgId && x.FinishDTime >= ff && x.FinishDTime <= ft)
+        from s in db.GpsTransactions.Where(s => s.OrgId == t.OrgId && s.Vin == p.VIN).DefaultIfEmpty()
+        from b in db.GpsInstalls.Where(b => b.OrgId == t.OrgId && s != null
+                                            && b.StorageCode == s.StorageCode && b.GpsNo == s.GpsDvNo).DefaultIfEmpty()
+        select new { VINReal = p.VIN, GPSNo = b == null ? null : b.GpsNo, p.FinishDTime, MapDateTime = (DateTime?)(s == null ? null : s.MapDateTime) }
+    ).ToListAsync();
+
+    if (mapFrom is not null) draft = draft.Where(d => d.MapDateTime >= mapFrom).ToList();
+    if (mapTo is not null) draft = draft.Where(d => d.MapDateTime <= mapTo).ToList();
+    if (vinKey is not null) draft = draft.Where(d => d.VINReal == vinKey).ToList();
+    if (gpsKey is not null) draft = draft.Where(d => d.GPSNo == gpsKey).ToList();
+
+    // 🔴 DÒNG MỒI của nguồn (`insert into #tbl_PDI_VIN_Filter_Draft(...) values('zzzzzVINReal', N'strGPSDvNo',
+    //    '2100-01-01 00:00:00','2100-01-01 00:00:00')`) — luôn thêm 1 dòng giả mang **chính mã GPS đang tìm**
+    //    để bảng gửi sang MMS không bao giờ rỗng và MMS vẫn tra được theo GPS. Port nguyên, không bỏ.
+    var sentinel = new { VINReal = "zzzzzVINReal", GPSNo = gpsKey, FinishDTime = (DateTime?)new DateTime(2100, 1, 1), MapDateTime = (DateTime?)new DateTime(2100, 1, 1) };
+    var tblReturn = draft.Append(sentinel)
+        .GroupBy(d => new { d.VINReal, d.GPSNo, d.FinishDTime, d.MapDateTime }).Select(g => g.Key).ToList();   // `select distinct`
+
+    return Results.Ok(new
+    {
+        count = tblReturn.Count, tblReturn,
+        note = "Gửi bảng này sang WS nhà máy MMS_Rpt_CarInStoAndMapGPS, rồi POST kết quả (VIN, VINReal, GPSNo) sang /api/reports/car-insto-and-mapgps."
+    });
+}).RequireAuthorization();
+
+// Bước 2 — ghép `#tbl_Return` × `#tbl_Mnf_VIN` (kết quả MMS) → báo cáo (khối SQL 2 của nguồn).
+app.MapPost("/api/reports/car-insto-and-mapgps", async (
+    List<MnfVinGpsDto> mnfVins, AppDbContext db, ITenantContext t,
+    DateTime? finishFrom, DateTime? finishTo, DateTime? mapFrom, DateTime? mapTo, string? vin, string? gpsDvNo) =>
+{
+    var (ff, ft, err) = RptCarInStoRange(finishFrom, finishTo);
+    if (err is not null) return Results.BadRequest(new { error = err });
+    if (mnfVins is null) return Results.BadRequest(new { error = "Thiếu bảng kết quả nhà máy (VIN, VINReal, GPSNo)." });
+
+    var vinKey = string.IsNullOrWhiteSpace(vin) ? null : vin.Trim().ToUpperInvariant();
+    var gpsKey = string.IsNullOrWhiteSpace(gpsDvNo) ? null : gpsDvNo.Trim().ToUpperInvariant();
+
+    var draft = await (
+        from p in db.StoragePdiVins.Where(x => x.OrgId == t.OrgId && x.FinishDTime >= ff && x.FinishDTime <= ft)
+        from s in db.GpsTransactions.Where(s => s.OrgId == t.OrgId && s.Vin == p.VIN).DefaultIfEmpty()
+        from b in db.GpsInstalls.Where(b => b.OrgId == t.OrgId && s != null
+                                            && b.StorageCode == s.StorageCode && b.GpsNo == s.GpsDvNo).DefaultIfEmpty()
+        select new { VINReal = p.VIN, GPSNo = b == null ? null : b.GpsNo, p.FinishDTime, MapDateTime = (DateTime?)(s == null ? null : s.MapDateTime) }
+    ).ToListAsync();
+    if (mapFrom is not null) draft = draft.Where(d => d.MapDateTime >= mapFrom).ToList();
+    if (mapTo is not null) draft = draft.Where(d => d.MapDateTime <= mapTo).ToList();
+    if (vinKey is not null) draft = draft.Where(d => d.VINReal == vinKey).ToList();
+    if (gpsKey is not null) draft = draft.Where(d => d.GPSNo == gpsKey).ToList();
+    var sentinel = new { VINReal = "zzzzzVINReal", GPSNo = gpsKey, FinishDTime = (DateTime?)new DateTime(2100, 1, 1), MapDateTime = (DateTime?)new DateTime(2100, 1, 1) };
+    var tblReturn = draft.Append(sentinel)
+        .GroupBy(d => new { d.VINReal, d.GPSNo, d.FinishDTime, d.MapDateTime }).Select(g => g.Key).ToList();
+
+    var mnf = mnfVins.Select(m => new { VIN = m.VIN?.Trim().ToUpperInvariant(), VINReal = m.VINReal?.Trim().ToUpperInvariant(), GPSNo = m.GPSNo?.Trim().ToUpperInvariant() }).ToList();
+
+    // `#tbl_GPS_Map_VIN` = (Return ⋈ Mnf trên VINReal) **UNION** (Return ⋈ Mnf trên GPSNo) — union = distinct.
+    var byVin = tblReturn.Join(mnf, r => r.VINReal, f => f.VINReal, (r, f) => new { f.GPSNo, f.VINReal });
+    var byGps = tblReturn.Join(mnf, r => r.GPSNo, f => f.GPSNo, (r, f) => new { f.GPSNo, f.VINReal });
+    var gpsMapVin = byVin.Concat(byGps).GroupBy(x => new { x.GPSNo, x.VINReal }).Select(g => g.Key).ToList();
+
+    var vinList = gpsMapVin.Where(x => x.VINReal != null).Select(x => x.VINReal!).Distinct().ToList();
+    var pdis = await db.StoragePdiVins.Where(p => p.OrgId == t.OrgId && vinList.Contains(p.VIN))
+        .Select(p => new { p.VIN, p.FinishDTime, p.ModelCode, p.ColorCode, p.SpecCode }).ToListAsync();
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtName, c.ColorExtNameVN }).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+
+    var items = gpsMapVin.Select(g =>
+    {
+        var r = tblReturn.FirstOrDefault(x => x.VINReal == g.VINReal);         // `left join #tbl_Return`
+        var p = pdis.FirstOrDefault(x => x.VIN == g.VINReal);                  // `left join PDI_VIN`
+        var m = p is null ? null : models.FirstOrDefault(x => x.ModelCode == p.ModelCode);
+        var c = p is null ? null : colors.FirstOrDefault(x => x.ModelCode == p.ModelCode && x.ColorCode == p.ColorCode);
+        var s = p is null ? null : specs.FirstOrDefault(x => x.SpecCode == p.SpecCode);
+        return new
+        {
+            gpsDvNo = g.GPSNo,
+            vin = g.VINReal,
+            finishDTime = p?.FinishDTime,
+            // `case when f.GPSNo is null then '' else t.MapDateTime end` — không có GPS ⇒ để TRỐNG.
+            mapDateTime = g.GPSNo is null ? null : r?.MapDateTime,
+            modelCode = p?.ModelCode, modelName = m?.ModelName,
+            colorCode = p?.ColorCode, colorExtName = c?.ColorExtName, colorExtNameVN = c?.ColorExtNameVN,
+            specCode = p?.SpecCode,
+            specDescription = s?.SpecDesc     // nguồn `Mst_CarSpec.SpecDescription` ↔ MiniHTC `CarSpec.SpecDesc`
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        mmsRows = mnf.Count,
+        note = items.Count == 0 ? "Không có kết quả nào phù hợp điều kiện tìm kiếm" : null   // Nonsense.MESS_NOTFOUND_RESULT
+    });
 }).RequireAuthorization();
 
 // ===== Đề nghị giao hồ sơ (ReqInvoice — port 1:1 FrmNewRDInvoice, 2010.HTC/Sales/Redeem) =====
@@ -31992,6 +32125,9 @@ record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, strin
 record GpsPaymentDto(DateTime? PmtMonth, List<GpsPaymentLineDto>? Lines);
 record GpsInstallDto(string Vin, string GpsNo, DateTime? DateActive, string? StorageCode = null, string? GpsBoxNo = null, string? VinReal = null, string? RefNoType = null, string? RefNoPk = null, string? InStatus = null, string? BlockStatus = null, string? Remark = null);
 record GpsOnlineResultDto(string? Imei, string? Address);
+/// <summary>#B03: một dòng bảng `Rpt_CarInStoAndMapGPS` do WS NHÀ MÁY trả về
+/// (`WSNM.WS.MMS_Rpt_CarInStoAndMapGPS` — `#tbl_Mnf_VIN`: VIN / VINReal / GPSNo).</summary>
+record MnfVinGpsDto(string? VIN, string? VINReal, string? GPSNo);
 record GpsInstallMapDto(string Vin, string GpsNo);
 record StoragePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtNameVN, string? DealerCode, DateTime? StorageDate, DateTime? DeliveryOutDate, decimal CostCoat, decimal CostStorage, string? Remark);
 record StoragePaymentDto(DateTime? PmtMonth, List<StoragePaymentLineDto>? Lines);
@@ -32838,7 +32974,7 @@ record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode
 record Dms40SoRootDto(string? SORCode, string? SOType, string? DealerCode, string? SPCode, DateTime? OrderMonth, List<Dms40SoRootLineDto>? Lines);
 record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal Approved1Quantity, DateTime? Approved1Date = null);
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
-record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark);
+record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime);
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
 record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
 record DealerContractCarDto(string CarId, decimal UnitPrice);
