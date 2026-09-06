@@ -11860,7 +11860,8 @@ app.MapGet("/api/paymentreqdiscounts", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PRDiscountNo, x.DealerCode, x.SPCode, x.Remark, x.Status, x.CreatedAt,
+    { x.PRDiscountNo, x.DealerCode, x.SPCode, x.AreaCode, x.Remark, x.Status,
+      x.CreatedAt, x.CreatedBy, x.Appr1By, x.Appr2By, x.CancelBy, x.LogLUDateTime, x.LogLUBy,
       lines = db.PaymentReqDiscountVins.Count(l => l.OrgId == t.OrgId && l.PRDiscountNo == x.PRDiscountNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -11871,12 +11872,15 @@ app.MapGet("/api/paymentreqdiscounts/{no}", async (string no, AppDbContext db, I
     var h = await db.PaymentReqDiscounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PaymentReqDiscountVins.Where(l => l.OrgId == t.OrgId && l.PRDiscountNo == no).Select(l => new
-    { l.VIN, l.CarId, l.SpecCode, l.SpecDescription, l.DeliveryOutDate, l.DeliveryEndDate, l.DeliveryDate, l.DlrContractNo, l.SMName, l.CusInvoiceDate, l.UnitPriceActual, l.AmountDealerRequest, l.CustomerName, l.AmountHTCAppr }).ToListAsync();
-    return Results.Ok(new { h.PRDiscountNo, h.DealerCode, h.SPCode, h.Remark, h.Status, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt, lines });
+    { l.VIN, l.CarId, l.SpecCode, l.SpecDescription, l.DeliveryOutDate, l.DeliveryEndDate, l.DeliveryDate, l.DlrContractNo, l.SMName, l.CusInvoiceDate, l.UnitPriceActual, l.AmountDealerRequest, l.CustomerName, l.AmountHTCAppr,
+      l.HTCApprDate, l.CreatedDate, l.CreatedBy, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
+    return Results.Ok(new { h.PRDiscountNo, h.DealerCode, h.SPCode, h.AreaCode, h.Remark, h.Status,
+        h.CreatedAt, h.CreatedBy, h.Approve1At, h.Appr1By, h.Approve2At, h.Appr2By,
+        h.CancelledAt, h.CancelBy, h.LogLUDateTime, h.LogLUBy, lines });
 }).RequireAuthorization();
 
 // Tạo đề nghị (đại lý) — khớp btnSave_Click/PRD_PaymentReqDiscount_Create gốc: cần chọn Chính sách hỗ trợ BH + ≥1 dòng VIN.
-app.MapPost("/api/paymentreqdiscounts", async (PaymentReqDiscountDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/paymentreqdiscounts", async (PaymentReqDiscountDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SPCode)) return Results.BadRequest(new { error = "Chưa chọn \"Chính sách hỗ trợ BH\"" });
     var lines = dto.Lines ?? new List<PaymentReqDiscountVinDto>();
@@ -11885,7 +11889,18 @@ app.MapPost("/api/paymentreqdiscounts", async (PaymentReqDiscountDto dto, AppDbC
     var no = string.IsNullOrWhiteSpace(dto.PRDiscountNo) ? "PRD" + DateTime.Now.ToString("yyMMddHHmmss") : dto.PRDiscountNo.Trim();
     if (await db.PaymentReqDiscounts.AnyAsync(x => x.OrgId == t.OrgId && x.PRDiscountNo == no))
         return Results.BadRequest(new { error = $"Số đề nghị {no} đã tồn tại!" });
-    var h = new PaymentReqDiscount { OrgId = t.OrgId, PRDiscountNo = no, DealerCode = dto.DealerCode, SPCode = dto.SPCode.Trim().ToUpperInvariant(), Remark = dto.Remark, Status = "Draft" };
+    // 🔴 #128 SỬA TAXONOMY: trạng thái theo `TConst.PRDiscountStatus` (Const.Main.cs:1114-1120):
+    //    "P" chờ duyệt · "A1" duyệt cấp 1 · "A2" duyệt cấp 2 · "C" huỷ. Port cũ dùng "Draft" là SAI.
+    var whoPrd = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new PaymentReqDiscount
+    {
+        OrgId = t.OrgId, PRDiscountNo = no, DealerCode = dto.DealerCode,
+        SPCode = dto.SPCode.Trim().ToUpperInvariant(), Remark = dto.Remark,
+        Status = "P",
+        AreaCode = dto.AreaCode,          // nguồn lấy từ dtDB_AreaDealer.AreaCodeDealer
+        CreatedBy = whoPrd,
+        LogLUDateTime = DateTime.Now, LogLUBy = whoPrd,
+    };
     db.PaymentReqDiscounts.Add(h);
     foreach (var l in lines)
     {
@@ -11893,8 +11908,14 @@ app.MapPost("/api/paymentreqdiscounts", async (PaymentReqDiscountDto dto, AppDbC
         {
             OrgId = t.OrgId, PRDiscountNo = no, VIN = (l.Vin ?? "").Trim().ToUpperInvariant(), CarId = l.CarId, SpecCode = l.SpecCode, SpecDescription = l.SpecDescription,
             DeliveryOutDate = l.DeliveryOutDate, DeliveryEndDate = l.DeliveryEndDate, DeliveryDate = l.DeliveryDate, DlrContractNo = l.DlrContractNo, SMName = l.SMName,
-            CusInvoiceDate = l.CusInvoiceDate, UnitPriceActual = l.UnitPriceActual, AmountDealerRequest = l.AmountDealerRequest, CustomerName = l.CustomerName, UpdatedAt = DateTime.Now
-        });
+            CusInvoiceDate = l.CusInvoiceDate, UnitPriceActual = l.UnitPriceActual, AmountDealerRequest = l.AmountDealerRequest, CustomerName = l.CustomerName, UpdatedAt = DateTime.Now,
+            // 🔴 #128: nguồn để `AmountHTCAppr` NULL khi tạo (chỉ điền khi HTC duyệt) và
+            //    nhận `HTCApprDate` từ bảng đầu vào; kèm dấu vết tạo/sửa (Biz.HTC.WH.My.cs:1265-1276).
+            AmountHTCAppr = null,
+            HTCApprDate = l.HTCApprDate,
+            CreatedDate = DateTime.Now, CreatedBy = whoPrd,
+            LogLUDateTime = DateTime.Now, LogLUBy = whoPrd,
+});
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { h.PRDiscountNo, h.Status, lines = lines.Count });
@@ -11961,7 +11982,8 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         var prd = r.PRDiscountNo!.Trim();
         if (!prdStatusByCode.TryGetValue(prd, out var prdStatus))
             return Results.BadRequest(new { error = $"VIN {r.Vin}: không tìm thấy đề nghị chiết khấu {prd}." });
-        if (prdStatus is not ("Approved1" or "Approved2"))
+        // 🔴 #128: mã trạng thái đúng của nguồn là "A1"/"A2" (TConst.PRDiscountStatus), không phải "Approved1/2".
+        if (prdStatus is not ("A1" or "A2"))
             return Results.BadRequest(new { error = $"VIN {r.Vin}: đề nghị chiết khấu {prd} chưa được duyệt (hiện {prdStatus})." });
     }
     // Biz.HTC.WH.cs SPL_SPSupportRetail_Create: VIN phải tồn tại trong Car_Vin+Car_Car; DealerCode/SpecCode/ModelCode LẤY TỪ VIN master (ghi đè giá trị caller gửi), không tin caller.
@@ -25083,8 +25105,8 @@ record DeviceTypeDto(string? DeviceTypeCode, string? DeviceTypeName, string? Fla
 record DeviceTypeSpecDto(string? DeviceTypeCode, string? DeviceTypeName, string? SpecCode, string? SpecDescription, string? FlagActive);
 record PRDiscountImportDto(List<PRDiscountRowDto>? Rows);
 record PRDiscountRowDto(string? PRDiscountNo, string? VIN, decimal AmountHTCAppr);
-record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, string? SpecDescription, DateTime? DeliveryOutDate, DateTime? DeliveryEndDate, DateTime? DeliveryDate, string? DlrContractNo, string? SMName, DateTime? CusInvoiceDate, decimal UnitPriceActual, decimal AmountDealerRequest, string? CustomerName);
-record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines);
+record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, string? SpecDescription, DateTime? DeliveryOutDate, DateTime? DeliveryEndDate, DateTime? DeliveryDate, string? DlrContractNo, string? SMName, DateTime? CusInvoiceDate, decimal UnitPriceActual, decimal AmountDealerRequest, string? CustomerName, DateTime? HTCApprDate);
+record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines, string? AreaCode);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode);
 record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);

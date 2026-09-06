@@ -2338,11 +2338,27 @@ public sealed class DeviceTypeSpec
 /// Mở rộng thêm các cột chi tiết VIN (CarId/SpecCode/DeliveryDate/DlrContractNo/SMName/UnitPriceActual/AmountDealerRequest/CustomerName) để phục vụ FrmPayReDiscount/FrmMngPaymentReqDiscountDealer (đề nghị + duyệt 2 cấp).</summary>
 public sealed class PaymentReqDiscountVin
 {
+    // 🔴 #128: tên lớp nói "…_VIN" nhưng **bảng nguồn tên đó KHÔNG TỒN TẠI**.
+    //    Bảng thật là **`PRD_PaymentReqDiscountDtl`** (ghi tại `DataWH/Biz.HTC.WH.My.cs:1312`,
+    //    trong `PRD_PaymentReqDiscount_Create_New20190507`). Giữ tên lớp để không phá API,
+    //    nhưng từ nay tra cứu nguồn phải tìm `…Dtl`, đừng tìm `…_VIN`.
+    // 🔴 TWIN lệch bit ở BA hàm: WS 32-bit gọi `_Create` / `_Get` / `_UpdateMulti` (nằm trong
+    //    `DataWH/**Delete.**Biz.HTC.WH.My.cs` — csproj `<None>`, **FILE CHẾT**), còn WS 64-bit gọi
+    //    `_Create_New20190507` / `_Get_New20210527` / `_UpdateMulti_New20190809` ở
+    //    `Biz.HTC.WH.My.cs` (csproj `<Compile>`, **LIVE**). Canonical = bản 64-bit.
+    //    Cùng mẫu đã gặp ở #127 (luật C0-centesimusvigesimusseptimus).
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string PRDiscountNo { get; set; } = "";
     public string VIN { get; set; } = "";
-    public decimal AmountHTCAppr { get; set; }
+    /// <summary>🔴 Nguồn để **NULL khi tạo** (`DBNull.Value`, dòng 1269) — chỉ điền khi HTC duyệt.</summary>
+    public decimal? AmountHTCAppr { get; set; }
+    /// <summary>Ngày HTC duyệt cho dòng này (`HTCApprDate`) — nguồn NHẬN từ bảng đầu vào lúc tạo.</summary>
+    public DateTime? HTCApprDate { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
     public string? UpdatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
     public string? CarId { get; set; }
@@ -2369,11 +2385,28 @@ public sealed class PaymentReqDiscount
     public string? DealerCode { get; set; }
     public string SPCode { get; set; } = "";
     public string? Remark { get; set; }
-    public string Status { get; set; } = "Draft";
+    /// <summary>
+    /// 🔴 #128 SỬA TAXONOMY: port cũ dùng `"Draft"` — **SAI**. Nguồn dùng `TConst.PRDiscountStatus`
+    /// (`Const.Main.cs:1114-1120`): **"P" chờ duyệt · "A1" duyệt cấp 1 · "A2" duyệt cấp 2 · "C" huỷ**.
+    /// Đây là bộ 4 giá trị RIÊNG của cụm chiết khấu, **không phải** `TConst.Stage`
+    /// (đúng luật C0-centesimusnonus: mỗi cụm có thể có hằng trạng thái riêng).
+    /// Kèm câu UPDATE migrate dữ liệu cũ trong Seeder.
+    /// </summary>
+    public string Status { get; set; } = "P";
+    /// <summary>#128: nguồn lấy từ `dtDB_AreaDealer.AreaCodeDealer` khi tạo (Biz.HTC.WH.My.cs:1250).</summary>
+    public string? AreaCode { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? Approve1At { get; set; }
+    /// <summary>Người duyệt cấp 1 (`Appr1By`).</summary>
+    public string? Appr1By { get; set; }
     public DateTime? Approve2At { get; set; }
+    /// <summary>Người duyệt cấp 2 (`Appr2By`).</summary>
+    public string? Appr2By { get; set; }
     public DateTime? CancelledAt { get; set; }
+    public string? CancelBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Mẫu hợp đồng của đại lý (Dlr_Mst_DealerContractForm) — port 1:1 FrmDlr_Mst_DealerContractForm (2010.HTC). Gán mã mẫu hợp đồng (ContractFNo) cho từng đại lý; upsert theo DealerCode.</summary>
