@@ -917,6 +917,65 @@ app.MapGet("/api/dlrcontracts/{no}/change-history", async (string no, AppDbConte
     return Results.Ok(new { no, bankCode = bank, salesType, salesManCode = smCode });
 }).RequireAuthorization();
 
+// ===== Sửa SỐ/NGÀY HOÁ ĐƠN KHÁCH của dòng bán lẻ (Dls_DealDetailCusInvoice_Update —
+// 2010.HTC Biz.HTC.WH.hkt.cs:7116). TWIN: chỉ `TERP.WSHTC.64` (27587). =====
+// 🔴 Ba nhánh update theo trường **thực sự đổi**; giá trị mới trống ⇒ giữ nguyên giá trị hiện tại;
+//    **cả hai trống ⇒ bỏ qua dòng** (nguồn không ghi gì cho dòng đó).
+app.MapGet("/api/dealdetail/cusinvoice-history", async (AppDbContext db, ITenantContext t, string? dealNo, string? carId) =>
+{
+    var qy = db.DealDetailCusInvoiceHisUpds.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(h => h.DealNo == dealNo);
+    if (!string.IsNullOrWhiteSpace(carId)) qy = qy.Where(h => h.CarId == carId.Trim().ToUpperInvariant());
+    var items = await qy.OrderByDescending(h => h.Id).Take(500).Select(h => new
+    {
+        h.DealNo, h.CarId, h.CusInvoiceNoOld, h.CusInvoiceNoNew,
+        h.CusInvoiceDateOld, h.CusInvoiceDateNew, h.UpdDTime, h.UpdBy
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealdetail/update-cusinvoice", async (DealDetailCusInvoiceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn dòng nào." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    int changedNo = 0, changedDate = 0, skipped = 0;
+    foreach (var r in rows)
+    {
+        var carId = r.CarId!.Trim().ToUpperInvariant();
+        // Cả hai giá trị mới đều trống ⇒ nguồn bỏ qua dòng này.
+        if (string.IsNullOrWhiteSpace(r.CusInvoiceNoNew) && r.CusInvoiceDateNew is null) { skipped++; continue; }
+
+        var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == r.DealNo);
+        if (d is null) return Results.BadRequest(new { error = $"Không tìm thấy giao dịch {r.DealNo}." });
+        var line = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == carId);
+        if (line is null) return Results.BadRequest(new { error = $"Giao dịch {r.DealNo} không có xe {carId}." });
+
+        var noOld = line.CusInvoiceNo;
+        var dateOld = line.CusInvoiceDate;
+        // Trống ⇒ giữ nguyên giá trị hiện tại (nguồn gán lại từ bản ghi DB).
+        var noNew = string.IsNullOrWhiteSpace(r.CusInvoiceNoNew) ? noOld : r.CusInvoiceNoNew!.Trim();
+        var dateNew = r.CusInvoiceDateNew ?? dateOld;
+
+        var noChanged = !string.Equals(noOld ?? "", noNew ?? "", StringComparison.OrdinalIgnoreCase);
+        var dateChanged = dateOld != dateNew;
+        if (!noChanged && !dateChanged) { skipped++; continue; }
+
+        db.DealDetailCusInvoiceHisUpds.Add(new DealDetailCusInvoiceHisUpd
+        {
+            OrgId = t.OrgId, DealNo = r.DealNo!, CarId = carId,
+            CusInvoiceNoOld = noOld, CusInvoiceNoNew = noNew,
+            CusInvoiceDateOld = dateOld, CusInvoiceDateNew = dateNew,
+            UpdDTime = now, UpdBy = who,
+        });
+        if (noChanged) { line.CusInvoiceNo = noNew; changedNo++; }
+        if (dateChanged) { line.CusInvoiceDate = dateNew; changedDate++; }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rows = rows.Count, changedNo, changedDate, skipped });
+}).RequireAuthorization();
+
 // ===== Sửa GIÁ dòng giao dịch bán lẻ (Dls_DealDetail_UpdatePrice — 2010.HTC Biz.HTC.WH.hkt.cs:6771) =====
 // 🔴 Luật nguồn: tra bảng xe theo **VIN** để lấy `CarId` rồi mới update — **KHÔNG lấy CarId từ input**;
 //    không tìm thấy xe thì báo lỗi. Update `DLS_DealDetail.Price = PriceNew` theo `DealNo` + `CarId`,
@@ -22211,6 +22270,9 @@ record CarDeliveryDateDto(List<CarDeliveryDateRowDto>? Rows);
 record DlvUpdDatesDto(List<DlvUpdDatesRowDto>? Rows);
 // Sửa giá dòng bán lẻ theo LÔ (nguồn nhận bảng `dtInput_DealDetail` nhiều dòng).
 record DealDetailPriceDto(List<DealDetailPriceRowDto>? Rows);
+// Sửa số/ngày hoá đơn khách theo LÔ (nguồn nhận bảng `dtInput_DealDetail` nhiều dòng).
+record DealDetailCusInvoiceDto(List<DealDetailCusInvoiceRowDto>? Rows);
+record DealDetailCusInvoiceRowDto(string? DealNo, string? CarId, string? CusInvoiceNoNew, DateTime? CusInvoiceDateNew);
 record DealDetailPriceRowDto(string? DealNo, string? VIN, decimal? PriceNew);
 record DlvUpdDatesRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, DateTime? DateNew);
 record DlvUpdProvinceDto(List<DlvUpdProvinceRowDto>? Rows);

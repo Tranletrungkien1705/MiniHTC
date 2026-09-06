@@ -4559,6 +4559,27 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Lịch sử sửa SỐ/NGÀY HOÁ ĐƠN KHÁCH của dòng bán lẻ (`Dls_DealDetailCusInvoice_HisUpd` — port 1:1
+/// `Dls_DealDetailCusInvoice_Update`, 2010.HTC `Biz.HTC.WH.hkt.cs:7116`).
+/// 🔴 Cùng mẫu ba nhánh với <see cref="SalesManUpdDeptSMTypeHis"/>: chỉ ghi cột **thực sự đổi**
+/// (cả hai / chỉ số HĐ / chỉ ngày HĐ); giá trị mới để trống ⇒ **giữ nguyên giá trị hiện tại**;
+/// nếu **cả hai** đều trống ⇒ **bỏ qua dòng**, không ghi gì.
+/// </summary>
+public sealed class DealDetailCusInvoiceHisUpd
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string? CusInvoiceNoOld { get; set; }
+    public string? CusInvoiceNoNew { get; set; }
+    public DateTime? CusInvoiceDateOld { get; set; }
+    public DateTime? CusInvoiceDateNew { get; set; }
+    public DateTime UpdDTime { get; set; } = DateTime.Now;
+    public string? UpdBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử sửa PHÒNG BAN / LOẠI NVBH (`Mst_SalesMan_UpdateDepartmentAndSMType_His` — port 1:1
 /// `Support_Mst_SalesMan_UpdateDepartmentAndSMType`, 2010.HTC `Biz.HTC.WH.hkt.cs:7470`).
 /// 🔴 Nguồn có **BA nhánh update khác nhau** tuỳ trường nào thực sự đổi:
