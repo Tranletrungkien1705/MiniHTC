@@ -5950,6 +5950,57 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// HẠNG MỤC của gói bảo dưỡng (`Mst_MaintainTaskItem` — port 1:1 cụm 4 hàm
+/// `Mst_MaintainTaskItem_Create/_Update/_Delete/_Get_New20181119`, 2010.HTC `Biz.HTC.WH.cs:7236`).
+/// TWIN: cả WS 32-bit lẫn 64-bit **khớp hoàn toàn** (5/5 hàm, kể cả `Mst_MaintainTask_Get` của bảng cha).
+/// Khoá dòng = cặp (`MtnTkCode`, `MtnTkItemCode`) — mã gói bảo dưỡng + mã hạng mục.
+/// 🔴 `ViewIdx` là **thứ tự hiển thị** hạng mục trong gói; `FlagActive` nguồn **luôn đặt `Flag.Active`
+/// ("1") khi tạo**, không nhận từ đầu vào.
+/// ⚠️ Bảng cha `Mst_MaintainTask` chỉ có hàm `_Get` (không có Create/Update/Delete) ⇒ **danh mục gói
+/// bảo dưỡng do DBA nạp**, chỉ hạng mục bên trong mới sửa được qua ứng dụng.
+/// </summary>
+public sealed class MstMaintainTaskItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Mã gói bảo dưỡng (bảng cha `Mst_MaintainTask` — chỉ đọc).</summary>
+    public string MtnTkCode { get; set; } = "";
+    public string MtnTkItemCode { get; set; } = "";
+    public string? MtnTkItemName { get; set; }
+    /// <summary>Thứ tự hiển thị trong gói.</summary>
+    public int? ViewIdx { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>
+/// CẤU HÌNH KỲ BÁO CÁO kế hoạch bán lẻ (`St_SettingRptPlanRetail` — port 1:1
+/// `St_SettingRptPlanRetail_Create`, 2010.HTC `BizHTC.Report.cs:35073`).
+/// 🔴 Cụm này **chỉ có ở WS 64-bit** (`_biz.St_SettingRptPlanRetail_Create`); 32-bit không có
+/// — ca thứ TƯ cùng dạng (sau #131 `Mst_MinInventory`, #132 `DLS_DealAttachFile`, #133 `Mst_BankDealer`).
+/// 🔴 **`PlanTimes` TỰ TĂNG, không nhận từ client**: nguồn truy vấn bản ghi mới nhất của cùng
+/// `PlanMonth` (order by `PlanTimes desc`), lấy `PlanTimes + 1`; nếu chưa có bản nào thì **"1"**
+/// (dòng 35127-35145). ⇒ Mỗi tháng có thể có **nhiều lần chốt kế hoạch**, đánh số 1, 2, 3…
+/// `ReportDate` là **ngày chốt số liệu** của lần đó — đây chính là tham số mà báo cáo kế hoạch bán lẻ
+/// (`Rpt_PlanRetail`, port ở #100) dùng để biết "chốt theo mốc nào".
+/// </summary>
+public sealed class StSettingRptPlanRetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Tháng kế hoạch.</summary>
+    public string PlanMonth { get; set; } = "";
+    /// <summary>Lần chốt thứ mấy trong tháng — server tự tăng, không nhận từ client.</summary>
+    public string PlanTimes { get; set; } = "1";
+    /// <summary>Ngày chốt số liệu của lần này.</summary>
+    public DateTime? ReportDate { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// KẾ HOẠCH SẢN XUẤT THEO NGÀY (`WO_ScheduleDetailDate` — 2010.HTC `BizHTC.WorkOrder.cs:563`,
 /// trong `WO_Schedule_Add_New20181115` (174); csproj `&lt;Compile&gt;` dòng 134 ⇒ LIVE).
 /// TWIN: cả WS 32-bit lẫn 64-bit **khớp hoàn toàn** (5/5 hàm, đã diff toàn bộ danh sách).

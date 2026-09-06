@@ -20002,6 +20002,107 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
 }).RequireAuthorization();
 
+// ===== HẠNG MỤC gói bảo dưỡng (Mst_MaintainTaskItem) =====
+// Port 1:1 cụm 4 hàm `_Create/_Update/_Delete/_Get_New20181119` (Biz.HTC.WH.cs:7236).
+// TWIN: cả hai bit khớp hoàn toàn (5/5 hàm, kể cả `Mst_MaintainTask_Get` của bảng cha).
+// ⚠️ Bảng cha `Mst_MaintainTask` CHỈ có hàm `_Get` ⇒ danh mục gói bảo dưỡng do DBA nạp; chỉ hạng mục
+//    bên trong mới sửa được qua ứng dụng.
+// 🔴 `FlagActive` nguồn LUÔN đặt "1" khi tạo, không nhận từ đầu vào.
+app.MapGet("/api/maintaintaskitems", async (AppDbContext db, ITenantContext t, string? mtnTkCode, string? flagActive) =>
+{
+    var qy = db.MstMaintainTaskItems.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(mtnTkCode)) qy = qy.Where(x => x.MtnTkCode == mtnTkCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.MtnTkCode).ThenBy(x => x.ViewIdx).Select(x => new
+    { x.MtnTkCode, x.MtnTkItemCode, x.MtnTkItemName, x.ViewIdx, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintaintaskitems/create", async (MaintainTaskItemDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tk = (dto.MtnTkCode ?? "").Trim();
+    var item = (dto.MtnTkItemCode ?? "").Trim();
+    if (tk.Length < 1) return Results.BadRequest(new { error = "Mã gói bảo dưỡng rỗng." });
+    if (item.Length < 1) return Results.BadRequest(new { error = "Mã hạng mục rỗng." });
+    if (await db.MstMaintainTaskItems.AnyAsync(x => x.OrgId == t.OrgId && x.MtnTkCode == tk && x.MtnTkItemCode == item))
+        return Results.BadRequest(new { error = $"Hạng mục {item} đã có trong gói {tk}." });
+    db.MstMaintainTaskItems.Add(new MstMaintainTaskItem
+    {
+        OrgId = t.OrgId, MtnTkCode = tk, MtnTkItemCode = item,
+        MtnTkItemName = dto.MtnTkItemName, ViewIdx = dto.ViewIdx,
+        FlagActive = "1",   // nguồn luôn đặt Flag.Active khi tạo
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { mtnTkCode = tk, mtnTkItemCode = item });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintaintaskitems/update", async (MaintainTaskItemDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tk = (dto.MtnTkCode ?? "").Trim();
+    var item = (dto.MtnTkItemCode ?? "").Trim();
+    var row = await db.MstMaintainTaskItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTkCode == tk && x.MtnTkItemCode == item);
+    if (row is null) return Results.NotFound(new { error = $"Gói {tk} không có hạng mục {item}." });
+    row.MtnTkItemName = dto.MtnTkItemName;
+    row.ViewIdx = dto.ViewIdx;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.MtnTkCode, row.MtnTkItemCode, row.ViewIdx, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintaintaskitems/delete", async (MaintainTaskItemKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var tk = (dto.MtnTkCode ?? "").Trim();
+    var item = (dto.MtnTkItemCode ?? "").Trim();
+    var row = await db.MstMaintainTaskItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTkCode == tk && x.MtnTkItemCode == item);
+    if (row is null) return Results.NotFound(new { error = $"Gói {tk} không có hạng mục {item}." });
+    db.MstMaintainTaskItems.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = $"{tk}/{item}" });
+}).RequireAuthorization();
+
+// ===== CẤU HÌNH KỲ BÁO CÁO kế hoạch bán lẻ (St_SettingRptPlanRetail) =====
+// Port 1:1 `St_SettingRptPlanRetail_Create` (BizHTC.Report.cs:35073).
+// 🔴 Cụm CHỈ có ở WS 64-bit — ca thứ TƯ cùng dạng (sau #131, #132, #133).
+// 🔴 `PlanTimes` TỰ TĂNG: nguồn lấy bản ghi mới nhất cùng `PlanMonth` (order by PlanTimes desc) rồi +1;
+//    chưa có bản nào thì "1" (dòng 35127-35145) ⇒ mỗi tháng có thể chốt kế hoạch NHIỀU LẦN, đánh số 1,2,3…
+//    KHÔNG nhận `PlanTimes` từ client.
+// `ReportDate` là ngày chốt số liệu của lần đó — chính là mốc mà báo cáo `Rpt_PlanRetail` (#100) dùng.
+app.MapGet("/api/settingrptplanretail", async (AppDbContext db, ITenantContext t, string? planMonth, string? flagActive) =>
+{
+    var qy = db.StSettingRptPlanRetails.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(planMonth)) qy = qy.Where(x => x.PlanMonth == planMonth);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderByDescending(x => x.PlanMonth).ThenByDescending(x => x.Id).Select(x => new
+    { x.PlanMonth, x.PlanTimes, x.ReportDate, x.FlagActive, x.CreateDTime, x.CreateBy, x.LogLUDateTime, x.LogLUBy })
+    .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/settingrptplanretail/create", async (SettingRptPlanRetailDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var month = (dto.PlanMonth ?? "").Trim();
+    if (month.Length < 1) return Results.BadRequest(new { error = "Tháng kế hoạch rỗng." });
+
+    // 🔴 PlanTimes tự tăng theo tháng, đúng như nguồn: lấy bản mới nhất của tháng rồi +1; chưa có thì "1".
+    var last = await db.StSettingRptPlanRetails
+        .Where(x => x.OrgId == t.OrgId && x.PlanMonth == month)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    var planTimes = "1";
+    if (last is not null && int.TryParse(last.PlanTimes, out var n)) planTimes = (n + 1).ToString();
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    db.StSettingRptPlanRetails.Add(new StSettingRptPlanRetail
+    {
+        OrgId = t.OrgId, PlanMonth = month, PlanTimes = planTimes,
+        ReportDate = dto.ReportDate,
+        FlagActive = "1",
+        CreateDTime = now, CreateBy = who, LogLUDateTime = now, LogLUBy = who,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { planMonth = month, planTimes, note = "PlanTimes do server tự tăng theo tháng, đúng như nguồn." });
+}).RequireAuthorization();
+
 // ===== KẾ HOẠCH SẢN XUẤT THEO NGÀY (WO_ScheduleDetailDate) — tầng thứ BA của cụm lịch SX =====
 // Nguồn: `BizHTC.WorkOrder.cs:563`, trong `WO_Schedule_Add_New20181115` (174).
 // TWIN: cả hai bit khớp hoàn toàn (5/5 hàm). csproj `<Compile>` 134 ⇒ LIVE. md5 khớp nguyên file 2 máy.
@@ -25259,6 +25360,11 @@ record WoScheduleDateAddDto(List<WoScheduleDateRowDto>? Rows);
 // Thiết bị kèm hoá đơn: SpecCode lưu vào DB lấy từ ActualSpec (spec THỰC TẾ của xe).
 record InvoiceDeviceRowDto(string? VIN, string? ActualSpec, string? DeviceTypeCode, string? DeviceCode, DateTime? EffectiveDate);
 record InvoiceDeviceSaveDto(string? HTCInvoiceCode, List<InvoiceDeviceRowDto>? Rows);
+// Hạng mục gói bảo dưỡng — khoá cặp (MtnTkCode, MtnTkItemCode).
+record MaintainTaskItemDto(string? MtnTkCode, string? MtnTkItemCode, string? MtnTkItemName, int? ViewIdx, string? FlagActive);
+record MaintainTaskItemKeyDto(string? MtnTkCode, string? MtnTkItemCode);
+// Kỳ báo cáo KH bán lẻ: PlanTimes do server tự tăng, KHÔNG nhận từ client.
+record SettingRptPlanRetailDto(string? PlanMonth, DateTime? ReportDate);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
