@@ -845,6 +845,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #165 parity họ hàm DlrApprove (bên B duyệt) — bản thường / điều chỉnh / điều chỉnh-kèm-mail
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DlrApprBy\" text",
         // #164 parity họ hàm KHÔNG-điều-chỉnh của hợp đồng đại lý DMS40
         "CREATE TABLE IF NOT EXISTS public.\"DmsDealerContractDtls\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"DlrCtrNo\" text NOT NULL DEFAULT '', \"ApprovedDate\" timestamp, \"CarId\" text NOT NULL DEFAULT '', \"OriginNo\" text, \"ProductionYear\" double precision NOT NULL DEFAULT 0, \"UnitPrice\" numeric NOT NULL DEFAULT 0, \"DlrCtrStatusDtl\" text, \"FlagDepositPmt\" text, \"Remark\" text, \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"HTCAppr1DTime\" timestamp",

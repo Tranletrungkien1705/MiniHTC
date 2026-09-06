@@ -20751,7 +20751,7 @@ app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
     var items = await q.OrderByDescending(c => c.Id).Take(500)
         .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime, c.BankCodeMD, c.FlagDlrCtrAdjust, c.DlrCtrNoParent,
-            c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2By, c.RejectDTime, c.RejectBy, c.FilePath, c.Remark, c.LogLUDateTime, c.LogLUBy,
+            c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2By, c.DlrApprBy, c.RejectDTime, c.RejectBy, c.FilePath, c.Remark, c.LogLUDateTime, c.LogLUBy,
             lines = db.DmsDealerContractDtls.Count(l => l.OrgId == t.OrgId && l.DlrCtrNo == c.DlrCtrNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -20770,7 +20770,7 @@ app.MapGet("/api/dmsdealercontracts/{no}/lines", async (string no, AppDbContext 
     var carIds = lines.Select(l => l.CarId).ToList();
     var cars = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && carIds.Contains(v.VIN))
         .Select(v => new { v.VIN, v.DlrCtrNo, v.FlagDealerContractDMS40, v.LogLUDateTime, v.LogLUBy }).ToListAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DlrCtrStatus, c.HTCSignStatus, c.DlrSignStatus, c.FilePath, c.Remark, count = lines.Count, lines, cars });
+    return Results.Ok(new { c.DlrCtrNo, c.DlrCtrStatus, c.HTCSignStatus, c.DlrSignStatus, c.DlrApprDTime, c.DlrApprBy, c.FilePath, c.Remark, count = lines.Count, lines, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/dmsdealercontracts/{no}/selectbankmd", async (string no, DmsSelectBankMDDto dto, AppDbContext db, ITenantContext t) =>
@@ -20837,24 +20837,85 @@ app.MapPost("/api/dmsdealercontracts/{no}/adjust", async (string no, AppDbContex
 
 // 🔴 ĐẠI LÝ (bên B) DUYỆT — `DMS40_CT_DealerContract_DlrApprove_New20190531` (0.34.Contract.cs:4069):
 // gán `DlrSignStatus = TConst.DlrSignStatus.**Approved** ("A")` — KHÔNG phải "S" như port cũ.
-app.MapPost("/api/dmsdealercontracts/{no}/dlr-approve", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== #165 bên B (đại lý) duyệt hợp đồng — BA lệnh WS, KHÔNG phải một =====
+// Nguồn: `TERP.BizHTC/DMS40/0.34.Contract.cs` (csproj 125), md5 cả file `e2f3680f` **KHỚP 2 máy**:
+//   · `_DlrApprove_New20190531`                  (4069) — hợp đồng THƯỜNG
+//   · `_DlrApproveAdjust_New20181115`            (4410) — hợp đồng ĐIỀU CHỈNH
+//   · `_DlrApproveAdjustAndSendMail_New20190529` (4743) — điều chỉnh + gửi mail
+//
+// 🔴 Port cũ phân biệt hai luồng bằng "có `DlrCtrNoParent` hay không" — **SAI TRỤC**. Nguồn phân biệt
+//    bằng cờ `FlagDlrCtrAdjust` (`strFlagDlrCtrAdjustListToCheck`: Inactive vs Active), và hai bản còn
+//    **khác nhau ở guard `HTCSignStatus`** — trục mà port cũ **không kiểm gì cả**:
+//      · THƯỜNG      → `HTCSignStatus = "P"`  (bên B ký TRƯỚC, bên A duyệt SAU)
+//      · ĐIỀU CHỈNH  → `HTCSignStatus = "A2"` (bên A đã duyệt cấp 2 rồi bên B mới ký)
+//    ⇒ khớp đúng cặp đối lập đã phát hiện ở #164, nhìn từ phía bên B.
+// ⚠️ Cả ba đều KHÔNG gọi `myCommon_CheckHTCDirect` (dòng đó bị comment trong nguồn) — hợp lý vì
+//    đây là thao tác của ĐẠI LÝ, không phải của HTC. Giữ nguyên, không tự thêm RBAC.
+app.MapPost("/api/dmsdealercontracts/{no}/dlr-approve", async (string no, DmsDlrApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim();
     var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // Ba guard chung của cả ba bản: đại lý còn chờ, hợp đồng chưa ký.
     if (c.DlrSignStatus != "P") return Results.BadRequest(new { error = $"Bên B đang ở trạng thái '{c.DlrSignStatus}' — chỉ duyệt khi đang chờ (P)." });
-    c.DlrSignStatus = "A"; c.DlrApprDTime = DateTime.Now;
-    // 🔴 Nếu đây là BẢN ĐIỀU CHỈNH, nguồn `_DlrApproveAdjust` còn chạy câu update thứ hai
-    //    `on t.DlrCtrNo = f.DlrCtrNoParent` để đánh **HỢP ĐỒNG GỐC** thành "AJ" (Adjusted).
+    if (c.DlrCtrStatus != "NS") return Results.BadRequest(new { error = $"Hợp đồng đang ở '{c.DlrCtrStatus}' — bên B chỉ ký khi chưa ký (NS)." });
+
+    var isAdjust = c.FlagDlrCtrAdjust == "1";
+    if (!isAdjust && c.HTCSignStatus != "P")
+        return Results.BadRequest(new { error = $"Bên A đang ở '{c.HTCSignStatus}' — hợp đồng thường thì bên B ký khi bên A còn chờ (P)." });
+    if (isAdjust && c.HTCSignStatus != "A2")
+        return Results.BadRequest(new { error = $"Bên A đang ở '{c.HTCSignStatus}' — hợp đồng điều chỉnh thì bên B chỉ ký SAU khi bên A duyệt cấp 2 (A2)." });
+
+    c.DlrSignStatus = "A"; c.DlrApprDTime = now; c.DlrApprBy = who;
+    // Nguồn upload file hợp đồng vào `Contracts_Temp` rồi MOVE sang `Contracts` và ghi lại đường dẫn ĐÍCH.
+    // MiniHTC chưa có tầng lưu file ⇒ nhận sẵn đường dẫn — **đã ghi nợ** (cùng món nợ #164).
+    if (!string.IsNullOrWhiteSpace(dto?.FilePath)) c.FilePath = dto!.FilePath!.Trim();
+
+    var dtls = await db.DmsDealerContractDtls.Where(l => l.OrgId == t.OrgId && l.DlrCtrNo == c.DlrCtrNo).ToListAsync();
     string? parentMarked = null;
-    if (!string.IsNullOrWhiteSpace(c.DlrCtrNoParent))
+
+    if (!isAdjust)
     {
-        var parent = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == c.DlrCtrNoParent);
-        if (parent is not null) { parent.DlrCtrStatus = "AJ"; parentMarked = parent.DlrCtrNo; }
+        // Bản THƯỜNG: **KHÔNG đổi `DlrCtrStatus`** (hợp đồng vẫn "NS" chờ bên A duyệt).
+        //   Dòng nhận `DlrCtrStatusDtl = f.DlrSignStatus` ⇒ "A", LogLU lấy từ `DlrAppr*`.
+        foreach (var l in dtls) { l.DlrCtrStatusDtl = c.DlrSignStatus; l.LogLUDateTime = now; l.LogLUBy = who; }
     }
+    else
+    {
+        // Bản ĐIỀU CHỈNH: bên B ký là bước CUỐI ⇒ hợp đồng con chuyển thẳng sang **"S" (đã ký)**,
+        //   và nguồn chạy **BỐN** câu update: header con · header GỐC · dòng con · dòng GỐC.
+        c.DlrCtrStatus = "S";
+        c.Remark = dto?.Remark;
+        foreach (var l in dtls) { l.DlrCtrStatusDtl = c.DlrCtrStatus; l.LogLUDateTime = now; l.LogLUBy = who; }
+
+        if (!string.IsNullOrWhiteSpace(c.DlrCtrNoParent))
+        {
+            var parent = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == c.DlrCtrNoParent);
+            if (parent is null)
+                return Results.BadRequest(new { error = $"Không tìm thấy hợp đồng gốc {c.DlrCtrNoParent}." });
+            // `on t.DlrCtrNo = f.DlrCtrNoParent` ⇒ hợp đồng GỐC bị đánh **"AJ" (đã điều chỉnh)**.
+            parent.DlrCtrStatus = "AJ"; parent.LogLUDateTime = now; parent.LogLUBy = who;
+            parentMarked = parent.DlrCtrNo;
+            // Câu update thứ TƯ: dòng của hợp đồng GỐC cũng nhận "AJ" — port cũ bỏ hẳn.
+            var pDtls = await db.DmsDealerContractDtls.Where(l => l.OrgId == t.OrgId && l.DlrCtrNo == parent.DlrCtrNo).ToListAsync();
+            foreach (var l in pDtls) { l.DlrCtrStatusDtl = "AJ"; l.LogLUDateTime = now; l.LogLUBy = who; }
+
+            // Bản `AndSendMail` chỉ khác bản `Adjust` ở HAI điểm: (1) CheckDB **lần hai** trên hợp đồng
+            // GỐC để lấy `BankCodeMD` của bản gốc; (2) gọi `DMS40_Email_BatchSendEmail_SendForDealerContractDlrApproveAdjustX`.
+            // ⇒ ở đây chỉ port điểm (1); việc gửi mail thật **ghi nợ**.
+            if (dto?.SendMail == true && string.IsNullOrWhiteSpace(parent.BankCodeMD))
+                return Results.BadRequest(new { error = $"Hợp đồng gốc {parent.DlrCtrNo} chưa có ngân hàng bảo lãnh MD — không gửi thông báo được." });
+        }
+    }
+
+    c.LogLUDateTime = now; c.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.DlrCtrStatus, parentAdjusted = parentMarked });
+    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, c.DlrCtrStatus, c.DlrApprDTime, c.DlrApprBy,
+        adjust = isAdjust, parentAdjusted = parentMarked, lines = dtls.Count,
+        mailQueued = dto?.SendMail == true ? "NỢ: chưa nối tầng gửi mail thật" : null });
 }).RequireAuthorization();
 
 // 🔴 HTC (bên A) duyệt **HAI CẤP** — `_HTCApprove1Adjust` (5748) rồi `_HTCApprove2Adjust` (5870),
@@ -28613,6 +28674,7 @@ record DmsDealerContractLineDto(string? CarId, string? OriginNo, double Producti
 record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 // HTC duyệt 2 cấp (Level 1|2) hoặc từ chối — theo TConst.HTCSignStatus.
 record DmsHtcApproveDto(int Level = 1, bool Reject = false, string? Remark = null, string? FilePath = null);
+record DmsDlrApproveDto(string? Remark = null, string? FilePath = null, bool SendMail = false);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);

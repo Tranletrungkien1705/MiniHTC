@@ -8813,6 +8813,8 @@ public sealed class DmsDealerContract
     public string DlrCtrStatus { get; set; } = "NS";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DlrApprDTime { get; set; }
+    /// <summary>#165 — Người duyệt bên B (`DlrApprBy`); nguồn luôn ghi cặp `DlrApprDTime`/`DlrApprBy`.</summary>
+    public string? DlrApprBy { get; set; }
     public DateTime? HTCAppr2DTime { get; set; }
     public string? BankCodeMD { get; set; }         // NH phát hành bảo lãnh MD — port FrmDMS40_SelectedBankMD
     public string FlagDlrCtrAdjust { get; set; } = "0"; // HĐ điều chỉnh
