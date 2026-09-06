@@ -4559,6 +4559,42 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Nhật ký gọi API **SBHOnline** (`OS_SBHOnline_Log` — port 1:1 `OS_SBHOnline_Log_Create`,
+/// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:4433`).
+/// 🔴 Hai trục tên KHÁC NHAU, đừng lẫn:
+/// · `FuncCall` = **hàm nghiệp vụ ERP** đã kích hoạt lần gọi — `DealerSalesDealCreate` ·
+///   `DealerSalesDealUpdateMulti` · `DealerSalesDealDelete`;
+/// · `FuncCode` = **lệnh API SBHOnline** được gọi — `fleet_owner_create` · `fleet_owner_update` ·
+///   `fleet_create` · `fleet_update` · `fleet_car_id`.
+/// 🔴 `ErrCode` **KHÔNG phải mã số**: thành công ghi `"0"`, thất bại ghi **nguyên văn thông điệp lỗi**
+/// (`response.errorMessage`, hoặc `ex.Message + "/" + response.errorMessage` khi vỡ deserialize).
+/// 🔴 Hàm nguồn **không có guard nào** (region Check để RỖNG) và `catch` nuốt trọn — ở đây
+/// `RollbackSafety` cũng bị comment, khác `DSL_LogCarSvCreate` (vẫn rollback).
+/// ⚠️ `strFunctionName` trong nguồn ghi nhầm là `"DSL_LogCarSv_Create"` (copy-paste từ hàm kia);
+/// vô hại vì `catch` trống nên chuỗi đó không bao giờ được dùng.
+/// </summary>
+public sealed class SbhOnlineApiLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Hàm nghiệp vụ ERP đã kích hoạt lần gọi.</summary>
+    public string? FuncCall { get; set; }
+    /// <summary>Lệnh API SBHOnline được gọi.</summary>
+    public string? FuncCode { get; set; }
+    /// <summary>JSON gửi đi.</summary>
+    public string? RQ { get; set; }
+    /// <summary>JSON nhận về (khi lỗi là `response.content` thô).</summary>
+    public string? RT { get; set; }
+    public string? DealNo { get; set; }
+    /// <summary>Rỗng ở các lệnh cấp chủ xe (`fleet_owner_*`); có giá trị ở lệnh cấp xe.</summary>
+    public string? CarId { get; set; }
+    /// <summary>"0" = thành công; khác "0" là THÔNG ĐIỆP lỗi nguyên văn.</summary>
+    public string? ErrCode { get; set; }
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
 /// Nhật ký đẩy xe đã bán sang **CarService** (`DLS_LogCarSv` — port 1:1 `DSL_LogCarSvCreate`,
 /// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:3974`; hàm đọc `DSL_LogCarSvGet_New20181115` (4104)
 /// là bản LIVE mà **cả WS 32-bit lẫn 64-bit** đều gọi).

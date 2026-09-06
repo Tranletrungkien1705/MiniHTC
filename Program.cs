@@ -4217,6 +4217,49 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Nhật ký gọi API SBHOnline (OS_SBHOnline_Log — port 1:1 OS_SBHOnline_Log_Create,
+// 2010.HTC BizHTC.DealerSales.cs:4433; 17 điểm gọi ở Biz.HTC.WH.cs + Biz.HTC.WH.hkt.cs) =====
+// 🔴 HAI trục tên khác nhau: `FuncCall` = hàm nghiệp vụ ERP kích hoạt (DealerSalesDealCreate /
+//    DealerSalesDealUpdateMulti / DealerSalesDealDelete); `FuncCode` = lệnh API SBHOnline
+//    (fleet_owner_create / fleet_owner_update / fleet_create / fleet_update / fleet_car_id).
+// 🔴 `ErrCode` KHÔNG phải mã số: "0" = thành công, ngược lại là THÔNG ĐIỆP lỗi nguyên văn
+//    (`response.errorMessage`, hoặc `ex.Message + "/" + response.errorMessage`).
+// 🔴 Nguồn KHÔNG có guard nào và catch nuốt trọn ⇒ POST không bao giờ trả 4xx vì lý do nghiệp vụ.
+app.MapGet("/api/sbhonlineapilogs", async (AppDbContext db, ITenantContext t, string? dealNo, string? carId, string? funcCall, string? funcCode, string? createdBy, bool? onlyError) =>
+{
+    var qy = db.SbhOnlineApiLogs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(x => x.DealNo == dealNo);
+    if (!string.IsNullOrWhiteSpace(carId)) qy = qy.Where(x => x.CarId == carId);
+    if (!string.IsNullOrWhiteSpace(funcCall)) qy = qy.Where(x => x.FuncCall == funcCall);
+    if (!string.IsNullOrWhiteSpace(funcCode)) qy = qy.Where(x => x.FuncCode == funcCode);
+    if (!string.IsNullOrWhiteSpace(createdBy)) qy = qy.Where(x => x.CreatedBy == createdBy);
+    // `ErrCode` khác "0" nghĩa là lỗi — bản thân nó CHÍNH LÀ thông điệp lỗi.
+    if (onlyError == true) qy = qy.Where(x => x.ErrCode != "0");
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.FuncCall, x.FuncCode, x.RQ, x.RT, x.DealNo, x.CarId, x.ErrCode, x.CreatedDateTime, x.CreatedBy,
+        Success = x.ErrCode == "0",
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sbhonlineapilogs", async (SbhOnlineApiLogDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    // Nguồn không kiểm tra gì cả (region Check rỗng) — giữ nguyên, chỉ chuẩn hoá khoảng trắng.
+    db.SbhOnlineApiLogs.Add(new SbhOnlineApiLog
+    {
+        OrgId = t.OrgId,
+        FuncCall = dto.FuncCall, FuncCode = dto.FuncCode,
+        RQ = dto.RQ, RT = dto.RT,
+        DealNo = (dto.DealNo ?? "").Trim(), CarId = (dto.CarId ?? "").Trim(),
+        ErrCode = string.IsNullOrWhiteSpace(dto.ErrCode) ? "0" : dto.ErrCode,
+        CreatedDateTime = DateTime.Now,
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { logged = true, success = string.IsNullOrWhiteSpace(dto.ErrCode) || dto.ErrCode == "0" });
+}).RequireAuthorization();
+
 // ===== Nhật ký đẩy xe đã bán sang CarService (DLS_LogCarSv — port 1:1 DSL_LogCarSvCreate,
 // 2010.HTC BizHTC.DealerSales.cs:3974 / DSL_LogCarSvGet_New20181115:4104).
 // TWIN: cả WSHTC 32-bit (WSHTC.cs:26209) lẫn 64-bit đều gọi cùng bản `_New20181115`. =====
@@ -22144,6 +22187,8 @@ record PlanRetailDto(string PlanMonth, string PlanTimes, string DealerCode, List
 record GpsCallLogDto(string? LogId, string? LogType, string? Status, string? Exception, string? DataSend, string? DataResponse, string? IDMSKey, string? FunctionName, string? FunctionType, string? Trycount, string? Url, string? Remark);
 // Nhật ký đẩy xe sang CarService: ErrCode "0" = thành công.
 record CarSvLogDto(string? DealNo, string? DealerCode, string? CarId, string? VIN, string? FuncCode, string? ErrCode);
+// Nhật ký gọi API SBHOnline: FuncCall = hàm ERP, FuncCode = lệnh API; ErrCode khác "0" là thông điệp lỗi.
+record SbhOnlineApiLogDto(string? FuncCall, string? FuncCode, string? RQ, string? RT, string? DealNo, string? CarId, string? ErrCode);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
