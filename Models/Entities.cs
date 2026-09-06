@@ -5950,6 +5950,59 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// KẾ HOẠCH SẢN XUẤT THEO NGÀY (`WO_ScheduleDetailDate` — 2010.HTC `BizHTC.WorkOrder.cs:563`,
+/// trong `WO_Schedule_Add_New20181115` (174); csproj `&lt;Compile&gt;` dòng 134 ⇒ LIVE).
+/// TWIN: cả WS 32-bit lẫn 64-bit **khớp hoàn toàn** (5/5 hàm, đã diff toàn bộ danh sách).
+/// 🔴 Đây là **TẦNG THỨ BA** của lịch sản xuất, port cũ mới có hai tầng đầu:
+/// · `WO_Schedule` (đầu) → <see cref="WoSchedule"/>;
+/// · `WO_ScheduleDetail` (theo model/spec/màu, tổng số lượng) → <see cref="WoScheduleLine"/>;
+/// · **`WO_ScheduleDetailDate` (theo TỪNG NGÀY `PlanDate` + `QtyPlan`)** — tầng này **thiếu hẳn**,
+///   nên port cũ **không biết kế hoạch rải ra ngày nào**, chỉ biết tổng.
+/// 🔴 Guard nguồn: `QtyPlan` **âm ⇒ ném lỗi**; `QtyPlan == 0` ⇒ **`continue`, KHÔNG ghi dòng**
+/// (dòng 544) — tức ngày không có kế hoạch thì **không tồn tại dòng**, không phải dòng với số 0.
+/// ⚠️ Cả ba bảng của cụm chỉ ghi `_dbMain`, **không có `_dbWH`** (dòng 561-564) — khác đa số cụm khác;
+/// ghi chú cho lượt trả nợ `_dbWH` (luật C0-centesimusvigesimusquintus).
+/// </summary>
+public sealed class WoScheduleDetailDate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string WorkOrderNo { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    /// <summary>Ngày kế hoạch — mỗi ngày một dòng.</summary>
+    public DateTime PlanDate { get; set; }
+    /// <summary>Số lượng kế hoạch ngày đó; nguồn KHÔNG ghi dòng khi giá trị = 0.</summary>
+    public decimal QtyPlan { get; set; }
+}
+
+/// <summary>
+/// THIẾT BỊ kèm theo dòng hoá đơn HTC (`VAT_HTCInvoiceDeviceDetail` — 2010.HTC
+/// `HDDTIntergration/BizHTC.HDDTIntergration.cs:4140`).
+/// Khoá dòng = bộ (`HTCInvoiceCode`, `VIN`, `DeviceCode`): một xe trên hoá đơn có thể kèm nhiều thiết bị.
+/// 🔴 `SpecCode` của bảng này **lấy từ cột `ActualSpec` của bảng đầu vào** (dòng 4131), **không phải**
+/// từ `SpecCode` — tức lưu **spec THỰC TẾ của xe**, không phải spec khai trên chứng từ.
+/// Nếu port theo phản xạ "SpecCode ← SpecCode" sẽ ghi sai dữ liệu.
+/// ⚠️ Nguồn ghi cả `_dbMain` lẫn `_dbWH` (4140-4142), dòng `_dbWH` **không bị comment**.
+/// </summary>
+public sealed class VatHtcInvoiceDeviceDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string HTCInvoiceCode { get; set; } = "";
+    public string VIN { get; set; } = "";
+    /// <summary>Lấy từ `ActualSpec` của đầu vào — spec THỰC TẾ của xe.</summary>
+    public string? SpecCode { get; set; }
+    public string? DeviceTypeCode { get; set; }
+    public string DeviceCode { get; set; } = "";
+    public DateTime? EffectiveDate { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// LỊCH SỬ NGHỈ VIỆC của nhân viên bán hàng (`Mst_SalesManHistoryInactive` — 2010.HTC
 /// `Biz.HTC.WH.cs:19236`, ghi bên trong `Mst_SalesMan_Update_New20230306` (18505)).
 /// 🔴 **Không có hàm riêng**: bảng chỉ được ghi **như một tác dụng phụ của lệnh SỬA nhân viên** —

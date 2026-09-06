@@ -20002,6 +20002,105 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
 }).RequireAuthorization();
 
+// ===== KẾ HOẠCH SẢN XUẤT THEO NGÀY (WO_ScheduleDetailDate) — tầng thứ BA của cụm lịch SX =====
+// Nguồn: `BizHTC.WorkOrder.cs:563`, trong `WO_Schedule_Add_New20181115` (174).
+// TWIN: cả hai bit khớp hoàn toàn (5/5 hàm). csproj `<Compile>` 134 ⇒ LIVE. md5 khớp nguyên file 2 máy.
+// 🔴 Port cũ mới có HAI tầng: `WO_Schedule` (đầu) và `WO_ScheduleDetail` (theo model/spec/màu, tổng SL).
+//    Tầng này rải kế hoạch ra TỪNG NGÀY (`PlanDate` + `QtyPlan`) — thiếu nó thì chỉ biết tổng,
+//    không biết kế hoạch nằm ở ngày nào.
+// 🔴 Guard nguồn: `QtyPlan` âm ⇒ LỖI; `QtyPlan == 0` ⇒ `continue`, **KHÔNG ghi dòng** (dòng 544)
+//    ⇒ ngày không có kế hoạch thì KHÔNG tồn tại dòng, chứ không phải dòng mang số 0.
+// ⚠️ Cả ba bảng của cụm chỉ ghi `_dbMain`, KHÔNG có `_dbWH` (561-564) — khác đa số cụm khác.
+app.MapGet("/api/woscheduledates", async (AppDbContext db, ITenantContext t, string? workOrderNo, DateTime? from, DateTime? to) =>
+{
+    var qy = db.WoScheduleDetailDates.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(workOrderNo)) qy = qy.Where(x => x.WorkOrderNo == workOrderNo);
+    if (from is not null) qy = qy.Where(x => x.PlanDate >= from);
+    if (to is not null) qy = qy.Where(x => x.PlanDate <= to);
+    var items = await qy.OrderBy(x => x.PlanDate).ThenBy(x => x.WorkOrderNo).Select(x => new
+    {
+        x.WorkOrderNo, x.SpecCode, x.ModelCode, x.ColorCode, x.PlanDate, x.QtyPlan, x.CreatedDate,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, totalQty = items.Sum(i => i.QtyPlan) });
+}).RequireAuthorization();
+
+app.MapPost("/api/woscheduledates/add", async (WoScheduleDateAddDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.WorkOrderNo) && r.PlanDate is not null).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng kế hoạch rỗng." });
+    // 🔴 Guard nguồn: âm thì lỗi, bằng 0 thì BỎ QUA (không ghi dòng).
+    foreach (var r in rows)
+        if ((r.QtyPlan ?? 0) < 0)
+            return Results.BadRequest(new { error = $"WorkOrder {r.WorkOrderNo} ngày {r.PlanDate:yyyy-MM-dd}: QtyPlan âm." });
+
+    var now = DateTime.Now;
+    var added = 0; var skippedZero = 0;
+    foreach (var r in rows)
+    {
+        if ((r.QtyPlan ?? 0) == 0) { skippedZero++; continue; }   // continue đúng như nguồn
+        db.WoScheduleDetailDates.Add(new WoScheduleDetailDate
+        {
+            OrgId = t.OrgId, CreatedDate = now, WorkOrderNo = r.WorkOrderNo!.Trim(),
+            SpecCode = r.SpecCode, ModelCode = r.ModelCode, ColorCode = r.ColorCode,
+            PlanDate = r.PlanDate!.Value, QtyPlan = r.QtyPlan!.Value,
+        });
+        added++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added, skippedZero, note = "Dòng có QtyPlan = 0 bị bỏ qua, đúng như nguồn." });
+}).RequireAuthorization();
+
+// ===== THIẾT BỊ kèm dòng hoá đơn HTC (VAT_HTCInvoiceDeviceDetail) =====
+// Nguồn: `HDDTIntergration/BizHTC.HDDTIntergration.cs:4140`.
+// 🔴 `SpecCode` của bảng này lấy từ cột **`ActualSpec`** của bảng đầu vào (dòng 4131) — tức **spec THỰC TẾ
+//    của xe**, KHÔNG phải spec khai trên chứng từ. Port theo phản xạ "SpecCode ← SpecCode" là ghi sai dữ liệu.
+// Khoá dòng = bộ (HTCInvoiceCode, VIN, DeviceCode): một xe trên hoá đơn kèm được nhiều thiết bị.
+app.MapGet("/api/invoicedevicedetails", async (AppDbContext db, ITenantContext t, string? htcInvoiceCode, string? vin) =>
+{
+    var qy = db.VatHtcInvoiceDeviceDetails.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(htcInvoiceCode)) qy = qy.Where(x => x.HTCInvoiceCode == htcInvoiceCode);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(x => x.VIN == vin);
+    var items = await qy.OrderBy(x => x.HTCInvoiceCode).ThenBy(x => x.VIN).ThenBy(x => x.DeviceCode)
+        .Select(x => new
+        {
+            x.HTCInvoiceCode, x.VIN, x.SpecCode, x.DeviceTypeCode, x.DeviceCode,
+            x.EffectiveDate, x.LogLUDateTime, x.LogLUBy,
+        }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/invoicedevicedetails/save", async (InvoiceDeviceSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.HTCInvoiceCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã hoá đơn HTC rỗng." });
+    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN) && !string.IsNullOrWhiteSpace(r.DeviceCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng thiết bị rỗng." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var saved = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        var dev = r.DeviceCode!.Trim();
+        var row = await db.VatHtcInvoiceDeviceDetails
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code && x.VIN == vin && x.DeviceCode == dev);
+        if (row is null)
+        {
+            row = new VatHtcInvoiceDeviceDetail { OrgId = t.OrgId, HTCInvoiceCode = code, VIN = vin, DeviceCode = dev };
+            db.VatHtcInvoiceDeviceDetails.Add(row);
+        }
+        // 🔴 SpecCode lấy từ ActualSpec, đúng như nguồn.
+        row.SpecCode = r.ActualSpec;
+        row.DeviceTypeCode = r.DeviceTypeCode;
+        row.EffectiveDate = r.EffectiveDate;
+        row.LogLUDateTime = now; row.LogLUBy = who;
+        saved++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { htcInvoiceCode = code, saved });
+}).RequireAuthorization();
+
 // ===== LỊCH SỬ NGHỈ VIỆC của nhân viên bán hàng (Mst_SalesManHistoryInactive) =====
 // Nguồn: `Biz.HTC.WH.cs:19236`, ghi **bên trong** `Mst_SalesMan_Update_New20230306` (18505).
 // 🔴 Bảng KHÔNG có hàm riêng — chỉ được ghi như **tác dụng phụ của lệnh SỬA nhân viên**: khi NVBH bị cho
@@ -25154,6 +25253,12 @@ record BankingTransAttachRowDto(int? FileIndex, string? FileType, string? FilePa
 record BankingTransAttachSaveDto(string? RQ_BankingTransNo, List<BankingTransAttachRowDto>? Files);
 // Cho NVBH nghỉ việc: lý do/ngày nghỉ là dữ liệu MỚI, phần hồ sơ do server chụp lại.
 record SalesManInactivateDto(string? SMCode, string? IdentityCardNo, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);
+// Kế hoạch SX theo ngày: dòng có QtyPlan = 0 sẽ bị BỎ QUA, đúng như nguồn.
+record WoScheduleDateRowDto(string? WorkOrderNo, string? SpecCode, string? ModelCode, string? ColorCode, DateTime? PlanDate, decimal? QtyPlan);
+record WoScheduleDateAddDto(List<WoScheduleDateRowDto>? Rows);
+// Thiết bị kèm hoá đơn: SpecCode lưu vào DB lấy từ ActualSpec (spec THỰC TẾ của xe).
+record InvoiceDeviceRowDto(string? VIN, string? ActualSpec, string? DeviceTypeCode, string? DeviceCode, DateTime? EffectiveDate);
+record InvoiceDeviceSaveDto(string? HTCInvoiceCode, List<InvoiceDeviceRowDto>? Rows);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
