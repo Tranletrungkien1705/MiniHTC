@@ -481,6 +481,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SmsTemplate> SmsTemplates => Set<SmsTemplate>();
     public DbSet<EmailTemplate> EmailTemplates => Set<EmailTemplate>();
     public DbSet<SmsSend> SmsSends => Set<SmsSend>();
+    public DbSet<SmsBatch> SmsBatches => Set<SmsBatch>();   // #229
     public DbSet<ServiceAppointment> ServiceAppointments => Set<ServiceAppointment>();
     public DbSet<AppointmentServiceItem> AppointmentServiceItems => Set<AppointmentServiceItem>();
     public DbSet<AppointmentPartItem> AppointmentPartItems => Set<AppointmentPartItem>();

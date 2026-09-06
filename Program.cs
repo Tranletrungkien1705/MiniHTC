@@ -8860,6 +8860,24 @@ static string? StdPhoneVn(string? raw)
     if (digits.Length == 10 && digits[0] == '0') return digits;
     return null;
 }
+// ===== 🔴 #229 ĐẦU LÔ TIN NHẮN `Sms_Batch` + thay thế biến trong nội dung =====
+// Nguồn: `Views/SMS/FrmSendSMSAdvertisement.cs` (706 dòng, DMSCarSv) `RefineSave` →
+//        `SmsOutService.SMS_Batch_Send` (SmsOutService.cs:79) → WS `Sms_Batch_Send`.
+// BƯỚC 3B: `SmsOutService.cs` md5 `2e4db12a` — KHỚP laptop (V20.2023.Release.V2) và 150 (V20.2023.Release).
+//
+// 🔴 SÁU biến nội dung (`Util.RefineContentSmsSend`, Util.cs:2372) — nguồn thay **cả 3 kiểu chữ**:
+//    {@FullName} · {@fullname} · {@FULLNAME}  ⇒ tên khách
+//    {@PlateNo}  · {@plateno}  · {@PLATENO}   ⇒ biển số
+//    ⚠️ Không có biến nào khác; đừng tự thêm.
+static string RefineSmsContent(string content, string? cusName, string? plateNo)
+{
+    var name = cusName ?? "";
+    var plate = plateNo ?? "";
+    return content
+        .Replace("{@FullName}", name).Replace("{@fullname}", name).Replace("{@FULLNAME}", name)
+        .Replace("{@PlateNo}", plate).Replace("{@plateno}", plate).Replace("{@PLATENO}", plate);
+}
+
 // ===== 🔴 LUẬT TÍNH TIỀN TIN NHẮN — port từ hệ SMS.V10 (chỉ có trên máy 150), SMS.Utils/Utils.cs =====
 // Port cũ chỉ đếm "số tin" = số điện thoại. Nguồn tính tiền theo SỐ PHẦN tin: nội dung dài bị chia
 // thành nhiều phần và TÍNH TIỀN TỪNG PHẦN; tin CÓ DẤU (Unicode) chỉ được 70 ký tự/phần thay vì 160.
@@ -8941,11 +8959,46 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
         return Results.BadRequest(new { error = "Nhà mạng không hợp lệ." });
     if (dto.UnitPrice < 0) return Results.BadRequest(new { error = "Đơn giá không được âm." });
     var isAnsi = dto.FlagANSI ?? SmsCost.DetectAnsi(content);
-    var pieces = SmsCost.Split(content, isAnsi);
     var no = "SMS" + DateTime.Now.ToString("yyMMddHHmmss");
-    int queued = 0, invalid = 0;
+
+    // 🔴 #229 Ngữ cảnh người nhận: nguồn lưu 7 cặp (A10..A16) và thay biến nội dung THEO TỪNG NGƯỜI
+    //    (`SmsUtil.RefineContentSmsSend(content, CusName, PlateNo)` — SmsOutService.cs:146).
+    //    ⇒ tra khách theo số ĐT một lần, rồi lấy xe đầu tiên của khách để có biển số.
+    var ctxRows = await (from c in db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && x.Mobile != null && x.Mobile != "")
+                         join car in db.ServiceCars.Where(x => x.OrgId == t.OrgId) on c.CusCode equals car.CusID into gj
+                         from car in gj.DefaultIfEmpty()
+                         select new { c.Mobile, c.CusCode, c.CusName, c.Address,
+                                      carId = car != null ? car.FrameNo : null,
+                                      plateNo = car != null ? car.PlateNo : null,
+                                      tradeMark = car != null ? car.TradeMark : null,
+                                      modelCode = car != null ? car.ModelCode : null }).ToListAsync();
+    var ctx = new Dictionary<string, SmsCtx>();
+    foreach (var r in ctxRows)
+    {
+        var key = StdPhoneVn(r.Mobile);
+        if (key is not null && !ctx.ContainsKey(key))
+            ctx[key] = new SmsCtx(r.CusCode, r.CusName, r.Address, r.carId, r.plateNo, r.tradeMark, r.modelCode);
+    }
+
+    // 🔴 #229 ĐẦU LÔ: nguồn LUÔN tạo 1 dòng `Sms_Batch` cùng lúc với các dòng gửi (RefineSave).
+    //    `EffectStatus` = "P"; `Remark` bị SMS_Batch_Send ghi đè bằng hằng "BrandName" (SmsOutService.cs:99).
+    //    `ContentsTemplate` ghép bằng "|": <loại người gửi>[|<loại báo giá>|<nội dung>].
+    var senderKind = string.IsNullOrWhiteSpace(dto.SenderKind) ? "BrandName" : dto.SenderKind!.Trim();
+    var batch = new SmsBatch
+    {
+        OrgId = t.OrgId, BatchId = no, AccountCode = dto.AccountCode, BatchType = batchType,
+        ContentsTemplate = string.IsNullOrWhiteSpace(dto.SmsType) ? senderKind : $"{senderKind}|{smsType}|{content}",
+        EffectDTime = dto.EffectDTime ?? DateTime.Now,   // mốc chọn giá hiệu lực (#228), KHÔNG phải ngày gửi
+        EffectStatus = "P",
+        Remark = "BrandName",
+        CreatedBy = dto.CreatedBy,
+    };
+    db.SmsBatches.Add(batch);
+
+    int queued = 0, invalid = 0, seqSend = 0;
     var invalids = new List<string>();
     var seen = new HashSet<string>();
+    var msgPerRecipient = new List<int>();
     foreach (var m in mobiles)
     {
         var std = StdPhoneVn(m);
@@ -8958,6 +9011,15 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
             continue;
         }
         if (!seen.Add(std)) continue; // bỏ trùng số trong lô
+
+        ctx.TryGetValue(std, out var who);
+        // 🔴 THAY BIẾN TRƯỚC, CHIA PHẦN SAU: thay {@FullName}/{@PlateNo} làm ĐỔI ĐỘ DÀI nội dung,
+        //    mà độ dài mới là thứ quyết định số phần tin ⇒ quyết định TIỀN. Port cũ chia phần trên
+        //    nội dung MẪU (còn nguyên biến) nên tính sai tiền khi tên/biển số dài.
+        var body = RefineSmsContent(content, who?.CusName, who?.PlateNo);
+        var pieces = SmsCost.Split(body, isAnsi);
+        msgPerRecipient.Add(pieces.Count);
+
         // ⚠️ Nguồn tạo lô ở trạng thái "P" (chờ gửi) rồi mới gửi bất đồng bộ — KHÔNG đánh dấu đã gửi ngay.
         foreach (var piece in pieces)
         {
@@ -8968,14 +9030,32 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
                 FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType,
                 ProjectCode = dto.ProjectCode, UnitPrice = dto.UnitPrice,
                 MsgParts = parts, Cost = dto.UnitPrice * parts,
+                // SendId tuần tự trong lô — nguồn dùng CUtils.TidNext(batchId, ref seq).
+                SendId = $"{no}-{++seqSend:D5}",
+                SupplierPhoneNo = dto.SupplierPhoneNo,
+                // Gửi bằng đầu số ⇒ nguồn ghi chuỗi RỖNG (không phải null) cho BranchName.
+                BranchName = senderKind == "BrandName" ? dto.BrandName : "",
+                FlagReply = "0",
+                CusID = who?.CusCode, CusName = who?.CusName,
+                Address = who?.Address, CarID = who?.CarId,
+                PlateNo = who?.PlateNo,
+                // A15 của nguồn ghép "TradeMarkCode|ModelName"; chỉ ghi khi có ít nhất một vế.
+                TradeMarkModel = who is null || (who.TradeMark is null && who.ModelCode is null)
+                                 ? null : $"{who.TradeMark}|{who.ModelCode}",
+                SendType = smsType,
             });
             queued++;
         }
     }
+    // Tiền ước tính của lô = tổng tiền các dòng chờ gửi (nguồn: Sum(UnitPrice * MyPartCount)).
     await db.SaveChangesAsync();
     var totalParts = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == no && !x.InvalidMobile).SumAsync(x => x.MsgParts);
+    batch.CostInit = dto.UnitPrice * totalParts;
+    await db.SaveChangesAsync();
     return Results.Ok(new { batchNo = no, queued, invalid, invalids, contentLength = content.Length,
-        isAnsi, messagesPerRecipient = pieces.Count, totalParts, totalCost = dto.UnitPrice * totalParts });
+        isAnsi, messagesPerRecipient = msgPerRecipient.Count == 0 ? 0 : msgPerRecipient.Max(),
+        totalParts, totalCost = batch.CostInit,
+        batch = new { batch.BatchId, batch.BatchType, batch.ContentsTemplate, batch.EffectDTime, batch.EffectStatus, batch.CostInit } });
 }).RequireAuthorization();
 
 // 🔴 Trạng thái gửi SMS theo ĐÚNG nguồn (TConst.SmsStage) — port cũ chỉ có 2/6 (Sent|Invalid).
@@ -8998,6 +9078,26 @@ app.MapGet("/api/smssends/statuses", () => Results.Ok(new
     legacyMap = smsLegacyStatusMap.Select(kv => new { legacy = kv.Key, code = kv.Value }),
     note = "Nguồn tạo lô ở P (chờ gửi) rồi gửi bất đồng bộ; kết thúc F (xong) hoặc R (lỗi)."
 })).RequireAuthorization();
+
+// Danh sách ĐẦU LÔ (Sms_Batch) — kèm tiền thực tế tính lại từ các dòng đã gửi xong.
+app.MapGet("/api/smsbatches", async (AppDbContext db, ITenantContext t, string? effectStatus, string? batchType) =>
+{
+    var qy = db.SmsBatches.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(effectStatus)) qy = qy.Where(x => x.EffectStatus == effectStatus!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(batchType)) qy = qy.Where(x => x.BatchType == batchType!.Trim().ToUpperInvariant());
+
+    var items = await qy.OrderByDescending(x => x.CreatedDTime).Take(500)
+        .Select(x => new { x.BatchId, x.AccountCode, x.BatchType, x.ContentsTemplate, x.EffectDTime,
+                           x.EffectStatus, x.Remark, x.CostInit, x.CostActual, x.CreatedDTime, x.CreatedBy,
+                           x.CancelDTime, x.CancelBy,
+                           // MYCOUNT_* của nguồn là cột TÍNH, không lưu — đếm tại chỗ.
+                           countPending = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "P"),
+                           countProgress = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "G"),
+                           countFinish = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "F"),
+                           countReject = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "R") })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
 
 // Cập nhật kết quả gửi của cả lô (bộ gửi SMS gọi lại sau khi xử lý xong).
 app.MapPost("/api/smssends/{batchNo}/status", async (
@@ -31311,7 +31411,13 @@ static class SmsCost
             ? PartsQC(len, isAnsi, telCo) : PartsNormal(len, isAnsi);
 }
 
-record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers, bool? FlagANSI = null, string? TelCo = null, string? BatchType = null, string? CostType = null, string? ProjectCode = null, decimal UnitPrice = 0);
+// #229: 6 trường đầu lô/người gửi thêm ở CUỐI record (tham số tuỳ chọn ⇒ không vỡ lời gọi cũ).
+//  SenderKind chỉ nhận đúng 2 giá trị hằng của nguồn: "BrandName" hoặc "Đầu số" (SmsSendKey, Constants.cs:441).
+record SmsSendDto(string? SmsType, string? Content, List<string>? Mobiles, bool? ToAllCustomers, bool? FlagANSI = null, string? TelCo = null, string? BatchType = null, string? CostType = null, string? ProjectCode = null, decimal UnitPrice = 0,
+    string? SenderKind = null, string? BrandName = null, string? SupplierPhoneNo = null, string? AccountCode = null, string? CreatedBy = null, DateTime? EffectDTime = null);
+
+// #229: ngữ cảnh người nhận dùng để thay biến nội dung + đổ 7 cặp A10..A16 của nguồn.
+record SmsCtx(string? CusCode, string? CusName, string? Address, string? CarId, string? PlateNo, string? TradeMark, string? ModelCode);
 record SmsEstimateDto(string? Content, bool? FlagANSI, string? TelCo, string? BatchType, decimal UnitPrice, int? RecipientCount);
 record ServiceQuotationDto(string? RONo, string? Vin, string? PlateNo, string? CusName, decimal Discount, string? Note, List<SqLaborDto>? Labors, List<SqPartDto>? Parts,
     /// Mức khấu trừ bảo hiểm — CHỈ hợp lệ khi báo giá có dòng ExpenseType="ROInsurance" (luật checkInsuranceDeductible).

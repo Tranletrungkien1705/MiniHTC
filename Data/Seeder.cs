@@ -845,6 +845,19 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #229 parity Sms_Batch (dau lo tin nhan) + 11 cot thieu cua Sms_Send
+        "CREATE TABLE IF NOT EXISTS public.\"SmsBatches\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchId\" text NOT NULL DEFAULT '', \"AccountCode\" text, \"BatchType\" text NOT NULL DEFAULT 'CSKH', \"ContentsTemplate\" text, \"EffectDTime\" timestamp NOT NULL DEFAULT now(), \"EffectStatus\" text NOT NULL DEFAULT 'P', \"Remark\" text, \"CostInit\" numeric NOT NULL DEFAULT 0, \"CostActual\" numeric NOT NULL DEFAULT 0, \"CreatedDTime\" timestamp NOT NULL DEFAULT now(), \"CreatedBy\" text, \"CancelDTime\" timestamp, \"CancelBy\" text)",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"SendId\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"SupplierPhoneNo\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"BranchName\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"CusName\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"Address\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"PlateNo\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"TradeMarkModel\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"SendType\" text",
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"FlagReply\" text NOT NULL DEFAULT '0'",
         // #228 parity Mst_PriceSend (bang gia gui tin, SMS.V10 - chi co tren may 150)
         "CREATE TABLE IF NOT EXISTS public.\"SmsPriceSends\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"CostType\" text NOT NULL DEFAULT '', \"SupplierCode\" text NOT NULL DEFAULT '', \"TelCoCode\" text NOT NULL DEFAULT '', \"BatchType\" text, \"EffectDate\" timestamp NOT NULL DEFAULT now(), \"UnitPrice\" numeric NOT NULL DEFAULT 0, \"LuDTime\" timestamp, \"LuBy\" text, \"CostTypeName\" text, \"SupplierName\" text, \"TelCoName\" text)",
         // #227 parity Mst_Province (danh muc tinh/thanh, DMSCarSv)

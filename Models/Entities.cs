@@ -11698,6 +11698,49 @@ public sealed class EmailAutoConfig
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// #229 ĐẦU LÔ TIN NHẮN `Sms_Batch` — port 1:1 `FrmSendSMSAdvertisement.RefineSave` (706 dòng, DMSCarSv)
+/// + `SmsOutService.SMS_Batch_Send` (SmsOutService.cs:79). Cột lấy từ lớp hằng `TblSMS_Batch`
+/// (DbDefine.cs:1886) — 13 cột lưu trữ; `MYCOUNT_*` là cột TÍNH nên không lưu.
+/// 🔴 Port cũ sinh `BatchNo` rồi vứt: **không có bản ghi đầu lô nào** ⇒ mất `EffectDTime`
+///    (mốc ngày mà bảng giá `Mst_PriceSend` dùng để chọn giá hiệu lực — xem #228), mất `CostInit`
+///    /`CostActual` và mất dấu vết huỷ lô.
+/// </summary>
+public sealed class SmsBatch
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchId { get; set; } = "";          // BATCHID — trùng BatchNo của SmsSend
+    public string? AccountCode { get; set; }           // ACCOUNTCODE — tài khoản SMS gửi lô
+    public string BatchType { get; set; } = "CSKH";    // BATCHTYPE — CSKH / QC
+
+    /// <summary>
+    /// CONTENTSTEMPLATE — 🔴 trường GHÉP bằng dấu `|` (RefineSave): khi có chọn loại báo giá thì
+    /// `&lt;loại người gửi&gt;|&lt;tên loại báo giá&gt;|&lt;nội dung&gt;`, không thì chỉ `&lt;loại người gửi&gt;`.
+    /// ⚠️ Đoạn đầu KHÔNG phải giá trị người gửi mà là **LOẠI** người gửi: hằng `SmsSendKey.BrandName`
+    ///    = chuỗi `"BrandName"`, `SmsSendKey.PhonePrefix` = chuỗi `"Đầu số"` (Constants.cs:441).
+    /// </summary>
+    public string? ContentsTemplate { get; set; }
+
+    /// <summary>EFFECTDTIME — 🔴 ngày hiệu lực của LÔ. Đây chính là `@strDateEffect` mà
+    /// `#tbl_Mst_PriceSend_Effect` (BizSMS.SMS.cs:279) dùng để chọn giá — KHÔNG phải ngày gửi.</summary>
+    public DateTime EffectDTime { get; set; } = DateTime.Now;
+
+    /// <summary>EFFECTSTATUS — theo `TConst.SmsStage` (N/P/G/C/F/R); nguồn tạo lô ở "P".</summary>
+    public string EffectStatus { get; set; } = "P";
+
+    /// <summary>REMARK — ⚠️ nguồn GHI ĐÈ bằng hằng `SmsSendKey.BrandName` (chuỗi "BrandName")
+    /// ngay trong `SMS_Batch_Send` (SmsOutService.cs:99), bất kể form đặt gì. Giữ nguyên hành vi.</summary>
+    public string? Remark { get; set; }
+
+    public decimal CostInit { get; set; }              // COSTINIT — tiền ước tính lúc tạo lô
+    public decimal CostActual { get; set; }            // COSTACTUAL — tiền thực sau khi gửi
+    public DateTime CreatedDTime { get; set; } = DateTime.Now;  // CREATEDDTIME
+    public string? CreatedBy { get; set; }             // CREATEDBY
+    public DateTime? CancelDTime { get; set; }         // CANCELDTIME
+    public string? CancelBy { get; set; }              // CANCELBY
+}
+
 public sealed class SmsSend
 {
     public long Id { get; set; }
@@ -11756,6 +11799,34 @@ public sealed class SmsSend
     public int TryCount { get; set; }
 
     public DateTime SendDate { get; set; } = DateTime.Now;
+
+    // ===== #229: 11 cột nguồn `Sms_Send` mà port cũ THIẾU (SmsOutService.cs:107-136) =====
+
+    /// <summary>SENDID — mã dòng gửi, nguồn sinh bằng `CUtils.TidNext(batchId, ref seq)` ⇒ **tuần tự trong lô**.</summary>
+    public string? SendId { get; set; }
+
+    /// <summary>SUPPLIERPHONENO — số của NCC dùng để gửi. 🔴 Nguồn gán `SystemGlobal.SMSSupplierPhoneNo`
+    /// ở **CẢ HAI nhánh** if/else (SmsOutService.cs:131 và :138) — hai nhánh chỉ khác nhau ở `BranchName`.
+    /// Đây là khoá tra `Mst_SupplierPhoneNo` → `SupplierCode` của bảng giá (#228).</summary>
+    public string? SupplierPhoneNo { get; set; }
+
+    /// <summary>BRANCHNAME — ⚠️ nguồn viết SAI CHÍNH TẢ: cột tên là `BranchName` nhưng nghĩa là **BrandName**
+    /// (tên thương hiệu hiện trên máy người nhận). Chỉ có giá trị khi người gửi là BrandName;
+    /// gửi bằng đầu số thì nguồn ghi chuỗi RỖNG (không phải NULL).</summary>
+    public string? BranchName { get; set; }
+
+    /// <summary>FLAGREPLY — nguồn luôn đặt `Constants.Flag.Inactive` ("0") khi tạo dòng gửi.</summary>
+    public string FlagReply { get; set; } = "0";
+
+    // A10..A16: nguồn lưu ngữ cảnh người nhận dưới dạng CẶP (AxxName, AxxValue) — túi thuộc tính chung.
+    // Ở đường gửi này 7 cặp LUÔN mang đúng 7 nghĩa dưới đây nên port thành cột có tên thật.
+    public string? CusID { get; set; }              // A10  CUSID
+    public string? CusName { get; set; }            // A11  CUSNAME
+    public string? Address { get; set; }            // A12  ADDRESS
+    public string? CarID { get; set; }              // A13  CARID
+    public string? PlateNo { get; set; }            // A14  PLATENO
+    public string? TradeMarkModel { get; set; }     // A15  "TradeMarkCode|ModelName" (ghép bằng |)
+    public string? SendType { get; set; }           // A16  SENDTYPE (loại tin gửi)
 }
 
 /// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>
