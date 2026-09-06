@@ -9110,6 +9110,10 @@ public sealed class CBReq
     public string Status { get; set; } = "Draft"; // Draft → Confirmed / Cancelled
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
+
+    // ===== #179 parity `Sto_CBReqApprove_New20181119` (DataWH/Biz.HTC.WH.cs:115992, csproj 272) =====
+    /// <summary>Lý do duyệt/bỏ duyệt (`Sto_CBReq.Remark`) — nguồn nhận `strRemark` và ghi ở CẢ HAI ngả.</summary>
+    public string? Remark { get; set; }
 }
 public sealed class CBReqDetail
 {
@@ -9121,6 +9125,10 @@ public sealed class CBReqDetail
     public string StorageCodeTo { get; set; } = "";
     public string? TypeCB { get; set; }
     public string? Remark { get; set; }
+
+    /// <summary>#179 — Trạng thái RIÊNG của dòng (`Sto_CBReqDetail.CBReqDtlStatus`): nguồn cập nhật
+    /// `'A'` khi duyệt và `'R'` khi bỏ duyệt, đồng bộ với header.</summary>
+    public string? CBReqDtlStatus { get; set; }
 }
 
 /// <summary>Sắp xếp/chuyển kho (Sto_StorageRearrange + Detail) — port 1:1 FrmNewSC (2010.HTC/Sales/Purchase). Chuyển vị trí lưu kho lô xe theo VIN, kho hiện tại→kho đến.</summary>

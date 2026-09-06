@@ -22177,7 +22177,7 @@ app.MapPost("/api/cbreqs", async (CBReqDto dto, AppDbContext db, ITenantContext 
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "CB" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new CBReq { OrgId = t.OrgId, CBReqNo = no, Status = "Draft" };
+    var r = new CBReq { OrgId = t.OrgId, CBReqNo = no, Status = "P" };  // #179: TConst.Stage, khong phai "Draft"
     db.CBReqs.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.CBReqDetails.Add(new CBReqDetail { OrgId = t.OrgId, CBReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), TypeCB = c.TypeCB, Remark = c.Remark });
@@ -22195,17 +22195,53 @@ app.MapGet("/api/cbreqs/{no}/cars", async (string no, AppDbContext db, ITenantCo
     return Results.Ok(new { r.CBReqNo, r.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
+    // ===== #179 DUYỆT / BỎ DUYỆT yêu cầu đóng thùng — `Sto_CBReqApprove_New20181119` =====
+    // Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:115992` (csproj 272).
+    // BƯỚC 3B: hàm bắt đầu **KHÁC DÒNG** (laptop 115992 / máy 150 115997) — căn theo MỐC HÀM (luật #156),
+    //   vùng 269 dòng md5 `d14ee3b4` KHỚP. TWIN: WS 32-bit và 64-bit gọi CÙNG bản.
+    //
+    // 🔴 Ba sai của port cũ:
+    //   1. **Từ vựng trạng thái TỰ ĐẶT**: port cũ dùng `"Confirmed"`/`"Cancelled"`. Nguồn dùng
+    //      `TConst.Stage`: `objCBReqStatusNew = bApprove ? Stage.Approved **"A"** : Stage.Rejected **"R"**`,
+    //      và dòng chi tiết nhận `'A'` / `'R'` (`CBReqDtlStatus`). Không có mã "Confirmed"/"Cancelled" nào.
+    //   2. Thiếu hẳn `Remark` — nguồn nhận `strRemark` và **ghi vào header ở CẢ HAI ngả**.
+    //   3. 🔴 Thiếu guard riêng của ngả bỏ duyệt (`Sto_CBReqApprove_ExistSto_RearrangeCB`),
+    //      nguồn ghi rõ trong comment: *"Chỉ Hủy YCĐT A khi chưa có lệnh ĐT A"* —
+    //      nếu đã tồn tại **lệnh điều chuyển đóng thùng** (`Sto_RearrangeCBDetail`) còn sống
+    //      (`RearCBDtlStatus not in ('R','C')`) cho cùng VIN thì **KHÔNG được bỏ duyệt**.
+    // Guard vào: nguồn `CheckDB(..., TConst.Stage.Pending)` — cả hai ngả đều vào từ "P".
+    if (action is not ("approve" or "unapprove")) return Results.BadRequest(new { error = "action = approve|unapprove" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.CBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận Yêu cầu đóng thùng này" : "Không thể hủy Yêu cầu đóng thùng này" });
-    if (action == "confirm") { r.Status = "Confirmed"; r.ConfirmedAt = DateTime.Now; }
-    else r.Status = "Cancelled";
+    if (r.Status != "P")
+        return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ duyệt/bỏ duyệt khi còn chờ duyệt (P)." });
+
+    var bApprove = action == "approve";
+    var lines = await db.CBReqDetails.Where(x => x.OrgId == t.OrgId && x.CBReqId == r.Id).ToListAsync();
+
+    if (!bApprove)
+    {
+        // `Sto_CBReqApprove_ExistSto_RearrangeCB`: đã có lệnh đóng thùng còn sống thì không huỷ được.
+        var vins = lines.Where(l => l.CBReqDtlStatus != "R" && l.CBReqDtlStatus != "C").Select(l => l.VIN).ToList();
+        var blocker = await db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && x.CBReqNo == no
+                && vins.Contains(x.VIN) && x.RearCBDtlStatus != "R" && x.RearCBDtlStatus != "C")
+            .Select(x => new { x.VIN, x.RearCBDtlStatus }).FirstOrDefaultAsync();
+        if (blocker is not null)
+            return Results.BadRequest(new { error = $"Đã tồn tại lệnh đóng thùng cho VIN {blocker.VIN} (trạng thái '{blocker.RearCBDtlStatus}') — không bỏ duyệt được yêu cầu.", vin = blocker.VIN });
+    }
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    // `bApprove ? Stage.Approved : Stage.Rejected`
+    r.Status = bApprove ? "A" : "R";
+    r.Remark = dto?.Remark;                 // nguồn ghi Remark ở CẢ HAI ngả
+    r.ConfirmedAt = bApprove ? now : null;
+    foreach (var l in lines) l.CBReqDtlStatus = r.Status;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.CBReqNo, status = r.Status });
+    return Results.Ok(new { r.CBReqNo, status = r.Status, r.Remark, unapprove = !bApprove, linesUpdated = lines.Count });
 }).RequireAuthorization();
 
 // ===== Sắp xếp/chuyển kho (StorageRearrange/SC — port 1:1 FrmNewSC, 2010.HTC/Sales/Purchase) =====
@@ -29740,6 +29776,7 @@ record GrtClaimMultiDto(List<string>? GrtClaimNos);
 record GrtClaimRejectDto(string? Remark = null);
 record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);
 record CBReqDto(List<CBReqCarDto>? Cars);
+record CbReqActionDto(string? Remark = null);
 record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
 record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars);
 // Duyệt chuyển kho: nguồn dùng MỘT hàm/cấp với cờ `strFlagUnapprove` (nghịch đảo) — ở đây phơi ra `Approve`.

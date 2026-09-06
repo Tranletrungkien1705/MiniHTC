@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #179 parity Sto_CBReqApprove_New20181119
+        "ALTER TABLE public.\"CBReqs\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
+        "ALTER TABLE public.\"CBReqDetails\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text",
+        "UPDATE public.\"CBReqs\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
+        "UPDATE public.\"CBReqs\" SET \"Status\" = 'A' WHERE \"Status\" = 'Confirmed'",
+        "UPDATE public.\"CBReqs\" SET \"Status\" = 'R' WHERE \"Status\" = 'Cancelled'",
         // #177 parity BPL_BusinessPlan_UnApprove2
         "ALTER TABLE public.\"BusinessPlanHeaders\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         "ALTER TABLE public.\"BusinessPlanHeaders\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
