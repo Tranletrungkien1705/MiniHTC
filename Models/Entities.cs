@@ -13398,6 +13398,15 @@ public sealed class ServiceAppointment
     public string? Vin { get; set; }               // Ser_Car.FrameNo của xe được hẹn
 
     /// <summary>
+    /// 🔴 #319 CARID — khoá kỹ thuật của XE, **KHÁC** <see cref="Vin"/> (số khung).
+    /// Nguồn `Ser_App_Create_ForTab` ghi `dt_Ser_App.Rows[0]["CarID"]` — nhưng **CHỈ ở bản máy 150**;
+    /// bản laptop `V20.2023.Release.V2` của cùng hàm KHÔNG ghi cột này (file lệch **+18 dòng**).
+    /// ⚠️ Các truy vấn khác của nguồn ghép xe theo `CarID` (vd bảo hành: `td.CarID = car.CarID`, #302),
+    ///    nên thiếu `CarID` thì lịch hẹn không nối được sang hồ sơ xe theo đúng khoá của hệ.
+    /// </summary>
+    public string? CarID { get; set; }
+
+    /// <summary>
     /// Trạng thái đẩy lịch hẹn sang HCC — cùng bộ mã với trục HMC của đề nghị bảo hành:
     /// "P" chờ đẩy · "A" đẩy thành công · "R" đẩy lỗi. `null` = không thuộc diện đẩy.
     /// ⚠️ Nguồn CHỈ đẩy ở nhánh **`_ForTab`** (kênh máy tính bảng); nhánh tạo lịch hẹn thường KHÔNG đẩy.

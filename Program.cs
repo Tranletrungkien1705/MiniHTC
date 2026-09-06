@@ -19451,6 +19451,7 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
+        x.CarID,          // #319 §12: phải có ở CẢ GET lẫn POST
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
         // #270 §12: cot bo sung co mat o CA GET lan POST
         x.DealerCode, x.CusID, x.Vin, x.HCCPushStatus, x.HCCPushDateTime,
@@ -19499,13 +19500,22 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
     //   ⇒ `Channel == "TAB"` mới đặt cờ chờ đẩy; mặc định để `null` = không thuộc diện đẩy.
     var isTab = string.Equals((dto.Channel ?? "").Trim(), "TAB", StringComparison.OrdinalIgnoreCase);
     var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
-        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked",
+        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note,
+        // 🔴 #319 TRẠNG THÁI do NGƯỜI GỌI truyền: nguồn ghi `AppStatus` **chỉ khi tham số khác rỗng**
+        //   (`if (!StringUtils.IsEmpty(strAppStatus))`) ⇒ kênh máy tính bảng tự quyết trạng thái ban đầu.
+        //   Port cũ **ép cứng** "Booked" ⇒ mất khả năng đó. Nay: rỗng thì mới mặc định "Booked".
+        Status = string.IsNullOrWhiteSpace(dto.AppStatus) ? "Booked" : dto.AppStatus!.Trim(),
         EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest,
         DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(), CusID = dto.CusID, Vin = dto.Vin?.Trim().ToUpperInvariant(),
         // #282 §12: 8 cột thật của `TblSerAppRO`. `Source` là cột NGUỒN; `Channel` (#270, port tự đặt)
         //   được ghi vào chính cột đó khi client không gửi `Source` riêng.
         Creator = dto.Creator, CusAddress = dto.CusAddress, CusTel = dto.CusTel, InsNo = dto.InsNo,
         CavityID = dto.CavityID,
+        // ===== 🔴 #319 SO HAI MÁY: bản 150 của `Ser_App_Create_ForTab` ghi **5 cột** mà bản laptop KHÔNG =====
+        //   `AppStatus` · `AppDateTime` · `CarID` · `InsNo` · `Note` (file `BizCarSv.Tab.cs` lệch **+18 dòng**;
+        //   khoanh được đúng chỗ chèn bằng **độ dịch dòng từng hàm** — quy trình 3 tầng của #318).
+        //   MiniHTC đã có 4/5 (`AppFrom`≈AppDateTime · `Status` · `InsNo` · `Note`); **thiếu `CarID`** ⇒ bổ sung.
+        CarID = dto.CarID,
         Source = string.IsNullOrWhiteSpace(dto.Source) ? (string.IsNullOrWhiteSpace(dto.Channel) ? null : dto.Channel!.Trim().ToUpperInvariant()) : dto.Source!.Trim().ToUpperInvariant(),
         HCCPushStatus = isTab ? "P" : null };
     db.ServiceAppointments.Add(a);
@@ -37506,7 +37516,9 @@ record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, stri
     string? Channel = null, string? DealerCode = null, string? CusID = null, string? Vin = null,
     // #282: 8 truong that cua TblSerAppRO. Source la cot NGUON; Channel (#270) la tham so do port tu dat.
     string? Creator = null, string? CusAddress = null, string? CusTel = null, string? InsNo = null,
-    string? CavityID = null, string? Source = null);
+    string? CavityID = null, string? Source = null,
+    // #319 §12: hai truong bo sung sau khi so ban 150 cua Ser_App_Create_ForTab.
+    string? CarID = null, string? AppStatus = null);
 record AppointmentStatusDto(string Status);
 // #270: `ToStatus` "A" thanh cong / "R" loi - cung bo ma voi truc HMC cua de nghi bao hanh.
 record AppointmentHccPushDto(string ToStatus, string? Note = null);

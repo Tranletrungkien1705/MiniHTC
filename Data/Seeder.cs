@@ -882,6 +882,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #319 CarID tren lich hen (chi ban may 150 cua Ser_App_Create_ForTab moi ghi)
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         // #310 lien ket phieu tiep nhan -> lenh sua chua (1-NHIEU)
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"ReceptionFNo\" text",
         // #307 hai don vi + ty le quy doi tren dong don dat phu tung
