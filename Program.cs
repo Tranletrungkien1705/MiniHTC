@@ -19576,9 +19576,18 @@ app.MapGet("/api/appointments/{no}/hcc-payload", async (string no, AppDbContext 
         ProvinceCode = cus?.ProvinceCode, DistrictCode = cus?.DistrictCode,
         ContactName = cus?.ContName, ContactPhone = cus?.ContMobile,
         ContactEmail = cus?.ContEmail, ContactAddress = cus?.ContAddress,
-        PlateNo = car?.PlateNo ?? a.PlateNo, TradeMarkCode = car?.TradeMark,
-        ModelCode = car?.ModelCode, VIN = a.Vin,
+        // 🔴 #317 SỬA: nguồn lấy CẢ HAI **TỪ XE**, KHÔNG có dự phòng sang lịch hẹn:
+        //   `car.PlateNo PlateNo` · `car.FrameNo VIN` (LEFT JOIN ⇒ xe không tra được thì để **NULL**).
+        //   Port cũ thêm `?? a.PlateNo` và dùng thẳng `a.Vin` ⇒ **tự nghĩ ra dự phòng** (lớp lỗi
+        //   `C0-quingentesimusquartusdecimus`). Nếu biển số trên lịch hẹn khác hồ sơ xe, HCC nhận số
+        //   KHÁC với thứ nguồn gửi — mà không có gì báo.
+        PlateNo = car?.PlateNo, TradeMarkCode = car?.TradeMark,
+        // `smm.ModelCode` — nguồn join `Ser_MST_Model` qua `car.ModelID`; MiniHTC lưu sẵn mã model trên xe.
+        ModelCode = car?.ModelCode, VIN = car?.FrameNo,
         AppointmentRequest = a.CusRequest,
+        // Giữ giá trị của lịch hẹn ở trường RIÊNG để đối chiếu, KHÔNG trộn vào payload.
+        plateNoOnAppointment = a.PlateNo, vinOnAppointment = a.Vin,
+        carResolved = car is not null,
         pushStatus = a.HCCPushStatus,
     });
 }).RequireAuthorization();
@@ -32613,7 +32622,9 @@ app.MapPost("/api/orderparts/{no}/lines/{partCode}/status", async (
 //   `ZTemp.cs:15666`  : `Isnull(sc.Tel, '')`  ⇒ **chỉ Tel**, hết thì CHUỖI RỖNG, không rơi sang Mobile.
 //   `Inventory.StockIn.cs:8960/9436` và `StockOut.cs:18959/19635` : `'' CustomerPhoneNo` ⇒ **hằng rỗng**,
 //     payload xuất kho **không gửi số điện thoại** chút nào.
-//   ⇒ Ba luật khác nhau cho cùng khái niệm "số điện thoại khách". Đừng gom một helper dùng chung.
+//   `HCC_Appointment_AddOSX` (**máy 150**, `BizCarSv.HCC.cs:83`) : `cus.Mobile CustomerPhone` ⇒ **chỉ Mobile**,
+//     ngược hẳn luật lưới. (#317 bổ sung — #316 ghi "ba luật" là **THIẾU MỘT**.)
+//   ⇒ **BỐN** luật khác nhau cho cùng khái niệm "số điện thoại khách". Đừng gom một helper dùng chung.
 //
 // ⚠️ BẪY ĐẶT TÊN của nguồn: `Inventory.Quote.cs:2047` đặt alias là **`cusMobile`** cho giá trị
 //   `isnull(cus.Tel, cus.mobile)` — tên nói "mobile" nhưng giá trị **ưu tiên Tel**. Đọc tên mà suy ra cột
