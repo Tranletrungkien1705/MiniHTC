@@ -12627,8 +12627,32 @@ public sealed class ServicePart
     public string? PartGroupCode { get; set; }
     public string? Model { get; set; }
     public string? Note { get; set; }
-    public string FlagActive { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // IsActive
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== 🔴 #261: 12 cột nguồn `TblSerMSTPart` (DbDefine.cs:663-693) mà port cũ THIẾU =====
+    // Tìm ra bằng sweep "lớp Tbl* có hằng nằm SAU DÒNG TRỐNG" (sinh từ bài học #260).
+
+    // --- 5 cột thuộc KHỐI CHÍNH ---
+    public string? PartID { get; set; }              // PARTID — khoá kỹ thuật, khác PartCode
+    public string? PartTypeID { get; set; }          // PARTTYPEID (đã có PartGroupCode ` PARTGROUPID)
+    public string? DealerCode { get; set; }          // DEALERCODE — phụ tùng theo đại lý
+    public decimal? VAT { get; set; }
+    public decimal? InventoryQuantity { get; set; }  // INVENTORYQUANTITY — KHÁC Quantity
+
+    // --- 7 cột thuộc KHỐI PHỤ (nằm sau dòng trống, :684-692) ---
+    public decimal? TotalPrice { get; set; }
+    public string? BalanceLocationId { get; set; }
+    public decimal? FreqUsed { get; set; }           // FREQUSED — tần suất sử dụng
+    public DateTime? PriceEffect { get; set; }       // PRICEEFFECT — mốc hiệu lực giá
+
+    /// <summary>🔴 `TSTPrice` / `TSTPriceBefore` — giá NCC hiện tại và giá TRƯỚC ĐÓ.
+    /// Cặp này cho biết giá vừa đổi; thiếu vế sau thì không đối chiếu được biến động giá.</summary>
+    public decimal? TSTPrice { get; set; }
+    public decimal? TSTPriceBefore { get; set; }
+
+    /// <summary>FLAGINTST — phụ tùng có nằm trong danh mục TST hay không.</summary>
+    public string? FlagInTST { get; set; }
 }
 
 /// <summary>Nhóm phụ tùng phân cấp (cha-con) — port 1:1 FrmPartGroup (TblSerMSTPartGroup, TCMotor).</summary>

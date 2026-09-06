@@ -12398,7 +12398,18 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.PartCode, updated = true });
     }
-    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1" };
+    // ===== 🔴 #261 12 CỘT bổ sung của `TblSerMSTPart` (DbDefine.cs:663-693) =====
+    // Sweep "lớp `Tbl*` có hằng nằm SAU DÒNG TRỐNG" (sinh từ #260): lớp này có **khối chính 18 hằng**
+    // + **khối phụ 7 hằng** (:684-692). Port cũ thiếu 5 cột khối chính và **cả 7** cột khối phụ.
+    // ⚠️ `TSTPrice`/`TSTPriceBefore` là **cặp giá hiện tại / giá trước** — thiếu vế sau thì không đối chiếu
+    //    được biến động giá NCC. `FlagInTST` cho biết PT có trong danh mục TST hay không.
+    // ⚠️ `InventoryQuantity` KHÁC `Quantity` (hai cột riêng trong cùng lớp hằng).
+    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1",
+        PartID = dto.PartID, PartTypeID = dto.PartTypeID, DealerCode = dto.DealerCode,
+        VAT = dto.VAT, InventoryQuantity = dto.InventoryQuantity,
+        TotalPrice = dto.TotalPrice, BalanceLocationId = dto.BalanceLocationId, FreqUsed = dto.FreqUsed,
+        PriceEffect = dto.PriceEffect, TSTPrice = dto.TSTPrice, TSTPriceBefore = dto.TSTPriceBefore,
+        FlagInTST = dto.FlagInTST };
     db.ServiceParts.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.PartCode, updated = false });
 }).RequireAuthorization();
@@ -33625,7 +33636,13 @@ record BulletinVinStatusDto(string? Status);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
-record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
+// #261: 12 cột của `TblSerMSTPart` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
+record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note,
+    string? PartID = null, string? PartTypeID = null, string? DealerCode = null,
+    decimal? VAT = null, decimal? InventoryQuantity = null,
+    decimal? TotalPrice = null, string? BalanceLocationId = null, decimal? FreqUsed = null,
+    DateTime? PriceEffect = null, decimal? TSTPrice = null, decimal? TSTPriceBefore = null,
+    string? FlagInTST = null);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate
     string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
