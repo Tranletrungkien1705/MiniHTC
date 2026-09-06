@@ -19346,7 +19346,9 @@ app.MapGet("/api/gpsinstalls", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.SyncStatus == status);
     if (!string.IsNullOrWhiteSpace(mapStatus)) q = q.Where(x => x.MapStatus == mapStatus);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt, x.MapStatus, x.GpsMapVINNo, x.MappedAt,
-        x.InStatus, x.StorageCode, x.GpsBoxNo, x.VinReal, x.RefNoType, x.RefNoPk, x.BlockStatus, x.VinAddress, x.GpsUnMapVINNo, x.UnMappedAt, x.Remark }).ToListAsync();
+        x.InStatus, x.StorageCode, x.GpsBoxNo, x.VinReal, x.RefNoType, x.RefNoPk, x.BlockStatus, x.VinAddress, x.GpsUnMapVINNo, x.UnMappedAt, x.Remark,
+        // #B01 (§12 — field mới phải có mặt ở CẢ POST lẫn GET, nếu không là lỗi câm)
+        x.VinUnMap, x.GpsAddress, x.FlagRealSale, x.LogLUDateTime, x.LogLUBy, x.UnMapBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -19364,6 +19366,25 @@ app.MapPost("/api/gpsinstalls/map", async (List<GpsInstallMapDto> rows, AppDbCon
         var x = await db.GpsInstalls.FirstOrDefaultAsync(g => g.OrgId == t.OrgId && g.Vin == vin && g.GpsNo == gps);
         if (x is null) { notFound.Add($"{vin}/{gps}"); continue; }
         x.MapStatus = "1"; x.GpsMapVINNo = mapNo; x.MappedAt = now;
+        // 🔴 #B01: ở trạng thái ĐÃ MAP, nguồn giữ `VIN == VINReal` — bằng chứng là chính khối phục hồi map
+        //    (`Biz.HTC.WH.cs:186590-186591` gán CẢ HAI = strVIN), và `DMSUnMapVINX` đọc `VINReal` để lấy VIN
+        //    vừa gỡ (:185876). Port cũ không gán `VinReal` ⇒ gỡ map xong `VinUnMap` luôn NULL.
+        x.VinReal = vin;
+        x.VinUnMap = null;             // map lại ⇒ xoá vết "vừa gỡ khỏi VIN nào"
+        // Nguồn ghi 1 dòng nhật ký loại GPSMAPVIN cho mỗi lượt map — `DMSUnMapVINX` tra đúng dòng này
+        // (`Biz.HTC.WH.cs:185810-185818`: StorageCode + GPSDvNo + VIN=VINReal + RefType='GPSMAPVIN')
+        // để so `MapDateTime` với `UnMapDateTime`. Port cũ không ghi ⇒ nhật ký map bị rỗng.
+        db.GpsTransactions.Add(new GpsTransaction
+        {
+            OrgId = t.OrgId, Vin = vin, GpsDvNo = gps, GpsBoxNo = x.GpsBoxNo,
+            StorageCode = x.StorageCode, VinReal = vin,
+            MapDateTime = now,
+            RefType = "GPSMAPVIN",       // TConst.RefTypeGPS.Sto_StoBalanceGPS_MapVIN
+            RefCode00 = mapNo,
+            FunctionName = "MYSTO_STOBALANCEGPS_MAPVINX",
+            MapStatusAfter = "1", BlockStatus = x.BlockStatus, InStatus = x.InStatus,
+            CreateDateTime = now,
+        });
         mapped++;
     }
     await db.SaveChangesAsync();
@@ -19450,20 +19471,43 @@ app.MapPost("/api/gpsinstalls/auto-unmap", async (
         if (row.BlockStatus != "0") { skippedBlocked++; continue; }
         if (row.InStatus != "0") { skippedInStorage++; continue; }
 
-        unmapped.Add(new { row.GpsNo, vinWas = row.Vin });
+        var vinBeforeUnmap = row.Vin;                 // chụp TRƯỚC: nguồn ghi đè cột VIN ngay bên dưới
+        var vinRealBeforeUnmap = row.VinReal;
+        unmapped.Add(new { row.GpsNo, vinWas = vinBeforeUnmap });
         row.MapStatus = "0";
         row.VinAddress = null;
         row.UnMapBy = actorUnmap;
+
+        // 🔴 #B01 BỔ SUNG PARITY — khối gán của nguồn `mySto_StoBalanceGPS_DMSUnMapVINX_New20181119`
+        //    (`Biz.HTC.WH.cs:185874-185884`) mà port #66 BỎ SÓT hoàn toàn:
+        //      drScan["VIN"]        = drScan["GPSDvNo"];      ← cột VIN bị nhồi SỐ THIẾT BỊ khi gỡ
+        //      drScan["VINReal"]    = null;
+        //      drScan["VINUnMap"]   = <VINReal cũ trong DB>;  ← chỗ DUY NHẤT nhớ VIN vừa gỡ
+        //      drScan["FlagRealSale"] = Veloca ? "1" : "0";
+        //      drScan["GPSAddress"] = <địa chỉ Veloca trả về>;
+        //      drScan["LogLUDateTime"/"LogLUBy"] = <thời điểm/người>;
+        //    Thiếu `VINUnMap` ⇒ màn PHỤC HỒI MAP (`FrmUnmapRecover`) không có gì để phục hồi.
+        row.VinUnMap = vinRealBeforeUnmap;
+        row.Vin = row.GpsNo;
+        row.VinReal = null;
+        row.FlagRealSale = "0";        // MiniHTC không có trục ProjectCode ⇒ nhánh else của nguồn
+        row.GpsAddress = null;         // nguồn lấy từ Veloca; MiniHTC không gọi Veloca ⇒ để NULL, KHÔNG suy
+        row.LogLUDateTime = now;
+        row.LogLUBy = actorUnmap;
 
         // 🔴 Nguồn GHI NHẬT KÝ giao dịch GPS cho mỗi lượt gỡ (Sto_StoTransactionGPS).
         // Luồng gỡ map tự động ở #50 KHÔNG ghi dòng nào ⇒ mất audit trail.
         db.GpsTransactions.Add(new GpsTransaction
         {
-            OrgId = t.OrgId, Vin = row.Vin, GpsDvNo = row.GpsNo, GpsBoxNo = row.GpsBoxNo,
-            StorageCode = row.StorageCode ?? code, VinReal = row.VinReal,
+            OrgId = t.OrgId, Vin = vinBeforeUnmap, GpsDvNo = row.GpsNo, GpsBoxNo = row.GpsBoxNo,
+            StorageCode = row.StorageCode ?? code, VinReal = vinRealBeforeUnmap,
             VINAddress = null,
             MapDateTime = row.MappedAt ?? now, UnMapDateTime = now, UnMapBy = actorUnmap,
-            RefType = "Sto_StoBalanceGPS_UNMapVIN",     // TConst.RefTypeGPS
+            // 🔴 #B01 SỬA GIÁ TRỊ SAI: port cũ ghi TÊN HẰNG `"Sto_StoBalanceGPS_UNMapVIN"`, còn GIÁ TRỊ thật
+            //    của `TConst.RefTypeGPS.Sto_StoBalanceGPS_UNMapVIN` là **"GPSUNMAPVIN"**
+            //    (`TERP.Constants/Const.Main.StorageFG.1.cs:77`). Nguồn `RecoverMapX` lọc
+            //    `t.RefType = 'GPSUNMAPVIN'` ⇒ để nguyên tên hằng thì KHÔNG BAO GIỜ tìm thấy dòng gỡ map.
+            RefType = "GPSUNMAPVIN",                     // TConst.RefTypeGPS.Sto_StoBalanceGPS_UNMapVIN
             RefCode00 = unmapNo,                         // nguồn ghi SỐ LÔ gỡ map vào RefCode00
             FunctionName = "MYSTO_STOBALANCEGPS_UNMAPVINX",  // nguồn viết HOA tên hàm
             MapStatusAfter = "0", BlockStatus = row.BlockStatus, InStatus = row.InStatus,
@@ -19481,6 +19525,82 @@ app.MapPost("/api/gpsinstalls/auto-unmap", async (
     await db.SaveChangesAsync();
     return Results.Ok(new { storageCode = code, gpsUnMapVINNo = unmapNo, unmapped = unmapped.Count, keptOnline,
         skippedBlocked, skippedInStorage, items = unmapped });
+}).RequireAuthorization();
+
+// ===== #B01 PHỤC HỒI MAP THIẾT BỊ GPS (port 1:1 FrmUnmapRecover — 2010.HTC TERP.HTCClient/Views/StoFGPS) =====
+// Trace twin LIVE: FrmUnmapRecover.btnUnmapRecover_Click → Sto_StoBalanceGPSService.Sto_StoBalanceGPS_RecoverMap
+//   → WSHTC.asmx.cs:52823 `Sto_StoBalanceGPS_RecoverMap` → **`_biz.Sto_StoBalanceGPS_RecoverMap_New20181119`**
+//   (Biz.HTC.WH.cs:186659) → `mySto_StoBalanceGPS_RecoverMapX_New20181119` (:186479).
+//   ⚠️ `mySto_StoBalanceGPS_RecoverMapX_New20180904` (BizHTC.ZTempGPS.cs:2978) là bản CHẾT — WS không gọi.
+//   ⚠️ `Biz.HTC.WH.Rel.20230823.cs` KHÔNG có trong `TERP.BizHTC.csproj` ⇒ cũng chết.
+// Nguồn hardcode kho `STOGPS` ngay trong form (`var storagecodeCur = "STOGPS";`).
+app.MapPost("/api/gpsinstalls/{device}/recover-map", async (
+    string device, AppDbContext db, ITenantContext t, string? storageCode,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    // Guard form: "Số GPS ID trống!" (FrmUnmapRecover.cs:167)
+    if (string.IsNullOrWhiteSpace(device)) return Results.BadRequest(new { error = "Số GPS ID trống!" });
+    var dv = device.Trim().ToUpperInvariant();
+    // Form hardcode "STOGPS"; cho phép override để test kho khác nhưng mặc định đúng nguồn.
+    var code = string.IsNullOrWhiteSpace(storageCode) ? "STOGPS" : storageCode!.Trim().ToUpperInvariant();
+
+    var g = await db.GpsInstalls.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsNo == dv && x.StorageCode == code);
+    // `Sto_StoBalanceGPS_CheckDB(..., strFlagExistToCheck = Flag.Yes)` — không có dòng ⇒ lỗi.
+    // Thông điệp lấy đúng form (:161): "Thiết bị không được khai báo trên hệ thống!".
+    if (g is null) return Results.BadRequest(new { error = "Thiết bị không được khai báo trên hệ thống!" });
+
+    // `Sto_StoBalanceGPS_CheckDB(..., BlockStatus=Inactive, InStatus=Inactive, MapStatus=Inactive)`
+    // — BA trục đều phải "0" (BizHTC.ZTempGPS.cs:25-125 + Biz.HTC.WH.cs:186499-186506).
+    if (g.BlockStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} đang bị khoá (BlockStatus)." });
+    if (g.InStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} vẫn còn trong kho (InStatus)." });
+    // MapStatus = "1" ⇒ form báo "Thiết bị đang được map với VIN '<VIN>'" (FrmUnmapRecover.cs:152-157).
+    if (g.MapStatus != "0")
+        return Results.BadRequest(new { error = $"Thiết bị đang được map với VIN '{g.Vin}' trên hệ thống!" });
+    // Form: VINUnMap rỗng ⇒ "Thiết bị chưa được map với bất kỳ VIN nào trên hệ thống!" (:142)
+    if (string.IsNullOrWhiteSpace(g.VinUnMap))
+        return Results.BadRequest(new { error = "Thiết bị chưa được map với bất kỳ VIN nào trên hệ thống!" });
+
+    // Nguồn: lấy dòng nhật ký GỠ MAP mới nhất (RefType = 'GPSUNMAPVIN'); không có ⇒
+    // `mySto_StoBalanceGPS_RecoverMapX_GPSNotUnMapVIN` (Biz.HTC.WH.cs:186537-186546).
+    var txUnmap = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && x.GpsDvNo == dv && x.StorageCode == code && x.RefType == "GPSUNMAPVIN")
+        .OrderByDescending(x => x.CreateDateTime).ThenByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (txUnmap is null)
+        return Results.BadRequest(new { error = $"Thiết bị {dv} chưa có giao dịch gỡ map (GPSUNMAPVIN) để phục hồi." });
+
+    // Nguồn: nếu SAU dòng gỡ map đó còn giao dịch khác (AutoId > AutoId của dòng gỡ) ⇒
+    // `..._InvalidExistBizOrther` (:186563-186578) — thiết bị đã đi tiếp nghiệp vụ khác, cấm phục hồi.
+    var txLater = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && x.GpsDvNo == dv && x.StorageCode == code && x.Id > txUnmap.Id)
+        .OrderByDescending(x => x.CreateDateTime).FirstOrDefaultAsync();
+    if (txLater is not null)
+        return Results.BadRequest(new { error = $"Thiết bị {dv} đã phát sinh nghiệp vụ khác sau khi gỡ map (RefType={txLater.RefType}, RefCode00={txLater.RefCode00}).", gpsDvNo = dv, txLater.RefType, txLater.RefCode00 });
+
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var vin = g.VinUnMap!.Trim();
+
+    // SaveDB Sto_StoBalanceGPS (Biz.HTC.WH.cs:186584-186598) — đúng 8 cột trong alColumnEffective.
+    g.Vin = vin;
+    g.VinReal = vin;
+    g.VinUnMap = null;
+    g.UnMappedAt = null;         // `UnMapDateTime` = null
+    g.UnMapBy = null;
+    g.MapStatus = "1";           // TConst.Flag.Active
+    g.LogLUDateTime = now;
+    g.LogLUBy = actor;
+
+    // SaveDB Sto_StoTransactionGPS (:186601-186610): nguồn **XOÁ** dòng nhật ký gỡ map (`Rows[0].Delete()`).
+    db.GpsTransactions.Remove(txUnmap);
+
+    // Call Veloca `Veloca_ResetUnMap` (:186613-186652): lỗi NOTOK chỉ được GHI vào alParamsCoupleError,
+    // lệnh `throw` bị COMMENT ⇒ nguồn KHÔNG chặn. MiniHTC không gọi Veloca ⇒ bỏ, không bịa kết quả.
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        gpsDvNo = dv, storageCode = code, vin, mapStatus = g.MapStatus,
+        message = $"Phục hồi map thiết bị với VIN ' {vin} ' thành công!"   // đúng thông điệp form (:135)
+    });
 }).RequireAuthorization();
 
 // Đồng bộ (khớp btnDongBoNggayXuatKho_Click gốc — mô phỏng gọi Veloca, luôn thành công trên fleet-demo).
@@ -28213,15 +28333,49 @@ app.MapGet("/api/reqpartprices/statuses", () => Results.Ok(new
     note = "Mã TST nhảy số 1/2/4 — KHÔNG có mã 3. DMS có nhánh R (từ chối)."
 })).RequireAuthorization();
 
-app.MapPost("/api/reqpartprices/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reqpartprices/{no}/send", async (string no, SentTstDto? dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     if (r.DMSStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi YC Mới tạo." });
-    r.DMSStatus = "A";
+
+    // ===== 🔴 #239 GỬI SANG TST — `Req_PartPrice_SentTST` (BizCarSv.SuggestPrice.cs:1220) =====
+    // BƯỚC 3B: `BizCarSv.SuggestPrice.cs` md5 `8aafd84f` (4213 dòng) — KHỚP 2 máy.
+    //
+    // 🔴 "Gửi TST" KHÔNG phải đổi một cờ. Nguồn làm ba việc, port cũ chỉ có việc thứ ba:
+    //  1. **Gọi API Bravo thật**: `GetToken` → `CallBravo(url, token, guid, json)` với
+    //     `JsonConvert.SerializeObject(objRQ_SuggestPriceHdr)`.
+    //  2. **Chỉ khi phản hồi `Status == "OK"`** mới ghi. Phản hồi rỗng hoặc khác "OK" ⇒ ném
+    //     `Req_PartPrice_SentTST_SyncFail` và **KHÔNG đổi trạng thái** (rollback cả transaction).
+    //  3. Update đặt **BẢY cột cùng một mốc `dtimeSys`** (:1436-1446), không phải một:
+    //     `DMSReqPartPriceStatus` · `ApprDTime` · `ApprBy` · `LUDTime` · `LUBy` · `LogLUDTime` · `LogLUBy`.
+    //  ⚠️ Ghi **BA DB**: `_dbMain` + `_dbWH` + `_dbDealer` (khi có) — nợ dual-write fleet-wide, chưa port.
+    //  ⚠️ NGHI VẤN đã ghi nợ: SQL dùng cột `t.LogLUDTime` trong khi POCO khai `LogLUDateTime`.
+    //     Hai tên khác nhau — KHÔNG tự chọn bên nào, cần soi schema DB thật.
+    //
+    // Ở đây chưa có tầng gọi Bravo (nợ chung của MiniHTC: lớp tích hợp ngoài), nên port ĐÚNG phần ghi
+    // và giữ nguyên **thứ tự phụ thuộc**: chỉ ghi khi "đồng bộ thành công". Client báo kết quả đồng bộ
+    // qua `syncStatus`; mặc định "OK" để đường gọi cũ không vỡ.
+    var syncOk = string.IsNullOrWhiteSpace(dto?.SyncStatus) || string.Equals(dto!.SyncStatus, "OK", StringComparison.OrdinalIgnoreCase);
+    if (!syncOk)
+        return Results.BadRequest(new
+        {
+            error = "Đồng bộ sang TST thất bại — không đổi trạng thái.",   // ` Req_PartPrice_SentTST_SyncFail
+            syncStatus = dto?.SyncStatus, description = dto?.SyncDescription,
+        });
+
+    var whoSend = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowSend = DateTime.Now;              // nguồn dùng CÙNG MỘT dtimeSys cho cả 7 cột
+    r.DMSStatus = "A";                       // TConst.DMSReqPartPriceStatus.Approved
+    r.ApprDTime = nowSend; r.ApprBy = whoSend;
+    r.LUDTime = nowSend; r.LUBy = whoSend;
+    r.LogLUDateTime = nowSend; r.LogLUBy = whoSend;
+    r.TSTSentDate = nowSend;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus });
+    return Results.Ok(new { r.ReqNo, dmsStatus = r.DMSStatus, r.ApprDTime, r.ApprBy, r.LUDTime, r.LUBy,
+                            r.LogLUDateTime, r.LogLUBy, r.TSTSentDate });
 }).RequireAuthorization();
 
 // TST báo giá (điền QuotedPrice từng dòng) → TSTStatus "2" (đã duyệt, chờ hoàn thiện).
@@ -28518,7 +28672,8 @@ app.MapGet("/api/ordercomplains/statuses", () => Results.Ok(new
     note = "Mã TST nhảy số 1/15/21/31; nguồn set '1' NGAY KHI TẠO, không có trạng thái rỗng."
 })).RequireAuthorization();
 
-app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action, OrderComplainActDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action, OrderComplainActDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("send" or "process" or "approve" or "reject"))
         return Results.BadRequest(new { error = "action = send|process|approve|reject" });
@@ -28532,7 +28687,30 @@ app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action
     if (action == "send")
     {
         if (c.DMSStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi khiếu nại Mới tạo." });
+
+        // ===== 🔴 #239 GỬI SANG TST — `Ser_OrderComplain_SentTST` (BizCarSv.SuggestPrice.cs:3535) =====
+        // Cùng khuôn với `Req_PartPrice_SentTST`: gọi API Bravo → chỉ ghi khi `Status == "OK"`,
+        // khác thì ném `Ser_OrderComplain_SentTST_SyncFail` và KHÔNG đổi trạng thái.
+        //
+        // 🔴 KHÁC BIỆT quan trọng so với YC báo giá: update của khiếu nại đặt **CẢ HAI** trạng thái
+        //    (:3757-3758) — `DMSOrderComplainStatus = Approved` **VÀ**
+        //    `TSTOrderComplainStatus = Pending` ⇒ **ĐẶT LẠI trạng thái TST về "1" ngay lúc gửi**.
+        //    Port cũ chỉ chạm DMS ⇒ khiếu nại từng bị xử lý dở (TST=15) rồi gửi lại sẽ giữ nguyên 15,
+        //    trong khi nguồn kéo về "chờ duyệt". Nay port đúng.
+        //    Nguồn chỉ đặt `LogLUDTime`/`LogLUBy` ở đây — KHÔNG có ApprDTime/ApprBy như YC báo giá.
+        var syncOkC = string.IsNullOrWhiteSpace(dto?.SyncStatus) || string.Equals(dto!.SyncStatus, "OK", StringComparison.OrdinalIgnoreCase);
+        if (!syncOkC)
+            return Results.BadRequest(new
+            {
+                error = "Đồng bộ khiếu nại sang TST thất bại — không đổi trạng thái.",
+                syncStatus = dto?.SyncStatus, description = dto?.SyncDescription,
+            });
+
+        var whoC = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+        var nowC = DateTime.Now;
         c.DMSStatus = "A";
+        tst = "1";                  // 🔴 nguồn ĐẶT LẠI TSTOrderComplainStatus = Pending
+        c.LogLUDTime = nowC; c.LogLUBy = whoC;
     }
     else
     {
@@ -31615,7 +31793,8 @@ record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Conten
     DateTime? DeliveryDateTime = null, string? DeliveryBy = null, string? TransportUnit = null,
     string? DeliveryLocation = null, string? ReceiveBy = null,
     DateTime? AssembleDateTime = null, string? AssembleBy = null);
-record OrderComplainActDto(string? Resolution);
+// #239: thêm 2 trường đồng bộ Bravo ở CUỐI (tuỳ chọn) — xem `SentTstDto`.
+record OrderComplainActDto(string? Resolution, string? SyncStatus = null, string? SyncDescription = null);
 // #237: 6 cột bổ sung mà form gửi lên. KHÔNG nhận `PriceAfterVAT` (server tính) và
 //   `SupplierPaymentDtlStatus`/vết ghi (server đặt).
 record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay, decimal Price, decimal Vat,
@@ -31627,6 +31806,10 @@ record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amou
     string? SupplierID = null, string? Address = null, string? TSTRequestNo = null,
     string? PaymentType = null, string? Description = null);
 // #238: 3 cột bổ sung mà đại lý nhập. KHÔNG nhận `TSTPartCode`/`DateEffect`/`TSTPrice` — phía TST điền.
+// #239: kết quả đồng bộ Bravo do tầng gọi báo về. Nguồn CHỈ ghi khi Status == "OK"
+//   (`Req_PartPrice_SentTST` / `Ser_OrderComplain_SentTST`, BizCarSv.SuggestPrice.cs).
+//   Bỏ trống = coi như OK, để đường gọi cũ không vỡ.
+record SentTstDto(string? SyncStatus = null, string? SyncDescription = null);
 record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty,
     string? DeliveryFormCode = null, string? VINCode = null, string? Remark = null);
 // #238: `Req_PartPrice_Save` gửi DealerCode + Description.

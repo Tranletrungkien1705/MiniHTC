@@ -1776,6 +1776,27 @@ public sealed class GpsInstall
     /// (`BizHTC.ZTempGPS.cs:1684-1688`, hệ `ERP.V15.DMSSales.Real` chỉ có trên máy 150).</summary>
     public string? UnMapBy { get; set; }
 
+    /// <summary>
+    /// 🔴 VIN mà thiết bị VỪA BỊ GỠ khỏi (`Sto_StoBalanceGPS.VINUnMap`) — nguồn ghi khi gỡ map
+    /// (`Biz.HTC.WH.cs:185876`: `drScan["VINUnMap"] = dt_Sto_StoBalanceGPS.Rows[0]["VINReal"]`)
+    /// và ĐỌC LẠI khi PHỤC HỒI map (`mySto_StoBalanceGPS_RecoverMapX_New20181119` :186584 → :186592).
+    /// Không có cột này thì màn `FrmUnmapRecover` KHÔNG THỂ hoạt động: không biết phục hồi về VIN nào.
+    /// </summary>
+    public string? VinUnMap { get; set; }
+
+    /// <summary>Địa chỉ thiết bị do Veloca trả về lúc gỡ map (`GPSAddress`, `Biz.HTC.WH.cs:185882`) —
+    /// KHÁC <see cref="VinAddress"/> (vị trí XE do API GPS trả về khi còn gắn).</summary>
+    public string? GpsAddress { get; set; }
+
+    /// <summary>Cờ "bán thật" (`FlagRealSale`) — nguồn đặt "1" khi `ProjectCode = Veloca`, ngược lại "0"
+    /// (`Biz.HTC.WH.cs:185877-185881`). MiniHTC chưa có trục ProjectCode ⇒ mặc định "0" = nhánh else của nguồn.</summary>
+    public string FlagRealSale { get; set; } = "0";
+
+    /// <summary>Nhật ký sửa cuối (`LogLUDateTime`) — nguồn ghi ở CẢ hai luồng gỡ map và phục hồi map.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>Người sửa cuối (`LogLUBy`).</summary>
+    public string? LogLUBy { get; set; }
+
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
