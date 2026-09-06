@@ -13828,13 +13828,20 @@ app.MapPut("/api/stockoutorders/{id:long}", async (long id, SerStockOutOrderUpda
     if (string.IsNullOrWhiteSpace(dto.OrderNo)) return Results.BadRequest(new { error = "Chưa nhập số lệnh xuất." });
 
     // CHỈ lệnh xuất THƯỜNG ("2") mới bị chặn khi đã có phiếu xuất còn hiệu lực.
-    // 📌 NỢ ĐÃ GHI RÕ: nguồn tra qua **bảng nối** `Ser_Inv_StockOutOrderStockOut` (lệnh ↔ phiếu) rồi lọc
-    //   `phiếu.Status in (1,2,3)`. MiniHTC **chưa port bảng nối đó** ⇒ ở đây dùng XẤP XỈ theo trạng thái
-    //   của chính lệnh: `CreateStockOut` ("6") nghĩa là đã sinh phiếu xuất. **KHÔNG phải parity đầy đủ** —
-    //   xấp xỉ này bỏ sót ca "đã tạo phiếu rồi phiếu bị huỷ/điều chỉnh" (nguồn CHO sửa, ở đây vẫn chặn).
-    if (h.StockOutType == "2" && h.Status == "CreateStockOut")
-        return Results.BadRequest(new { error = "Lệnh xuất đã có phiếu xuất, không thể sửa!",
-            approximation = "Chưa port bảng nối lệnh↔phiếu; đang xét theo trạng thái lệnh." });
+    // ✅ #294 GỠ XẤP XỈ của #293: đã port bảng nối `SerStockOutOrderStockOuts` ⇒ nay tra ĐÚNG như nguồn —
+    //   qua bảng nối, lọc **phiếu xuất có `Status in (1,2,3)`**. Phiếu `4` (điều chỉnh) và `5` (huỷ)
+    //   KHÔNG chặn ⇒ lệnh lại sửa được, đúng chủ đích ghi trong nguồn.
+    if (h.StockOutType == "2")
+    {
+        var blockingNo = await (from lk in db.SerStockOutOrderStockOuts
+                                join so in db.PartStockOuts on lk.StockOutId equals so.Id
+                                where lk.OrgId == t.OrgId && so.OrgId == t.OrgId
+                                      && lk.StockOutOrderId == h.Id
+                                      && (so.Status == "1" || so.Status == "2" || so.Status == "3")
+                                select so.StockOutNo).FirstOrDefaultAsync();
+        if (blockingNo is not null)
+            return Results.BadRequest(new { error = "Lệnh xuất đã có phiếu xuất, không thể sửa!", stockOutNo = blockingNo });
+    }
 
     h.OrderNo = dto.OrderNo!.Trim().ToUpperInvariant();
     if (dto.OrderDate.HasValue) h.OrderDate = dto.OrderDate;
@@ -32696,10 +32703,47 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
         LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCode,
     };
     db.PartStockOuts.Add(h); await db.SaveChangesAsync();
+
+    // 🔴 #294: nguồn `SerStockOutCreate` (`StockOut.cs:540`) gọi `SerStockOutOrderStockOutCreate` ⇒ khi phiếu
+    //   xuất được tạo **TỪ MỘT LỆNH XUẤT**, ghi một dòng vào bảng nối. Quan hệ NHIỀU-NHIỀU: một lệnh có thể
+    //   sinh nhiều phiếu (giao nhiều đợt). Nguồn lưu CẢ khoá lẫn SỐ của hai phía.
+    if (!string.IsNullOrWhiteSpace(dto.StockOutOrderNo))
+    {
+        var soNo = dto.StockOutOrderNo!.Trim().ToUpperInvariant();
+        var soo = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == soNo);
+        if (soo is null) return Results.BadRequest(new { error = "Không tìm thấy lệnh xuất kho: " + soNo });
+        db.SerStockOutOrderStockOuts.Add(new SerStockOutOrderStockOut
+        {
+            OrgId = t.OrgId,
+            StockOutOrderId = soo.Id, StockOutOrderNo = soo.OrderNo,
+            StockOutId = h.Id, StockOutNo = h.StockOutNo,
+            LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCode,
+        });
+        await db.SaveChangesAsync();
+    }
     foreach (var l in lines)
         db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
+}).RequireAuthorization();
+
+// #294 Tra các phiếu xuất đã sinh ra từ MỘT lệnh xuất (quan hệ NHIỀU-NHIỀU qua bảng nối).
+app.MapGet("/api/stockoutorders/{id:long}/stockouts", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var items = await (from lk in db.SerStockOutOrderStockOuts
+                       join so in db.PartStockOuts on lk.StockOutId equals so.Id
+                       where lk.OrgId == t.OrgId && so.OrgId == t.OrgId && lk.StockOutOrderId == id
+                       orderby lk.Id
+                       select new
+                       {
+                           lk.StockOutNo, so.Status,
+                           statusName = stockOutStatusNames.ContainsKey(so.Status) ? stockOutStatusNames[so.Status] : null,
+                           so.StockOutDate, lk.LogLUDateTime, lk.LogLUBy,
+                       }).ToListAsync();
+    return Results.Ok(new { stockOutOrderId = id, orderNo = h.OrderNo, count = items.Count, items,
+        blocksEdit = items.Any(x => x.Status == "1" || x.Status == "2" || x.Status == "3") });
 }).RequireAuthorization();
 
 app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -35041,7 +35085,9 @@ record StockOutLineDto(string PartCode, string? PartName, string? Location, deci
 //  sinh ra — chưa port, đã ghi nợ.
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines,
     string? UserCode = null, string? CusID = null, string? DealerCode = null,
-    string? TruckNo = null, string? DriverName = null, string? DriverID = null, string? DrivingLicense = null);
+    string? TruckNo = null, string? DriverName = null, string? DriverID = null, string? DrivingLicense = null,
+    // #294: khi phieu xuat duoc tao TU MOT LENH XUAT thi ghi bang noi (Ser_Inv_StockOutOrderStockOut).
+    string? StockOutOrderNo = null);
 record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);

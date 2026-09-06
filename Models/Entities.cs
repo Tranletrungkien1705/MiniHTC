@@ -2911,6 +2911,35 @@ public sealed class SerStockOutOrder
     public string? Description { get; set; }
 }
 
+/// <summary>
+/// 🔴 #294 BẢNG NỐI LỆNH XUẤT ↔ PHIẾU XUẤT — `Ser_Inv_StockOutOrderStockOut`
+/// (lớp hằng `TblSerInvStockOutOrderStockOut`, `DbDefine.cs:1378-1387`).
+/// Đây chính là bảng mà #293 **chưa có** nên phải dùng xấp xỉ; nay port thật ⇒ gỡ xấp xỉ đó.
+///
+/// 🔴 QUAN HỆ **NHIỀU-NHIỀU**: một lệnh xuất có thể sinh **NHIỀU** phiếu xuất (giao nhiều đợt —
+/// xem `BackOrderIndex` "lần đặt lại"), nên nguồn tách hẳn bảng nối thay vì để một cột khoá ngoại.
+/// Người ghi: `SerStockOutOrderStockOutCreate` (`StockOut.cs:7952`), được gọi từ **`SerStockOutCreate`**
+/// (bản LIVE, `:540`) ⇒ **link sinh ra đúng lúc TẠO PHIẾU XUẤT từ một lệnh**.
+/// (Hai chỗ gọi còn lại nằm trong `SerStockOutCreate_New20240115`/`SerStockOutUpdate_New20240115` — bản
+/// CHẾT đã xác định ở #292.)
+/// </summary>
+public sealed class SerStockOutOrderStockOut
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>STOCKOUTORDERID / STOCKOUTORDERNO — lệnh xuất (giữ CẢ khoá lẫn số, đúng như nguồn).</summary>
+    public long StockOutOrderId { get; set; }
+    public string? StockOutOrderNo { get; set; }
+
+    /// <summary>STOCKOUTID / STOCKOUTNO — phiếu xuất sinh ra từ lệnh trên.</summary>
+    public long StockOutId { get; set; }
+    public string? StockOutNo { get; set; }
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Dòng chi tiết lệnh xuất kho theo đơn (Ser_InvStockOutOrderDetail) — thuộc SerStockOutOrder. Mã PT + tên + ĐVT + SL yêu cầu.</summary>
 public sealed class SerStockOutOrderLine
 {

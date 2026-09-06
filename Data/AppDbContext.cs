@@ -224,6 +224,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerInsuranceContract> SerInsuranceContracts => Set<SerInsuranceContract>();
     public DbSet<MstUnitPriceGPS> MstUnitPriceGpsItems => Set<MstUnitPriceGPS>();
     public DbSet<SerStockOutOrder> SerStockOutOrders => Set<SerStockOutOrder>();
+    // #294: bảng nối lệnh xuất ↔ phiếu xuất (Ser_Inv_StockOutOrderStockOut) — quan hệ NHIỀU-NHIỀU
+    public DbSet<SerStockOutOrderStockOut> SerStockOutOrderStockOuts => Set<SerStockOutOrderStockOut>();
     public DbSet<SerStockOutOrderLine> SerStockOutOrderLines => Set<SerStockOutOrderLine>();
     public DbSet<SalesManCertificate> SalesManCertificates => Set<SalesManCertificate>();
     public DbSet<TrainingCourse> TrainingCourses => Set<TrainingCourse>();
