@@ -26,17 +26,47 @@ const entFile = args.find(a => /Entities\.cs$/i.test(a));
 const srcFiles = args.filter(a => a !== entFile);
 if (!entFile) { console.error('Thieu duong dan Models/Entities.cs'); process.exit(1); }
 
+// 🔴 #314c BAT BUOC QUET **MOI** CAY NGUON LIEN QUAN.
+//   MiniHTC port tu ~20 he nguon. Tap W (cot co GHI) dung lai o cay nao duoc truyen vao; cot cua he
+//   KHONG duoc quet se trong nhu "chua bao gio duoc ghi" => bao dan xuat NHAM.
+//   Bang chung: TotalValVAT bi bao la dan xuat khi chi quet TCMotor; no la cot LUU that cua 2010.HTC
+//   (Invoice_Invoice, doc qua Rows[0]["TotalValVAT"]). Them cay 2010.HTC vao => tu bien mat.
+const trees = new Set(srcFiles.map(f => (f.match(/idocNet[\\/]([^\\/]+)/) || [])[1]).filter(Boolean));
+if (trees.size < 2) {
+    console.log("⚠️  CANH BAO: chi thay " + trees.size + " cay nguon (" + [...trees].join(", ") + ").");
+    console.log("    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.");
+    console.log("    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.\n");
+}
+
 const W = new Set();   // cot NGUON co ghi
 const D = new Map();   // ten dan xuat -> 'file:line' dau tien (de kiem tay)
 for (const f of srcFiles) {
     const raw = readText(f).split(/\r?\n/);
+    // #314: NGUON con GHI bang SQL `update <alias> set <alias>.<Cot> = ...` — sweep #313 chi bat kieu
+    //   DataTable (Rows[0]["X"]=) nen goi nham cac cot do la "dan xuat".
+    //   Bang chung: TotalValOrderBeforeDc/AfterDc/AfterVAT (A.02.OrderPart.cs:1068) duoc UPDATE that su,
+    //   nhung #313 van liet ke chung => FALSE POSITIVE.
+    let inUpdateSet = false;
     for (const line0 of raw) {
         if (line0.trim().startsWith('//')) continue;          // C# comment (bai hoc #308)
         const line = line0.replace(/--.*$/, '');              // SQL comment (bai hoc #305)
 
+        // #314 nhan dien khoi `update ... set`
+        if (/\bupdate\s+[A-Za-z0-9_\[\]\.]+/i.test(line)) inUpdateSet = false;
+        if (/^\s*set\b/i.test(line) || /\bupdate\b[\s\S]*\bset\b/i.test(line)) inUpdateSet = true;
+        if (/^\s*(from|where|;)\b/i.test(line)) inUpdateSet = false;
+        if (inUpdateSet) {
+            // `t.Cot = f.Cot` hoac `Cot = ...` trong menh de SET => day la GHI
+            const mu = /^\s*,?\s*(?:[A-Za-z0-9_]+\.)?([A-Za-z0-9_]+)\s*=/.exec(line);
+            if (mu) W.add(mu[1].toLowerCase());
+        }
+
         // (1) GHI: Rows[0]["X"] = ... | newRow["X"] = ... | strFN = "X"
         let m;
-        const reW = /(?:Rows\s*\[\s*0\s*\]|newRow)\s*\[\s*"([A-Za-z0-9_]+)"\s*\]\s*=/g;
+        // #314b: TEN BIEN ghi la TUY Y — nguon dung ca `Rows[0]["X"]`, `newRow["X"]`, `aRow["X"]`, `dr["X"]`.
+        //   #313 hardcode "newRow" nen goi nham AverageCost (ghi qua aRow["AverageCost"], Stock.cs:3972)
+        //   la "dan xuat" => FALSE POSITIVE thu hai. Nay bat MOI `<bien>["X"] =` (gan, khong phai so sanh).
+        const reW = /[A-Za-z_][A-Za-z0-9_.\[\]]*\[\s*"([A-Za-z0-9_]+)"\s*\]\s*=(?!=)/g;
         while ((m = reW.exec(line))) W.add(m[1].toLowerCase());
         const reMap = /strFN\s*=\s*"([A-Za-z0-9_]+)"/g;
         while ((m = reMap.exec(line))) W.add(m[1].toLowerCase());
