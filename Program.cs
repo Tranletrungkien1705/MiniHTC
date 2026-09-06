@@ -4217,6 +4217,138 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Dòng chi phí marketing (MKT_MarketingFeeDetail — port 1:1 cụm 6 hàm
+// Create(4157) / Update(3858) / UpdateHTCLimit(3608) / Approved(4555) / Rejected(4696) / Delete(4400),
+// 2010.HTC BizHTC.Marketing.cs). TWIN: 6/6 hàm, cả WS 32-bit lẫn 64-bit. =====
+// 🔴 Trạng thái PHIẾU mà mỗi lệnh đòi hỏi KHÁC NHAU, đọc kỹ kẻo port lẫn:
+//    · Create / Update / Delete dòng: phiếu ở **"P" HOẶC "A"** (vẫn thêm/sửa/xoá được sau khi phiếu đã duyệt);
+//    · Approved / Rejected / UpdateHTCLimit: phiếu phải **"A"**.
+//    Còn TRẠNG THÁI DÒNG thì: Create/Update/Delete/Approved/Rejected đòi dòng **"P"**;
+//    riêng UpdateHTCLimit đòi dòng **"A"**.
+// 🔴 Approved và Rejected ghi CHUNG hai cột `ApprovedDetailDate`/`ApprovedDetailBy` — cột tên "Approved"
+//    nhưng cũng lưu dấu vết TỪ CHỐI. Đừng suy trạng thái từ việc hai cột này có giá trị.
+// ⚠️ Xem `### C0-bug7`: cả Approved lẫn Rejected của nguồn gán `LogLUDateTime = strPartnerUserCode`
+//    (ghi MÃ NGƯỜI DÙNG vào cột NGÀY GIỜ). Port ghi đúng thời gian, không nhân bản lỗi.
+app.MapPost("/api/mktfeedetails/create", async (MktFeeDetailCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    // Nguồn: strMKTStatusListToCheck = "P,A" — thêm dòng được cả khi phiếu ĐÃ duyệt.
+    if (fee.MKTStatus != "P" && fee.MKTStatus != "A")
+        return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ thêm dòng khi 'P' hoặc 'A'." });
+    if (dto.Qty is null || dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng phải > 0." });
+    if (dto.Price is null || dto.Price <= 0m) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
+    if (!await db.MktActivities.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == act && x.FlagActive == "1"))
+        return Results.BadRequest(new { error = $"Hoạt động {act} không tồn tại hoặc đã ngưng." });
+    if (await db.MktFeeDetails.AnyAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act))
+        return Results.BadRequest(new { error = $"Phiếu {code} đã có dòng cho hoạt động {act}." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.MktFeeDetails.Add(new MktFeeDetail
+    {
+        OrgId = t.OrgId, MKTFeeCode = code, MKTActivityCode = act,
+        Qty = dto.Qty!.Value, Price = dto.Price!.Value, Remark = dto.Remark,
+        MKTFeeDetailStatus = "P", LogLUDateTime = DateTime.Now, LogLUBy = who,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, act, mktFeeDetailStatus = "P" });
+}).RequireAuthorization();
+
+app.MapPost("/api/mktfeedetails/update", async (MktFeeDetailUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    if (fee.MKTStatus != "P" && fee.MKTStatus != "A")
+        return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ sửa dòng khi 'P' hoặc 'A'." });
+    var row = await db.MktFeeDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act);
+    if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
+    if (row.MKTFeeDetailStatus != "P")
+        return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ sửa được khi 'P'." });
+    if (dto.Qty is null || dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng phải > 0." });
+    if (dto.Price is null || dto.Price <= 0m) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
+
+    row.Qty = dto.Qty!.Value; row.Price = dto.Price!.Value; row.Remark = dto.Remark;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, act, row.Qty, row.Price });
+}).RequireAuthorization();
+
+// 🔴 Nhập TIỀN HTC HỖ TRỢ: nguồn chỉ cho khi phiếu "A", dòng "A", VÀ — nếu số tiền > 0 — bắt buộc
+//    đã có file đính kèm loại HOÁ ĐƠN với `StatusInvoice = "A"`. Số tiền = 0 thì không đòi hồ sơ.
+app.MapPost("/api/mktfeedetails/updatehtclimit", async (MktFeeDetailLimitDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    if (fee.MKTStatus != "A") return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ nhập tiền hỗ trợ khi phiếu 'A'." });
+    var row = await db.MktFeeDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act);
+    if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
+    if (row.MKTFeeDetailStatus != "A") return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ nhập tiền hỗ trợ khi dòng 'A'." });
+
+    var total = dto.TotalHTCSuport ?? 0m;
+    if (total > 0m && row.StatusInvoice != "A")
+        return Results.BadRequest(new { error = "Chỉ nhập được tiền hỗ trợ khi hoá đơn đính kèm đã được duyệt." });
+    row.TotalHTCSuport = total;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, act, row.TotalHTCSuport });
+}).RequireAuthorization();
+
+
+// Duyệt/từ chối một dòng chi phí: nguồn có hai hàm riêng nhưng thân giống hệt nhau.
+// Cả hai đều đòi phiếu "A" + dòng "P", và ghi chung ApprovedDetailDate/By.
+static async Task<IResult> MktFeeDetailSetStatus(MktFeeDetailKeyDto dto, string target, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user)
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    if (fee.MKTStatus != "A") return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ chốt dòng khi phiếu 'A'." });
+    var row = await db.MktFeeDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act);
+    if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
+    if (row.MKTFeeDetailStatus != "P") return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ chốt được khi 'P'." });
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.MKTFeeDetailStatus = target;
+    row.ApprovedDetailDate = now; row.ApprovedDetailBy = who;
+    // 🔴 C0-bug7: nguồn gán LogLUDateTime = mã người dùng. Ở đây ghi đúng thời gian.
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, act, row.MKTFeeDetailStatus });
+}
+
+// Duyệt / từ chối MỘT dòng. Nguồn tách thành hai hàm riêng nhưng thân giống hệt, chỉ khác giá trị đích.
+app.MapPost("/api/mktfeedetails/approve", async (MktFeeDetailKeyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await MktFeeDetailSetStatus(dto, "A", db, t, user)).RequireAuthorization();
+
+app.MapPost("/api/mktfeedetails/reject", async (MktFeeDetailKeyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await MktFeeDetailSetStatus(dto, "R", db, t, user)).RequireAuthorization();
+
+app.MapPost("/api/mktfeedetails/delete", async (MktFeeDetailKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.MKTFeeCode ?? "").Trim();
+    var act = (dto.MKTActivityCode ?? "").Trim();
+    var fee = await db.MktFees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTFeeCode == code);
+    if (fee is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
+    if (fee.MKTStatus != "P" && fee.MKTStatus != "A")
+        return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ xoá dòng khi 'P' hoặc 'A'." });
+    var row = await db.MktFeeDetails.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act);
+    if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
+    if (row.MKTFeeDetailStatus != "P")
+        return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ xoá được khi 'P'." });
+    db.MktFeeDetails.Remove(row); // nguồn XOÁ THẬT
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = $"{code}/{act}" });
+}).RequireAuthorization();
+
 // ===== Phiếu chi phí marketing (MKT_MarketingFee — port 1:1 cụm 7 hàm
 // Get/Create/Update/Finished/Delete/ForceDelete/Approve_New20181115, 2010.HTC BizHTC.Marketing.cs
 // 6764 / 6259 / 6582 / 2981 / 7037 / 7235 / 7395). TWIN: 7/7 hàm, cả WS 32-bit lẫn 64-bit. =====
@@ -4240,7 +4372,7 @@ app.MapGet("/api/mktfees", async (AppDbContext db, ITenantContext t, string? fee
         {
             d.MKTFeeCode, d.MKTActivityCode, d.Qty, d.Price, d.Remark, d.MKTFeeDetailStatus,
             d.StatusDesignImage, d.StatusActualImage, d.StatusContract, d.StatusInvoice,
-            d.TotalHTCSuport, d.LogLUDateTime, d.LogLUBy,
+            d.TotalHTCSuport, d.ApprovedDetailDate, d.ApprovedDetailBy, d.LogLUDateTime, d.LogLUBy,
         }).ToListAsync();
     return Results.Ok(new { count = items.Count, items, details = dtls });
 }).RequireAuthorization();
@@ -22703,6 +22835,11 @@ record MktFeeCreateDto(string? MKTFeeCode, string? MKTFeeName, string? DealerCod
 record MktFeeUpdateDto(string? MKTFeeCode, string? MKTFeeName, DateTime? DateStart, DateTime? DateEnd, string? Remark);
 record MktFeeApproveDto(string? MKTFeeCode, bool? Approve);
 record MktFeeKeyDto(string? MKTFeeCode);
+// Dòng chi phí marketing: khoá dòng = cặp (MKTFeeCode, MKTActivityCode).
+record MktFeeDetailCreateDto(string? MKTFeeCode, string? MKTActivityCode, int? Qty, decimal? Price, string? Remark);
+record MktFeeDetailUpdateDto(string? MKTFeeCode, string? MKTActivityCode, int? Qty, decimal? Price, string? Remark);
+record MktFeeDetailLimitDto(string? MKTFeeCode, string? MKTActivityCode, decimal? TotalHTCSuport);
+record MktFeeDetailKeyDto(string? MKTFeeCode, string? MKTActivityCode);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

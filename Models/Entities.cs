@@ -4618,6 +4618,10 @@ public sealed class MktFeeDetail
     public string? StatusInvoice { get; set; }
     /// <summary>Tổng tiền HTC hỗ trợ (nguồn viết thiếu chữ p: `TotalHTCSuport`).</summary>
     public decimal? TotalHTCSuport { get; set; }
+    /// <summary>Ngày chốt dòng — nguồn dùng CHUNG cho cả duyệt lẫn từ chối.</summary>
+    public DateTime? ApprovedDetailDate { get; set; }
+    /// <summary>Người chốt dòng — cũng dùng chung cho duyệt lẫn từ chối.</summary>
+    public string? ApprovedDetailBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
