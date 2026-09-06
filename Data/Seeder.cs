@@ -882,6 +882,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #276 parity VIB_BankTransactionFile (ERP.DMS.HTC.VPBank.WS - CHI CO TREN MAY 150)
+        "ALTER TABLE public.\"BankingTranses\" ADD COLUMN IF NOT EXISTS \"LoanType\" text",
+        "ALTER TABLE public.\"RqBankingTransPmts\" ADD COLUMN IF NOT EXISTS \"TransactionID\" text",
+        "ALTER TABLE public.\"RqBankingTransGrts\" ADD COLUMN IF NOT EXISTS \"TransactionID\" text",
         // #275 parity UpdateTransBankFile (ERP.DMS.HTC.VPBank.WS - CHI CO TREN MAY 150)
         "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"PageIdx\" bigint",
         "ALTER TABLE public.\"BankingTransBankFiles\" ADD COLUMN IF NOT EXISTS \"ElementX\" numeric",

@@ -8602,6 +8602,13 @@ public sealed class RqBankingTransPmt
     public string? PaymentBankCode { get; set; }
     public decimal LoanLimit { get; set; }
     public decimal AmountDisbursed { get; set; }
+
+    /// <summary>🔴 #276 `TransactionID` — mã giao dịch do **VIB** cấp khi đẩy file ký GIẢI NGÂN.
+    /// Nguồn `VIB_BankTransactionFile` (`BizHTC.VPBank.cs:5262`, cây **chỉ có trên máy 150**) ghi nó vào
+    /// **MỌI dòng** `RQ_BankingTransPmt` của đề nghị (`update … where RQ_BankingTransNo = @…`, không lọc
+    /// thêm gì) ⇒ mã giao dịch gắn theo ĐỀ NGHỊ, không theo từng dòng thanh toán.</summary>
+    public string? TransactionID { get; set; }
+
     public string BkTransPmtStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
@@ -8687,6 +8694,10 @@ public sealed class RqBankingTransGrt
     public string? GrtRecDepartment { get; set; }
     public string? GrtRecPersonAddress { get; set; }
     public DateTime? DisbursementRequestDate { get; set; }
+    /// <summary>#276 `TransactionID` do VIB cấp khi đẩy file ký BẢO LÃNH — nhánh song song với
+    /// <see cref="RqBankingTransPmt.TransactionID"/>.</summary>
+    public string? TransactionID { get; set; }
+
     public string BkTransGrtStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
@@ -9443,6 +9454,13 @@ public sealed class BankingTrans
 
     /// <summary>Mã tham chiếu do ngân hàng cấp khi báo kết quả về (`RefBankCode`).</summary>
     public string? RefBankCode { get; set; }
+
+    /// <summary>
+    /// 🔴 #276 `LoanType` — loại hồ sơ VIB đã đẩy file ký cho đề nghị này (`DISBURSEMENT` / `GUARANTEE`).
+    /// **RỖNG = VIB CHƯA từng đẩy file lần nào** — nguồn dùng đúng dấu hiệu này để chặn: lần đầu mà xin
+    /// `ReSign = "Y"` (ký lại) là vô lý ⇒ ném lỗi.
+    /// </summary>
+    public string? LoanType { get; set; }
     /// <summary>Ghi chú của ngân hàng trả về (`BankRemark`).</summary>
     public string? BankRemark { get; set; }
     public DateTime? BankUpdatedAt { get; set; }

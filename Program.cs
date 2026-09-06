@@ -22260,7 +22260,7 @@ app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.BkTransType == type);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
-        .Select(b => new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.BkTransStatus, b.Remark, b.CreatedDate, b.SentAt, b.ApprovedDate, b.BkTransBankStatus, b.PushedToBankAt,
+        .Select(b => new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType, b.LoanType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.BkTransStatus, b.Remark, b.CreatedDate, b.SentAt, b.ApprovedDate, b.BkTransBankStatus, b.PushedToBankAt,   // #276 §12
             b.RefBankCode, b.BankRemark, b.BankUpdatedAt,
             b.LDNo, b.DisbursementTerm, b.DisbursementInterestRate,
             b.MDNo, b.GrtAmount, b.GrtDateStart, b.GrtDateEnd, b.GrtTerm, b.GrtFee, b.GrtLatePmtDate,
@@ -22385,6 +22385,122 @@ app.MapPost("/api/bankingtrans/{no}/bank-update", async (
 //
 // Luồng hai bước: ngân hàng gọi GET lấy các file `SignStatus = 'P'`, rồi gọi POST báo lại
 //   **trang số mấy + toạ độ/kích thước ô ký** để hệ thống đặt chữ ký đúng chỗ.
+// ===== 🔴 #276 VIB ĐẨY FILE CHỜ KÝ — `VIB_BankTransactionFile` (`BizHTC.VPBank.cs:5262`) =====
+// Cây `ERP.DMS.HTC.VPBank.WS` **CHỈ CÓ TRÊN MÁY 150**. Là `[WebMethod]` sống (WSHTC.cs:201).
+//
+// 🔴 BẪY HẰNG: guard trạng thái ngân hàng là `strBkTransBankStatus.Equals(BkTransBankStatus.Approve)`,
+//   mà `BkTransBankStatus.Approve = "A0"` (Const.Main.cs:732) — **CHỈ mức A0**, KHÔNG phải "đã duyệt nói
+//   chung". A1..A5 cũng là các mức duyệt nhưng **KHÔNG** qua guard này. Đọc tên hằng mà không tra giá trị
+//   là port sai ngay. (Trạng thái nội bộ thì `BkTransStatus.Approve = "A"` — hai bảng mã KHÁC nhau.)
+//
+// LUẬT `ReSign` (Y/N) — bốn nhánh, đối xứng nhau:
+//   • `LoanType` của đề nghị **RỖNG** (VIB chưa từng đẩy) + `ReSign = "Y"`  ⇒ lỗi (ký lại cái chưa có).
+//   • `ReSign = "N"` (đẩy lần đầu) mà **ĐÃ CÓ** file cùng `DocumentType` ở `SignStatus in ('P','A')` ⇒ lỗi.
+//   • `ReSign = "Y"` (ký lại) mà **CHƯA CÓ** file như trên ⇒ lỗi.
+//   • `ReSign = "Y"` hợp lệ ⇒ **HUỶ** mọi file P/A đó về `SignStatus = "R"` kèm ghi chú nguyên văn
+//     *"Hủy file, VIB đẩy lại file chưa ký"*, rồi ghi `TransactionID`.
+//
+// ⚠️ Hai loại hồ sơ đi hai bảng khác nhau: `DISBURSEMENT` → `RQ_BankingTransPmt` (giải ngân) ·
+//   `GUARANTEE` → `RQ_BankingTransGrt` (bảo lãnh). Mỗi nhánh đòi bảng tương ứng **phải có dòng**.
+// ⚠️ Nguồn ném `CMyException.Raise("<câu tiếng Việt>")` — **chuỗi trần, không phải mã lỗi** (khác hẳn các
+//   hàm quanh nó). Giữ NGUYÊN VĂN, kể cả hai chỗ sai chính tả: *"Trạnh thái Mã hồ sơ Bank không hợp lệ!"*
+//   và *"File đẩy lần đầu.Trạng thái ReSign hợp lệ!"* (thiếu chữ "không").
+app.MapPost("/api/bankingtrans/{no}/vib-file", async (
+    string no, VibBankFileDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Thiếu số đề nghị giao dịch." });
+    var refBankCode = (dto.RefBankCode ?? "").Trim();
+    if (refBankCode.Length == 0) return Results.BadRequest(new { error = "Thiếu RefBankCode." });
+    var transactionId = (dto.TransactionID ?? "").Trim();
+    if (transactionId.Length == 0) return Results.BadRequest(new { error = "Thiếu TransactionID." });
+    var loanType = (dto.LoanType ?? "").Trim().ToUpperInvariant();
+    if (loanType.Length == 0) return Results.BadRequest(new { error = "Thiếu LoanType." });
+    if (loanType is not ("DISBURSEMENT" or "GUARANTEE"))
+        return Results.BadRequest(new { error = "LoanType phải là DISBURSEMENT | GUARANTEE." });
+    var reSign = (dto.ReSign ?? "").Trim().ToUpperInvariant();
+    if (reSign.Length == 0) return Results.BadRequest(new { error = "Thiếu ReSign." });
+    if (reSign is not ("Y" or "N")) return Results.BadRequest(new { error = "ReSign chỉ nhận Y hoặc N." });
+
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    // 🔴 CHỈ "A" (nội bộ) và CHỈ "A0" (ngân hàng) — xem chú thích bẫy hằng ở trên.
+    if (r.BkTransStatus != "A" || r.BkTransBankStatus != "A0")
+        return Results.BadRequest(new { error = "Trạnh thái Mã hồ sơ Bank không hợp lệ!",
+            bkTransStatus = r.BkTransStatus, bkTransBankStatus = r.BkTransBankStatus });
+
+    // LoanType hiện tại RỖNG = VIB chưa từng đẩy file ⇒ không thể là lần "ký lại".
+    if (string.IsNullOrWhiteSpace(r.LoanType) && reSign == "Y")
+        return Results.BadRequest(new { error = "File đẩy lần đầu.Trạng thái ReSign hợp lệ!", reSign });
+
+    // Bảng chứng từ tương ứng phải có dòng.
+    var hasDoc = loanType == "DISBURSEMENT"
+        ? await db.RqBankingTransPmts.AnyAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no)
+        : await db.RqBankingTransGrts.AnyAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
+    if (!hasDoc)
+        return Results.BadRequest(new { error = loanType == "DISBURSEMENT"
+            ? "Đề nghị không có loại khoản vay giải ngân!" : "Đề nghị không có loại khoản vay bảo lãnh!" });
+
+    // File cùng loại chứng từ đang ở P hoặc A.
+    var liveFiles = await db.BankingTransBankFiles
+        .Where(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id && f.DocumentType == loanType
+                    && (f.SignStatus == "P" || f.SignStatus == "A"))
+        .ToListAsync();
+
+    if (reSign == "N" && liveFiles.Count > 0)
+        return Results.BadRequest(new { error = "Đã từng đẩy file ký GN, loại ký không hợp lệ!", existing = liveFiles.Count });
+    if (reSign == "Y" && liveFiles.Count == 0)
+        return Results.BadRequest(new { error = "Chưa từng đẩy file ký GN, loại ký không hợp lệ!" });
+
+    var actor = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    var cancelled = 0;
+    if (reSign == "Y")
+    {
+        foreach (var f in liveFiles)
+        {
+            f.SignStatus = "R";
+            f.Remark = "Hủy file, VIB đẩy lại file chưa ký";   // nguyên văn nguồn
+            f.LogLUBy = actor; f.LogLUDateTime = now;
+            cancelled++;
+        }
+    }
+
+    // Ghi TransactionID lên MỌI dòng chứng từ của đề nghị (nguồn không lọc thêm điều kiện nào).
+    var updatedDocs = 0;
+    if (loanType == "DISBURSEMENT")
+        foreach (var p in await db.RqBankingTransPmts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+        { p.TransactionID = transactionId; p.LogLUBy = actor; p.LogLUDateTime = now; updatedDocs++; }
+    else
+        foreach (var g in await db.RqBankingTransGrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).ToListAsync())
+        { g.TransactionID = transactionId; g.LogLUBy = actor; g.LogLUDateTime = now; updatedDocs++; }
+
+    r.LoanType = loanType;
+    r.RefBankCode = refBankCode;
+
+    // File VIB gửi kèm — vào đúng bảng file như luồng ngân hàng khác, ở trạng thái CHỜ KÝ.
+    var idx = await db.BankingTransBankFiles.CountAsync(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id);
+    var added = 0;
+    foreach (var f in dto.Files ?? new List<BankingTransFileDto>())
+    {
+        db.BankingTransBankFiles.Add(new BankingTransBankFile
+        {
+            OrgId = t.OrgId, BankingTransId = r.Id, FileIndex = ++idx,
+            FileType = f.FileType, FilePath = f.FilePath, FileName = f.FileName ?? "",
+            DocumentType = loanType, FileSize = f.FileSize, Remark = f.Remark,
+            BkTransBankStatus = r.BkTransBankStatus, SignStatus = "P",
+            LogLUBy = actor, LogLUDateTime = now,
+        });
+        added++;
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rqBankingTransNo = no, loanType, reSign, transactionId,
+        cancelledFiles = cancelled, updatedDocs, addedFiles = added });
+}).RequireAuthorization();
+
 app.MapGet("/api/bankingtrans/{no}/bank-files-pending", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
@@ -34720,6 +34836,8 @@ record BankingTransFileDto(string? FileName, string? FileType, string? FilePath,
 // #275: ngan hang bao vi tri o chu ky. `PageIdx` nguon kiem IsInteger64; bon gia tri con lai IsNumeric
 //   (cho thap phan) - bat doi xung CO Y cua nguon, giu nguyen.
 record BankFileSignPlacementDto(long? PageIdx, decimal? ElementX, decimal? ElementY, decimal? ElementWidth, decimal? ElementHeight);
+// #276: VIB day file cho ky. `ReSign` Y/N; `LoanType` DISBURSEMENT|GUARANTEE (DocumentType cua nguon).
+record VibBankFileDto(string? RefBankCode, string? TransactionID, string? LoanType, string? ReSign, List<BankingTransFileDto>? Files = null);
 record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, string? RefBankCode, string? LDNo, decimal? DisbursementAmount, DateTime? DisbursementDate, string? DisbursementTerm, decimal? DisbursementInterestRate, string? MDNo, decimal? GrtAmount, DateTime? GrtDateStart, DateTime? GrtDateEnd, string? GrtTerm, decimal? GrtFee, DateTime? GrtLatePmtDate, string? LCNo, decimal? LCAmount, DateTime? LCStartDate, DateTime? LCEndDate, List<BankingTransFileDto>? Files);
 record BankingTransDto(string BankCode, string BkTransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark, string? DealerCode = null, string? BizResNumber = null);
 // ---- #137: DTO 12 bảng vệ tinh của đề nghị GD ngân hàng (RQ_BankingTransactions_SaveX_20220817) ----
