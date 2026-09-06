@@ -32811,25 +32811,70 @@ string[] roCompletedStatuses = { "Paid", "Finished" };
 //   nhóm "Hủy, Hẹn lại" **KHÔNG** gồm `Rejected`.
 // ⚠️ Bản CŨ dùng hàm SQL `dbo.ROStatus_GetStatusNameByCode(ro.Status)`; bản LIVE **viết thẳng CASE** ⇒
 //   bảng nhãn chuẩn nay nằm trong code, không nằm trong DB.
-var roStatusDisplayNames = new Dictionary<string, string>
+// ===== 🔴 #286 ĐÍNH CHÍNH #284: nhãn trạng thái LSC là **THEO MÀN**, KHÔNG có bảng toàn cục =====
+// #284 dựng MỘT bảng nhãn dùng chung — SAI. Quét lại nhãn của riêng mã `W4P` trên toàn cây (đã loại file
+// chết) ra **BA giá trị khác nhau ở BA màn**, cả ba đều LIVE:
+//   • `Ser_RO_HomeX` (`BizCarSv.Tab.cs:1379`, WS **Tab** `WSCarSvTab.asmx.cs:4048` → `Home_Get`) → "Đợi phụ tùng"
+//   • `Ser_RO_GetStatusList02_GetClaimX` (`Service.RO.cs`, WS CarSv)                              → "Hủy, Hẹn lại"
+//   • báo cáo XUẤT KHO (`Inventory.StockOut.cs:18584`, WS CarSv)                                  → "Không dùng"
+// ⇒ cùng một mã, ba nhãn; dùng chung một bảng là hiển thị SAI ở hai trong ba màn.
+//
+// ⚠️ Bảng của màn Tab là bảng **CHI TIẾT NHẤT** (phân biệt CRE/PRT/HRO thành ba nhãn khác nhau, trong khi
+//   hai màn kia gộp cả ba thành "Chờ sửa") — nhưng KHÔNG được lấy nó làm bảng chung.
+// ☠️ Bảng Tab có LỖI NGUỒN: `when 'REJ' then N'Lập lệnh sửa chữa'` — lặp y nguyên nhãn của `HRO` ngay
+//   dòng trên; `REJ` là **huỷ**, không thể là "Lập lệnh sửa chữa". Giữ NGUYÊN VĂN (màn Tab đang hiện vậy),
+//   đánh dấu rõ để không ai đọc nhãn rồi suy ngược ra nghiệp vụ.
+var roStatusDisplayNamesByScreen = new Dictionary<string, Dictionary<string, string>>
 {
-    ["Created"] = "Chờ sửa", ["PrintedQuote"] = "Chờ sửa", ["HasRO"] = "Chờ sửa",   // CRE, PRT, HRO
-    ["InGarage"] = "Đang sửa",                                                      // INGA
-    ["Repaired"] = "Sửa xong",                                                      // RPRD
-    ["CheckEnd"] = "Kiểm tra cuối cùng",                                            // CEND
-    ["Paid"] = "Thanh toán xong",                                                   // PAID — Issue 981
-    ["Finished"] = "Đã giao xe",                                                    // FNS
-    ["Rejected"] = "Lệnh hủy",                                                      // REJ — RIÊNG
-    ["Wait4Part"] = "Hủy, Hẹn lại", ["HasPart"] = "Hủy, Hẹn lại", ["NotResponding"] = "Hủy, Hẹn lại",
+    // Màn TRA LỆNH SỬA CHỮA (Ser_RO_GetStatusList02_GetClaimX) — dùng cho /api/repairorders/status-history.
+    ["rosearch"] = new()
+    {
+        ["Created"] = "Chờ sửa", ["PrintedQuote"] = "Chờ sửa", ["HasRO"] = "Chờ sửa",
+        ["InGarage"] = "Đang sửa", ["Repaired"] = "Sửa xong", ["CheckEnd"] = "Kiểm tra cuối cùng",
+        ["Paid"] = "Thanh toán xong",        // Issue 981 tách khỏi "Sửa xong"
+        ["Finished"] = "Đã giao xe", ["Rejected"] = "Lệnh hủy",
+        ["Wait4Part"] = "Hủy, Hẹn lại", ["HasPart"] = "Hủy, Hẹn lại", ["NotResponding"] = "Hủy, Hẹn lại",
+    },
+    // Màn HOME của máy tính bảng (Ser_RO_HomeX) — chi tiết nhất.
+    ["tabhome"] = new()
+    {
+        ["Created"] = "Lập báo giá", ["PrintedQuote"] = "In báo giá",
+        ["Wait4Part"] = "Đợi phụ tùng", ["HasPart"] = "Đã có phụ tùng",
+        ["HasRO"] = "Lập lệnh sửa chữa",
+        ["Rejected"] = "Lập lệnh sửa chữa",   // ☠️ LỖI NGUỒN, giữ nguyên văn (xem chú thích trên)
+        ["InGarage"] = "Vào sửa chữa", ["CheckEnd"] = "Kiểm tra cuối cùng", ["Repaired"] = "Sửa xong",
+        ["Paid"] = "Đã thanh toán", ["Finished"] = "Đã hoàn thành", ["NotResponding"] = "Chưa dùng",
+    },
+    // Báo cáo XUẤT KHO phụ tùng (Inventory.StockOut).
+    ["stockout"] = new()
+    {
+        ["Created"] = "Chờ sửa", ["PrintedQuote"] = "Chờ sửa", ["HasRO"] = "Chờ sửa",
+        ["InGarage"] = "Đang sửa", ["Repaired"] = "Sửa xong", ["CheckEnd"] = "Kiểm tra cuối cùng",
+        ["Paid"] = "Thanh toán xong", ["Finished"] = "Đã giao xe", ["Rejected"] = "Lệnh hủy",
+        ["Wait4Part"] = "Không dùng", ["HasPart"] = "Không dùng", ["NotResponding"] = "Không dùng",
+    },
 };
+
+// Giữ tên cũ cho các chỗ đã dùng: mặc định là bảng của màn TRA LSC.
+var roStatusDisplayNames = roStatusDisplayNamesByScreen["rosearch"];
 // Nguồn có nhánh `else N'Không xác định'` — giữ nguyên, KHÔNG trả rỗng.
 string RoStatusDisplayName(string? st) => st is not null && roStatusDisplayNames.TryGetValue(st, out var n) ? n : "Không xác định";
 
-app.MapGet("/api/repairorders/statusnames", () => Results.Ok(new
+// #286: nhãn theo MÀN — `screen` nhận `rosearch` (mặc định) · `tabhome` · `stockout`.
+app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
-    names = roStatusDisplayNames.Select(kv => new { code = kv.Key, name = kv.Value }),
-    note = "Bảng NHÃN HIỂN THỊ — khác bảng NHÓM TÌM KIẾM (/api/repairorders?stage=...): tìm kiếm gộp Paid vào Sửa xong, hiển thị tách riêng Thanh toán xong (Issue 981).",
-})).RequireAuthorization();
+    var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
+    if (!roStatusDisplayNamesByScreen.TryGetValue(key, out var map))
+        return Results.BadRequest(new { error = "screen phải là rosearch | tabhome | stockout.", screen = key });
+    return Results.Ok(new
+    {
+        screen = key,
+        names = map.Select(kv => new { code = kv.Key, name = kv.Value }),
+        screens = roStatusDisplayNamesByScreen.Keys,
+        note = "#286: nhãn hiển thị KHÁC NHAU theo màn (cùng mã W4P: rosearch=\"Hủy, Hẹn lại\" · tabhome=\"Đợi phụ tùng\" · stockout=\"Không dùng\"). "
+             + "Khác nữa với bảng NHÓM TÌM KIẾM (/api/repairorders?stage=...) vốn gộp Paid vào Sửa xong.",
+    });
+}).RequireAuthorization();
 
 // ===== 🔴 #283 TRA LỆNH SỬA CHỮA CHÉO ĐẠI LÝ (tổng đài iCIC) — `Ser_RO_GetStatusHistoryList_New20180622` =====
 // Nguồn: `ERP.ICIC/TERP.BizCarSv/BizCarSv.Customer.cs:2869` (hệ **CHỈ CÓ TRÊN LAPTOP**).
