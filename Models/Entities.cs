@@ -7164,7 +7164,23 @@ public sealed class DlrContractDetail
     public decimal TotalAmountAfterVAT { get; set; }
 }
 
-/// <summary>Khách hàng của đại lý (DealerCustomer) — port 1:1 FrmNewCustomer/FrmMngCustomer (DMSales.Foton/SalesDealer). Master KH cấp đại lý: loại KH, CMND, giới tính, DOB...</summary>
+/// <summary>
+/// Khách hàng của đại lý — port 1:1 FrmNewCustomer/FrmMngCustomer. Master KH cấp đại lý.
+/// 🔴 **#124 đối chiếu bảng nguồn `DLS_DealerCustomer`** (2010.HTC `BizHTC.DealerSales.cs:2024`,
+/// hàm `DealerSalesDealerCustomerCreate` (1872); sửa qua
+/// `DealerSalesDealerCustomerUpdateAll_New20210109` (`Biz.HTC.WH.cs:108188`)).
+/// 🔴 **BẪY TWIN LỆCH BIT ở riêng hàm `UpdateAll`**: WS 32-bit (`WSHTC.cs:29626`) gọi
+/// `…UpdateAll_New20181119`, còn WS 64-bit (`WSHTC.64:41141`) gọi `…UpdateAll_**New20210109**`
+/// — bản 2021 mới hơn **3 năm**, comment nguồn ghi rõ *"Nâng cấp ghi log"*. Các hàm khác của cụm
+/// (Create/Update/Delete/Get) thì hai bit **giống nhau** ⇒ chỉ đúng MỘT hàm lệch, dễ bỏ sót.
+/// Canonical đã chọn = **bản 64-bit / 2021**.
+/// 📌 Lệch tên cột giữa port cũ và nguồn (giữ tên port cũ để không phá API):
+/// `CustomerBaseCode`→`CusBaseCode`, `CreatedDate`→`CreatedAt`.
+/// ⚠️ `CusTypeCode` **KHÔNG có trong bảng nguồn 2010.HTC** (grep toàn `TERP.BizHTC` = 0) — đây là cột
+/// riêng của bản port Foton; giữ nguyên, nhưng đừng tìm nó ở nguồn 2010.HTC.
+/// ⚠️ `BUCode` ở nguồn **chỉ dùng để kiểm quyền** (`myCommon_CheckAccessDealerData`), **không ghi**
+/// vào bảng ⇒ cố ý không thêm cột này.
+/// </summary>
 public sealed class DealerCustomer
 {
     public long Id { get; set; }
@@ -7188,7 +7204,46 @@ public sealed class DealerCustomer
     public string? RepresentName { get; set; }        // audit 2026-09-03: bổ sung (người đại diện, KH doanh nghiệp)
     public string? Position { get; set; }              // audit 2026-09-03: bổ sung (chức vụ người đại diện)
     public string? CusAccountBank { get; set; }         // audit 2026-09-03: bổ sung (số TK ngân hàng KH)
+    /// <summary>#124: nguồn có `CreatedBy` (BizHTC.DealerSales.cs:2021) — port cũ thiếu.</summary>
+    public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// NHẬT KÝ sửa khách hàng đại lý (`DLS_DealerCustomer_Upd` — 2010.HTC `Biz.HTC.WH.cs:108538`,
+/// trong `DealerSalesDealerCustomerUpdateAll_New20210109`).
+/// 🔴 **Khác hẳn họ bảng `*_His` đã port ở #91-#99**: các bảng kia lưu **cặp Old/New** từng cột,
+/// còn bảng này lưu **SNAPSHOT TOÀN BỘ bản ghi SAU khi sửa** — nguồn lấy chính `DataTable` vừa lưu,
+/// gọi `AcceptChanges()` rồi `SetAdded()` mọi dòng và `SaveData` sang bảng `_Upd`
+/// ⇒ **schema giống hệt bảng chính**, không có cột Old/New/UpdBy nào.
+/// ⇒ Muốn biết "đã đổi gì" thì phải **so hai snapshot liên tiếp**, không đọc được trực tiếp.
+/// (Đây chính là phần "Nâng cấp ghi log" mà comment ở hàm 2021 nhắc tới.)
+/// </summary>
+public sealed class DealerCustomerUpdLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CustomerCode { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? CusBaseCode { get; set; }
+    public string FullName { get; set; } = "";
+    public string? FullNameEN { get; set; }
+    public string? Address { get; set; }
+    public string? PhoneNo { get; set; }
+    public string? Email { get; set; }
+    public string? TaxCode { get; set; }
+    public string? ProvinceCode { get; set; }
+    public string? DistrictCode { get; set; }
+    public string? IDCardNo { get; set; }
+    public string? IDCardType { get; set; }
+    public string? Gender { get; set; }
+    public DateTime? DateOfBirth { get; set; }
+    public string? RepresentName { get; set; }
+    public string? Position { get; set; }
+    public string? CusAccountBank { get; set; }
+    /// <summary>Thời điểm chụp snapshot (MiniHTC thêm — nguồn không có, vì nó copy nguyên bản ghi).</summary>
+    public DateTime LoggedAt { get; set; } = DateTime.Now;
+    public string? LoggedBy { get; set; }
 }
 
 /// <summary>Yêu cầu PDI của đại lý (Dlr_PDIRequest) — port 1:1 FrmNewDlr_PDIRequest (DMSales.Foton/SalesDealer). Đại lý gửi yêu cầu PDI cho danh sách xe/RO.</summary>

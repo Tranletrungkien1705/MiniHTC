@@ -20045,12 +20045,75 @@ app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.FullName.Contains(q) || c.CustomerCode.Contains(q) || (c.PhoneNo != null && c.PhoneNo.Contains(q)));
     var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
-        c.CustomerCode, c.FullName, c.DealerCode, c.CusTypeCode, c.PhoneNo, c.Address, c.IDCardNo, c.Gender, c.ProvinceCode, c.CreatedAt
+        // #124 §12: projection cũ THIẾU 10 cột đã có trong entity — bổ sung cho đủ.
+        c.CustomerCode, c.FullName, c.FullNameEN, c.DealerCode, c.CusTypeCode, c.CusBaseCode,
+        c.PhoneNo, c.Email, c.Address, c.ProvinceCode, c.DistrictCode, c.TaxCode,
+        c.IDCardNo, c.IDCardType, c.Gender, c.DateOfBirth,
+        c.RepresentName, c.Position, c.CusAccountBank, c.CreatedBy, c.CreatedAt
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext db, ITenantContext t) =>
+// 🔴 #124 Sửa KH đại lý — port `DealerSalesDealerCustomerUpdateAll_New20210109` (Biz.HTC.WH.cs:108188).
+// TWIN: WS 64-bit gọi bản 2021 này, WS 32-bit vẫn gọi bản 2018 — canonical là bản 2021 ("Nâng cấp ghi log").
+// Sau khi ghi bản chính, nguồn **chụp SNAPSHOT toàn bộ bản ghi** sang `DLS_DealerCustomer_Upd`
+// (`AcceptChanges()` + `SetAdded()` rồi SaveData, dòng 108529-108541) — KHÔNG phải cặp Old/New.
+app.MapPost("/api/dealercustomers/update", async (DealerCustomerUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.CustomerCode ?? "").Trim().ToUpperInvariant();
+    var c = await db.DealerCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CustomerCode == code);
+    if (c is null) return Results.NotFound(new { error = $"Không có khách hàng {code}." });
+
+    // Nguồn ghi các cột này không điều kiện; riêng IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng
+    // (`if (!IsEmpty(...))`, dòng 108515-108516) — giữ đúng để không xoá mất giấy tờ đã lưu.
+    if (!string.IsNullOrWhiteSpace(dto.FullName)) c.FullName = dto.FullName!.Trim();
+    c.FullNameEN = dto.FullNameEN;
+    c.Gender = dto.Gender;
+    if (!string.IsNullOrWhiteSpace(dto.Address)) c.Address = dto.Address!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.PhoneNo)) c.PhoneNo = dto.PhoneNo!.Trim();
+    c.TaxCode = dto.TaxCode;
+    c.ProvinceCode = dto.ProvinceCode;
+    c.DistrictCode = dto.DistrictCode;
+    c.CusBaseCode = dto.CusBaseCode;          // cột nguồn: CustomerBaseCode
+    c.DateOfBirth = dto.DateOfBirth;
+    c.Email = dto.Email;
+    c.RepresentName = dto.RepresentName;
+    c.Position = dto.Position;
+    c.CusAccountBank = dto.CusAccountBank;
+    if (!string.IsNullOrWhiteSpace(dto.IDCardType)) c.IDCardType = dto.IDCardType;
+    if (!string.IsNullOrWhiteSpace(dto.IDCardNo)) c.IDCardNo = dto.IDCardNo;
+
+    // 🔴 Snapshot SAU khi sửa, đúng như nguồn.
+    db.DealerCustomerUpdLogs.Add(new DealerCustomerUpdLog
+    {
+        OrgId = t.OrgId, CustomerCode = c.CustomerCode, DealerCode = c.DealerCode,
+        CusBaseCode = c.CusBaseCode, FullName = c.FullName, FullNameEN = c.FullNameEN,
+        Address = c.Address, PhoneNo = c.PhoneNo, Email = c.Email, TaxCode = c.TaxCode,
+        ProvinceCode = c.ProvinceCode, DistrictCode = c.DistrictCode,
+        IDCardNo = c.IDCardNo, IDCardType = c.IDCardType, Gender = c.Gender, DateOfBirth = c.DateOfBirth,
+        RepresentName = c.RepresentName, Position = c.Position, CusAccountBank = c.CusAccountBank,
+        LoggedAt = DateTime.Now,
+        LoggedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CustomerCode, c.FullName, logged = true });
+}).RequireAuthorization();
+
+// Đọc nhật ký sửa. Vì nguồn lưu SNAPSHOT (không phải Old/New), muốn biết "đổi gì" phải so hai bản liên tiếp.
+app.MapGet("/api/dealercustomers/updlogs", async (AppDbContext db, ITenantContext t, string? customerCode) =>
+{
+    var qy = db.DealerCustomerUpdLogs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(customerCode)) qy = qy.Where(x => x.CustomerCode == customerCode);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.CustomerCode, x.DealerCode, x.CusBaseCode, x.FullName, x.FullNameEN, x.Address, x.PhoneNo,
+        x.Email, x.TaxCode, x.ProvinceCode, x.DistrictCode, x.IDCardNo, x.IDCardType, x.Gender,
+        x.DateOfBirth, x.RepresentName, x.Position, x.CusAccountBank, x.LoggedAt, x.LoggedBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, note = "Mỗi dòng là SNAPSHOT toàn bộ bản ghi sau một lần sửa (nguồn không lưu Old/New)." });
+}).RequireAuthorization();
+
+app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CusTypeCode)) return Results.BadRequest(new { error = "Hãy nhập loại khách hàng." });
     if (string.IsNullOrWhiteSpace(dto.FullName)) return Results.BadRequest(new { error = "Hãy nhập Họ tên." });
@@ -20073,6 +20136,7 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
     var c = new DealerCustomer
     {
         OrgId = t.OrgId, CustomerCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), CusTypeCode = dto.CusTypeCode.Trim(),
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
         CusBaseCode = dto.CusBaseCode, FullName = dto.FullName.Trim(), FullNameEN = dto.FullNameEN, Address = dto.Address.Trim(), PhoneNo = dto.PhoneNo.Trim(),
         Email = dto.Email, TaxCode = dto.TaxCode, ProvinceCode = dto.ProvinceCode, DistrictCode = dto.DistrictCode,
         IDCardNo = dto.IDCardNo, IDCardType = dto.IDCardType, Gender = dto.Gender, DateOfBirth = dto.DateOfBirth,
@@ -24436,6 +24500,8 @@ record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
 record DlrPdiApproveDto(string? Remark);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
+// #124: sửa KH đại lý. IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng, đúng như nguồn.
+record DealerCustomerUpdateDto(string? CustomerCode, string? FullName, string? FullNameEN, string? Gender, string? Address, string? PhoneNo, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? CusBaseCode, DateTime? DateOfBirth, string? Email, string? RepresentName, string? Position, string? CusAccountBank, string? IDCardType, string? IDCardNo);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
