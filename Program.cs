@@ -28037,6 +28037,7 @@ app.MapGet("/api/customercares/{no}/survey", async (string no, AppDbContext db, 
     var care = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
     if (care is null) return Results.NotFound(new { no });
     var survey = await db.CustomerCareSurveys.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    // #211 §12: trả về nguyên bản khảo sát (đã gồm 33 cột mới) thay vì chiếu tay từng cột.
     return Results.Ok(new
     {
         care.CareNo, care.CareType, care.RONo, care.PlateNo, care.CusName, care.CusPhone,
@@ -28106,6 +28107,40 @@ app.MapPost("/api/customercares/{no}/survey", async (
     // Nguồn ghi cùng một giá trị ô ghi chú vào cả Note lẫn YourHopeOfOur (câu 6 tự luận) — giữ nguyên hành vi.
     survey.Note = dto.Note;
     survey.YourHopeOfOur = dto.Note;
+    // ===== #211 bộ câu hỏi trắc nghiệm + hồ sơ khảo sát (Ser_CustomerCare72h) =====
+    survey.CusCareType = dto.CusCareType?.Trim() ?? care.CareType;
+    survey.OrderID = no;                      // 🔴 nguồn gán OrderID = CusCareID, KHÔNG phải mã đơn hàng
+    survey.Remark = dto.Remark;
+    survey.SurveyGmail = dto.SurveyGmail?.Trim();
+    survey.SurveyDateTime = now;              // nguồn đặt = thời điểm lưu
+    survey.Survey1 = dto.Survey1;
+    survey.Survey2 = dto.Survey2;
+    survey.Survey3 = dto.Survey3;
+    survey.Survey4 = dto.Survey4;
+    survey.Survey5 = dto.Survey5;
+    survey.Survey6 = dto.Survey6;
+    survey.Survey7 = dto.Survey7;
+    survey.Survey8 = dto.Survey8;
+    survey.Survey9 = dto.Survey9;
+    survey.Survey10 = dto.Survey10;
+    survey.Survey11 = dto.Survey11;
+    survey.Survey12 = dto.Survey12;
+    survey.Survey13 = dto.Survey13;
+    survey.Survey14 = dto.Survey14;
+    survey.Survey15 = dto.Survey15;
+    survey.Survey16 = dto.Survey16;
+    survey.Survey17 = dto.Survey17;
+    survey.Survey18 = dto.Survey18;
+    survey.Survey19 = dto.Survey19;
+    survey.Survey20 = dto.Survey20;
+    survey.Survey21 = dto.Survey21;
+    survey.Survey22 = dto.Survey22;
+    survey.Survey23 = dto.Survey23;
+    survey.Survey24 = dto.Survey24;
+    survey.Survey25 = dto.Survey25;
+    survey.Survey26 = dto.Survey26;
+    survey.Survey27 = dto.Survey27;
+    survey.Survey28 = dto.Survey28;
     if (!isNewSurvey) survey.UpdatedAt = now;
 
     // Đồng bộ trạng thái phiếu CSKH (nguồn: Ser_CustomerCareStatusUpdate).
@@ -30097,7 +30132,10 @@ record CustomerCareBirthdayDto(string? CusId, string? DealerCode, DateTime? Date
 record CareSurveyDto(
     string? Status, string? RONo, DateTime? FinishedDate, DateTime? ContactDate,
     string? YourCarProblem, string? YourSatisfyQSv, string? FyourCSSH,
-    string? YourRIWN, string? WFBasicNeeds, string? Note);
+    string? YourRIWN, string? WFBasicNeeds, string? Note,
+    // #211: hồ sơ khảo sát + bộ trắc nghiệm Survey1..28 của `Ser_CustomerCare72h`.
+    string? CusCareType = null, string? Remark = null, string? SurveyGmail = null,
+    string? Survey1 = null, string? Survey2 = null, string? Survey3 = null, string? Survey4 = null, string? Survey5 = null, string? Survey6 = null, string? Survey7 = null, string? Survey8 = null, string? Survey9 = null, string? Survey10 = null, string? Survey11 = null, string? Survey12 = null, string? Survey13 = null, string? Survey14 = null, string? Survey15 = null, string? Survey16 = null, string? Survey17 = null, string? Survey18 = null, string? Survey19 = null, string? Survey20 = null, string? Survey21 = null, string? Survey22 = null, string? Survey23 = null, string? Survey24 = null, string? Survey25 = null, string? Survey26 = null, string? Survey27 = null, string? Survey28 = null);
 record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);

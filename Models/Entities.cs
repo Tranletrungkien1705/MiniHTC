@@ -4754,6 +4754,52 @@ public sealed class CustomerCareSurvey
     /// <summary>Ghi chú phiếu (nguồn: Note24).</summary>
     public string? Note { get; set; }
 
+
+    // ===== #211 parity `Ser_CustomerCare72h` (DMSCarSv V20.2023.Release.V2 —
+    //       TERP.BizCarSv/BizCarSv.Customer.cs:16010-16130, hàm `Ser_CustomerCare72h_UpdateStatus_New20180622`) =====
+    // Đối chiếu từng cột: nguồn ghi 44 cột; entity đang có 11 ⇒ bổ sung 33 cột dưới đây.
+    /// <summary>Loại phiếu CSKH (`CusCareType`) — nguồn lưu lại ngay trên bản khảo sát.</summary>
+    public string? CusCareType { get; set; }
+    /// <summary>⚠️ Nguồn gán `OrderID = strCusCareID` (CÙNG giá trị với `CusCareID`) — giữ nguyên,
+    /// không suy diễn thành mã đơn hàng.</summary>
+    public string? OrderID { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>Email nhận bản khảo sát (`SurveyGmail`).</summary>
+    public string? SurveyGmail { get; set; }
+    /// <summary>Mốc gửi/ghi khảo sát (`SurveyDateTime`) — nguồn đặt = thời điểm lưu.</summary>
+    public DateTime? SurveyDateTime { get; set; }
+
+    // 🔴 `Survey1..Survey28`: bộ câu hỏi TRẮC NGHIỆM, là **cột RỜI** trên chính bảng khảo sát
+    //    (không phải bảng con) — giữ đúng dạng nguồn, cùng kiểu với cụm `DlsDealSurvey` đã port.
+    public string? Survey1 { get; set; }
+    public string? Survey2 { get; set; }
+    public string? Survey3 { get; set; }
+    public string? Survey4 { get; set; }
+    public string? Survey5 { get; set; }
+    public string? Survey6 { get; set; }
+    public string? Survey7 { get; set; }
+    public string? Survey8 { get; set; }
+    public string? Survey9 { get; set; }
+    public string? Survey10 { get; set; }
+    public string? Survey11 { get; set; }
+    public string? Survey12 { get; set; }
+    public string? Survey13 { get; set; }
+    public string? Survey14 { get; set; }
+    public string? Survey15 { get; set; }
+    public string? Survey16 { get; set; }
+    public string? Survey17 { get; set; }
+    public string? Survey18 { get; set; }
+    public string? Survey19 { get; set; }
+    public string? Survey20 { get; set; }
+    public string? Survey21 { get; set; }
+    public string? Survey22 { get; set; }
+    public string? Survey23 { get; set; }
+    public string? Survey24 { get; set; }
+    public string? Survey25 { get; set; }
+    public string? Survey26 { get; set; }
+    public string? Survey27 { get; set; }
+    public string? Survey28 { get; set; }
+
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? UpdatedAt { get; set; }
