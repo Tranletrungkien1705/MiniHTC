@@ -13886,6 +13886,21 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 //   ⚠️ Nghĩa là **khoảng trắng** và **chữ tiếng Việt có dấu** cũng bị coi là ký tự đặc biệt.
 //   ⚠️ Vì regex nằm ở lớp cha nên **mọi màn kế thừa `FrmMdiBase` đều dùng chung** — khi port màn khác
 //      thấy `this.regex.IsMatch(...)` thì đây chính là quy tắc đó.
+// ===== 🔴 #258 BIỂN SỐ XE — HAI mẫu hợp lệ của nguồn =====
+// `Views/ExcelUtil/FrmImportCustomer.cs:143-149` (md5 `fb5df1f7` — KHỚP 2 máy):
+//     `re1 = ^[1-9]{1}[0-9]{0,1}[A-Z]{1,2}[-]{1}[0-9]{4,5}$`   (biển thường, vd 29A-12345)
+//     `re2 = ^[A-Z]{2}[-]{1}[0-9]{4,5}$`                        (biển 2 chữ, vd NG-1234)
+//     `if (!re1.IsMatch(x) && !re2.IsMatch(x)) ShowMessageBox("Biển số không hợp lệ")`
+// ⇒ hợp lệ khi khớp **MỘT TRONG HAI**; cả hai đều **có anchor** `^…$` (khác regex email ở #251).
+// ⚠️ Mẫu chỉ chấp nhận **CHỮ HOA** và bắt buộc dấu gạch ngang.
+static bool IsValidPlateNo(string? s)
+{
+    if (string.IsNullOrWhiteSpace(s)) return false;
+    var x = s.Trim();
+    return System.Text.RegularExpressions.Regex.IsMatch(x, "^[1-9]{1}[0-9]{0,1}[A-Z]{1,2}[-]{1}[0-9]{4,5}$")
+        || System.Text.RegularExpressions.Regex.IsMatch(x, "^[A-Z]{2}[-]{1}[0-9]{4,5}$");
+}
+
 // ===== 🔴 #255 QUY TẮC "KÝ TỰ ĐẶC BIỆT" THỨ HAI — `StringUtils.ValidateSpecialCharacter` =====
 // Nguồn `CommonUtils/CommonUtils.cs:496-503` (md5 `5de6e9b7` — KHỚP 2 máy):
 //     `const string specialChars = @"()";`
@@ -29172,6 +29187,22 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
         if (dlr.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dto.DealerCode} đang ngừng hoạt động." });
     }
 
+    // ===== 🔴 #258 MÔ TẢ > 400 — `MSG_WARNING_REMARK` =====
+    // `FrmReq_PartPriceMng.cs:846-853` kiểm `Req_PartPrice.Description` dài **> 400** khi sửa trên lưới.
+    // Port cũ (#238/#241) KHÔNG có guard nào cho `Description` của YC báo giá ⇒ GAP, nay vá.
+    //
+    // ⚠️ MÂU THUẪN NGƯỠNG trong chính nguồn — đã kiểm cả 4 nơi dùng `MSG_WARNING_REMARK`:
+    //   · `Req_PartPrice.Description`            : **400** (FrmReq_PartPriceMng:852)      ← port ở đây
+    //   · `Ser_OrderComplain.Description`        : **400** ở lưới (FrmSer_OrderComplainMng:781)
+    //     nhưng **256** ở form chi tiết (#233, `iLength`) ⇒ giữ **256** (chặt hơn, đã port đúng).
+    //   · `Ser_SupplierPayment.Description`      : **400** ở lưới (FrmSer_SupplierPaymentMng:760)
+    //     nhưng **1000** ở form nhập (#237) ⇒ giữ **1000** (đường nhập chính, đã port đúng).
+    //   · `Ser_Order_PartDtl.Remark`             : **400** (FrmSer_SupplierPayment:1426)
+    //   ⇒ nguồn có HAI đường nhập cho cùng cột với NGƯỠNG KHÁC NHAU; API là một cửa duy nhất nên giữ
+    //     ngưỡng của **đường nhập chính**, không tự siết xuống mức của lưới sửa nhanh.
+    if (!string.IsNullOrEmpty(dto.Description) && dto.Description!.Trim().Length > 400)
+        return Results.BadRequest(new { error = "Ghi chú không được > 400 ký tự" });
+
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.ReqQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Lưới thông tin vật tư trống" });
 
@@ -30459,6 +30490,7 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
     var errors = new List<object>();
     var seen = new HashSet<string>();
+    var seenPlate = new HashSet<string>();   // #258: bắt trùng BIỂN SỐ trong cùng file nhập
     int created = 0, updated = 0;
     for (int i = 0; i < rows.Count; i++)
     {
@@ -30478,6 +30510,21 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
         { errors.Add(new { line, error = "Họ tên người liên hệ không được chứa ký tự đặc biệt. Tên khách hàng: " + r.CusName }); continue; }
         if (HasParenOrNewline(r.ContAddress))
         { errors.Add(new { line, error = "Địa chỉ người liên hệ không được chứa ký tự đặc biệt. Tên khách hàng: " + r.CusName }); continue; }
+
+        // ===== 🔴 #258 BIỂN SỐ — GAP: import khách hàng của nguồn CÓ cột biển số và kiểm nó =====
+        // `FrmImportCustomer.cs:141-160`: mỗi dòng có `TblSerCar.PlateNo`, kiểm HAI mẫu regex rồi
+        //   kiểm **trùng biển số trong file** ⇒ `MSG_WARNING_DUPLICATE_PLATENO` = "Biển số xe trùng nhau".
+        // ⚠️ Ngay giữa hai guard đó có khối regex ký tự đặc biệt **BỊ COMMENT** (:150-154) ⇒ KHÔNG port
+        //    (giống `FrmImportPart` ở #256).
+        // Port cũ không có cột biển số nào trong import khách hàng ⇒ mất cả xe lẫn hai guard.
+        if (!string.IsNullOrWhiteSpace(r.PlateNo))
+        {
+            var plate = r.PlateNo!.Trim();
+            if (!IsValidPlateNo(plate))
+            { errors.Add(new { line, plateNo = plate, error = "Biển số không hợp lệ" }); continue; }
+            if (!seenPlate.Add(plate))
+            { errors.Add(new { line, plateNo = plate, error = "Biển số xe trùng nhau" }); continue; }
+        }
         if (string.IsNullOrWhiteSpace(r.Mobile) && string.IsNullOrWhiteSpace(r.Tel)) { errors.Add(new { line, name = r.CusName, error = "Cần SĐT di động hoặc cố định." }); continue; }
         var code = string.IsNullOrWhiteSpace(r.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + line : r.CusCode.Trim().ToUpperInvariant();
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã khách hàng bị trùng trong file nhập." }); continue; }
@@ -33529,7 +33576,9 @@ record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarI
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 // #255: thêm 2 trường người liên hệ — nguồn `FrmImportCustomer` kiểm chúng nên file nhập CÓ chứa chúng.
+// #258: thêm `PlateNo` — file nhập của nguồn CÓ cột biển số (`TblSerCar.PlateNo`) và kiểm 2 mẫu + trùng.
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email,
+    string? PlateNo = null,
     string? ContName = null, string? ContAddress = null);
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
