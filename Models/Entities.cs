@@ -36,6 +36,9 @@ public sealed class Dealer
     public string? FlagDirect { get; set; }
     public string? FlagActive { get; set; }
     public string? DealerScale { get; set; }
+    /// <summary>Mã vùng thị trường marketing (`Mst_Dealer_UpdateMRKAMCode`,
+    /// 2010.HTC `BizHTC.Marketing.cs:12035`) — trỏ sang <see cref="MrkMstAreaMarket"/>.</summary>
+    public string? MRKAMCode { get; set; }
     public string? DealerPhoneNo { get; set; }
     public string? DealerFaxNo { get; set; }
     public string? CompanyName { get; set; }
@@ -4556,6 +4559,28 @@ public sealed class DealerDealDetail
     /// <summary>Ngày giao xe cho khách (`DLS_DealDetail.DeliveryDate`) — `CarDeliveryDate_Update`
     /// cập nhật cột này theo cặp khoá `DealNo` + `CarId`.</summary>
     public DateTime? DeliveryDate { get; set; }
+}
+
+/// <summary>
+/// Bộ đếm sinh mã dùng chung (`Seq_*` — port 1:1 `Seq_Common_Get_New20181115` /
+/// `Seq_Common_MyGet` / `Seq_Common_Raw`, 2010.HTC `BizHTC.Marketing.cs` dòng 16924 / 16868 / 16854).
+/// 🔴 Nguồn KHÔNG có một bảng đếm duy nhất: mỗi loại mã trỏ tới **một bảng `Seq_*` riêng**
+/// (`Seq_Id`, `Seq_MRKFilePath`, `Seq_HMCList`, `Seq_GPSUnMapVINNo`, `Seq_PrintVAT`,
+/// `Seq_BulkInfo`, `Seq_RequestId`, `Seq_CarReq`, `Seq_ATApprOrdNo`, `Seq_GrtClaimExtNo`),
+/// và lấy số bằng thủ thuật `insert … values(null); delete … where AutoID = @@Identity; select @@Identity`
+/// — tức **mượn IDENTITY của SQL Server rồi xoá ngay dòng vừa chèn**. MiniHTC dùng Postgres nên port
+/// thành **một bảng đếm có khoá là tên bảng `Seq_*`**, giữ nguyên việc mỗi loại mã đếm riêng.
+/// 🔴 HAI loại mã dùng CHUNG một bộ đếm: `TCGIV` và `HTCIV` đều đếm trên `Seq_PrintVAT`;
+/// `CTRM` và `CDV` đều đếm trên `Seq_CarReq`. Đó là chủ đích của nguồn, không phải nhầm.
+/// </summary>
+public sealed class SeqCounter
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Tên bảng đếm của nguồn, ví dụ "Seq_PrintVAT".</summary>
+    public string SeqTableName { get; set; } = "";
+    /// <summary>Giá trị đã cấp gần nhất; mỗi lần lấy mã thì tăng 1.</summary>
+    public long LastValue { get; set; }
 }
 
 /// <summary>

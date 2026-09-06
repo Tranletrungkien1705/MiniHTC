@@ -232,7 +232,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(d => d.DealerCode.Contains(q) || d.DealerName.Contains(q));
     var items = await query.OrderBy(d => d.DealerCode).Select(d => new
     { d.DealerCode, d.DealerName, d.DealerType, d.BUCode, d.BuPattern, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode,
-      d.FlagDirect, d.FlagActive, d.DealerScale, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
+      d.FlagDirect, d.FlagActive, d.DealerScale, d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
       d.GarageAddress, d.GarageManagerPhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
@@ -4215,6 +4215,87 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     var logs = await db.DealPatchLogs.Where(l => l.OrgId == t.OrgId && l.DealNo == dealNo)
         .OrderByDescending(l => l.Id).Take(200).Select(l => new { l.Field, l.OldValue, l.NewValue, l.PatchedAt }).ToListAsync();
     return Results.Ok(new { dealNo, count = logs.Count, logs });
+}).RequireAuthorization();
+
+// ===== Gán VÙNG THỊ TRƯỜNG cho đại lý (Mst_Dealer_UpdateMRKAMCode — port 1:1
+// `Mst_Dealer_UpdateMRKAMCode_New20181115`, 2010.HTC BizHTC.Marketing.cs:12035).
+// TWIN: WSHTC.cs:37369 và WSHTC.64:50350. =====
+// Nguồn chỉ ghi ĐÚNG MỘT cột `MRKAMCode` của `Mst_Dealer` (alColumnEffective chỉ có cột này),
+// sau khi kiểm đại lý tồn tại và vùng thị trường tồn tại (`MRK_Mst_AreaMarket_CheckDB`).
+app.MapPost("/api/dealers/update-mrkamcode", async (DealerMrkamCodeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var code = (dto.MRKAMCode ?? "").Trim();
+    var row = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer);
+    if (row is null) return Results.NotFound(new { error = $"Không có đại lý {dealer}." });
+    // Guard nguồn: vùng thị trường phải tồn tại trong MRK_Mst_AreaMarket.
+    if (!await db.MrkMstAreaMarkets.AnyAsync(x => x.OrgId == t.OrgId && x.MRKAMCode == code))
+        return Results.BadRequest(new { error = $"Vùng thị trường {code} không tồn tại." });
+    row.MRKAMCode = code;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.DealerCode, row.MRKAMCode });
+}).RequireAuthorization();
+
+// ===== Sinh mã dùng chung (Seq_Common_Get — port 1:1 `Seq_Common_Get_New20181115` (16924) →
+// `Seq_Common_MyGet` (16868) → `Seq_Common_Raw` (16854), 2010.HTC BizHTC.Marketing.cs).
+// TWIN: WSHTC.cs:592 và WSHTC.64:962. =====
+// 🔴 Mỗi loại mã có BA tham số riêng: bảng đếm, chuỗi format, và MODULO (nMaxSeq) — số đếm được
+//    lấy dư theo modulo nên mã sẽ QUAY VÒNG khi vượt ngưỡng. Đó là thiết kế của nguồn.
+// 🔴 HAI cặp loại mã dùng CHUNG bộ đếm: TCGIV + HTCIV → `Seq_PrintVAT`; CTRM + CDV → `Seq_CarReq`.
+// 🔴 Placeholder {3} là MÃ NGÀY 3 ký tự, mã hoá theo bảng "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+//    ký tự[năm - 2010] + ký tự[tháng] + ký tự[ngày]. Ví dụ 2026-09-06 → "G96".
+//    Bảng chỉ có 36 ký tự nên năm ≥ 2046 sẽ vượt chỉ số — giới hạn sẵn có của nguồn, giữ nguyên.
+var seqMap = new Dictionary<string, (string Table, string Format, long MaxSeq)>(StringComparer.OrdinalIgnoreCase)
+{
+    ["ID"] = ("Seq_Id", "{0}{1}{2}", 999000000000L),
+    ["MRKFP"] = ("Seq_MRKFilePath", "{0}MRKFP.{3}.{1:00000}{2}", 100000L),
+    ["PL"] = ("Seq_HMCList", "{0}PL.{3}.{1:00000}{2}", 100000L),
+    ["GPSUNMAPVINNO"] = ("Seq_GPSUnMapVINNo", "{0}{1}{2:00000}", 100000L),
+    ["TCGIV"] = ("Seq_PrintVAT", "{0}{1}{2:00000}", 100000L),
+    ["HTCIV"] = ("Seq_PrintVAT", "{0}{1}{2:00000}", 100000L),
+    ["BULKINFO"] = ("Seq_BulkInfo", "{0}{1}{2:00000}", 100000L),
+    ["REQUESTID"] = ("Seq_RequestId", "{0}{1}{2:00000}", 100000L),
+    ["CTRM"] = ("Seq_CarReq", "{0}{1}{2:00000}", 100000L),
+    ["CDV"] = ("Seq_CarReq", "{0}{1}{2:00000}", 100000L),
+    ["ATAPPRORDNO"] = ("Seq_ATApprOrdNo", "{0}ATAORDNO.{3}.{1:00000}{2}", 100000L),
+    ["GRTCEXTNO"] = ("Seq_GrtClaimExtNo", "{0}GRTCEXTNO.{3}.{1:00000}{2}", 100000L),
+};
+
+app.MapPost("/api/seqcommon/get", async (SeqCommonDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.SequenceType ?? "").Trim();
+    if (!seqMap.TryGetValue(type, out var map))
+        return Results.BadRequest(new { error = $"Loại mã không hợp lệ. Cho phép: {string.Join(", ", seqMap.Keys)}." });
+
+    // Nguồn mượn IDENTITY của SQL Server; ở đây tăng bộ đếm theo tên bảng Seq_* tương ứng.
+    var counter = await db.SeqCounters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SeqTableName == map.Table);
+    if (counter is null)
+    {
+        counter = new SeqCounter { OrgId = t.OrgId, SeqTableName = map.Table, LastValue = 0 };
+        db.SeqCounters.Add(counter);
+    }
+    counter.LastValue += 1;
+    await db.SaveChangesAsync();
+
+    // Mã ngày {3}: ký tự[năm-2010] + ký tự[tháng] + ký tự[ngày] trên bảng 36 ký tự.
+    const string enc = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    var now = DateTime.Now;
+    var yIdx = now.Year - 2010; // TConst.BizMix.Default_RootYear
+    if (yIdx < 0 || yIdx >= enc.Length)
+        return Results.BadRequest(new { error = $"Năm {now.Year} nằm ngoài bảng mã 36 ký tự của nguồn." });
+    var dateCode = $"{enc[yIdx]}{enc[now.Month]}{enc[now.Day]}";
+
+    var seq = counter.LastValue % map.MaxSeq; // 🔴 lấy DƯ — mã quay vòng khi vượt ngưỡng
+    var code = string.Format(map.Format, dto.ParamPrefix ?? "", seq, dto.ParamPostfix ?? "", dateCode);
+    return Results.Ok(new { sequenceType = type, seqTable = map.Table, seq, dateCode, code });
+}).RequireAuthorization();
+
+// Xem bộ đếm hiện tại (không cấp số mới) — tiện cho vận hành, nguồn không có hàm tương ứng.
+app.MapGet("/api/seqcommon", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.SeqCounters.Where(x => x.OrgId == t.OrgId)
+        .OrderBy(x => x.SeqTableName).Select(x => new { x.SeqTableName, x.LastValue }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // ===== Master của module Marketing (port 1:1 các hàm `*_Get` trong BizHTC.Marketing.cs:
@@ -23699,6 +23780,10 @@ record MrkCampaignDLKeyDto(string? DealerCode, string? MRKCamDLYear, string? MRK
 // Tài liệu marketing (Mst_Doc): chỉ có Create và Delete, không có Update.
 record MstDocCreateDto(string? DocName, string? DocType, string? FileNameActual, string? FilePath, string? Remark);
 record MstDocKeyDto(long Id);
+// Gán vùng thị trường marketing cho đại lý.
+record DealerMrkamCodeDto(string? DealerCode, string? MRKAMCode);
+// Sinh mã dùng chung: SequenceType + tiền tố/hậu tố do người gọi truyền.
+record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPostfix);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

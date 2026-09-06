@@ -43,6 +43,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MrkKpiDisbursment> MrkKpiDisbursments => Set<MrkKpiDisbursment>();
     public DbSet<MrkCampaign> MrkCampaigns => Set<MrkCampaign>();
     public DbSet<MrkCampaignDL> MrkCampaignDLs => Set<MrkCampaignDL>();
+    public DbSet<SeqCounter> SeqCounters => Set<SeqCounter>();
     public DbSet<MstKpi> MstKpis => Set<MstKpi>();
     public DbSet<MstKpiType> MstKpiTypes => Set<MstKpiType>();
     public DbSet<MrkMstAreaMarket> MrkMstAreaMarkets => Set<MrkMstAreaMarket>();
