@@ -7668,7 +7668,8 @@ app.MapGet("/api/transpdlv", async (AppDbContext db, ITenantContext t, string? t
     {
         m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, m.CreatedAt,
         m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
-        m.TranspReqNo, m.TranspReqType, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
+        m.TranspReqNo, m.TranspReqType, m.RefOrdNo, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
+        m.GPSDvNo, m.DlvEndGPSDateTime,
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -7688,7 +7689,7 @@ app.MapPost("/api/transpdlv", async (TranspDlvDto dto, AppDbContext db, ITenantC
         DealerCode = dto.DealerCode ?? "", ConfirmStatus = "Pending",
         // Hai phía duyệt độc lập, đều bắt đầu ở P (TConst.Stage.Pending).
         FDlvMnStatus = "P", TDlvMnStatus = "P",
-        TranspReqNo = dto.TranspReqNo, TranspReqType = dto.TranspReqType,
+        TranspReqNo = dto.TranspReqNo, TranspReqType = dto.TranspReqType, RefOrdNo = dto.RefOrdNo,
         FStorageCode = dto.FStorageCode, TStorageCode = dto.TStorageCode,
         FAddress = dto.FAddress, TAddress = dto.TAddress,
         DlvStartDate = dto.DlvStartDate, PlateNo = dto.PlateNo, DriverId = dto.DriverId
@@ -9766,6 +9767,191 @@ app.MapGet("/api/reports/car-delivery-not-dealer-point", async (
 
         skipHasPoint, skipRearrange, skipGpsStatus, skipNoCar, skipNoDealer,
         note = items.Count == 0 ? "Lưới danh sách dữ liệu trống!" : null   // đúng thông điệp form (:191)
+    });
+}).RequireAuthorization();
+
+// ===== #B05 BÁO CÁO XE CHUYỂN SAI VÙNG THỊ TRƯỜNG CHÍNH (TỈNH) =====
+// Port 1:1 `FrmRptXeChuyenSaiVungTTChinh` (2010.HTC TERP.HTCClient/Views/StoFGPS).
+// Trace twin LIVE: btnSearch_Click:176 → `ReportStoFGPSService.Rpt_CarChangeProvinceWhenDelivery` (:313)
+//   rẽ theo `checkWH` → WS (`WSHTC.asmx.cs:45495`) → `_biz.…_New20181115` (`BizHTC.ZTempGPS.cs:8982`, `_dbMain`)
+//   / WS `…_WH` (:69520) → `…_WH_New20181119` (`Biz.HTC.WH.cs:150464`, `_dbWH`).
+//   Bản CHẾT: `Delete.BizHTC.Report.cs:167673` và `…_New20181017`.
+// ✅ Đã grep `ws.`/`WSNM` trọn thân hàm ⇒ **không gọi WS ngoài** (luật C0-…tertius).
+// Nghiệp vụ: xe đã giao (có mốc GPS) nhưng SAU đó GPS báo xe sang tỉnh KHÁC tỉnh của đại lý.
+
+// Nạp nhật ký "xe đổi tỉnh" do hệ GPS/Veloca trả về (bảng `DMS_CHANGE_CITY` → `Rpt_CarChangeProvince`).
+// ⚠️ NỢ: job đồng bộ thật `Rpt_CarChangeProvince_Save_New20181119` (Biz.HTC.WH.cs:135185) gọi WS Veloca —
+//    MiniHTC không tới được ⇒ nhận qua payload, KHÔNG bịa dữ liệu.
+app.MapPost("/api/carchangeprovinces/import", async (List<CarChangeProvinceDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? storageCode) =>
+{
+    var list = (rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN) && !string.IsNullOrWhiteSpace(r.GPSDvNo)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Không có dòng đổi tỉnh để nạp." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var code = string.IsNullOrWhiteSpace(storageCode) ? "STOGPS" : storageCode!.Trim().ToUpperInvariant();
+    int added = 0, skipped = 0;
+    foreach (var r in list)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant(); var dv = r.GPSDvNo!.Trim().ToUpperInvariant();
+        // Nguồn chèn có `inner join Car_VIN` + `inner join Sto_StoBalanceGPS` (:135386-135390):
+        // VIN chưa khai hoặc thiết bị chưa khai ⇒ **không nhận dòng**.
+        if (!await db.CarVinMasters.AnyAsync(c => c.OrgId == t.OrgId && c.VIN == vin)) { skipped++; continue; }
+        if (!await db.GpsInstalls.AnyAsync(g => g.OrgId == t.OrgId && g.GpsNo == dv)) { skipped++; continue; }
+        if (await db.RptCarChangeProvinces.AnyAsync(x => x.OrgId == t.OrgId && x.AutoID == r.AutoID && r.AutoID != 0)) { skipped++; continue; }
+        db.RptCarChangeProvinces.Add(new RptCarChangeProvince
+        {
+            OrgId = t.OrgId, AutoID = r.AutoID, StorageCode = code, GPSDvNo = dv, VIN = vin,
+            GPSProvinceCode = r.GPSProvinceCode, ChangeDateTime = r.ChangeDateTime,
+            MapLongitude = r.MapLongitude, MapLatitude = r.MapLatitude, GPSAddress = r.Address,
+            Remark = "",                       // nguồn ghi chuỗi rỗng, không phải NULL (:135381)
+            LogLUDateTime = now, LogLUBy = who
+        });
+        added++;
+    }
+    await db.SaveChangesAsync();
+    // `Rpt_MaxAutoIDChangeProvince` của nguồn = mốc nước `max(AutoID)` cho lần đồng bộ sau.
+    var maxAutoId = await db.RptCarChangeProvinces.Where(x => x.OrgId == t.OrgId).Select(x => (long?)x.AutoID).MaxAsync() ?? 0;
+    return Results.Ok(new { added, skipped, maxAutoId });
+}).RequireAuthorization();
+
+app.MapGet("/api/carchangeprovinces", async (AppDbContext db, ITenantContext t, string? vin, string? device) =>
+{
+    var q = db.RptCarChangeProvinces.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(device)) q = q.Where(x => x.GPSDvNo == device!.Trim().ToUpperInvariant());
+    var items = await q.OrderByDescending(x => x.ChangeDateTime).Take(1000).Select(x => new
+    { x.AutoID, x.StorageCode, x.GPSDvNo, x.VIN, x.GPSProvinceCode, x.ChangeDateTime,
+      x.MapLongitude, x.MapLatitude, x.GPSAddress, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Danh mục tỉnh phía GPS + ánh xạ sang mã tỉnh DMS (`GPS_Mst_Province`, `Map_ProvinceGPS_DMS`).
+app.MapGet("/api/gpsprovinces", async (AppDbContext db, ITenantContext t) =>
+{
+    var provinces = await db.GpsMstProvinces.Where(x => x.OrgId == t.OrgId)
+        .OrderBy(x => x.GPSProvinceCode).Select(x => new { x.GPSProvinceCode, x.GPSProvinceName }).ToListAsync();
+    var maps = await db.MapProvinceGpsDmses.Where(x => x.OrgId == t.OrgId)
+        .OrderBy(x => x.GPSProvinceCode).Select(x => new { x.GPSProvinceCode, x.ProvinceCode }).ToListAsync();
+    return Results.Ok(new { provinces, maps });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsprovinces", async (GpsProvinceImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    int p = 0, m = 0;
+    foreach (var r in dto.Provinces ?? new())
+    {
+        if (string.IsNullOrWhiteSpace(r.GPSProvinceCode)) continue;
+        var code = r.GPSProvinceCode!.Trim().ToUpperInvariant();
+        var x = await db.GpsMstProvinces.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.GPSProvinceCode == code);
+        if (x is null) { x = new GpsMstProvince { OrgId = t.OrgId, GPSProvinceCode = code }; db.GpsMstProvinces.Add(x); }
+        x.GPSProvinceName = r.GPSProvinceName; p++;
+    }
+    foreach (var r in dto.Maps ?? new())
+    {
+        if (string.IsNullOrWhiteSpace(r.GPSProvinceCode) || string.IsNullOrWhiteSpace(r.ProvinceCode)) continue;
+        var gc = r.GPSProvinceCode!.Trim().ToUpperInvariant(); var pc = r.ProvinceCode!.Trim().ToUpperInvariant();
+        var x = await db.MapProvinceGpsDmses.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.GPSProvinceCode == gc);
+        if (x is null) { x = new MapProvinceGpsDms { OrgId = t.OrgId, GPSProvinceCode = gc }; db.MapProvinceGpsDmses.Add(x); }
+        x.ProvinceCode = pc; m++;
+    }
+    if (p == 0 && m == 0) return Results.BadRequest(new { error = "Không có dòng danh mục/ánh xạ tỉnh GPS để nạp." });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { provinces = p, maps = m });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/car-change-province-when-delivery", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? vin, DateTime? fromDate, DateTime? toDate, string? dataWH, string? buPattern) =>
+{
+    var dealerKey = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim().ToUpperInvariant();
+    var vinKey = string.IsNullOrWhiteSpace(vin) ? null : vin.Trim().ToUpperInvariant();
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `from Sto_DlvMinutes sdm` + `inner join Sto_StoBalanceGPS ssbagps on StorageCode='STOGPS' and GPSDvNo`
+    // + `and sdm.VIN = ssbagps.VIN` (điều kiện RỜI ở cuối where, :9114) ⇒ thiết bị phải đang gắn ĐÚNG xe đó.
+    var q = db.TranspDlvConfirms.Where(h => h.OrgId == t.OrgId
+        && h.DlvEndGPSDateTime != null);          // `sdm.DlvEndGPSDateTime is not null and <> ''`
+    if (dealerKey is not null) q = q.Where(h => h.DealerCode == dealerKey);   // nguồn lọc `sdm.DealerCode`
+    // Nguồn dùng CÙNG cột `sdm.DlvEndGPSDateTime` cho CẢ HAI bộ lọc ngày (:9128-9129 — `strDDDDeliveryDate…`
+    // cũng build trên `sdm.DlvEndGPSDateTime`, KHÔNG phải `ddd.DeliveryDate` như tên gợi ý). Port đúng vậy.
+    if (fromDate is not null) q = q.Where(h => h.DlvEndGPSDateTime >= fromDate);
+    if (toDate is not null) q = q.Where(h => h.DlvEndGPSDateTime <= toDate);
+
+    var heads = await q.Select(h => new { h.Id, h.DlvMinutesNo, h.GPSDvNo, h.DealerCode, h.DlvEndGPSDateTime, h.RefOrdNo }).ToListAsync();
+    var headIds = heads.Select(h => h.Id).ToList();
+    var headCars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && headIds.Contains(c.TranspDlvConfirmId))
+        .Select(c => new { c.TranspDlvConfirmId, c.VIN }).ToListAsync();
+    var allVins = headCars.Select(c => c.VIN).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && allVins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode }).ToListAsync();
+    var changes = await db.RptCarChangeProvinces.Where(x => x.OrgId == t.OrgId && allVins.Contains(x.VIN)).ToListAsync();
+    var maps = await db.MapProvinceGpsDmses.Where(x => x.OrgId == t.OrgId).Select(x => new { x.GPSProvinceCode, x.ProvinceCode }).ToListAsync();
+    var gpsProvinces = await db.GpsMstProvinces.Where(x => x.OrgId == t.OrgId).Select(x => new { x.GPSProvinceCode, x.GPSProvinceName }).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
+    var provinces = await db.MstProvinces.Where(p => p.OrgId == t.OrgId).Select(p => new { p.ProvinceCode, p.ProvinceName }).ToListAsync();
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtName, c.ColorExtNameVN }).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+    var doCars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId).Select(c => new { c.DoId, c.Vin, c.ConfirmStatus }).ToListAsync();
+    var dos = await db.DeliveryOrders.Where(o => o.OrgId == t.OrgId).Select(o => new { o.Id, DeliveryOrderNo = o.DoNo }).ToListAsync();   // `Car_DeliveryOrder.DeliveryOrderNo` ↔ MiniHTC `DoNo`
+
+    var items = new List<object>();
+    int skipNoDo = 0, skipNoChange = 0, skipNoMap = 0, skipSameProvince = 0, skipChangeBefore = 0, skipNoDealer = 0, skipNoCar = 0, skipDeviceVin = 0;
+    foreach (var h in heads)
+        foreach (var hc in headCars.Where(c => c.TranspDlvConfirmId == h.Id))
+        {
+            if (vinKey is not null && hc.VIN != vinKey) continue;             // `sdm.VIN` filter
+            // `and sdm.VIN = ssbagps.VIN` + `ssbagps.StorageCode = 'STOGPS' and sdm.GPSDvNo = ssbagps.GPSDvNo`
+            if (!db.GpsInstalls.Any(g => g.OrgId == t.OrgId && g.StorageCode == "STOGPS"
+                                         && g.GpsNo == h.GPSDvNo && g.Vin == hc.VIN)) { skipDeviceVin++; continue; }
+            var car = cars.FirstOrDefault(c => c.VIN == hc.VIN);              // `inner join Car_VIN cv`
+            if (car is null) { skipNoCar++; continue; }
+            // `inner join Car_DeliveryOrderDetail cdod on sdm.RefOrdNo = cdod.DeliveryOrderNo
+            //  and cc.CarId = cdod.CarId and cdod.ConfirmStatus in ('A','F')`
+            var doId = dos.FirstOrDefault(o => o.DeliveryOrderNo == h.RefOrdNo)?.Id;
+            var dline = doId is null ? null : doCars.FirstOrDefault(c => c.DoId == doId && c.Vin == hc.VIN);
+            if (dline is null || (dline.ConfirmStatus != "A" && dline.ConfirmStatus != "F")) { skipNoDo++; continue; }
+            var dl = dealers.FirstOrDefault(d => d.DealerCode == h.DealerCode);
+            if (dl is null) { skipNoDealer++; continue; }                     // `inner join Mst_Province on md.ProvinceCode`
+            if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { skipNoDealer++; continue; }
+            var mo = models.FirstOrDefault(x => x.ModelCode == car.ModelCode);
+            var co = colors.FirstOrDefault(x => x.ModelCode == car.ModelCode && x.ColorCode == car.ColorCode);
+            var sp = specs.FirstOrDefault(x => x.SpecCode == car.SpecCode);
+            var prov = provinces.FirstOrDefault(x => x.ProvinceCode == dl.ProvinceCode);
+            if (prov is null) { skipNoDealer++; continue; }
+            foreach (var ch in changes.Where(c => c.VIN == hc.VIN))           // `inner join Rpt_CarChangeProvince`
+            {
+                var map = maps.FirstOrDefault(x => x.GPSProvinceCode == ch.GPSProvinceCode);
+                if (map is null) { skipNoMap++; continue; }                   // `inner join Map_ProvinceGPS_DMS`
+                // 🔴 ĐIỀU KIỆN CỐT LÕI 1: tỉnh GPS (đã quy đổi) KHÁC tỉnh của đại lý.
+                if (string.Equals(map.ProvinceCode, dl.ProvinceCode, StringComparison.OrdinalIgnoreCase)) { skipSameProvince++; continue; }
+                // 🔴 ĐIỀU KIỆN CỐT LÕI 2: lần đổi tỉnh xảy ra SAU thời điểm giao xe.
+                if (ch.ChangeDateTime is null || ch.ChangeDateTime < h.DlvEndGPSDateTime) { skipChangeBefore++; continue; }
+                var gp = gpsProvinces.FirstOrDefault(x => x.GPSProvinceCode == ch.GPSProvinceCode);
+                if (gp is null) { skipNoMap++; continue; }                    // `inner join GPS_Mst_Province`
+                items.Add(new
+                {
+                    dlvMnNo = h.DlvMinutesNo, gpsDvNo = h.GPSDvNo, vin = hc.VIN,
+                    dealerCode = h.DealerCode, dealerName = dl.DealerName,
+                    provinceCode = dl.ProvinceCode, provinceName = prov.ProvinceName,
+                    gpsProvinceCode = map.GPSProvinceCode, gpsProvinceName = gp.GPSProvinceName,
+                    modelCode = car.ModelCode, modelName = mo?.ModelName,
+                    colorCode = car.ColorCode, colorExtName = co?.ColorExtName, colorExtNameVN = co?.ColorExtNameVN,
+                    specCode = car.SpecCode, specDescription = sp?.SpecDesc,
+                    changeProvinceDateTime = ch.ChangeDateTime,     // alias `ChangeProvinceDateTime` của nguồn
+                    gpsAddress = ch.GPSAddress
+                });
+            }
+        }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        dataWH = dataWH == "1" || dataWH == "true",
+        dataWHNote = "Nguồn có 2 hàm (Main/WH) cùng thuật toán, khác DB đích; MiniHTC 1 DB ⇒ cờ không đổi kết quả.",
+        dealerChainNote = "Nguồn lấy đại lý qua chuỗi Car_Car→Dls_DealDetail→DLS_Deal(FlagInitDeal='0')→Mst_Dealer (3 bảng đầu chưa có trong MiniHTC) rồi so md.ProvinceCode; ở đây dùng đại lý trên chính biên bản (sdm.DealerCode) — XẤP XỈ CÓ NHÃN.",
+        skipDeviceVin, skipNoCar, skipNoDo, skipNoChange, skipNoMap, skipSameProvince, skipChangeBefore, skipNoDealer,
+        note = items.Count == 0 ? "Lưới danh sách dữ liệu trống!" : null
     });
 }).RequireAuthorization();
 
@@ -32222,6 +32408,12 @@ record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, strin
 record GpsPaymentDto(DateTime? PmtMonth, List<GpsPaymentLineDto>? Lines);
 record GpsInstallDto(string Vin, string GpsNo, DateTime? DateActive, string? StorageCode = null, string? GpsBoxNo = null, string? VinReal = null, string? RefNoType = null, string? RefNoPk = null, string? InStatus = null, string? BlockStatus = null, string? Remark = null);
 record GpsOnlineResultDto(string? Imei, string? Address);
+/// <summary>#B05: một dòng bảng `DMS_CHANGE_CITY` do hệ GPS/Veloca trả về
+/// (`Rpt_CarChangeProvince_Save_New20181119`, Biz.HTC.WH.cs:135318-135330).</summary>
+record CarChangeProvinceDto(long AutoID, string? GPSDvNo, string? VIN, string? GPSProvinceCode, DateTime? ChangeDateTime, decimal? MapLongitude, decimal? MapLatitude, string? Address);
+record GpsMstProvinceDto(string? GPSProvinceCode, string? GPSProvinceName);
+record MapProvinceGpsDmsDto(string? GPSProvinceCode, string? ProvinceCode);
+record GpsProvinceImportDto(List<GpsMstProvinceDto>? Provinces, List<MapProvinceGpsDmsDto>? Maps);
 /// <summary>#B03: một dòng bảng `Rpt_CarInStoAndMapGPS` do WS NHÀ MÁY trả về
 /// (`WSNM.WS.MMS_Rpt_CarInStoAndMapGPS` — `#tbl_Mnf_VIN`: VIN / VINReal / GPSNo).</summary>
 record MnfVinGpsDto(string? VIN, string? VINReal, string? GPSNo);
@@ -32602,7 +32794,7 @@ record TranspDlvDto(
     string? TranspReqNo = null, string? TranspReqType = null,
     string? FStorageCode = null, string? TStorageCode = null,
     string? FAddress = null, string? TAddress = null,
-    DateTime? DlvStartDate = null, string? PlateNo = null, string? DriverId = null);
+    DateTime? DlvStartDate = null, string? PlateNo = null, string? DriverId = null, string? RefOrdNo = null);
 record TranspConfirmDto(string? Remark);
 /// <summary>Một dòng của bảng kiểm tra tình trạng xe trên biên bản giao nhận.</summary>
 record DlvCheckLineDto(string? ItemCode, string? Status);

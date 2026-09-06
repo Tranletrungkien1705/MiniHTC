@@ -11502,6 +11502,14 @@ public sealed class TranspDlvConfirm
     public string? TranspReqNo { get; set; }
     public string? TranspReqType { get; set; }
 
+    /// <summary>
+    /// 🔴 #B05: Số chứng từ NGUỒN của biên bản (`Sto_DlvMinutes.RefOrdNo`) — **khác** <see cref="TranspReqNo"/>.
+    /// Báo cáo *Xe chuyển sai vùng thị trường chính* nối `sdm.RefOrdNo = cdod.DeliveryOrderNo`
+    /// (`BizHTC.ZTempGPS.cs:9078-9081`) để lấy dòng lệnh giao xe đang ở `ConfirmStatus in ('A','F')`.
+    /// Không có cột này thì không lần được biên bản về lệnh giao.
+    /// </summary>
+    public string? RefOrdNo { get; set; }
+
     /// <summary>Kho + địa chỉ hai đầu tuyến (FSTORAGECODE/TSTORAGECODE, FADDRESS/TADDRESS).</summary>
     public string? FStorageCode { get; set; }
     public string? TStorageCode { get; set; }
@@ -13196,4 +13204,60 @@ public sealed class ServiceInsuranceCustomer
     public string? Address { get; set; }           // gridAddress
     public string? Mobile { get; set; }            // gridTelephone (FieldName = Mobile)
     public string? Description { get; set; }       // gridDescription
+}
+
+// ===== #B05 Ba bảng cho báo cáo "Xe chuyển sai vùng thị trường chính (tỉnh)" =====
+// Nguồn: `Rpt_CarChangeProvinceWhenDelivery_New20181115` (`BizHTC.ZTempGPS.cs:8982`, twin LIVE của
+// `FrmRptXeChuyenSaiVungTTChinh`). Ba bảng này trước đây KHÔNG CÓ trong MiniHTC ⇒ báo cáo không thể port.
+
+/// <summary>
+/// Nhật ký xe ĐỔI TỈNH theo GPS (`Rpt_CarChangeProvince`). Dữ liệu do job đồng bộ Veloca ghi vào:
+/// `Rpt_CarChangeProvince_Save_New20181119` (`Biz.HTC.WH.cs:135185`) gọi WS GPS lấy bảng `DMS_CHANGE_CITY`
+/// rồi `insert into Rpt_CarChangeProvince (AutoID, StorageCode, GPSDvNo, VIN, GPSProvinceCode, ChangeDateTime,
+/// MapLongitude, MapLatitude, GPSAddress, Remark, LogLUDateTime, LogLUBy)` (:135359-135387).
+/// ⚠️ `AutoID` là **số của phía GPS/Veloca**, KHÔNG phải identity của DB — nguồn chép thẳng `t.AutoID`
+/// và dùng `max(AutoID)` làm mốc nước (`Rpt_MaxAutoIDChangeProvince`) cho lần đồng bộ sau.
+/// 🔴 Nợ: job đồng bộ Veloca chưa port (MiniHTC không tới được Veloca) — xem log #B05.
+/// </summary>
+public sealed class RptCarChangeProvince
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số bản ghi phía GPS (`AutoID`) — mốc nước đồng bộ, không phải khoá của MiniHTC.</summary>
+    public long AutoID { get; set; }
+    public string? StorageCode { get; set; }
+    public string GPSDvNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    /// <summary>Mã tỉnh THEO HỆ GPS (`GPSProvinceCode`) — phải qua <see cref="MapProvinceGpsDms"/>
+    /// mới ra mã tỉnh của DMS.</summary>
+    public string? GPSProvinceCode { get; set; }
+    /// <summary>Thời điểm xe đổi tỉnh (`ChangeDateTime`) — báo cáo đòi `>= DlvEndGPSDateTime`.</summary>
+    public DateTime? ChangeDateTime { get; set; }
+    public decimal? MapLongitude { get; set; }
+    public decimal? MapLatitude { get; set; }
+    public string? GPSAddress { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Ánh xạ mã tỉnh GPS ↔ mã tỉnh DMS (`Map_ProvinceGPS_DMS`).
+/// Nguồn chỉ dùng đúng hai cột này (`BizHTC.ZTempGPS.cs:9096-9097` + điều kiện
+/// `mpgpsdms.ProvinceCode != md.ProvinceCode`) ⇒ chỉ khai hai cột có BẰNG CHỨNG, không bịa thêm.</summary>
+public sealed class MapProvinceGpsDms
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GPSProvinceCode { get; set; } = "";
+    public string ProvinceCode { get; set; } = "";
+}
+
+/// <summary>Danh mục tỉnh phía hệ GPS (`GPS_Mst_Province`). Nguồn dùng `GPSProvinceCode` + `GPSProvinceName`
+/// (`BizHTC.ZTempGPS.cs:9107-9108`).</summary>
+public sealed class GpsMstProvince
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GPSProvinceCode { get; set; } = "";
+    public string? GPSProvinceName { get; set; }
 }

@@ -445,6 +445,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<TranspDlvConfirm> TranspDlvConfirms => Set<TranspDlvConfirm>();
     public DbSet<TranspDlvConfirmCar> TranspDlvConfirmCars => Set<TranspDlvConfirmCar>();
     public DbSet<DlvMinutesCheckItem> DlvMinutesCheckItems => Set<DlvMinutesCheckItem>();
+    // #B05 báo cáo xe chuyển sai vùng thị trường chính
+    public DbSet<RptCarChangeProvince> RptCarChangeProvinces => Set<RptCarChangeProvince>();
+    public DbSet<MapProvinceGpsDms> MapProvinceGpsDmses => Set<MapProvinceGpsDms>();
+    public DbSet<GpsMstProvince> GpsMstProvinces => Set<GpsMstProvince>();
     public DbSet<HmcSalesRecord> HmcSalesRecords => Set<HmcSalesRecord>();
     public DbSet<BackOrder> BackOrders => Set<BackOrder>();
     public DbSet<BankAccount> BankAccounts => Set<BankAccount>();
