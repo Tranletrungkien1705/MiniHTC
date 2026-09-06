@@ -5441,6 +5441,16 @@ public sealed class CarDocRequestCar
     /// (Tên property đặt `CarDocReqTypeCRR` để không lẫn với các cột TypeCRR khác trong hệ.)
     /// </summary>
     public string? CarDocReqTypeCRR { get; set; }
+
+    // ===== #209 parity `CarDocReqDtlReject_New20181119` (DataWH/Biz.HTC.WH.cs:83426) =====
+    // 🔴 Nguồn thao tác ở mức **DÒNG** (`Car_DocReqDtl`), không phải header: cả họ lệnh đều là
+    //    `...DtlApprove2` / `...DtlCancel` / `...DtlReject` / `...DtlDelete`.
+    /// <summary>Trạng thái của DÒNG (`DRDtlStatus`) — trục riêng, khác trạng thái đề nghị (`DRListStatus`).</summary>
+    public string? DRDtlStatus { get; set; }
+    public DateTime? RejectDate { get; set; }
+    public string? RejectBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

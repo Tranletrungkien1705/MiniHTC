@@ -26517,16 +26517,59 @@ app.MapPost("/api/cardocrequests/{no}/complete", async (string no, AppDbContext 
     return Results.Ok(new { r.RequestNo, status = r.Status });
 }).RequireAuthorization();
 
-// Từ chối đề nghị giấy tờ xe (FrmDRApproved)
-app.MapPost("/api/cardocrequests/{no}/reject", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #209 TỪ CHỐI THEO DÒNG — `CarDocReqDtlReject_New20181119` (DataWH/Biz.HTC.WH.cs:83426) =====
+// BƯỚC 3B: căn theo **MỐC HÀM** (laptop 83426 / máy 150 83431 — file này lệch offset, xem luật #208):
+//   md5 vùng hàm `634c0032` KHỚP 2 máy.
+// TWIN FILE: hàm còn ở `Biz.HTC.WH.Rel.20230823.cs:79543` — file KHÔNG có trong csproj ⇒ FILE CHẾT.
+//
+// ⚠️ ĐÃ BỎ `POST /api/cardocrequests/{no}/reject` (từ chối theo HEADER): nguồn **không có** lệnh nào từ chối
+//    cả đề nghị. Cả họ lệnh đều ở mức DÒNG — `CarDocReqDtlApprove2` · `CarDocReqDtlCancel` ·
+//    `CarDocReqDtlReject` · `Car_DocReqDtlDelete`; mức đề nghị chỉ có `CarDocReqListCancel`/`...ListDelete`.
+//
+// BA GUARD của nguồn, đúng thứ tự:
+//  1. DÒNG phải đang **"A2"** (đã duyệt cấp 2) — `myCar_CheckCar_DocReqDtl(..., "A2")`;
+//  2. ĐỀ NGHỊ phải thuộc **"P,A1,A2,F"** — `myCar_CheckCarDocReq(..., "P,A1,A2,F")`;
+//  3. 🔴 **GUARD CHÉO Normal ↔ SPECIAL**: nếu đề nghị là loại `Normal` mà chính VIN đó còn nằm trong một
+//     đề nghị **SPECIAL khác** còn sống (`DRListStatus not in ('R','C')` **và** `DRDtlStatus not in ('R','C')`)
+//     ⇒ chặn với `CarDocReqDtlReject_ExistAnotherSpecial` — *muốn huỷ ĐN Normal phải huỷ ĐN Special trước*.
+//
+// Nguồn ghi trên DÒNG: `DRDtlStatus = Stage.Rejected ("R")` · `RejectDate` · `RejectBy` · `Remark` · `LogLU*`.
+// ⚠️ NỢ: `CarDocRequest.Status` của port đang dùng từ vựng `Draft/Done/Rejected` — nguồn dùng `DRListStatus`
+//    với bộ P/A1/A2/F/R/C. Đổi sẽ lan ra nhiều endpoint ⇒ để lượt riêng (giữ "một biến").
+app.MapPost("/api/cardocrequests/{no}/cars/{carId}/reject", async (string no, string carId,
+    SoRejectDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    no = no.Trim().ToUpperInvariant();
+    no = no.Trim().ToUpperInvariant(); carId = carId.Trim().ToUpperInvariant();
     var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Chỉ từ chối đề nghị đang chờ." });
-    r.Status = "Rejected"; r.RejectReason = dto.Reason; r.RejectedAt = DateTime.Now;
+    var line = await db.CarDocRequestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestId == r.Id && x.CarId == carId);
+    if (line is null) return Results.NotFound(new { no, carId });
+
+    // guard 1 — dòng phải đã duyệt cấp 2.
+    if ((line.DRDtlStatus ?? "") != "A2")
+        return Results.BadRequest(new { error = $"Dòng xe {carId} đang '{line.DRDtlStatus}' — chỉ từ chối dòng đã duyệt cấp 2 (A2)." });
+
+    // guard 3 — Normal mà VIN còn trong một ĐN SPECIAL khác còn sống thì chặn.
+    if (string.Equals(line.CarDocReqTypeCRR, "NORMAL", StringComparison.OrdinalIgnoreCase))
+    {
+        var conflict = await db.CarDocRequestCars
+            .Where(x => x.OrgId == t.OrgId && x.CarId == carId && x.RequestId != r.Id
+                     && x.DRDtlStatus != "R" && x.DRDtlStatus != "C"
+                     && x.CarDocReqTypeCRR == "SPECIAL")
+            .Select(x => x.RequestId).FirstOrDefaultAsync();
+        if (conflict != 0)
+            return Results.BadRequest(new { error = $"Xe {carId} còn nằm trong một đề nghị SPECIAL khác — phải huỷ đề nghị SPECIAL trước.", conflictRequestId = conflict });
+    }
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    line.DRDtlStatus = "R";                      // TConst.Stage.Rejected
+    line.RejectDate = now; line.RejectBy = who;
+    if (!string.IsNullOrWhiteSpace(dto?.Reason)) line.Remark = dto!.Reason!.Trim();   // nguồn ghi vào `Remark`
+    line.LogLUDateTime = now; line.LogLUBy = who;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RequestNo, status = r.Status });
+    return Results.Ok(new { r.RequestNo, line.CarId, drDtlStatus = line.DRDtlStatus, line.RejectDate, line.RejectBy, line.Remark });
 }).RequireAuthorization();
 
 // ===== Lệnh giao xe cho đại lý (DeliveryOrder — port 1:1 FrmNewDO/FrmMngDO, DMSales.Foton) =====

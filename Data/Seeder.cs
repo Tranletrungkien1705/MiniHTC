@@ -845,6 +845,12 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #209 parity CarDocReqDtlReject: trang thai + moc tu choi o muc DONG
+        "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"DRDtlStatus\" text",
+        "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"RejectDate\" timestamp",
+        "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"RejectBy\" text",
+        "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #208 parity DMS40_Ord_SalesOrderRoot_Cancel1/Cancel2
         "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp",
         "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text",
