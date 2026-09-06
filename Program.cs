@@ -32768,6 +32768,44 @@ var roStage4Search = new Dictionary<string, string[]>
 string[] roCompletedStatuses = { "Paid", "Finished" };
 
 // Danh mục trạng thái RO + nhóm tìm kiếm, để client dựng bộ lọc đúng như WinForm.
+// ===== 🔴 #284 NHÃN HIỂN THỊ TRẠNG THÁI LSC — `StatusName` (khác NHÓM TÌM KIẾM đã port) =====
+// Nguồn: `DMSCarSv/TERP.BizCarSv/BizCarSv.Service.RO.cs:1327-1340`, viết THẲNG trong SQL của
+//   `Ser_RO_GetStatusList02_GetClaimX_New20230220`.
+// 🆕 Tìm ra nhờ **sweep luật che `ELSE '******'`** (sinh từ #283): quét cả DMSCarSv + 2010.HTC được
+//   **24 hit** (sau khi loại file chết) — tất cả thuộc họ `Ser_RO_GetStatusList02*`, tức **cùng một màn**
+//   với cái iCIC đã port ở #283. Nhánh 2010.HTC `ERP.V15.DataWH.Release.2025`: **0 hit**.
+// ✅ TRACE TWIN: WS `WSCarSv.asmx.cs:10149` gọi `Ser_RO_GetStatusList02_New20230220` ⇒ bản trần
+//   (`Service01.cs:1214`) và `_WH` (`WH.cs:30391`) CHẾT.
+//
+// 🔴 HAI BẢNG PHÂN NHÓM KHÁC NHAU cho HAI mục đích — port cũ mới có một:
+//   • `roStage4Search` (đã có): nhóm để **TÌM KIẾM**, gộp `Repaired + Paid` vào "Sửa xong".
+//   • `roStatusDisplayNames` (MỚI): nhãn để **HIỂN THỊ**, **TÁCH RIÊNG** `PAID` = "Thanh toán xong".
+//     Nguồn ghi chú ngay tại dòng: *"Issue 981: [Trạng thái báo giá] - thêm trạng thái thanh toán xong"*
+//     ⇒ việc tách là **thay đổi nghiệp vụ có số hiệu**, không phải trùng lặp.
+// ⚠️ `REJ` = "Lệnh hủy" đứng RIÊNG, còn "Hủy, Hẹn lại" là `W4P/HPA/NORE` — khớp đúng điều đã ghi trong sổ:
+//   nhóm "Hủy, Hẹn lại" **KHÔNG** gồm `Rejected`.
+// ⚠️ Bản CŨ dùng hàm SQL `dbo.ROStatus_GetStatusNameByCode(ro.Status)`; bản LIVE **viết thẳng CASE** ⇒
+//   bảng nhãn chuẩn nay nằm trong code, không nằm trong DB.
+var roStatusDisplayNames = new Dictionary<string, string>
+{
+    ["Created"] = "Chờ sửa", ["PrintedQuote"] = "Chờ sửa", ["HasRO"] = "Chờ sửa",   // CRE, PRT, HRO
+    ["InGarage"] = "Đang sửa",                                                      // INGA
+    ["Repaired"] = "Sửa xong",                                                      // RPRD
+    ["CheckEnd"] = "Kiểm tra cuối cùng",                                            // CEND
+    ["Paid"] = "Thanh toán xong",                                                   // PAID — Issue 981
+    ["Finished"] = "Đã giao xe",                                                    // FNS
+    ["Rejected"] = "Lệnh hủy",                                                      // REJ — RIÊNG
+    ["Wait4Part"] = "Hủy, Hẹn lại", ["HasPart"] = "Hủy, Hẹn lại", ["NotResponding"] = "Hủy, Hẹn lại",
+};
+// Nguồn có nhánh `else N'Không xác định'` — giữ nguyên, KHÔNG trả rỗng.
+string RoStatusDisplayName(string? st) => st is not null && roStatusDisplayNames.TryGetValue(st, out var n) ? n : "Không xác định";
+
+app.MapGet("/api/repairorders/statusnames", () => Results.Ok(new
+{
+    names = roStatusDisplayNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Bảng NHÃN HIỂN THỊ — khác bảng NHÓM TÌM KIẾM (/api/repairorders?stage=...): tìm kiếm gộp Paid vào Sửa xong, hiển thị tách riêng Thanh toán xong (Issue 981).",
+})).RequireAuthorization();
+
 // ===== 🔴 #283 TRA LỆNH SỬA CHỮA CHÉO ĐẠI LÝ (tổng đài iCIC) — `Ser_RO_GetStatusHistoryList_New20180622` =====
 // Nguồn: `ERP.ICIC/TERP.BizCarSv/BizCarSv.Customer.cs:2869` (hệ **CHỈ CÓ TRÊN LAPTOP**).
 // TRACE TWIN: ba bản — bản trần (:2362) · `_Old` (:2611) · `_New20180622` (:2869);
@@ -32789,9 +32827,12 @@ string[] roCompletedStatuses = { "Paid", "Finished" };
 //   bóc tiền tố đã port ở `/api/stockreqs`.
 // ⚠️ `TOP 500` + `ORDER BY ro.CheckInDate DESC` đặt ở **truy vấn LỌC ĐẦU TIÊN**, trước mọi join ⇒ cắt theo
 //   ngày tiếp nhận, không phải cắt sau khi ghép dữ liệu.
+// #284: bản DMSCarSv của CÙNG màn này (`Ser_RO_GetStatusList02_New20230220`) có thêm bộ lọc
+//   `strActualDeliveryDate` (ngày GIAO XE thực tế) và trả kèm `plateNoList` — bản iCIC không có.
+//   Gộp vào đây thay vì dựng endpoint thứ hai: **cùng một màn, hai hệ gọi**.
 app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantContext t,
     string? callerDealerCode, string? dealers, string? status, string? plateNo, string? frameNo,
-    string? cusName, DateTime? checkInDate) =>
+    string? cusName, DateTime? checkInDate, DateTime? actualDeliveryDate) =>
 {
     var caller = (callerDealerCode ?? "").Trim().ToUpperInvariant();
 
@@ -32809,6 +32850,12 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
         qy = qy.Where(r => r.CheckInDate != null && r.CheckInDate >= d0 && r.CheckInDate < d1);
     }
 
+    if (actualDeliveryDate.HasValue)
+    {
+        var a0 = actualDeliveryDate.Value.Date; var a1 = a0.AddDays(1);
+        qy = qy.Where(r => r.ActualDeliveryDate != null && r.ActualDeliveryDate >= a0 && r.ActualDeliveryDate < a1);
+    }
+
     // TOP 500 + sắp theo ngày tiếp nhận GIẢM DẦN — đúng vị trí của nguồn: cắt TRƯỚC khi ghép dữ liệu.
     var rows = await qy.OrderByDescending(r => r.CheckInDate).Take(500).ToListAsync();
 
@@ -32823,7 +32870,8 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
             normalizedRONo = own ? "LS-" + r.RONo : MASK,             // tiền tố LỆNH SỬA CHỮA — CHE nếu khác đại lý
             normalizedCreator = own ? r.Creator : MASK,
             r.DealerCode, r.LicensePlate, r.Vin, r.CusName, r.Status,
-            r.CheckInDate, r.TrademarkNameModel,
+            statusName = RoStatusDisplayName(r.Status),   // #284 nhãn hiển thị của nguồn
+            r.CheckInDate, r.ActualDeliveryDate, r.TrademarkNameModel,
             isOwnDealer = own,
         };
     }).ToList();
@@ -32832,6 +32880,8 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
     {
         callerDealerCode = caller.Length == 0 ? null : caller,
         note = "Số lệnh (LS-) và người lập bị che ****** khi lệnh thuộc đại lý KHÁC đại lý gọi; tiền tố BG- không che.",
+        // #284: nguồn DMSCarSv gộp biển số thành MỘT chuỗi ngăn bằng dấu phẩy (STUFF … FOR XML PATH).
+        plateNoList = string.Join(",", rows.Select(r => r.LicensePlate).Where(p => !string.IsNullOrWhiteSpace(p)).Distinct()),
         count = items.Count, items,
     });
 }).RequireAuthorization();
