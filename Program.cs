@@ -28406,6 +28406,48 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
 }).RequireAuthorization();
 
 // Tạo bản ghi MACE (WinForm gốc chỉ search vì nguồn phát sinh từ hãng — thêm POST để nhập tay tương đương)
+// ===== 🔴 #216 LỊCH HẸN BẢO DƯỠNG đã chốt ngày — `Ser_CustomerCareMaceApointDate_Get` =====
+// Màn gốc: `Views/Customer/FrmCustomerCareMaceApointDate.cs` (369 dòng, DMSCarSv) —
+//   ba nút `btnSearch` · `btnExportExcel` · `btnThoat` (grep KHÔNG phân biệt hoa/thường, luật #212).
+// Nguồn: `TERP.BizCarSv/BizCarSv.Customer.cs:13429`. 3B: md5 CẢ FILE `44c7c87b` KHỚP 2 máy (đo ở #210).
+//
+// 🔴 HAI GUARD CỨNG trong chính câu SQL của nguồn (không phải tham số lọc):
+//     `and t.Status = '1'`            — CHỈ lấy dòng **đã liên hệ**
+//     `and t.ApointDate is not null`  — và **đã chốt ngày hẹn**
+//   ⇒ đây là màn "lịch hẹn đã chốt", KHÔNG phải danh sách nhắc bảo dưỡng nói chung
+//     (danh sách chung là `/api/customercaremaces` đã có, lọc status tuỳ ý).
+//
+// Bảng mã `TConst.SerCareMaceStatus` (Const.Main.cs:365): **0 chưa liên hệ · 1 đã liên hệ · 2 không liên hệ**
+//   — nguồn dịch sang chữ ngay trong SELECT (`StatusText`); port trả kèm để khỏi map lại ở client.
+// Bộ lọc của form: tên khách + biển số + khoảng `ApointDate` (from/to). Nguồn dựng bằng `BuildClause`,
+//   chuỗi rỗng ⇒ **bỏ hẳn điều kiện** (luật `C0-trecentesimusvicesimusquartus`).
+app.MapGet("/api/customercaremaces/appointments", async (AppDbContext db, ITenantContext t,
+    string? cusName, string? plateNo, DateTime? fromDate, DateTime? toDate) =>
+{
+    // hai guard cứng của nguồn — luôn áp, không cho client tắt
+    var qy = db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId && c.Status == "1" && c.ApointDate != null);
+
+    if (!string.IsNullOrWhiteSpace(cusName))
+        qy = qy.Where(c => c.CusName != null && c.CusName.ToLower().Contains(cusName!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(plateNo))
+        qy = qy.Where(c => c.Vin != null && c.Vin.ToLower().Contains(plateNo!.Trim().ToLower()));
+    if (fromDate.HasValue) qy = qy.Where(c => c.ApointDate!.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) qy = qy.Where(c => c.ApointDate!.Value.Date <= toDate.Value.Date);
+
+    var items = await qy.OrderBy(c => c.ApointDate).Take(500)
+        .Select(c => new
+        {
+            c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName,
+            c.Status,
+            statusText = c.Status == "0" ? "Chưa liên hệ" : c.Status == "1" ? "Đã liên hệ" : c.Status == "2" ? "Không liên hệ" : c.Status,
+            c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark
+        }).ToListAsync();
+
+    return Results.Ok(new { count = items.Count, items,
+        note = "Luôn lọc Status='1' (đã liên hệ) và ApointDate != null — hai điều kiện nằm CỨNG trong SQL nguồn.",
+        skipped = "Nguồn còn join Ser_Car (FrameNo) + ser_mst_model + ser_ro để hiện khung/model/lệnh sửa chữa — MiniHTC lưu Vin trên chính dòng, chưa nối các bảng đó, KHÔNG bịa." });
+}).RequireAuthorization();
+
 app.MapPost("/api/customercaremaces", async (CustomerCareMaceDto dto, AppDbContext db, ITenantContext t) =>
 {
     var maceType = (dto.MaceType ?? "").Trim();
