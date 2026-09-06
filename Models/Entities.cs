@@ -2298,6 +2298,40 @@ public sealed class PartStockIn
     public string? SupplierID { get; set; }
     public string? TSTRequestNo { get; set; }   // số yêu cầu xuất NCC
     public string? BillNo { get; set; }         // số hoá đơn NCC
+
+    // ===== 🔴 #265: 16 cột nguồn `TblSerInvStockIn` (DbDefine.cs:1122-1148) mà port cũ THIẾU =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+    public string? StockInID { get; set; }
+    public string? StatusText { get; set; }     // nguồn lưu CẢ NHÃN trạng thái
+    public string? Description { get; set; }
+    public string? UserCode { get; set; }
+
+    // --- khối VẬN CHUYỂN (4) — giống phiếu xuất (#264) ---
+    public string? DriverName { get; set; }
+    public string? DrivingLicense { get; set; }
+    public string? DriverID { get; set; }
+    public string? TruckNo { get; set; }
+
+    /// <summary>STOCKOUTNO — số phiếu XUẤT tương ứng (nhập do kho khác xuất sang).</summary>
+    public string? StockOutNo { get; set; }
+
+    // --- khối ĐIỀU CHỈNH (5) ---
+    /// <summary>🔴 `IsAdjustment` — phiếu nhập có **CỜ RIÊNG** đánh dấu là phiếu điều chỉnh,
+    /// KHÁC phiếu xuất (#264) vốn chỉ có `OldStockOutID`. Ở đây có **cả cờ lẫn Old ID**.</summary>
+    public string? IsAdjustment { get; set; }
+    public string? AdjustmentBy { get; set; }
+    public DateTime? AdjustmentDate { get; set; }
+    public string? AdjustmentNote { get; set; }
+    public string? OldStockInID { get; set; }
+
+    /// <summary>
+    /// 🔴 MẮT XÍCH `Ser_Order_Part` → nhập kho: `OrderPartId`/`OrderPartNo` nối phiếu nhập về **đơn đặt
+    /// phụ tùng** (cụm TST, #234), còn `FlagOrderNCC` đánh dấu nhập theo đơn đặt NCC.
+    /// Thiếu ba cột này thì không truy được hàng nhập về từ đơn nào.
+    /// </summary>
+    public string? OrderPartId { get; set; }
+    public string? OrderPartNo { get; set; }
+    public string? FlagOrderNCC { get; set; }
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>

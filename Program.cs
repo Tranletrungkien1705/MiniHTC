@@ -31451,6 +31451,27 @@ app.MapPost("/api/stockouts/{no}/reject", async (string no, StockRejectDto dto, 
 //    `ServiceStockIn` — và cụm đó port **CÙNG một bảng nguồn `Ser_Inv_StockIn`** với `PartStockIn` dưới đây
 //    (`TblSerInvStockIn` chỉ là lớp hằng TÊN CỘT phía client, không phải bảng thứ hai).
 //    ⇒ Nợ GỘP 2 entity trùng, đã ghi sổ; không gộp vội vì nhiều báo cáo đang đọc `ServiceStockIn`.
+// ===== 🔴 #265 NHẬP KHO — `TblSerInvStockIn` (DbDefine.cs:1122-1160) =====
+// md5 `d373e758` — KHỚP 2 máy; tìm qua sweep `sweep_tblconst_tail.js` (#261).
+//
+// VOCABULARY TRẠNG THÁI (:1150-1160) — **5 mã, đều có cặp Value+Text**:
+//   "1" Mới tạo · "2" Tiến hành · "3" Kết thúc · "4" Đã điều chỉnh · "5" Đã hủy
+// ⚠️ KHÁC phiếu XUẤT (#264): phiếu xuất còn có `StatusNewValue = "0"` (không có Text); phiếu nhập **không có**
+//    mã 0. Hai bảng gần giống nhưng bộ mã KHÔNG bằng nhau — đừng dùng chung bảng nhãn.
+// ⚠️ Nguồn viết `StatusAdjusmentValue` (thiếu chữ "t": Adjus**ment**) — lỗi chính tả của nguồn, giữ nguyên
+//    khi grep; giá trị vẫn là "4".
+var stockInStatusNames = new Dictionary<string, string>
+{
+    ["1"] = "Mới tạo", ["2"] = "Tiến hành", ["3"] = "Kết thúc",
+    ["4"] = "Đã điều chỉnh", ["5"] = "Đã hủy",
+};
+
+app.MapGet("/api/stockins/vocab", () => Results.Ok(new
+{
+    statuses = stockInStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    note = "Phiếu NHẬP không có mã \"0\" (phiếu XUẤT thì có, xem /api/stockouts/vocab).",
+})).RequireAuthorization();
+
 app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
 {
     var q = db.PartStockIns.Where(s => s.OrgId == t.OrgId);
@@ -31459,6 +31480,12 @@ app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? st
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
         s.StockInNo, s.StockInDate, s.StockInType, s.WarehouseCode, s.Staff, s.Status, s.PostedAt,
+        // #265 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
+        s.StockInID, s.StatusText, s.Description, s.UserCode,
+        s.DriverName, s.DrivingLicense, s.DriverID, s.TruckNo, s.StockOutNo,
+        s.IsAdjustment, s.AdjustmentBy, s.AdjustmentDate, s.AdjustmentNote, s.OldStockInID,
+        s.OrderPartId, s.OrderPartNo, s.FlagOrderNCC,
+        s.DealerCode, s.SupplierID, s.TSTRequestNo, s.BillNo,
         lines = db.PartStockInLines.Count(l => l.OrgId == t.OrgId && l.StockInId == s.Id),
         total = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)(l.Quantity * l.Price)) ?? 0
     }).ToListAsync();
@@ -31471,7 +31498,21 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "1" };
+    var h = new PartStockIn
+    {
+        OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now,
+        StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(),
+        Staff = dto.Staff, Status = "1",
+        // #265: nhãn lưu kèm mã, đúng như nguồn (StatusText).
+        StatusText = stockInStatusNames.TryGetValue("1", out var si1) ? si1 : null,
+        Description = dto.Description, UserCode = dto.UserCode,
+        DriverName = dto.DriverName, DrivingLicense = dto.DrivingLicense,
+        DriverID = dto.DriverID, TruckNo = dto.TruckNo, StockOutNo = dto.StockOutNo,
+        // mắt xích về đơn đặt phụ tùng (cụm TST)
+        OrderPartId = dto.OrderPartId, OrderPartNo = dto.OrderPartNo, FlagOrderNCC = dto.FlagOrderNCC,
+        DealerCode = dto.DealerCode, SupplierID = dto.SupplierID,
+        TSTRequestNo = dto.TSTRequestNo, BillNo = dto.BillNo,
+    };
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
@@ -33255,7 +33296,14 @@ record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, strin
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
-record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);
+// #265 §12: 12 trường bổ sung. Khối ĐIỀU CHỈNH (`IsAdjustment`/`Adjustment*`/`OldStockInID`) CỐ Ý
+//   không nhận từ client — do luồng tạo phiếu điều chỉnh sinh ra, chưa port (ghi nợ, giống #264).
+record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines,
+    string? Description = null, string? UserCode = null,
+    string? DriverName = null, string? DrivingLicense = null, string? DriverID = null, string? TruckNo = null,
+    string? StockOutNo = null,
+    string? OrderPartId = null, string? OrderPartNo = null, string? FlagOrderNCC = null,
+    string? DealerCode = null, string? SupplierID = null, string? TSTRequestNo = null, string? BillNo = null);
 record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
 // #264: 7 trường bổ sung (người lập/khách/đại lý + khối vận chuyển).
 //  Khối ĐIỀU CHỈNH (`Adjustment*`/`OldStockOut*`) KHÔNG nhận từ client: nó do luồng tạo phiếu điều chỉnh
