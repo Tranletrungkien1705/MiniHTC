@@ -7235,6 +7235,74 @@ public sealed class DealerCustomer
 }
 
 /// <summary>
+/// PHIẾU THANH TOÁN cho đại lý (`Pmt_Payment` — port 1:1 `PaymentPaymentCreate_New20191202`,
+/// 2010.HTC `TERP.BizHTC/BankIntergration/BizHTC.MBBank.cs:32`).
+/// 🔴 **BẪY TWIN + FILE CHẾT, cùng lúc:**
+/// · WS 32-bit (`WSHTC.cs`) gọi `PaymentPaymentCreate_**New20181119**` — hàm này nằm ở
+///   `DataWH/**Delete.**Biz.HTC.WH.My.cs:15765`, và file đó trong csproj là **`<None>`** (dòng 325)
+///   ⇒ **FILE CHẾT, không nằm trong build**.
+/// · WS 64-bit gọi `PaymentPaymentCreate_**New20191202**` ở `BizHTC.MBBank.cs` — csproj `<Compile>`
+///   (dòng 310) ⇒ **LIVE**.
+/// · Ngoài ra còn bản `_New20190611` ở `Biz.HTC.WH.cs:45880` **không WS nào gọi** — bản trung gian.
+/// ⇒ Canonical = **bản 20191202 / MBBank.cs**. Nếu chọn theo "file DataWH quen thuộc" sẽ port **nhầm bản
+/// trung gian** và **thiếu 2 cột** `PmtBakingStatus` + `BulkDetailId` (chỉ có ở bản 2019-12).
+/// 🔴 `PaymentStatus` = `TConst.Stage.Pending` ("P") khi tạo; `ApprovedDate/By`, `PaymentEndDate`,
+/// `ConfirmDate/By`, `AccountingRecordNo`, `BulkDetailId` đều để **NULL tường minh** lúc tạo.
+/// 🔴 `PmtBakingStatus` = `TConst.Flag.No` (**"0"**) khi tạo — cờ đã đẩy sang ngân hàng hay chưa
+/// (⚠️ tên cột nguồn viết **"Baking"**, thiếu chữ n so với "Banking" — giữ nguyên).
+/// ⚠️ Nguồn ghi cả `_dbMain` lẫn `_dbWH` (460-463), dòng `_dbWH` **không bị comment**.
+/// </summary>
+public sealed class PmtPayment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? PaymentType { get; set; }
+    public string? BankCodeSend { get; set; }
+    public string? BankCodeReceive { get; set; }
+    public string? BankPaymentNo { get; set; }
+    public string? BankAccountSend { get; set; }
+    public string? BankAccountReceive { get; set; }
+    public string? AccountingRecordNo { get; set; }
+    public decimal? TotalAmount { get; set; }
+    /// <summary>"P" khi tạo (TConst.Stage).</summary>
+    public string PaymentStatus { get; set; } = "P";
+    public string? Funds { get; set; }
+    public string? BankLending { get; set; }
+    /// <summary>Cờ đã đẩy sang ngân hàng ("1"/"0"), khởi tạo "0". Tên cột nguồn thiếu chữ n: "Baking".</summary>
+    public string? PmtBakingStatus { get; set; }
+    /// <summary>Khoá dòng của lô gửi ngân hàng — NULL lúc tạo, điền khi đẩy đi.</summary>
+    public string? BulkDetailId { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? PaymentEndDate { get; set; }
+    public DateTime? ConfirmDate { get; set; }
+    public string? ConfirmBy { get; set; }
+}
+
+/// <summary>
+/// DÒNG phiếu thanh toán (`Pmt_PaymentDetail` — `BizHTC.MBBank.cs:460`).
+/// Mỗi dòng gắn phiếu với **một xe** và (tuỳ nghiệp vụ) **một bảo lãnh** + **một hợp đồng đại lý**.
+/// 🔴 Cột chỉ gồm **5**: `PaymentNo`, `CarId`, `GuaranteeNo`, `DlrCtrNo`, `Amount` — nguồn
+/// **không** ghi VIN, không ghi trạng thái dòng. Khoá nối về đầu là `PaymentNo` (chuỗi), không phải Id.
+/// </summary>
+public sealed class PmtPaymentDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentNo { get; set; } = "";
+    public string? CarId { get; set; }
+    /// <summary>Số bảo lãnh gắn với dòng thanh toán.</summary>
+    public string? GuaranteeNo { get; set; }
+    /// <summary>Số hợp đồng đại lý.</summary>
+    public string? DlrCtrNo { get; set; }
+    public decimal? Amount { get; set; }
+}
+
+/// <summary>
 /// KHẢO SÁT theo GIAO DỊCH bán lẻ (`DLS_DealSurvey` — port 1:1 `DealerSalesDealUpdate_Survey_New20190424`,
 /// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:5225`). Khoá là `DealNo`.
 /// TWIN: cả WS 32-bit lẫn 64-bit **cùng bản** (đã diff TOÀN BỘ danh sách hàm của cụm theo luật

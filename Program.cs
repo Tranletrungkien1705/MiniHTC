@@ -20073,6 +20073,77 @@ app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== PHIẾU THANH TOÁN đại lý (Pmt_Payment + Pmt_PaymentDetail) =====
+// Port 1:1 `PaymentPaymentCreate_New20191202` — 2010.HTC `BankIntergration/BizHTC.MBBank.cs:32`
+// (ghi Pmt_Payment tại 460, Pmt_PaymentDetail tại 460-463).
+// 🔴 BẪY TWIN + FILE CHẾT cùng lúc — phải trace mới ra:
+//    · WS 32-bit gọi `_New20181119`, nhưng hàm đó nằm ở `DataWH/Delete.Biz.HTC.WH.My.cs` mà csproj
+//      khai là `<None>` (dòng 325) ⇒ FILE CHẾT, không trong build.
+//    · WS 64-bit gọi `_New20191202` ở `BizHTC.MBBank.cs` — csproj `<Compile>` (310) ⇒ LIVE.
+//    · Còn bản `_New20190611` ở `Biz.HTC.WH.cs:45880` KHÔNG WS nào gọi (bản trung gian).
+//    ⇒ Canonical = bản 20191202. Chọn nhầm bản trung gian sẽ THIẾU 2 cột PmtBakingStatus + BulkDetailId.
+// 🔴 Khi tạo: PaymentStatus = "P"; ApprovedDate/By, PaymentEndDate, ConfirmDate/By,
+//    AccountingRecordNo, BulkDetailId để NULL tường minh; PmtBakingStatus = "0" (chưa đẩy ngân hàng).
+// ⚠️ Tên cột nguồn viết "PmtBakingStatus" — thiếu chữ n so với "Banking". Giữ nguyên theo nguồn.
+app.MapGet("/api/pmtpayments", async (AppDbContext db, ITenantContext t, string? paymentNo, string? dealerCode, string? status) =>
+{
+    var qy = db.PmtPayments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(paymentNo)) qy = qy.Where(x => x.PaymentNo == paymentNo);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.PaymentStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.PaymentNo, x.DealerCode, x.PaymentType, x.BankCodeSend, x.BankCodeReceive, x.BankPaymentNo,
+        x.BankAccountSend, x.BankAccountReceive, x.AccountingRecordNo, x.TotalAmount, x.PaymentStatus,
+        x.Funds, x.BankLending, x.PmtBakingStatus, x.BulkDetailId,
+        x.CreatedDate, x.CreatedBy, x.ApprovedDate, x.ApprovedBy,
+        x.PaymentEndDate, x.ConfirmDate, x.ConfirmBy,
+    }).ToListAsync();
+    var nos = items.Select(i => i.PaymentNo).ToList();
+    var details = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && nos.Contains(d.PaymentNo))
+        .Select(d => new { d.PaymentNo, d.CarId, d.GuaranteeNo, d.DlrCtrNo, d.Amount }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, details });
+}).RequireAuthorization();
+
+app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.PaymentNo ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số phiếu thanh toán rỗng." });
+    if (dealer.Length < 1) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    if (await db.PmtPayments.AnyAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no))
+        return Results.BadRequest(new { error = $"Phiếu {no} đã tồn tại." });
+    var rows = (dto.Details ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.PmtPayments.Add(new PmtPayment
+    {
+        OrgId = t.OrgId, PaymentNo = no, DealerCode = dealer,
+        PaymentType = dto.PaymentType,
+        BankCodeSend = dto.BankCodeSend, BankCodeReceive = dto.BankCodeReceive,
+        BankPaymentNo = dto.BankPaymentNo,
+        BankAccountSend = dto.BankAccountSend, BankAccountReceive = dto.BankAccountReceive,
+        TotalAmount = dto.TotalAmount,
+        PaymentStatus = "P",
+        Funds = dto.Funds, BankLending = dto.BankLending,
+        PmtBakingStatus = "0",           // TConst.Flag.No — chưa đẩy sang ngân hàng
+        // 🔴 Nguồn để NULL tường minh lúc tạo, không sinh sẵn:
+        AccountingRecordNo = null, BulkDetailId = null,
+        ApprovedDate = null, ApprovedBy = null,
+        PaymentEndDate = null, ConfirmDate = null, ConfirmBy = null,
+        CreatedDate = DateTime.Now, CreatedBy = who,
+    });
+    foreach (var r in rows)
+        db.PmtPaymentDetails.Add(new PmtPaymentDetail
+        {
+            OrgId = t.OrgId, PaymentNo = no,   // khoá nối về đầu là SỐ phiếu, không phải Id
+            CarId = r.CarId!.Trim(), GuaranteeNo = r.GuaranteeNo, DlrCtrNo = r.DlrCtrNo, Amount = r.Amount,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P" });
+}).RequireAuthorization();
+
 // ===== KHẢO SÁT bán lẻ: theo GIAO DỊCH (DLS_DealSurvey) và theo XE/VIN (DLS_VINSurvey) =====
 // Port 1:1 `DealerSalesDealUpdate_Survey_New20190424` (BizHTC.DealerSales.cs:5225) và
 // `DlsVINSurvey_Update_New20190424` (7214). TWIN: đã diff TOÀN BỘ danh sách hàm của cụm ở cả hai WS —
@@ -24653,6 +24724,9 @@ record DealerCustomerUpdateDto(string? CustomerCode, string? FullName, string? F
 // Khảo sát bán lẻ: 29 câu cột rời, đúng schema nguồn. SurveyDateTime do server đặt, không nhận từ client.
 record DlsDealSurveyDto(string? DealNo, string? Note, DateTime? ContactDate, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29);
 record DlsVinSurveyDto(string? VIN, string? Note, DateTime? ContactDate, string? SurveyGmail, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29, string? SurveyPosition);
+// Phiếu thanh toán đại lý: dòng nối về đầu bằng SỐ phiếu (PaymentNo), không phải khoá nội bộ.
+record PmtPaymentRowDto(string? CarId, string? GuaranteeNo, string? DlrCtrNo, decimal? Amount);
+record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).

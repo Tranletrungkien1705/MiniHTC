@@ -49,6 +49,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SysObject> SysObjects => Set<SysObject>();
     public DbSet<DealerCustomerUpdLog> DealerCustomerUpdLogs => Set<DealerCustomerUpdLog>();
     public DbSet<DlsDealSurvey> DlsDealSurveys => Set<DlsDealSurvey>();
+    public DbSet<PmtPayment> PmtPayments => Set<PmtPayment>();
+    public DbSet<PmtPaymentDetail> PmtPaymentDetails => Set<PmtPaymentDetail>();
     public DbSet<DlsVinSurvey> DlsVinSurveys => Set<DlsVinSurvey>();
     public DbSet<CtContractOversea> CtContractOverseas => Set<CtContractOversea>();
     public DbSet<CtLc> CtLcs => Set<CtLc>();
