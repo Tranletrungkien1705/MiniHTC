@@ -882,6 +882,13 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #270 parity Ser_App_Create_ForTab -> HCC_Appointment_AddOSX (khoi CHI CO TREN MAY 150)
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"Vin\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"HCCPushStatus\" text",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"HCCPushDateTime\" timestamp",
+        "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"HCCPushNote\" text",
         // #269 parity HCC_NoShow_CreateOS (BizCarSv.HCC.cs:381 - CHI CO TREN MAY 150)
         "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CurrentServiceDate\" timestamp",
         "ALTER TABLE public.\"ServiceCustomers\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",

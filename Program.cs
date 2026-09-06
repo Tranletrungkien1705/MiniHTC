@@ -18618,6 +18618,8 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
+        // #270 §12: cot bo sung co mat o CA GET lan POST
+        x.DealerCode, x.CusID, x.Vin, x.HCCPushStatus, x.HCCPushDateTime,
         serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
         partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
     }).ToListAsync();
@@ -34300,8 +34302,13 @@ record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl 
 record WarrantyClaimActionDto(string Action, string? Note, string? Creator = null);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
-record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null);
+// #270: `Channel` = kenh tao lich hen. Nguon chi day HCC o nhanh `Ser_App_Create_ForTab` (may tinh bang)
+//   => chi `Channel == "TAB"` moi dat co cho day.
+record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null,
+    string? Channel = null, string? DealerCode = null, string? CusID = null, string? Vin = null);
 record AppointmentStatusDto(string Status);
+// #270: `ToStatus` "A" thanh cong / "R" loi - cung bo ma voi truc HMC cua de nghi bao hanh.
+record AppointmentHccPushDto(string ToStatus, string? Note = null);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record SupplierDebitDto(string? SupplierCode, string? StockInNo, decimal DebitAmount, DateTime? DebitDate, string? Note);

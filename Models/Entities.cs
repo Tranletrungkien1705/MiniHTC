@@ -12924,6 +12924,24 @@ public sealed class ServiceAppointment
     /// <summary>Yêu cầu của khách khi đặt lịch (Ser_App.CusRequest).</summary>
     public string? CusRequest { get; set; }
 
+    // ===== 🔴 #270: khoá tra cứu + trục ĐẨY SANG HCC =====
+    // Nguồn: `BizCarSv.Tab.cs:4780 Ser_App_Create_ForTab` gọi `HCC_Appointment_AddOSX`
+    //   (`HCCIntergration/BizCarSv.HCC.cs:28`) NGAY SAU khi ghi `Ser_App`.
+    // 🔴 Khối gọi này **CHỈ CÓ TRÊN MÁY 150** — bản laptop của cùng file KHÔNG có (diff toàn file: đúng
+    //   một khối 19 dòng này là thay đổi thực chất duy nhất).
+    public string? DealerCode { get; set; }        // Ser_App.DealerCode — nối sang Mst_Dealer lấy OrgHCCID
+    public string? CusID { get; set; }             // Ser_App.CusID
+    public string? Vin { get; set; }               // Ser_Car.FrameNo của xe được hẹn
+
+    /// <summary>
+    /// Trạng thái đẩy lịch hẹn sang HCC — cùng bộ mã với trục HMC của đề nghị bảo hành:
+    /// "P" chờ đẩy · "A" đẩy thành công · "R" đẩy lỗi. `null` = không thuộc diện đẩy.
+    /// ⚠️ Nguồn CHỈ đẩy ở nhánh **`_ForTab`** (kênh máy tính bảng); nhánh tạo lịch hẹn thường KHÔNG đẩy.
+    /// </summary>
+    public string? HCCPushStatus { get; set; }
+    public DateTime? HCCPushDateTime { get; set; }
+    public string? HCCPushNote { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
