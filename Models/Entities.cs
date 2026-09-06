@@ -564,24 +564,49 @@ public sealed class Guarantee
     public DateTime? ApprovedAt { get; set; }
 }
 
-/// <summary>Danh sách hóa đơn xuất bán (InvoiceList — port 1:1 FrmNewInvoice/FrmMngInvoice):
-/// header 1 lô hóa đơn (nhập Excel A2), CreatedDate + số tham chiếu.</summary>
+/// <summary>
+/// Danh sách hoá đơn xuất bán — port 1:1 FrmNewInvoice/FrmMngInvoice; header 1 lô hoá đơn (nhập Excel A2).
+/// 🔴 **#126 đối chiếu bảng nguồn `Car_InvoiceList`** (2010.HTC `Biz.HTC.WH.cs:109183`,
+/// hàm `CarInvoiceListCreate_New20181119` (109011); còn `CarInvoiceListDelete_New20181119`,
+/// `Car_InvoiceList_Get` và `_GetWH`).
+/// TWIN: đã diff TOÀN BỘ danh sách hàm ở cả hai WS — **4 hàm khớp hoàn toàn** (WS64 có thêm
+/// `Pmt_Payment_InvoiceList_Get` nhưng đó là bảng `Pmt_*`, khác cụm).
+/// GAP đã vá ở #126: bổ sung `CreatedBy`.
+/// ⚠️ Nguồn ghi **cả `_dbMain` lẫn `_dbWH`** (109183-109185) — nợ `_dbWH` chung fleet
+/// (đã kiểm dòng `_dbWH` **không bị comment**, theo luật C0-centesimusvigesimusquintus).
+/// </summary>
 public sealed class InvoiceList
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string InvoiceListCode { get; set; } = "";   // số tham chiếu (GetInvoiceListNo)
     public DateTime CreatedDate { get; set; } = DateTime.Now;
+    /// <summary>#126: nguồn có `CreatedBy` (dòng 109155) — port cũ thiếu.</summary>
+    public string? CreatedBy { get; set; }
 }
 
-/// <summary>Dòng hóa đơn (InvoiceListDetail): 1 xe/VIN + số hóa đơn + ngày HĐ.</summary>
+/// <summary>
+/// Dòng hoá đơn (`Car_InvoiceListDetail` — 2010.HTC `Biz.HTC.WH.cs:109203`).
+/// 🔴 GAP #126 (1): nguồn khoá dòng bằng **`InvoiceListCode`** (số tham chiếu, kiểu chuỗi), port cũ chỉ
+/// có `ListId` (khoá nội bộ tự sinh) ⇒ **không map được dữ liệu thật** khi import từ SQL 228.
+/// Nay giữ cả hai.
+/// 🔴 GAP #126 (2): cột đại lý của nguồn tên **`InvoiceDealerCode`**, port cũ đặt `DealerCode` —
+/// giữ tên cũ để không phá API nhưng bổ sung cột đúng tên nguồn.
+/// ⚠️ Nguồn **KHÔNG ghi VIN** vào bảng chi tiết (chỉ `CarId`); cột `Vin` là của bản port cũ, giữ nguyên.
+/// 🔴 Guard nguồn quan trọng: `myCar_CheckInvoiceListDetail(..., Flag.Inactive, ...)` (dòng 109155-109159)
+/// ⇒ **một xe chỉ được nằm trong ĐÚNG MỘT danh sách hoá đơn**; xe đã có dòng ở list khác thì bị chặn.
+/// </summary>
 public sealed class InvoiceLine
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long ListId { get; set; }
+    /// <summary>Khoá dòng của nguồn (`Car_InvoiceListDetail.InvoiceListCode`).</summary>
+    public string? InvoiceListCode { get; set; }
     public string? CarId { get; set; }
     public string? DealerCode { get; set; }
+    /// <summary>Tên cột đúng theo nguồn (`InvoiceDealerCode`).</summary>
+    public string? InvoiceDealerCode { get; set; }
     public string InvoiceNo { get; set; } = "";
     public string Vin { get; set; } = "";
     public DateTime? InvoiceDate { get; set; }

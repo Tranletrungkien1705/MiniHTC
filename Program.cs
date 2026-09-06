@@ -2125,19 +2125,38 @@ app.MapPost("/api/grts/{grtNo}/expiry", async (string grtNo, GrtExpiryDto dto, A
 app.MapGet("/api/invoicelists", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.InvoiceLists.Where(l => l.OrgId == t.OrgId).OrderByDescending(l => l.Id).Take(500)
-        .Select(l => new { l.InvoiceListCode, l.CreatedDate, lines = db.InvoiceLines.Count(d => d.OrgId == t.OrgId && d.ListId == l.Id) }).ToListAsync();
+        .Select(l => new { l.InvoiceListCode, l.CreatedDate, l.CreatedBy, lines = db.InvoiceLines.Count(d => d.OrgId == t.OrgId && d.ListId == l.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/invoicelists", async (InvoiceListDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/invoicelists", async (InvoiceListDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var lines = (dto.Lines ?? new List<InvoiceLineDto>()).Where(l => !string.IsNullOrWhiteSpace(l.InvoiceNo) && !string.IsNullOrWhiteSpace(l.Vin)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (InvoiceNo + Vin)." });
     var code = "IVL" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new InvoiceList { OrgId = t.OrgId, InvoiceListCode = code, CreatedDate = DateTime.Now };
+    var h = new InvoiceList { OrgId = t.OrgId, InvoiceListCode = code, CreatedDate = DateTime.Now,
+        // #126 parity Car_InvoiceList: nguồn ghi CreatedBy (Biz.HTC.WH.cs:109155).
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
+    // 🔴 #126 guard nguồn `myCar_CheckInvoiceListDetail(..., Flag.Inactive, ...)`
+    //    (Biz.HTC.WH.cs:109155-109159): MỘT XE chỉ được nằm trong ĐÚNG MỘT danh sách hoá đơn.
+    //    Port cũ thiếu guard này ⇒ cùng một xe có thể bị xuất hoá đơn ở nhiều list.
+    var carIds = lines.Where(l => !string.IsNullOrWhiteSpace(l.CarId)).Select(l => l.CarId!.Trim()).ToList();
+    if (carIds.Count > 0)
+    {
+        var dup = await db.InvoiceLines
+            .Where(d => d.OrgId == t.OrgId && d.CarId != null && carIds.Contains(d.CarId))
+            .Select(d => new { d.CarId, d.InvoiceListCode }).ToListAsync();
+        if (dup.Count > 0)
+            return Results.BadRequest(new { error = $"Các xe sau đã nằm trong danh sách hoá đơn khác: {string.Join(", ", dup.Select(x => $"{x.CarId}→{x.InvoiceListCode}").Take(10))}." });
+    }
+
     db.InvoiceLists.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.InvoiceLines.Add(new InvoiceLine { OrgId = t.OrgId, ListId = h.Id, CarId = l.CarId, DealerCode = l.DealerCode, InvoiceNo = l.InvoiceNo.Trim(), Vin = l.Vin.Trim().ToUpperInvariant(), InvoiceDate = l.InvoiceDate });
+        db.InvoiceLines.Add(new InvoiceLine { OrgId = t.OrgId, ListId = h.Id,
+            // 🔴 #126 parity: nguồn khoá dòng bằng SỐ tham chiếu (InvoiceListCode), và cột đại lý
+            //    tên đúng là InvoiceDealerCode (Biz.HTC.WH.cs:109196-109200).
+            InvoiceListCode = h.InvoiceListCode, CarId = l.CarId,
+            DealerCode = l.DealerCode, InvoiceDealerCode = l.DealerCode, InvoiceNo = l.InvoiceNo.Trim(), Vin = l.Vin.Trim().ToUpperInvariant(), InvoiceDate = l.InvoiceDate });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.InvoiceListCode, lines = lines.Count });
 }).RequireAuthorization();
@@ -2148,7 +2167,7 @@ app.MapGet("/api/invoicelists/{code}/lines", async (string code, AppDbContext db
     var h = await db.InvoiceLists.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InvoiceListCode == code);
     if (h is null) return Results.NotFound(new { code });
     var lines = await db.InvoiceLines.Where(l => l.OrgId == t.OrgId && l.ListId == h.Id)
-        .Select(l => new { l.CarId, l.DealerCode, l.InvoiceNo, l.Vin, l.InvoiceDate }).ToListAsync();
+        .Select(l => new { l.InvoiceListCode, l.CarId, l.DealerCode, l.InvoiceDealerCode, l.InvoiceNo, l.Vin, l.InvoiceDate }).ToListAsync();
     return Results.Ok(new { h.InvoiceListCode, count = lines.Count, lines });
 }).RequireAuthorization();
 
