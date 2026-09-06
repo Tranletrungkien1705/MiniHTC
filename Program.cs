@@ -28052,7 +28052,8 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
 }).RequireAuthorization();
 
 // ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
-string[] _careTypes = { "CARE24H", "CARE72H", "DOB", "MAINT" };
+// #220 parity: mã loại phiếu CSKH đúng `TConst.SerCareType` (Const.Main.cs:349) — viết THƯỜNG.
+string[] _careTypes = { "24h", "72h", "dob", "man" };
 string[] _maceStatuses = { "Pending", "Contacted", "NotContacted" };
 app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
 {
@@ -28069,8 +28070,9 @@ app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, strin
 
 app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, ITenantContext t) =>
 {
-    var type = string.IsNullOrWhiteSpace(dto.CareType) ? "CARE24H" : dto.CareType.Trim().ToUpperInvariant();
-    if (!_careTypes.Contains(type)) return Results.BadRequest(new { error = "CareType = CARE24H|CARE72H|DOB|MAINT" });
+    // #220: mã nguồn viết thường ⇒ chuẩn hoá về LOWER, không phải UPPER.
+    var type = string.IsNullOrWhiteSpace(dto.CareType) ? "24h" : dto.CareType.Trim().ToLowerInvariant();
+    if (!_careTypes.Contains(type)) return Results.BadRequest(new { error = "CareType = 24h|72h|dob|man" });
     if (string.IsNullOrWhiteSpace(dto.PlateNo) && string.IsNullOrWhiteSpace(dto.CusPhone))
         return Results.BadRequest(new { error = "Cần biển số hoặc SĐT khách." });
     var no = "CC" + DateTime.Now.ToString("yyMMddHHmmss");
@@ -28420,7 +28422,7 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
 //     `#tblCustomerCareCamp` (chiến dịch): 🔴 **Pending=`'2'` · IsContact=`'1'` · IsNotContact=`'3'`**
 //        ⇒ nhóm chiến dịch **ĐẢO** so với Mace/Bth: mã `'2'` ở đây là "chưa liên hệ", không phải "không liên hệ".
 //
-// ⚠️ MiniHTC lưu 24h/72h trên CÙNG bảng `CustomerCares`, phân biệt bằng `CareType` (CARE24H/CARE72H)
+// ⚠️ MiniHTC lưu 24h/72h trên CÙNG bảng `CustomerCares`, phân biệt bằng `CareType` (#220: mã nguồn `24h`/`72h`)
 //    ⇒ tách hai nhóm bằng CareType, đúng ngữ nghĩa nguồn (nguồn tách bằng hai bảng tạm).
 app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
@@ -28446,8 +28448,8 @@ app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantCo
         };
     }
 
-    var g24 = CareGroup("CARE24H", cares.Where(x => x.CareType == "CARE24H"));
-    var g72 = CareGroup("CARE72H", cares.Where(x => x.CareType == "CARE72H"));
+    var g24 = CareGroup("24h", cares.Where(x => x.CareType == "24h"));
+    var g72 = CareGroup("72h", cares.Where(x => x.CareType == "72h"));
 
     // --- nhóm 3: nhắc bảo dưỡng (mã 0/1/2) ---
     var maces = await db.CustomerCareMaces.Where(x => x.OrgId == t.OrgId).ToListAsync();

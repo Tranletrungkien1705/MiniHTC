@@ -4644,13 +4644,19 @@ public sealed class WarrantyClaimPartItem
 }
 
 /// <summary>Chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare — port 1:1 FrmCustomerCare, TCMotor DMSCarSv/Customer):
-/// CRM follow-up. CareType: CARE24H/CARE72H/DOB(sinh nhật)/MAINT(nhắc bảo dưỡng). Pending→Contacted→Closed.</summary>
+/// CRM follow-up. CareType (TConst.SerCareType): 24h / 72h / dob (sinh nhật) / man (nhắc bảo dưỡng).
 public sealed class CustomerCare
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CareNo { get; set; } = "";
-    public string CareType { get; set; } = "CARE24H";   // CARE24H/CARE72H/DOB/MAINT
+    /// <summary>
+    /// #220 parity `TConst.SerCareType` (Const.Main.cs:349): **`24h` · `72h` · `dob` · `man`**.
+    /// Bộ `CARE24H/CARE72H/DOB/MAINT` của port cũ KHÔNG có ở nguồn ⇒ đã đổi + migration.
+    /// ⚠️ Mã nguồn viết **thường** (`24h`, `dob`), không viết hoa — giữ đúng chính tả nguồn (luật
+    /// `C0-trecentesimusvicesimusseptimus`) vì SQL nguồn so bằng `=` trên chuỗi.
+    /// </summary>
+    public string CareType { get; set; } = "24h";
     public string? RONo { get; set; }
     public string? PlateNo { get; set; }
     public string? CusName { get; set; }
@@ -4749,6 +4755,19 @@ public sealed class CustomerCareBirthday
 /// Mỗi phiếu CSKH (<see cref="CustomerCare"/>) có TỐI ĐA MỘT bản khảo sát: nguồn đọc
 /// "top 1 * where CusCareID = ..." rồi insert-nếu-chưa-có / update-nếu-đã-có (upsert theo CareNo).
 /// Bộ 6 câu hỏi dùng CHUNG cho cả 24h và 72h (form 24h nạp hằng số của lớp SerCusCare72hQA).
+/// 🔴 #220 — ÁNH XẠ TÊN CỘT giữa hai bảng nguồn (chúng là HAI bảng riêng, tên cột khác nhau):
+///   `Ser_CustomerCare72h` → `Ser_CustomerCare24h`
+///     `FyourCSSH`        → `FyourCSSH24`
+///     `WFBasicNeeds`     → `WFBasicNeed24s`   ⚠️ hậu tố **"24s"** chứ không phải "s24" — chính tả nguồn
+///     `YourCarProblem`   → `YourCarProblem24`
+///     `YourRIWN`         → `YourRIWN24`
+///     `YourSatisfyQSv`   → `YourSatisfyQSv24`
+///     `YourHopeOfOur`    → `YourHopeOfOur24`
+///     `FinishedDate`     → `FinishedDate24` · `ContactDate` → `ContactDate24`
+///   Các cột chung không đổi tên: `CusCareID` · `ROID` · `OrderID` · `Note` · `CreatedBy` · `CreatedDate` ·
+///   `LogLUBy` · `LogLUDateTime`.
+///   MiniHTC gộp một entity cho cả hai (phân biệt bằng <see cref="CustomerCare.CareType"/>); giữ tên **không
+///   hậu tố** của bản 72h. Ghi ánh xạ ở đây để lượt sau tách bảng (nếu cần) không phải dò lại nguồn.
 /// </summary>
 public sealed class CustomerCareSurvey
 {

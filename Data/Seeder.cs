@@ -845,6 +845,11 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #220 migrate tu vung CareType sang TConst.SerCareType (24h/72h/dob/man)
+        "UPDATE public.\"CustomerCares\" SET \"CareType\" = '24h' WHERE \"CareType\" = 'CARE24H'",
+        "UPDATE public.\"CustomerCares\" SET \"CareType\" = '72h' WHERE \"CareType\" = 'CARE72H'",
+        "UPDATE public.\"CustomerCares\" SET \"CareType\" = 'dob' WHERE \"CareType\" = 'DOB'",
+        "UPDATE public.\"CustomerCares\" SET \"CareType\" = 'man' WHERE \"CareType\" = 'MAINT'",
         // #218 parity Ser_CustomerCareMaintance (nhac bao duong theo phieu CSKH)
         "CREATE TABLE IF NOT EXISTS public.\"CustomerCareMaintances\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"CareNo\" text NOT NULL DEFAULT '', \"DateAppointment\" text, \"ContactDate\" timestamp, \"Note\" text, \"CreatedAt\" timestamp NOT NULL DEFAULT now(), \"UpdatedAt\" timestamp, \"UpdatedBy\" text)",
         // #217 parity Ser_CustomerCareBth_Update: 3 cot con thieu
