@@ -882,6 +882,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #322 parity Ser_ROWarrantyReport_Update_V2 (ban LIVE, 34 cot): ban chup khach+xe
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CusName\" text",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CusAddress\" text",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CusTel\" text",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ModelID\" text",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"BatteryNo\" text",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"SerialNo\" text",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"WarrantyRegistrationDate\" timestamp",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"WarrantyExpiresDate\" timestamp",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"WarrantyKM\" numeric",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"Note\" text",
         // #321 parity Ser_RO_Update_New20230220 (ban LIVE): 6 cot chi co o nhanh Update
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"Engineer\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"QA\" text",

@@ -12949,6 +12949,16 @@ app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext 
         warrantyExpiresDate = ro?.WarrantyExpiresDate,
         roCreator = ro?.Creator,
 
+        // 🔴 #322 BẢN CHỤP TRÊN CHÍNH PHIẾU — ghi bởi `_Update_V2` nhưng hàm Get LIVE KHÔNG đọc.
+        //   Trả kèm để lộ nghịch lý: nếu lệch với khối lấy từ LỆNH ở trên thì dữ liệu hai nơi đã rời nhau.
+        claimSnapshot = new
+        {
+            c.CusName, c.CusAddress, c.CusTel, c.ModelID, c.BatteryNo, c.SerialNo,
+            c.WarrantyRegistrationDate, c.WarrantyExpiresDate, c.WarrantyKM, c.Note,
+        },
+        snapshotDiffersFromRo = (c.BatteryNo ?? "") != (ro?.BatteryNo ?? "")
+                             || (c.SerialNo ?? "") != (ro?.SerialNo ?? ""),
+
         // --- cột DUY NHẤT còn lấy từ master xe ---
         cusConfirmedWarrantyDate = car?.WarrantyDate,
         ownerName = cus?.CusName,
@@ -12970,6 +12980,9 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote, x.WarrantySerCode, x.ApprovedDate,
         // #302 §12: cột mới có mặt ở CẢ GET lẫn POST
         x.ROWNo, x.ROID, x.CusID, x.CarID, x.Creator, x.Assistant, x.Km, x.CheckInDate, x.FinishedDate,
+        // #322 §12: bản chụp khách + xe (ghi bởi _Update_V2)
+        x.CusName, x.CusAddress, x.CusTel, x.ModelID, x.BatteryNo, x.SerialNo,
+        x.WarrantyRegistrationDate, x.WarrantyExpiresDate, x.WarrantyKM, x.Note,
         x.CusRequest, x.CarStatus, x.NaturalCode, x.CauseCode, x.StartDate, x.ROWTID,
         x.ErrorCodeCD, x.ErrorCodePN, x.FlagReadySend, x.PartIDError, x.ApprovedBy, x.CreatedBy
     }).ToListAsync();
@@ -13011,7 +13024,13 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
         CusRequest = dto.CusRequest, CarStatus = dto.CarStatus,
         NaturalCode = dto.NaturalCode, CauseCode = dto.CauseCode, StartDate = dto.StartDate,
         ROWTID = dto.ROWTID, ErrorCodeCD = dto.ErrorCodeCD, ErrorCodePN = dto.ErrorCodePN,
-        FlagReadySend = dto.FlagReadySend, PartIDError = dto.PartIDError };
+        FlagReadySend = dto.FlagReadySend, PartIDError = dto.PartIDError,
+        // #322 §12: gán bản chụp khách + xe.
+        CusName = dto.CusName, CusAddress = dto.CusAddress, CusTel = dto.CusTel, ModelID = dto.ModelID,
+        BatteryNo = dto.BatteryNo, SerialNo = dto.SerialNo,
+        WarrantyRegistrationDate = dto.WarrantyRegistrationDate,
+        WarrantyExpiresDate = dto.WarrantyExpiresDate,
+        WarrantyKM = dto.WarrantyKM, Note = dto.Note };
     db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
     // #268: nguồn ghi nhật ký NGAY KHI TẠO (2 chỗ gọi với Ser_WarrantyReport_Status.Pending,
     //   WarrantyReport.cs:2792 và :3493) ⇒ đề nghị nào cũng có dòng đầu tiên "PEND".
@@ -37585,7 +37604,12 @@ record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? P
     string? Assistant = null, string? Km = null, DateTime? CheckInDate = null, DateTime? FinishedDate = null,
     string? CusRequest = null, string? CarStatus = null, string? NaturalCode = null, string? CauseCode = null,
     DateTime? StartDate = null, string? ROWTID = null, string? ErrorCodeCD = null, string? ErrorCodePN = null,
-    string? FlagReadySend = null, string? PartIDError = null, string? CreatedBy = null);
+    string? FlagReadySend = null, string? PartIDError = null, string? CreatedBy = null,
+    // #322 §12: ban chup khach+xe ma ham LIVE _Update_V2 ghi len chinh phieu bao hanh.
+    string? CusName = null, string? CusAddress = null, string? CusTel = null, string? ModelID = null,
+    string? BatteryNo = null, string? SerialNo = null,
+    DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null,
+    decimal? WarrantyKM = null, string? Note = null);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 // #303: một dòng của báo cáo chấp thuận bảo hành (`SerWarrantyAcceptRpt_New20230417`).
 record WarrantyAcceptRptRow(long RowId, string? RowNo, string? RONo, string? FrameNo, string? DealerCode,

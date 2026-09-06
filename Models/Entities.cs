@@ -5145,6 +5145,27 @@ public sealed class ServiceWarrantyClaim
     public string? ApprovedBy { get; set; }
     public string? CreatedBy { get; set; }
 
+    // ===== 🔴 #322 BẢN CHỤP KHÁCH + XE **TRÊN CHÍNH PHIẾU BẢO HÀNH** =====
+    // Nguồn LIVE `Ser_ROWarrantyReport_Update_V2` (`WarrantyReport.cs:4174`) GHI 34 cột, trong đó có
+    // khối khách/xe dưới đây — port cũ (#302) chỉ lấy cột từ hàm **Get** nên bỏ sót chúng.
+    //
+    // ⚠️ NGHỊCH LÝ CÓ THẬT, ghi lại để không ai "sửa cho hợp lý":
+    //   hàm **Update GHI** bản chụp này lên phiếu, nhưng hàm **Get LIVE** (`_New20230417`, #302) lại
+    //   **ĐỌC từ LỆNH SỬA CHỮA** (`ro.FrameNo`/`ro.PlateNo`/`ro.Warranty*`) chứ không đọc mấy cột này.
+    //   ⇒ Bản chụp trên phiếu **được ghi nhưng KHÔNG được màn chi tiết dùng**. Vẫn phải port: các màn/báo
+    //     cáo khác đọc thẳng bảng, và mất cột thì mất dữ liệu lịch sử.
+    public string? CusName { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusTel { get; set; }
+    public string? ModelID { get; set; }
+    public string? BatteryNo { get; set; }
+    public string? SerialNo { get; set; }
+    public DateTime? WarrantyRegistrationDate { get; set; }
+    public DateTime? WarrantyExpiresDate { get; set; }
+    public decimal? WarrantyKM { get; set; }
+    /// <summary>NOTE — ghi chú của ĐỀ NGHỊ. ⚠️ KHÁC `HtcNote` (ghi chú của HTC khi duyệt/từ chối).</summary>
+    public string? Note { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
