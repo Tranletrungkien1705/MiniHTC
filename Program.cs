@@ -2568,6 +2568,49 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
 //                      (Car_TransportMinutes_HTCAprrSpecial_New20190122:57193)
 //    htc-cancel     : → HTC="C" + Tổng="C"       (…_HTCCancelX:56696)
 //    Endpoint cũ (approve/reject, một trục, từ vựng "Pending"/"Approved") đã được THAY hẳn.
+// ===== #180 HTC HUỶ biên bản vận chuyển — `Car_TransportMinutes_HTCCancel_New20190122` =====
+// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:57440` (csproj 272), thân thật ở `_HTCCancelX` (56696).
+// BƯỚC 3B: hàm bắt đầu **cùng dòng 57440 ở CẢ HAI máy**, vùng 261 dòng md5 `f5edd068` KHỚP.
+// TWIN: WS 32-bit và 64-bit đều có `_HTCCancel_New20190122`.
+//
+// 🔴 Lệnh này MiniHTC chưa có. Bề mặt WS 64-bit của cụm `Car_TransportMinutes` có **13 lệnh**;
+//    MiniHTC mới phủ 4 route. Đây là lệnh **lùi trạng thái** duy nhất của cụm.
+//
+// Guard nguồn (`Car_TransportMinutes_CheckDB`) — **BA trục cùng lúc**, khớp đúng mô hình 3 trục đã port:
+//   · `DLTransportMinutesStatus` = **"A"** (đại lý đã duyệt)
+//   · `HTCTransportMinutesStatus` ∈ **{"P","A1"}** ⇒ huỷ được khi bên A **chưa duyệt** hoặc **mới duyệt cấp 1**;
+//     đã duyệt cấp 2 ("A2") thì KHÔNG huỷ được nữa.
+//   · `TransportMinutesStatus` (trục tổng) = **"P"**
+// Ghi: `HTCTransportMinutesStatus = Cancel ("C")` **và** trục tổng `TransportMinutesStatus = Cancel ("C")`;
+//   dòng chi tiết nhận `TransportMinutesDtlStatus = ` **trục tổng** (không phải trục HTC).
+app.MapPost("/api/transminutes/{no}/htc-cancel", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    if (m.DLTransportMinutesStatus != "A")
+        return Results.BadRequest(new { error = $"Trục đại lý đang '{m.DLTransportMinutesStatus}' — chỉ huỷ khi đại lý đã duyệt (A)." });
+    if (m.HTCTransportMinutesStatus is not ("P" or "A1"))
+        return Results.BadRequest(new { error = $"Trục HTC đang '{m.HTCTransportMinutesStatus}' — chỉ huỷ khi bên A còn chờ (P) hoặc mới duyệt cấp 1 (A1)." });
+    if (m.Status != "P")
+        return Results.BadRequest(new { error = $"Trục tổng đang '{m.Status}' — chỉ huỷ khi còn chờ (P)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    // Nguồn ghi ĐỒNG THỜI hai trục: trục HTC và trục TỔNG, cùng nhận Cancel.
+    m.HTCTransportMinutesStatus = "C";
+    m.Status = "C";
+    m.DecidedAt = now; m.HTCCancelDateTime = now; m.HTCCancelBy = who;   // nguon ghi cap moc huy rieng cua ben A
+    m.LogLUDateTime = now; m.LogLUBy = who;
+    // `ctmd.TransportMinutesDtlStatus = f.TransportMinutesStatus` — dòng lấy theo TRỤC TỔNG.
+    var cars = await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync();
+    foreach (var c in cars) { c.DtlStatus = m.Status; c.LogLUDateTime = now; c.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.TransportMinutesNo, htcStatus = m.HTCTransportMinutesStatus, status = m.Status,
+        linesUpdated = cars.Count });
+}).RequireAuthorization();
+
 app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
