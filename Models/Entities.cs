@@ -2896,6 +2896,19 @@ public sealed class SerStockOutOrder
     public string? DealerCode { get; set; }             // DEALERCODE
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>
+    /// 🔴 #293 STOCKOUTTYPE — loại lệnh xuất (`TConst.Ser_StockOutType`): `"1"` StockService · `"2"` StockNormal.
+    /// Cột này **quyết định có áp guard sửa hay không**: luật "đã có phiếu xuất thì cấm sửa" CHỈ áp cho
+    /// lệnh xuất **THƯỜNG** (`"2"`), lệnh xuất **DỊCH VỤ** (`"1"`) KHÔNG bị chặn.
+    /// ⚠️ Chú thích trong lớp hằng nguồn ghi nhầm sang nghĩa khác ("Nhập, còn số lượng" / "Đã xuất hết")
+    /// — đó là comment của một hằng khác bị chép sang; giá trị "1"/"2" mới là thứ dùng thật.
+    /// </summary>
+    public string? StockOutType { get; set; }
+
+    /// <summary>#293 DESCRIPTION — mô tả lệnh xuất. Nguồn `SerStockOutOrderUpdate` ghi cột này
+    /// (KHÁC `Note` port cũ đang dùng).</summary>
+    public string? Description { get; set; }
 }
 
 /// <summary>Dòng chi tiết lệnh xuất kho theo đơn (Ser_InvStockOutOrderDetail) — thuộc SerStockOutOrder. Mã PT + tên + ĐVT + SL yêu cầu.</summary>

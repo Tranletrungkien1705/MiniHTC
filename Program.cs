@@ -13800,6 +13800,76 @@ app.MapPost("/api/stockoutorders/{id}/status", async (
 
 // Giữ đường cũ cho client đã tích hợp: /issue đi TẮT từ Created thẳng tới Finished.
 // ⚠️ Nguồn KHÔNG có bước tắt này (phải qua Submitted→Accepted→CreateStockOut) — dùng /status để đi đúng quy trình.
+// ===== 🔴 #293 SỬA / XOÁ LỆNH XUẤT KHO — `SerStockOutOrderUpdate` / `SerStockOutOrderDelete` =====
+// Tiếp nợ #292 (cụm `SerStockOutOrder*` 13 hàm WS sống ↔ MiniHTC mới có 8 endpoint).
+// TRACE: WS `WSCarSv.asmx.cs:15943` (`Update`) và `:15984` (`Delete`) — cả hai gọi **bản TRẦN**.
+//
+// 🔴 GUARD XOÁ là **DANH SÁCH CẤM** (blacklist), NGƯỢC với guard phiếu nhập/xuất ở #292 (whitelist):
+//   `CheckStockOutOrderAccepted`      cấm `"5"` Chấp nhận
+//   `CheckStockOutOrderCreateStockOut` cấm `"6"` Đã tạo phiếu xuất
+//   `CheckStockOutOrderFinished`      cấm `"7"` Kết thúc
+//   ⇒ **xoá được khi Status ∈ {1 Mới tạo, 2 Đã gửi, 3 Từ chối, 4 Đang chờ}**.
+//   ⚠️ Guard `"6"` **ném NHẦM mã lỗi** `Ser_Inv_StockOutOrder_Accepted` (lẽ ra phải là mã riêng) — lỗi
+//     copy-paste của nguồn; port dùng thông điệp riêng cho từng trạng thái để người dùng hiểu được.
+//
+// 🔴 GUARD SỬA — nguồn ghi thẳng chủ đích ở dòng `:11405`:
+//   *"Lệnh xuất thường chỉ được sửa khi chưa có Phiếu xuất hoặc phiếu xuất đã bị hủy hoặc xóa"*
+//   Cài đặt: **CHỈ khi `StockOutType = "2"` (xuất THƯỜNG)** mới kiểm; tra qua bảng nối
+//   `Ser_Inv_StockOutOrderStockOut` xem có phiếu xuất nào `Status in (1,2,3)` không ⇒ có thì cấm sửa.
+//   ⚠️ Tập `(1,2,3)` **KHÔNG gồm `4` (Đã điều chỉnh) và `5` (Huỷ)** ⇒ phiếu đã huỷ **hoặc đã điều chỉnh**
+//     đều cho sửa lại lệnh. Chú thích chỉ nói "hủy hoặc xóa" nhưng code còn cho cả "điều chỉnh".
+//   ⚠️ Lệnh xuất **DỊCH VỤ** (`"1"`) **KHÔNG bị guard này** — sửa được kể cả khi đã có phiếu xuất.
+app.MapPut("/api/stockoutorders/{id:long}", async (long id, SerStockOutOrderUpdateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+
+    if (string.IsNullOrWhiteSpace(dto.OrderNo)) return Results.BadRequest(new { error = "Chưa nhập số lệnh xuất." });
+
+    // CHỈ lệnh xuất THƯỜNG ("2") mới bị chặn khi đã có phiếu xuất còn hiệu lực.
+    // 📌 NỢ ĐÃ GHI RÕ: nguồn tra qua **bảng nối** `Ser_Inv_StockOutOrderStockOut` (lệnh ↔ phiếu) rồi lọc
+    //   `phiếu.Status in (1,2,3)`. MiniHTC **chưa port bảng nối đó** ⇒ ở đây dùng XẤP XỈ theo trạng thái
+    //   của chính lệnh: `CreateStockOut` ("6") nghĩa là đã sinh phiếu xuất. **KHÔNG phải parity đầy đủ** —
+    //   xấp xỉ này bỏ sót ca "đã tạo phiếu rồi phiếu bị huỷ/điều chỉnh" (nguồn CHO sửa, ở đây vẫn chặn).
+    if (h.StockOutType == "2" && h.Status == "CreateStockOut")
+        return Results.BadRequest(new { error = "Lệnh xuất đã có phiếu xuất, không thể sửa!",
+            approximation = "Chưa port bảng nối lệnh↔phiếu; đang xét theo trạng thái lệnh." });
+
+    h.OrderNo = dto.OrderNo!.Trim().ToUpperInvariant();
+    if (dto.OrderDate.HasValue) h.OrderDate = dto.OrderDate;
+    h.RequestDeliveryTime = dto.RequestDeliveryTime;
+    h.Priority = dto.Priority; h.Description = dto.Description;
+    h.BackOrderIndex = dto.BackOrderIndex;
+    if (!string.IsNullOrWhiteSpace(dto.Status)) h.Status = dto.Status!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.UserCode)) h.UserCode = dto.UserCode;   // nguồn chỉ ghi khi khác rỗng
+    h.CusID = dto.CusID; h.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+    if (!string.IsNullOrWhiteSpace(dto.RONo)) h.RONo = dto.RONo;               // nguồn chỉ ghi khi khác rỗng
+    h.StockOutType = dto.StockOutType ?? h.StockOutType;
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = dto.UserCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.OrderNo, h.Status, h.StockOutType });
+}).RequireAuthorization();
+
+app.MapDelete("/api/stockoutorders/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+
+    // Danh sách CẤM của nguồn — mỗi trạng thái một thông điệp riêng (nguồn dùng chung nhầm 1 mã lỗi).
+    var code = stockOutOrderStatusSourceCodes.TryGetValue(h.Status, out var sc) ? sc : h.Status;
+    if (code == "5") return Results.BadRequest(new { error = "Lệnh xuất đã được CHẤP NHẬN, không xoá được.", status = h.Status });
+    if (code == "6") return Results.BadRequest(new { error = "Lệnh xuất ĐÃ TẠO PHIẾU XUẤT, không xoá được.", status = h.Status });
+    if (code == "7") return Results.BadRequest(new { error = "Lệnh xuất đã KẾT THÚC, không xoá được.", status = h.Status });
+
+    // Nguồn xoá DÒNG CHI TIẾT trước rồi mới xoá đầu lệnh (hai câu `delete t` liên tiếp).
+    var lines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && x.OrderId == h.Id).ToListAsync();
+    db.SerStockOutOrderLines.RemoveRange(lines);
+    db.SerStockOutOrders.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { id, deletedLines = lines.Count });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockoutorders/{id}/issue", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -35600,6 +35670,11 @@ record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffSt
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);
 record StockOutOrderStatusDto(string? ToStatus);
 record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
+// #293: sua lenh xuat kho - 12 truong cua SerStockOutOrderUpdate.
+record SerStockOutOrderUpdateDto(string? OrderNo, DateTime? OrderDate = null, DateTime? RequestDeliveryTime = null,
+    string? Priority = null, string? Description = null, string? BackOrderIndex = null, string? Status = null,
+    string? UserCode = null, string? CusID = null, string? DealerCode = null, string? RONo = null,
+    string? StockOutType = null);
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
 record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
 record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive, string? SMCerNo = null, string? Remark = null);

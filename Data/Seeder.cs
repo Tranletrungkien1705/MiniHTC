@@ -882,6 +882,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #293 parity SerStockOutOrderUpdate/Delete: loai lenh xuat + mo ta
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"StockOutType\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"Description\" text",
         // #292 parity UpdateStockOut: cot Description (KHAC Reason da co)
         "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"Description\" text",
         // #290 cau hinh gui email tu dong (Email_ConfigSendAuto)
