@@ -17846,6 +17846,65 @@ app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext
     return Results.Ok(new { totalCustomer = cus.Sum(r => r.balance), totalInsurance = ins.Sum(r => r.balance), grandTotal = all.Sum(r => r.balance), rows = all });
 }).RequireAuthorization();
 
+// ===== 🔴 #213 CÔNG NỢ PHẢI THU tại thời điểm — `Ser_ReportReceivableDebitRpt` =====
+// Màn gốc: `TERP.HTCServiceClient/Views/Debit/FrmReportTotalReceivableDebit.cs` (274 dòng, DMSCarSv) —
+//   bốn nút `btnSearch` · `btnPrint` · `btnExportExcel` · `btnThoat` (đã grep KHÔNG phân biệt hoa/thường).
+// Nguồn: `TERP.BizCarSv/BizCarSv.Service.Report.cs:2605`.
+// BƯỚC 3B: md5 CẢ FILE `b7ecca4c` (7315 dòng) KHỚP 2 máy (laptop `.Release.V2` ≡ máy 150 `.Release`).
+//
+// Nguồn gom **BA nguồn nợ** rồi ghép, lọc bỏ dòng có số dư = 0:
+//  1. **Bảo hiểm nợ**: `ser_insurance` ⟗ (nợ `ser_cusdebit` gom theo `InsNo`) − (thu `Ser_Payment` gom theo `InsNo`);
+//  2. **Khách hàng nợ**: `ser_customer` ⟗ (nợ gom theo `CusID`) − (thu gom theo `CusID`, **chỉ `PaymentType='1'`**);
+//  3. **Bảng chốt lịch sử** `BaoCoCongNoKhachHang_20170101` — dữ liệu cũ, ghép bằng `union` (khử trùng).
+//
+// 🔴 BA CHI TIẾT DỄ MẤT khi port:
+//  · Lọc mốc thời gian của nguồn là `substring(DebitDate,1,11) <= @ToDate` ⇒ cột ngày ở nguồn là **VARCHAR**;
+//    MiniHTC lưu `DateTime?` nên so sánh theo NGÀY (`.Date <=`) — cùng ngữ nghĩa, ghi rõ để khỏi tưởng lệch.
+//  · Nhánh KHÁCH HÀNG lọc `PaymentType='1'`; nhánh BẢO HIỂM **không** lọc — bất đối xứng CÓ CHỦ Ý, giữ nguyên.
+//  · Hai nhánh đầu ghép bằng `union all` (giữ trùng), riêng bảng lịch sử ghép bằng `union` (khử trùng).
+// ⚠️ NỢ: bảng chốt `BaoCoCongNoKhachHang_20170101` nằm ở DB CommonCenter, MiniHTC chưa có ⇒ **KHÔNG bịa**;
+//   endpoint trả `legacyRows: null` kèm ghi chú thay vì lặng lẽ bỏ nguồn thứ ba.
+app.MapGet("/api/report/receivable-debit", async (AppDbContext db, ITenantContext t, DateTime? toDate) =>
+{
+    var cut = (toDate ?? DateTime.Today).Date;
+
+    // (1) nợ + thu theo KHÁCH HÀNG
+    var cusDebits = await db.CusDebits.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.DebitDate == null || x.DebitDate.Value.Date <= cut)
+        .GroupBy(x => new { x.CusId, x.CusName })
+        .Select(g => new { g.Key.CusId, g.Key.CusName, Debit = g.Sum(x => x.DebitAmount), Paid = g.Sum(x => x.PaidAmount) })
+        .ToListAsync();
+
+    // (2) nợ + thu theo HÃNG BẢO HIỂM
+    var insDebits = await db.InsDebits.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.DebitDate == null || x.DebitDate.Value.Date <= cut)
+        .GroupBy(x => new { x.InsNo, x.InsName })
+        .Select(g => new { g.Key.InsNo, g.Key.InsName, Debit = g.Sum(x => x.DebitAmount), Paid = g.Sum(x => x.PaidAmount) })
+        .ToListAsync();
+
+    var insRows = insDebits
+        .Select(x => new { itemCode = x.InsNo, itemName = x.InsName, remark = "Bảo hiểm nợ", debitAmount = x.Debit - x.Paid })
+        .Where(r => r.debitAmount != 0).ToList();
+    var cusRows = cusDebits
+        .Select(x => new { itemCode = x.CusId, itemName = x.CusName, remark = "Khách hàng nợ", debitAmount = x.Debit - x.Paid })
+        .Where(r => r.debitAmount != 0).ToList();
+
+    // union all giữa hai nhánh — đúng nguồn (không khử trùng).
+    var rows = insRows.Concat(cusRows).OrderByDescending(r => r.debitAmount).ToList();
+
+    return Results.Ok(new
+    {
+        toDate = cut,
+        totalInsurance = insRows.Sum(r => r.debitAmount),
+        totalCustomer = cusRows.Sum(r => r.debitAmount),
+        grandTotal = rows.Sum(r => r.debitAmount),
+        count = rows.Count,
+        rows,
+        legacyRows = (object?)null,
+        note = "Nguồn còn union bảng chốt lịch sử BaoCoCongNoKhachHang_20170101 (DB CommonCenter) — MiniHTC chưa có bảng này, KHÔNG bịa dữ liệu."
+    });
+}).RequireAuthorization();
+
 // Báo cáo tổng công nợ khách hàng: đầu kỳ 0, phát sinh tăng = tổng nợ, phát sinh giảm = tổng thu, cuối kỳ = dư nợ.
 app.MapGet("/api/report/cusdebit-total", async (AppDbContext db, ITenantContext t) =>
 {
