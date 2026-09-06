@@ -28036,6 +28036,56 @@ app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #224 TÌM KHÁCH HÀNG CÓ PHÂN TRANG — `SerCustomerGetPaging` → `Ser_Customer_Get` =====
+// Màn gốc: `Views/Customer/FrmCustomerInfoSearch.cs` (305 dòng, DMSCarSv) — hai nút `bntPrivous` · `btnNext`
+//   (lưu ý: nút "Previous" trong nguồn viết SAI CHÍNH TẢ là `bntPrivous` — grep theo `btn` sẽ trượt).
+// Tầng service: `TERP.HTCServiceClient/DbServices/MstCustomerService.cs:708`; biz `BizCarSv.Customer.cs:423`.
+// BƯỚC 3B: md5 CẢ FILE `44c7c87b` KHỚP 2 máy.
+//
+// 🔴 BA CHI TIẾT của cơ chế phân trang nguồn:
+//  1. **Phân trang ở TẦNG CLIENT**: biz `Ser_Customer_Get` trả về TOÀN BỘ kết quả; service tự cắt trang bằng
+//     `startRow = (CurrentPage - 1) * PageSize` ⇒ trang bắt đầu từ **1**, không phải 0.
+//  2. Nguồn trả kèm bảng **`Ser_Customer_Summary`** chứa **tổng số dòng** (`myRowCount`) — client dùng để
+//     tính số trang. Port trả trường `totalRows` + `totalPages` đúng vai trò đó.
+//  3. Ba ô tìm kiếm được service **tự bọc `%…%`** trước khi gửi (`strCusNamePattern`, `strAddressPattern`,
+//     `strPhonePattern`) ⇒ so khớp CHỨA; ô `strCusID` thì KHÔNG bọc ⇒ so khớp **chính xác**.
+//     Giữ đúng sự bất đối xứng này.
+app.MapGet("/api/servicecustomers/search", async (AppDbContext db, ITenantContext t,
+    string? cusId, string? cusName, string? address, string? phone, int pageSize = 20, int currentPage = 1) =>
+{
+    if (pageSize <= 0) pageSize = 20;
+    if (currentPage <= 0) currentPage = 1;   // nguồn đánh số trang từ 1
+
+    var qy = db.ServiceCustomers.Where(c => c.OrgId == t.OrgId);
+    // ô mã KH: so khớp CHÍNH XÁC (nguồn không bọc %…%)
+    if (!string.IsNullOrWhiteSpace(cusId)) qy = qy.Where(c => c.CusCode == cusId!.Trim());
+    // ba ô còn lại: nguồn bọc %…% ⇒ CHỨA
+    if (!string.IsNullOrWhiteSpace(cusName))
+        qy = qy.Where(c => c.CusName != null && c.CusName.ToLower().Contains(cusName!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(address))
+        qy = qy.Where(c => c.Address != null && c.Address.ToLower().Contains(address!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(phone))
+        qy = qy.Where(c => (c.Mobile != null && c.Mobile.Contains(phone!.Trim()))
+                        || (c.Tel != null && c.Tel.Contains(phone!.Trim())));
+
+    // tương ứng bảng `Ser_Customer_Summary` của nguồn
+    var totalRows = await qy.CountAsync();
+    var startRow = (currentPage - 1) * pageSize;
+
+    var items = await qy.OrderBy(c => c.CusName).Skip(startRow).Take(pageSize)
+        .Select(c => new { c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode,
+                           c.Sex, c.DOB, c.DealerCode, c.ProvinceCode, c.DistrictCode, c.IDCardNo })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        totalRows,
+        totalPages = totalRows == 0 ? 0 : (int)Math.Ceiling(totalRows / (double)pageSize),
+        pageSize, currentPage, startRow,
+        count = items.Count, items
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
