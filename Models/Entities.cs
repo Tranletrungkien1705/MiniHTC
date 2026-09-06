@@ -2172,6 +2172,23 @@ public sealed class RoServiceItem
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
+/// <summary>
+/// #253 ẢNH ĐÍNH KÈM LỆNH SỬA CHỮA `Ser_RO_Attachment` — port 1:1
+/// `Views/Services/FrmROAttachment.cs` (407 dòng, md5 `d81f1052` — KHỚP 2 máy).
+/// Cột lấy từ hằng của form (:26-30): `ID` · `IMAGE` · `IMAGEPATH` · `IMAGENAME` + khoá `RONO`.
+/// ⚠️ `RONo` hiển thị được form ghép tiền tố `"LS-"` (:203) — đó là **định dạng HIỂN THỊ**,
+///    KHÔNG lưu vào DB; port giữ mã trần.
+/// </summary>
+public sealed class RoAttachment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public string ImageName { get; set; } = "";   // IMAGENAME — tên file, bị 4 guard (xem endpoint)
+    public string? ImagePath { get; set; }        // IMAGEPATH (thêm 2016-07-16 theo comment nguồn)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class RoPartItem
 {
     public long Id { get; set; }

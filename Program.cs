@@ -13835,6 +13835,69 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 static bool HasSpecialChar(string? s) =>
     !string.IsNullOrEmpty(s) && System.Text.RegularExpressions.Regex.IsMatch(s, "[^a-zA-Z0-9._-]");
 
+// ===== 🔴 #253 ẢNH ĐÍNH KÈM LỆNH SỬA CHỮA — `FrmROAttachment` (Views/Services, 407 dòng) =====
+// BƯỚC 3B: md5 `d81f1052` — KHỚP 2 máy. Tầng ghi của nguồn: `_serROAttachment.UploadFileImageV2_ForRO`
+//   (đẩy file base64) rồi `SerROAttachmentUpload(strROID, ds)`; đọc bằng `SerROAttachmentGet(strROID)`.
+//
+// 🔴 BỐN GUARD TÊN FILE, đúng THỨ TỰ của nguồn (:319-342) — mỗi guard một THÔNG ĐIỆP riêng:
+//  1. `Util.IsUnicode(item)`   ⇒ "Tên ảnh không được để tiếng việt!"
+//  2. `item.Contains(" ")`     ⇒ "Tên ảnh không được để dấu cách!"
+//  3. `regex.IsMatch(item)`    ⇒ "Tên ảnh không được có ký tự đặc biệt!"
+//  4. `item.Length > 45`       ⇒ "Tên ảnh không được quá 45 ký tự!"
+// ⚠️ Guard 3 (`[^a-zA-Z0-9._-]`) **đã bao** guard 1 và 2 (tiếng Việt và khoảng trắng đều là ký tự đặc biệt).
+//    Nguồn vẫn kiểm riêng để **báo đúng lý do**; port giữ đủ 4 theo thứ tự, KHÔNG gộp.
+// ⚠️ Ngưỡng **45** là của riêng màn này (cụm Services) — không suy từ 24/192/254 của cụm TST.
+// ⚠️ `open.Filter` của nguồn chỉ nhận **jpg · jpeg · gif · bmp** (:307) ⇒ port kiểm phần mở rộng.
+app.MapGet("/api/roattachments", async (AppDbContext db, ITenantContext t, string? roNo) =>
+{
+    var qy = db.RoAttachments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim().ToUpperInvariant());
+    var items = await qy.OrderBy(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt,
+                           // form hiển thị số LSC kèm tiền tố "LS-" (:203) — chỉ là ĐỊNH DẠNG hiển thị
+                           roNoDisplay = "LS-" + x.RONo })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/roattachments", async (RoAttachmentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var roNo = (dto.RONo ?? "").Trim().ToUpperInvariant();
+    if (roNo.Length == 0) return Results.BadRequest(new { error = "Chưa có số lệnh sửa chữa." });
+    var name = (dto.ImageName ?? "").Trim();
+    if (name.Length == 0) return Results.BadRequest(new { error = "Chưa chọn ảnh." });
+
+    // --- 4 guard của nguồn, giữ NGUYÊN thứ tự và thông điệp ---
+    // 1) tiếng Việt: nguồn dùng `Util.IsUnicode` ⇒ có ký tự ngoài bảng ASCII
+    if (name.Any(ch => ch > 127))
+        return Results.BadRequest(new { error = "Tên ảnh không được để tiếng việt!" });
+    if (name.Contains(' '))
+        return Results.BadRequest(new { error = "Tên ảnh không được để dấu cách!" });
+    if (HasSpecialChar(name))
+        return Results.BadRequest(new { error = "Tên ảnh không được có ký tự đặc biệt!" });
+    if (name.Length > 45)
+        return Results.BadRequest(new { error = "Tên ảnh không được quá 45 ký tự!" });
+
+    // phần mở rộng theo `open.Filter` của nguồn
+    var ext = System.IO.Path.GetExtension(name).ToLowerInvariant();
+    if (ext is not (".jpg" or ".jpeg" or ".gif" or ".bmp"))
+        return Results.BadRequest(new { error = "Chỉ nhận ảnh jpg, jpeg, gif, bmp.", imageName = name });
+
+    var row = new RoAttachment { OrgId = t.OrgId, RONo = roNo, ImageName = name, ImagePath = dto.ImagePath };
+    db.RoAttachments.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.RONo, row.ImageName, row.ImagePath, roNoDisplay = "LS-" + row.RONo });
+}).RequireAuthorization();
+
+app.MapDelete("/api/roattachments/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.RoAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    db.RoAttachments.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
 // ===== 🔴 #247 BẢNG TẠM PHỤ TÙNG TST — `TST_Mst_Part_Temp_Get` (BizCarSv.Bravo.cs:223) =====
 // BƯỚC 3B: `BizCarSv.Bravo.cs` md5 `44509215` (469 dòng) — KHỚP 2 máy (đã đo ở #212).
 //
@@ -33508,6 +33571,8 @@ record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string?
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 // #245: 16 trường của `TST_Mst_Part_Get01` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
+// #253: ảnh đính kèm LSC. Nội dung file (base64) do tầng lưu trữ xử lý — nợ chung của MiniHTC.
+record RoAttachmentDto(string? RONo, string? ImageName, string? ImagePath = null);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive,
     decimal? MinOrderQuantity = null, decimal? TSTPriceList = null, decimal? TSTPriceUrgent = null,
     decimal? TSTPriceWarranty = null, decimal? TaxRate = null,
