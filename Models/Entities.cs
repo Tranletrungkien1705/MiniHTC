@@ -556,6 +556,68 @@ public sealed class Quota
 // TWIN: `_biz.Sys_SessionHist_Add_New20181115` được **CẢ HAI** WS gọi ⇒ không lệch.
 
 /// <summary>Lịch sử phiên đăng nhập dịch vụ (`Sys_SessionHist`).</summary>
+// ========== CẤU HÌNH ĐẦU VÀO THUẬT TOÁN MAP VIN (#150) ==========
+// Nguồn: DMS40/zTemp.0.20.MapVIN.cs (csproj <Compile> **127**, md5 b903cd2f… khớp nguyên file 2 máy)
+//   `Config_MapVINCarCarInput_AddX` (74709) ghi 2 bảng tại 75082 / 75111;
+//   `_Update` (75301) → `_UpdateX` (75421).
+// 🔴 TWIN: cả cụm **chỉ có ở WS 64-bit** (`_Add` / `_Get` / `_Update`); WS 32-bit không có hàm nào.
+//
+// Bản chất: bộ **tham số đầu vào** cho thuật toán chia/map VIN — quyết định xe của hợp đồng nào được
+// map trước, dựa trên **% đã đặt cọc** và **có bảo lãnh hay không**, tách theo phương thức thanh toán.
+
+/// <summary>
+/// Bộ cấu hình map VIN theo dòng xe, có **khoảng hiệu lực** (`Config_MapVINCarCarInput`).
+/// 🔴 Ba luật của nguồn (`_AddX`):
+/// · `EffDateStart` **bắt buộc**, và phải **≥ NGÀY MAI** — nguồn so với `dtimeSys.AddDays(1)`
+///   ⇒ **không cho cấu hình có hiệu lực ngay hôm nay hoặc lùi về quá khứ**;
+/// · `EffDateEnd` khi thêm luôn = `TConst.DateTimeSpecial.DateMax` = **"2100-01-01"** (vô hạn);
+/// · không được trùng cặp (`ModelCode`, `EffDateStart`) trên bản ghi đang Active.
+/// 🔴 `_Update` KHÔNG sửa nội dung: nguồn chặn nếu `FlagActive` khác `Inactive`
+///   ⇒ "sửa" ở đây thực chất **chỉ là HUỶ HIỆU LỰC** (tắt cấu hình), khoá theo (CfgATMVIpCode, ModelCode).
+/// </summary>
+public sealed class ConfigMapVinCarCarInput
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Mã bộ cấu hình (`CfgATMVIpCode`).</summary>
+    public string CfgATMVIpCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Dòng cấu hình map VIN (`Config_MapVINCarCarInputDtl`) — **không có cột ngày**: khoảng hiệu lực
+/// nằm ở bảng đầu, dòng chỉ mô tả điều kiện.
+/// </summary>
+public sealed class ConfigMapVinCarCarInputDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CfgATMVIpCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    /// <summary>
+    /// Phương thức thanh toán của hợp đồng đại lý (`DCPType`).
+    /// ⚠️ Nguồn **KHÔNG có class hằng riêng** cho cột này — giá trị đến từ dữ liệu hợp đồng
+    /// (`Dlr_Contract.DCPType`, xem `0.34.Contract.cs:795-846`). Cố ý **không suy đoán bảng mã**.
+    /// </summary>
+    public string? DCPType { get; set; }
+    /// <summary>Cận DƯỚI của khoảng % đã đặt cọc (`ValPmtDepositPercentFrom`).</summary>
+    public decimal ValPmtDepositPercentFrom { get; set; }
+    /// <summary>Cận TRÊN của khoảng % đã đặt cọc (`ValPmtDepositPercentTo`).</summary>
+    public decimal ValPmtDepositPercentTo { get; set; }
+    /// <summary>Điều kiện "hợp đồng CÓ bảo lãnh hay không" (`FlagIsExistGuarantee`) — cờ "1"/"0".</summary>
+    public string? FlagIsExistGuarantee { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class SysSessionHist
 {
     public long Id { get; set; }

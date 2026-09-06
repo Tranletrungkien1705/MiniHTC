@@ -8518,6 +8518,89 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #150: CẤU HÌNH ĐẦU VÀO THUẬT TOÁN MAP VIN (Config_MapVINCarCarInput + Dtl) =====
+// Nguồn: DMS40/zTemp.0.20.MapVIN.cs (csproj 127) — _AddX (74709) ghi 2 bảng tại 75082/75111,
+//        _Update (75301) → _UpdateX (75421). 🔴 Chỉ có ở WS 64-bit.
+app.MapGet("/api/mapvinconfigs", async (AppDbContext db, ITenantContext t, string? model, string? flagActive, DateTime? onDate) =>
+{
+    var q = db.ConfigMapVinCarCarInputs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    // lọc "bộ cấu hình đang hiệu lực tại một ngày" — dùng đúng cặp mốc của nguồn.
+    if (onDate is DateTime d) q = q.Where(x => x.EffDateStart <= d && (x.EffDateEnd == null || x.EffDateEnd >= d));
+    var items = await q.OrderBy(x => x.ModelCode).ThenByDescending(x => x.EffDateStart).Take(1000).Select(x => new {
+        x.CfgATMVIpCode, x.ModelCode, x.EffDateStart, x.EffDateEnd, x.CreateDTime, x.CreateBy,
+        x.FlagActive, x.LogLUDateTime, x.LogLUBy,
+        lines = db.ConfigMapVinCarCarInputDtls.Count(l => l.OrgId == t.OrgId && l.CfgATMVIpCode == x.CfgATMVIpCode && l.ModelCode == x.ModelCode) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mapvinconfigs/{code}/{model}", async (string code, string model, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var h = await db.ConfigMapVinCarCarInputs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CfgATMVIpCode == code && x.ModelCode == model);
+    if (h is null) return Results.NotFound(new { code, model });
+    var lines = await db.ConfigMapVinCarCarInputDtls.Where(x => x.OrgId == t.OrgId && x.CfgATMVIpCode == code && x.ModelCode == model)
+        .Select(x => new { x.DCPType, x.ValPmtDepositPercentFrom, x.ValPmtDepositPercentTo,
+            x.FlagIsExistGuarantee, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.CfgATMVIpCode, h.ModelCode, h.EffDateStart, h.EffDateEnd,
+        h.CreateDTime, h.CreateBy, h.FlagActive, h.LogLUDateTime, h.LogLUBy }, count = lines.Count, lines });
+}).RequireAuthorization();
+
+// Thêm bộ cấu hình — port 1:1 `Config_MapVINCarCarInput_AddX`.
+// 🔴 Ba guard của nguồn, port nguyên:
+//   (1) EffDateStart bắt buộc;
+//   (2) EffDateStart phải **≥ NGÀY MAI** (nguồn so với dtimeSys.AddDays(1)) — không cho hiệu lực
+//       ngay hôm nay hay lùi quá khứ, để bộ cấu hình không đổi giữa chừng một ngày đang chạy;
+//   (3) không trùng cặp (ModelCode, EffDateStart) trên bản ghi đang Active.
+// EffDateEnd đặt = "2100-01-01" (TConst.DateTimeSpecial.DateMax) — vô hạn, KHÔNG để null.
+app.MapPost("/api/mapvinconfigs", async (MapVinCfgDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.CfgATMVIpCode ?? "").Trim().ToUpperInvariant();
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0 || model.Length == 0) return Results.BadRequest(new { error = "Cần cả mã bộ cấu hình và mã dòng xe." });
+    var start = dto.EffDateStart.Date;
+    if (start < DateTime.Now.Date.AddDays(1))
+        return Results.BadRequest(new { error = "Ngày bắt đầu hiệu lực phải từ NGÀY MAI trở đi (guard của nguồn: so với dtimeSys.AddDays(1))." });
+    if (await db.ConfigMapVinCarCarInputs.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model
+            && x.EffDateStart == start && x.FlagActive == "1"))
+        return Results.Conflict(new { error = $"Dòng xe {model} đã có bộ cấu hình đang hiệu lực bắt đầu từ ngày này." });
+    var lines = (dto.Lines ?? new()).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Bộ cấu hình phải có ít nhất 1 dòng điều kiện." });
+    var bad = lines.FirstOrDefault(l => l.ValPmtDepositPercentTo < l.ValPmtDepositPercentFrom);
+    if (bad is not null) return Results.BadRequest(new { error = $"Khoảng % đặt cọc không hợp lệ: từ {bad.ValPmtDepositPercentFrom} đến {bad.ValPmtDepositPercentTo}." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var dateMax = new DateTime(2100, 1, 1);          // TConst.DateTimeSpecial.DateMax
+    db.ConfigMapVinCarCarInputs.Add(new ConfigMapVinCarCarInput { OrgId = t.OrgId, CfgATMVIpCode = code,
+        ModelCode = model, EffDateStart = start, EffDateEnd = dateMax, CreateDTime = now, CreateBy = who,
+        FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    foreach (var l in lines)
+        db.ConfigMapVinCarCarInputDtls.Add(new ConfigMapVinCarCarInputDtl { OrgId = t.OrgId, CfgATMVIpCode = code,
+            ModelCode = model, DCPType = l.DCPType,
+            ValPmtDepositPercentFrom = l.ValPmtDepositPercentFrom, ValPmtDepositPercentTo = l.ValPmtDepositPercentTo,
+            FlagIsExistGuarantee = l.FlagIsExistGuarantee, FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, model, effDateStart = start, effDateEnd = dateMax, lines = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 "Update" của nguồn KHÔNG sửa nội dung — `_UpdateX` chặn nếu FlagActive khác Inactive,
+//    và mệnh đề set chỉ có FlagActive + LogLU*. Vì vậy endpoint đặt tên đúng bản chất: /deactivate.
+app.MapPost("/api/mapvinconfigs/{code}/{model}/deactivate", async (string code, string model, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = code.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var h = await db.ConfigMapVinCarCarInputs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CfgATMVIpCode == code && x.ModelCode == model);
+    if (h is null) return Results.NotFound(new { code, model });
+    if (h.FlagActive == "0") return Results.BadRequest(new { error = "Bộ cấu hình đã ở trạng thái ngừng hiệu lực." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    h.FlagActive = "0"; h.LogLUDateTime = now; h.LogLUBy = who;
+    // nguồn khoá theo (CfgATMVIpCode, ModelCode) và KHÔNG đụng EffDateEnd — giữ nguyên hành vi đó.
+    foreach (var l in await db.ConfigMapVinCarCarInputDtls.Where(x => x.OrgId == t.OrgId && x.CfgATMVIpCode == code && x.ModelCode == model).ToListAsync())
+    { l.FlagActive = "0"; l.LogLUDateTime = now; l.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, model, flagActive = h.FlagActive, note = "Nguồn chỉ tắt cờ, KHÔNG rút ngắn EffDateEnd." });
+}).RequireAuthorization();
+
 // ===== #149: LỊCH SỬ PHIÊN (Sys_SessionHist) =====
 // Nguồn: BizHTC.System.cs (csproj 133) — Sys_SessionHist_AddX (2269). Cả hai WS đều gọi _Add_New20181115.
 app.MapGet("/api/sessionhists", async (AppDbContext db, ITenantContext t, string? userCode, string? service, string? fn) =>
@@ -27513,6 +27596,10 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #150: DTO cấu hình đầu vào thuật toán map VIN ----
+record MapVinCfgLineDto(string? DCPType, decimal ValPmtDepositPercentFrom, decimal ValPmtDepositPercentTo, string? FlagIsExistGuarantee);
+record MapVinCfgDto(string CfgATMVIpCode, string ModelCode, DateTime EffDateStart, List<MapVinCfgLineDto>? Lines);
+
 // ---- #149: DTO hạ tầng phiên / chống trùng / log ngân hàng ----
 record SessionHistDto(string SessionId, string? RootSvCode, string? RootUserCode, string? ServiceCode, string? UserCode, string? FunctionName, string? LanguageCode, DateTime? DateTimeLogin, string? InfoInternal, string? InfoExternal);
 record ValidateIdDto(string Id);

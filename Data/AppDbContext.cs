@@ -142,6 +142,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();
     public DbSet<InsuranceFee> InsuranceFees => Set<InsuranceFee>();
     public DbSet<Quota> Quotas => Set<Quota>();
+    public DbSet<ConfigMapVinCarCarInput> ConfigMapVinCarCarInputs => Set<ConfigMapVinCarCarInput>();
+    public DbSet<ConfigMapVinCarCarInputDtl> ConfigMapVinCarCarInputDtls => Set<ConfigMapVinCarCarInputDtl>();
     public DbSet<SysSessionHist> SysSessionHists => Set<SysSessionHist>();
     public DbSet<SysValidateId> SysValidateIds => Set<SysValidateId>();
     public DbSet<OsMBankLog> OsMBankLogs => Set<OsMBankLog>();
