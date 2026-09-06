@@ -272,9 +272,15 @@ public sealed class BusinessPlanHeader
     public DateTime? Approve2At { get; set; }
     /// <summary>Người duyệt cấp 2 (`Appr2By`).</summary>
     public string? Approve2By { get; set; }
-    /// <summary>Số lần lập kế hoạch (`TimesPlan`) — nguồn giữ khi nhân bản phiên bản.</summary>
-    public int TimesPlan { get; set; }
+    /// <summary>Số lần lập kế hoạch (`TimesPlan`) — nguồn giữ khi nhân bản phiên bản.
+    /// ⚠️ #177: kiểu phải NULLABLE — `_UnApprove2` gán `DBNull.Value` cho cột này khi bỏ duyệt.</summary>
+    public int? TimesPlan { get; set; }
     public DateTime? CancelledAt { get; set; }
+
+    // ===== #177 parity `BPL_BusinessPlan_UnApprove2` (DataWH/BizHTC.zTemp.cs:50378, csproj 276) =====
+    /// <summary>Nhật ký sửa cuối — nguồn ghi `LogLUDateTime`/`LogLUBy` ở mọi bước duyệt/bỏ duyệt.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

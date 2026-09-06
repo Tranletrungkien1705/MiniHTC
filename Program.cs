@@ -786,16 +786,47 @@ app.MapPost("/api/planheaders/{code}/approve2", async (string code, AppDbContext
     return Results.Ok(new { h.BusinessPlanCode, h.Status });
 }).RequireAuthorization();
 
-app.MapPost("/api/planheaders/{code}/cancel", async (string code, AppDbContext db, ITenantContext t) =>
+// ===== #177 BỎ DUYỆT CẤP 2 kế hoạch kinh doanh — `BPL_BusinessPlan_UnApprove2` =====
+// Nguồn: `TERP.BizHTC/DataWH/BizHTC.zTemp.cs:50378` (csproj 276). BƯỚC 3B: md5 cả file `dbb71f7d` KHỚP 2 máy.
+//
+// 🔴 TWIN LỆCH BIT — hai bề mặt KHÁC HẲN NHAU về số cấp duyệt:
+//    · WS **32-bit**: `BPL_BusinessPlan_Approve` + `_UnApprove`          (duyệt MỘT cấp)
+//    · WS **64-bit**: `_Approve1` + `_Approve2` + `_UnApprove2`          (duyệt HAI cấp)
+//    Canonical = 64-bit (hai cấp) — đúng như port đang làm.
+//
+// 🔴 SỬA MỘT HIỂU SAI HÀNH ĐỘNG (cùng lớp #167 `PRD_..._Cancel` và #172 `_RejectGrtClaim`):
+//    Port cũ đặt endpoint này là `/cancel` và **chỉ ghi `CancelledAt`, giữ nguyên `Status = "A2"`**,
+//    kèm ghi chú "nguồn không có mã huỷ nên giữ A2". Guard thì trace ĐÚNG (`A2` + `ACTUAL`),
+//    nhưng **hành động thì sai**: nguồn không huỷ gì cả — nó **BỎ DUYỆT**, đưa kế hoạch **về "P"**
+//    và **XOÁ SẠCH** `Appr1DTime`/`Appr1By`/`Appr2DTime`/`Appr2By`/`TimesPlan` (nguồn gán `DBNull.Value`).
+//    Hệ quả của port cũ: kế hoạch **kẹt vĩnh viễn ở "A2"**, không bao giờ sửa/duyệt lại được.
+//    ⇒ Đổi tên endpoint theo NGHĨA THẬT: `/unapprove2`.
+//
+// Guard nguồn (`BPL_BusinessPlan_CheckDB`): `BusinessPlanStatus = "A2"` **và** `Version = "ACTUAL"`
+//   ⇒ chỉ bỏ duyệt được bản kế hoạch THỰC TẾ đã duyệt cấp 2, không đụng bản "INIT".
+// RBAC: nguồn gọi `myCommon_CheckHTCDirect` — nợ chung fleet.
+app.MapPost("/api/planheaders/{code}/unapprove2", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
     if (h is null) return Results.NotFound(new { code });
-    if (h.Status != "A2" || h.Version != "ACTUAL") return Results.BadRequest(new { error = "Kế hoạch kinh doanh không hợp lệ!" });
-    // ⚠️ Nguồn KHÔNG có mã huỷ trong TConst.BusinessPlanStatus — giữ nguyên "A2" và chỉ ghi mốc huỷ,
-    // KHÔNG tự đặt thêm mã trạng thái mới.
-    h.CancelledAt = DateTime.Now; await db.SaveChangesAsync();
-    return Results.Ok(new { h.BusinessPlanCode, h.Status });
+    if (h.Status != "A2")
+        return Results.BadRequest(new { error = $"Kế hoạch đang ở '{h.Status}' — chỉ bỏ duyệt được bản đã duyệt cấp 2 (A2)." });
+    if (h.Version != "ACTUAL")
+        return Results.BadRequest(new { error = $"Phiên bản '{h.Version}' — chỉ bỏ duyệt được bản THỰC TẾ (ACTUAL)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    // Nguồn ghi lại đúng bộ này: trạng thái về "P", Version giữ "ACTUAL", năm cột mốc duyệt về NULL.
+    h.Status = "P";
+    h.Version = "ACTUAL";
+    h.Approve1At = null; h.Approve1By = null;
+    h.Approve2At = null; h.Approve2By = null;
+    h.TimesPlan = null;
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.BusinessPlanCode, h.Status, h.Version,
+        h.Approve1At, h.Approve1By, h.Approve2At, h.Approve2By, h.TimesPlan, h.LogLUDateTime, h.LogLUBy });
 }).RequireAuthorization();
+
 
 app.MapGet("/api/planheaders/statuses", () => Results.Ok(new
 {
@@ -805,7 +836,7 @@ app.MapGet("/api/planheaders/statuses", () => Results.Ok(new
         new { code = "A2", name = "Đã duyệt cấp 2" },
         new { code = "A", name = "Đã duyệt (dùng cho dòng chi tiết)" } },
     versions = new[] { "INIT", "ACTUAL" },
-    note = "Nguồn KHÔNG có mã huỷ; huỷ chỉ ghi mốc CancelledAt, trạng thái giữ A2.",
+    note = "Nguồn KHÔNG có mã huỷ. Thao tác duy nhất lùi trạng thái là BỎ DUYỆT CẤP 2 (`/unapprove2`): A2 → P và xoá sạch mốc duyệt.",
 })).RequireAuthorization();
 
 // 🔴 DÒNG chi tiết kế hoạch KD (BPL_BusinessPlanDtl) — 3 loại × 12 tháng theo từng Model.
@@ -819,7 +850,7 @@ app.MapGet("/api/planheaders/{code}/lines", async (string code, AppDbContext db,
             l.Id, l.ModelCode, l.BusinessPlanDtlStatus, l.VersionDtl, l.Rtl_TotalQtyDeal, l.BO_TotalQtyBO,
             l.Rtl_QtyM1, l.Rtl_QtyM2, l.Rtl_QtyM3, l.Rtl_QtyM4, l.Rtl_QtyM5, l.Rtl_QtyM6, l.Rtl_QtyM7, l.Rtl_QtyM8, l.Rtl_QtyM9, l.Rtl_QtyM10, l.Rtl_QtyM11, l.Rtl_QtyM12, l.Ord_QtyM1, l.Ord_QtyM2, l.Ord_QtyM3, l.Ord_QtyM4, l.Ord_QtyM5, l.Ord_QtyM6, l.Ord_QtyM7, l.Ord_QtyM8, l.Ord_QtyM9, l.Ord_QtyM10, l.Ord_QtyM11, l.Ord_QtyM12, l.BO_QtyM1, l.BO_QtyM2, l.BO_QtyM3, l.BO_QtyM4, l.BO_QtyM5, l.BO_QtyM6, l.BO_QtyM7, l.BO_QtyM8, l.BO_QtyM9, l.BO_QtyM10, l.BO_QtyM11, l.BO_QtyM12, 
         }).ToListAsync();
-    return Results.Ok(new { h.BusinessPlanCode, h.YearPlan, h.Status, h.Version, count = lines.Count, lines });
+    return Results.Ok(new { h.BusinessPlanCode, h.YearPlan, h.Status, h.Version, h.LogLUDateTime, h.LogLUBy, count = lines.Count, lines });
 }).RequireAuthorization();
 
 app.MapPost("/api/planheaders/{code}/lines", async (

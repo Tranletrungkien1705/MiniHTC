@@ -845,6 +845,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #177 parity BPL_BusinessPlan_UnApprove2
+        "ALTER TABLE public.\"BusinessPlanHeaders\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"BusinessPlanHeaders\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #176 parity Ser_StockAdj_Update / _Delete
         "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
