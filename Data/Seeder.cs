@@ -845,6 +845,14 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #163 parity DMS40_Ord_SalesOrderRoot_Finish_New20210521 (bản LIVE của WS 64-bit)
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"FinishDTime\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"FinishBy\" text",
+        "ALTER TABLE public.\"Dms40SoRoots\" ADD COLUMN IF NOT EXISTS \"GeneratedSoCode\" text",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"RequestedDate\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"Approved1Date\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"Approved2Date\" timestamp",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"SORStatusDtl\" text",
         // #162 side-effect ContractPackingListCreate_New20190923
         "CREATE TABLE IF NOT EXISTS public.\"VinMyStatuses\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"VIN\" text NOT NULL DEFAULT '', \"MapDateTime\" timestamp, \"DeliveryOutDate\" timestamp, \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         "ALTER TABLE public.\"DeviceCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",

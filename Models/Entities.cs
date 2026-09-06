@@ -3838,6 +3838,14 @@ public sealed class Dms40SoRoot
     public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprDTime { get; set; }
+
+    // ===== #163 parity `DMS40_Ord_SalesOrderRoot_Finish_New20210521` (DataWH/BizHTC.Order.cs:1478, csproj 315) =====
+    /// <summary>Thời điểm hoàn tất (`FinishDTime`) — nguồn ghi cùng `SORStatus = 'F'`; port cũ chỉ đổi trạng thái.</summary>
+    public DateTime? FinishDTime { get; set; }
+    /// <summary>Người hoàn tất (`FinishBy`).</summary>
+    public string? FinishBy { get; set; }
+    /// <summary>🔴 Mã đơn bán (`Ord_SalesOrder.SOCode`) mà bước hoàn tất TỰ SINH ra từ đơn gốc này.</summary>
+    public string? GeneratedSoCode { get; set; }
 }
 
 /// <summary>Dòng model/spec/color trong đơn hàng gốc DMS40 — port 1:1 grid FrmUpgradeOrderApprovePlan (DMS40_Ord_SalesOrderRootDetail).</summary>
@@ -3855,6 +3863,16 @@ public sealed class Dms40SoRootDetail
     public decimal Approved2Quantity { get; set; }
     public decimal CancelQuantityTotal { get; set; }
     public string? Remark { get; set; }
+
+    // ===== #163 parity `DMS40_Ord_SalesOrderRoot_Finish_New20210521` =====
+    /// <summary>Ngày yêu cầu giao của dòng (`RequestedDate`) — nguồn bê sang dòng đơn bán khi hoàn tất.</summary>
+    public DateTime? RequestedDate { get; set; }
+    /// <summary>Ngày duyệt cấp 1 của dòng (`Approved1Date`) — nguồn map thành `ApprovedDate` của dòng đơn bán.</summary>
+    public DateTime? Approved1Date { get; set; }
+    /// <summary>Ngày duyệt cấp 2 (`Approved2Date`) — bước hoàn tất **sao chép từ `Approved1Date`**, không nhập tay.</summary>
+    public DateTime? Approved2Date { get; set; }
+    /// <summary>Trạng thái RIÊNG của dòng (`SORStatusDtl`) — nguồn cập nhật theo trạng thái header ở bước hoàn tất.</summary>
+    public string? SORStatusDtl { get; set; }
 }
 
 /// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>
