@@ -10341,7 +10341,21 @@ public sealed class BankTmCar
     public string ColorCode { get; set; } = "";
 }
 
-/// <summary>Phiếu thanh toán ngân hàng (Pmt_PM) — port 1:1 FrmMngPM. Header.</summary>
+/// <summary>
+/// ⚠️ #202 TRÙNG LẶP — thực thể này và <see cref="PmtPayment"/> là **CÙNG MỘT BẢNG NGUỒN** `Pmt_Payment`.
+/// · Tên bảng ghi trong tài liệu cũ (`Pmt_PM` / `Pmt_PMDetail`) **KHÔNG TỒN TẠI** ở nguồn — đã grep toàn
+///   `TERP.BizHTC`: họ `Pmt_*` chỉ có Payment / PaymentDetail / PaymentAVN / PaymentGPS / PaymentPDI /
+///   PaymentStorage / Guarantee / GrtClaim… , không có `Pmt_PM`.
+/// · Màn gốc `TERP.BankClient/Views/Bank/FrmMngPM.cs` (672 dòng) có đúng ba nút Search·Export·Close
+///   ⇒ **màn CHỈ ĐỌC** của cổng ngân hàng trên bảng `Pmt_Payment`; cổng `TERP.WSBank` chỉ có 2 lệnh ghi,
+///   đều thuộc cụm `DMS40_DlrCtr_CancelBankMD_*`. Các lệnh GHI phiếu thanh toán nằm ở cổng WSHTC
+///   (`PaymentPaymentCreate/Approve/Reject/Cancel/Confirm`) — <see cref="PmtPayment"/> mới là bản port đúng.
+/// 🔴 NỢ HỢP NHẤT (chưa làm ở lượt này vì cần đối chiếu nguồn từng cột): <see cref="PmtPaymentDetail"/>
+///   hiện chỉ có 4 cột dữ liệu (CarId/GuaranteeNo/DlrCtrNo/Amount) trong khi <see cref="BankPaymentCar"/>
+///   có thêm 11 cột (VIN, ModelCode, SpecCode, SOCode, ColorCode, AmountAccum, PercentAccum,
+///   UnitPriceActual, AmountCurrent, PercentCurrent, BankGuaranteeNo). Phải soi `Pmt_PaymentDetail` ở nguồn
+///   rồi mới gộp — KHÔNG gộp mù.
+/// </summary>
 public sealed class BankPayment
 {
     public long Id { get; set; }
@@ -10366,7 +10380,8 @@ public sealed class BankPayment
     public int? LoanPeriod { get; set; }        // kỳ hạn vay (tháng)
 }
 
-/// <summary>Chi tiết phiếu thanh toán theo VIN (Pmt_PMDetail) — port 1:1 FrmMngPM detail.</summary>
+/// <summary>Chi tiết phiếu thanh toán theo VIN — bảng nguồn THẬT là `Pmt_PaymentDetail`
+/// (tên `Pmt_PMDetail` trong tài liệu cũ không tồn tại). Xem ghi chú trùng lặp ở <see cref="BankPayment"/>.</summary>
 public sealed class BankPaymentCar
 {
     public long Id { get; set; }

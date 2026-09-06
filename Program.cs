@@ -3716,7 +3716,7 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
     {
         OrgId = t.OrgId, PaymentNo = no, BankPaymentNo = dto.BankPaymentNo ?? "", DealerCode = dto.DealerCode.Trim(),
         BankCodeSend = dto.BankCodeSend ?? "", BankCodeReceive = dto.BankCodeReceive.Trim(), BankAccountSend = dto.BankAccountSend ?? "", BankAccountReceive = dto.BankAccountReceive ?? "",
-        Funds = dto.Funds ?? "", BankLending = dto.BankLending ?? "", Remark = dto.Remark ?? "", PaymentStatus = "Draft", TotalAmount = cars.Sum(c => c.AmountCurrent)
+        Funds = dto.Funds ?? "", BankLending = dto.BankLending ?? "", Remark = dto.Remark ?? "", PaymentStatus = "P"   /* #202: TConst.Stage.Pending */, TotalAmount = cars.Sum(c => c.AmountCurrent)
     };
     db.BankPayments.Add(p2); await db.SaveChangesAsync();
     foreach (var c in cars)
@@ -3742,13 +3742,18 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
     no = no.Trim().ToUpperInvariant();
     var p = await db.BankPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
-    if (p.PaymentStatus != "Draft") return Results.BadRequest(new { error = "Phiếu thanh toán không ở trạng thái chờ duyệt." });
+    // 🔴 #202 TỪ VỰNG: nguồn ghi `PaymentStatus` bằng `TConst.Stage` (P/A/R/C) — đã grep mọi chỗ gán
+    //    `["PaymentStatus"] =` trong `TERP.BizHTC`: tất cả đều là `TConst.Stage.*`. Bộ Draft/Approved/Rejected
+    //    của port cũ KHÔNG có ở nguồn ⇒ đổi + migration trong Seeder.
+    //    Lệnh nguồn tương ứng có thật ở cổng WSHTC (cả 32 lẫn 64 bit):
+    //    `PaymentPaymentApprove_Approve_New20210601` / `PaymentPaymentApprove_Reject_new20200130`.
+    if (p.PaymentStatus != "P") return Results.BadRequest(new { error = "Phiếu thanh toán không ở trạng thái chờ duyệt.", current = p.PaymentStatus });
     if (action == "approve")
     {
-        p.PaymentStatus = "Approved"; p.ApprovedAt = DateTime.Now;
+        p.PaymentStatus = "A"; p.ApprovedAt = DateTime.Now;
         p.AccountingRecordNo = string.IsNullOrWhiteSpace(accNo) ? "GS" + DateTime.Now.ToString("yyMMddHHmmss") : accNo!.Trim();
     }
-    else p.PaymentStatus = "Rejected";
+    else p.PaymentStatus = "R";
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo });
 }).RequireAuthorization();

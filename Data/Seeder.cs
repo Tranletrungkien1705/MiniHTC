@@ -845,6 +845,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #202 migrate TU VUNG phieu thanh toan: nguon dung TConst.Stage (P/A/R), khong phai Draft/Approved/Rejected
+        "UPDATE public.\"BankPayments\" SET \"PaymentStatus\" = 'P' WHERE \"PaymentStatus\" = 'Draft'",
+        "UPDATE public.\"BankPayments\" SET \"PaymentStatus\" = 'A' WHERE \"PaymentStatus\" = 'Approved'",
+        "UPDATE public.\"BankPayments\" SET \"PaymentStatus\" = 'R' WHERE \"PaymentStatus\" = 'Rejected'",
         // #201 parity CarCarCancel / CarCarReActive: 5 cot cua Car_Car
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",
