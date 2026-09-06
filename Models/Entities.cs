@@ -7205,6 +7205,126 @@ public sealed class SeqCounter
 /// `BizHTC.Marketing.cs` dòng 7808 / 8080 / 11961. Giữ nguyên, KHÔNG "sửa" thành `FlagActive`
 /// kẻo lệch tên cột với hệ nguồn.
 /// </summary>
+/// <summary>
+/// 🔴 #329 BÁO CÁO KPI XƯỞNG DỊCH VỤ — `Report_KPI` (`Report_KPICreate_New20221101`,
+/// `BizCarSv.zzzzCode.cs:1150`). MiniHTC mới có **danh mục** KPI (`MstKpi`/`MstKpiType`), **chưa có
+/// bản ghi báo cáo**. Đây là cụm lệch LỚN NHẤT của sweep #320: **44 cột** giữa hai bản.
+///
+/// TRACE TWIN: WS `:27809` gọi `Report_KPICreate_**New20221101**` (100 cột) ⇒ bản trần (56 cột) CHẾT.
+/// ⚠️ Cả hai bản nằm trong `zzzzCode.cs` — tên file gợi ý "code rác", **nhưng bản LIVE lại ở đó**.
+///   Không được loại một hàm chỉ vì tên file; chỉ WS mới quyết định.
+/// ⚠️ Sweep đánh dấu ⚠️ (ủy quyền ghi) cho cả hai ⇒ số cột có thể còn hụt; đã đối chiếu tay danh sách
+///   `[\"X\"] =` trong trọn thân hàm để lấy đủ 100.
+///
+/// 🔴 TỪ VỰNG LOẠI CÔNG VIỆC (lặp trong hầu hết tên cột) — **SCC** · **SCD** · **SCS** · **SPK** ·
+/// **BDD** · **BDN**; mỗi loại lại chia theo NGUỒN TIỀN: `…RoRepair` (sửa chữa) · `…RoInsurance`
+/// (bảo hiểm) · `…RoWarranty` (bảo hành) · `…Local` (nội bộ). Đừng gộp bốn nguồn tiền làm một.
+/// </summary>
+public sealed class ReportKpi
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public decimal? AccessoryAmountAfterVAT { get; set; }
+    public decimal? AccessoryAmountOut { get; set; }
+    public decimal? AdvisoryNumber { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public decimal? CabinetPaintNumber { get; set; }
+    public decimal? CarPerAdviserDay { get; set; }
+    public decimal? CavityBPNumber { get; set; }
+    public decimal? CavityCopperNumber { get; set; }
+    public decimal? CavityMaintainNumber { get; set; }
+    public decimal? CavityOtherNumber { get; set; }
+    public decimal? CavityParkingNumber { get; set; }
+    public decimal? CavityQtyPerEngineerBDNSCC { get; set; }
+    public decimal? CavityRONumber { get; set; }
+    public decimal? CountBDD { get; set; }
+    public decimal? CountBDDLocal { get; set; }
+    public decimal? CountBDDPerCavityMaintain { get; set; }
+    public decimal? CountBDDRoRepair { get; set; }
+    public decimal? CountCarService { get; set; }
+    public decimal? CountSCC { get; set; }
+    public decimal? CountSCCLocal { get; set; }
+    public decimal? CountSCCPerCavityRO { get; set; }
+    public decimal? CountSCCRoInsurance { get; set; }
+    public decimal? CountSCCRoRepair { get; set; }
+    public decimal? CountSCCRoWarranty { get; set; }
+    public decimal? CountSCD { get; set; }
+    public decimal? CountSCDLocal { get; set; }
+    public decimal? CountSCDPerCavityCopper { get; set; }
+    public decimal? CountSCDRoInsurance { get; set; }
+    public decimal? CountSCDRoRepair { get; set; }
+    public decimal? CountSCDRoWarranty { get; set; }
+    public decimal? CountSCS { get; set; }
+    public decimal? CountSCSLocal { get; set; }
+    public decimal? CountSCSPerCabinetPaint { get; set; }
+    public decimal? CountSCSPerCavityBP { get; set; }
+    public decimal? CountSCSRoInsurance { get; set; }
+    public decimal? CountSCSRoRepair { get; set; }
+    public decimal? CountSCSRoWarranty { get; set; }
+    public decimal? CountSPK { get; set; }
+    public decimal? CountSPKLocal { get; set; }
+    public decimal? CountSPKRoRepair { get; set; }
+    public DateTime? DateReport { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? EmploymentRate { get; set; }
+    public string? EnginerBP { get; set; }
+    public decimal? EnginerNumber { get; set; }
+    public decimal? LaborProductivity { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public decimal? PaintingTechnicianQty { get; set; }
+    public decimal? PartAmountLocal { get; set; }
+    public decimal? PartAmountOut { get; set; }
+    public decimal? PartAmountRoInsurance { get; set; }
+    public decimal? PartAmountRoRepair { get; set; }
+    public decimal? PartAmountRoWarranty { get; set; }
+    public decimal? PartAmountShell { get; set; }
+    public decimal? PartProfitRate { get; set; }
+    public decimal? RevenuePerAdviser { get; set; }
+    public decimal? RevenuePerKTVBDN { get; set; }
+    public decimal? RevenuePerKTVSCC { get; set; }
+    public decimal? RevenuePerKTVSCD { get; set; }
+    public decimal? RevenuePerKTVSCS { get; set; }
+    public decimal? SerProfitRate { get; set; }
+    public decimal? ServiceAmountBDDLocal { get; set; }
+    public decimal? ServiceAmountBDDRoRepair { get; set; }
+    public decimal? ServiceAmountSCCLocal { get; set; }
+    public decimal? ServiceAmountSCCRoInsurance { get; set; }
+    public decimal? ServiceAmountSCCRoRepair { get; set; }
+    public decimal? ServiceAmountSCCRoWarranty { get; set; }
+    public decimal? ServiceAmountSCDLocal { get; set; }
+    public decimal? ServiceAmountSCDRoInsurance { get; set; }
+    public decimal? ServiceAmountSCDRoRepair { get; set; }
+    public decimal? ServiceAmountSCDRoWarranty { get; set; }
+    public decimal? ServiceAmountSCSLocal { get; set; }
+    public decimal? ServiceAmountSCSRoInsurance { get; set; }
+    public decimal? ServiceAmountSCSRoRepair { get; set; }
+    public decimal? ServiceAmountSCSRoWarranty { get; set; }
+    public decimal? ServiceAmountSPKLocal { get; set; }
+    public decimal? ServiceAmountSPKRoRepair { get; set; }
+    public decimal? ServiceProductivity { get; set; }
+    public decimal? ServiceTechnicianQty { get; set; }
+    public decimal? ShellAmountOut { get; set; }
+    public string? SparePartsStaff { get; set; }
+    public string? StaffOrther { get; set; }
+    public string? Status { get; set; }
+    public decimal? UnitPriceBDN { get; set; }
+    public decimal? UnitPriceSCC { get; set; }
+    public decimal? UnitPriceSCD { get; set; }
+    public decimal? UnitPriceSCS { get; set; }
+    public decimal? WorkDayQty { get; set; }
+    public decimal? WorkHourActualQty { get; set; }
+    public decimal? WorkHourBDNQty { get; set; }
+    public decimal? WorkHourFeeQty { get; set; }
+    public decimal? WorkHourPerCarRO { get; set; }
+    public decimal? WorkHourQty { get; set; }
+    public decimal? WorkHourSCCQty { get; set; }
+    public decimal? WorkHourSCDQty { get; set; }
+    public decimal? WorkHourSCSQty { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
 public sealed class MstKpi
 {
     public long Id { get; set; }

@@ -109,6 +109,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstProvince> MstProvinces => Set<MstProvince>();   // #227
     public DbSet<MstDealerSalesType> MstDealerSalesTypes => Set<MstDealerSalesType>();
     public DbSet<MstKpi> MstKpis => Set<MstKpi>();
+    // #329: ban ghi BAO CAO KPI xuong dich vu (Report_KPI)
+    public DbSet<ReportKpi> ReportKpis => Set<ReportKpi>();
     public DbSet<MstKpiType> MstKpiTypes => Set<MstKpiType>();
     public DbSet<MrkMstAreaMarket> MrkMstAreaMarkets => Set<MrkMstAreaMarket>();
     public DbSet<MstDocType> MstDocTypes => Set<MstDocType>();
