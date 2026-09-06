@@ -10005,6 +10005,16 @@ public sealed class CarVinMaster
     public string? SpecCode { get; set; }
     public string? DealerCode { get; set; }
 
+    /// <summary>
+    /// 🔴 #B04: Mã màu của xe (`Car_VIN.ColorCode`). Bộ ba định danh xe của nguồn là
+    /// (`ModelCode`, `SpecCode`, `ColorCode`) — port cũ chỉ có hai, nên **mọi báo cáo join
+    /// `Mst_CarColor` theo `cv.ModelCode + cv.ColorCode`** đều không thực hiện được.
+    /// Bằng chứng dùng thật: `Rpt_CarDeliveryNotAddressDealerRegis_New20181115`
+    /// (`BizHTC.ZTempGPS.cs:8848-8850`) `inner join Mst_CarColor mcc on cv.ModelCode = mcc.ModelCode
+    /// and cv.ColorCode = mcc.ColorCode`.
+    /// </summary>
+    public string? ColorCode { get; set; }
+
     // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
     //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
     /// <summary>Ngày KẾT THÚC thế chấp (`Car_Vin.MortageEndDate`) — nguồn đặt = hôm nay khi duyệt.</summary>

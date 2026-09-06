@@ -1112,6 +1112,8 @@ public static class Seeder
         "UPDATE public.\"BankPayments\" SET \"PaymentStatus\" = 'R' WHERE \"PaymentStatus\" = 'Rejected'",
         // #201 parity CarCarCancel / CarCarReActive: 5 cot cua Car_Car
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text",
+        // #B04 Car_VIN.ColorCode — bộ ba định danh xe của nguồn (ModelCode, SpecCode, ColorCode)
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"ColorCode\" text",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelRemark\" text",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelDate\" timestamp",
