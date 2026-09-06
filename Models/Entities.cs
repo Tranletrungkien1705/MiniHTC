@@ -9009,6 +9009,12 @@ public sealed class DmsDealerContract
     public string? HTCAppr1By { get; set; }
     /// <summary>Người duyệt cấp 2 (`HTCAppr2By`) — port cũ chỉ có thời điểm.</summary>
     public string? HTCAppr2By { get; set; }
+    // ===== #207 parity: đối chiếu TỪNG CỘT với `DMS40_CT_DealerContract_SaveX_New20190404`
+    //       (DMS40/0.34.Contract.cs:1442) — nguồn ghi 33 cột; entity thiếu đúng 2 cột mốc huỷ dưới đây.
+    /// <summary>Mốc HUỶ của đại lý (`CancelDTime`/`CancelBy`) — `DlrCancel_New20190404` ghi cùng lúc với
+    /// `LogLU*` và `LUDTime`/`LUBy` (cả ba cặp nhận CÙNG một giá trị).</summary>
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
     /// <summary>Thời điểm/người TỪ CHỐI (`RejectDTime`/`RejectBy`) — nguồn dùng CẶP CỘT RIÊNG, không dùng chung với duyệt.</summary>
     public DateTime? RejectDTime { get; set; }
     public string? RejectBy { get; set; }

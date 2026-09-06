@@ -845,6 +845,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #207 parity DMS40_CT_DealerContract: 2 cot moc huy
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text",
         // #206 doi tiep 3 ten cot BankingTrans theo RQ_BankingTransactions_SaveX_20220817
         "ALTER TABLE public.\"BankingTranses\" RENAME COLUMN \"Status\" TO \"BkTransStatus\"",
         "ALTER TABLE public.\"BankingTranses\" RENAME COLUMN \"CreatedAt\" TO \"CreatedDate\"",

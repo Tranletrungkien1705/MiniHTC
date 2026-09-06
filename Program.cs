@@ -22591,18 +22591,47 @@ app.MapPost("/api/dmsdealercontracts/{no}/htc-approve", async (string no, DmsHtc
     return Results.Ok(new { c.DlrCtrNo, c.HTCSignStatus, c.DlrCtrStatus });
 }).RequireAuthorization();
 
-// 🔴 ĐẠI LÝ HUỶ — `DMS40_CT_DealerContract_DlrCancel_New20190404` (5246): gán **cả hai** cột
-// `DlrSignStatus = "C"` và `DlrCtrStatus = "C"` trong cùng một thao tác.
-app.MapPost("/api/dmsdealercontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #207 HUỶ HĐ ĐẠI LÝ — `DMS40_CT_DealerContract_DlrCancel_New20190404` (DMS40/0.34.Contract.cs:5246) =====
+// BƯỚC 3B: md5 CẢ FILE `e2f3680f` KHỚP 2 máy.
+//
+// 🔴 GUARD BA TRỤC của nguồn — port cũ chỉ chặn hai giá trị của MỘT trục nên LỎNG hơn hẳn:
+//     `DlrSignStatus`  phải = `DlrSignStatus.Approved` ("A")   — đại lý đã ký duyệt
+//     `HTCSignStatus`  phải = `HTCSignStatus.Pending` ("P")    — HTC CHƯA ký
+//     `DlrCtrStatus`   phải = `DlrCtrStatus.NotSign` ("NS")    — hợp đồng chưa ký
+//   (`TConst.DlrCtrStatus`: NS chưa ký · S đã ký · AJ điều chỉnh · C huỷ — Const.Main.DMS40.cs:147.)
+//   ⇒ Chỉ huỷ được đúng MỘT trạng thái: đại lý đã ký nhưng HTC chưa ký.
+//
+// Nguồn ghi trên HEADER: `CancelDTime`/`CancelBy`, **và cùng giá trị đó** vào `LogLUDateTime`/`LogLUBy`
+//   lẫn `LUDTime`/`LUBy` (ba cặp một giá trị), kèm `DlrSignStatus`, `DlrCtrStatus`, `Remark`.
+// 🔴 CASCADE: bảng `DMS40_CT_DealerContractDetail` — `DlrCtrStatusDtl = f.DlrSignStatus` + `LogLU*`.
+//   Port cũ chỉ đổi header ⇒ dòng chi tiết đứng nguyên (cùng lớp lỗi #193/#194).
+app.MapPost("/api/dmsdealercontracts/{no}/cancel", async (string no, DmsCtrCancelDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim();
     var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (c.DlrCtrStatus == "C") return Results.BadRequest(new { error = "Hợp đồng đã huỷ." });
-    if (c.DlrCtrStatus == "S") return Results.BadRequest(new { error = "HĐ đã ký, không hủy được." });
+
+    if ((c.DlrSignStatus ?? "") != "A")
+        return Results.BadRequest(new { error = $"Đại lý chưa ký duyệt (DlrSignStatus = '{c.DlrSignStatus}') — không huỷ được." });
+    if ((c.HTCSignStatus ?? "") != "P")
+        return Results.BadRequest(new { error = $"HTC đã xử lý chữ ký (HTCSignStatus = '{c.HTCSignStatus}') — không huỷ được." });
+    if ((c.DlrCtrStatus ?? "") != "NS")
+        return Results.BadRequest(new { error = $"Hợp đồng đang '{c.DlrCtrStatus}' — chỉ huỷ khi chưa ký (NS)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     c.DlrSignStatus = "C"; c.DlrCtrStatus = "C";
+    c.CancelDTime = now; c.CancelBy = who;
+    c.LogLUDateTime = now; c.LogLUBy = who;      // nguồn: LogLU* nhận đúng CancelDTime/CancelBy
+    c.LUDTime = now; c.LUBy = who;               // nguồn: LUDTime/LUBy cũng nhận CÙNG giá trị
+    if (!string.IsNullOrWhiteSpace(dto?.Remark)) c.Remark = dto!.Remark!.Trim();
+
+    var dtls = await db.DmsDealerContractDtls.Where(x => x.OrgId == t.OrgId && x.DlrCtrNo == no).ToListAsync();
+    foreach (var d in dtls) { d.DlrCtrStatusDtl = "C"; d.LogLUDateTime = now; d.LogLUBy = who; }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, status = c.DlrCtrStatus });
+    return Results.Ok(new { c.DlrCtrNo, c.DlrSignStatus, status = c.DlrCtrStatus, c.CancelDTime, c.CancelBy,
+                            cancelledDetailRows = dtls.Count });
 }).RequireAuthorization();
 
 // Biên bản hủy hợp đồng đại lý (FrmDMS40_DlrCtr_CancelMinutes) — tạo BB hủy + set HĐ Cancelled
@@ -30785,6 +30814,7 @@ record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 // HTC duyệt 2 cấp (Level 1|2) hoặc từ chối — theo TConst.HTCSignStatus.
 record DmsHtcApproveDto(int Level = 1, bool Reject = false, string? Remark = null, string? FilePath = null);
 record DmsDlrApproveDto(string? Remark = null, string? FilePath = null, bool SendMail = false);
+record DmsCtrCancelDto(string? Remark = null);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
 record CancelMinutesUpdateDto(string? FtColsUpd, string? FilePath);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
