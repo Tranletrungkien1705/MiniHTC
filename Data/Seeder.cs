@@ -845,6 +845,16 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #168 parity Sto_DlvMinutes_InputFee + _Correct (bang TranspDlvConfirms)
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TDriverName\" text",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"CorrectDate\" timestamp",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"CorrectBy\" text",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFValReal\" numeric NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TPValReal\" numeric NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFRemark\" text",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFInputDate\" timestamp",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFInputBy\" text",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TGPSDvStatus\" text",
         // #166 parity DMS40_CT_DealerContract_SaveX_New20190404
         "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DCPType\" text",
         "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"TotalAmount\" numeric NOT NULL DEFAULT 0",

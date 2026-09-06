@@ -10762,6 +10762,28 @@ public sealed class TranspDlvConfirm
     public string? TStatusIaKm { get; set; }
     public string? FStatusIaRemark { get; set; }
     public string? TStatusIaRemark { get; set; }
+
+    // ===== #168 parity `Sto_DlvMinutes_InputFee_New20190416` (8811) + `_Correct_New20190416` (4915) =====
+    //   `TERP.BizHTC/BizHTC.Storage.DlvMinutes.cs`, csproj 120 — BƯỚC 3B: md5 cả file `0b3b957d` KHỚP 2 máy.
+    /// <summary>Tên lái xe tại nơi NHẬN — `_Correct` bắt đủ **cả ba** `TPlateNo`/`TDriverId`/`TDriverName`
+    /// (`Correct_InvalidTTVanTai`); port cũ đã có hai cột đầu, thiếu cột này ⇒ không dựng được guard.</summary>
+    public string? TDriverName { get; set; }
+    /// <summary>Mốc ĐÍNH CHÍNH của HTC (`CorrectDate`/`CorrectBy`).</summary>
+    public DateTime? CorrectDate { get; set; }
+    public string? CorrectBy { get; set; }
+    /// <summary>
+    /// 🔴 Phí vận chuyển thực tế (`TFValReal`) và tiền phạt trễ hạn (`TPValReal`) trên CHÍNH biên bản.
+    /// `_InputFee` nhận cờ `strFlagFeeOrPer` chỉ chấp nhận **"FEE"** hoặc **"PER"** và **mỗi lần chỉ nhập
+    /// MỘT trong hai**; cờ khác ⇒ `InputFee_InvalidFeeOrPer`.
+    /// ⚠️ Khác hai cột cùng tên trên dòng đề nghị thanh toán phí vận chuyển (`TransportInsPaymentLine`).
+    /// </summary>
+    public decimal TFValReal { get; set; }
+    public decimal TPValReal { get; set; }
+    public string? TFRemark { get; set; }
+    public DateTime? TFInputDate { get; set; }
+    public string? TFInputBy { get; set; }
+    /// <summary>Tình trạng thiết bị GPS tại nơi nhận (`TGPSDvStatus`) — `_Correct` ghi cùng lượt.</summary>
+    public string? TGPSDvStatus { get; set; }
 }
 
 /// <summary>

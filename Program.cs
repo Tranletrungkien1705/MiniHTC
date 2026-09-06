@@ -20399,6 +20399,7 @@ app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? 
     {
         m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.FDlvMnStatus, m.TDlvMnStatus,
         m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy, m.CreatedAt,
+        m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFInputDate, m.TFInputBy,
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -20453,10 +20454,75 @@ app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantCon
         .Select(x => new { x.ItemGroup, x.ItemCode, x.FStatus, x.TStatus }).ToListAsync();
     return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.DealerCode,
         m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
+        m.TPlateNo, m.TDriverId, m.TDriverName, m.TGPSDvStatus, m.TRemark, m.TStatusIaKm, m.TStatusIaRemark,
+        m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
         cars, checklist });
 }).RequireAuthorization();
 
 // Hỗ trợ sửa biên bản theo lô — khoá là CẶP (số biên bản, VIN): một biên bản chở nhiều xe, mỗi xe một tuyến.
+// ===== #168 nhập phí vận chuyển thực tế — `Sto_DlvMinutes_InputFee_New20190416` =====
+// Nguồn: `TERP.BizHTC/BizHTC.Storage.DlvMinutes.cs:8811` (csproj 120). BƯỚC 3B: md5 cả file `0b3b957d` KHỚP 2 máy.
+// TWIN: WS 32-bit và 64-bit gọi **cùng** bản `_New20190416` cho cả cụm (chỉ `_DeleteSupport` là 64-bit-only).
+// 🔴 Cờ `strFlagFeeOrPer` chỉ nhận **"FEE"** hoặc **"PER"**, **mỗi lần chỉ nhập MỘT trong hai**:
+//    "FEE" ⇒ `TFValReal` (phí vận chuyển), "PER" ⇒ `TPValReal` (phạt trễ hạn). Cờ khác ⇒ `InputFee_InvalidFeeOrPer`.
+app.MapPost("/api/dlvminutes/{no}/inputfee", async (string no, DlvInputFeeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
+    if (m is null) return Results.NotFound(new { no });
+    var flag = (dto.FlagFeeOrPer ?? "").Trim().ToUpperInvariant();
+    if (flag is not ("FEE" or "PER")) return Results.BadRequest(new { error = "Cờ nhập phí chỉ nhận FEE hoặc PER." });
+    if (dto.Value is null || dto.Value < 0)
+        return Results.BadRequest(new { error = flag == "FEE" ? "Phí vận chuyển thực tế không hợp lệ." : "Tiền phạt trễ hạn không hợp lệ." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (flag == "FEE") m.TFValReal = dto.Value.Value; else m.TPValReal = dto.Value.Value;
+    m.TFRemark = dto.TFRemark; m.TFInputDate = DateTime.Now; m.TFInputBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, flag, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy });
+}).RequireAuthorization();
+
+// ===== #168 ĐÍNH CHÍNH biên bản giao xe — `Sto_DlvMinutes_Correct_New20190416` (4915) =====
+// 🔴 BỐN guard, port cũ không có cái nào:
+//   1. `TApprovedDate` phải CÓ (`Correct_TApprovedDateNotFound`) — chưa được đại lý xác nhận thì không đính chính.
+//   2. Vận tải **tại nơi nhận** đủ CẢ BA: biển số · CMND lái xe · tên lái xe (`Correct_InvalidTTVanTai`).
+//   3. **CẢ HAI** trục `FDlvMnStatus` **và** `TDlvMnStatus` phải `TConst.Stage.Approved` (`Correct_InvalidStatus`).
+//   4. 🔴 **Hạn 2 NGÀY** kể từ `TApprovedDate` (`new TimeSpan(2,0,0,0)`; vượt ⇒ `Correct_OverTime`).
+// Ghi `CorrectDate`/`CorrectBy` + đè lại danh mục tình trạng xe (bảng con `DlvMinutesCheckItems`, cột `TStatus`)
+// và thông tin vận tải nơi nhận. Nguồn lưu danh mục thành 36 cột phẳng `TStatus_OS_*`/`_IS_*`/`_SP_*`/`_DA_*`;
+// MiniHTC đã TÁCH thành bảng con — ánh xạ 1:1 theo `ItemCode`.
+app.MapPost("/api/dlvminutes/{no}/correct", async (string no, DlvCorrectDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.TApprovedDate is null)
+        return Results.BadRequest(new { error = "Biên bản chưa được đại lý xác nhận — không đính chính được." });
+    var plate = (dto.TPlateNo ?? "").Trim(); var drvId = (dto.TDriverId ?? "").Trim(); var drvNm = (dto.TDriverName ?? "").Trim();
+    if (plate.Length == 0 || drvId.Length == 0 || drvNm.Length == 0)
+        return Results.BadRequest(new { error = "Thiếu thông tin vận tải tại nơi nhận (biển số / CMND lái xe / tên lái xe)." });
+    if (m.FDlvMnStatus != "A" || m.TDlvMnStatus != "A")
+        return Results.BadRequest(new { error = $"Trạng thái hai đầu phải đều đã duyệt (đang là F='{m.FDlvMnStatus}', T='{m.TDlvMnStatus}')." });
+    var now = DateTime.Now;
+    if (now - m.TApprovedDate.Value > TimeSpan.FromDays(2))
+        return Results.BadRequest(new { error = $"Quá hạn đính chính: chỉ được sửa trong 2 ngày kể từ {m.TApprovedDate:yyyy-MM-dd HH:mm}." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    m.CorrectDate = now; m.CorrectBy = who;
+    m.TPlateNo = plate; m.TDriverId = drvId; m.TDriverName = drvNm;
+    m.TGPSDvStatus = dto.TGPSDvStatus; m.TRemark = dto.TRemark; m.TStatusIaRemark = dto.TStatusIaRemark;
+    if (dto.TStatusIaKm is not null) m.TStatusIaKm = dto.TStatusIaKm;
+    int items = 0;
+    foreach (var it in dto.Items ?? new())
+    {
+        var row = await db.DlvMinutesCheckItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id && x.ItemCode == it.ItemCode);
+        if (row is null) return Results.BadRequest(new { error = $"Danh mục '{it.ItemCode}' không thuộc biên bản {no}." });
+        row.TStatus = it.TStatus; items++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.CorrectDate, m.CorrectBy, m.TPlateNo, m.TDriverId, m.TDriverName,
+        m.TGPSDvStatus, m.TRemark, m.TStatusIaKm, m.TStatusIaRemark, itemsUpdated = items });
+}).RequireAuthorization();
+
 app.MapPost("/api/dlvminutes/patch-batch", async (
     DlvMinutesBatchPatchDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -28133,6 +28199,9 @@ record ReqPaymentDiscountDecideDto(bool Approve);
 record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck);
 record PdiFeePaymentEditDto(List<PdiFeePaymentEditLineDto>? Lines);
 record TransportInsPaymentLineDto(string? Vin, string? CarId, string? DlvMnNo, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? DlvEndDate, decimal TFValReal, decimal TPValReal, decimal PriceCar, decimal InsuranceCost, string? Remark);
+record DlvInputFeeDto(string? FlagFeeOrPer, decimal? Value, string? TFRemark = null);
+record DlvCorrectItemDto(string ItemCode, string? TStatus);
+record DlvCorrectDto(string? TPlateNo, string? TDriverId, string? TDriverName, string? TGPSDvStatus = null, string? TRemark = null, string? TStatusIaKm = null, string? TStatusIaRemark = null, List<DlvCorrectItemDto>? Items = null);
 record TransportInsPaymentDto(DateTime? PmtMonth, List<TransportInsPaymentLineDto>? Lines);
 record TransportInsPaymentEditLineDto(string? Vin, decimal TFValReal, decimal TPValReal, decimal InsuranceCost);
 record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
