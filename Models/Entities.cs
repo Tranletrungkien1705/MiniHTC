@@ -8825,6 +8825,47 @@ public sealed class DmsDealerContract
     /// đúng khoảng trống mà lượt #83 đã ghi nợ.
     /// </summary>
     public string? DlrCtrNoParent { get; set; }
+
+    // ===== #164 parity HỌ HÀM **KHÔNG-điều-chỉnh** (`_HTCApprove1X` · `_HTCApprove2X_New20190531` ·
+    //   `_HTCRejectX`, DMS40/zTemp.0.34.Contract.cs:318/769/1115, csproj 129) =====
+    /// <summary>Thời điểm/người duyệt cấp 1 của bên A (`HTCAppr1DTime`/`HTCAppr1By`).</summary>
+    public DateTime? HTCAppr1DTime { get; set; }
+    public string? HTCAppr1By { get; set; }
+    /// <summary>Người duyệt cấp 2 (`HTCAppr2By`) — port cũ chỉ có thời điểm.</summary>
+    public string? HTCAppr2By { get; set; }
+    /// <summary>Thời điểm/người TỪ CHỐI (`RejectDTime`/`RejectBy`) — nguồn dùng CẶP CỘT RIÊNG, không dùng chung với duyệt.</summary>
+    public DateTime? RejectDTime { get; set; }
+    public string? RejectBy { get; set; }
+    /// <summary>Đường dẫn file hợp đồng đã ký — `_HTCApprove2X` upload file rồi MOVE sang thư mục đích và ghi lại cột này.</summary>
+    public string? FilePath { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Dòng hợp đồng đại lý DMS40 (`DMS40_CT_DealerContractDetail` — cột lấy từ
+/// `DMS40_CT_DealerContract_SaveX`, DMS40/0.34.Contract.cs:1998-2012).
+/// 🔴 Bảng này là ĐẦU VÀO của bước duyệt cấp 2: `_HTCApprove2X` vừa cập nhật `DlrCtrStatusDtl`
+/// vừa **duyệt qua từng dòng để gắn hợp đồng vào xe** (`Car_Car`).
+/// </summary>
+public sealed class DmsDealerContractDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DlrCtrNo { get; set; } = "";
+    public DateTime? ApprovedDate { get; set; }
+    public string CarId { get; set; } = "";
+    public string? OriginNo { get; set; }
+    public double ProductionYear { get; set; }
+    public decimal UnitPrice { get; set; }
+    /// <summary>Trạng thái RIÊNG của dòng — `_HTCApprove2X` đặt `= DlrCtrStatus` của header (⇒ "S").</summary>
+    public string? DlrCtrStatusDtl { get; set; }
+    /// <summary>Cờ đã thanh toán đặt cọc (`FlagDepositPmt`).</summary>
+    public string? FlagDepositPmt { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công văn bảo lãnh/claim đại lý (GrtClaim + Detail) — port 1:1 FrmNewGrtClaim/FrmMngGrtClaim (2010.HTC/Sales/GrtClaim). Công văn bảo lãnh lô xe theo đại lý + phép nhận.</summary>
@@ -9280,6 +9321,13 @@ public sealed class CarVinMaster
     /// mới cho tạo đề nghị giao hồ sơ (`InvalidRedeemDate`) — bản 2018 không kiểm.
     /// </summary>
     public DateTime? RedeemDate { get; set; }
+
+    // ===== #164 parity khối `// Update Car_Car:` trong `_HTCApprove2X_New20190531` (zTemp.0.34.Contract.cs:1006) =====
+    /// <summary>🔴 Số hợp đồng đại lý DMS40 đã GẮN vào xe (`Car_Car.DlrCtrNo`/`DealerContractNo`) —
+    /// nguồn ghi khi bên A duyệt cấp 2, lấy từ **từng dòng** `DMS40_CT_DealerContractDetail`.</summary>
+    public string? DlrCtrNo { get; set; }
+    /// <summary>Cờ "xe đã thuộc hợp đồng đại lý DMS40" (`FlagDealerContractDMS40`) — nguồn gán cứng "1".</summary>
+    public string? FlagDealerContractDMS40 { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
