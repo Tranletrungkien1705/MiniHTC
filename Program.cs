@@ -19815,6 +19815,166 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
 }).RequireAuthorization();
 
 // Đặt lịch hẹn. Guard: giờ kết thúc > bắt đầu; không trùng khoang cùng lúc (bay không được đặt chồng giờ).
+// ===== 🔴 #331 ĐẶT LỊCH TỪ ỨNG DỤNG DI ĐỘNG (TVO) — `HTCMobileTVO_Ser_App_Create_New20210423` =====
+// (`BizCarSv.TVO.cs:1808`). TRACE TWIN: WS `:37191` gọi bản `_New20210423` ⇒ bản trần (`:1120`) CHẾT.
+// BƯỚC 3B: md5 file TVO **giống hệt** giữa laptop (`V20.2023.Release.V2`) và máy 150 (`V20.2023.Release`).
+//
+// Đây KHÔNG phải bản sao của `POST /api/appointments`: kênh này là **khách tự đặt**, chưa chắc đã có
+// hồ sơ ⇒ nguồn **tự sinh khách + xe** rồi mới tạo lịch. Ba khác biệt cốt lõi so với kênh nội bộ:
+//
+// 🔴 (1) DANH TÍNH KHÁCH TRA THEO **BIỂN SỐ**, không theo tên/điện thoại:
+//       `from Ser_Car t inner join Ser_Customer f on t.CusID = f.CusID`
+//       `where t.PlateNo = @strPlateNo and f.DealerCode = @strDealerCode and t.IsActive = '1'`
+//     ⇒ Biển số đã có tại đại lý đó ⇒ **dùng lại khách + xe cũ**, và tên/di động/địa chỉ vừa gửi lên
+//       bị **BỎ QUA HOÀN TOÀN** (nguồn không cập nhật gì lên hồ sơ cũ). Người đặt hộ, người mua lại xe,
+//       hay gõ nhầm biển đều rơi vào hồ sơ của chủ cũ. Giữ 1:1 vì đây là luật danh tính của kênh,
+//       nhưng trả `customerMatchedByPlate` để chỗ đối chiếu nhìn thấy khi nào hồ sơ cũ được tái dùng.
+//
+// 🔴 (2) **KHÔNG có guard chồng giờ**. Kênh nội bộ (#325) chặn trùng khoang bằng `MyCheck_DateTime_Cavity`
+//     với đủ **3 nhánh** (gồm nhánh bao trùm); kênh di động này **không gọi hàm nào tương tự** —
+//     ⇒ khách tự đặt **đè lên lịch đã có** được. Không tự thêm guard (lệ #299: không tự chế luật),
+//       trả cờ `overlapNotChecked` để lệch với kênh nội bộ là lệch **nhìn thấy được**.
+//
+// 🔴 (3) `AppDateTime` ghi **THÔ**, không cắt ngày như kênh nội bộ:
+//     TVO: `dt_Ser_App.Rows[0]["AppDateTime"] = strAppDateTime;` (nguyên chuỗi client gửi)
+//     nội bộ (#323): `… = Convert.ToDateTime(str).ToString("yyyy-MM-dd");` (**cắt còn ngày**)
+//     ⇒ **cùng một cột, hai kênh ghi hai định dạng khác nhau** — đúng kiểu lệch mà sweep #320 truy.
+//       Port giữ nguyên thô, trả `appDateTimeRawNote`.
+//
+// ⚠️ `Source` **đóng cứng** `"HYUNDAIME"` trong nguồn (có chú thích "Fix cứng") ⇒ không cho client đặt.
+// ⚠️ `AppStatus = "1"` ghi thẳng chữ số — cùng từ vựng thô của #319, không phải nhãn hiển thị.
+// ⚠️ `CreatedDate` dạng `"yyyy-MM-dd HH:mm"` ⇒ **cắt GIÂY** (khác #330 giữ giây).
+//
+// 📌 `alColumnEffective` trong nguồn được tạo RỖNG rồi truyền thẳng vào `SaveData` — biến chết,
+//   không lọc cột nào. Không port.
+// 📌 NỢ ĐÃ KHAI (giữ nguyên nợ chung của fleet, không phát sinh mới ở lượt này):
+//   nguồn ghi **ba** CSDL `_dbMain` + `_dbWH` + `_dbDealer` trong một giao dịch; MiniHTC một CSDL.
+//   Nguồn còn gọi HTTP `NotifyNewAppointment` sang HCC **bên trong giao dịch đang mở** (giữ khoá
+//   suốt lời gọi mạng) — tầng HTTP HCC vẫn là nợ; ở đây chỉ trả `pendingAppCount` mà HCC cần.
+app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // Thứ tự và tập trường bắt buộc lấy đúng theo nguồn. ModelCode và CVDVCode **không** bắt buộc
+    //   (hai guard đó bị comment trong nguồn) ⇒ không tự thêm.
+    var req = new (string k, string? v)[]
+    {
+        ("CustomerName", dto.CustomerName), ("CustomerMobile", dto.CustomerMobile),
+        ("CustomerAddress", dto.CustomerAddress), ("PlateNo", dto.PlateNo),
+        ("TradeMarkCode", dto.TradeMarkCode), ("AppDateTime", dto.AppDateTime),
+        ("AppTime", dto.AppTime), ("CusRequest", dto.CusRequest), ("DealerCode", dto.DealerCode),
+    };
+    foreach (var (k, v) in req)
+        if (string.IsNullOrWhiteSpace(v)) return Results.BadRequest(new { error = "Thiếu tham số bắt buộc: " + k });
+
+    var dealer = dto.DealerCode!.Trim().ToUpperInvariant();
+    var plate = dto.PlateNo!.Trim().ToUpperInvariant();
+
+    // Nguồn gọi CheckExistDealerCode / CheckExistTradeMarkCode / CheckExistEngineerCode(nếu có CVDV).
+    if (!await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealer))
+        return Results.BadRequest(new { error = "Đại lý không tồn tại: " + dealer });
+
+    var cvdv = (dto.CVDVCode ?? "").Trim();
+
+    // ---- (1) tra khách + xe THEO BIỂN SỐ (xe còn hiệu lực) ----
+    var car = await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId
+        && c.PlateNo == plate && c.DealerCode == dealer && c.FlagActive == "1");
+    var matchedByPlate = car is not null;
+
+    var now = DateTime.Now;
+    string? cusId = car?.CusID;
+    string? carId = car?.CarID;
+    string? cusCreated = null, carCreated = null;
+
+    if (!matchedByPlate)
+    {
+        // Nguồn tạo khách với **hầu hết cột = DBNull** — chỉ giữ tên / di động / địa chỉ.
+        //   `IsContact = true` và `IsActive = true` là hai giá trị đóng cứng.
+        cusId = "TVO" + now.ToString("yyMMddHHmmssfff");
+        db.ServiceCustomers.Add(new ServiceCustomer
+        {
+            // MiniHTC định danh khách dịch vụ bằng `CusCode` (không có cột `CusID` như nguồn);
+            //   `ServiceCar.CusID` trỏ về đúng giá trị này nên quan hệ hai bảng giữ nguyên.
+            OrgId = t.OrgId, CusCode = cusId, DealerCode = dealer,
+            CusName = dto.CustomerName!.Trim(), Mobile = dto.CustomerMobile!.Trim(),
+            Address = dto.CustomerAddress!.Trim(),
+            // 🔴 LỆCH CÓ CHỦ ĐÍCH: nguồn **nhận** `strCustomerIDCardNo`, đưa vào mảng ghi log, rồi
+            //   **KHÔNG GHI VÀO ĐÂU CẢ** — số CMND/CCCD khách nhập trên app **rơi mất im lặng**.
+            //   Không có chú thích nào giải thích ⇒ là sót, không phải luật (lệ #272/#275).
+            //   MiniHTC đã sẵn cột `IDCardNo` ⇒ **ghi lại**, và trả cờ `idCardNoStoredWebOnly`.
+            IDCardNo = string.IsNullOrWhiteSpace(dto.CustomerIDCardNo) ? null : dto.CustomerIDCardNo!.Trim(),
+            // Nguồn ghi `true` (cột bit); MiniHTC dùng từ vựng cờ "1"/"0" ⇒ "1".
+            IsContact = "1", FlagActive = "1",
+        });
+        cusCreated = cusId;
+
+        carId = "TVOC" + now.ToString("yyMMddHHmmssfff");
+        db.ServiceCars.Add(new ServiceCar
+        {
+            OrgId = t.OrgId, CarID = carId, CusID = cusId, DealerCode = dealer, PlateNo = plate,
+            TradeMark = dto.TradeMarkCode!.Trim(), ModelCode = string.IsNullOrWhiteSpace(dto.ModelCode) ? null : dto.ModelCode!.Trim(),
+            CusName = dto.CustomerName!.Trim(), CusMobile = dto.CustomerMobile!.Trim(),
+            FlagActive = "1",
+        });
+        carCreated = carId;
+    }
+    else
+    {
+        // ---- (2) hậu kiểm của nguồn: xe này có đang thuộc về khách KHÁC không ----
+        //   `where t.CarID = @strCarID and f.CusID <> @strCusID` ⇒ ném lỗi `…_ReCheck_InvalidCusID`.
+        //   ⚠️ Nguồn chạy hậu kiểm **SAU KHI đã ghi** lịch hẹn vào cả ba CSDL; an toàn chỉ nhờ giao dịch
+        //     bọc ngoài rollback. Port kiểm **TRƯỚC KHI ghi** — cùng kết quả, không dựa vào rollback.
+        if (!string.IsNullOrWhiteSpace(carId) && !string.IsNullOrWhiteSpace(cusId)
+            && await db.ServiceCars.AnyAsync(c => c.OrgId == t.OrgId && c.CarID == carId && c.CusID != cusId))
+            return Results.BadRequest(new { error = "Xe đang thuộc về khách hàng khác — không tạo được lịch hẹn.", carId });
+    }
+
+    // ---- (3) tạo lịch hẹn ----
+    var appNo = "APP" + now.ToString("yyMMddHHmmss");
+    // AppFrom/AppTo là cột bắt buộc của MiniHTC; nguồn không có cặp này (chỉ ngày + giờ THÔ)
+    //   ⇒ dựng lại từ AppDateTime + AppTime để hai bên không rời nhau, giống cách #323 làm ngược lại.
+    var appFrom = DateTime.TryParse((dto.AppDateTime + " " + dto.AppTime).Trim(), out var pf) ? pf
+        : DateTime.TryParse(dto.AppDateTime, out var pd) ? pd : now;
+    var a = new ServiceAppointment
+    {
+        OrgId = t.OrgId, AppNo = appNo, DealerCode = dealer, PlateNo = plate,
+        CusID = cusId, CarID = carId,
+        CusName = dto.CustomerName!.Trim(), Mobile = dto.CustomerMobile!.Trim(),
+        CusAddress = dto.CustomerAddress!.Trim(),
+        CusRequest = dto.CusRequest!.Trim(),
+        Creator = dto.PartnerUserCode,
+        Status = "1",                       // AppStatus ghi thẳng chữ số, đúng nguồn
+        Source = "HYUNDAIME",               // ĐÓNG CỨNG trong nguồn — client không đặt được
+        // ⚠️ THÔ, **không** cắt ngày — khác kênh nội bộ (#323). Xem chú thích (3) ở đầu khối.
+        AppDateTime = dto.AppDateTime!.Trim(), AppDateTimeFrom = dto.AppDateTime!.Trim(),
+        AppTime = dto.AppTime!.Trim(), AppTimeFrom = dto.AppTime!.Trim(),
+        CVDVCode = cvdv == "" ? null : cvdv,
+        AppFrom = appFrom, AppTo = appFrom,
+        // Nguồn: `CreatedDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm")` ⇒ CẮT GIÂY.
+        CreatedAt = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0),
+    };
+    db.ServiceAppointments.Add(a);
+    await db.SaveChangesAsync();
+
+    // Nguồn đếm số lịch `AppStatus = '1'` của đại lý rồi gửi sang HCC (`itemcount`).
+    var pendingAppCount = await db.ServiceAppointments.CountAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.Status == "1");
+
+    return Results.Ok(new
+    {
+        a.Id, appNo, dealerCode = dealer, plateNo = plate, cusId, carId,
+        appStatus = "1", source = "HYUNDAIME",
+        // Danh tính tra theo BIỂN SỐ: true = dùng lại hồ sơ cũ, tên/di động/địa chỉ gửi lên bị bỏ qua.
+        customerMatchedByPlate = matchedByPlate,
+        customerCreated = cusCreated, carCreated = carCreated,
+        pendingAppCount,
+        overlapNotChecked = true,
+        overlapNote = "Kênh di động KHÔNG kiểm chồng giờ (kênh nội bộ #325 có kiểm) — đúng nguồn.",
+        appDateTimeRawNote = "AppDateTime lưu THÔ theo chuỗi client gửi; kênh nội bộ cắt còn \"yyyy-MM-dd\".",
+        idCardNoStoredWebOnly = !string.IsNullOrWhiteSpace(dto.CustomerIDCardNo),
+        idCardNoNote = string.IsNullOrWhiteSpace(dto.CustomerIDCardNo) ? null
+            : "Nguồn NHẬN CustomerIDCardNo rồi bỏ rơi (không ghi vào đâu); web có ghi ⇒ dữ liệu web ĐẦY HƠN.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (dto.AppTo <= dto.AppFrom) return Results.BadRequest(new { error = "Giờ kết thúc phải sau giờ bắt đầu." });
@@ -38330,6 +38490,14 @@ record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdM
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
 // #270: `Channel` = kenh tao lich hen. Nguon chi day HCC o nhanh `Ser_App_Create_ForTab` (may tinh bang)
 //   => chi `Channel == "TAB"` moi dat co cho day.
+// #331: dat lich tu ung dung di dong (HTCMobileTVO_Ser_App_Create_New20210423).
+//   9 truong BAT BUOC; ModelCode/CVDVCode tuy chon (guard cua nguon bi comment).
+//   CustomerIDCardNo: nguon nhan roi BO ROI — web co ghi (xem chu thich #331).
+record TvoAppCreateDto(string? CustomerName, string? CustomerMobile, string? CustomerAddress,
+    string? PlateNo, string? TradeMarkCode, string? AppDateTime, string? AppTime,
+    string? CusRequest, string? DealerCode, string? CustomerIDCardNo = null,
+    string? ModelCode = null, string? CVDVCode = null, string? PartnerUserCode = null);
+
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null,
     string? Channel = null, string? DealerCode = null, string? CusID = null, string? Vin = null,
     // #282: 8 truong that cua TblSerAppRO. Source la cot NGUON; Channel (#270) la tham so do port tu dat.
