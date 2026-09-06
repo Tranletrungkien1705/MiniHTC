@@ -2722,6 +2722,21 @@ public sealed class SerStockOutOrder
     public string? RONo { get; set; }                  // số lệnh sửa chữa (khi SourceType=RO)
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    // ===== 🔴 #263: 9 cột nguồn `TblSerInvStockOutOrder` (DbDefine.cs:1306-1320) mà port cũ THIẾU =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+    public DateTime? RequestDeliveryTime { get; set; }  // REQUESTDELIVERYTIME — ngày YÊU CẦU giao
+    public string? Priority { get; set; }               // PRIORITY — độ ưu tiên
+    public string? BackOrderIndex { get; set; }         // BACKORDERINDEX — lần đặt lại (hàng thiếu)
+
+    /// <summary>STATUSTEXT — nguồn lưu **cả nhãn** cạnh mã trạng thái (xem bộ hằng ở Program.cs).</summary>
+    public string? StatusText { get; set; }
+
+    public string? UserCode { get; set; }               // USERCODE — người lập
+    public string? CusID { get; set; }                  // CUSID — mã khách (khác CusName đang có)
+    public string? DealerCode { get; set; }             // DEALERCODE
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng chi tiết lệnh xuất kho theo đơn (Ser_InvStockOutOrderDetail) — thuộc SerStockOutOrder. Mã PT + tên + ĐVT + SL yêu cầu.</summary>

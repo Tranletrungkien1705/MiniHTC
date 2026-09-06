@@ -882,6 +882,16 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #263 parity TblSerInvStockOutOrder: 9 cot thieu
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"RequestDeliveryTime\" timestamp",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"Priority\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"BackOrderIndex\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"StatusText\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"UserCode\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #262 parity TblTSTMSTPart: 13 cot DB THAT con thieu sau #245
         "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"TSTPriceBefore\" numeric",
         "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"TSTCost\" numeric",

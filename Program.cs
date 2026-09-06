@@ -13645,19 +13645,40 @@ app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext 
 
 // 🔴 Bộ trạng thái ĐẦY ĐỦ của lệnh xuất kho (TConst.Ser_Inv_StockOutOrder) — port cũ mới có 3/7.
 // Quy trình DUYỆT nằm ở KHÚC GIỮA mà port cũ bỏ hẳn: gửi → chờ → chấp nhận → đã tạo phiếu xuất.
+// ===== 🔴 #263 TRẠNG THÁI THỨ 8 + NHÃN ĐÚNG NGUỒN — `TblSerInvStockOutOrder` =====
+// Bộ mã + nhãn nằm NGAY TRONG lớp hằng `Tbl` (DbDefine.cs:1323-1338, md5 `d373e758` — KHỚP 2 máy),
+// dạng cặp `Status<X>Value` / `Status<X>Text` — phát hiện qua sweep `sweep_tblconst_tail.js` (#261).
+// 🔴 HAI SAI SÓT của port cũ:
+//  1. **Thiếu hẳn mã "8" = `StatusAdjustedValue` / "Đã điều chỉnh"** ⇒ phiếu đã điều chỉnh không biểu diễn được.
+//  2. Nhãn mã "3": port cũ ghi "Từ chối", nguồn ghi **"Đã hủy"** (`StatusRejectedText`).
+// ⚠️ Entity lưu **chuỗi dài** ("Created"…) chứ không phải mã số — giữ nguyên vì đã có bảng ánh xạ này
+//    và dữ liệu cũ đọc được; nhãn/mã nguồn trả qua `/api/stockoutorders/statuses`.
 var stockOutOrderStatusSourceCodes = new Dictionary<string, string>
 {
     ["Created"] = "1",          // Mới tạo
     ["Submitted"] = "2",        // Đã gửi
-    ["Rejected"] = "3",         // Từ chối
+    ["Rejected"] = "3",         // Đã hủy   (nguồn: StatusRejectedText)
     ["Waiting"] = "4",          // Đang chờ
     ["Accepted"] = "5",         // Chấp nhận
     ["CreateStockOut"] = "6",   // Đã tạo phiếu xuất
     ["Finished"] = "7",         // Kết thúc
+    ["Adjusted"] = "8",         // Đã điều chỉnh  🔴 #263: port cũ THIẾU
+};
+
+// Nhãn tiếng Việt NGUYÊN VĂN của nguồn (Status<X>Text) — trả kèm để client hiển thị đúng chữ.
+var stockOutOrderStatusTexts = new Dictionary<string, string>
+{
+    ["1"] = "Mới tạo", ["2"] = "Đã gửi", ["3"] = "Đã hủy", ["4"] = "Đang chờ",
+    ["5"] = "Chấp nhận", ["6"] = "Đã tạo phiếu xuất", ["7"] = "Kết thúc", ["8"] = "Đã điều chỉnh",
 };
 
 // Bảng chuyển tiếp. `Accepted`/`CreateStockOut`/`Finished` là các mốc biz nguồn CHẶN sửa tiếp
 // (CheckStockOutOrderAccepted / …CreateStockOut / …Finished trong BizCarSv.Inventory.StockOut).
+// 🔴 #263 LƯU Ý: "Adjusted" (mã 8) CÓ trong bảng mã nhưng KHÔNG có nhánh chuyển tới.
+//    Lý do: quét toàn `TERP.BizCarSv` + `Views/` chỉ thấy mã 8 ở chỗ **hiển thị** nhãn
+//    (`FrmStockOutOrderSearch.cs:322` map mã→StatusText), **KHÔNG tìm thấy nơi GHI** trạng thái này.
+//    ⇒ giữ mã để ĐỌC được dữ liệu sẵn có, nhưng KHÔNG bịa đường chuyển (luật: không thấy nơi ghi thì không đoán).
+//    Nếu sau này tìm ra hàm đặt mã 8, thêm nhánh vào bảng dưới.
 var stockOutOrderTransitions = new Dictionary<string, string[]>
 {
     ["Created"] = new[] { "Submitted", "Rejected" },
@@ -13671,7 +13692,12 @@ var stockOutOrderTransitions = new Dictionary<string, string[]>
 
 app.MapGet("/api/stockoutorders/statuses", () => Results.Ok(new
 {
-    statuses = stockOutOrderStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    statuses = stockOutOrderStatusSourceCodes.Select(kv => new
+    {
+        status = kv.Key, sourceCode = kv.Value,
+        // #263: nhãn nguyên văn của nguồn
+        sourceText = stockOutOrderStatusTexts.TryGetValue(kv.Value, out var tx) ? tx : null,
+    }),
     transitions = stockOutOrderTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
     note = "Accepted/CreateStockOut/Finished là các mốc biz nguồn chặn sửa tiếp."
 })).RequireAuthorization();
