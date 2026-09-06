@@ -477,6 +477,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<BulletinDtl> BulletinDtls => Set<BulletinDtl>();
     public DbSet<BulletinVin> BulletinVins => Set<BulletinVin>();
     public DbSet<SharePart> ShareParts => Set<SharePart>();
+    // #277: chăm sóc khách hàng 72h (Ser_CustomerCare72h — hệ ERP.ICIC, chỉ có trên laptop)
+    public DbSet<CustomerCare72h> CustomerCare72hs => Set<CustomerCare72h>();
     // #272: nhật ký đẩy NoShow sang HCC (HCC_NoShow_CreateOSX — chỉ có trên máy 150)
     public DbSet<HccNoShowPush> HccNoShowPushes => Set<HccNoShowPush>();
     public DbSet<PartGroup> PartGroups => Set<PartGroup>();
