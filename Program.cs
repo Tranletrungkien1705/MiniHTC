@@ -17503,11 +17503,14 @@ app.MapGet("/api/dealerbanks", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(b => b.FlagActive == active);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
-        .Select(b => new { b.BankCode, b.DealerCode, b.BankBranchCode, b.BankBranchName, b.CreditContractNo, b.CreditContractDate, b.CreditAmount, b.FlagBankGrt, b.FlagBankPmt, b.FlagActive }).ToListAsync();
+        .Select(b => new { b.BankCode, b.DealerCode, b.BankBranchCode, b.BankBranchName,
+            b.CreditContractNo, b.CreditContractDate, b.CreditAmount,
+            b.FlagBankGrt, b.FlagBankPmt, b.FlagActive,
+            b.Remark, b.LogLUDateTime, b.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealerbanks", async (DealerBankDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealerbanks", async (DealerBankDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     // audit 2026-09-03: bổ sung guard đúng nguồn FrmDealerBank.btnImport_Click/gviewDb_ValidateRow
     if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Mã ngân hàng không được để trống!" });
@@ -17528,7 +17531,12 @@ app.MapPost("/api/dealerbanks", async (DealerBankDto dto, AppDbContext db, ITena
     {
         OrgId = t.OrgId, BankCode = bk, DealerCode = dl, BankBranchCode = dto.BankBranchCode, BankBranchName = dto.BankBranchName,
         CreditContractNo = dto.CreditContractNo, CreditContractDate = dto.CreditContractDate,
-        CreditAmount = dto.CreditAmount, FlagBankGrt = dto.FlagBankGrt ?? "0", FlagBankPmt = dto.FlagBankPmt ?? "0", FlagActive = "1"
+        CreditAmount = dto.CreditAmount, FlagBankGrt = dto.FlagBankGrt ?? "0", FlagBankPmt = dto.FlagBankPmt ?? "0", FlagActive = "1",
+        // 🔴 #133 parity Mst_BankDealer (KHÔNG phải Mst_DealerBank — bảng tên đó không tồn tại):
+        //    nguồn ghi thêm Remark + dấu vết sửa (Biz.HTC.WH.cs:4966-4968).
+        Remark = dto.Remark,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
     };
     db.DealerBanks.Add(b); await db.SaveChangesAsync();
     return Results.Ok(new { b.BankCode, b.DealerCode });
@@ -19992,6 +20000,51 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
+}).RequireAuthorization();
+
+// ===== LỊCH SỬ NGHỈ VIỆC của nhân viên bán hàng (Mst_SalesManHistoryInactive) =====
+// Nguồn: `Biz.HTC.WH.cs:19236`, ghi **bên trong** `Mst_SalesMan_Update_New20230306` (18505).
+// 🔴 Bảng KHÔNG có hàm riêng — chỉ được ghi như **tác dụng phụ của lệnh SỬA nhân viên**: khi NVBH bị cho
+//    nghỉ, nguồn chụp nguyên trạng hồ sơ sang đây. Tra bằng danh sách WS sẽ không thấy; phải tra `SaveData`.
+// 🔴 `SMFlagActive` lấy từ `Mst_SalesMan.FlagActive` (ĐỔI TÊN khi sang bảng lịch sử).
+// 🔴 `IdentityCardNo`/`SMEndDate`/`SMReason`/`SMDesc` là **dữ liệu MỚI** do lệnh sửa truyền vào;
+//    phần còn lại là ảnh chụp hồ sơ cũ.
+app.MapGet("/api/salesmaninactivehistory", async (AppDbContext db, ITenantContext t, string? smCode, string? dealerCode) =>
+{
+    var qy = db.SalesManHistoryInactives.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(smCode)) qy = qy.Where(x => x.SMCode == smCode);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.SMCode, x.SMHyundaiCode, x.DealerCode, x.SMStatus, x.IdentityCardNo, x.SMFlagActive,
+        x.SMStartDate, x.SMEndDate, x.SMReason, x.SMDesc, x.InactiveDateTime, x.InactiveBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Cho nghỉ việc: chụp hồ sơ hiện tại sang bảng lịch sử rồi hạ cờ hoạt động — đúng thứ tự của nguồn.
+app.MapPost("/api/salesmen/inactivate", async (SalesManInactivateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.SMCode ?? "").Trim();
+    var sm = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code);
+    if (sm is null) return Results.NotFound(new { error = $"Không có nhân viên bán hàng {code}." });
+
+    db.SalesManHistoryInactives.Add(new SalesManHistoryInactive
+    {
+        OrgId = t.OrgId,
+        // --- ảnh chụp hồ sơ hiện tại ---
+        SMCode = sm.SalesManCode, DealerCode = sm.DealerCode, SMStatus = sm.Status,
+        SMFlagActive = sm.Status,          // nguồn chép từ FlagActive của bảng nhân viên
+        SMStartDate = dto.SMStartDate,
+        // --- dữ liệu MỚI của lần cho nghỉ này ---
+        IdentityCardNo = dto.IdentityCardNo,
+        SMEndDate = dto.SMEndDate, SMReason = (dto.SMReason ?? "").Trim(), SMDesc = (dto.SMDesc ?? "").Trim(),
+        InactiveDateTime = DateTime.Now,
+        InactiveBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    });
+    sm.Status = "0";                        // hạ cờ hoạt động sau khi đã chụp lịch sử
+    await db.SaveChangesAsync();
+    return Results.Ok(new { smCode = code, inactivated = true });
 }).RequireAuthorization();
 
 // ===== BA bảng FILE ĐÍNH KÈM: giao dịch bán lẻ · thư bảo lãnh · giao dịch ngân hàng =====
@@ -25099,6 +25152,8 @@ record GuaranteeAttachSaveDto(string? GuaranteeNo, List<GuaranteeAttachRowDto>? 
 // FlagPush KHÔNG nhận từ client: nguồn ép "1" cho mọi dòng.
 record BankingTransAttachRowDto(int? FileIndex, string? FileType, string? FilePath, string? FileName, string? FlagDlrCtr);
 record BankingTransAttachSaveDto(string? RQ_BankingTransNo, List<BankingTransAttachRowDto>? Files);
+// Cho NVBH nghỉ việc: lý do/ngày nghỉ là dữ liệu MỚI, phần hồ sơ do server chụp lại.
+record SalesManInactivateDto(string? SMCode, string? IdentityCardNo, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
@@ -25594,7 +25649,7 @@ record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, str
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
-record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? BankBranchName, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt);
+record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? BankBranchName, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt, string? Remark);
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode);
 /// <summary>Một dòng lưới model/quy cách của điều khoản thanh toán.</summary>

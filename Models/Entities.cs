@@ -5950,6 +5950,42 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// LỊCH SỬ NGHỈ VIỆC của nhân viên bán hàng (`Mst_SalesManHistoryInactive` — 2010.HTC
+/// `Biz.HTC.WH.cs:19236`, ghi bên trong `Mst_SalesMan_Update_New20230306` (18505)).
+/// 🔴 **Không có hàm riêng**: bảng chỉ được ghi **như một tác dụng phụ của lệnh SỬA nhân viên** —
+/// khi NVBH bị cho nghỉ, nguồn chụp lại nguyên trạng hồ sơ vào đây. Vì vậy tra bằng danh sách WS
+/// sẽ **không thấy** cụm nào cho bảng này; phải tra bằng `SaveData("…")`.
+/// 🔴 Cột `SMFlagActive` **lấy từ `FlagActive` của bảng nhân viên** (`dtrMS["FlagActive"]`, dòng 19211)
+/// — đổi tên khi sang bảng lịch sử; đừng tìm cột `SMFlagActive` ở `Mst_SalesMan`.
+/// 🔴 Ba cột do lệnh sửa truyền vào (không chép từ hồ sơ): `IdentityCardNo`, `SMEndDate`,
+/// `SMReason`, `SMDesc` — tức **lý do và ngày nghỉ là dữ liệu MỚI**, phần còn lại là ảnh chụp hồ sơ cũ.
+/// ⚠️ Nguồn ghi `_dbMain` (19236) và `_dbWH` (19259) nhưng **bằng HAI DataTable khác nhau**
+/// (`dt_…` vs `dtDB_…_Main`) — ghi chú lại cho lượt trả nợ `_dbWH`.
+/// </summary>
+public sealed class SalesManHistoryInactive
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SMCode { get; set; } = "";
+    public string? SMHyundaiCode { get; set; }
+    public string? DealerCode { get; set; }
+    public string? SMStatus { get; set; }
+    /// <summary>Số CMND/CCCD — do lệnh sửa truyền vào, không chép từ hồ sơ.</summary>
+    public string? IdentityCardNo { get; set; }
+    /// <summary>Chép từ `Mst_SalesMan.FlagActive` (đổi tên khi sang bảng lịch sử).</summary>
+    public string? SMFlagActive { get; set; }
+    public DateTime? SMStartDate { get; set; }
+    /// <summary>Ngày nghỉ — dữ liệu MỚI của lần cho nghỉ này.</summary>
+    public DateTime? SMEndDate { get; set; }
+    /// <summary>Lý do nghỉ — dữ liệu MỚI.</summary>
+    public string? SMReason { get; set; }
+    /// <summary>Diễn giải thêm — dữ liệu MỚI.</summary>
+    public string? SMDesc { get; set; }
+    public DateTime InactiveDateTime { get; set; } = DateTime.Now;
+    public string? InactiveBy { get; set; }
+}
+
+/// <summary>
 /// FILE ĐÍNH KÈM của giao dịch bán lẻ (`DLS_DealAttachFile` — 2010.HTC `Biz.HTC.WH.cs:94717`,
 /// hàm `DealerSalesDealUpdateAttachFileMulti`; hàm đọc `OSHCC_Dls_DealAttachFileGet`).
 /// 🔴 Cụm này **CHỈ có ở WS 64-bit** — `TERP.WSHTC` (32-bit) không có hàm nào
@@ -6369,7 +6405,21 @@ public sealed class CarOCN
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Ngân hàng đại lý (Mst_DealerBank) — port 1:1 FrmDealerBank (2010.HTC/Admin/Product). Tài khoản/hạn mức NH của đại lý + cờ NH bảo lãnh/thanh toán.</summary>
+/// <summary>
+/// Ngân hàng của đại lý — port 1:1 FrmDealerBank (2010.HTC/Admin/Product): tài khoản/hạn mức NH của
+/// đại lý + cờ NH bảo lãnh / NH thanh toán.
+/// 🔴 **#133 parity Mst_BankDealer — SỬA TÊN BẢNG trong mô tả:** port cũ ghi nguồn là `Mst_DealerBank`,
+/// nhưng **bảng tên đó KHÔNG TỒN TẠI** (grep toàn `TERP.BizHTC`: 0 hit). Bảng thật là
+/// **`Mst_BankDealer`** — **đảo thứ tự hai từ** (ghi tại `Biz.HTC.WH.cs:4779`).
+/// Cùng loại lỗi với `PRD_PaymentReqDiscount_VIN` ở #127/#128: tên lớp/mô tả trỏ vào bảng không có thật,
+/// khiến mọi lần tra cứu nguồn sau đó đều trượt.
+/// 🔴 **TWIN:** cụm `Mst_BankDealer_*` **CHỈ có ở WS 64-bit** (32-bit không có hàm nào) — ca thứ ba
+/// cùng dạng (sau `Mst_MinInventory` #131 và `DLS_DealAttachFile` #132).
+/// WS gọi `Mst_BankDealer_**Create_20230922**` (`Biz.HTC.WH.cs:4830`), **không phải** bản
+/// `Mst_BankDealer_Create` không hậu tố ở dòng 4661 — bản cũ **thiếu 5 tham số**
+/// (`CreditContractNo`, `CreditContractDate`, `CreditAmount`, `BankBranchCode`, `BankBranchName`).
+/// May là port cũ đã có đủ 5 cột này; GAP #133 chỉ còn `Remark` + dấu vết sửa.
+/// </summary>
 public sealed class DealerBank
 {
     public long Id { get; set; }
@@ -6384,6 +6434,10 @@ public sealed class DealerBank
     public string FlagBankGrt { get; set; } = "0";   // NH bảo lãnh
     public string FlagBankPmt { get; set; } = "0";   // NH thanh toán
     public string FlagActive { get; set; } = "1";
+    /// <summary>#133: nguồn có `Remark` (Biz.HTC.WH.cs:4966) — port cũ thiếu.</summary>
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
