@@ -24632,7 +24632,9 @@ app.MapGet("/api/gpsbalance", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(g => g.Vin != null && g.Vin.Contains(vin.ToUpper()));
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(g => g.GpsDvNo.Contains(device.ToUpper()));
     var items = await q.OrderByDescending(g => g.Id).Take(1000).Select(g => new
-    { g.GpsDvNo, g.Vin, g.DealerCode, g.DealerName, g.Address, g.StorageCode, g.MapVINDateTime, g.Status }).ToListAsync();
+    { g.GpsDvNo, g.Vin, g.DealerCode, g.DealerName, g.Address, g.StorageCode, g.MapVINDateTime, g.Status,
+      // #138: ba trục trạng thái thật của Sto_StoBalanceGPS.
+      g.BlockStatus, g.InStatus, g.MapStatus }).ToListAsync();
     return Results.Ok(new { count = items.Count, mapped = items.Count(x => x.Status == "Mapped"), items });
 }).RequireAuthorization();
 
@@ -24650,6 +24652,7 @@ app.MapPost("/api/gpsbalance/map", async (GpsMapDto dto, AppDbContext db, ITenan
     if (g is null) { g = new GpsBalance { OrgId = t.OrgId, GpsDvNo = dv }; db.GpsBalances.Add(g); }
     g.Vin = vin; g.DealerCode = dto.DealerCode; g.DealerName = dto.DealerName; g.Address = dto.Address; g.StorageCode = dto.StorageCode;
     g.MapVINDateTime = DateTime.Now; g.Status = "Mapped";
+    g.MapStatus = "1";   // #138: trục MapStatus của Sto_StoBalanceGPS, độc lập với InStatus/BlockStatus
     // ghi lịch sử (Sto_StoTransactionGPS): mở 1 giao dịch gắn mới
     db.GpsTransactions.Add(new GpsTransaction { OrgId = t.OrgId, Vin = vin, GpsDvNo = dv, VINAddress = dto.Address, MapDateTime = DateTime.Now });
     await db.SaveChangesAsync();
@@ -24668,6 +24671,7 @@ app.MapPost("/api/gpsbalance/{device}/unmap", async (string device, AppDbContext
         .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
     if (openTx is not null) openTx.UnMapDateTime = DateTime.Now;
     g.Status = "Unmapped"; g.Vin = null; g.MapVINDateTime = null;
+    g.MapStatus = "0";   // #138: gỡ khỏi xe — KHÔNG đụng InStatus (thiết bị vẫn ở nguyên trạng thái kho)
     await db.SaveChangesAsync();
     return Results.Ok(new { g.GpsDvNo, status = g.Status });
 }).RequireAuthorization();
@@ -24692,30 +24696,48 @@ app.MapGet("/api/gpsouts", async (AppDbContext db, ITenantContext t, string? sto
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.SFGPSOutNo, g.StorageCode, g.UserCodeReceived, g.Remark, g.CreatedAt,
+        // #138 parity StoF_GPSOut.
+        g.GPSOutStatus, g.CreateBy, g.LUDateTime, g.LUBy, g.ApproveDateTime, g.ApproveBy, g.LogLUDateTime, g.LogLUBy,
         devices = db.GpsOutDetails.Count(d => d.OrgId == t.OrgId && d.OutId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/gpsouts", async (GpsOutDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/gpsouts", async (GpsOutDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Cần StorageCode (kho GPS)." });
     var devs = (dto.Devices ?? new List<GpsInDevDto>()).Where(d => !string.IsNullOrWhiteSpace(d.GpsDvNo)).ToList();
     if (devs.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 thiết bị GPS." });
     var dupe = devs.GroupBy(d => d.GpsDvNo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Thiết bị {dupe.Key} bị trùng!" });
+    // 🔴 #138 port guard nguồn (…Frm.cs:4502-4560): xuất kho đòi thiết bị đang TRONG KHO và CHƯA gắn xe
+    //    (`@strInStatus = Flag.Active`, `@strMapStatus = Flag.Inactive`).
+    var storageOut = dto.StorageCode.Trim().ToUpperInvariant();
+    foreach (var d in devs)
+    {
+        var dv = d.GpsDvNo.Trim().ToUpperInvariant();
+        var bal = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == dv && x.StorageCode == storageOut);
+        if (bal is null) return Results.BadRequest(new { error = $"Thiết bị {dv} không có trong tồn kho {storageOut}." });
+        if (bal.BlockStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} đang bị khoá." });
+        if (bal.InStatus != "1") return Results.BadRequest(new { error = $"Thiết bị {dv} không còn trong kho." });
+        if (bal.MapStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} đang gắn trên xe." });
+    }
+    var whoOut = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowOut = DateTime.Now;
     var no = "GPSOUT" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new GpsOut { OrgId = t.OrgId, SFGPSOutNo = no, StorageCode = dto.StorageCode.Trim().ToUpperInvariant(), UserCodeReceived = dto.UserCodeReceived, Remark = dto.Remark };
+    var h = new GpsOut { OrgId = t.OrgId, SFGPSOutNo = no, StorageCode = storageOut, UserCodeReceived = dto.UserCodeReceived, Remark = dto.Remark,
+        GPSOutStatus = "P", CreateBy = whoOut, LogLUDateTime = nowOut, LogLUBy = whoOut };
     db.GpsOuts.Add(h); await db.SaveChangesAsync();
     foreach (var d in devs)
     {
-        db.GpsOutDetails.Add(new GpsOutDetail { OrgId = t.OrgId, OutId = h.Id, GpsDvNo = d.GpsDvNo.Trim().ToUpperInvariant(), GpsBoxNo = d.GpsBoxNo, MapStatus = "1", Remark = d.Remark });
+        db.GpsOutDetails.Add(new GpsOutDetail { OrgId = t.OrgId, OutId = h.Id, GpsDvNo = d.GpsDvNo.Trim().ToUpperInvariant(), GpsBoxNo = d.GpsBoxNo, MapStatus = "1",
+            GPSOutStatusDtl = "P", Remark = d.Remark, LogLUDateTime = nowOut, LogLUBy = whoOut });
         // xuất kho = gắn lên xe → đánh dấu MapStatus='1' trên tồn nhập nếu có
         var inDtl = await db.GpsInDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == d.GpsDvNo.Trim().ToUpperInvariant());
         if (inDtl is not null) inDtl.MapStatus = "1";
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, devices = devs.Count });
+    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, status = h.GPSOutStatus, devices = devs.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/gpsouts/{no}/devices", async (string no, AppDbContext db, ITenantContext t) =>
@@ -24724,8 +24746,8 @@ app.MapGet("/api/gpsouts/{no}/devices", async (string no, AppDbContext db, ITena
     var h = await db.GpsOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SFGPSOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     var devices = await db.GpsOutDetails.Where(d => d.OrgId == t.OrgId && d.OutId == h.Id)
-        .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.Remark }).ToListAsync();
-    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, count = devices.Count, devices });
+        .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.GPSOutStatusDtl, d.Remark, d.LogLUDateTime, d.LogLUBy }).ToListAsync();
+    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, status = h.GPSOutStatus, count = devices.Count, devices });
 }).RequireAuthorization();
 
 // ===== Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis) =====
@@ -24759,26 +24781,55 @@ app.MapGet("/api/gpsins", async (AppDbContext db, ITenantContext t, string? stor
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.SFGPSInNo, g.GpsInType, g.StorageCode, g.Remark, g.CreatedAt,
+        // #138 parity StoF_GPSIn: trục duyệt + trạng thái phiếu.
+        g.GPSInStatus, g.CreateBy, g.LUDateTime, g.LUBy, g.ApproveDateTime, g.ApproveBy, g.LogLUDateTime, g.LogLUBy,
         devices = db.GpsInDetails.Count(d => d.OrgId == t.OrgId && d.InId == g.Id),
         mapped = db.GpsInDetails.Count(d => d.OrgId == t.OrgId && d.InId == g.Id && d.MapStatus == "1")
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/gpsins", async (GpsInDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/gpsins", async (GpsInDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Cần StorageCode (kho GPS)." });
     var devs = (dto.Devices ?? new List<GpsInDevDto>()).Where(d => !string.IsNullOrWhiteSpace(d.GpsDvNo)).ToList();
     if (devs.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 thiết bị GPS." });
     var dupe = devs.GroupBy(d => d.GpsDvNo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Thiết bị {dupe.Key} bị trùng!" });
+    // 🔴 #138 port guard nguồn (BizHTC.StorageFG.Frm.cs:3020-3047): loại nhập rẽ HAI nhánh kiểm tra tồn.
+    var inType = (dto.GpsInType ?? "").Trim().ToUpperInvariant();
+    if (inType is not ("FIRST_IN" or "RE_IN"))
+        return Results.BadRequest(new { error = "Loại nhập = FIRST_IN (nhập lần đầu) | RE_IN (nhập lại)." });
+    var storage = dto.StorageCode.Trim().ToUpperInvariant();
+    foreach (var d in devs)
+    {
+        var dv = d.GpsDvNo.Trim().ToUpperInvariant();
+        var bal = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == dv && x.StorageCode == storage);
+        if (inType == "FIRST_IN")
+        {
+            // FIRST_IN ⇒ CheckDB(..., Flag.No) : thiết bị PHẢI CHƯA có trong tồn kho này.
+            if (bal is not null) return Results.BadRequest(new { error = $"Thiết bị {dv} đã có trong tồn kho {storage} — nhập lần đầu không hợp lệ." });
+        }
+        else
+        {
+            // RE_IN ⇒ CheckDB(..., Flag.Yes, Inactive, Inactive, Inactive) : PHẢI đã có, và CẢ BA trục đều "0".
+            if (bal is null) return Results.BadRequest(new { error = $"Thiết bị {dv} chưa có trong tồn kho {storage} — nhập lại không hợp lệ." });
+            if (bal.BlockStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} đang bị khoá." });
+            if (bal.InStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} đang còn trong kho — không nhập lại được." });
+            if (bal.MapStatus != "0") return Results.BadRequest(new { error = $"Thiết bị {dv} đang gắn trên xe." });
+        }
+    }
+    var whoIn = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowIn = DateTime.Now;
     var no = "GPSIN" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new GpsIn { OrgId = t.OrgId, SFGPSInNo = no, GpsInType = dto.GpsInType, StorageCode = dto.StorageCode.Trim().ToUpperInvariant(), Remark = dto.Remark };
+    var h = new GpsIn { OrgId = t.OrgId, SFGPSInNo = no, GpsInType = inType, StorageCode = storage, Remark = dto.Remark,
+        GPSInStatus = "P", CreateBy = whoIn, LogLUDateTime = nowIn, LogLUBy = whoIn };
     db.GpsIns.Add(h); await db.SaveChangesAsync();
     foreach (var d in devs)
-        db.GpsInDetails.Add(new GpsInDetail { OrgId = t.OrgId, InId = h.Id, GpsDvNo = d.GpsDvNo.Trim().ToUpperInvariant(), GpsBoxNo = d.GpsBoxNo, MapStatus = "0", Remark = d.Remark });
+        db.GpsInDetails.Add(new GpsInDetail { OrgId = t.OrgId, InId = h.Id, GpsDvNo = d.GpsDvNo.Trim().ToUpperInvariant(), GpsBoxNo = d.GpsBoxNo, MapStatus = "0",
+            GPSInStatusDtl = "P", Remark = d.Remark, LogLUDateTime = nowIn, LogLUBy = whoIn });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, devices = devs.Count });
+    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, h.GpsInType, status = h.GPSInStatus, devices = devs.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/gpsins/{no}/devices", async (string no, AppDbContext db, ITenantContext t) =>
@@ -24787,8 +24838,77 @@ app.MapGet("/api/gpsins/{no}/devices", async (string no, AppDbContext db, ITenan
     var h = await db.GpsIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SFGPSInNo == no);
     if (h is null) return Results.NotFound(new { no });
     var devices = await db.GpsInDetails.Where(d => d.OrgId == t.OrgId && d.InId == h.Id)
-        .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.Remark }).ToListAsync();
-    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, count = devices.Count, devices });
+        .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.GPSInStatusDtl, d.Remark, d.LogLUDateTime, d.LogLUBy }).ToListAsync();
+    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, status = h.GPSInStatus, count = devices.Count, devices });
+}).RequireAuthorization();
+
+// ---- #138: DUYỆT phiếu nhập/xuất kho GPS ----
+// Nguồn: `StoF_GPSIn_Approve_New20181115` (3769) / `StoF_GPSOut_Approve_New20181115` (4854),
+// BizHTC.StorageFG.Frm.cs (csproj <Compile> 151). CẢ HAI WS 32-bit và 64-bit đều gọi bản _New20181115
+// ⇒ lần này KHÔNG có bẫy twin (khác #131-#137).
+// Nguồn duyệt gán: LogLU* = LU* = Approve* (cùng một mốc thời gian), rồi `GPSInStatusDtl = GPSInStatus`
+// ⇒ dòng chi tiết LUÔN bám theo phiếu, không có trạng thái riêng.
+app.MapPost("/api/gpsins/{no}/approve", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.GpsIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SFGPSInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    // guard nguồn: StoF_GPSIn_CheckDB(..., GPSInStatus.Pending) — chỉ duyệt phiếu đang "P".
+    if (h.GPSInStatus != "P") return Results.BadRequest(new { error = "Chỉ duyệt phiếu đang chờ duyệt (P)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var dtls = await db.GpsInDetails.Where(d => d.OrgId == t.OrgId && d.InId == h.Id).ToListAsync();
+    if (dtls.Count == 0) return Results.BadRequest(new { error = "Phiếu không có thiết bị." });
+
+    foreach (var d in dtls)
+    {
+        var bal = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == d.GpsDvNo && x.StorageCode == h.StorageCode);
+        // nguồn kiểm tra LẠI đúng guard của lúc lưu (…Frm.cs:3885-3911) — trạng thái có thể đổi giữa lưu và duyệt.
+        if (h.GpsInType == "FIRST_IN")
+        {
+            if (bal is not null) return Results.BadRequest(new { error = $"Thiết bị {d.GpsDvNo} đã có trong tồn kho — không duyệt được phiếu nhập lần đầu." });
+            bal = new GpsBalance { OrgId = t.OrgId, GpsDvNo = d.GpsDvNo, StorageCode = h.StorageCode };
+            db.GpsBalances.Add(bal);
+        }
+        else
+        {
+            if (bal is null) return Results.BadRequest(new { error = $"Thiết bị {d.GpsDvNo} chưa có trong tồn kho." });
+            if (bal.BlockStatus != "0" || bal.InStatus != "0" || bal.MapStatus != "0")
+                return Results.BadRequest(new { error = $"Thiết bị {d.GpsDvNo} không ở trạng thái nhập lại được." });
+        }
+        bal.InStatus = "1";                 // duyệt nhập ⇒ vào kho
+        d.GPSInStatusDtl = "A"; d.LogLUDateTime = now; d.LogLUBy = who;
+    }
+    h.GPSInStatus = "A"; h.ApproveDateTime = now; h.ApproveBy = who;
+    h.LUDateTime = now; h.LUBy = who; h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.SFGPSInNo, status = h.GPSInStatus, devices = dtls.Count });
+}).RequireAuthorization();
+
+app.MapPost("/api/gpsouts/{no}/approve", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.GpsOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SFGPSOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.GPSOutStatus != "P") return Results.BadRequest(new { error = "Chỉ duyệt phiếu đang chờ duyệt (P)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var dtls = await db.GpsOutDetails.Where(d => d.OrgId == t.OrgId && d.OutId == h.Id).ToListAsync();
+    if (dtls.Count == 0) return Results.BadRequest(new { error = "Phiếu không có thiết bị." });
+
+    foreach (var d in dtls)
+    {
+        var bal = await db.GpsBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsDvNo == d.GpsDvNo && x.StorageCode == h.StorageCode);
+        if (bal is null) return Results.BadRequest(new { error = $"Thiết bị {d.GpsDvNo} không có trong tồn kho." });
+        if (bal.BlockStatus != "0" || bal.InStatus != "1" || bal.MapStatus != "0")
+            return Results.BadRequest(new { error = $"Thiết bị {d.GpsDvNo} không ở trạng thái xuất được." });
+        bal.InStatus = "0";                 // duyệt xuất ⇒ ra khỏi kho
+        d.GPSOutStatusDtl = "A"; d.LogLUDateTime = now; d.LogLUBy = who;
+    }
+    h.GPSOutStatus = "A"; h.ApproveDateTime = now; h.ApproveBy = who;
+    h.LUDateTime = now; h.LUBy = who; h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.SFGPSOutNo, status = h.GPSOutStatus, devices = dtls.Count });
 }).RequireAuthorization();
 
 // ===== Yêu cầu sửa/bảo hành thiết bị GPS (GPSF_GPSClaim — port 1:1 FrmGPSF_GPSClaimNew/FrmGPSF_GPSClaimMng) =====

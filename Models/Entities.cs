@@ -828,10 +828,27 @@ public sealed class GpsIn
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SFGPSInNo { get; set; } = "";
-    public string? GpsInType { get; set; }        // loại nhập
+    /// <summary>
+    /// Loại nhập (`GPSInType`) — `TConst.GPSInType` (Const.Main.StorageFG.cs:38-42):
+    /// **"FIRST_IN"** nhập lần đầu · **"RE_IN"** nhập lại. 🔴 KHÔNG phải nhãn tuỳ ý:
+    /// nguồn rẽ nhánh guard tồn kho theo đúng 2 giá trị này (xem endpoint POST /api/gpsins).
+    /// </summary>
+    public string? GpsInType { get; set; }
     public string StorageCode { get; set; } = ""; // kho GPS
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>Trạng thái phiếu (`GPSInStatus`, `TConst.GPSInStatus`): "P" chờ duyệt → "A" đã duyệt.</summary>
+    public string GPSInStatus { get; set; } = "P";
+    // --- #138 parity StoF_GPS* : TRỤC DUYỆT nguồn ghi mà port cũ thiếu sạch ---
+    /// <summary>Người lập (`CreateBy`).</summary>
+    public string? CreateBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng thiết bị nhập (StoF_GPSInDtl): số thiết bị + số hộp + trạng thái map.</summary>
@@ -842,8 +859,20 @@ public sealed class GpsInDetail
     public long InId { get; set; }
     public string GpsDvNo { get; set; } = "";     // số thiết bị GPS
     public string? GpsBoxNo { get; set; }         // số hộp
-    public string MapStatus { get; set; } = "0";  // '1' = đã gắn lên xe
+    /// <summary>
+    /// ⚠️ Cột RIÊNG của MiniHTC ('1' = đã gắn lên xe) — `StoF_GPSInDtl` KHÔNG có cột này.
+    /// Trước #138 nó bị dùng THAY chỗ `GPSInStatusDtl` (sai ngữ nghĩa); nay giữ lại vì
+    /// endpoint /api/gpsouts đang dùng, nhưng trạng thái duyệt đã tách sang `GPSInStatusDtl`.
+    /// </summary>
+    public string MapStatus { get; set; } = "0";
+    /// <summary>
+    /// Trạng thái duyệt của DÒNG (`GPSInStatusDtl`) — nguồn đặt "P" khi lưu, và khi duyệt gán
+    /// `t.GPSInStatusDtl = f.GPSInStatus` (BizHTC.StorageFG.Frm.cs:4019) ⇒ dòng **luôn bám theo phiếu**.
+    /// </summary>
+    public string GPSInStatusDtl { get; set; } = "P";
     public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu xuất kho thiết bị GPS (StoF_GPSOut — port 1:1 FrmStoF_GPSOut/FrmMngStoF_GPSOut, StoFGPS):
@@ -857,6 +886,18 @@ public sealed class GpsOut
     public string? UserCodeReceived { get; set; }   // người nhận
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>Trạng thái phiếu (`GPSOutStatus`, `TConst.GPSOutStatus`): "P" → "A".</summary>
+    public string GPSOutStatus { get; set; } = "P";
+    // --- #138 parity StoF_GPS* : TRỤC DUYỆT nguồn ghi mà port cũ thiếu sạch ---
+    /// <summary>Người lập (`CreateBy`).</summary>
+    public string? CreateBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng thiết bị xuất (StoF_GPSOutDtl): số thiết bị + số hộp + trạng thái map.</summary>
@@ -866,9 +907,15 @@ public sealed class GpsOutDetail
     public Guid OrgId { get; set; }
     public long OutId { get; set; }
     public string GpsDvNo { get; set; } = "";
+    /// <summary>⚠️ `StoF_GPSOutDtl` nguồn **KHÔNG có** cột số hộp (chỉ bảng NHẬP mới có) — cột riêng MiniHTC.</summary>
     public string? GpsBoxNo { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC — xem ghi chú ở <see cref="GpsInDetail.MapStatus"/>.</summary>
     public string MapStatus { get; set; } = "0";
+    /// <summary>Trạng thái duyệt của dòng (`GPSOutStatusDtl`) — bám theo phiếu (…Frm.cs:5042).</summary>
+    public string GPSOutStatusDtl { get; set; } = "P";
     public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis, StoFGPS):
@@ -900,6 +947,17 @@ public sealed class GpsBalance
     public string? StorageCode { get; set; }
     public DateTime? MapVINDateTime { get; set; }    // ngày gắn GPS vào VIN
     public string Status { get; set; } = "Unmapped"; // Mapped / Unmapped
+
+    // 🔴 #138: `Sto_StoBalanceGPS` có **BA trục trạng thái ĐỘC LẬP**, không phải một.
+    //    `Sto_StoBalanceGPS_CheckDB(..., strBlockStatusListToCheck, strInStatusListToCheck, strMapStatusListToCheck)`
+    //    nhận ba danh sách RIÊNG ⇒ port cũ gộp hết vào một `Status` (Mapped/Unmapped) là MẤT THÔNG TIN.
+    //    Giá trị: "1" Active / "0" Inactive (luật `dmssales-flag-values-1-0-not-yn`).
+    /// <summary>Thiết bị bị KHOÁ (`BlockStatus`) — "1" = đang khoá, không cho giao dịch.</summary>
+    public string BlockStatus { get; set; } = "0";
+    /// <summary>Đang NẰM TRONG KHO (`InStatus`) — "1" sau khi duyệt phiếu nhập, "0" sau khi duyệt phiếu xuất.</summary>
+    public string InStatus { get; set; } = "0";
+    /// <summary>Đã GẮN lên xe (`MapStatus`) — trục thứ ba, độc lập với hai trục trên.</summary>
+    public string MapStatus { get; set; } = "0";
 }
 
 /// <summary>Lịch sử gắn/gỡ GPS theo VIN (Sto_StoTransactionGPS — port 1:1 FrmMngVinHistoryMap, StoFGPS):
