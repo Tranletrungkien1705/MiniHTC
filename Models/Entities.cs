@@ -192,6 +192,14 @@ public sealed class CarRetrieve
     // chứng từ, mỗi nhánh một CỘT KHÁC TÊN — đó là lý do port cũ bỏ sót cả ba.
     /// <summary>Ngày xuất kho thực tế của lệnh thu hồi (`Sto_CarRetrieveDetail.RetrieveOutDate`).</summary>
     public DateTime? RetrieveOutDate { get; set; }
+
+    // ===== #170 parity `Sto_DlvMinutes_UpdateDlvEndDate_New20181115` (BizHTC.Storage.DlvMinutes.cs:9329) =====
+    /// <summary>Ngày thu hồi XONG (`RetrieveEndDate`).</summary>
+    public DateTime? RetrieveEndDate { get; set; }
+
+    // ===== #170b nhat ky sua cuoi (LogLU*) — nguon ghi cap nay o moi buoc ghi =====
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hủy xe (FrmCarCancel + FrmMngCarCancel) — hủy xe theo loại hủy, ghi nhận per-car; duyệt là governance thêm của web.</summary>
@@ -3368,6 +3376,12 @@ public sealed class StoRearCBDtl
     /// <summary>Ngày xuất kho thực tế của lệnh điều chuyển ĐÓNG THÙNG (`RearCBOutDate`) — nguồn chỉ ghi
     /// khi `TypeCB` KHÁC `TConst.CVTypeCB.ChuaDongThung`, và `RearCBDtlStatus` đang là "A" hoặc "F".</summary>
     public DateTime? RearCBOutDate { get; set; }
+
+    // ===== #170 parity `Sto_DlvMinutes_UpdateDlvEndDate_New20181115` (BizHTC.Storage.DlvMinutes.cs:9329) =====
+    /// <summary>Ngày điều chuyển đóng thùng XONG (`RearCBEndDate`).</summary>
+    public DateTime? RearCBEndDate { get; set; }
+    public DateTime? ConfirmDate { get; set; }
+    public string? ConfirmBy { get; set; }
 }
 
 /// <summary>Phiên đăng nhập hệ thống — port 1:1 FrmMngSession (Session, TCMotor). Giám sát phiên đang mở + kill phiên hết hạn theo thời gian truy cập cuối.</summary>
@@ -5193,6 +5207,14 @@ public sealed class DeliveryOrderCar
     /// <summary>Trạng thái xác nhận của DÒNG xe (`ConfirmStatus`) — trục RIÊNG, khác trạng thái của lệnh:
     /// nguồn guard sửa dòng theo `"P,A"`, và khi xoá dòng thì `A`/`F` phải kiểm thêm hồ sơ xe.</summary>
     public string ConfirmStatus { get; set; } = "P";
+
+    // ===== #170 parity `Sto_DlvMinutes_UpdateDlvEndDate_New20181115` (BizHTC.Storage.DlvMinutes.cs:9329) =====
+    /// <summary>Ngày/người XÁC NHẬN giao xong (`ConfirmDate`/`ConfirmBy`) — nguồn ghi cùng `ConfirmStatus = "F"`.</summary>
+    public DateTime? ConfirmDate { get; set; }
+    public string? ConfirmBy { get; set; }
+    /// <summary>Nhật ký sửa cuối của DÒNG lệnh xuất xe.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):
@@ -9064,6 +9086,12 @@ public sealed class StorageRearrangeDetail
     /// <summary>Ngày xuất kho thực tế của lệnh điều chuyển (`RearrangeOutDate`) — nguồn ghi khi
     /// DUYỆT biên bản giao xe, và chỉ khi `RearrangeDtlStatus` đang là "A2" hoặc "F".</summary>
     public DateTime? RearrangeOutDate { get; set; }
+
+    // ===== #170 parity `Sto_DlvMinutes_UpdateDlvEndDate_New20181115` (BizHTC.Storage.DlvMinutes.cs:9329) =====
+    /// <summary>Ngày điều chuyển XONG (`RearrangeEndDate`) — nhận từ ngày nhận xe của biên bản giao xe.</summary>
+    public DateTime? RearrangeEndDate { get; set; }
+    public DateTime? ConfirmDate { get; set; }
+    public string? ConfirmBy { get; set; }
 }
 
 /// <summary>Đề nghị bảo hiểm (Ins_InsuranceReq + Dtl) — port 1:1 FrmNewInsuranceReq (2010.HTC/Sales/Purchase). Đề nghị mua bảo hiểm cho lô VIN theo hãng + loại hình.</summary>
@@ -10823,6 +10851,10 @@ public sealed class TranspDlvConfirm
     /// (ngày nhận xe do người dùng nhập).</summary>
     public DateTime? DlvEndDateTime { get; set; }
     public string? DlvEndBy { get; set; }
+
+    // ===== #170b nhat ky sua cuoi (LogLU*) — nguon ghi cap nay o moi buoc ghi =====
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

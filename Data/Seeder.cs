@@ -845,6 +845,23 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #170b LogLU* cho CarRetrieves va TranspDlvConfirms
+        "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        // #170 parity Sto_DlvMinutes_UpdateDlvEndDate_New20181115
+        "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"ConfirmDate\" timestamp",
+        "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"ConfirmBy\" text",
+        "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"DeliveryOrderCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"RearrangeEndDate\" timestamp",
+        "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"ConfirmDate\" timestamp",
+        "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"ConfirmBy\" text",
+        "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"RetrieveEndDate\" timestamp",
+        "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBEndDate\" timestamp",
+        "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"ConfirmDate\" timestamp",
+        "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"ConfirmBy\" text",
         // #169 parity Sto_DlvMinutes_Confirm_New20190416
         "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFVCode\" text",
         "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TPValSys\" numeric NOT NULL DEFAULT 0",

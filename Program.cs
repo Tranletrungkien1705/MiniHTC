@@ -559,7 +559,8 @@ app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? s
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     { r.Code, r.RetrieveOrderNo, r.Vin, r.DealerCode, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate,
       r.FlagEarlyCancel, r.RetrieveRemark, r.DeliveryOrderNo, r.Status, r.RetrieveDtlStatus,
-      r.CreatedAt, r.CreatedBy, r.ApprovedAt, r.ApprovedBy }).ToListAsync();
+      r.CreatedAt, r.CreatedBy, r.ApprovedAt, r.ApprovedBy,
+      r.RetrieveOutDate, r.RetrieveEndDate, r.LogLUDateTime, r.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -14247,7 +14248,8 @@ app.MapGet("/api/storearcbs/{no}/cars", async (string no, AppDbContext db, ITena
     var h = await db.StoRearCBs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StoRearCBNo == no);
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.StoRearCBId == h.Id)
-        .Select(c => new { c.VIN, c.SpecCode, c.EngineNo, c.ColorCode, c.StorageCodeFrom, c.StorageCodeTo, c.ExpectedStartDate, c.ExpectedEndDate, c.CBReqNo, c.TenLoaiThung, c.Remark, c.RearCBDtlStatus }).ToListAsync();
+        .Select(c => new { c.VIN, c.SpecCode, c.EngineNo, c.ColorCode, c.StorageCodeFrom, c.StorageCodeTo, c.ExpectedStartDate, c.ExpectedEndDate, c.CBReqNo, c.TenLoaiThung, c.Remark, c.RearCBDtlStatus,
+            c.RearCBOutDate, c.RearCBEndDate, c.ConfirmDate, c.ConfirmBy }).ToListAsync();
     return Results.Ok(new { h.StoRearCBNo, h.RearCBStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -20485,6 +20487,106 @@ app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantCon
 //          thì chặn (`Confirm_HolidayNotBeSet`) — tức chỉ được lùi qua chuỗi ngày NGHỈ;
 //        · bấm **sau 12h** ⇒ ngày nhận **bắt buộc = hôm nay** (`Create_InvalidDlvEndDate`).
 //   5. Phải có bản biểu phạt đang hiệu lực (`Confirm_InvalidPenaltyVer`).
+// ===== #170 SỬA NGÀY NHẬN XE sau khi biên bản đã chốt — `Sto_DlvMinutes_UpdateDlvEndDate_New20181115` =====
+// Nguồn: `TERP.BizHTC/BizHTC.Storage.DlvMinutes.cs:9329` (csproj 120). BƯỚC 3B: md5 cả file `0b3b957d` KHỚP 2 máy.
+// TWIN: WS 32-bit và 64-bit gọi CÙNG bản `_New20181115`.
+//
+// ⚠️ KHÁC HẲN `/api/dlvminutes/update-dates` đã có: cái đó sửa **ngày XUẤT kho** (`DlvStartDate`) hàng loạt
+//    và ghi lịch sử; cái này sửa **ngày NHẬN xe** (`DlvEndDate`) của MỘT biên bản đã chốt hai đầu,
+//    rồi **lan ngược** ngày đó sang chứng từ gốc.
+//
+// 🔴 BA guard:
+//   1. `FDlvMnStatus = "A"` **và** `TDlvMnStatus = "A"` (`UpdateDlvEndDate_InvalidStatus`) — cả hai đầu đã chốt.
+//   2. `DlvStartDate <= DlvEndDate` (`UpdateDlvEndDate_InvalidDateEnd`).
+//   3. Ngày nhận **không được rỗng** (`UpdateDlvEndDate_DateEndIsNotNull`).
+//   4. Phải join được dòng YCVT `Sto_TranspReqDtl` với `TranspReqDtlStatus ∈ {"A","F"}` (`Approve_JoinTransReq`).
+//
+// 🔴 LAN NGƯỢC theo `TranspReqType` của DÒNG YCVT (`TConst.Sto_TranspReqType`) — bốn nhánh LOẠI TRỪ nhau:
+//   · "CARTRANSPORT"     → `Car_DeliveryOrderDetail`: `DeliveryEndDate`, `ConfirmStatus = "F"`, `ConfirmDate`/`ConfirmBy`
+//                          **và** `DLS_DealDetail`: `DeliveryDate`, `DeliveryStatus = "A"`, `ConfirmDate`/`ConfirmBy`
+//   · "STORAGEREARRANGE" → `Sto_StorageRearrangeDetail`: `RearrangeEndDate`, `ConfirmDate`/`ConfirmBy`
+//   · "CARRETRIEVE"      → `Sto_CarRetrieveDetail`: `RetrieveEndDate`
+//   · "STORAGEREARRCB"   → `Sto_RearrangeCBDetail`: `RearCBEndDate`, `ConfirmDate`/`ConfirmBy`
+app.MapPost("/api/dlvminutes/{no}/update-enddate", async (string no, DlvUpdEndDateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo.ToUpper() == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.FDlvMnStatus != "A" || m.TDlvMnStatus != "A")
+        return Results.BadRequest(new { error = $"Chỉ sửa ngày nhận khi CẢ HAI đầu đã duyệt (đang là F='{m.FDlvMnStatus}', T='{m.TDlvMnStatus}')." });
+    if (dto.DlvEndDate is null) return Results.BadRequest(new { error = "Ngày nhận xe không được để trống." });
+    var endDate = dto.DlvEndDate.Value;
+    if (m.DlvStartDate is not null && m.DlvStartDate.Value > endDate)
+        return Results.BadRequest(new { error = $"Ngày nhận xe ({endDate:yyyy-MM-dd}) không được trước ngày xuất kho ({m.DlvStartDate:yyyy-MM-dd})." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var vins = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+        .Select(c => c.VIN).ToListAsync();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Biên bản không có xe nào." });
+
+    m.DlvEndDate = endDate;
+    int doHit = 0, rearrHit = 0, retrHit = 0, cbHit = 0;
+    var skipped = new List<string>();
+
+    foreach (var vin in vins)
+    {
+        // Dòng YCVT quyết định lan sang chứng từ NÀO — guard `TranspReqDtlStatus ∈ {"A","F"}`.
+        var dtl = await db.RetrieveReqCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin
+            && (x.DtlStatus == "A" || x.DtlStatus == "F"));
+        if (dtl is null) { skipped.Add($"{vin}: không có dòng yêu cầu vận chuyển ở trạng thái A/F"); continue; }
+        var reqType = (dtl.TranspReqType ?? "").Trim().ToUpperInvariant();
+
+        if (reqType == "CARTRANSPORT")
+        {
+            foreach (var x in await db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId && x.Vin == vin).ToListAsync())
+            {
+                x.DeliveryEndDate = endDate;
+                x.ConfirmStatus = "F";                       // nguồn: TConst.Stage.Finished
+                x.ConfirmDate = now; x.ConfirmBy = who;
+                x.LogLUDateTime = now; x.LogLUBy = who;
+                doHit++;
+            }
+            // ⚠️ NỢ: nhánh này còn ghi `DLS_DealDetail` (`DeliveryDate`, `DeliveryStatus = "A"`, `ConfirmDate`/`ConfirmBy`).
+            //    MiniHTC chưa port bảng `DLS_DealDetail` ⇒ ghi nợ, KHÔNG bịa bảng thay thế.
+        }
+        else if (reqType == "STORAGEREARRANGE")
+        {
+            foreach (var x in await db.StorageRearrangeDetails.Where(x => x.OrgId == t.OrgId && x.VIN == vin).ToListAsync())
+            {
+                x.RearrangeEndDate = endDate; x.ConfirmDate = now; x.ConfirmBy = who; rearrHit++;
+            }
+        }
+        else if (reqType == "CARRETRIEVE")
+        {
+            foreach (var x in await db.CarRetrieves.Where(x => x.OrgId == t.OrgId && x.Vin == vin).ToListAsync())
+            {
+                x.RetrieveEndDate = endDate;
+                // 🔴 LỆCH CÓ CHỦ ĐÍCH: nguồn gán `LogLUDateTime = LogLUBy = objDlvEndDate` cho nhánh này —
+                //    tức nhét NGÀY vào cột NGƯỜI. Đây là lỗi copy-paste hiển nhiên của nguồn (ba nhánh kia
+                //    đều gán đúng `DateTime.Now` / `strPartnerUserCode`), không phải luật nghiệp vụ ⇒ ghi đúng.
+                x.LogLUDateTime = now; x.LogLUBy = who;
+                retrHit++;
+            }
+        }
+        else if (reqType == "STORAGEREARRCB")
+        {
+            foreach (var x in await db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && x.VIN == vin).ToListAsync())
+            {
+                x.RearCBEndDate = endDate; x.ConfirmDate = now; x.ConfirmBy = who; cbHit++;
+            }
+        }
+        else skipped.Add($"{vin}: loại yêu cầu vận chuyển \"{reqType}\" không thuộc bốn loại nguồn xử lý");
+    }
+
+    m.LogLUDateTime = now; m.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.DlvMinutesNo, m.DlvEndDate, cars = vins.Count,
+        updated = new { deliveryOrder = doHit, storageRearrange = rearrHit, carRetrieve = retrHit, rearrangeCB = cbHit },
+        skipped });
+}).RequireAuthorization();
+
 app.MapPost("/api/dlvminutes/{no}/confirm", async (string no, DlvConfirmDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -21738,7 +21840,8 @@ app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db
     var r = await db.StorageRearranges.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SCNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.StorageRearrangeDetails.Where(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
-        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark, c.RearrangeDtlStatus, c.ExpectedStartDate, c.ExpectedEndDate }).ToListAsync();
+        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark, c.RearrangeDtlStatus, c.ExpectedStartDate, c.ExpectedEndDate,
+            c.RearrangeOutDate, c.RearrangeEndDate, c.ConfirmDate, c.ConfirmBy }).ToListAsync();
     return Results.Ok(new { r.SCNo, r.Status, r.ApprovedBy1, r.ApprovedBy2, r.Remark, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -25011,7 +25114,8 @@ app.MapGet("/api/deliveryorders/{no}/carsdates", async (string no, AppDbContext 
     var o = await db.DeliveryOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DoNo == no);
     if (o is null) return Results.NotFound(new { no });
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryStartDate, c.DeliveryEndDate, c.DeliveryOutDate }).ToListAsync();
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryStartDate, c.DeliveryEndDate, c.DeliveryOutDate,
+            c.ConfirmStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -28306,6 +28410,7 @@ record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOu
 record PdiFeePaymentEditDto(List<PdiFeePaymentEditLineDto>? Lines);
 record TransportInsPaymentLineDto(string? Vin, string? CarId, string? DlvMnNo, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? DlvEndDate, decimal TFValReal, decimal TPValReal, decimal PriceCar, decimal InsuranceCost, string? Remark);
 record DlvInputFeeDto(string? FlagFeeOrPer, decimal? Value, string? TFRemark = null);
+record DlvUpdEndDateDto(DateTime? DlvEndDate);
 record DlvConfirmDto(DateTime? DlvEndDate, string? TPlateNo, string? TDriverId, string? TDriverName, string? TGPSDvStatus = null, string? TRemark = null, string? TStatusIaKm = null, string? TStatusIaRemark = null, string? GPSDvNo = null, string? GPSDvAddress = null, string? GPSDvResponse = null, List<DlvCorrectItemDto>? Items = null);
 record DlvCorrectItemDto(string ItemCode, string? TStatus);
 record DlvCorrectDto(string? TPlateNo, string? TDriverId, string? TDriverName, string? TGPSDvStatus = null, string? TRemark = null, string? TStatusIaKm = null, string? TStatusIaRemark = null, List<DlvCorrectItemDto>? Items = null);
