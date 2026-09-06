@@ -20752,6 +20752,8 @@ app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, 
     var items = await q.OrderByDescending(c => c.Id).Take(500)
         .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime, c.BankCodeMD, c.FlagDlrCtrAdjust, c.DlrCtrNoParent,
             c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2By, c.DlrApprBy, c.RejectDTime, c.RejectBy, c.FilePath, c.Remark, c.LogLUDateTime, c.LogLUBy,
+            c.DCPType, c.TotalAmount, c.CreateDTime, c.CreateBy, c.LUDTime, c.LUBy,
+            c.PMTermNo, c.DepositPercent, c.GuaranteePercent, c.GuaranteeDays, c.DepositDutyEndDays, c.GuaranteeEndDays,
             lines = db.DmsDealerContractDtls.Count(l => l.OrgId == t.OrgId && l.DlrCtrNo == c.DlrCtrNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -20786,24 +20788,139 @@ app.MapPost("/api/dmsdealercontracts/{no}/selectbankmd", async (string no, DmsSe
     return Results.Ok(new { c.DlrCtrNo, c.BankCodeMD, c.FlagDlrCtrAdjust });
 }).RequireAuthorization();
 
-app.MapPost("/api/dmsdealercontracts", async (DmsDealerContractDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #166 lưu hợp đồng đại lý DMS40 — `DMS40_CT_DealerContract_SaveX_New20190404` =====
+// Nguồn: `TERP.BizHTC/DMS40/0.34.Contract.cs:1442` (csproj 125) — BƯỚC 3B: md5 CẢ FILE `e2f3680f` KHỚP 2 máy.
+// Đây là hàm **UPSERT + XOÁ trong một** (`objFlagIsDelete`), hoàn tất nốt cặp `_Save`/`_SaveAdjust`
+// — cặp thứ 6 và cuối cùng của cụm `DMS40_CT_DealerContract` (xem #164/#165).
+app.MapPost("/api/dmsdealercontracts", async (DmsDealerContractDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var no = string.IsNullOrWhiteSpace(dto.DlrCtrNo) ? "DLC40" + now.ToString("yyMMddHHmmss") : dto.DlrCtrNo!.Trim();
+    var existing = await db.DmsDealerContracts.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DlrCtrNo == no);
+
+    // ---- nhánh XOÁ: nguồn `if (rows < 1 && bIsDelete) goto Done` ⇒ xoá cái không có là THÀNH CÔNG (idempotent).
+    if (dto.FlagIsDelete)
+    {
+        if (existing is null) return Results.Ok(new { DlrCtrNo = no, deleted = 0, note = "Không tồn tại — nguồn coi là thành công." });
+        var dead = await db.DmsDealerContractDtls.Where(l => l.OrgId == t.OrgId && l.DlrCtrNo == no).ToListAsync();
+        db.DmsDealerContractDtls.RemoveRange(dead);
+        db.DmsDealerContracts.Remove(existing);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { DlrCtrNo = no, deleted = 1, lines = dead.Count });
+    }
+
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
-    if (dto.ContractDate is null) return Results.BadRequest(new { error = "Cần ngày hợp đồng." });
-    var no = string.IsNullOrWhiteSpace(dto.DlrCtrNo) ? "DLC40" + DateTime.Now.ToString("yyMMddHHmmss") : dto.DlrCtrNo.Trim();
-    if (await db.DmsDealerContracts.AnyAsync(c => c.OrgId == t.OrgId && c.DlrCtrNo == no))
-        return Results.BadRequest(new { error = $"Số hợp đồng {no} đã tồn tại!" });
-    var c = new DmsDealerContract { OrgId = t.OrgId, DlrCtrNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), ContractDate = dto.ContractDate, DlrSignStatus = "P", HTCSignStatus = "P", DlrCtrStatus = "NS" };
-    db.DmsDealerContracts.Add(c); await db.SaveChangesAsync();
-    // #164: nguồn `_SaveX` ghi kèm bảng dòng `DMS40_CT_DealerContractDetail` (mỗi dòng một XE).
+    var dealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+
+    // 🔴 Guard "chỉ sửa được khi CHƯA ai ký" — nguồn viết `!(DlrSignStatus == P) && !(DlrCtrStatus == NS)`.
+    // ⚠️ Đây là **VÀ**, không phải HOẶC: nguồn chỉ chặn khi CẢ HAI đều lệch. Giữ nguyên đúng nguồn
+    //    (cùng tinh thần `CKTT` ở #163: không "sửa cho hợp lý" một luật của nghiệp vụ), có ghi chú.
+    if (existing is not null && existing.DlrSignStatus != "P" && existing.DlrCtrStatus != "NS")
+        return Results.BadRequest(new { error = $"Hợp đồng đang ở DlrSignStatus='{existing.DlrSignStatus}', DlrCtrStatus='{existing.DlrCtrStatus}' — không sửa được." });
+
+    // `myCommon_CheckDealer(..., Active, Active)`
+    var dlr = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode);
+    if (dlr is null) return Results.BadRequest(new { error = $"Đại lý {dealerCode} không tồn tại." });
+    if (dlr.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dealerCode} đang ngừng hoạt động." });
+
+    // `DlrCtr_PaymentType_CheckDB(strDCPType, Active, Active)` — loại điều khoản thanh toán PHẢI có và còn hiệu lực.
+    var dcp = (dto.DCPType ?? "").Trim().ToUpperInvariant();
+    if (dcp.Length == 0) return Results.BadRequest(new { error = "Chưa chọn loại điều khoản thanh toán (DCPType)." });
+    var dcpRow = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == dcp);
+    if (dcpRow is null) return Results.BadRequest(new { error = $"Loại điều khoản thanh toán '{dcp}' không tồn tại." });
+    if (dcpRow.FlagActive != "1") return Results.BadRequest(new { error = $"Loại điều khoản thanh toán '{dcp}' đã ngừng hiệu lực." });
+
     var dtlIn = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.CarId)).ToList();
+    // Nguồn ném `..._Input_DMS40_CT_DealerContractDetailTblNotFound` khi thiếu bảng dòng.
+    if (dtlIn.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 xe trong hợp đồng." });
+
+    // ---- Kiểm TỪNG XE + rút bộ điều khoản thanh toán ----
+    string? pmTermNo = null; PaymentTerm? pmTerm = null;
+    var built = new List<DmsDealerContractDtl>();
     foreach (var l in dtlIn)
-        db.DmsDealerContractDtls.Add(new DmsDealerContractDtl { OrgId = t.OrgId, DlrCtrNo = no,
-            CarId = l.CarId!.Trim().ToUpperInvariant(), OriginNo = l.OriginNo, ProductionYear = l.ProductionYear,
-            UnitPrice = l.UnitPrice, ApprovedDate = l.ApprovedDate, FlagDepositPmt = l.FlagDepositPmt,
-            Remark = l.Remark, DlrCtrStatusDtl = "NS" });
-    if (dtlIn.Count > 0) await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DealerCode, lines = dtlIn.Count });
+    {
+        var carId = l.CarId!.Trim().ToUpperInvariant();
+        // `myCar_CheckCar(..., strDealerCodeToCheck: DealerCode của user)` — xe phải TỒN TẠI và thuộc ĐÚNG đại lý đó.
+        // ⚠️ Hai vế còn lại của guard nguồn (`FlagActive` và `PaymentStatus ∈ {P,A,F}`) chưa có cột trong
+        //    `CarVinMaster` ⇒ **ĐÃ GHI NỢ**, không bịa.
+        var car = await db.CarVinMasters.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.VIN == carId);
+        if (car is null) return Results.BadRequest(new { error = $"Xe {carId} không tồn tại.", carId });
+        if (!string.IsNullOrWhiteSpace(car.DealerCode) && car.DealerCode != dealerCode)
+            return Results.BadRequest(new { error = $"Xe {carId} thuộc đại lý {car.DealerCode}, không phải {dealerCode}.", carId });
+
+        // 🔴 Xe ĐÃ nằm trong một hợp đồng đại lý khác:
+        //    · `FlagDealerContractDMS40 = "0"` ⇒ LỖI `ExistDlrCtrNo` (hợp đồng cũ chưa DMS40-hoá, chặn thẳng);
+        //    · `= "1"` ⇒ chỉ cho dùng lại khi hợp đồng cũ **đã HUỶ** (`DlrCtrStatus = "C"`).
+        if (!string.IsNullOrWhiteSpace(car.DlrCtrNo) && car.DlrCtrNo != no)
+        {
+            if (car.FlagDealerContractDMS40 != "1")
+                return Results.BadRequest(new { error = $"Xe {carId} đã thuộc hợp đồng {car.DlrCtrNo}.", carId });
+            var old = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == car.DlrCtrNo);
+            if (old is not null && old.DlrCtrStatus != "C")
+                return Results.BadRequest(new { error = $"Xe {carId} đang thuộc hợp đồng {car.DlrCtrNo} (trạng thái '{old.DlrCtrStatus}') — chỉ dùng lại được khi hợp đồng đó đã huỷ (C).", carId });
+        }
+
+        // `Ord_SalesOrderDetail_CheckDB(CarId, exist)` — xe phải đã map vào một dòng đơn bán.
+        var soLine = await db.SalesOrderLines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarId == carId);
+        if (soLine is null) return Results.BadRequest(new { error = $"Xe {carId} chưa có dòng đơn bán (Ord_SalesOrderDetail).", carId });
+
+        // `Mst_PaymentTerm_CheckSpecCode(SpecCode, EffectiveDate = ApprovedDate của DÒNG SO)` — phải ra ĐÚNG MỘT dòng.
+        var eff = soLine.ApprovedDate ?? now;
+        var terms = await db.PaymentTerms.Where(x => x.OrgId == t.OrgId && x.SpecCode == car.SpecCode && x.FlagActive == "1"
+                && x.EffectiveDateFrom <= eff && (x.EffectiveDateTo == null || x.EffectiveDateTo >= eff)).ToListAsync();
+        if (terms.Count != 1)
+            return Results.BadRequest(new { error = $"Xe {carId} (spec {car.SpecCode}): tìm thấy {terms.Count} điều khoản thanh toán hiệu lực ngày {eff:yyyy-MM-dd} — nguồn đòi đúng 1.", carId });
+        var term = terms[0];
+
+        // 🔴 MỌI XE trong hợp đồng phải CÙNG một `PMTermNo` (lỗi `PaymentTermNotMatch`):
+        //    xe đầu tiên ấn định bộ điều khoản, xe sau lệch là chặn.
+        if (pmTermNo is null) { pmTermNo = term.PMTermNo; pmTerm = term; }
+        else if (pmTermNo != term.PMTermNo)
+            return Results.BadRequest(new { error = $"Xe {carId} có điều khoản '{term.PMTermNo}', khác điều khoản '{pmTermNo}' của các xe trước — hợp đồng phải thuần nhất.", carId });
+
+        built.Add(new DmsDealerContractDtl { OrgId = t.OrgId, DlrCtrNo = no, CarId = carId,
+            OriginNo = l.OriginNo, ProductionYear = l.ProductionYear, UnitPrice = l.UnitPrice,
+            // `drScan["ApprovedDate"]` lấy từ **dòng SO**, KHÔNG phải ngày hệ thống (nguồn có comment đã đổi).
+            ApprovedDate = soLine.ApprovedDate,
+            DlrCtrStatusDtl = "NS",
+            FlagDepositPmt = term.FlagDepositPmt,   // chép từ điều khoản, không lấy input
+            Remark = (l.Remark ?? "").Trim(),
+            LogLUDateTime = now, LogLUBy = who });
+    }
+
+    var c = existing ?? new DmsDealerContract { OrgId = t.OrgId, DlrCtrNo = no };
+    c.DealerCode = dealerCode;
+    c.DCPType = dcp;
+    // Nguồn KHÔNG lấy ngày hợp đồng từ input: `ContractDate = dtimeSys`, `TotalAmount = 0.0`.
+    c.ContractDate = now.Date;
+    c.TotalAmount = 0m;
+    c.BankCodeMD = null; c.FilePath = null;
+    c.DlrApprDTime = null; c.DlrApprBy = null;
+    c.HTCAppr1DTime = null; c.HTCAppr1By = null;
+    c.HTCAppr2DTime = null; c.HTCAppr2By = null;
+    c.RejectDTime = null; c.RejectBy = null;
+    c.FlagDlrCtrAdjust = "0"; c.DlrSignStatus = "P"; c.HTCSignStatus = "P"; c.DlrCtrStatus = "NS";
+    c.Remark = (dto.Remark ?? "").Trim();
+    // 🔴 CreateDTime/CreateBy: GIỮ NGUYÊN của bản ghi cũ khi lưu đè, chỉ điền mới khi chưa có.
+    c.CreateDTime ??= now; c.CreateBy ??= who;
+    c.LUDTime = now; c.LUBy = who;
+    // Bộ SÁU cột điều khoản chép từ điều khoản của xe đầu tiên (sau khi đã bắt mọi xe thuần nhất).
+    c.PMTermNo = pmTermNo;
+    c.DepositPercent = pmTerm?.DepositPercent; c.GuaranteePercent = pmTerm?.GuaranteePercent;
+    c.GuaranteeDays = pmTerm?.GuaranteeDays; c.DepositDutyEndDays = pmTerm?.DepositDutyEndDays;
+    c.GuaranteeEndDays = pmTerm?.GuaranteeEndDays;
+    c.LogLUDateTime = now; c.LogLUBy = who;
+    if (existing is null) db.DmsDealerContracts.Add(c);
+
+    // Lưu đè ⇒ thay trọn bộ dòng (nguồn dựng lại `#input` rồi merge theo DlrCtrNo).
+    var oldDtls = await db.DmsDealerContractDtls.Where(l => l.OrgId == t.OrgId && l.DlrCtrNo == no).ToListAsync();
+    if (oldDtls.Count > 0) db.DmsDealerContractDtls.RemoveRange(oldDtls);
+    db.DmsDealerContractDtls.AddRange(built);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrCtrNo, c.DealerCode, c.DCPType, c.ContractDate, c.TotalAmount,
+        c.PMTermNo, c.DepositPercent, c.GuaranteePercent, c.GuaranteeDays, c.DepositDutyEndDays, c.GuaranteeEndDays,
+        c.CreateDTime, c.CreateBy, c.LUDTime, c.LUBy, lines = built.Count });
 }).RequireAuthorization();
 
 // 🔴 TẠO HỢP ĐỒNG ĐIỀU CHỈNH — `DMS40_CT_DealerContract_SaveAdjust_New20181115` (0.34.Contract.cs:2410).
@@ -24078,7 +24195,7 @@ app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITena
     DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
     db.SalesOrders.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL, ColorCode = l.ColorCode });
+        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL, ColorCode = l.ColorCode, CarId = l.CarId });
     await db.SaveChangesAsync();
     return Results.Ok(new { o.SoCode, o.OrderType, lines = lines.Count, status = o.Status });
 }).RequireAuthorization();
@@ -24089,7 +24206,7 @@ app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITe
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate, l.UnitPriceInit, l.MapVINRanking, l.Remark }).ToListAsync();
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate, l.UnitPriceInit, l.MapVINRanking, l.Remark, l.CarId }).ToListAsync();
     return Results.Ok(new { o.SoCode, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
 }).RequireAuthorization();
 
@@ -27984,7 +28101,7 @@ record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, str
 record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);
 record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
 record CtTkhqDeleteDto(List<string>? DeclarationNos);
-record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null);
+record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null, string? CarId = null);
 record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
 record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
@@ -28669,7 +28786,7 @@ record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser,
 // Duyệt HĐ đại lý: nguồn cho sửa số HĐ người dùng + ngày HĐ ngay trong bước duyệt, và ghi Remark.
 record DealerContractActionDto(string? Remark, string? DealerContractNoUser, DateTime? ContractDate);
 record DealerContractReceiptDto(DateTime? ReceiptContractDate);
-record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate, List<DmsDealerContractLineDto>? Lines = null);
+record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate, List<DmsDealerContractLineDto>? Lines = null, string? DCPType = null, string? Remark = null, bool FlagIsDelete = false);
 record DmsDealerContractLineDto(string? CarId, string? OriginNo, double ProductionYear = 0, decimal UnitPrice = 0, DateTime? ApprovedDate = null, string? FlagDepositPmt = null, string? Remark = null);
 record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 // HTC duyệt 2 cấp (Level 1|2) hoặc từ chối — theo TConst.HTCSignStatus.

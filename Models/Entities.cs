@@ -5518,6 +5518,11 @@ public sealed class SalesOrderLine
     public decimal? MapVINRanking { get; set; }
     /// <summary>Ghi chú của người duyệt cấp 1 theo dòng (`Ord_SalesOrderDetail.Remark`).</summary>
     public string? Remark { get; set; }
+
+    /// <summary>#166 — Xe đã map vào dòng đơn bán (`Ord_SalesOrderDetail.CarId`). Nguồn
+    /// `DMS40_CT_DealerContract_SaveX` tra dòng SO **theo CarId** để lấy `ApprovedDate`, rồi dùng ngày đó
+    /// làm **mốc hiệu lực** khi tìm điều khoản thanh toán của xe. Không có cột này thì không lập được hợp đồng đại lý.</summary>
+    public string? CarId { get; set; }
 }
 
 /// <summary>Giao dịch bán lẻ của đại lý (DealerDeal) — port 1:1 FrmNewDeal/FrmMngDeal (DMSales.Foton/SalesDealer). Đại lý bán xe cho khách: 3 vai trò KH (mua/lái/đứng tên), kiểu bán lẻ, cờ PDI.</summary>
@@ -8843,6 +8848,32 @@ public sealed class DmsDealerContract
     public string? Remark { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+
+    // ===== #166 parity `DMS40_CT_DealerContract_SaveX_New20190404` (DMS40/0.34.Contract.cs:1442, csproj 125) =====
+    /// <summary>🔴 Loại điều khoản thanh toán của hợp đồng (`DCPType`) — nguồn guard bằng
+    /// `DlrCtr_PaymentType_CheckDB(..., Active, Active)`: mã PHẢI tồn tại trong bảng điều khoản và còn hiệu lực.
+    /// Đây chính là bảng `PaymentTermMst` (`/api/paymentterms`) đã port.</summary>
+    public string? DCPType { get; set; }
+    /// <summary>Tổng tiền hợp đồng — nguồn khởi tạo **cứng 0.0** lúc lưu, tính lại ở bước khác.</summary>
+    public decimal TotalAmount { get; set; }
+    /// <summary>Ngày/người TẠO (`CreateDTime`/`CreateBy`) — 🔴 khi lưu ĐÈ bản ghi cũ, nguồn **giữ nguyên**
+    /// giá trị cũ, chỉ điền mới khi bản ghi chưa tồn tại.</summary>
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    /// <summary>Ngày/người SỬA LẦN CUỐI (`LUDTime`/`LUBy`) — khác cặp `LogLU*` (nhật ký kỹ thuật).</summary>
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    /// <summary>
+    /// 🔴 Bộ SÁU cột điều khoản thanh toán chép từ `Mst_PaymentTerm` của **xe ĐẦU TIÊN**, và nguồn bắt
+    /// **mọi xe trong hợp đồng phải cùng một `PMTermNo`** (lỗi `PaymentTermNotMatch`) — tức hợp đồng
+    /// đại lý là **thuần nhất về điều khoản thanh toán**.
+    /// </summary>
+    public string? PMTermNo { get; set; }
+    public decimal? DepositPercent { get; set; }
+    public decimal? GuaranteePercent { get; set; }
+    public int? GuaranteeDays { get; set; }
+    public int? DepositDutyEndDays { get; set; }
+    public int? GuaranteeEndDays { get; set; }
 }
 
 /// <summary>

@@ -845,6 +845,20 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #166 parity DMS40_CT_DealerContract_SaveX_New20190404
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DCPType\" text",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"TotalAmount\" numeric NOT NULL DEFAULT 0",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"CreateDTime\" timestamp",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"CreateBy\" text",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"LUDTime\" timestamp",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"LUBy\" text",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"PMTermNo\" text",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DepositPercent\" numeric",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"GuaranteePercent\" numeric",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"GuaranteeDays\" integer",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DepositDutyEndDays\" integer",
+        "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"GuaranteeEndDays\" integer",
+        "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"CarId\" text",
         // #165 parity họ hàm DlrApprove (bên B duyệt) — bản thường / điều chỉnh / điều chỉnh-kèm-mail
         "ALTER TABLE public.\"DmsDealerContracts\" ADD COLUMN IF NOT EXISTS \"DlrApprBy\" text",
         // #164 parity họ hàm KHÔNG-điều-chỉnh của hợp đồng đại lý DMS40
