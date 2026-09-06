@@ -882,6 +882,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #266 parity TblSerRO: 10 cot the hoi vien / diem (khoi phu cuoi lop hang)
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"FlagCardExist\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"FlagIsDLQuery\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CardNoInv\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CardTypeInv\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CardTypeExpectInv\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"PointEndInv\" numeric",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"PointRankTotalInv\" numeric",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"PointConsumptionPrm\" numeric",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"MemberNo\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"PointVoucher\" numeric",
         // #265 parity TblSerInvStockIn: cot thieu (van chuyen/dieu chinh/mat xich don dat PT)
         "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"StockInID\" text",
         "ALTER TABLE public.\"PartStockIns\" ADD COLUMN IF NOT EXISTS \"StatusText\" text",

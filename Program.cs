@@ -31798,6 +31798,11 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status, r.RejectNote,
+        // #266 §12: 10 cột thẻ hội viên / điểm
+        r.FlagCardExist, r.FlagIsDLQuery,
+        r.CardNoInv, r.CardTypeInv, r.CardTypeExpectInv,
+        r.PointEndInv, r.PointRankTotalInv, r.PointConsumptionPrm,
+        r.MemberNo, r.PointVoucher,
         services = db.RoServiceItems.Count(s => s.OrgId == t.OrgId && s.RoId == r.Id),
         parts = db.RoPartItems.Count(p => p.OrgId == t.OrgId && p.RoId == r.Id),
         total = db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id).Sum(s => (decimal?)s.Amount) ?? 0
@@ -31817,7 +31822,12 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HasRO",
         // 4 cột phục vụ màn Lịch sử dịch vụ (FrmServiceHistory); DealerCode là khoá của luật CanShowDetail
         DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
-        TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant
+        TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant,
+        // #266 §12: nhóm thẻ hội viên / điểm.
+        //  ⚠️ Nhóm hậu tố `Inv` là SNAPSHOT lúc lập hoá đơn ⇒ CHỈ nhận `MemberNo`/`FlagCardExist` lúc tạo LSC;
+        //     các cột `*Inv` và `PointVoucher` do luồng LẬP HOÁ ĐƠN (`FrmInvoice`) chốt — chưa port,
+        //     KHÔNG cho client tự đặt (tránh sửa được số liệu đã chốt trên hoá đơn).
+        MemberNo = dto.MemberNo, FlagCardExist = dto.FlagCardExist
     };
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     foreach (var s in dto.Services ?? new())
@@ -33287,7 +33297,10 @@ record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null);
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0);
-record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null);
+// #266: chỉ nhận `MemberNo` + `FlagCardExist` lúc tạo LSC. Nhóm `*Inv` và `PointVoucher` do luồng lập
+//   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
+record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
+    string? MemberNo = null, string? FlagCardExist = null);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

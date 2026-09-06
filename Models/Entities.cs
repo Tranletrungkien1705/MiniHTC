@@ -2130,6 +2130,38 @@ public sealed class RepairOrder
     public string? Assistant { get; set; }             // Ser_RO.Assistant — cố vấn dịch vụ
     public DateTime? ActualDeliveryDate { get; set; }  // Ser_RO.ActualDeliveryDate — "Giờ giao xe thực tế"
     public DateTime? FinishedDate { get; set; }        // Ser_RO.FinishedDate — khoá sắp xếp (order by desc)
+
+    // ===== 🔴 #266: 10 cột THẺ HỘI VIÊN / ĐIỂM của `TblSerRO` (DbDefine.cs:864-875) =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261) — chúng nằm ở KHỐI PHỤ cuối lớp hằng.
+    // ⚠️ TRACE: chỉ file `Views/Services/FrmInvoice.cs` (SỐNG, md5 `4c587940` — KHỚP 2 máy) dùng thật.
+    //    Các file `FrmInvoice - Copy.cs` / `- Copy (2).cs` **KHÔNG có trong .csproj ⇒ DEAD**, không tin.
+
+    /// <summary>FLAGCARDEXIST — khách có thẻ hội viên hay không.</summary>
+    public string? FlagCardExist { get; set; }
+    /// <summary>FLAGISDLQUERY — đã tra cứu thông tin hội viên hay chưa.</summary>
+    public string? FlagIsDLQuery { get; set; }
+
+    /// <summary>
+    /// 🔴 Nhóm hậu tố **`Inv`** = **CHỐT tại thời điểm lập HOÁ ĐƠN** (snapshot), KHÔNG phải giá trị hiện
+    /// tại của thẻ. Cùng họ với cặp `CostInit`/`CostActual` (#231): hoá đơn phải giữ số liệu lúc phát hành,
+    /// điểm/hạng đổi sau đó không được làm đổi hoá đơn cũ.
+    /// </summary>
+    public string? CardNoInv { get; set; }            // CARDNOINV — số thẻ lúc lập hoá đơn
+    public string? CardTypeInv { get; set; }          // CARDTYPEINV — hạng thẻ lúc lập hoá đơn
+    public string? CardTypeExpectInv { get; set; }    // CARDTYPEEXPECTINV — hạng DỰ KIẾN sau giao dịch
+    public decimal? PointEndInv { get; set; }         // POINTENDINV — điểm cuối kỳ
+    public decimal? PointRankTotalInv { get; set; }   // POINTRANKTOTALINV — tổng điểm xét hạng
+    public decimal? PointConsumptionPrm { get; set; } // POINTCONSUMPTIONPRM — điểm tiêu dùng
+
+    public string? MemberNo { get; set; }             // MEMBERNO — số hội viên (FrmInvoice.cs:707)
+
+    /// <summary>
+    /// 🔴 POINTVOUCHER — điểm quy đổi thành TIỀN GIẢM. `FrmInvoice.cs:648`:
+    ///   `AmountFinal = TongTienSauThue − AmountDiscount − AmountDiscountOther − PointVoucher`
+    /// ⇒ **trừ THẲNG vào tiền cuối cùng**, không phải chỉ để hiển thị.
+    /// (:1634 còn trừ tiếp `AmountFromMC` khi tính tổng sau sửa chữa.)
+    /// </summary>
+    public decimal? PointVoucher { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
