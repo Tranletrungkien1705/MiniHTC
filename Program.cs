@@ -12669,13 +12669,98 @@ app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust, l.BalanceLocation, l.InStockLocation }).ToListAsync();
-    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
+    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, h.LogLUDateTime, h.LogLUBy, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
 }).RequireAuthorization();
 
 // 🔴 KẾT THÚC phiếu điều chỉnh — port `ProcessFinishStockOutAdj` (BizCarSv.Inventory.StockAdj.cs:240-378).
 // Port cũ chỉ ĐỔI CỜ approve/reject mà **KHÔNG hề động vào tồn kho** ⇒ "điều chỉnh tồn kho" không điều chỉnh gì.
 // Nguồn khi kết thúc: mỗi dòng TRỪ tồn ở kho CÂN ĐỐI rồi CHUYỂN sang kho ĐÍCH, có guard tồn tại tồn kho trước.
 // ⚠️ Nhánh "reject" đã BỎ: nguồn không có huỷ phiếu điều chỉnh (`Ser_StockAdj` chỉ "0"/"1").
+// ===== #176 SỬA và XOÁ phiếu điều chỉnh tồn — `Ser_StockAdj_Update` (5300) / `_Delete` (4829) =====
+// Nguồn: TCMotor `DMSCarSv/TERP.BizCarSv/BizCarSv.Inventory.Stock.cs` — BƯỚC 3B: md5 cả file `d91ec639`
+//   KHỚP 2 máy (laptop `V20.2023.Release.V2`, máy 150 `V20.2023.Release` — hai tên, một nội dung, xem #174).
+// TWIN: `TERP.WSCarSv/App_Code/WSCarSv.cs` gọi `_biz.Ser_StockAdj_Create/_Update/_Delete/_Get` —
+//   bốn lệnh, MiniHTC mới có Create + Get + finish ⇒ lượt này bù nốt Update và Delete.
+//
+// ⚠️ LƯU Ý BẢNG: cụm này ghi **`Ser_Inv_StockAdj`**, KHÁC bảng `Ser_Inv_StockOutAdj` của
+//    `StockOutAdjCreate` (`BizCarSv.Inventory.StockAdj.cs`). Hai bảng, hai cụm — dễ lẫn vì tên gần giống.
+app.MapPost("/api/stockadjs/{no}/update", async (string no, StockAdjDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
+    if (h is null) return Results.NotFound(new { no });
+
+    // 🔴 `Ser_StockAdj_NotAllowFinish`: phiếu đã kết thúc ("1") thì không sửa được nữa.
+    if (h.AdjStatus != "0")
+        return Results.BadRequest(new { error = $"Phiếu đang ở trạng thái '{h.AdjStatus}' — chỉ sửa được phiếu Mới tạo (0)." });
+
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
+
+    var wh = dto.StorageCode ?? h.StorageCode ?? "";
+    var seen = new HashSet<string>();
+    foreach (var l in lines)
+    {
+        var part = l.PartCode!.Trim().ToUpperInvariant();
+        var bal = (l.BalanceLocation ?? "").Trim();
+        var dst = (l.InStockLocation ?? "").Trim();
+
+        // 🔴 `Ser_StockAdj_LocationNotChange`: vị trí CÂN ĐỐI và vị trí ĐÍCH không được trùng nhau —
+        //    điều chỉnh mà không đổi vị trí thì vô nghĩa. Guard này chỉ có ở `_Update`, `_Create` KHÔNG có.
+        if (bal.Equals(dst, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = $"{part}: vị trí cân đối và vị trí đích trùng nhau ('{bal}').", partCode = part });
+
+        // 🔴 `Ser_StockAdj_QtyChangeOverBalance`: số lượng điều chỉnh không được vượt TỒN THỰC tại vị trí cân đối.
+        // ⚠️ Nguồn chỉ kiểm KHI TÌM THẤY dòng tồn (`if (dtStockBalance != null && Rows.Count > 0)`);
+        //    không có tồn thì **bỏ qua**, không báo lỗi. Giữ đúng — khác `/finish` vốn bắt buộc phải có tồn.
+        var st = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == wh
+            && x.PartCode == part && (x.Location ?? "") == bal);
+        if (st is not null && st.OnHand < l.QtyAdjust)
+            return Results.BadRequest(new { error = $"{part}@{bal}: số lượng điều chỉnh {l.QtyAdjust} vượt tồn {st.OnHand}.", partCode = part });
+
+        // `Ser_StockAdj_PartDuplicate`
+        if (!seen.Add(part))
+            return Results.BadRequest(new { error = $"Mã phụ tùng {part} bị trùng!", partCode = part });
+    }
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (dto.StorageCode is not null) h.StorageCode = dto.StorageCode;
+    if (dto.DealerCode is not null) h.DealerCode = dto.DealerCode;
+    if (dto.StockOutDate is not null) h.StockOutDate = dto.StockOutDate;
+    h.Remark = dto.Remark;
+    h.LogLUDateTime = now; h.LogLUBy = who;
+
+    // Nguồn dựng lại trọn bộ dòng theo bảng đầu vào.
+    var old = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id).ToListAsync();
+    db.StockAdjLines.RemoveRange(old);
+    foreach (var l in lines)
+        db.StockAdjLines.Add(new StockAdjLine
+        {
+            OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim().ToUpperInvariant(),
+            PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust,
+            BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, replaced = old.Count, lines = lines.Count, h.LogLUDateTime, h.LogLUBy });
+}).RequireAuthorization();
+
+// 🔴 `Ser_StockAdj_Delete` (4829): guard DUY NHẤT là **`Status == Finished` thì chặn**
+//    (`Ser_StockAdj_DeleteNotAllow`) — tức phiếu Mới tạo xoá được, phiếu đã kết thúc thì không.
+app.MapDelete("/api/stockadjs/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.AdjStatus == "1")
+        return Results.BadRequest(new { error = "Phiếu đã kết thúc — không xoá được." });
+    var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id).ToListAsync();
+    db.StockAdjLines.RemoveRange(lines);
+    db.StockAdjs.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no, linesDeleted = lines.Count });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockadjs/{no}/finish", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();

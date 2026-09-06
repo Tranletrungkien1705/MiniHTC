@@ -2903,6 +2903,12 @@ public sealed class StockAdj
     public DateTime CreatedAt { get; set; }
     /// <summary>Thời điểm KẾT THÚC phiếu (status "1"), lúc tồn kho thực sự bị điều chỉnh.</summary>
     public DateTime? ApprovedAt { get; set; }
+
+    // ===== #176 parity `Ser_StockAdj_Update` (BizCarSv.Inventory.Stock.cs:5300) =====
+    /// <summary>Nhật ký sửa cuối (`LogLUDateTime`/`LogLUBy`) — nguồn ghi ở CẢ `_Create` lẫn `_Update`
+    /// trên bảng `Ser_Inv_StockAdj` (KHÁC bảng `Ser_Inv_StockOutAdj` của cụm `StockOutAdjCreate`).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết phiếu điều chỉnh tồn kho — port 1:1 StockAdj detail (TCMotor DMSCarSv).</summary>
