@@ -331,6 +331,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstInsuranceCompany> MstInsuranceCompanies => Set<MstInsuranceCompany>();
     public DbSet<MstInsuranceType> MstInsuranceTypes => Set<MstInsuranceType>();
     public DbSet<EmailBatch> EmailBatches => Set<EmailBatch>();
+    public DbSet<EmailBatchCc> EmailBatchCcs => Set<EmailBatchCc>();
+    public DbSet<EmailBatchBcc> EmailBatchBccs => Set<EmailBatchBcc>();
+    public DbSet<EmailBatchFileAttach> EmailBatchFileAttaches => Set<EmailBatchFileAttach>();
     public DbSet<OrderComplain> OrderComplains => Set<OrderComplain>();
     public DbSet<SupplierPayment> SupplierPayments => Set<SupplierPayment>();
     public DbSet<SupplierPaymentLine> SupplierPaymentLines => Set<SupplierPaymentLine>();

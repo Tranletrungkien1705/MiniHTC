@@ -8421,7 +8421,7 @@ app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? 
 }).RequireAuthorization();
 
 // Gửi email: tiêu đề/nội dung = emailType (mẫu) hoặc subject+body trực tiếp; người nhận = emails và/hoặc toAllCustomers.
-app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var subject = dto.Subject?.Trim() ?? "";
     var body = dto.Body?.Trim() ?? "";
@@ -8444,11 +8444,25 @@ app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenant
     if (emails.Count == 0) return Results.BadRequest(new { error = "Chưa có địa chỉ email nhận." });
     var no = "EML" + DateTime.Now.ToString("yyMMddHHmmss");
     // 🔴 Nguồn ghi HEADER LÔ (Email_BatchSendEmail) trước, mang ngày hiệu lực / người gửi / file đính kèm cả lô.
+    var whoEB = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var nowEB = DateTime.Now;
     db.EmailBatches.Add(new EmailBatch
     {
         OrgId = t.OrgId, BatchNo = no, DealerCode = dto.DealerCode,
         EffectDate = dto.EffectDate ?? DateTime.Now, SendBy = dto.SendBy, AttachmentName = dto.AttachmentName,
+        // #143 parity DMS40_Email_BatchSendEmail: 6 cột nguồn ghi mà port cũ thiếu.
+        ConfigCode = dto.ConfigCode, TEmailCode = dto.TEmailCode, WSPath = dto.WSPath,
+        BatchStatus = "P", LogLUDateTime = nowEB, LogLUBy = whoEB,
     });
+    // #143: CC / BCC / file đính kèm — ba bảng con nguồn có mà port cũ THIẾU HẲN.
+    // ⚠️ CC ghi vào BẢNG CC. Nguồn có một biến HỎNG `zzzzClauseInsertDMS40_Email_BatchSendEmailCC_zSave`
+    //    (thiếu dấu gạch dưới sau "Insert") ghi CC vào bảng **To**; biến đó KHÔNG được ghép vào câu lệnh
+    //    cuối nên là BIẾN CHẾT — bộ cột ở đây lấy theo `_Job_SaveX` (bản sạch).
+    foreach (var e in (dto.Cc ?? new List<string>()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct())
+        db.EmailBatchCcs.Add(new EmailBatchCc { OrgId = t.OrgId, BatchNo = no, EmailCode = e, BatchStatusCC = "P", LogLUDateTime = nowEB, LogLUBy = whoEB });
+    foreach (var e in (dto.Bcc ?? new List<string>()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct())
+        db.EmailBatchBccs.Add(new EmailBatchBcc { OrgId = t.OrgId, BatchNo = no, EmailCode = e, BatchStatusBCC = "P", LogLUDateTime = nowEB, LogLUBy = whoEB });
+    foreach (var f in (dto.Files ?? new List<string>()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct())
+        db.EmailBatchFileAttaches.Add(new EmailBatchFileAttach { OrgId = t.OrgId, BatchNo = no, FilePath = f, BatchStatusFA = "P", LogLUDateTime = nowEB, LogLUBy = whoEB });
     int queued = 0, invalid = 0;
     var invalids = new List<string>();
     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -8504,12 +8518,75 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// #143: chi tiết một lô — trả CẢ BỐN nhánh người nhận/đính kèm của nguồn.
+app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var h = await db.EmailBatches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BatchNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    return Results.Ok(new
+    {
+        header = new { h.BatchNo, h.DealerCode, h.EffectDate, h.SendBy, h.AttachmentName, h.CreatedAt,
+            h.ConfigCode, h.TEmailCode, h.WSPath, h.BatchStatus, h.LogLUDateTime, h.LogLUBy },
+        to = await db.EmailSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == no)
+            .Select(x => new { x.Email, x.Status, x.InvalidEmail }).ToListAsync(),
+        cc = await db.EmailBatchCcs.Where(x => x.OrgId == t.OrgId && x.BatchNo == no)
+            .Select(x => new { x.EmailCode, x.BatchStatusCC, x.LogLUDateTime, x.LogLUBy }).ToListAsync(),
+        bcc = await db.EmailBatchBccs.Where(x => x.OrgId == t.OrgId && x.BatchNo == no)
+            .Select(x => new { x.EmailCode, x.BatchStatusBCC, x.LogLUDateTime, x.LogLUBy }).ToListAsync(),
+        files = await db.EmailBatchFileAttaches.Where(x => x.OrgId == t.OrgId && x.BatchNo == no)
+            .Select(x => new { x.FilePath, x.BatchStatusFA, x.LogLUDateTime, x.LogLUBy }).ToListAsync()
+    });
+}).RequireAuthorization();
+
+// #143: hàng chờ thật của worker — lô còn "P" VÀ đã tới giờ hẹn (nguồn dùng EffectDate để hẹn giờ).
+app.MapGet("/api/emailbatches/pending", async (AppDbContext db, ITenantContext t, int? take) =>
+{
+    var now = DateTime.Now;
+    var items = await db.EmailBatches
+        .Where(x => x.OrgId == t.OrgId && x.BatchStatus == "P" && (x.EffectDate == null || x.EffectDate <= now))
+        .OrderBy(x => x.EffectDate).ThenBy(x => x.Id).Take(take ?? 100)
+        .Select(x => new { x.BatchNo, x.ConfigCode, x.TEmailCode, x.WSPath, x.EffectDate, x.DealerCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// #143: đánh dấu đã gửi. Nguồn đặt "A" ở bảng đầu VÀ ở trạng thái riêng của TỪNG bảng con
+// (BatchStatusTo/CC/BCC/FA — bốn cột khác tên nhưng chung bảng mã TConst.BatchStatus).
+// ⚠️ Nhánh To ở MiniHTC là `EmailSend`, dùng CỜ "1"/"0" chứ không phải bảng mã chữ — giữ đúng
+//    từ vựng của từng tầng, không đồng hoá.
+app.MapPost("/api/emailbatches/{no}/sent", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var h = await db.EmailBatches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BatchNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.BatchStatus != "P") return Results.BadRequest(new { error = $"Lô đang \"{h.BatchStatus}\", chỉ đánh dấu gửi cho lô còn \"P\"." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    h.BatchStatus = "A"; h.LogLUDateTime = now; h.LogLUBy = who;
+    var sent = 0;
+    foreach (var x in await db.EmailSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == no && x.Status == "0" && !x.InvalidEmail).ToListAsync())
+    { x.Status = "1"; sent++; }
+    foreach (var x in await db.EmailBatchCcs.Where(x => x.OrgId == t.OrgId && x.BatchNo == no).ToListAsync())
+    { x.BatchStatusCC = "A"; x.LogLUDateTime = now; x.LogLUBy = who; }
+    foreach (var x in await db.EmailBatchBccs.Where(x => x.OrgId == t.OrgId && x.BatchNo == no).ToListAsync())
+    { x.BatchStatusBCC = "A"; x.LogLUDateTime = now; x.LogLUBy = who; }
+    foreach (var x in await db.EmailBatchFileAttaches.Where(x => x.OrgId == t.OrgId && x.BatchNo == no).ToListAsync())
+    { x.BatchStatusFA = "A"; x.LogLUDateTime = now; x.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.BatchNo, status = h.BatchStatus, toMarkedSent = sent });
+}).RequireAuthorization();
+
 app.MapGet("/api/emailbatches", async (AppDbContext db, ITenantContext t, string? dealer) =>
 {
     var qy = db.EmailBatches.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer);
     var items = await qy.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.Id, x.BatchNo, x.DealerCode, x.EffectDate, x.SendBy, x.AttachmentName, x.CreatedAt }).ToListAsync();
+        .Select(x => new { x.Id, x.BatchNo, x.DealerCode, x.EffectDate, x.SendBy, x.AttachmentName, x.CreatedAt,
+            // #143 parity DMS40_Email_BatchSendEmail.
+            x.ConfigCode, x.TEmailCode, x.WSPath, x.BatchStatus, x.LogLUDateTime, x.LogLUBy,
+            to = db.EmailSends.Count(y => y.OrgId == t.OrgId && y.BatchNo == x.BatchNo),
+            cc = db.EmailBatchCcs.Count(y => y.OrgId == t.OrgId && y.BatchNo == x.BatchNo),
+            bcc = db.EmailBatchBccs.Count(y => y.OrgId == t.OrgId && y.BatchNo == x.BatchNo),
+            files = db.EmailBatchFileAttaches.Count(y => y.OrgId == t.OrgId && y.BatchNo == x.BatchNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -26796,7 +26873,7 @@ record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note
 record SupplierDebitDto(string? SupplierCode, string? StockInNo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record SupplierDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
-record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers, string? FromAddress = null, string? DealerCode = null, string? SendBy = null, string? AttachmentName = null, DateTime? EffectDate = null, bool? IsAuto = null);
+record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers, string? FromAddress = null, string? DealerCode = null, string? SendBy = null, string? AttachmentName = null, DateTime? EffectDate = null, bool? IsAuto = null, string? ConfigCode = null, string? TEmailCode = null, string? WSPath = null, List<string>? Cc = null, List<string>? Bcc = null, List<string>? Files = null);
 record EmailBatchStatusDto(string? Status, string? Note);
 record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);
 record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);

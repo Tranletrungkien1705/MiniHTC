@@ -845,6 +845,16 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #143 parity DMS40_Email_BatchSendEmail + 3 bảng con còn thiếu (CC / BCC / FileAttach)
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"ConfigCode\" text",
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"TEmailCode\" text",
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"WSPath\" text",
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"BatchStatus\" text NOT NULL DEFAULT 'P'",
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "CREATE TABLE IF NOT EXISTS public.\"EmailBatchCcs\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchNo\" text NOT NULL DEFAULT '', \"EmailCode\" text NOT NULL DEFAULT '', \"BatchStatusCC\" text NOT NULL DEFAULT 'P', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
+        "CREATE TABLE IF NOT EXISTS public.\"EmailBatchBccs\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchNo\" text NOT NULL DEFAULT '', \"EmailCode\" text NOT NULL DEFAULT '', \"BatchStatusBCC\" text NOT NULL DEFAULT 'P', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
+        "CREATE TABLE IF NOT EXISTS public.\"EmailBatchFileAttaches\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchNo\" text NOT NULL DEFAULT '', \"FilePath\" text NOT NULL DEFAULT '', \"BatchStatusFA\" text NOT NULL DEFAULT 'P', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         // #142 parity Car_TransportReq(Detail) + Car_TransportMinutes(Detail)
         "ALTER TABLE public.\"TransportRequests\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
         "ALTER TABLE public.\"TransportRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text",

@@ -9812,10 +9812,77 @@ public sealed class EmailBatch
     public DateTime? EffectDate { get; set; }
     /// <summary>Người gửi lô (SendBy).</summary>
     public string? SendBy { get; set; }
-    /// <summary>Tên file đính kèm dùng chung cả lô (AttachmentName).</summary>
+    /// <summary>
+    /// Tên file đính kèm dùng chung cả lô (`AttachmentName`).
+    /// ⚠️ Cột RIÊNG của MiniHTC — nguồn KHÔNG để file ở bảng đầu mà ở bảng con
+    /// `DMS40_Email_BatchSendEmailFileAttach` (nhiều file / lô). Giữ lại vì client cũ đang dùng.
+    /// </summary>
     public string? AttachmentName { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #143 parity DMS40_Email_BatchSendEmail =====
+    // Nguồn: DMS40/0.34.Contract.cs — `_SaveX` (12927) / `_Job_SaveX` (13853), csproj 125.
+    // 🔴 Đây là HẠ TẦNG DÙNG CHUNG: hơn 20 chỗ trong hệ xếp mail vào bảng này (VietinBank,
+    //    TCFIntergration, PaymentDiscount, PaymentGrtExt, BizHTC.Car, BizHTC.Report, Biz.HTC.WH.My,
+    //    BizHTC.zTemp, 0.34.Contract…) — không phải một màn hình.
+    /// <summary>Mã cấu hình SMTP/hộp gửi (`ConfigCode`).</summary>
+    public string? ConfigCode { get; set; }
+    /// <summary>Mã MẪU email (`TEmailCode`) — nội dung lấy từ mẫu, bảng này không lưu nội dung.</summary>
+    public string? TEmailCode { get; set; }
+    /// <summary>Đường dẫn web-service xử lý lô (`WSPath`).</summary>
+    public string? WSPath { get; set; }
+    /// <summary>
+    /// Trạng thái LÔ (`BatchStatus`, `TConst.BatchStatus`, Const.Main.DMS40.cs:214):
+    /// N/**P**/C/**A**/A1/A2/F/R/D. Nguồn tạo ở **"P"**, gửi xong đặt **"A"**.
+    /// ⚠️ KHÁC bảng mã của <see cref="EmailSend.Status"/> — dòng người-nhận dùng cờ "1"/"0",
+    /// còn LÔ dùng bảng mã chữ. Hai tầng, hai từ vựng.
+    /// </summary>
+    public string BatchStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
+
+// --- #143: ba bảng con của lô mà port cũ THIẾU HẲN ---
+// Port cũ gộp mọi người nhận vào `EmailSend` (tương đương `DMS40_Email_BatchSendEmailTo`),
+// nên CC / BCC / file đính kèm nhiều-file không có chỗ chứa.
+
+/// <summary>Người nhận CC của lô (`DMS40_Email_BatchSendEmailCC`).</summary>
+public sealed class EmailBatchCc
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string EmailCode { get; set; } = "";
+    /// <summary>Trạng thái gửi tới địa chỉ này (`BatchStatusCC`) — cùng bảng mã `TConst.BatchStatus`.</summary>
+    public string BatchStatusCC { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Người nhận BCC của lô (`DMS40_Email_BatchSendEmailBCC`).</summary>
+public sealed class EmailBatchBcc
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string EmailCode { get; set; } = "";
+    public string BatchStatusBCC { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>File đính kèm của lô (`DMS40_Email_BatchSendEmailFileAttach`) — chỉ lưu ĐƯỜNG DẪN, nhiều file/lô.</summary>
+public sealed class EmailBatchFileAttach
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string BatchNo { get; set; } = "";
+    public string FilePath { get; set; } = "";
+    public string BatchStatusFA { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 
 /// <summary>Cấu hình gửi SMS tự động theo giờ/loại + ngày hiệu lực — port 1:1 FrmSMSSetAutoSend (TblSMS_ConfigSendAuto, TCMotor).</summary>
 public sealed class SmsAutoConfig
