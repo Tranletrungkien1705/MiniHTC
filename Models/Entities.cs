@@ -1053,6 +1053,17 @@ public sealed class Guarantee
     public string Status { get; set; } = "Pending";  // Pending → Approved
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
+
+    // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
+    //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
+    /// <summary>
+    /// 🔴 Ngân hàng GIÁM SÁT (`Pmt_Guarantee.BankCodeMonitor`) — khi duyệt đề nghị giao hồ sơ,
+    /// mã này được ghi sang `Car_Vin.HandOverBankCode` (ngân hàng nhận bàn giao hồ sơ xe).
+    /// Khác <see cref="BankCode"/> (ngân hàng phát hành bảo lãnh).
+    /// </summary>
+    public string? BankCodeMonitor { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -2723,6 +2734,11 @@ public sealed class RedeemInvoiceRequest
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
+    //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng VIN của đề nghị giao HĐ thu hồi (RD_ReqInvoiceDtl) — thuộc RedeemInvoiceRequest. VIN + xe + loại ĐN giao (DEALER=Đại lý / BANKBL=Ngân hàng BL / BANKLC=Ngân hàng LC).</summary>
@@ -2757,6 +2773,11 @@ public sealed class RedeemInvoiceRequestLine
     public string? HTCInvoiceNo { get; set; }
     public string? InvoiceNoFactory { get; set; }
     public string? TCGInvoiceNo { get; set; }
+
+    // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
+    //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>NVBH đại lý + duyệt BĐH (Mst_DlSalesMan) — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC (2010.HTC/SalesDealer). Đại lý đăng ký NVBH → HTC/BĐH duyệt. 2 trạng thái: SMStatus (thử việc/chính thức/nghỉ/CTV) + BDHStatus (duyệt). KHÁC master SalesMan đơn giản. Upsert-by-SMCode.</summary>
@@ -9185,6 +9206,16 @@ public sealed class CarVinMaster
     public string? ModelCode { get; set; }
     public string? SpecCode { get; set; }
     public string? DealerCode { get; set; }
+
+    // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
+    //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
+    /// <summary>Ngày KẾT THÚC thế chấp (`Car_Vin.MortageEndDate`) — nguồn đặt = hôm nay khi duyệt.</summary>
+    public DateTime? MortageEndDate { get; set; }
+    /// <summary>Ngân hàng nhận BÀN GIAO hồ sơ xe (`Car_Vin.HandOverBankCode`) — lấy từ
+    /// `Pmt_Guarantee.BankCodeMonitor` của bảo lãnh còn hiệu lực duy nhất.</summary>
+    public string? HandOverBankCode { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
@@ -9854,6 +9885,13 @@ public sealed class BankGuaranteeDtl
     /// (`Biz.HTC.WH.My.cs:10679`). Có cột này thì mới truy được từng xe đang ở trạng thái nào.
     /// </summary>
     public string GuaranteeDetailStatus { get; set; } = "P";
+
+    // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
+    //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
+    /// <summary>Ngày bắt đầu hiệu lực (`Pmt_GuaranteeDetail.DateStart`) — nguồn ĐẶT LẠI = hôm nay
+    /// khi duyệt dòng đề nghị giao hồ sơ (không phải lúc tạo bảo lãnh).</summary>
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>

@@ -11669,6 +11669,74 @@ app.MapPost("/api/dealersalesmen/{id}/toggle", async (long id, AppDbContext db, 
 }).RequireAuthorization();
 
 // ===== Đề nghị giao HĐ/hồ sơ thu hồi (RedeemInvoiceRequest header-detail — port 1:1 FrmNewRDInvoice/FrmMngRDInvoice, 2010.HTC/Sales/Redeem) =====
+// ===== #160 side-effect: DUYỆT DÒNG ĐỀ NGHỊ GIAO HỒ SƠ XE (RD_ReqInvoiceDtlApprove) =====
+// Nguồn: DataWH/Biz.HTC.WH.cs:128014 (csproj 272) — `RD_ReqInvoiceDtlApprove_New20181119`.
+// BƯỚC 3B: căn theo MỐC HÀM (laptop 128014 / máy 150 128019), vùng md5 1e58bf10 KHỚP 2 máy.
+// TWIN: CẢ HAI WS đều gọi `_New20181119` ⇒ không lệch cho hàm này.
+//   (Ghi nhận riêng: `_Create` thì 64-bit có thêm `_New20240617`, `_Get/_GetWH` là `_New20191014`
+//    trong khi 32-bit vẫn `_New20181119` — NỢ một vòng đối chiếu riêng cho hai hàm đó.)
+//
+// 🔴 Hàm này ghi BỐN bảng, port cũ chỉ đổi trạng thái dòng:
+//   RD_ReqInvoiceDtl → duyệt dòng; RD_ReqInvoice → chỉ đóng khi HẾT dòng chưa duyệt;
+//   Pmt_GuaranteeDetail → DateStart = hôm nay; Car_Vin → MortageEndDate + HandOverBankCode.
+app.MapPost("/api/redeeminvoicereqs/{no}/approve-lines", async (string no, ReqInvoiceDtlApproveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRDInvoiceNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    // guard nguồn: cả ĐẦU và DÒNG phải đang "P" (Pending) mới được duyệt.
+    if (h.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang \"{h.Status}\", chỉ duyệt khi \"P\"." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now; var today = now.Date;
+    var want = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).ToHashSet();
+    var lines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == h.Id).ToListAsync();
+    var target = want.Count == 0 ? lines : lines.Where(l => l.VIN != null && want.Contains(l.VIN)).ToList();
+    if (target.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào khớp để duyệt." });
+
+    int approved = 0, grtHit = 0, vinHit = 0; var skipped = new List<string>();
+    foreach (var l in target)
+    {
+        if (l.RDReqIvDtlStatus != "P") { skipped.Add($"{l.VIN}: dòng đang \"{l.RDReqIvDtlStatus}\""); continue; }
+        l.RDReqIvDtlStatus = "A"; l.ApprovedDate = now; l.ApprovedBy = who;
+        l.LogLUDateTime = now; l.LogLUBy = who; approved++;
+
+        var vin = (l.VIN ?? "").Trim().ToUpperInvariant();
+        if (vin.Length == 0) continue;
+
+        // 🔴 Guard nguồn: một VIN chỉ được có ĐÚNG MỘT bảo lãnh còn hiệu lực (trạng thái "A" hoặc "F"
+        //    ở CẢ bảng đầu lẫn dòng). Nhiều hơn một ⇒ nguồn NÉM LỖI (GuaranteeNoNotOnly).
+        var grtDtls = await (from d in db.BankGuaranteeDtls
+                             join g in db.Guarantees on d.GuaranteeId equals g.Id
+                             where d.OrgId == t.OrgId && d.VIN == vin
+                                && (g.Status == "A" || g.Status == "F")
+                                && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F")
+                             select new { d, g }).ToListAsync();
+        if (grtDtls.Count > 1)
+            return Results.BadRequest(new { error = $"VIN {vin} có {grtDtls.Count} bảo lãnh còn hiệu lực — nguồn chỉ cho phép 1.", vin });
+        if (grtDtls.Count == 0) { skipped.Add($"{vin}: không có bảo lãnh còn hiệu lực"); continue; }
+
+        var pair = grtDtls[0];
+        pair.d.DateStart = today; pair.d.LogLUDateTime = now; pair.d.LogLUBy = who; grtHit++;
+
+        foreach (var v in await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.VIN == vin).ToListAsync())
+        {
+            v.MortageEndDate = today;
+            v.HandOverBankCode = pair.g.BankCodeMonitor;   // ngân hàng GIÁM SÁT, không phải BankCode phát hành
+            v.LogLUDateTime = now; v.LogLUBy = who; vinHit++;
+        }
+    }
+
+    // 🔴 Bảng ĐẦU là giá trị DẪN XUẤT: chỉ đóng khi KHÔNG còn dòng nào ở "P"
+    //    (nguồn: `if (dtDB_RD_ReqInvoiceDtlReCheck.Rows.Count <= 0)`). Cùng motif RedeemRequest (#140).
+    var stillPending = lines.Any(l => l.RDReqIvDtlStatus == "P");
+    if (!stillPending)
+    { h.Status = "A"; h.ApprovedDate = now; h.ApprovedBy = who; h.LogLUDateTime = now; h.LogLUBy = who; }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { reqNo = no, approvedLines = approved, headerClosed = !stillPending,
+        guaranteeUpdated = grtHit, vinUpdated = vinHit, skipped });
+}).RequireAuthorization();
+
 app.MapGet("/api/redeeminvoicerequests", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
     var qry = db.RedeemInvoiceRequests.Where(x => x.OrgId == t.OrgId);
@@ -28168,6 +28236,9 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #160: DTO duyệt DÒNG đề nghị giao hồ sơ xe ----
+record ReqInvoiceDtlApproveDto(List<string>? Vins);
+
 // ---- #159: DTO duyệt biên bản giao xe (ghi ngược ngày xuất kho) ----
 record DlvMinutesApproveDto(List<string>? Vins, DateTime? DeliveryOutDate, string? FlagUnapprove);
 
