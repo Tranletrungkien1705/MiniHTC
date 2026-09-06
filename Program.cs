@@ -32344,6 +32344,41 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
     var stockInIds = await db.PartStockIns
         .Where(s => s.OrgId == t.OrgId && s.OrderPartNo == o.OrderPartNo && s.Status == "3")
         .Select(s => s.Id).ToListAsync();
+
+    // ===== 🔴 #315 "NGÀY NHẬP CUỐI" (`StockInDateLastest`) — hai bất thường phải giữ nguyên =====
+    // Nguồn `Ser_Order_Part_Get` (`A.02.OrderPart.cs:1819-1830`):
+    //   `select top 1 pf.StockInDate from Ser_Inv_StockInDetail pt`
+    //   `  inner join Ser_Inv_StockIn pf on pt.StockInID = pf.StockInID`
+    //   `where pt.PartID = <dòng>.PartID and pf.OrderPartNo = <đơn>.OrderPartNo`
+    //   `order by pf.CreatedDate desc`
+    //
+    // 🔴 BẤT THƯỜNG 1 — LỆCH TRỤC: sắp theo `CreatedDate` (giờ NHẬP LIỆU) nhưng lấy `StockInDate`
+    //   (ngày NGHIỆP VỤ). Tên cột hứa `MAX(StockInDate)` nhưng thực ra trả **ngày nhập của phiếu được TẠO
+    //   gần nhất**. Phiếu lùi ngày nhưng nhập liệu sau sẽ thắng ⇒ kết quả có thể **nhỏ hơn** max thật.
+    //   (Đúng lớp `C0-quingentesimustricesimusnonus`: SELECT là GIÁ TRỊ, không phải KHOÁ ⇒ khả nghi thật,
+    //    khác trường hợp `top 1 sr.ROID order by ActualDeliveryDate` ở #308 vốn hợp lệ.)
+    //
+    // 🔴 BẤT THƯỜNG 2 — KHÔNG LỌC TRẠNG THÁI, trong khi cột SỐ LƯỢNG ngay cạnh thì CÓ:
+    //   `TotalQuantityIn` đi qua `#tbl_Ser_Inv_StockIn_Filter` có `and t.Status = '3'` (Kết thúc);
+    //   `StockInDateLastest` **không có** điều kiện đó ⇒ tính cả phiếu nháp/huỷ.
+    //   ⇒ Trên cùng một dòng lưới: "đã nhập 0" nhưng "ngày nhập cuối" vẫn có ngày. Bất nhất CÓ THẬT.
+    //
+    // Port giữ **nguyên cả hai bất thường** (luật 1:1) nhưng trả kèm giá trị đối chiếu để lộ ra:
+    //   `stockInDateLastest`      — đúng nguồn (mọi trạng thái, theo CreatedDate)
+    //   `stockInDateMaxFinished`  — `MAX(StockInDate)` chỉ phiếu Kết thúc (thứ người dùng thường TƯỞNG)
+    var allStockIns = await db.PartStockIns
+        .Where(s => s.OrgId == t.OrgId && s.OrderPartNo == o.OrderPartNo)
+        .Select(s => new { s.Id, s.StockInDate, s.CreatedAt, s.Status })
+        .ToListAsync();
+    var allStockInIds = allStockIns.Select(s => s.Id).ToList();
+    var allInLines = allStockInIds.Count == 0
+        ? new List<(long StockInId, string PartCode)>()
+        : (await db.PartStockInLines
+                .Where(l => l.OrgId == t.OrgId && allStockInIds.Contains(l.StockInId))
+                .Select(l => new { l.StockInId, l.PartCode })
+                .ToListAsync())
+            .Select(x => (x.StockInId, x.PartCode)).ToList();
+    var stockInById = allStockIns.ToDictionary(s => s.Id, s => s);
     var inByPart = stockInIds.Count == 0
         ? new Dictionary<string, decimal>()
         : (await db.PartStockInLines
@@ -32368,6 +32403,19 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
         decimal? rate = isTst ? (tmeu?.ExchangeRate ?? 1.0m) : (isOther ? 1.0m : (decimal?)null);
 
         var qtyAppr = l.QtyAppr ?? 0m;
+
+        // #315 "ngày nhập cuối": lọc theo MÃ PT của dòng, KHÔNG lọc trạng thái phiếu (đúng nguồn),
+        //   rồi sắp theo CreatedAt giảm dần và lấy StockInDate của phiếu đầu tiên.
+        var partStockIns = allInLines.Where(x => x.PartCode == l.PartCode)
+            .Select(x => stockInById.TryGetValue(x.StockInId, out var s) ? s : null)
+            .Where(s => s is not null).Select(s => s!).ToList();
+        DateTime? stockInDateLastest = partStockIns
+            .OrderByDescending(s => s.CreatedAt)      // ⚠️ sắp theo giờ NHẬP LIỆU — đúng nguồn
+            .Select(s => (DateTime?)s.StockInDate)    // ⚠️ nhưng LẤY ngày NGHIỆP VỤ
+            .FirstOrDefault();
+        // Giá trị đối chiếu: MAX ngày nghiệp vụ, chỉ phiếu Kết thúc — thứ người dùng thường TƯỞNG.
+        DateTime? stockInDateMaxFinished = partStockIns.Where(s => s.Status == "3")
+            .Select(s => (DateTime?)s.StockInDate).DefaultIfEmpty(null).Max();
 
         // #312: cột N TÍNH từ phiếu nhập; cột lưu của #307 chỉ là dự phòng cho dữ liệu cũ.
         decimal? totalIn = inByPart.TryGetValue(l.PartCode, out var qin) ? qin : l.TotalQuantityIn;
@@ -32401,11 +32449,18 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
             totalQuantityIn = totalIn,                             // cột N — TÍNH từ phiếu nhập (#312)
             totalQuantityInExchangeRate = totalInExch,             // cột L — N CHIA tỷ lệ (#312)
             totalQuantityInStored = l.TotalQuantityIn,             // cột lưu cũ (#307) — chỉ để đối chiếu
+            // #315 "Ngày nhập cuối" — xem hai bất thường ở chú thích đầu endpoint.
+            stockInDateLastest,
+            stockInDateMaxFinished,
+            stockInDateMismatch = stockInDateLastest != stockInDateMaxFinished,
             totalQuantityRemain = remain,                          // cột Q — ĐV đặt
             totalQuantityRemainExchangeRate = remainExchange,      // cột M — ĐV bán
         };
     }).ToList();
     return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, o.OrderPartType,
+                            stockInDateNote = "stockInDateLastest theo ĐÚNG nguồn: sắp theo giờ NHẬP LIỆU, lấy ngày NGHIỆP VỤ, "
+                                            + "và KHÔNG lọc trạng thái phiếu (khác cột số lượng vốn chỉ tính phiếu Kết thúc). "
+                                            + "stockInDateMaxFinished là MAX ngày nghiệp vụ của phiếu Kết thúc — dùng để đối chiếu.",
                             unitNote = "part_Unit = đơn vị ĐẶT (TST lấy theo hãng); unitStockIn = đơn vị NHẬP KHO (luôn của master). "
                                      + "OrderPartType ngoài {TST, OTHER} ⇒ đơn vị và tỷ lệ quy đổi trả NULL (nguồn không có else).",
                             count = lines.Count, lines,
