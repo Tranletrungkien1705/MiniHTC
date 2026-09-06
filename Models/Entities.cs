@@ -5470,8 +5470,8 @@ public sealed class SbhOnlinePushHistory
 /// 🔴 Guard đặc thù của nguồn: `DLS_Deal.DealerCodeBuyer` **phải RỖNG** — nếu giao dịch là bán cho
 /// ĐẠI LÝ khác thì báo lỗi `Support_DLS_Deal_UpdateBankCode_DealerCodeBuyerInvalid`;
 /// tức chỉ sửa ngân hàng cho giao dịch **bán khách lẻ**.
-/// ⚠️ Nguồn còn guard mã NH mới có trong `Mst_Bank` — MiniHTC chưa có master ngân hàng (nợ từ #94)
-/// nên guard đó CHƯA port.
+/// ✅ Guard mã NH mới phải có trong `Mst_Bank` **và đang hoạt động** ĐÃ port ở #116
+/// (master `Mst_Bank` bổ sung ở #115).
 /// </summary>
 public sealed class DealUpdBankCodeHis
 {
@@ -5559,8 +5559,7 @@ public sealed class DlvMinutesHisDel
 /// <summary>
 /// Lịch sử sửa NGÂN HÀNG của HĐ bán lẻ (`Dlr_Contract_UpdateBankCode_His` — port 1:1
 /// `Support_Dlr_Contract_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.cs:114595`).
-/// ⚠️ Nguồn còn guard mã ngân hàng mới phải có trong `Mst_Bank` — MiniHTC **chưa có master ngân hàng**
-/// nên guard đó CHƯA port (đã ghi nợ, không bịa master).
+/// ✅ Guard mã ngân hàng mới phải có trong `Mst_Bank` ĐÃ port ở #116 (master bổ sung ở #115).
 /// </summary>
 public sealed class DlrContractUpdBankCodeHis
 {
@@ -5576,8 +5575,8 @@ public sealed class DlrContractUpdBankCodeHis
 /// <summary>
 /// Lịch sử sửa KIỂU BÁN của HĐ bán lẻ (`Dlr_Contract_UpdateSalesType_His` — port 1:1
 /// `Support_Dlr_Contract_UpdateSalesType`, `Biz.HTC.WH.cs:114292`).
-/// ⚠️ Guard nguồn: kiểu bán mới phải có trong `Mst_DealerSalesType` — MiniHTC **chưa có master này**
-/// ⇒ CHƯA port guard (đã ghi nợ).
+/// ✅ Guard kiểu bán mới phải có trong `Mst_DealerSalesType` ĐÃ port ở #116 (master bổ sung ở #115).
+/// 🔴 Nguồn CHỈ kiểm TỒN TẠI, KHÔNG kiểm `FlagActive` — khác helper `Mst_DealerSalesType_CheckDB`.
 /// </summary>
 public sealed class DlrContractUpdSalesTypeHis
 {

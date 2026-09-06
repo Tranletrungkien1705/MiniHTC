@@ -1124,9 +1124,27 @@ app.MapPost("/api/dlvminutes/update-province", async (DlvUpdProvinceDto dto, App
     {
         var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo);
         if (m is null) return Results.BadRequest(new { error = $"Không tìm thấy biên bản {r.DlvMnNo}." });
-        // CHUA PORT DUOC guard nguon: nguon kiem cap tinh-huyen moi co ton tai trong Mst_District
-        // cho CA hai dau tuyen (F/T) truoc khi cap nhat. MiniHTC chua co entity nao cho Mst_District
-        // => bo guard thay vi bia master moi. Da ghi no trong so theo doi.
+        // ✅ GUARD ĐÃ PORT (nợ #92 đóng ở #116, sau khi có master `Mst_District` từ #115).
+        // Nguồn (`Biz.HTC.WH.hkt.cs:9072-9140`) kiểm CẶP (ProvinceCode, DistrictCode) phải tồn tại
+        // trong `Mst_District`, làm RIÊNG cho từng đầu tuyến: F (nơi đi) và T (nơi đến).
+        // 🔴 Guard chỉ chạy khi giá trị THỰC SỰ ĐỔI — nguồn bọc trong
+        //    `if (!drInput["FProvinceCodeNew"].Equals(...) || !drInput["FDistrictCodeNew"].Equals(...))`.
+        var fProvNew = string.IsNullOrWhiteSpace(r.FProvinceCodeNew) ? m.FProvinceCode : r.FProvinceCodeNew;
+        var fDistNew = string.IsNullOrWhiteSpace(r.FDistrictCodeNew) ? m.FDistrictCode : r.FDistrictCodeNew;
+        if (fProvNew != m.FProvinceCode || fDistNew != m.FDistrictCode)
+        {
+            var okF = await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId
+                && x.ProvinceCode == fProvNew && x.DistrictCode == fDistNew);
+            if (!okF) return Results.BadRequest(new { error = $"Tỉnh + xã giao (nơi đi) không hợp lệ: {fProvNew}/{fDistNew}." });
+        }
+        var tProvNew = string.IsNullOrWhiteSpace(r.TProvinceCodeNew) ? m.TProvinceCode : r.TProvinceCodeNew;
+        var tDistNew = string.IsNullOrWhiteSpace(r.TDistrictCodeNew) ? m.TDistrictCode : r.TDistrictCodeNew;
+        if (tProvNew != m.TProvinceCode || tDistNew != m.TDistrictCode)
+        {
+            var okT = await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId
+                && x.ProvinceCode == tProvNew && x.DistrictCode == tDistNew);
+            if (!okT) return Results.BadRequest(new { error = $"Tỉnh + xã giao (nơi đến) không hợp lệ: {tProvNew}/{tDistNew}." });
+        }
         var his = new DlvMinutesUpdProvinceHis
         {
             OrgId = t.OrgId, DlvMnNo = r.DlvMnNo, VIN = r.VIN!.Trim().ToUpperInvariant(), UpdDTime = now, UpdBy = who,
@@ -19334,13 +19352,21 @@ app.MapPost("/api/dlrcontracts/{no}/patch", async (string no, DlrContractPatchDt
     switch (field)
     {
         case "bankCode":
-            // ⚠️ CHƯA port guard nguồn: mã NH mới phải có trong `Mst_Bank` — MiniHTC chưa có master
-            //    ngân hàng ⇒ bỏ guard thay vì bịa master. Đã ghi nợ.
+            // ✅ GUARD ĐÃ PORT (nợ #94 đóng ở #116). Nguồn `Support_Dlr_Contract_UpdateBankCode`
+            //    (`Biz.HTC.WH.cs:114720-114748`) kiểm INLINE: `BankCode = @strBankCode AND FlagActive = 1`
+            //    — tức ngân hàng vừa phải tồn tại VỪA phải đang hoạt động.
+            if (!await db.MstBanks.AnyAsync(x => x.OrgId == t.OrgId && x.BankCode == newVal && x.FlagActive == "1"))
+                return Results.BadRequest(new { error = $"Ngân hàng {newVal} không tồn tại hoặc đã ngưng hoạt động." });
             oldVal = c.BankCode ?? ""; c.BankCode = newVal;
             db.DlrContractUpdBankCodeHiss.Add(new DlrContractUpdBankCodeHis { OrgId = t.OrgId, DlrContractNo = c.DlrContractNo, BankCodeOld = oldVal, BankCodeNew = newVal, UpdDTime = now, UpdBy = who });
             break;
         case "salesType":
-            // ⚠️ CHƯA port guard nguồn: kiểu bán mới phải có trong `Mst_DealerSalesType` (chưa có master).
+            // ✅ GUARD ĐÃ PORT (nợ #94 đóng ở #116). Nguồn `Support_Dlr_Contract_UpdateSalesType`
+            //    (`Biz.HTC.WH.cs:114415-114443`) kiểm INLINE và **CHỈ kiểm TỒN TẠI** —
+            //    🔴 KHÔNG kiểm `FlagActive`, khác hẳn helper `Mst_DealerSalesType_CheckDB` (tra theo cặp
+            //    SalesType + FlagActive). Port đúng bản INLINE mà hàm LIVE thực sự chạy, không theo helper.
+            if (!await db.MstDealerSalesTypes.AnyAsync(x => x.OrgId == t.OrgId && x.SalesType == newVal))
+                return Results.BadRequest(new { error = $"Kiểu bán lẻ {newVal} không tồn tại." });
             oldVal = c.SalesType; c.SalesType = newVal;
             db.DlrContractUpdSalesTypeHiss.Add(new DlrContractUpdSalesTypeHis { OrgId = t.OrgId, DlrContractNo = c.DlrContractNo, SalesTypeOld = oldVal, SalesTypeNew = newVal, UpdDTime = now, UpdBy = who });
             break;
