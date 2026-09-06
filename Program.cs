@@ -11185,6 +11185,13 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
 {
     if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Chưa nhập mã dịch vụ." });
     if (string.IsNullOrWhiteSpace(dto.SerName)) return Results.BadRequest(new { error = "Chưa nhập tên dịch vụ." });
+    // ===== 🔴 #252 txtMaDV — MỘT tên control, HAI nghĩa ở hai màn =====
+    // `Views/Services/FrmServices.cs:409` và `:645` kiểm `this.regex.IsMatch(txtMaDV.Text)`
+    //   ⇒ ở màn này `txtMaDV` bind vào **`SerCode`** (mã DỊCH VỤ) — xem :169, :227, :281.
+    // ⚠️ Thông điệp của nguồn ở đây là `MSG_WARNING_KEYSPE_PARTCODE` = "Mã **phụ tùng** không được phép
+    //    chứa các ký tự đặc biệt" — **SAI nghĩa** (chép từ màn phụ tùng), nhưng đây là 1:1 nên GIỮ NGUYÊN.
+    if (HasSpecialChar(dto.SerCode.Trim()))
+        return Results.BadRequest(new { error = "Mã phụ tùng không được phép chứa các ký tự đặc biệt" });
     if (dto.Price < 0 || dto.Cost < 0 || dto.Vat < 0) return Results.BadRequest(new { error = "Giá/vốn/VAT không hợp lệ." });
     var code = dto.SerCode.Trim().ToUpperInvariant();
     var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
@@ -12322,6 +12329,10 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
     if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa nhập tên phụ tùng." });
     if (dto.Price < 0 || dto.Cost < 0) return Results.BadRequest(new { error = "Giá/chi phí không hợp lệ." });
+    // #252: `Views/Services/FrmPart.cs` cũng kiểm `regex.IsMatch(txtMaDV.Text)`, nhưng ở màn này
+    //   `txtMaDV` bind vào **`PartCode`** (:260, :279) ⇒ thông điệp "Mã phụ tùng…" ở đây là ĐÚNG nghĩa.
+    if (HasSpecialChar(dto.PartCode.Trim()))
+        return Results.BadRequest(new { error = "Mã phụ tùng không được phép chứa các ký tự đặc biệt" });
     var code = dto.PartCode.Trim().ToUpperInvariant();
     var ex = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
     if (ex is not null)
