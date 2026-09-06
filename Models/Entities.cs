@@ -4559,6 +4559,32 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Nhật ký đẩy xe đã bán sang **CarService** (`DLS_LogCarSv` — port 1:1 `DSL_LogCarSvCreate`,
+/// 2010.HTC `TERP.BizHTC/BizHTC.DealerSales.cs:3974`; hàm đọc `DSL_LogCarSvGet_New20181115` (4104)
+/// là bản LIVE mà **cả WS 32-bit lẫn 64-bit** đều gọi).
+/// 🔴 Quy ước: `ErrCode = "0"` là **THÀNH CÔNG**; khác "0" là mã lỗi CarService trả về.
+/// 🔴 `FuncCode` — nhánh thành công ghi **tên lệnh** đã gọi, nhánh lỗi ghi **PVal** (function code nơi lỗi).
+/// Ba lệnh có thật ở các điểm gọi: `SerCustomerCarSalesCreate` · `OS_Ser_CarSalesUpd` · `OS_Ser_CarSalesDelX`.
+/// 🔴 Nguồn **NUỐT mọi lỗi**: `catch` chỉ rollback rồi thoát, không ném — hàm ghi log không được phép
+/// làm hỏng luồng bán xe. Endpoint port giữ đúng ngữ nghĩa đó (trả `logged=false`, không phải lỗi 4xx).
+/// </summary>
+public sealed class CarSvLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealNo { get; set; }
+    public string? DealerCode { get; set; }
+    public string? CarId { get; set; }
+    public string? VIN { get; set; }
+    /// <summary>Lệnh CarService đã gọi (thành công) hoặc PVal nơi lỗi.</summary>
+    public string? FuncCode { get; set; }
+    /// <summary>"0" = thành công; khác "0" = mã lỗi.</summary>
+    public string? ErrCode { get; set; }
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>
 /// Nhật ký gọi API GPS (`GPS_LogGPS` — port 1:1 `GPS_LogGPS_Add`, 2010.HTC
 /// `StorageFG/BizHTC.ConnGPSVelocaDMS.cs:1476`).
 /// 🔴 Mỗi lần gọi API ghi **HAI dòng** chung một `LogId`:

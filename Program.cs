@@ -4217,6 +4217,59 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Nhật ký đẩy xe đã bán sang CarService (DLS_LogCarSv — port 1:1 DSL_LogCarSvCreate,
+// 2010.HTC BizHTC.DealerSales.cs:3974 / DSL_LogCarSvGet_New20181115:4104).
+// TWIN: cả WSHTC 32-bit (WSHTC.cs:26209) lẫn 64-bit đều gọi cùng bản `_New20181115`. =====
+// 🔴 `ErrCode = "0"` là THÀNH CÔNG; khác "0" là mã lỗi CarService trả về.
+// 🔴 `FuncCode`: nhánh thành công ghi tên lệnh (`SerCustomerCarSalesCreate`, `OS_Ser_CarSalesUpd`,
+//    `OS_Ser_CarSalesDelX`); nhánh lỗi ghi `PVal` — function code nơi phát sinh lỗi.
+// 🔴 Nguồn NUỐT lỗi (catch chỉ rollback, không ném): ghi log hỏng KHÔNG được làm hỏng luồng bán xe.
+//    Vì vậy POST dưới đây trả 200 kèm `logged=false` + `reason` thay vì 400.
+// ⚠️ Nguồn lọc thêm theo `Mst_Dealer.BUCode like @strBUPatternOfUser` (RBAC) — nợ chung toàn fleet.
+app.MapGet("/api/carsvlogs", async (AppDbContext db, ITenantContext t, string? dealNo, string? dealerCode, string? carId, string? vin, string? funcCode, string? errCode, string? createdBy, bool? onlyError) =>
+{
+    var qy = db.CarSvLogs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(x => x.DealNo == dealNo);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(carId)) qy = qy.Where(x => x.CarId == carId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(x => x.VIN == vin);
+    if (!string.IsNullOrWhiteSpace(funcCode)) qy = qy.Where(x => x.FuncCode == funcCode);
+    if (!string.IsNullOrWhiteSpace(errCode)) qy = qy.Where(x => x.ErrCode == errCode);
+    if (!string.IsNullOrWhiteSpace(createdBy)) qy = qy.Where(x => x.CreatedBy == createdBy);
+    // Tiện dụng: chỉ lấy các lần đẩy LỖI (ErrCode khác "0").
+    if (onlyError == true) qy = qy.Where(x => x.ErrCode != "0");
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.DealNo, x.DealerCode, x.CarId, x.VIN, x.FuncCode, x.ErrCode, x.CreatedDateTime, x.CreatedBy,
+        Success = x.ErrCode == "0",
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/carsvlogs", async (CarSvLogDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealNo = (dto.DealNo ?? "").Trim();
+    var carId = (dto.CarId ?? "").Trim();
+    var vin = (dto.VIN ?? "").Trim();
+    // 🔴 Guard nguồn, nhưng thất bại thì NUỐT (không ném) — đúng như `catch` của `DSL_LogCarSvCreate`.
+    // MinLengthCode = 5 (TConst.HTCConst, Const.Main.cs:322).
+    string? reason = null;
+    if (dealNo.Length < 5) reason = "DealNo ngắn hơn MinLengthCode (5).";
+    else if (vin.Length < 1) reason = "VIN rỗng.";
+    else if (carId.Length < 1) reason = "CarId rỗng.";
+    if (reason is not null) return Results.Ok(new { logged = false, reason });
+
+    db.CarSvLogs.Add(new CarSvLog
+    {
+        OrgId = t.OrgId, DealNo = dealNo, DealerCode = (dto.DealerCode ?? "").Trim(),
+        CarId = carId, VIN = vin, FuncCode = dto.FuncCode, ErrCode = dto.ErrCode ?? "0",
+        CreatedDateTime = DateTime.Now,
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { logged = true, success = (dto.ErrCode ?? "0") == "0" });
+}).RequireAuthorization();
+
 // ===== Nhật ký gọi API GPS (GPS_LogGPS — port 1:1 GPS_LogGPS_Add,
 // 2010.HTC StorageFG/BizHTC.ConnGPSVelocaDMS.cs:1476) =====
 // 🔴 Mỗi lần gọi API ghi HAI dòng chung một `LogId`: "RQ" trước khi gửi (Status rỗng) và
@@ -22089,6 +22142,8 @@ record SbhBatchDto(List<string>? Vins);
 record PlanRetailDto(string PlanMonth, string PlanTimes, string DealerCode, List<PlanRetailLineDto>? Lines, string? PlanTimesPrev = null);
 // Nhật ký gọi API GPS: một dòng cho RQ, một dòng cho RS, chung LogId.
 record GpsCallLogDto(string? LogId, string? LogType, string? Status, string? Exception, string? DataSend, string? DataResponse, string? IDMSKey, string? FunctionName, string? FunctionType, string? Trycount, string? Url, string? Remark);
+// Nhật ký đẩy xe sang CarService: ErrCode "0" = thành công.
+record CarSvLogDto(string? DealNo, string? DealerCode, string? CarId, string? VIN, string? FuncCode, string? ErrCode);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
