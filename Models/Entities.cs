@@ -5011,6 +5011,32 @@ public sealed class ServiceWarrantyClaim
     public DateTime? ApprovedDate { get; set; }
 
     public string? HtcNote { get; set; }
+
+    // ===== 🔴 #302 CỘT THẬT CỦA `Ser_ROWarrantyReport` MÀ PORT CŨ THIẾU =====
+    // Nguồn LIVE `Ser_ROWarrantyReport_Get_New20230417` (`WarrantyReport.cs:13388`) trả `td.*` —
+    // dưới đây là các cột trong `td.*` mà MiniHTC chưa có chỗ chứa.
+    public string? ROWNo { get; set; }          // số phiếu đề nghị bảo hành
+    public string? ROID { get; set; }           // khoá lệnh sửa chữa (nguồn join `td.ROID = ro.ROID`)
+    public string? CusID { get; set; }
+    public string? CarID { get; set; }
+    public string? Creator { get; set; }
+    public string? Assistant { get; set; }      // cố vấn dịch vụ
+    public string? Km { get; set; }
+    public DateTime? CheckInDate { get; set; }
+    public DateTime? FinishedDate { get; set; }
+    public string? CusRequest { get; set; }     // yêu cầu của khách
+    public string? CarStatus { get; set; }      // tình trạng xe lúc tiếp nhận
+    public string? NaturalCode { get; set; }    // mã HIỆN TƯỢNG
+    public string? CauseCode { get; set; }      // mã NGUYÊN NHÂN
+    public DateTime? StartDate { get; set; }
+    public string? ROWTID { get; set; }         // loại bảo hành (`Ser_MST_ROWarrantyType`)
+    public string? ErrorCodeCD { get; set; }
+    public string? ErrorCodePN { get; set; }
+    public string? FlagReadySend { get; set; }  // sẵn sàng gửi hãng
+    public string? PartIDError { get; set; }    // phụ tùng LỖI (join `Ser_MST_Part` để lấy mã + tên)
+    public string? ApprovedBy { get; set; }
+    public string? CreatedBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
