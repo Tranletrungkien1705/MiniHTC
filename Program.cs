@@ -28036,6 +28036,77 @@ app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #226 DANH SÁCH KHÁCH HÀNG KÈM XE (phân trang) — `SerCustomerCarGetPagingALL` =====
+// Màn gốc: `Views/Customer/FrmCustomerList.cs` (825 dòng, DMSCarSv) — 6 handler, phân loại theo luật
+//   `C0-trecentesimusquadragesimusquartus`:
+//     lệnh thật → `btnSearch` (861) · `btnRefresh` · `gridPCLaoDong_Click` (nạp chi tiết 1 KH)
+//     điều hướng → `btnNhapMoi` (mở form nhập mới) · `btnExportExcel` (xuất file tại client)
+//     bỏ qua → `btnThoat`
+// Tầng service: `MstCustomerService.cs:861`; biz `BizCarSv.Customer.cs:1885` (`Ser_CustomerCar_GetAllDL`).
+// BƯỚC 3B: md5 CẢ FILE `44c7c87b` KHỚP 2 máy.
+//
+// 🔴 KHÁC #224 (`SerCustomerGetPaging`): màn này tra **KHÁCH HÀNG KÈM XE** nên có thêm 4 ô lọc theo XE
+//    (`PlateNo` · `FrameNo` · `EngineNo`) và 2 ô giấy tờ (`IDCardNo` · `TaxCode`), cộng cờ `IsActive`.
+//    ⇒ Không dùng lại endpoint #224; đây là hai màn khác nhau (luật `C0-ducentesimusvicesimussecundus`:
+//      hai báo cáo/màn cùng cụm có thể lọc khác nhau, không suy từ cái đã port).
+//
+// 🔴 Bọc `%…%`: tầng service bọc **8 ô** (CusName · Phone · Address · PlateNo · FrameNo · EngineNo ·
+//    IDCardNo · TaxCode) ⇒ so khớp CHỨA. Riêng `strCusID` và `strIsActive` **không bọc** ⇒ khớp CHÍNH XÁC.
+// 🔴 Phân trang y như #224: cắt ở tầng client, trang đánh số từ **1**, tổng số dòng lấy từ bảng
+//    `Ser_Customer_Summary` ⇒ trả `totalRows`/`totalPages`.
+app.MapGet("/api/servicecustomers/cars-search", async (AppDbContext db, ITenantContext t,
+    string? cusId, string? cusName, string? phone, string? address,
+    string? plateNo, string? frameNo, string? engineNo, string? idCardNo, string? taxCode,
+    string? isActive, int pageSize = 20, int currentPage = 1) =>
+{
+    if (pageSize <= 0) pageSize = 20;
+    if (currentPage <= 0) currentPage = 1;
+
+    // Ghép khách hàng × xe theo CusID (nguồn join Ser_Customer với Ser_Car).
+    var qy = from c in db.ServiceCustomers.Where(x => x.OrgId == t.OrgId)
+             join car in db.ServiceCars.Where(x => x.OrgId == t.OrgId) on c.CusCode equals car.CusID into gj
+             from car in gj.DefaultIfEmpty()
+             select new { c, car };
+
+    // khớp CHÍNH XÁC (nguồn không bọc %…%)
+    if (!string.IsNullOrWhiteSpace(cusId)) qy = qy.Where(x => x.c.CusCode == cusId!.Trim());
+    if (!string.IsNullOrWhiteSpace(isActive)) qy = qy.Where(x => x.car != null && x.car.FlagActive == isActive!.Trim());
+
+    // khớp CHỨA (nguồn bọc %…% ở tầng service)
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(x => x.c.CusName != null && x.c.CusName.ToLower().Contains(cusName!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(address)) qy = qy.Where(x => x.c.Address != null && x.c.Address.ToLower().Contains(address!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(phone)) qy = qy.Where(x => (x.c.Mobile != null && x.c.Mobile.Contains(phone!.Trim())) || (x.c.Tel != null && x.c.Tel.Contains(phone!.Trim())));
+    if (!string.IsNullOrWhiteSpace(idCardNo)) qy = qy.Where(x => x.c.IDCardNo != null && x.c.IDCardNo.Contains(idCardNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(taxCode)) qy = qy.Where(x => x.c.TaxCode != null && x.c.TaxCode.Contains(taxCode!.Trim()));
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.car != null && x.car.PlateNo != null && x.car.PlateNo.ToLower().Contains(plateNo!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.car != null && x.car.FrameNo.ToLower().Contains(frameNo!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(engineNo)) qy = qy.Where(x => x.car != null && x.car.EngineNo != null && x.car.EngineNo.ToLower().Contains(engineNo!.Trim().ToLower()));
+
+    var totalRows = await qy.CountAsync();          // ` bảng Ser_Customer_Summary của nguồn
+    var startRow = (currentPage - 1) * pageSize;    // nguồn đánh số trang từ 1
+
+    var items = await qy.OrderBy(x => x.c.CusName).ThenBy(x => x.car != null ? x.car.FrameNo : "")
+        .Skip(startRow).Take(pageSize)
+        .Select(x => new
+        {
+            x.c.CusCode, x.c.CusName, x.c.Mobile, x.c.Tel, x.c.Address, x.c.IDCardNo, x.c.TaxCode, x.c.DOB,
+            frameNo = x.car != null ? x.car.FrameNo : null,
+            plateNo = x.car != null ? x.car.PlateNo : null,
+            engineNo = x.car != null ? x.car.EngineNo : null,
+            modelCode = x.car != null ? x.car.ModelCode : null,
+            colorCode = x.car != null ? x.car.ColorCode : null,
+            flagActive = x.car != null ? x.car.FlagActive : null
+        }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        totalRows,
+        totalPages = totalRows == 0 ? 0 : (int)Math.Ceiling(totalRows / (double)pageSize),
+        pageSize, currentPage, startRow, count = items.Count, items,
+        note = "Khách hàng LEFT JOIN xe — khách chưa có xe vẫn lên danh sách (nguồn dùng Ser_Customer × Ser_Car)."
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #224 TÌM KHÁCH HÀNG CÓ PHÂN TRANG — `SerCustomerGetPaging` → `Ser_Customer_Get` =====
 // Màn gốc: `Views/Customer/FrmCustomerInfoSearch.cs` (305 dòng, DMSCarSv) — hai nút `bntPrivous` · `btnNext`
 //   (lưu ý: nút "Previous" trong nguồn viết SAI CHÍNH TẢ là `bntPrivous` — grep theo `btn` sẽ trượt).
