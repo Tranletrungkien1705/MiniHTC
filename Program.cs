@@ -10960,6 +10960,13 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
     {
         if (dto.CurrentKm < ex.CurrentKm) return Results.BadRequest(new { error = $"Số km mới ({dto.CurrentKm}) không được nhỏ hơn số km hiện tại ({ex.CurrentKm})." });
         ex.PlateNo = dto.PlateNo; ex.EngineNo = dto.EngineNo; ex.ModelCode = dto.ModelCode; ex.ColorCode = dto.ColorCode; ex.TradeMark = dto.TradeMark; ex.ProductYear = dto.ProductYear; ex.CurrentKm = dto.CurrentKm; ex.WarrantyDate = dto.WarrantyDate; ex.CusName = dto.CusName; ex.CusMobile = dto.CusMobile; ex.FlagActive = "1";
+        // 🔴 #223: sweep hai-nhánh phát hiện `CusID`/`DealerCode` CHỈ được gán khi TẠO MỚI ⇒ sửa xe đã có
+        //    thì hai trường này không bao giờ đổi được. Nguồn `CarUpdate` CÓ gửi cả hai
+        //    (`_serCar.CusID`, `_serCar.DealerCode` — MstCarService.cs:109) ⇒ phải cập nhật.
+        //    Riêng `MemberCarID` KHÔNG nằm trong `CarUpdate`: nó có lệnh RIÊNG
+        //    (`CarSv_SerCarUpdate_MemberCarID` → `POST /api/servicecars/{frameNo}/membercar`)
+        //    nên CỐ Ý chỉ gán lúc tạo mới — không phải bỏ sót.
+        ex.CusID = dto.CusID; ex.DealerCode = dto.DealerCode;
         // ===== #222 parity: 8 trường còn thiếu của `CarUpdate` (tầng service) =====
         ex.CarID = dto.CarID;
         ex.SalesCarID = dto.SalesCarID;
