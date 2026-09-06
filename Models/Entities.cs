@@ -4777,6 +4777,42 @@ public sealed class InsuranceAttachment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// 🔴 #268 NHẬT KÝ CHUYỂN TRẠNG THÁI của đề nghị bảo hành — `Ser_ROWarrantyReportTransaction`.
+/// Nguồn: `BizCarSv.WarrantyReport.cs:1701 ProcessSaveSerROWarrantyReportTransaction` —
+/// **10 chỗ gọi**, tức MỌI lần đổi trạng thái đều ghi lại một dòng. Port cũ thiếu hẳn bảng này ⇒
+/// đề nghị chỉ còn trạng thái HIỆN TẠI, mất sạch dấu vết ai đổi, khi nào, vì sao.
+///
+/// ⚠️ Lớp hằng `TblSerROWarrantyReportTransaction` (DbDefine.cs:947-960) chỉ liệt kê **6** cột, còn câu
+/// INSERT thật ghi **9** (thêm `CreatedBy`, `LogLUDateTime`, `LogLUBy`). Lại một lần `Tbl*` thiếu cột —
+/// nguồn sự thật là CÂU GHI.
+/// ⚠️ Nguồn gõ sai chính tả ngay trong hằng: `ROWRTransactionID = "ROWRTRANACTIONID"` (thiếu chữ "S" —
+/// TRAN**A**CTION). Giữ nguyên khi grep DB nguồn; port dùng tên đúng chính tả.
+/// </summary>
+public sealed class ServiceWarrantyClaimTransaction
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>ROWID — đề nghị bảo hành mà dòng nhật ký này thuộc về.</summary>
+    public long ClaimId { get; set; }
+
+    /// <summary>CREATOR — **người/bên tạo bước chuyển** (do WS truyền vào), KHÁC `CreatedBy` là tài
+    /// khoản đăng nhập thực hiện. Nguồn giữ cả hai vì đại lý có thể thao tác thay cho người khác.</summary>
+    public string? Creator { get; set; }
+
+    /// <summary>CURRENTSTATUS — trạng thái ĐÍCH sau bước chuyển (`Ser_WarrantyReport_Status`).</summary>
+    public string CurrentStatus { get; set; } = "";
+
+    /// <summary>NOTE — lý do; nguồn bắt buộc với từ chối/hoàn trả.</summary>
+    public string? Note { get; set; }
+
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
 public sealed class ServiceWarrantyClaim
 {

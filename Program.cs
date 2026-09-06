@@ -12559,6 +12559,14 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
         Vin = dto.Vin, PlateNo = dto.PlateNo, WarrantyType = dto.WarrantyType, PartCode = dto.PartCode, Description = dto.Description,
         Amount = dto.Amount, Status = "Pending", WarrantySerCode = dto.WarrantySerCode };
     db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
+    // #268: nguồn ghi nhật ký NGAY KHI TẠO (2 chỗ gọi với Ser_WarrantyReport_Status.Pending,
+    //   WarrantyReport.cs:2792 và :3493) ⇒ đề nghị nào cũng có dòng đầu tiên "PEND".
+    db.ServiceWarrantyClaimTransactions.Add(new ServiceWarrantyClaimTransaction
+    {
+        OrgId = t.OrgId, ClaimId = c.Id, Creator = dto.Creator, CurrentStatus = c.Status,
+        Note = dto.Description, CreatedBy = dto.Creator, LogLUDateTime = DateTime.Now, LogLUBy = dto.Creator,
+    });
+    await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.ClaimNo, c.Status });
 }).RequireAuthorization();
 
@@ -12815,8 +12823,34 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     if (rule.to == "Confirmed") c.ApprovedDate = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
     c.UpdatedAt = DateTime.Now;
+
+    // 🔴 #268: MỌI bước chuyển đều ghi một dòng nhật ký — nguồn gọi
+    //   `ProcessSaveSerROWarrantyReportTransaction` ở **10 chỗ**, phủ hết submit/review/approve/reject/revert.
+    //   `CurrentStatus` là trạng thái ĐÍCH (nguồn truyền vào chính hằng trạng thái mới).
+    db.ServiceWarrantyClaimTransactions.Add(new ServiceWarrantyClaimTransaction
+    {
+        OrgId = t.OrgId, ClaimId = c.Id, Creator = dto.Creator, CurrentStatus = c.Status,
+        Note = dto.Note, CreatedBy = dto.Creator, LogLUDateTime = DateTime.Now, LogLUBy = dto.Creator,
+    });
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.Status });
+}).RequireAuthorization();
+
+// #268: đọc nhật ký chuyển trạng thái của một đề nghị (cũ nhất → mới nhất, như nguồn `order by`
+//   `rt.ROWRTransactionID` ở WarrantyReport.cs:13552).
+// 📌 NỢ: nguồn ghi dòng này vào **BA** DB — `_dbMain`, `_dbWH`, và `_dbDealer` khi `!bIsWSMain`
+//   (WarrantyReport.cs:1735/1780/1795). MiniHTC một DB nên chỉ ghi một lần.
+app.MapGet("/api/warrantyclaims/{id}/transactions", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+    var items = await db.ServiceWarrantyClaimTransactions
+        .Where(x => x.OrgId == t.OrgId && x.ClaimId == id)
+        .OrderBy(x => x.Id)
+        .Select(x => new { x.Id, x.Creator, x.CurrentStatus, x.Note, x.CreatedBy,
+            createdDate = x.CreatedDate.ToString("yyyy-MM-dd HH:mm:ss"), x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { claimId = id, c.ClaimNo, currentStatus = c.Status, count = items.Count, items });
 }).RequireAuthorization();
 
 // ===== Gói dịch vụ (ServicePackage — port 1:1 FrmServicePackageCreate/Search, TCMotor/Services) =====
@@ -34179,11 +34213,12 @@ record SalesTypeFixDto(long Id, string? SalesType);
 record DealBankFixDto(long Id, string? BankCode);
 record DeliveryDateFixDto(long Id, string? DeliveredAt);
 record CustomerRegionFixDto(long Id, string? ProvinceCode, string? DistrictCode);
-record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount, string? WarrantySerCode = null);
+record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? PlateNo, string? WarrantyType, string? PartCode, string? Description, decimal Amount, string? WarrantySerCode = null, string? Creator = null);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
-record WarrantyClaimActionDto(string Action, string? Note);
+// #268: `Creator` = bên tạo bước chuyển (nguồn truyền riêng, KHÁC tài khoản đăng nhập `CreatedBy`).
+record WarrantyClaimActionDto(string Action, string? Note, string? Creator = null);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null);

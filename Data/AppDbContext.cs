@@ -212,6 +212,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PartPrice> PartPrices => Set<PartPrice>();
     public DbSet<CustomerCar> CustomerCars => Set<CustomerCar>();
     public DbSet<ServiceWarrantyClaim> ServiceWarrantyClaims => Set<ServiceWarrantyClaim>();
+    // #268: nhật ký chuyển trạng thái đề nghị bảo hành (Ser_ROWarrantyReportTransaction)
+    public DbSet<ServiceWarrantyClaimTransaction> ServiceWarrantyClaimTransactions => Set<ServiceWarrantyClaimTransaction>();
     public DbSet<WarrantyAttachment> WarrantyAttachments => Set<WarrantyAttachment>();
     public DbSet<PartCostSnapshot> PartCostSnapshots => Set<PartCostSnapshot>();
     public DbSet<ServicePackage> ServicePackages => Set<ServicePackage>();
