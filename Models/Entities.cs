@@ -11832,8 +11832,20 @@ public sealed class SmsSend
     /// <summary>SỐ PHẦN tin sau khi chia — chính là hệ số nhân tiền.</summary>
     public int MsgParts { get; set; } = 1;
 
-    /// <summary>Thành tiền = <see cref="UnitPrice"/> × <see cref="MsgParts"/>.</summary>
+    /// <summary>
+    /// Thành tiền ƯỚC TÍNH = <see cref="UnitPrice"/> × <see cref="MsgParts"/>.
+    /// #231: cột này tương ứng `Sms_Send.CostInit` của nguồn (BizSMS.SMS.cs:1316 `dblCostInit`).
+    /// Giữ tên `Cost` để không vỡ dữ liệu đã tạo; cặp đôi của nó là <see cref="CostActual"/>.
+    /// </summary>
     public decimal Cost { get; set; }
+
+    /// <summary>
+    /// #231 COSTACTUAL — tiền THỰC bị trừ. 🔴 Nguồn tách ĐÔI `CostInit` / `CostActual`:
+    /// lúc xếp hàng chỉ có `CostInit`; khi gửi mới đặt `ss.CostActual = t.UnitPrice * t.MyPartCount`
+    /// (BizSMS.SMS.cs:262); khi huỷ lô thì `CostActual` bị **đưa về 0** và số đã trừ được HOÀN lại
+    /// (BizSMS.SMS.cs:172-183). ⇒ tiền hoàn tính từ `CostActual`, KHÔNG phải từ `Cost`/`CostInit`.
+    /// </summary>
+    public decimal CostActual { get; set; }
 
     /// <summary>Số lần đã thử gửi — nguồn giới hạn `SMSTryCountMax = 1` (KHÔNG tự gửi lại).</summary>
     public int TryCount { get; set; }

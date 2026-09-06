@@ -845,6 +845,8 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #231 parity Sms_Send.CostActual (tach doi CostInit/CostActual)
+        "ALTER TABLE public.\"SmsSends\" ADD COLUMN IF NOT EXISTS \"CostActual\" numeric NOT NULL DEFAULT 0",
         // #230 parity Acc_BrandName + 4 cot Acc_Balance/Acc_Account thieu cua SmsAccounts
         "CREATE TABLE IF NOT EXISTS public.\"SmsBrandNames\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BrandName\" text NOT NULL DEFAULT '', \"AccountCode\" text, \"LuDTime\" timestamp, \"LuBy\" text)",
         "ALTER TABLE public.\"SmsAccounts\" ADD COLUMN IF NOT EXISTS \"AccountCode\" text",

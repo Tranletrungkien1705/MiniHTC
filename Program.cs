@@ -9185,9 +9185,103 @@ app.MapPost("/api/smssends/{batchNo}/status", async (
         // Đã kết thúc (F/C) thì không đổi nữa.
         if (current is "F" or "C") continue;
         row.Status = target; updated++;
+
+        // 🔴 #231 CHỐT TIỀN THỰC khi lô gửi xong: nguồn đặt `ss.CostActual = t.UnitPrice * t.MyPartCount`
+        //    (BizSMS.SMS.cs:262) — trước đó `CostActual` vẫn là 0, chỉ có `CostInit` (ở đây là `Cost`).
+        //    Lô bị từ chối/huỷ thì KHÔNG chốt tiền.
+        if (target == "F") row.CostActual = row.UnitPrice * row.MsgParts;
+        else if (target is "C" or "R") row.CostActual = 0m;
+    }
+
+    // Đầu lô: EffectStatus đi theo kết quả, và CostActual của lô = tổng tiền thực các dòng.
+    var hdr = await db.SmsBatches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BatchId == batchNo);
+    if (hdr is not null)
+    {
+        hdr.EffectStatus = target;
+        hdr.CostActual = rows.Sum(x => x.CostActual);
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { batchNo, status = target, statusName = smsStageNames[target], updated, total = rows.Count });
+    return Results.Ok(new { batchNo, status = target, statusName = smsStageNames[target], updated, total = rows.Count,
+                            costActual = hdr?.CostActual });
+}).RequireAuthorization();
+
+// ===== 🔴 #231 HUỶ LÔ TIN NHẮN — `Sms_Batch_Cancel` (SMS.V10/SMS.Biz/BizSMS.SMS.cs:1464 →
+//        `mySms_Batch_Cancel_Exec` :101). Màn gốc: `Views/SMS/FrmSMSMng.cs:388` `btnCancelSMS_Click`
+//        → `SmsOutService.SMS_Batch_Cancel(batchId, userCode)` (SmsOutService.cs:45).
+// BƯỚC 3B: hệ `SMS.V10` CHỈ có trên máy 150; `BizSMS.SMS.cs` md5 `1d5bc4b2` (2717 dòng).
+//
+// NĂM luật của nguồn, port đủ:
+//  1. 🔴 GUARD TRẠNG THÁI: `mySms_Batch_Check(..., strEffectStatusListToCheck = TConst.Stage.Pending)`
+//     ⇒ **chỉ huỷ được lô đang "P" (chờ gửi)**. Lô đang gửi/đã xong/đã huỷ đều bị chặn.
+//  2. 🔴 GUARD QUYỀN: không phải SysAdmin thì `AccountCode` của LÔ phải trùng tài khoản gọi,
+//     khác ⇒ `Sms_Batch_Cancel_AccessDeny`.
+//  3. Đầu lô: `EffectStatus = 'C'` + `CancelDTime` + `CancelBy`.
+//  4. 🔴 TIỀN HOÀN = `Sum(ss.CostActual)` — tiền **THỰC đã trừ**, KHÔNG phải `CostInit`; sau đó các dòng gửi
+//     bị đặt `SendStatus = 'C'` và `CostActual = 0.0`. Lô còn ở "P" thì thường CostActual = 0 ⇒ hoàn 0.
+//  5. 🔴 Chỉ ghi giao dịch hoàn khi `dblCostRefund > 0`, và gọi `myAcc_Transaction_Exec` với
+//     `bCheckDebitOverdraft = false` (nạp tiền thì KHÔNG kiểm thấu chi — xem #230),
+//     `TRefType = TConst.TransactionRefType.SmsCancel`, `TRefCode = BatchId`, `Remark = "BatchId={id}"`.
+app.MapPost("/api/smsbatches/{batchId}/cancel", async (
+    string batchId, SmsBatchCancelDto dto, AppDbContext db, ITenantContext t) =>
+{
+    batchId = batchId.Trim();
+    var hdr = await db.SmsBatches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BatchId == batchId);
+    if (hdr is null) return Results.NotFound(new { batchId });
+
+    // (1) chỉ huỷ được lô đang chờ gửi
+    if (hdr.EffectStatus != "P")
+        return Results.BadRequest(new { error = $"Chỉ huỷ được lô đang chờ gửi (lô này đang \"{hdr.EffectStatus}\").",
+                                        effectStatus = hdr.EffectStatus });
+
+    // (2) hàng rào quyền theo tài khoản sở hữu lô
+    var caller = dto.AccountCode?.Trim();
+    if (!string.IsNullOrWhiteSpace(caller))
+    {
+        var acc = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountCode == caller);
+        var isSa = acc != null && acc.FlagSysAdmin == "1";
+        if (!isSa && !string.Equals(hdr.AccountCode, caller, StringComparison.OrdinalIgnoreCase))
+            return Results.Json(new { error = "Không có quyền huỷ lô của tài khoản khác.",
+                                      accountCodeOwner = hdr.AccountCode }, statusCode: 403);
+    }
+
+    var sends = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == batchId).ToListAsync();
+
+    // (4) tiền hoàn lấy từ CostActual (tiền THỰC), tính TRƯỚC khi đưa về 0
+    var refund = sends.Sum(x => x.CostActual);
+    foreach (var s in sends) { s.Status = "C"; s.CostActual = 0m; }
+
+    // (3) đầu lô
+    hdr.EffectStatus = "C";
+    hdr.CancelDTime = DateTime.Now;
+    hdr.CancelBy = dto.PerformBy;
+    hdr.CostActual = 0m;
+
+    // (5) hoàn tiền — chỉ khi > 0, và KHÔNG kiểm thấu chi vì đây là chiều NẠP
+    decimal? balanceAfter = null;
+    if (refund > 0 && !string.IsNullOrWhiteSpace(hdr.AccountCode))
+    {
+        var owner = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountCode == hdr.AccountCode);
+        if (owner is not null)
+        {
+            owner.Balance += refund;
+            balanceAfter = owner.Balance;
+            db.SmsAccountTxs.Add(new SmsAccountTx
+            {
+                OrgId = t.OrgId, SmsAccountId = owner.Id,
+                TRefType = "SmsCancel",          // TConst.TransactionRefType.SmsCancel
+                Value = refund, BalanceAfter = owner.Balance,
+                Note = $"BatchId={batchId}",     // đúng Remark của nguồn
+            });
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        batchId, effectStatus = hdr.EffectStatus, cancelDTime = hdr.CancelDTime, cancelBy = hdr.CancelBy,
+        cancelledSends = sends.Count, refund, balanceAfter,
+        note = "Tiền hoàn lấy từ CostActual của các dòng gửi; lô còn ở \"P\" thì CostActual thường = 0.",
+    });
 }).RequireAuthorization();
 
 // ===== Gửi email + log (EmailSend — port 1:1 FrmSendEmail, TCMotor) — tích hợp EmailTemplate + ServiceCustomer =====
@@ -31413,6 +31507,10 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
 record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
 record SmsBatchStatusDto(string? ToStatus);
+
+// #231: `PerformBy` = người bấm huỷ (nguồn truyền `SystemGlobal.Instance.user.UserCode`);
+//       `AccountCode` = tài khoản SMS đang đăng nhập, dùng cho hàng rào quyền (bỏ trống = bỏ qua kiểm).
+record SmsBatchCancelDto(string? PerformBy = null, string? AccountCode = null);
 static class SmsCost
 {
     // TConst.SMSMix
