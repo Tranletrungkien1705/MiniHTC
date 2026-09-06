@@ -32549,7 +32549,7 @@ app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? 
     var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) q = q.Where(p => p.PartCode.Contains(part.ToUpper()));
     var items = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
-    { p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status }).ToListAsync();
+    { p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive }).ToListAsync();   // #295 §12
     object? applicable = null;
     if (!string.IsNullOrWhiteSpace(part) && DateTime.TryParse(onDate, out var od))
         applicable = items.Where(x => x.PartCode == part.Trim().ToUpperInvariant() && x.EffectiveDate <= od)
@@ -32571,7 +32571,11 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
     var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == ed);
     if (p is null) { p = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = ed }; db.PartPrices.Add(p); }
     p.PartName = dto.PartName; p.Price = dto.Price; p.VAT = dto.VAT; p.PriceVAT = Math.Round(dto.Price * (1 + dto.VAT / 100m), 2);
-    p.Status = dto.Status ?? "1"; p.UpdatedAt = DateTime.Now;
+    p.Status = dto.Status ?? "1";
+    // #295: hai cột RIÊNG của nguồn — `IsActive` mặc định "1" (bật), KHÔNG suy từ `Status`.
+    p.Remark = dto.Remark;
+    p.IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim();
+    p.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
 }).RequireAuthorization();
@@ -35089,7 +35093,8 @@ record StockOutDto(DateTime? StockOutDate, string? StockOutType, string Warehous
     // #294: khi phieu xuat duoc tao TU MOT LENH XUAT thi ghi bang noi (Ser_Inv_StockOutOrderStockOut).
     string? StockOutOrderNo = null);
 record StockRejectDto(string? Reason);
-record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
+record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status,
+    string? Remark = null, string? IsActive = null);   // #295
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
 record CareContactDto(string? Result);

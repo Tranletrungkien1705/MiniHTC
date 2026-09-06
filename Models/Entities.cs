@@ -2537,6 +2537,14 @@ public sealed class PartPrice
     public decimal PriceVAT { get; set; }
     public DateTime EffectiveDate { get; set; }
     public string Status { get; set; } = "1";
+
+    // ===== 🔴 #295 parity `TblSer_Inv_PartPrice` (DbDefine.cs:1990-1999): 2 cột port cũ THIẾU =====
+    /// <summary>REMARK — ghi chú cho mốc giá.</summary>
+    public string? Remark { get; set; }
+    /// <summary>ISACTIVE — cờ hiệu lực, **CỘT RIÊNG, KHÁC `Status`** đã có. Nguồn giữ cả hai:
+    /// `Status` là trạng thái nghiệp vụ của mốc giá, `IsActive` là cờ bật/tắt bản ghi.</summary>
+    public string? IsActive { get; set; }
+
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
