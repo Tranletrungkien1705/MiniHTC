@@ -4217,6 +4217,17 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// Tra LỊCH SỬ đẩy SBH online (`Rpt_PushSBHOnline_History`).
+app.MapGet("/api/sbhonline/push-history", async (AppDbContext db, ITenantContext t, string? vin, string? dealNo) =>
+{
+    var qy = db.SbhOnlinePushHistories.Where(h => h.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(h => h.VIN == vin.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(h => h.DealNo == dealNo);
+    var items = await qy.OrderByDescending(h => h.Id).Take(500)
+        .Select(h => new { h.VIN, h.CarId, h.DealNo, h.PushDate, h.PushBy, h.PushTo, h.PushStatus, h.FlagSucsess }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // ===== Đẩy Sổ Bảo Hành online (SbhOnline — port 1:1 Frm_RePostSBHOnline, SalesDealer) =====
 app.MapGet("/api/sbhonline", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? status) =>
 {
@@ -4225,7 +4236,7 @@ app.MapGet("/api/sbhonline", async (AppDbContext db, ITenantContext t, string? d
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(s => s.VIN.Contains(vin!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.PostStatus == status);
     var items = await q.OrderByDescending(s => s.Id).Take(500)
-        .Select(s => new { s.VIN, s.CarId, s.DealNo, s.DealerCode, s.DeliveryDate, s.PostStatus, s.PushCount, s.LastPushAt }).ToListAsync();
+        .Select(s => new { s.VIN, s.CarId, s.DealNo, s.DealerCode, s.DeliveryDate, s.WarrantyExpiresDate, s.PostStatus, s.PushCount, s.LastPushAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -4236,34 +4247,62 @@ app.MapPost("/api/sbhonline", async (SbhOnlineDto dto, AppDbContext db, ITenantC
     var ex = await db.SbhOnlines.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.VIN == vin);
     if (ex is not null)
     {
-        ex.CarId = dto.CarId ?? ""; ex.DealNo = dto.DealNo ?? ""; ex.DealerCode = dto.DealerCode ?? ""; ex.DeliveryDate = dto.DeliveryDate;
+        ex.CarId = dto.CarId ?? ""; ex.DealNo = dto.DealNo ?? ""; ex.DealerCode = dto.DealerCode ?? ""; ex.DeliveryDate = dto.DeliveryDate; ex.WarrantyExpiresDate = dto.WarrantyExpiresDate ?? ex.WarrantyExpiresDate;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.VIN, updated = true });
     }
-    var s2 = new SbhOnline { OrgId = t.OrgId, VIN = vin, CarId = dto.CarId ?? "", DealNo = dto.DealNo ?? "", DealerCode = dto.DealerCode ?? "", DeliveryDate = dto.DeliveryDate, PostStatus = "Pending" };
+    var s2 = new SbhOnline { OrgId = t.OrgId, VIN = vin, CarId = dto.CarId ?? "", DealNo = dto.DealNo ?? "", DealerCode = dto.DealerCode ?? "", DeliveryDate = dto.DeliveryDate, WarrantyExpiresDate = dto.WarrantyExpiresDate, PostStatus = "Pending" };
     db.SbhOnlines.Add(s2); await db.SaveChangesAsync();
     return Results.Ok(new { s2.VIN, updated = false });
 }).RequireAuthorization();
 
 // Đẩy / đẩy lại SBH lên online: Pending->Posted (hoặc Posted->Posted = đẩy lại), tăng PushCount.
-app.MapPost("/api/sbhonline/{vin}/push", async (string vin, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/sbhonline/{vin}/push", async (string vin, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     vin = vin.Trim().ToUpperInvariant();
     var s = await db.SbhOnlines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
     if (s is null) return Results.NotFound(new { vin });
+    // 🔴 Guard nguồn `RePush_SBHOnline` (Biz.HTC.WH.hkt.cs:5867): xe KHÔNG có ngày hết hạn bảo hành
+    //    thì chặn đẩy (`RePush_SBHOnline_InvalidWarrantyExpiresDate`).
+    if (s.WarrantyExpiresDate is null)
+        return Results.BadRequest(new { error = $"Xe {vin} chưa có ngày hết hạn bảo hành — không đẩy được SBH online." });
     var wasRepush = s.PostStatus == "Posted";
-    s.PostStatus = "Posted"; s.PushCount += 1; s.LastPushAt = DateTime.Now;
+    var now = DateTime.Now;
+    s.PostStatus = "Posted"; s.PushCount += 1; s.LastPushAt = now;
+    // 🔴 Nguồn ghi lịch sử mỗi lần đẩy (`SBHOnline_HistoryCreate` → `Rpt_PushSBHOnline_History`) —
+    //    port cũ chỉ tăng bộ đếm, không lưu ai đẩy / đẩy đi đâu / kết quả ra sao.
+    db.SbhOnlinePushHistories.Add(new SbhOnlinePushHistory
+    {
+        OrgId = t.OrgId, DealNo = s.DealNo, CarId = s.CarId, VIN = s.VIN,
+        PushDate = now, PushBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        PushTo = "SBHOnline", PushStatus = s.PostStatus, FlagSucsess = "1",
+    });
     await db.SaveChangesAsync();
     return Results.Ok(new { s.VIN, status = s.PostStatus, s.PushCount, rePush = wasRepush, message = "Đẩy thành công!" });
 }).RequireAuthorization();
 
 // Đẩy hàng loạt VIN đã chọn.
-app.MapPost("/api/sbhonline/pushbatch", async (SbhBatchDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/sbhonline/pushbatch", async (SbhBatchDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var vins = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v != "").Distinct().ToList();
     if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn VIN để đẩy." });
     var rows = await db.SbhOnlines.Where(s => s.OrgId == t.OrgId && vins.Contains(s.VIN)).ToListAsync();
-    foreach (var s in rows) { s.PostStatus = "Posted"; s.PushCount += 1; s.LastPushAt = DateTime.Now; }
+    // 🔴 Cùng guard với đẩy đơn lẻ: xe chưa có ngày hết hạn bảo hành thì nguồn chặn đẩy.
+    var blocked = rows.Where(x => x.WarrantyExpiresDate is null).Select(x => x.VIN).ToList();
+    if (blocked.Count > 0)
+        return Results.BadRequest(new { error = $"Các xe sau chưa có ngày hết hạn bảo hành: {string.Join(", ", blocked.Take(10))}" });
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    foreach (var s in rows)
+    {
+        s.PostStatus = "Posted"; s.PushCount += 1; s.LastPushAt = now;
+        // Mỗi VIN được đẩy đều ghi một dòng lịch sử, đúng như nguồn gọi `SBHOnline_HistoryCreate` theo từng xe.
+        db.SbhOnlinePushHistories.Add(new SbhOnlinePushHistory
+        {
+            OrgId = t.OrgId, DealNo = s.DealNo, CarId = s.CarId, VIN = s.VIN,
+            PushDate = now, PushBy = who, PushTo = "SBHOnline", PushStatus = s.PostStatus, FlagSucsess = "1",
+        });
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { pushed = rows.Count, message = "Đẩy thành công!" });
 }).RequireAuthorization();
@@ -21897,7 +21936,7 @@ record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice);
 record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars);
 record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? DealDate, string? PlateNo, string? SalesType, string? WarrantyNo, string? CustomerCode, string? VerifyStatus);
 record DealPatchDto(string Field, string Value);
-record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate);
+record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate, DateTime? WarrantyExpiresDate = null);
 record SbhBatchDto(List<string>? Vins);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

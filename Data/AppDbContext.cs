@@ -29,6 +29,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SalesManUpdDeptSMTypeHis> SalesManUpdDeptSMTypeHiss => Set<SalesManUpdDeptSMTypeHis>();
     public DbSet<DealDetailCusInvoiceHisUpd> DealDetailCusInvoiceHisUpds => Set<DealDetailCusInvoiceHisUpd>();
     public DbSet<DealUpdBankCodeHis> DealUpdBankCodeHiss => Set<DealUpdBankCodeHis>();
+    public DbSet<SbhOnlinePushHistory> SbhOnlinePushHistories => Set<SbhOnlinePushHistory>();
     public DbSet<DlrContractUpdBankCodeHis> DlrContractUpdBankCodeHiss => Set<DlrContractUpdBankCodeHis>();
     public DbSet<DlrContractUpdSalesTypeHis> DlrContractUpdSalesTypeHiss => Set<DlrContractUpdSalesTypeHis>();
     public DbSet<DlrContractUpdSMCodeHis> DlrContractUpdSMCodeHiss => Set<DlrContractUpdSMCodeHis>();

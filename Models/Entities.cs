@@ -4559,6 +4559,29 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Lịch sử ĐẨY Sổ Bảo Hành online (`Rpt_PushSBHOnline_History` — port 1:1 `SBHOnline_HistoryCreate`,
+/// 2010.HTC `BizHTC.DealerSales.cs:~4310`, được `RePush_SBHOnline` gọi).
+/// 📌 Hàm ghi lịch sử nằm ở **file KHÁC** với hàm đẩy, và là `public void` (không phải `DataSet`) —
+/// quét ranh giới hàm bằng mẫu chỉ bắt `public DataSet` sẽ gán nhầm sang hàm `DSL_LogCarSvGet` phía trên.
+/// ⚠️ Giữ nguyên tên cột `FlagSucsess` **sai chính tả trong nguồn** để đối chiếu dữ liệu được.
+/// </summary>
+public sealed class SbhOnlinePushHistory
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public string CarId { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public DateTime PushDate { get; set; } = DateTime.Now;
+    public string? PushBy { get; set; }
+    /// <summary>Đích đẩy (`PushTo`) — hệ thống online nhận dữ liệu.</summary>
+    public string? PushTo { get; set; }
+    public string? PushStatus { get; set; }
+    /// <summary>Cờ thành công (`FlagSucsess` — sai chính tả nguyên văn nguồn): "1" thành công / "0" thất bại.</summary>
+    public string FlagSucsess { get; set; } = "0";
+}
+
+/// <summary>
 /// Lịch sử sửa NGÂN HÀNG tài trợ của giao dịch bán lẻ (`DLS_Deal_UpdateBankCode_His` — port 1:1
 /// `Support_DLS_Deal_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.hkt.cs:7848`).
 /// 🔴 Guard đặc thù của nguồn: `DLS_Deal.DealerCodeBuyer` **phải RỖNG** — nếu giao dịch là bán cho
@@ -6622,6 +6645,14 @@ public sealed class SbhOnline
     public string PostStatus { get; set; } = "Pending";   // Pending -> Posted (co the day lai)
     public int PushCount { get; set; }
     public DateTime? LastPushAt { get; set; }
+    /// <summary>
+    /// 🔴 Ngày hết hạn bảo hành của xe (`WarrantyExpiresDate`) — `RePush_SBHOnline`
+    /// (2010.HTC `Biz.HTC.WH.hkt.cs:5867`) **CHẶN đẩy** nếu cột này rỗng
+    /// (`RePush_SBHOnline_InvalidWarrantyExpiresDate`).
+    /// ⚠️ Dòng SQL `--and t.WarrantyExpiresDate is not null` trong nguồn **đã bị comment**, nhưng guard
+    /// C# ngay bên dưới vẫn ACTIVE ⇒ port theo guard C# (luật "port dòng ACTIVE").
+    /// </summary>
+    public DateTime? WarrantyExpiresDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
