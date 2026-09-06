@@ -3838,6 +3838,11 @@ public sealed class CarTestCar
     public string? RejectReason { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #190 parity `Car_TestCar_Finished` (BizHTC.Car.cs:6762) — cum CHI CO o WS 64-bit =====
+    /// <summary>Mốc KẾT THÚC chạy thử (`FinishedDate`/`FinishedBy`) — nguồn ghi khi chuyển "A" sang "F".</summary>
+    public DateTime? FinishedDate { get; set; }
+    public string? FinishedBy { get; set; }
 }
 
 /// <summary>Dòng VIN trong đề nghị đăng ký xe lái thử — port 1:1 grid FrmNewRegister_TestCar (Car_TestCarDtl, 2010.HTC).</summary>

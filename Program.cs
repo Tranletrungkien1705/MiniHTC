@@ -14120,7 +14120,88 @@ app.MapPost("/api/cartestcars/{no}/action", async (
     foreach (var l in await db.CarTestCarDtls.Where(x => x.OrgId == t.OrgId && x.TestCarId == h.Id).ToListAsync())
         l.TestCarStatusDtl = target;
     await db.SaveChangesAsync();
+    // 🔴 #190: guard HẬU-GHI của nguồn (`mycheck_Car_TestCar_CarId`) — gọi ở CẢ NĂM hàm của cụm.
+    var badUniq = await CheckTestCarCarIdUniqueAsync(db, t, h.Id);
+    if (badUniq is not null) return badUniq;
     return Results.Ok(new { h.TestCarCode, status = h.TestCarStatus, h.ApprovedAt, h.RejectReason });
+}).RequireAuthorization();
+
+// ===== #190 Xe chạy thử: `Car_TestCar_Finished` + `Car_TestCarDtl_Cancel`/`_Reject` + GUARD HẬU-GHI =====
+// Nguồn: `TERP.BizHTC/BizHTC.Car.cs` (csproj) — `_SaveX`(5710) · `_ApproveX`(6384) · `_FinishedX`(6762)
+//   · `Dtl_CancelX`(7215) · `Dtl_RejectX`(7677); helper `mycheck_Car_TestCar_CarId`(4947).
+// BƯỚC 3B: md5 CẢ FILE `961695a5` KHỚP 2 máy. Đã liệt kê ranh giới hàm trước khi đọc.
+// 🔴 TWIN: cụm `Car_TestCar_*` **CHỈ có ở WS 64-bit**; WS 32-bit **không có hàm nào**.
+//
+// 🔴 Cách tìm ra: biến luật `C0-ducentesimusseptuagesimus` (#189, guard hậu-ghi) thành phép quét —
+//    `grep "Port check\|PostCheck"` toàn biz. Khối *"Port check: 1 CarId chỉ thuộc 1 đề nghị đăng ký
+//    lái thử trạng thái chi tiết P/A"* xuất hiện ở **CẢ NĂM** hàm của cụm này.
+//
+// 🔴 GUARD HẬU-GHI (`mycheck_Car_TestCar_CarId`, 4947): sau khi lưu, nguồn gom các `CarId` của phiếu
+//    rồi đếm trên **toàn bảng** `Car_TestCarDtl` những dòng `TestCarStatusDtl in ('P','A')`;
+//    `CountCarId > 1` ⇒ ném `mycheck_Car_TestCar_CarId_InvalidCarId`.
+//    ⇒ Một xe chỉ được nằm trong ĐÚNG MỘT đề nghị còn sống. Port cũ **chỉ ghi luật này trong ghi chú
+//    `/statuses`** mà KHÔNG endpoint nào thực thi.
+static async Task<IResult?> CheckTestCarCarIdUniqueAsync(AppDbContext db, ITenantContext t, long testCarId)
+{
+    var carIds = await db.CarTestCarDtls
+        .Where(x => x.OrgId == t.OrgId && x.TestCarId == testCarId)
+        .Select(x => x.CarId).ToListAsync();
+    if (carIds.Count == 0) return null;
+    var dup = await db.CarTestCarDtls
+        .Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId)
+                 && (x.TestCarStatusDtl == "P" || x.TestCarStatusDtl == "A"))
+        .GroupBy(x => x.CarId)
+        .Where(g => g.Count() > 1)
+        .Select(g => g.Key).FirstOrDefaultAsync();
+    return dup is null ? null
+        : Results.BadRequest(new { error = $"Xe {dup} đang nằm trong nhiều hơn một đề nghị chạy thử còn hiệu lực (P/A).", carId = dup });
+}
+
+// 🔴 `Car_TestCar_Finished` (6762): guard header `TestCarStatus = Approved ("A")` → `"F"`,
+//    ghi `FinishedDate`/`FinishedBy`. Nguồn còn kiểm xe tồn tại + còn hoạt động trước khi kết thúc.
+app.MapPost("/api/cartestcars/{no}/finish", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.TestCarStatus != "A")
+        return Results.BadRequest(new { error = $"Đề nghị đang '{h.TestCarStatus}' — chỉ kết thúc khi đã duyệt (A)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    h.TestCarStatus = "F"; h.FinishedDate = now; h.FinishedBy = who;
+    foreach (var l in await db.CarTestCarDtls.Where(x => x.OrgId == t.OrgId && x.TestCarId == h.Id).ToListAsync())
+        l.TestCarStatusDtl = "F";
+    await db.SaveChangesAsync();
+    var bad = await CheckTestCarCarIdUniqueAsync(db, t, h.Id);
+    if (bad is not null) return bad;
+    return Results.Ok(new { h.TestCarCode, status = h.TestCarStatus, h.FinishedDate, h.FinishedBy });
+}).RequireAuthorization();
+
+// 🔴 `Car_TestCarDtl_Cancel` (7215) / `_Reject` (7677) — thao tác theo **DÒNG**, không phải header.
+//    Guard trạng thái dòng **NGƯỢC NHAU**:
+//      · `_Cancel` đòi `TestCarStatusDtl = Finished ("F")` — huỷ dòng ĐÃ kết thúc;
+//      · `_Reject` đòi `TestCarStatusDtl = Approved ("A")` — từ chối dòng ĐÃ duyệt.
+//    Cả hai còn kiểm xe tồn tại + `FlagTestCar` (cờ "xe đang là xe chạy thử"): `_Cancel` chặn khi cờ
+//    đang Inactive, `_Reject` chặn khi cờ đang Active — cũng ngược nhau.
+app.MapPost("/api/cartestcars/{no}/lines/{carId}/{action}", async (string no, string carId, string action,
+    AppDbContext db, ITenantContext t) =>
+{
+    if (action is not ("cancel" or "reject")) return Results.BadRequest(new { error = "action = cancel|reject" });
+    no = no.Trim(); carId = carId.Trim();
+    var h = await db.CarTestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarCode == no);
+    if (h is null) return Results.NotFound(new { no });
+    var l = await db.CarTestCarDtls.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TestCarId == h.Id && x.CarId == carId);
+    if (l is null) return Results.NotFound(new { no, carId });
+
+    var want = action == "cancel" ? "F" : "A";
+    if (l.TestCarStatusDtl != want)
+        return Results.BadRequest(new { error = $"Dòng xe {carId} đang '{l.TestCarStatusDtl}' — {(action == "cancel" ? "chỉ huỷ dòng ĐÃ kết thúc (F)" : "chỉ từ chối dòng ĐÃ duyệt (A)")}." });
+
+    l.TestCarStatusDtl = action == "cancel" ? "C" : "R";
+    await db.SaveChangesAsync();
+    var bad = await CheckTestCarCarIdUniqueAsync(db, t, h.Id);
+    if (bad is not null) return bad;
+    return Results.Ok(new { h.TestCarCode, l.CarId, statusDtl = l.TestCarStatusDtl });
 }).RequireAuthorization();
 
 app.MapGet("/api/cartestcars/statuses", () => Results.Ok(new
@@ -14129,7 +14210,8 @@ app.MapGet("/api/cartestcars/statuses", () => Results.Ok(new
         new { code = "P", name = "Chờ duyệt" },
         new { code = "A", name = "Đã duyệt" },
         new { code = "R", name = "Từ chối" } },
-    note = "Một xe (CarId) chỉ được nằm trong ĐÚNG MỘT đề nghị đang ở 'P' hoặc 'A'.",
+    note = "Một xe (CarId) chỉ được nằm trong ĐÚNG MỘT đề nghị đang ở 'P' hoặc 'A' — #190 đã THỰC THI bằng guard hậu-ghi, trước đó chỉ là ghi chú.",
+    statusesDtl = new[] { "P", "A", "F", "C", "R" },
 })).RequireAuthorization();
 
 // Xóa đề nghị (khớp Car_TestCar_Save với flagIsDelete=1 gốc)
