@@ -5309,8 +5309,32 @@ public sealed class ReqPartPrice
     /// Nguồn set "1" ngay khi tạo (cùng lúc DMSStatus="P").
     /// </summary>
     public string TSTStatus { get; set; } = "1";
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;   // CreateDTime
     public DateTime? QuotedAt { get; set; }
+
+    // ===== 🔴 #238: cột nguồn `Req_PartPrice` mà port cũ THIẾU =====
+    // Nguồn `Entities/TST/Req_PartPrice.cs` (md5 35f57589) + `Req_PartPrice_Save`
+    // (Req_PartPriceService.cs:254) — client gửi `ReqPartPriceNo` · `DealerCode` · `Description`.
+    public string? DealerCode { get; set; }
+    public string? Description { get; set; }
+
+    /// <summary>TSTReqPartPriceID / TSTSentDate — định danh + ngày gửi sang phía TST (server ghi).</summary>
+    public string? TSTReqPartPriceID { get; set; }
+    public DateTime? TSTSentDate { get; set; }
+
+    /// <summary>IsUpdatePrice — cờ "đã cập nhật giá vào bảng giá" (khác với "đã báo giá").</summary>
+    public string? IsUpdatePrice { get; set; }
+
+    // vết ghi theo TỪNG MỐC — nguồn tách riêng Create/Appr/Finish, không gộp một cặp LogLU.
+    public string? CreateBy { get; set; }
+    public DateTime? ApprDTime { get; set; }
+    public string? ApprBy { get; set; }
+    public DateTime? FinishDTime { get; set; }
+    public string? FinishBy { get; set; }
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng PT xin báo giá (Req_PartPriceDtl): mã PT + SL yêu cầu + giá TST báo (điền sau).</summary>
@@ -5319,10 +5343,29 @@ public sealed class ReqPartPriceLine
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long ReqId { get; set; }
-    public string PartCode { get; set; } = "";
-    public string? PartName { get; set; }
+    public string PartCode { get; set; } = "";         // ` DMSPartCode
+    public string? PartName { get; set; }              // VieName
     public decimal ReqQty { get; set; } = 1;
-    public decimal QuotedPrice { get; set; }           // TST điền
+    public decimal QuotedPrice { get; set; }           // TST điền (` TSTPrice)
+
+    // ===== 🔴 #238: cột nguồn `Req_PartPriceDtl` mà port cũ THIẾU =====
+    /// <summary>ReqPartPriceNo — nguồn nối dòng về header bằng SỐ PHIẾU (không phải Id).</summary>
+    public string? ReqPartPriceNo { get; set; }
+
+    /// <summary>🔴 `DMSPartCode` và `TSTPartCode` là HAI mã KHÁC NHAU: mã đại lý dùng và mã NCC trả về.
+    /// Cả điểm của màn này là ÁNH XẠ hai mã đó — gộp một cột là mất mục đích nghiệp vụ.</summary>
+    public string? TSTPartCode { get; set; }
+
+    public string? DeliveryFormCode { get; set; }   // hình thức giao hàng của dòng
+    public string? VINCode { get; set; }            // xin giá theo VIN cụ thể
+    public DateTime? DateEffect { get; set; }       // ngày hiệu lực của giá NCC trả
+    public string? Remark { get; set; }
+
+    /// <summary>Trạng thái RIÊNG của dòng (`ReqPartPriceDtlStatus`).</summary>
+    public string ReqPartPriceDtlStatus { get; set; } = "P";
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate, TCMotor DMSCarSv/Admin):

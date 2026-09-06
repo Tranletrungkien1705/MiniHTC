@@ -28114,6 +28114,11 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
 }).RequireAuthorization();
 
 // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
+// ===== 🔴 #238 XIN BÁO GIÁ PHỤ TÙNG — parity `Req_PartPrice` + `Req_PartPriceDtl` (DMSCarSv/TST) =====
+// Tầng ghi `Req_PartPriceService.cs:254` `Req_PartPrice_Save` gửi: ReqPartPriceNo · DealerCode · Description
+//   + bộ dòng, kèm **HAI cờ**: `strFlagIsDelete` và `strFlagIsCheck` (cờ thứ hai chưa port — ghi nợ).
+// BƯỚC 3B: POCO header md5 `35f57589` · POCO dòng `bf24ceeb` · Service `6fd0af13` — KHỚP 2 máy.
+// 🔴 Dòng có `DMSPartCode` và `TSTPartCode` là HAI mã KHÁC NHAU — chính là mục đích của màn (ánh xạ mã).
 app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, string? dms, string? tst) =>
 {
     var q = db.ReqPartPrices.Where(r => r.OrgId == t.OrgId);
@@ -28122,21 +28127,44 @@ app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, strin
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.ReqNo, r.DMSStatus, r.TSTStatus, r.CreatedAt, r.QuotedAt,
+      // #238: 14 cột bổ sung của đầu phiếu
+      r.DealerCode, r.Description, r.TSTReqPartPriceID, r.TSTSentDate, r.IsUpdatePrice,
+      r.CreateBy, r.ApprDTime, r.ApprBy, r.FinishDTime, r.FinishBy, r.LUDTime, r.LUBy,
+      r.LogLUDateTime, r.LogLUBy,
         lines = db.ReqPartPriceLines.Count(l => l.OrgId == t.OrgId && l.ReqId == r.Id),
         quotedTotal = db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id).Sum(l => (decimal?)(l.ReqQty * l.QuotedPrice)) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.ReqQty > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng PT (PartCode + ReqQty > 0)." });
     var no = "RQ" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new ReqPartPrice { OrgId = t.OrgId, ReqNo = no, DMSStatus = "P", TSTStatus = "1" };   // nguồn set TST=1 (Chờ duyệt) ngay khi tạo
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var r = new ReqPartPrice
+    {
+        OrgId = t.OrgId, ReqNo = no,
+        DMSStatus = "P", TSTStatus = "1",   // nguồn set TST=1 (Chờ duyệt) ngay khi tạo
+        // #238: 3 trường mà `Req_PartPrice_Save` gửi lên + vết ghi
+        DealerCode = dto.DealerCode, Description = dto.Description,
+        CreateBy = who, LogLUDateTime = DateTime.Now, LogLUBy = who,
+    };
     db.ReqPartPrices.Add(r); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.ReqPartPriceLines.Add(new ReqPartPriceLine { OrgId = t.OrgId, ReqId = r.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, ReqQty = l.ReqQty, QuotedPrice = 0 });
+        db.ReqPartPriceLines.Add(new ReqPartPriceLine
+        {
+            OrgId = t.OrgId, ReqId = r.Id, ReqPartPriceNo = no,
+            PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
+            ReqQty = l.ReqQty, QuotedPrice = 0,
+            // #238: 6 cột bổ sung của dòng. ⚠️ `TSTPartCode`/`DateEffect` do phía TST điền khi báo giá,
+            //    KHÔNG nhận lúc tạo (giống `QuotedPrice` vốn để 0).
+            DeliveryFormCode = l.DeliveryFormCode, VINCode = l.VINCode, Remark = l.Remark,
+            ReqPartPriceDtlStatus = "P",
+            LogLUDateTime = DateTime.Now, LogLUBy = who,
+        });
     await db.SaveChangesAsync();
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
@@ -28147,7 +28175,12 @@ app.MapGet("/api/reqpartprices/{no}/lines", async (string no, AppDbContext db, I
     var r = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     var lines = await db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.ReqQty, l.QuotedPrice, lineTotal = l.ReqQty * l.QuotedPrice }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.ReqQty, l.QuotedPrice,
+                           // #238: 8 cột bổ sung của dòng
+                           l.ReqPartPriceNo, l.TSTPartCode, l.DeliveryFormCode, l.VINCode,
+                           l.DateEffect, l.Remark, l.ReqPartPriceDtlStatus,
+                           l.LogLUDateTime, l.LogLUBy,
+                           lineTotal = l.ReqQty * l.QuotedPrice }).ToListAsync();
     return Results.Ok(new { r.ReqNo, r.DMSStatus, r.TSTStatus, count = lines.Count, lines, quotedTotal = lines.Sum(x => x.lineTotal) });
 }).RequireAuthorization();
 
@@ -31593,8 +31626,11 @@ record SupplierPaymentLineDto(string? PartCode, string? PartName, decimal QtyPay
 record SupplierPaymentDto(string SupplierCode, string? OrderPartNo, decimal Amount, DateTime? PaymentDate, List<SupplierPaymentLineDto>? Lines = null, string? DealerCode = null,
     string? SupplierID = null, string? Address = null, string? TSTRequestNo = null,
     string? PaymentType = null, string? Description = null);
-record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty);
-record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines);
+// #238: 3 cột bổ sung mà đại lý nhập. KHÔNG nhận `TSTPartCode`/`DateEffect`/`TSTPrice` — phía TST điền.
+record ReqPartPriceLineDto(string PartCode, string? PartName, decimal ReqQty,
+    string? DeliveryFormCode = null, string? VINCode = null, string? Remark = null);
+// #238: `Req_PartPrice_Save` gửi DealerCode + Description.
+record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = null, string? Description = null);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
