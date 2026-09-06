@@ -5980,6 +5980,43 @@ public sealed class DlrContractCar
 }
 
 /// <summary>
+/// LỊCH SỬ DÒNG hợp đồng bán lẻ (`Dlr_ContractDtlHis` — 2010.HTC, ghi ở **7 điểm**:
+/// `Biz.HTC.WH.cs` 92527 / 93305 / 112277 / 113313 / 133720 / 134196 và
+/// `BizHTC.RetailContract.cs` 1731 / 4937). Cột đọc từ bản canonical
+/// `DealerSalesDealCreate_SellToDealer_New20230306` (93285-93308) — bản WS 64-bit gọi, xác định ở #129.
+/// 🔴 **Cơ chế lịch sử KIỂU THỨ BA**, khác hai kiểu đã port trước:
+/// · #91-#99 họ `*_His`: lưu **cặp Old/New** từng cột;
+/// · #124 `DLS_DealerCustomer_Upd`: lưu **snapshot** toàn bộ bản ghi;
+/// · **ở đây**: lưu **snapshot dòng theo PHIÊN BẢN** — mỗi dòng mang `VersionDTimeCurr` bằng đúng mốc
+///   của phần đầu tại thời điểm đó, nên **nhóm theo `VersionDTimeCurr` sẽ dựng lại được nguyên trạng
+///   bảng dòng ở từng phiên bản**. Không có cột Old/New.
+/// 🔴 Dòng lịch sử chép từ `dtDetail_groupBy` (đã GỘP NHÓM theo Spec/Model/Color, `Qty = SumQty`) —
+/// tức lịch sử đi theo `Dlr_ContractDtl`, **không** theo `Dlr_ContractCar` (bảng nở dòng của #129).
+/// ⚠️ `ContractUpdateType` để **NULL khi TẠO MỚI**; chỉ các hàm SỬA (112266, 113305) mới truyền giá trị
+/// từ bảng đầu vào ⇒ dòng lịch sử có `ContractUpdateType` rỗng nghĩa là **bản ghi lúc tạo**.
+/// ⚠️ Nguồn ghi cả `_dbMain` lẫn `_dbWH` (93305-93308), dòng `_dbWH` **không bị comment**.
+/// </summary>
+public sealed class DlrContractDtlHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Mốc phiên bản — bằng đúng `Dlr_Contract.VersionDTimeCurr` lúc ghi. Khoá nhóm lịch sử.</summary>
+    public DateTime VersionDTimeCurr { get; set; }
+    public string DlrContractNo { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ColorCode { get; set; }
+    /// <summary>Tổng số lượng của nhóm (SumQty), không phải một xe.</summary>
+    public int Qty { get; set; }
+    /// <summary>NULL nghĩa là bản ghi lúc TẠO; có giá trị nghĩa là bản ghi do một lần SỬA.</summary>
+    public string? ContractUpdateType { get; set; }
+    public string? UpdateBy { get; set; }
+    public DateTime? DlvExpectedDate { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Lịch sử sửa NGÂN HÀNG của HĐ bán lẻ (`Dlr_Contract_UpdateBankCode_His` — port 1:1
 /// `Support_Dlr_Contract_UpdateBankCode`, 2010.HTC `Biz.HTC.WH.cs:114595`).
 /// ✅ Guard mã ngân hàng mới phải có trong `Mst_Bank` ĐÃ port ở #116 (master bổ sung ở #115).
@@ -7203,6 +7240,14 @@ public sealed class DlrContract
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+    /// <summary>
+    /// 🔴 #130 VersionDTimeCurr — **MỐC PHIÊN BẢN hiện hành** của hợp đồng
+    /// (`Dlr_Contract.VersionDTimeCurr`, 2010.HTC `Biz.HTC.WH.cs:93118`).
+    /// Mỗi lần tạo/sửa, nguồn đặt mốc này ở phần đầu **và** ghi cùng giá trị vào mọi dòng
+    /// <see cref="DlrContractDtlHis"/> sinh ra ⇒ dùng để **nhóm các dòng thuộc CÙNG một phiên bản**.
+    /// Port cũ thiếu hẳn cột này nên không dựng lại được lịch sử theo phiên bản.
+    /// </summary>
+    public DateTime? VersionDTimeCurr { get; set; }
     public string DlrContractNo { get; set; } = "";
     public string DlrContractNoUser { get; set; } = "";
     public string DealerCode { get; set; } = "";

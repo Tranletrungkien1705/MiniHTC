@@ -19941,6 +19941,10 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     db.DlrContracts.Add(c); await db.SaveChangesAsync();
     var whoCtr = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var ctrCarSeq = 1;   // đếm chung toàn hợp đồng, đúng mẫu "{SốHĐ}.{j:00}" của nguồn
+    // 🔴 #130: nguồn đặt MỐC PHIÊN BẢN ở phần đầu rồi ghi CÙNG giá trị đó vào mọi dòng lịch sử
+    //    (Biz.HTC.WH.cs:93118 và 93290) ⇒ nhóm theo mốc này dựng lại được nguyên trạng từng phiên bản.
+    var versionStamp = DateTime.Now;
+    c.VersionDTimeCurr = versionStamp;
     foreach (var l in lines)
     {
         var amountVat = l.Price * l.Qty * l.VAT / 100m;
@@ -19955,6 +19959,20 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
             ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ColorCode = l.ColorCode,
             Qty = l.Qty, DlvExpectedDate = l.DlvExpectedDate,
             Price = l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter,
+            LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
+        });
+
+        // 🔴 #130 ghi lịch sử dòng (`Dlr_ContractDtlHis`, Biz.HTC.WH.cs:93285-93305): snapshot dòng
+        //    theo PHIÊN BẢN — mang `VersionDTimeCurr` bằng đúng mốc của phần đầu. KHÔNG có cặp Old/New.
+        //    `ContractUpdateType` để NULL vì đây là bản ghi lúc TẠO (chỉ hàm SỬA mới truyền giá trị).
+        db.DlrContractDtlHiss.Add(new DlrContractDtlHis
+        {
+            OrgId = t.OrgId, VersionDTimeCurr = versionStamp,
+            DlrContractNo = c.DlrContractNo,
+            SpecCode = l.SpecCode, ModelCode = l.ModelCode.Trim(), ColorCode = l.ColorCode,
+            Qty = l.Qty,
+            ContractUpdateType = null,
+            UpdateBy = whoCtr, DlvExpectedDate = l.DlvExpectedDate,
             LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
         });
 
@@ -19974,6 +19992,31 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 #130: LỊCH SỬ DÒNG hợp đồng (`Dlr_ContractDtlHis`) — nhóm theo `VersionDTimeCurr`.
+// Đây là kiểu lịch sử THỨ BA trong hệ nguồn: không phải cặp Old/New (#91-#99), cũng không phải snapshot
+// bản ghi đơn (#124), mà là **snapshot bảng dòng theo từng phiên bản**.
+app.MapGet("/api/dlrcontracts/{no}/dtlhistory", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var rows = await db.DlrContractDtlHiss.Where(x => x.OrgId == t.OrgId && x.DlrContractNo == no)
+        .OrderByDescending(x => x.VersionDTimeCurr).ThenBy(x => x.ModelCode)
+        .Select(x => new
+        {
+            x.VersionDTimeCurr, x.DlrContractNo, x.SpecCode, x.ModelCode, x.ColorCode, x.Qty,
+            x.ContractUpdateType, x.UpdateBy, x.DlvExpectedDate, x.LogLUDateTime, x.LogLUBy,
+        }).ToListAsync();
+    // Gom theo phiên bản để đọc được "bảng dòng trông thế nào ở mỗi lần sửa".
+    var versions = rows.GroupBy(r => r.VersionDTimeCurr)
+        .OrderByDescending(g => g.Key)
+        .Select(g => new
+        {
+            versionDTimeCurr = g.Key,
+            isCreate = g.All(r => r.ContractUpdateType == null),   // NULL ⇒ bản ghi lúc tạo
+            lines = g.ToList(),
+        }).ToList();
+    return Results.Ok(new { no, versionCount = versions.Count, rowCount = rows.Count, versions });
 }).RequireAuthorization();
 
 // 🔴 #129: XE trong hợp đồng (`Dlr_ContractCar`) — nở dòng theo từng xe, CtrCarId "<SốHĐ>.01/.02…".
@@ -20002,7 +20045,9 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
         .Select(l => new { l.DlrContractNo, l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate,
             l.Price, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT,
             l.ContractUpdateType, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
-    return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SignDate, c.Status, count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
+    return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode,
+        c.SignDate, c.Status, c.VersionDTimeCurr,   // #130: mốc phiên bản hiện hành
+        count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
 }).RequireAuthorization();
 
 // Sửa số lượng theo dòng model/spec/màu (port 1:1 FrmMngRetailContractHistory btnFlagDone01_Click, Sales/RetailContract)
