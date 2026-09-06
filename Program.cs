@@ -25125,7 +25125,8 @@ app.MapGet("/api/editdeal/dealinfo", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.DealNo, x.DealNoUser, x.DealerCode, dealDate = x.DealDate.ToString("yyyy-MM-dd"), x.CtmCareFlag
+        x.Id, x.DealNo, x.DealNoUser, x.DealerCode, dealDate = x.DealDate.ToString("yyyy-MM-dd"), x.CtmCareFlag,
+        x.CtmCareUpdDate, x.CtmCareUpdBy, x.CtmCareRemark   // #196 §12
     }).ToListAsync();
     return Results.Ok(new { count = rows.Count, rows });
 }).RequireAuthorization();
@@ -25520,6 +25521,99 @@ app.MapPost("/api/dealerdeals/edit-salestype", async (EditDealSalesTypeDto dto, 
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// ===== 🔴 #196 DUYỆT KIỂM CHỨNG BÁN LẺ — `OSHCC_DLS_Deal_UpdCtmCareFlagX_New20260805` =====
+// Nguồn: `TERP.BizHTC/HCC/BizHTC.HCC.cs` — hàm mới ở **3654**, call-site đã repoint (3398).
+//
+// 🔴 BƯỚC 3B — HÀM NÀY **CHỈ CÓ TRÊN MÁY 150**:
+//   So đúng cặp `.Release.2025` ↔ `.Release.2025` (đúng luật `C0-ducentesimusoctogesimustertius`):
+//   laptop `HCC/BizHTC.HCC.cs` 3651 dòng · máy 150 **3982 dòng (+331)**; bản 150 có thêm nguyên hàm
+//   `..._New20260805` ("Nâng cấp Call sang Membership tạo hội viên khi Duyệt kiểm chứng bán lẻ", 2026-08-05)
+//   và ĐỔI call-site sang gọi nó. Bản laptop vẫn gọi `OSHCC_DLS_Deal_UpdCtmCareFlagX` cũ.
+//   `BizHTC.Common.cs` trên 150 cũng có thêm 8 biến cấu hình `_strUrlAPI_Loyalty*` phục vụ đúng hàm này.
+//   ⇒ canonical cho cụm HCC = **máy 150**. (Ngược với #195, nơi canonical là laptop — mỗi FILE một chiều.)
+//
+// SÁU GUARD của nguồn, đúng thứ tự:
+//  1. Deal phải TỒN TẠI (`myDealerSales_CheckDeal(..., Flag.Yes, "")`).
+//  2. `CtmCareFlag` đang `Flag.Active` ⇒ lỗi `..._InvalidCtmCareFlag` (đã kiểm chứng rồi, không làm lại).
+//  3. `DealerCodeBuyer` CÓ giá trị ⇒ lỗi `..._CannotUpdateDealWithAnotherDealer` (bán sang đại lý khác).
+//  4. `DLS_DealDetail` phải có ít nhất 1 dòng ⇒ `..._TableDetailNotBlank`.
+//  5. TỪNG dòng chi tiết: `CusInvoiceNo` ≠ rỗng · `CusInvoiceDate` ≠ null · `PlateNo` ≠ rỗng
+//     (ba mã lỗi riêng: `..._CusInvoiceNoNotNull` / `..._CusInvoiceDateNotNull` / `..._PlateNoNotNull`).
+//  6. `DLS_DealAttachFile` phải có ít nhất 1 dòng **`DlsFileType = 'BILL'`** — nguồn ghi chú thẳng:
+//     *"Phải có ảnh hóa đơn mới được kiểm chứng 20180313"* ⇒ `..._TableAttachNotBlank`.
+// GHI: `CtmCareFlag = "1"`, `CtmCareUpdDate`, `CtmCareUpdBy`, `CtmCareRemark` (ghi `_dbMain` và `_dbWH`).
+//
+// ⚠️ NỢ (không bịa): sau khi ghi, nguồn dựng một câu SQL gộp 6 bảng
+//   (`DLS_Deal` × `DLS_DealerCustomer` × `Dls_DealDetail` × `Car_Car` × `Mst_CarModel`) rồi **gọi API Loyalty**
+//   `Crd_Member_AddAndApprByDMS` để tạo + duyệt hội viên. MiniHTC chưa có tầng gọi API ngoài ⇒ endpoint này
+//   TRẢ VỀ sẵn `loyaltyPayload` đúng các trường nguồn map (kể cả **đảo giới tính**: nguồn `Gender='0'` (Nam)
+//   ⇒ gửi `MemberGender='1'`) để tầng tích hợp dùng, và ghi nợ phần gọi HTTP thật.
+app.MapPost("/api/dealerdeals/{no}/verify-ctmcare", async (string no, VerifyCtmCareDto dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim();
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { no });                                  // guard 1
+
+    if ((d.CtmCareFlag ?? "") == "1")                                                    // guard 2
+        return Results.BadRequest(new { error = "Hợp đồng đã được kiểm chứng rồi.", dealNo = no });
+
+    if (!string.IsNullOrWhiteSpace(d.DealerCodeBuyer))                                   // guard 3
+        return Results.BadRequest(new { error = "Hợp đồng bán cho đại lý khác — không kiểm chứng được.", dealerCodeBuyer = d.DealerCodeBuyer });
+
+    var lines = await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.DealId == d.Id).ToListAsync();
+    if (lines.Count == 0)                                                                // guard 4
+        return Results.BadRequest(new { error = "Hợp đồng chưa có dòng chi tiết." });
+
+    foreach (var l in lines)                                                             // guard 5
+    {
+        if (string.IsNullOrWhiteSpace(l.CusInvoiceNo))
+            return Results.BadRequest(new { error = "Chưa có số hoá đơn khách hàng.", carId = l.CarId });
+        if (l.CusInvoiceDate is null)
+            return Results.BadRequest(new { error = "Chưa có ngày hoá đơn khách hàng.", carId = l.CarId });
+        if (string.IsNullOrWhiteSpace(l.PlateNo))
+            return Results.BadRequest(new { error = "Chưa có biển số xe.", carId = l.CarId });
+    }
+
+    // guard 6 — phải có ảnh hoá đơn ("BILL") mới được kiểm chứng.
+    var hasBill = await db.DlsDealAttachFiles
+        .AnyAsync(x => x.OrgId == t.OrgId && x.DealNo == no && x.DlsFileType == "BILL");
+    if (!hasBill)
+        return Results.BadRequest(new { error = "Chưa đính kèm ảnh hoá đơn (DlsFileType = 'BILL') — không kiểm chứng được." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    d.CtmCareFlag = "1";
+    d.CtmCareUpdDate = now; d.CtmCareUpdBy = who;
+    d.CtmCareRemark = (dto.Remark ?? "").Trim();
+    await db.SaveChangesAsync();
+
+    // Dữ liệu hội viên đúng phép map của nguồn — CHƯA gọi API (ghi nợ tầng tích hợp Loyalty).
+    var cust = await db.DealerCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CustomerCode == d.CustomerCodeBuyer);
+    var loyaltyPayload = lines.Select(l => new
+    {
+        dealNo = d.DealNo,
+        customerCode = d.CustomerCodeBuyer,
+        memberName = cust?.FullName,
+        phoneNo = cust?.PhoneNo,
+        memberGender = (cust?.Gender ?? "") == "0" ? "1" : "0",   // 🔴 nguồn ĐẢO cờ giới tính, giữ nguyên
+        dateOfBirth = cust?.DateOfBirth,
+        provinceCode = cust?.ProvinceCode,
+        districtCode = cust?.DistrictCode,
+        memAddress = cust?.Address,
+        idCardNo = cust?.IDCardNo,
+        carId = l.CarId,
+        carNo = l.PlateNo,
+        tradeMarkCode = "HYUNDAI",                                 // nguồn ghi CỨNG
+        dlCodeRegis = d.DealerCode,
+        invoiceDate = l.CusInvoiceDate,
+    }).ToList();
+
+    return Results.Ok(new { d.DealNo, ctmCareFlag = d.CtmCareFlag, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark,
+        detailRows = lines.Count, loyaltyPayload,
+        note = "Chưa gọi API Loyalty Crd_Member_AddAndApprByDMS — MiniHTC chưa có tầng gọi API ngoài (nợ)." });
 }).RequireAuthorization();
 
 // Sửa cờ kiểm chứng CSKH hàng loạt (port 1:1 FrmEditDeal_KiemChung/DealerSalesDealUpdateCtmCareInfoMulti gốc)
@@ -29854,6 +29948,7 @@ record EditDealSalesTypeDto(List<EditDealSalesTypeRowDto>? Rows);
 record EditDealPlateNoRowDto(string? DealNo, string? CarId, string? PlateNo);
 record EditDealPlateNoDto(List<EditDealPlateNoRowDto>? Rows);
 record EditDealCtmCareRowDto(string? DealNo, string? CtmCareFlag);
+record VerifyCtmCareDto(string? Remark = null);
 record EditDealCtmCareDto(List<EditDealCtmCareRowDto>? Rows);
 record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);

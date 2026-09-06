@@ -5644,6 +5644,11 @@ public sealed class DealerDeal
     public string? DlrContractNo { get; set; }
     public string? BankCode { get; set; }                // mã ngân hàng tài trợ (Support sửa)
     public string? CtmCareFlag { get; set; }             // cờ kiểm chứng CSKH (EditDeal_KiemChung)
+    // ===== #196 parity `OSHCC_DLS_Deal_UpdCtmCareFlagX_New20260805` (HCC/BizHTC.HCC.cs:3654, CHỈ có trên máy 150) =====
+    /// <summary>Mốc DUYỆT kiểm chứng — nguồn ghi cùng lúc 3 cột này với `CtmCareFlag`.</summary>
+    public DateTime? CtmCareUpdDate { get; set; }
+    public string? CtmCareUpdBy { get; set; }
+    public string? CtmCareRemark { get; set; }
     public string SalesType { get; set; } = "";          // kiểu bán lẻ
     public string FlagPDI { get; set; } = "1";           // 1 = có PDI, 0 = không
     public string? ReasonNotPDI { get; set; }
