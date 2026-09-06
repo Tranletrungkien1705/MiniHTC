@@ -34,6 +34,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CarSvLog> CarSvLogs => Set<CarSvLog>();
     public DbSet<SbhOnlineApiLog> SbhOnlineApiLogs => Set<SbhOnlineApiLog>();
     public DbSet<RptMarketing> RptMarketings => Set<RptMarketing>();
+    public DbSet<MktActivityType> MktActivityTypes => Set<MktActivityType>();
+    public DbSet<MktActivity> MktActivities => Set<MktActivity>();
     public DbSet<PlanRetail> PlanRetails => Set<PlanRetail>();
     public DbSet<PlanRetailDtl> PlanRetailDtls => Set<PlanRetailDtl>();
     public DbSet<PlanRetailModel> PlanRetailModels => Set<PlanRetailModel>();

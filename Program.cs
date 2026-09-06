@@ -4217,6 +4217,171 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Master LOẠI hoạt động marketing (Mst_MarketingActivityType — port 1:1 cụm 4 hàm
+// Get/_Create/_Update/_Delete_New20181115, 2010.HTC BizHTC.Marketing.cs 90/260/416/579) =====
+// 🔴 Delete của nguồn là XOÁ THẬT (DataRow.Delete()), KHÔNG phải hạ FlagActive — và nguồn KHÔNG
+//    kiểm tra loại này còn hoạt động nào đang dùng. Port giữ nguyên hành vi, chỉ trả kèm số hoạt động
+//    sẽ bị mồ côi để người dùng thấy (`orphaned`), không tự ý thêm guard nguồn không có.
+// 🔴 FlagActive theo TConst.Flag: "1" = Active, "0" = Inactive (KHÔNG phải "Y"/"N").
+// ⚠️ RBAC nguồn CheckHTCDirect chưa port — nợ chung toàn fleet.
+app.MapGet("/api/mktactivitytypes", async (AppDbContext db, ITenantContext t, string? code, string? flagActive) =>
+{
+    var qy = db.MktActivityTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(code)) qy = qy.Where(x => x.MKTActivityTypeCode == code);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.MKTActivityTypeCode).Select(x => new
+    {
+        x.MKTActivityTypeCode, x.MKTActivityTypeName, x.FlagActive, x.Remark,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mktactivitytypes/create", async (MktActivityTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTActivityTypeCode ?? "").Trim();
+    var name = (dto.MKTActivityTypeName ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã loại hoạt động rỗng." });
+    if (name.Length < 1) return Results.BadRequest(new { error = "Tên loại hoạt động rỗng." });
+    // Guard nguồn CheckDB với FlagExistToCheck = Flag.No: mã PHẢI chưa tồn tại.
+    if (await db.MktActivityTypes.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == code))
+        return Results.BadRequest(new { error = $"Loại hoạt động {code} đã tồn tại." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    db.MktActivityTypes.Add(new MktActivityType
+    {
+        OrgId = t.OrgId, MKTActivityTypeCode = code, MKTActivityTypeName = name,
+        FlagActive = "1", // nguồn luôn tạo ở trạng thái Active
+        Remark = dto.Remark, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, flagActive = "1" });
+}).RequireAuthorization();
+
+// Nguồn dùng `Ft_Cols_Upd` — danh sách cột được phép sửa; cột không có trong danh sách thì GIỮ NGUYÊN.
+app.MapPost("/api/mktactivitytypes/update", async (MktActivityTypeUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTActivityTypeCode ?? "").Trim();
+    var row = await db.MktActivityTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có loại hoạt động {code}." });
+    var cols = (dto.Cols ?? new()).Select(c => c.Trim().ToUpperInvariant()).ToHashSet();
+    bool Upd(string c) => cols.Contains(c.ToUpperInvariant());
+
+    if (Upd("MKTActivityTypeName"))
+    {
+        var name = (dto.MKTActivityTypeName ?? "").Trim();
+        if (name.Length < 1) return Results.BadRequest(new { error = "Tên loại hoạt động rỗng." });
+        row.MKTActivityTypeName = name;
+    }
+    if (Upd("FlagActive")) row.FlagActive = dto.FlagActive ?? row.FlagActive;
+    if (Upd("Remark")) row.Remark = dto.Remark;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.MKTActivityTypeCode, row.MKTActivityTypeName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/mktactivitytypes/delete", async (MktActivityTypeKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.MKTActivityTypeCode ?? "").Trim();
+    var row = await db.MktActivityTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có loại hoạt động {code}." });
+    // Nguồn XOÁ THẬT và KHÔNG chặn khi còn hoạt động tham chiếu — chỉ báo lại số bị mồ côi.
+    var orphaned = await db.MktActivities.CountAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == code);
+    db.MktActivityTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code, orphaned });
+}).RequireAuthorization();
+
+// ===== Master HOẠT ĐỘNG marketing (Mst_MarketingActivity — port 1:1 cụm 4 hàm, BizHTC.Marketing.cs
+// 766 / 977 / 1164 / 1359; hàm Update của nguồn viết thường chữ n: `_Update_new20181115`) =====
+// 🔴 Guard FK: MKTActivityTypeCode PHẢI tồn tại trong Mst_MarketingActivityType — kiểm ở CẢ Create LẪN Update.
+// 🔴 Ba cờ hồ sơ: FlagDesignImage (ảnh thiết kế) / FlagActualImage (ảnh thực tế) / FlagContract (hợp đồng).
+app.MapGet("/api/mktactivities", async (AppDbContext db, ITenantContext t, string? code, string? typeCode, string? flagActive) =>
+{
+    var qy = db.MktActivities.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(code)) qy = qy.Where(x => x.MKTActivityCode == code);
+    if (!string.IsNullOrWhiteSpace(typeCode)) qy = qy.Where(x => x.MKTActivityTypeCode == typeCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.MKTActivityCode).Select(x => new
+    {
+        x.MKTActivityCode, x.MKTActivityName, x.MKTActivityTypeCode, x.FlagActive,
+        x.FlagDesignImage, x.FlagActualImage, x.FlagContract, x.Remark,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mktactivities/create", async (MktActivityDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTActivityCode ?? "").Trim();
+    var name = (dto.MKTActivityName ?? "").Trim();
+    var typeCode = (dto.MKTActivityTypeCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã hoạt động rỗng." });
+    if (name.Length < 1) return Results.BadRequest(new { error = "Tên hoạt động rỗng." });
+    if (await db.MktActivities.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == code))
+        return Results.BadRequest(new { error = $"Hoạt động {code} đã tồn tại." });
+    // 🔴 Guard FK của nguồn: loại hoạt động phải có thật.
+    if (!await db.MktActivityTypes.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == typeCode))
+        return Results.BadRequest(new { error = $"Loại hoạt động {typeCode} không tồn tại." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    db.MktActivities.Add(new MktActivity
+    {
+        OrgId = t.OrgId, MKTActivityCode = code, MKTActivityName = name, MKTActivityTypeCode = typeCode,
+        FlagActive = "1",
+        FlagDesignImage = dto.FlagDesignImage, FlagActualImage = dto.FlagActualImage, FlagContract = dto.FlagContract,
+        Remark = dto.Remark, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, typeCode, flagActive = "1" });
+}).RequireAuthorization();
+
+app.MapPost("/api/mktactivities/update", async (MktActivityUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MKTActivityCode ?? "").Trim();
+    var row = await db.MktActivities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có hoạt động {code}." });
+    var cols = (dto.Cols ?? new()).Select(c => c.Trim().ToUpperInvariant()).ToHashSet();
+    bool Upd(string c) => cols.Contains(c.ToUpperInvariant());
+
+    if (Upd("MKTActivityName"))
+    {
+        var name = (dto.MKTActivityName ?? "").Trim();
+        if (name.Length < 1) return Results.BadRequest(new { error = "Tên hoạt động rỗng." });
+        row.MKTActivityName = name;
+    }
+    if (Upd("MKTActivityTypeCode"))
+    {
+        var typeCode = (dto.MKTActivityTypeCode ?? "").Trim();
+        // 🔴 Nguồn kiểm FK lại ở Update, không chỉ ở Create.
+        if (!await db.MktActivityTypes.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == typeCode))
+            return Results.BadRequest(new { error = $"Loại hoạt động {typeCode} không tồn tại." });
+        row.MKTActivityTypeCode = typeCode;
+    }
+    if (Upd("FlagActive")) row.FlagActive = dto.FlagActive ?? row.FlagActive;
+    if (Upd("Remark")) row.Remark = dto.Remark;
+    if (Upd("FlagDesignImage")) row.FlagDesignImage = dto.FlagDesignImage;
+    if (Upd("FlagActualImage")) row.FlagActualImage = dto.FlagActualImage;
+    if (Upd("FlagContract")) row.FlagContract = dto.FlagContract;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.MKTActivityCode, row.MKTActivityName, row.MKTActivityTypeCode, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/mktactivities/delete", async (MktActivityKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.MKTActivityCode ?? "").Trim();
+    var row = await db.MktActivities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có hoạt động {code}." });
+    db.MktActivities.Remove(row); // nguồn XOÁ THẬT
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 // ===== Hạn mức & thanh toán marketing theo năm/đại lý (Rpt_Marketing — port 1:1 cụm 5 hàm
 // Rpt_MarketingGet/Create/UpdateMulti/Update/Approve_New20181115, 2010.HTC BizHTC.Marketing.cs
 // 1617 / 1811 / 2182 / 2567 / 2822). TWIN: cả WS 32-bit lẫn 64-bit gọi cùng bản _New20181115. =====
@@ -22341,6 +22506,13 @@ record RptMarketingRowDto(string? DealerCode, decimal? Limit1, decimal? Limit2, 
 record RptMarketingCreateDto(string? MKTYear, List<RptMarketingRowDto>? Rows);
 record RptMarketingUpdateDto(string? MKTYear, string? DealerCode, decimal? Limit1, decimal? Limit2, decimal? Limit3, decimal? Limit4, decimal? Payment1, decimal? Payment2, decimal? Payment3, decimal? Payment4, string? Remark);
 record RptMarketingApproveDto(string? MKTYear);
+// Master marketing. `Cols` = danh sách cột được phép sửa (nguồn: tham số `Ft_Cols_Upd`).
+record MktActivityTypeDto(string? MKTActivityTypeCode, string? MKTActivityTypeName, string? Remark);
+record MktActivityTypeUpdateDto(string? MKTActivityTypeCode, string? MKTActivityTypeName, string? FlagActive, string? Remark, List<string>? Cols);
+record MktActivityTypeKeyDto(string? MKTActivityTypeCode);
+record MktActivityDto(string? MKTActivityCode, string? MKTActivityName, string? MKTActivityTypeCode, string? FlagDesignImage, string? FlagActualImage, string? FlagContract, string? Remark);
+record MktActivityUpdateDto(string? MKTActivityCode, string? MKTActivityName, string? MKTActivityTypeCode, string? FlagActive, string? FlagDesignImage, string? FlagActualImage, string? FlagContract, string? Remark, List<string>? Cols);
+record MktActivityKeyDto(string? MKTActivityCode);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

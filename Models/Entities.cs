@@ -4559,6 +4559,64 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Master **LOẠI hoạt động marketing** (`Mst_MarketingActivityType` — port 1:1 cụm 4 hàm
+/// `Mst_MarketingActivityTypeGet/_Create/_Update/_Delete_New20181115`, 2010.HTC
+/// `TERP.BizHTC/BizHTC.Marketing.cs` dòng 90 / 260 / 416 / 579).
+/// 🔴 `Delete` của nguồn là **XOÁ THẬT** (`DataRow.Delete()` rồi `SaveData`), **không** phải hạ
+/// `FlagActive` — và nguồn **không kiểm tra** loại này còn hoạt động nào đang dùng hay không.
+/// 🔴 `FlagActive` theo `TConst.Flag`: **"1"** = Active, **"0"** = Inactive (KHÔNG phải "Y"/"N").
+/// ⚠️ RBAC nguồn `myCommon_CheckHTCDirect` (chỉ HTC trực tiếp được ghi) — nợ chung toàn fleet.
+/// </summary>
+public sealed class MktActivityType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MKTActivityTypeCode { get; set; } = "";
+    public string MKTActivityTypeName { get; set; } = "";
+    /// <summary>"1" = Active, "0" = Inactive.</summary>
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Master **HOẠT ĐỘNG marketing** (`Mst_MarketingActivity` — port 1:1 cụm 4 hàm
+/// `Mst_MarketingActivityGet/_Create/_Update/_Delete`, 2010.HTC `BizHTC.Marketing.cs`
+/// dòng 766 / 977 / 1164 / 1359). Lưu ý hàm Update của nguồn viết thường chữ n:
+/// `Mst_MarketingActivity_Update_new20181115`.
+/// 🔴 Guard FK: `MKTActivityTypeCode` **phải tồn tại** trong `Mst_MarketingActivityType`
+/// (`Mst_MarketingActivityType_CheckDB` với `FlagExistToCheck = Flag.Yes`) — kiểm ở **cả Create lẫn Update**.
+/// 🔴 Ba cờ hồ sơ bắt buộc kèm theo hoạt động: `FlagDesignImage` (ảnh thiết kế) · `FlagActualImage`
+/// (ảnh thực tế) · `FlagContract` (hợp đồng) — giá trị "1"/"0".
+/// 🔴 `Delete` cũng là **XOÁ THẬT**, giống loại hoạt động.
+/// </summary>
+public sealed class MktActivity
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MKTActivityCode { get; set; } = "";
+    public string MKTActivityName { get; set; } = "";
+    /// <summary>Khoá ngoại sang <see cref="MktActivityType"/>.</summary>
+    public string? MKTActivityTypeCode { get; set; }
+    /// <summary>"1" = Active, "0" = Inactive.</summary>
+    public string FlagActive { get; set; } = "1";
+    /// <summary>Có bắt buộc ảnh thiết kế không ("1"/"0").</summary>
+    public string? FlagDesignImage { get; set; }
+    /// <summary>Có bắt buộc ảnh thực tế không ("1"/"0").</summary>
+    public string? FlagActualImage { get; set; }
+    /// <summary>Có bắt buộc hợp đồng không ("1"/"0").</summary>
+    public string? FlagContract { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Hạn mức & thanh toán marketing theo NĂM của từng đại lý (`Rpt_Marketing` — port 1:1 cụm 5 hàm
 /// `Rpt_MarketingGet/Create/UpdateMulti/Update/Approve_New20181115`, 2010.HTC
 /// `TERP.BizHTC/BizHTC.Marketing.cs` dòng 1617 / 1811 / 2182 / 2567 / 2822).
