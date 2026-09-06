@@ -5950,6 +5950,81 @@ public sealed class DlvMinutesHisDel
 }
 
 /// <summary>
+/// FILE ĐÍNH KÈM của giao dịch bán lẻ (`DLS_DealAttachFile` — 2010.HTC `Biz.HTC.WH.cs:94717`,
+/// hàm `DealerSalesDealUpdateAttachFileMulti`; hàm đọc `OSHCC_Dls_DealAttachFileGet`).
+/// 🔴 Cụm này **CHỈ có ở WS 64-bit** — `TERP.WSHTC` (32-bit) không có hàm nào
+/// (cùng ca với `Mst_MinInventory` ở #131, luật C0-centesimustricesimusprimus).
+/// Khoá dòng = cặp (`DealNo`, `FileIndex`); `UpdateMulti` nhận **bảng nhiều dòng** trong một lệnh.
+/// ⚠️ Tiền tố cột là **`Dls…`** (`DlsFilePath`/`DlsFileName`/`DlsFileType`/`DlsRemark`) —
+/// mỗi bảng đính kèm trong hệ dùng một tiền tố riêng, xem hai lớp dưới.
+/// </summary>
+public sealed class DlsDealAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealNo { get; set; } = "";
+    public int FileIndex { get; set; }
+    public string? DlsFilePath { get; set; }
+    public string? DlsFileName { get; set; }
+    public string? DlsFileType { get; set; }
+    public string? DlsRemark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// FILE ĐÍNH KÈM của thư bảo lãnh (`Pmt_GuaranteeAttachFile` — 2010.HTC
+/// `TCFIntergration/BizHTC.TCFIntergration.cs:1403`, csproj `&lt;Compile&gt;` dòng 328 ⇒ LIVE).
+/// Khoá dòng = cặp (`GuaranteeNo`, `FileIndex`).
+/// 🔴 Bảng này có **`FileSizeInBytes`** — hai bảng đính kèm anh em KHÔNG có cột này; đây là luồng
+/// tích hợp TCF (công ty tài chính) nên dung lượng file được ghi lại.
+/// ⚠️ Tiền tố cột là **`Grt…`** (`GrtFilePath`/`GrtFileName`/`GrtFileRemark`) — khác `Dls…` và `BkTrans…`.
+/// ⚠️ Không WS nào gọi trực tiếp: bảng được ghi **bên trong luồng tích hợp TCF**.
+/// </summary>
+public sealed class PmtGuaranteeAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GuaranteeNo { get; set; } = "";
+    public int FileIndex { get; set; }
+    public string? GrtFilePath { get; set; }
+    public string? GrtFileName { get; set; }
+    /// <summary>Dung lượng file — chỉ bảng này có (luồng TCF).</summary>
+    public long? FileSizeInBytes { get; set; }
+    public string? GrtFileRemark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// FILE ĐÍNH KÈM của giao dịch ngân hàng (`RQ_BankingTransAttachFile` — 2010.HTC
+/// `BankIntergration/BizHTC.VietinBank.cs:1125`, csproj `&lt;Compile&gt;` dòng 311 ⇒ LIVE).
+/// Khoá dòng = cặp (`RQ_BankingTransNo`, `FileIndex`); danh sách cột lấy từ
+/// `MyBuildDBDT_Common("#input_RQ_BankingTransAttachFile", …)` (dòng 7008-7019).
+/// 🔴 Hai cờ riêng của bảng này: `FlagPush` — nguồn **đặt `TConst.Flag.Active` ("1") cho MỌI dòng
+/// ngay trước khi lưu** (dòng 1119-1121), tức đánh dấu **đã đẩy sang ngân hàng**; và `FlagDlrCtr`
+/// (file thuộc hợp đồng đại lý hay không).
+/// ⚠️ Tiền tố cột là **`BkTrans…`** (`BkTransFileType`/`BkTransFilePath`/`BkTransFileName`).
+/// ⚠️ Không WS nào gọi trực tiếp: ghi bên trong luồng tích hợp VietinBank.
+/// </summary>
+public sealed class RqBankingTransAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RQ_BankingTransNo { get; set; } = "";
+    public int FileIndex { get; set; }
+    public string? BkTransFileType { get; set; }
+    public string? BkTransFilePath { get; set; }
+    public string? BkTransFileName { get; set; }
+    /// <summary>"1" = đã đẩy sang ngân hàng — nguồn đặt cho MỌI dòng ngay trước khi lưu.</summary>
+    public string? FlagPush { get; set; }
+    /// <summary>File thuộc hợp đồng đại lý hay không.</summary>
+    public string? FlagDlrCtr { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// TỒN KHO TỐI THIỂU theo dòng xe (`Mst_MinInventory` — port 1:1 cụm 4 hàm
 /// `Mst_MinInventory_CreateMulti_New20210604` (`Biz.HTC.WH.cs:201728`) / `_Update_New20210605` /
 /// `_Delete_New20210605` (202688) / `_Get_New20210605`).

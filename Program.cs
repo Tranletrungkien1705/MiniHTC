@@ -19994,6 +19994,117 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
 }).RequireAuthorization();
 
+// ===== BA bảng FILE ĐÍNH KÈM: giao dịch bán lẻ · thư bảo lãnh · giao dịch ngân hàng =====
+// `DLS_DealAttachFile` (Biz.HTC.WH.cs:94717, `DealerSalesDealUpdateAttachFileMulti` — **chỉ WS 64-bit**),
+// `Pmt_GuaranteeAttachFile` (TCFIntergration/BizHTC.TCFIntergration.cs:1403),
+// `RQ_BankingTransAttachFile` (BankIntergration/BizHTC.VietinBank.cs:1125).
+// 🔴 Ba bảng cùng vai trò nhưng **mỗi bảng một TIỀN TỐ CỘT riêng**: `Dls…` / `Grt…` / `BkTrans…`
+//    ⇒ không dùng chung entity/DTO được, và khi import dữ liệu thật phải map từng bảng một.
+// 🔴 Chỉ `Pmt_GuaranteeAttachFile` có `FileSizeInBytes`; chỉ `RQ_BankingTransAttachFile` có
+//    `FlagPush`/`FlagDlrCtr`. Khoá dòng của cả ba đều là cặp (`SốChứngTừ`, `FileIndex`).
+// ⚠️ Hai bảng sau **không WS nào gọi trực tiếp** — ghi bên trong luồng tích hợp TCF / VietinBank;
+//    cả hai file đều `<Compile>` trong csproj (328 và 311) ⇒ LIVE.
+// ⚠️ Cả ba đều ghi `_dbMain` + `_dbWH`, dòng `_dbWH` không bị comment.
+app.MapGet("/api/dealattachfiles", async (AppDbContext db, ITenantContext t, string? dealNo) =>
+{
+    var qy = db.DlsDealAttachFiles.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(x => x.DealNo == dealNo);
+    var items = await qy.OrderBy(x => x.DealNo).ThenBy(x => x.FileIndex).Select(x => new
+    { x.DealNo, x.FileIndex, x.DlsFilePath, x.DlsFileName, x.DlsFileType, x.DlsRemark, x.LogLUDateTime, x.LogLUBy })
+    .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// `UpdateMulti` — nguồn nhận BẢNG nhiều dòng, upsert theo cặp (DealNo, FileIndex).
+app.MapPost("/api/dealattachfiles/updatemulti", async (DealAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.DealNo ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số giao dịch rỗng." });
+    var rows = dto.Files ?? new();
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var saved = 0;
+    foreach (var f in rows)
+    {
+        var idx = f.FileIndex ?? 0;
+        var row = await db.DlsDealAttachFiles.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no && x.FileIndex == idx);
+        if (row is null) { row = new DlsDealAttachFile { OrgId = t.OrgId, DealNo = no, FileIndex = idx }; db.DlsDealAttachFiles.Add(row); }
+        row.DlsFilePath = f.FilePath; row.DlsFileName = f.FileName;
+        row.DlsFileType = f.FileType; row.DlsRemark = f.Remark;
+        row.LogLUDateTime = now; row.LogLUBy = who;
+        saved++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealNo = no, saved });
+}).RequireAuthorization();
+
+app.MapGet("/api/guaranteeattachfiles", async (AppDbContext db, ITenantContext t, string? guaranteeNo) =>
+{
+    var qy = db.PmtGuaranteeAttachFiles.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(guaranteeNo)) qy = qy.Where(x => x.GuaranteeNo == guaranteeNo);
+    var items = await qy.OrderBy(x => x.GuaranteeNo).ThenBy(x => x.FileIndex).Select(x => new
+    { x.GuaranteeNo, x.FileIndex, x.GrtFilePath, x.GrtFileName, x.FileSizeInBytes, x.GrtFileRemark, x.LogLUDateTime, x.LogLUBy })
+    .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/guaranteeattachfiles/save", async (GuaranteeAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.GuaranteeNo ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số bảo lãnh rỗng." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var saved = 0;
+    foreach (var f in dto.Files ?? new())
+    {
+        var idx = f.FileIndex ?? 0;
+        var row = await db.PmtGuaranteeAttachFiles.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no && x.FileIndex == idx);
+        if (row is null) { row = new PmtGuaranteeAttachFile { OrgId = t.OrgId, GuaranteeNo = no, FileIndex = idx }; db.PmtGuaranteeAttachFiles.Add(row); }
+        row.GrtFilePath = f.FilePath; row.GrtFileName = f.FileName;
+        row.FileSizeInBytes = f.FileSizeInBytes;   // chỉ bảng này có
+        row.GrtFileRemark = f.Remark;
+        row.LogLUDateTime = now; row.LogLUBy = who;
+        saved++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { guaranteeNo = no, saved });
+}).RequireAuthorization();
+
+app.MapGet("/api/bankingtransattachfiles", async (AppDbContext db, ITenantContext t, string? transNo, string? flagPush) =>
+{
+    var qy = db.RqBankingTransAttachFiles.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(transNo)) qy = qy.Where(x => x.RQ_BankingTransNo == transNo);
+    if (!string.IsNullOrWhiteSpace(flagPush)) qy = qy.Where(x => x.FlagPush == flagPush);
+    var items = await qy.OrderBy(x => x.RQ_BankingTransNo).ThenBy(x => x.FileIndex).Select(x => new
+    { x.RQ_BankingTransNo, x.FileIndex, x.BkTransFileType, x.BkTransFilePath, x.BkTransFileName,
+      x.FlagPush, x.FlagDlrCtr, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// 🔴 Nguồn đặt `FlagPush = TConst.Flag.Active` ("1") cho MỌI dòng ngay trước khi lưu (VietinBank.cs:1119-1121)
+//    — tức lưu ở đây đồng nghĩa "đã đẩy sang ngân hàng". Port giữ nguyên, không nhận cờ này từ client.
+app.MapPost("/api/bankingtransattachfiles/save", async (BankingTransAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = (dto.RQ_BankingTransNo ?? "").Trim();
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số giao dịch ngân hàng rỗng." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var saved = 0;
+    foreach (var f in dto.Files ?? new())
+    {
+        var idx = f.FileIndex ?? 0;
+        var row = await db.RqBankingTransAttachFiles.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no && x.FileIndex == idx);
+        if (row is null) { row = new RqBankingTransAttachFile { OrgId = t.OrgId, RQ_BankingTransNo = no, FileIndex = idx }; db.RqBankingTransAttachFiles.Add(row); }
+        row.BkTransFileType = f.FileType; row.BkTransFilePath = f.FilePath; row.BkTransFileName = f.FileName;
+        row.FlagPush = "1";                 // nguồn ép Flag.Active cho mọi dòng
+        row.FlagDlrCtr = f.FlagDlrCtr;
+        row.LogLUDateTime = now; row.LogLUBy = who;
+        saved++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { transNo = no, saved, note = "FlagPush được đặt '1' cho mọi dòng, đúng như nguồn." });
+}).RequireAuthorization();
+
 // ===== TỒN KHO TỐI THIỂU theo dòng xe (Mst_MinInventory) =====
 // Port 1:1 cụm 4 hàm: `_CreateMulti_New20210604` (Biz.HTC.WH.cs:201728) / `_Update_New20210605` /
 // `_Delete_New20210605` (202688) / `_Get_New20210605`.
@@ -24980,6 +25091,14 @@ record MinInventoryKeyDto(string? SpecCode);
 // Lịch làm việc: ResetYear khai giá trị cho TỪNG THỨ rồi trải ra cả năm.
 record CalendarResetYearDto(string? CalendarType, int? Year, string? Monday, string? Tuesday, string? Wednesday, string? Thursday, string? Friday, string? Saturday, string? Sunday);
 record CalendarUpdateDto(string? CalendarType, DateTime? Date, string? StatusValue);
+// Ba bảng file đính kèm — khoá dòng đều là cặp (SốChứngTừ, FileIndex), nhưng TIỀN TỐ CỘT khác nhau.
+record DealAttachRowDto(int? FileIndex, string? FilePath, string? FileName, string? FileType, string? Remark);
+record DealAttachSaveDto(string? DealNo, List<DealAttachRowDto>? Files);
+record GuaranteeAttachRowDto(int? FileIndex, string? FilePath, string? FileName, long? FileSizeInBytes, string? Remark);
+record GuaranteeAttachSaveDto(string? GuaranteeNo, List<GuaranteeAttachRowDto>? Files);
+// FlagPush KHÔNG nhận từ client: nguồn ép "1" cho mọi dòng.
+record BankingTransAttachRowDto(int? FileIndex, string? FileType, string? FilePath, string? FileName, string? FlagDlrCtr);
+record BankingTransAttachSaveDto(string? RQ_BankingTransNo, List<BankingTransAttachRowDto>? Files);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
