@@ -30,6 +30,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealDetailCusInvoiceHisUpd> DealDetailCusInvoiceHisUpds => Set<DealDetailCusInvoiceHisUpd>();
     public DbSet<DealUpdBankCodeHis> DealUpdBankCodeHiss => Set<DealUpdBankCodeHis>();
     public DbSet<SbhOnlinePushHistory> SbhOnlinePushHistories => Set<SbhOnlinePushHistory>();
+    public DbSet<GpsCallLog> GpsCallLogs => Set<GpsCallLog>();
     public DbSet<PlanRetail> PlanRetails => Set<PlanRetail>();
     public DbSet<PlanRetailDtl> PlanRetailDtls => Set<PlanRetailDtl>();
     public DbSet<PlanRetailModel> PlanRetailModels => Set<PlanRetailModel>();

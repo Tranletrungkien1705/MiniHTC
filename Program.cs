@@ -4217,6 +4217,69 @@ app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbCon
     return Results.Ok(new { dealNo, count = logs.Count, logs });
 }).RequireAuthorization();
 
+// ===== Nhật ký gọi API GPS (GPS_LogGPS — port 1:1 GPS_LogGPS_Add,
+// 2010.HTC StorageFG/BizHTC.ConnGPSVelocaDMS.cs:1476) =====
+// 🔴 Mỗi lần gọi API ghi HAI dòng chung một `LogId`: "RQ" trước khi gửi (Status rỗng) và
+//    "RS" sau khi nhận (Status = kết quả, hoặc "FALSE" khi lỗi). Endpoint dưới đây phơi đúng mô hình đó.
+// 🔴 `FunctionType` theo `TConst.TypeCallGPS`: MAPVIN · OUTSTO · GETADDRESSONLINE · SEARCHADDRESSS ·
+//    DMSUNMAPVIN (giữ nguyên "SEARCHADDRESSS" thừa một chữ S của nguồn).
+app.MapGet("/api/gpscalllogs", async (AppDbContext db, ITenantContext t, string? logId, string? logType, string? functionType, string? status) =>
+{
+    var qy = db.GpsCallLogs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(logId)) qy = qy.Where(x => x.LogId == logId);
+    if (!string.IsNullOrWhiteSpace(logType)) qy = qy.Where(x => x.LogType == logType.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(functionType)) qy = qy.Where(x => x.FunctionType == functionType.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.LogId, x.LogType, x.Status, x.Exception, x.DataSend, x.DataResponse,
+        x.IDMSKey, x.FunctionName, x.FunctionType, x.Trycount, x.Url, x.Remark, x.CreatedAt
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Ghi một dòng nhật ký (dùng cho cả RQ lẫn RS — đúng như nguồn gọi cùng một hàm `GPS_LogGPS_Add`).
+app.MapPost("/api/gpscalllogs", async (GpsCallLogDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var logType = (dto.LogType ?? "RQ").Trim().ToUpperInvariant();
+    if (logType is not ("RQ" or "RS")) return Results.BadRequest(new { error = "LogType = RQ | RS (TConst.LogTypeGPS)." });
+    var fnType = string.IsNullOrWhiteSpace(dto.FunctionType) ? null : dto.FunctionType!.Trim().ToUpperInvariant();
+    string[] okTypes = { "MAPVIN", "OUTSTO", "GETADDRESSONLINE", "SEARCHADDRESSS", "DMSUNMAPVIN" };
+    if (fnType is not null && !okTypes.Contains(fnType))
+        return Results.BadRequest(new { error = $"FunctionType không hợp lệ. Cho phép: {string.Join(", ", okTypes)}." });
+    var logId = string.IsNullOrWhiteSpace(dto.LogId) ? Guid.NewGuid().ToString("N") : dto.LogId!.Trim();
+    var row = new GpsCallLog
+    {
+        OrgId = t.OrgId, LogId = logId, LogType = logType,
+        // Nguồn để Status RỖNG ở dòng RQ; "FALSE" khi lỗi phía RS.
+        Status = logType == "RQ" ? "" : dto.Status,
+        Exception = dto.Exception, DataSend = dto.DataSend, DataResponse = dto.DataResponse,
+        IDMSKey = dto.IDMSKey, FunctionName = dto.FunctionName, FunctionType = fnType,
+        Trycount = string.IsNullOrWhiteSpace(dto.Trycount) ? "1" : dto.Trycount, // nguồn luôn truyền "1"
+        Url = dto.Url, Remark = dto.Remark,
+    };
+    db.GpsCallLogs.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.LogId, row.LogType, row.FunctionType, row.Status });
+}).RequireAuthorization();
+
+// Tra một lần gọi trọn vẹn: ghép cặp RQ + RS theo LogId.
+app.MapGet("/api/gpscalllogs/{logId}/pair", async (string logId, AppDbContext db, ITenantContext t) =>
+{
+    var rows = await db.GpsCallLogs.Where(x => x.OrgId == t.OrgId && x.LogId == logId)
+        .OrderBy(x => x.Id).ToListAsync();
+    if (rows.Count == 0) return Results.NotFound(new { logId });
+    var rq = rows.FirstOrDefault(x => x.LogType == "RQ");
+    var rs = rows.FirstOrDefault(x => x.LogType == "RS");
+    return Results.Ok(new
+    {
+        logId,
+        request = rq is null ? null : new { rq.FunctionType, rq.FunctionName, rq.Url, rq.DataSend, rq.CreatedAt },
+        response = rs is null ? null : new { rs.Status, rs.DataResponse, rs.Exception, rs.CreatedAt },
+        completed = rq is not null && rs is not null,
+    });
+}).RequireAuthorization();
+
 // ===== Kế hoạch bán lẻ theo tháng (Rpt_PlanRetail — port 1:1 Rpt_PlanRetail_Create/Approve/Cancel,
 // 2010.HTC BizHTC.Report.cs:33001/33644/33900). TWIN: chỉ `TERP.WSHTC.64` (95765/95832/95901). =====
 // 🔴 Trạng thái `TConst.PRStatus`: "P" mới tạo · "A" duyệt · "C" từ chối.
@@ -22024,6 +22087,8 @@ record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCod
 record SbhBatchDto(List<string>? Vins);
 // Kế hoạch bán lẻ: khoá nghiệp vụ PlanMonth + PlanTimes + DealerCode.
 record PlanRetailDto(string PlanMonth, string PlanTimes, string DealerCode, List<PlanRetailLineDto>? Lines, string? PlanTimesPrev = null);
+// Nhật ký gọi API GPS: một dòng cho RQ, một dòng cho RS, chung LogId.
+record GpsCallLogDto(string? LogId, string? LogType, string? Status, string? Exception, string? DataSend, string? DataResponse, string? IDMSKey, string? FunctionName, string? FunctionType, string? Trycount, string? Url, string? Remark);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);

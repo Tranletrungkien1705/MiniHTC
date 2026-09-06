@@ -4559,6 +4559,41 @@ public sealed class DealerDealDetail
 }
 
 /// <summary>
+/// Nhật ký gọi API GPS (`GPS_LogGPS` — port 1:1 `GPS_LogGPS_Add`, 2010.HTC
+/// `StorageFG/BizHTC.ConnGPSVelocaDMS.cs:1476`).
+/// 🔴 Mỗi lần gọi API ghi **HAI dòng** chung một `LogId`:
+/// · `LogType = "RQ"` ghi **trước khi gửi**, `Status` để **rỗng**;
+/// · `LogType = "RS"` ghi **sau khi nhận**, `Status` = kết quả trả về, hoặc **"FALSE"** khi lỗi/không nhận được.
+/// (`TConst.LogTypeGPS`, `Const.Main.cs:733-737`.)
+/// 🔴 `FunctionType` theo `TConst.TypeCallGPS` (724-731): **MAPVIN · OUTSTO · GETADDRESSONLINE ·
+/// SEARCHADDRESSS · DMSUNMAPVIN** — lưu ý `SEARCHADDRESSS` **thừa một chữ S nguyên văn nguồn**.
+/// </summary>
+public sealed class GpsCallLog
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Khoá nối cặp RQ↔RS của cùng một lần gọi.</summary>
+    public string LogId { get; set; } = "";
+    /// <summary>"RQ" gửi đi / "RS" nhận về.</summary>
+    public string LogType { get; set; } = "RQ";
+    /// <summary>Trạng thái trả về; rỗng ở dòng RQ, "FALSE" khi lỗi.</summary>
+    public string? Status { get; set; }
+    public string? Exception { get; set; }
+    public string? DataSend { get; set; }
+    public string? DataResponse { get; set; }
+    /// <summary>Khoá bản ghi phía DMS (`iDMSKey`) — giữ nguyên tên cột của nguồn.</summary>
+    public string? IDMSKey { get; set; }
+    public string? FunctionName { get; set; }
+    /// <summary>Loại lệnh gọi theo `TConst.TypeCallGPS`.</summary>
+    public string? FunctionType { get; set; }
+    /// <summary>Số lần thử (`Trycount` — nguồn luôn truyền "1" ở mọi điểm gọi hiện có).</summary>
+    public string? Trycount { get; set; }
+    public string? Url { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
 /// Kế hoạch bán lẻ theo tháng (`Rpt_PlanRetail` — port 1:1 `Rpt_PlanRetail_Create/Approve/Cancel`,
 /// 2010.HTC `BizHTC.Report.cs:33001/33644/33900`).
 /// 🔴 Trạng thái theo `TConst.PRStatus` (`Const.Main.DMS40.cs:826-831`):
