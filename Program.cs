@@ -28407,6 +28407,67 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
 }).RequireAuthorization();
 
 // Tạo bản ghi MACE (WinForm gốc chỉ search vì nguồn phát sinh từ hãng — thêm POST để nhập tay tương đương)
+// ===== 🔴 #218 NHẮC BẢO DƯỠNG theo phiếu CSKH — `Ser_CustomerCareMaintance` =====
+// Màn gốc: `Views/Customer/FrmCSCCustomerCareMaintance.cs` (238 dòng, DMSCarSv) —
+//   bốn nút: `btnThoat` · `btnContactedIFeedB` · `btnContactedINoFB` · `btnReject`.
+// Nguồn: `TERP.BizCarSv/BizCarSv.Customer.cs:16472`. 3B: md5 CẢ FILE `44c7c87b` KHỚP 2 máy.
+//
+// 🔴 BẪY ĐẶT TÊN NÚT — ba nút map sang ba mã theo HẰNG, KHÔNG theo tên nút:
+//     `btnContactedIFeedB`  → `SerCareStatus.ContactedINeedFB` = **CINFB** (đã liên hệ, CHƯA phản hồi)
+//     `btnContactedINoFB`   → `SerCareStatus.ContactedIFNoB`   = **CIFB**  (đã liên hệ, ĐÃ phản hồi)
+//     `btnReject`           → `SerCareStatus.Reject`           = **REJ**
+//   Tên nút và tên hằng NGƯỢC nhau về nghĩa (IFeedB ↔ INeedFB, INoFB ↔ IFNoB) ⇒ phải bám hằng.
+//
+// 🔴 MỘT THAO TÁC CHẠM HAI BẢNG:
+//   1. `Ser_CustomerCareMaintance` — **upsert** theo `CusCareID`, ghi 3 cột `DateAppointment`/`ContactDate`/`Note`;
+//   2. gọi `Ser_CustomerCareStatusUpdate` đặt `Status` (+ `ContactDate`) trên PHIẾU CHÍNH `Ser_CustomerCare`.
+//   Bỏ bước 2 thì phiếu vẫn ở "PEND" dù đã ghi nhận liên hệ — lỗi âm thầm.
+//
+// ⚠️ Khác #217: `ContactDate` ở đây **chỉ ghi khi có giá trị** (`if (!IsEmpty(strConatctDate))`) — để trống thì
+//   GIỮ NGUYÊN giá trị cũ, không set NULL. Giữ đúng khác biệt này.
+app.MapPost("/api/customercares/{no}/maintance", async (string no, CareMaintanceDto dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var care = await db.CustomerCares.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (care is null) return Results.NotFound(new { no });
+
+    var status = (dto.Status ?? "").Trim().ToUpperInvariant();
+    if (status is not ("CINFB" or "CIFB" or "REJ"))
+        return Results.BadRequest(new { error = "Trạng thái chỉ nhận CINFB (chưa phản hồi) | CIFB (đã phản hồi) | REJ (không liên hệ)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // (1) upsert bảng nhắc bảo dưỡng
+    var row = await db.CustomerCareMaintances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    var isNew = row is null;
+    if (row is null) { row = new CustomerCareMaintance { OrgId = t.OrgId, CareNo = no, CreatedAt = now }; db.CustomerCareMaintances.Add(row); }
+    row.DateAppointment = dto.DateAppointment;
+    if (dto.ContactDate.HasValue) row.ContactDate = dto.ContactDate;   // rỗng ⇒ GIỮ giá trị cũ (đúng nguồn)
+    row.Note = dto.Note;
+    if (!isNew) { row.UpdatedAt = now; row.UpdatedBy = who; }
+
+    // (2) side-effect: cập nhật trạng thái trên PHIẾU CHÍNH
+    care.Status = status;
+    if (dto.ContactDate.HasValue) { care.ContactDate = dto.ContactDate; care.ContactedAt = now; }
+    if (status == "CINFB") { care.IsCall = "1"; care.IsFeedback = "0"; }
+    else if (status == "CIFB") { care.IsCall = "1"; care.IsFeedback = "1"; }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { care.CareNo, status = care.Status, care.IsCall, care.IsFeedback,
+                            row.DateAppointment, row.ContactDate, row.Note, created = isNew });
+}).RequireAuthorization();
+
+app.MapGet("/api/customercares/{no}/maintance", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var row = await db.CustomerCareMaintances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    if (row is null) return Results.NotFound(new { no });
+    return Results.Ok(new { row.CareNo, row.DateAppointment, row.ContactDate, row.Note,
+                            row.CreatedAt, row.UpdatedAt, row.UpdatedBy });
+}).RequireAuthorization();
+
 // ===== 🔴 #216 LỊCH HẸN BẢO DƯỠNG đã chốt ngày — `Ser_CustomerCareMaceApointDate_Get` =====
 // Màn gốc: `Views/Customer/FrmCustomerCareMaceApointDate.cs` (369 dòng, DMSCarSv) —
 //   ba nút `btnSearch` · `btnExportExcel` · `btnThoat` (grep KHÔNG phân biệt hoa/thường, luật #212).
@@ -30413,6 +30474,7 @@ record CareSurveyDto(
     // #211: hồ sơ khảo sát + bộ trắc nghiệm Survey1..28 của `Ser_CustomerCare72h`.
     string? CusCareType = null, string? Remark = null, string? SurveyGmail = null,
     string? Survey1 = null, string? Survey2 = null, string? Survey3 = null, string? Survey4 = null, string? Survey5 = null, string? Survey6 = null, string? Survey7 = null, string? Survey8 = null, string? Survey9 = null, string? Survey10 = null, string? Survey11 = null, string? Survey12 = null, string? Survey13 = null, string? Survey14 = null, string? Survey15 = null, string? Survey16 = null, string? Survey17 = null, string? Survey18 = null, string? Survey19 = null, string? Survey20 = null, string? Survey21 = null, string? Survey22 = null, string? Survey23 = null, string? Survey24 = null, string? Survey25 = null, string? Survey26 = null, string? Survey27 = null, string? Survey28 = null);
+record CareMaintanceDto(string? Status, string? DateAppointment = null, DateTime? ContactDate = null, string? Note = null);
 record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);

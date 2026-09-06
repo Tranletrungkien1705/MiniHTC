@@ -4680,7 +4680,29 @@ public sealed class CustomerCare
 }
 
 /// <summary>
-/// Chăm sóc khách hàng nhân dịp SINH NHẬT (Ser_CustomerCareBth —
+/// #218 parity `Ser_CustomerCareMaintance` — NHẮC BẢO DƯỠNG theo phiếu CSKH
+/// (port 1:1 `FrmCSCCustomerCareMaintance`, TCMotor DMSCarSv/Customer; nguồn `BizCarSv.Customer.cs:16472`).
+/// 🔴 Bảng RIÊNG, khoá `CusCareID` — quan hệ 1-1 với phiếu <see cref="CustomerCare"/>; nguồn **upsert**:
+/// chưa có thì insert, có rồi thì update đúng ba cột `DateAppointment` · `ContactDate` · `Note`.
+/// ⚠️ Mỗi lần lưu, nguồn còn gọi `Ser_CustomerCareStatusUpdate` để đặt `Status` trên PHIẾU CHÍNH
+/// ⇒ một thao tác chạm HAI bảng.
+/// </summary>
+public sealed class CustomerCareMaintance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số phiếu CSKH (nguồn: `CusCareID`) — khoá upsert.</summary>
+    public string CareNo { get; set; } = "";
+    /// <summary>Ngày hẹn bảo dưỡng (`DateAppointment`).</summary>
+    public string? DateAppointment { get; set; }
+    public DateTime? ContactDate { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; }
+    public string? UpdatedBy { get; set; }
+}
+
+/// <summary>Chăm sóc khách hàng nhân dịp SINH NHẬT
 /// port 1:1 FrmCSCCustomerCareDOB / FrmCustomerCareBth, TCMotor DMSCarSv/Customer).
 /// ⚠️ Là BẢNG RIÊNG ở nguồn, KHÔNG phải một loại của <see cref="CustomerCare"/>:
 /// có khoá riêng (CareBthId) và **bộ trạng thái riêng "0/1/2"**, khác hẳn PEND/CINFB/CIFB/REJ.

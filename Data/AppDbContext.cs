@@ -330,6 +330,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceQuotationPart> ServiceQuotationParts => Set<ServiceQuotationPart>();
     public DbSet<CustomerCare> CustomerCares => Set<CustomerCare>();
     public DbSet<CustomerCareSurvey> CustomerCareSurveys => Set<CustomerCareSurvey>();
+    public DbSet<CustomerCareMaintance> CustomerCareMaintances => Set<CustomerCareMaintance>();   // #218
     public DbSet<CustomerCareBirthday> CustomerCareBirthdays => Set<CustomerCareBirthday>();
     public DbSet<CustomerCareMace> CustomerCareMaces => Set<CustomerCareMace>();
     public DbSet<InsuranceAttachmentType> InsuranceAttachmentTypes => Set<InsuranceAttachmentType>();
