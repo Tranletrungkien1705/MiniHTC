@@ -3981,7 +3981,7 @@ app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string?
     else if (adjType == "root") q = q.Where(v => v.InvoiceAdjType == "");
     var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new
     {
-        v.HTCInvoiceCode, v.HTCInvoiceNo, v.InvoiceIDCode, v.HTCInvoiceDate, v.VAT, v.DealerCode, v.BankCode, v.SourceInvoiceName, v.InvoiceAdjType, v.RootHTCInvoiceNo, v.OS_HDDT_InvoiceCode, v.VatHTCStatus, v.CreatedAt,
+        v.HTCInvoiceCode, v.HTCInvoiceNo, v.InvoiceIDCode, v.InvoiceIDType, v.HTCInvoiceDate, v.VAT, v.DealerCode, v.BankCode, v.SourceInvoiceName, v.InvoiceAdjType, v.RootHTCInvoiceNo, v.OS_HDDT_InvoiceCode, v.VatHTCStatus, v.CreatedAt,   // #274 §12
         v.ApprovedDate, v.ApprovedBy,
         v.OS_HDDT_RefNo, v.HddtSyncedAt, v.PaymentMethodCode, v.SourceInvoiceCode, v.RefNo,   // #195 §12
         v.ValGoodsNotTaxable, v.ValGoodsNotChargeTax, v.ValGoodsVAT5, v.ValVAT5, v.ValGoodsVAT10, v.ValVAT10,
@@ -4015,6 +4015,25 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
     var srcCode = (dto.SourceInvoiceCode ?? "").Trim().ToUpperInvariant();
     if (srcCode.Length > 0 && srcCode is not ("INVOICEROOT" or "INVOICEADJ" or "INVOICEREPLACE"))
         return Results.BadRequest(new { error = "SourceInvoiceCode phải là INVOICEROOT | INVOICEADJ | INVOICEREPLACE." });
+
+    // ===== 🔴 #274 hai guard nữa của đường NHẬP (`VAT_HTCInvoiceImportNew_New20190816`, :9038 và :9109) =====
+    var idType = string.IsNullOrWhiteSpace(dto.InvoiceIDType) ? "HTC" : dto.InvoiceIDType!.Trim().ToUpperInvariant();
+    if (idType != "HTC")
+        return Results.BadRequest(new { error = "InvoiceIDType phải là HTC (nguồn: ..._InvalidInvoiceIDType).", invoiceIDType = idType });
+
+    // Nguồn liệt kê nguyên văn ba giá trị hợp lệ trong tham số lỗi: "NORMAL, ADJINCREASE, ADJDESCREASE".
+    var adjType = (dto.InvoiceAdjType ?? "").Trim().ToUpperInvariant();
+    if (adjType.Length > 0 && adjType is not ("NORMAL" or "ADJINCREASE" or "ADJDESCREASE"))
+        return Results.BadRequest(new { error = "InvoiceAdjType phải là NORMAL | ADJINCREASE | ADJDESCREASE." });
+
+    // ☠️ KHÔNG port guard ngay sau đó của nguồn (:9124):
+    //     `if (StringEqualIgnoreCase(strInvoiceAdjType, TConst.SourceInvoiceCode.InvoiceReplace)`
+    //     ` || StringEqualIgnoreCase(strInvoiceAdjType, TConst.SourceInvoiceCode.InvoiceAdj))` … `throw InvalidRefNo`
+    //   Nó so **InvoiceAdjType** với hằng của **SourceInvoiceCode** — SAI BỘ TỪ VỰNG. Mà guard ngay TRÊN nó
+    //   vừa ép AdjType chỉ được là NORMAL/ADJINCREASE/ADJDESCREASE ⇒ điều kiện **LUÔN SAI, guard CHẾT**.
+    //   Hơn nữa ý định viết ra cũng ngược (ném khi RefNo CÓ, trong khi thay thế/điều chỉnh thì BẮT BUỘC có
+    //   RefNo). Port theo mặt chữ = code chết; port theo "ý định" = chặn nhầm nghiệp vụ ⇒ **không port**,
+    //   ghi lại để người nghiệp vụ quyết.
     var refNo = (dto.RefNo ?? "").Trim().ToUpperInvariant();
     VatInvoice? rootInv = null;
     if (srcCode == "INVOICEREPLACE")
@@ -4028,7 +4047,7 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
     var code = "HDVAT" + DateTime.Now.ToString("yyMMddHHmmss");
     var v2 = new VatInvoice
     {
-        OrgId = t.OrgId, HTCInvoiceCode = code, InvoiceIDCode = dto.InvoiceIDCode.Trim(), VAT = dto.VAT <= 0 ? 10 : dto.VAT, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode ?? "",
+        OrgId = t.OrgId, HTCInvoiceCode = code, InvoiceIDCode = dto.InvoiceIDCode.Trim(), InvoiceIDType = idType, VAT = dto.VAT <= 0 ? 10 : dto.VAT, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode ?? "",
         SourceInvoiceName = dto.SourceInvoiceName ?? "", InvoiceAdjType = dto.InvoiceAdjType ?? "", RootHTCInvoiceNo = dto.RootHTCInvoiceNo ?? "",
         SourceInvoiceCode = srcCode, RefNo = refNo,      // #195
         // Nguồn tạo ở "P" (chờ duyệt) và để SỐ + NGÀY hoá đơn NULL (Biz.HTC.WH.cs:120616-120619).
@@ -4166,14 +4185,34 @@ app.MapPost("/api/vatinvoices/{code}/invoiceno", async (
     if (noStr.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số hoá đơn." });
     if (!decimal.TryParse(noStr, out var noVal))
         return Results.BadRequest(new { error = "Số hoá đơn phải là số (nguồn so sánh bằng giá trị số)." });
+
+    // 🔴 #274 ĐỘ DÀI: nguồn `if (strHTCInvoiceNo.Length < 7) throw ..._HTCInvoiceNoInvalidLength`,
+    //   kèm dòng cũ bị comment `//if (strHTCInvoiceNo.Length != 7)` và ghi chú *"20180308 nới luật check số
+    //   hoá đơn"* ⇒ luật ĐANG CHẠY là **tối thiểu 7**, KHÔNG phải đúng 7. Port theo dòng đang chạy.
+    if (noStr.Length < 7)
+        return Results.BadRequest(new { error = "Số hoá đơn phải có ít nhất 7 ký tự.", htcInvoiceNo = noStr });
     if (dto.HTCInvoiceDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày hoá đơn." });
     var idCode = string.IsNullOrWhiteSpace(dto.InvoiceIDCode) ? v.InvoiceIDCode : dto.InvoiceIDCode!.Trim();
     if (string.IsNullOrWhiteSpace(idCode)) return Results.BadRequest(new { error = "Chưa có ký hiệu hoá đơn." });
     var day = dto.HTCInvoiceDate.Value.Date;
 
+    // 🔴 #274 TRÙNG SỐ HOÁ ĐƠN — nguồn `..._HTCInvoiceNoExist` (:9190). Port cũ thiếu hẳn.
+    //   Cùng phạm vi với phép tìm liền kề: cùng ký hiệu + cùng loại + chưa bị huỷ/từ chối.
+    var noExists = await db.VatInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.InvoiceIDCode == idCode
+        && x.InvoiceIDType == "HTC" && x.HTCInvoiceCode != code && x.HTCInvoiceNo == noStr
+        && x.VatHTCStatus != "R" && x.VatHTCStatus != "C");
+    if (noExists)
+        return Results.BadRequest(new { error = "Số hoá đơn đã tồn tại trong cùng ký hiệu.", htcInvoiceNo = noStr, invoiceIDCode = idCode });
+
     // Cùng ký hiệu, khác chính nó, đã có số + ngày.
+    // 🔴 #274 BỔ SUNG HAI ĐIỀU KIỆN LỌC của nguồn (:9262-9268) mà port cũ THIẾU:
+    //   `and vt.InvoiceIDType = 'HTC'` và `and vt.VatHTCStatus not in ('R','C')`.
+    //   Thiếu vế trạng thái là lỗi THẬT: một hoá đơn **đã huỷ/bị từ chối** vẫn được coi là "hàng xóm" và
+    //   **chặn oan** ngày của hoá đơn đang lập. Hoá đơn đã huỷ thì không còn ràng buộc thứ tự ngày nữa.
     var siblings = await db.VatInvoices
         .Where(x => x.OrgId == t.OrgId && x.InvoiceIDCode == idCode && x.HTCInvoiceCode != code
+                    && x.InvoiceIDType == "HTC"
+                    && x.VatHTCStatus != "R" && x.VatHTCStatus != "C"
                     && x.HTCInvoiceNo != "" && x.HTCInvoiceDate != null)
         .Select(x => new { x.HTCInvoiceNo, x.HTCInvoiceDate }).ToListAsync();
 
@@ -34065,7 +34104,8 @@ record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentN
 record VatInvoiceCarDto(string VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? BrandName, string? CarType, string? InvoiceNoFactory, string? ProductionYear, decimal HTCUnitPrice, DateTime? CustomsClearanceDate);
 record VatInvoiceNoDto(string? HTCInvoiceNo, string? InvoiceIDCode, DateTime? HTCInvoiceDate);
 record VatHddtDto(string? OS_HDDT_InvoiceCode, string? OS_HDDT_RefNo);
-record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? SourceInvoiceCode, string? RefNo, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1);
+record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? SourceInvoiceCode, string? RefNo, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1,
+    string? InvoiceIDType = null);   // #274: nguon chi nhan "HTC"
 record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
 record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars, string? Remark = null);
 record GrtClaimExtSignDto(string FileName, string? Remark = null);

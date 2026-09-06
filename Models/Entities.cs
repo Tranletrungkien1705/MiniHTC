@@ -11293,6 +11293,15 @@ public sealed class VatInvoice
     public string HTCInvoiceCode { get; set; } = "";
     public string HTCInvoiceNo { get; set; } = "";       // so HD (gan khi phat hanh)
     public string InvoiceIDCode { get; set; } = "";       // ky hieu HD
+
+    /// <summary>
+    /// 🔴 #274 `VAT_HTCInvoice.InvoiceIDType` — LOẠI ký hiệu hoá đơn. Nguồn
+    /// (`BizHTC.HDDTIntergration.cs:9038 VAT_HTCInvoiceImportNew_New20190816`) chặn thẳng:
+    /// `if (strInvoiceIDType != TConst.InvoiceType.HTC) throw ..._InvalidInvoiceIDType`
+    /// ⇒ đường nhập chỉ nhận hoá đơn loại **HTC**. Cột này còn là ĐIỀU KIỆN LỌC khi tìm hoá đơn liền kề
+    /// để kiểm ngày (xem guard cận dưới/cận trên) — thiếu nó thì lọc sai tập so sánh.
+    /// </summary>
+    public string InvoiceIDType { get; set; } = "HTC";
     public decimal VAT { get; set; } = 10;
     public string DealerCode { get; set; } = "";
     public string BankCode { get; set; } = "";
