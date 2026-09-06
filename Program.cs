@@ -32372,11 +32372,69 @@ var stockOutTypeNames = new Dictionary<string, string>
     ["2"] = "Xuất thường",    // StockOutTypeNormalValue/Text
 };
 
-var stockOutStatusNames = new Dictionary<string, string>
+// ===== 🔴 #288 Trạng thái PHIẾU XUẤT nhìn từ MÀN BÁO GIÁ — nhãn KHÁC HẲN màn phiếu xuất =====
+// Nguồn: `BizCarSv.Inventory.Quote.cs:1530-1534` (lặp lại ở `:1817`), đọc CÙNG cột
+//   `Ser_Inv_StockOut.Status` nhưng gán nhãn khác — đúng luật "nhãn theo MÀN" đã rút ở #286.
+//
+// | mã | màn PHIẾU XUẤT (#264) | màn BÁO GIÁ (#288) |
+// |----|----------------------|--------------------|
+// | `NULL` | (không có nhãn)      | **"Mới tạo"** ← nghĩa: **CHƯA lập phiếu xuất nào** |
+// | `1` | "Mới tạo"            | **"Đã tạo phiếu xuất"** |
+// | `2` | "Tiến hành"          | **(không có nhãn ⇒ NULL)** |
+// | `3` | "Kết thúc"           | "Đã xuất" |
+// | `4` | "Đã điều chỉnh"      | "Đã điều chỉnh phiếu xuất" |
+// | `5` | "Đã hủy"             | "Đã hủy phiếu xuất" |
+//
+// 🔴 HAI điểm dễ port sai:
+//   1. Màn báo giá **diễn giải NULL thành một trạng thái nghiệp vụ** ("chưa lập phiếu xuất") — NULL ở đây
+//      KHÔNG phải "thiếu dữ liệu". Bỏ nhánh `is null` là mất hẳn trạng thái đầu tiên của luồng.
+//   2. Mã `2` **nhảy cóc**: màn báo giá không có nhánh cho nó ⇒ trả NULL. Đừng "điền cho đủ".
+//   ⇒ Cùng một mã `1`: màn phiếu xuất đọc là "Mới tạo", màn báo giá đọc là "Đã tạo phiếu xuất" — hai câu
+//     nói về hai chủ thể khác nhau (phiếu vs báo giá), không mâu thuẫn.
+var stockOutStatusNamesByScreen = new Dictionary<string, Dictionary<string, string>>
 {
-    ["1"] = "Mới tạo", ["2"] = "Tiến hành", ["3"] = "Kết thúc",
-    ["4"] = "Đã điều chỉnh", ["5"] = "Đã hủy",
+    // Màn PHIẾU XUẤT (Ser_Inv_StockOut) — #264.
+    ["stockout"] = new()
+    {
+        ["1"] = "Mới tạo", ["2"] = "Tiến hành", ["3"] = "Kết thúc",
+        ["4"] = "Đã điều chỉnh", ["5"] = "Đã hủy",
+    },
+    // Màn BÁO GIÁ sửa chữa nhìn sang phiếu xuất — Inventory.Quote.cs.
+    // Khoá "(null)" là quy ước của port cho nhánh `so.Status is null` của nguồn.
+    ["quote"] = new()
+    {
+        ["(null)"] = "Mới tạo",
+        ["1"] = "Đã tạo phiếu xuất",
+        ["3"] = "Đã xuất",
+        ["4"] = "Đã điều chỉnh phiếu xuất",
+        ["5"] = "Đã hủy phiếu xuất",
+    },
 };
+
+// Giữ tên cũ cho các chỗ đã dùng: mặc định là bảng của màn PHIẾU XUẤT.
+var stockOutStatusNames = stockOutStatusNamesByScreen["stockout"];
+
+// Tra nhãn theo màn — nguồn KHÔNG có nhánh ELSE ⇒ mã lạ trả NULL, không phải chuỗi rỗng.
+string? StockOutStatusName(string screen, string? code)
+{
+    if (!stockOutStatusNamesByScreen.TryGetValue(screen, out var map)) return null;
+    var key = string.IsNullOrWhiteSpace(code) ? "(null)" : code!.Trim();
+    return map.TryGetValue(key, out var n) ? n : null;
+}
+
+app.MapGet("/api/stockouts/statusnames", (string? screen) =>
+{
+    var key = string.IsNullOrWhiteSpace(screen) ? "stockout" : screen!.Trim().ToLowerInvariant();
+    if (!stockOutStatusNamesByScreen.TryGetValue(key, out var map))
+        return Results.BadRequest(new { error = "screen phải là stockout | quote.", screen = key });
+    return Results.Ok(new
+    {
+        screen = key,
+        names = map.Select(kv => new { code = kv.Key, name = kv.Value }),
+        screens = stockOutStatusNamesByScreen.Keys,
+        note = "Cùng cột Ser_Inv_StockOut.Status, hai màn hai bảng nhãn. Màn quote diễn giải NULL = \"Mới tạo\" (chưa lập phiếu xuất) và KHÔNG có nhãn cho mã 2.",
+    });
+}).RequireAuthorization();
 
 app.MapGet("/api/stockouts/vocab", () => Results.Ok(new
 {
