@@ -32597,7 +32597,7 @@ app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? s
     {
         s.StockOutNo, s.StockOutDate, s.StockOutType, s.WarehouseCode, s.Reason, s.Status, s.PostedAt,
         // #264: cột bổ sung (§12)
-        s.StockOutTypeText, s.StatusText, s.UserCode, s.CusID, s.DealerCode,
+        s.StockOutTypeText, s.StatusText, s.UserCode, s.CusID, s.DealerCode, s.Description,   // #292 §12
         s.TruckNo, s.DriverName, s.DriverID, s.DrivingLicense,
         s.AdjustmentBy, s.AdjustmentDate, s.AdjustmentNote, s.OldStockOutID, s.OldStockOutNo,
         s.LogLUDateTime, s.LogLUBy,
@@ -32698,6 +32698,36 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
 // Hủy phiếu xuất kho (port 1:1 FrmSOReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
 // #291 XOÁ phiếu XUẤT — cùng luật với phiếu nhập (xem chú thích ở `DELETE /api/stockins/{no}`).
 // Guard nguồn: `CheckStockOutForDelete` (`StockOut.cs:184`) — chỉ `Status` ∈ { "1", "5" }.
+// #292 SỬA phiếu XUẤT — thiết kế guard KHÁC màn nhập (xem chú thích ở `PUT /api/stockins/{no}`).
+app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+
+    if (string.IsNullOrWhiteSpace(dto.StockOutNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu xuất." });
+    if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Chưa chọn kho." });
+
+    // 🔴 KHÔNG guard trạng thái HIỆN TẠI. Chỉ khi client GỬI Status thì mới kiểm — và chỉ nhận "1"/"5".
+    var newStatus = (dto.Status ?? "").Trim();
+    if (newStatus.Length > 0 && newStatus != "1" && newStatus != "5")
+        return Results.BadRequest(new { error = "Status gửi lên chỉ được là Mới tạo (1) hoặc Huỷ (5).", status = newStatus });
+
+    h.StockOutNo = dto.StockOutNo!.Trim().ToUpperInvariant();
+    h.WarehouseCode = dto.WarehouseCode!.Trim().ToUpperInvariant();
+    h.StockOutType = dto.StockOutType;
+    if (dto.StockOutDate.HasValue) h.StockOutDate = dto.StockOutDate.Value;
+    if (newStatus.Length > 0) h.Status = newStatus;      // không gửi ⇒ KHÔNG đụng
+    h.Description = dto.Description; h.UserCode = dto.StaffID;
+    h.DriverName = dto.DriverName; h.DrivingLicense = dto.DrivingLicense;
+    h.DriverID = dto.DriverID; h.TruckNo = dto.TruckNo; h.CusID = dto.CusID;
+    h.AdjustmentBy = dto.AdjustmentBy; h.AdjustmentDate = dto.AdjustmentDate; h.AdjustmentNote = dto.AdjustmentNote;
+    h.OldStockOutID = string.IsNullOrWhiteSpace(dto.OldStockOutID) ? null : dto.OldStockOutID!.Trim();
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, statusChanged = newStatus.Length > 0 });
+}).RequireAuthorization();
+
 app.MapDelete("/api/stockouts/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -32888,6 +32918,59 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
 //   MiniHTC một DB ⇒ xoá một lần, giữ đúng THỨ TỰ chi tiết → đầu phiếu.
 // 📌 Nguồn còn kiểm `OldStockInID`/`OldStockOutID` có tồn tại không (phiếu điều chỉnh trỏ về phiếu gốc) —
 //   chỉ để **báo lỗi nếu phiếu gốc biến mất**, không chặn xoá; port giữ đúng: cảnh báo, không chặn.
+// ===== 🔴 #292 SỬA phiếu kho — `SerStockInUpdate` / `SerStockOutUpdate` (port cũ THIẾU HẲN) =====
+// 🆕 Tìm ra bằng cách **đếm WebMethod cùng gốc** (mở rộng sweep #291): gốc `SerStockIn*`/`SerStockOut*` có
+//   43 hàm WS sống, MiniHTC mới có 9+9 endpoint ⇒ soát ra `Update` **chưa port**: màn chỉ TẠO được,
+//   không SỬA được.
+//
+// ☠️ TRACE TWIN — bẫy "bản mới nhất": có `SerStockInUpdate_New20240115` (**2024-01-15**, mới nhất theo tên)
+//   nhưng WS `WSCarSv.asmx.cs:14562` gọi **bản TRẦN** `SerStockInUpdate` ⇒ bản 2024 **CHẾT**.
+//   (Tương tự `SerStockOutUpdate_New20240115` ở `:16350`.) Ngày trong tên mới tới đâu cũng không thay được
+//   việc trace lời gọi.
+//
+// 🔴 HAI MÀN, HAI THIẾT KẾ GUARD KHÁC HẲN — đọc kỹ kẻo áp nhầm:
+//   • **NHẬP** (`UpdateStockIn`): guard trên **TRẠNG THÁI HIỆN TẠI** — `CheckStockInNotPendingExecuting`
+//     ⇒ chỉ sửa được khi phiếu đang `"1"` Mới tạo hoặc `"2"` Tiến hành. Và **KHÔNG ghi cột `Status`**:
+//     sửa phiếu không đổi trạng thái.
+//   • **XUẤT** (`UpdateStockOut`): **KHÔNG** guard trạng thái hiện tại. Thay vào đó, nếu client **có gửi**
+//     `Status` thì mới kiểm — và kiểm bằng `CheckStockOutNotPending` (Pending `"1"` / Reject `"5"`) —
+//     rồi **GHI** cột `Status`. Không gửi ⇒ không kiểm, không ghi.
+//     ⇒ ở màn xuất, `Status` gửi lên chỉ được đặt về `"1"` hoặc `"5"`.
+//
+// ⚠️ `OldStockInID`: nguồn ghi giá trị khi khác rỗng, **ngược lại ghi DBNull** ⇒ gửi rỗng là **XOÁ** liên kết
+//   phiếu gốc, không phải "bỏ qua". Port giữ đúng.
+app.MapPut("/api/stockins/{no}", async (string no, StockInUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    if (h is null) return Results.NotFound(new { no });
+
+    // Guard TRẠNG THÁI HIỆN TẠI: chỉ "1" Mới tạo hoặc "2" Tiến hành.
+    if (h.Status != "1" && h.Status != "2")
+        return Results.BadRequest(new { error = "Chỉ sửa được phiếu nhập ở trạng thái Mới tạo (1) hoặc Tiến hành (2).",
+            status = h.Status });
+
+    // CheckStockInFieldEmpty — nguồn bắt buộc các trường này.
+    if (string.IsNullOrWhiteSpace(dto.StockInNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu nhập." });
+    if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
+    if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Chưa chọn kho." });
+
+    h.StockInNo = dto.StockInNo!.Trim().ToUpperInvariant();   // nguồn ToUpper
+    h.SupplierID = dto.SupplierID; h.WarehouseCode = dto.WarehouseCode!.Trim().ToUpperInvariant();
+    h.StockInType = dto.StockInType;
+    if (dto.StockInDate.HasValue) h.StockInDate = dto.StockInDate.Value;
+    h.Description = dto.Description; h.UserCode = dto.StaffID;
+    h.DriverName = dto.DriverName; h.DrivingLicense = dto.DrivingLicense;
+    h.DriverID = dto.DriverID; h.TruckNo = dto.TruckNo; h.BillNo = dto.BillNo;
+    h.AdjustmentBy = dto.AdjustmentBy; h.AdjustmentDate = dto.AdjustmentDate; h.AdjustmentNote = dto.AdjustmentNote;
+    // Rỗng ⇒ XOÁ liên kết phiếu gốc (nguồn ghi DBNull), không phải bỏ qua.
+    h.OldStockInID = string.IsNullOrWhiteSpace(dto.OldStockInID) ? null : dto.OldStockInID!.Trim();
+    // ⚠️ KHÔNG ghi Status — nguồn không đụng tới.
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockInNo, status = h.Status, note = "Sửa phiếu KHÔNG đổi trạng thái (đúng nguồn)." });
+}).RequireAuthorization();
+
 app.MapDelete("/api/stockins/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -34864,6 +34947,18 @@ record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
 // #265 §12: 12 trường bổ sung. Khối ĐIỀU CHỈNH (`IsAdjustment`/`Adjustment*`/`OldStockInID`) CỐ Ý
 //   không nhận từ client — do luồng tạo phiếu điều chỉnh sinh ra, chưa port (ghi nợ, giống #264).
+// #292: sửa phiếu NHẬP — KHÔNG có trường Status (nguồn không ghi cột đó khi sửa).
+record StockInUpdateDto(string? StockInNo, string? SupplierID, string? WarehouseCode, string? StockInType,
+    DateTime? StockInDate = null, string? Description = null, string? StaffID = null,
+    string? DriverName = null, string? DrivingLicense = null, string? DriverID = null, string? TruckNo = null,
+    string? BillNo = null, string? AdjustmentBy = null, DateTime? AdjustmentDate = null,
+    string? AdjustmentNote = null, string? OldStockInID = null);
+// #292: sửa phiếu XUẤT — CÓ trường Status (chỉ nhận "1"/"5"), rỗng = không đổi.
+record StockOutUpdateDto(string? StockOutNo, string? WarehouseCode, string? StockOutType,
+    DateTime? StockOutDate = null, string? Status = null, string? Description = null, string? StaffID = null,
+    string? DriverName = null, string? DrivingLicense = null, string? DriverID = null, string? TruckNo = null,
+    string? CusID = null, string? AdjustmentBy = null, DateTime? AdjustmentDate = null,
+    string? AdjustmentNote = null, string? OldStockOutID = null);
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines,
     string? Description = null, string? UserCode = null,
     string? DriverName = null, string? DrivingLicense = null, string? DriverID = null, string? TruckNo = null,

@@ -2478,6 +2478,13 @@ public sealed class PartStockOut
 
     // ===== 🔴 #264: 13 cột nguồn `TblSerInvStockOut` (DbDefine.cs:1257-1283) mà port cũ THIẾU =====
     // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+    /// <summary>
+    /// 🔴 #292 `Description` — mô tả phiếu xuất (`TblSerInvStockOut.Description`, DbDefine.cs:1263).
+    /// ⚠️ **KHÁC** `Reason` đã có: `Reason` là lý do xuất kho; `Description` là mô tả chung, và chính là
+    /// cột mà `UpdateStockOut` ghi. #264 port thiếu cột này nên `PUT` không lưu được mô tả.
+    /// </summary>
+    public string? Description { get; set; }
+
     public string? StockOutTypeText { get; set; }   // STOCKOUTTYPETEXT — nguồn lưu CẢ NHÃN loại xuất
     public string? StatusText { get; set; }         // STATUSTEXT — nguồn lưu CẢ NHÃN trạng thái
     public string? UserCode { get; set; }
