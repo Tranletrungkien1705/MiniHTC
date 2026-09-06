@@ -12441,9 +12441,128 @@ app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantConte
     return Results.Ok(new { minVisits = minV, count = rows.Count, avgVisits = rows.Count > 0 ? Math.Round(rows.Average(r => (double)r.visits), 1) : 0, rows });
 }).RequireAuthorization();
 
-// ===== Khả năng cung ứng phụ tùng (report tái-dùng ServicePartOO — port 1:1 FrmRpt_AbilitySupplyParts, TCMotor) =====
-// Tỉ lệ đáp ứng = tổng SL đã giao / tổng SL cần, theo mã PT (từ đơn phụ tùng nợ/chờ giao).
-app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #311 KHẢ NĂNG CUNG ỨNG PHỤ TÙNG — viết lại theo nguồn `Rpt_AbilitySupplyParts` =====
+// Nguồn: `BizCarSv.Inventory.Report.cs:8303` (LIVE). 🆕 Đến được nhờ rà **17 hit "lệch trục"** của sweep
+//   `top 1` (#308/#310): ba cặp `select f.StockOutID/StockOutTime … order by f.StockOutNo asc` nằm trong
+//   báo cáo này.
+//
+// ⚠️ Bản cũ ở đây là **HÀNG TỰ CHẾ**: gom `ServicePartOO` theo mã PT rồi chia ra %,. Nguồn KHÔNG làm vậy —
+//   nó đi từ **LỆNH SỬA CHỮA** → lệnh xuất kho → **bảng nối** (#294) → phiếu xuất, rồi tính đáp ứng.
+//
+// 🔴 BỐN điểm nguồn mà bản tự chế sai hẳn:
+//  1. **Lọc RO là BLACKLIST, không phải whitelist.** Nguồn: `t.Status NOT IN (Wait4Part, HasPart,
+//     NotResponding, RejectRO)` ⇒ **LOẠI** bốn trạng thái đó, giữ mọi trạng thái còn lại (kể cả mã lạ).
+//     Đọc lướt rất dễ hiểu ngược thành "chỉ lấy bốn trạng thái này".
+//  2. **Kỳ báo cáo theo THÁNG** (`strPeriodMonth`) lọc trên `CreatedDate` của LỆNH, từ ngày đầu đến ngày
+//     cuối tháng — không phải khoảng ngày tuỳ ý.
+//  3. **Phiếu xuất đại diện = phiếu ĐẦU TIÊN theo SỐ**, không phải mới nhất:
+//     `select top 1 f.StockOutID … where f.Status = '3' order by f.StockOutNo **asc**`.
+//     ⚠️ `StockOutNo` là **CHUỖI** ⇒ sắp tăng dần theo chuỗi, chỉ đúng thứ tự thời gian nếu cách đánh số
+//       giữ được thứ tự từ điển. Đây là giả định của nguồn, giữ nguyên và ghi lại.
+//     ⚠️ Nguồn viết **HAI subquery giống hệt** (một lấy `StockOutID`, một lấy `StockOutTime`) cùng `order by`
+//       ⇒ hai giá trị chắc chắn cùng một dòng. Port lấy một lần rồi tách ra.
+//  4. **Tỉ lệ đáp ứng là CHUỖI "đã/cần"**, KHÔNG phải phần trăm: `CONCAT(ResponseQuantityTotal, '/',
+//     RequestQuantityTotal)`. Có **HAI** tỉ lệ khác nhau: theo **mã phụ tùng** và theo **LỆNH**.
+//     Bản cũ trả `fillRate` % ⇒ khác hẳn con số người dùng quen đọc.
+//
+// 📌 Đã kiểm và KHÔNG phải lỗi: `f.Status = '@strStatusFinish'` trông giống bẫy **[BAKE-PARAM-MIX]**
+//   (nháy bao quanh tham số), nhưng `@strStatusFinish` được **bake** bằng `StringUtils.Replace` với
+//   `TConst.Ser_Inv_StockOut.Finished` = `"3"` (`:8779`) ⇒ thành `'3'`, hợp lệ.
+//
+// 📌 NỢ ĐÃ KHAI: nguồn còn tham số `strRespondType` và bảng `…NotResponse` (chi tiết PT **không** đáp ứng,
+//   có nhánh `case when h.ResponseQuantity is null then t.NotResponseQuantity else h.NotResponseQuantity`).
+//   Port lượt này làm **hai tỉ lệ + danh sách đáp ứng/không đáp ứng theo mã PT**; nhánh RespondType chưa làm.
+app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t,
+    string? periodMonth, string? dealer, string? partCode) =>
+{
+    // Kỳ: mặc định tháng hiện tại. Nguồn lọc CreatedDate của LỆNH trong [đầu tháng, cuối tháng].
+    var baseMonth = DateTime.TryParse((periodMonth ?? "") + "-01", out var pm) ? pm : new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
+    var monthFrom = new DateTime(baseMonth.Year, baseMonth.Month, 1);
+    var monthTo = monthFrom.AddMonths(1);
+
+    // 1. LỆNH trong kỳ — BLACKLIST bốn trạng thái (đúng nguồn: NOT IN).
+    var excluded = new[] { "Wait4Part", "HasPart", "NotResponding", "Rejected" };
+    var roQuery = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && r.CreatedAt >= monthFrom && r.CreatedAt < monthTo
+        && !excluded.Contains(r.Status));
+    if (!string.IsNullOrWhiteSpace(dealer)) roQuery = roQuery.Where(r => r.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var ros = await roQuery.Select(r => new { r.Id, r.RONo }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+    var roNos = ros.Select(x => x.RONo).ToList();
+
+    // 2. Lệnh xuất kho của các lệnh đó → bảng nối (#294) → phiếu xuất ĐÃ KẾT THÚC ("3").
+    var orders = await db.SerStockOutOrders
+        .Where(o => o.OrgId == t.OrgId && o.RONo != null && roNos.Contains(o.RONo))
+        .Select(o => new { o.Id, o.RONo }).ToListAsync();
+    var orderIds = orders.Select(o => o.Id).ToList();
+
+    var links = await (from lk in db.SerStockOutOrderStockOuts
+                       join so in db.PartStockOuts on lk.StockOutId equals so.Id
+                       where lk.OrgId == t.OrgId && so.OrgId == t.OrgId
+                             && orderIds.Contains(lk.StockOutOrderId)
+                             && so.Status == "3"                       // TConst.Ser_Inv_StockOut.Finished
+                       select new { lk.StockOutOrderId, so.Id, so.StockOutNo, so.StockOutDate, so.StockOutDateTime })
+                      .ToListAsync();
+    // Phiếu ĐẠI DIỆN của mỗi lệnh xuất: ĐẦU TIÊN theo SỐ (chuỗi) tăng dần — đúng nguồn.
+    var firstByOrder = links.GroupBy(x => x.StockOutOrderId)
+        .ToDictionary(g => g.Key, g => g.OrderBy(x => x.StockOutNo, StringComparer.Ordinal).First());
+
+    // 3. Dòng phụ tùng: cần (theo lệnh xuất) vs đã xuất (theo phiếu đại diện).
+    var needLines = await db.SerStockOutOrderLines
+        .Where(l => l.OrgId == t.OrgId && orderIds.Contains(l.OrderId)).ToListAsync();
+    var doneStockOutIds = firstByOrder.Values.Select(v => v.Id).ToList();
+    var doneLines = await db.PartStockOutLines
+        .Where(l => l.OrgId == t.OrgId && doneStockOutIds.Contains(l.StockOutId)).ToListAsync();
+
+    if (!string.IsNullOrWhiteSpace(partCode))
+    {
+        var pc = partCode!.Trim().ToUpperInvariant();
+        needLines = needLines.Where(l => l.PartCode == pc).ToList();
+        doneLines = doneLines.Where(l => l.PartCode == pc).ToList();
+    }
+
+    var needByPart = needLines.GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.OrderQuantity));
+    // PartStockOutLine dung cot Quantity (khac SerStockOutOrderLine dung OrderQuantity).
+    var doneByPart = doneLines.GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
+
+    var byPart = needByPart.Keys.Union(doneByPart.Keys).OrderBy(k => k).Select(pc =>
+    {
+        var need = needByPart.TryGetValue(pc, out var n) ? n : 0m;
+        var done = doneByPart.TryGetValue(pc, out var d) ? d : 0m;
+        return new
+        {
+            partCode = pc,
+            requestQuantity = need, responseQuantity = done,
+            notResponseQuantity = need - done > 0 ? need - done : 0m,
+            // ⚠️ CHUỖI "đã/cần" đúng nguồn, KHÔNG phải phần trăm.
+            responseRateByPartCode = done.ToString("0.##") + "/" + need.ToString("0.##"),
+            responded = done > 0,
+        };
+    }).ToList();
+
+    // 4. Tỉ lệ theo LỆNH: số lệnh có phiếu xuất đã kết thúc / tổng số lệnh trong kỳ.
+    var respondedOrderIds = firstByOrder.Keys.ToHashSet();
+    var roResponded = orders.Where(o => respondedOrderIds.Contains(o.Id)).Select(o => o.RONo).Distinct().Count();
+    var roQuantity = ros.Count;
+
+    return Results.Ok(new
+    {
+        periodMonth = monthFrom.ToString("yyyy-MM"),
+        roQuantity, roResponseQuantity = roResponded,
+        responseRateByRO = roResponded + "/" + roQuantity,
+        count = byPart.Count,
+        responded = byPart.Where(x => x.responded),
+        notResponded = byPart.Where(x => !x.responded),
+        rows = byPart,
+        note = "Tỉ lệ là CHUỖI \"đã/cần\" đúng nguồn, KHÔNG phải %. Lọc lệnh là BLACKLIST (loại "
+             + "Wait4Part/HasPart/NotResponding/Rejected). Phiếu xuất đại diện = ĐẦU TIÊN theo SỐ (chuỗi) tăng dần.",
+        debtNote = "Chưa port: tham số RespondType và nhánh NotResponseQuantity hai tầng của nguồn.",
+    });
+}).RequireAuthorization();
+
+// #311 Bản CŨ (tự chế, gom ServicePartOO theo mã PT rồi ra %). GIỮ ở route riêng để không vỡ client đang
+//   dùng, nhưng KHÔNG còn là "port 1:1" — con số khác hẳn nguồn.
+app.MapGet("/api/report/part-supply-ability-legacy", async (AppDbContext db, ITenantContext t) =>
 {
     var agg = await db.ServicePartOOs.Where(x => x.OrgId == t.OrgId)
         .GroupBy(x => x.PartCode)
