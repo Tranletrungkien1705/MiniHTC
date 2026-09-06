@@ -31989,6 +31989,10 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
             //    Mặc định lấy bằng số đặt để tổng tiền không ra 0; bước duyệt sẽ ghi đè.
             QtyAppr = l.QtyAppr ?? l.OrderQty,
             UPBeforeDc = l.UPBeforeDc ?? l.Price, DiscountRate = l.DiscountRate, VAT = l.VAT,
+            // #307 §12: bốn cột mới phải GÁN được, không chỉ ĐỌC được.
+            UnitStockIn = l.UnitStockIn, ExchangeRate = l.ExchangeRate,
+            TotalQuantityIn = l.TotalQuantityIn,
+            TotalQuantityInExchangeRate = l.TotalQuantityInExchangeRate,
             LogLUDateTime = DateTime.Now, LogLUBy = who,
         };
         RecalcOrderPartLine(line);
@@ -32005,15 +32009,62 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
     no = no.Trim().ToUpperInvariant();
     var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
     if (o is null) return Results.NotFound(new { no });
-    var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.OrderQty, l.Price, l.OrderPartStatusDtl,
-                           // #235: 17 cột bổ sung (§12 — có ở cả GET lẫn POST)
-                           l.PartID, l.Unit, l.MinQuantity, l.Remark, l.QtyAppr,
-                           l.UPBeforeDc, l.DiscountRate, l.VAT,
-                           l.TPBeforeDc, l.UPAfterDc, l.TPAfterDc, l.ValVAT, l.TPAfterVAT,
-                           l.OrderSuppierNo, l.TSTID, l.LogLUDateTime, l.LogLUBy,
-                           lineTotal = l.OrderQty * l.Price }).ToListAsync();
-    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, count = lines.Count, lines,
+    // ===== 🔴 #307 ĐƠN VỊ ĐẶT ≠ ĐƠN VỊ NHẬP KHO, và TỶ LỆ QUY ĐỔI phụ thuộc LOẠI ĐƠN =====
+    // Nguồn `Ser_Order_Part_Get` (`A.02.OrderPart.cs:1782-1818`) — LIVE, WS gọi thẳng bản trần.
+    //   `part_Unit` (đơn vị ĐẶT):  TST ⇒ `ISNULL(tmeu.TSTUnit, part.Unit)` · OTHER ⇒ `part.Unit`
+    //   `part_UnitStockIn`:        **LUÔN** `part.Unit` — kho vẫn nhập bằng đơn vị lẻ của master
+    //   `ExchangeRate`:            OTHER ⇒ **hằng 1.0** · TST ⇒ `ISNULL(tmeu.ExchangeRate, 1.0)`
+    // ⚠️ Cả ba khối `case` đều **KHÔNG có `else`** ⇒ `OrderPartType` ngoài {TST, OTHER} cho ra **NULL**,
+    //   KHÔNG phải rơi về giá trị của OTHER. Giữ đúng (whitelist).
+    var lineRows = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).ToListAsync();
+    var tstCodes = lineRows.Select(l => l.PartCode).Distinct().ToList();
+    var tmeuMap = (await db.TstExchangeUnits
+            .Where(x => x.OrgId == t.OrgId && tstCodes.Contains(x.TSTPartCode) && x.FlagActive == "1")
+            .ToListAsync())
+        .GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var lines = lineRows.Select(l =>
+    {
+        var isTst = o.OrderPartType == "TST";
+        var isOther = o.OrderPartType == "OTHER";
+        var tmeu = tmeuMap.TryGetValue(l.PartCode, out var m0) ? m0 : null;
+
+        // đơn vị ĐẶT — không có else ⇒ null khi loại đơn lạ
+        string? unitOrder = isTst ? (tmeu?.TSTUnit ?? l.Unit) : (isOther ? l.Unit : null);
+        // tỷ lệ quy đổi — không có else ⇒ null khi loại đơn lạ
+        decimal? rate = isTst ? (tmeu?.ExchangeRate ?? 1.0m) : (isOther ? 1.0m : (decimal?)null);
+
+        var qtyAppr = l.QtyAppr ?? 0m;
+        var inQty = l.TotalQuantityInExchangeRate ?? 0m;
+        // Cột Q — SL chưa về tính theo ĐƠN VỊ ĐẶT.
+        var remain = qtyAppr - inQty;
+        // Cột M — SL chưa về theo ĐƠN VỊ BÁN. ⚠️ Nguồn CHỈ nhân tỷ lệ cho TST; OTHER giữ nguyên số Q.
+        decimal? remainExchange = isOther ? remain
+            : (isTst ? remain * (tmeu?.ExchangeRate ?? 1.0m) : (decimal?)null);
+
+        return new
+        {
+            l.PartCode, l.PartName, l.OrderQty, l.Price, l.OrderPartStatusDtl,
+            // #235: 17 cột bổ sung (§12 — có ở cả GET lẫn POST)
+            l.PartID, l.Unit, l.MinQuantity, l.Remark, l.QtyAppr,
+            l.UPBeforeDc, l.DiscountRate, l.VAT,
+            l.TPBeforeDc, l.UPAfterDc, l.TPAfterDc, l.ValVAT, l.TPAfterVAT,
+            l.OrderSuppierNo, l.TSTID, l.LogLUDateTime, l.LogLUBy,
+            lineTotal = l.OrderQty * l.Price,
+            // #307 §12: bốn cột mới + ba giá trị TÍNH của nguồn
+            partUnit = unitOrder,                                  // part_Unit — đơn vị ĐẶT
+            unitStockIn = l.UnitStockIn ?? l.Unit,                 // part_UnitStockIn — LUÔN đơn vị master
+            exchangeRate = rate,
+            l.TotalQuantityIn,                                     // cột N
+            l.TotalQuantityInExchangeRate,                         // cột L
+            totalQuantityRemain = remain,                          // cột Q — ĐV đặt
+            totalQuantityRemainExchangeRate = remainExchange,      // cột M — ĐV bán
+        };
+    }).ToList();
+    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, o.OrderPartType,
+                            unitNote = "part_Unit = đơn vị ĐẶT (TST lấy theo hãng); unitStockIn = đơn vị NHẬP KHO (luôn của master). "
+                                     + "OrderPartType ngoài {TST, OTHER} ⇒ đơn vị và tỷ lệ quy đổi trả NULL (nguồn không có else).",
+                            count = lines.Count, lines,
                             total = lines.Sum(x => x.lineTotal),
                             // #235: tổng THẬT của nguồn là tiền sau VAT, tính từ SL DUYỆT.
                             totalAfterVAT = lines.Sum(x => x.TPAfterVAT ?? 0m),
@@ -34307,12 +34358,17 @@ app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
     if (!roStatusDisplayNamesByScreen.TryGetValue(key, out var map))
-        return Results.BadRequest(new { error = "screen phải là rosearch | tabhome | stockout.", screen = key });
+        return Results.BadRequest(new { error = "screen phải là một trong: "
+            + string.Join(" | ", roStatusDisplayNamesByScreen.Keys), screen = key });
     return Results.Ok(new
     {
         screen = key,
         names = map.Select(kv => new { code = kv.Key, name = kv.Value }),
+        // #307: #306 có chú thích "trả kèm nhánh else" nhưng THỰC RA CHƯA trả — nay trả thật.
+        //   Ba màn ba kết cục cho mã lạ: "Không xác định" · "" (chuỗi rỗng) · null (không có else).
+        fallback = roStatusFallbackByScreen.TryGetValue(key, out var fb) ? fb : "Không xác định",
         screens = roStatusDisplayNamesByScreen.Keys,
+        fallbackByScreen = roStatusFallbackByScreen.Select(kv => new { screen = kv.Key, elseValue = kv.Value }),
         note = "#286: nhãn hiển thị KHÁC NHAU theo màn (cùng mã W4P: rosearch=\"Hủy, Hẹn lại\" · tabhome=\"Đợi phụ tùng\" · stockout=\"Không dùng\"). "
              + "Khác nữa với bảng NHÓM TÌM KIẾM (/api/repairorders?stage=...) vốn gộp Paid vào Sửa xong.",
     });
@@ -36087,7 +36143,10 @@ record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, st
 //  đúng như lưới nguồn KHOÁ 5 ô đó (`_lstColNotAllowEdit`).
 record OrderPartLineDto(string PartCode, string? PartName, decimal OrderQty, decimal Price,
     string? PartID = null, string? Unit = null, decimal? MinQuantity = null, string? Remark = null,
-    decimal? QtyAppr = null, decimal? UPBeforeDc = null, decimal? DiscountRate = null, decimal? VAT = null);
+    decimal? QtyAppr = null, decimal? UPBeforeDc = null, decimal? DiscountRate = null, decimal? VAT = null,
+    // #307 §12: don vi NHAP KHO tach khoi don vi DAT + ty le quy doi (TST) + hai cot SL da nhap.
+    string? UnitStockIn = null, decimal? ExchangeRate = null,
+    decimal? TotalQuantityIn = null, decimal? TotalQuantityInExchangeRate = null);
 record OrderPartLineStatusDto(string? ToStatus);
 // #234: 8 trường mà `Ser_Order_Part_Save` gửi lên, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
 // #240: `OrderPartNo` (trống = tạo mới) + `FlagIsDelete` ("Y" = xoá) — nguồn dùng CHUNG một hàm

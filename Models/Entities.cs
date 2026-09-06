@@ -5661,6 +5661,28 @@ public sealed class OrderPartLine
 
     public string? OrderSuppierNo { get; set; }    // số đơn NCC (nguồn viết thiếu chữ "l")
     public string? TSTID { get; set; }
+
+    // ===== 🔴 #307 HAI ĐƠN VỊ TRÊN CÙNG MỘT DÒNG (`Ser_Order_Part_Get`, `A.02.OrderPart.cs:1782`) =====
+    // Nguồn trả **hai** cột đơn vị và chúng **khác nhau**:
+    //   `part_Unit`        = đơn vị ĐẶT HÀNG   — TST: `ISNULL(tmeu.TSTUnit, part.Unit)` · OTHER: `part.Unit`
+    //   `part_UnitStockIn` = đơn vị NHẬP KHO   — **LUÔN** `part.Unit` (của master), không bao giờ đổi
+    // ⇒ đơn đặt TST tính bằng **đơn vị BÁN của hãng** (thùng/hộp), kho nhập bằng **đơn vị lẻ**.
+    //   Port cũ chỉ có MỘT cột `Unit` ⇒ không phân biệt được, mọi số lượng bị hiểu cùng một đơn vị.
+    public string? UnitStockIn { get; set; }
+
+    /// <summary>
+    /// 🔴 SL QUY ĐỔI ĐƠN VỊ BÁN. Nguồn: `OTHER` ⇒ **hằng 1.0**; `TST` ⇒ `ISNULL(tmeu.ExchangeRate, 1.0)`
+    /// (tra `Ser_Mst_TSTExchangeUnit` theo `PartCode = TSTPartCode`).
+    /// ⚠️ Khối `case` **KHÔNG có `else`** ⇒ loại đơn ngoài hai giá trị cho ra **NULL**, không phải 1.0.
+    /// Lưu lại trên dòng để số liệu cũ không đổi khi master tỷ lệ quy đổi thay đổi về sau.
+    /// </summary>
+    public decimal? ExchangeRate { get; set; }
+
+    /// <summary>Cột N — tổng SL đã nhập kho theo đơn này (chỉ phiếu nhập **Kết thúc**).</summary>
+    public decimal? TotalQuantityIn { get; set; }
+
+    /// <summary>Cột L — `TotalQuantityIn` quy về ĐƠN VỊ ĐẶT. Dùng để trừ ra SL chưa về.</summary>
+    public decimal? TotalQuantityInExchangeRate { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
