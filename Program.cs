@@ -8518,6 +8518,107 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #153 parity: ĐỊNH MỨC TỒN TỐI THIỂU — bảng đầu + HAI BẢNG CON THẬT =====
+// Nguồn: DMS40/0.01.Master.cs (csproj 122) — St_MinInvBalance_AddX (10130) ghi 3 bảng tại
+//        10468 / 10501 / 10520; _UpdateX (11686) XOÁ rồi GHI LẠI cả hai bảng con.
+// 🔴 Chỉ có ở WS 64-bit (_Add / _Get / _Update / _DeleteMulti).
+// 🔴 GAP đã vá: port cũ gộp danh sách spec/đại lý thành CHUỖI (ModelList/SpecMix/DealerList) trong khi
+//    nguồn dùng hai BẢNG CON — nên không lọc/join được theo spec hay đại lý. Nay có bảng thật;
+//    ba cột chuỗi giữ lại để đọc dữ liệu cũ, KHÔNG ghi mới.
+app.MapGet("/api/mininvbalances/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.MinInvBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StMinInvNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var specs = await db.StMinInvBalanceSpecs.Where(x => x.OrgId == t.OrgId && x.StMinInvNo == no)
+        .OrderBy(x => x.SpecCode).Select(x => new { x.SpecCode, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var dealers = await db.StMinInvBalanceDealers.Where(x => x.OrgId == t.OrgId && x.StMinInvNo == no)
+        .OrderBy(x => x.DealerCode).Select(x => new { x.DealerCode, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.StMinInvNo, h.TotalQty, h.FlagAllDealer, h.CreateDTime, h.CreateBy,
+        h.InactiveDTime, h.InactiveBy, h.Remark, h.FlagActive, h.LogLUDateTime, h.LogLUBy },
+        specs, dealers,
+        note = h.FlagAllDealer == "1" ? "FlagAllDealer='1' ⇒ áp cho TẤT CẢ đại lý, bảng đại lý để rỗng." : null });
+}).RequireAuthorization();
+
+// Tạo định mức — port 1:1 `St_MinInvBalance_AddX`.
+// Ba guard của nguồn:
+//   (1) `TotalQty` phải **> 0** (nguồn: `if (nTotalQty <= 0) throw`), đọc bằng Convert.ToInt32;
+//   (2) mã định mức phải CHƯA tồn tại — `St_MinInvBalance_CheckDB(…, TConst.Flag.Inactive)`;
+//   (3) 🔴 `FlagAllDealer = "0"` ⇒ bảng đại lý PHẢI có ít nhất 1 dòng (0.01.Master.cs:11767);
+//       `= "1"` ⇒ áp cho tất cả, bảng con để rỗng.
+app.MapPost("/api/mininvbalances/full", async (MinInvBalanceFullDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.TotalQty <= 0) return Results.BadRequest(new { error = "Tổng số lượng định mức phải > 0." });
+    var allDealer = (dto.FlagAllDealer ?? "0").Trim() == "1" ? "1" : "0";
+    var specs = (dto.Specs ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    var dealers = (dto.Dealers ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    if (specs.Count == 0) return Results.BadRequest(new { error = "Định mức phải có ít nhất 1 spec." });
+    if (allDealer == "0" && dealers.Count == 0)
+        return Results.BadRequest(new { error = "FlagAllDealer='0' thì phải chọn ít nhất 1 đại lý (guard nguồn)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var no = "MIN" + now.ToString("yyMMddHHmmss");
+    db.MinInvBalances.Add(new MinInvBalance { OrgId = t.OrgId, StMinInvNo = no, TotalQty = dto.TotalQty,
+        FlagAllDealer = allDealer, CreateDTime = now, CreateBy = who, Remark = dto.Remark,
+        FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    foreach (var s in specs)
+        db.StMinInvBalanceSpecs.Add(new StMinInvBalanceSpec { OrgId = t.OrgId, StMinInvNo = no, SpecCode = s,
+            LogLUDateTime = now, LogLUBy = who });
+    if (allDealer == "0")
+        foreach (var d in dealers)
+            db.StMinInvBalanceDealers.Add(new StMinInvBalanceDealer { OrgId = t.OrgId, StMinInvNo = no, DealerCode = d,
+                LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { stMinInvNo = no, dto.TotalQty, flagAllDealer = allDealer,
+        specs = specs.Count, dealers = allDealer == "1" ? 0 : dealers.Count });
+}).RequireAuthorization();
+
+// Sửa — port 1:1 `_UpdateX`: XOÁ rồi GHI LẠI cả hai bảng con (0.01.Master.cs:11851/11894), không sửa từng dòng.
+app.MapPut("/api/mininvbalances/{no}/full", async (string no, MinInvBalanceFullDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.MinInvBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StMinInvNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (dto.TotalQty <= 0) return Results.BadRequest(new { error = "Tổng số lượng định mức phải > 0." });
+    var allDealer = (dto.FlagAllDealer ?? h.FlagAllDealer).Trim() == "1" ? "1" : "0";
+    var specs = (dto.Specs ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    var dealers = (dto.Dealers ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    if (specs.Count == 0) return Results.BadRequest(new { error = "Định mức phải có ít nhất 1 spec." });
+    if (allDealer == "0" && dealers.Count == 0)
+        return Results.BadRequest(new { error = "FlagAllDealer='0' thì phải chọn ít nhất 1 đại lý (guard nguồn)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    h.TotalQty = dto.TotalQty; h.FlagAllDealer = allDealer;
+    if (dto.Remark is not null) h.Remark = dto.Remark;
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    db.StMinInvBalanceSpecs.RemoveRange(await db.StMinInvBalanceSpecs.Where(x => x.OrgId == t.OrgId && x.StMinInvNo == no).ToListAsync());
+    db.StMinInvBalanceDealers.RemoveRange(await db.StMinInvBalanceDealers.Where(x => x.OrgId == t.OrgId && x.StMinInvNo == no).ToListAsync());
+    foreach (var s in specs)
+        db.StMinInvBalanceSpecs.Add(new StMinInvBalanceSpec { OrgId = t.OrgId, StMinInvNo = no, SpecCode = s,
+            LogLUDateTime = now, LogLUBy = who });
+    if (allDealer == "0")
+        foreach (var d in dealers)
+            db.StMinInvBalanceDealers.Add(new StMinInvBalanceDealer { OrgId = t.OrgId, StMinInvNo = no, DealerCode = d,
+                LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { stMinInvNo = no, specs = specs.Count, dealers = allDealer == "1" ? 0 : dealers.Count,
+        note = "Nguồn xoá sạch 2 bảng con rồi ghi lại — không sửa từng dòng." });
+}).RequireAuthorization();
+
+// Ngừng hiệu lực — nguồn có cặp InactiveDTime/InactiveBy TÁCH RIÊNG khỏi LogLU*.
+app.MapPost("/api/mininvbalances/{no}/inactivate", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.MinInvBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StMinInvNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.FlagActive == "0") return Results.BadRequest(new { error = "Định mức đã ngừng hiệu lực." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    h.FlagActive = "0"; h.InactiveDTime = now; h.InactiveBy = who;
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StMinInvNo, h.FlagActive, h.InactiveDTime, h.InactiveBy });
+}).RequireAuthorization();
+
 // ===== #152: LỊCH SỬ FILE ĐÍNH KÈM THƯ BẢO LÃNH (Pmt_GuaranteeAttachFileHis) =====
 // Nguồn: TCFIntergration/BizHTC.TCFIntergration.cs (csproj 328) — 1564 / 5412.
 // 🔴 Bảng KHÁC Pmt_GuaranteeAttachFile (bản hiện hành, đã port): cùng bộ cột nhưng lưu bản đã bị thay thế.
@@ -14538,7 +14639,7 @@ app.MapGet("/api/mininvbalances", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelList.Contains(model!));
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerList != null && x.DealerList.Contains(dealer!));
     var items = await q.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.Id, x.ModelList, x.SpecMix, x.DealerList, x.TotalQty, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ModelList, x.SpecMix, x.DealerList, x.TotalQty, x.FlagActive , x.StMinInvNo, x.FlagAllDealer, x.CreateDTime, x.CreateBy, x.InactiveDTime, x.InactiveBy, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -27815,6 +27916,9 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #153: DTO định mức tồn tối thiểu (bảng đầu + 2 bảng con thật) ----
+record MinInvBalanceFullDto(decimal TotalQty, string? FlagAllDealer, string? Remark, List<string>? Specs, List<string>? Dealers);
+
 // ---- #152: DTO ba bảng vệ tinh (lịch sử file bảo lãnh · vị trí GPS giao xe · cấp số in hoá đơn) ----
 record GrtAttachFileHisDto(string GuaranteeNo, int FileIndex, string? GrtFilePath, string? GrtFileName, long FileSizeInBytes, string? GrtFileRemark);
 record GpsDlvAddressDto(string DlvMnNo, string VIN, string? StorageCode, string? GPSDvNo, string? PointRegisCode, string? DealerCode, DateTime? DlvEndGPSDateTime, decimal? MapLongitude, decimal? MapLatitude, string? GPSAddress, string? GPSStatus, string? CallGPSStatus, string? Remark);

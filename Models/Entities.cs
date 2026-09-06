@@ -3553,12 +3553,65 @@ public sealed class MinInvBalance
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string ModelList { get; set; } = "";     // ListModel
-    public string? SpecMix { get; set; }             // ListSpecMix
-    public string? DealerList { get; set; }          // ListDealer
+
+    // ===== #153 parity St_MinInvBalance (nguồn: DMS40/0.01.Master.cs, csproj 122, md5 c690f1f1… verify 2 máy ở #144)
+    //       `St_MinInvBalance_AddX` (10130) ghi 3 bảng tại 10468 / 10501 / 10520;
+    //       `_UpdateX` (11686) xoá-ghi lại hai bảng con. 🔴 Chỉ có ở WS 64-bit.
+    /// <summary>Số định mức (`StMinInvNo`) — **khoá nghiệp vụ**, port cũ không có cột này.</summary>
+    public string StMinInvNo { get; set; } = "";
+    /// <summary>
+    /// 🔴 Cờ ÁP CHO TẤT CẢ ĐẠI LÝ (`FlagAllDealer`) — "1"/"0".
+    /// Guard nguồn (0.01.Master.cs:11767): `FlagAllDealer = "0"` thì bảng
+    /// <see cref="StMinInvBalanceDealer"/> **phải có ít nhất 1 dòng**; `= "1"` thì bảng con để rỗng.
+    /// </summary>
+    public string FlagAllDealer { get; set; } = "0";
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    /// <summary>Mốc NGỪNG hiệu lực (`InactiveDTime`/`InactiveBy`) — tách khỏi `LogLU*`.</summary>
+    public DateTime? InactiveDTime { get; set; }
+    public string? InactiveBy { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+
+    /// <summary>Tổng số lượng định mức (`TotalQty`) — nguồn đọc `Convert.ToInt32` và bắt **> 0**.</summary>
     public decimal TotalQty { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    // --- ⚠️ #153: bốn cột dưới là cột RIÊNG của MiniHTC, KHÔNG có ở nguồn ---
+    /// <summary>⚠️ Nguồn KHÔNG gộp danh sách vào chuỗi — dùng bảng con <see cref="StMinInvBalanceSpec"/>. Giữ để đọc dữ liệu cũ.</summary>
+    public string ModelList { get; set; } = "";
+    /// <summary>⚠️ Cột riêng MiniHTC — xem <see cref="ModelList"/>.</summary>
+    public string? SpecMix { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC — nguồn dùng bảng con <see cref="StMinInvBalanceDealer"/>.</summary>
+    public string? DealerList { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC, đứng thay `LogLUDateTime` của nguồn.</summary>
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>Spec thuộc định mức tồn tối thiểu (`St_MinInvBalanceSpec`) — bảng nối, chỉ khoá + dấu vết.</summary>
+public sealed class StMinInvBalanceSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StMinInvNo { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Đại lý áp dụng định mức (`St_MinInvBalanceDealer`) — bảng nối.
+/// Rỗng khi <see cref="MinInvBalance.FlagAllDealer"/> = "1" (áp cho tất cả đại lý).
+/// </summary>
+public sealed class StMinInvBalanceDealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StMinInvNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đề nghị đăng ký xe lái thử (Car_TestCar) — port 1:1 FrmNewRegister_TestCar (2010.HTC/Sales). Header đề nghị + danh sách VIN được đăng ký làm xe lái thử, có hiệu lực từ-đến.
