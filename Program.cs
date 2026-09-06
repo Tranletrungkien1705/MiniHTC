@@ -13852,6 +13852,18 @@ app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db
 //   ⚠️ Nghĩa là **khoảng trắng** và **chữ tiếng Việt có dấu** cũng bị coi là ký tự đặc biệt.
 //   ⚠️ Vì regex nằm ở lớp cha nên **mọi màn kế thừa `FrmMdiBase` đều dùng chung** — khi port màn khác
 //      thấy `this.regex.IsMatch(...)` thì đây chính là quy tắc đó.
+// ===== 🔴 #255 QUY TẮC "KÝ TỰ ĐẶC BIỆT" THỨ HAI — `StringUtils.ValidateSpecialCharacter` =====
+// Nguồn `CommonUtils/CommonUtils.cs:496-503` (md5 `5de6e9b7` — KHỚP 2 máy):
+//     `const string specialChars = @"()";`
+//     `if (str.Contains(Environment.NewLine) || str.Contains("\n")) return true;`
+//     `return str.Count(ch => specialChars.Contains(ch)) >= 1;`
+// ⇒ CHỈ cấm **dấu ngoặc tròn** và **xuống dòng**. Chữ tiếng Việt, khoảng trắng, mọi ký tự khác đều
+//   **CHO PHÉP** — hợp lý vì nó dùng cho TÊN và ĐỊA CHỈ, không phải cho MÃ.
+// 🔴 KHÁC HẲN `HasSpecialChar` (regex lớp cha `[^a-zA-Z0-9._-]`) dù tên gọi na ná. Hai quy tắc song song;
+//   dùng nhầm ⇒ hoặc chặn sạch tên tiếng Việt, hoặc để lọt dấu ngoặc.
+static bool HasParenOrNewline(string? s) =>
+    !string.IsNullOrEmpty(s) && (s.Contains('\n') || s.Contains('\r') || s.Contains('(') || s.Contains(')'));
+
 // 🔴 #249: phải là LOCAL FUNCTION, không phải biến cục bộ — nhiều endpoint dùng nó nằm **TRƯỚC** chỗ này
 //    trong Program.cs (vd `/api/deliverylocations` ở đầu file). Local function gọi trước khi khai đều được;
 //    biến cục bộ thì không (và `static readonly` field thì CS0106 — xem #248).
@@ -30418,6 +30430,20 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
     {
         var r = rows[i]; var line = i + 1;
         if (string.IsNullOrWhiteSpace(r.CusName)) { errors.Add(new { line, error = "Thiếu tên khách hàng." }); continue; }
+
+        // ===== 🔴 #255 BỐN GUARD của `FrmImportCustomer.cs:220-247` (md5 `fb5df1f7` — KHỚP 2 máy) =====
+        // Dùng `StringUtils.ValidateSpecialCharacter` (chỉ cấm `(` `)` và xuống dòng — xem helper).
+        // Mỗi trường một THÔNG ĐIỆP riêng, và **đều kèm tên khách hàng** để tra được dòng nào.
+        // ⚠️ Bản `Views/Insurance/ExcelUtil/FrmImportCustomer.cs` **KHÔNG có** khối này (khác 34 dòng)
+        //    ⇒ hai màn import khách hàng có luật KHÁC nhau; port theo bản `ExcelUtil` (chặt hơn).
+        if (HasParenOrNewline(r.CusName))
+        { errors.Add(new { line, error = "Tên khách hàng không được chứa ký tự đặc biệt. Tên khách hàng: " + r.CusName }); continue; }
+        if (HasParenOrNewline(r.Address))
+        { errors.Add(new { line, error = "Địa chỉ không được chứa ký tự đặc biệt. Tên khách hàng: " + r.CusName }); continue; }
+        if (HasParenOrNewline(r.ContName))
+        { errors.Add(new { line, error = "Họ tên người liên hệ không được chứa ký tự đặc biệt. Tên khách hàng: " + r.CusName }); continue; }
+        if (HasParenOrNewline(r.ContAddress))
+        { errors.Add(new { line, error = "Địa chỉ người liên hệ không được chứa ký tự đặc biệt. Tên khách hàng: " + r.CusName }); continue; }
         if (string.IsNullOrWhiteSpace(r.Mobile) && string.IsNullOrWhiteSpace(r.Tel)) { errors.Add(new { line, name = r.CusName, error = "Cần SĐT di động hoặc cố định." }); continue; }
         var code = string.IsNullOrWhiteSpace(r.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + line : r.CusCode.Trim().ToUpperInvariant();
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã khách hàng bị trùng trong file nhập." }); continue; }
@@ -30425,6 +30451,8 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
         if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); created++; }
         else updated++;
         c.CusName = r.CusName; c.Mobile = r.Mobile; c.Tel = r.Tel; c.Address = r.Address; c.Email = r.Email; c.UpdatedAt = DateTime.Now;
+        // #255: hai cột người liên hệ mà nguồn CÓ kiểm nhưng import cũ không nhận/không gán (§12).
+        c.ContName = r.ContName; c.ContAddress = r.ContAddress;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
@@ -33461,7 +33489,9 @@ record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? 
 record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
-record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email);
+// #255: thêm 2 trường người liên hệ — nguồn `FrmImportCustomer` kiểm chúng nên file nhập CÓ chứa chúng.
+record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email,
+    string? ContName = null, string? ContAddress = null);
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null);
