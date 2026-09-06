@@ -4428,6 +4428,60 @@ app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto,
     return Results.Ok(new { deleted = $"{code}/{vin}" });
 }).RequireAuthorization();
 
+// ===== Danh mục MÀN HÌNH / CHỨC NĂNG (Sys_Object) — mảnh cuối của bộ RBAC =====
+// Cột theo `mySql_GetClauseColumnForSysObjectInfo` (2010.HTC BizHTC.Common.cs:1547).
+// 🔴 Bảng này KHÔNG có hàm ghi trong biz nguồn (danh mục tĩnh do DBA nạp) — MiniHTC vẫn mở endpoint
+//    ghi để nạp danh mục, đây là điểm KHÁC nguồn và đã ghi rõ trong comment entity.
+// 🔴 `ObjectType` (TConst.SysObjectType, Const.Main.cs:166): WS · WSFUNC · APP · MENU · SCR · BTN
+//    ⇒ phân quyền xuống tới TỪNG NÚT, không chỉ từng màn hình. (`BIZFUNC` bị comment trong nguồn.)
+// 🔴 `ObjectCodeParent` tạo cây APP → MENU → SCR → BTN.
+string[] SysObjectTypes = { "WS", "WSFUNC", "APP", "MENU", "SCR", "BTN" };
+
+app.MapGet("/api/sysobjects", async (AppDbContext db, ITenantContext t, string? objectCode, string? objectType, string? parent, string? flagActive) =>
+{
+    var qy = db.SysObjects.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(objectCode)) qy = qy.Where(x => x.ObjectCode == objectCode);
+    if (!string.IsNullOrWhiteSpace(objectType)) qy = qy.Where(x => x.ObjectType == objectType);
+    if (!string.IsNullOrWhiteSpace(parent)) qy = qy.Where(x => x.ObjectCodeParent == parent);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.ObjectType).ThenBy(x => x.ObjectCode).Select(x => new
+    {
+        x.ObjectCode, x.ObjectType, x.ObjectName, x.ObjectCodeParent, x.ObjectCodeExec,
+        x.PhysicalAssembly, x.PhysicalClass, x.FlagExecModal, x.PartnerCode, x.FlagActive,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sysobjects/save", async (SysObjectSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ObjectCode ?? "").Trim();
+    if (code.Length < 1) return Results.BadRequest(new { error = "Mã đối tượng rỗng." });
+    var type = (dto.ObjectType ?? "").Trim().ToUpperInvariant();
+    if (type.Length > 0 && !SysObjectTypes.Contains(type))
+        return Results.BadRequest(new { error = $"Loại đối tượng không hợp lệ. Cho phép: {string.Join(", ", SysObjectTypes)}." });
+    var parent = (dto.ObjectCodeParent ?? "").Trim();
+    // Cây phân cấp: khai báo cha thì cha phải có thật (nguồn dựng cây qua ObjectCodeParent).
+    if (parent.Length > 0 && parent != code
+        && !await db.SysObjects.AnyAsync(x => x.OrgId == t.OrgId && x.ObjectCode == parent))
+        return Results.BadRequest(new { error = $"Đối tượng cha {parent} không tồn tại." });
+    if (parent == code) return Results.BadRequest(new { error = "Đối tượng không thể là cha của chính nó." });
+
+    var row = await db.SysObjects.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ObjectCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new SysObject { OrgId = t.OrgId, ObjectCode = code }; db.SysObjects.Add(row); }
+    row!.ObjectType = type.Length > 0 ? type : row.ObjectType;
+    row.ObjectName = dto.ObjectName;
+    row.ObjectCodeParent = parent.Length > 0 ? parent : null;
+    row.ObjectCodeExec = dto.ObjectCodeExec;
+    row.PhysicalAssembly = dto.PhysicalAssembly;
+    row.PhysicalClass = dto.PhysicalClass;
+    row.FlagExecModal = dto.FlagExecModal;
+    row.PartnerCode = dto.PartnerCode;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ObjectCode, created = isNew });
+}).RequireAuthorization();
+
 // ===== Map PHÂN QUYỀN: nhóm↔người dùng (Map_SG_SU) và nhóm↔màn hình (Map_SG_SO) =====
 // Port 1:1 `SysSaveMapSysGroupSysUser_New20181119` (Biz.HTC.WH.cs:16421) và
 // `SysSaveMapSysGroupSysObject_New20181119` (16587). TWIN: cả WS 32-bit lẫn 64-bit CÙNG bản.
@@ -4510,14 +4564,30 @@ app.MapPost("/api/sysgroupobjects/save", async (MapSgSoSaveDto dto, AppDbContext
 
 // Tiện tra cứu: quyền màn hình HIỆU LỰC của một người dùng = hợp của mọi nhóm người đó thuộc về.
 // (Nguồn có hàm riêng `SysGetMapSysUserSysObjectForCurrentUser` — đây là bản rút gọn theo dữ liệu đã port.)
-app.MapGet("/api/sysusers/{userCode}/objects", async (string userCode, AppDbContext db, ITenantContext t) =>
+// 🔴 Quyền HIỆU LỰC của một người dùng. Nguồn KHÔNG có bảng `Map_SU_SO` vật lý — quyền là **DẪN XUẤT**
+// qua chuỗi join `Sys_User → Map_SG_SU → Map_SG_SO → Sys_Object`
+// (`mySys_GetMapSysUserSysObject`, 2010.HTC BizHTC.System.cs:84; `dt_Map_SU_SO` chỉ là tên DataTable kết quả).
+// #121 nâng cấp bản rút gọn của #120: nay join thật sang `Sys_Object` và **lọc theo `so.FlagActive`
+// + `so.ObjectType`** đúng như ba mệnh đề `BuildClauseConditionList` của nguồn (dòng 163-165).
+app.MapGet("/api/sysusers/{userCode}/objects", async (string userCode, AppDbContext db, ITenantContext t, string? objectType, string? flagActive) =>
 {
     userCode = userCode.Trim();
     var groups = await db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId && x.UserCode == userCode)
         .Select(x => x.GroupCode).Distinct().ToListAsync();
-    var objects = await db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode))
-        .Select(x => x.ObjectCode).Distinct().OrderBy(x => x).ToListAsync();
-    return Results.Ok(new { userCode, groups, objects, count = objects.Count });
+    var codes = await db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode))
+        .Select(x => x.ObjectCode).Distinct().ToListAsync();
+    var qy = db.SysObjects.Where(x => x.OrgId == t.OrgId && codes.Contains(x.ObjectCode));
+    if (!string.IsNullOrWhiteSpace(objectType)) qy = qy.Where(x => x.ObjectType == objectType);
+    // Nguồn lọc `so.FlagActive`; mặc định chỉ trả đối tượng đang hoạt động.
+    var fa = string.IsNullOrWhiteSpace(flagActive) ? "1" : flagActive!;
+    if (fa != "*") qy = qy.Where(x => x.FlagActive == fa);
+    var objects = await qy.OrderBy(x => x.ObjectType).ThenBy(x => x.ObjectCode).Select(x => new
+    {
+        x.ObjectCode, x.ObjectType, x.ObjectName, x.ObjectCodeParent, x.FlagExecModal, x.FlagActive,
+    }).ToListAsync();
+    // Mã có trong map nhưng KHÔNG có trong danh mục — dấu hiệu danh mục thiếu dòng.
+    var orphan = codes.Except(objects.Select(o => o.ObjectCode)).ToList();
+    return Results.Ok(new { userCode, groups, count = objects.Count, objects, orphanCodes = orphan });
 }).RequireAuthorization();
 
 // ===== Người dùng / nhóm hệ thống (Sys_User, Sys_Group — port 1:1 `SysSaveUser`(16095) /
@@ -24331,6 +24401,8 @@ record SysGroupSaveDto(string? GroupCode, string? GroupName, string? PartnerCode
 record MapSgSuRowDto(string? GroupCode, string? UserCode);
 record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows);
 record MapSgSoSaveDto(string? GroupCode, List<string>? ObjectCodes);
+// Danh mục màn hình/chức năng. ObjectType: WS | WSFUNC | APP | MENU | SCR | BTN.
+record SysObjectSaveDto(string? ObjectCode, string? ObjectType, string? ObjectName, string? ObjectCodeParent, string? ObjectCodeExec, string? PhysicalAssembly, string? PhysicalClass, string? FlagExecModal, string? PartnerCode, string? FlagActive);
 // Hoá đơn TCG: khoá dòng = cặp (TCGInvoiceCode, VIN). TInvoicePrice nguồn luôn ghi 0 nên không nhận từ client.
 record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);

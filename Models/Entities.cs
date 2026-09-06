@@ -4656,6 +4656,42 @@ public sealed class VatTcgInvoiceDetail
 }
 
 /// <summary>
+/// Danh mục MÀN HÌNH / CHỨC NĂNG hệ thống (`Sys_Object`) — mảnh cuối của bộ RBAC
+/// (`Sys_User` #119 → `Map_SG_SU`/`Map_SG_SO` #120 → `Sys_Object` ở đây).
+/// Cột lấy theo `mySql_GetClauseColumnForSysObjectInfo` (2010.HTC `BizHTC.Common.cs:1547`).
+/// 🔴 Bảng này **KHÔNG có hàm ghi** trong biz (không `SaveData("Sys_Object")`, không WS `Save…`) —
+/// là **danh mục tĩnh do DBA nạp**, chỉ được ĐỌC. Vì vậy nó cũng không nằm trong danh sách 38 bảng
+/// dựng từ `SaveData(` ở #117. MiniHTC vẫn cho ghi để nạp danh mục, nhưng ghi rõ đây là điểm khác.
+/// 🔴 `ObjectType` theo `TConst.SysObjectType` (`Const.Main.cs:166`): **WS · WSFUNC · APP · MENU ·
+/// SCR · BTN** — tức phân quyền xuống tới **từng NÚT**, không chỉ từng màn hình.
+/// (`BIZFUNC` có trong nguồn nhưng **đã bị comment**, không dùng.)
+/// 🔴 `ObjectCodeParent` tạo **cây phân cấp** (APP → MENU → SCR → BTN);
+/// `ObjectCodeExec` + `PhysicalAssembly` + `PhysicalClass` là thông tin nạp form WinForm;
+/// `FlagExecModal` cho biết mở dạng modal hay không.
+/// ⚠️ Câu SQL của nguồn đặt bí danh `FlagActive` thành **`SOFlagActive`** để tránh đụng cột cùng tên
+/// của `Sys_User` khi join — tên CỘT thật vẫn là `FlagActive`.
+/// </summary>
+public sealed class SysObject
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ObjectCode { get; set; } = "";
+    /// <summary>WS | WSFUNC | APP | MENU | SCR | BTN (TConst.SysObjectType).</summary>
+    public string? ObjectType { get; set; }
+    public string? ObjectName { get; set; }
+    /// <summary>Mã cha — tạo cây APP → MENU → SCR → BTN.</summary>
+    public string? ObjectCodeParent { get; set; }
+    /// <summary>Mã đối tượng được thực thi khi kích hoạt.</summary>
+    public string? ObjectCodeExec { get; set; }
+    public string? PhysicalAssembly { get; set; }
+    public string? PhysicalClass { get; set; }
+    /// <summary>Mở dạng modal hay không ("1"/"0").</summary>
+    public string? FlagExecModal { get; set; }
+    public string? PartnerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>
 /// Map NHÓM ↔ NGƯỜI DÙNG (`Map_SG_SU` — port 1:1 `SysSaveMapSysGroupSysUser_New20181119`,
 /// 2010.HTC `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:16421`; hàm đọc `SysGetMapSysGroupSysUser`
 /// ở `BizHTC.System.cs:659`). TWIN: cả WS 32-bit lẫn 64-bit **cùng bản** `_New20181119`.

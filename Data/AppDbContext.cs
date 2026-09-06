@@ -46,6 +46,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SeqCounter> SeqCounters => Set<SeqCounter>();
     public DbSet<MstBank> MstBanks => Set<MstBank>();
     public DbSet<SysUser> SysUsers => Set<SysUser>();
+    public DbSet<SysObject> SysObjects => Set<SysObject>();
     public DbSet<MapSysGroupSysUser> MapSysGroupSysUsers => Set<MapSysGroupSysUser>();
     public DbSet<MapSysGroupSysObject> MapSysGroupSysObjects => Set<MapSysGroupSysObject>();
     public DbSet<SysGroup> SysGroups => Set<SysGroup>();
