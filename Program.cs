@@ -29268,13 +29268,53 @@ app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, stri
 //    dù cùng khối giao nhận — form chỉ bắt buộc 3 trường đầu. Giữ nguyên, không "siết cho đều".
 // ⚠️ `TSTOrderComplainNo` · `TSTEmployeeCode` · `TSTSolution` · hai cột trạng thái KHÔNG nằm trong
 //    `Ser_OrderComplain_Save` ⇒ client **không gửi được**; phía NCC/TST ghi. Không nhận từ DTO.
+// ===== 🔴 #242 SAVE BA VAI cho `Ser_OrderComplain_Save` + guard của BIZ (khác guard của FORM) =====
+// Nguồn `BizCarSv.SuggestPrice.cs:2756-2872` (md5 8aafd84f, 4213 dòng — khớp 2 máy).
+// #233 đã port 12 guard của `checkForm()` phía client. Lượt này đọc **tầng BIZ** — và biz có guard RIÊNG:
+//  · Ba vai như #240/#241: `bIsDelete` · chưa tồn tại + đang xoá ⇒ `goto MyCodeLabel_Done` (thành công
+//    im lặng) · đã tồn tại ⇒ `DMSOrderComplainStatus` **phải là `Pending`** ⇒ khiếu nại đã gửi
+//    KHÔNG sửa/xoá được. Khi sửa: giữ NGUYÊN `CreateDTime`/`CreateBy`.
+//  · `Mst_Dealer_CheckDB(Exist=Yes, **Active**)` — giống YC báo giá (#241), KHÁC đơn đặt PT (#240 không có).
+//  · 🔴 `if (dblQuantity < 1)` ⇒ "Số lượng vật tư phải lớn hơn 0!" — **ngưỡng là `< 1`, KHÔNG phải `<= 0`**.
+//    Số lượng lẻ (0.5) bị CHẶN dù thông điệp chỉ nói "lớn hơn 0". Form (#233) chỉ kiểm `> 0` ⇒ **hai tầng
+//    lệch nhau**; biz mới là chốt chặn cuối, port theo BIZ.
+//  · `VINCode` rỗng ⇒ "Số VIN không được để trống!" (biz kiểm lại, không tin form).
 app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
+    var isDelete = string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
+    var cmpNoIn = (dto.ComplainNo ?? "").Trim().ToUpperInvariant();
+
+    OrderComplain? existingC = cmpNoIn.Length == 0 ? null
+        : await db.OrderComplains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cmpNoIn);
+
+    if (existingC is null && isDelete)
+        return Results.Ok(new { complainNo = cmpNoIn, deleted = true, note = "Khiếu nại không tồn tại — xoá coi như thành công (đúng nguồn)." });
+
+    if (existingC is not null && existingC.DMSStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ sửa/xoá được khiếu nại đang Mới tạo.", dmsStatus = existingC.DMSStatus });
+
+    if (isDelete)
+    {
+        var oldFiles = await db.OrderComplainAttachments.Where(a => a.OrgId == t.OrgId && a.ComplainNo == cmpNoIn).ToListAsync();
+        db.OrderComplainAttachments.RemoveRange(oldFiles);
+        db.OrderComplains.Remove(existingC!);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { complainNo = cmpNoIn, deleted = true, removedFiles = oldFiles.Count });
+    }
+
     if (string.IsNullOrWhiteSpace(dto.OrderPartNo)) return Results.BadRequest(new { error = "Cần OrderPartNo." });
     var orderNo = dto.OrderPartNo.Trim().ToUpperInvariant();
     var exists = await db.OrderParts.AnyAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == orderNo);
     if (!exists) return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt {orderNo}." });
+
+    // Guard của BIZ: đại lý phải tồn tại VÀ đang hoạt động.
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode))
+    {
+        var dlrC = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dto.DealerCode!.Trim());
+        if (dlrC is null) return Results.BadRequest(new { error = $"Đại lý {dto.DealerCode} không tồn tại." });
+        if (dlrC.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dto.DealerCode} đang ngừng hoạt động." });
+    }
 
     // --- 12 guard của checkForm(), giữ NGUYÊN THÔNG ĐIỆP tiếng Việt của nguồn ---
     if (string.IsNullOrWhiteSpace(dto.ComplainType)) return Results.BadRequest(new { error = "Chưa chọn phân loại khiếu nại" });
@@ -29282,6 +29322,9 @@ app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db,
     if (string.IsNullOrWhiteSpace(dto.VieName)) return Results.BadRequest(new { error = "Tên vật tư không được trống" });
     if (dto.Quantity is null) return Results.BadRequest(new { error = "Số lượng không được trống" });
     if (dto.Quantity <= 0) return Results.BadRequest(new { error = "Số lượng > 0" });
+    // 🔴 Guard của BIZ chặt hơn form: `if (dblQuantity < 1)` (BizCarSv.SuggestPrice.cs:2846).
+    //    Thông điệp nói "lớn hơn 0" nhưng ngưỡng thật là **>= 1** ⇒ 0.5 bị chặn. Giữ nguyên cả hai.
+    if (dto.Quantity < 1) return Results.BadRequest(new { error = "Số lượng vật tư phải lớn hơn 0!" });
     if (string.IsNullOrWhiteSpace(dto.VINCode)) return Results.BadRequest(new { error = "VIN không được trống" });
     if (string.IsNullOrWhiteSpace(dto.RequestOrderNo)) return Results.BadRequest(new { error = "Số yêu cầu giao hàng không được trống" });
     var content = (dto.Content ?? "").Trim();
@@ -29292,7 +29335,7 @@ app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db,
     if (string.IsNullOrWhiteSpace(dto.DeliveryBy)) return Results.BadRequest(new { error = "Người giao nhận không được trống" });
     if (string.IsNullOrWhiteSpace(dto.TransportUnit)) return Results.BadRequest(new { error = "Đơn vị vận tải không được trống" });
 
-    var no = "CMP" + DateTime.Now.ToString("yyMMddHHmmss");
+    var no = existingC?.ComplainNo ?? (cmpNoIn.Length > 0 ? cmpNoIn : "CMP" + DateTime.Now.ToString("yyMMddHHmmss"));
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var c = new OrderComplain
     {
@@ -29308,7 +29351,17 @@ app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db,
         AssembleDateTime = dto.AssembleDateTime, AssembleBy = dto.AssembleBy,
         CreateBy = who, LogLUDTime = DateTime.Now, LogLUBy = who,
     };
-    db.OrderComplains.Add(c); await db.SaveChangesAsync();
+    if (existingC is not null)
+    {
+        // SỬA: giữ NGUYÊN CreateDTime/CreateBy của bản ghi cũ (:2827-2828).
+        c.Id = existingC.Id;
+        c.CreatedAt = existingC.CreatedAt;
+        c.CreateBy = existingC.CreateBy;
+        db.Entry(existingC).CurrentValues.SetValues(c);
+        await db.SaveChangesAsync();
+        c = existingC;
+    }
+    else { db.OrderComplains.Add(c); await db.SaveChangesAsync(); }
     return Results.Ok(new { c.ComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
                             c.DealerCode, c.PartCode, c.VieName, c.Quantity, c.VINCode, c.RequestOrderNo,
                             c.DeliveryDateTime, c.DeliveryBy, c.TransportUnit, c.DeliveryLocation,
@@ -32618,7 +32671,10 @@ record OrderPartActionDto(DateTime? EstimatedDeliverDate = null, DateTime? Reque
     List<OrderPartLineDto>? Lines = null);
 // #233: bổ sung 13 trường mà `Ser_OrderComplain_Save` gửi lên (thêm ở CUỐI ⇒ không vỡ lời gọi cũ).
 //  KHÔNG có TSTOrderComplainNo/TSTEmployeeCode/TSTSolution/2 trạng thái: nguồn không cho client gửi.
+// #242: `ComplainNo` (trống = tạo mới) + `FlagIsDelete` — nguồn dùng CHUNG `Ser_OrderComplain_Save`
+//   cho cả tạo/sửa/xoá.
 record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Content,
+    string? ComplainNo = null, string? FlagIsDelete = null,
     string? DealerCode = null, string? PartCode = null, string? VieName = null, decimal? Quantity = null,
     string? VINCode = null, string? RequestOrderNo = null,
     DateTime? DeliveryDateTime = null, string? DeliveryBy = null, string? TransportUnit = null,
