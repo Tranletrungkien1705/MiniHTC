@@ -17846,6 +17846,70 @@ app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext
     return Results.Ok(new { totalCustomer = cus.Sum(r => r.balance), totalInsurance = ins.Sum(r => r.balance), grandTotal = all.Sum(r => r.balance), rows = all });
 }).RequireAuthorization();
 
+// ===== 🔴 #215 TÌM KIẾM CÔNG NỢ (3 loại) — `SerCusDebitSearch` =====
+// Màn gốc: `Views/Debit/FrmCusDebitSearch.cs` (258 dòng, DMSCarSv) — hai nút `btnSearch` · `btnExit`.
+// Nguồn: `TERP.BizCarSv/BizCarSv.Debit.cs:1632`; WS LIVE (`WSCarSv.asmx.cs:18250`) gọi đúng hàm này.
+// BƯỚC 3B: md5 CẢ FILE `9119d491` (3784 dòng) KHỚP 2 máy.
+//
+// 🔴 PHÁT HIỆN GIẢI THÍCH #213/#214: nguồn lọc **`d.DebitType = @DebitType` VÀ `r.PaymentType = @DebitType`**
+//    — tức mã loại nợ và mã loại phiếu thu DÙNG CHUNG một bộ hằng `TConst.SerDebitType` (Const.Main.cs:372):
+//      **1 = khách hàng · 2 = bảo hiểm · 3 = nhà cung cấp**.
+//    ⇒ `PaymentType='1'` ở #213 và `'2'` ở #214 không phải hai quy ước rời rạc mà là CÙNG một bảng mã.
+//    Nguồn có hẳn ba nhánh SQL theo `DebitType` (1632: khách hàng · 1876: bảo hiểm · 1930: nhà cung cấp).
+//
+// 🔴 Bộ lọc của nguồn dựng bằng `SqlUtils.BuildClause` với chuỗi điều kiện đã ghép sẵn ở tầng service:
+//    tên/hãng BH/NCC nhận dạng `"like %giá trị%"` ⇒ **so khớp CHỨA, không phân biệt hoa thường**.
+//    Riêng `strIsDebit`: nếu = `Flag.Active` ("1") thì thành `"> 0"`, ngược lại **chuỗi rỗng ⇒ BỎ HẲN điều kiện**
+//    (không phải lọc `= 0`). Nghĩa là: bật cờ ⇒ chỉ hiện dòng CÒN nợ; tắt cờ ⇒ hiện TẤT CẢ.
+app.MapGet("/api/debits/search", async (AppDbContext db, ITenantContext t,
+    string? debitType, string? name, string? plateNo, string? insName, string? supplierName, string? isDebit) =>
+{
+    var dt = (debitType ?? "1").Trim();
+    if (dt is not ("1" or "2" or "3"))
+        return Results.BadRequest(new { error = "Loại công nợ chỉ nhận 1 (khách hàng) | 2 (bảo hiểm) | 3 (nhà cung cấp)." });
+    var onlyDebt = (isDebit ?? "").Trim() == "1";   // nguồn: Flag.Active ⇒ "> 0"; ngược lại bỏ hẳn điều kiện
+
+    var rows = new List<object>();
+    if (dt == "1")
+    {
+        var q1 = db.CusDebits.Where(x => x.OrgId == t.OrgId);
+        if (!string.IsNullOrWhiteSpace(name)) q1 = q1.Where(x => x.CusName != null && x.CusName.ToLower().Contains(name!.Trim().ToLower()));
+        var list = await q1.GroupBy(x => new { x.CusId, x.CusName })
+            .Select(g => new { g.Key.CusId, g.Key.CusName, Debit = g.Sum(x => x.DebitAmount), Paid = g.Sum(x => x.PaidAmount) })
+            .ToListAsync();
+        rows.AddRange(list.Select(x => new { code = x.CusId, itemName = x.CusName, debitType = dt,
+                                            debitAmount = x.Debit, paymentAmount = x.Paid, remain = x.Debit - x.Paid })
+                          .Where(r => !onlyDebt || r.remain > 0).Cast<object>());
+    }
+    else if (dt == "2")
+    {
+        var q2 = db.InsDebits.Where(x => x.OrgId == t.OrgId);
+        if (!string.IsNullOrWhiteSpace(insName)) q2 = q2.Where(x => x.InsName != null && x.InsName.ToLower().Contains(insName!.Trim().ToLower()));
+        var list = await q2.GroupBy(x => new { x.InsNo, x.InsName })
+            .Select(g => new { g.Key.InsNo, g.Key.InsName, Debit = g.Sum(x => x.DebitAmount), Paid = g.Sum(x => x.PaidAmount) })
+            .ToListAsync();
+        rows.AddRange(list.Select(x => new { code = x.InsNo, itemName = x.InsName, debitType = dt,
+                                            debitAmount = x.Debit, paymentAmount = x.Paid, remain = x.Debit - x.Paid })
+                          .Where(r => !onlyDebt || r.remain > 0).Cast<object>());
+    }
+    else
+    {
+        var q3 = db.SupplierDebits.Where(x => x.OrgId == t.OrgId);
+        // Entity MiniHTC chỉ có SupplierCode (không lưu tên NCC) ⇒ lọc theo MÃ; tên do bảng NCC riêng giữ.
+        if (!string.IsNullOrWhiteSpace(supplierName)) q3 = q3.Where(x => x.SupplierCode.ToLower().Contains(supplierName!.Trim().ToLower()));
+        var list = await q3.GroupBy(x => new { x.SupplierCode })
+            .Select(g => new { g.Key.SupplierCode, Debit = g.Sum(x => x.DebitAmount), Paid = g.Sum(x => x.PaidAmount) })
+            .ToListAsync();
+        rows.AddRange(list.Select(x => new { code = x.SupplierCode, itemName = (string?)null, debitType = dt,
+                                            debitAmount = x.Debit, paymentAmount = x.Paid, remain = x.Debit - x.Paid })
+                          .Where(r => !onlyDebt || r.remain > 0).Cast<object>());
+    }
+
+    return Results.Ok(new { debitType = dt, onlyDebt, count = rows.Count, rows,
+        note = "DebitType dùng chung bảng mã với PaymentType (TConst.SerDebitType: 1 KH · 2 BH · 3 NCC).",
+        skipped = "Bộ lọc biển số/nhóm KH của nguồn cần bảng Ser_Car + Ser_CustomerGroup — chưa nối, KHÔNG bịa." });
+}).RequireAuthorization();
+
 // ===== 🔴 #214 CÔNG NỢ BẢO HIỂM theo KỲ — `Ser_InvReportInsuranceDebitRpt_New20210618` =====
 // Màn gốc: `Views/Debit/FrmReportTotalInsDebit.cs` (303 dòng, DMSCarSv) — 4 nút Search/Print/Export/Thoát.
 // Nguồn: `TERP.BizCarSv/BizCarSv.Service.Report.cs:2392`. md5 CẢ FILE `b7ecca4c` KHỚP 2 máy.
