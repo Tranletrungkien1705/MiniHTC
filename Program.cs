@@ -32064,6 +32064,84 @@ app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceCon
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();
 
+// ===== 🔴 #281 TỔNG ĐÀI TRA KHÁCH + XE THEO SỐ ĐIỆN THOẠI — `Ser_CustomerCar_Get_ByPhone_New20180622` =====
+// Nguồn: `ERP.ICIC/TERP.BizCarSv/BizCarSv.Customer.cs:930` (hệ **CHỈ CÓ TRÊN LAPTOP**).
+// TRACE TWIN: ba bản — bản trần (:152) · `_Old` (:537) · `_New20180622` (:930). WS `WSCarSv_ICIC.cs:1314`
+//   gọi **`_New20180622`** ⇒ hai bản kia CHẾT.
+//
+// 🔴 SỐ ĐIỆN THOẠI KHỚP TRÊN **HAI CỘT**, nối bằng `OR` — đây là điểm cốt lõi của màn tổng đài:
+//     `and ( ((1=1) <đk trên t.Tel>) OR ((1=1) <đk trên t.Mobile>) )`
+//   và mỗi vế dùng `BuildClauseConditionList(..., strPhoneList, "|")` ⇒ **NHẬN NHIỀU SỐ, ngăn bằng `|`**.
+//   ⇒ endpoint `/api/customercars` sẵn có KHÔNG thay thế được: nó chỉ so MỘT cột `CusPhone` với MỘT chuỗi.
+//
+// 🔴 `car.DealerCode not in (@DealerCodeRejectList)` nằm ở **WHERE** trong khi `Ser_Car` là **LEFT JOIN**
+//   ⇒ với khách **CHƯA CÓ XE**, `car.DealerCode` là NULL, mà `NULL not in (...)` cho ra **UNKNOWN** ⇒ dòng
+//   bị LOẠI. Tức LEFT JOIN bị điều kiện WHERE biến thành **INNER JOIN**: **khách không có xe không bao giờ
+//   ra kết quả**. Đây là hành vi THẬT của hệ đang chạy ⇒ port giữ nguyên (`requireCar` mặc định bật) và
+//   mở tham số để đối soát; đổi thành LEFT JOIN thật sẽ làm tổng đài thấy thêm khách mà hệ cũ không thấy.
+//
+// Các guard còn lại: `t.IsActive = 1` · `t.CusID is not null` · `t.DealerCode not in (reject)` ·
+//   `car.IsActive = 1` nằm **trên điều kiện JOIN** (không phải WHERE) · sắp xếp `order by t.CusName asc`.
+// 📌 NỢ: nguồn còn gọi WS Sales lấy thêm khách bên bán hàng (`strSalesSessionId` + `GenInCondition`) rồi
+//   ghép bảng `Sales_DealerCustomer` — MiniHTC chưa có tầng gọi WS ngoài.
+app.MapGet("/api/servicecustomers/by-phone", async (AppDbContext db, ITenantContext t,
+    string? phones, string? dealer, string? cusName, string? plateNo, string? frameNo,
+    string? rejectDealers, bool? requireCar) =>
+{
+    // Danh sách số ngăn bằng "|" đúng như nguồn (nhận thêm "," cho tiện gọi từ web).
+    var phoneList = (phones ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+
+    var cus = db.ServiceCustomers.Where(c => c.OrgId == t.OrgId
+        && c.FlagActive == "1"                    // t.IsActive = 1
+        && c.CusCode != "");                      // t.CusID is not null
+    if (!string.IsNullOrWhiteSpace(dealer)) cus = cus.Where(c => c.DealerCode == dealer!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(cusName)) cus = cus.Where(c => c.CusName.Contains(cusName!));
+
+    var reject = (rejectDealers ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
+    if (reject.Count > 0) cus = cus.Where(c => c.DealerCode == null || !reject.Contains(c.DealerCode));
+
+    var cusList = await cus.ToListAsync();
+
+    // Tel HOẶC Mobile — khớp bất kỳ số nào trong danh sách.
+    if (phoneList.Count > 0)
+        cusList = cusList.Where(c => phoneList.Any(p =>
+            (c.Tel != null && c.Tel.Contains(p)) || (c.Mobile != null && c.Mobile.Contains(p)))).ToList();
+
+    var codes = cusList.Select(c => c.CusCode).ToList();
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1"
+            && x.CusID != null && codes.Contains(x.CusID))
+        .ToListAsync();
+    if (!string.IsNullOrWhiteSpace(plateNo)) cars = cars.Where(x => x.PlateNo != null && x.PlateNo.Contains(plateNo!.ToUpperInvariant())).ToList();
+    if (!string.IsNullOrWhiteSpace(frameNo)) cars = cars.Where(x => x.FrameNo.Contains(frameNo!.ToUpperInvariant())).ToList();
+    if (reject.Count > 0) cars = cars.Where(x => x.DealerCode == null || !reject.Contains(x.DealerCode)).ToList();
+
+    var carsByCus = cars.GroupBy(x => x.CusID!).ToDictionary(g => g.Key, g => g.ToList());
+
+    // Mặc định GIỮ hành vi nguồn: khách không có xe thì KHÔNG ra (xem chú thích LEFT JOIN ở trên).
+    var mustHaveCar = requireCar ?? true;
+
+    var items = cusList
+        .Where(c => !mustHaveCar || carsByCus.ContainsKey(c.CusCode))
+        .OrderBy(c => c.CusName)                  // order by t.CusName asc
+        .Take(500)
+        .Select(c => new
+        {
+            c.CusCode, c.CusName, c.Tel, c.Mobile, c.Address, c.DealerCode,
+            cars = carsByCus.TryGetValue(c.CusCode, out var cs)
+                ? cs.Select(x => new { x.FrameNo, x.PlateNo, x.ModelCode, x.InsNo, x.DealerCode, x.CurrentKm, x.CurrentServiceDate }).ToList()
+                : new(),
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        phones = phoneList, requireCar = mustHaveCar, rejectedDealers = reject,
+        note = "Nguồn khớp Tel HOẶC Mobile; khách chưa có xe bị loại do car.DealerCode not in (...) đặt ở WHERE trên LEFT JOIN.",
+        count = items.Count, items,
+    });
+}).RequireAuthorization();
+
 // ===== Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar) =====
 app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string? plate, string? vin, string? cus) =>
 {
