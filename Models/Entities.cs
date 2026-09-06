@@ -2510,6 +2510,19 @@ public sealed class PartStockOut
     /// </summary>
     public string? Description { get; set; }
 
+    /// <summary>
+    /// 🔴 #304 FLAGSYNCVELOCA — cờ **đã đồng bộ phiếu xuất sang Veloca**, port cũ THIẾU HẲN.
+    /// Nguồn đặt `Flag.Inactive` ("0") **ngay khi tạo** phiếu (4 chỗ: `StockOut.cs:704/753/1222/1271`,
+    /// ghi vào cả DB đại lý lẫn DB kho), rồi `OSVeloca_Ser_Inv_StockOut_UpdFlagSyncVeloca` nâng lên "1".
+    /// Bộ lọc của nguồn nhận **ba** giá trị: "0" chưa đồng bộ · "1" đã đồng bộ · **"" = LẤY CẢ HAI**
+    /// (`StockOut.cs:18468` + mệnh đề `( '' = @strFlagSyncVeloca or siso.FlagSyncVeloca = @… )`).
+    /// </summary>
+    public string FlagSyncVeloca { get; set; } = "0";
+
+    /// <summary>#304 STOCKOUTDATETIME — mốc thời gian dùng để tính giá vốn bình quân và để đẩy sang
+    /// Veloca (`ApprDTimeUTC`). Khác <see cref="StockOutDate"/> ở chỗ có GIỜ.</summary>
+    public DateTime? StockOutDateTime { get; set; }
+
     public string? StockOutTypeText { get; set; }   // STOCKOUTTYPETEXT — nguồn lưu CẢ NHÃN loại xuất
     public string? StatusText { get; set; }         // STATUSTEXT — nguồn lưu CẢ NHÃN trạng thái
     public string? UserCode { get; set; }

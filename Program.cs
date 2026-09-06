@@ -33255,6 +33255,18 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
         DrivingLicense = dto.DrivingLicense,
         LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCode,
     };
+    // 🔴 #304: nguồn đặt `FlagSyncVeloca = Flag.Inactive` **ngay khi tạo** (4 chỗ, cả DB đại lý lẫn DB kho)
+    //   ⇒ phiếu mới luôn ở trạng thái "chưa đồng bộ Veloca". Mặc định entity đã là "0", ghi rõ cho khỏi lệch.
+    h.FlagSyncVeloca = "0";
+    // 🔴 #304 LUẬT GIỜ XUẤT KHO (`StockOut.cs:2207-2216`): `StockOutDateTime` = ngày xuất + **giờ hiện tại**
+    //   NẾU ngày xuất là HÔM NAY; ngược lại là **00:00:00**. Phiếu lùi ngày không được mang giờ của lúc nhập.
+    //   ⚠️ Luật này chỉ còn trong `SerStockOutUpdate_New20240115` — bản **CHẾT** (WS gọi bản trần).
+    //     Port vào đây vì nó là quy tắc dữ liệu hợp lý và `StockOutDateTime` được dùng để tính giá vốn
+    //     bình quân (`GetAverageCost(..., StockOutDateTime)`) lẫn để đẩy Veloca. **Khai rõ là mở rộng**,
+    //     không phải trích từ đường chạy LIVE.
+    h.StockOutDateTime = h.StockOutDate.Date == DateTime.Now.Date
+        ? DateTime.Now
+        : h.StockOutDate.Date;
     db.PartStockOuts.Add(h); await db.SaveChangesAsync();
 
     // 🔴 #294: nguồn `SerStockOutCreate` (`StockOut.cs:540`) gọi `SerStockOutOrderStockOutCreate` ⇒ khi phiếu
@@ -33297,6 +33309,108 @@ app.MapGet("/api/stockoutorders/{id:long}/stockouts", async (long id, AppDbConte
                        }).ToListAsync();
     return Results.Ok(new { stockOutOrderId = id, orderNo = h.OrderNo, count = items.Count, items,
         blocksEdit = items.Any(x => x.Status == "1" || x.Status == "2" || x.Status == "3") });
+}).RequireAuthorization();
+
+// ===== 🔴 #304 ĐỒNG BỘ PHIẾU XUẤT SANG VELOCA (`OSVeloca_Ser_Inv_StockOut_*`) — chưa từng port =====
+// Nguồn: `BizCarSv.Inventory.StockOut.cs`; WS có **7** WebMethod cho trục này (StockIn 3 + StockOut 4).
+// TRACE TWIN: WS `:17685` gọi `..._GetByStockOutID_New20240606` ⇒ bản `_GetByStockOutID` (`:18670`) CHẾT.
+//
+// 🔴 LUẬT GIỜ UTC — **CHỈ áp cho trục Veloca/OS, KHÔNG áp cho HCC**:
+//   Nguồn viết `CONVERT(varchar, DateAdd(hh, -7, X), 20) …UTC` ở **49 chỗ** (StockIn 4 · StockOut 4 ·
+//   ZTemp 41) ⇒ mọi trường tên `*UTC` của trục này = **giờ địa phương TRỪ 7** (VN = UTC+7).
+//   ⚠️ Ngược lại `HCCIntergration/BizCarSv.HCC.cs` **KHÔNG có lấy một** `DateAdd(hh,-7)` nào ⇒ payload HCC
+//     gửi **giờ địa phương** dù tên trường cũng là `…DTimeUTC`. Hai trục, hai luật — **đừng áp đại trà**.
+//     (Vì vậy `AppointmentDTimeUTC` và `DeliveryDTimeUTC` đã port ở các vòng trước là ĐÚNG, giữ nguyên.)
+static string? VelocaUtc(DateTime? v) => v?.AddHours(-7).ToString("yyyy-MM-dd HH:mm:ss");
+
+// 🔴 BẢN ĐỒ ĐẠI LÝ → KHO gõ CỨNG trong SQL nguồn, kèm chú thích của tác giả:
+//   *"20240401. HuongTTT: Code này xử lý cho trường hợp PX không truyền vào Mã kho -> Sau khi NC cho PX
+//     truyền vào mã kho thì rem đoạn này lại."*
+//   ⇒ đây là **giải pháp TẠM có hạn dùng**, tác giả nói rõ sẽ bỏ. Bản đúng (đọc `Ser_Inv_Stock` /
+//   `Ser_Mst_Location`) nằm ngay trên nhưng **đang bị comment**. Theo luật B port DÒNG ĐANG CHẠY,
+//   đồng thời ghi lại ý định để vòng sau biết đường thay.
+//   ⚠️ `else` gộp **mọi đại lý khác** về `PTDL` — blacklist, không phải whitelist.
+var velocaDealerInv = new Dictionary<string, string>
+{
+    ["VN029"] = "PTDL",     // Đông Đô
+    ["VN068"] = "PTDL",     // Đông Anh
+    ["V3601"] = "KHOTONG",  // Lam Kinh
+    ["VN012"] = "PTHD",     // Hải Phòng
+    ["VN063"] = "PTDL",     // Ninh Bình
+};
+static string VelocaInvCode(Dictionary<string, string> m, string? dealer)
+    => dealer is not null && m.TryGetValue(dealer, out var v) ? v : "PTDL";   // else của nguồn
+
+// #304 Danh sách phiếu xuất theo trạng thái đồng bộ Veloca.
+// ⚠️ `flagSync` rỗng = **LẤY CẢ HAI** (đúng nguồn: `'' = @strFlagSyncVeloca or siso.FlagSyncVeloca = @…`),
+//   KHÔNG phải "không lọc gì" một cách tình cờ — đó là giá trị thứ ba có nghĩa.
+app.MapGet("/api/stockouts/veloca-pending", async (AppDbContext db, ITenantContext t,
+    string? flagSync, string? dealer) =>
+{
+    var qy = db.PartStockOuts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrEmpty(flagSync)) qy = qy.Where(x => x.FlagSyncVeloca == flagSync);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        note = "flagSync rỗng ⇒ lấy CẢ đã và chưa đồng bộ (giá trị thứ ba có nghĩa của nguồn).",
+        items = rows.Select(x => new
+        {
+            x.Id, x.StockOutNo, x.DealerCode, x.WarehouseCode, x.Status,
+            x.StockOutDate, x.StockOutDateTime, x.FlagSyncVeloca,
+            velocaInvCode = VelocaInvCode(velocaDealerInv, x.DealerCode),
+        }),
+    });
+}).RequireAuthorization();
+
+// #304 Payload đẩy MỘT phiếu xuất sang Veloca (`..._GetByStockOutID_New20240606`).
+app.MapGet("/api/stockouts/{id:long}/veloca-payload", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { stockOutId = id });
+    var inv = VelocaInvCode(velocaDealerInv, h.DealerCode);
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
+
+    return Results.Ok(new
+    {
+        // ---- Mst_Inventory (Table0) — dựng từ bản đồ gõ cứng ở trên ----
+        inventory = new
+        {
+            h.DealerCode,
+            InvCode = inv,
+            InvCodeParent = "I",
+            InvBUCode = "I." + inv,
+            InvBUPattern = "I." + inv + "%",
+            InvLevel = "2",
+            InvName = inv,
+            InvAddress = (string?)null, InvContactName = (string?)null,
+            InvContactPhone = (string?)null, InvContactEmail = (string?)null, Remark = (string?)null,
+            FlagIn_Out = "1", FlagActive = "1",
+        },
+        // ---- phiếu xuất ----
+        stockOut = new
+        {
+            h.Id, h.StockOutNo, h.DealerCode, h.WarehouseCode, h.Status, h.CusID,
+            CreateBy = h.UserCode, ApprBy = h.UserCode,
+            // 🔴 hai trường UTC = giờ địa phương − 7 (chỉ trục Veloca/OS)
+            CreateDTimeUTC = VelocaUtc(h.CreatedAt),
+            ApprDTimeUTC = VelocaUtc(h.StockOutDateTime ?? h.StockOutDate),
+            h.FlagSyncVeloca,
+        },
+        lineCount = lines.Count,
+        note = "InvCode gõ CỨNG theo đại lý (giải pháp tạm 20240401 của nguồn); đại lý ngoài danh sách ⇒ PTDL.",
+    });
+}).RequireAuthorization();
+
+// #304 Đánh dấu ĐÃ đồng bộ (`OSVeloca_Ser_Inv_StockOut_UpdFlagSyncVeloca`).
+app.MapPost("/api/stockouts/{id:long}/veloca-synced", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { stockOutId = id });
+    h.FlagSyncVeloca = "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.StockOutNo, h.FlagSyncVeloca });
 }).RequireAuthorization();
 
 app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
