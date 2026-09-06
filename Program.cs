@@ -18853,9 +18853,45 @@ var appointmentStatusSourceCodes = new Dictionary<string, string>
 };
 
 // Nhãn hiển thị nguyên văn nguồn. Nguồn **KHÔNG có nhánh ELSE** ⇒ mã lạ cho ra NULL, không phải chuỗi rỗng.
-var appointmentStatusDisplayNames = new Dictionary<string, string>
+// ===== 🔴 #289 BỔ SUNG mã trạng thái lịch hẹn thứ NĂM + bảng nhãn theo MÀN + từ vựng ĐỐI TÁC =====
+// 🆕 Tìm ra bằng sweep `_audit/sweep_label_divergence.js` (gom mọi khối `CASE … then N'…'` rồi nhóm theo
+//   CỘT được switch): trên `TERP.BizCarSv` có **118 khối nhãn / 12 cột**, trong đó **4 cột PHÂN KỲ**.
+//   Cột `AppStatus` có **BA** bộ nhãn khác nhau — #285 mới port một bộ.
+//
+// ✅ TRACE TWIN: **CẢ HAI** hàm đều LIVE, là hai `[WebMethod]` riêng:
+//   • `Ser_App_GetStatusList` (`Appointment.cs:1418`)            → 4 mã (1..4)
+//   • `Ser_App_GetStatusList01_New20201230` (`ZTemp.cs:26252`)   → **5 mã**, thêm
+//     `when '5' then N'Đã liên hệ & Chưa xác nhận'`
+//   ⇒ mã `'5'` là **có thật**, chỉ màn cũ không hiện. Bảng 4 mã của #285 là **THIẾU**.
+//
+// 🔴 Bộ thứ BA là **TỪ VỰNG ĐỐI TÁC**, không phải nhãn cho người dùng:
+//   `BizCarSv.PushToHyundaiMe.cs:315` → `when '2' then N'confirm' when '4' then N'reject'`
+//   — tiếng ANH, và **chỉ ánh xạ 2 trong 5 mã**; ba mã còn lại cho NULL ⇒ hệ Hyundai Me **không nhận**
+//   lịch hẹn ở trạng thái mới tạo / tiếp nhận / đã-liên-hệ. Đây là **hợp đồng dữ liệu ra ngoài**, phải
+//   giữ tách khỏi bảng nhãn hiển thị.
+var appointmentStatusDisplayNamesByScreen = new Dictionary<string, Dictionary<string, string>>
 {
-    ["1"] = "Mới tạo", ["2"] = "Xác nhận", ["3"] = "Tiếp nhận", ["4"] = "Hủy",
+    // Màn danh sách lịch hẹn cũ (Ser_App_GetStatusList) — 4 mã.
+    ["applist"] = new()
+    {
+        ["1"] = "Mới tạo", ["2"] = "Xác nhận", ["3"] = "Tiếp nhận", ["4"] = "Hủy",
+    },
+    // Màn danh sách lịch hẹn bản 20201230 (Ser_App_GetStatusList01_New20201230) — 5 mã.
+    ["applist01"] = new()
+    {
+        ["1"] = "Mới tạo", ["2"] = "Xác nhận", ["3"] = "Tiếp nhận", ["4"] = "Hủy",
+        ["5"] = "Đã liên hệ & Chưa xác nhận",
+    },
+};
+
+// Giữ tên cũ cho chỗ đã dùng: bảng ĐẦY ĐỦ nhất (5 mã) — vì đây là bảng dùng để TRA, không phải để hiển thị
+// theo một màn cụ thể.
+var appointmentStatusDisplayNames = appointmentStatusDisplayNamesByScreen["applist01"];
+
+// 🔴 Từ vựng ĐẨY SANG HYUNDAI ME (`PushToHyundaiMe.cs:315`) — CHỈ 2/5 mã có giá trị.
+var appointmentStatusHyundaiMe = new Dictionary<string, string>
+{
+    ["2"] = "confirm", ["4"] = "reject",
 };
 
 var appointmentTransitions = new Dictionary<string, string[]>
@@ -18874,6 +18910,13 @@ app.MapGet("/api/appointments/statuses", () => Results.Ok(new
         status = kv.Key, sourceCode = kv.Value,
         // #285: nhãn hiển thị nguyên văn nguồn; mã "(port-only)" không có nhãn.
         displayName = appointmentStatusDisplayNames.TryGetValue(kv.Value, out var dn) ? dn : null,
+        // #289: giá trị gửi sang hệ Hyundai Me — NULL nghĩa là trạng thái đó KHÔNG được đẩy.
+        hyundaiMe = appointmentStatusHyundaiMe.TryGetValue(kv.Value, out var hm) ? hm : null,
+    }),
+    // #289: bảng nhãn THEO MÀN (applist = 4 mã · applist01 = 5 mã, thêm "Đã liên hệ & Chưa xác nhận").
+    byScreen = appointmentStatusDisplayNamesByScreen.Select(s => new
+    {
+        screen = s.Key, names = s.Value.Select(kv => new { code = kv.Key, name = kv.Value }),
     }),
     transitions = appointmentTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
     note = "#285: mã nguồn của AppStatus là CHỮ SỐ 1..4 (kiểm bằng lệnh GHI, tham số LỌC và CASE hiển thị). "
