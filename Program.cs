@@ -32270,10 +32270,12 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
             //    Mặc định lấy bằng số đặt để tổng tiền không ra 0; bước duyệt sẽ ghi đè.
             QtyAppr = l.QtyAppr ?? l.OrderQty,
             UPBeforeDc = l.UPBeforeDc ?? l.Price, DiscountRate = l.DiscountRate, VAT = l.VAT,
-            // #307 §12: bốn cột mới phải GÁN được, không chỉ ĐỌC được.
+            // #307 §12: đơn vị nhập kho + tỷ lệ quy đổi phải GÁN được (đây LÀ cột thật của nguồn).
             UnitStockIn = l.UnitStockIn, ExchangeRate = l.ExchangeRate,
-            TotalQuantityIn = l.TotalQuantityIn,
-            TotalQuantityInExchangeRate = l.TotalQuantityInExchangeRate,
+            // 🔴 #312 KHÔNG gán TotalQuantityIn / TotalQuantityInExchangeRate từ client nữa.
+            //   Hai cột đó là DẪN XUẤT (SUM dòng phiếu nhập Status='3' theo OrderPartNo+PartID).
+            //   #307 cho ghi qua DTO ⇒ client gửi gì cũng thành "đã nhập", sai lệch số liệu kho mà build
+            //   vẫn xanh. Nay endpoint TÍNH lại khi đọc; DTO giữ hai trường cho tương thích nhưng BỎ QUA.
             LogLUDateTime = DateTime.Now, LogLUBy = who,
         };
         RecalcOrderPartLine(line);
@@ -32298,6 +32300,27 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
     // ⚠️ Cả ba khối `case` đều **KHÔNG có `else`** ⇒ `OrderPartType` ngoài {TST, OTHER} cho ra **NULL**,
     //   KHÔNG phải rơi về giá trị của OTHER. Giữ đúng (whitelist).
     var lineRows = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id).ToListAsync();
+
+    // ===== 🔴 #312 ĐÍNH CHÍNH #307: SL ĐÃ NHẬP là **DẪN XUẤT**, không phải cột lưu =====
+    // Nguồn `Ser_Order_Part_Get` (`A.02.OrderPart.cs:1717-1770`) dựng `TotalQuantityIn` bằng cách
+    //   **SUM dòng phiếu NHẬP KHO** của các phiếu **`Status = '3'` (Kết thúc)**, gom theo
+    //   (`OrderPartNo`, `PartID`) — KHÔNG đọc cột nào trên dòng đơn đặt.
+    // #307 đã thêm hai cột lưu + cho ghi qua DTO ⇒ giá trị chỉ là thứ client gửi, không phản ánh kho.
+    //   Nay TÍNH LẠI; cột lưu chỉ dùng làm **dự phòng** khi chưa có dữ liệu nhập (dữ liệu cũ).
+    //
+    // 🔴 CỘT L = **PHÉP CHIA**: `TST ⇒ TotalQuantityIn / ExchangeRate` · `OTHER ⇒ TotalQuantityIn`.
+    //   ⚠️ **NGƯỢC CHIỀU** với cột M (SL chưa về ĐV bán) vốn **NHÂN** tỷ lệ (#307). Cùng một màn, cùng một
+    //     tỷ lệ, hai phép ngược nhau: N→L là *quy về đơn vị ĐẶT*, Q→M là *quy sang đơn vị BÁN*.
+    //   ⚠️ Khối `case` **không có `else`** ⇒ loại đơn ngoài {TST, OTHER} cho ra **NULL**.
+    var stockInIds = await db.PartStockIns
+        .Where(s => s.OrgId == t.OrgId && s.OrderPartNo == o.OrderPartNo && s.Status == "3")
+        .Select(s => s.Id).ToListAsync();
+    var inByPart = stockInIds.Count == 0
+        ? new Dictionary<string, decimal>()
+        : (await db.PartStockInLines
+                .Where(l => l.OrgId == t.OrgId && stockInIds.Contains(l.StockInId))
+                .ToListAsync())
+            .GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
     var tstCodes = lineRows.Select(l => l.PartCode).Distinct().ToList();
     var tmeuMap = (await db.TstExchangeUnits
             .Where(x => x.OrgId == t.OrgId && tstCodes.Contains(x.TSTPartCode) && x.FlagActive == "1")
@@ -32316,7 +32339,17 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
         decimal? rate = isTst ? (tmeu?.ExchangeRate ?? 1.0m) : (isOther ? 1.0m : (decimal?)null);
 
         var qtyAppr = l.QtyAppr ?? 0m;
-        var inQty = l.TotalQuantityInExchangeRate ?? 0m;
+
+        // #312: cột N TÍNH từ phiếu nhập; cột lưu của #307 chỉ là dự phòng cho dữ liệu cũ.
+        decimal? totalIn = inByPart.TryGetValue(l.PartCode, out var qin) ? qin : l.TotalQuantityIn;
+        // #312: cột L = N **CHIA** tỷ lệ (chỉ TST); OTHER giữ nguyên N; loại đơn lạ ⇒ null (không có else).
+        decimal? totalInExch = isOther ? totalIn
+            : (isTst
+                ? (totalIn.HasValue
+                    ? totalIn.Value / ((tmeu?.ExchangeRate ?? 1.0m) == 0m ? 1.0m : (tmeu?.ExchangeRate ?? 1.0m))
+                    : (decimal?)null)
+                : (decimal?)null);
+        var inQty = totalInExch ?? 0m;
         // Cột Q — SL chưa về tính theo ĐƠN VỊ ĐẶT.
         var remain = qtyAppr - inQty;
         // Cột M — SL chưa về theo ĐƠN VỊ BÁN. ⚠️ Nguồn CHỈ nhân tỷ lệ cho TST; OTHER giữ nguyên số Q.
@@ -32336,8 +32369,9 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
             partUnit = unitOrder,                                  // part_Unit — đơn vị ĐẶT
             unitStockIn = l.UnitStockIn ?? l.Unit,                 // part_UnitStockIn — LUÔN đơn vị master
             exchangeRate = rate,
-            l.TotalQuantityIn,                                     // cột N
-            l.TotalQuantityInExchangeRate,                         // cột L
+            totalQuantityIn = totalIn,                             // cột N — TÍNH từ phiếu nhập (#312)
+            totalQuantityInExchangeRate = totalInExch,             // cột L — N CHIA tỷ lệ (#312)
+            totalQuantityInStored = l.TotalQuantityIn,             // cột lưu cũ (#307) — chỉ để đối chiếu
             totalQuantityRemain = remain,                          // cột Q — ĐV đặt
             totalQuantityRemainExchangeRate = remainExchange,      // cột M — ĐV bán
         };

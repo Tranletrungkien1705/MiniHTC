@@ -5689,10 +5689,24 @@ public sealed class OrderPartLine
     /// </summary>
     public decimal? ExchangeRate { get; set; }
 
-    /// <summary>Cột N — tổng SL đã nhập kho theo đơn này (chỉ phiếu nhập **Kết thúc**).</summary>
+    /// <summary>
+    /// Cột N — tổng SL đã nhập kho theo đơn này (chỉ phiếu nhập **Kết thúc**).
+    /// 🔴 #312 ĐÍNH CHÍNH #307: hai cột này là **DẪN XUẤT**, nguồn KHÔNG lưu chúng trên dòng đơn đặt.
+    /// `Ser_Order_Part_Get` dựng chúng trong temp `#tbl_Ser_Order_PartDtl_StockInDetail` bằng cách
+    /// **SUM dòng phiếu NHẬP KHO** (`Ser_Inv_StockInDetail`) của các phiếu `Status = '3'`, gom theo
+    /// (`OrderPartNo`, `PartID`). #307 thêm chúng làm cột LƯU + cho ghi qua DTO ⇒ giá trị chỉ là thứ
+    /// client gửi lên, **không bao giờ phản ánh lượng đã nhập thật**.
+    /// ⇒ Giữ cột để đọc dữ liệu cũ, nhưng endpoint nay **TÍNH LẠI** từ phiếu nhập (xem Program.cs #312).
+    /// </summary>
     public decimal? TotalQuantityIn { get; set; }
 
-    /// <summary>Cột L — `TotalQuantityIn` quy về ĐƠN VỊ ĐẶT. Dùng để trừ ra SL chưa về.</summary>
+    /// <summary>
+    /// Cột L — `TotalQuantityIn` quy về ĐƠN VỊ ĐẶT.
+    /// 🔴 #312: công thức của nguồn là **CHIA**: `TST ⇒ TotalQuantityIn / ExchangeRate` ·
+    /// `OTHER ⇒ TotalQuantityIn` (không đổi). **Ngược chiều** với cột M (SL chưa về ĐV bán) vốn **NHÂN**
+    /// tỷ lệ — hai phép ngược nhau trong CÙNG một màn, rất dễ port nhầm chiều.
+    /// ⚠️ Khối `case` **không có `else`** ⇒ loại đơn lạ cho ra **NULL**.
+    /// </summary>
     public decimal? TotalQuantityInExchangeRate { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
