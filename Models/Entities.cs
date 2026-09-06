@@ -8640,9 +8640,12 @@ public sealed class BankingTrans
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string SoDeNghi { get; set; } = "";       // số đề nghị (auto)
+    // ===== #205 parity: tên cột về ĐÚNG nguồn `RQ_BankingTransactions` (BankIntergration/BizHTC.VietinBank.cs) =====
+    // Tên cũ `SoDeNghi` / `TransType` / `BankStatus` KHÔNG tồn tại trong CẢ solution 2010.HTC (sweep #205 tầng B).
+    // Nguồn dùng: `RQ_BankingTransNo` · `BkTransType` · `BkTransStatus` · `BkTransBankStatus`.
+    public string RQ_BankingTransNo { get; set; } = "";       // số đề nghị (auto)
     public string BankCode { get; set; } = "";       // ngân hàng
-    public string TransType { get; set; } = "";       // loại ĐN GD: GNTT/BLLC/PHLC
+    public string BkTransType { get; set; } = "";       // loại ĐN GD: GNTT/BLLC/PHLC
     public DateTime? DisbursementDate { get; set; }   // ngày giải ngân
     public decimal AmountDisbursed { get; set; }      // số tiền giải ngân
     public decimal TotalAmount { get; set; }
@@ -8656,7 +8659,7 @@ public sealed class BankingTrans
     /// **chỉ có trên máy 150**): "N" · "P" · "C" · **"A0".."A5"** các mức duyệt · "F" hoàn tất · "R" từ chối.
     /// 📌 Port cũ chỉ ghi nhận P/A1/A2/A3 — nguồn có **A0 và A4, A5** nữa, cùng "F"/"C"/"R".
     /// </summary>
-    public string BankStatus { get; set; } = "P";
+    public string BkTransBankStatus { get; set; } = "P";
     public DateTime? PushedToBankAt { get; set; }
 
     // --- #137 parity RQ_BankingTransactions: 9 cột nguồn ghi mà port cũ THIẾU ---

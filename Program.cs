@@ -20265,9 +20265,9 @@ app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string
     var q = db.BankingTranses.Where(b => b.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(b => b.Status == status);
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
-    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.TransType == type);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.BkTransType == type);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
-        .Select(b => new { b.SoDeNghi, b.BankCode, b.TransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt, b.BankStatus, b.PushedToBankAt,
+        .Select(b => new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.Status, b.Remark, b.CreatedAt, b.SentAt, b.ApprovedAt, b.BkTransBankStatus, b.PushedToBankAt,
             b.RefBankCode, b.BankRemark, b.BankUpdatedAt,
             b.LDNo, b.DisbursementTerm, b.DisbursementInterestRate,
             b.MDNo, b.GrtAmount, b.GrtDateStart, b.GrtDateEnd, b.GrtTerm, b.GrtFee, b.GrtLatePmtDate,
@@ -20308,14 +20308,14 @@ app.MapPost("/api/bankingtrans/{no}/bank-update", async (
     string no, BankingTransUpdateDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
-    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (r is null) return Results.NotFound(new { no });
 
     var st = (dto.BkTransBankStatus ?? "").Trim();
     if (!bkTransBankStatusNames.ContainsKey(st))
         return Results.BadRequest(new { error = $"Trạng thái ngân hàng không hợp lệ: {st}." });
 
-    r.BankStatus = st;
+    r.BkTransBankStatus = st;
     r.BankRemark = dto.BankRemark;
     if (!string.IsNullOrWhiteSpace(dto.RefBankCode)) r.RefBankCode = dto.RefBankCode!.Trim();
 
@@ -20378,21 +20378,21 @@ app.MapPost("/api/bankingtrans/{no}/bank-update", async (
     }
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.SoDeNghi, bankStatus = r.BankStatus, status = r.Status,
+    return Results.Ok(new { r.RQ_BankingTransNo, bankStatus = r.BkTransBankStatus, status = r.Status,
         internalStatusSynced = st == "F" || st == "C" || st == "R", savedFiles });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankingtrans/{no}/files", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
-    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (r is null) return Results.NotFound(new { no });
     var files = await db.BankingTransBankFiles.Where(f => f.OrgId == t.OrgId && f.BankingTransId == r.Id)
         .OrderBy(f => f.FileIndex).Select(f => new
         { f.FileIndex, f.FileName, f.FileType, f.FilePath, f.DocumentType, f.FileSize, f.Remark, f.BkTransBankStatus, f.SignStatus,
           f.SerialNumber, f.LogLUBy, f.LogLUDateTime })   // #192 §12: cột mới phải chiếu ở CẢ GET
         .ToListAsync();
-    return Results.Ok(new { r.SoDeNghi, count = files.Count, totalSize = files.Sum(f => f.FileSize), files });
+    return Results.Ok(new { r.RQ_BankingTransNo, count = files.Count, totalSize = files.Sum(f => f.FileSize), files });
 }).RequireAuthorization();
 
 // ===== #192 KÝ SỐ FILE NGÂN HÀNG — `RQ_BankingTransactions_SignBankFile` (lệnh WS còn THIẾU HẲN) =====
@@ -20431,7 +20431,7 @@ app.MapPost("/api/bankingtrans/{no}/files/{index:int}/sign", async (string no, i
         return Results.BadRequest(new { error = "Chưa có số serial chứng thư số (SerialNumber)." });
 
     no = no.Trim().ToUpperInvariant();
-    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var r = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (r is null) return Results.NotFound(new { no });
 
     // Guard 2 — đề nghị phải đang DUYỆT (`BkTransStatus.Approve`).
@@ -20455,17 +20455,17 @@ app.MapPost("/api/bankingtrans/{no}/files/{index:int}/sign", async (string no, i
     f.LogLUBy = who; f.LogLUDateTime = now;
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.SoDeNghi, fileIndex = f.FileIndex, signStatus = f.SignStatus, f.SerialNumber, f.FilePath, f.LogLUBy, f.LogLUDateTime });
+    return Results.Ok(new { r.RQ_BankingTransNo, fileIndex = f.FileIndex, signStatus = f.SignStatus, f.SerialNumber, f.FilePath, f.LogLUBy, f.LogLUDateTime });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankingtrans/{no}/pushbank", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
-    b.BankStatus = "A1"; b.PushedToBankAt = DateTime.Now;
+    b.BkTransBankStatus = "A1"; b.PushedToBankAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.SoDeNghi, b.BankStatus });
+    return Results.Ok(new { b.RQ_BankingTransNo, b.BkTransBankStatus });
 }).RequireAuthorization();
 
 // 🔴 #193 HUỶ ĐỀ NGHỊ GD NGÂN HÀNG — port lại theo `RQ_BankingTransactions_Cancel`
@@ -20497,16 +20497,16 @@ app.MapPost("/api/bankingtrans/{no}/pushbank", async (string no, AppDbContext db
 app.MapPost("/api/bankingtrans/{no}/cancel-request", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
-    if (!(b.Status == "Approved" && (b.BankStatus == "A1" || b.BankStatus == "A2" || b.BankStatus == "A3")))
+    if (!(b.Status == "Approved" && (b.BkTransBankStatus == "A1" || b.BkTransBankStatus == "A2" || b.BkTransBankStatus == "A3")))
         return Results.BadRequest(new { error = "Không thể hủy nếu 2 trạng thái khác 'A' - 'A1'/'A2'/'A3'!" });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
 
     b.Status = "Cancelled";
-    b.BankStatus = "C";                       // nguồn đổi LUÔN trạng thái ngân hàng, không chờ bank đẩy lại
+    b.BkTransBankStatus = "C";                       // nguồn đổi LUÔN trạng thái ngân hàng, không chờ bank đẩy lại
     b.CancelDate = now; b.CancelBy = who;
     b.LogLUDateTime = now; b.LogLUBy = who;
 
@@ -20534,16 +20534,16 @@ app.MapPost("/api/bankingtrans/{no}/cancel-request", async (string no, AppDbCont
     // KHÔNG chạm RqBankingTransGrtLCs / RqBankingTransGrtLCDtls — đúng như nguồn (xem ghi chú trên).
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.SoDeNghi, status = b.Status, bankStatus = b.BankStatus, b.CancelDate, b.CancelBy, cancelledDetailRows = n });
+    return Results.Ok(new { b.RQ_BankingTransNo, status = b.Status, bankStatus = b.BkTransBankStatus, b.CancelDate, b.CancelBy, cancelledDetailRows = n });
 }).RequireAuthorization();
 
-// Xóa đề nghị (port 1:1 btnDelete_Click) — chỉ khi Status='Draft' (P) và BankStatus='P'.
+// Xóa đề nghị (port 1:1 btnDelete_Click) — chỉ khi Status='Draft' (P) và BkTransBankStatus='P'.
 app.MapDelete("/api/bankingtrans/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
-    if (!(b.Status == "Draft" && b.BankStatus == "P"))
+    if (!(b.Status == "Draft" && b.BkTransBankStatus == "P"))
         return Results.BadRequest(new { error = "Không thể xóa nếu hai trạng thái khác 'P' - 'P'!" });
     db.BankingTranses.Remove(b);
     await db.SaveChangesAsync();
@@ -20553,13 +20553,13 @@ app.MapDelete("/api/bankingtrans/{no}", async (string no, AppDbContext db, ITena
 app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng." });
-    if (string.IsNullOrWhiteSpace(dto.TransType) || !_bankTransTypes.Contains(dto.TransType))
+    if (string.IsNullOrWhiteSpace(dto.BkTransType) || !_bankTransTypes.Contains(dto.BkTransType))
         return Results.BadRequest(new { error = "Loại ĐN GD = GNTT | BLLC | PHLC." });
     if (dto.AmountDisbursed <= 0) return Results.BadRequest(new { error = "Số tiền phải > 0." });
     var no = "BKT" + DateTime.Now.ToString("yyMMddHHmmss");
     var b = new BankingTrans
     {
-        OrgId = t.OrgId, SoDeNghi = no, BankCode = dto.BankCode.Trim().ToUpperInvariant(), TransType = dto.TransType.Trim(),
+        OrgId = t.OrgId, RQ_BankingTransNo = no, BankCode = dto.BankCode.Trim().ToUpperInvariant(), BkTransType = dto.BkTransType.Trim(),
         DisbursementDate = dto.DisbursementDate, AmountDisbursed = dto.AmountDisbursed, TotalAmount = dto.TotalAmount == 0 ? dto.AmountDisbursed : dto.TotalAmount, Remark = dto.Remark, Status = "Draft",
         // #137 parity RQ_BankingTransactions.
         DealerCode = dto.DealerCode, BizResNumber = dto.BizResNumber,
@@ -20567,7 +20567,7 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
         LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
     };
     db.BankingTranses.Add(b); await db.SaveChangesAsync();
-    return Results.Ok(new { b.SoDeNghi, b.BankCode, b.TransType });
+    return Results.Ok(new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType });
 }).RequireAuthorization();
 
 // ===== #141: CHỐT THÁNG NHÂN SỰ BÁN HÀNG (HR_SalesManOfMonth + Dtl) =====
@@ -21110,7 +21110,7 @@ app.MapPost("/api/paymentpdi/{no}/{action}", async (string no, string action, Ap
 app.MapPost("/api/bankingtrans/{no}/detail", async (string no, RqBtDetailDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
     if (b.Status is not ("Draft" or "Rejected")) return Results.BadRequest(new { error = "Chỉ sửa chi tiết khi đề nghị còn ở trạng thái nháp/bị từ chối." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -21162,11 +21162,11 @@ app.MapPost("/api/bankingtrans/{no}/detail", async (string no, RqBtDetailDto dto
 app.MapGet("/api/bankingtrans/{no}/detail", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
     return Results.Ok(new
     {
-        header = new { b.SoDeNghi, b.BankCode, b.TransType, b.Status, b.DealerCode, b.BizResNumber, b.CreatedBy, b.ApprovedBy, b.FinishDate, b.FinishBy, b.CancelDate, b.CancelBy, b.LogLUDateTime, b.LogLUBy },
+        header = new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType, b.Status, b.DealerCode, b.BizResNumber, b.CreatedBy, b.ApprovedBy, b.FinishDate, b.FinishBy, b.CancelDate, b.CancelBy, b.LogLUDateTime, b.LogLUBy },
         pmt = await db.RqBankingTransPmts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentNo, x.PaymentType, x.DisbursementType, x.TransferAmount, x.LoanPeriod, x.LoanPeriodDate, x.TransferRemark, x.InterestRate, x.ReceivingUnit, x.BankAccountReceive, x.BankNameReceive, x.ProvinceName, x.Remark, x.DisbursementRequestDate, x.FirstInterestPmtDate, x.CreditContractNo, x.CreditContractDate, x.Purpose, x.InvoiceNo, x.Representative, x.FlagAuthority, x.AuthorityInfo, x.PaymentAccount, x.PaymentBankCode, x.LoanLimit, x.AmountDisbursed, x.BkTransPmtStatus }).FirstOrDefaultAsync(),
         pmtDtls = await db.RqBankingTransPmtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.PmtPercent, x.PmtAmount, x.AmountActual, x.HTCInvoiceNo, x.BkTransPmtDtlStatus }).ToListAsync(),
         pmtLC = await db.RqBankingTransPmtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentType, x.DisbursementType, x.LoanPeriod, x.LoanPeriodDate, x.InterestRate, x.Remark, x.BkTransPmtLCStatus }).FirstOrDefaultAsync(),
@@ -21185,25 +21185,25 @@ app.MapGet("/api/bankingtrans/{no}/detail", async (string no, AppDbContext db, I
 app.MapPost("/api/bankingtrans/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
     if (b.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã gửi." });
     b.Status = "Sent"; b.SentAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.SoDeNghi, status = b.Status });
+    return Results.Ok(new { b.RQ_BankingTransNo, status = b.Status });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankingtrans/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
-    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoDeNghi == no);
+    var b = await db.BankingTranses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no);
     if (b is null) return Results.NotFound(new { no });
     if (b.Status != "Sent") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối đề nghị đã gửi." });
     if (action == "approve") { b.Status = "Approved"; b.ApprovedAt = DateTime.Now; }
     else b.Status = "Rejected";
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.SoDeNghi, status = b.Status });
+    return Results.Ok(new { b.RQ_BankingTransNo, status = b.Status });
 }).RequireAuthorization();
 
 // ===== Biên bản giao xe (DlvMinutes — port 1:1 FrmDealerNewDlvMinutes/FrmHTCNewDlvMinutes, 2010.HTC/Sales/DlvMinutes) =====
@@ -30675,7 +30675,7 @@ record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? Fl
 record BankFileSignDto(string SerialNumber, string? FileName = null, string? FilePath = null);
 record BankingTransFileDto(string? FileName, string? FileType, string? FilePath, string? DocumentType, long FileSize, string? Remark, string? SignStatus);
 record BankingTransUpdateDto(string? BkTransBankStatus, string? BankRemark, string? RefBankCode, string? LDNo, decimal? DisbursementAmount, DateTime? DisbursementDate, string? DisbursementTerm, decimal? DisbursementInterestRate, string? MDNo, decimal? GrtAmount, DateTime? GrtDateStart, DateTime? GrtDateEnd, string? GrtTerm, decimal? GrtFee, DateTime? GrtLatePmtDate, string? LCNo, decimal? LCAmount, DateTime? LCStartDate, DateTime? LCEndDate, List<BankingTransFileDto>? Files);
-record BankingTransDto(string BankCode, string TransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark, string? DealerCode = null, string? BizResNumber = null);
+record BankingTransDto(string BankCode, string BkTransType, DateTime? DisbursementDate, decimal AmountDisbursed, decimal TotalAmount, string? Remark, string? DealerCode = null, string? BizResNumber = null);
 // ---- #137: DTO 12 bảng vệ tinh của đề nghị GD ngân hàng (RQ_BankingTransactions_SaveX_20220817) ----
 record RqBtPmtDto(string? BkTransType, string? PaymentNo, string? PaymentType, string? DisbursementType, decimal TransferAmount, int LoanPeriod, DateTime? LoanPeriodDate, string? TransferRemark, decimal InterestRate, string? ReceivingUnit, string? BankAccountReceive, string? BankNameReceive, string? ProvinceName, string? Remark, DateTime? DisbursementRequestDate, DateTime? FirstInterestPmtDate, string? CreditContractNo, DateTime? CreditContractDate, string? Purpose, string? InvoiceNo, string? Representative, string? FlagAuthority, string? AuthorityInfo, string? PaymentAccount, string? PaymentBankCode, decimal LoanLimit, decimal AmountDisbursed);
 record RqBtPmtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal PmtPercent, decimal PmtAmount, decimal AmountActual, string? HTCInvoiceNo);

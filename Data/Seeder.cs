@@ -845,6 +845,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #205 doi ten cot BankingTrans ve dung nguon RQ_BankingTransactions
+        "ALTER TABLE public.\"BankingTranses\" RENAME COLUMN \"SoDeNghi\" TO \"RQ_BankingTransNo\"",
+        "ALTER TABLE public.\"BankingTranses\" RENAME COLUMN \"TransType\" TO \"BkTransType\"",
+        "ALTER TABLE public.\"BankingTranses\" RENAME COLUMN \"BankStatus\" TO \"BkTransBankStatus\"",
         // #204 doi ten cot NVBH ve dung nguon (Mst_SalesMan) + migrate tu vung BDHStatus
         "ALTER TABLE public.\"DlSalesMen\" ADD COLUMN IF NOT EXISTS \"SMGender\" text",
         "ALTER TABLE public.\"DlSalesMen\" ADD COLUMN IF NOT EXISTS \"SMPhoneNo\" text",
