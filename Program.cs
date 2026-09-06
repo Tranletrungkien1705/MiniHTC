@@ -21755,6 +21755,8 @@ app.MapGet("/api/grtclaims", async (AppDbContext db, ITenantContext t, string? s
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.GrtClaimNo, r.DealerCode, r.ContractDate, r.FlagisHTC, r.Status, r.CreatedAt, r.IssuedAt,
+        r.SignStatus, r.SignDate, r.SignBy, r.FileSigned, r.CancelDate, r.CancelBy,
+        r.RejectDate, r.RejectBy, r.RejectRemark, r.LogLUDateTime, r.LogLUBy,
         cars = db.GrtClaimDetails.Count(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id),
         total = db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id).Sum(c => (decimal?)c.UnitPrice) ?? 0
     }).ToListAsync();
@@ -21793,7 +21795,7 @@ app.MapGet("/api/grtclaims/{no}/cars", async (string no, AppDbContext db, ITenan
     var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id)
-        .Select(c => new { c.VIN, c.UnitPrice, c.BankCode, c.VinSignStatus }).ToListAsync();
+        .Select(c => new { c.VIN, c.UnitPrice, c.BankCode, c.VinSignStatus, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { r.GrtClaimNo, r.DealerCode, r.FlagisHTC, count = cars.Count, cars, total = cars.Sum(x => x.UnitPrice),
         signed = cars.Count(x => x.VinSignStatus == "A"), cancelled = cars.Count(x => x.VinSignStatus == "C") });
 }).RequireAuthorization();
@@ -21825,11 +21827,110 @@ app.MapPost("/api/grtclaims/{no}/cars/{vin}/{action}", async (string no, string 
 
 // 🔴 XOÁ cả công văn — `GrtClaimDelete_New20181115` (BizHTC.Payment.cs:3180): nguồn xoá thẳng
 // `Pmt_GrtClaimDetail` rồi `Pmt_GrtClaim`, RBAC `myCommon_CheckHTCDirect`; **không có trạng thái huỷ ở header**.
+// ===== #172 KÝ / HUỶ / XOÁ / TỪ CHỐI công văn bảo lãnh — cụm `Pmt_GrtClaim_*` =====
+// Nguồn: `TERP.BizHTC/DataWH/Biz.HTC.WH.My.cs` (csproj 273). BƯỚC 3B: md5 cả file `7ef389d0` KHỚP 2 máy.
+//   `_Approve` (5981) · `_DelMulti` (6322) · `_CancelMulti` (6549) · `_RejectGrtClaim` (7745).
+// TWIN: bốn lệnh này có ở CẢ hai bit; riêng `_ApproveAndSignAndSendMail_New20190531` và toàn bộ cụm
+//   `Pmt_GrtClaimExt_*` (5 lệnh) **CHỈ có ở WS 64-bit** — ghi nợ.
+//
+// 🔴 SỬA MỘT KẾT LUẬN SAI của lượt trước. Port cũ ghi trong `GrtClaim.Status`:
+//    *"Nguồn KHÔNG có cột trạng thái cho HEADER … `grep GrtClaimStatus` = 0 hit ⇒ Draft/Issued/Cancelled
+//    là trạng thái BỊA … Trục trạng thái THẬT nằm ở DÒNG (`VinSignStatus`)."*
+//    Nửa sau đúng, **nửa đầu sai**: cột trạng thái header có thật, chỉ **không tên `GrtClaimStatus`** mà là
+//    **`SignStatus`** (`TConst.SignStatus`: **"P" chưa ký · "A" đã ký · "C" huỷ**). Bốn hàm dưới đây đều
+//    guard/ghi chính cột đó — grep sai TÊN nên kết luận sai SỰ TỒN TẠI.
+//
+// Bảng trạng thái header thật:
+//   `_Approve`     : guard "P" → "A"  (+ `SignDate`, `FileSigned`; và ký TẤT CẢ dòng `VinSignStatus = "A"`)
+//   `_DelMulti`    : guard "P" → xoá  (chỉ xoá được công văn CHƯA ký)
+//   `_CancelMulti` : guard "A" → "C"  (+ `CancelDate`/`CancelBy`) — chỉ huỷ được công văn ĐÃ ký
+//   `_RejectGrtClaim`: guard "C"      — chỉ GỬI MAIL từ chối cho công văn ĐÃ HUỶ; không đổi trạng thái
+// ⇒ luồng thật: ký (P→A) → huỷ (A→C) → gửi mail từ chối (C). Cả bốn đều `myCommon_CheckHTCDirect` (nợ RBAC fleet).
+app.MapPost("/api/grtclaims/{no}/approve", async (string no, GrtClaimApproveDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.SignStatus != "P")
+        return Results.BadRequest(new { error = $"Công văn đang ở '{r.SignStatus}' — chỉ ký khi chưa ký (P)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var lines = await db.GrtClaimDetails.Where(x => x.OrgId == t.OrgId && x.GrtClaimId == r.Id).ToListAsync();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Công văn không có dòng VIN nào." });
+    // Nguồn ký TOÀN BỘ dòng trong một lượt: `drScan["VinSignStatus"] = TConst.SignStatus.Signed`.
+    foreach (var l in lines) { l.VinSignStatus = "A"; l.LogLUDateTime = now; l.LogLUBy = who; }
+
+    r.SignStatus = "A"; r.SignDate = now; r.SignBy = who;
+    r.FileSigned = dto?.FileSigned;     // nguồn ghi đường dẫn file đã ký cùng lượt
+    r.LogLUDateTime = now; r.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.GrtClaimNo, r.SignStatus, r.SignDate, r.SignBy, r.FileSigned, signedLines = lines.Count });
+}).RequireAuthorization();
+
+// 🔴 `_CancelMulti` (6549) và `_DelMulti` (6322) đều nhận NHIỀU công văn một lượt (bảng đầu vào),
+//    và **guard trạng thái NGƯỢC NHAU**: huỷ đòi "A" (đã ký), xoá đòi "P" (chưa ký).
+app.MapPost("/api/grtclaims/{action}-multi", async (string action, GrtClaimMultiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (action is not ("cancel" or "del")) return Results.NotFound();
+    var nos = (dto.GrtClaimNos ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn công văn nào." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var wanted = action == "cancel" ? "A" : "P";
+    int done = 0, delLines = 0;
+    foreach (var n in nos)
+    {
+        var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == n);
+        if (r is null) return Results.BadRequest(new { error = $"Công văn {n} không tồn tại.", grtClaimNo = n });
+        if (r.SignStatus != wanted)
+            return Results.BadRequest(new { error = $"Công văn {n} đang ở '{r.SignStatus}' — {(action == "cancel" ? "chỉ huỷ được công văn ĐÃ ký (A)" : "chỉ xoá được công văn CHƯA ký (P)")}.", grtClaimNo = n });
+        var lines = await db.GrtClaimDetails.Where(x => x.OrgId == t.OrgId && x.GrtClaimId == r.Id).ToListAsync();
+        if (action == "cancel")
+        {
+            r.SignStatus = "C"; r.CancelDate = now; r.CancelBy = who;
+            r.LogLUDateTime = now; r.LogLUBy = who;
+            // Nguồn dựng luôn bảng dòng để đồng bộ `VinSignStatus` theo header.
+            foreach (var l in lines) { l.VinSignStatus = "C"; l.LogLUDateTime = now; l.LogLUBy = who; }
+        }
+        else
+        {
+            db.GrtClaimDetails.RemoveRange(lines); delLines += lines.Count;
+            db.GrtClaims.Remove(r);
+        }
+        done++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { action, count = done, linesDeleted = delLines });
+}).RequireAuthorization();
+
+// 🔴 `_RejectGrtClaim` (7745): guard header **`SignStatus = "C"` ở CẢ HAI lần `Pmt_GrtClaim_CheckDB`**
+//    ⇒ đây KHÔNG phải bước đổi trạng thái, mà là bước **gửi mail từ chối cho công văn ĐÃ HUỶ**
+//    (`DMS40_Email_BatchSendEmail_Build_SendRejectX` → `_SaveX` → xếp lô gửi).
+// ⚠️ NỢ: MiniHTC chưa nối tầng gửi mail thật ⇒ chỉ ghi mốc từ chối và trả về cảnh báo, KHÔNG bịa lô mail.
+app.MapPost("/api/grtclaims/{no}/reject", async (string no, GrtClaimRejectDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.SignStatus != "C")
+        return Results.BadRequest(new { error = $"Công văn đang ở '{r.SignStatus}' — chỉ gửi thông báo từ chối cho công văn ĐÃ HUỶ (C)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.RejectDate = DateTime.Now; r.RejectBy = who; r.RejectRemark = dto?.Remark;
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.GrtClaimNo, r.SignStatus, r.RejectDate, r.RejectBy, r.RejectRemark,
+        mailQueued = "NỢ: chưa nối tầng gửi mail thật (DMS40_Email_BatchSendEmail)" });
+}).RequireAuthorization();
+
 app.MapDelete("/api/grtclaims/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.GrtClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtClaimNo == no);
     if (r is null) return Results.NotFound(new { no });
+    // #172: nguon `_DelMulti` guard `SignStatus = "P"` — chi xoa duoc cong van CHUA ky.
+    if (r.SignStatus != "P")
+        return Results.BadRequest(new { error = $"Cong van dang o '{r.SignStatus}' — chi xoa duoc khi chua ky (P)." });
     var lines = await db.GrtClaimDetails.Where(x => x.OrgId == t.OrgId && x.GrtClaimId == r.Id).ToListAsync();
     db.GrtClaimDetails.RemoveRange(lines);
     db.GrtClaims.Remove(r);
@@ -29265,6 +29366,9 @@ record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
 record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
+record GrtClaimApproveDto(string? FileSigned = null);
+record GrtClaimMultiDto(List<string>? GrtClaimNos);
+record GrtClaimRejectDto(string? Remark = null);
 record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);
 record CBReqDto(List<CBReqCarDto>? Cars);
 record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);

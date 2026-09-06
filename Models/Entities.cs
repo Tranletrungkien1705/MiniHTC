@@ -8953,6 +8953,31 @@ public sealed class GrtClaim
     public string Status { get; set; } = "Draft";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? IssuedAt { get; set; }
+
+    // ===== #172 parity cum `Pmt_GrtClaim_*` (DataWH/Biz.HTC.WH.My.cs, csproj 273) =====
+    /// <summary>
+    /// 🔴 Trang thai KY cua HEADER cong van (`Pmt_GrtClaim.SignStatus`, `TConst.SignStatus`):
+    /// **"P" chua ky · "A" da ky · "C" huy**.
+    /// ⚠️ SUA KET LUAN SAI cua luot truoc: comment cu khang dinh *"nguon KHONG co cot trang thai cho header,
+    /// grep GrtClaimStatus = 0 hit"*. Cot co that — chi **khong ten `GrtClaimStatus`** ma ten `SignStatus`.
+    /// Bon ham `_Approve` (5981) · `_DelMulti` (6322) · `_CancelMulti` (6549) · `_RejectGrtClaim` (7745)
+    /// deu guard/ghi chinh cot nay. Grep sai TEN nen ket luan sai SU TON TAI.
+    /// (Truc trang thai o DONG — <see cref="GrtClaimDetail.VinSignStatus"/> — van dung, hai truc SONG SONG.)
+    /// </summary>
+    public string SignStatus { get; set; } = "P";
+    /// <summary>Moc KY (`SignDate`/`SignBy`) va duong dan file da ky (`FileSigned`) — `_Approve` ghi cung luot.</summary>
+    public DateTime? SignDate { get; set; }
+    public string? SignBy { get; set; }
+    public string? FileSigned { get; set; }
+    /// <summary>Moc HUY (`CancelDate`/`CancelBy`) — `_CancelMulti` ghi khi chuyen "A" sang "C".</summary>
+    public DateTime? CancelDate { get; set; }
+    public string? CancelBy { get; set; }
+    /// <summary>Moc gui thong bao TU CHOI (`_RejectGrtClaim`) — chi cho cong van DA HUY ("C").</summary>
+    public DateTime? RejectDate { get; set; }
+    public string? RejectBy { get; set; }
+    public string? RejectRemark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 public sealed class GrtClaimDetail
 {
@@ -8970,6 +8995,10 @@ public sealed class GrtClaimDetail
     /// Nguồn tạo dòng ở "P" (Biz.HTC.WH.My.cs:5572), ký ⇒ "A" (6106), huỷ ⇒ "C" (6819).
     /// </summary>
     public string VinSignStatus { get; set; } = "P";
+
+    // ===== #172: nguon ghi LogLU* cho tung DONG o ca _Approve lan _CancelMulti =====
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đề nghị chiết khấu thanh toán sớm BL/LC theo VIN (Req_PaymentDiscount + Dtl — port 1:1 FrmReq_PaymentDiscount/FrmMngReq_PaymentDiscount, 2010.HTC/Sales):
