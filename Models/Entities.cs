@@ -525,6 +525,27 @@ public sealed class Quota
 /// Nguồn: `Mng_Quota_UpdMultiX_New20230306` (0.01.Master.cs:6158) — **chỉ có ở WS 64-bit**.
 /// 🔴 Đây mới là bảng "hạn mức số lượng" thật; `Mst_Quota` là chương trình điều kiện–khuyến mãi.
 /// </summary>
+/// <summary>
+/// Tỉ lệ tối đa được duyệt đơn hàng theo (đại lý, dòng xe) (`Mst_SORateMax`) —
+/// nguồn DMS40/0.01.Master.cs (csproj 122), `Mst_SORateMax_AddMultiX` (6936) ghi tại 7120.
+/// 🔴 Chỉ có ở WS 64-bit (`_biz.Mst_SORateMax_Get` / `_AddMulti`).
+/// Nguồn CHỈ THÊM MỚI: `Mst_SORateMax_CheckDB(…, TConst.Flag.No)` bắt cặp (đại lý, model)
+/// **phải CHƯA tồn tại**; đại lý và model đều phải tồn tại và đang Active; `Rate` không được âm.
+/// </summary>
+public sealed class MstSoRateMax
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    /// <summary>Tỉ lệ tối đa (`Rate`) — nguồn khai kiểu `float`, chỉ chặn `< 0` (không chặn > 1).</summary>
+    public decimal Rate { get; set; }
+    /// <summary>Cờ hiệu lực — nguồn ép cứng `TConst.Flag.Active` khi thêm.</summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class MngQuota
 {
     public long Id { get; set; }
@@ -3351,8 +3372,17 @@ public sealed class StorageRate
     public decimal MBVal { get; set; }   // miền Bắc
     public decimal MTVal { get; set; }   // miền Trung
     public decimal MNVal { get; set; }   // miền Nam
+    /// <summary>
+    /// ✅ #147 — cột NÀY CÓ THẬT ở nguồn: tuy không nằm trong danh sách `insert into Mst_StorageAreaRate`,
+    /// `Mst_StorageAreaRate_CheckDB` **đọc** `FlagActive` (0.01.Master.cs:8999) ⇒ DB có cột, chỉ dùng default.
+    /// (Đối chiếu bằng danh sách `insert` là CHƯA đủ để kết luận "cột thừa".)
+    /// </summary>
     public string FlagActive { get; set; } = "1";
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC, đứng thay `LogLUDateTime` của nguồn.</summary>
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // --- #147 parity Mst_StorageAreaRate ---
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Gói bảo dưỡng theo mốc (loại BD × model, gồm hạng mục CV + vật tư) — port 1:1 FrmMaintenance (Admin/Maintenance, 2010.HTC).</summary>
@@ -3420,8 +3450,14 @@ public sealed class RateApprOrderModelMax
     public string DealerCode { get; set; } = "";
     public string ModelCode { get; set; } = "";
     public decimal RateApprMax { get; set; }
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC: `Mst_RateApprOrderModelMax` nguồn **không có** `FlagActive`
+    /// (grep toàn nguồn: 0 dòng nhắc). Giữ lại vì endpoint `/toggle` đang dùng.</summary>
     public string FlagActive { get; set; } = "1";
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC, đứng thay `LogLUDateTime` của nguồn.</summary>
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // --- #147 parity Mst_RateApprOrderModelMax: dấu vết chuẩn của nguồn ---
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Cấu hình mẫu phụ lục hợp đồng theo loại ĐH+HT thanh toán+model (Ctr_ContractTypeModel) — port 1:1 FrmCtr_ContractTypeModel (TCMotor DMSales.Foton/Admin/Product). Composite key SOType+PmtMethodNo+ModelCode → ContractType áp dụng. Upsert.</summary>
@@ -7591,8 +7627,14 @@ public sealed class SalesInventoryThreshold
     public string DealerCode { get; set; } = "";
     public string ModelCode { get; set; } = "";
     public int NguongBH { get; set; }
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC: `Mst_MngRateTonKhoBanHang` nguồn **không có** `FlagActive`.</summary>
     public string FlagActive { get; set; } = "1";
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC, đứng thay `LogLUDateTime` của nguồn.</summary>
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // --- #147 parity Mst_MngRateTonKhoBanHang: nguồn có Remark + dấu vết chuẩn ---
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Tài khoản ngân hàng (Mst_BankAccount) — port 1:1 FrmMstAccountBank (2010.HTC/Admin/Product). TK NH của HTC/đại lý, cờ TK dùng cho GrtClaim.</summary>
@@ -10983,8 +11025,14 @@ public sealed class OrderAmplitude
     public string? ModelName { get; set; }
     public decimal AmplitudeOrdMax { get; set; }    // AMPLITUDEORDMAX: biên độ tối đa đặt hàng (%)
     public decimal AmplitudePlanMax { get; set; }   // AMPLITUDEPLANMAX: biên độ tối đa kế hoạch (%)
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC: `Mst_AmplitudeApprOrd` nguồn **không có** `FlagActive`.</summary>
     public string FlagActive { get; set; } = "1";
+    /// <summary>⚠️ #147 — cột RIÊNG MiniHTC, đứng thay `LogLUDateTime` của nguồn.</summary>
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // --- #147 parity Mst_AmplitudeApprOrd ---
+    // (DealerName / ModelName cũng là cột riêng MiniHTC — nguồn chỉ lưu MÃ, tên lấy bằng join khi hiển thị.)
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Tham số hệ thống PDI (key-value, vd DEAL.PDIHOUR) — port 1:1 FrmMst_ParamPDI (Tbl_Mst_ParamPDI).</summary>

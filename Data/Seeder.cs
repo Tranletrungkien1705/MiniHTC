@@ -845,6 +845,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        "CREATE TABLE IF NOT EXISTS public.\"MstSoRateMaxes\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"DealerCode\" text NOT NULL DEFAULT '', \"ModelCode\" text NOT NULL DEFAULT '', \"Rate\" numeric NOT NULL DEFAULT 0, \"FlagActive\" text NOT NULL DEFAULT '1', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
+        // #147 parity 4 master tỉ lệ đã port: bổ sung dấu vết chuẩn LogLU* (+ Remark) của nguồn
+        "ALTER TABLE public.\"RateApprOrderModelMaxes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"RateApprOrderModelMaxes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"OrderAmplitudes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"OrderAmplitudes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"SalesInventoryThresholds\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"SalesInventoryThresholds\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        "ALTER TABLE public.\"SalesInventoryThresholds\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
+        "ALTER TABLE public.\"StorageRates\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
+        "ALTER TABLE public.\"StorageRates\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #146 parity Mst_Quota (12 cột thật) + 2 bảng mới Mng_Quota / Mng_QuotaHis
         "ALTER TABLE public.\"Quotas\" ADD COLUMN IF NOT EXISTS \"QuotaCode\" text",
         "ALTER TABLE public.\"Quotas\" ADD COLUMN IF NOT EXISTS \"QuotaName\" text",

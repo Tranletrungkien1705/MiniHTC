@@ -2867,11 +2867,11 @@ app.MapGet("/api/salesinvthresholds", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, x.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
@@ -2879,7 +2879,7 @@ app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbCon
     var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
     var ex = await db.SalesInventoryThresholds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md);
     if (ex is not null) { ex.NguongBH = dto.NguongBH; ex.FlagActive = "1"; await db.SaveChangesAsync(); return Results.Ok(new { ex.DealerCode, ex.ModelCode, ex.NguongBH, updated = true }); }
-    var x2 = new SalesInventoryThreshold { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, FlagActive = "1" };
+    var x2 = new SalesInventoryThreshold { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, FlagActive = "1", Remark = dto.Remark, LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.SalesInventoryThresholds.Add(x2); await db.SaveChangesAsync();
     return Results.Ok(new { x2.DealerCode, x2.ModelCode, x2.NguongBH, updated = false });
 }).RequireAuthorization();
@@ -8517,6 +8517,50 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     statuses = new[] { new { code = "0", name = "Chưa gửi (trong hàng đợi)" }, new { code = "1", name = "Đã gửi" } },
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
+
+// ===== #147: TỈ LỆ DUYỆT ĐƠN TỐI ĐA THEO (ĐẠI LÝ, DÒNG XE) — Mst_SORateMax =====
+// Nguồn: DMS40/0.01.Master.cs (csproj 122) — Mst_SORateMax_AddMultiX (6936) ghi tại 7120.
+// 🔴 Chỉ có ở WS 64-bit. Nguồn CHỈ THÊM MỚI, không có hàm sửa/xoá.
+app.MapGet("/api/soratemaxes", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? flagActive) =>
+{
+    var q = db.MstSoRateMaxes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(2000).Select(x => new {
+        x.DealerCode, x.ModelCode, x.Rate, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Thêm hàng loạt — port 1:1 `Mst_SORateMax_AddMulti`.
+// Ba guard của nguồn đã port: (1) bảng đầu vào phải có dòng; (2) cặp (đại lý, model) PHẢI CHƯA tồn tại
+// (`CheckDB(…, TConst.Flag.No)`); (3) `Rate` **không được âm** — nguồn KHÔNG chặn cận trên.
+// `FlagActive` nguồn ép cứng "1".
+app.MapPost("/api/soratemaxes", async (SoRateMaxAddDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var lines = (dto.Lines ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.DealerCode) && !string.IsNullOrWhiteSpace(x.ModelCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng nào để thêm." });
+    var neg = lines.FirstOrDefault(x => x.Rate < 0);
+    if (neg is not null) return Results.BadRequest(new { error = $"Tỉ lệ của {neg.DealerCode}/{neg.ModelCode} không được âm." });
+    var dupe = lines.GroupBy(x => (x.DealerCode.Trim().ToUpperInvariant(), x.ModelCode.Trim().ToUpperInvariant()))
+        .FirstOrDefault(g => g.Count() > 1);
+    if (dupe.Key.Item1 is not null) return Results.BadRequest(new { error = $"Cặp {dupe.Key.Item1}/{dupe.Key.Item2} bị trùng trong danh sách gửi lên." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var exists = new List<string>();
+    foreach (var l in lines)
+    {
+        var dealer = l.DealerCode.Trim().ToUpperInvariant();
+        var model = l.ModelCode.Trim().ToUpperInvariant();
+        if (await db.MstSoRateMaxes.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ModelCode == model))
+        { exists.Add($"{dealer}/{model}"); continue; }
+        db.MstSoRateMaxes.Add(new MstSoRateMax { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model,
+            Rate = l.Rate, FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    }
+    if (exists.Count == lines.Count)
+        return Results.Conflict(new { error = "Tất cả các cặp gửi lên đều đã tồn tại — nguồn chỉ cho THÊM MỚI.", exists });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added = lines.Count - exists.Count, skippedExisting = exists });
+}).RequireAuthorization();
 
 // ===== #146: HẠN MỨC PHÂN BỔ THEO SPEC (Mng_Quota + Mng_QuotaHis) =====
 // Nguồn: DMS40/0.01.Master.cs (csproj 122) — Mng_Quota_UpdMultiX_New20230306 (6158).
@@ -14299,17 +14343,18 @@ app.MapGet("/api/storagerates", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(x => x.StorageCode == storage);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.Id, x.StorageCode, x.ModelCode, x.SpecCode, x.ColorExtCode, x.MBVal, x.MTVal, x.MNVal, total = x.MBVal + x.MTVal + x.MNVal, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.StorageCode, x.ModelCode, x.SpecCode, x.ColorExtCode, x.MBVal, x.MTVal, x.MNVal, total = x.MBVal + x.MTVal + x.MNVal, x.FlagActive,
+            x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #147 parity Mst_StorageAreaRate
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/storagerates", async (StorageRateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storagerates", async (StorageRateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var sc = (dto.StorageCode ?? "").Trim(); var mc = (dto.ModelCode ?? "").Trim();
     if (sc == "" || mc == "") return Results.BadRequest(new { error = "Thiếu mã kho hoặc model." });
     if (dto.MBVal < 0 || dto.MTVal < 0 || dto.MNVal < 0) return Results.BadRequest(new { error = "Tỉ lệ không được âm." });
     var r = await db.StorageRates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == sc && x.ModelCode == mc && x.SpecCode == dto.SpecCode && x.ColorExtCode == dto.ColorExtCode);
-    if (r is null) { r = new StorageRate { OrgId = t.OrgId, StorageCode = sc, ModelCode = mc, SpecCode = dto.SpecCode, ColorExtCode = dto.ColorExtCode }; db.StorageRates.Add(r); }
+    if (r is null) { r = new StorageRate { OrgId = t.OrgId, StorageCode = sc, ModelCode = mc, SpecCode = dto.SpecCode, ColorExtCode = dto.ColorExtCode , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" }; db.StorageRates.Add(r); }
     r.MBVal = dto.MBVal; r.MTVal = dto.MTVal; r.MNVal = dto.MNVal; r.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { r.Id, r.StorageCode, r.ModelCode, total = r.MBVal + r.MTVal + r.MNVal });
@@ -15170,11 +15215,12 @@ app.MapGet("/api/rateapprordermodelmaxes", async (AppDbContext db, ITenantContex
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
-    var items = await qry.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(1000).Select(x => new { x.Id, x.DealerCode, x.ModelCode, x.RateApprMax, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(1000).Select(x => new { x.Id, x.DealerCode, x.ModelCode, x.RateApprMax, x.FlagActive,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #147 parity Mst_RateApprOrderModelMax
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/rateapprordermodelmaxes", async (RateApprOrderModelMaxDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/rateapprordermodelmaxes", async (RateApprOrderModelMaxDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
@@ -15182,7 +15228,7 @@ app.MapPost("/api/rateapprordermodelmaxes", async (RateApprOrderModelMaxDto dto,
     if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
     if (dto.RateApprMax < 0) return Results.BadRequest(new { error = "Tỷ lệ duyệt tối đa không được âm." });
     var row = await db.RateApprOrderModelMaxes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ModelCode == model);
-    if (row is null) { row = new RateApprOrderModelMax { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model }; db.RateApprOrderModelMaxes.Add(row); }
+    if (row is null) { row = new RateApprOrderModelMax { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" }; db.RateApprOrderModelMaxes.Add(row); }
     row.RateApprMax = dto.RateApprMax; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
@@ -17666,12 +17712,12 @@ app.MapGet("/api/orderamplitudes", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.DealerCode, x.DealerName, x.ModelCode, x.ModelName, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.DealerCode, x.DealerName, x.ModelCode, x.ModelName, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Upsert theo (đại lý + model): mỗi cặp 1 biên độ; nhập lại = cập nhật.
-app.MapPost("/api/orderamplitudes", async (OrderAmplitudeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/orderamplitudes", async (OrderAmplitudeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
@@ -17684,7 +17730,7 @@ app.MapPost("/api/orderamplitudes", async (OrderAmplitudeDto dto, AppDbContext d
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.DealerCode, ex.ModelCode, updated = true });
     }
-    var r = new OrderAmplitude { OrgId = t.OrgId, DealerCode = dl, DealerName = dto.DealerName, ModelCode = md, ModelName = dto.ModelName, AmplitudeOrdMax = dto.AmplitudeOrdMax, AmplitudePlanMax = dto.AmplitudePlanMax, FlagActive = "1" };
+    var r = new OrderAmplitude { OrgId = t.OrgId, DealerCode = dl, DealerName = dto.DealerName, ModelCode = md, ModelName = dto.ModelName, AmplitudeOrdMax = dto.AmplitudeOrdMax, AmplitudePlanMax = dto.AmplitudePlanMax, FlagActive = "1" , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.OrderAmplitudes.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.DealerCode, r.ModelCode, updated = false });
 }).RequireAuthorization();
@@ -26928,7 +26974,7 @@ record DlvApproveDto(string? Side);
 record DlvUpdateDealerDto(string? DealerCode, string? TAddress, DateTime? DlvEndDate, string? TRemark);
 record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
 record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
-record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH);
+record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH, string? Remark = null);
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
 record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);
@@ -27281,6 +27327,10 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #147: DTO tỉ lệ duyệt đơn tối đa ----
+record SoRateMaxLineDto(string DealerCode, string ModelCode, decimal Rate);
+record SoRateMaxAddDto(List<SoRateMaxLineDto>? Lines);
+
 // ---- #146: DTO hạn mức phân bổ theo spec + chương trình điều kiện/khuyến mãi ----
 record MngQuotaLineDto(string DealerCode, string SpecCode, decimal QtyQuota);
 record MngQuotaUpdDto(List<MngQuotaLineDto>? Lines, bool UpdQtyQuota = true);
