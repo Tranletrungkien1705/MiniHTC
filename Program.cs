@@ -20018,6 +20018,68 @@ app.MapPost("/api/bankingtrans/{no}/{action}", async (string no, string action, 
 // `TranspDlvConfirm` + `TranspDlvConfirmCar` + `DlvMinutesCheckItem` — **cùng bảng nguồn `Sto_DlvMinutes`**.
 // Hợp nhất theo kiểu BỔ KHUYẾT: giữ bộ có 2 phía duyệt F/T + checklist dạng BẢNG,
 // và mang TUYẾN vận chuyển từ bộ cũ sang — nhưng đặt ở **DÒNG XE**, đúng mô hình nguồn.
+// ===== #159: DUYỆT BIÊN BẢN GIAO XE — ghi ngược NGÀY XUẤT KHO lên chứng từ nguồn =====
+// Nguồn: `Sto_DlvMinutes_Approve_New20190416` (DataWH/Biz.HTC.WH.cs:138340, csproj 272).
+// BƯỚC 3B: vùng hàm md5 78160161 khớp 2 máy (laptop 138340 / máy 150 138345 — căn theo MỐC HÀM).
+// TWIN: CẢ HAI WS đều gọi `_New20190416` ⇒ không lệch.
+//
+// 🔴 Đây là side-effect mà port cũ bỏ sót TRỌN VẸN: duyệt biên bản không chỉ đổi trạng thái biên bản,
+//    mà còn ghi "ngày xuất kho" NGƯỢC lên **chứng từ nguồn** của từng xe. Bốn nhánh theo loại chứng từ,
+//    mỗi nhánh một CỘT KHÁC TÊN — chính vì khác tên nên khi port từng màn riêng lẻ thì không ai thấy:
+//      Car_DeliveryOrderDetail   → DeliveryOutDate    (lệnh giao xe)
+//      Sto_StorageRearrangeDetail→ RearrangeOutDate   (điều chuyển kho)   — guard: dòng đang "A2" hoặc "F"
+//      Sto_CarRetrieveDetail     → RetrieveOutDate    (thu hồi xe)
+//      Sto_RearrangeCBDetail     → RearCBOutDate      (điều chuyển đóng thùng)
+//                                   — chỉ khi TypeCB ≠ ChuaDongThung; guard: dòng đang "A" hoặc "F"
+// 🔴 Trạng thái biên bản: nguồn đặt `Approved` khi duyệt, `Rejected` khi bỏ duyệt
+//    (`bFromApprove = FlagUnapprove == "0"`).
+app.MapPost("/api/dlvminutes/{no}/approve", async (string no, DlvMinutesApproveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var outDate = dto.DeliveryOutDate ?? now;
+    var unapprove = (dto.FlagUnapprove ?? "0").Trim() == "1";
+    // nguồn: bFromApprove = (FlagUnapprove == Flag.Inactive) ⇒ Approved, ngược lại Rejected.
+    m.FDlvMnStatus = unapprove ? "R" : "A";
+
+    var vins = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).ToList();
+    if (vins.Count == 0)
+        vins = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+            .Select(c => c.VIN).ToListAsync();   // khoá nối là Id, không phải số biên bản
+
+    int doHit = 0, rearrHit = 0, retrHit = 0, cbHit = 0; var skipped = new List<string>();
+    foreach (var vin in vins)
+    {
+        // (1) lệnh giao xe
+        foreach (var x in await db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId && x.Vin == vin).ToListAsync())
+        { x.DeliveryOutDate = outDate; doHit++; }
+
+        // (2) điều chuyển kho — guard trạng thái dòng "A2"/"F" đúng như nguồn
+        foreach (var x in await db.StorageRearrangeDetails.Where(x => x.OrgId == t.OrgId && x.VIN == vin).ToListAsync())
+        {
+            if (x.RearrangeDtlStatus is not ("A2" or "F")) { skipped.Add($"{vin}: điều chuyển kho đang \"{x.RearrangeDtlStatus}\""); continue; }
+            x.RearrangeOutDate = outDate; rearrHit++;
+        }
+
+        // (3) thu hồi xe
+        foreach (var x in await db.CarRetrieves.Where(x => x.OrgId == t.OrgId && x.Vin == vin).ToListAsync())
+        { x.RetrieveOutDate = outDate; retrHit++; }
+
+        // (4) điều chuyển đóng thùng — guard trạng thái dòng "A"/"F"
+        foreach (var x in await db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && x.VIN == vin).ToListAsync())
+        {
+            if (x.RearCBDtlStatus is not ("A" or "F")) { skipped.Add($"{vin}: đóng thùng đang \"{x.RearCBDtlStatus}\""); continue; }
+            x.RearCBOutDate = outDate; cbHit++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dlvMinutesNo = no, status = m.FDlvMnStatus, deliveryOutDate = outDate, cars = vins.Count,
+        updated = new { deliveryOrder = doHit, storageRearrange = rearrHit, carRetrieve = retrHit, rearrangeCB = cbHit },
+        skipped });
+}).RequireAuthorization();
+
 app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? status, string? vin) =>
 {
     var qy = db.TranspDlvConfirms.Where(m => m.OrgId == t.OrgId);
@@ -28106,6 +28168,9 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #159: DTO duyệt biên bản giao xe (ghi ngược ngày xuất kho) ----
+record DlvMinutesApproveDto(List<string>? Vins, DateTime? DeliveryOutDate, string? FlagUnapprove);
+
 // ---- #155: DTO lịch sử lô chuyển tiền ngân hàng ----
 record PmtBulkHistDto(string PaymentNo, string? BulkInfo, string? BulkDetailId, string? TransferType, decimal TotalAmount);
 

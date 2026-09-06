@@ -186,6 +186,12 @@ public sealed class CarRetrieve
     public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
+
+    // ===== #159 side-effect `Sto_DlvMinutes_Approve_New20190416` (Biz.HTC.WH.cs:138340, csproj 272) =====
+    // Duyệt biên bản giao xe GHI NGƯỢC "ngày xuất kho" lên CHỨNG TỪ NGUỒN của xe. Bốn nhánh theo loại
+    // chứng từ, mỗi nhánh một CỘT KHÁC TÊN — đó là lý do port cũ bỏ sót cả ba.
+    /// <summary>Ngày xuất kho thực tế của lệnh thu hồi (`Sto_CarRetrieveDetail.RetrieveOutDate`).</summary>
+    public DateTime? RetrieveOutDate { get; set; }
 }
 
 /// <summary>Hủy xe (FrmCarCancel + FrmMngCarCancel) — hủy xe theo loại hủy, ghi nhận per-car; duyệt là governance thêm của web.</summary>
@@ -3324,6 +3330,13 @@ public sealed class StoRearCBDtl
     public string? CBReqNo { get; set; }
     public string? TenLoaiThung { get; set; }
     public string? Remark { get; set; }
+
+    // ===== #159 side-effect `Sto_DlvMinutes_Approve_New20190416` (Biz.HTC.WH.cs:138340, csproj 272) =====
+    // Duyệt biên bản giao xe GHI NGƯỢC "ngày xuất kho" lên CHỨNG TỪ NGUỒN của xe. Bốn nhánh theo loại
+    // chứng từ, mỗi nhánh một CỘT KHÁC TÊN — đó là lý do port cũ bỏ sót cả ba.
+    /// <summary>Ngày xuất kho thực tế của lệnh điều chuyển ĐÓNG THÙNG (`RearCBOutDate`) — nguồn chỉ ghi
+    /// khi `TypeCB` KHÁC `TConst.CVTypeCB.ChuaDongThung`, và `RearCBDtlStatus` đang là "A" hoặc "F".</summary>
+    public DateTime? RearCBOutDate { get; set; }
 }
 
 /// <summary>Phiên đăng nhập hệ thống — port 1:1 FrmMngSession (Session, TCMotor). Giám sát phiên đang mở + kill phiên hết hạn theo thời gian truy cập cuối.</summary>
@@ -8889,6 +8902,13 @@ public sealed class StorageRearrangeDetail
     public string? StorageCodeFrom { get; set; }
     public string StorageCodeTo { get; set; } = "";
     public string? Remark { get; set; }
+
+    // ===== #159 side-effect `Sto_DlvMinutes_Approve_New20190416` (Biz.HTC.WH.cs:138340, csproj 272) =====
+    // Duyệt biên bản giao xe GHI NGƯỢC "ngày xuất kho" lên CHỨNG TỪ NGUỒN của xe. Bốn nhánh theo loại
+    // chứng từ, mỗi nhánh một CỘT KHÁC TÊN — đó là lý do port cũ bỏ sót cả ba.
+    /// <summary>Ngày xuất kho thực tế của lệnh điều chuyển (`RearrangeOutDate`) — nguồn ghi khi
+    /// DUYỆT biên bản giao xe, và chỉ khi `RearrangeDtlStatus` đang là "A2" hoặc "F".</summary>
+    public DateTime? RearrangeOutDate { get; set; }
 }
 
 /// <summary>Đề nghị bảo hiểm (Ins_InsuranceReq + Dtl) — port 1:1 FrmNewInsuranceReq (2010.HTC/Sales/Purchase). Đề nghị mua bảo hiểm cho lô VIN theo hãng + loại hình.</summary>

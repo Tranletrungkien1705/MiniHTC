@@ -845,6 +845,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #159 side-effect duyệt biên bản giao xe: 3 cột ngày xuất kho còn thiếu
+        "ALTER TABLE public.\"StorageRearrangeDetails\" ADD COLUMN IF NOT EXISTS \"RearrangeOutDate\" timestamp",
+        "ALTER TABLE public.\"CarRetrieves\" ADD COLUMN IF NOT EXISTS \"RetrieveOutDate\" timestamp",
+        "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBOutDate\" timestamp",
         // #158 parity Dlr_Contract: 10 cột nguồn ghi mà port cũ thiếu
         "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"DealerCodeBuyer\" text",
         "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
