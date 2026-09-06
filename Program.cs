@@ -29913,6 +29913,30 @@ app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, Or
     if (action == "approve")
     {
         if (o.OrderPartStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi NCC đơn Mới tạo." });
+
+        // ===== 🔴 #246 DUYỆT = GỬI ĐƠN HÀNG SANG NCC QUA BRAVO, không phải đổi cờ =====
+        // Nguồn `Ser_Order_Part_Appr` (BizCarSv.A.02.OrderPart.cs:2691), khối gọi API tại :3258-3320.
+        // BƯỚC 3B: md5 `72e6623f` (5014 dòng) — KHỚP 2 máy (đo ở #236).
+        // Phát hiện bằng sweep "hàm nào gọi `CallBravo`": toàn `TERP.BizCarSv` chỉ có **5 hàm**, và
+        //   `Ser_Order_Part_Appr` là hàm tôi đã port ở #234 mà **không biết** nó gọi Bravo.
+        //
+        // Nguồn dựng `RQ_SalesOrderHdr` gồm **header + TOÀN BỘ DÒNG** (Unit · ItemName · RequestQuantity ·
+        //   EstimatedTimeDelivery · Remark — :3230-3248), `GetToken` → `CallBravo`, rồi:
+        //   · phản hồi RỖNG  ⇒ ném `Ser_Order_Part_Appr_SentTST_SyncFail`
+        //   · `Status != "OK"` ⇒ cũng ném `..._SyncFail`
+        //   ⇒ **đơn KHÔNG được duyệt** khi NCC chưa nhận. #234 tôi cho duyệt vô điều kiện — GAP đã vá.
+        //
+        // ⚠️ KHÔNG port khối update `t.OrderSuppierNo` / `t.TSTID` từ phản hồi: cả khối **BỊ COMMENT**
+        //    ở nguồn (:3331-3348). Vì thế `OrderSuppierNo` vẫn do người duyệt NHẬP TAY (đúng như #234).
+        var syncOkOp = string.IsNullOrWhiteSpace(dto?.SyncStatus)
+                       || string.Equals(dto!.SyncStatus, "OK", StringComparison.OrdinalIgnoreCase);
+        if (!syncOkOp)
+            return Results.BadRequest(new
+            {
+                error = "Gửi đơn hàng sang NCC thất bại — đơn KHÔNG được duyệt.",   // ` Appr_SentTST_SyncFail
+                syncStatus = dto?.SyncStatus, description = dto?.SyncDescription,
+            });
+
         o.OrderPartStatus = "A"; o.SentAt = DateTime.Now; o.ApprBy = who; lineStatus = "A";
         o.SupplierStatus = "2";   // SS_2: đã duyệt, chờ NCC hoàn thiện
         // 5 trường mà _Appr gửi lên (chỉ ghi khi client có truyền — không xoá dữ liệu cũ)
@@ -32820,8 +32844,10 @@ record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLi
     string? OrderPartType = null);
 
 // #234: 5 trường mà `Ser_Order_Part_Appr` gửi lên — CHỈ dùng cho action "approve".
+// #246: kết quả đồng bộ Bravo khi DUYỆT — nguồn chỉ ghi khi `Status == "OK"`.
 record OrderPartActionDto(DateTime? EstimatedDeliverDate = null, DateTime? RequestSuppierDate = null,
     DateTime? ResponseSuppierDate = null, string? OrderSuppierNo = null, string? Remark = null,
+    string? SyncStatus = null, string? SyncDescription = null,
     // #235: `_Appr` gửi kèm cả bộ dòng ⇒ duyệt cập nhật được SL duyệt và khối giá.
     List<OrderPartLineDto>? Lines = null);
 // #233: bổ sung 13 trường mà `Ser_OrderComplain_Save` gửi lên (thêm ở CUỐI ⇒ không vỡ lời gọi cũ).
