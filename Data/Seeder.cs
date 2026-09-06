@@ -845,6 +845,17 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"RearCBDtlStatus\" text NOT NULL DEFAULT 'P'",
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+        // #182 parity cum DMS40_DlrCtr_CancelBankMD_*
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"CancelBankMDStatus\" text NOT NULL DEFAULT 'P'",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"FinishDTime\" timestamp",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"FinishBy\" text",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"RejectDTime\" timestamp",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"RejectBy\" text",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"RemarkDlr\" text",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"LUDTime\" timestamp",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"LUBy\" text",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
+        "ALTER TABLE public.\"DmsCancelBankMDs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #179 parity Sto_CBReqApprove_New20181119
         "ALTER TABLE public.\"CBReqs\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
         "ALTER TABLE public.\"CBReqDetails\" ADD COLUMN IF NOT EXISTS \"CBReqDtlStatus\" text",

@@ -8874,6 +8874,28 @@ public sealed class DmsCancelBankMD
     public string? Remark { get; set; }
     public string FlagIsDelete { get; set; } = "0";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #182 parity cum `DMS40_DlrCtr_CancelBankMD_*` (DMS40/0.34.Contract.cs, csproj 125) =====
+    /// <summary>
+    /// 🔴 Trạng thái biên bản huỷ NH bảo lãnh MD (`CancelBankMDStatus`, `TConst.CancelBankMDStatus`):
+    /// "N" · **"P" chờ** · "C" huỷ · **"A" đã duyệt** · "A1" · "A2" · **"F" hoàn tất** (+ "R" từ chối).
+    /// `_Finish` và `_Reject` đều vào từ **"A"**.
+    /// </summary>
+    public string CancelBankMDStatus { get; set; } = "P";
+    /// <summary>Mốc HOÀN TẤT (`FinishDTime`/`FinishBy`) — bước này gỡ NH bảo lãnh khỏi hợp đồng.</summary>
+    public DateTime? FinishDTime { get; set; }
+    public string? FinishBy { get; set; }
+    /// <summary>Mốc TỪ CHỐI (`RejectDTime`/`RejectBy`).</summary>
+    public DateTime? RejectDTime { get; set; }
+    public string? RejectBy { get; set; }
+    /// <summary>Ghi chú của đại lý (`RemarkDlr`) — nguồn ghi ở CẢ hai lệnh, KHÁC cột `Remark` lúc tạo.</summary>
+    public string? RemarkDlr { get; set; }
+    /// <summary>Nguồn ghi ĐỒNG THỜI hai cặp: `LUDTime`/`LUBy` (sửa lần cuối, nghiệp vụ) và
+    /// `LogLUDateTime`/`LogLUBy` (nhật ký kỹ thuật) — xem luật C0-ducentesimusvicesimus.</summary>
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hợp đồng đại lý DMS40 (DMS40_CT_DealerContract) — port 1:1 FrmDMS40_CT_DealerContractHTC_New/FrmMngDMS40 (2010.HTC/Sales/DMS40). HĐ đại lý ký 2 bên: A=HTC, B=đại lý.</summary>

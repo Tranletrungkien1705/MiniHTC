@@ -21964,11 +21964,76 @@ app.MapPost("/api/dmscancelminutes/{no}/{action}", async (string no, string acti
 }).RequireAuthorization();
 
 // Hủy NH phát hành bảo lãnh MD (FrmDMS40_DlrCtr_CancelBankMD)
+// ===== #182 HOÀN TẤT / TỪ CHỐI biên bản huỷ ngân hàng bảo lãnh MD — cụm `DMS40_DlrCtr_CancelBankMD_*` =====
+// Nguồn: `TERP.BizHTC/DMS40/0.34.Contract.cs` (csproj 125) — `_Reject_New20181115` (10152),
+//   `_Finish_New20181115` (10372), `_FinishAndSendMail_New20181115` (10627).
+// BƯỚC 3B: md5 CẢ FILE `e2f3680f` KHỚP 2 máy (đã đo ở #165, đo lại vẫn khớp).
+// TWIN: cả ba lệnh có ở **CẢ HAI** bit, cùng bản `_New20181115`.
+//
+// 🔴 Cách tìm ra: lập **BẢNG ACTION THẬT** (luật `C0-ducentesimusquinquagesimusquintus` rút ra sau sự cố
+//    port trùng #180/#181) — quét 55 endpoint gói nhiều lệnh trong MỘT route. Đối chiếu bề mặt WS thì cụm
+//    `DMS40_DlrCtr_CancelBankMD` có **4 lệnh ghi** mà MiniHTC mới có GET + POST(tạo) ⇒ thiếu cả 3 lệnh dưới.
+//
+// Trạng thái theo `TConst.CancelBankMDStatus` ("N"/"P"/"C"/"A"/"A1"/"A2"/"F"):
+//   · `_Reject` : guard **"A"** → **"R"**, ghi `RejectDTime`/`RejectBy`/`RemarkDlr`
+//   · `_Finish` : guard **"A"** → **"F"**, ghi `FinishDTime`/`FinishBy`/`RemarkDlr`
+//                 **VÀ side-effect lên `DMS40_CT_DealerContract`**: `BankCodeMD = f.BankCodeMD_Upd`
+//                 với `BankCodeMD_Upd = DBNull.Value` ⇒ **XOÁ ngân hàng bảo lãnh MD khỏi hợp đồng**.
+//                 Đây mới là mục đích thật của "hoàn tất biên bản huỷ NH bảo lãnh".
+//   · `_FinishAndSendMail` = `_Finish` + xếp lô gửi mail ⇒ port bằng cờ `sendMail` (mail **ghi nợ**).
+app.MapPost("/api/dmscancelbankmd/{no}/{action}", async (string no, string action, CancelBankMDActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (action is not ("finish" or "reject")) return Results.BadRequest(new { error = "action = finish|reject" });
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.DmsCancelBankMDs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CancelBankMDNo == no);
+    if (m is null) return Results.NotFound(new { no });
+
+    // Cả hai lệnh cùng guard: `DMS40_DlrCtr_CancelBankMD_CheckDB(..., CancelBankMDStatus.Approved)`.
+    if (m.CancelBankMDStatus != "A")
+        return Results.BadRequest(new { error = $"Biên bản đang ở '{m.CancelBankMDStatus}' — chỉ hoàn tất/từ chối khi đã duyệt (A)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    m.RemarkDlr = dto?.RemarkDlr;
+    m.LogLUDateTime = now; m.LogLUBy = who;
+    m.LUDTime = now; m.LUBy = who;      // nguồn ghi CẢ hai cặp: LogLU* (nhật ký) và LU* (sửa lần cuối)
+
+    string? clearedOn = null;
+    if (action == "reject")
+    {
+        m.CancelBankMDStatus = "R";
+        m.RejectDTime = now; m.RejectBy = who;
+    }
+    else
+    {
+        m.CancelBankMDStatus = "F";
+        m.FinishDTime = now; m.FinishBy = who;
+        // 🔴 SIDE-EFFECT: hoàn tất biên bản huỷ ⇒ **gỡ ngân hàng bảo lãnh MD khỏi hợp đồng đại lý**
+        //    (`t.BankCodeMD = f.BankCodeMD_Upd`, mà `BankCodeMD_Upd = DBNull.Value`).
+        if (!string.IsNullOrWhiteSpace(m.DlrCtrNo))
+        {
+            var ctr = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == m.DlrCtrNo);
+            if (ctr is null) return Results.BadRequest(new { error = $"Không tìm thấy hợp đồng đại lý {m.DlrCtrNo}.", dlrCtrNo = m.DlrCtrNo });
+            ctr.BankCodeMD = null;
+            ctr.LogLUDateTime = now; ctr.LogLUBy = who;
+            ctr.LUDTime = now; ctr.LUBy = who;
+            clearedOn = ctr.DlrCtrNo;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { m.CancelBankMDNo, status = m.CancelBankMDStatus, m.DlrCtrNo, m.RemarkDlr,
+        m.FinishDTime, m.FinishBy, m.RejectDTime, m.RejectBy,
+        bankCodeMDClearedOn = clearedOn,
+        mailQueued = (action == "finish" && dto?.SendMail == true) ? "NỢ: chưa nối tầng gửi mail thật (_FinishAndSendMail)" : null });
+}).RequireAuthorization();
+
 app.MapGet("/api/dmscancelbankmd", async (AppDbContext db, ITenantContext t, string? dlrCtrNo) =>
 {
     var q = db.DmsCancelBankMDs.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(m => m.DlrCtrNo == dlrCtrNo);
-    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelBankMDNo, m.DlrCtrNo, m.BankCodeMD, m.Remark, m.FlagIsDelete, m.CreatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelBankMDNo, m.DlrCtrNo, m.BankCodeMD, m.Remark, m.FlagIsDelete, m.CreatedAt,
+        m.CancelBankMDStatus, m.FinishDTime, m.FinishBy, m.RejectDTime, m.RejectBy, m.RemarkDlr,
+        m.LUDTime, m.LUBy, m.LogLUDateTime, m.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -29793,6 +29858,7 @@ record DmsHtcApproveDto(int Level = 1, bool Reject = false, string? Remark = nul
 record DmsDlrApproveDto(string? Remark = null, string? FilePath = null, bool SendMail = false);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
+record CancelBankMDActionDto(string? RemarkDlr = null, bool SendMail = false);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
 record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
 record GrtClaimApproveDto(string? FileSigned = null);
