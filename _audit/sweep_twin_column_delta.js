@@ -50,7 +50,16 @@ for (const f of process.argv.slice(2)) {
             const re3 = /al(?:Column|)Effective(?:Column|)\.Add\("([A-Za-z0-9_]+)"\)/g;
             while ((m = re3.exec(l))) cols.add(m[1].toLowerCase());
         }
-        if (cols.size > 0) funcs.push({ file: path.basename(f), name: marks[k].name, line: start + 1, cols });
+        // #324 (bai hoc C0-quingentesimusseptuagesimusprimus): ham UY QUYEN ghi cho HELPER bi dem hut.
+        //   Vi du: Ser_App_Update_New20201230 chi ghi 5 cot bang con, con 16 cot HEADER do helper
+        //   Function_UtilsSerApp ghi (tra ve qua `out dt_...` + `out alEffectiveColumn`).
+        //   Sweep khong lan duoc qua helper => danh dau de nguoi doc biet SO COT LA HUT.
+        let delegates = false;
+        for (let i = start; i < end; i++) {
+            if (raw[i].trim().startsWith("//")) continue;
+            if (/\bout\s+(ArrayList\s+)?alEffectiveColumn|\bout\s+dt_[A-Za-z0-9_]+/.test(raw[i])) { delegates = true; break; }
+        }
+        if (cols.size > 0) funcs.push({ file: path.basename(f), name: marks[k].name, line: start + 1, cols, delegates });
     }
 }
 
@@ -72,10 +81,12 @@ for (const [root, list] of [...byRoot.entries()].sort()) {
     console.log('\n🟠 ' + root + '  (chenh ' + (max - min) + ' cot giua cac ban)');
     for (const fn of list.sort((a, b) => b.cols.size - a.cols.size)) {
         const missing = [...list.find(x => x.cols.size === max).cols].filter(c => !fn.cols.has(c));
-        console.log('     ' + String(fn.cols.size).padStart(3) + ' cot  ' + fn.file + ':' + fn.line + '  ' + fn.name
+        console.log('     ' + String(fn.cols.size).padStart(3) + ' cot' + (fn.delegates ? '⚠️' : '  ') + ' ' + fn.file + ':' + fn.line + '  ' + fn.name
             + (missing.length && fn.cols.size !== max ? '   [thieu: ' + missing.slice(0, 6).join(', ')
                 + (missing.length > 6 ? ' +' + (missing.length - 6) : '') + ']' : ''));
     }
 }
 console.log('\nTONG: ' + funcs.length + ' ham co ghi cot, ' + byRoot.size + ' cum, ' + flagged + ' cum LECH >= 3 cot.');
 console.log('⚠️  GOI Y thoi — phai trace WS xem ban nao LIVE roi moi ket luan (C0-...vicesimussecundus).');
+console.log('⚠️  Dau \u26a0\ufe0f sau so cot = ham UY QUYEN ghi cho helper (out dt_/out alEffectiveColumn)');
+console.log('    => SO COT DO LA HUT, phai doc cot trong helper (C0-...septuagesimusprimus).');

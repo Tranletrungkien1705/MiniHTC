@@ -34933,6 +34933,83 @@ var appLoginBlockedAll = new HashSet<string>
 var appLoginDealerActiveExempt = new HashSet<string> { "LT888", "LT889" };
 
 // Kết quả xét quyền đăng nhập APP theo đúng nguồn.
+// ===== 🔴 #324 BỀ MẶT LỊCH HẸN CHO ĐỐI TÁC (`OS_Ser_App_*`) — MiniHTC CHƯA CÓ GÌ =====
+// WS có **5** WebMethod `OS_Ser_App_*`; trace từng cái xem gọi biz nào (KHÔNG suy theo tên):
+//   `OS_Ser_App_Create`        → `_biz.Ser_App_Create_ForTab`   ⇐ **dùng LẠI đường tạo của máy tính bảng**
+//   `OS_Ser_App_Create_ForHCC` → `_biz.OS_Ser_App_Create_ForHCC`
+//   `OS_Ser_App_Delete`        → `_biz.Ser_App_Delete`
+//   `OS_Ser_App_UpdateStatus`  → `_biz.Ser_App_UpdateStatus_New20190710`
+//   `OS_Ser_App_Update`        → `_biz.OS_Ser_App_Update`       ⇐ **biz RIÊNG, không dùng chung**
+// ⇒ 4/5 tái sử dụng hàm nội bộ; chỉ `Update` có đường riêng. Vì vậy sửa hàm nội bộ là **đổi luôn hành vi
+//   API đối tác** — điều đã xảy ra ở #319 khi vá `Ser_App_Create_ForTab`.
+//
+// 🔴 KHÁC BIỆT DUY NHẤT NHƯNG QUAN TRỌNG của `OS_Ser_App_Update` so với bản nội bộ
+//   (`Ser_App_Update_New20201230`) — cả hai cùng gọi helper `Function_UtilsSerApp`, nhưng:
+//     nội bộ: `…, strAppTypeCode, **null, null**, out dt_Ser_App, …`
+//     đối tác: `…, strAppTypeCode, **strFirstContactDateTime, strLastContactDateTime**, out …`
+//   ⇒ **Chỉ API ĐỐI TÁC mới đặt được hai mốc liên hệ khách**; đường nội bộ luôn truyền `null`.
+//   ⚠️ Điều này **đi vòng qua** luật của `/api/appointments/{no}/contact` (#282: lần liên hệ ĐẦU không bao
+//     giờ bị ghi đè). Đối tác gửi thẳng giá trị nào là ghi giá trị đó. Giữ đúng nguồn, và trả cờ để lộ ra.
+// ⚠️ `OS_Ser_App_Update` **KHÔNG** đụng bảng con (dịch vụ/phụ tùng) — chỉ cập nhật HEADER.
+app.MapPut("/api/os/appointments/{no}", async (string no, OsAppointmentUpdateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var appNo = no.Trim().ToUpperInvariant();
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == appNo);
+    if (a is null) return Results.NotFound(new { no = appNo });
+
+    // Helper `Function_UtilsSerApp` ghi theo luật "rỗng = GIỮ NGUYÊN" (mỗi cột một guard) — xem #323.
+    static string? Keep(string? v, string? cur) => string.IsNullOrWhiteSpace(v) ? cur : v!.Trim();
+
+    a.DealerCode = Keep(dto.DealerCode, a.DealerCode);
+    a.CusID = Keep(dto.CusID, a.CusID);
+    a.CusRequest = Keep(dto.CusRequest, a.CusRequest);
+    a.Creator = Keep(dto.Creator, a.Creator);
+    a.InsNo = Keep(dto.InsNo, a.InsNo);
+    a.CarID = Keep(dto.CarID, a.CarID);
+    a.Note = Keep(dto.Note, a.Note);
+    a.CVDVCode = Keep(dto.CVDVCode, a.CVDVCode);
+    a.CavityID = Keep(dto.CavityID, a.CavityID);
+    a.AppTypeCode = Keep(dto.AppTypeCode, a.AppTypeCode);
+    // 4 cột NGÀY/GIỜ THÔ tách rời (#323) — nguồn ghi ngày qua Convert, giờ giữ CHUỖI THÔ.
+    a.AppDateTime = Keep(dto.AppDateTime, a.AppDateTime);
+    a.AppTime = Keep(dto.AppTime, a.AppTime);
+    a.AppDateTimeFrom = Keep(dto.AppDateTimeFrom, a.AppDateTimeFrom);
+    a.AppTimeFrom = Keep(dto.AppTimeFrom, a.AppTimeFrom);
+
+    // 🔴 HAI MỐC LIÊN HỆ — chỉ đường ĐỐI TÁC mới đặt được.
+    var overroteFirst = dto.FirstContactDateTime.HasValue && a.FirstContactDateTime.HasValue
+                        && dto.FirstContactDateTime != a.FirstContactDateTime;
+    if (dto.FirstContactDateTime.HasValue) a.FirstContactDateTime = dto.FirstContactDateTime;
+    if (dto.LastContactDateTime.HasValue) a.LastContactDateTime = dto.LastContactDateTime;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        a.AppNo, a.DealerCode, a.CusID, a.CarID, a.CVDVCode, a.CavityID, a.AppTypeCode,
+        a.AppDateTime, a.AppTime, a.AppDateTimeFrom, a.AppTimeFrom,
+        a.FirstContactDateTime, a.LastContactDateTime,
+        // Lộ ra việc đối tác GHI ĐÈ mốc liên hệ đầu tiên — đường nội bộ (#282) không cho phép.
+        overwroteFirstContact = overroteFirst,
+        note = "Chỉ API đối tác đặt được FirstContactDateTime/LastContactDateTime (đường nội bộ truyền null). "
+             + "Endpoint này KHÔNG đụng bảng con dịch vụ/phụ tùng, đúng như OS_Ser_App_Update.",
+    });
+}).RequireAuthorization();
+
+// #324 Bản đồ 5 WebMethod đối tác → hàm biz thật, để client biết cái nào dùng chung đường nội bộ.
+app.MapGet("/api/os/appointments/surface", () => Results.Ok(new
+{
+    methods = new[]
+    {
+        new { os = "OS_Ser_App_Create", biz = "Ser_App_Create_ForTab", sharedWithInternal = true },
+        new { os = "OS_Ser_App_Create_ForHCC", biz = "OS_Ser_App_Create_ForHCC", sharedWithInternal = false },
+        new { os = "OS_Ser_App_Delete", biz = "Ser_App_Delete", sharedWithInternal = true },
+        new { os = "OS_Ser_App_Update", biz = "OS_Ser_App_Update", sharedWithInternal = false },
+        new { os = "OS_Ser_App_UpdateStatus", biz = "Ser_App_UpdateStatus_New20190710", sharedWithInternal = true },
+    },
+    note = "4/5 dùng lại hàm nội bộ ⇒ sửa hàm nội bộ là đổi luôn hành vi API đối tác (đã xảy ra ở #319).",
+})).RequireAuthorization();
+
 app.MapGet("/api/auth/app-login-eligibility", (string dealerCode, string userCode, string? versionApp) =>
 {
     var d = (dealerCode ?? "").Trim();
@@ -36746,6 +36823,13 @@ record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
     DateTime? StartDate = null, DateTime? FinishedDate = null,
     decimal? PlanedDuration = null, string? CusRequest = null, string? CarStatus = null,
     string? ModifyBy = null);
+// #324: cap nhat lich hen tu API DOI TAC (OS_Ser_App_Update). Rong = GIU NGUYEN (helper Function_UtilsSerApp).
+record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, string? CusRequest = null,
+    string? Creator = null, string? InsNo = null, string? CarID = null, string? Note = null,
+    string? CVDVCode = null, string? CavityID = null, string? AppTypeCode = null,
+    string? AppDateTime = null, string? AppTime = null,
+    string? AppDateTimeFrom = null, string? AppTimeFrom = null,
+    DateTime? FirstContactDateTime = null, DateTime? LastContactDateTime = null);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
