@@ -1207,6 +1207,16 @@ public sealed class TranspFee
     public int ExpectedDays { get; set; }
     public string? TFVCode { get; set; }   // phiên bản CPVT (batch) — port FrmMngTranspFeeHist
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    // ===== #169 Mst_TranspPenaltyVer — bản biểu PHẠT trễ hạn =====
+    /// <summary>Mức phạt ngày trễ cuối (`ValBased`) và mức cộng thêm cho mỗi ngày trễ sớm hơn (`ValEx`).
+    /// Nguồn để hai giá trị này ở bảng RIÊNG `Mst_TranspPenaltyVer` (lấy `top 1` theo `FlagActive='1'`);
+    /// MiniHTC gộp vào cùng bảng biểu phí và đánh dấu bằng `FlagPenaltyVer` — ánh xạ 1:1, ghi rõ để không lẫn.</summary>
+    public decimal ValBased { get; set; }
+    public decimal ValEx { get; set; }
+    public string? TPVCode { get; set; }
+    /// <summary>"1" = dòng này là **bản biểu phạt** đang hiệu lực (thay cho `Mst_TranspPenaltyVer.FlagActive`).</summary>
+    public string? FlagPenaltyVer { get; set; }
 }
 
 /// <summary>Biên bản vận chuyển / giao nhận (TransportMinutes — port 1:1 FrmNewTransportMinutes/FrmMngTransportMinutes, Phase2):
@@ -10784,6 +10794,35 @@ public sealed class TranspDlvConfirm
     public string? TFInputBy { get; set; }
     /// <summary>Tình trạng thiết bị GPS tại nơi nhận (`TGPSDvStatus`) — `_Correct` ghi cùng lượt.</summary>
     public string? TGPSDvStatus { get; set; }
+
+    // ===== #169 parity `Sto_DlvMinutes_Confirm_New20190416` (BizHTC.Storage.DlvMinutes.cs:2822, csproj 120) =====
+    /// <summary>Mã bản biểu phí vận chuyển áp cho biên bản (`TFVCode`) — khoá tra `Mst_TranspFee`
+    /// để lấy `ExpectedDays`, tức số ngày vận chuyển ĐỊNH MỨC của tuyến.</summary>
+    public string? TFVCode { get; set; }
+    /// <summary>
+    /// 🔴 Tiền phạt trễ hạn **HỆ THỐNG TỰ TÍNH** khi đại lý xác nhận (`TPValSys`), bậc thang GIẢM DẦN:
+    /// với n = (DlvEndDate − DlvStartDate).Days − ExpectedDays ngày trễ,
+    /// TPValSys = Σ(i = n → 1) [ValBased + (i−1)·ValEx] = n·ValBased + ValEx·n(n−1)/2.
+    /// Nguồn gán `TPValReal = TPValSys` ngay tại bước xác nhận; `_InputFee` (#168) mới là chỗ sửa tay sau đó.
+    /// ⚠️ Nếu tuyến KHÔNG có dòng `Mst_TranspFee` khớp, nguồn **không ném lỗi** (throw bị comment) và
+    /// nhánh tính phạt nằm trong `else` ⇒ kết quả là **không phạt**.
+    /// </summary>
+    public decimal TPValSys { get; set; }
+    /// <summary>Mã bản biểu phạt đang hiệu lực (`TPVCode`, nguồn lấy từ `Mst_TranspPenaltyVer` `FlagActive='1'`).</summary>
+    public string? TPVCode { get; set; }
+    /// <summary>Thiết bị GPS gắn với xe lúc xác nhận (`GPSDvNo`, nguồn tra `Sto_StoBalanceGPS` theo VIN)
+    /// cùng cặp mốc `DlvEndGPSDateTime`/`DlvEndGPSBy`.</summary>
+    public string? GPSDvNo { get; set; }
+    public DateTime? DlvEndGPSDateTime { get; set; }
+    public string? DlvEndGPSBy { get; set; }
+    /// <summary>Địa chỉ/kết quả trả về từ **Veloca** (`GPSDvAddress`/`GPSDvResponse`) — nguồn gọi API
+    /// `Veloca_SearAddress` tối đa 3 lần và **nuốt mọi lỗi**, xác nhận vẫn thành công.</summary>
+    public string? GPSDvAddress { get; set; }
+    public string? GPSDvResponse { get; set; }
+    /// <summary>Mốc bấm "Lưu" biên bản của đại lý (`DlvEndDateTime`/`DlvEndBy`) — **khác** `DlvEndDate`
+    /// (ngày nhận xe do người dùng nhập).</summary>
+    public DateTime? DlvEndDateTime { get; set; }
+    public string? DlvEndBy { get; set; }
 }
 
 /// <summary>
