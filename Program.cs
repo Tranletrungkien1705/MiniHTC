@@ -34203,12 +34203,106 @@ var roStatusDisplayNamesByScreen = new Dictionary<string, Dictionary<string, str
     },
 };
 
+// ===== 🔴 #306 NHÁNH `else` KHÁC NHAU THEO MÀN — port cũ chỉ mô hình hoá MỘT =====
+// Bảng `when` của ba màn gần giống nhau nên dễ tưởng chỉ khác từ vựng. Thực ra **kết cục cho mã lạ/NULL
+// khác hẳn ở cả ba** (luật `C0-quingentesimusquintusdecimus`: `else` là MỘT PHẦN của chữ ký):
+//   `rosearch`  (`Service.RO.cs:692`)                    → `else N'Không xác định'`
+//   `stockout`  (`Inventory.StockOut.cs:18587` + `:20173`) → `else ''`  ← **CHUỖI RỖNG**, không phải NULL
+//   `tabhome`   (`Tab.cs:1392`)                          → **KHÔNG có `else`** ⇒ **NULL**
+// ⇒ cùng một mã lạ: màn này ghi "Không xác định", màn kia để **ô trống có giá trị rỗng**, màn thứ ba
+//   trả **NULL**. Trước #306 port trả "Không xác định" cho cả ba ⇒ hai màn sau **hiện chữ mà nguồn không hiện**.
+var roStatusFallbackByScreen = new Dictionary<string, string?>
+{
+    ["rosearch"] = "Không xác định",
+    ["stockout"] = "",       // chuỗi rỗng — nguồn viết else ''
+    ["quote"] = "Không xác định",
+    ["tabhome"] = null,      // không có else ⇒ NULL
+};
+
 // Giữ tên cũ cho các chỗ đã dùng: mặc định là bảng của màn TRA LSC.
 var roStatusDisplayNames = roStatusDisplayNamesByScreen["rosearch"];
 // Nguồn có nhánh `else N'Không xác định'` — giữ nguyên, KHÔNG trả rỗng.
 string RoStatusDisplayName(string? st) => st is not null && roStatusDisplayNames.TryGetValue(st, out var n) ? n : "Không xác định";
 
+// #306: tra nhãn theo ĐÚNG màn, kèm ĐÚNG nhánh else của màn đó.
+string? RoStatusDisplayNameFor(string screen, string? st)
+{
+    var map = roStatusDisplayNamesByScreen.TryGetValue(screen, out var m) ? m : roStatusDisplayNamesByScreen["rosearch"];
+    if (st is not null && map.TryGetValue(st, out var n)) return n;
+    return roStatusFallbackByScreen.TryGetValue(screen, out var f) ? f : "Không xác định";
+}
+
+// #306b: khối endpoint đặt SAU phần khai báo bảng nhãn — hàm cục bộ chỉ gọi được khi biến bị bắt
+//   đã được gán (C# top-level statement: thứ tự dòng = thứ tự thực thi).
+// ===== 🔴 #306 TRA PHIẾU XUẤT THEO SỐ BÁO GIÁ (`OSVeloca_Ser_Inv_StockOut_GetByRONo`) =====
+// WebMethod **cuối cùng** của trục Veloca (StockIn 3 ở #305 · StockOut 4: #304 ba + cái này) ⇒ trục ĐÓNG.
+//
+// 🔴 Cùng điều kiện CỨNG như chiều nhập: `and siso.Status = '3'` (chỉ phiếu **Kết thúc**).
+//   Bảy bộ lọc khác (`StockOutDateFrom/To`, `SyncVelocaDTime*`, `StockOutNo`, `PlateNo`, `StockOutType`,
+//   `FlagSyncVeloca`) **đều đã bị comment** — hàm này chỉ còn nhận **`RONo`**. Port đúng bề mặt đó,
+//   không "khôi phục cho đầy đủ" (luật B: port dòng ĐANG CHẠY).
+//
+// ⚠️ `select distinct` kèm chú thích **thú nhận không hiểu** của tác giả:
+//   *"20240404. Them distinct boi vi khong ro nguyen nhan tai sao 1 PX lai dk gan voi nhieu lenh xuat"*
+//   ⇒ bảng nối `Ser_Inv_StockOutOrderStockOut` (đã port ở #294, quan hệ NHIỀU-NHIỀU) sinh dòng trùng và
+//   tác giả **dán `distinct` đè lên thay vì tìm nguyên nhân**. Giữ `distinct` (đúng nguồn) và ghi lại đây:
+//   nếu sau này thấy số liệu lệch ở màn dùng bảng nối, đây là điểm khả nghi ĐẦU TIÊN.
+//
+// ⚠️ `StockOutTypeName`: "1" Xuất dịch vụ · "2" Xuất thường — **KHÔNG có `else`** ⇒ mã lạ ra NULL.
+// ⚠️ `ROStatusName` dùng bảng nhãn của màn **`stockout`**, và nhánh `else` của màn đó là **chuỗi RỖNG**
+//   (xem khối `roStatusFallbackByScreen` ở trên) — KHÔNG phải "Không xác định".
+app.MapGet("/api/stockouts/veloca-by-rono", async (string rono, AppDbContext db, ITenantContext t) =>
+{
+    var no = (rono ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Thiếu số báo giá (rono)." });
+
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.RONo == no);
+    if (ro is null) return Results.Ok(new { rono = no, count = 0, items = Array.Empty<object>() });
+
+    // Đường đi của nguồn: RO → lệnh xuất (ROID) → bảng nối (#294) → phiếu xuất.
+    var stockOutIds = await (from soo in db.SerStockOutOrders
+                             join lk in db.SerStockOutOrderStockOuts on soo.Id equals lk.StockOutOrderId
+                             where soo.OrgId == t.OrgId && lk.OrgId == t.OrgId && soo.RONo == no
+                             select lk.StockOutId).Distinct().ToListAsync();
+
+    // Điều kiện CỨNG Status = "3" (Kết thúc).
+    var rows = await db.PartStockOuts
+        .Where(x => x.OrgId == t.OrgId && stockOutIds.Contains(x.Id) && x.Status == "3")
+        .ToListAsync();
+
+    var orderNoById = await (from soo in db.SerStockOutOrders
+                             join lk in db.SerStockOutOrderStockOuts on soo.Id equals lk.StockOutOrderId
+                             where soo.OrgId == t.OrgId && lk.OrgId == t.OrgId && soo.RONo == no
+                             select new { lk.StockOutId, soo.OrderNo }).ToListAsync();
+    var firstOrderNo = orderNoById.GroupBy(x => x.StockOutId)
+        .ToDictionary(g => g.Key, g => g.First().OrderNo);
+
+    var items = rows.Select(x => new
+    {
+        stockOutID = x.Id, x.StockOutNo,
+        stockOutTime = x.StockOutDateTime ?? x.StockOutDate,
+        roNo = ro.RONo, x.CusID, cusName = ro.CusName,
+        stockOutOrderNo = firstOrderNo.TryGetValue(x.Id, out var on) ? on : null,
+        plateNo = ro.LicensePlate,
+        stockNo = x.WarehouseCode, x.UserCode, x.Description, x.StockOutType,
+        // whitelist, KHÔNG else ⇒ mã lạ ra null
+        stockOutTypeName = x.StockOutType is not null && stockOutTypeNames.TryGetValue(x.StockOutType, out var tn) ? tn : null,
+        x.FlagSyncVeloca, x.SyncVelocaDTime,
+        roStatus = ro.Status,
+        // nhãn của màn "stockout" — else là CHUỖI RỖNG
+        roStatusName = RoStatusDisplayNameFor("stockout", ro.Status),
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        rono = no, count = items.Count, items,
+        note = "Chỉ phiếu xuất Status=3 (Kết thúc). distinct theo nguồn — bảng nối lệnh↔phiếu có thể sinh "
+             + "dòng trùng (nguồn thừa nhận không rõ nguyên nhân, 20240404).",
+    });
+}).RequireAuthorization();
+
 // #286: nhãn theo MÀN — `screen` nhận `rosearch` (mặc định) · `tabhome` · `stockout`.
+// #306: trả kèm **nhánh `else` của từng màn** — ba màn ba kết cục (chuỗi "Không xác định" / "" / null).
 app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
