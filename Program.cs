@@ -19297,6 +19297,101 @@ app.MapGet("/api/report/service-payments", async (AppDbContext db, ITenantContex
     return Results.Ok(new { count = rows.Count, total = rows.Sum(r => r.PaymentAmount), rows });
 }).RequireAuthorization();
 
+// ===== 🔴 #272 XẾP HÀNG ĐẨY NO-SHOW SANG HCC =====
+// Nguồn: phần "Call HCC" của `HCC_NoShow_CreateOSX` (`BizCarSv.HCC.cs:704-763`, **chỉ có trên máy 150**).
+//
+// 🔴 TÀI KHOẢN ĐĂNG NHẬP HCC LÀ TÀI KHOẢN NỀN, KHÔNG PHẢI NGƯỜI DÙNG:
+//   `HCCService.Login(url, GwUserCode, GwPassword, tid, **_strOS_HCC_BG_WAUserCode**, **…BG_WAUserPassword**)`
+//   — khác hẳn `CommonSignIn2026NC` (truyền chính mật khẩu người đăng nhập). Job chạy không có người dùng
+//   nào ngồi đó, nên phải dùng tài khoản riêng; đăng nhập hỏng ⇒ ném `..._HCCLoginFail`.
+//
+// 🔴 `AppAgent = "BizSkodaService"` — chuỗi CỐ ĐỊNH, và nó ghi **Skoda** trong hệ TCMotor/Hyundai.
+//   Dấu vết copy từ bản dựng của hãng khác. Giữ nguyên văn khi đối soát log phía HCC, đừng "sửa cho đúng".
+//   Cùng khối: `UtcOffset = "7"`, `Authorization = "Bearer " + AccessToken`.
+//
+// ☠️ KẾT QUẢ ĐẨY KHÔNG ĐƯỢC KIỂM: cả khối kiểm `objCMyMsgResult` và lệnh `throw` đều **bị comment**
+//   ⇒ HCC trả lỗi thì job vẫn coi như xong, **hỏng âm thầm**. (Lệnh throw bị comment đó còn dùng NHẦM hằng
+//   lỗi của hàm khác: `HCC_Appointment_AddOSX_InvalidOutSite` nằm trong `HCC_NoShow_CreateOSX`.)
+//   ⇒ Port **KHÔNG bắt chước chỗ hỏng âm thầm**: có trục trạng thái "R" + ghi chú lỗi. Sai lệch CỐ Ý.
+//
+// 🔴 Nguồn đẩy **THEO TỪNG ĐẠI LÝ** (vòng lặp `dt_Mst_Dealer`) ⇒ nhật ký cũng một dòng / một đại lý.
+app.MapPost("/api/hcc/noshow/queue", async (AppDbContext db, ITenantContext t, string? dealer, int? months) =>
+{
+    var m = months ?? 6;
+    if (m != 6 && m != 12)
+        return Results.BadRequest(new { error = "months chỉ nhận 6 hoặc 12 (nguồn chỉ định nghĩa hai mốc)." });
+
+    var now = DateTime.Now;
+    var noShowType = m == 6 ? "6Month" : "12Month";
+    var fromDate = now.AddMonths(m == 6 ? -12 : -24).Date;
+    var toDate = now.AddMonths(m == 6 ? -6 : -12).Date.AddDays(1).AddSeconds(-1);
+
+    var dealers = db.Dealers.Where(d => d.OrgId == t.OrgId && d.OrgHCCID != null);
+    if (!string.IsNullOrWhiteSpace(dealer)) dealers = dealers.Where(d => d.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var dealerList = await dealers.ToListAsync();
+
+    var created = new List<HccNoShowPush>();
+    foreach (var d in dealerList)
+    {
+        var count = await (from car in db.ServiceCars
+                           join cus in db.ServiceCustomers on car.CusID equals cus.CusCode
+                           where car.OrgId == t.OrgId && cus.OrgId == t.OrgId
+                                 && car.CurrentServiceDate > fromDate && car.CurrentServiceDate <= toDate
+                                 && cus.DealerCode == d.DealerCode && cus.FlagActive == "1"
+                           select car.Id).CountAsync();
+
+        // Danh sách rỗng ⇒ nguồn KHÔNG gọi HCC (guard `strOrgID` vẫn null). Không tạo dòng nhật ký.
+        if (count == 0) continue;
+
+        var row = new HccNoShowPush
+        {
+            OrgId = t.OrgId, NoShowType = noShowType, DealerCode = d.DealerCode,
+            WindowFrom = fromDate, WindowTo = toDate, CandidateCount = count, PushStatus = "P",
+        };
+        db.HccNoShowPushes.Add(row); created.Add(row);
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        noShowType,
+        from = fromDate.ToString("yyyy-MM-dd HH:mm:ss"), to = toDate.ToString("yyyy-MM-dd HH:mm:ss"),
+        dealersScanned = dealerList.Count, queued = created.Count,
+        skippedEmpty = dealerList.Count - created.Count,
+        items = created.Select(x => new { x.Id, x.DealerCode, x.CandidateCount, x.PushStatus }),
+    });
+}).RequireAuthorization();
+
+// #272 Đọc nhật ký đẩy NoShow.
+app.MapGet("/api/hcc/noshow/pushes", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
+{
+    var qy = db.HccNoShowPushes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.PushStatus == status);
+    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.NoShowType, x.DealerCode, x.CandidateCount, x.PushStatus, x.PushNote,
+        windowFrom = x.WindowFrom.ToString("yyyy-MM-dd HH:mm:ss"),
+        windowTo = x.WindowTo.ToString("yyyy-MM-dd HH:mm:ss"),
+        pushDateTime = x.PushDateTime.HasValue ? x.PushDateTime.Value.ToString("yyyy-MM-dd HH:mm:ss") : null,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// #272 Ghi kết quả đẩy (bộ đẩy gọi lại). Nguồn BỎ QUA kết quả (khối kiểm bị comment) — port ghi lại.
+app.MapPost("/api/hcc/noshow/pushes/{id}/result", async (long id, HccNoShowResultDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.HccNoShowPushes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    var to = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+    if (to != "A" && to != "R") return Results.BadRequest(new { error = "ToStatus chỉ nhận A (thành công) hoặc R (lỗi)." });
+    if (to == "R" && string.IsNullOrWhiteSpace(dto.Note))
+        return Results.BadRequest(new { error = "Đẩy lỗi phải ghi lý do (nguồn nuốt lỗi, port thì không)." });
+    row.PushStatus = to; row.PushDateTime = DateTime.Now; row.PushNote = dto.Note;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.PushStatus, row.PushDateTime, row.PushNote });
+}).RequireAuthorization();
+
 // ===== 🔴 #269 HCC NO-SHOW — khách QUÁ HẠN chưa quay lại xưởng =====
 // Nguồn: `TERP.BizCarSv/HCCIntergration/BizCarSv.HCC.cs:381 HCC_NoShow_CreateOS` + hàm con `…OSX`,
 //   chạy bởi job `Refs/Jobs/DMS.Service.Job.OSHCC` (`DMSServices_OSHCC.HCCNoShowCreateOS`).
@@ -34119,6 +34214,8 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record SharePartLineDto(string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, decimal MinQuantity, string? Remark);
+// #272: kết quả một lượt đẩy NoShow sang HCC — "A" xong / "R" lỗi (lỗi BẮT BUỘC ghi lý do).
+record HccNoShowResultDto(string ToStatus, string? Note = null);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 // #261: 12 cột của `TblSerMSTPart` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note,

@@ -13091,6 +13091,39 @@ public sealed class SupplierDebitPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// 🔴 #272 NHẬT KÝ MỘT LƯỢT ĐẨY "khách quá hạn chưa quay lại" (NoShow) SANG HCC.
+/// Nguồn: `HCCIntergration/BizCarSv.HCC.cs:485 HCC_NoShow_CreateOSX` (**chỉ có trên máy 150**) —
+/// mỗi ĐẠI LÝ trong vòng lặp là **một lượt đẩy riêng**, nên nhật ký cũng theo đại lý + loại nhắc.
+/// Cặp với danh sách ứng viên ở `GET /api/hcc/noshow` (#269).
+/// </summary>
+public sealed class HccNoShowPush
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>"6Month" hoặc "12Month" — nguồn chỉ sinh hai giá trị này (#269).</summary>
+    public string NoShowType { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+
+    /// <summary>Cửa sổ đã dùng để chọn ứng viên — lưu lại để đối soát về sau,
+    /// vì cửa sổ trượt theo ngày chạy job.</summary>
+    public DateTime WindowFrom { get; set; }
+    public DateTime WindowTo { get; set; }
+
+    /// <summary>Số ứng viên trong lượt. 🔴 Nguồn KHÔNG gọi HCC khi danh sách rỗng: guard
+    /// `if (!IsNullOrEmpty(strOrgID))` mà `strOrgID` chỉ được gán BÊN TRONG vòng lặp dòng ⇒ danh sách
+    /// rỗng thì nó ở lại `null`. Một guard "có dòng nào không" NGUỴ TRANG thành guard "có OrgID không".</summary>
+    public int CandidateCount { get; set; }
+
+    /// <summary>"P" chờ đẩy · "A" đẩy xong · "R" lỗi — cùng bộ mã với các trục HCC/HMC khác.</summary>
+    public string PushStatus { get; set; } = "P";
+    public DateTime? PushDateTime { get; set; }
+    public string? PushNote { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
 public sealed class SharePart
 {
