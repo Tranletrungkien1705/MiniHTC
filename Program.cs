@@ -18120,6 +18120,448 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
     return Results.Ok(new { b.SoDeNghi, b.BankCode, b.TransType });
 }).RequireAuthorization();
 
+// ===== #139: 4 HỌ PHIẾU THANH TOÁN DỊCH VỤ THEO XE =====
+// Nguồn: DMS40/0.34.Contract.cs (csproj 125) — Pmt_Payment{GPS,AVN,Storage,PDI}_*.
+// 🔴 Cụm CHỈ có ở WS 64-bit (WS 32-bit không có hàm nào) — ca "chỉ 64-bit" thứ SÁU.
+//
+// Máy trạng thái BA TRỤC, đọc từ chữ ký `*_CheckDB` chứ KHÔNG từ comment tại chỗ gọi
+// (comment ở call-site GHI SAI thứ tự tham số — xem ghi chú của endpoint xoá bên dưới):
+//    Approve1            : Doc="P" , HTV="P", TCMS="P"  → Doc="A1"
+//    Approve2            : Doc="A1", HTV="P", TCMS="P"  → Doc="A2"
+//    Cancel              : Doc="P" , HTV="P", TCMS="P"  → Doc="C"     (đã duyệt 1 là KHÔNG huỷ được)
+//    TCMSApproveAndSign  : Doc="A2", HTV="P", TCMS="P"  → TCMS="A"    (KHÔNG đổi Doc)
+//    HTVApproveAndSign   : Doc="A2", HTV="P", TCMS="A"  → HTV="A" + Doc="F"
+// ⇒ TCMS luôn ký TRƯỚC HTV, và chỉ chữ ký HTV mới đóng phiếu.
+string? PmtGuard(string doc, string htv, string tcms, string okDoc, string okHtv, string okTcms)
+{
+    if (!okDoc.Split(',').Contains(doc)) return $"Trạng thái phiếu phải thuộc ({okDoc}), hiện là \"{doc}\".";
+    if (!okHtv.Split(',').Contains(htv)) return $"Trạng thái ký HTV phải thuộc ({okHtv}), hiện là \"{htv}\".";
+    if (!okTcms.Split(',').Contains(tcms)) return $"Trạng thái ký TCMS phải thuộc ({okTcms}), hiện là \"{tcms}\".";
+    return null;
+}
+
+// ---- Họ GPS: phí thuê thiết bị định vị ----
+app.MapGet("/api/paymentgps", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+{
+    var q = db.PmtPaymentGpses.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.PaymentGPSStatus == status);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(x => x.PmtMonth == month);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.PaymentGPSNo, x.PmtMonth, x.CreateDateTime, x.CreateBy, x.AmountTotal, x.VAT, x.PaymentGPSStatus,
+        x.App1DTime, x.App1By, x.App2DTime, x.App2By, x.CancelDTime, x.CancelBy,
+        x.HTVSignStatus, x.HTVSignDTime, x.TCMSSignStatus, x.TCMSSignDTime, x.FilePath, x.LogLUDateTime, x.LogLUBy,
+        cars = db.PmtPaymentGpsDetails.Count(d => d.OrgId == t.OrgId && d.PaymentGPSNo == x.PaymentGPSNo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/paymentgps/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentGpses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentGPSNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var d = await db.PmtPaymentGpsDetails.Where(x => x.OrgId == t.OrgId && x.PaymentGPSNo == no).Select(x => new {
+        x.VIN, x.CarId, x.GPSID, x.GPSStartDate, x.CostGPSStartDate, x.RetailDate, x.CostGPSEndDate,
+        x.PlanCostGPSDate, x.DeductDate, x.ActualCostGPSDate, x.PriceGPS, x.AmountGPS, x.ContractGPS,
+        x.PaymentGPSDtlStatus, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.PaymentGPSNo, h.PmtMonth, h.CreateDateTime, h.CreateBy, h.AmountTotal, h.VAT,
+        h.PaymentGPSStatus, h.App1DTime, h.App1By, h.App2DTime, h.App2By, h.CancelDTime, h.CancelBy,
+        h.HTVSignStatus, h.HTVSignDTime, h.TCMSSignStatus, h.TCMSSignDTime, h.FilePath, h.LogLUDateTime, h.LogLUBy },
+        count = d.Count, details = d });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentgps", async (PmtGpsDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var no = "PGPS" + now.ToString("yyMMddHHmmss");
+    var h = new PmtPaymentGps { OrgId = t.OrgId, PaymentGPSNo = no, PmtMonth = dto.PmtMonth, CreateDateTime = now, CreateBy = who,
+        VAT = dto.VAT, AmountTotal = rows.Sum(x => x.AmountGPS), PaymentGPSStatus = "P",
+        HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
+    db.PmtPaymentGpses.Add(h);
+    foreach (var r in rows)
+        db.PmtPaymentGpsDetails.Add(new PmtPaymentGpsDetail { OrgId = t.OrgId, PaymentGPSNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+            CarId = r.CarId, GPSID = r.GPSID, GPSStartDate = r.GPSStartDate, CostGPSStartDate = r.CostGPSStartDate, RetailDate = r.RetailDate,
+            CostGPSEndDate = r.CostGPSEndDate, PlanCostGPSDate = r.PlanCostGPSDate, DeductDate = r.DeductDate, ActualCostGPSDate = r.ActualCostGPSDate,
+            PriceGPS = r.PriceGPS, AmountGPS = r.AmountGPS, ContractGPS = r.ContractGPS, PaymentGPSDtlStatus = "P",
+            LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PaymentGPSNo, h.PmtMonth, h.AmountTotal, status = h.PaymentGPSStatus, cars = rows.Count });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentgps/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? filePath) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentGpses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentGPSNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var dtls = await db.PmtPaymentGpsDetails.Where(x => x.OrgId == t.OrgId && x.PaymentGPSNo == no).ToListAsync();
+    string? err;
+    switch (action)
+    {
+        case "approve1":
+            err = PmtGuard(h.PaymentGPSStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentGPSStatus = "A1"; h.App1DTime = now; h.App1By = who;
+            foreach (var d in dtls) { d.PaymentGPSDtlStatus = "A1"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "approve2":
+            err = PmtGuard(h.PaymentGPSStatus, h.HTVSignStatus, h.TCMSSignStatus, "A1", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentGPSStatus = "A2"; h.App2DTime = now; h.App2By = who;
+            foreach (var d in dtls) { d.PaymentGPSDtlStatus = "A2"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "cancel":
+            err = PmtGuard(h.PaymentGPSStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentGPSStatus = "C"; h.CancelDTime = now; h.CancelBy = who;
+            foreach (var d in dtls) { d.PaymentGPSDtlStatus = "C"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "sign-tcms":
+            err = PmtGuard(h.PaymentGPSStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.TCMSSignStatus = "A"; h.TCMSSignDTime = now; h.FilePath = filePath ?? h.FilePath;
+            break;
+        case "sign-htv":
+            // guard nguồn đòi TCMS đã "A" ⇒ KHÔNG ký HTV trước được.
+            err = PmtGuard(h.PaymentGPSStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "A");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.HTVSignStatus = "A"; h.HTVSignDTime = now; h.FilePath = filePath ?? h.FilePath;
+            h.PaymentGPSStatus = "F";       // chỉ chữ ký HTV mới đóng phiếu
+            foreach (var d in dtls) { d.PaymentGPSDtlStatus = "F"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        default: return Results.BadRequest(new { error = "action = approve1|approve2|cancel|sign-tcms|sign-htv" });
+    }
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PaymentGPSNo, status = h.PaymentGPSStatus, h.HTVSignStatus, h.TCMSSignStatus });
+}).RequireAuthorization();
+
+// ---- Họ AVN: thiết bị màn hình giải trí ----
+app.MapGet("/api/paymentavn", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+{
+    var q = db.PmtPaymentAvns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.PaymentAVNStatus == status);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(x => x.PmtMonth == month);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.PaymentAVNNo, x.PmtMonth, x.CreateDateTime, x.CreateBy, x.AmountTotal, x.PaymentAVNStatus,
+        x.App1DTime, x.App1By, x.App2DTime, x.App2By, x.CancelDTime, x.CancelBy,
+        x.HTVSignStatus, x.HTVSignDTime, x.TCMSSignStatus, x.TCMSSignDTime, x.FilePath, x.LogLUDateTime, x.LogLUBy,
+        cars = db.PmtPaymentAvnDetails.Count(d => d.OrgId == t.OrgId && d.PaymentAVNNo == x.PaymentAVNNo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/paymentavn/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentAvns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentAVNNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var d = await db.PmtPaymentAvnDetails.Where(x => x.OrgId == t.OrgId && x.PaymentAVNNo == no).Select(x => new {
+        x.VIN, x.EngineNo, x.InStorageDate, x.AVNDate, x.SerialNo, x.AVNCode, x.UnitPriceAVN, x.FlagPmtAVN,
+        x.PaymentAVNDtlStatus, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.PaymentAVNNo, h.PmtMonth, h.CreateDateTime, h.CreateBy, h.AmountTotal,
+        h.PaymentAVNStatus, h.App1DTime, h.App1By, h.App2DTime, h.App2By, h.CancelDTime, h.CancelBy,
+        h.HTVSignStatus, h.HTVSignDTime, h.TCMSSignStatus, h.TCMSSignDTime, h.FilePath, h.LogLUDateTime, h.LogLUBy },
+        count = d.Count, details = d });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentavn", async (PmtAvnDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var no = "PAVN" + now.ToString("yyMMddHHmmss");
+    var h = new PmtPaymentAvn { OrgId = t.OrgId, PaymentAVNNo = no, PmtMonth = dto.PmtMonth, CreateDateTime = now, CreateBy = who,
+        AmountTotal = rows.Sum(x => x.UnitPriceAVN), PaymentAVNStatus = "P",
+        HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
+    db.PmtPaymentAvns.Add(h);
+    foreach (var r in rows)
+        db.PmtPaymentAvnDetails.Add(new PmtPaymentAvnDetail { OrgId = t.OrgId, PaymentAVNNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+            EngineNo = r.EngineNo, InStorageDate = r.InStorageDate, AVNDate = r.AVNDate, SerialNo = r.SerialNo, AVNCode = r.AVNCode,
+            UnitPriceAVN = r.UnitPriceAVN, FlagPmtAVN = r.FlagPmtAVN, PaymentAVNDtlStatus = "P", LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PaymentAVNNo, h.PmtMonth, h.AmountTotal, status = h.PaymentAVNStatus, cars = rows.Count });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentavn/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? filePath) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentAvns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentAVNNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var dtls = await db.PmtPaymentAvnDetails.Where(x => x.OrgId == t.OrgId && x.PaymentAVNNo == no).ToListAsync();
+    string? err;
+    switch (action)
+    {
+        case "approve1":
+            err = PmtGuard(h.PaymentAVNStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentAVNStatus = "A1"; h.App1DTime = now; h.App1By = who;
+            foreach (var d in dtls) { d.PaymentAVNDtlStatus = "A1"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "approve2":
+            err = PmtGuard(h.PaymentAVNStatus, h.HTVSignStatus, h.TCMSSignStatus, "A1", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentAVNStatus = "A2"; h.App2DTime = now; h.App2By = who;
+            foreach (var d in dtls) { d.PaymentAVNDtlStatus = "A2"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "cancel":
+            err = PmtGuard(h.PaymentAVNStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentAVNStatus = "C"; h.CancelDTime = now; h.CancelBy = who;
+            foreach (var d in dtls) { d.PaymentAVNDtlStatus = "C"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "sign-tcms":
+            err = PmtGuard(h.PaymentAVNStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.TCMSSignStatus = "A"; h.TCMSSignDTime = now; h.FilePath = filePath ?? h.FilePath;
+            break;
+        case "sign-htv":
+            err = PmtGuard(h.PaymentAVNStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "A");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.HTVSignStatus = "A"; h.HTVSignDTime = now; h.FilePath = filePath ?? h.FilePath;
+            h.PaymentAVNStatus = "F";
+            foreach (var d in dtls) { d.PaymentAVNDtlStatus = "F"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        default: return Results.BadRequest(new { error = "action = approve1|approve2|cancel|sign-tcms|sign-htv" });
+    }
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PaymentAVNNo, status = h.PaymentAVNStatus, h.HTVSignStatus, h.TCMSSignStatus });
+}).RequireAuthorization();
+
+// ---- Họ Storage: phí lưu kho + phủ sơn ----
+// ⛔ NỢ: phiếu này nguồn do JOB sinh (`Job_Pmt_PaymentStorage_Create`, 0.34.Contract.cs:26138) bằng một
+//    truy vấn tổng hợp lớn (bậc lưu kho × đơn giá × số ngày). Ở đây CHỈ port vòng đời phiếu
+//    (nhập/sửa/duyệt/ký/xoá); THUẬT TOÁN sinh phiếu để một vòng riêng — không bịa công thức.
+app.MapGet("/api/paymentstorage", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+{
+    var q = db.PmtPaymentStorages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.PaymentStorageStatus == status);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(x => x.PmtMonth == month);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.PaymentStorageNo, x.PmtMonth, x.CreateDateTime, x.CreateBy, x.AmountTotal, x.VAT, x.PaymentStorageStatus,
+        x.App1DTime, x.App1By, x.App2DTime, x.App2By, x.CancelDTime, x.CancelBy,
+        x.HTVSignStatus, x.HTVSignDTime, x.TCMSSignStatus, x.TCMSSignDTime, x.FilePath, x.LogLUDateTime, x.LogLUBy,
+        cars = db.PmtPaymentStorageDetails.Count(d => d.OrgId == t.OrgId && d.PaymentStorageNo == x.PaymentStorageNo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/paymentstorage/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentStorages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var d = await db.PmtPaymentStorageDetails.Where(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no).Select(x => new {
+        x.VIN, x.CarId, x.StorageCodeInit, x.StorageDate, x.ApprovedDate2, x.DeliveryOutDate, x.DealerCode,
+        x.InCostStorageDate, x.LevelStorage, x.OutCostStorageDate, x.CostStorageMonth, x.PriceCoat, x.PriceStorage,
+        x.CostCoat, x.CostStorage, x.TotalAmount, x.PaymentStorageDtlStatus, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.PaymentStorageNo, h.PmtMonth, h.CreateDateTime, h.CreateBy, h.AmountTotal, h.VAT,
+        h.PaymentStorageStatus, h.App1DTime, h.App1By, h.App2DTime, h.App2By, h.CancelDTime, h.CancelBy,
+        h.HTVSignStatus, h.HTVSignDTime, h.TCMSSignStatus, h.TCMSSignDTime, h.FilePath, h.LogLUDateTime, h.LogLUBy },
+        count = d.Count, details = d });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentstorage", async (PmtStorageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var no = "PSTO" + now.ToString("yyMMddHHmmss");
+    var h = new PmtPaymentStorage { OrgId = t.OrgId, PaymentStorageNo = no, PmtMonth = dto.PmtMonth, CreateDateTime = now,
+        CreateBy = who, VAT = dto.VAT == 0 ? 0.1m : dto.VAT,   // nguồn ghi thẳng literal '0.1' khi JOB tạo phiếu
+        AmountTotal = rows.Sum(x => x.TotalAmount), PaymentStorageStatus = "P",
+        HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
+    db.PmtPaymentStorages.Add(h);
+    foreach (var r in rows)
+        db.PmtPaymentStorageDetails.Add(new PmtPaymentStorageDetail { OrgId = t.OrgId, PaymentStorageNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+            CarId = r.CarId, StorageCodeInit = r.StorageCodeInit, StorageDate = r.StorageDate, ApprovedDate2 = r.ApprovedDate2,
+            DeliveryOutDate = r.DeliveryOutDate, DealerCode = r.DealerCode, InCostStorageDate = r.InCostStorageDate,
+            LevelStorage = r.LevelStorage, OutCostStorageDate = r.OutCostStorageDate, CostStorageMonth = r.CostStorageMonth,
+            PriceCoat = r.PriceCoat, PriceStorage = r.PriceStorage, CostCoat = r.CostCoat, CostStorage = r.CostStorage,
+            TotalAmount = r.TotalAmount, PaymentStorageDtlStatus = "P", Remark = r.Remark, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PaymentStorageNo, h.PmtMonth, h.AmountTotal, status = h.PaymentStorageStatus, cars = rows.Count });
+}).RequireAuthorization();
+
+// Xoá phiếu (`Pmt_PaymentStorage_Delete`, 27612).
+// 🔴 Đọc guard theo CHỮ KÝ hàm, KHÔNG theo comment tại chỗ gọi: chữ ký là
+//    (…, strHTVSignStatusListToCheck, strTCMSSignStatusListToCheck, strPaymentStorageStatusListToCheck)
+//    nên bộ ("P","P","P,C") nghĩa là HTV="P", TCMS="P", **Doc ∈ {P,C}** — comment ở chỗ gọi lại
+//    dán nhãn "P,C" cho TCMS, tức GHI SAI. Cùng bộ với Pmt_PaymentPDI_Delete.
+app.MapDelete("/api/paymentstorage/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentStorages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "P,C", "P", "P");
+    if (err is not null) return Results.BadRequest(new { error = err });
+    db.PmtPaymentStorageDetails.RemoveRange(await db.PmtPaymentStorageDetails.Where(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no).ToListAsync());
+    db.PmtPaymentStorages.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, deleted = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentstorage/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? filePath) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentStorages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var dtls = await db.PmtPaymentStorageDetails.Where(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no).ToListAsync();
+    string? err;
+    switch (action)
+    {
+        case "approve1":
+            err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentStorageStatus = "A1"; h.App1DTime = now; h.App1By = who;
+            foreach (var d in dtls) { d.PaymentStorageDtlStatus = "A1"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "approve2":
+            err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "A1", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentStorageStatus = "A2"; h.App2DTime = now; h.App2By = who;
+            foreach (var d in dtls) { d.PaymentStorageDtlStatus = "A2"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "cancel":
+            err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PaymentStorageStatus = "C"; h.CancelDTime = now; h.CancelBy = who;
+            foreach (var d in dtls) { d.PaymentStorageDtlStatus = "C"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "sign-tcms":
+            err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.TCMSSignStatus = "A"; h.TCMSSignDTime = now; h.FilePath = filePath ?? h.FilePath;
+            break;
+        case "sign-htv":
+            err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "A");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.HTVSignStatus = "A"; h.HTVSignDTime = now; h.FilePath = filePath ?? h.FilePath;
+            h.PaymentStorageStatus = "F";
+            foreach (var d in dtls) { d.PaymentStorageDtlStatus = "F"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        default: return Results.BadRequest(new { error = "action = approve1|approve2|cancel|sign-tcms|sign-htv" });
+    }
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PaymentStorageNo, status = h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus });
+}).RequireAuthorization();
+
+// ---- Họ PDI: phí kiểm tra trước giao xe ----
+// ⛔ NỢ: cũng do JOB sinh (`Job_Pmt_PaymentPDI_Create`, 29578) — chỉ port vòng đời phiếu.
+app.MapGet("/api/paymentpdi", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+{
+    var q = db.PmtPaymentPdis.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.PmtPDIStatus == status);
+    if (!string.IsNullOrWhiteSpace(month)) q = q.Where(x => x.PmtMonth == month);
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.PmtPDINo, x.PmtMonth, x.CreateDTime, x.CreateBy, x.TotalAmount, x.AmountVAT, x.TotalAmountAfterVAT,
+        x.LUDateTime, x.LUBy, x.PmtPDIStatus, x.Appr1DTime, x.Appr1By, x.Appr2DTime, x.Appr2By, x.CancelDTime, x.CancelBy,
+        x.HTVSignStatus, x.HTVSignDTime, x.HTVSignBy, x.TCMSSignStatus, x.TCMSSignDTime, x.TCMSSignBy,
+        x.FilePath, x.LogLUDateTime, x.LogLUBy,
+        cars = db.PmtPaymentPdiDetails.Count(d => d.OrgId == t.OrgId && d.PmtPDINo == x.PmtPDINo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/paymentpdi/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtPDINo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var d = await db.PmtPaymentPdiDetails.Where(x => x.OrgId == t.OrgId && x.PmtPDINo == no).Select(x => new {
+        x.VIN, x.CarId, x.StoreDate, x.StorageCodeInit, x.DlvStartDate, x.DlvMnNo, x.DealerCode,
+        x.CostInCheck, x.CostOutCheck, x.PmtPDIStatusDtl, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.PmtPDINo, h.PmtMonth, h.CreateDTime, h.CreateBy, h.TotalAmount, h.AmountVAT,
+        h.TotalAmountAfterVAT, h.LUDateTime, h.LUBy, h.PmtPDIStatus, h.Appr1DTime, h.Appr1By, h.Appr2DTime, h.Appr2By,
+        h.CancelDTime, h.CancelBy, h.HTVSignStatus, h.HTVSignDTime, h.HTVSignBy, h.TCMSSignStatus, h.TCMSSignDTime,
+        h.TCMSSignBy, h.FilePath, h.LogLUDateTime, h.LogLUBy }, count = d.Count, details = d });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentpdi", async (PmtPdiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var no = "PPDI" + now.ToString("yyMMddHHmmss");
+    var total = rows.Sum(x => x.CostInCheck + x.CostOutCheck);
+    var h = new PmtPaymentPdi { OrgId = t.OrgId, PmtPDINo = no, PmtMonth = dto.PmtMonth, CreateDTime = now, CreateBy = who,
+        TotalAmount = total, AmountVAT = dto.AmountVAT, TotalAmountAfterVAT = total + dto.AmountVAT, PmtPDIStatus = "P",
+        HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
+    db.PmtPaymentPdis.Add(h);
+    foreach (var r in rows)
+        db.PmtPaymentPdiDetails.Add(new PmtPaymentPdiDetail { OrgId = t.OrgId, PmtPDINo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+            CarId = r.CarId, StoreDate = r.StoreDate, StorageCodeInit = r.StorageCodeInit, DlvStartDate = r.DlvStartDate,
+            DlvMnNo = r.DlvMnNo, DealerCode = r.DealerCode, CostInCheck = r.CostInCheck, CostOutCheck = r.CostOutCheck,
+            PmtPDIStatusDtl = "P", LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtPDINo, h.PmtMonth, h.TotalAmountAfterVAT, status = h.PmtPDIStatus, cars = rows.Count });
+}).RequireAuthorization();
+
+app.MapDelete("/api/paymentpdi/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtPDINo == no);
+    if (h is null) return Results.NotFound(new { no });
+    // Pmt_PaymentPDI_Delete (30961): chữ ký PDI đảo thứ tự — (…, PmtPDIStatus, HTVSign, TCMSSign) —
+    // nên bộ ("P,C","P","P") vẫn ra CÙNG luật với họ Storage: Doc ∈ {P,C}, hai chữ ký còn "P".
+    var err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "P,C", "P", "P");
+    if (err is not null) return Results.BadRequest(new { error = err });
+    db.PmtPaymentPdiDetails.RemoveRange(await db.PmtPaymentPdiDetails.Where(x => x.OrgId == t.OrgId && x.PmtPDINo == no).ToListAsync());
+    db.PmtPaymentPdis.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, deleted = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymentpdi/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? filePath) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtPDINo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var dtls = await db.PmtPaymentPdiDetails.Where(x => x.OrgId == t.OrgId && x.PmtPDINo == no).ToListAsync();
+    string? err;
+    switch (action)
+    {
+        case "approve1":
+            err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PmtPDIStatus = "A1"; h.Appr1DTime = now; h.Appr1By = who;
+            foreach (var d in dtls) { d.PmtPDIStatusDtl = "A1"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "approve2":
+            err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "A1", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PmtPDIStatus = "A2"; h.Appr2DTime = now; h.Appr2By = who;
+            foreach (var d in dtls) { d.PmtPDIStatusDtl = "A2"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "cancel":
+            err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.PmtPDIStatus = "C"; h.CancelDTime = now; h.CancelBy = who;
+            foreach (var d in dtls) { d.PmtPDIStatusDtl = "C"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        case "sign-tcms":
+            err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "P");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.TCMSSignStatus = "A"; h.TCMSSignDTime = now; h.TCMSSignBy = who; h.FilePath = filePath ?? h.FilePath;
+            break;
+        case "sign-htv":
+            err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "A2", "P", "A");
+            if (err is not null) return Results.BadRequest(new { error = err });
+            h.HTVSignStatus = "A"; h.HTVSignDTime = now; h.HTVSignBy = who; h.FilePath = filePath ?? h.FilePath;
+            h.PmtPDIStatus = "F";
+            foreach (var d in dtls) { d.PmtPDIStatusDtl = "F"; d.LogLUDateTime = now; d.LogLUBy = who; }
+            break;
+        default: return Results.BadRequest(new { error = "action = approve1|approve2|cancel|sign-tcms|sign-htv" });
+    }
+    h.LUDateTime = now; h.LUBy = who;      // chỉ họ PDI có cặp sửa gần nhất
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtPDINo, status = h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus });
+}).RequireAuthorization();
+
 // ---- #137: 12 nhánh chi tiết của đề nghị GD ngân hàng ----
 // Nguồn ghi CẢ 14 bảng trong MỘT lệnh (`RQ_BankingTransactions_SaveX_20220817`), theo kiểu nạp bảng tạm
 // `#input_*` rồi `insert…select` — nên ở đây cũng lưu TRỌN GÓI: xoá sạch 12 nhánh cũ rồi ghi lại.
@@ -26233,6 +26675,15 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #139: DTO 4 họ phiếu thanh toán dịch vụ theo xe ----
+record PmtGpsDtlDto(string VIN, string? CarId, string? GPSID, DateTime? GPSStartDate, DateTime? CostGPSStartDate, DateTime? RetailDate, DateTime? CostGPSEndDate, DateTime? PlanCostGPSDate, DateTime? DeductDate, DateTime? ActualCostGPSDate, decimal PriceGPS, decimal AmountGPS, string? ContractGPS);
+record PmtGpsDto(string? PmtMonth, decimal VAT, List<PmtGpsDtlDto>? Details);
+record PmtAvnDtlDto(string VIN, string? EngineNo, DateTime? InStorageDate, DateTime? AVNDate, string? SerialNo, string? AVNCode, decimal UnitPriceAVN, string? FlagPmtAVN);
+record PmtAvnDto(string? PmtMonth, List<PmtAvnDtlDto>? Details);
+record PmtStorageDtlDto(string VIN, string? CarId, string? StorageCodeInit, DateTime? StorageDate, DateTime? ApprovedDate2, DateTime? DeliveryOutDate, string? DealerCode, DateTime? InCostStorageDate, string? LevelStorage, DateTime? OutCostStorageDate, decimal CostStorageMonth, decimal PriceCoat, decimal PriceStorage, decimal CostCoat, decimal CostStorage, decimal TotalAmount, string? Remark);
+record PmtStorageDto(string? PmtMonth, decimal VAT, List<PmtStorageDtlDto>? Details);
+record PmtPdiDtlDto(string VIN, string? CarId, DateTime? StoreDate, string? StorageCodeInit, DateTime? DlvStartDate, string? DlvMnNo, string? DealerCode, decimal CostInCheck, decimal CostOutCheck);
+record PmtPdiDto(string? PmtMonth, decimal AmountVAT, List<PmtPdiDtlDto>? Details);
 record RqBtDetailDto(RqBtPmtDto? Pmt, List<RqBtPmtDtlDto>? PmtDtls, RqBtPmtLCDto? PmtLC, List<RqBtPmtLCDtlDto>? PmtLCDtls, RqBtGrtDto? Grt, List<RqBtGrtDtlDto>? GrtDtls, RqBtGrtLCDto? GrtLC, List<RqBtGrtLCDtlDto>? GrtLCDtls, RqBtWrtDto? Wrt, List<RqBtWrtDtlDto>? WrtDtls, List<RqBtCtrDto>? Ctrs, List<RqBtWrtCtrDto>? WrtCtrs);
 
 record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist);

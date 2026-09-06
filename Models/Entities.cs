@@ -6303,6 +6303,271 @@ public sealed class PmtGuaranteeAttachFile
 //    Ctr / WrtCtr = danh sách HỢP ĐỒNG đại lý gắn vào đề nghị (WrtCtr có thêm LTV + GrtValue).
 
 /// <summary>Nhánh GIẢI NGÂN của đề nghị (`RQ_BankingTransPmt`).</summary>
+// ================= 4 HỌ PHIẾU THANH TOÁN DỊCH VỤ THEO XE (#139) =================
+// Nguồn: DMS40/0.34.Contract.cs (csproj <Compile> 125) — md5 e2f3680f… khớp cả 2 máy.
+// 🔴 TWIN: toàn bộ cụm `Pmt_Payment{GPS,AVN,Storage,PDI}_*` **CHỈ có ở WS 64-bit**; WS 32-bit
+//    KHÔNG có một hàm nào ⇒ ca "chỉ 64-bit" thứ SÁU (#131, #132, #133, #135, #136, #139).
+//
+// Bốn họ dùng CHUNG một máy trạng thái ba trục (xem `*_CheckDB` — mỗi tham số
+// `str*StatusListToCheck` là một trục, luật C0-centesimustricesimusnonus):
+//    DocStatus  : "P" → "A1" (duyệt 1) → "A2" (duyệt 2) → "F" (hoàn tất) · "R" từ chối · "C" huỷ
+//    TCMSSignStatus / HTVSignStatus : bảng mã riêng (N/P/C/A/A1/A2/F/R/D)
+// 🔴 THỨ TỰ KÝ BẮT BUỘC: **TCMS ký TRƯỚC, HTV ký SAU** — guard của `*_HTVApproveAndSign` đòi
+//    TCMSSignStatus = "A" (còn `*_TCMSApproveAndSign` chỉ đòi cả hai còn "P").
+//    Và **chỉ HTV ký mới đóng phiếu** (đặt DocStatus = "F"); TCMS ký không đổi DocStatus.
+// 🔴 Huỷ (`*_Cancel`) chỉ được khi phiếu còn "P" — đã duyệt 1 là KHÔNG huỷ được nữa.
+//
+// ⚠️ BỐN HỌ GẦN GIỐNG NHƯNG KHÔNG ĐỒNG NHẤT — chỗ dễ port ẩu nhất:
+//    · GPS/Storage có `VAT`; **AVN KHÔNG có VAT**.
+//    · PDI đặt tên KHÁC HẲN: `PmtPDINo` (không phải PaymentPDINo), `CreateDTime` (không phải
+//      CreateDateTime), `Appr1DTime/Appr1By` (không phải App1DTime/App1By), `PmtPDIStatusDtl`
+//      (không phải …DtlStatus); và có thêm `LUDateTime/LUBy`, `HTVSignBy/TCMSSignBy`,
+//      `AmountVAT`, `TotalAmountAfterVAT` thay cho cặp `AmountTotal`+`VAT`.
+
+/// <summary>Phiếu thanh toán phí thiết bị GPS theo tháng (`Pmt_PaymentGPS`).</summary>
+public sealed class PmtPaymentGps
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentGPSNo { get; set; } = "";
+    /// <summary>Tháng thanh toán (`PmtMonth`).</summary>
+    public string? PmtMonth { get; set; }
+    public DateTime CreateDateTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    public decimal AmountTotal { get; set; }
+    /// <summary>Thuế suất VAT — nguồn ghi thẳng literal '0.1' khi tạo phiếu (là TỈ LỆ, không phải tiền thuế).</summary>
+    public decimal VAT { get; set; }
+    /// <summary>Trạng thái phiếu (`PaymentGPSStatus`, `TConst.PaymentGPSStatus`, Const.Main.DMS40.cs:626).</summary>
+    public string PaymentGPSStatus { get; set; } = "P";
+    public DateTime? App1DTime { get; set; }
+    public string? App1By { get; set; }
+    public DateTime? App2DTime { get; set; }
+    public string? App2By { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    // --- Hai chữ ký + hai mốc duyệt (chung cho cả 4 họ) ---
+    /// <summary>Trạng thái ký phía HTV (`HTVSignStatus`, `TConst.HTVSignStatus`): N/P/C/A/A1/A2/F/R/D.</summary>
+    public string HTVSignStatus { get; set; } = "P";
+    public DateTime? HTVSignDTime { get; set; }
+    /// <summary>Trạng thái ký phía TCMS (`TCMSSignStatus`) — cùng bảng mã với HTV.</summary>
+    public string TCMSSignStatus { get; set; } = "P";
+    public DateTime? TCMSSignDTime { get; set; }
+    /// <summary>Đường dẫn file đã ký. Nguồn chuyển file từ thư mục `*_Temp` sang thư mục chính khi ký.</summary>
+    public string? FilePath { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng xe của phiếu phí GPS (`Pmt_PaymentGPSDetail`) — 6 mốc ngày tính tiền thuê thiết bị.</summary>
+public sealed class PmtPaymentGpsDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentGPSNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? CarId { get; set; }
+    public string? GPSID { get; set; }
+    public DateTime? GPSStartDate { get; set; }
+    public DateTime? CostGPSStartDate { get; set; }
+    public DateTime? RetailDate { get; set; }
+    public DateTime? CostGPSEndDate { get; set; }
+    public DateTime? PlanCostGPSDate { get; set; }
+    /// <summary>Ngày trừ (`DeductDate`) — dùng cắt bớt kỳ tính phí.</summary>
+    public DateTime? DeductDate { get; set; }
+    public DateTime? ActualCostGPSDate { get; set; }
+    public decimal PriceGPS { get; set; }
+    public decimal AmountGPS { get; set; }
+    /// <summary>Số hợp đồng GPS làm căn cứ tính tiền — endpoint xoá thiết bị đã join cột này (xem chú thích ở /api/gpsinstalls).</summary>
+    public string? ContractGPS { get; set; }
+    public string PaymentGPSDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Phiếu thanh toán thiết bị AVN (màn hình giải trí) theo tháng (`Pmt_PaymentAVN`).</summary>
+public sealed class PmtPaymentAvn
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentAVNNo { get; set; } = "";
+    public string? PmtMonth { get; set; }
+    public DateTime CreateDateTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    /// <summary>⚠️ Họ AVN **KHÔNG có cột VAT** (khác GPS/Storage) — đã đối chiếu danh sách cột `insert into`.</summary>
+    public decimal AmountTotal { get; set; }
+    public string PaymentAVNStatus { get; set; } = "P";
+    public DateTime? App1DTime { get; set; }
+    public string? App1By { get; set; }
+    public DateTime? App2DTime { get; set; }
+    public string? App2By { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    // --- Hai chữ ký + hai mốc duyệt (chung cho cả 4 họ) ---
+    /// <summary>Trạng thái ký phía HTV (`HTVSignStatus`, `TConst.HTVSignStatus`): N/P/C/A/A1/A2/F/R/D.</summary>
+    public string HTVSignStatus { get; set; } = "P";
+    public DateTime? HTVSignDTime { get; set; }
+    /// <summary>Trạng thái ký phía TCMS (`TCMSSignStatus`) — cùng bảng mã với HTV.</summary>
+    public string TCMSSignStatus { get; set; } = "P";
+    public DateTime? TCMSSignDTime { get; set; }
+    /// <summary>Đường dẫn file đã ký. Nguồn chuyển file từ thư mục `*_Temp` sang thư mục chính khi ký.</summary>
+    public string? FilePath { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Dòng xe của phiếu AVN (`Pmt_PaymentAVNDetail`).
+/// ⚠️ Nguồn có dòng `--, CarId` **đã comment** ⇒ theo luật "port dòng ACTIVE, không port comment"
+///    bảng này KHÔNG có CarId (khác 3 họ kia).
+/// </summary>
+public sealed class PmtPaymentAvnDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentAVNNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? EngineNo { get; set; }
+    public DateTime? InStorageDate { get; set; }
+    public DateTime? AVNDate { get; set; }
+    public string? SerialNo { get; set; }
+    public string? AVNCode { get; set; }
+    public string PaymentAVNDtlStatus { get; set; } = "P";
+    public decimal UnitPriceAVN { get; set; }
+    /// <summary>Cờ đã thanh toán AVN — "1"/"0".</summary>
+    public string? FlagPmtAVN { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Phiếu thanh toán phí lưu kho + phủ sơn theo tháng (`Pmt_PaymentStorage`) — do JOB sinh.</summary>
+public sealed class PmtPaymentStorage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentStorageNo { get; set; } = "";
+    public string? PmtMonth { get; set; }
+    public DateTime CreateDateTime { get; set; } = DateTime.Now;
+    /// <summary>Nguồn ghi cứng "WSHTC" — phiếu do JOB sinh, không phải người dùng lập.</summary>
+    public string? CreateBy { get; set; }
+    public decimal AmountTotal { get; set; }
+    public decimal VAT { get; set; }
+    public string PaymentStorageStatus { get; set; } = "P";
+    public DateTime? App1DTime { get; set; }
+    public string? App1By { get; set; }
+    public DateTime? App2DTime { get; set; }
+    public string? App2By { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    // --- Hai chữ ký + hai mốc duyệt (chung cho cả 4 họ) ---
+    /// <summary>Trạng thái ký phía HTV (`HTVSignStatus`, `TConst.HTVSignStatus`): N/P/C/A/A1/A2/F/R/D.</summary>
+    public string HTVSignStatus { get; set; } = "P";
+    public DateTime? HTVSignDTime { get; set; }
+    /// <summary>Trạng thái ký phía TCMS (`TCMSSignStatus`) — cùng bảng mã với HTV.</summary>
+    public string TCMSSignStatus { get; set; } = "P";
+    public DateTime? TCMSSignDTime { get; set; }
+    /// <summary>Đường dẫn file đã ký. Nguồn chuyển file từ thư mục `*_Temp` sang thư mục chính khi ký.</summary>
+    public string? FilePath { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng xe của phiếu lưu kho (`Pmt_PaymentStorageDetail`) — tách riêng tiền PHỦ SƠN và tiền LƯU KHO.</summary>
+public sealed class PmtPaymentStorageDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PaymentStorageNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? CarId { get; set; }
+    public string? StorageCodeInit { get; set; }
+    public DateTime? StorageDate { get; set; }
+    /// <summary>Ngày duyệt bước 2 của chứng từ gốc (`ApprovedDate2`) — mốc bắt đầu tính phí.</summary>
+    public DateTime? ApprovedDate2 { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? InCostStorageDate { get; set; }
+    /// <summary>Bậc lưu kho (`LevelStorage`) — đơn giá lưu kho tăng theo bậc.</summary>
+    public string? LevelStorage { get; set; }
+    public DateTime? OutCostStorageDate { get; set; }
+    public decimal CostStorageMonth { get; set; }
+    public decimal PriceCoat { get; set; }
+    public decimal PriceStorage { get; set; }
+    public decimal CostCoat { get; set; }
+    public decimal CostStorage { get; set; }
+    public decimal TotalAmount { get; set; }
+    public string PaymentStorageDtlStatus { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Phiếu thanh toán phí PDI theo tháng (`Pmt_PaymentPDI`) — do JOB sinh.
+/// 🔴 Họ này đặt tên LỆCH khỏi 3 họ kia ở gần như MỌI cột (xem ghi chú đầu cụm).
+/// </summary>
+public sealed class PmtPaymentPdi
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>⚠️ `PmtPDINo` — KHÔNG phải "PaymentPDINo".</summary>
+    public string PmtPDINo { get; set; } = "";
+    public string? PmtMonth { get; set; }
+    /// <summary>⚠️ `CreateDTime` — KHÔNG phải "CreateDateTime".</summary>
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    /// <summary>⚠️ PDI tách 3 cột tiền, thay cho cặp `AmountTotal` + `VAT` của 3 họ kia.</summary>
+    public decimal TotalAmount { get; set; }
+    public decimal AmountVAT { get; set; }
+    public decimal TotalAmountAfterVAT { get; set; }
+    /// <summary>⚠️ Chỉ họ PDI mới có cặp sửa gần nhất này.</summary>
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    /// <summary>⚠️ `Appr1DTime`/`Appr1By` — 3 họ kia là "App1DTime"/"App1By" (thiếu chữ "r").</summary>
+    public DateTime? Appr1DTime { get; set; }
+    public string? Appr1By { get; set; }
+    public DateTime? Appr2DTime { get; set; }
+    public string? Appr2By { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    /// <summary>⚠️ Chỉ họ PDI mới lưu NGƯỜI ký (3 họ kia chỉ lưu mốc thời gian + trạng thái).</summary>
+    public string? HTVSignBy { get; set; }
+    public string? TCMSSignBy { get; set; }
+    public string PmtPDIStatus { get; set; } = "P";
+    // --- Hai chữ ký + hai mốc duyệt (chung cho cả 4 họ) ---
+    /// <summary>Trạng thái ký phía HTV (`HTVSignStatus`, `TConst.HTVSignStatus`): N/P/C/A/A1/A2/F/R/D.</summary>
+    public string HTVSignStatus { get; set; } = "P";
+    public DateTime? HTVSignDTime { get; set; }
+    /// <summary>Trạng thái ký phía TCMS (`TCMSSignStatus`) — cùng bảng mã với HTV.</summary>
+    public string TCMSSignStatus { get; set; } = "P";
+    public DateTime? TCMSSignDTime { get; set; }
+    /// <summary>Đường dẫn file đã ký. Nguồn chuyển file từ thư mục `*_Temp` sang thư mục chính khi ký.</summary>
+    public string? FilePath { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng xe của phiếu PDI (`Pmt_PaymentPDIDetail`) — tách phí kiểm tra ĐẦU VÀO và ĐẦU RA.</summary>
+public sealed class PmtPaymentPdiDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PmtPDINo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? CarId { get; set; }
+    public DateTime? StoreDate { get; set; }
+    public string? StorageCodeInit { get; set; }
+    public DateTime? DlvStartDate { get; set; }
+    /// <summary>Số biên bản giao xe làm căn cứ (`DlvMnNo`).</summary>
+    public string? DlvMnNo { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal CostInCheck { get; set; }
+    public decimal CostOutCheck { get; set; }
+    /// <summary>⚠️ `PmtPDIStatusDtl` — 3 họ kia đặt là "…DtlStatus" (đảo thứ tự chữ).</summary>
+    public string PmtPDIStatusDtl { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class RqBankingTransPmt
 {
     public long Id { get; set; }

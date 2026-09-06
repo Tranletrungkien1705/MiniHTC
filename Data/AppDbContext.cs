@@ -61,7 +61,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<VatHtcInvoiceDeviceDetail> VatHtcInvoiceDeviceDetails => Set<VatHtcInvoiceDeviceDetail>();
     public DbSet<DlsDealAttachFile> DlsDealAttachFiles => Set<DlsDealAttachFile>();
     public DbSet<PmtGuaranteeAttachFile> PmtGuaranteeAttachFiles => Set<PmtGuaranteeAttachFile>();
-        public DbSet<RqBankingTransPmt> RqBankingTransPmts => Set<RqBankingTransPmt>();
+            public DbSet<PmtPaymentGps> PmtPaymentGpses => Set<PmtPaymentGps>();
+    public DbSet<PmtPaymentGpsDetail> PmtPaymentGpsDetails => Set<PmtPaymentGpsDetail>();
+    public DbSet<PmtPaymentAvn> PmtPaymentAvns => Set<PmtPaymentAvn>();
+    public DbSet<PmtPaymentAvnDetail> PmtPaymentAvnDetails => Set<PmtPaymentAvnDetail>();
+    public DbSet<PmtPaymentStorage> PmtPaymentStorages => Set<PmtPaymentStorage>();
+    public DbSet<PmtPaymentStorageDetail> PmtPaymentStorageDetails => Set<PmtPaymentStorageDetail>();
+    public DbSet<PmtPaymentPdi> PmtPaymentPdis => Set<PmtPaymentPdi>();
+    public DbSet<PmtPaymentPdiDetail> PmtPaymentPdiDetails => Set<PmtPaymentPdiDetail>();
+    public DbSet<RqBankingTransPmt> RqBankingTransPmts => Set<RqBankingTransPmt>();
     public DbSet<RqBankingTransPmtDtl> RqBankingTransPmtDtls => Set<RqBankingTransPmtDtl>();
     public DbSet<RqBankingTransPmtLC> RqBankingTransPmtLCs => Set<RqBankingTransPmtLC>();
     public DbSet<RqBankingTransPmtLCDtl> RqBankingTransPmtLCDtls => Set<RqBankingTransPmtLCDtl>();
