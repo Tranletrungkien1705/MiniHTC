@@ -6447,6 +6447,62 @@ public sealed class PmtGuaranteeAttachFile
 /// (`strFlagIsMonth`) rồi tính toàn bộ số liệu từ BO / tồn kho / đơn hàng và ghi cả header lẫn chi tiết.
 /// Số phiếu lấy từ bộ sinh mã `TConst.SequenceTypeDMS40.ORPNo`.
 /// </summary>
+// ========== DANH MỤC MÀU XE + SPEC ÁP DỤNG (#145) ==========
+// Nguồn: BizHTC.MasterData.cs (csproj <Compile> **115**, md5 01910ed5… khớp nguyên file 2 máy)
+//   `Mst_CarColor_Save` (3382) → `_SaveX` (3552), ghi 2 bảng tại 3974 / 4022.
+//   Hàm đọc `Mst_CarColor_Get_New20181119` KHÔNG nằm cùng file mà ở `DataWH/Biz.HTC.WH.cs:2448`
+//   (luật C0-centesimusquadragesimusseptimus: đừng khoanh vùng đọc theo file).
+//
+// 🔴 TWIN dạng "ĐỌC ở cả hai, GHI chỉ 64-bit": WS 32-bit chỉ gọi `_Get_New20181119`;
+//    WS 64-bit gọi thêm `_Save` và `Mst_CarColorSpec_Get`. Tức đại lý (bit 32) chỉ TRA CỨU màu,
+//    còn sửa danh mục là việc của bản 64-bit.
+//
+// Khoá nghiệp vụ là CẶP (ModelCode, ColorCode) — không phải một mã màu đơn lẻ:
+// cùng mã màu ở hai dòng xe khác nhau là hai bản ghi khác nhau.
+
+/// <summary>Danh mục màu xe theo dòng xe (`Mst_CarColor`) — khoá kép (ModelCode, ColorCode).</summary>
+public sealed class MstCarColor
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    /// <summary>Loại màu NGOẠI thất (`ColorExtType`).</summary>
+    public string? ColorExtType { get; set; }
+    public string? ColorExtCode { get; set; }
+    public string? ColorExtName { get; set; }
+    /// <summary>Tên màu ngoại thất tiếng Việt (`ColorExtNameVN`) — nguồn lưu song ngữ.</summary>
+    public string? ColorExtNameVN { get; set; }
+    public string? ColorIntCode { get; set; }
+    public string? ColorIntName { get; set; }
+    public string? ColorIntNameVN { get; set; }
+    /// <summary>
+    /// Phụ phí màu (`ColorFee`). ⚠️ Nguồn đọc bằng `Convert.ToDouble` ⇒ là SỐ TIỀN cộng thêm
+    /// cho màu đặc biệt, không phải tỉ lệ.
+    /// </summary>
+    public decimal ColorFee { get; set; }
+    /// <summary>Cờ hiệu lực (`FlagActive`) — "1"/"0", chuẩn hoá qua `StandardizeFlag`.</summary>
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Spec áp dụng cho một màu (`Mst_CarColorSpec`) — bảng nối 3 khoá, KHÔNG có cột nghiệp vụ nào khác.
+/// Nguồn khi lưu **xoá sạch spec của cặp (ModelCode, ColorCode) rồi ghi lại** danh sách mới.
+/// </summary>
+public sealed class MstCarColorSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string ColorCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class OrdOrderPlanHtmv
 {
     public long Id { get; set; }

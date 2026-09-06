@@ -8518,6 +8518,90 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #145: DANH MỤC MÀU XE + SPEC ÁP DỤNG (Mst_CarColor + Mst_CarColorSpec) =====
+// Nguồn: BizHTC.MasterData.cs (csproj 115) — Mst_CarColor_Save (3382) → _SaveX (3552).
+// 🔴 TWIN "đọc ở cả hai, GHI chỉ 64-bit": WS 32-bit chỉ có _Get_New20181119; _Save chỉ ở WS 64-bit.
+// Khoá nghiệp vụ là CẶP (ModelCode, ColorCode).
+app.MapGet("/api/carcolors", async (AppDbContext db, ITenantContext t, string? model, string? color, string? flagActive) =>
+{
+    var q = db.MstCarColors.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(color)) q = q.Where(x => x.ColorCode == color);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.ModelCode).ThenBy(x => x.ColorCode).Take(1000).Select(x => new {
+        x.ModelCode, x.ColorCode, x.ColorExtType, x.ColorExtCode, x.ColorExtName, x.ColorExtNameVN,
+        x.ColorIntCode, x.ColorIntName, x.ColorIntNameVN, x.ColorFee, x.FlagActive, x.Remark,
+        x.LogLUDateTime, x.LogLUBy,
+        specs = db.MstCarColorSpecs.Count(s => s.OrgId == t.OrgId && s.ModelCode == x.ModelCode && s.ColorCode == x.ColorCode) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/carcolors/{model}/{color}", async (string model, string color, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant(); color = color.Trim().ToUpperInvariant();
+    var h = await db.MstCarColors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color);
+    if (h is null) return Results.NotFound(new { model, color });
+    var specs = await db.MstCarColorSpecs.Where(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color)
+        .OrderBy(x => x.SpecCode).Select(x => new { x.SpecCode, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.ModelCode, h.ColorCode, h.ColorExtType, h.ColorExtCode,
+        h.ColorExtName, h.ColorExtNameVN, h.ColorIntCode, h.ColorIntName, h.ColorIntNameVN, h.ColorFee,
+        h.FlagActive, h.Remark, h.LogLUDateTime, h.LogLUBy }, count = specs.Count, specs });
+}).RequireAuthorization();
+
+// Lưu (UPSERT theo cặp khoá) — nguồn `_SaveX` dùng đúng một hàm cho cả thêm lẫn sửa:
+//   `Mst_CarColor_CheckDB` gọi với hai tham số lọc RỖNG ⇒ chỉ để BIẾT đã tồn tại hay chưa,
+//   không chặn; chưa có thì thêm, có rồi thì sửa.
+// 🔴 Quy ước lưới WinForm đã port: dòng spec có `SpecCode` **RỖNG** ⇒ `bIsDeleteSpec = true`
+//    (BizHTC.MasterData.cs:3808-3812) — tức gửi lên một dòng trống nghĩa là **XOÁ SẠCH spec**
+//    của cặp (Model, Color), không phải bỏ qua dòng đó.
+app.MapPost("/api/carcolors", async (CarColorDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    var color = (dto.ColorCode ?? "").Trim().ToUpperInvariant();
+    if (model.Length == 0 || color.Length == 0) return Results.BadRequest(new { error = "Cần cả ModelCode và ColorCode (khoá kép)." });
+    if (dto.Specs is null) return Results.BadRequest(new { error = "Thiếu bảng Mst_CarColorSpec (nguồn bắt buộc có, kể cả rỗng)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+
+    var rawSpecs = dto.Specs.Select(x => (x.SpecCode ?? "").Trim().ToUpperInvariant()).ToList();
+    var blankSpec = rawSpecs.Any(x => x.Length == 0);   // quy ước "dòng trống = xoá sạch spec"
+    var specs = rawSpecs.Where(x => x.Length > 0).Distinct().ToList();
+    if (!blankSpec && specs.Count == 0) return Results.BadRequest(new { error = "Phải có ít nhất 1 spec, hoặc gửi 1 dòng trống để xoá hết spec." });
+
+    var h = await db.MstCarColors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color);
+    var created = h is null;
+    if (h is null) { h = new MstCarColor { OrgId = t.OrgId, ModelCode = model, ColorCode = color }; db.MstCarColors.Add(h); }
+    h.ColorExtType = dto.ColorExtType; h.ColorExtCode = dto.ColorExtCode; h.ColorExtName = dto.ColorExtName;
+    h.ColorExtNameVN = dto.ColorExtNameVN; h.ColorIntCode = dto.ColorIntCode; h.ColorIntName = dto.ColorIntName;
+    h.ColorIntNameVN = dto.ColorIntNameVN; h.ColorFee = dto.ColorFee;
+    h.FlagActive = (dto.FlagActive ?? "1").Trim() == "0" ? "0" : "1";
+    h.Remark = dto.Remark; h.LogLUDateTime = now; h.LogLUBy = who;
+
+    // nguồn: xoá sạch spec của cặp khoá rồi ghi lại (BizHTC.MasterData.cs:3875-3893).
+    db.MstCarColorSpecs.RemoveRange(await db.MstCarColorSpecs
+        .Where(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color).ToListAsync());
+    if (!blankSpec)
+        foreach (var s in specs)
+            db.MstCarColorSpecs.Add(new MstCarColorSpec { OrgId = t.OrgId, ModelCode = model, ColorCode = color,
+                SpecCode = s, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { model, color, created, specs = blankSpec ? 0 : specs.Count, specsCleared = blankSpec });
+}).RequireAuthorization();
+
+// Xoá: nguồn dùng CÙNG hàm _SaveX với cờ FlagIsDelete="1" — xoá cả spec lẫn bản ghi màu.
+// 🔴 Nguồn: chưa tồn tại + đang xoá ⇒ `goto MyCodeLabel_Done` (THÀNH CÔNG, không báo lỗi).
+//    Port đúng ý đó: trả 200 idempotent thay vì 404.
+app.MapDelete("/api/carcolors/{model}/{color}", async (string model, string color, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant(); color = color.Trim().ToUpperInvariant();
+    var h = await db.MstCarColors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color);
+    if (h is null) return Results.Ok(new { model, color, deleted = false, note = "Không tồn tại — nguồn coi là thành công." });
+    db.MstCarColorSpecs.RemoveRange(await db.MstCarColorSpecs
+        .Where(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color).ToListAsync());
+    db.MstCarColors.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { model, color, deleted = true });
+}).RequireAuthorization();
+
 // ===== #144: KẾ HOẠCH ĐẶT HÀNG GỬI NHÀ MÁY HTMV (Ord_OrderPlan_HTMV + Detail) =====
 // Nguồn: DMS40/zTemp.0.30.Order.cs (csproj 128) — _Create (9461) / _Update (10585). Chỉ có ở WS 64-bit.
 // ⛔ NỢ ghi rõ: `_Create` là JOB TỰ SINH — chỉ nhận `strFlagIsMonth` rồi TỰ TÍNH 8 loại số lượng
@@ -27077,6 +27161,10 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #145: DTO danh mục màu xe ----
+record CarColorSpecLineDto(string? SpecCode);
+record CarColorDto(string ModelCode, string ColorCode, string? ColorExtType, string? ColorExtCode, string? ColorExtName, string? ColorExtNameVN, string? ColorIntCode, string? ColorIntName, string? ColorIntNameVN, decimal ColorFee, string? FlagActive, string? Remark, List<CarColorSpecLineDto>? Specs);
+
 // ---- #144: DTO kế hoạch đặt hàng nhà máy + quy đổi spec ATMV ----
 record OrderPlanHtmvLineDto(string SpecCode, string? ModelCode, decimal QtyBOApp, decimal QtySalesOrderP, decimal QtyStock, decimal QtyBOHTMV, decimal QtyStockDealer, decimal QtySalesOrderPlan, decimal QtySalesOrder, decimal QtyHTMVApp);
 record OrderPlanHtmvDto(DateTime? PeriodDate, string? FlagIsMonth, List<OrderPlanHtmvLineDto>? Lines);
