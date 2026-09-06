@@ -8518,6 +8518,118 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     note = "Nguồn dùng cờ Flag 1/0, KHÔNG phải chuỗi Sent/Invalid. Địa chỉ sai định dạng nằm ở cờ riêng invalidEmail.",
 })).RequireAuthorization();
 
+// ===== #151: GÓI BẢO TRÌ THEO DÒNG XE (Mst_MaintainType + MtnTp_MaintainTaskItem + MtnTp_Part) =====
+// Nguồn: DataWH/Biz.HTC.WH.cs (csproj 272) — _Add_New20181119 (7711) ghi 3 bảng tại 8068/8093/8119;
+//        _Update_New20181119 (8213) ghi lại 2 bảng con tại 8602/8628.
+// TWIN: cả hai WS đều gọi đủ bộ _Add/_Update/_Delete/_Get_New20181119 ⇒ không lệch.
+app.MapGet("/api/maintaintypes", async (AppDbContext db, ITenantContext t, string? model, string? mtnTp, string? flagActive) =>
+{
+    var q = db.MstMaintainTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(mtnTp)) q = q.Where(x => x.MtnTp == mtnTp);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.ModelCode).ThenBy(x => x.MtnTp).Take(1000).Select(x => new {
+        x.MtnTp, x.ModelCode, x.MtnTpName, x.MtnTimes, x.FlagActive, x.LogLUDateTime, x.LogLUBy,
+        tasks = db.MtnTpMaintainTaskItems.Count(l => l.OrgId == t.OrgId && l.MtnTp == x.MtnTp && l.ModelCode == x.ModelCode),
+        parts = db.MtnTpParts.Count(l => l.OrgId == t.OrgId && l.MtnTp == x.MtnTp && l.ModelCode == x.ModelCode) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string model, AppDbContext db, ITenantContext t) =>
+{
+    mtnTp = mtnTp.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var h = await db.MstMaintainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model);
+    if (h is null) return Results.NotFound(new { mtnTp, model });
+    var tasks = await db.MtnTpMaintainTaskItems.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model)
+        .Select(x => new { x.MtnTkCode, x.MtnTkItemCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var parts = await db.MtnTpParts.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model)
+        .Select(x => new { x.PartCode, x.Qty, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.MtnTp, h.ModelCode, h.MtnTpName, h.MtnTimes, h.FlagActive,
+        h.LogLUDateTime, h.LogLUBy }, tasks, parts });
+}).RequireAuthorization();
+
+// Thêm gói — guard nguồn: cặp (MtnTp, ModelCode) PHẢI CHƯA tồn tại (CheckDB(…, TConst.Flag.No)).
+app.MapPost("/api/maintaintypes", async (MaintainTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var mtnTp = (dto.MtnTp ?? "").Trim().ToUpperInvariant();
+    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (mtnTp.Length == 0 || model.Length == 0) return Results.BadRequest(new { error = "Cần cả mã gói bảo trì và mã dòng xe (khoá kép)." });
+    if (dto.MtnTimes < 0) return Results.BadRequest(new { error = "Số lần bảo trì không được âm." });
+    if (await db.MstMaintainTypes.AnyAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model))
+        return Results.Conflict(new { error = $"Gói {mtnTp} của dòng xe {model} đã tồn tại." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    db.MstMaintainTypes.Add(new MstMaintainType { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
+        MtnTpName = dto.MtnTpName, MtnTimes = dto.MtnTimes, FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    foreach (var k in dto.Tasks ?? new())
+        db.MtnTpMaintainTaskItems.Add(new MtnTpMaintainTaskItem { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
+            MtnTkCode = k.MtnTkCode, MtnTkItemCode = (k.MtnTkItemCode ?? "").Trim().ToUpperInvariant(),
+            FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    foreach (var p in dto.Parts ?? new())
+        db.MtnTpParts.Add(new MtnTpPart { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
+            PartCode = (p.PartCode ?? "").Trim().ToUpperInvariant(), Qty = p.Qty,
+            FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { mtnTp, model, tasks = (dto.Tasks ?? new()).Count, parts = (dto.Parts ?? new()).Count });
+}).RequireAuthorization();
+
+// Sửa gói — port 1:1 `_Update_New20181119`: UPDATE bảng đầu, rồi **DELETE rồi INSERT LẠI** hai bảng con
+// (Biz.HTC.WH.cs:8570/8580 delete → 8602/8628 insert). Không có "sửa từng dòng con".
+app.MapPut("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string model, MaintainTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    mtnTp = mtnTp.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var h = await db.MstMaintainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model);
+    if (h is null) return Results.NotFound(new { mtnTp, model });
+    if (dto.MtnTimes < 0) return Results.BadRequest(new { error = "Số lần bảo trì không được âm." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    h.MtnTpName = dto.MtnTpName ?? h.MtnTpName; h.MtnTimes = dto.MtnTimes;
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    db.MtnTpMaintainTaskItems.RemoveRange(await db.MtnTpMaintainTaskItems.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
+    db.MtnTpParts.RemoveRange(await db.MtnTpParts.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
+    foreach (var k in dto.Tasks ?? new())
+        db.MtnTpMaintainTaskItems.Add(new MtnTpMaintainTaskItem { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
+            MtnTkCode = k.MtnTkCode, MtnTkItemCode = (k.MtnTkItemCode ?? "").Trim().ToUpperInvariant(),
+            FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    foreach (var p in dto.Parts ?? new())
+        db.MtnTpParts.Add(new MtnTpPart { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
+            PartCode = (p.PartCode ?? "").Trim().ToUpperInvariant(), Qty = p.Qty,
+            FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { mtnTp, model, tasks = (dto.Tasks ?? new()).Count, parts = (dto.Parts ?? new()).Count,
+        note = "Nguồn xoá sạch 2 bảng con rồi ghi lại — không sửa từng dòng." });
+}).RequireAuthorization();
+
+// ===== #151: KẾT QUẢ BẢO TRÌ THEO HẠNG MỤC (StoF_MaintainMix) =====
+// Nguồn: StorageFG/BizHTC.StorageFG.Frm.cs (csproj 151) — StoF_Maintain_Save_New20181115 (106) ghi tại 637,
+//        StoF_Maintain_SaveEval_New20181115 (1011) ghi tại 1425. WS có _Get/_GetWH_New20181119.
+// Đây là bảng con thứ HAI của phiếu bảo trì: StoF_MaintainMain ở mức XE, còn bảng này ở mức HẠNG MỤC.
+app.MapGet("/api/stofmaintains/{no}/items", async (string no, AppDbContext db, ITenantContext t, string? vin) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var q = db.StoFMaintainMixes.Where(x => x.OrgId == t.OrgId && x.SF_MtnNo == no);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN == vin!.Trim().ToUpperInvariant());
+    var items = await q.OrderBy(x => x.VIN).ThenBy(x => x.MtnTkItemCode).Select(x => new {
+        x.VIN, x.MtnTp, x.ModelCode, x.MtnTkCode, x.MtnTkItemCode, x.MtnVal, x.MtnStatusMix, x.Remark,
+        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { sfMtnNo = no, count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/stofmaintains/{no}/items", async (string no, List<MaintainMixLineDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var lines = (rows ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dòng hạng mục nào." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    // nguồn ghi lại toàn bộ dòng hạng mục của phiếu trong mỗi lượt lưu ⇒ xoá sạch rồi ghi lại.
+    db.StoFMaintainMixes.RemoveRange(await db.StoFMaintainMixes.Where(x => x.OrgId == t.OrgId && x.SF_MtnNo == no).ToListAsync());
+    foreach (var l in lines)
+        db.StoFMaintainMixes.Add(new StoFMaintainMix { OrgId = t.OrgId, SF_MtnNo = no,
+            VIN = l.VIN.Trim().ToUpperInvariant(), MtnTp = l.MtnTp, ModelCode = l.ModelCode,
+            MtnTkCode = l.MtnTkCode, MtnTkItemCode = l.MtnTkItemCode, MtnVal = l.MtnVal,
+            MtnStatusMix = l.MtnStatusMix, Remark = l.Remark, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { sfMtnNo = no, saved = lines.Count });
+}).RequireAuthorization();
+
 // ===== #150: CẤU HÌNH ĐẦU VÀO THUẬT TOÁN MAP VIN (Config_MapVINCarCarInput + Dtl) =====
 // Nguồn: DMS40/zTemp.0.20.MapVIN.cs (csproj 127) — _AddX (74709) ghi 2 bảng tại 75082/75111,
 //        _Update (75301) → _UpdateX (75421). 🔴 Chỉ có ở WS 64-bit.
@@ -27596,6 +27708,12 @@ record RqBtWrtDto(string? BkTransType, string? AdditionalMarginFlag, decimal Add
 record RqBtWrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal AmountActual);
 record RqBtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount);
 record RqBtWrtCtrDto(string? DlrCtrNo, string? SpecCode, DateTime? ContractDate, string? BkTransCtrPcpNo, DateTime? BkTransCtrPcpDate, string? AssemblyStatus, decimal Qty, decimal UnitPrice, decimal Amount, decimal LTV, decimal GrtValue, DateTime? BkTransCtrDate);
+// ---- #151: DTO gói bảo trì theo dòng xe + kết quả theo hạng mục ----
+record MtnTypeTaskDto(string? MtnTkCode, string MtnTkItemCode);
+record MtnTypePartDto(string PartCode, decimal Qty);
+record MaintainTypeDto(string MtnTp, string ModelCode, string? MtnTpName, int MtnTimes, List<MtnTypeTaskDto>? Tasks, List<MtnTypePartDto>? Parts);
+record MaintainMixLineDto(string VIN, string? MtnTp, string? ModelCode, string? MtnTkCode, string? MtnTkItemCode, string? MtnVal, string? MtnStatusMix, string? Remark);
+
 // ---- #150: DTO cấu hình đầu vào thuật toán map VIN ----
 record MapVinCfgLineDto(string? DCPType, decimal ValPmtDepositPercentFrom, decimal ValPmtDepositPercentTo, string? FlagIsExistGuarantee);
 record MapVinCfgDto(string CfgATMVIpCode, string ModelCode, DateTime EffDateStart, List<MapVinCfgLineDto>? Lines);

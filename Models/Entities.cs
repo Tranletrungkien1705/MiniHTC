@@ -575,6 +575,98 @@ public sealed class Quota
 /// 🔴 `_Update` KHÔNG sửa nội dung: nguồn chặn nếu `FlagActive` khác `Inactive`
 ///   ⇒ "sửa" ở đây thực chất **chỉ là HUỶ HIỆU LỰC** (tắt cấu hình), khoá theo (CfgATMVIpCode, ModelCode).
 /// </summary>
+// ========== ĐỊNH NGHĨA GÓI BẢO TRÌ THEO DÒNG XE + KẾT QUẢ THEO XE (#151) ==========
+// Nguồn: DataWH/Biz.HTC.WH.cs (csproj **272**) — `Mst_MaintainType_Add_New20181119` (7711) ghi 3 bảng
+//        tại 8068 / 8093 / 8119; `_Update_New20181119` (8213) ghi lại 2 bảng con tại 8602 / 8628.
+//        StorageFG/BizHTC.StorageFG.Frm.cs (csproj **151**, md5 d92ec381… verify 2 máy ở #138)
+//        — `StoF_Maintain_Save_New20181115` (106) / `_SaveEval_New20181115` (1011) ghi `StoF_MaintainMix`.
+// ⚠️ BƯỚC 3B: `Biz.HTC.WH.cs` lệch số dòng giữa 2 máy (212 978 vs 212 983) nhưng **vùng 7711–8660
+//    md5 KHỚP HOÀN TOÀN** (1354fb06…) — dùng đúng quy trình so-vùng của C0-centesimussexagesimusseptimus.
+// TWIN: cả hai WS đều gọi đủ bộ `_Add/_Update/_Delete/_Get_New20181119` ⇒ **không lệch**.
+//
+// 🔴 Phân biệt hai bảng tên gần giống — đã suýt nhầm ở BƯỚC 2:
+//    `Mst_MaintainTaskItem`  = DANH MỤC hạng mục (đã port, entity `MstMaintainTaskItem`);
+//    `MtnTp_MaintainTaskItem` = bảng NỐI "gói bảo trì ↔ hạng mục" — **chưa port**, chính là bảng dưới đây.
+
+/// <summary>
+/// Gói bảo trì theo dòng xe (`Mst_MaintainType`) — khoá kép (`MtnTp`, `ModelCode`).
+/// Nguồn khi thêm bắt cặp khoá **phải CHƯA tồn tại** (`Mst_MaintainType_CheckDB(…, TConst.Flag.No)`).
+/// </summary>
+public sealed class MstMaintainType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Mã gói bảo trì (`MtnTp`).</summary>
+    public string MtnTp { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? MtnTpName { get; set; }
+    /// <summary>Số lần bảo trì của gói (`MtnTimes`) — nguồn đọc bằng `Convert.ToInt32` ⇒ số NGUYÊN.</summary>
+    public int MtnTimes { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Hạng mục thuộc gói bảo trì (`MtnTp_MaintainTaskItem`) — bảng NỐI, không phải danh mục.
+/// Mỗi `MtnTkItemCode` nguồn bắt **phải tồn tại và đang Active** (`Mst_MaintainTaskItem_CheckDB`).
+/// </summary>
+public sealed class MtnTpMaintainTaskItem
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MtnTp { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    /// <summary>Mã gói hạng mục cha (`MtnTkCode`).</summary>
+    public string? MtnTkCode { get; set; }
+    public string MtnTkItemCode { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Phụ tùng thuộc gói bảo trì (`MtnTp_Part`). Mỗi `PartCode` nguồn bắt **phải tồn tại** (`Mst_Part_CheckDB`).
+/// </summary>
+public sealed class MtnTpPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MtnTp { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string PartCode { get; set; } = "";
+    /// <summary>Số lượng phụ tùng dùng cho gói (`Qty`).</summary>
+    public decimal Qty { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Kết quả bảo trì THEO TỪNG HẠNG MỤC của một xe (`StoF_MaintainMix`) — bảng con thứ hai của phiếu
+/// bảo trì, song song với <see cref="StoFMaintainMain"/> (vốn ở mức XE).
+/// Nối phiếu (`SF_MtnNo`) + xe (`VIN`) + gói (`MtnTp`,`ModelCode`) + hạng mục (`MtnTkCode`,`MtnTkItemCode`),
+/// lưu **giá trị đo được** `MtnVal` và trạng thái riêng `MtnStatusMix`.
+/// </summary>
+public sealed class StoFMaintainMix
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SF_MtnNo { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? MtnTp { get; set; }
+    public string? ModelCode { get; set; }
+    public string? MtnTkCode { get; set; }
+    public string? MtnTkItemCode { get; set; }
+    /// <summary>Giá trị ghi nhận của hạng mục (`MtnVal`) — ví dụ số đo/kết quả kiểm.</summary>
+    public string? MtnVal { get; set; }
+    /// <summary>Trạng thái RIÊNG của dòng hạng mục (`MtnStatusMix`) — độc lập với trạng thái phiếu và mức xe.</summary>
+    public string? MtnStatusMix { get; set; }
+    public string? Remark { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class ConfigMapVinCarCarInput
 {
     public long Id { get; set; }
