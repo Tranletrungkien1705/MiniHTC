@@ -34840,6 +34840,92 @@ app.MapGet("/api/stockouts/veloca-by-rono", async (string rono, AppDbContext db,
 
 // #286: nhãn theo MÀN — `screen` nhận `rosearch` (mặc định) · `tabhome` · `stockout`.
 // #306: trả kèm **nhánh `else` của từng màn** — ba màn ba kết cục (chuỗi "Không xác định" / "" / null).
+// ===== 🔴 #318 ĐĂNG NHẬP APP: ĐẠI LÝ "ĐÃ TRIỂN KHAI WEB THÌ DỪNG" =====
+// Nguồn: `CommonSignIn2026NC` (`BizCarSv.Common.cs:1545`) — hàm **CHỈ CÓ TRÊN MÁY 150**
+//   (bản laptop `V20.2023.Release.V2` không có; file lệch **+666 dòng**). Tìm ra bằng cách so `wc -l`
+//   toàn bộ `TERP.BizCarSv` hai máy: **6/55 file lệch**, 150 luôn lớn hơn.
+//
+// 🔴 HAI ĐƯỜNG XÁC THỰC, rẽ theo `strVersion_App`:
+//   `"WAVersion_App_idocNet2024"` ⇒ xác thực qua **HCC** (`HCCService.Login`, kiểm `AccessToken`),
+//     **KHÔNG** so mật khẩu trong DB.
+//   ngược lại                     ⇒ so mật khẩu **local**: `strPassword == Sys_User.UserPassword`
+//     (so chuỗi TRỰC TIẾP — nguồn không băm).
+//
+// 🔴 DANH SÁCH CHẶN chỉ áp dụng khi **KHÔNG** phải đăng nhập từ WA. Hai nhóm:
+//   (A) chặn **TRỪ một/hai tài khoản ngoại lệ** mỗi đại lý;
+//   (B) chặn **TRỌN** đại lý, không ngoại lệ (`58` mã).
+// ⚠️ Nguồn ném mã lỗi `CommonAppData_SysUserInvalidFlagActive` — nghĩa gốc là "user bị khoá", dùng lại cho
+//   "đại lý đã lên web" ⇒ **thông điệp lệch nghiệp vụ**, người dùng thấy báo sai lý do. Giữ nguyên hành vi,
+//   nhưng trả thêm `reason` rõ ràng để không lặp lại cái sai đó ở web.
+// ⚠️ `VS086.1` · `VN096` · `VN063` · `VS065` · `VC079` nằm trong danh sách nhưng **đã bị comment** ở nhóm (B)
+//   — chúng vẫn còn ở nhóm (A) với ngoại lệ riêng. Port theo **dòng đang chạy** (luật B).
+var appLoginBlockedWithException = new Dictionary<string, string[]>
+{
+    ["VN030"] = new[] { "MANHTUAN" },
+    ["VN061"] = new[] { "CSKH" },
+    ["VN066"] = new[] { "CSKH" },
+    ["VN096"] = new[] { "CSKH1" },
+    ["VN063"] = new[] { "GIANGLN", "NGUYENDH" },
+    ["VC062"] = new[] { "THUONGNTH" },
+    ["VC077"] = new[] { "PHUONGH" },
+    ["VC079"] = new[] { "SYSADMIN" },
+    // ⚠️ nguồn liệt kê CẢ HAI dạng chữ vì so sánh phân biệt hoa/thường ở nhánh này
+    ["VS065"] = new[] { "SYSADMIN", "sysadmin" },
+};
+
+var appLoginBlockedAll = new HashSet<string>
+{
+    "VN054", "VN071", "VN040", "VN029", "VN059", "VN042", "VN098", "VN041",
+    "VN090", "VN049", "VN012", "VN089", "VN056", "VN018", "VN064", "VN026",
+    "VN010", "VN017", "VN065.1", "VN022", "VN021", "VN025", "VC048", "VC021",
+    "VC060.1", "VC006", "VC096", "VC081", "VC076", "VC074", "VC046", "VC020",
+    "VN055.1", "VC004", "VS067", "VS094", "VS071", "VS058", "VS093", "VS080",
+    "VS069", "VS088", "VS066", "VS036", "VS068.1", "VS070", "VS092", "VS090",
+    "VS089", "VS039", "VS086.1", "VS098", "VS008", "VS057", "VS034", "VS064",
+    "VC037", "V3601",
+};
+
+// 🔴 LÂM THAO (`LT888`/`LT889`): chú thích nguồn — *"Đại lý lâm thao chỉ dùng SMS không view lên bất kỳ BC
+//   nào ==> đại lý phải là inactive"*. Vì vậy nguồn gọi `myCommon_CheckDealer` với
+//   `strFlagActiveListToCheck = ""` (chấp nhận MỌI trạng thái) thay vì `Flag.Active`.
+//   ⇒ hai đại lý này **cố ý để inactive** mà vẫn đăng nhập được. Đừng "sửa" thành active.
+var appLoginDealerActiveExempt = new HashSet<string> { "LT888", "LT889" };
+
+// Kết quả xét quyền đăng nhập APP theo đúng nguồn.
+app.MapGet("/api/auth/app-login-eligibility", (string dealerCode, string userCode, string? versionApp) =>
+{
+    var d = (dealerCode ?? "").Trim();
+    var u = (userCode ?? "").Trim();
+    var isWa = string.Equals(versionApp, "WAVersion_App_idocNet2024", StringComparison.Ordinal);
+
+    string? blockedBy = null, reason = null;
+    if (!isWa)   // danh sách chặn CHỈ áp khi không đăng nhập từ WA
+    {
+        if (appLoginBlockedWithException.TryGetValue(d, out var allowed))
+        {
+            // ⚠️ nguồn so bằng `StringUtils.StringEqual`; riêng VS065 liệt kê cả hai dạng chữ.
+            if (!allowed.Contains(u, StringComparer.Ordinal))
+            { blockedBy = "exception-list"; reason = "Đại lý đã triển khai web — chỉ tài khoản ngoại lệ được dùng app."; }
+        }
+        else if (appLoginBlockedAll.Contains(d))
+        { blockedBy = "blanket-list"; reason = "Đại lý đã triển khai web — app bị dừng cho toàn bộ tài khoản."; }
+    }
+
+    return Results.Ok(new
+    {
+        dealerCode = d, userCode = u,
+        versionApp, isWaLogin = isWa,
+        allowed = blockedBy is null,
+        blockedBy, reason,
+        // Cách XÁC THỰC tương ứng — hai đường khác hẳn nhau.
+        authMode = isWa ? "HCC token (HCCService.Login, kiểm AccessToken)" : "so mật khẩu local với Sys_User.UserPassword",
+        // Trạng thái đại lý có bị bắt buộc Active không.
+        dealerActiveRequired = !appLoginDealerActiveExempt.Contains(d),
+        note = "Nguồn ném mã lỗi CommonAppData_SysUserInvalidFlagActive (nghĩa gốc: user bị khoá) cho cả "
+             + "trường hợp đại lý đã lên web ⇒ thông điệp lệch nghiệp vụ. Ở đây trả reason đúng lý do.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
