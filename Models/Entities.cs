@@ -5283,6 +5283,16 @@ public sealed class CarDocRequestCar
     public string CarId { get; set; } = "";   // VIN/CarId
     public string? Remark { get; set; }
     public DateTime? DeliveryStartDate { get; set; }
+
+    // ===== #161 parity `RD_ReqInvoiceCreate_New20240617` =====
+    /// <summary>
+    /// 🔴 Loại yêu cầu hồ sơ xe (`Car_DocReqDtl.TypeCRR`, `TConst.CarDocReqType`):
+    /// **"NORMAL" · "SPECIAL" · "DEALER" · "DEALERTCG"**.
+    /// Bản 2024 chỉ chấp nhận **NORMAL** hoặc **DEALER** khi tạo đề nghị giao hồ sơ
+    /// (`InvalidTypeCRR`), và nếu là **DEALER** thì `TypeRDReqIv` của dòng bắt buộc phải là **DEALER**.
+    /// (Tên property đặt `CarDocReqTypeCRR` để không lẫn với các cột TypeCRR khác trong hệ.)
+    /// </summary>
+    public string? CarDocReqTypeCRR { get; set; }
 }
 
 /// <summary>
@@ -9216,6 +9226,13 @@ public sealed class CarVinMaster
     public string? HandOverBankCode { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+
+    // ===== #161 parity `RD_ReqInvoiceCreate_New20240617` (Biz.HTC.WH.cs:127483) =====
+    /// <summary>
+    /// 🔴 Ngày GIẢI CHẤP của xe (`Car_VIN.RedeemDate`). Bản 2024 bắt buộc cột này **PHẢI CÓ**
+    /// mới cho tạo đề nghị giao hồ sơ (`InvalidRedeemDate`) — bản 2018 không kiểm.
+    /// </summary>
+    public DateTime? RedeemDate { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>

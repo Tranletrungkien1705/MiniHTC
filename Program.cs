@@ -11763,18 +11763,72 @@ app.MapPost("/api/redeeminvoicerequests", async (RedeemInvoiceRequestDto dto, Ap
     if (dup != null) return Results.BadRequest(new { error = $"VIN '{dup.Key}' bị trùng trong đề nghị." });
     if (lines.Any(l => (l.ReqType ?? "DEALER").Trim().ToUpperInvariant() is not ("DEALER" or "BANKBL" or "BANKLC"))) return Results.BadRequest(new { error = "Loại ĐN giao phải là DEALER, BANKBL hoặc BANKLC." });
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+
+    // ===== #161 guard bản 2024 — `RD_ReqInvoiceCreate_New20240617` (Biz.HTC.WH.cs:127483, csproj 272) =====
+    // 🔴 TWIN: bản này CHỈ có ở WS 64-bit; WS 32-bit vẫn gọi `_New20181119`. BƯỚC 3B: căn theo MỐC HÀM
+    //    (laptop 127483 / máy 150 127488), vùng md5 89adb51c KHỚP 2 máy.
+    // Bản 2024 THÊM 5 guard mà bản 2018 không có (và bỏ 3 guard cũ):
+    //   InvalidRedeemDate · InvalidMortageEndDate · InvalidTypeCRR · InvalidTypeRDReqIv · NotExistPmt_GuaranteeDetail
+    foreach (var l in lines)
+    {
+        var vin = (l.VIN ?? "").Trim().ToUpperInvariant();
+        var reqType = (l.ReqType ?? "DEALER").Trim().ToUpperInvariant();
+
+        var car = await db.CarVinMasters.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.VIN == vin);
+        if (car is not null)
+        {
+            // (1) xe PHẢI đã có ngày giải chấp
+            if (car.RedeemDate is null)
+                return Results.BadRequest(new { error = $"VIN {vin}: chưa có ngày giải chấp (RedeemDate).", vin });
+            // (2) xe PHẢI CHƯA kết thúc thế chấp — nguồn chặn khi MortageEndDate ĐÃ có giá trị
+            if (car.MortageEndDate is not null)
+                return Results.BadRequest(new { error = $"VIN {vin}: đã có ngày kết thúc thế chấp (MortageEndDate) — không tạo đề nghị được.", vin });
+        }
+
+        // (3) loại yêu cầu hồ sơ xe chỉ được NORMAL hoặc DEALER
+        var docCar = await db.CarDocRequestCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CarId == l.CarId);
+        if (docCar?.CarDocReqTypeCRR is { } typeCrr && typeCrr.Length > 0)
+        {
+            if (typeCrr is not ("NORMAL" or "DEALER"))
+                return Results.BadRequest(new { error = $"VIN {vin}: TypeCRR = \"{typeCrr}\", nguồn chỉ chấp nhận NORMAL hoặc DEALER.", vin });
+            // (4) ÁNH XẠ BẮT BUỘC: TypeCRR = DEALER ⇒ loại đề nghị phải là DEALER
+            if (typeCrr == "DEALER" && reqType != "DEALER")
+                return Results.BadRequest(new { error = $"VIN {vin}: hồ sơ loại DEALER thì loại đề nghị phải là DEALER (đang \"{reqType}\").", vin });
+        }
+
+        // (5) phải có ĐÚNG MỘT bảo lãnh, và loại bảo lãnh QUYẾT ĐỊNH loại đề nghị:
+        //     GuaranteeType "BL" ⇒ BANKBL;  "LCTC" hoặc "LCUP" ⇒ BANKLC.
+        var grts = await (from d in db.BankGuaranteeDtls
+                          join g in db.Guarantees on d.GuaranteeId equals g.Id
+                          where d.OrgId == t.OrgId && d.VIN == vin
+                          select g).ToListAsync();
+        if (grts.Count == 0)
+            return Results.BadRequest(new { error = $"VIN {vin}: không tìm thấy bảo lãnh (Pmt_GuaranteeDetail).", vin });
+        if (grts.Count > 1)
+            return Results.BadRequest(new { error = $"VIN {vin}: có {grts.Count} bảo lãnh — nguồn chỉ cho phép 1.", vin });
+        var grtType = (grts[0].GrtType ?? "").Trim().ToUpperInvariant();
+        if (grtType == "BL" && reqType != "BANKBL")
+            return Results.BadRequest(new { error = $"VIN {vin}: bảo lãnh loại BL thì loại đề nghị phải là BANKBL (đang \"{reqType}\").", vin });
+        if ((grtType == "LCTC" || grtType == "LCUP") && reqType != "BANKLC")
+            return Results.BadRequest(new { error = $"VIN {vin}: bảo lãnh loại {grtType} thì loại đề nghị phải là BANKLC (đang \"{reqType}\").", vin });
+    }
+
     var h = new RedeemInvoiceRequest
     {
         OrgId = t.OrgId,
         ReqRDInvoiceNo = string.IsNullOrWhiteSpace((dto.ReqRDInvoiceNo ?? "").Trim()) ? "RDI" + DateTime.Now.ToString("yyMMddHHmmss") : dto.ReqRDInvoiceNo!.Trim(),
         CreatedDate = dto.CreatedDate ?? DateTime.Now,
         DealerCode = dto.DealerCode, Note = dto.Note, VinCount = lines.Count,
-        Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now
+        // 🔴 #161 SỬA BUG CÂM (cùng loại đã vá ở #140 cho RedeemRequest — bảng anh em VẪN CÒN):
+        //    chỗ này ghi Status = "Created" trong khi endpoint duyệt đòi Status == "P"
+        //    ⇒ mọi đề nghị vừa tạo KHÔNG BAO GIỜ duyệt được. Mã nguồn dùng "P" (TConst.Stage.Pending).
+        Status = "P", CreatedBy = who, CreatedAt = DateTime.Now
     };
     db.RedeemInvoiceRequests.Add(h);
     await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.RedeemInvoiceRequestLines.Add(new RedeemInvoiceRequestLine { OrgId = t.OrgId, RequestId = h.Id, VIN = (l.VIN ?? "").Trim(), CarId = l.CarId, ReqType = (l.ReqType ?? "DEALER").Trim().ToUpperInvariant() });
+        db.RedeemInvoiceRequestLines.Add(new RedeemInvoiceRequestLine { OrgId = t.OrgId, RequestId = h.Id, VIN = (l.VIN ?? "").Trim(), CarId = l.CarId, ReqType = (l.ReqType ?? "DEALER").Trim().ToUpperInvariant(),
+            RDReqIvDtlStatus = "P", LogLUDateTime = DateTime.Now, LogLUBy = who });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.ReqRDInvoiceNo, h.VinCount, h.Status });
 }).RequireAuthorization();
@@ -28030,7 +28084,7 @@ record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, str
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines, string? Remark = null);
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, DateTime? DMReqDate = null, string? DealerCode = null, string? DRListCode = null, string? MortageBankCode = null, string? ReqRMNo = null, string? Remark = null);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
-record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType);
+record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive);
