@@ -2244,12 +2244,13 @@ app.MapGet("/api/transreqs", async (AppDbContext db, ITenantContext t, string? s
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.TranspReqNo, r.DealerCode, r.TransporterCode, r.TransContractNo, r.Status, r.CreatedAt, r.DecidedAt,
+        r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,   // #142 parity Car_TransportReq
         cars = db.TransportReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/transreqs", async (TransReqDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transreqs", async (TransReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
         return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode." });
@@ -2261,11 +2262,14 @@ app.MapPost("/api/transreqs", async (TransReqDto dto, AppDbContext db, ITenantCo
     var r = new TransportRequest
     {
         OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
-        TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), TransContractNo = dto.TransContractNo, Status = "Pending"
+        TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), TransContractNo = dto.TransContractNo,
+        Status = "P",   // #142 parity: mã nguồn, không phải "Pending"
+        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
     };
     db.TransportRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.TransportReqCars.Add(new TransportReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, StorageCode = c.StorageCode });
+        db.TransportReqCars.Add(new TransportReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, StorageCode = c.StorageCode,
+            CarId = c.CarId, TransportReqDtlStatus = "P", LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
     await db.SaveChangesAsync();
     return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, status = r.Status });
 }).RequireAuthorization();
@@ -2276,18 +2280,23 @@ app.MapGet("/api/transreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
-        .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.StorageCode }).ToListAsync();
+        .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.StorageCode,
+            c.CarId, c.TransportReqDtlStatus, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #142 parity
     return Results.Ok(new { r.TranspReqNo, r.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối yêu cầu Đang xử lý." });
-    r.Status = action == "approve" ? "Approved" : "Rejected"; r.DecidedAt = DateTime.Now;
+    if (r.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối yêu cầu đang chờ duyệt (P)." });
+    var whoTR = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.Status = action == "approve" ? "A" : "C"; r.DecidedAt = DateTime.Now;   // #142 parity: mã nguồn
+    r.ApprovedBy = whoTR; r.LogLUDateTime = DateTime.Now; r.LogLUBy = whoTR;
+    foreach (var c in await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id).ToListAsync())
+    { c.TransportReqDtlStatus = r.Status; c.LogLUDateTime = DateTime.Now; c.LogLUBy = whoTR; }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.TranspReqNo, status = r.Status });
 }).RequireAuthorization();
@@ -2371,12 +2380,17 @@ app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
         m.TransportMinutesNo, m.DealerCode, m.TransporterCode, m.Status, m.CreatedAt, m.DecidedAt,
+        // #142 parity Car_TransportMinutes: hai trục còn lại + mọi mốc duyệt.
+        m.DLTransportMinutesStatus, m.HTCTransportMinutesStatus, m.TransportMinutesDate, m.FilePath,
+        m.DLCreatedDateTime, m.DLCreatedBy, m.DLApprDateTime, m.DLApprBy,
+        m.HTCAppr1DateTime, m.HTCAppr1By, m.HTCAppr2DateTime, m.HTCAppr2By,
+        m.HTCCancelDateTime, m.HTCCancelBy, m.LogLUDateTime, m.LogLUBy,
         cars = db.TransportMinutesCars.Count(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/transminutes", async (TransMinDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transminutes", async (TransMinDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
         return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode." });
@@ -2385,10 +2399,17 @@ app.MapPost("/api/transminutes", async (TransMinDto dto, AppDbContext db, ITenan
     var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "TM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var m = new TransportMinutes { OrgId = t.OrgId, TransportMinutesNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Status = "Pending" };
+    var whoTM = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var nowTM = DateTime.Now;
+    // #142 parity: nguồn tạo biên bản ở CẢ BA trục = "P" và ghi cặp DLCreated*.
+    var m = new TransportMinutes { OrgId = t.OrgId, TransportMinutesNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(),
+        Status = "P", DLTransportMinutesStatus = "P", HTCTransportMinutesStatus = "P",
+        TransportMinutesDate = dto.TransportMinutesDate ?? nowTM,
+        DLCreatedDateTime = nowTM, DLCreatedBy = whoTM, LogLUDateTime = nowTM, LogLUBy = whoTM };
     db.TransportMinutes.Add(m); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.TransportMinutesCars.Add(new TransportMinutesCar { OrgId = t.OrgId, MinutesId = m.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, EngineNo = c.EngineNo, DtlStatus = "Pending" });
+        db.TransportMinutesCars.Add(new TransportMinutesCar { OrgId = t.OrgId, MinutesId = m.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, EngineNo = c.EngineNo,
+            DtlStatus = "P", CarId = c.CarId, LogLUDateTime = nowTM, LogLUBy = whoTM });
     await db.SaveChangesAsync();
     return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, cars = vins.Count, status = m.Status });
 }).RequireAuthorization();
@@ -2399,23 +2420,67 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
     var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
     if (m is null) return Results.NotFound(new { no });
     var cars = await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
-        .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.EngineNo, c.DtlStatus }).ToListAsync();
+        .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.EngineNo, c.DtlStatus,
+            c.CarId, c.CancelDateTime, c.CancelBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #142 parity
     return Results.Ok(new { m.TransportMinutesNo, m.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 #142 parity — CHUỖI DUYỆT THẬT của biên bản vận chuyển, BA TRỤC (Biz.HTC.WH.cs, csproj 272):
+//    Tạo            : DL="P", HTC="P", Tổng="P"
+//    dl-appr        : cần DL=P , HTC=P , Tổng=P  → DL="A"           (Car_TransportMinutes_DLApprX:56071)
+//    htc-appr1      : cần DL=A , HTC=P , Tổng=P  → HTC="A1"         (…_HTCAppr1X:56226)
+//    htc-appr2      : cần DL=A , HTC=A1, Tổng=P  → HTC="A2" + Tổng="A"  (…_HTCAppr2X:56374)
+//    htc-appr-special: nguồn GỘP DLApprX + HTCAppr1X trong một lệnh — HTC làm thay bước đại lý
+//                      (Car_TransportMinutes_HTCAprrSpecial_New20190122:57193)
+//    htc-cancel     : → HTC="C" + Tổng="C"       (…_HTCCancelX:56696)
+//    Endpoint cũ (approve/reject, một trục, từ vựng "Pending"/"Approved") đã được THAY hẳn.
+app.MapPost("/api/transminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
     if (m is null) return Results.NotFound(new { no });
-    if (m.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối biên bản Đang xử lý." });
-    m.Status = action == "approve" ? "Approved" : "Rejected"; m.DecidedAt = DateTime.Now;
-    var dtl = m.Status;
-    foreach (var c in await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync())
-        c.DtlStatus = dtl;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    string? Need(string dl, string htc, string all) =>
+        m.DLTransportMinutesStatus != dl ? $"Trục đại lý phải là \"{dl}\" (đang \"{m.DLTransportMinutesStatus}\")."
+        : m.HTCTransportMinutesStatus != htc ? $"Trục HTC phải là \"{htc}\" (đang \"{m.HTCTransportMinutesStatus}\")."
+        : m.Status != all ? $"Trục tổng phải là \"{all}\" (đang \"{m.Status}\")." : null;
+    string? err;
+    switch (action)
+    {
+        case "dl-appr":
+            err = Need("P", "P", "P"); if (err is not null) return Results.BadRequest(new { error = err });
+            m.DLTransportMinutesStatus = "A"; m.DLApprDateTime = now; m.DLApprBy = who;
+            break;
+        case "htc-appr1":
+            err = Need("A", "P", "P"); if (err is not null) return Results.BadRequest(new { error = err });
+            m.HTCTransportMinutesStatus = "A1"; m.HTCAppr1DateTime = now; m.HTCAppr1By = who;
+            break;
+        case "htc-appr2":
+            err = Need("A", "A1", "P"); if (err is not null) return Results.BadRequest(new { error = err });
+            m.HTCTransportMinutesStatus = "A2"; m.HTCAppr2DateTime = now; m.HTCAppr2By = who;
+            m.Status = "A"; m.DecidedAt = now;          // chỉ bước này mới đóng trục tổng
+            foreach (var c in await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync())
+            { c.DtlStatus = "A"; c.LogLUDateTime = now; c.LogLUBy = who; }   // ⚠️ dòng dùng "A", KHÔNG phải "A2"
+            break;
+        case "htc-appr-special":
+            // nguồn gộp hai bước: điều kiện là điều kiện của bước ĐẦU.
+            err = Need("P", "P", "P"); if (err is not null) return Results.BadRequest(new { error = err });
+            m.DLTransportMinutesStatus = "A"; m.DLApprDateTime = now; m.DLApprBy = who;
+            m.HTCTransportMinutesStatus = "A1"; m.HTCAppr1DateTime = now; m.HTCAppr1By = who;
+            break;
+        case "htc-cancel":
+            if (m.Status != "P") return Results.BadRequest(new { error = $"Chỉ huỷ khi trục tổng còn \"P\" (đang \"{m.Status}\")." });
+            m.HTCTransportMinutesStatus = "C"; m.HTCCancelDateTime = now; m.HTCCancelBy = who;
+            m.Status = "C"; m.DecidedAt = now;
+            foreach (var c in await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id).ToListAsync())
+            { c.DtlStatus = "R"; c.CancelDateTime = now; c.CancelBy = who; c.LogLUDateTime = now; c.LogLUBy = who; }
+            break;
+        default:
+            return Results.BadRequest(new { error = "action = dl-appr | htc-appr1 | htc-appr2 | htc-appr-special | htc-cancel" });
+    }
+    m.LogLUDateTime = now; m.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.TransportMinutesNo, status = m.Status });
+    return Results.Ok(new { m.TransportMinutesNo, dl = m.DLTransportMinutesStatus, htc = m.HTCTransportMinutesStatus, status = m.Status });
 }).RequireAuthorization();
 
 // ===== Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2) =====
@@ -26030,13 +26095,13 @@ record InvoiceListDto(List<InvoiceLineDto>? Lines);
 record BankBillCarDto(string Vin, string? EngineNo, string? LCNo, string? GuaranteeBankCode, decimal ClaimAmount);
 record BankBillDto(string BankCode, DateTime? BankBillDate, List<BankBillCarDto>? Cars);
 record BankBillReceiveDto(DateTime? BankBillReciveDate);
-record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode);
+record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode, string? CarId = null);
 record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
 record TranspFeeVersionDto(List<TranspFeeDto>? Rows);
 record TranspFeeVerDeleteDto(List<string>? TFVCodes);
-record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo);
-record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars);
+record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
+record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null);

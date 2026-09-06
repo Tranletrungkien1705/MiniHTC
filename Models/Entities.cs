@@ -649,9 +649,21 @@ public sealed class TransportRequest
     public string DealerCode { get; set; } = "";
     public string TransporterCode { get; set; } = "";
     public string? TransContractNo { get; set; }
-    public string Status { get; set; } = "Pending";   // Pending → Approved / Rejected
+    /// <summary>
+    /// Trạng thái yêu cầu (`Car_TransportReq.TransportReqStatus`) — mã nguồn dùng "P" chờ duyệt → "A" đã duyệt.
+    /// 🔴 #142: trước đây port ghi "Pending"/"Approved"/"Rejected" (từ vựng tự chế) ⇒ đã đưa về mã nguồn,
+    /// kèm UPDATE di trú dữ liệu cũ trong Seeder.
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>Ngày duyệt (`ApprovedDate`).</summary>
     public DateTime? DecidedAt { get; set; }
+
+    // --- #142 parity Car_TransportReq ---
+    public string? CreatedBy { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng xe trong YC vận chuyển (TranspReqDtl): VIN + DO + màu + kho.</summary>
@@ -661,9 +673,20 @@ public sealed class TransportReqCar
     public Guid OrgId { get; set; }
     public long ReqId { get; set; }
     public string Vin { get; set; } = "";
+    /// <summary>Số lệnh giao xe (`DeliveryOrderNo`).</summary>
     public string? DoNo { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC — `Car_TransportReqDetail` nguồn KHÔNG có màu/kho.</summary>
     public string? ColorCode { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC — xem ghi chú ở <see cref="ColorCode"/>.</summary>
     public string? StorageCode { get; set; }
+
+    // --- #142 parity Car_TransportReqDetail ---
+    /// <summary>🔴 Khoá DÒNG XE thật của nguồn (`CarId`) — nguồn định danh xe bằng CarId, không bằng VIN.</summary>
+    public string? CarId { get; set; }
+    /// <summary>Trạng thái dòng (`TransportReqDtlStatus`) — bám theo phiếu.</summary>
+    public string TransportReqDtlStatus { get; set; } = "P";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2):
@@ -692,10 +715,42 @@ public sealed class TransportMinutes
     public Guid OrgId { get; set; }
     public string TransportMinutesNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
+    /// <summary>⚠️ Cột riêng MiniHTC — bảng đầu `Car_TransportMinutes` nguồn KHÔNG có nhà vận chuyển.</summary>
     public string TransporterCode { get; set; } = "";
-    public string Status { get; set; } = "Pending";   // Pending → Approved / Rejected
+    /// <summary>
+    /// 🔴 TRỤC TỔNG (`TransportMinutesStatus`, `TConst.TransportMinutesStatus`): "P" → "A" · "C" huỷ.
+    /// Đây chỉ là MỘT trong BA trục — xem <see cref="DLTransportMinutesStatus"/> và
+    /// <see cref="HTCTransportMinutesStatus"/>. Trước #142 port gộp cả ba vào đây với từ vựng tự chế.
+    /// </summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DecidedAt { get; set; }
+
+    // ===== #142 parity Car_TransportMinutes — BA TRỤC TRẠNG THÁI, mỗi trục MỘT BẢNG MÃ KHÁC NHAU =====
+    // Đọc từ chữ ký `Car_TransportMinutes_CheckDB(…, strDLTransportMinutesStatusListToCheck,
+    //   strHTCTransportMinutesStatusListToCheck, strTransportMinutesStatusListToCheck, …)`
+    //   (Biz.HTC.WH.cs:53611) — luật C0-centesimustricesimusnonus.
+    /// <summary>Trục ĐẠI LÝ (`DLTransportMinutesStatus`): chỉ **"P" → "A"** (2 giá trị, không có huỷ).</summary>
+    public string DLTransportMinutesStatus { get; set; } = "P";
+    /// <summary>Trục HTC (`HTCTransportMinutesStatus`): **"P" → "A1" → "A2" · "C"** (4 giá trị).</summary>
+    public string HTCTransportMinutesStatus { get; set; } = "P";
+
+    /// <summary>Ngày biên bản (`TransportMinutesDate`).</summary>
+    public DateTime? TransportMinutesDate { get; set; }
+    /// <summary>File biên bản đã ký (`FilePath`) — nhánh `_HTCAppr2AndSignAndSendMail` ghi.</summary>
+    public string? FilePath { get; set; }
+    public DateTime? DLCreatedDateTime { get; set; }
+    public string? DLCreatedBy { get; set; }
+    public DateTime? DLApprDateTime { get; set; }
+    public string? DLApprBy { get; set; }
+    public DateTime? HTCAppr1DateTime { get; set; }
+    public string? HTCAppr1By { get; set; }
+    public DateTime? HTCAppr2DateTime { get; set; }
+    public string? HTCAppr2By { get; set; }
+    public DateTime? HTCCancelDateTime { get; set; }
+    public string? HTCCancelBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng xe trong BB vận chuyển (TransportMinutesDetail): VIN + DO + màu + trạng thái dòng.</summary>
@@ -706,9 +761,25 @@ public sealed class TransportMinutesCar
     public long MinutesId { get; set; }
     public string Vin { get; set; } = "";
     public string? DoNo { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC — `Car_TransportMinutesDetail` nguồn không có màu/số máy.</summary>
     public string? ColorCode { get; set; }
+    /// <summary>⚠️ Cột riêng MiniHTC — xem ghi chú ở <see cref="ColorCode"/>.</summary>
     public string? EngineNo { get; set; }
-    public string DtlStatus { get; set; } = "Pending";  // theo header
+    /// <summary>
+    /// Trạng thái dòng (`TransportMinutesDtlStatus`, `TConst.TransportMinutesDtlStatus`): "P" · **"A"** · "R".
+    /// 🔴 BẪY TÊN-vs-GIÁ-TRỊ: hằng tên là **`Approve1`** nhưng giá trị là **"A"**, KHÔNG phải "A1"
+    /// (khác hẳn trục HTC ở bảng đầu, nơi "A1" là giá trị thật).
+    /// </summary>
+    public string DtlStatus { get; set; } = "P";
+
+    // --- #142 parity Car_TransportMinutesDetail ---
+    /// <summary>🔴 Khoá dòng xe thật của nguồn (`CarId`).</summary>
+    public string? CarId { get; set; }
+    /// <summary>Huỷ ở MỨC TỪNG XE (`CancelDateTime`/`CancelBy`) — độc lập với huỷ cả biên bản.</summary>
+    public DateTime? CancelDateTime { get; set; }
+    public string? CancelBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2):
