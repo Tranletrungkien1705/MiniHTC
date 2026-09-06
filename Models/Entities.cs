@@ -5004,6 +5004,11 @@ public sealed class CustomerCare
     public string? IsSendmail { get; set; }
     public string? Note { get; set; }
 
+
+    /// <summary>#278 DealerCode — đại lý của phiếu CSKH. Bản tổng đài iCIC lọc **danh sách đại lý bị
+    /// loại** trên CẢ BA bảng (tt/cus/car); MiniHTC gộp về một cột trên phiếu.</summary>
+    public string? DealerCode { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ContactedAt { get; set; }
 }
@@ -13180,103 +13185,6 @@ public sealed class HccNoShowPush
     public string? PushNote { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
-}
-
-/// <summary>
-/// 🔴 #277 CHĂM SÓC KHÁCH HÀNG 72 GIỜ (`Ser_CustomerCare72h`) — tổng đài iCIC gọi lại khách sau khi
-/// giao xe/kết thúc lệnh sửa chữa. Nguồn: hệ **`50.Source/ERP.ICIC` CHỈ CÓ TRÊN LAPTOP**
-/// (máy 150 không có thư mục này) ⇒ lần đầu đọc được cụm này.
-///
-/// ✅ TRACE TWIN — ca nhiều bản nhất từ trước tới nay: `Ser_CustomerCare_Get72h` có **BẢY** bản
-/// (`_Old20170523` ở `BizCarSv.Customer.cs`; bản trần, `_New20161029`, `_New20180622`, `_New20191230`,
-/// `_New20230315` ở `ZTemp.cs`). WS `WSCarSv_ICIC.cs:1598` gọi **`_New20230315`** ⇒ **6 bản CHẾT**.
-/// ⚠️ Trong file, bản `_New20161029` nằm **SAU CÙNG** — chọn "hàm cuối file" là lấy đúng bản CŨ NHẤT.
-/// </summary>
-public sealed class CustomerCare72h
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-
-    /// <summary>CUSCAREID — khoá nghiệp vụ của phiếu chăm sóc.</summary>
-    public string CusCareID { get; set; } = "";
-    /// <summary>ROID — lệnh sửa chữa sinh ra phiếu này.</summary>
-    public string? ROID { get; set; }
-    public string? RONo { get; set; }
-
-    public string? DealerCode { get; set; }
-    public string? CusID { get; set; }
-    public string? CusName { get; set; }
-    public string? FrameNo { get; set; }
-    public string? PlateNo { get; set; }
-    public string? Sex { get; set; }
-    public string? Address { get; set; }
-    public string? TradeMarkCode { get; set; }
-    public string? ModelName { get; set; }
-
-    /// <summary>STATUS — trạng thái cuộc gọi chăm sóc.</summary>
-    public string? Status { get; set; }
-    /// <summary>CARETYPE / CUSCARETYPE — loại chăm sóc.</summary>
-    public string? CareType { get; set; }
-    public string? CusCareType { get; set; }
-
-    public DateTime? ActualDeliveryDateTime { get; set; }
-    public DateTime? CheckInDateTime { get; set; }
-    public DateTime? ContactDate { get; set; }
-    public DateTime? FinishedDate { get; set; }
-    public string? OrderID { get; set; }
-    public string? Note { get; set; }
-
-    /// <summary>
-    /// 🔴 EXPENSETYPE — **ĐỐI TƯỢNG THANH TOÁN** của lệnh sửa chữa, nguồn suy ra bằng bốn phép
-    /// `select top 1` trên chi phí của RO: `LOCAL` · `ROINSURANCE` · `ROREPAIR` · `ROWARRANTY`.
-    /// Tham số lọc của nguồn nhận các giá trị: `NoLOCAL100`, `NoROINSURANCE100`, `ROREPAIR`, `LOCAL100`
-    /// (ghi nguyên văn trong chú thích tham số) — **KHÔNG** trùng bộ mã ở trên, là bộ lọc riêng.
-    /// </summary>
-    public string? ExpenseType { get; set; }
-
-    // --- 6 câu hỏi phản hồi cố định của phiếu (tên viết tắt giữ NGUYÊN VĂN nguồn) ---
-    public string? FyourCSSH { get; set; }
-    public string? WFBasicNeeds { get; set; }
-    public string? YourCarProblem { get; set; }
-    public string? YourRIWN { get; set; }
-    public string? YourSatisfyQSv { get; set; }
-    public string? YourHopeOfOur { get; set; }
-
-    // --- 28 câu khảo sát: nguồn truyền `strSurvey1`..`strSurvey28` là THAM SỐ RỜI, không phải bảng con
-    //     (cùng lệ với `DlsDealSurvey.Survey1..29` đã port trước đó — hai bộ khảo sát KHÁC nhau).
-
-    public string? Survey1 { get; set; }
-    public string? Survey2 { get; set; }
-    public string? Survey3 { get; set; }
-    public string? Survey4 { get; set; }
-    public string? Survey5 { get; set; }
-    public string? Survey6 { get; set; }
-    public string? Survey7 { get; set; }
-    public string? Survey8 { get; set; }
-    public string? Survey9 { get; set; }
-    public string? Survey10 { get; set; }
-    public string? Survey11 { get; set; }
-    public string? Survey12 { get; set; }
-    public string? Survey13 { get; set; }
-    public string? Survey14 { get; set; }
-    public string? Survey15 { get; set; }
-    public string? Survey16 { get; set; }
-    public string? Survey17 { get; set; }
-    public string? Survey18 { get; set; }
-    public string? Survey19 { get; set; }
-    public string? Survey20 { get; set; }
-    public string? Survey21 { get; set; }
-    public string? Survey22 { get; set; }
-    public string? Survey23 { get; set; }
-    public string? Survey24 { get; set; }
-    public string? Survey25 { get; set; }
-    public string? Survey26 { get; set; }
-    public string? Survey27 { get; set; }
-    public string? Survey28 { get; set; }
-
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public string? LogLUBy { get; set; }
-    public DateTime? LogLUDateTime { get; set; }
 }
 
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>

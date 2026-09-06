@@ -19336,129 +19336,6 @@ app.MapGet("/api/report/service-payments", async (AppDbContext db, ITenantContex
     return Results.Ok(new { count = rows.Count, total = rows.Sum(r => r.PaymentAmount), rows });
 }).RequireAuthorization();
 
-// ===== 🔴 #277 CHĂM SÓC KHÁCH HÀNG 72 GIỜ (iCIC) — `Ser_CustomerCare72h` =====
-// Nguồn: hệ `50.Source/ERP.ICIC` — **CHỈ CÓ TRÊN LAPTOP**, máy 150 không có thư mục này.
-// ✅ TRACE TWIN: `Ser_CustomerCare_Get72h` có **BẢY** bản; WS `WSCarSv_ICIC.cs:1598` gọi
-//   **`Ser_CustomerCare_Get72h_New20230315`** (`ZTemp.cs:3170`) ⇒ 6 bản còn lại CHẾT.
-//   ⚠️ Bản `_New20161029` nằm **CUỐI FILE** — chọn "hàm cuối" là lấy đúng bản CŨ NHẤT.
-//   Tương tự `Ser_CustomerCare72h_UpdateStatus` có 5 bản, LIVE = `_New20180622` (`ZTemp.cs:675`).
-//
-// 🔴 BỐN ĐIỀU KIỆN LỌC của nguồn (`ZTemp.cs:3325-3345`) — port cũ THIẾU HẲN cả màn:
-//   1. `and ro.IsReRepair = '0'` — **loại lệnh SỬA LẠI**: khách quay lại vì lỗi cũ thì không tính là
-//      một ca chăm sóc mới.
-//   2. `and (ro.ROType != 'PDI' or ro.ROType is null)` — **loại PDI** (kiểm tra trước giao xe, chưa có
-//      khách để chăm sóc). Lưu ý vế `is null`: ROType rỗng vẫn được lấy.
-//   3. **DANH SÁCH ĐẠI LÝ BỊ LOẠI** áp cho **CẢ BA** bảng: `tt.DealerCode`, `cus.DealerCode`,
-//      `car.DealerCode` đều `not in (@DealerCodeRejectList)` — lọc một bảng là chưa đủ.
-//   4. `strIsROFinish` phải đúng "1" hoặc "0", sai ⇒ ném `..._IsRoFinish` (không nhận rỗng).
-//
-// ⚠️ Khối `CheckUpdateCusCare(...)` ở đầu hàm nguồn **ĐÃ BỊ COMMENT** ⇒ không tự cập nhật trạng thái
-//   khi đọc danh sách. KHÔNG port nó (nếu port thì API đọc lại đi GHI — sai bản chất).
-//
-// 📌 NỢ: `Ser_CustomerCare72h_UpdateStatus_New20180622` sau khi ghi còn **gọi ngược WS CarSv CỦA CHÍNH
-//   ĐẠI LÝ ĐÓ** (`_strConfig_OS_URLWSCarSv` thay `@strDealerCode`) — iCIC là tổng đài TẬP TRUNG, ghi
-//   xuống hệ từng đại lý. MiniHTC một hệ ⇒ chỉ ghi tại chỗ, ghi nợ tầng gọi liên đại lý.
-app.MapGet("/api/customercare72h", async (AppDbContext db, ITenantContext t,
-    string? dealer, string? status, string? careType, string? plate, string? frameNo, string? cus,
-    string? expenseType, string? isRoFinish, string? rejectDealers) =>
-{
-    // Guard 4 của nguồn: chỉ nhận đúng "1" hoặc "0".
-    var roFin = (isRoFinish ?? "").Trim();
-    if (roFin != "1" && roFin != "0")
-        return Results.BadRequest(new { error = "IsROFinish chỉ nhận \"1\" hoặc \"0\".", isRoFinish = roFin });
-
-    var qy = db.CustomerCare72hs.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
-    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
-    if (!string.IsNullOrWhiteSpace(careType)) qy = qy.Where(x => x.CareType == careType);
-    if (!string.IsNullOrWhiteSpace(plate)) qy = qy.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
-    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.FrameNo != null && x.FrameNo.Contains(frameNo!));
-    if (!string.IsNullOrWhiteSpace(cus)) qy = qy.Where(x => x.CusID == cus || (x.CusName != null && x.CusName.Contains(cus!)));
-    if (!string.IsNullOrWhiteSpace(expenseType)) qy = qy.Where(x => x.ExpenseType == expenseType);
-
-    // Điều kiện 3: danh sách đại lý bị loại — nguồn áp cho cả ba bảng; MiniHTC gộp một cột DealerCode.
-    var reject = (rejectDealers ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
-        .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
-    if (reject.Count > 0) qy = qy.Where(x => x.DealerCode == null || !reject.Contains(x.DealerCode));
-
-    // Điều kiện 1 + 2: loại lệnh SỬA LẠI và loại PDI — tra sang lệnh sửa chữa.
-    var roNos = await db.RepairOrders.Where(r => r.OrgId == t.OrgId
-            && (r.IsReRepair == null || r.IsReRepair == "0")
-            && (r.ROType == null || r.ROType != "PDI"))
-        .Select(r => r.RONo).ToListAsync();
-    qy = qy.Where(x => x.RONo == null || roNos.Contains(x.RONo));
-
-    var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    {
-        x.Id, x.CusCareID, x.ROID, x.RONo, x.DealerCode, x.CusID, x.CusName, x.FrameNo, x.PlateNo,
-        x.Sex, x.Address, x.TradeMarkCode, x.ModelName, x.Status, x.CareType, x.CusCareType,
-        x.ActualDeliveryDateTime, x.CheckInDateTime, x.ContactDate, x.FinishedDate, x.OrderID, x.Note,
-        x.ExpenseType, x.FyourCSSH, x.WFBasicNeeds, x.YourCarProblem, x.YourRIWN, x.YourSatisfyQSv, x.YourHopeOfOur,
-        x.Survey1, x.Survey2, x.Survey3, x.Survey4, x.Survey5, x.Survey6, x.Survey7, x.Survey8, x.Survey9, x.Survey10, x.Survey11, x.Survey12, x.Survey13, x.Survey14, x.Survey15, x.Survey16, x.Survey17, x.Survey18, x.Survey19, x.Survey20, x.Survey21, x.Survey22, x.Survey23, x.Survey24, x.Survey25, x.Survey26, x.Survey27, x.Survey28
-    }).ToListAsync();
-    return Results.Ok(new { count = items.Count, isRoFinish = roFin, rejectedDealers = reject, items });
-}).RequireAuthorization();
-
-// #277 Ghi kết quả cuộc gọi chăm sóc (nguồn `Ser_CustomerCare72h_UpdateStatus_New20180622`).
-app.MapPost("/api/customercare72h/{cusCareId}/status", async (
-    string cusCareId, CustomerCare72hUpdateDto dto, AppDbContext db, ITenantContext t,
-    System.Security.Claims.ClaimsPrincipal user) =>
-{
-    var id = cusCareId.Trim();
-    if (id.Length == 0) return Results.BadRequest(new { error = "Thiếu CusCareID." });
-    var c = await db.CustomerCare72hs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCareID == id);
-    if (c is null) return Results.NotFound(new { cusCareId = id });
-
-    if (!string.IsNullOrWhiteSpace(dto.Status)) c.Status = dto.Status!.Trim();
-    if (!string.IsNullOrWhiteSpace(dto.CusCareType)) c.CusCareType = dto.CusCareType!.Trim();
-    if (!string.IsNullOrWhiteSpace(dto.OrderID)) c.OrderID = dto.OrderID!.Trim();
-    if (dto.ContactDate.HasValue) c.ContactDate = dto.ContactDate;
-    if (dto.FinishedDate.HasValue) c.FinishedDate = dto.FinishedDate;
-    if (dto.Note is not null) c.Note = dto.Note;
-
-    if (dto.FyourCSSH is not null) c.FyourCSSH = dto.FyourCSSH;
-    if (dto.WFBasicNeeds is not null) c.WFBasicNeeds = dto.WFBasicNeeds;
-    if (dto.YourCarProblem is not null) c.YourCarProblem = dto.YourCarProblem;
-    if (dto.YourRIWN is not null) c.YourRIWN = dto.YourRIWN;
-    if (dto.YourSatisfyQSv is not null) c.YourSatisfyQSv = dto.YourSatisfyQSv;
-    if (dto.YourHopeOfOur is not null) c.YourHopeOfOur = dto.YourHopeOfOur;
-
-    if (dto.Survey1 is not null) c.Survey1 = dto.Survey1;
-    if (dto.Survey2 is not null) c.Survey2 = dto.Survey2;
-    if (dto.Survey3 is not null) c.Survey3 = dto.Survey3;
-    if (dto.Survey4 is not null) c.Survey4 = dto.Survey4;
-    if (dto.Survey5 is not null) c.Survey5 = dto.Survey5;
-    if (dto.Survey6 is not null) c.Survey6 = dto.Survey6;
-    if (dto.Survey7 is not null) c.Survey7 = dto.Survey7;
-    if (dto.Survey8 is not null) c.Survey8 = dto.Survey8;
-    if (dto.Survey9 is not null) c.Survey9 = dto.Survey9;
-    if (dto.Survey10 is not null) c.Survey10 = dto.Survey10;
-    if (dto.Survey11 is not null) c.Survey11 = dto.Survey11;
-    if (dto.Survey12 is not null) c.Survey12 = dto.Survey12;
-    if (dto.Survey13 is not null) c.Survey13 = dto.Survey13;
-    if (dto.Survey14 is not null) c.Survey14 = dto.Survey14;
-    if (dto.Survey15 is not null) c.Survey15 = dto.Survey15;
-    if (dto.Survey16 is not null) c.Survey16 = dto.Survey16;
-    if (dto.Survey17 is not null) c.Survey17 = dto.Survey17;
-    if (dto.Survey18 is not null) c.Survey18 = dto.Survey18;
-    if (dto.Survey19 is not null) c.Survey19 = dto.Survey19;
-    if (dto.Survey20 is not null) c.Survey20 = dto.Survey20;
-    if (dto.Survey21 is not null) c.Survey21 = dto.Survey21;
-    if (dto.Survey22 is not null) c.Survey22 = dto.Survey22;
-    if (dto.Survey23 is not null) c.Survey23 = dto.Survey23;
-    if (dto.Survey24 is not null) c.Survey24 = dto.Survey24;
-    if (dto.Survey25 is not null) c.Survey25 = dto.Survey25;
-    if (dto.Survey26 is not null) c.Survey26 = dto.Survey26;
-    if (dto.Survey27 is not null) c.Survey27 = dto.Survey27;
-    if (dto.Survey28 is not null) c.Survey28 = dto.Survey28;
-
-    c.LogLUBy = user.Identity?.Name ?? "system";
-    c.LogLUDateTime = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { c.CusCareID, c.Status, c.CusCareType, c.ContactDate, c.FinishedDate,
-        note = "Nguồn còn gọi ngược WS CarSv của chính đại lý để ghi xuống hệ đại lý — chưa port (nợ)." });
-}).RequireAuthorization();
-
 // ===== 🔴 #272 XẾP HÀNG ĐẨY NO-SHOW SANG HCC =====
 // Nguồn: phần "Call HCC" của `HCC_NoShow_CreateOSX` (`BizCarSv.HCC.cs:704-763`, **chỉ có trên máy 150**).
 //
@@ -31389,15 +31266,49 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
 // #220 parity: mã loại phiếu CSKH đúng `TConst.SerCareType` (Const.Main.cs:349) — viết THƯỜNG.
 string[] _careTypes = { "24h", "72h", "dob", "man" };
 string[] _maceStatuses = { "Pending", "Contacted", "NotContacted" };
-app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
+// ===== 🔴 #278 PARITY với bản TỔNG ĐÀI iCIC (`50.Source/ERP.ICIC` — hệ CHỈ CÓ TRÊN LAPTOP) =====
+// ⚠️ #211 ĐÃ port bảng `Ser_CustomerCare72h` (kể cả `Survey1..28`) từ **DMSCarSv** ⇒ lượt này chỉ ĐỐI CHIẾU
+//   thêm với bản của hệ iCIC và vá LUẬT LỌC còn thiếu, KHÔNG dựng bảng/endpoint mới.
+// TRACE TWIN: `Ser_CustomerCare_Get72h` có **BẢY** bản; WS `WSCarSv_ICIC.cs:1598` gọi `_New20230315`
+//   (`ZTemp.cs:3170`) ⇒ 6 bản chết. Bản `_New20161029` nằm **CUỐI FILE**: chọn "hàm cuối" là lấy bản CŨ NHẤT.
+//
+// BỐN ĐIỀU KIỆN LỌC của nguồn (`ZTemp.cs:3325-3345`) mà endpoint này THIẾU:
+//   1. IsReRepair = "0" — loại lệnh SỬA LẠI (khách quay lại vì lỗi cũ ⇒ không phải ca chăm sóc mới).
+//   2. ROType != "PDI" **hoặc ROType is null** — loại PDI nhưng vế null VẪN ĐƯỢC LẤY.
+//   3. Danh sách đại lý bị loại áp cho **CẢ BA** bảng (tt/cus/car) — lọc một bảng là chưa đủ.
+//   4. IsROFinish phải đúng "1"/"0" (rỗng cũng không nhận) ⇒ nguồn ném `..._IsRoFinish`.
+//      Ở đây tham số để **tuỳ chọn** cho khỏi vỡ lời gọi cũ; đã truyền thì phải đúng — sai lệch CỐ Ý.
+// ⚠️ KHÔNG port khối `CheckUpdateCusCare(...)` đầu hàm nguồn — **đã bị comment**; port vào thì API ĐỌC
+//   danh sách lại đi GHI trạng thái.
+// 📌 NỢ: bản iCIC sau khi ghi còn gọi ngược **WS CarSv của chính đại lý** (`_strConfig_OS_URLWSCarSv` thay
+//   `@strDealerCode`) — iCIC là tổng đài TẬP TRUNG, ghi xuống hệ từng đại lý.
+app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate,
+    string? isRoFinish, string? rejectDealers) =>
 {
+    if (!string.IsNullOrWhiteSpace(isRoFinish) && isRoFinish != "1" && isRoFinish != "0")
+        return Results.BadRequest(new { error = "IsROFinish chỉ nhận 1 hoặc 0.", isRoFinish });
+
     var q = db.CustomerCares.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(c => c.CareType == type);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo != null && c.PlateNo.Contains(plate.ToUpper()));
+
+    // Điều kiện 3 — đại lý bị loại (MiniHTC gộp một cột trên phiếu; nguồn tách ba bảng).
+    var reject = (rejectDealers ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
+    if (reject.Count > 0) q = q.Where(c => c.DealerCode == null || !reject.Contains(c.DealerCode));
+
+    // Điều kiện 1 + 2 — tra sang ĐẦU lệnh sửa chữa. ⚠️ KHÔNG dùng `RoServiceItem.ROType`: cùng tên cột
+    //   nhưng là loại công việc TỪNG DÒNG; join sang đó thì một lệnh 5 dòng bị xét 5 lần.
+    var roOk = await db.RepairOrders.Where(r => r.OrgId == t.OrgId
+            && (r.IsReRepair == null || r.IsReRepair == "0")
+            && (r.ROType == null || r.ROType != "PDI"))
+        .Select(r => r.RONo).ToListAsync();
+    q = q.Where(c => c.RONo == null || roOk.Contains(c.RONo));
+
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt,
-      c.IsCall, c.IsFeedback, c.CusFeedback, c.IsSendmail, c.Note }).ToListAsync();   // #210 §12
+      c.IsCall, c.IsFeedback, c.CusFeedback, c.IsSendmail, c.Note, c.DealerCode }).ToListAsync();   // #210 §12 · #278
     // "Chưa liên hệ" nhận cả mã nguồn PEND lẫn giá trị Pending của dữ liệu tạo trước khi vá mã trạng thái.
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status is "PEND" or "Pending"), items });
 }).RequireAuthorization();
@@ -34592,12 +34503,6 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
 record SharePartLineDto(string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, decimal MinQuantity, string? Remark);
 // #272: kết quả một lượt đẩy NoShow sang HCC — "A" xong / "R" lỗi (lỗi BẮT BUỘC ghi lý do).
 record HccNoShowResultDto(string ToStatus, string? Note = null);
-// #277: 6 câu phản hồi cố định + 28 câu khảo sát — nguồn truyền TỪNG THAM SỐ RỜI (`strSurvey1`..`strSurvey28`).
-record CustomerCare72hUpdateDto(string? Status = null, string? CusCareType = null, string? OrderID = null,
-    DateTime? ContactDate = null, DateTime? FinishedDate = null, string? Note = null,
-    string? FyourCSSH = null, string? WFBasicNeeds = null, string? YourCarProblem = null,
-    string? YourRIWN = null, string? YourSatisfyQSv = null, string? YourHopeOfOur = null,
-    string? Survey1 = null, string? Survey2 = null, string? Survey3 = null, string? Survey4 = null, string? Survey5 = null, string? Survey6 = null, string? Survey7 = null, string? Survey8 = null, string? Survey9 = null, string? Survey10 = null, string? Survey11 = null, string? Survey12 = null, string? Survey13 = null, string? Survey14 = null, string? Survey15 = null, string? Survey16 = null, string? Survey17 = null, string? Survey18 = null, string? Survey19 = null, string? Survey20 = null, string? Survey21 = null, string? Survey22 = null, string? Survey23 = null, string? Survey24 = null, string? Survey25 = null, string? Survey26 = null, string? Survey27 = null, string? Survey28 = null);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
 // #261: 12 cột của `TblSerMSTPart` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note,
