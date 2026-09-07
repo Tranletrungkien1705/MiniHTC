@@ -24887,6 +24887,28 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         // 📌 Bài học công cụ: đây là lần **thứ tư** cùng một họ lỗi đo (offset cứng #411 · grep trúng chỗ GỌI
         //   #425 · biên vùng thiếu `private void` #430 · nay thiếu **kiểu trả về** #450). Từ nay dò định nghĩa
         //   thành viên C# phải dùng script, không dùng danh sách kiểu liệt kê tay.
+        // ===== ✅ #452 KIỂM LẠI BẰNG **KHẢ ĐẠT THẬT** (reachability), không còn đoán theo một mức gọi =====
+        // Công cụ mới `_audit/reach.js`: dựng đồ thị gọi trong `TERP.BizCarSv`, lấy **điểm vào** là mọi
+        //   `_biz.<Ten>(` xuất hiện trong `HTCWSCarSv` (tức các `[WebMethod]`), rồi BFS.
+        // 📊 Số đo toàn cây: **782 điểm vào WS · 1580 hàm biz · 1217 khả đạt**
+        //   ⇒ **363 hàm (23%) KHÔNG khả đạt từ bất kỳ WebMethod nào** — gần một phần tư tầng biz là code chết.
+        // 📊 Riêng 60 hàm hậu tố `xxx`: **4 khả đạt · 56 chết**. Bốn hàm khả đạt **đúng bằng** danh sách #450
+        //   ⇒ phép đo một-mức của #450 tình cờ cho đúng TẬP, nhưng lý lẽ thì chưa đủ chặt.
+        //
+        // 🔴 **BỎ MỘT BẰNG CHỨNG SAI CỦA #450**: ở đó tôi dẫn `Blt_SerStockInStatusUpdate` như "hàm sống"
+        //   gọi `CheckExistStockInxxx` và `UpdateStockInStatusxxx`. Kiểm lại: **không WebMethod nào** gọi nó
+        //   (grep cả `HTCWSCarSv` lẫn `TERP.WSCarSv` = 0 hit) và BFS xác nhận **KHÔNG khả đạt** ⇒ nó **cũng chết**.
+        //   Hai hàm kia vẫn khả đạt, nhưng qua đường khác: `SerStockInStatusUpdateToFinishedAdjustment`,
+        //   `SerStockInStatusUpdate`, `CreateStockIn`, `ProcessStockIn01`.
+        //   ⇒ Kết luận giữ nguyên; **một dòng dẫn chứng bị rút**.
+        // 📌 Bài học: "được gọi bởi một hàm không mang `xxx`" **chưa đủ** — hàm gọi đó có thể tự nó chết.
+        //   Liveness phải tính **bắc cầu từ điểm vào thật**, và điểm vào ở hệ này là `[WebMethod]`.
+        deadSuffixReach = new { wsEntryPoints = 782, bizFunctions = 1580, reachable = 1217,
+            unreachable = 363, xxxReachable = 4, xxxDead = 56 },
+        deadSuffixReachNote = "Reachability thật (BFS từ 782 điểm vào WebMethod): 1217/1580 hàm biz khả "
+            + "đạt ⇒ 363 hàm (23%) là code chết. Trong 60 hàm hậu tố xxx: 4 khả đạt, 56 chết. "
+            + "Blt_SerStockInStatusUpdate — từng được #450 dẫn như 'hàm sống' — thực ra KHÔNG khả đạt; "
+            + "dẫn chứng đó đã rút, kết luận giữ nguyên.",
         deadSuffixSweep = new { xxxFunctions = 60, stillCalled = 10, calledFromLiveCaller = 4 },
         deadSuffixSweepNote = "Quét lại bằng script (mẫu nhận diện thành viên ĐẦY ĐỦ): 60 hàm hậu tố xxx, "
             + "10 còn được gọi, 4 được gọi từ hàm KHÔNG mang xxx — CheckExistStockInxxx, UpdateStockInStatusxxx, "
