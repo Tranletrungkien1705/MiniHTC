@@ -3605,6 +3605,110 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    · **`(dlsdd.DeliveryDate is null OR dlsdd.DeliveryDate >= @strTDate_From)`** —
 //      🔴 vế `is null` **được chấp nhận** ⇒ báo cáo gồm **cả xe CHƯA bán**; bỏ vế này là mất nửa dữ liệu.
 // ✅ `@strBUPatternOfUser` **dùng thật** (`where … and (md.BUCode like @strBUPatternOfUser)`, `:65368`).
+
+// ===== #B72 KẾ HOẠCH GIAO XE THEO TUẦN — `RptStatistic_HTCStock03_New20260514` =====
+// (`FrmPivotDeliveryPlan`.) Trace LIVE: `ReportService.ReportDeliveryPlanPivot` (`:1341`) → WS
+//   `RptStatistic_HTCStock03` (`WSHTC.asmx.cs:29005`) → **`_biz.RptStatistic_HTCStock03_New20260514`**
+//   (`BizHTC.Report.cs`); SQL ở `RptSQLQuery.cs:52116` = `mySql_RptStatistic_HTCStock03()`.
+//   ✅ Thuộc đợt zone `_New20260514` và **có** coalesce (`:5432`) — an toàn (#B58).
+// 🔴 **`RefDate` là cột SUY RA theo THỨ TỰ ƯU TIÊN** (`:52142-52148`):
+//      `CQStartDate` (nếu có) → **rồi mới** `CQExpectedDate` → nếu cả hai rỗng thì **`@strTDateMax`**
+//      (`TConst.DateTimeSpecial.DateMax`).
+//    ⚠️ Đảo thứ tự hai vế đầu, hoặc dùng `??` với `CQExpectedDate` trước, sẽ **đổi nhóm** của xe.
+//    ⚠️ Vế cuối gán **ngày MAX** (không phải `null`) — nhờ vậy xe chưa có mốc nào vẫn có `RefDate`
+//      và bị loại ở `where … RefDate < @strTDate_Next2Week`, **chứ không phải bị loại vì NULL**.
+// 🔴 **BỐN nhóm giao hàng** (`DeliveryRangeType`, `:52168-52175`) — biên **lệch nhau**, đọc kỹ:
+//      `RefDate <= @strTDate`                                   → `DlvImmediate`
+//      `@strTDate <  RefDate <  @strTDate_Next1Week`             → `DlvThisWeek`
+//      `@strTDate_Next1Week <= RefDate < @strTDate_Next2Week`    → `DlvNextWeek`
+//      còn lại                                                   → `DlvOverNextWeek`
+//    🔴 Nhánh 2 dùng **`<` ở CẢ HAI đầu**, nhánh 3 dùng **`<=` đầu trái** — biên không đối xứng.
+//    🔴 Nhưng `where` cuối chặn `RefDate < @strTDate_Next2Week` ⇒ nhóm `DlvOverNextWeek`
+//      **KHÔNG BAO GIỜ xuất hiện** trong kết quả. Port giữ nguyên cả nhánh (để đối chiếu) và ghi rõ.
+// 🔴 Tập xe: `left join #tbl_CDOD_Active` rồi `where cdod.CarId is null` **(*)** — xe **chưa có LXX
+//    active-đã-xuất** (mảnh dùng chung `…FilterActive_01`, như #B65/#B67).
+// 🔴 `left join Mst_DealerZone` + `where mdz.FlagActive = '1'` ⇒ **inner join thực chất** — xe của đại lý
+//    **chưa gán vùng bị LOẠI** (cùng khuôn #B70; xem luật `C0-…quadragesimusquintus`).
+app.MapGet("/api/reports/delivery-plan-weekly", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? zoneCode, string? buPattern) =>
+{
+    var asOf = (tDate ?? DateTime.Now).Date;
+    var next1 = asOf.AddDays(7);
+    var next2 = asOf.AddDays(14);
+    var dateMax = new DateTime(2100, 1, 1);          // `TConst.DateTimeSpecial.DateMax`
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var zone = string.IsNullOrWhiteSpace(zoneCode) ? null : zoneCode.Trim().ToUpperInvariant();
+
+    // `#tbl_CDOD_Active` — mảnh dùng chung.
+    var cdodActive = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                    && x.DeliveryOutDate != null && x.DeliveryOutDate <= asOf)
+        .Select(x => x.CarId ?? x.Vin).ToListAsync()).ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    cars = cars.Where(c => !cdodActive.Contains(c.VIN)).ToList();      // (*) cdod.CarId is null
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    if (pattern is not null)
+    {
+        var inBu = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+            .Select(d => d.DealerCode).ToHashSet();
+        cars = cars.Where(c => c.DealerCode != null && inBu.Contains(c.DealerCode)).ToList();
+    }
+
+    // `left join Mst_DealerZone` + `where mdz.FlagActive='1'` ⇒ inner join thực chất.
+    var dz = await db.DealerZones.Where(z => z.OrgId == t.OrgId && z.FlagActive == "1")
+        .Select(z => new { z.DealerCode, z.ZoneCode }).ToListAsync();
+    var zoneByDealer = dz.GroupBy(x => x.DealerCode).ToDictionary(g => g.Key, g => g.First().ZoneCode);
+    var beforeZone = cars.Count;
+    cars = cars.Where(c => c.DealerCode != null && zoneByDealer.ContainsKey(c.DealerCode)).ToList();
+    var droppedNoActiveZone = beforeZone - cars.Count;
+    if (zone is not null)
+        cars = cars.Where(c => (zoneByDealer[c.DealerCode!] ?? "").ToUpperInvariant() == zone).ToList();
+
+    // `RefDate`: CQStartDate → CQExpectedDate → DateMax (ĐÚNG thứ tự ưu tiên của nguồn).
+    var rows = cars.Select(c =>
+    {
+        var refDate = c.CQStartDate ?? c.CQExpectedDate ?? dateMax;
+        string bucket =
+            refDate <= asOf ? "DlvImmediate"
+            : (asOf < refDate && refDate < next1) ? "DlvThisWeek"
+            : (next1 <= refDate && refDate < next2) ? "DlvNextWeek"
+            : "DlvOverNextWeek";
+        return new { Car = c, RefDate = refDate, Bucket = bucket };
+    })
+    // `where … and (t.RefDate < @strTDate_Next2Week)` — chặn ở đây nên `DlvOverNextWeek` không bao giờ ra.
+    .Where(x => x.RefDate < next2)
+    .ToList();
+
+    var items = rows.Select(x => new
+    {
+        cvVIN = x.Car.VIN, cvModelCode = x.Car.ModelCode, cvSpecCode = x.Car.SpecCode,
+        cvColorCode = x.Car.ColorCode, ccDealerCode = x.Car.DealerCode,
+        mdDealerName = dealers.FirstOrDefault(d => d.DealerCode == x.Car.DealerCode)?.DealerName,
+        mzZoneCode = zoneByDealer.TryGetValue(x.Car.DealerCode!, out var z) ? z : null,
+        cvCQStartDate = x.Car.CQStartDate, cvCQExpectedDate = x.Car.CQExpectedDate,
+        refDate = x.RefDate, deliveryRangeType = x.Bucket,
+        total = 1.0m
+    }).OrderBy(x => x.refDate).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf, next1Week = next1, next2Week = next2,
+        count = items.Count, items, droppedNoActiveZone,
+        byRangeType = items.GroupBy(x => x.deliveryRangeType)
+            .Select(g => new { deliveryRangeType = g.Key, qty = g.Count() }).OrderBy(x => x.deliveryRangeType).ToList(),
+        byZone = items.GroupBy(x => x.mzZoneCode ?? "?")
+            .Select(g => new { zoneCode = g.Key, qty = g.Count() }).OrderBy(x => x.zoneCode).ToList(),
+        refDateRule = "RefDate = CQStartDate (neu co) -> ROI MOI CQExpectedDate -> neu ca hai rong thi @strTDateMax (TConst.DateTimeSpecial.DateMax). Dao thu tu hai ve dau se DOI NHOM cua xe. Ve cuoi gan NGAY MAX (khong phai null) nen xe chua co moc nao van co RefDate va bi loai o where, KHONG phai bi loai vi NULL.",
+        bucketRule = "4 nhom: RefDate <= @strTDate => DlvImmediate | @strTDate < RefDate < Next1Week => DlvThisWeek | Next1Week <= RefDate < Next2Week => DlvNextWeek | con lai => DlvOverNextWeek. BIEN KHONG DOI XUNG: nhanh 2 dung '<' o CA HAI dau, nhanh 3 dung '<=' o dau trai.",
+        neverEmittedNote = "where cuoi chan 'RefDate < @strTDate_Next2Week' => nhom DlvOverNextWeek KHONG BAO GIO xuat hien trong ket qua. Port giu nguyen ca nhanh de doi chieu voi nguon.",
+        carSetRule = "left join #tbl_CDOD_Active roi where cdod.CarId is null (*) - xe CHUA co LXX active-da-xuat (manh dung chung ...FilterActive_01, nhu #B65/#B67).",
+        zoneJoinNote = "left join Mst_DealerZone + where mdz.FlagActive='1' => INNER JOIN thuc chat: xe cua dai ly chua gan vung BI LOAI (cung khuon #B70).",
+        zoneSafeNote = "Ham thuoc dot _New20260514 va CO coalesce zone (:5432) - an toan (#B58)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-retail-sales-detail", async (
     AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? buPattern) =>
 {

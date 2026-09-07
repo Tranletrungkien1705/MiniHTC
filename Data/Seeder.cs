@@ -2294,6 +2294,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 // #B65 - Car_Car.FlagEarlyCancel (1 trong 4 dieu kien dinh nghia back-order)
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagEarlyCancel\" text NULL",
+                // #B72 - Car_VIN.CQStartDate / CQExpectedDate (quyet dinh RefDate va viec phan 4 nhom giao hang)
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQStartDate\" timestamp NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQExpectedDate\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

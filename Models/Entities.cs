@@ -10392,6 +10392,13 @@ public sealed class CarVinMaster
     /// — xe có thể còn `FlagActive='1'` mà đã bị đánh dấu huỷ sớm. Thiếu cột thì back-order **đếm dư**.
     /// ⚠️ Cột cùng tên đã có trên hai thực thể khác — đây là cột trên **`Car_Car`**.</summary>
     public string? FlagEarlyCancel { get; set; }
+    /// <summary>🔴 #B72 — `Car_VIN.CQStartDate` / `CQExpectedDate` (mốc kiểm định CQ: ngày BẮT ĐẦU và
+    /// ngày DỰ KIẾN). Báo cáo kế hoạch giao xe suy ra `RefDate` theo THU TU UU TIEN
+    /// `CQStartDate` -> `CQExpectedDate` -> `DateMax` (`RptSQLQuery.cs:52142-52148`) roi phan 4 nhom
+    /// giao hang. Thieu hai cot nay thi TOAN BO viec phan nhom cua bao cao khong lam duoc.</summary>
+    public DateTime? CQStartDate { get; set; }
+    /// <summary>`Car_VIN.CQExpectedDate` — xem chú thích của [CQStartDate].</summary>
+    public DateTime? CQExpectedDate { get; set; }
     /// <summary>🔴 #B54 — `Car_VIN.MortageBankCode`: ngân hàng đang nhận thế chấp xe. Là điều kiện
     /// **ĐẦU TIÊN của cả bốn khối** báo cáo Nhập–Xuất–Tồn thế chấp (`mySql_Rpt_NhapXuatTonTrongKy_New20190213`,
     /// `RptSQLQuery.cs:10600`): `MortageBankCode is not null AND <> ''`. Thiếu cột ⇒ báo cáo không tồn tại được.
