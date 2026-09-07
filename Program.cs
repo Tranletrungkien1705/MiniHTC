@@ -38061,6 +38061,26 @@ app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITen
     return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Mới tạo" });
 }).RequireAuthorization();
 
+// ===== 🔴 #390 GIÁ VỐN BÌNH QUÂN TÍNH LẠI **NGAY LÚC CHỐT PHIẾU NHẬP** =====
+// TRACE TWIN: `FrmStockInModify` → `stockInService.UpdateStockInStatusToFinished`
+//   → WS `SerStockInStatusUpdateToFinished` → biz **`SerStockInStatusUpdateToFinished_New20230721`**
+//   (`StockIn.cs:5736`). Có **BỐN** bản cùng tên gốc — bản trần (`:4949`), `_New20200118` (`:5349`),
+//   `_New20230721` (**LIVE**) và `…Adjustment` (`:6857`); WS chỉ gọi bản `_New20230721`.
+//
+// 🔴 **KHÁC với `/api/partcosts/calculate` đã có**: cái đó tính bình quân **THEO KỲ**
+//   (`(TGD+TGN)/(SLD+SLN)`). Còn ở đây là bình quân **TĂNG DẦN, ngay lúc chốt từng phiếu nhập**:
+//     `ave = (aveCũ × (tồnSauNhập − SLnhập) + giáNhập × SLnhập) / tồnSauNhập`
+//   Hai cơ chế cùng tồn tại trong nguồn, **không thay thế nhau**.
+// 🔴 **HAI THAM SỐ CẤU HÌNH phải CÙNG bật** thì mới tính (hai `if` lồng nhau):
+//     `Mst_Param` `ParamType='MCC'` và `ParamValue = SerMethodCostCapital.Average`  (phương pháp bình quân)
+//     `Mst_Param` `ParamValue = SerDateCC.ByInputStock`                       (mốc tính theo lúc NHẬP)
+//   Thiếu **một trong hai** ⇒ **không tính gì cả**, im lặng. (Nhánh thứ hai `SerDateCC.ByManual` là
+//   đường tính tay, nằm cùng cấp bên dưới.)
+// 🔴 **Giá gốc ĐÃ GỒM VAT**: `Price × (1 + 0.01 × VAT)` — không phải giá net.
+// ⚠️ Nguồn **chia cho `InStockQuantity` mà KHÔNG chặn 0** ⇒ tồn sau nhập bằng 0 là **chia cho 0**.
+//   Port có chặn và trả cờ `skippedZeroStock` thay vì ném lỗi.
+// ⚠️ Kết quả `Math.Round(ave, 2)` ghi vào `Ser_PartCost` kèm `StockInID` ⇒ mỗi phiếu nhập để lại
+//   **một mốc giá vốn**, không ghi đè cột trên master phụ tùng.
 app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -38077,11 +38097,61 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
         if (stock is null) { stock = new PartStock { OrgId = t.OrgId, WarehouseCode = h.WarehouseCode, PartCode = l.PartCode, PartName = l.PartName, Location = l.Location, OnHand = 0 }; db.PartStocks.Add(stock); }
         stock.OnHand += l.Quantity; stock.PartName = l.PartName ?? stock.PartName; stock.UpdatedAt = DateTime.Now;
     }
+    // --- #390 GIÁ VỐN BÌNH QUÂN TĂNG DẦN (chỉ khi HAI tham số cùng bật).
+    var pMcc = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param"
+        && m.Code == "MCC" && m.Name == "Average");
+    var pByInput = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param"
+        && m.Name == "ByInputStock");
+    var avgApplied = new List<object>();
+    var skippedZeroStock = new List<string>();
+    if (pMcc && pByInput)
+    {
+        foreach (var l in lines)
+        {
+            // Giá nhập ĐÃ GỒM VAT — đúng nguồn.
+            var inCost = l.Price * (1m + 0.01m * l.VAT);
+            var onHand = await db.PartStocks.Where(x => x.OrgId == t.OrgId && x.PartCode == l.PartCode)
+                .SumAsync(x => (decimal?)x.OnHand) ?? 0m;   // tồn SAU khi đã cộng ở vòng trên
+            if (onHand == 0m) { skippedZeroStock.Add(l.PartCode); continue; }   // nguồn KHÔNG chặn 0
+
+            var prev = await db.PartCostSnapshots
+                .Where(x => x.OrgId == t.OrgId && x.PartCode == l.PartCode)
+                .OrderByDescending(x => x.CalculatedAt).FirstOrDefaultAsync();
+            var prevAvg = prev?.AverageCost ?? 0m;
+
+            var ave = (prevAvg * (onHand - l.Quantity) + inCost * l.Quantity) / onHand;
+            ave = Math.Round(ave, 2);
+
+            db.PartCostSnapshots.Add(new PartCostSnapshot
+            {
+                OrgId = t.OrgId, PartCode = l.PartCode, PartName = l.PartName,
+                AverageCost = ave, InQty = l.Quantity, InValue = inCost * l.Quantity,
+                TotalQty = onHand, Method = "Average/ByInputStock (stock-in)",
+                CalculatedAt = DateTime.Now,
+            });
+            avgApplied.Add(new { l.PartCode, previousAverage = prevAvg, inCostWithVat = inCost, newAverage = ave, onHand });
+        }
+    }
+
     // 🔴 Luật nguồn 2025-01-24 (dongnt, StockIn.cs:4605-4609): khi Kết thúc thì **StockInDate lấy theo
     //    THỜI ĐIỂM DUYỆT**, không giữ ngày nhập lúc lập phiếu. Chỉ phiếu NHẬP có luật này, phiếu XUẤT không.
     h.Status = "3"; h.StockInDate = DateTime.Now; h.PostedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
+    return Results.Ok(new
+    {
+        h.StockInNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count,
+        // #390 giá vốn bình quân tăng dần
+        avgCostEnabled = pMcc && pByInput,
+        avgCostApplied = avgApplied,
+        skippedZeroStock,
+        avgCostNote = "Chỉ tính khi CẢ HAI tham số cùng bật: MCC = Average và mốc tính = ByInputStock. "
+            + "Thiếu một trong hai thì nguồn KHÔNG tính gì cả, im lặng.",
+        avgCostFormulaNote = "ave = (aveCũ × (tồnSauNhập − SLnhập) + giáNhậpGồmVAT × SLnhập) / tồnSauNhập; "
+            + "giá gốc ĐÃ GỒM VAT, làm tròn 2 số.",
+        avgCostVsPeriodNote = "KHÁC /api/partcosts/calculate (bình quân THEO KỲ) — hai cơ chế cùng tồn tại, "
+            + "không thay thế nhau.",
+        zeroDivisionNote = "Nguồn chia cho tồn-sau-nhập mà KHÔNG chặn 0; port có chặn và trả skippedZeroStock.",
+    });
 }).RequireAuthorization();
 
 // Hủy phiếu nhập kho (port 1:1 FrmSIReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
