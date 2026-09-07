@@ -6617,6 +6617,69 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
 //   thành **NULL**, không phải 0. Giữ đúng: DTO dùng kiểu nullable, không ép về 0.
 // ⚠️ Ghi bằng `_dbMain.SaveData("Rpt_KPI", dt_KPI)` — **dạng HAI THAM SỐ**, tức ghi mọi cột của
 //   DataTable (lệ đã đo ở #374/#381), và chỉ ghi trên **DB Main** (không WH/Dealer).
+// ===== 🔴 #404 SỬA BÁO CÁO KPI (`RptKPIUpdate`, `Service.Report.cs:4096`) =====
+// Cùng màn `FrmReportCreate_KPI` với #403, nhưng **hai thao tác cư xử KHÁC NHAU** ở hai điểm:
+//
+// 🔴 1. **GUARD KHÁC NHAU** — và đây là một lỗ hổng của nguồn:
+//    · TẠO   dùng `CheckExistRptKPIYearMonth(DealerCode, RptYear, RptMonth)` ⇒ **chống trùng kỳ**.
+//    · SỬA   dùng `CheckExistRptKPI(strAutoID)` ⇒ **chỉ kiểm bản ghi có tồn tại**.
+//    ⇒ Sửa **được phép dời báo cáo sang một kỳ đã có báo cáo khác** — không ai chặn. Cửa sau đúng
+//      vào cái mà guard lúc tạo cố ngăn. Port giữ 1:1 và **báo cờ** khi phát hiện trùng kỳ.
+// 🔴 2. **Ô ĐỂ TRỐNG mang HAI nghĩa tuỳ THAO TÁC**:
+//    · TẠO: chỉ gán khi khác rỗng (`14` ô) ⇒ để trống thành **NULL**.
+//    · SỬA: `if (IsEmpty(x)) x = TConst.Flag.Inactive` với `Inactive = "0"` (`26` ô)
+//           ⇒ để trống thành **SỐ 0**.
+//    ⇒ Cùng một ô trên cùng một form: tạo xong để trống thì cột NULL, sửa xong để trống thì cột 0.
+//      Báo cáo tổng hợp phân biệt NULL với 0 sẽ ra hai kết quả khác nhau tuỳ người dùng bấm gì.
+// ⚠️ `alColumnEffective` của SỬA **có liệt kê cột** (khác lệnh TẠO dùng `SaveData` hai tham số).
+app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.ReportKpis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { id });
+
+    // Bốn cột khung: SỬA gán VÔ ĐIỀU KIỆN (nằm đầu alColumnEffective của nguồn).
+    r.RptYear = dto.RptYear; r.RptMonth = dto.RptMonth; r.RptBy = dto.RptBy;
+    if (!string.IsNullOrWhiteSpace(dto.Status)) r.Status = dto.Status;
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) r.DealerCode = dto.DealerCode;
+
+    // 🔴 Ô để trống ⇒ SỐ 0 (khác lệnh TẠO để NULL). Áp cho MỌI chỉ tiêu số.
+    var eProps = typeof(ReportKpi).GetProperties()
+        .Where(p => p.CanWrite && (p.PropertyType == typeof(decimal?) || p.PropertyType == typeof(decimal)))
+        .ToDictionary(p => p.Name);
+    var zeroed = new List<string>(); var copied = 0;
+    foreach (var dp in typeof(ReportKpiDto).GetProperties())
+    {
+        if (!eProps.TryGetValue(dp.Name, out var ep)) continue;
+        var v = dp.GetValue(dto);
+        if (v is null) { ep.SetValue(r, ep.PropertyType == typeof(decimal?) ? (decimal?)0m : 0m); zeroed.Add(dp.Name); }
+        else { ep.SetValue(r, v); copied++; }
+    }
+
+    // Nguồn KHÔNG chặn trùng kỳ khi sửa — vẫn lưu, nhưng ta báo ra.
+    var periodClash = !string.IsNullOrWhiteSpace(r.DealerCode)
+        && !string.IsNullOrWhiteSpace(r.RptYear) && !string.IsNullOrWhiteSpace(r.RptMonth)
+        && await db.ReportKpis.AnyAsync(x => x.OrgId == t.OrgId && x.Id != r.Id
+            && x.DealerCode == r.DealerCode && x.RptYear == r.RptYear && x.RptMonth == r.RptMonth);
+
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = dto.RptBy;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        r.Id, r.DealerCode, r.RptYear, r.RptMonth, r.Status,
+        figuresCopied = copied, figuresZeroed = zeroed.Count,
+        emptyMeansZeroNote = "Khi SỬA, ô để trống thành SỐ 0 (nguồn: `if (IsEmpty(x)) x = Flag.Inactive`, "
+            + "Inactive = \"0\"). Khác lệnh TẠO — ở đó ô trống để NULL.",
+        periodClash,
+        periodClashNote = periodClash
+            ? "Kỳ này ĐÃ CÓ báo cáo khác. Nguồn KHÔNG chặn khi sửa (guard lúc sửa chỉ kiểm bản ghi tồn tại) "
+              + "⇒ giữ 1:1 và chỉ báo cờ; đây là cửa sau vòng qua guard chống trùng kỳ lúc tạo."
+            : null,
+        guardDiffNote = "TẠO dùng CheckExistRptKPIYearMonth (chống trùng kỳ); SỬA dùng CheckExistRptKPI "
+            + "(chỉ kiểm tồn tại) — hai thao tác, hai guard khác nhau.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
 {
     // 🔴 #403 Guard của nguồn: KHÔNG cho hai báo cáo cùng (đại lý, năm, tháng).
