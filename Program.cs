@@ -21758,7 +21758,22 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
 // ⚠️ Ghép xe theo **FrameNo** (số khung) rồi mới sang `CarID` — không ghép thẳng `CarID`.
 // ⚠️ `ActualDeliveryDate` nguồn `convert(varchar, …, 23)` ⇒ trả **CHUỖI `yyyy-MM-dd`**.
 // ⚠️ Trả kèm `Km` — cùng với ngày giao, đây là hai số để tính "lặp sau bao lâu / bao nhiêu km".
-app.MapGet("/api/warrantyclaims/{id:long}/previous-repair", async (long id, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #378 ĐỐI CHIẾU BẢN `_WH` của guard 'lần sửa trước đó' — LỆCH NGHIỆP VỤ, KHÔNG PHẢI ĐỔI CSDL =====
+// Nguồn có bốn hàm cùng họ: `Ser_ROWarrantyReportHTC_Get_OnlyOneROWID(_New20230417)` (`WarrantyReport.cs`)
+// và `…_WH(_New20230417)` (`WH.cs:33266/33646`). Diff bỏ khoảng trắng giữa hai bản **LIVE**:
+//
+// 🔴 **ĐIỀU KIỆN CHỌN LẦN SỬA KHÁC HẲN NHAU**:
+//     bản Main: `and t.ROID > sr.ROID`  `-- Chỉ lấy những báo giá trước đó`
+//     bản `_WH` : `and t.ROID <> sr.ROID`   (**không** có chú thích)
+//   ⇒ Bản Main chỉ xét các lệnh **TRƯỚC ĐÓ**; bản `_WH` xét **MỌI lệnh khác, kể cả lệnh SAU**.
+//     Vì sau đó còn `order by ActualDeliveryDate desc` nên bản `_WH` có thể trả về một lần sửa
+//     **XẢY RA SAU** đề nghị bảo hành và gọi đó là 'lần thay gần nhất trước đó' — sai nghiệp vụ,
+//     và làm hai màn (HTC vs kho) cho ra **kết quả khác nhau trên cùng một hồ sơ**.
+// ⚠️ Danh mục loại BCBH: bản Main join qua `[@strDBName_CommonCenter]`, bản `_WH` join bảng cục bộ;
+//   một chỗ trong bản `_WH` còn đổi `--//[mylock]` thành `with(nolock)` ⇒ **gợi ý khoá khác nhau**.
+//   (Cùng lệ #376: hậu tố `_WH` không chỉ là đổi CSDL.)
+// 📌 MiniHTC một CSDL: `scope` tái hiện **khác biệt điều kiện**, mặc định `main` (bản đúng nghiệp vụ).
+app.MapGet("/api/warrantyclaims/{id:long}/previous-repair", async (long id, AppDbContext db, ITenantContext t, string? scope) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (c is null) return Results.NotFound(new { claimId = id });
@@ -21784,9 +21799,11 @@ app.MapGet("/api/warrantyclaims/{id:long}/previous-repair", async (long id, AppD
         return Results.Ok(new { claimId = id, found = false, reason = "Đề nghị chưa có dòng phụ tùng." });
 
     // Các lệnh TRƯỚC ĐÓ của cùng xe: theo THỨ TỰ KHOÁ (Id < Id hiện tại), đúng như nguồn.
+    // #378: bản _WH dùng `<>` thay vì `>` ⇒ nhận CẢ lệnh sau. Mặc định giữ bản Main.
+    var whScope = (scope ?? "main").Trim().ToLowerInvariant() == "wh";
     var priorRoIds = await db.RepairOrders
         .Where(r => r.OrgId == t.OrgId && r.Vin == vin
-                    && r.Id < curRo.Id
+                    && (whScope ? r.Id != curRo.Id : r.Id < curRo.Id)
                     && r.ActualDeliveryDate != null
                     && r.Status != "Rejected")            // blacklist đúng MỘT mã, đúng nguồn
         .Select(r => r.Id).ToListAsync();
@@ -21810,6 +21827,12 @@ app.MapGet("/api/warrantyclaims/{id:long}/previous-repair", async (long id, AppD
     return Results.Ok(new
     {
         claimId = id, found = true,
+        // #378: bản _WH của nguồn dùng `<>` nên có thể trả về một lần sửa XẢY RA SAU.
+        scope = whScope ? "wh" : "main",
+        scopeNote = whScope
+            ? "Bản _WH dùng `t.ROID <> sr.ROID` ⇒ nhận CẢ lệnh SAU đề nghị; kết quả có thể KHÔNG phải lần sửa trước đó."
+            : "Bản Main dùng `t.ROID > sr.ROID` — chỉ xét lệnh TRƯỚC ĐÓ (đúng nghiệp vụ).",
+        laterRepairReturned = whScope && prev.Id > curRo.Id,
         roId = prev.Id, prev.RONo, prev.Km,
         actualDeliveryDate = prev.ActualDeliveryDate?.ToString("yyyy-MM-dd"),   // convert(varchar,…,23)
         daysSincePrevious = prev.ActualDeliveryDate.HasValue
