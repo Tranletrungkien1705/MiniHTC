@@ -17185,6 +17185,56 @@ app.MapPost("/api/docreqs/update-letter-representation", async (
         tableNote = "Nguồn khoá theo DRListCode ⇒ ghi ở ĐẦU đề nghị (Car_DocReqList). Port cũ đặt nhầm 3 cột này trên DÒNG XE (DocReqCar) — cột cũ giữ nguyên để không phá dữ liệu."
     });
 }).RequireAuthorization();
+
+// ===== #B27 CẬP NHẬT HÀNG LOẠT CỜ "ĐÃ LẬP ĐỀ NGHỊ GIAO HỒ SƠ" (port 1:1 `FrmCapNhatThongTinHoaDon`) =====
+// Trace twin LIVE: `FrmCapNhatThongTinHoaDon.cs:466` → `new SalesService().Car_VIN_UpdMulti_FlagDocReq(dtbCarVin)`
+//   → WS `Car_VIN_UpdMulti_FlagDocReq` (`WSHTC.asmx.cs:34626`) → **`_biz.Car_VIN_UpdMulti_FlagDocReq`**
+//   (`BizHTC.Car.cs:3146` — **KHÔNG** ở `Biz.HTC.WH.cs`).
+// 🔴 LUẬT LỌC NẰM Ở CLIENT (`:440-444`): chỉ những dòng có `FlagDocReq` **đúng "0" hoặc "1"** mới được đưa
+//    vào lô gửi lên; dòng có giá trị khác bị **bỏ qua ngay ở lưới**, không gửi. Biz chuẩn hoá bằng `StdFlag`.
+//    ⇒ Port server phải tự kiểm lại (client web có thể gửi bất kỳ giá trị nào).
+// 🔴 `alColumnEffective` đúng **3 cột**: `FlagDocReq` + `LogLUDateTime` + `LogLUBy`; update join `t.VIN = f.VIN`.
+// ⚠️ Ghi chú lượt này: hàm anh em `Car_VIN_Upd_Profile` (`SalesService.cs:21208`) có **TOÀN BỘ lời gọi WS
+//    bị COMMENT** (`:21226-21237`) ⇒ **DEAD CODE, không port**. Đã kiểm để không phí công.
+app.MapPost("/api/carvinmasters/update-multi-flagdocreq", async (
+    List<CarVinFlagDocReqDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    // `..._TableCar_VINBlank`
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật đang rỗng." });
+    var list = rows.Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật đang rỗng." });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var vins = list.Select(r => r.Vin!.Trim().ToUpperInvariant()).ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+
+    foreach (var r in list)
+    {
+        var v = r.Vin!.Trim().ToUpperInvariant();
+        // `myCar_CheckVIN(..., TConst.Flag.Active, "" /* không kiểm DocumentsStatus */)`
+        if (!cars.Any(c => c.VIN == v)) return Results.BadRequest(new { error = $"VIN {v} chưa khai báo trên hệ thống." });
+        // Luật lọc của client, kiểm lại ở server: chỉ nhận "0" hoặc "1".
+        if (r.FlagDocReq != "0" && r.FlagDocReq != "1")
+            return Results.BadRequest(new { error = $"VIN {v}: FlagDocReq phải là '0' hoặc '1' (nhận '{r.FlagDocReq}')." });
+    }
+
+    int updated = 0;
+    foreach (var r in list)
+    {
+        var car = cars.First(c => c.VIN == r.Vin!.Trim().ToUpperInvariant());
+        car.FlagDocReq = r.FlagDocReq;              // 3 cột của alColumnEffective
+        car.LogLUDateTime = now; car.LogLUBy = who;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated, columnsWritten = new[] { "FlagDocReq", "LogLUDateTime", "LogLUBy" },
+        acceptedValues = new[] { "0", "1" },
+        deadCodeNote = "Hàm anh em Car_VIN_Upd_Profile (SalesService.cs:21208) có TOÀN BỘ lời gọi WS bị COMMENT ⇒ dead code, không port."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/carvinmasters/update-docdeliveryreqdate", async (
     List<CarVinDocDlvReqDto> rows, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
@@ -34709,6 +34759,8 @@ record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, s
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
 record CarVinDocDlvReqDto(string? Vin, DateTime? DocDeliveryReqDate);
+/// <summary>#B27: một dòng bảng cập nhật cờ FlagDocReq — chỉ nhận "0" hoặc "1".</summary>
+record CarVinFlagDocReqDto(string? Vin, string? FlagDocReq);
 /// <summary>#B21: một dòng bảng cập nhật tờ trình của đề nghị giao hồ sơ (khoá `DRListCode`).</summary>
 record DocReqLetterRepDto(string? DRListCode, string? LetterRepresentationNo, DateTime? LetterRepresentationDate, int? LoanSupportDay);
 /// <summary>#B17: một dòng của bảng `#input_Car_Car` — sửa hàng loạt quy cách theo CarId.</summary>

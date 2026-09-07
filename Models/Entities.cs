@@ -10111,6 +10111,10 @@ public sealed class CarVinMaster
     /// and cv.ColorCode = mcc.ColorCode`.
     /// </summary>
     public string? ColorCode { get; set; }
+    /// <summary>#B27 Cờ "đã lập đề nghị giao hồ sơ" (`Car_VIN.FlagDocReq`) — `Car_VIN_UpdMulti_FlagDocReq`
+    /// (`BizHTC.Car.cs:3146`) cập nhật HÀNG LOẠT cột này. Màn gọi (`FrmCapNhatThongTinHoaDon.cs:440-444`)
+    /// **chỉ đưa vào lô những dòng có giá trị "0" hoặc "1"** — client lọc trước, biz `StdFlag` chuẩn hoá.</summary>
+    public string? FlagDocReq { get; set; }
     /// <summary>#B24 Mã đơn hàng của xe (`Car_Car.SOCode`) — mốc nối xe sang `Ord_SalesOrder` để đọc
     /// chính sách bán `SPCode`. Bộ lọc chiết khấu thanh toán loại xe thuộc đơn có SPCode "KCK"/"NG".</summary>
     public string? SOCode { get; set; }
