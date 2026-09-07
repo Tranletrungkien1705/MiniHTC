@@ -5291,6 +5291,10 @@ public sealed class ServiceWarrantyClaim
 /// </summary>
 public sealed class WarrantyClaimServiceItem
 {
+    /// <summary>🔴 #396 §12 Mốc duyệt LAN xuống dòng công khi HTC duyệt đề nghị.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#396 §12 Người duyệt, lan xuống dòng công.</summary>
+    public string? ApprovedBy { get; set; }
     public long Id { get; set; }                 // ItemID
     public Guid OrgId { get; set; }
     /// <summary>ROWID — khoá về đề nghị bảo hành.</summary>
@@ -5330,6 +5334,10 @@ public sealed class WarrantyClaimServiceItem
 
 public sealed class WarrantyClaimPartItem
 {
+    /// <summary>🔴 #396 §12 Mốc duyệt LAN xuống dòng phụ tùng khi HTC duyệt đề nghị.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#396 §12 Người duyệt, lan xuống dòng phụ tùng.</summary>
+    public string? ApprovedBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
 

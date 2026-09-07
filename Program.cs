@@ -14669,12 +14669,59 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
                 c.DealerCode });
     }
 
+    // ===== 🔴 #396 ĐẦU NHẬN của lời gọi liên hệ thống (`…_HTCApproved_ForDealer`, `:11090`) =====
+    //   Chú thích của chính nguồn ngay tên hàm: *"dùng tạm sau phải nâng cấp lại"*.
+    //   Hàm này mới là nơi GHI, và nó làm **bốn** việc chứ không chỉ đổi trạng thái đầu:
+    //     1. Guard `CreatedDate > ApprovedDate` ⇒ `Ser_ROWarrantyReport_HTCApproved_InvalidApproved`
+    //        (ngày duyệt **không được TRƯỚC** ngày tạo đề nghị).
+    //     2. Ghi 10 cột lên `Ser_ROWarrantyReport` — **Main + WH + Dealer** (Dealer có điều kiện).
+    //     3. **LAN trạng thái + mốc duyệt xuống DÒNG CÔNG và DÒNG PHỤ TÙNG**
+    //        (`…ServiceItems` / `…PartItems`, mỗi bảng 4 cột: `WarrantyStatus` `BulletinID`
+    //        `ApprovedDate` `ApprovedBy`) — cũng trên cả ba CSDL.
+    //     4. 🔴 **TÁC DỤNG PHỤ SANG MIỀN KHÁC**: nếu duyệt = `Accepted` **và** dòng công có
+    //        `BulletinID` thì cập nhật `Btl_Bulletin_VIN` sang `Blt_Bulletin_Status.F`
+    //        ('Đã thực hiện'; `P` = chưa thực hiện — khớp mặc định `isnull(Status,'P')` ở #377).
+    //        ⇒ Duyệt bảo hành **đóng luôn thông báo kỹ thuật** cho xe đó.
+    //   ⚠️ Trong khối bulletin, nguồn có câu `left join ser_car car on car.carid = ro.roid` —
+    //     ghép **mã xe với mã LỆNH**. Vô hại ở đây vì không cột nào của `car` được dùng trong
+    //     bảng tạm đó, nhưng là cái bẫy nằm sẵn nếu ai thêm cột.
+    // 📌 Guard 1 và bước 3, 4 nay đã port; bước 2 (ba CSDL) MiniHTC không tái hiện được.
+    if (htcSide && dto.ApprovedDate is not null && dto.ApprovedDate < c.CreatedAt)
+        return Results.BadRequest(new { error = "Ser_ROWarrantyReport_HTCApproved_InvalidApproved",
+            message = "Ngày duyệt không được TRƯỚC ngày tạo đề nghị.",
+            createdAt = c.CreatedAt, approvedDate = dto.ApprovedDate });
+
     c.Status = rule.to;
     // Mốc duyệt dùng cho job đẩy HMC (nguồn lọc ApprovedDate trên đề nghị đang ở "CONF").
     if (rule.to == "Confirmed") c.ApprovedDate = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
     // #395: nguồn ĐẨY quyết định sang WS của đại lý ngay trong lời gọi này. MiniHTC chưa có tầng đó.
     var dealerPushPending = htcSide;
+
+    // --- #396 LAN trạng thái + mốc duyệt xuống DÒNG CÔNG và DÒNG PHỤ TÙNG.
+    var apprAt = dto.ApprovedDate ?? DateTime.Now;
+    var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == c.Id).ToListAsync();
+    var prtItems = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == c.Id).ToListAsync();
+    if (htcSide)
+    {
+        foreach (var i in svcItems) { i.WarrantyStatus = rule.to; i.ApprovedDate = apprAt; i.ApprovedBy = dto.ApprovedBy; }
+        foreach (var i in prtItems) { i.WarrantyStatus = rule.to; i.ApprovedDate = apprAt; i.ApprovedBy = dto.ApprovedBy; }
+    }
+
+    // --- #396 TÁC DỤNG PHỤ: duyệt CHẤP THUẬN + dòng công có BulletinID ⇒ đóng thông báo kỹ thuật.
+    var bulletinsClosed = new List<string>();
+    if (rule.to == "Accepted" && c.Vin is not null)
+    {
+        var bltIds = svcItems.Where(i => !string.IsNullOrWhiteSpace(i.BulletinID))
+            .Select(i => i.BulletinID!).Distinct().ToList();
+        if (bltIds.Count > 0)
+        {
+            var links = await db.BulletinVins
+                .Where(x => x.OrgId == t.OrgId && x.VinNo == c.Vin && bltIds.Contains(x.BulletinNo))
+                .ToListAsync();
+            foreach (var lk in links) { lk.Status = "F"; bulletinsClosed.Add(lk.BulletinNo); }
+        }
+    }
     c.UpdatedAt = DateTime.Now;
 
     // 🔴 #268: MỌI bước chuyển đều ghi một dòng nhật ký — nguồn gọi
@@ -14691,6 +14738,14 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
         c.Id, c.Status,
         // #395: nguon DAY quyet dinh sang WS cua dai ly ngay trong loi goi nay.
         dealerPushPending,
+        // #396
+        cascadedServiceItems = htcSide ? svcItems.Count : 0,
+        cascadedPartItems = htcSide ? prtItems.Count : 0,
+        bulletinsClosed,
+        cascadeNote = "Nguồn lan WarrantyStatus + ApprovedDate/By xuống DÒNG CÔNG và DÒNG PHỤ TÙNG, "
+            + "trên cả ba CSDL (Main + WH + Dealer).",
+        bulletinSideEffectNote = "Duyệt CHẤP THUẬN + dòng công có BulletinID ⇒ Btl_Bulletin_VIN chuyển sang "
+            + "F (\"Đã thực hiện\"): duyệt bảo hành ĐÓNG LUÔN thông báo kỹ thuật cho xe đó.",
         dealerWsUrl = dealerRow?.WsUrlAddr,
         dealerPushNote = dealerPushPending
             ? "Nguon goi ..._ForDealer sang WS cua dai ly ngay tai buoc nay; loi thi KHONG duyet. "
@@ -42299,7 +42354,9 @@ record WarrantyClaimServiceItemDto(string? SerID = null, string? SerCode = null,
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
 // #268: `Creator` = bên tạo bước chuyển (nguồn truyền riêng, KHÁC tài khoản đăng nhập `CreatedBy`).
-record WarrantyClaimActionDto(string Action, string? Note, string? Creator = null);
+// #396 §12: ApprovedDate/ApprovedBy — moc duyet lan xuong dong cong + dong phu tung.
+record WarrantyClaimActionDto(string Action, string? Note, string? Creator = null,
+    DateTime? ApprovedDate = null, string? ApprovedBy = null);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
 // #270: `Channel` = kenh tao lich hen. Nguon chi day HCC o nhanh `Ser_App_Create_ForTab` (may tinh bang)
