@@ -15119,6 +15119,23 @@ app.MapGet("/api/servicecars/search-paging", async (AppDbContext db, ITenantCont
         // ⚠️ Bản Main còn một bảng tạm trung gian #tbl_ID_CusName (4 lần) mà _WH không có, và giữ lại
         //   một dòng Row_Number ĐÃ COMMENT; bản _WH đã bỏ dòng chết đó.
         // 📊 Thống kê twin _WH tới #426: giống nghiệp vụ #406/#407/#409/#418/#426 · lệch #378/#413/#422.
+        // ===== ✅ #480 XÁC NHẬN LẠI CẶP NÀY BẰNG CÔNG CỤ, VÀ MỘT PHÁT HIỆN MỚI VỀ KÊNH =====
+        // Sweep `_WH` (#471/#478) xếp cặp này vào nhóm "lệch" (105 → 92 dòng SQL, macro=0).
+        //   Soi lại: đúng như #426 đã kết luận bằng tay — **không lệch nghiệp vụ**, chỉ khác CÁCH TÍNH
+        //   (`#tbl_customer_tmp_CheckInDate/_CheckInCount` của Main vs hai truy vấn con tương quan của `_WH`).
+        //   Đọc trọn hai khối: cả hai đều nối `Ser_RO` **chỉ theo `CusID`**, `where(1=1)` — **không** có phạm vi
+        //   đại lý hay khoảng ngày ở CẢ HAI bên ⇒ cùng con số. Ghi lại như một **kiểm tra âm tính có bằng chứng**.
+        //   📌 Vậy con số "105→92" của sweep là **chênh cách viết**, không phải nợ port. Trừ ca này khỏi hàng đợi.
+        //
+        // 🔴 PHÁT HIỆN MỚI (nhờ #478 quét đủ 4 project WS): **hai hàm biz khác nhau** cùng phục vụ tên gần giống,
+        //   mỗi hàm cho MỘT KÊNH:
+        //     · `HTCWSCarSv`    → `_biz.Ser_CustomerCar_Get20220626`  (vỏ bọc → `…_GetX`) — kênh WEB
+        //     · `HTCWSCarSvTab` → `_biz.Ser_CustomerCar_Get`          (bản TRẦN)      — kênh MÁY TÍNH BẢNG
+        //   ⇒ Bản trần **KHÔNG chết** như cách đọc cũ; nó là đường của máy tính bảng. Khi sửa một bên phải
+        //     hỏi ngay "kênh kia có dùng chung không?" — đây đã là lần thứ hai gặp (xem #324: 4/5 WebMethod
+        //     đối tác dùng lại hàm nội bộ).
+        customerCarGetChannels = new { web = "Ser_CustomerCar_Get20220626", tablet = "Ser_CustomerCar_Get",
+            wh = "Ser_CustomerCar_Get_WH", sweepGapIsStyleOnly = true },
         whTwinNote = "Ser_CustomerCar_Get_WH chép toàn bộ SQL thay vì gọi lại GetX; KHÔNG lệch nghiệp vụ "
             + "(đếm chuỗi 8 mốc đều bằng nhau) nhưng tính FirstCheckInDate/CheckInCount bằng HAI TRUY VẤN "
             + "CON TƯƠNG QUAN cho TỪNG DÒNG, trong khi bản Main gom sẵn vào bảng tạm ⇒ lệch HIỆU NĂNG.",
