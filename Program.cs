@@ -27395,6 +27395,120 @@ app.MapPost("/api/dealerdeals/edit-platenumber", async (EditDealPlateNoDto dto, 
 //   · `SearchCarToSellToDealer`        → `GenLikeCondition(vin)`     = MỘT giá trị, LIKE
 //   · `SearchCarToSellToDealer_ListVIN`→ `GenContainsCondition(vin)` = DANH SÁCH VIN, IN
 //   ⇒ endpoint nhận `vin` (một, LIKE) **hoặc** `vins` (nhiều, khớp tuyệt đối).
+
+// ===== #B10 TÌM XE ĐỂ LÀM PDI (port 1:1 FrmSearchCarForPDI, 2010.HTC/SalesDealer) =====
+// Trace twin LIVE (đọc WS TRƯỚC): `DealerService.SearchCarToPDI` → WS `SearchCarToPDI`
+//   (`WSHTC.asmx.cs:84668`) → **`_biz.SearchCarToPDI`** (`BizHTC.DealerSales.cs:3679`).
+// 🔴 HÌNH DẠNG BỘ LỌC — bốn ô, BA hình dạng khác nhau (đọc `Gen*Condition`, không đoán theo tên):
+//   · `dealerCodeBuyer` → `GenEqualCondition2` ⇒ **"=" tuyệt đối**
+//   · `modelCode`       → `GenEqualCondition2` ⇒ **"=" tuyệt đối**
+//   · `vin`             → `GenLikeCondition`   ⇒ **LIKE %…%**
+//   · `dlrContractNo`   → `GenEqualCondition`  ⇒ **"=" tuyệt đối**
+//   · `isInStock`       → `GenEqualCondition2(Flag.Active)` gán vào `strDLSDDFlagCurrentConditionList`
+//     ⇒ lại là **`DLS_DealDetail.FlagCurrent = '1'`**, KHÔNG phải tồn kho (giống bẫy ở #B08).
+// 🔴 HAI NHÁNH SQL HOÀN TOÀN KHÁC NHAU tuỳ `dlrContractNo` có hay không (`:3749` vs `:3861`):
+//   · CÓ số hợp đồng → nối thêm `Dlr_ContractDtl` + `Dlr_Contract`, trả `DlrContractNo`/`DDCFullName`/
+//     `DlvExpectedDate` THẬT, và **tự thêm guard `dc.DlrCtrStatus = TConst.Stage.Approved` ("A")**
+//     — guard này CHỈ tồn tại ở nhánh này (`:3837`).
+//   · KHÔNG có → truy vấn gọn hơn, ba cột kia trả **chuỗi RỖNG** (nguồn `select '' DlrContractNo`…).
+app.MapGet("/api/dealerdeals/cars-to-pdi", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCodeBuyer, string? vin, string? modelCode, string? dlrContractNo, string? inStock, string? buPattern) =>
+{
+    var buyerKey = string.IsNullOrWhiteSpace(dealerCodeBuyer) ? null : dealerCodeBuyer.Trim().ToUpperInvariant();
+    var vinKey = string.IsNullOrWhiteSpace(vin) ? null : vin.Trim().ToUpperInvariant();
+    var modelKey = string.IsNullOrWhiteSpace(modelCode) ? null : modelCode.Trim().ToUpperInvariant();
+    var ctrKey = string.IsNullOrWhiteSpace(dlrContractNo) ? null : dlrContractNo.Trim().ToUpperInvariant();
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var hasContract = ctrKey is not null;
+
+    // `from DLS_Deal dlsd inner join Mst_Dealer md on dlsd.DealerCodeBuyer = md.DealerCode and BUCode like …`
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId && d.DealerCodeBuyer != null && d.DealerCodeBuyer != "").ToListAsync();
+    if (buyerKey is not null) deals = deals.Where(d => d.DealerCodeBuyer == buyerKey).ToList();     // "=" tuyệt đối
+    int droppedByDealerJoin = 0;
+    deals = deals.Where(d =>
+    {
+        var dl = dealers.FirstOrDefault(x => x.DealerCode == d.DealerCodeBuyer);
+        if (dl is null) { droppedByDealerJoin++; return false; }                    // nối TRONG ⇒ mất dòng
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedByDealerJoin++; return false; }
+        return true;
+    }).ToList();
+
+    var dealIds = deals.Select(d => d.Id).ToList();
+    var details = await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && dealIds.Contains(x.DealId)).ToListAsync();
+    // ô tick "còn trong kho" ⇒ `dlsdd.FlagCurrent = '1'` (Flag.Active) — lại là cột FlagCurrent.
+    if (inStock == "1" || inStock == "true") details = details.Where(x => x.FlagCurrent == "1").ToList();
+
+    // MiniHTC không có `Car_Car`; `DealerDealDetail.CarId` chính là VIN (ghi rõ ở entity) ⇒ nối thẳng Car_VIN.
+    var carIds = details.Select(x => x.CarId).Distinct().ToList();
+    var carsVin = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    // `inner join Car_DeliveryOrderDetail cdod on cc.CarId = cdod.CarId and cdod.ConfirmStatus = 'F'`
+    //   -- chú thích nguồn: "Đại lý đã nhập Kho."  (Stage.Finished = "F")
+    var confirmedVins = (await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.ConfirmStatus == "F" && carIds.Contains(c.Vin))
+        .Select(c => c.Vin).ToListAsync()).ToHashSet();
+
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+    var ctrDtls = hasContract
+        ? await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId && x.DlrContractNo == ctrKey).ToListAsync()
+        : new List<DlrContractDetail>();
+    var contracts = hasContract
+        ? await db.DlrContracts.Where(c => c.OrgId == t.OrgId && c.DlrContractNo == ctrKey).ToListAsync()
+        : new List<DlrContract>();
+    var dealerCustomers = hasContract
+        ? await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).Select(c => new { c.CustomerCode, c.FullName }).ToListAsync()
+        : null;
+
+    var items = new List<object>();
+    int droppedNoCar = 0, droppedNotInStorage = 0, droppedNoContractDtl = 0, droppedCtrNotApproved = 0;
+    var seen = new HashSet<string>();                                   // `select distinct`
+    foreach (var d in details)
+    {
+        var cv = carsVin.FirstOrDefault(c => c.VIN == d.CarId);
+        if (cv is null) { droppedNoCar++; continue; }                   // inner join Car_Car/Car_VIN
+        if (!confirmedVins.Contains(d.CarId)) { droppedNotInStorage++; continue; }
+        if (vinKey is not null && !cv.VIN.ToUpperInvariant().Contains(vinKey)) continue;          // LIKE
+        if (modelKey is not null && !string.Equals(cv.ModelCode, modelKey, StringComparison.OrdinalIgnoreCase)) continue;  // "="
+
+        string? outCtrNo = null, outFullName = null; DateTime? outDlvExpected = null;
+        if (hasContract)
+        {
+            // `inner join Dlr_ContractDtl dcd on cc.ModelCode = dcd.ModelCode and cc.SpecCode = dcd.SpecCode
+            //  and **cv.ColorCode** = dcd.ColorCode` — chú thích nguồn (20210909, ToanNH): màu lấy theo màu
+            // của VIN vì khi map VIN có luật bỏ qua màu, còn hợp đồng lại tạo theo màu của VIN.
+            var dcd = ctrDtls.FirstOrDefault(x => x.ModelCode == cv.ModelCode && x.SpecCode == cv.SpecCode && x.ColorCode == cv.ColorCode);
+            if (dcd is null) { droppedNoContractDtl++; continue; }
+            var dc = contracts.FirstOrDefault(x => x.DlrContractNo == dcd.DlrContractNo);
+            // 🔴 Guard `dc.DlrCtrStatus = Stage.Approved` ("A") — nguồn CHỈ thêm khi có số hợp đồng (:3837).
+            if (dc is null || dc.Status != "A") { droppedCtrNotApproved++; continue; }
+            outCtrNo = dcd.DlrContractNo;
+            outDlvExpected = dcd.DlvExpectedDate;
+            outFullName = dealerCustomers?.FirstOrDefault(x => x.CustomerCode == dc.CustomerCode)?.FullName;
+        }
+
+        var key = $"{cv.VIN}|{outCtrNo}";
+        if (!seen.Add(key)) continue;
+        items.Add(new
+        {
+            vin = cv.VIN, cvSpecCode = cv.SpecCode, cvModelCode = cv.ModelCode, cvColorCode = cv.ColorCode,
+            cvActualSpec = cv.ActualSpec,
+            cvActualSpecDescription = specs.FirstOrDefault(s => s.SpecCode == cv.ActualSpec)?.SpecDesc,
+            // Nhánh KHÔNG có số hợp đồng: nguồn trả **chuỗi rỗng** cho ba cột này, không phải null.
+            dlrContractNo = outCtrNo ?? "", ddcFullName = outFullName ?? "",
+            dlvExpectedDate = hasContract ? (object?)outDlvExpected : ""
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        branch = hasContract ? "CÓ số hợp đồng (nối Dlr_ContractDtl + guard DlrCtrStatus='A')" : "KHÔNG có số hợp đồng (3 cột hợp đồng trả rỗng)",
+        filterShapes = new { dealerCodeBuyer = "=", modelCode = "=", vin = "LIKE", dlrContractNo = "=", inStock = "DLS_DealDetail.FlagCurrent='1'" },
+        droppedByDealerJoin, droppedNoCar, droppedNotInStorage, droppedNoContractDtl, droppedCtrNotApproved,
+        note = items.Count == 0 ? "Không có kết quả nào phù hợp điều kiện tìm kiếm" : null
+    });
+}).RequireAuthorization();
 app.MapGet("/api/dealerdeals/cars-to-sell-to-dealer", async (
     AppDbContext db, ITenantContext t,
     string? carId, string? vin, string? vins, string? specCode, string? actualSpec, string? modelCode,
