@@ -336,10 +336,21 @@ app.MapDelete("/api/deliverylocations/{dealerCode}/{code}", async (
 }).RequireAuthorization();
 
 // ===== Đại lý (Mst_Dealer) — port 1:1 FrmDealer =====
-app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) =>
+// ===== #545 VÁ BỘ LỌC CỦA `SerDealerGet` (kênh ClientService) =====
+// Nguồn: `BizCarSv.Master.cs:7623 SerDealerGet` — chỉ `select * from Mst_Dealer` với **hai** bộ lọc
+//   `BuildClause("and", "d.DealerCode", …)` và `BuildClause("and", "d.FlagActive", …)`, **không `order by`**.
+// Bản port đã có đủ cột (#349 §12) nhưng chỉ có ô tìm chung `q` ⇒ bù hai bộ lọc **theo đúng cột nguồn**.
+// ⚠️ Hai bộ lọc này dính bẫy #410 ở nguồn (thiếu toán tử là **bỏ im lặng**) — cùng lớp với #520.
+// ⚪ Kiểm tra âm tính: hàm **không có** join nào ⇒ không có dòng bị nuốt; `select *` nên hình dạng
+//   kết quả bám lược đồ bảng (MiniHTC liệt kê tường minh — khác **cố ý**, đã ghi ở #349).
+app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q,
+    string? dealerCode, string? flagActive) =>
 {
     var query = db.Dealers.Where(d => d.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(d => d.DealerCode.Contains(q) || d.DealerName.Contains(q));
+    // #545 hai bộ lọc của nguồn.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(d => d.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) query = query.Where(d => d.FlagActive == flagActive!.Trim());
     var items = await query.OrderBy(d => d.DealerCode).Select(d => new
     { d.DealerCode, d.DealerName, d.DealerType, d.BUCode, d.BuPattern, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode,
       d.FlagDirect, d.FlagActive, d.FlagDealerHTC, d.OrgHCCID, d.NetworkHCCID, d.DealerScale,   // #349 §12 d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
@@ -348,7 +359,14 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
       d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // #545 nguồn (SerDealerGet) chỉ có đúng hai bộ lọc này và KHÔNG sắp xếp.
+        sourceFilters = new[] { "d.DealerCode", "d.FlagActive" },
+        sourceHasNoOrderBy = true,
+        sourceHasNoJoin = true,
+    });
 }).RequireAuthorization();
 
 // Khớp gviewDb_ValidatingEditor gốc: ProvinceCode/BUCode/BuPattern/DealerName bắt buộc.
