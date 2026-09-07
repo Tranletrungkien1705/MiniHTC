@@ -14288,6 +14288,107 @@ app.MapGet("/api/report/customer-visits", async (AppDbContext db, ITenantContext
 
 // ===== Ngày đăng ký bảo hành theo VIN (ServiceCar.WarrantyRegistrationDate — port 1:1 FrmHTCSearch/UpdateWarrantyRegistrationDate, TCMotor) =====
 // Tìm xe + ngày đăng ký BH (lọc frame/biển số; onlyMissing=true chỉ xe chưa có ngày ĐK).
+// ===== 🔴 #425 TÌM KHÁCH + XE CÓ PHÂN TRANG (`SerCustomerCarGetPagingHTC`) — **BỐN TÊN cho MỘT chuỗi gọi**
+//        và một lượt kiểm cho ra **kết quả ÂM TÍNH** đáng ghi =====
+// TRACE đầy đủ (đọc thân từng tầng, lệ #400 — mỗi tầng đổi tên một lần):
+//   form `FrmHTCSearchWarrantyRegistrationDate`
+//     → service `SerCustomerCarGetPagingHTC`   (`SerCarHTCUpdateWarrantyDateService.cs:102`)
+//     → WS      `Ser_CustomerCar_Get`          (`WSCarSv.asmx.cs:6656`)
+//     → biz     `Ser_CustomerCar_Get20220626`  (`BizCarSv.Customer.cs:1257` — chỉ là VỎ BỌC)
+//     → thân    `Ser_CustomerCar_GetX`         (`:1517` — nơi có SQL thật)
+//   ⇒ **Bốn tên khác nhau cho một chuỗi gọi.** Grep theo bất kỳ tên nào cũng chỉ thấy một mắt xích.
+//
+// 📌 **KẾT QUẢ ÂM TÍNH, đã kiểm chứ không đoán** — hai chỗ trông giống bẫy đã gặp nhưng **KHÔNG phải bẫy**:
+//   1. Tầng service bọc `"%" + x + "%"` **KHÔNG kèm chữ `like`** (khác các service khác dựng `"like %x%"`).
+//      Theo lệ #410 thì giá trị trần vào `BuildClause` sẽ **chết câm**. Nhưng ở đây biz dùng
+//      `BuildClauseConditionSingle("and", cột, **"like"**, @param, giá trị, …)` — **toán tử do BIZ cấp riêng**,
+//      không đọc từ chuỗi ⇒ bộ lọc **CHẠY ĐÚNG**. Lại một xác nhận: vị trí toán tử không có quy luật (#409).
+//   2. Số điện thoại lọc trên **HAI cột** `t.Tel` và `t.Mobile`, cả hai mệnh đề đều mang tiền tố `and`.
+//      Nếu ghép thẳng thì phải khớp CẢ HAI ⇒ gần như không ra kết quả. Nhưng SQL bọc chúng thành
+//      `and ( ((1=1) <Tel>) OR ((1=1) <Mobile>) )` ⇒ **đúng ý OR**. Không phải lỗi.
+//   ⇒ Ghi lại cả hai để lần sau khỏi 'phát hiện' lại cùng một thứ đã kiểm.
+//
+// 🔴 **BẤT ĐỐI XỨNG TOÁN TỬ**: `CusName` · `Address` · `PlateNo` · `FrameNo` · `EngineNo` dùng `like`;
+//   còn `TradeMarkCode` và `ModelId` dùng **`=` (khớp CHÍNH XÁC)**. Người dùng gõ một phần mã hãng/mã
+//   dòng xe sẽ **không ra gì**, trong khi mọi ô khác trên cùng form đều tìm gần đúng.
+// ⚠️ **KHE HỞ NHẬT KÝ**: danh sách tham số ghi log lỗi (`alParamsCoupleError`) của cả `Get20220626` lẫn
+//   `GetX` liệt kê CusName/Address/PlateNo/FrameNo/EngineNo/TradeMark/ModelId nhưng **BỎ SÓT `strPhonePattern`**
+//   ⇒ khi hàm ném lỗi, nhật ký **không ghi lại người dùng đã tìm số điện thoại nào**.
+// ⚠️ Phân trang theo `Row_Number() over (order by t.CusName asc)`; có **một bản dòng đó bị comment**
+//   ở khối trên, bản ACTIVE nằm ở khối dưới — port dòng active.
+// ⚠️ Biên trang: `@MyRowIdx_Start = start + 1` (chú thích nguồn: *C# đếm từ 0, SQL đếm từ 1*),
+//   `@MyRowIdx_End = start + count` ⇒ **bao gồm cả hai đầu**.
+app.MapGet("/api/servicecars/search-paging", async (AppDbContext db, ITenantContext t,
+    string? cusId, string? dealer, string? cusName, string? address, string? phone,
+    string? plateNo, string? frameNo, string? engineNo, string? tradeMark, string? modelId,
+    int? page, int? pageSize) =>
+{
+    var size = pageSize is > 0 ? pageSize!.Value : 30;
+    var cur = page is > 0 ? page!.Value : 1;
+    var start = (cur - 1) * size;
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var custs = (await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => c.CusCode).ToDictionary(g => g.Key, g => g.First());
+
+    bool Like(string? v, string? pat) => string.IsNullOrWhiteSpace(pat)
+        || (v ?? "").Contains(pat!.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    var joined = cars.Select(c =>
+    {
+        custs.TryGetValue(c.CusID ?? "", out var cu);
+        return new { Car = c, Cus = cu };
+    })
+    .Where(x => string.IsNullOrWhiteSpace(cusId) || x.Car.CusID == cusId)
+    .Where(x => string.IsNullOrWhiteSpace(dealer) || x.Car.DealerCode == dealer)
+    .Where(x => Like(x.Cus?.CusName, cusName))
+    .Where(x => Like(x.Cus?.Address, address))
+    .Where(x => Like(x.Car.PlateNo, plateNo))
+    .Where(x => Like(x.Car.FrameNo, frameNo))
+    .Where(x => Like(x.Car.EngineNo, engineNo))
+    // 🔴 Hai cột này nguồn dùng "=" chứ KHÔNG phải like.
+    .Where(x => string.IsNullOrWhiteSpace(tradeMark) || x.Car.TradeMark == tradeMark)
+    .Where(x => string.IsNullOrWhiteSpace(modelId) || x.Car.ModelCode == modelId)
+    // Điện thoại: Tel HOẶC Mobile (nguồn bọc hai mệnh đề trong một khối OR).
+    .Where(x => string.IsNullOrWhiteSpace(phone)
+             || Like(x.Cus?.Tel, phone) || Like(x.Cus?.Mobile, phone))
+    // Row_Number() over (order by t.CusName asc)
+    .OrderBy(x => x.Cus?.CusName ?? "")
+    .ToList();
+
+    var total = joined.Count;
+    var rows = joined.Skip(start).Take(size).Select(x => new
+    {
+        cusId = x.Car.CusID, cusName = x.Cus?.CusName, address = x.Cus?.Address,
+        tel = x.Cus?.Tel, mobile = x.Cus?.Mobile,
+        plateNo = x.Car.PlateNo, frameNo = x.Car.FrameNo, engineNo = x.Car.EngineNo,
+        tradeMark = x.Car.TradeMark, modelCode = x.Car.ModelCode,
+        dealerCode = x.Car.DealerCode,
+        warrantyRegistrationDate = x.Car.WarrantyRegistrationDate,
+        dateBuyCar = x.Car.DateBuyCar,
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, total, page = cur, pageSize = size,
+        rowIdxStart = start + 1, rowIdxEnd = start + size,
+        fourNamesNote = "Một chuỗi gọi, BỐN tên: SerCustomerCarGetPagingHTC (service) → Ser_CustomerCar_Get "
+            + "(WS) → Ser_CustomerCar_Get20220626 (biz, chỉ là vỏ bọc) → Ser_CustomerCar_GetX (SQL thật). "
+            + "Grep theo bất kỳ tên nào cũng chỉ thấy một mắt xích.",
+        verifiedNotABugNote = "Đã KIỂM hai chỗ trông giống bẫy nhưng KHÔNG phải: (1) service bọc %x% không "
+            + "kèm chữ like, nhưng biz cấp toán tử riêng qua BuildClauseConditionSingle nên bộ lọc CHẠY; "
+            + "(2) Tel và Mobile tuy cùng tiền tố 'and' nhưng SQL bọc chúng trong một khối OR nên đúng ý.",
+        operatorAsymmetryNote = "CusName/Address/PlateNo/FrameNo/EngineNo dùng LIKE, còn TradeMarkCode và "
+            + "ModelId dùng '=' (khớp CHÍNH XÁC) ⇒ gõ một phần mã hãng hoặc mã dòng xe sẽ không ra gì, "
+            + "trong khi mọi ô khác trên cùng form đều tìm gần đúng.",
+        logGapNote = "Danh sách tham số ghi log lỗi của cả Get20220626 lẫn GetX BỎ SÓT strPhonePattern ⇒ "
+            + "khi hàm ném lỗi, nhật ký không ghi người dùng đã tìm số điện thoại nào.",
+        pagingBoundNote = "Nguồn: MyRowIdx_Start = start + 1 (C# đếm từ 0, SQL đếm từ 1), MyRowIdx_End = "
+            + "start + count ⇒ bao gồm cả hai đầu.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/servicecars/warranty-reg", async (AppDbContext db, ITenantContext t, string? frame, string? plate, bool? onlyMissing) =>
 {
     var q = db.ServiceCars.Where(v => v.OrgId == t.OrgId);
