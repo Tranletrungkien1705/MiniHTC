@@ -48473,6 +48473,97 @@ app.MapGet("/api/serviceitems/workarising", async (AppDbContext db, ITenantConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #538 PHỤ TÙNG PHÁT SINH (CommonCenter) — **BẢNG KHÁC, TÊN CỘT KHÁC, DỄ NHẦM** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:6496 Ser_MST_PartExtra_Get` · `:6616 …_Save` · `:6971 …_Delete`.
+// Endpoint: `GET` + `POST /api/partextramsts` + `POST /api/partextramsts/delete`.
+// **§12**: entity `PartExtraMst` + `DbSet` + Seeder.
+//
+// ⚠️ **GREP TRƯỚC cứu một lần nữa, nhưng theo chiều NGƯỢC**: MiniHTC **đã có** `ExtraPartMst`
+//   (`/api/extraparts`, `:30593`) — nhưng bảng nguồn của nó là `Tbl_Mst_Extra_Parts_Mng`,
+//   **KHÔNG PHẢI** `Ser_MST_PartExtra` ở đây. **Tên gần giống, bảng khác nhau**:
+//     `ExtraPartMst`: `PartCode · PartName · Unit · Price · MaxQuantity · FlagActive`
+//     `PartExtraMst` (mới): `**ROMSID** · PartCode · **VieName** · Unit · Price · **TotalLimit** · FlagActive`
+//   ⇒ Nếu "tái dùng cho tiện" thì mất hẳn cột `ROMSID` và ánh xạ sai hai tên cột. Tạo bảng riêng.
+//
+// ⚠️ Đọc dữ liệu: `from [CommonCenter].[dbo].Ser_MST_PartExtra t **with (nolock)**` — viết `with (nolock)`
+//   **thẳng**, không dùng dấu `--//[mylock]` như quy ước phần còn lại của repo (đã gặp ở #510).
+// ⚠️ Hai bộ lọc `t.ROMSID` / `t.PartCode` đều qua `BuildClause` ⇒ dính bẫy #410/#520 (thiếu toán tử là
+//   **bỏ im lặng**). Port lọc thật.
+// 🔴 `Save`: khuôn *rỗng ⇒ `DBNull`* cho `VieName` · `Unit` · `Price` · `TotalLimit` ⇒ **gửi rỗng XOÁ**
+//   (cùng họ #535, ngược #528). Bảng đầu vào bắt buộc tên `"Ser_MST_PartExtra"` và **không có**
+//   `Tables.Contains` ⇒ sai tên là NRE.
+// 🔴 `Delete`: lại là `BuildClauseConditionList` + `ExecNonQuery` **không tham số hoá** (y hệt #536)
+//   ⇒ **bề mặt tiêm SQL trên câu XOÁ**; và chỉ xoá ở `_dbMain` + `_dbWH`.
+app.MapGet("/api/partextramsts", async (AppDbContext db, ITenantContext t,
+    string? romsId, string? partCode, string? flagActive) =>
+{
+    var qy = db.PartExtraMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(romsId)) qy = qy.Where(x => x.ROMSID == romsId!.Trim());
+    if (!string.IsNullOrWhiteSpace(partCode)) qy = qy.Where(x => x.PartCode == partCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+    var items = await qy.OrderBy(x => x.PartCode).Take(1000)
+        .Select(x => new { x.Id, x.ROMSID, x.PartCode, x.VieName, x.Unit, x.Price, x.TotalLimit, x.FlagActive })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        tableName = "Ser_MST_PartExtra",
+        notTheSameAs = "ExtraPartMst (/api/extraparts) — nguon Tbl_Mst_Extra_Parts_Mng",
+        sourceUsesRawNolock = true,
+        sourceHasNoOrderBy = true,
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Cần bảng Ser_MST_PartExtra (nguồn không kiểm Tables.Contains)." });
+
+    var created = 0; var updated = 0;
+    foreach (var r in rows)
+    {
+        var code = (r.PartCode ?? "").Trim();
+        if (code.Length == 0) return Results.BadRequest(new { error = "PartCode rỗng." });
+        var row = await db.PartExtraMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
+        if (row is null)
+        {
+            row = new PartExtraMst { OrgId = t.OrgId, PartCode = code };
+            db.PartExtraMsts.Add(row); created++;
+        }
+        else updated++;
+        // Rỗng ⇒ null (khuôn DBNull của nguồn: gửi rỗng XOÁ).
+        row.ROMSID = string.IsNullOrWhiteSpace(r.ROMSID) ? null : r.ROMSID;
+        row.VieName = string.IsNullOrWhiteSpace(r.VieName) ? null : r.VieName;
+        row.Unit = string.IsNullOrWhiteSpace(r.Unit) ? null : r.Unit;
+        row.Price = r.Price;
+        row.TotalLimit = r.TotalLimit;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, created, updated,
+        emptyMeansClear = true,
+        inputTableNameInSource = "Ser_MST_PartExtra",
+        noTablesContainsGuardInSource = true,
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/partextramsts/delete", async (List<string> partCodes, AppDbContext db, ITenantContext t) =>
+{
+    var codes = (partCodes ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Cần danh sách PartCode." });
+    var rows = await db.PartExtraMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.PartCode)).ToListAsync();
+    db.PartExtraMsts.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        requested = codes.Count, deleted = rows.Count,
+        sourceDeleteIsNotParameterised = "BuildClauseConditionList + ExecNonQuery khong tham so (nhu #536)",
+        deletesMainAndWhOnly = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -50289,6 +50380,9 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record PartExtraMstDto(string? PartCode, string? ROMSID, string? VieName, string? Unit,
+    decimal? Price, decimal? TotalLimit, string? FlagActive);   // #538
+
 record WarrantyWorkDeleteDto(List<string>? ROWWorkCodes, string? Mode);   // #536
 
 record WarrantyWorkPushDto(List<string>? ROWWorkCodes);   // #535

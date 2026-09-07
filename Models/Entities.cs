@@ -14754,6 +14754,26 @@ public sealed class MaintenanceLevelMst
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#538 Phụ tùng phát sinh **của CommonCenter** (`Ser_MST_PartExtra`) — **KHÁC** `ExtraPartMst`
+/// (vốn port từ `Tbl_Mst_Extra_Parts_Mng`). Hai bảng khác nhau, cùng nói về "phụ tùng phát sinh":
+/// bảng này có thêm `ROMSID` (khoá bộ định mức) và dùng tên cột `VieName`/`TotalLimit`.</summary>
+public sealed class PartExtraMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Khoá bộ định mức — nguồn cho lọc `t.ROMSID`; `ExtraPartMst` **không có** cột này.</summary>
+    public string? ROMSID { get; set; }
+    public string PartCode { get; set; } = "";
+    /// <summary>Tên tiếng Việt — nguồn đặt là `VieName` (không phải `PartName`).</summary>
+    public string? VieName { get; set; }
+    public string? Unit { get; set; }
+    public decimal? Price { get; set; }
+    /// <summary>Giới hạn tổng — nguồn đặt là `TotalLimit` (không phải `MaxQuantity`).</summary>
+    public decimal? TotalLimit { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Phụ tùng phát sinh (mã/tên/ĐVT/giá/SL tối đa) — port 1:1 FrmMstExtraPartsMng (Tbl_Mst_Extra_Parts_Mng, TCMotor).</summary>
 public sealed class ExtraPartMst
 {
