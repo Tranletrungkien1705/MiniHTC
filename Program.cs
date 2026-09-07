@@ -41959,13 +41959,39 @@ app.MapPost("/api/stockins/{no}/execute", async (string no, AppDbContext db, ITe
 // 🔴 LÙI trạng thái "2"→"1" (nhánh `strIsRevert == Flag.Active` của nguồn) — port cũ THIẾU.
 // ⚠️ Nguồn phiếu NHẬP dùng `CheckStockInNotPending` vốn chấp nhận **cả "1" LẪN "5" (Hủy)** ⇒ lùi được sang Hủy.
 //    Phiếu XUẤT thì KHÔNG (`CheckStockOutNotPending` chỉ nhận "1") — luật LỆCH giữa 2 màn, giữ nguyên.
-app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #451 NHÁNH LÙI: ghi chú đã nói đúng luật nhưng **CODE CHỈ LÀM MỘT NỬA** =====
+// Ghi chú ngay trên đã ghi: `CheckStockInNotPending` chấp nhận **cả hai** đích. Nay đọc đúng thân guard
+//   (`BizCarSv.Inventory.StockIn.cs:348`):
+//     `if (!strStatus.Equals(Pending) **&** !strStatus.Equals(Reject)) throw …`
+//   với `Pending = "1"` và `Reject = "5"` (`Const.Main.cs:205,209`).
+//   ⇒ Nguồn cho lùi sang **"1" HOẶC "5"**, nhưng endpoint cũ **gán cứng `h.Status = "1"`** ⇒ đích "5"
+//     **không đi tới được**. Ghi chú mô tả đúng luật, code thì bỏ mất một nửa — dạng lệch khó thấy nhất
+//     vì người đọc tin vào ghi chú.
+//
+// ⚠️ **HẰNG VÀ CHÚ THÍCH CỦA NÓ MÂU THUẪN**: `public const string Reject = "5"; // Kết thúc` —
+//   **tên** là *Reject* (từ chối/huỷ) nhưng **chú thích** lại là *"Kết thúc"*, **trùng y hệt** chú thích của
+//   `Finished = "3"` ngay phía trên (dấu hiệu chép dòng). ⇒ Không thể suy nhãn hiển thị từ hằng này.
+//   Ghi chú cũ ở đây gọi "5" là **Hủy** — đó là suy từ TÊN, không phải từ chú thích. Nay **không khẳng định**
+//   nhãn nào, chỉ trả cả mã lẫn hai cách đọc để nghiệp vụ chốt.
+// ⚠️ Nguồn viết `&` (toán tử bit) thay vì `&&` — với hai giá trị bool thì kết quả như nhau, chỉ mất
+//   short-circuit; ghi lại vì đây là dấu hiệu code được gõ vội, thường đi kèm chỗ khác cẩu thả hơn.
+app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITenantContext t,
+    string? toStatus) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2)." });
-    h.Status = "1";
+    // Đích mặc định giữ như cũ ("1"); nguồn còn cho "5" (hằng Reject).
+    var target = string.IsNullOrWhiteSpace(toStatus) ? "1" : toStatus!.Trim();
+    if (target != "1" && target != "5")
+        return Results.BadRequest(new
+        {
+            error = "Ser_Inv_StockIn_NotPending",
+            message = "Đích lùi chỉ được là \"1\" (Pending) hoặc \"5\" (hằng Reject) — đúng guard "
+                + "CheckStockInNotPending của nguồn.",
+        });
+    h.Status = target;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Mới tạo" });
 }).RequireAuthorization();
