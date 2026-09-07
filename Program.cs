@@ -45346,6 +45346,86 @@ app.MapGet("/api/reports/care-mace", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #493 PHỤ TÙNG CHẬM LUÂN CHUYỂN — `Ser_Mst_Part_SP_Get` (`BizCarSv.PartOrder.cs:4196`) =====
+// ⚪ Cặp `_WH` (`WH.cs:27415`) khác **đúng một dòng** và chỉ là **khoảng trắng cuối dòng** trong lời gọi
+//   `Replace(…, "@iNotRotateFrom", …)` — cả hai bản đều có đủ cả hai placeholder ⇒ **tương đương**.
+//   Đóng thêm một ca của #484 (**còn 9**).
+//
+// 🔴 **"SỐ NGÀY KHÔNG LUÂN CHUYỂN" ĐẾM TỚI HÔM NAY**:
+//     `DATEDIFF(DAY, q.MaxStockInDate, GETDATE()) KLuanChuyen`
+//   ⇒ mốc là **ngày CHẠY**, không phải mốc báo cáo — cùng khuôn đã gặp ở #473. Chạy lại sau một tuần
+//     ra con số khác cho **cùng một danh sách**. Giữ đúng nguồn, trả cờ `ageCountedToTodayNotReportDate`.
+//
+// 🔴 **BỎ TRỐNG KHÔNG PHẢI "KHÔNG LỌC"**: nguồn khai `int iNotRotateFrom = 0;` rồi chỉ gán khi
+//   `int.TryParse` thành công. Truyền rỗng ⇒ **cả hai đều là 0** ⇒ guard `From > To` **không bắt**
+//   (0 > 0 sai) và SQL lọc `KLuanChuyen >= "0" and <= "0"` ⇒ **chỉ ra phụ tùng vừa nhập đúng hôm nay**.
+//   Người dùng tưởng bỏ trống là xem tất cả; thực tế **gần như rỗng**. Port bắt buộc truyền cả hai + cờ.
+// 🔴 **MÌN TRÀN SỐ**: `if (int.TryParse(s, out i)) { i = Convert.To**Int16**(s); }` — parse lọt vào `int`
+//   nhưng gán lại bằng `Int16` ⇒ giá trị **> 32767 ném OverflowException** ngay tại tầng biz.
+//   Port dùng `int` và chặn mềm ở biên 32767 + cờ `sourceOverflowsAboveInt16`.
+// ⚠️ Guard duy nhất của `#region //Check` (đã trích nguyên văn): `if (iNotRotateFrom > iNotRotateTo) throw`
+//   `Ser_Mst_Part_SP_Get_InvalidRotate`. Không có guard nào khác.
+// ⚠️ Cửa sổ phân trang: `@MyRowIdx_Start = start + 1` (C# đếm từ 0), `@MyRowIdx_End = start + count`.
+// ⚠️ Hai mốc bake **có nháy** quanh giá trị SỐ (`"@iNotRotateFrom"`) ⇒ so chuỗi/ép kiểu ngầm ở SQL.
+app.MapGet("/api/reports/slow-moving-parts", async (AppDbContext db, ITenantContext t,
+    int? notRotateFrom, int? notRotateTo, string? dealerCode, int? start, int? count) =>
+{
+    // Bỏ trống ở nguồn = 0/0 (xem ghi chú) ⇒ port bắt buộc truyền, tránh "rỗng mà tưởng tất cả".
+    if (notRotateFrom is null || notRotateTo is null)
+        return Results.BadRequest(new
+        {
+            error = "Cần notRotateFrom và notRotateTo.",
+            emptyMeansZeroInSource = true,
+            note = "Nguồn để rỗng thành 0/0 ⇒ lọc KLuanChuyen trong [0,0], gần như không ra dòng nào.",
+        });
+    var f = notRotateFrom.Value; var tto = notRotateTo.Value;
+    if (f > tto)
+        return Results.BadRequest(new { error = "Ser_Mst_Part_SP_Get_InvalidRotate", from = f, to = tto });
+    var overflowsInSource = f > 32767 || tto > 32767;
+
+    var st = Math.Max(0, start ?? 0);
+    var cnt = Math.Clamp(count ?? 50, 1, 500);
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DateIn != null).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        inst = inst.Where(x => x.DealerCode == dealerCode!.Trim()).ToList();
+    // MaxStockInDate theo từng phụ tùng.
+    var maxIn = inst.Where(x => x.PartCode != null)
+        .GroupBy(x => x.PartCode!)
+        .ToDictionary(g => g.Key, g => g.Max(x => x.DateIn!.Value).Date);
+
+    var today = DateTime.Now.Date;
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).ToListAsync();
+    var rows = parts.Where(p => p.PartCode != null && maxIn.ContainsKey(p.PartCode))
+        .Select(p =>
+        {
+            var last = maxIn[p.PartCode!];
+            return new
+            {
+                p.PartCode, VieName = p.PartName, p.Unit, p.Location, p.Quantity,
+                MaxStockInDate = last,
+                KLuanChuyen = (int)(today - last).TotalDays,   // đúng nguồn: đếm tới HÔM NAY
+            };
+        })
+        .Where(x => x.KLuanChuyen >= f && x.KLuanChuyen <= tto)
+        .OrderByDescending(x => x.KLuanChuyen).ThenBy(x => x.PartCode)
+        .ToList();
+
+    var page = rows.Skip(st).Take(cnt).ToList();
+    return Results.Ok(new
+    {
+        notRotateFrom = f, notRotateTo = tto,
+        total = rows.Count, start = st, count = cnt,
+        rowIdxStart = st + 1, rowIdxEnd = st + cnt,   // đúng @MyRowIdx_Start/@MyRowIdx_End
+        items = page,
+        ageCountedToTodayNotReportDate = true,
+        emptyMeansZeroInSource = true,
+        sourceOverflowsAboveInt16 = overflowsInSource,
+        bakedNumericWithQuotes = true,
+        whTwinEquivalent = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
