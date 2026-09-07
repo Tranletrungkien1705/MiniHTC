@@ -4120,6 +4120,146 @@ app.MapGet("/api/reports/wo-order-and-schedule", async (
         woDebt = "NO: bang WO_WorkOrder (ScheduleEndDate) va Ord_PerformanceInvoiceDetail (WorkOrderNo+Quantity) chua du trong MiniHTC => nhanh #tbl_WO_DoneButNotFraming cua union all KHONG duoc dung. Khong bia so."
     });
 }).RequireAuthorization();
+
+// ===== #B78 SỐ LƯỢNG KẾ HOẠCH KINH DOANH THEO MODEL — `BPL_BusinessPlan_GetQtyWH` =====
+// Trace LIVE: WS `BPL_BusinessPlan_GetQty` (`WSHTC.asmx.cs:33650`) → `_biz.BPL_BusinessPlan_GetQty`
+//   / `…_WH` (`DataWH/Biz.HTC.WH.My.cs:23074` / `:23209`) — **cả hai chỉ là VỎ**, việc thật nằm ở
+//   **`BPL_BusinessPlan_GetQtyX`** (`:21731`); bản `_WH` truyền `_dbWH` làm `_dbAction`.
+//   3B đo thật, **khớp cả 2 máy**: start=21731 md5 `ea608b64f143ae02de608bc4c027aa7e`.
+// 🔴 **KHUNG DÒNG LÀ DANH MỤC MODEL, KHÔNG PHẢI GIAO DỊCH**: `from Mst_CarModel mcm left join
+//    #tbl_CountQtyMonth t … where mcm.FlagBusinessPlan = '1'` (`:22005`) ⇒ model **bật cờ** mà không có
+//    giao dịch nào **vẫn hiện dòng 0**; model **tắt cờ** thì **biến mất kể cả khi có giao dịch**.
+//    ⚠️ Cờ là **`FlagBusinessPlan`**, KHÔNG phải `FlagActive` — đã thêm §12.
+// 🔴 **BỐN điều kiện "bán lẻ" nằm TRONG `on` của `inner join Dls_DealDetail`** (`:21875-21880`):
+//    `dddt.FlagCurrent = '1'` ∧ `dd.DealerCodeBuyer is null` ∧ `dd.CustomerCodeBuyer is not null`
+//    ∧ `dd.FlagInitDeal = '0'`. Vì là `inner join`, đặt ở `on` hay `where` **cùng kết quả** — nhưng
+//    `left join Car_Car` ngay sau thì **KHÁC**: xe thiếu bản ghi `Car_Car` **vẫn giữ giao dịch**,
+//    chỉ mất `ModelCode` (rơi khỏi nhóm khi group). Đã đếm `dealsWithoutCarRow`.
+// ✅ **ĐỐI CHỨNG RBAC (ca thứ 9, LÀNH)**: cả ba khối đều `inner join Mst_Dealer md … and (md.BUCode
+//    like @strBUPatternOfUser)` kèm đúng chú thích *"Must inner join to filter AbilityOfUser"* —
+//    ở đây điều kiện **CÓ THẬT VÀ ĐANG CHẠY**. Củng cố kết luận: 8 ca kia là **lỗi**, không phải quy ước.
+// 🔴 **HAI KIỂU SO NGÀY TRỘN NHAU trong cùng một `case`** (`:21895-21910`):
+//      `YEARPAST` dùng **so khoảng**: `DeliveryDate >= '@strFirstDayOfYearPast' and < '@strFirstDayOfYearCurrent'`
+//      `M1…M12`  dùng **`like N'yyyy-MM%'`** — so CHUỖI trên cột ngày.
+//    ⇒ `M1..M12` chỉ đúng khi cột lưu dạng chuỗi `'yyyy-MM-dd…'`. Port so theo (năm, tháng).
+// 🔴 **Ba bảng kết quả, ba mốc thời gian khác nhau**:
+//    · `Rtl` (bán lẻ)  — `Dls_DealDetail.DeliveryDate`, có thêm cột `Rtl_TotalQtyDeal` = **NĂM TRƯỚC**.
+//    · `Ord` (đặt hàng) — `Ord_SalesOrderDetail.ApprovedDate`, lọc `oso.SOStatus **not in ('C','R')**`
+//      (loại Huỷ/Từ chối — chú ý là **not in**, không phải `in ('A2')`) và
+//      `osod.ApprovedDate >= '@strFirstDayOfYearCurrent'` ⇒ **không có ô YEARPAST**.
+//    · `BO` (tồn back-order) — xem NỢ bên dưới.
+// ⚠️ **Dòng lỗi vô hại trong nguồn** (`:21798`): `string strYearNext = yearLast.ToString("yyyy");`
+//    — gán **năm TRƯỚC** vào biến "năm SAU". Biến này **không được dùng ở đâu** (`intYearNext` được
+//    tính riêng đúng), nên không sai số liệu. Ghi lại để lượt sau đọc không tưởng là lỗi đang sống.
+// 📌 **NỢ — bảng `BO` KHÔNG dựng**: khối `#tbl_Car_Car_FilterBO` cần **`VIN_MyStatus`** (nợ từ #B65)
+//    và ba bảng cộng dồn thanh toán `#tbl_Pmt_PaymentDetailTotal_Temp/_Deposit/_A_Deposit`
+//    (`Pmt_PaymentDetail` + `Pmt_Payment`, nợ tầng thanh toán từ #B37). Cờ `boTableSkipped` báo rõ.
+app.MapGet("/api/reports/business-plan-qty", async (
+    AppDbContext db, ITenantContext t, string? yearPlan, string? dealerCode, string? buPattern) =>
+{
+    var year = int.TryParse((yearPlan ?? "").Trim(), out var y) && y > 1900 ? y : DateTime.Now.Year;
+    var yearPast = year - 1;
+    var dlr = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim().ToUpperInvariant();
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `inner join Mst_Dealer … and (md.BUCode like @strBUPatternOfUser)` — LỌC THẬT.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var scope = dealers
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => dlr is null || (d.DealerCode ?? "").ToUpperInvariant() == dlr)
+        .Select(d => d.DealerCode).ToHashSet();
+
+    // Khung dòng = danh mục model có `FlagBusinessPlan = '1'`.
+    var models = await db.CarModelStds
+        .Where(m => m.OrgId == t.OrgId && m.FlagBusinessPlan == "1")
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.VIN, c.ModelCode, c.SOCode }).ToListAsync();
+    var carByKey = cars.GroupBy(c => c.VIN).ToDictionary(g => g.Key, g => g.First());
+
+    // ---------- Bảng 1: `Rtl` — giao dịch BÁN LẺ theo DeliveryDate ----------
+    var deals = await (from d in db.DealerDeals.Where(x => x.OrgId == t.OrgId
+                            && (x.DealerCodeBuyer == null || x.DealerCodeBuyer == "")
+                            && x.CustomerCodeBuyer != null && x.CustomerCodeBuyer != ""
+                            && x.FlagInitDeal == "0")
+                       join l in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.FlagCurrent == "1")
+                            on d.Id equals l.DealId
+                       select new { d.DealerCode, l.CarId, l.DeliveryDate }).ToListAsync();
+    deals = deals.Where(x => x.DealerCode != null && scope.Contains(x.DealerCode)).ToList();
+
+    // `left join Car_Car` — giao dịch KHÔNG có bản ghi xe vẫn giữ, chỉ mất ModelCode.
+    var dealsWithoutCarRow = deals.Count(x => x.CarId == null || !carByKey.ContainsKey(x.CarId));
+
+    var rtl = new Dictionary<string, decimal[]>();     // [0]=YEARPAST, [1..12]=M1..M12
+    foreach (var x in deals)
+    {
+        if (x.CarId is null || !carByKey.TryGetValue(x.CarId, out var cv)) continue;
+        var mc = cv.ModelCode; if (mc is null) continue;
+        if (x.DeliveryDate is null) continue;
+        var dt = x.DeliveryDate.Value;
+        int slot = dt.Year == yearPast ? 0 : (dt.Year == year ? dt.Month : -1);
+        if (slot < 0) continue;
+        if (!rtl.TryGetValue(mc, out var arr)) { arr = new decimal[13]; rtl[mc] = arr; }
+        arr[slot] += 1m;
+    }
+
+    // ---------- Bảng 2: `Ord` — dòng đơn bán theo ApprovedDate ----------
+    var soHeads = await db.SalesOrders.Where(o => o.OrgId == t.OrgId
+                        && o.Status != "C" && o.Status != "R")        // 🔴 `not in ('C','R')`
+        .Select(o => new { o.Id, o.DealerCode, o.SoCode }).ToListAsync();
+    var soInScope = soHeads.Where(o => o.DealerCode != null && scope.Contains(o.DealerCode))
+        .ToDictionary(o => o.Id, o => o.SoCode);
+    var soLines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.ApprovedDate != null)
+        .Select(l => new { l.SalesOrderId, l.ModelCode, l.ApprovedDate, l.CarId }).ToListAsync();
+
+    var ord = new Dictionary<string, decimal[]>();     // [1..12] (KHÔNG có ô YEARPAST)
+    foreach (var l in soLines)
+    {
+        if (!soInScope.ContainsKey(l.SalesOrderId)) continue;
+        var dt = l.ApprovedDate!.Value;
+        if (dt.Year != year) continue;                  // `ApprovedDate >= @strFirstDayOfYearCurrent`
+        var mc = l.ModelCode; if (string.IsNullOrEmpty(mc)) continue;
+        if (!ord.TryGetValue(mc, out var arr)) { arr = new decimal[13]; ord[mc] = arr; }
+        arr[dt.Month] += 1m;
+    }
+
+    var items = models.Select(m =>
+    {
+        rtl.TryGetValue(m.ModelCode, out var r);
+        ord.TryGetValue(m.ModelCode, out var o);
+        decimal R(int i) => r is null ? 0m : r[i];
+        decimal O(int i) => o is null ? 0m : o[i];
+        return new
+        {
+            m.ModelCode, m.ModelName,
+            rtl_TotalQtyDeal = R(0),        // NĂM TRƯỚC
+            rtl_QtyM1 = R(1), rtl_QtyM2 = R(2), rtl_QtyM3 = R(3), rtl_QtyM4 = R(4),
+            rtl_QtyM5 = R(5), rtl_QtyM6 = R(6), rtl_QtyM7 = R(7), rtl_QtyM8 = R(8),
+            rtl_QtyM9 = R(9), rtl_QtyM10 = R(10), rtl_QtyM11 = R(11), rtl_QtyM12 = R(12),
+            ord_QtyM1 = O(1), ord_QtyM2 = O(2), ord_QtyM3 = O(3), ord_QtyM4 = O(4),
+            ord_QtyM5 = O(5), ord_QtyM6 = O(6), ord_QtyM7 = O(7), ord_QtyM8 = O(8),
+            ord_QtyM9 = O(9), ord_QtyM10 = O(10), ord_QtyM11 = O(11), ord_QtyM12 = O(12)
+        };
+    }).OrderBy(x => x.ModelCode, StringComparer.Ordinal).ToList();
+
+    return Results.Ok(new
+    {
+        yearPlan = year.ToString("D4"), yearPast = yearPast.ToString("D4"),
+        dealerCode = dlr, count = items.Count, items,
+        dealsWithoutCarRow,
+        rowFrameNote = "KHUNG DONG LA DANH MUC MODEL, KHONG PHAI GIAO DICH: 'from Mst_CarModel mcm left join #tbl_CountQtyMonth t ... where mcm.FlagBusinessPlan = 1'. Model BAT co ma khong co giao dich nao VAN HIEN DONG 0; model TAT co thi BIEN MAT ke ca khi co giao dich. Co la FlagBusinessPlan, KHONG phai FlagActive.",
+        retailCriteriaNote = "BON dieu kien 'ban le' nam TRONG 'on' cua inner join Dls_DealDetail: dddt.FlagCurrent='1' VA dd.DealerCodeBuyer is null VA dd.CustomerCodeBuyer is not null VA dd.FlagInitDeal='0'. Vi la inner join nen dat o 'on' hay 'where' cung ket qua - NHUNG 'left join Car_Car' ngay sau thi KHAC: xe thieu ban ghi Car_Car VAN GIU giao dich, chi mat ModelCode (roi khoi nhom khi group). Da dem dealsWithoutCarRow.",
+        rbacCounterExample = "DOI CHUNG RBAC (ca thu 9, LANH): ca ba khoi deu 'inner join Mst_Dealer md ... and (md.BUCode like @strBUPatternOfUser)' kem dung chu thich 'Must inner join to filter AbilityOfUser', va o day dieu kien CO THAT VA DANG CHAY. Cung co ket luan: 8 ca kia la LOI, khong phai quy uoc.",
+        dateCompareMixNote = "HAI KIEU SO NGAY TRON NHAU trong cung mot 'case': YEARPAST dung SO KHOANG (>= dau nam truoc va < dau nam nay), con M1..M12 dung 'like N''yyyy-MM%''' - so CHUOI tren cot ngay. M1..M12 chi dung khi cot luu dang chuoi 'yyyy-MM-dd...'. Port so theo (nam, thang).",
+        threeTablesNote = "Ba bang ket qua, BA MOC THOI GIAN KHAC NHAU: Rtl theo Dls_DealDetail.DeliveryDate (co them Rtl_TotalQtyDeal = NAM TRUOC) | Ord theo Ord_SalesOrderDetail.ApprovedDate, loc oso.SOStatus NOT IN ('C','R') (loai Huy/Tu choi - chu y la NOT IN, khong phai IN ('A2')) va ApprovedDate >= dau nam => KHONG CO o YEARPAST | BO xem boTableSkipped.",
+        harmlessSourceTypoNote = "Dong :21798 cua nguon: 'string strYearNext = yearLast.ToString(\"yyyy\");' - gan NAM TRUOC vao bien 'nam SAU'. Bien nay KHONG duoc dung o dau (intYearNext duoc tinh rieng dung) nen KHONG sai so lieu. Ghi lai de luot sau doc khong tuong la loi dang song.",
+        boTableSkipped = true,
+        boDebt = "NO: bang BO khong dung duoc. Khoi #tbl_Car_Car_FilterBO can VIN_MyStatus (no tu #B65) va ba bang cong don thanh toan #tbl_Pmt_PaymentDetailTotal_Temp/_Deposit/_A_Deposit (Pmt_PaymentDetail + Pmt_Payment, no tang thanh toan tu #B37). Khong bia.",
+        wrapperNote = "BPL_BusinessPlan_GetQty va _WH deu chi la VO; viec that o BPL_BusinessPlan_GetQtyX (:21731). Ban _WH truyen _dbWH lam _dbAction."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-retail-sales-detail", async (
     AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? buPattern) =>
 {

@@ -13529,6 +13529,12 @@ public sealed class CarModelStd
     public string ModelCode { get; set; } = "";
     public string? ModelName { get; set; }
     public string FlagActive { get; set; } = "1";
+    /// <summary>🔴 #B78 — `Mst_CarModel.FlagBusinessPlan`: cờ quyết định model có nằm trong **kế hoạch
+    /// kinh doanh** hay không. Nguồn dùng nó làm **KHUNG DÒNG** của báo cáo
+    /// (`from Mst_CarModel mcm left join #tbl_CountQtyMonth … where mcm.FlagBusinessPlan = '1'`,
+    /// `Biz.HTC.WH.My.cs:22005`) ⇒ model bật cờ mà **không có giao dịch nào vẫn hiện dòng 0**,
+    /// còn model tắt cờ thì **biến mất kể cả khi có giao dịch**. Không phải `FlagActive`.</summary>
+    public string FlagBusinessPlan { get; set; } = "0";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
