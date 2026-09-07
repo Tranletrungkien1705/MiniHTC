@@ -5216,11 +5216,30 @@ app.MapGet("/api/deals/search", async (
         };
     }).ToList();
 
+    // ===== #B14 khối `Car_PlateNoDuplicate` của nguồn (`Biz.HTC.WH.cs:146035-146055`) =====
+    // Với các giao dịch trong TRANG hiện tại, lấy mọi dòng có `PlateNo` khác rỗng, rồi tìm những dòng ở
+    // **GIAO DỊCH KHÁC** (`t.DealNo <> f.DealNo`) đang dùng CÙNG biển số ⇒ trả (CarId, PlateNo).
+    // ⚠️ So sánh là **DealNo <> DealNo**, KHÔNG phải CarId <> CarId — hai dòng cùng một giao dịch trùng biển
+    //    số thì nguồn KHÔNG coi là trùng.
+    var pagePlates = details.Where(x => !string.IsNullOrWhiteSpace(x.PlateNo))
+        .Select(x => new { x.PlateNo, DealNo = deals.First(z => z.Id == x.DealId).DealNo }).ToList();
+    var plateKeys = pagePlates.Select(p => p.PlateNo!).Distinct().ToList();
+    var otherLines = await db.DealerDealDetails
+        .Where(f => f.OrgId == t.OrgId && f.PlateNo != null && plateKeys.Contains(f.PlateNo))
+        .Select(f => new { f.CarId, f.PlateNo, f.DealId }).ToListAsync();
+    var allDealNos = await db.DealerDeals.Where(z => z.OrgId == t.OrgId)
+        .Select(z => new { z.Id, z.DealNo }).ToListAsync();
+    var plateNoDuplicates = otherLines
+        .Select(f => new { f.CarId, f.PlateNo, DealNo = allDealNos.FirstOrDefault(z => z.Id == f.DealId)?.DealNo })
+        .Where(f => pagePlates.Any(p => p.PlateNo == f.PlateNo && p.DealNo != f.DealNo))
+        .Distinct().ToList();
+
     return Results.Ok(new
     {
         myCount,                       // tổng SỐ GIAO DỊCH khớp lọc (trước phân trang) — đúng `MyCount` của nguồn
         recordStart = start, recordCount = count,
         count = items.Count, items,
+        plateNoDuplicates,             // #B14: khối `Car_PlateNoDuplicate` của nguồn
         rowShape = "MỘT bản ghi = MỘT DÒNG XE (DLS_DealDetail), không phải một chứng từ",
         rbacJoinColumn = "dlsd.DealerCode (đại lý BÁN) — khác cars-to-sell-to-dealer/cars-to-pdi vốn join DealerCodeBuyer",
         droppedByDealerJoin,
@@ -27645,8 +27664,36 @@ app.MapPost("/api/deals/{dealNo}/cars/{carId}/plateno", async (
     if (d.CtmCareFlag == "1")
         return Results.BadRequest(new { error = "Đã kiểm chứng, không được nhập (sửa) biển số", dealNo = no, ctmCareFlag = d.CtmCareFlag });
 
+    // ===== #B14 CẢNH BÁO TRÙNG BIỂN SỐ (port `FrmMngDeal.cs:853-885` + `GetDealDetailByPlateNo` :2443) =====
+    // Luật nguồn: **chỉ chạy khi người dùng KHÔNG phải HTC** (`if (!MasterInit.Instance.IsHTC())`), tức phía
+    // ĐẠI LÝ. Tra mọi dòng đang mang biển số này (lọc kèm `FlagInitDeal = "0"` do client hardcode); nếu cặp
+    // (`DealNo`, `CarId`) hiện tại **không nằm trong** kết quả (tức biển số thực sự đổi sang xe khác) thì hỏi:
+    //   "Biển số '{plateNo}' đã được gắn cho xe '{danh sách CarId};…'. Bạn có chắc chắn muốn cập nhật…?"
+    // ⚠️ Ở nguồn đây là **MessageBox phía CLIENT** (chọn No thì `return`, không gọi service). Chuyển sang
+    //    server nên phải có cờ xác nhận — đây là **chuyển vị trí có nhãn**, không phải luật mới.
+    var newPlate = dto.PlateNo.Trim();
+    if (!dto.IsHTC)                                        // `!MasterInit.Instance.IsHTC()`
+    {
+        var dupLines = await (
+            from f in db.DealerDealDetails.Where(f => f.OrgId == t.OrgId && f.PlateNo == newPlate)
+            join z in db.DealerDeals.Where(z => z.OrgId == t.OrgId && z.FlagInitDeal == "0")
+                 on f.DealId equals z.Id
+            select new { f.CarId, DealNo = z.DealNo }).ToListAsync();
+        // "Nếu biển số không thay đổi thì bỏ qua" — cặp (DealNo, CarId) hiện tại đã có trong kết quả.
+        var isSameCar = dupLines.Any(x => x.DealNo == no && x.CarId == cid);
+        if (dupLines.Count > 0 && !isSameCar && !dto.ConfirmDuplicatePlateNo)
+        {
+            var carDup = string.Join(";", dupLines.Select(x => x.CarId).Distinct());
+            return Results.BadRequest(new
+            {
+                error = $"Biển số '{newPlate}' đã được gắn cho xe '{carDup}'. Bạn có chắc chắn muốn cập nhật biển số này cho xe {cid}?",
+                needConfirm = true, plateNo = newPlate, duplicatedCarIds = carDup, duplicates = dupLines
+            });
+        }
+    }
+
     // `alColumnEffective` chỉ có ĐÚNG MỘT cột: PlateNo (:95246).
-    line.PlateNo = dto.PlateNo.Trim();
+    line.PlateNo = newPlate;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -33834,7 +33881,7 @@ record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
 /// <summary>#B11: sửa biển số dòng xe (`DealerSalesDealDetailUpdate_NormalInfo` — nguồn chỉ nhận PlateNo).</summary>
-record DealDetailPlateNoDto(string? PlateNo);
+record DealDetailPlateNoDto(string? PlateNo, bool IsHTC = true, bool ConfirmDuplicatePlateNo = false);
 /// <summary>#B11: xác nhận/sửa ngày giao xe (`…_DeliveryDate`). Không gửi ngày = không xác nhận.</summary>
 record DealDetailDeliveryDateDto(DateTime? DeliveryDate);
 record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);
