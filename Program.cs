@@ -27993,6 +27993,126 @@ app.MapGet("/api/dealerdeals/cars-to-sell-to-dealer", async (
 //    trong khi nguồn nhận `strSalesType` từ client. Dùng `POST /api/wholesaledeals` (bản đầy đủ).
 
 // ===== Yêu cầu PDI của đại lý (DlrPdiRequest — port 1:1 FrmNewDlr_PDIRequest, DMSales.Foton/SalesDealer) =====
+
+// ===== #B16 TÌM YÊU CẦU PDI ĐẠI LÝ (port 1:1 `SearchDlrPDIRequest` → `DlrPDIRequest_Get`) =====
+// Dùng bởi `FrmNewDlr_PDIRequest` (:216) và `FrmMngDlr_PDIRequest`.
+// Trace: `Dlr_PDIRequestService.SearchDlrPDIRequest` (:145) → WS `DlrPDIRequest_Get`
+//   (`WSHTC.asmx.cs:84951`) → `_biz.DlrPDIRequest_Get` (`…DlrPDIRequest.cs:1914`, **VỎ BỌC**)
+//   → **`Dlr_PDIRequest_GetX`** (`:855`) — SQL thật.
+// 🔴 `left join Dlr_PDIRequestDtl` RỒI `inner join Car_VIN cv on dprd.VIN = cv.VIN` ⇒ cái `left join`
+//    **bị vô hiệu**: yêu cầu KHÔNG có dòng nào, hoặc dòng có VIN chưa khai trong `Car_VIN`, đều **bị LOẠI**.
+//    Đây là mất dữ liệu lúc ĐỌC, không có cảnh báo nào.
+// 🔴 Chín bộ lọc, HAI hình dạng: `DlrPDIReqNo`/`VIN`/`DlrContractNo`/`CtrCarId` = **LIKE %…%**;
+//    `DealerCode`/`DlrPDIReqStatus`/`ROStatus` = **"="**; `CreatedDate` = **">=" và "<="** (một khoảng).
+app.MapGet("/api/dlrpdirequests/search", async (
+    AppDbContext db, ITenantContext t,
+    string? dlrPDIReqNo, string? dealerCode, DateTime? createdFrom, DateTime? createdTo,
+    string? dlrPDIReqStatus, string? vin, string? dlrContractNo, string? roStatus, string? ctrCarId,
+    string? buPattern, int? recordStart, int? recordCount) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var reqs = await db.DlrPdiRequests.Where(r => r.OrgId == t.OrgId).ToListAsync();
+    int droppedByDealerJoin = 0;
+    reqs = reqs.Where(r =>
+    {
+        var dl = dealers.FirstOrDefault(x => x.DealerCode == r.DealerCode);
+        if (dl is null) { droppedByDealerJoin++; return false; }
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedByDealerJoin++; return false; }
+        return true;
+    }).ToList();
+
+    // Bộ lọc trên ĐẦU yêu cầu.
+    if (!string.IsNullOrWhiteSpace(dlrPDIReqNo)) { var k = dlrPDIReqNo.Trim().ToUpperInvariant(); reqs = reqs.Where(r => r.DlrPdiReqNo.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(dealerCode)) reqs = reqs.Where(r => r.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+    if (createdFrom is not null) reqs = reqs.Where(r => r.CreatedAt >= createdFrom).ToList();
+    if (createdTo is not null) reqs = reqs.Where(r => r.CreatedAt <= createdTo).ToList();
+    if (!string.IsNullOrWhiteSpace(dlrPDIReqStatus)) reqs = reqs.Where(r => r.Status == dlrPDIReqStatus.Trim()).ToList();
+
+    var reqIds = reqs.Select(r => r.Id).ToList();
+    var dtls = await db.DlrPdiRequestDetails.Where(x => x.OrgId == t.OrgId && reqIds.Contains(x.DlrPdiReqId)).ToListAsync();
+    // Bộ lọc trên DÒNG.
+    if (!string.IsNullOrWhiteSpace(vin)) { var k = vin.Trim().ToUpperInvariant(); dtls = dtls.Where(x => (x.VIN ?? "").ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(dlrContractNo)) { var k = dlrContractNo.Trim().ToUpperInvariant(); dtls = dtls.Where(x => (x.DlrContractNo ?? "").ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(roStatus)) dtls = dtls.Where(x => x.ROStatus == roStatus.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(ctrCarId)) { var k = ctrCarId.Trim().ToUpperInvariant(); dtls = dtls.Where(x => (x.CtrCarId ?? "").ToUpperInvariant().Contains(k)).ToList(); }
+
+    // 🔴 `inner join Car_VIN` sau `left join` ⇒ dòng có VIN chưa khai bị LOẠI, và yêu cầu không còn dòng nào
+    //    cũng biến mất khỏi kết quả.
+    var vinKeys = dtls.Where(x => x.VIN != null).Select(x => x.VIN!).Distinct().ToList();
+    var carsVin = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vinKeys.Contains(c.VIN)).ToListAsync();
+    var knownVins = carsVin.Select(c => c.VIN).ToHashSet();
+    var droppedNoCarVin = dtls.Count(x => x.VIN == null || !knownVins.Contains(x.VIN));
+    dtls = dtls.Where(x => x.VIN != null && knownVins.Contains(x.VIN)).ToList();
+    var keptReqIds = dtls.Select(x => x.DlrPdiReqId).ToHashSet();
+    var droppedReqNoLine = reqs.Count(r => !keptReqIds.Contains(r.Id));
+    reqs = reqs.Where(r => keptReqIds.Contains(r.Id)).ToList();
+
+    // Phân trang `identity(bigint,0,1) MyIdxSeq` trên `distinct DlrPDIReqNo`, `order by dpr.DlrPDIReqNo`.
+    var orderedNos = reqs.Select(r => r.DlrPdiReqNo).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+    var myCount = orderedNos.Count;
+    var pageNos = orderedNos.Skip(start).Take(count).ToHashSet();
+    reqs = reqs.Where(r => pageNos.Contains(r.DlrPdiReqNo)).ToList();
+    var pageReqIds = reqs.Select(r => r.Id).ToHashSet();
+    dtls = dtls.Where(x => pageReqIds.Contains(x.DlrPdiReqId)).ToList();
+
+    // `#tblDLS_Deal`: giao dịch bán của các VIN trong trang — 🔴 **chỉ `dd.FlagInitDeal = '0'`**.
+    var pageVins = dtls.Select(x => x.VIN!).Distinct().ToList();
+    var dealLines = await (
+        from f in db.DealerDealDetails.Where(f => f.OrgId == t.OrgId && pageVins.Contains(f.CarId))
+        join z in db.DealerDeals.Where(z => z.OrgId == t.OrgId && z.FlagInitDeal == "0") on f.DealId equals z.Id
+        select new { VIN = f.CarId, z.DealNo, z.DealDate, z.SalesType, z.DealerCode, z.DealerCodeBuyer }).ToListAsync();
+
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtNameVN, c.ColorIntNameVN }).ToListAsync();
+    var ctrDtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var custs = await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).Select(c => new { c.CustomerCode, c.FullName, c.DealerCode }).ToListAsync();
+
+    var items = dtls.Select(x =>
+    {
+        var r = reqs.First(z => z.Id == x.DlrPdiReqId);
+        var cv = carsVin.First(c => c.VIN == x.VIN);
+        var mo = models.FirstOrDefault(m => m.ModelCode == cv.ModelCode);
+        var sp = specs.FirstOrDefault(s => s.SpecCode == cv.SpecCode);
+        var co = colors.FirstOrDefault(c => c.ModelCode == cv.ModelCode && c.ColorCode == cv.ColorCode);
+        var dcd = ctrDtls.FirstOrDefault(z => z.DlrContractNo == x.DlrContractNo
+                                              && z.ModelCode == cv.ModelCode && z.SpecCode == cv.SpecCode && z.ColorCode == cv.ColorCode);
+        var anyDeal = dealLines.FirstOrDefault(d => d.VIN == x.VIN);
+        // 🔴 `DealNo`/`DealDate` chỉ lấy giao dịch có **`dd.DealerCodeBuyer is null`** — tức **bán LẺ**,
+        //    loại giao dịch bán buôn ĐL→ĐL; còn `SalesType`/`DealerCode` KHÔNG có điều kiện đó.
+        var retailDeal = dealLines.FirstOrDefault(d => d.VIN == x.VIN && string.IsNullOrEmpty(d.DealerCodeBuyer));
+        var cust = custs.FirstOrDefault(c => c.DealerCode == r.DealerCode);
+        return new
+        {
+            r.DlrPdiReqNo, dlrPDIReqStatus = r.Status, r.DealerCode, r.CreatedAt, r.CreatedBy,
+            r.ApprovedDate, r.ApprovedBy, r.FlagAccessory, r.Remark,
+            x.VIN, x.DlrContractNo, x.CtrCarId, x.RONo, x.ROCreatedDate, x.ROStatus, x.DlrPDIReqDtlStatus,
+            cvVIN = cv.VIN, cvSerialNo = cv.SerialNo, cvSpecCode = cv.SpecCode, mcsSpecDescription = sp?.SpecDesc,
+            cvModelCode = cv.ModelCode, mcmModelName = mo?.ModelName, cvColorCode = cv.ColorCode,
+            mccColorNameVN = co is null ? null : $"{co.ColorExtNameVN}/{co.ColorIntNameVN}",   // `concat(…,'/',…)`
+            cvActualSpec = cv.ActualSpec,
+            ddcCustomerCode = cust?.CustomerCode, ddcFullName = cust?.FullName,
+            dcdDlvExpectedDate = dcd?.DlvExpectedDate,
+            flagDealNo = anyDeal is null ? "0" : "1",       // `IsNull((select top 1 '1' …), 0)`
+            salesType = anyDeal?.SalesType, dealerCodeOfDeal = anyDeal?.DealerCode,
+            dealNo = retailDeal?.DealNo, dealDate = retailDeal?.DealDate
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        rowShape = "MỘT bản ghi = MỘT DÒNG XE của yêu cầu PDI",
+        filterShapes = "LIKE: DlrPDIReqNo/VIN/DlrContractNo/CtrCarId · '=': DealerCode/DlrPDIReqStatus/ROStatus · khoảng: CreatedDate",
+        dealNoRule = "DealNo/DealDate chỉ lấy giao dịch có DealerCodeBuyer rỗng (bán LẺ); SalesType/DealerCode không có điều kiện đó",
+        droppedByDealerJoin, droppedNoCarVin, droppedReqNoLine,
+        droppedNote = "inner join Car_VIN sau left join ⇒ dòng VIN chưa khai VÀ yêu cầu không còn dòng nào đều bị loại (đúng nguồn)"
+    });
+}).RequireAuthorization();
 app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
     var q = db.DlrPdiRequests.Where(p => p.OrgId == t.OrgId);
