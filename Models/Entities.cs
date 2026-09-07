@@ -2143,6 +2143,12 @@ public sealed class TcgSalePrice
 /// header lệnh sửa chữa xe tại xưởng dịch vụ. HasRO→InGarage→Repaired→CheckEnd→Paid→Finished.</summary>
 public sealed class RepairOrder
 {
+    /// <summary>🔴 #446 §12 APPID — khoá nối LỆNH SỬA về CUỘC HẸN sinh ra nó.
+    /// Nguồn lọc `BuildClauseConditionList("and", "ro.**AppId**", strAppId, "|")` trong
+    /// `Ser_RO_Get_ByAppId` (`BizCarSv.Appointment.cs:2086`) — đây là cách màn lịch hẹn biết
+    /// "cuộc hẹn này đã có báo giá chưa" để đổi nhãn nút giữa *Tạo báo giá* và *Xem báo giá*.
+    /// Thiếu cột này thì **không có đường nào đi từ cuộc hẹn sang báo giá**.</summary>
+    public string? AppId { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string RONo { get; set; } = "";

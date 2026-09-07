@@ -24823,6 +24823,74 @@ app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDt
 //   `DateTime.ParseExact(x, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)` — **đúng cách**,
 //   ngược hẳn với `DateTime.Now.ToString()` phụ thuộc văn hoá ở #421. Cùng một cây nguồn, hai lối làm.
 // ⚠️ Lịch hẹn **chưa gán khoang** (`CavityID` rỗng) không bao giờ lên bảng — cả nguồn lẫn bản port.
+// ===== 🔴 #446 CUỘC HẸN NÀY ĐÃ CÓ BÁO GIÁ CHƯA (`Ser_RO_Get_ByAppId`) =====
+// TRACE: `FrmQuotationApp.btnCreateRO_Click` (`:2612`) → `AppointmentService.Ser_RO_Get_ByAppId`
+//   (`:508`) → biz (`BizCarSv.Appointment.cs:2086`). Kết quả quyết định nhãn nút:
+//   có báo giá ⇒ **"Xem báo giá"**, chưa có ⇒ **"Tạo báo giá"**.
+//
+// 🔴 **CHỌN BÁO GIÁ BẰNG BIẾN, KHÔNG SẮP XẾP**:
+//     `declare @ROID int`
+//     `select @ROID = ro0.ROID from ser_RO ro0 where exists ( … )`
+//   Không `TOP`, không `ORDER BY` ⇒ nếu **một cuộc hẹn có nhiều lệnh sửa**, `@ROID` nhận **một cái BẤT KỲ**
+//   (cái cuối cùng máy quét trúng). Cùng họ với lỗi `TOP` thiếu `ORDER BY` ở #415, nhưng ở đây nó quyết định
+//   **người dùng được mở báo giá NÀO**. 📌 MiniHTC sắp theo `Id` và trả `candidateCount` để thấy khi có nhiều.
+//
+// 🔴 **NHÁNH "KHÔNG CÓ" TRẢ VỀ BẢNG SAI LƯỢC ĐỒ**: `else BEGIN select 1 where (1 = 0) END`
+//   ⇒ một bảng **rỗng nhưng chỉ có một cột vô danh**, rồi biz vẫn **đặt tên nó là `Ser_RO`**.
+//   Client nhận một bảng tên đúng, **lược đồ sai**. Và vì có guard `if (dsGetData.Tables.Count > 1)`,
+//   hai bảng `Ser_Service`/`Ser_Part` **không tồn tại** trong trường hợp này ⇒ `ds.Tables["Ser_Part"]`
+//   trả **null**, được gán thẳng vào `frm.dtSerAppParts` — null lan âm thầm sang màn báo giá.
+//
+// 🔴 **NGUỒN DÒNG ĐỔI THEO NHÁNH**: trong `btnCreateRO_Click`, khi đã có báo giá và `bRoFirst == false`,
+//   nguồn **ghi đè** `frm.dtSerAppParts`/`Services` bằng các bảng lấy từ **LỆNH SỬA**, thay cho bảng lấy từ
+//   **CUỘC HẸN** gán ngay phía trên. ⇒ Cùng một màn, dòng công/phụ tùng hiển thị có thể đến từ **hai nguồn
+//   khác nhau** tuỳ đã có báo giá hay chưa. Đọc lướt sẽ tưởng luôn lấy từ cuộc hẹn.
+//
+// ⚠️ Chuỗi fallback tên/địa chỉ người liên hệ, đáng chú ý vì **địa chỉ đi theo cái TÊN**:
+//   `isnull(ro.CusName, isnull(cus.ContName, cus.CusName)) CusName` và
+//   `case when ro.CusName is not null then ro.**CusAddress** when cus.ContName is not null then cus.**ContAddress**`
+//   `     else cus.Address end` — điều kiện xét **cột TÊN** để chọn **cột ĐỊA CHỈ**.
+app.MapGet("/api/appointments/{appNo}/quotation", async (string appNo, AppDbContext db, ITenantContext t) =>
+{
+    var app = await db.ServiceAppointments
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == appNo);
+    if (app is null) return Results.NotFound(new { appNo });
+
+    var candidates = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId && r.AppId == appNo)
+        .OrderBy(r => r.Id).ToListAsync();
+
+    if (candidates.Count == 0)
+        return Results.Ok(new
+        {
+            appNo, hasQuotation = false, buttonLabel = "Tạo báo giá",
+            candidateCount = 0,
+            emptyShapeNote = "Nguồn trả `select 1 where (1=0)` cho trường hợp này ⇒ một bảng RỖNG chỉ có "
+                + "MỘT CỘT VÔ DANH nhưng vẫn được đặt tên Ser_RO (lược đồ sai), và hai bảng Ser_Service/"
+                + "Ser_Part KHÔNG tồn tại ⇒ ds.Tables[\"Ser_Part\"] trả null, lan âm thầm sang màn báo giá.",
+        });
+
+    var ro = candidates[0];
+    return Results.Ok(new
+    {
+        appNo, hasQuotation = true, buttonLabel = "Xem báo giá",
+        candidateCount = candidates.Count,
+        ro.Id, ro.RONo, ro.Status, ro.CusRequest, ro.CarStatus, ro.Assistant, ro.Km,
+        ro.CusID, ro.CarID, ro.DealerCode,
+        arbitraryPickNote = candidates.Count > 1
+            ? $"Cuộc hẹn này có {candidates.Count} lệnh sửa. NGUỒN chọn bằng `select @ROID = ro0.ROID … "
+              + "where exists(…)` KHÔNG có TOP/ORDER BY ⇒ lấy một cái BẤT KỲ; người dùng có thể được mở "
+              + "báo giá khác nhau giữa hai lần bấm. MiniHTC sắp theo Id cho ổn định."
+            : null,
+        lineSourceSwitchNote = "Trong nguồn, khi ĐÃ có báo giá và bRoFirst = false, các bảng dòng công/phụ "
+            + "tùng bị GHI ĐÈ bằng dữ liệu lấy từ LỆNH SỬA thay cho dữ liệu lấy từ CUỘC HẸN gán ngay phía "
+            + "trên ⇒ cùng một màn, dòng hiển thị đến từ hai nguồn khác nhau tuỳ đã có báo giá hay chưa.",
+        contactFallbackNote = "Tên người liên hệ: isnull(ro.CusName, isnull(cus.ContName, cus.CusName)). "
+            + "Địa chỉ chọn theo ĐIỀU KIỆN TRÊN CỘT TÊN (when ro.CusName is not null then ro.CusAddress …) "
+            + "⇒ địa chỉ đi theo nguồn của cái TÊN, không tự xét cột địa chỉ.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantContext t,
     DateTime? date, int? fromHour, int? toHour) =>
 {
