@@ -524,6 +524,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<TranspFeeHist> TranspFeeHists => Set<TranspFeeHist>();   // #B90 anh chup dong phi theo phien ban
     public DbSet<SysPartner> SysPartners => Set<SysPartner>();                 // #B96 danh muc doi tac he thong
     public DbSet<SysObjectTypeMst> SysObjectTypeMsts => Set<SysObjectTypeMst>();   // #B96 danh muc loai doi tuong phan quyen
+    public DbSet<Department> Departments => Set<Department>();   // #B98 danh muc phong ban (Mst_Department)
     public DbSet<PaymentTerm> PaymentTerms => Set<PaymentTerm>();
     public DbSet<PaymentTermDetail> PaymentTermDetails => Set<PaymentTermDetail>();
     public DbSet<CarSpec> CarSpecs => Set<CarSpec>();

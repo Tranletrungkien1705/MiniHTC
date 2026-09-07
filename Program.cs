@@ -35986,6 +35986,45 @@ app.MapGet("/api/sysobjecttypes", async (AppDbContext db, ITenantContext t, stri
     });
 }).RequireAuthorization();
 
+// ===== #B98 DANH MỤC PHÒNG BAN — `Mst_Department_Get_New20181115` =====
+// Trace LIVE: WS → `_biz.Mst_Department_Get_New20181115` (`BizHTC.zzzzCode.cs:6839`);
+//   phía client là `DealerService.GetDepartment(strDepartmentCode)`.
+//   3B đo thật, **khớp cả 2 máy**: start=6839 md5 `21e38c178f9a1e81c64c26e4119c2040`.
+// ⚠️ **Caller-first (luật `C0-…septuagesimustertius`)**: hai hàm liền kề trong **cùng file**
+//    `Mst_SalesManTypeCertificate_Get_New20181115` (`:7240`) và `Mst_Qualification_Get_New20181115`
+//    (`:7465`) **KHÔNG CÓ caller nào** — grep toàn cây chỉ ra chính file đó + bản `Backup/`.
+//    ⇒ **HÀM CHẾT, KHÔNG PORT** (cùng quyết định với `DiscountCreate`/`MstDiscountSave`).
+// 🔴 **Khuôn "lọc rồi tự nối lại"**: `#tbl_Mst_Department_Filter` chỉ giữ **`DepartmentCode`**, rồi
+//    `inner join Mst_Department` lấy `mdpm.*`. Cả hai bước đều `select distinct` — **hai lần** distinct.
+//    ⇒ Bảng có hai dòng trùng `DepartmentCode` nhưng khác cột khác thì **vẫn ra hai dòng** (distinct
+//    thứ hai xét TOÀN BỘ cột). Đừng port thành `DistinctBy(DepartmentCode)`.
+// 🔴 `BuildClauseConditionList` — dấu ngăn **ống `|`** như #B96, không phải dấu phẩy.
+// ⚠️ **RBAC biến thể 2 — ca thứ 15**: `@strBUPatternOfUser` bind nhưng SQL **không dùng**
+//    (danh mục phòng ban không có cột đại lý). Tác hại ~0; ghi để đủ mẫu.
+app.MapGet("/api/departments", async (AppDbContext db, ITenantContext t, string? departmentCodeList) =>
+{
+    var codes = SplitConditionList(departmentCodeList);
+    var q = db.Departments.Where(d => d.OrgId == t.OrgId);
+    if (codes.Count > 0) q = q.Where(d => codes.Contains(d.DepartmentCode));
+    // Hai lần `select distinct`, lần sau xét TOÀN BỘ cột ⇒ KHÔNG gộp theo mã.
+    var items = (await q.OrderBy(d => d.DepartmentCode).ToListAsync())
+        .Select(d => new
+        {
+            mdpmDepartmentCode = d.DepartmentCode,
+            mdpmDepartmentName = d.DepartmentName,
+            mdpmFlagActive = d.FlagActive,
+            mdpmRemark = d.Remark
+        }).Distinct().ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        distinctNote = "Khuon 'loc roi tu noi lai': #tbl_Mst_Department_Filter chi giu DepartmentCode, roi inner join Mst_Department lay mdpm.*. CA HAI buoc deu 'select distinct' - HAI LAN distinct, va lan sau xet TOAN BO cot => hai dong trung DepartmentCode nhung khac cot khac VAN ra hai dong. Dung port thanh DistinctBy(DepartmentCode).",
+        separatorNote = "BuildClauseConditionList dung dau ngan ONG '|' (nhu #B96), khong phai dau phay.",
+        deadSiblingsNote = "Caller-first: hai ham lien ke trong CUNG FILE - Mst_SalesManTypeCertificate_Get_New20181115 (:7240) va Mst_Qualification_Get_New20181115 (:7465) - KHONG CO caller nao (chi file goc + Backup/) => HAM CHET, KHONG PORT.",
+        rbacHole = "RBAC bien the 2 (khai ma khong dung), ca thu 15: @strBUPatternOfUser bind nhung SQL khong dung (danh muc phong ban khong co cot dai ly). Tac hai ~0; ghi de du mau."
+    });
+}).RequireAuthorization();
+
 // Dấu ngăn của nguồn là `|`; chấp nhận thêm `,` để client hiện tại không vỡ (khác biệt CÓ Ý).
 static List<string> SplitConditionList(string? s) =>
     string.IsNullOrWhiteSpace(s)

@@ -9238,6 +9238,22 @@ public sealed class DealerInventoryThreshold
 /// <summary>
 /// 🔴 #B89 — **Danh mục VÙNG** (`Mst_Zone`), tách hẳn khỏi <see cref="DealerZone"/> (`Mst_DealerZone`,
 /// <summary>
+/// 🔴 #B98 — **Danh mục PHÒNG BAN** (`Mst_Department`). Port cũ **không có bảng này** — chỉ có cột
+/// `DepartmentCode` rải rác ở `MstSalesManType`, nhân viên… ⇒ mã phòng ban là **chuỗi tự do**,
+/// không đối chiếu và không có tên hiển thị. Nguồn: `Mst_Department_Get_New20181115`
+/// (`BizHTC.zzzzCode.cs:6839`), client `DealerService.GetDepartment`.
+/// </summary>
+public sealed class Department
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DepartmentCode { get; set; } = "";
+    public string? DepartmentName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+}
+
+/// <summary>
 /// 🔴 #B96 — **Danh mục ĐỐI TÁC hệ thống** (`Sys_Partner`). Mọi lời gọi WS của 2010.HTC đều mang
 /// `strPartnerCode`; bảng này là nơi khai báo hợp lệ. Port cũ **không có** ⇒ `PartnerCode` là chuỗi
 /// tự do, không đối chiếu được. Nguồn: `SysGetPartner_New20181115` (`BizHTC.System.cs:807`).
