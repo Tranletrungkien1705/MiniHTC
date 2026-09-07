@@ -24608,6 +24608,58 @@ app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, IT
 }).RequireAuthorization();
 
 // Khớp checkForm() + btnApply_Click gốc: guard tên/nội dung/ngày bắt buộc, PercentDiscount 0-100, PartCode không trùng trong 1 lần tạo.
+// ===== 🔴 #392 DUYỆT CHIẾN DỊCH MARKETING (`FrmSer_CampaignMarketingDetail`) =====
+// TRACE TWIN 4 tầng: `FrmSer_CampaignMarketingDetail.cs:1001` → `Ser_CampaignMarketingService.cs:425`
+//   → WS `Ser_CampaignMarketing_Approve` → biz **`Ser_CampaignMarketing_Approve_20220926`**
+//   (`CampaignMarketing/BizCarSv.CampaignMarketing.cs:7163`, chú thích tác giả `//ToanNH`).
+//   ⚠️ Có **BA** hàm cùng tên gốc trong **HAI thư mục trùng tên file**
+//     (`BizCarSv.CampaignMarketing/` và `CampaignMarketing/`) — WS chỉ gọi bản `_20220926`.
+//
+// 🔴 **DUYỆT LAN TRẠNG THÁI XUỐNG SÁU BẢNG** trong một câu lệnh:
+//     `CamMarketingStatus` (chiến dịch) · `CamMarketingVINStatus` · `CamMarketingPlateNoStatus`
+//     · `CamMarketingDealerStatus` · `CamMarketingFullVINStatus` · `CamMarketingPartStatus`
+//   ⇒ Duyệt **không chỉ đổi một cột ở đầu**; bỏ sót bảng con nào là bảng đó vĩnh viễn kẹt ở `P`.
+// 🔴 Guard: `Ser_CampaignMarketing_CheckDB(…, CamMarketingStatus.Pending, …)` ⇒ **chỉ duyệt được
+//   khi đang ở `P`**; đã `A` thì không duyệt lại.
+// ⚠️ Bảng mã chỉ có **HAI** giá trị: `P` = chờ duyệt · `A` = đã duyệt. Không có mã từ chối.
+// ⚠️ Tầng service truyền `Remark` = **null khi rỗng** (không phải chuỗi rỗng) — giữ đúng phân biệt.
+// 📌 MiniHTC hiện chỉ có bảng con `CampaignMarketingPart`; bốn bảng VIN/PlateNo/Dealer/FullVIN chưa
+//   mô hình hoá ⇒ trả cờ `childTablesNotModelled` thay vì lặng lẽ bỏ qua.
+app.MapPost("/api/campaignmarketings/{no}/approve", async (string no, CampaignApproveDto? dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = (no ?? "").Trim().ToUpperInvariant();
+    var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+
+    // Chỉ duyệt được khi đang CHỜ DUYỆT.
+    if (c.CamMarketingStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ duyệt được chiến dịch đang ở trạng thái P (chờ duyệt).",
+            currentStatus = c.CamMarketingStatus });
+
+    var now = DateTime.Now;
+    c.CamMarketingStatus = "A";
+    c.ApprDTime = now;
+    c.ApprBy = dto?.ApprBy;
+
+    // LAN trạng thái xuống bảng con mà MiniHTC có.
+    var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id).ToListAsync();
+    foreach (var p in parts) p.CamMarketingPartStatus = "A";
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        c.CamNo, status = c.CamMarketingStatus, c.ApprDTime, c.ApprBy,
+        // Remark: null khi rỗng, đúng cách tầng service của nguồn truyền lên.
+        remark = string.IsNullOrWhiteSpace(dto?.Remark) ? null : dto!.Remark,
+        cascadedParts = parts.Count,
+        cascadeNote = "Duyệt LAN trạng thái xuống SÁU bảng con trong nguồn (VIN, PlateNo, Dealer, FullVIN, Part).",
+        childTablesNotModelled = new[] { "CamMarketingVINStatus", "CamMarketingPlateNoStatus",
+            "CamMarketingDealerStatus", "CamMarketingFullVINStatus" },
+        statusVocabNote = "Chỉ có HAI mã: P = chờ duyệt, A = đã duyệt. Không có mã từ chối.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CamName)) return Results.BadRequest(new { error = "Chưa nhập tên chiến dịch." });
@@ -41156,6 +41208,8 @@ record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? Apoin
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
+// #392: dau vao duyet chien dich marketing. Remark = null khi rong (dung nguon).
+record CampaignApproveDto(string? ApprBy, string? Remark);
 record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
 record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note, string? DealerCode = null);
 record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);

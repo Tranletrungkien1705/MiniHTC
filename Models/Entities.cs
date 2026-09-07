@@ -5596,6 +5596,15 @@ public sealed class CustomerCareSurvey
 /// + danh sách phụ tùng khuyến mãi kèm % giảm.</summary>
 public sealed class CampaignMarketing
 {
+    // ===== 🔴 #392 §12 TRẠNG THÁI + DẤU DUYỆT của chiến dịch marketing =====
+    /// <summary>Trạng thái: `P` = chờ duyệt (Pending) · `A` = đã duyệt (Approve).
+    /// 🔴 Khi duyệt, nguồn **lan trạng thái này xuống SÁU bảng con** — xem
+    /// `POST /api/campaignmarketings/{no}/approve`.</summary>
+    public string CamMarketingStatus { get; set; } = "P";
+    /// <summary>Thời điểm duyệt (`ApprDTime`).</summary>
+    public DateTime? ApprDTime { get; set; }
+    /// <summary>Người duyệt (`ApprBy`).</summary>
+    public string? ApprBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CamNo { get; set; } = "";
@@ -5614,6 +5623,8 @@ public sealed class CampaignMarketing
 /// <summary>Phụ tùng khuyến mãi trong chiến dịch marketing (dòng) — port 1:1 grid gridCPart, TCMotor.</summary>
 public sealed class CampaignMarketingPart
 {
+    /// <summary>#392 §12 Trạng thái LAN từ chiến dịch cha khi duyệt (`CamMarketingPartStatus`).</summary>
+    public string? CamMarketingPartStatus { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long CampaignId { get; set; }

@@ -1007,6 +1007,11 @@ public static class Seeder
         "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"HTCConfirm\" text NULL",
         "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"PartialShipment\" text NULL",
         "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"TypeTransport\" text NULL",
+        // #392 trang thai + dau duyet chien dich marketing (P -> A), lan xuong bang con
+        "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"CamMarketingStatus\" text NOT NULL DEFAULT 'P'",
+        "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"ApprDTime\" timestamp NULL",
+        "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"ApprBy\" text NULL",
+        "ALTER TABLE public.\"CampaignMarketingParts\" ADD COLUMN IF NOT EXISTS \"CamMarketingPartStatus\" text NULL",
         // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",
