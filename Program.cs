@@ -48029,6 +48029,133 @@ app.MapGet("/api/roworktimes", async (AppDbContext db, ITenantContext t, string?
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #533 TRA CỨU PHÂN CÔNG CHO MÁY TÍNH BẢNG — PHÂN TRANG **CHẠY** NHƯNG **KHÔNG ỔN ĐỊNH** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:2118 Ser_AssignmentWork_Get_ForTab`.
+// Endpoint: `GET /api/serassignmentworks/search`.
+//
+// ⚪ **TƯƠNG PHẢN VỚI #526**: ở đây hai dòng phân trang **ĐANG CHẠY** (không bị comment):
+//     `and (t.MyIdxSeq >= @nFilterRecordStart)` · `and (t.MyIdxSeq <= @nFilterRecordEnd)`
+//   ⇒ cùng một khuôn "draft + identity + lọc theo MyIdxSeq", một hàm bật một hàm tắt. Kiểm tra âm tính.
+// 🔴 **NHƯNG SỐ THỨ TỰ ĐƯỢC GÁN TRÊN MỘT TẬP KHÔNG SẮP**:
+//     `select distinct identity(bigint, 0, 1) MyIdxSeq, saw.ROID into #…_Draft from … where …`
+//   — **không có `order by`** (luật #415/#411). `identity()` đánh số theo thứ tự engine trả về.
+//   ⇒ **Trang 2 có thể chứa lại dòng của trang 1** giữa hai lần gọi, và không ai báo lỗi.
+//   Port sắp tường minh theo `ROID` rồi mới cắt trang + cờ `sourceHasNoOrderBy`.
+// 🔴 `left join Ser_AssignmentWorkEngineer sawe on saw.ROID = sawe.ROID` — hỏi ba câu #414:
+//   WHERE **có** điều kiện trên bảng LEFT khi client truyền `strEngineerID`
+//   (`BuildClause("and", "sawe.EngineerID", …)`) ⇒ **LEFT biến thành INNER**: lọc theo kỹ thuật viên
+//   thì lệnh **chưa phân ai** biến mất. Không lọc thì LEFT vô hại (đã `select distinct` theo `ROID`).
+//   ⚠️ Cột nguồn là `EngineerID`, entity MiniHTC đặt `EngineerNo` — khác tên, cùng vai.
+// 🔴 `ROTypeView` = `case when (count = 1) then (loại duy nhất) when (count > 1) then N'SCC' end`
+//   ⇒ **không có `else`**: lệnh **chưa có hạng mục nào** (count = 0) cho `NULL`; và lệnh **nhiều loại**
+//     bị **dán cứng nhãn "SCC"** bất kể loại thật là gì. Đây là *ô hiển thị*, nhưng máy tính bảng dùng
+//     nó để phân luồng ⇒ nêu cờ `roTypeViewCollapsesMultiToSCC`.
+// ⚠️ `FlagFullOK` **dòng ĐANG CHẠY** lấy thẳng `ro.ServiceStatus`; ngay dưới là **công thức cũ bị comment**
+//   (đếm `Ser_ROServiceItems.Status is null or = '0'`). Port theo dòng active, ghi rõ để khỏi nhầm.
+// ⚪ **Kiểm tra âm tính đã truy tận nơi**: bộ lọc ngày ghép 28 mệnh đề bằng tiền tố `"or"` trong một cặp
+//   ngoặc `and ( … )`. Ban đầu ngờ `BuildClause` luôn nối `and` (thân hàm `AppendFormat(" and (…)")`),
+//   nhưng đọc tới cuối hàm thì nó `Remove(0, " and ".Length)` rồi bọc lại bằng `strOperatorPrefix`
+//   ⇒ `or` **có hiệu lực**. Không phải lỗi — ghi lại để lượt sau khỏi nghi oan.
+// ⚠️ `left(saw.SCCPlanStartDTime, 10)` — cắt 10 ký tự đầu, tức **giả định cột lưu chuỗi** `yyyy-MM-dd …`;
+//   28 cột × 1 giá trị ngày. Port so theo `.Date`.
+app.MapGet("/api/serassignmentworks/search", async (AppDbContext db, ITenantContext t,
+    string? roNo, string? dealerCode, DateTime? onDate, string? frameNo, string? plateNo,
+    string? roCreator, string? engineerNo, string? roStatusList, string? workTypeStart, string? workTypeFinish,
+    int? recordStart, int? recordCount) =>
+{
+    var qy = from w in db.SerAssignmentWorks
+             join r in db.RepairOrders on new { w.OrgId, w.RONo } equals new { r.OrgId, RONo = r.RONo }
+             where w.OrgId == t.OrgId
+             select new { w, r };
+
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.r.RONo == roNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.r.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.r.Vin != null && x.r.Vin!.Contains(frameNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.r.LicensePlate.Contains(plateNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(roCreator)) qy = qy.Where(x => x.r.Creator == roCreator!.Trim());
+    if (!string.IsNullOrWhiteSpace(workTypeStart)) qy = qy.Where(x => x.w.WorkTypeStart == workTypeStart!.Trim());
+    if (!string.IsNullOrWhiteSpace(workTypeFinish)) qy = qy.Where(x => x.w.WorkTypeFinish == workTypeFinish!.Trim());
+    if (!string.IsNullOrWhiteSpace(roStatusList))
+    {
+        var sts = roStatusList!.Split('|', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim()).ToList();      // nguồn: BuildClauseConditionList(..., "|")
+        qy = qy.Where(x => sts.Contains(x.r.Status));
+    }
+
+    // Lọc theo kỹ thuật viên ⇒ LEFT của nguồn thành INNER (lệnh chưa phân ai biến mất).
+    var engineerFilterKillsLeftJoin = !string.IsNullOrWhiteSpace(engineerNo);
+    if (engineerFilterKillsLeftJoin)
+    {
+        var ids = await db.SerAssignmentWorkEngineers
+            .Where(e => e.OrgId == t.OrgId && e.EngineerNo == engineerNo!.Trim())
+            .Select(e => e.AssignmentWorkId).ToListAsync();
+        qy = qy.Where(x => ids.Contains(x.w.Id));
+    }
+
+    var rows = await qy.ToListAsync();
+
+    if (onDate is not null)
+    {
+        var d = onDate.Value.Date;
+        // Nguồn dò cùng một ngày trên 28 cột kế hoạch/thực tế của bảy công đoạn, nối bằng OR.
+        bool Hit(SerAssignmentWork w) =>
+            new DateTime?[]
+            {
+                w.SCCPlanStartDTime, w.SCCPlanFinishDTime, w.SCCActualStartDTime, w.SCCActualFinishDTime,
+                w.SCDPlanStartDTime, w.SCDPlanFinishDTime, w.SCDActualStartDTime, w.SCDActualFinishDTime,
+                w.SCNPlanStartDTime, w.SCNPlanFinishDTime, w.SCNActualStartDTime, w.SCNActualFinishDTime,
+                w.SCSPlanStartDTime, w.SCSPlanFinishDTime, w.SCSActualStartDTime, w.SCSActualFinishDTime,
+                w.SCDBPlanStartDTime, w.SCDBPlanFinishDTime, w.SCDBActualStartDTime, w.SCDBActualFinishDTime,
+                w.SCLRPlanStartDTime, w.SCLRPlanFinishDTime, w.SCLRActualStartDTime, w.SCLRActualFinishDTime,
+                w.SCKSCPlanStartDTime, w.SCKSCPlanFinishDTime, w.SCKSCActualStartDTime, w.SCKSCActualFinishDTime,
+            }.Any(x => x is not null && x!.Value.Date == d);
+        rows = rows.Where(x => Hit(x.w)).ToList();
+    }
+
+    var total = rows.Count;
+    // Nguồn đánh số identity() trên tập KHÔNG sắp; ở đây sắp tường minh trước khi cắt trang.
+    var start = Math.Max(0, recordStart ?? 0);
+    var take = recordCount is > 0 ? recordCount!.Value : total;
+    var page = rows.OrderBy(x => x.w.ROID).ThenBy(x => x.w.Id).Skip(start).Take(take).ToList();
+
+    var roIds = page.Select(x => x.r.Id).ToList();
+    var svcTypes = (await db.RoServiceItems
+            .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ROType != null)
+            .Select(i => new { i.RoId, i.ROType }).ToListAsync())
+        .Distinct().GroupBy(x => x.RoId)
+        .ToDictionary(g => g.Key, g => g.Select(x => x.ROType!).ToList());
+
+    var items = page.Select(x =>
+    {
+        svcTypes.TryGetValue(x.r.Id, out var types);
+        var n = types?.Count ?? 0;
+        return new
+        {
+            x.w.Id, x.w.ROID, x.r.RONo, PlateNo = x.r.LicensePlate, FrameNo = x.r.Vin,
+            x.r.PlanedDeliveryDate,
+            // count = 1 → loại đó; count > 1 → "SCC" gõ cứng; count = 0 → null (nguồn thiếu else).
+            ROTypeView = n == 1 ? types![0] : n > 1 ? "SCC" : null,
+            roTypeCount = n,
+            FlagFullOK = x.r.ServiceStatus,          // dòng ACTIVE của nguồn
+            x.w.WorkTypeStart, x.w.WorkTypeFinish, x.w.FlagArise, x.w.WorkTypePause,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount = total, count = items.Count, items,
+        pagingIsActiveHere = true,
+        contrastWithFrozenPaging = "#526 hai dong phan trang bi comment; o day dang chay",
+        sourceHasNoOrderBy = "identity() gan tren select distinct khong order by => trang KHONG on dinh",
+        engineerFilterKillsLeftJoin,
+        roTypeViewCollapsesMultiToSCC = items.Count(x => x.roTypeCount > 1),
+        roTypeViewNullWhenNoServiceItem = items.Count(x => x.roTypeCount == 0),
+        flagFullOkFromServiceStatusNotComputed = true,
+        engineerColumnNameDiffers = "nguon EngineerID / MiniHTC EngineerNo",
+        orPrefixInBuildClauseVerified = "da doc den cuoi BuildClause: Remove(\" and \") roi boc lai bang prefix => OR co hieu luc",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
