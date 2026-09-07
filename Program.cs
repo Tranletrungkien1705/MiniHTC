@@ -2987,6 +2987,79 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
 }).RequireAuthorization();
 
 // Sửa hàng loạt ngày/số tờ trình + số ngày hỗ trợ vay vốn theo VIN (port 1:1 FrmUpdateDocReq, 2010.HTC/Sales)
+
+// ===== #B41 XOÁ DÒNG XE KHỎI ĐNGT **TCG** — `Car_DocReqTCGDtlDelete_ByDealer_new20181119` =====
+// Nguồn: `DataWH/Biz.HTC.WH.cs:85268`; gọi rollup đầu đề nghị tại `:85481` (hàng đợi ghi ở #B40).
+// 🔴 **KHÁC HẲN luồng thường** (`Car_DocReqDtlDelete`, #B31): ở đó phải **HUỶ về "C" trước rồi mới xoá**;
+//    ở luồng TCG nguồn cho xoá **thẳng dòng đang "P"** — `myCar_CheckCar_DocReqTCGDtl(…, Stage.Pending)`.
+// 🔴 **CHÚ THÍCH LỆCH CODE** ở guard đầu đề nghị (`:85320`): chú thích viết *"chỉ xóa Đề nghị ở trạng
+//    thái C"* nhưng tham số thực truyền là **`TConst.Stage.Pending`** ("P"). Theo luật port-guard
+//    (message lệch condition ⇒ tin CODE, không tin chữ), port **"P"**.
+//    ⇒ Đề nghị TCG đang A1/A2/F **không xoá được**, hẹp hơn hẳn luồng thường ("P,A1,A2,F").
+// 🔴 **RBAC BỊ COMMENT**: `//myCommon_CheckHTCDirect(… Flag.Active)` (`:85305-85309`) — **KHÔNG port**;
+//    đây là lệnh "ByDealer", đại lý tự xoá đề nghị của mình.
+// 🔴 Side-effect y như #B31: sau khi xoá dòng, **xoá luôn đầu đề nghị nếu không còn dòng nào**
+//    (`delete Car_DocReqTCGList … left join Car_DocReqTCGDtl … where is null` — "kỹ thuật lọc ngược",
+//    nguyên văn chú thích nguồn), rồi mới gọi rollup trạng thái.
+app.MapPost("/api/docreqs/{no}/cars/delete-tcg", async (string no, CdrCancelDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    // `..._TableDetailBeBlank`
+    var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v))
+        .Select(v => v.Trim().ToUpperInvariant()).ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe nào để xoá.", guard = "Car_DocReqTCGDtlDelete_ByDealer_TableDetailBeBlank" });
+    // `..._DuplicateKeyDetail`
+    var dup = vins.GroupBy(v => v).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong danh sách!", guard = "Car_DocReqTCGDtlDelete_ByDealer_DuplicateKeyDetail" });
+    vins = vins.Distinct().ToList();
+
+    var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
+    if (d is null) return Results.NotFound(new { no });
+    // `myCar_CheckCar_DocReqTCGList(…, Flag.Active, Stage.Pending)` — theo CODE là "P", không phải "C".
+    if (d.Status != "P")
+        return Results.BadRequest(new
+        {
+            error = $"Đề nghị TCG đang ở '{d.Status}' — chỉ xoá được khi đang chờ duyệt 'P'.",
+            guard = "myCar_CheckCar_DocReqTCGList(Stage.Pending)",
+            sourceQuirk = "Chú thích nguồn viết 'chỉ xóa Đề nghị ở trạng thái C' nhưng THAM SỐ thực là Stage.Pending — port theo CODE."
+        });
+
+    var lines = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && x.DocReqId == d.Id && vins.Contains(x.Vin)).ToListAsync();
+    foreach (var vin in vins)
+    {
+        // `myCar_CheckCar_DocReqTCGDtl(…, Flag.Active, Stage.Pending)`
+        var line = lines.FirstOrDefault(x => x.Vin == vin);
+        if (line is null) return Results.BadRequest(new { error = $"Xe {vin} không nằm trong đề nghị {no}." });
+        if (line.DRDtlStatus != "P")
+            return Results.BadRequest(new { error = $"Xe {vin} đang ở '{line.DRDtlStatus}' — luồng TCG chỉ xoá được dòng đang 'P'.", note = "Khác luồng thường: ở đó phải HUỶ về 'C' trước rồi mới xoá (#B31)." });
+    }
+
+    db.DocReqCars.RemoveRange(lines);
+    await db.SaveChangesAsync();
+
+    // "Kỹ thuật lọc ngược": hết dòng thì xoá luôn đầu đề nghị.
+    var remain = await db.DocReqCars.CountAsync(x => x.OrgId == t.OrgId && x.DocReqId == d.Id);
+    var headerDeleted = false;
+    string? headerStatusNew = null;
+    if (remain == 0) { db.DocReqs.Remove(d); await db.SaveChangesAsync(); headerDeleted = true; }
+    else
+    {
+        // `SetStatusCar_DocReqTCGList_New20181119(…)` tại `:85481` — cùng hàm rollup của #B40.
+        var allDtl = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && x.DocReqId == d.Id)
+            .Select(x => x.DRDtlStatus).ToListAsync();
+        headerStatusNew = RollupDocReqTcgListStatus(allDtl);
+        if (headerStatusNew is not null) { d.Status = headerStatusNew; await db.SaveChangesAsync(); }
+    }
+
+    return Results.Ok(new
+    {
+        requestNo = no, deleted = vins.Count, vins, remainingCars = remain, headerDeleted,
+        headerStatus = headerDeleted ? null : d.Status, headerStatusChanged = headerStatusNew is not null,
+        rbacNote = "myCommon_CheckHTCDirect ở nguồn BỊ COMMENT — không port (lệnh ByDealer).",
+        headerDeleteRule = "Nguồn xoá luôn Car_DocReqTCGList khi không còn Car_DocReqTCGDtl tương ứng."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/docreqs/{no}/edit-support", async (string no, DocReqSupportDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
