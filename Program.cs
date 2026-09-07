@@ -16916,6 +16916,72 @@ app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? 
 // 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:66620`) là DÒNG ACTIVE — chỉ HTC trực tiếp.
 // 🔴 `alColumnEffective` có **ĐÚNG MỘT** phần tử: `DocDeliveryReqDate` (`:66714`) — không ghi LogLU*,
 //    không ghi gì khác. Port thêm cột nào cũng là sai.
+
+// ===== #B21 CẬP NHẬT THÔNG TIN TỜ TRÌNH TRÊN ĐỀ NGHỊ GIAO HỒ SƠ (port 1:1 `FrmUpdateDocReq`) =====
+// Trace twin LIVE: `FrmUpdateDocReq.cs:145` → `salesSv.CarDocReqListUpdate_LetterRepresentationInfo(tableSave)`
+//   (`SalesService.cs:25842`) → WS (`WSHTC.asmx.cs:39104`)
+//   → **`_biz.CarDocReqListUpdate_LetterRepresentationInfo`** (`BizHTC.zTemp.cs:10651`).
+//   Input là **BẢNG**; `MyBuildDBDT_Common` khoá theo **`DRListCode`** ⇒ ghi ở **ĐẦU đề nghị**, không phải dòng xe.
+// 🔴 LUẬT "BỘ BA TẤT CẢ-HOẶC-KHÔNG": `LetterRepresentationNo`, `LetterRepresentationDate`, `LoanSupportDay`
+//    phải **cùng có** hoặc **cùng rỗng**. Nguồn viết thành BA guard đối xứng (`:10780-10828`), mỗi guard bắt
+//    một trường có giá trị mà một trong hai trường kia rỗng:
+//      · có No mà thiếu (Day hoặc Date)   → `..._InvalidLoanSupportDayOrLetterRepresentationDate`
+//      · có Date mà thiếu (Day hoặc No)   → `..._InvalidLoanSupportDayOrLetterRepresentationNo`
+//      · có Day mà thiếu (Date hoặc No)   → `..._InvalidLetterRepresentationDateOrLetterRepresentationNo`
+// 🔴 `LoanSupportDay < 0` → `..._InvalidLoanSupportDay` (nguồn `Convert.ToInt16`, chặn số ÂM, cho phép 0).
+app.MapPost("/api/docreqs/update-letter-representation", async (
+    List<DocReqLetterRepDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    // `..._TableBlank`
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Bảng đề nghị cần cập nhật đang rỗng." });
+    var list = rows.Where(r => !string.IsNullOrWhiteSpace(r.DRListCode)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Bảng đề nghị cần cập nhật đang rỗng." });
+
+    var codes = list.Select(r => r.DRListCode!.Trim()).ToList();
+    var reqs = await db.DocReqs.Where(x => x.OrgId == t.OrgId && codes.Contains(x.DocReqNo)).ToListAsync();
+
+    foreach (var r in list)
+    {
+        var code = r.DRListCode!.Trim();
+        // `Car_DocReqList_CheckDB(..., TConst.Flag.Yes)` — đề nghị phải tồn tại.
+        if (!reqs.Any(x => x.DocReqNo == code)) return Results.BadRequest(new { error = $"Đề nghị {code} không tồn tại." });
+
+        var hasNo = !string.IsNullOrWhiteSpace(r.LetterRepresentationNo);
+        var hasDate = r.LetterRepresentationDate is not null;
+        var hasDay = r.LoanSupportDay is not null;
+        if (hasDay && r.LoanSupportDay < 0)
+            return Results.BadRequest(new { error = $"Đề nghị {code}: số ngày hỗ trợ vay vốn không được âm.", drListCode = code, loanSupportDay = r.LoanSupportDay });
+        if (hasNo && (!hasDay || !hasDate))
+            return Results.BadRequest(new { error = $"Đề nghị {code}: có số tờ trình thì phải có CẢ ngày tờ trình và số ngày hỗ trợ vay vốn.", drListCode = code });
+        if (hasDate && (!hasDay || !hasNo))
+            return Results.BadRequest(new { error = $"Đề nghị {code}: có ngày tờ trình thì phải có CẢ số tờ trình và số ngày hỗ trợ vay vốn.", drListCode = code });
+        if (hasDay && (!hasDate || !hasNo))
+            return Results.BadRequest(new { error = $"Đề nghị {code}: có số ngày hỗ trợ vay vốn thì phải có CẢ số tờ trình và ngày tờ trình.", drListCode = code });
+    }
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    int updated = 0;
+    foreach (var r in list)
+    {
+        var d = reqs.First(x => x.DocReqNo == r.DRListCode!.Trim());
+        // 6 cột của `MyBuildDBDT_Common` (:10844-10850): DRListCode (khoá) + 3 trường + LogLU*.
+        // Bộ ba ghi VÔ ĐIỀU KIỆN (kể cả về null) vì luật trên đã bảo đảm chúng cùng có hoặc cùng rỗng.
+        d.LetterRepresentationNo = string.IsNullOrWhiteSpace(r.LetterRepresentationNo) ? null : r.LetterRepresentationNo!.Trim();
+        d.LetterRepresentationDate = r.LetterRepresentationDate;
+        d.LoanSupportDay = r.LoanSupportDay;
+        d.LogLUDateTime = now; d.LogLUBy = who;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated,
+        columnsWritten = new[] { "LetterRepresentationNo", "LetterRepresentationDate", "LoanSupportDay", "LogLUDateTime", "LogLUBy" },
+        tripleRule = "Ba trường tờ trình phải CÙNG CÓ hoặc CÙNG RỖNG (3 guard đối xứng của nguồn); LoanSupportDay >= 0.",
+        tableNote = "Nguồn khoá theo DRListCode ⇒ ghi ở ĐẦU đề nghị (Car_DocReqList). Port cũ đặt nhầm 3 cột này trên DÒNG XE (DocReqCar) — cột cũ giữ nguyên để không phá dữ liệu."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/carvinmasters/update-docdeliveryreqdate", async (
     List<CarVinDocDlvReqDto> rows, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
@@ -34336,6 +34402,8 @@ record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, s
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
 record CarVinDocDlvReqDto(string? Vin, DateTime? DocDeliveryReqDate);
+/// <summary>#B21: một dòng bảng cập nhật tờ trình của đề nghị giao hồ sơ (khoá `DRListCode`).</summary>
+record DocReqLetterRepDto(string? DRListCode, string? LetterRepresentationNo, DateTime? LetterRepresentationDate, int? LoanSupportDay);
 /// <summary>#B17: một dòng của bảng `#input_Car_Car` — sửa hàng loạt quy cách theo CarId.</summary>
 record CarSpecBatchDto(string? CarId, string? SpecCode);
 /// <summary>#B11: sửa biển số dòng xe (`DealerSalesDealDetailUpdate_NormalInfo` — nguồn chỉ nhận PlateNo).</summary>

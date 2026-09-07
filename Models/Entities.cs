@@ -5777,6 +5777,19 @@ public sealed class DocReq
     public DateTime? CancelDate { get; set; }
     /// <summary>Người huỷ đề nghị (`Car_DocReqList.CancelBy`).</summary>
     public string? CancelBy { get; set; }
+
+    // ===== #B21 parity `CarDocReqListUpdate_LetterRepresentationInfo` (BizHTC.zTemp.cs:10651) =====
+    // 🔴 Nguồn ghi BỘ BA này lên **`Car_DocReqList`** (khoá `DRListCode`, tức ĐẦU đề nghị).
+    //    Port cũ đặt nhầm ba cột lên `DocReqCar` (DÒNG XE) — sai cấp bảng. Giữ cột cũ để không phá dữ
+    //    liệu đã lưu, nhưng endpoint `#B21` ghi vào ĐÂY, đúng nguồn.
+    /// <summary>Số tờ trình (`Car_DocReqList.LetterRepresentationNo`).</summary>
+    public string? LetterRepresentationNo { get; set; }
+    /// <summary>Ngày tờ trình (`Car_DocReqList.LetterRepresentationDate`).</summary>
+    public DateTime? LetterRepresentationDate { get; set; }
+    /// <summary>Số ngày hỗ trợ vay vốn (`Car_DocReqList.LoanSupportDay`) — nguồn chặn **< 0**.</summary>
+    public int? LoanSupportDay { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng xe làm hồ sơ (Car_DocReqDtl): VIN + model + màu + số máy + tiền.</summary>

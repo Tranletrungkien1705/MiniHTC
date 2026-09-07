@@ -1177,6 +1177,12 @@ public static class Seeder
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CODate\" timestamp NULL",
         // #B20 Car_VIN.DocDeliveryReqDate
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DocDeliveryReqDate\" timestamp NULL",
+        // #B21 Car_DocReqList: bo ba to trinh + LogLU (nguon ghi o HEADER, khong phai dong xe)
+        "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LetterRepresentationNo\" text NULL",
+        "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LetterRepresentationDate\" timestamp NULL",
+        "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LoanSupportDay\" integer NULL",
+        "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",
