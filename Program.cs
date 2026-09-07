@@ -47585,6 +47585,121 @@ app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #528 PHÂN CÔNG CÔNG VIỆC — **BẢY CÔNG ĐOẠN GÕ CỨNG, GỬI RỖNG KHÔNG XOÁ ĐƯỢC** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:23 Ser_AssignmentWork_Create` (vỏ bọc) → `…_CreateX` (`:203`).
+//   Sống qua **kênh ClientService** (#519). Endpoint: `POST /api/serassignmentworks` + `GET`.
+// **§12**: thêm 21 cột kế hoạch + `ROID` + 2 cột loại công việc + 4 cột nhật ký (entity + Seeder + DTO + GET/POST).
+//
+// 🔴 **BẢY NHÓM CÔNG ĐOẠN GÕ CỨNG VÀO CHỮ KÝ HÀM**: `SCC · SCD · SCN · SCS · SCDB · SCLR · SCKSC`,
+//   mỗi nhóm ba tham số (`…PlanStartDTime` · `…PlanFinishDTime` · `…CavityID`) ⇒ **21 tham số**.
+//   Thêm một công đoạn mới là phải **sửa chữ ký WebMethod** — danh sách đóng băng ở tầng API
+//   (họ #413/#512, nhưng lần này đóng băng ngay trong **hợp đồng gọi**, không phải trong SQL).
+// 🔴 **MỌI TRƯỜNG ĐỀU BỌC `if (!StringUtils.IsEmpty(...))`** ⇒ gửi chuỗi rỗng **không ghi gì**:
+//   ở tạo mới thì cột để trống, nhưng ở **sửa** (`Ser_AssignmentWork_Update` cùng khuôn) thì
+//   **không có cách nào XOÁ một mốc kế hoạch đã đặt** — muốn bỏ lịch phải nhập đè giá trị khác.
+//   Port giữ đúng (bỏ qua `null`/rỗng) và nêu cờ `emptyMeansKeepNotClear`.
+// 🔴 Guard trùng khoang/thời gian gọi **bảy lần**, mỗi nhóm một lần:
+//   `MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007(_dbDealer, …, <nhóm>CavityID, start, finish)`
+//   ⇒ kiểm **theo từng nhóm**, **không** kiểm chéo giữa các nhóm: hai công đoạn khác nhau có thể
+//     đặt **cùng một khoang, cùng khung giờ** mà không ai chặn.
+// 🔴 `dt_Ser_AssignmentWork.Rows[0]["ROID"] = Convert.ToInt32(strROID);` — **không guard rỗng**
+//   ⇒ thiếu `ROID` là `FormatException` (họ #526).
+// ⚠️ Ghi **ba** DB: `_dbMain.SaveData` → sao chép rồi `_dbWH.SaveData` → `_dbDealer.SaveData` nếu
+//   `!bIsWSMain`. ⚠️ `SetDataRowStateOfAllRows(ref …, DataRowState.Added)` được gọi **HAI lần liên tiếp**
+//   trên cùng bảng — lần thứ hai **thừa** (trạng thái đã là `Added`): câu lệnh chết, vô hại.
+app.MapPost("/api/serassignmentworks", async (SerAssignmentWorkDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RONo) && string.IsNullOrWhiteSpace(dto.ROID))
+        return Results.BadRequest(new { error = "Cần RONo hoặc ROID (nguồn Convert.ToInt32(strROID) không guard rỗng)." });
+
+    // MyCheck_Ser_RO: lệnh phải có thật.
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && (x.RONo == dto.RONo || x.Id.ToString() == dto.ROID));
+    if (ro is null) return Results.BadRequest(new { error = "MyCheck_Ser_RO: không tìm thấy lệnh sửa chữa." });
+
+    // Bảy guard theo NHÓM — nguồn không kiểm chéo giữa các nhóm.
+    if (dto.SCCPlanStartDTime is not null && dto.SCCPlanFinishDTime is not null
+        && dto.SCCPlanStartDTime > dto.SCCPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCC bat dau sau ket thuc." });
+    if (dto.SCDPlanStartDTime is not null && dto.SCDPlanFinishDTime is not null
+        && dto.SCDPlanStartDTime > dto.SCDPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCD bat dau sau ket thuc." });
+    if (dto.SCNPlanStartDTime is not null && dto.SCNPlanFinishDTime is not null
+        && dto.SCNPlanStartDTime > dto.SCNPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCN bat dau sau ket thuc." });
+    if (dto.SCSPlanStartDTime is not null && dto.SCSPlanFinishDTime is not null
+        && dto.SCSPlanStartDTime > dto.SCSPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCS bat dau sau ket thuc." });
+    if (dto.SCDBPlanStartDTime is not null && dto.SCDBPlanFinishDTime is not null
+        && dto.SCDBPlanStartDTime > dto.SCDBPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCDB bat dau sau ket thuc." });
+    if (dto.SCLRPlanStartDTime is not null && dto.SCLRPlanFinishDTime is not null
+        && dto.SCLRPlanStartDTime > dto.SCLRPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCLR bat dau sau ket thuc." });
+    if (dto.SCKSCPlanStartDTime is not null && dto.SCKSCPlanFinishDTime is not null
+        && dto.SCKSCPlanStartDTime > dto.SCKSCPlanFinishDTime)
+        return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCKSC bat dau sau ket thuc." });
+
+    var w = new SerAssignmentWork
+    {
+        OrgId = t.OrgId, RONo = ro.RONo, ROID = dto.ROID ?? ro.Id.ToString(),
+        CreateDTime = DateTime.Now, LogLUDateTime = DateTime.Now,
+    };
+    // Gửi rỗng = KHÔNG ghi (đúng nguồn).
+    if (dto.SCCPlanStartDTime is not null) w.SCCPlanStartDTime = dto.SCCPlanStartDTime;
+    if (dto.SCCPlanFinishDTime is not null) w.SCCPlanFinishDTime = dto.SCCPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCCCavityID)) w.SCCCavityID = dto.SCCCavityID;
+    if (dto.SCDPlanStartDTime is not null) w.SCDPlanStartDTime = dto.SCDPlanStartDTime;
+    if (dto.SCDPlanFinishDTime is not null) w.SCDPlanFinishDTime = dto.SCDPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCDCavityID)) w.SCDCavityID = dto.SCDCavityID;
+    if (dto.SCNPlanStartDTime is not null) w.SCNPlanStartDTime = dto.SCNPlanStartDTime;
+    if (dto.SCNPlanFinishDTime is not null) w.SCNPlanFinishDTime = dto.SCNPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCNCavityID)) w.SCNCavityID = dto.SCNCavityID;
+    if (dto.SCSPlanStartDTime is not null) w.SCSPlanStartDTime = dto.SCSPlanStartDTime;
+    if (dto.SCSPlanFinishDTime is not null) w.SCSPlanFinishDTime = dto.SCSPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCSCavityID)) w.SCSCavityID = dto.SCSCavityID;
+    if (dto.SCDBPlanStartDTime is not null) w.SCDBPlanStartDTime = dto.SCDBPlanStartDTime;
+    if (dto.SCDBPlanFinishDTime is not null) w.SCDBPlanFinishDTime = dto.SCDBPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCDBCavityID)) w.SCDBCavityID = dto.SCDBCavityID;
+    if (dto.SCLRPlanStartDTime is not null) w.SCLRPlanStartDTime = dto.SCLRPlanStartDTime;
+    if (dto.SCLRPlanFinishDTime is not null) w.SCLRPlanFinishDTime = dto.SCLRPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCLRCavityID)) w.SCLRCavityID = dto.SCLRCavityID;
+    if (dto.SCKSCPlanStartDTime is not null) w.SCKSCPlanStartDTime = dto.SCKSCPlanStartDTime;
+    if (dto.SCKSCPlanFinishDTime is not null) w.SCKSCPlanFinishDTime = dto.SCKSCPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.SCKSCCavityID)) w.SCKSCCavityID = dto.SCKSCCavityID;
+    if (!string.IsNullOrWhiteSpace(dto.WorkTypeStart)) w.WorkTypeStart = dto.WorkTypeStart;
+    if (!string.IsNullOrWhiteSpace(dto.WorkTypeFinish)) w.WorkTypeFinish = dto.WorkTypeFinish;
+    db.SerAssignmentWorks.Add(w);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        w.Id, w.RONo, w.ROID,
+        w.SCCPlanStartDTime, w.SCCPlanFinishDTime, w.SCCCavityID,
+        w.SCDPlanStartDTime, w.SCDPlanFinishDTime, w.SCDCavityID,
+        w.SCNPlanStartDTime, w.SCNPlanFinishDTime, w.SCNCavityID,
+        w.SCSPlanStartDTime, w.SCSPlanFinishDTime, w.SCSCavityID,
+        w.SCDBPlanStartDTime, w.SCDBPlanFinishDTime, w.SCDBCavityID,
+        w.SCLRPlanStartDTime, w.SCLRPlanFinishDTime, w.SCLRCavityID,
+        w.SCKSCPlanStartDTime, w.SCKSCPlanFinishDTime, w.SCKSCCavityID,
+        w.WorkTypeStart, w.WorkTypeFinish,
+        stageGroups = new[] { "SCC", "SCD", "SCN", "SCS", "SCDB", "SCLR", "SCKSC" },
+        stageListHardcodedInApiSignature = true,
+        emptyMeansKeepNotClear = true,
+        cavityCheckPerGroupOnlyNotCrossGroup = true,
+        sourceWritesThreeDatabases = "Main + WH + Dealer (neu !bIsWSMain)",
+        deadStatementInSource = "SetDataRowStateOfAllRows(Added) goi hai lan lien tiep",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/serassignmentworks", async (AppDbContext db, ITenantContext t, string? roNo) =>
+{
+    var qy = db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim());
+    var items = await qy.OrderByDescending(x => x.Id).Take(200).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49401,6 +49516,16 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record SerAssignmentWorkDto(string? RONo = null, string? ROID = null,
+    DateTime? SCCPlanStartDTime = null, DateTime? SCCPlanFinishDTime = null, string? SCCCavityID = null,
+    DateTime? SCDPlanStartDTime = null, DateTime? SCDPlanFinishDTime = null, string? SCDCavityID = null,
+    DateTime? SCNPlanStartDTime = null, DateTime? SCNPlanFinishDTime = null, string? SCNCavityID = null,
+    DateTime? SCSPlanStartDTime = null, DateTime? SCSPlanFinishDTime = null, string? SCSCavityID = null,
+    DateTime? SCDBPlanStartDTime = null, DateTime? SCDBPlanFinishDTime = null, string? SCDBCavityID = null,
+    DateTime? SCLRPlanStartDTime = null, DateTime? SCLRPlanFinishDTime = null, string? SCLRCavityID = null,
+    DateTime? SCKSCPlanStartDTime = null, DateTime? SCKSCPlanFinishDTime = null, string? SCKSCCavityID = null,
+    string? WorkTypeStart = null, string? WorkTypeFinish = null);   // #528
+
 record ReceptionDeliverDetailDto(string? ReceptionFAudCode, string? ReceptionFAudType,
     string? DeliveryAudStatus, string? Remark);   // #527
 record ReceptionDeliverDto(List<ReceptionDeliverDetailDto>? Details);   // #527

@@ -5059,8 +5059,41 @@ public sealed class WarrantyExtensionDateLog
 }
 
 /// <summary>Phân công công đoạn sửa chữa theo RO (Ser_AssignmentWork header) — port 1:1 FrmSer_AssignmentWork (TCMotor DMSCarSv/Services). Header theo RO; 7 công đoạn (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) mỗi công đoạn gán khoang (Cavity) + kế hoạch/thực tế bắt đầu-kết thúc → SerAssignmentWorkStage.</summary>
+// ===== #528 §12 KẾ HOẠCH PHÂN CÔNG THEO **BẢY** CÔNG ĐOẠN (Ser_AssignmentWork) =====
+// Nguồn `BizCarSv.AssignmentOfWork.cs:203 Ser_AssignmentWork_CreateX` nhận **21** tham số kế hoạch:
+//   bảy nhóm `SCC / SCD / SCN / SCS / SCDB / SCLR / SCKSC` × ba cột (bắt đầu · kết thúc · khoang).
 public sealed class SerAssignmentWork
 {
+    /// <summary>Khoá lệnh sửa chữa — nguồn `Convert.ToInt32(strROID)` (KHÔNG guard rỗng).</summary>
+    public string? ROID { get; set; }
+    public DateTime? SCCPlanStartDTime { get; set; }
+    public DateTime? SCCPlanFinishDTime { get; set; }
+    public string? SCCCavityID { get; set; }
+    public DateTime? SCDPlanStartDTime { get; set; }
+    public DateTime? SCDPlanFinishDTime { get; set; }
+    public string? SCDCavityID { get; set; }
+    public DateTime? SCNPlanStartDTime { get; set; }
+    public DateTime? SCNPlanFinishDTime { get; set; }
+    public string? SCNCavityID { get; set; }
+    public DateTime? SCSPlanStartDTime { get; set; }
+    public DateTime? SCSPlanFinishDTime { get; set; }
+    public string? SCSCavityID { get; set; }
+    public DateTime? SCDBPlanStartDTime { get; set; }
+    public DateTime? SCDBPlanFinishDTime { get; set; }
+    public string? SCDBCavityID { get; set; }
+    public DateTime? SCLRPlanStartDTime { get; set; }
+    public DateTime? SCLRPlanFinishDTime { get; set; }
+    public string? SCLRCavityID { get; set; }
+    public DateTime? SCKSCPlanStartDTime { get; set; }
+    public DateTime? SCKSCPlanFinishDTime { get; set; }
+    public string? SCKSCCavityID { get; set; }
+    /// <summary>Loại công việc lúc BẮT ĐẦU / KẾT THÚC (`WorkTypeStart` / `WorkTypeFinish`).</summary>
+    public string? WorkTypeStart { get; set; }
+    public string? WorkTypeFinish { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string RONo { get; set; } = "";
