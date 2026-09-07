@@ -13381,6 +13381,12 @@ public sealed class SmsSend
 /// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>
 public sealed class EmailTemplate
 {
+    // ===== 🔴 #438 §12 DEALERCODE — cột nguồn LỌC bằng mà bản port THIẾU HẲN =====
+    //   `Email_TempEmail_Get` nhận `strDealerCode`, biz dựng `BuildClause("and", "tmp.**DealerCode**", …)`,
+    //   và **cả hai** lời gọi của `FrmEmail_TempEmailList` đều truyền `SystemGlobal.strDealerCode`.
+    //   ⇒ Mẫu thư là dữ liệu **theo từng đại lý**, không phải dùng chung. Thiếu cột này thì mọi đại lý
+    //     nhìn chung một tập mẫu — sai mô hình dữ liệu, và §12 KHÔNG bắt được (lệ #403: cột thiếu HẲN).
+    public string? DealerCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string TempType { get; set; } = "";   // loại email

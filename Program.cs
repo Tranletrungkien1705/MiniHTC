@@ -12779,14 +12779,52 @@ app.MapGet("/api/report/emailsends", async (AppDbContext db, ITenantContext t, D
 }).RequireAuthorization();
 
 // ===== Mẫu email (EmailTemplate — port 1:1 FrmEmail_TempEmailCreate/List, TCMotor) =====
-app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+// ===== 🔴 #438 MẪU THƯ (`Email_TempEmail_Get`) — bổ sung `DealerCode` (§12) + sáu bộ lọc riêng =====
+// TRACE: `FrmEmail_TempEmailList` (323 dòng) → `EmailSendEmailService.Email_TempEmail_Get` (`:584`)
+//   → WS → biz (`BizCarSv.SendMail.cs:3530`).
+//
+// 🔴 **CỘT THIẾU HẲN — `DealerCode`**: nguồn lọc `BuildClause("and", "tmp.DealerCode", …)` và **cả hai**
+//   lời gọi của form đều truyền `SystemGlobal.strDealerCode` ⇒ mẫu thư là dữ liệu **theo từng đại lý**.
+//   Bản port cũ **không có cột này** ⇒ mọi đại lý dùng chung một tập mẫu. §12 **không bắt được**
+//   (lệ #403: cột thiếu HẲN thì bộ kiểm 4-chỗ vô hiệu). Nay thêm đủ 4 chỗ.
+//
+// 📌 **HAI KẾT QUẢ ÂM TÍNH đáng ghi** (màn này làm ĐÚNG những chỗ màn khác làm sai):
+//   ① **Không rò phạm vi**: cả lời gọi lúc NẠP lẫn lúc TÌM đều truyền mã đại lý — ngược hẳn
+//     `FrmAutoSendConfigList` ở #437 (nạp có, tìm bỏ trống). Cùng thư mục, hai màn, hai kết quả.
+//   ② **Không trộn quy ước dựng mệnh đề**: **cả bảy** bộ lọc đều đi qua `BuildClause` với chuỗi
+//     **có sẵn toán tử** (`"= x"`, `"like %x%"`) ⇒ chạy đúng hết. Ngược với #428 (một ô lọt sang
+//     `BuildClauseConditionSingle` nên chết câm) và #432 (`"=CVDV"` lọt sang `BuildClauseConditionList`).
+//   ⇒ Ghi lại để lần sau khỏi dò lại cùng một chỗ.
+//
+// ⚠️ Nguồn lọc **từng ô riêng**: `TempIDEmail` (=) · `TempSubject` (like) · `TempBody` (like) ·
+//   `TempTypeEmail` (=) · `TempFileAttachment` (like) · `IsActive` (=). Bản port cũ chỉ có một ô `q` gộp
+//   ba cột ⇒ **không tìm được theo nội dung thư hay theo tên tệp đính kèm**. Nay bổ sung.
+// ⚠️ Tham số `"and "` (thừa dấu cách) ở một lời gọi `BuildClause` — vô hại vì nó chỉ là tiền tố nối chuỗi.
+app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active,
+    string? dealer, string? tempType, string? subject, string? body, string? fileAttachment) =>
 {
     var query = db.EmailTemplates.Where(x => x.OrgId == t.OrgId);
+    // #438 phạm vi đại lý — nguồn LUÔN truyền, cả lúc nạp lẫn lúc tìm.
+    if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer!.Trim());
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.TempType.Contains(q!.ToUpper()) || (x.TempSubject != null && x.TempSubject.Contains(q!)) || (x.TempName != null && x.TempName.Contains(q!)));
+    // #438 sáu bộ lọc riêng của nguồn (bản port cũ gộp hết vào `q`).
+    if (!string.IsNullOrWhiteSpace(tempType)) query = query.Where(x => x.TempType == tempType!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(subject)) query = query.Where(x => x.TempSubject != null && x.TempSubject.Contains(subject!.Trim()));
+    if (!string.IsNullOrWhiteSpace(body)) query = query.Where(x => x.TempBody.Contains(body!.Trim()));
+    if (!string.IsNullOrWhiteSpace(fileAttachment)) query = query.Where(x => x.FileAttachment != null && x.FileAttachment.Contains(fileAttachment!.Trim()));
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.TempType).Take(500)
-        .Select(x => new { x.TempType, x.TempName, x.TempSubject, x.TempBody, x.FileAttachment, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+        .Select(x => new { x.TempType, x.TempName, x.TempSubject, x.TempBody, x.FileAttachment, x.FlagActive,
+            x.DealerCode,   // #438 §12: có mặt ở CẢ GET lẫn POST
+            updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        dealerScopeNote = "Mẫu thư là dữ liệu THEO ĐẠI LÝ (nguồn lọc tmp.DealerCode và luôn truyền mã "
+            + "đại lý ở cả hai lời gọi). Bản port cũ thiếu hẳn cột này nên mọi đại lý dùng chung một tập mẫu.",
+        verifiedCleanNote = "KẾT QUẢ ÂM TÍNH: màn này KHÔNG rò phạm vi (khác #437) và KHÔNG trộn quy ước "
+            + "dựng mệnh đề — cả bảy bộ lọc đều qua BuildClause với chuỗi có sẵn toán tử (khác #428/#432).",
+    });
 }).RequireAuthorization();
 
 // Upsert theo loại email (tiêu đề bắt buộc — giống guard txtTempSubject WinForm).
@@ -12800,10 +12838,12 @@ app.MapPost("/api/emailtemplates", async (EmailTemplateDto dto, AppDbContext db,
     if (ex is not null)
     {
         ex.TempName = dto.TempName; ex.TempSubject = dto.TempSubject; ex.TempBody = dto.TempBody; ex.FileAttachment = dto.FileAttachment; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+        if (!string.IsNullOrWhiteSpace(dto.DealerCode)) ex.DealerCode = dto.DealerCode!.Trim();   // #438 §12
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.TempType, updated = true });
     }
-    var r = new EmailTemplate { OrgId = t.OrgId, TempType = type, TempName = dto.TempName, TempSubject = dto.TempSubject, TempBody = dto.TempBody, FileAttachment = dto.FileAttachment, FlagActive = "1" };
+    var r = new EmailTemplate { OrgId = t.OrgId, TempType = type, TempName = dto.TempName, TempSubject = dto.TempSubject, TempBody = dto.TempBody, FileAttachment = dto.FileAttachment, FlagActive = "1",
+        DealerCode = dto.DealerCode?.Trim() };   // #438 §12
     db.EmailTemplates.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.TempType, updated = false });
 }).RequireAuthorization();
@@ -45225,7 +45265,8 @@ record EmailAutoTempDto(string? BatchId = null, string? DealerCode = null, strin
 
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody,
     string? DealerCode = null, string? IsActive = null);
-record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
+// #438 §12: DealerCode — mau thu la du lieu THEO DAI LY.
+record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment, string? DealerCode = null);
 record SmsBatchStatusDto(string? ToStatus);
 
 // #231: `PerformBy` = người bấm huỷ (nguồn truyền `SystemGlobal.Instance.user.UserCode`);
