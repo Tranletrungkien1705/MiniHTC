@@ -24848,6 +24848,26 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         overloadNote = "Nguồn có HAI overload LIVE cùng tên MyCheck_DateTime_Cavity: bản 5 tham số cho TẠO "
             + "(ZTemp.cs:23125) và bản 6 tham số cho SỬA (:23175) — bản sửa thêm đúng một dòng "
             + "`and t.AppId <> @strAppId` để tự loại chính nó.",
+        // ===== 🔴 #449 QUÉT TRỌN BIZ: quy ước hậu tố `xxx` = "code chết" **KHÔNG ĐÁNG TIN** =====
+        // Đếm trên `TERP.BizCarSv`: **50** hàm mang hậu tố `xxx` trong tên định nghĩa.
+        // Với mỗi tên, tìm nơi GỌI (bỏ chính dòng định nghĩa, bỏ dòng comment):
+        //     **8/50 vẫn còn được gọi**, và trong 8 đó **5 hàm được gọi từ hàm KHÔNG mang `xxx`** —
+        //     tức từ code đang sống:
+        //   · `CheckExistStockInxxx` ← `SerStockInCreate_New20240115` · `SerStockInUpdate_New20240115`
+        //     · `SerStockInStatusUpdate` · `Blt_SerStockInStatusUpdate` (bốn nơi, có bản **2024**)
+        //   · `CheckExistPartInstancexxx` ← `ProcessSaveStockInPb` · `CheckExistStockInNoxxx`
+        //   · `CheckStockInPartInstanceRejectxxx` · `ProcessSaveStockInPbxxx`
+        //   (3 hàm còn lại chỉ được gọi từ hàm `xxx` khác ⇒ chết-gọi-chết, coi như chết thật.)
+        //
+        // ⇒ **Hậu tố `xxx` chỉ là Ý ĐỊNH của người viết, không phải sự thật về liveness.** Một guard tên
+        //   "đã bỏ" đang được **hàm tạo phiếu nhập bản 2024** dùng để kiểm tra. Bỏ qua nó khi port là
+        //   **bỏ mất một guard đang chạy**.
+        // 📌 Sửa lệ: gặp `xxx`/`zzzz`/`Delete.`/` - Copy` thì **vẫn phải tìm nơi GỌI** rồi xét xem hàm gọi
+        //   có sống không, y như trace twin. Chỉ tên thôi không kết luận được.
+        deadSuffixSweep = new { xxxFunctions = 50, stillCalled = 8, calledFromLiveCaller = 5 },
+        deadSuffixSweepNote = "Quét TERP.BizCarSv: 50 hàm có hậu tố xxx, 8 vẫn được gọi, trong đó 5 được "
+            + "gọi từ hàm KHÔNG mang xxx (gồm SerStockInCreate_New20240115 — bản 2024). Hậu tố xxx là Ý "
+            + "ĐỊNH, KHÔNG phải sự thật về liveness; phải trace nơi gọi.",
         deadTwinNote = "Còn một bản CHẾT MyCheck_DateTime_Cavityxxx (:23078) chỉ có HAI nhánh chồng giờ "
             + "⇒ bỏ sót ca 'khoảng mới bao trùm khoảng cũ'. Hai bản LIVE đều có ĐỦ BA nhánh (đếm chuỗi "
             + "concat(t.AppDateTimeFrom = 3 ở cả hai) ⇒ lỗ hổng đó thuộc về bản cũ đã bỏ.",
