@@ -2378,6 +2378,10 @@ public sealed class RoServiceItem
     /// đó là **tầng báo giá**, khác tầng LỆNH SỬA CHỮA này.
     /// </summary>
     public string? ExpenseType { get; set; }
+    /// <summary>🔴 #367 CAMID — mã **chương trình khuyến mại** áp cho dòng dịch vụ. Nguồn gửi Veloca
+    /// (`Table 20`) lọc mã này trên CHÍNH hai bảng dòng RO ⇒ **không có cột này thì bảng khuyến mại
+    /// gửi sang Veloca VĨNH VIỄN RỖNG**, chứ không phải "chưa có dữ liệu".</summary>
+    public string? CamID { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
@@ -2439,6 +2443,8 @@ public sealed class RoPartItem
     /// <summary>#280 `ExpenseType` — đối tượng thanh toán của dòng phụ tùng, cùng bộ mã
     /// <see cref="RoServiceItem.ExpenseType"/>.</summary>
     public string? ExpenseType { get; set; }
+    /// <summary>#367 CamID — khuyến mại áp cho dòng phụ tùng (xem <see cref="RoServiceItem.CamID"/>).</summary>
+    public string? CamID { get; set; }
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):

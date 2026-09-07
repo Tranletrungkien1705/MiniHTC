@@ -2137,13 +2137,13 @@ app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbCont
     var canShow = myDealer != "" && (r.DealerCode ?? "").ToUpperInvariant() == myDealer;
 
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
-        .Select(p => new { p.PartCode, p.PartName, qty = p.NeedQty, p.ExpenseType, p.FlagAccessory, p.InsurancePrice }).ToListAsync();
+        .Select(p => new { p.PartCode, p.PartName, qty = p.NeedQty, p.ExpenseType, p.FlagAccessory, p.InsurancePrice, p.CamID }).ToListAsync();
 
     if (!canShow)
         return Results.Ok(new { r.RONo, canShowDetail = 0, mode = "PartsOnly", partCount = parts.Count, parts });
 
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice }).ToListAsync();   // #280 §12 + #342
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice, s.CamID }).ToListAsync();   // #280 §12 + #342 + #367
     return Results.Ok(new { r.RONo, canShowDetail = 1, mode = "Full", services, partCount = parts.Count, parts });
 }).RequireAuthorization();
 
@@ -16358,6 +16358,113 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 //   ⇒ Không gửi mã nội bộ; Veloca có danh mục loại khoang riêng đánh số sẵn.
 // ⚠️ `Table 3` (KTV): dùng `EngineerNo` (quyết định `20241204`, cùng #361) và **`Remark` cũng gán
 //   `EngineerNo`** — trùng giá trị với chính khoá, giữ 1:1.
+// ===== 🔴 #367 DANH MỤC SẢN PHẨM + KHUYẾN MẠI gửi Veloca (`Table 7` & `Table 20`) — HAI BẢNG CUỐI =====
+// 🔴 `Table 7` (`Ser_Mst_Part` — tên bảng nói "phụ tùng") thực ra là **UNION phụ tùng + dịch vụ vào MỘT
+//   danh mục SẢN PHẨM duy nhất**, phân biệt bằng `ProductType`: `'PRODUCT'` / `'SERVICE'`.
+//   ⇒ Bên Veloca **không có danh mục dịch vụ riêng**; port thành hai master tách biệt là sai mô hình.
+//   ⚠️ Đơn vị tính của nhánh dịch vụ đóng cứng `N'Lần'` (dịch vụ không có cột đơn vị).
+// 🔴 `ProductNameEN` **KHÔNG phải tên tiếng Anh** — cả hai nhánh đều gán **MÃ** (`PartCode` / `SerCode`),
+//   và `Remark` gán **lại chính mã đó**. Tên trường nói dối lần nữa (cùng lệ `…UTC` ở #363):
+//   "sửa cho đúng nghĩa" bằng cách đưa tên tiếng Anh thật vào sẽ lệch dữ liệu Veloca đang có.
+//   ⇒ Một dòng gửi đi mang mã ở BA ô: `ProductCodeUser` · `ProductNameEN` · `Remark`.
+// 🔴 `Table 20` (`Ser_Campaign`) đọc từ **CSDL CommonCenter** (`[@strDBName_CommonCenter]`), không phải DB
+//   đại lý — khuyến mại là danh mục DÙNG CHUNG toàn hệ. Lọc `CamID is not null and CamID <> ''` trên
+//   **cả dòng dịch vụ lẫn dòng phụ tùng** (UNION hai nhánh, `distinct`).
+//   ⇒ §12: đã thêm cột `CamID` vào CẢ HAI bảng dòng RO — trước lượt này MiniHTC không có ô nào ghi mã
+//     khuyến mại, nên bảng 20 gửi sang Veloca sẽ **luôn rỗng mà không báo lỗi**.
+// ⚠️ `EffDateEnd` lấy `FinishedDate` của chiến dịch (ngày KẾT THÚC chương trình) — trùng TÊN cột với
+//   `FinishedDate` của LỆNH SỬA CHỮA vốn là "lúc sửa xong" (#340/#362). Cùng tên, hai nghĩa, hai bảng.
+app.MapGet("/api/osveloca/ro/{roNo}/products", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { roNo });
+
+    var partCodes = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
+        .Select(p => p.PartCode).Distinct().ToListAsync();
+    var serCodes = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
+        .Select(s => s.SerCode).Distinct().ToListAsync();
+
+    // Nhánh PRODUCT — phụ tùng. Mã nằm ở BA ô, đúng nguồn.
+    var products = (await db.ServiceParts.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.PartCode)).ToListAsync())
+        .Select(x => new
+        {
+            roNo, x.DealerCode,
+            productCodeUser = x.PartCode,
+            productType = "PRODUCT",
+            productName = x.PartName,
+            productNameEN = x.PartCode,      // ⚠️ là MÃ, không phải tên tiếng Anh
+            productBarCode = x.PartID,
+            unitCode = x.Unit,
+            remark = x.PartCode,             // ⚠️ lại là MÃ
+        }).ToList<object>();
+
+    // Nhánh SERVICE — dịch vụ, đơn vị đóng cứng "Lần".
+    var services = (await db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId && serCodes.Contains(x.SerCode)).ToListAsync())
+        .Select(x => new
+        {
+            roNo, x.DealerCode,
+            productCodeUser = x.SerCode,
+            productType = "SERVICE",
+            productName = x.SerName,
+            productNameEN = x.SerCode,
+            productBarCode = x.Id.ToString(),
+            unitCode = "Lần",                // nguồn đóng cứng
+            remark = x.SerCode,
+        }).ToList<object>();
+
+    var all = products.Concat(services).ToList();
+    var foundPart = products.Count; var foundSer = services.Count;
+
+    return Results.Ok(new
+    {
+        roNo, count = all.Count, products = all,
+        oneCatalogNote = "Veloca dùng MỘT danh mục sản phẩm chung; phụ tùng và dịch vụ phân biệt bằng ProductType.",
+        codeInThreeFieldsNote = "ProductCodeUser = ProductNameEN = Remark (đều là MÃ). Tên trường ProductNameEN nói dối.",
+        // Thiếu một dòng danh mục ⇒ Veloca có dòng RO trỏ tới sản phẩm không tồn tại (cùng lệ #366).
+        missingPartCodes = partCodes.Except(products.Select(p => (string)p.GetType().GetProperty("productCodeUser")!.GetValue(p)!)).ToList(),
+        missingSerCodes = serCodes.Except(services.Select(s => (string)s.GetType().GetProperty("productCodeUser")!.GetValue(s)!)).ToList(),
+        joinedByCodeNote = "Nguồn ghép theo PartID/SerID; MiniHTC lưu MÃ trên dòng RO nên ghép theo mã.",
+        serviceBarCodeNote = foundSer == 0 ? null
+            : "ProductBarCode của dịch vụ dùng khoá nội bộ (MiniHTC chưa có cột SerID riêng).",
+        resolved = new { parts = foundPart, services = foundSer },
+    });
+}).RequireAuthorization();
+
+// Khuyến mại (Table 20) — danh mục DÙNG CHUNG, nguồn đọc từ CSDL CommonCenter.
+app.MapGet("/api/osveloca/ro/{roNo}/campaigns", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { roNo });
+
+    // UNION hai nhánh: mã khuyến mại trên dòng DỊCH VỤ và trên dòng PHỤ TÙNG.
+    var fromSvc = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id && s.CamID != null && s.CamID != "")
+        .Select(s => s.CamID!).ToListAsync();
+    var fromPrt = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id && p.CamID != null && p.CamID != "")
+        .Select(p => p.CamID!).ToListAsync();
+    var camIds = fromSvc.Concat(fromPrt).Distinct().ToList();
+
+    var cams = await db.Campaigns.Where(c => c.OrgId == t.OrgId && camIds.Contains(c.CamNo))
+        .Select(c => new
+        {
+            prmCode = c.CamNo,
+            prmName = c.CamName,
+            prmDescription = c.Content,
+            effDateStart = c.StartDate,
+            effDateEnd = c.FinishDate,   // ngày KẾT THÚC chiến dịch — KHÁC FinishedDate của lệnh (#340)
+        }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        roNo, count = cams.Count, campaigns = cams,
+        sourceNote = "Nguồn đọc chiến dịch từ CSDL CommonCenter — danh mục dùng chung, không thuộc DB đại lý.",
+        fromServiceLines = fromSvc.Distinct().Count(), fromPartLines = fromPrt.Distinct().Count(),
+        missingCamIds = camIds.Except(cams.Select(c => c.prmCode)).ToList(),
+        effDateEndNote = "EffDateEnd = FinishedDate của CHIẾN DỊCH; đừng nhầm với FinishedDate của lệnh (= lúc sửa xong).",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/catalogs", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
@@ -37794,7 +37901,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền hạng mục DỊCH VỤ theo nguồn: Factor * Price * (1 + VAT*0.01) — KHÔNG có cột Quantity riêng.
         // Client cũ vẫn truyền thẳng Amount; có Price thì tính lại cho đúng công thức nguồn.
         var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
-        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice });
+        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID });
     }
     foreach (var p in dto.Parts ?? new())
     {
@@ -37802,7 +37909,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền dòng PHỤ TÙNG theo nguồn: Factor * Quantity * Price * (1 + VAT*0.01).
         var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
         var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
-        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice });
+        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
@@ -37829,9 +37936,9 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice }).ToListAsync();   // #280 §12 + #342
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice, s.CamID }).ToListAsync();   // #280 §12 + #342 + #367
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
-        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note }).ToListAsync();
+        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note, p.CamID }).ToListAsync();
     return Results.Ok(new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
@@ -39543,13 +39650,15 @@ record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int De
 //   cung benh voi dong PHU TUNG da va o #337. Thieu chung thi phep tinh cong no bao hiem
 //   loc ExpenseType = ROINSURANCE se LUON bo sot phan tien cong.
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null,
-    string? ExpenseType = null, decimal? InsurancePrice = null);
+    string? ExpenseType = null, decimal? InsurancePrice = null,
+    string? CamID = null);   // #367
 // #337: ExpenseType (nguon tien) va FlagAccessory (co phu kien) — HAI truong bao cao KPI loc theo,
 //   ma truoc nay KHONG duong nao ghi duoc: cot ExpenseType them tu #280 nhung dong tao RO khong gan.
 //   Thieu chung thi nhom PartAmount* cua bao cao LUON bang 0.
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0,
     decimal? InsurancePrice = null,   // #342
-    string? ExpenseType = null, string? FlagAccessory = "0");
+    string? ExpenseType = null, string? FlagAccessory = "0",
+    string? CamID = null);   // #367
 // #266: chỉ nhận `MemberNo` + `FlagCardExist` lúc tạo LSC. Nhóm `*Inv` và `PointVoucher` do luồng lập
 //   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
