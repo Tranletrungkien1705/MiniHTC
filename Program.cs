@@ -14238,6 +14238,90 @@ app.MapDelete("/api/carcolors/{model}/{color}", async (string model, string colo
     return Results.Ok(new { model, color, deleted = true });
 }).RequireAuthorization();
 
+// ===== #B93 TRA MÀU XE + BẢNG GHÉP MÀU↔SPEC — `Mst_CarColorSpec_Get` =====
+// Trace LIVE: WS → `_biz.Mst_CarColorSpec_Get` (`BizHTC.MasterData.cs:3048`, thân
+//   **`Mst_CarColorSpec_GetX`** `:3175`). 3B đo thật, **khớp cả 2 máy**: start=3175 md5
+//   `59119c3bb13023020b60ee1569de7312`.
+// 🔴 **MỘT lần gọi trả tới HAI bảng, và KHUNG PHÂN TRANG là `Mst_CarColor`** — không phải bảng ghép:
+//    `#tbl_Mst_CarColor_Draft` đánh số `identity(bigint,0,1) MyIdxSeq` **trên `Mst_CarColor`**, cắt
+//    trang, rồi **hai** khối `zOut` bám vào cùng `#tbl_Mst_CarColor_Filter`. ⇒ **phân trang theo MÀU**,
+//    một màu có nhiều spec thì bảng ghép trả **nhiều dòng hơn** số bản ghi trang. Đừng phân trang
+//    trên bảng ghép.
+// 🔴 **Hai cờ `bGet_*` độc lập**: mặc định cả hai khối là `"-- Nothing."`; chỉ khi bật mới **chạy
+//    câu truy vấn tương ứng** (cùng khuôn `strIsGetDetail` ở #B90 — **không** phải "ẩn cột").
+// 🔴 **Bảng ghép nối bằng `inner join`, nhưng lấy TÊN MÀU bằng `left join`**:
+//      `inner join Mst_CarColorSpec mccs on t.ModelCode = mccs.ModelCode and t.ColorCode = mccs.ColorCode`
+//      `left  join Mst_CarColor      mcc  on mccs.ModelCode = mcc.ModelCode and mccs.ColorCode = mcc.ColorCode`
+//    ⇒ dòng ghép **không có** bản ghi màu vẫn **giữ lại**, chỉ thiếu tên (`mcc_*` = null).
+//    Cột tên được **đổi bí danh có tiền tố `mcc_`** (`mcc_ColorExtName`, `mcc_ColorIntNameVN`,
+//    `mcc_FlagActive`…) để **không đè** cột cùng tên của `mccs.*`. Port giữ đúng tiền tố.
+// 🔴 **RBAC biến thể 2 — ca thứ 12**: `@strBUPatternOfUser` được bind nhưng danh mục màu **không có
+//    cột đại lý** để lọc ⇒ tham số **không dùng đến**. Tác hại ~0 (dữ liệu chung), ghi để đủ mẫu.
+app.MapGet("/api/carcolorspecs", async (
+    AppDbContext db, ITenantContext t, int? recordStart, int? recordCount,
+    string? modelCode, string? colorCode, string? getCarColor, string? getCarColorSpec) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+    var wantColor = (getCarColor ?? "1").Trim() == "1";
+    var wantSpec = (getCarColorSpec ?? "1").Trim() == "1";
+
+    // `#tbl_Mst_CarColor_Draft` — KHUNG phân trang là `Mst_CarColor`.
+    var q = db.MstCarColors.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(c => c.ModelCode == modelCode.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(colorCode)) q = q.Where(c => c.ColorCode == colorCode.Trim().ToUpperInvariant());
+    var draft = await q.OrderBy(c => c.ModelCode).ThenBy(c => c.ColorCode).ToListAsync();
+    var myCount = draft.Count;                       // `MyCount` đếm TRƯỚC khi cắt trang
+    var page = draft.Skip(start).Take(count).ToList();
+    var keys = page.Select(c => (c.ModelCode, c.ColorCode)).ToHashSet();
+
+    object? carColors = null;
+    if (wantColor)
+        carColors = page.Select(c => new
+        {
+            mccModelCode = c.ModelCode, mccColorCode = c.ColorCode,
+            mccColorExtCode = c.ColorExtCode, mccColorExtName = c.ColorExtName, mccColorExtNameVN = c.ColorExtNameVN,
+            mccColorIntCode = c.ColorIntCode, mccColorIntName = c.ColorIntName, mccColorIntNameVN = c.ColorIntNameVN
+        }).ToList();
+
+    object? carColorSpecs = null;
+    if (wantSpec)
+    {
+        var links = await db.MstCarColorSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync();
+        // `inner join` với trang màu; tên màu lấy bằng `left join` (thiếu thì để null).
+        var colorByKey = page.ToDictionary(c => (c.ModelCode, c.ColorCode));
+        carColorSpecs = links.Where(s => keys.Contains((s.ModelCode, s.ColorCode)))
+            .OrderBy(s => s.ModelCode, StringComparer.Ordinal)
+            .ThenBy(s => s.ColorCode, StringComparer.Ordinal)
+            .ThenBy(s => s.SpecCode, StringComparer.Ordinal)
+            .Select(s =>
+            {
+                colorByKey.TryGetValue((s.ModelCode, s.ColorCode), out var mcc);
+                return new
+                {
+                    mccsModelCode = s.ModelCode, mccsColorCode = s.ColorCode, mccsSpecCode = s.SpecCode,
+                    mccsLogLUDateTime = s.LogLUDateTime, mccsLogLUBy = s.LogLUBy,
+                    // Tiền tố `mcc_` của nguồn — cố ý để KHÔNG đè cột cùng tên của `mccs.*`.
+                    mcc_ColorExtName = mcc?.ColorExtName, mcc_ColorExtNameVN = mcc?.ColorExtNameVN,
+                    mcc_ColorIntName = mcc?.ColorIntName, mcc_ColorIntNameVN = mcc?.ColorIntNameVN,
+                    mcc_FlagActive = mcc?.FlagActive
+                };
+            }).ToList();
+    }
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count,
+        getCarColor = wantColor, getCarColorSpec = wantSpec,
+        carColors, carColorSpecs,
+        pagingFrameNote = "MOT lan goi tra toi HAI bang, va KHUNG PHAN TRANG la Mst_CarColor - KHONG phai bang ghep: #tbl_Mst_CarColor_Draft danh so identity(bigint,0,1) MyIdxSeq TREN Mst_CarColor, cat trang, roi HAI khoi zOut bam vao cung #tbl_Mst_CarColor_Filter. => phan trang THEO MAU; mot mau co nhieu spec thi bang ghep tra NHIEU DONG HON so ban ghi trang. Dung phan trang tren bang ghep.",
+        twoFlagsNote = "Hai co bGet_* DOC LAP: mac dinh ca hai khoi la '-- Nothing.'; chi khi bat moi CHAY cau truy van tuong ung (cung khuon strIsGetDetail o #B90 - KHONG phai 'an cot').",
+        joinShapeNote = "Bang ghep noi bang INNER JOIN (Mst_CarColorSpec theo ModelCode+ColorCode) nhung TEN MAU lay bang LEFT JOIN (Mst_CarColor) => dong ghep KHONG CO ban ghi mau van GIU LAI, chi thieu ten (mcc_* = null).",
+        aliasPrefixNote = "Cot ten mau duoc doi bi danh co TIEN TO 'mcc_' (mcc_ColorExtName, mcc_ColorIntNameVN, mcc_FlagActive...) de KHONG DE cot cung ten cua mccs.*. Port giu dung tien to.",
+        rbacHole = "LO HONG RBAC - bien the 2 (khai ma khong dung), ca thu 12: @strBUPatternOfUser duoc bind nhung danh muc mau KHONG CO cot dai ly de loc => tham so khong dung den. Tac hai ~0 (du lieu chung), ghi de DU MAU."
+    });
+}).RequireAuthorization();
+
 // ===== #144: KẾ HOẠCH ĐẶT HÀNG GỬI NHÀ MÁY HTMV (Ord_OrderPlan_HTMV + Detail) =====
 // Nguồn: DMS40/zTemp.0.30.Order.cs (csproj 128) — _Create (9461) / _Update (10585). Chỉ có ở WS 64-bit.
 // ⛔ NỢ ghi rõ: `_Create` là JOB TỰ SINH — chỉ nhận `strFlagIsMonth` rồi TỰ TÍNH 8 loại số lượng
