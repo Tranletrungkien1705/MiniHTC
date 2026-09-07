@@ -2533,6 +2533,27 @@ public sealed class Reception
     public string? CusPhoneNo { get; set; }
     public string? CusRequest { get; set; }
     public string? RONO { get; set; }
+    // ===== #522 §12 CÁC CỘT PHIẾU TIẾP NHẬN MÀ BẢN PORT CŨ THIẾU =====
+    // Nguồn `Ser_ReceptionF_ReceptionX_New20210727` (`BizCarSv.ZTemp.cs:21199`) nhận **26** tham số;
+    // bản port đầu chỉ giữ biển số/tên khách/yêu cầu. Bảy cột dưới đây là dữ liệu **nghiệp vụ thật**.
+    /// <summary>Số km khi tiếp nhận (`strKm`).</summary>
+    public string? Km { get; set; }
+    /// <summary>Mức nhiên liệu (`strFuelLevel`).</summary>
+    public string? FuelLevel { get; set; }
+    /// <summary>Mức kiểm tra — nguồn CHỈ nhận "1", "2", "3" (guard cứng).</summary>
+    public string? LevelOfInspection { get; set; }
+    /// <summary>Trạng thái quay lại sửa (`strBackRepairStatus`).</summary>
+    public string? BackRepairStatus { get; set; }
+    /// <summary>🔴 SAI CHÍNH TẢ TRONG NGUỒN: `strWarrantlyStatus` (đúng ra "Warranty").
+    /// Chép **nguyên văn** để khớp dữ liệu — xem luật HẰNG ≠ GIÁ TRỊ.</summary>
+    public string? WarrantlyStatus { get; set; }
+    /// <summary>🔴 SAI CHÍNH TẢ TRONG NGUỒN: `strInsuaranceStatus` (đúng ra "Insurance").</summary>
+    public string? InsuaranceStatus { get; set; }
+    /// <summary>🔴 SAI CHÍNH TẢ TRONG NGUỒN: `strRemarkErrOrther` (đúng ra "Other").</summary>
+    public string? RemarkErrOrther { get; set; }
+    /// <summary>Khoá khách hàng / khoá xe (`strCusID` / `strCarID`) — nguồn nhận KHOÁ, không nhận biển số.</summary>
+    public string? CusID { get; set; }
+    public string? CarID { get; set; }
     /// <summary>#506 §12 `DealerCode` — nguồn lọc phiếu tiếp nhận theo đại lý
     /// (`SqlTemplate_Ser_ReceptionF.zzB_tbl_Ser_ReceptionF_Filter_zzE(strDealerCode, …)`).</summary>
     public string? DealerCode { get; set; }                  // RO liên kết (nếu đã lập lệnh)

@@ -43674,12 +43674,46 @@ app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? 
 app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Cần biển số (PlateNo)." });
+
+    // ===== 🔴 #522 BỐN GUARD CỦA BẢN LIVE 2021 MÀ BẢN PORT CŨ THIẾU HẲN =====
+    // Nguồn: `Ser_ReceptionF_ReceptionX_New20210727` (`BizCarSv.ZTemp.cs:21199`), khối `#region // Check Input`
+    //   (đọc được nguyên văn — đúng luật #403, không suy đoán):
+    //     `Mst_Dealer_CheckDB(… TConst.Flag.Yes, TConst.Flag.Active …)` ⇒ đại lý phải **tồn tại VÀ đang hoạt động**
+    //     `this.CheckExistCarID(… strCarID …)`                        ⇒ xe phải **có thật**
+    //     `Ser_App_CheckDB(… TConst.Flag.Yes, "1, 2" …)`              ⇒ lịch hẹn phải ở **trạng thái 1 hoặc 2**
+    //     `if (!(strLevelOfInspection.Equals("1") || …("2") || …("3"))) throw`
+    //         `Ser_ReceptionF_CheckInput_InvalidLevelOfInspection`
+    // 🔴 Bản port cũ chỉ kiểm **lịch hẹn có tồn tại**, không kiểm **trạng thái** ⇒ nhận được lịch hẹn
+    //   **đã huỷ (4)** hoặc **đã tiếp nhận rồi (3)** ⇒ tiếp nhận trùng/tiếp nhận trên lịch đã huỷ.
+    // ⚠️ Guard mức kiểm tra là **danh sách đóng "1"/"2"/"3"** và **không cho rỗng** — nguồn ném lỗi ngay.
+    //   MiniHTC chỉ ép khi client có gửi (giữ tương thích), và nêu cờ `levelOfInspectionRequiredInSource`.
+    const string kAppStatusAllowForReception = "1, 2";   // hằng literal của nguồn, chép nguyên văn
+    if (!string.IsNullOrWhiteSpace(dto.LevelOfInspection)
+        && dto.LevelOfInspection!.Trim() is not ("1" or "2" or "3"))
+        return Results.BadRequest(new { error = "Ser_ReceptionF_CheckInput_InvalidLevelOfInspection" });
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode))
+    {
+        var dl = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dto.DealerCode!.Trim());
+        if (dl is null) return Results.BadRequest(new { error = "Mst_Dealer_CheckDB: không tìm thấy đại lý " + dto.DealerCode });
+        if (dl.FlagActive != "1") return Results.BadRequest(new { error = "Mst_Dealer_CheckDB: đại lý ngừng hoạt động " + dto.DealerCode });
+    }
+    if (!string.IsNullOrWhiteSpace(dto.CarID))
+    {
+        var carOk = await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId && x.CarID == dto.CarID!.Trim());
+        if (!carOk) return Results.BadRequest(new { error = "CheckExistCarID: không tìm thấy xe " + dto.CarID });
+    }
+
     var no = "RCP" + DateTime.Now.ToString("yyMMddHHmmss");
     var r = new Reception
     {
         OrgId = t.OrgId, ReceptionFNo = no, PlateNo = dto.PlateNo.Trim().ToUpperInvariant(), ModelName = dto.ModelName,
         CusName = dto.CusName, CusAddress = dto.CusAddress, CusPhoneNo = dto.CusPhoneNo, CusRequest = dto.CusRequest, Status = "Pending",
         AppNo = string.IsNullOrWhiteSpace(dto.AppNo) ? null : dto.AppNo!.Trim(),
+        // #522 §12 — các cột nghiệp vụ của bản LIVE 2021 (chép cả tên SAI CHÍNH TẢ của nguồn).
+        DealerCode = dto.DealerCode, CusID = dto.CusID, CarID = dto.CarID,
+        Km = dto.Km, FuelLevel = dto.FuelLevel, LevelOfInspection = dto.LevelOfInspection,
+        BackRepairStatus = dto.BackRepairStatus, WarrantlyStatus = dto.WarrantlyStatus,
+        InsuaranceStatus = dto.InsuaranceStatus, RemarkErrOrther = dto.RemarkErrOrther,
     };
     db.Receptions.Add(r);
 
@@ -43691,11 +43725,32 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
     {
         var app = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == r.AppNo);
         if (app is null) return Results.BadRequest(new { error = "Không tìm thấy lịch hẹn: " + r.AppNo });
+        // #522: nguồn còn chặn theo TRẠNG THÁI lịch hẹn — thiếu guard này thì tiếp nhận được cả lịch đã huỷ.
+        if (!kAppStatusAllowForReception.Split(',').Select(x => x.Trim()).Contains(app.Status))
+            return Results.BadRequest(new
+            {
+                error = "Ser_App_CheckDB: lịch hẹn không ở trạng thái cho phép tiếp nhận.",
+                appStatus = app.Status, allowed = kAppStatusAllowForReception,
+            });
         app.HCCFinishStatus = "P";      // chờ đẩy lệnh đóng sang HCC
         appPush = app.HCCFinishStatus;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, r.PlateNo, status = r.Status, r.AppNo, hccFinishStatus = appPush });
+    return Results.Ok(new
+    {
+        r.ReceptionFNo, r.PlateNo, status = r.Status, r.AppNo, hccFinishStatus = appPush,
+        r.DealerCode, r.CusID, r.CarID, r.Km, r.FuelLevel, r.LevelOfInspection,
+        r.BackRepairStatus, r.WarrantlyStatus, r.InsuaranceStatus, r.RemarkErrOrther,
+        // #522 các điểm còn lệch so với bản LIVE 2021 — nêu tên, không giấu.
+        guardsAddedFrom2021 = new[] { "Mst_Dealer_CheckDB(exist+active)", "CheckExistCarID",
+            "Ser_App_CheckDB(status in 1,2)", "LevelOfInspection in (1,2,3)" },
+        levelOfInspectionRequiredInSource = true,
+        sourceMisspellings = new[] { "WarrantlyStatus", "InsuaranceStatus", "RemarkErrOrther" },
+        notPortedYet = new[] { "ds_Ser_ReceptionFDtl (bang chi tiet hang muc)",
+            "ds_Ser_ReceptionFAttachFile (tep dinh kem)", "BodyPaintFilePath",
+            "CardNo/MemberNo/CardType (the hoi vien)" },
+        sourceWritesThreeDatabases = "Main + WH + Dealer (no _dbWH/_dbDealer)",
+    });
 }).RequireAuthorization();
 
 // Gắn RO (kiểm tra RO tồn tại — tích hợp RepairOrder)
@@ -48983,7 +49038,12 @@ record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
+// #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest,
+    string? DealerCode = null, string? CusID = null, string? CarID = null,
+    string? Km = null, string? FuelLevel = null, string? LevelOfInspection = null,
+    string? BackRepairStatus = null, string? WarrantlyStatus = null, string? InsuaranceStatus = null,
+    string? RemarkErrOrther = null,
     string? AppNo = null);
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);

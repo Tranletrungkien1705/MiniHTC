@@ -1265,6 +1265,16 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #522 cac cot nghiep vu cua phieu tiep nhan (Ser_ReceptionF_ReceptionX_New20210727)
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"Km\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"FuelLevel\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"LevelOfInspection\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"BackRepairStatus\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"WarrantlyStatus\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"InsuaranceStatus\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"RemarkErrOrther\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
+        "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         // #506 dai ly cua phieu tiep nhan (bao cao tong hop theo gio/ngay/thang)
         "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         // #488 danh muc dich vu chuan (gia chuan de so chenh lech)
