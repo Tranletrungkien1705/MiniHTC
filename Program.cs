@@ -15851,16 +15851,51 @@ app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext 
 // ⚠️ Bảng kết quả thứ hai còn **ba `inner join`** (Ser_RO · Ser_Customer · ser_car) ⇒ vẫn mất dòng nếu
 //   thiếu khách hoặc thiếu xe. Đếm và trả `droppedByRequiredMaster`.
 // ⚠️ Cùng bảng dịch 6 mã trạng thái, **không có ELSE** ⇒ mã lạ ra **null** (đã có ở endpoint này).
+// ===== 🔴 #470 NHÁNH KHO `Ser_ROWarrantyReport_Get_WH` LỌC **SAI CỘT** so với bản chính =====
+// DIFF hai nhánh (`_audit/diffwh.js`, 77 vs 50 dòng SQL) — khác biệt cốt lõi nằm ở **cột được lọc**:
+//   · bản chính `_New20230417`: `BuildClause("and", "**ro**.FrameNo", …)` · `"**ro**.PlateNo"`
+//     ⇒ lọc theo **ẢNH CHỤP trên lệnh sửa chữa** (đúng tinh thần đợt sửa 2023-04-17, xem #460).
+//   · bản kho `_WH`:            `BuildClause("and", "**car**.FrameNo", …)` · `"**car**.PlateNo"`
+//     ⇒ lọc theo **DANH MỤC XE HIỆN TẠI**.
+//   ⇒ Xe **đổi biển số** sau khi sửa: tra ở màn chính phải gõ biển **lúc sửa**, tra ở màn kho phải gõ biển
+//     **hiện tại** — cùng một câu hỏi, hai đáp án. Đây đúng là loại lỗi "**LỌC SAI CỘT**" mà §12 không bắt.
+// 🔴 Bản kho còn **THIẾU HẲN**: bảng lọc trung gian `#Ser_ROWarrantyReportFilter` · hai bộ lọc
+//   `ROWTypeCode`/`ROWTID` (nên **không lọc được theo loại đề nghị bảo hành**) · `left join Ser_MST_Part`
+//   (nên **không có tên phụ tùng lỗi**) · `order by rt.ROWRTransactionID` · ba `left join` dịch vụ/phụ tùng/
+//   `Btl_Bulletin`. ⇒ Khớp đúng hình dạng "nhánh kho tụt hậu" mà #468 đo được trên toàn cây.
+// ⇒ Port cho tham số `scope` chọn **cột lọc**, mặc định `main` (ảnh chụp). Không tự hợp nhất hai bên.
 app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, string? status, string? plate,
-    string? vin, string? dealer, string? roId, string? rowId, string? isGetDetail) =>
+    string? vin, string? dealer, string? roId, string? rowId, string? isGetDetail, string? scope) =>
 {
+    var useMasterCar = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
     var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
     // #466: hai bộ lọc chính của lối vào theo lệnh sửa chữa (nguồn so BẰNG, không LIKE).
     if (!string.IsNullOrWhiteSpace(roId)) q = q.Where(x => x.ROID == roId!.Trim());
     if (!string.IsNullOrWhiteSpace(rowId)) q = q.Where(x => x.ROWNo == rowId!.Trim());
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
-    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
-    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin != null && x.Vin.Contains(vin!));
+    // #470: nhánh kho lọc trên DANH MỤC XE, nhánh chính lọc trên ẢNH CHỤP của lệnh.
+    if (useMasterCar)
+    {
+        if (!string.IsNullOrWhiteSpace(plate))
+        {
+            var carIdsByPlate = await db.ServiceCars.Where(c => c.OrgId == t.OrgId
+                && c.PlateNo != null && c.PlateNo.Contains(plate!) && c.CarID != null)
+                .Select(c => c.CarID!).ToListAsync();
+            q = q.Where(x => x.CarID != null && carIdsByPlate.Contains(x.CarID));
+        }
+        if (!string.IsNullOrWhiteSpace(vin))
+        {
+            var carIdsByVin = await db.ServiceCars.Where(c => c.OrgId == t.OrgId
+                && c.FrameNo.Contains(vin!) && c.CarID != null)
+                .Select(c => c.CarID!).ToListAsync();
+            q = q.Where(x => x.CarID != null && carIdsByVin.Contains(x.CarID));
+        }
+    }
+    else
+    {
+        if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
+        if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin != null && x.Vin.Contains(vin!));
+    }
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
@@ -15902,6 +15937,14 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         isGetDetail = isGetDetail,
         dealerScopeForcedInSource = true,
         leftJoinDiesWhenRowTypeFiltered = true,
+        // ===== #470 =====
+        scope = useMasterCar ? "wh" : "main",
+        filterColumnDiffersByScope = true,
+        filterColumnNote = "scope=main lọc PlateNo/Vin ẢNH CHỤP trên lệnh (ro.*); scope=wh lọc theo DANH "
+            + "MỤC XE hiện tại (car.*) — đúng nguồn Ser_ROWarrantyReport_Get_WH. Xe đổi biển số thì hai "
+            + "phạm vi cho kết quả khác nhau.",
+        whBranchMissing = new[] { "loc ROWTypeCode", "loc ROWTID", "ten phu tung loi (Ser_MST_Part)",
+            "order by ROWRTransactionID", "left join dich vu/phu tung/Btl_Bulletin" },
         carOwnerJoinInconsistentAcrossScreens = true,
         carOwnerJoinNote = "Ser_ROWarrantyReport_Get_New20230417 ĐÃ BỎ vế `td.cusID = car.CusID` "
             + "(comment 2022-05-23: khách không bắt buộc phải giống nhau), nhưng Ser_RO_GetWarranty_V2"
