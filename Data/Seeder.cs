@@ -2274,6 +2274,11 @@ public static class Seeder
                 // #B48 — Car_Car.TInvoicePrice / FlagInvoiceAdj (dieu kien "can hoa don DIEU CHINH")
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"TInvoicePrice\" numeric NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagInvoiceAdj\" text NULL",
+                // #B49 — 4 cot PDI_VIN ma FrmSearchVinForPL loc truc tiep
+                "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrderNoMMSDelivery\" text NULL",
+                "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdCategoryTypeMMS\" text NULL",
+                "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdMonthMMSDelivery\" text NULL",
+                "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdCategoryTypeMMSDelivery\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

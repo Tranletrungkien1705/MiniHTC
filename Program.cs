@@ -3089,6 +3089,95 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
 //    Trả `outOfScopeCount` + cờ `enforceBuScope`; không tự bịt.
 // ⚠️ NỢ CÓ NHÃN: nguồn còn ~10 `left join` làm giàu (TKHQ, packing list, LC, ĐNGT, lệnh giao, biên bản
 //    giao `#tblmaxDlv`…). Endpoint này trả **khối lõi + trạng thái hoá đơn**; các cột làm giàu chưa port.
+
+// ===== #B49 TÌM VIN TRONG KHO PDI — `DMS_PDI_VIN_Get_New20181115` (`FrmSearchVinForPL`) =====
+// Trace LIVE: `salesSv.PDI_VIN_Get` (`SalesService.cs:29073`) → WS `PDI_VIN_Get`
+//   (`WSHTC.asmx.cs:54922`) → **`_biz.DMS_PDI_VIN_Get_New20181115`**
+//   (`MMSIntergration/BizHTC.MMSIntergration.PDIVIN.cs:891`) → **`PDI_VIN_GetX`** (`:563`).
+// 🔴 **BẪY "BẢN MỚI HƠN KHÔNG PHẢI BẢN SỐNG"**: cùng file có `DMS_PDI_VIN_Get_New20190214` (`:1037`)
+//    gọi `PDI_VIN_GetX_New20181119` — **tên mới hơn** nhưng **WS KHÔNG gọi**. WS gọi `_New20181115`.
+//    Chọn theo "hậu tố ngày lớn hơn" là **sai twin**; phải đọc thân WS (luật trace đã có).
+//    Bản `_New20181119` của `GetX` là bản mà **WS WH** dùng (`PDI_VIN_GetWH` → `PDI_VIN_GetWH_New20181119`).
+// 🔴 **BẢY bộ lọc, ba hình dạng** (`SalesService.cs:29087-29113`):
+//    `"in"` cho `VIN` · LIKE `%…%` cho `OrderNoMMSDelivery`, `OrderNoMMS` ·
+//    `"="` cho `OrdCategoryTypeMMS`, `OrdMonthMMSDelivery`, `OrdCategoryTypeMMSDelivery`, `PDIStorageStatus`.
+//    ⚠️ `VIN` dùng **"in"**, KHÔNG phải LIKE — port thành `Contains` là **nới lỏng** bộ lọc.
+// 🔴 Phân trang `identity(bigint,0,1) MyIdxSeq` trên `select distinct pdiv.VIN`, `order by pdiv.VIN asc`;
+//    `MyCount` đếm trên `#tbl_PDI_VIN_Draft` (**trước** khi cắt trang).
+// ⚠️ NỢ CÓ NHÃN: `PDIStorageStatus` ở MiniHTC nằm trên `HtmvPdiDtl`, **không** trên `StoragePdiVin`
+//    (nguồn có cột này ngay trong `PDI_VIN`) ⇒ bộ lọc thứ 7 **chưa dùng được**: trả **400 có nhãn**,
+//    KHÔNG nhận-rồi-bỏ-qua (luật "không lọc im lặng").
+app.MapGet("/api/pdivins/search", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? orderNoMMSDelivery, string? orderNoMMS,
+    string? ordCategoryTypeMMS, string? ordMonthMMSDelivery, string? ordCategoryTypeMMSDelivery,
+    string? pdiStorageStatus, int? recordStart, int? recordCount) =>
+{
+    if (!string.IsNullOrWhiteSpace(pdiStorageStatus))
+        return Results.BadRequest(new
+        {
+            error = "Bộ lọc PDIStorageStatus chưa dùng được: MiniHTC để cột này ở HtmvPdiDtl, không phải StoragePdiVin (nguồn có trong PDI_VIN).",
+            debt = "NỢ có nhãn — hợp nhất cột rồi mới bật bộ lọc."
+        });
+
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var q = db.StoragePdiVins.Where(x => x.OrgId == t.OrgId);
+    // 🔴 `VIN` dùng "in" — danh sách, so BẰNG; không phải LIKE.
+    if (!string.IsNullOrWhiteSpace(vin))
+    {
+        var set = vin.Split(',').Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToHashSet();
+        q = q.Where(x => set.Contains(x.VIN));
+    }
+    if (!string.IsNullOrWhiteSpace(orderNoMMSDelivery))
+    { var k = orderNoMMSDelivery.Trim(); q = q.Where(x => x.OrderNoMMSDelivery != null && x.OrderNoMMSDelivery.Contains(k)); }
+    if (!string.IsNullOrWhiteSpace(orderNoMMS))
+    { var k = orderNoMMS.Trim(); q = q.Where(x => x.OrderNoMMS != null && x.OrderNoMMS.Contains(k)); }
+    if (!string.IsNullOrWhiteSpace(ordCategoryTypeMMS))
+    { var k = ordCategoryTypeMMS.Trim(); q = q.Where(x => x.OrdCategoryTypeMMS == k); }
+    if (!string.IsNullOrWhiteSpace(ordMonthMMSDelivery))
+    { var k = ordMonthMMSDelivery.Trim(); q = q.Where(x => x.OrdMonthMMSDelivery == k); }
+    if (!string.IsNullOrWhiteSpace(ordCategoryTypeMMSDelivery))
+    { var k = ordCategoryTypeMMSDelivery.Trim(); q = q.Where(x => x.OrdCategoryTypeMMSDelivery == k); }
+
+    // `MyCount` đếm TRƯỚC khi cắt trang; `order by pdiv.VIN asc`.
+    var all = await q.OrderBy(x => x.VIN).ToListAsync();
+    var myCount = all.Select(x => x.VIN).Distinct().Count();
+    var page = all.Skip(start).Take(count).ToList();
+
+    // Khối làm giàu: `Mst_CarSpec` · `Mst_CarColor` (khoá **cặp** ModelCode+ColorCode) · `Mst_CarModel`.
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc, s.ModelCode }).ToListAsync();
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtNameVN, c.ColorIntNameVN }).ToListAsync();
+
+    var items = page.Select(x =>
+    {
+        var sp = specs.FirstOrDefault(s => s.SpecCode == x.SpecCode);
+        var mo = models.FirstOrDefault(m => m.ModelCode == x.ModelCode);
+        // 🔴 `Mst_CarColor` khoá theo CẶP (ModelCode, ColorCode) — tra chỉ theo ColorCode là sai bảng master.
+        var co = colors.FirstOrDefault(c => c.ModelCode == x.ModelCode && c.ColorCode == x.ColorCode);
+        return new
+        {
+            pdivVIN = x.VIN, pdivModelCode = x.ModelCode, pdivSpecCode = x.SpecCode, pdivColorCode = x.ColorCode,
+            pdivOrderNoMMS = x.OrderNoMMS, pdivOrderNoMMSDelivery = x.OrderNoMMSDelivery,
+            pdivOrdCategoryTypeMMS = x.OrdCategoryTypeMMS, pdivOrdMonthMMSDelivery = x.OrdMonthMMSDelivery,
+            pdivOrdCategoryTypeMMSDelivery = x.OrdCategoryTypeMMSDelivery,
+            pdivEngineNo = x.EngineNo, pdivKeyNo = x.KeyNo, pdivAVNSerialNo = x.AVNSerialNo,
+            pdivBatteryNo = x.BatteryNo, pdivFinishDTime = x.FinishDTime, pdivFlagActive = x.FlagActive,
+            mcsSpecDescription = sp?.SpecDesc, mcmModelName = mo?.ModelName,
+            mccColorNameVN = co is null ? null : $"{co.ColorExtNameVN}/{co.ColorIntNameVN}"
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        filterShapes = "'in': VIN · LIKE: OrderNoMMSDelivery, OrderNoMMS · '=': OrdCategoryTypeMMS, OrdMonthMMSDelivery, OrdCategoryTypeMMSDelivery, PDIStorageStatus",
+        twinNote = "WS gọi DMS_PDI_VIN_Get_New20181115 → PDI_VIN_GetX. Bản _New20190214 (:1037) TÊN MỚI HƠN nhưng KHÔNG được WS gọi — chọn theo hậu tố ngày là sai twin.",
+        debt = "PDIStorageStatus: MiniHTC để ở HtmvPdiDtl, nguồn để trong PDI_VIN ⇒ bộ lọc thứ 7 trả 400 có nhãn thay vì lọc im lặng."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/for-htc-invoice", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? specCode, string? modelCode, string? colorCode, string? dealerCode,

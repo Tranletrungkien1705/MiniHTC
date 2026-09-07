@@ -9439,6 +9439,19 @@ public sealed class StoragePdiVin
     public string FlagActive { get; set; } = "1";
     public string? Remark { get; set; }
 
+    /// <summary>🔴 #B49 — bốn cột `PDI_VIN` mà màn `FrmSearchVinForPL` lọc trực tiếp
+    /// (`SalesService.PDI_VIN_Get`, `:29087-29113`) nhưng port cũ **thiếu hẳn**:
+    /// `OrderNoMMSDelivery` (LIKE) · `OrdCategoryTypeMMS` ("=") · `OrdMonthMMSDelivery` ("=") ·
+    /// `OrdCategoryTypeMMSDelivery` ("="). Thiếu cột thì **bốn trong bảy bộ lọc của màn không chạy được**.
+    /// (`PDIStorageStatus` nằm ở `HtmvPdiDtl`, không phải bảng này — xem chú thích ở `debt` của endpoint.)</summary>
+    public string? OrderNoMMSDelivery { get; set; }
+    /// <summary>`PDI_VIN.OrdCategoryTypeMMS` — xem chú thích của [OrderNoMMSDelivery].</summary>
+    public string? OrdCategoryTypeMMS { get; set; }
+    /// <summary>`PDI_VIN.OrdMonthMMSDelivery` — xem chú thích của [OrderNoMMSDelivery].</summary>
+    public string? OrdMonthMMSDelivery { get; set; }
+    /// <summary>`PDI_VIN.OrdCategoryTypeMMSDelivery` — xem chú thích của [OrderNoMMSDelivery].</summary>
+    public string? OrdCategoryTypeMMSDelivery { get; set; }
+
     /// <summary>
     /// 🔴 #B03: Thời điểm HOÀN TẤT PDI = "thời gian nhập kho" (`PDI_VIN.FinishDTime`).
     /// Là bộ lọc **BẮT BUỘC** của báo cáo *Xe nhập kho và lắp GPS*
