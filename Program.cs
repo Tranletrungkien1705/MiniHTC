@@ -5034,6 +5034,105 @@ app.MapDelete("/api/wholesaledeals/{no}", async (string no, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Sửa thông tin giao dịch bán xe (DealRecord — port 1:1 cụm FrmEditDeal_*: DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung) =====
+
+// ===== #B12 TÌM GIAO DỊCH BÁN — trả DÒNG XE (port 1:1 `DLS_Deal_Get`, dùng bởi FrmMngDeal + Frm_RePostSBHOnline) =====
+// Trace twin LIVE (biz là **VỎ BỌC**, phải đi tiếp mới thấy SQL):
+//   `DealerService.SearchDeal` / `SearchDeal_SBHOnline` (:2374) → WS `DLS_Deal_Get` (`WSHTC.asmx.cs:72826`)
+//   → `_biz.DLS_Deal_Get_New20181119` (`Biz.HTC.WH.cs:145006`) — hàm này **không có SQL nào**, nó chỉ gọi
+//   → **`DLS_Deal_GetX_New20190228`** (`Biz.HTC.WH.cs:145680`) — SQL thật nằm ở đây.
+// 🔴 KẾT QUẢ SAI HÌNH DẠNG nếu port ẩu: client `SearchDeal_SBHOnline` trả về
+//    `mdsFinal.Tables[Tbl_Dealer_Deal_Detail]` ⇒ **một bản ghi = MỘT DÒNG XE**, không phải một chứng từ.
+// 🔴 RBAC join ở đây là `dlsd.**DealerCode**` (đại lý BÁN) — **khác** `SearchCarToSellToDealer` (#B08) và
+//    `SearchCarToPDI` (#B10) vốn join theo `dlsd.DealerCodeBuyer`. Cùng một bảng, ba màn, hai cột RBAC.
+// 🔴 `flagInitDeal = "0"` được client **HARDCODE** (`DealerService.cs:2384-2388`, `if` luôn đúng vì biến gán
+//    cứng ngay trên) ⇒ biến thể SBHOnline **luôn** loại giao dịch khởi tạo.
+app.MapGet("/api/deals/search", async (
+    AppDbContext db, ITenantContext t,
+    string? dealNo, string? carId, string? vin, string? flagInitDeal, string? buPattern,
+    int? recordStart, int? recordCount) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    // `from DLS_Deal dlsd inner join Mst_Dealer md on dlsd.DealerCode = md.DealerCode and BUCode like @…`
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    int droppedByDealerJoin = 0;
+    deals = deals.Where(d =>
+    {
+        var dl = dealers.FirstOrDefault(x => x.DealerCode == d.DealerCode);
+        if (dl is null) { droppedByDealerJoin++; return false; }              // nối TRONG ⇒ mất dòng lúc ĐỌC
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedByDealerJoin++; return false; }
+        return true;
+    }).ToList();
+
+    // Bộ lọc do CLIENT dựng (`sbSql.AddWhereClause`), ba cái đầu là LIKE `%…%`, `FlagInitDeal` là "=".
+    if (!string.IsNullOrWhiteSpace(dealNo)) { var k = dealNo.Trim().ToUpperInvariant(); deals = deals.Where(d => d.DealNo.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(flagInitDeal)) deals = deals.Where(d => d.FlagInitDeal == flagInitDeal.Trim()).ToList();
+
+    var dealIds = deals.Select(d => d.Id).ToList();
+    var details = await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && dealIds.Contains(x.DealId)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(carId)) { var k = carId.Trim().ToUpperInvariant(); details = details.Where(x => x.CarId.ToUpperInvariant().Contains(k)).ToList(); }
+
+    var carIds = details.Select(x => x.CarId).Distinct().ToList();
+    var carsVin = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin))
+    {
+        var k = vin.Trim().ToUpperInvariant();
+        var okVins = carsVin.Where(c => c.VIN.ToUpperInvariant().Contains(k)).Select(c => c.VIN).ToHashSet();
+        details = details.Where(x => okVins.Contains(x.CarId)).ToList();
+    }
+
+    // `#tbl_DLS_Deal_Draft` gán `identity(bigint,0,1) MyIdxSeq` **theo `order by dlsd.DealNo`**, rồi
+    // `#tbl_DLS_Deal_Filter` cắt `MyIdxSeq >= @nFilterRecordStart and <= @nFilterRecordEnd`.
+    // ⚠️ Phân trang của nguồn là **theo SỐ GIAO DỊCH (DealNo distinct)**, KHÔNG phải theo dòng xe.
+    var pagedDealNos = deals.Select(d => d.DealNo).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+    var myCount = pagedDealNos.Count;                                          // khối `select Count(0) MyCount`
+    var pageNos = pagedDealNos.Skip(start).Take(count).ToHashSet();
+    var pagedDealIds = deals.Where(d => pageNos.Contains(d.DealNo)).Select(d => d.Id).ToHashSet();
+    details = details.Where(x => pagedDealIds.Contains(x.DealId)).ToList();
+
+    var ctrDtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var items = details.Select(x =>
+    {
+        var d = deals.First(z => z.Id == x.DealId);
+        var cv = carsVin.FirstOrDefault(c => c.VIN == x.CarId);
+        var prev = string.IsNullOrWhiteSpace(x.DealNoPrevious) ? null : deals.FirstOrDefault(z => z.DealNo == x.DealNoPrevious);
+        // `left join Dlr_ContractDtl dcd on dlsd.DlrContractNo = dcd.DlrContractNo and cc.SpecCode = dcd.SpecCode
+        //  and cc.ModelCode = dcd.ModelCode and **cc.ColorCode** = dcd.ColorCode`
+        // 🔴 Ở ĐÂY màu lấy từ **Car_Car** (`cc`), trong khi `SearchCarToPDI` (#B10) lấy từ **Car_VIN** (`cv`)
+        //    — hai màn, hai nguồn màu; không được suy màn này từ màn kia.
+        var dcd = d.DlrContractNo is null ? null : ctrDtls.FirstOrDefault(z =>
+            z.DlrContractNo == d.DlrContractNo && z.SpecCode == cv?.SpecCode && z.ModelCode == cv?.ModelCode && z.ColorCode == cv?.ColorCode);
+        return new
+        {
+            dealNo = d.DealNo, d.DealNoUser, d.DealerCode, d.DealerCodeBuyer, d.SalesType, d.DealDate,
+            d.FlagInitDeal, d.CtmCareFlag, d.DlrContractNo, d.CustomerCodeBuyer,
+            x.CarId, x.PlateNo, x.PriceAFVAT, x.Price, x.DeliveryDate, x.DeliveryStatus,
+            x.ConfirmDate, x.ConfirmBy, x.FlagCurrent, x.DealNoPrevious, x.CtrCarId,
+            cvVIN = cv?.VIN, ccSpecCode = cv?.SpecCode, ccModelCode = cv?.ModelCode, ccColorCode = cv?.ColorCode,
+            cvSpecCode = cv?.SpecCode, cvModelCode = cv?.ModelCode, cvColorCode = cv?.ColorCode,
+            cvEngineNo = cv?.EngineNo, cvKeyNo = cv?.KeyNo, cvActualSpec = cv?.ActualSpec, cvSerialNo = cv?.SerialNo,
+            dlsdpDealerCode = prev?.DealerCode, dlsdpDealerCodeBuyer = prev?.DealerCodeBuyer,
+            // `dcd.UnitPrice` của nguồn ↔ MiniHTC đặt tên `DlrContractDetail.Price` (đơn giá theo hợp đồng ĐL).
+            unitPrice = dcd?.Price
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount,                       // tổng SỐ GIAO DỊCH khớp lọc (trước phân trang) — đúng `MyCount` của nguồn
+        recordStart = start, recordCount = count,
+        count = items.Count, items,
+        rowShape = "MỘT bản ghi = MỘT DÒNG XE (DLS_DealDetail), không phải một chứng từ",
+        rbacJoinColumn = "dlsd.DealerCode (đại lý BÁN) — khác cars-to-sell-to-dealer/cars-to-pdi vốn join DealerCodeBuyer",
+        droppedByDealerJoin,
+        // ⚠️ NỢ có nhãn: nguồn còn trả `CTPLShippingDate*` (join `CT_PackingList` theo `cv.PackingListNo`) và
+        //    `CVStoreDate`/`CVCQStartDate`/`CVCQEndDate`/`CVCODate` — MiniHTC `CarVinMaster` chưa có các cột đó.
+        missingEnrichNote = "NỢ: CTPLShippingDateStart/End/EndExpected + CVStoreDate/CVCQStartDate/CVCQEndDate/CVCODate chưa có cột trong CarVinMaster."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/deals/records", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? dealer) =>
 {
     var q = db.DealRecords.Where(r => r.OrgId == t.OrgId);
