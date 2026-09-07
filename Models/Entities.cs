@@ -9237,6 +9237,33 @@ public sealed class DealerInventoryThreshold
 
 /// <summary>
 /// 🔴 #B89 — **Danh mục VÙNG** (`Mst_Zone`), tách hẳn khỏi <see cref="DealerZone"/> (`Mst_DealerZone`,
+/// <summary>
+/// 🔴 #B96 — **Danh mục ĐỐI TÁC hệ thống** (`Sys_Partner`). Mọi lời gọi WS của 2010.HTC đều mang
+/// `strPartnerCode`; bảng này là nơi khai báo hợp lệ. Port cũ **không có** ⇒ `PartnerCode` là chuỗi
+/// tự do, không đối chiếu được. Nguồn: `SysGetPartner_New20181115` (`BizHTC.System.cs:807`).
+/// </summary>
+public sealed class SysPartner
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartnerCode { get; set; } = "";
+    public string? PartnerName { get; set; }
+}
+
+/// <summary>
+/// 🔴 #B96 — **Danh mục LOẠI ĐỐI TƯỢNG phân quyền** (`Sys_ObjectType`). Port cũ để **CỨNG trong C#**
+/// (`string[] SysObjectTypes = { "WS", "WSFUNC", "APP", "MENU", "SCR", "BTN" }`) ⇒ **mất `ObjectTypeName`**
+/// (tên hiển thị) và **không thêm/bớt loại được** nếu nghiệp vụ mở rộng.
+/// Nguồn đọc từ BẢNG: `SysGetObjectType_New20181115` (`BizHTC.System.cs:927`).
+/// </summary>
+public sealed class SysObjectTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ObjectType { get; set; } = "";
+    public string? ObjectTypeName { get; set; }
+}
+
 /// bảng GHÉP đại lý↔vùng). Nguồn: `Mst_Zone_Get`/`Mst_Zone_Update` (`BizHTC.MasterData.cs:4141`/`:4431`).
 /// Port cũ chỉ có bảng ghép ⇒ **không có nơi khai báo vùng**, mọi `ZoneCode` là chuỗi tự do.
 /// ⚠️ Cột dấu vết của bảng này tên **`LogLUDTime`** (KHÔNG có chữ "ate") — khác `LogLUDateTime`

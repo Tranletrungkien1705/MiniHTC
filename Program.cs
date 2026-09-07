@@ -35857,6 +35857,67 @@ app.MapGet("/api/zones", async (
     });
 }).RequireAuthorization();
 
+// ===== #B96 HAI DANH MỤC HỆ THỐNG — `SysGetPartner` + `SysGetObjectType` =====
+// Trace LIVE: WS → `_biz.SysGetPartner_New20181115` (`BizHTC.System.cs:807`) và
+//   `_biz.SysGetObjectType_New20181115` (`:927`). 3B đo thật, **khớp cả 2 máy**:
+//   `807/55047c83c310ec5e935ea54589d43b00` · `927/b0bf9b3e38733915e9b88eb38a43a49f`.
+// 🔴 **`BuildClauseConditionList(…, "|")` — DẤU NGĂN LÀ ỐNG `|`, KHÔNG PHẢI DẤU PHẨY.**
+//    Cả hai hàm truyền tham số thứ tư là `"|"`. Client gửi `"A,B"` sẽ được hiểu là **MỘT mã**
+//    tên `"A,B"` ⇒ trả về **rỗng**, không báo lỗi. Port nhận **cả hai** dấu ngăn và ghi rõ.
+// 🔴 **`Sys_ObjectType` là BẢNG, không phải hằng**: port cũ để **CỨNG trong C#**
+//    (`string[] SysObjectTypes = { "WS", "WSFUNC", "APP", "MENU", "SCR", "BTN" }`) ⇒ **mất cột
+//    `ObjectTypeName`** (tên hiển thị cho người dùng) và **không thêm/bớt loại được**.
+//    Đã thêm entity `SysObjectTypeMst` (§12); mảng cứng **giữ lại** làm giá trị mặc định khi bảng rỗng,
+//    để không phá màn phân quyền đang chạy — trả cờ `fallbackToHardCoded` cho biết đang dùng bản nào.
+// 🔴 `Sys_Partner` cũng chưa có ⇒ `PartnerCode` (tham số **bắt buộc của MỌI lời gọi WS** 2010.HTC)
+//    là chuỗi tự do không đối chiếu được. Đã thêm entity `SysPartner`.
+// ✅ Hai hàm **không có RBAC nào** — danh mục hệ thống, đọc chung; đây là **thiết kế** chứ không phải
+//    điều kiện bị bỏ quên (phân biệt theo `C0-…quinquagesimus`).
+app.MapGet("/api/syspartners", async (AppDbContext db, ITenantContext t, string? partnerCodeList) =>
+{
+    var q = db.SysPartners.Where(p => p.OrgId == t.OrgId);
+    var codes = SplitConditionList(partnerCodeList);
+    if (codes.Count > 0) q = q.Where(p => codes.Contains(p.PartnerCode));
+    var items = await q.OrderBy(p => p.PartnerCode)
+        .Select(p => new { tPartnerCode = p.PartnerCode, tPartnerName = p.PartnerName }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        separatorNote = "BuildClauseConditionList(..., '|') - DAU NGAN LA ONG '|', KHONG PHAI DAU PHAY. Client gui 'A,B' se duoc hieu la MOT ma ten 'A,B' => tra ve RONG, khong bao loi. Port nhan CA HAI dau ngan.",
+        tableNote = "Sys_Partner chua co trong port cu => PartnerCode (tham so BAT BUOC cua MOI loi goi WS 2010.HTC) la chuoi tu do khong doi chieu duoc. Da them entity SysPartner.",
+        rbacNote = "Ham KHONG co RBAC nao - danh muc he thong, doc chung. Day la THIET KE, khong phai dieu kien bi bo quen (C0-...quinquagesimus)."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/sysobjecttypes", async (AppDbContext db, ITenantContext t, string? objectTypeList) =>
+{
+    var codes = SplitConditionList(objectTypeList);
+    var rows = await db.SysObjectTypeMsts.Where(o => o.OrgId == t.OrgId)
+        .OrderBy(o => o.ObjectType).ToListAsync();
+    var fallback = rows.Count == 0;
+    // Bảng rỗng ⇒ dùng tạm mảng cứng của port cũ để không phá màn phân quyền đang chạy.
+    var items = fallback
+        ? SysObjectTypes.Where(x => codes.Count == 0 || codes.Contains(x))
+            .Select(x => new { tObjectType = x, tObjectTypeName = (string?)null }).ToList()
+        : rows.Where(o => codes.Count == 0 || codes.Contains(o.ObjectType))
+            .Select(o => new { tObjectType = o.ObjectType, tObjectTypeName = o.ObjectTypeName }).ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        fallbackToHardCoded = fallback,
+        tableNote = "Sys_ObjectType la BANG, khong phai hang: port cu de CUNG trong C# (string[] SysObjectTypes = { WS, WSFUNC, APP, MENU, SCR, BTN }) => MAT cot ObjectTypeName (ten hien thi) va KHONG them/bot loai duoc. Da them entity SysObjectTypeMst; mang cung GIU LAI lam gia tri mac dinh khi bang rong - xem co fallbackToHardCoded.",
+        separatorNote = "BuildClauseConditionList(..., '|') - dau ngan la ONG '|', khong phai dau phay.",
+        vocabNote = "Tu vung goc (Const.Main.cs:166, TConst.SysObjectType): WS · WSFUNC · APP · MENU · SCR · BTN. 'BIZFUNC' BI COMMENT trong nguon."
+    });
+}).RequireAuthorization();
+
+// Dấu ngăn của nguồn là `|`; chấp nhận thêm `,` để client hiện tại không vỡ (khác biệt CÓ Ý).
+static List<string> SplitConditionList(string? s) =>
+    string.IsNullOrWhiteSpace(s)
+        ? new List<string>()
+        : s.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
+           .Select(x => x.Trim()).Where(x => x.Length > 0).Distinct().ToList();
+
 app.MapPost("/api/zones/{code}/toggle", async (
     string code, MstZoneToggleDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
