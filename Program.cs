@@ -23713,6 +23713,28 @@ app.MapPost("/api/dealerinvthresholds/{dealer}/{model}/toggle", async (string de
     return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
+// Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
+// (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
+// 🔴 **HAI DẠNG cùng tồn tại** trong cùng đợt rollout zone `_New20260514`:
+//   · **BAKE** — `('@strZoneCode' = '' or mdz.ZoneCode = '@strZoneCode')`, **có bọc nháy**: **10** site.
+//     Được `CmUtils.StringUtils.Replace` thay chuỗi ⇒ null thành rỗng ⇒ **an toàn**.
+//     (Báo cáo **công nợ** `RptDebitReport02_New20260514` thuộc nhóm này — đã kiểm, KHÔNG dính bug.)
+//   · **PARAM runtime** — `(@strZoneCode = '' or mdz.ZoneCode = @strZoneCode)`, **không nháy**: **29** site.
+//     Với `@strZoneCode = NULL`: `NULL = ''` → UNKNOWN và `ZoneCode = NULL` → UNKNOWN ⇒ **loại sạch dòng**.
+// ✅ **Ba hàm `_New20260514` dùng dạng PARAM đã TỰ VÁ** đúng cách, cùng một dòng coalesce:
+//    `strZoneCode = TUtils.CUtils.IsNullOrEmpty(strZoneCode) ? "" : TUtils.CUtils.StandardizeParam(strZoneCode);`
+//    — `RptStatistic_HTCStock03_New20260514` (`BizHTC.Report.cs:5432`),
+//      `RptSales_CtmCare_01_New20260514` (`:11670`), `RptStatistic_DealerStock_21_New20260514` (`:23222`).
+//    (Cần vì `StandardizeParam` **trả `null`** khi rỗng — `TERP.Utils/Utils.cs:351-355`.)
+// 🔴 **SITE BỊ BỎ SÓT**: `Rpt_DlrContractGet_WH_New20190619` (`BizHTC.Contract.cs:10653`, bind ở `:10956`)
+//    **KHÔNG có dòng coalesce** ⇒ nếu client gửi zone rỗng/null thì báo cáo **ra RỖNG**. Bản `_WH` cũ
+//    (2019) **không được vá theo đợt 20260514**. 📌 Báo cho phía nghiệp vụ; **không sửa source legacy**.
+// ✅ **MiniHTC KHÔNG mắc bẫy này**: mọi bộ lọc tuỳ chọn ở đây dùng `if (!string.IsNullOrWhiteSpace(x))`
+//    rồi mới thêm điều kiện — null/rỗng ⇒ **bỏ qua bộ lọc**, đúng ý định. Giữ nguyên khuôn này.
+// ⚠️ NỢ CÓ NHÃN: các báo cáo vừa port ở #B54–#B57 **chưa có** bộ lọc zone dù nguồn có — cần bổ sung khi
+//    MiniHTC nối `Mst_DealerZone` vào tầng báo cáo.
+
 // ===== Vùng đại lý (DealerZone — port 1:1 FrmMst_DealerZone, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/dealerzones", async (AppDbContext db, ITenantContext t, string? zone, string? dealer, string? active) =>
 {
