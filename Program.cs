@@ -21754,6 +21754,103 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
 //   nguồn ghi **ba** CSDL `_dbMain` + `_dbWH` + `_dbDealer` trong một giao dịch; MiniHTC một CSDL.
 //   Nguồn còn gọi HTTP `NotifyNewAppointment` sang HCC **bên trong giao dịch đang mở** (giữ khoá
 //   suốt lời gọi mạng) — tầng HTTP HCC vẫn là nợ; ở đây chỉ trả `pendingAppCount` mà HCC cần.
+// ===== 🔴 #372 API MOBILE: KHÁCH ĐẾN HẠN BẢO DƯỠNG (`HTCMobileTVO_GetServiceReminders`) =====
+// Nguồn: `BizCarSv.TVO.cs:426-620` — chuỗi 4 bảng tạm `_Draft_01` → `_Draft_02` → `_Draft` → `_Filter`.
+// Chú thích của chính nguồn: *"API này trả về danh sách KH đến hạn bảo dưỡng và làm dịch vụ"*.
+//
+// 🔴 **THAM SỐ NGÀY KHÔNG PHẢI KHOẢNG**: nguồn gán `strFromDate` và `strToDate` **cùng bằng**
+//   `StandardizeDate(strDate)` ⇒ luôn chỉ lọc **ĐÚNG MỘT NGÀY**. Tên biến `From`/`To` gợi ý một
+//   khoảng, nhưng không có tham số thứ hai nào để truyền. Đừng "sửa cho tiện" thành khoảng ngày.
+// 🔴 **PHÂN TRANG KHÔNG PHÂN ĐƯỢC**: `nFilterRecordStart` đóng cứng `0`, `nFilterRecordEnd = start + count - 1`
+//   ⇒ API **luôn trả về `count` bản ghi ĐẦU TIÊN**, không có đường nào lấy trang 2. Ứng dụng mobile
+//   chỉ "xem thêm" được bằng cách tăng `count`. Giữ 1:1 và báo cờ.
+// 🔴 **TRỤC CHỌN BẢN ĐẠI DIỆN LÀ LẦN SỬA CUỐI**, không phải lần tạo:
+//   `select top 1 ro.ROID … order by ro.LogLUDateTime desc`
+//   ⇒ Một lệnh cũ chỉ cần **bị sửa vặt** (đổi ghi chú, cập nhật hành chính) là **nhảy lên làm đại diện**
+//     cho khách đó. Khác hẳn `Tab.cs:8487` (#310) vốn chọn theo `CreatedDate` — cùng mẫu "top 1 lấy
+//     bản đại diện" nhưng **hai trục khác nhau** trong cùng một hệ.
+// ⚠️ Gộp theo `CusID` lấy `max(ReminderMaintanceDate)` — nhưng bước trước đã lọc về đúng một ngày,
+//   nên phép `max` này chỉ còn tác dụng khi cột có phần GIỜ. Giữ nguyên, không rút gọn.
+// ⚠️ **KHÔNG lọc đại lý** ở bất kỳ bước nào ⇒ API trả khách của TOÀN hệ. Chạy trên DB Main.
+// 📌 Đối chiếu 3 cây: laptop `.V2` = 150 `.Release` (md5 `7860ef59`); `V20` khác md5 cả file nhưng
+//   **vùng hàm 426-560 giống hệt** (`c5ea1781`) ⇒ hàm chưa từng đổi.
+app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext t, DateTime? date, int? count) =>
+{
+    var day = (date ?? DateTime.Today).Date;
+    var take = count is > 0 ? count!.Value : 50;
+
+    // _Draft_01: lệnh có ngày hẹn bảo dưỡng RƠI ĐÚNG NGÀY ĐÓ (from = to, không phải khoảng).
+    var next = day.AddDays(1);
+    var pool = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId
+                    && r.ReminderMaintanceDate >= day && r.ReminderMaintanceDate < next
+                    && r.CusID != null)
+        .Select(r => new { r.Id, roid = r.Id, r.RONo, r.CusID, r.CarID, r.Vin, r.DealerCode,
+                           r.ReminderMaintanceDate, r.LogLUDateTime })
+        .ToListAsync();
+
+    // _Draft_02 + _Draft: mỗi khách lấy mốc hẹn LỚN NHẤT, rồi trong đó chọn lệnh SỬA GẦN NHẤT.
+    var picked = pool
+        .GroupBy(r => r.CusID!)
+        .Select(g =>
+        {
+            var maxDate = g.Max(x => x.ReminderMaintanceDate);
+            var sameDate = g.Where(x => x.ReminderMaintanceDate == maxDate).ToList();
+            // TRỤC = LogLUDateTime (lần sửa cuối), KHÔNG phải ngày tạo — đúng nguồn.
+            var rep = sameDate.OrderByDescending(x => x.LogLUDateTime).First();
+            return new { rep, candidates = sameDate.Count };
+        })
+        .ToList();
+
+    // _Filter: MyIdxSeq trong [0 .. count-1] — start LUÔN bằng 0 nên không có trang 2.
+    var totalBeforePaging = picked.Count;
+    var page = picked.Take(take).ToList();
+
+    var cusIds = page.Select(x => x.rep.CusID!).Distinct().ToList();
+    var vins = page.Select(x => x.rep.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cus = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusIds.Contains(c.CusCode)).ToListAsync();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync();
+    var modelCodes = cars.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToListAsync();
+
+    var items = page.Select(x =>
+    {
+        var r = x.rep;
+        var c = cus.FirstOrDefault(z => z.CusCode == r.CusID);
+        var car = r.Vin == null ? null : cars.FirstOrDefault(z => z.FrameNo == r.Vin);
+        var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(z => z.ModelCode == car.ModelCode);
+        return new
+        {
+            r.roid, r.RONo,
+            customerCode = r.CusID, customerName = c?.CusName,
+            customerMobile = c?.Mobile, customerIDCardNo = c?.IDCardNo,
+            r.CarID, plateNo = car?.PlateNo, vin = car?.FrameNo,
+            tradeMarkCode = car?.TradeMark,
+            modelCode = mdl?.ModelCode, modelName = mdl?.ModelName,
+            r.ReminderMaintanceDate, r.DealerCode,
+            // Có nhiều lệnh cùng mốc hẹn ⇒ bản hiển thị phụ thuộc LẦN SỬA CUỐI.
+            candidateCount = x.candidates,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        date = day, count = items.Count, items,
+        totalBeforePaging,
+        truncated = totalBeforePaging > items.Count,
+        pagingStartAlwaysZero = true,
+        pagingNote = "Nguồn đóng cứng vị trí bắt đầu = 0 ⇒ chỉ lấy được `count` bản ghi ĐẦU; không có trang 2.",
+        singleDayNotRange = true,
+        dateNote = "Nguồn đặt from = to = cùng một ngày; tên biến From/To gây hiểu nhầm là khoảng.",
+        representativeAxis = "LogLUDateTime (lần SỬA cuối)",
+        axisNote = "Lệnh cũ bị sửa vặt sẽ nhảy lên làm đại diện. Khác Tab.cs:8487 (#310) vốn chọn theo CreatedDate.",
+        ambiguousCustomers = page.Count(x => x.candidates > 1),
+        noDealerFilter = true,
+        carJoinedByVin = true,
+        carJoinNote = "Nguồn ghép xe theo CarID; MiniHTC ghép theo VIN vì ServiceCar không có cột CarID.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db, ITenantContext t) =>
 {
     // Thứ tự và tập trường bắt buộc lấy đúng theo nguồn. ModelCode và CVDVCode **không** bắt buộc
