@@ -35901,6 +35901,82 @@ var orderPartSupplierStatusNames = new Dictionary<string, string>
     ["7"] = "Đơn lỗi, chờ kinh doanh điều chỉnh",
 };
 
+// ===== 🔴 #402 NHẬP DÒNG ĐƠN ĐẶT PHỤ TÙNG TỪ EXCEL (`FrmOrderPartCreate.btnImport_Click`) =====
+// Đây là **bước chuẩn bị dữ liệu ngay trên máy trạm**, trước khi bấm Lưu — nên nó không đi qua
+// tầng WS/biz nào; toàn bộ luật nằm trong form. Port thành một endpoint nhận **dòng đã đọc từ Excel**.
+//
+// 🔴 **HEADER Ở DÒNG 2**: `ExcelImport.Query(file, Tbl_SerMSTPart, "A2")` — client phải parse đúng vậy.
+// 🔴 **LEFT JOIN VỚI MASTER PHỤ TÙNG theo `PartCode`** để lấy `PartID` · `Unit` · `VieName`
+//   ⇒ **file Excel chỉ cần MÃ**; tên và đơn vị **luôn lấy từ master**, người dùng gõ gì cũng bị thay.
+//   ⚠️ Trước khi join, form còn **XOÁ cột `VieName`** khỏi bảng Excel nếu có (để join ghi đè sạch),
+//     và **thêm** hai cột `BeforeTax` / `AfterTax` kiểu decimal nếu file thiếu.
+// 🔴 **KHỬ TRÙNG MÃ — GIỮ ĐÚNG MỘT DÒNG** (chú thích nguồn `20121015 lap phu tung, chi giu 1 ma phu tung`):
+//   gặp mã xuất hiện ≥ 2 lần thì xoá dòng hiện tại rồi **quay lại quét từ đầu** (`j = 0`).
+//   ⇒ Kết quả: mỗi mã còn **một** dòng. **KHÔNG cộng dồn số lượng** — các dòng trùng bị **vứt bỏ**,
+//     nên tổng số lượng đặt **giảm đi** so với file gốc. Đây là chỗ dễ hiểu nhầm nhất.
+// ⚠️ Guard 'mã phụ tùng không được rỗng' **đã bị COMMENT** ⇒ dòng **thiếu mã vẫn lọt vào lưới**,
+//   và vì vòng khử trùng chỉ chạy khi mã **khác rỗng** nên **nhiều dòng rỗng cùng tồn tại**.
+//   Giữ 1:1 và trả cờ `blankPartCodeRows` thay vì tự chặn.
+app.MapPost("/api/orderparts/import-lines", async (OrderPartImportDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào trong file." });
+
+    // --- KHỬ TRÙNG: mỗi mã giữ ĐÚNG MỘT dòng; dòng RỖNG mã thì giữ hết (guard đã bị comment).
+    var kept = new List<OrderPartImportRowDto>();
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    var droppedDuplicates = new List<string>();
+    var blankPartCodeRows = 0;
+    foreach (var r in rows)
+    {
+        var code = (r.PartCode ?? "").Trim();
+        if (code.Length == 0) { blankPartCodeRows++; kept.Add(r); continue; }
+        if (!seen.Add(code.ToUpperInvariant())) { droppedDuplicates.Add(code); continue; }
+        kept.Add(r);
+    }
+
+    // --- LEFT JOIN master: tên + đơn vị LUÔN lấy từ master, bỏ qua giá trị trong file.
+    var codes = kept.Select(r => (r.PartCode ?? "").Trim().ToUpperInvariant())
+        .Where(x => x.Length > 0).Distinct().ToList();
+    var masters = await db.ServiceParts
+        .Where(p => p.OrgId == t.OrgId && codes.Contains(p.PartCode))
+        .Select(p => new { p.PartCode, p.PartID, p.PartName, p.Unit })
+        .ToListAsync();
+    var byCode = masters.ToDictionary(m => m.PartCode.ToUpperInvariant(), m => m);
+
+    var notInMaster = new List<string>();
+    var lines = kept.Select(r =>
+    {
+        var code = (r.PartCode ?? "").Trim();
+        byCode.TryGetValue(code.ToUpperInvariant(), out var m);
+        if (code.Length > 0 && m is null) notInMaster.Add(code);
+        return new
+        {
+            partCode = code,
+            partID = m?.PartID,
+            partName = m?.PartName,        // LEFT JOIN ⇒ không có master thì để trống
+            unit = m?.Unit,
+            quantity = r.Quantity,
+            beforeTax = r.BeforeTax ?? 0m, // form TỰ THÊM hai cột này nếu file thiếu
+            afterTax = r.AfterTax ?? 0m,
+            description = r.Description,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        inputRows = rows.Count, count = lines.Count, lines,
+        droppedDuplicates, duplicateCount = droppedDuplicates.Count,
+        blankPartCodeRows, notInMaster,
+        headerRowNote = "Excel gốc đọc bằng ExcelImport.Query(file, \"A2\") ⇒ HEADER Ở DÒNG 2.",
+        dedupNote = "Mã trùng bị VỨT BỎ, KHÔNG cộng dồn số lượng ⇒ tổng số lượng đặt GIẢM so với file gốc.",
+        masterOverrideNote = "Tên và đơn vị LUÔN lấy từ master phụ tùng (left join theo mã); giá trị trong "
+            + "file bị bỏ qua — form còn xoá hẳn cột VieName trước khi join.",
+        blankGuardNote = "Guard 'mã không được rỗng' ĐÃ BỊ COMMENT trong nguồn ⇒ dòng thiếu mã vẫn lọt; "
+            + "và vòng khử trùng bỏ qua dòng rỗng nên nhiều dòng rỗng cùng tồn tại.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/orderparts/statuses", () => Results.Ok(new
 {
     orderPartStatus = orderPartStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
@@ -41790,6 +41866,10 @@ record ReportHeaderDto(string DealerCode, string? DealerName, string? CompanyNam
 //   LUU Y kieu: ProductYear = int?, CurrentKm = decimal (khong nullable tren entity),
 //   con DateBuyCar / InsStartDate / InsFinishedDate nguon LUU DANG CHUOI.
 // #400: cap nhat so luong BO tu man Ton kho toi uu. CusDebt = SO LUONG BO (ten cot noi doi).
+// #402: mot dong doc tu file Excel cua man tao don dat phu tung (HEADER O DONG 2).
+record OrderPartImportRowDto(string? PartCode, decimal? Quantity, decimal? BeforeTax,
+    decimal? AfterTax, string? Description);
+record OrderPartImportDto(List<OrderPartImportRowDto>? Rows);
 record PartUpdateBoItemDto(string? PartCode, decimal? CusDebt);
 record PartUpdateBoDto(List<PartUpdateBoItemDto>? Items);
 record ServiceCarUpdateDto(string? DealerCode, string? CusID, string? ModelID, string? PlateNo,
