@@ -44150,6 +44150,96 @@ app.MapGet("/api/reports/total-stockout", async (AppDbContext db, ITenantContext
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #472 BÁO CÁO TỒN KHO (bản KHO) — `Ser_InvReportBalanceRpt_WH_New20221011` =====
+// Chọn từ 12 ca lệch THẬT của #471. Đặc điểm: `chi o main = 0` ⇒ bản kho là **TẬP CHA** của bản chính
+//   (19 dòng SQL của bản chính nằm trọn trong 41 dòng của bản kho) — bản kho **làm THÊM**, không phải làm khác.
+// Phần THÊM: ba bảng tạm `#tbl_sd` (nhập luỹ kế) · `#tbl_sdo` (xuất luỹ kế) · `#tbl_Open` (tồn đầu),
+//   dựng từ `Ser_Inv_PartInstance` + `Ser_Inv_StockInDetail`.
+//
+// 🔴 **PHƯƠNG PHÁP GIÁ VỐN LÀ THAM SỐ CỦA ĐẠI LÝ, VÀ NHÁNH CÒN LẠI ĐÃ CHẾT**:
+//   `case when (select ParamValue from Mst_Param where DealerCode=@ and ParamCode="MCC" and ParamType="MCC")`
+//   `= "FIFO" then <tổng theo giá nhập> Else "0" -- sum(GetAverageCost(...))`
+//   ⇒ Đại lý **không** đặt `MCC = "FIFO"` thì **giá trị tồn trả về 0**, còn SỐ LƯỢNG vẫn đúng.
+//     Nhánh bình quân gia quyền (`GetAverageCost`) **đã bị comment** ⇒ không có đường nào khác.
+//     Đây là "0 im lặng": báo cáo vẫn ra, cột tiền bằng 0, không cảnh báo gì. Cờ `costMethodNotFifoGivesZero`.
+//   ⚠️ `Else "0"` là **chuỗi** đặt cạnh biểu thức số trong cùng `CASE` ⇒ SQL ép kiểu; giữ nguyên ý nghĩa 0.
+// ⚠️ Tồn = (nhập có `DateIn <= @ToDate`) − (xuất có `DateOut <= @ToDate`), loại `Status not in ("4","5")`.
+//   Mốc dùng `@ToDate` **không kèm giờ** ⇒ lại là nửa đêm (luật #415). Nguồn CÓ dựng biến
+//   `strToDateTime = strToDate + " 23:59:59"` nhưng **không dùng cho hai vế này** ⇒ biến gần như thừa.
+//   Port dùng mốc 23:59:59 và đếm `lostByRawEndDate`.
+// ⚠️ `strFromDate = "1900-01-01"` đóng cứng trong nguồn — không phải tham số người dùng.
+// ⚪ `left join Ser_Inv_StockInDetail` nối BA cột (PartID + StockInID + LocationID), WHERE không đụng tới
+//   ⇒ **LEFT còn sống**; thiếu dòng nhập chi tiết thì rơi về `spi.SIPrice`. Kiểm tra âm tính.
+app.MapGet("/api/reports/inventory-balance", async (AppDbContext db, ITenantContext t,
+    DateTime? toDate, string? dealerCode) =>
+{
+    if (toDate is null) return Results.BadRequest(new { error = "Cần toDate." });
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode (nguồn lọc theo đại lý)." });
+    var dealer = dealerCode!.Trim();
+    var toRawMidnight = toDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    // Phương pháp giá vốn của ĐẠI LÝ (Mst_Param: MCC/MCC).
+    var mcc = await db.MstParams.Where(p => p.OrgId == t.OrgId && p.DealerCode == dealer
+            && p.ParamCode == "MCC" && p.ParamType == "MCC")
+        .Select(p => p.ParamValue).FirstOrDefaultAsync();
+    var isFifo = string.Equals(mcc, "FIFO", StringComparison.OrdinalIgnoreCase);
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.Status != "4" && x.Status != "5").ToListAsync();
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    // Khoá nối BA cột của nguồn (ở MiniHTC: StockInId + PartCode + Location).
+    var lineByKey = lines.Where(l => l.PartCode != null)
+        .GroupBy(l => l.StockInId + "|" + l.PartCode + "|" + (l.Location ?? ""))
+        .ToDictionary(g => g.Key, g => g.First());
+    decimal UnitPrice(PartInstance x)
+    {
+        var k = x.StockInId + "|" + (x.PartCode ?? "") + "|" + (x.LocationID ?? "");
+        if (lineByKey.TryGetValue(k, out var l)) return l.Price;
+        return x.SIPrice ?? 0m;
+    }
+    decimal Value(PartInstance x)
+    {
+        if (!isFifo) return 0m;                     // nhánh Else "0" của nguồn
+        var p = UnitPrice(x);
+        return p * x.Quantity + (x.SIVAT ?? 0m) * 0.01m * p * x.Quantity;
+    }
+
+    var inRows = inst.Where(x => x.DateIn != null && x.DateIn <= to).ToList();
+    var outRows = inst.Where(x => x.DateOut != null && x.DateOut <= to).ToList();
+    var lostByRawEndDate = inRows.Count(x => x.DateIn > toRawMidnight)
+                         + outRows.Count(x => x.DateOut > toRawMidnight);
+
+    var sd = inRows.GroupBy(x => new { x.PartID, x.LocationID })
+        .ToDictionary(g => (g.Key.PartID ?? "") + "|" + (g.Key.LocationID ?? ""),
+                      g => new { SD = g.Sum(x => x.Quantity), TD = g.Sum(Value) });
+    var sdo = outRows.GroupBy(x => new { x.PartID, x.LocationID })
+        .ToDictionary(g => (g.Key.PartID ?? "") + "|" + (g.Key.LocationID ?? ""),
+                      g => new { SX = g.Sum(x => x.Quantity), TX = g.Sum(Value) });
+
+    // #tbl_Open = LEFT join sd -> sdo (dòng chỉ có ở xuất KHÔNG xuất hiện — đúng nguồn).
+    var items = sd.Select(kv => new
+    {
+        PartID = kv.Key.Split((char)124)[0],
+        LocationID = kv.Key.Split((char)124)[1],
+        SLC = kv.Value.SD - (sdo.TryGetValue(kv.Key, out var o) ? o.SX : 0m),
+        TGC = kv.Value.TD - (sdo.TryGetValue(kv.Key, out var o2) ? o2.TX : 0m),
+    }).OrderBy(x => x.PartID).ThenBy(x => x.LocationID).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer,
+        toDate = to.ToString("yyyy-MM-dd HH:mm:ss"),
+        fromDateHardcodedInSource = "1900-01-01",
+        costMethod = mcc, isFifo,
+        costMethodNotFifoGivesZero = !isFifo,
+        averageCostBranchCommentedOut = true,
+        endDateExclusiveInSource = true, lostByRawEndDate,
+        outOnlyRowsDroppedByLeftJoin = sdo.Keys.Count(k => !sd.ContainsKey(k)),
+        count = items.Count, items,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {

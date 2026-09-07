@@ -2575,6 +2575,9 @@ public sealed class PartInstance
     public decimal? SIPrice { get; set; }
     /// <summary>Giá xuất của lô (dự phòng khi dòng chi tiết phiếu xuất không có giá).</summary>
     public decimal? SOPrice { get; set; }
+    /// <summary>#472 `SIVAT` — %VAT lúc nhập, dùng trong công thức giá trị tồn của báo cáo kho:
+    /// `Price*Qty + SIVAT*0.01*Price*Qty`.</summary>
+    public decimal? SIVAT { get; set; }
     public DateTime? DateIn { get; set; }
     public DateTime? DateOut { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
@@ -15019,5 +15022,22 @@ public sealed class LoyaltyCard
     public string? FlagExceptionally { get; set; }
     public string? DLCodeExceptionally { get; set; }
     public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+
+// ===== #472 THAM SỐ CẤU HÌNH THEO ĐẠI LÝ (`Mst_Param`) =====
+/// <summary>Nguồn tra `Mst_Param` theo bộ ba `DealerCode` + `ParamCode` + `ParamType`.
+/// Ca dùng đầu tiên: `ParamCode = ParamType = "MCC"` quyết định **phương pháp tính giá vốn**
+/// (`"FIFO"` hay không) trong báo cáo tồn kho.</summary>
+public sealed class MstParam
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ParamCode { get; set; } = "";
+    public string ParamType { get; set; } = "";
+    public string? ParamValue { get; set; }
+    public string? Description { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
