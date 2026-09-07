@@ -43981,6 +43981,110 @@ app.MapGet("/api/repairorders/{no}/warranty", async (string no, AppDbContext db,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #469 BÁO CÁO TỔNG XUẤT KHO — `Ser_InvReportTotalStockOutRpt_New20230623` =====
+// Nguồn: `BizCarSv.Inventory.Report.cs:1609` (WS gọi bản này; bản kho `…_WH` ở `WH.cs:10495`).
+// Chọn màn này từ danh sách lệch của #468 (**15 dòng SQL → 5**) — chênh lớn nhất theo tỉ lệ.
+//
+// 🔴 **BẢN KHO THIẾU HẲN MỘT NỬA NGHIỆP VỤ**: bản chính `union all` hai nguồn —
+//   (1) phiếu xuất kho `Ser_Inv_StockOut` + chi tiết, và
+//   (2) **phiếu xuất trả nhà cung cấp** `Ser_SupplierPayment(Dtl)`, nhãn `N"Xuất trả nhà cung cấp"`.
+//   Bản `_WH` **chỉ có (1)** ⇒ cùng một khoảng ngày, xem theo kho sẽ **thiếu toàn bộ hàng trả NCC**.
+//   Đây là dạng lệch mà #468 dự đoán: nhánh kho **tụt hậu**, không phải thiết kế khác.
+//
+// 🔴 **HAI CỬA SỔ NGÀY KHÁC NHAU TRONG CÙNG MỘT TRUY VẤN** (luật #415, nhưng bất đối xứng):
+//   · Nửa NCC dùng `@strDateFrom`/`@strDateTo` = ngày kèm `00:00:00` / `23:59:59` ⇒ **đủ ngày cuối**.
+//   · Nửa xuất kho dùng `@FromDate`/`@ToDate` = **chuỗi THÔ người gọi truyền** ⇒ nếu chỉ có `yyyy-MM-dd` thì
+//     `so.StockOutTime <= "2026-09-08"` hiểu là **nửa đêm** ⇒ **mất trọn ngày cuối** cho phiếu xuất kho,
+//     trong khi nửa NCC vẫn lấy đủ. Hai nửa của CÙNG báo cáo lệch nhau một ngày.
+//   ⇒ Port dùng mốc `23:59:59` cho **cả hai** nửa và trả cờ `endDateExclusiveInSourceForStockOut`
+//     kèm số dòng chênh, để chỗ sửa là **cố ý và đo được**.
+// 🔴 **GUARD CHẾT**: WHERE có `and so.status = 3` rồi lại `and so.Status not in ("4","5")` —
+//   điều kiện sau **không bao giờ loại thêm dòng nào**. Giữ nguyên hành vi, ghi cờ `redundantStatusGuard`.
+// ⚠️ `StockOutType` CASE chỉ có 1 → "Xuất dịch vụ", 2 → "Xuất thường", **không có ELSE** ⇒ loại khác cho
+//   nhãn **NULL** nhưng **dòng vẫn được tính vào tổng**.
+// ⚠️ Nửa NCC lọc `SupplierPaymentStatus = "A"` (đã duyệt) và mốc theo `ApprDTime`, KHÔNG theo ngày lập.
+// ⚠️ Toàn bộ tham số **bake bằng `StringUtils.Replace` vào chuỗi có nháy** (`"@FromDate"`), không phải
+//   SqlParameter ⇒ bề mặt tiêm SQL. Port dùng tham số thật (lệch CỐ Ý, an toàn hơn).
+// ⚠️ `union all` nối hai kiểu khác nhau: nửa đầu `so.StockOutTime` (datetime), nửa sau
+//   `Convert(varchar, CONVERT(date, ApprDTime))` ⇒ kiểu cột do **nửa đầu** quyết định.
+app.MapGet("/api/reports/total-stockout", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    if (fromDate is null || toDate is null)
+        return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);            // 23:59:59 — đúng nửa NCC của nguồn
+    var toRawMidnight = toDate.Value.Date;                            // mốc THÔ mà nửa xuất kho của nguồn dùng
+
+    var soQ = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId
+        && x.Status == "3"                                            // nguồn: so.status = 3
+        && x.StockOutDate >= from && x.StockOutDate <= to);
+    var soRows = await soQ.ToListAsync();
+    // Đếm đúng số dòng mà nguồn ĐÁNH RƠI vì mốc thô (không phải ước lượng).
+    var lostByRawEndDate = soRows.Count(x => x.StockOutDate > toRawMidnight);
+
+    var soIds = soRows.Select(x => x.Id).ToList();
+    var soLines = await db.ServiceStockOutLines
+        .Where(l => l.OrgId == t.OrgId && soIds.Contains(l.ServiceStockOutId)).ToListAsync();
+    var lineByHead = soLines.GroupBy(l => l.ServiceStockOutId)
+        .ToDictionary(g => g.Key, g => g.Sum(l => l.Quantity * l.Price + l.Quantity * l.Price * 0.01m * (l.Vat)));
+
+    static string? TypeLabel(string? code) => code switch
+    {
+        "1" => "Xuất dịch vụ",
+        "2" => "Xuất thường",
+        _ => null,          // nguồn KHÔNG có ELSE ⇒ nhãn null, dòng vẫn tính
+    };
+
+    var partA = soRows.Select(x => new
+    {
+        StockOutTime = x.StockOutDate,
+        x.StockOutNo,
+        Note = (string?)null,
+        StockOutType = TypeLabel(x.StockOutType),
+        Amount = lineByHead.TryGetValue(x.Id, out var a) ? a : 0m,
+        Source = "StockOut",
+    }).ToList();
+
+    // Nửa thứ hai — phiếu xuất trả nhà cung cấp (bản _WH THIẾU hẳn khối này).
+    var payQ = db.SupplierPayments.Where(x => x.OrgId == t.OrgId
+        && x.Status == "A"                                            // SupplierPaymentStatus = A
+        && x.ApprovedAt >= from && x.ApprovedAt <= to);
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+    {
+        payQ = payQ.Where(x => x.DealerCode == dealerCode);
+    }
+    var pays = await payQ.ToListAsync();
+    var payNos = pays.Select(x => x.PaymentNo).ToList();
+    var payLines = await db.SupplierPaymentLines
+        .Where(l => l.OrgId == t.OrgId && payNos.Contains(l.PaymentNo)).ToListAsync();
+    var partB = pays.Select(p => new
+    {
+        StockOutTime = p.ApprovedAt,
+        StockOutNo = p.PaymentNo,
+        Note = p.Description,
+        StockOutType = (string?)"Xuất trả nhà cung cấp",
+        Amount = payLines.Where(l => l.PaymentNo == p.PaymentNo)
+            .Sum(l => l.QtyPay * l.Price + l.QtyPay * l.Price * 0.01m * l.Vat),
+        Source = "SupplierPayment",
+    }).ToList();
+
+    var items = partA.Concat(partB).OrderBy(x => x.StockOutTime).ThenBy(x => x.StockOutNo).ToList();
+    return Results.Ok(new
+    {
+        from = from.ToString("yyyy-MM-dd HH:mm:ss"), to = to.ToString("yyyy-MM-dd HH:mm:ss"),
+        count = items.Count, items,
+        stockOutCount = partA.Count, supplierPaymentCount = partB.Count,
+        total = items.Sum(x => x.Amount),
+        endDateExclusiveInSourceForStockOut = true,
+        lostByRawEndDate,
+        redundantStatusGuard = true,
+        typeLabelHasNoElse = true,
+        bakedParamsInSource = true,
+        whVariantMissesSupplierPaymentHalf = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {

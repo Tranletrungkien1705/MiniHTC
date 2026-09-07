@@ -32,6 +32,7 @@ console.log('  ham biz duoc WS goi = ' + live.size);
 
 function sqlOf(lines){
   return lines.map(x=>x.replace(/\r/g,''))
+    .filter(x=>!/^\s*\/\/\//.test(x))   // #469: bo dong XML-doc ///
     .filter(x=>/select|from\s|where|join|group by|order by|into\s/i.test(x))
     .map(x=>x.replace(/\[@strDBName_CommonCenter\]\.\[dbo\]\./g,'')
              .replace(/_WH\b/g,'').replace(/_New\d{6,8}/g,'')
