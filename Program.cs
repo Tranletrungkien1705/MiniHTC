@@ -24671,6 +24671,21 @@ app.MapGet("/api/report/part-top-profit", async (AppDbContext db, ITenantContext
               + "gia quyền đã bị COMMENT) ⇒ toàn bộ doanh thu bị báo là lợi nhuận. MiniHTC VẪN tính giá "
               + "vốn thật (cột profit); xem profitIfSourceBehaviour để biết con số nguồn sẽ ra."
             : "MCC = FIFO ⇒ nguồn và MiniHTC tính giống nhau.",
+        // ===== #418 ĐỐI CHIẾU TWIN `_WH` — lần này GIỐNG HỆT, và đó cũng là một kết quả =====
+        // Diff `Ser_InvReportPartTopProfit` (`Inventory.Report.cs:6729-6901`, 164 dòng sau khi bỏ
+        //   khoảng trắng) với `Ser_InvReportPartTopProfit_WH` (`WH.cs:7581-7750`, 162 dòng):
+        //   khác biệt còn lại **chỉ là hai dòng đánh dấu `#region`**, ngoài phần định tuyến CSDL.
+        // 📌 Kiểm bằng ĐẾM CHUỖI (lệ #413 — đừng đọc lướt), năm mốc đều 1=1 ở cả hai bản:
+        //   `Else '0'` · `paramcode='MCC'` · `like '%%'` · `GetAverageCost` · `order by Profit desc`.
+        //   ⇒ **Lỗi giá vốn = 0 khi không FIFO có ở CẢ HAI bản** — không phải chỉ bản Main.
+        //     Chuyển sang màn kho cũng không thoát; sửa thì phải sửa cả hai.
+        // 📊 Thống kê twin `_WH` tới #418: giống hệt ở #406, #407, #409, #418 · lệch thật ở #378, #413.
+        //   4/6 giống — nhưng 2 lần lệch đều là lệch NGHIỆP VỤ nặng, nên vẫn phải diff từng hàm.
+        whTwinIdentical = true,
+        whTwinNote = "Ser_InvReportPartTopProfit_WH (WH.cs:7581) diff với bản Main chỉ còn hai dòng "
+            + "#region ngoài phần định tuyến CSDL. Đếm chuỗi: Else '0' / paramcode='MCC' / like '%%' / "
+            + "GetAverageCost / order by Profit desc đều 1=1 hai bên ⇒ LỖI GIÁ VỐN = 0 CÓ Ở CẢ HAI BẢN, "
+            + "sửa thì phải sửa cả hai. Không cần tham số scope cho báo cáo này.",
         orderByNote = "Hàm này CÓ order by Profit desc, partcode trong chính câu lấy TOP ⇒ KHÔNG dính "
             + "lỗi thiếu ORDER BY của #415. Hai báo cáo sinh đôi về hình thức, chỉ một cái hỏng.",
         soldOnlyNote = "Nguồn lọc StockOutNo like '%%' — trông như không lọc, nhưng like LOẠI NULL "
