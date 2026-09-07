@@ -40584,10 +40584,22 @@ app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, strin
 // ⚠️ Ba thủ tục sinh phiếu tự động (`ProcCusToCareDoB`, `ProcCusToCareManitance`, `ProcCusToCareManitanceByKm`)
 //   **đều bị comment** ⇒ port dòng ACTIVE: API đọc KHÔNG sinh phiếu.
 // ⚠️ Giới tính lưu dạng CHUỖI "True"/"False" (không phải bool/1/0): True→"Nam", False→"Nữ".
+// ===== ✅ #462 NHÁNH "TRA CẢ LỊCH SỬ" (`_WH`) — ĐÃ DIFF, **KHÔNG có luật riêng nào** =====
+// Ô tick `chkQueryFullHistory` của `FrmCustomerCare` đổi lời gọi sang `Ser_CustomerCare_GetNew_WH`
+//   (`BizCarSv.WH.cs:26604`). Theo luật #414, DIFF **hai chuỗi SQL với nhau** trước khi đọc riêng:
+//   sau khi chuẩn hoá khoảng trắng và bỏ hậu tố `_WH`, **324 dòng vs 328 dòng**, và toàn bộ khác biệt là:
+//     · chạy trên `_dbWH` thay vì `_dbDealer`  (khác **CƠ SỞ DỮ LIỆU**, không khác nghiệp vụ);
+//     · `--//[mylock]` thay cho `with(nolock)`;
+//     · bỏ tiền tố chéo-DB `[@strDBName_CommonCenter].[dbo].` cho `Ser_CustomerCareDOB` và `ser_mst_model`
+//       (trong DB kho hai bảng đó là bảng cục bộ);
+//     · chữ hoa/thường của từ khoá SQL và vị trí xuống dòng.
+//   ⇒ **Bộ lọc, phép nối, thứ tự, phân trang: GIỐNG HỆT** — kể cả cùng dính lỗi LEFT chết đã nêu ở #457.
+//   📌 Kết quả ÂM TÍNH, ghi để lượt sau khỏi đọc lại: "tra cả lịch sử" **không phải truy vấn khác**,
+//     chỉ là **kho dữ liệu khác**. MiniHTC một CSDL nên tham số `fullHistory` chỉ phản chiếu ý định.
 app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t,
     string? cusName, string? plateNo, string? status, string? careType,
     DateTime? deliveryFrom, DateTime? deliveryTo, DateTime? checkInFrom, DateTime? checkInTo,
-    int? start, int? count) =>
+    int? start, int? count, bool? fullHistory) =>
 {
     var st = Math.Max(0, start ?? 0);
     var cnt = Math.Clamp(count ?? 50, 1, 500);
@@ -40641,6 +40653,12 @@ app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t
         distinctIneffectiveInSource = true,
         autoGenerateProcsCommentedOut = true,
         note = "Twin của FrmCustomerCare là Ser_CustomerCare_GetNew (không phải bản iCIC 72h).",
+        // #462: nhánh _WH khác nguồn dữ liệu, KHÔNG khác luật.
+        fullHistory = fullHistory == true,
+        whVariantIsSameLogic = true,
+        whVariantNote = "Ser_CustomerCare_GetNew_WH khác bản Main ĐÚNG BA thứ: chạy trên _dbWH, dùng "
+            + "--//[mylock] thay with(nolock), và bỏ tiền tố chéo-DB cho Ser_CustomerCareDOB/ser_mst_model. "
+            + "Bộ lọc và phép nối giống hệt — MiniHTC một CSDL nên cờ này chỉ ghi nhận ý định người dùng.",
     });
 }).RequireAuthorization();
 
