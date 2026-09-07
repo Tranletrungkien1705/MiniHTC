@@ -15,6 +15,26 @@ public sealed class Area
 }
 
 /// <summary>Đại lý (Mst_Dealer) — port 1:1 FrmDealer (2010.HTC/Admin/Dealer).</summary>
+/// <summary>🔴 #375 §12 TIÊU ĐỀ BÁO CÁO theo đại lý (`Mst_ReportHeader`) — phần đầu thư in trên mọi
+/// biểu mẫu. **BA nơi trong nguồn đọc bảng này với BA hành vi khác nhau**, xem `/api/reportheaders`.</summary>
+public sealed class ReportHeader
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string? DealerName { get; set; }
+    public string? CompanyName { get; set; }
+    public string? CompanyAddress { get; set; }
+    public string? Website { get; set; }
+    /// <summary>🔴 Tên cột nói 'phòng trưng bày' nhưng nguồn trả ra dưới nhãn **Tel**.</summary>
+    public string? Showroom1 { get; set; }
+    /// <summary>🔴 Trả ra dưới nhãn **Fax**.</summary>
+    public string? Showroom2 { get; set; }
+    /// <summary>🔴 Trả ra dưới nhãn **Mobile**.</summary>
+    public string? Showroom3 { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class Dealer
 {
     public long Id { get; set; }

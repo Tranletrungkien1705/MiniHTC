@@ -10,6 +10,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerFilePathVideo> SerFilePathVideos => Set<SerFilePathVideo>();
     public DbSet<SerModelAudImage> SerModelAudImages => Set<SerModelAudImage>();
     public DbSet<Dealer> Dealers => Set<Dealer>();
+    // #375: tiêu đề báo cáo theo đại lý (Mst_ReportHeader)
+    public DbSet<ReportHeader> ReportHeaders => Set<ReportHeader>();
     public DbSet<CarPrice> CarPrices => Set<CarPrice>();
     public DbSet<SalesMan> SalesMen => Set<SalesMan>();
     public DbSet<PdiRequest> PdiRequests => Set<PdiRequest>();

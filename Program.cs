@@ -13740,6 +13740,112 @@ app.MapDelete("/api/serviceparts/{code}", async (string code, AppDbContext db, I
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #375 TIÊU ĐỀ BÁO CÁO theo đại lý (`Mst_ReportHeader`) =====
+// Nguồn có **BA nơi đọc cùng bảng này, ba hành vi khác nhau** — không thể port thành một hàm:
+//   1. `Mst_ReportHeader_Get`      (`Service.Report.cs:83`)  — `select top 1 rpt.*`, DB **Main**
+//   2. `Mst_ReportHeader_Getnew`   (`Service.Report.cs:196`) — `select top 1` + **ĐỔI NHÃN CỘT**, DB **Main**
+//   3. `SerMasterInitGet`          (`Master.cs:7811`)        — **KHÔNG `top 1`** (trả cả danh sách),
+//      đọc từ **CSDL CommonCenter** `[@strDBName_CommonCenter]`. `Service01.cs:13289` cũng đọc CommonCenter.
+//   ⇒ Cùng một tên bảng nhưng **hai CSDL khác nhau** và **một dòng vs cả danh sách**.
+//
+// 🔴 **TÊN CỘT NÓI DỐI, LẦN NÀY LÀ CỘT BỊ DÙNG LẠI**: bản (2) và (3) đổi nhãn khi trả về:
+//   `DealerName → info1` · `CompanyName → info2` · `CompanyAddress → info3` · `Website → info4`
+//   🔴 `Showroom1 → Tel` · `Showroom2 → Fax` · `Showroom3 → Mobile`
+//   ⇒ Ba cột mang tên 'phòng trưng bày' thực chất chứa **số điện thoại / fax / di động**. Ai đọc
+//     thẳng CSDL sẽ hiểu sai hoàn toàn. Giữ tên cột theo nguồn, nhưng nêu rõ ở entity và output.
+// 🔴 `top 1` **không** `order by` trong khi bộ lọc là **DANH SÁCH đại lý** (`BuildClauseConditionList`,
+//   ngăn cách `|`) ⇒ truyền nhiều đại lý thì nhận **tiêu đề của MỘT đại lý tuỳ ý**, và biểu mẫu sẽ được
+//   in với **thư đầu của đại lý khác**. Giữ 1:1 nhưng trả cờ để lộ ra.
+// ⚠️ Bản (1) viết marker khoá dòng **thiếu dấu đóng**: `--//[mylock` (2 chỗ), trong khi bản (2) viết đúng
+//   `--//[mylock]` ⇒ bộ hậu xử lý rowlock **không nhận ra** hai bảng của bản (1).
+app.MapGet("/api/reportheaders", async (AppDbContext db, ITenantContext t, string? dealers) =>
+{
+    // Bộ lọc danh sách đại lý ngăn cách bằng "|" — đúng quy ước BuildClauseConditionList của nguồn.
+    var codes = (dealers ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var q0 = db.ReportHeaders.Where(x => x.OrgId == t.OrgId);
+    if (codes.Count > 0) q0 = q0.Where(x => codes.Contains(x.DealerCode));
+
+    // Hành vi (3): trả CẢ DANH SÁCH, có đổi nhãn cột.
+    var rows = await q0.OrderBy(x => x.DealerCode).Select(x => new
+    {
+        x.DealerCode,
+        info1 = x.DealerName, info2 = x.CompanyName, info3 = x.CompanyAddress, info4 = x.Website,
+        Tel = x.Showroom1, Fax = x.Showroom2, Mobile = x.Showroom3,
+    }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        dealerFilter = codes,
+        aliasNote = "info1..4 = DealerName/CompanyName/CompanyAddress/Website; Tel/Fax/Mobile = Showroom1/2/3.",
+        repurposedColumnsNote = "Ba cột tên Showroom1/2/3 THỰC CHẤT chứa điện thoại/fax/di động — tên cột trong CSDL nói dối.",
+        sourceDbNote = "Nguồn của hành vi này đọc từ CSDL CommonCenter; hai hàm Service.Report đọc từ DB Main.",
+    });
+}).RequireAuthorization();
+
+// Hành vi (1)+(2): `top 1` KHÔNG `order by` trên một DANH SÁCH đại lý.
+app.MapGet("/api/reportheaders/one", async (AppDbContext db, ITenantContext t, string? dealers, string? shape) =>
+{
+    var codes = (dealers ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var q0 = db.ReportHeaders.Where(x => x.OrgId == t.OrgId);
+    if (codes.Count > 0) q0 = q0.Where(x => codes.Contains(x.DealerCode));
+
+    var all = await q0.ToListAsync();
+    var one = all.FirstOrDefault();          // đúng nghĩa "top 1 không order by"
+    if (one is null) return Results.Ok(new { found = false, dealerFilter = codes });
+
+    var labeled = (shape ?? "labeled").Trim().ToLowerInvariant() != "raw";
+    object payload = labeled
+        ? new
+          {
+              one.DealerCode,
+              info1 = one.DealerName, info2 = one.CompanyName, info3 = one.CompanyAddress, info4 = one.Website,
+              Tel = one.Showroom1, Fax = one.Showroom2, Mobile = one.Showroom3,
+          }
+        : new
+          {
+              one.DealerCode, one.DealerName, one.CompanyName, one.CompanyAddress,
+              one.Website, one.Showroom1, one.Showroom2, one.Showroom3,
+          };
+
+    var distinctDealers = all.Select(x => x.DealerCode).Distinct().Count();
+    return Results.Ok(new
+    {
+        found = true, header = payload,
+        shape = labeled ? "labeled (Mst_ReportHeader_Getnew)" : "raw (Mst_ReportHeader_Get)",
+        matchedCount = all.Count, distinctDealers,
+        // Nhiều đại lý khớp ⇒ nguồn trả tiêu đề của MỘT đại lý tuỳ ý.
+        ambiguous = distinctDealers > 1,
+        ambiguousNote = distinctDealers > 1
+            ? "Bộ lọc khớp nhiều đại lý nhưng nguồn dùng `top 1` KHÔNG `order by` ⇒ biểu mẫu có thể in thư đầu của ĐẠI LÝ KHÁC."
+            : null,
+        mylockNote = "Bản Mst_ReportHeader_Get viết marker `--//[mylock` THIẾU dấu đóng ⇒ hậu xử lý rowlock bỏ sót.",
+    });
+}).RequireAuthorization();
+
+// #375 §12: đường GHI cho tiêu đề báo cáo (nguồn sửa bằng màn master riêng).
+app.MapPost("/api/reportheaders", async (ReportHeaderDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "DealerCode bắt buộc." });
+
+    var row = await db.ReportHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
+    if (row is null)
+    {
+        row = new ReportHeader { OrgId = t.OrgId, DealerCode = code };
+        db.ReportHeaders.Add(row);
+    }
+    row.DealerName = dto.DealerName; row.CompanyName = dto.CompanyName;
+    row.CompanyAddress = dto.CompanyAddress; row.Website = dto.Website;
+    row.Showroom1 = dto.Showroom1; row.Showroom2 = dto.Showroom2; row.Showroom3 = dto.Showroom3;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.DealerCode, saved = true });
+}).RequireAuthorization();
+
 app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -40352,6 +40458,9 @@ record TransportInsPaymentDto(DateTime? PmtMonth, List<TransportInsPaymentLineDt
 record TransportInsPaymentEditLineDto(string? Vin, decimal TFValReal, decimal TPValReal, decimal InsuranceCost);
 record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
 // #362: SalesCusID — ma KH ben he Sales, dung de hop nhat ma KH khi dong bo Veloca.
+// #375 §12: tieu de bao cao. Showroom1/2/3 THUC CHAT la Tel/Fax/Mobile (ten cot noi doi).
+record ReportHeaderDto(string DealerCode, string? DealerName, string? CompanyName, string? CompanyAddress,
+    string? Website, string? Showroom1, string? Showroom2, string? Showroom3);
 record ServiceCustomerDto(string? SalesCusID,string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
     // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
     string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
