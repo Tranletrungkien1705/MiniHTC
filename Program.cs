@@ -22225,8 +22225,34 @@ app.MapDelete("/api/warrantyclaims/{id}/attachments/{attId}", async (long id, lo
 //
 // ⚠️ Lọc ngày duyệt của nguồn là `convert(char(10), rwr.ApprovedDate, 120)` ⇒ **so CHUỖI yyyy-MM-dd**,
 //   không phải khoảng datetime. ⚠️ Lọc `VAT` là MỘT tham số áp cho **CẢ HAI** bảng dòng (`rwrs.VAT` và `rwrp.VAT`).
+// ===== 🔴 #406 GAP: lọc ngày duyệt của nguồn là **KHOẢNG**, không phải một ngày =====
+// TRACE (đọc thân từng tầng, lệ #400/#405): form `FrmWarrantyReportAcceptRpt`
+//   → `SerROWarrantyReportSerivce.SerWarrantyAcceptRpt(dealer, dateFrom, dateTo, VAT)`
+//   → WS `SerWarrantyAcceptRpt` → biz `SerWarrantyAcceptRpt_New20230417` (`WarrantyReport.cs:14575`).
+//
+// 🔴 **TOÁN TỬ LỌC NẰM Ở TẦNG SERVICE** (lệ #401) — biz chỉ nhận một CHUỖI điều kiện:
+//   `Util.GenDateRangeCondition(from, to)` (`Util.cs:180`) sinh ra **bốn dạng** tuỳ ô nào trống:
+//     cả hai trống → `""` (KHÔNG lọc) · chỉ có `to` → `"<=to"` · chỉ có `from` → `">=from"`
+//     · đủ hai → `">=from|<=to"`   (dấu `|` = AND hai vế, theo cú pháp `SqlUtils.BuildClause`).
+//   Biz áp chuỗi đó lên `convert(char(10), rwr.ApprovedDate, 120)` ⇒ **so sánh CHUỖI**, không phải datetime.
+//   May là `yyyy-MM-dd` xếp thứ tự từ điển trùng thứ tự thời gian nên khoảng vẫn đúng — và form
+//   định dạng bằng `Nonsense.DATE_DB_FORMAT = "yyyy-MM-dd"` (`Constants.cs:120`), **khớp** `char(10)` kiểu 120.
+//   ⚠️ Nếu ai đó đổi `DATE_DB_FORMAT` sang `dd/MM/yyyy` thì bộ lọc **vẫn chạy, vẫn ra kết quả, chỉ là sai** —
+//     so chuỗi không bao giờ báo lỗi kiểu. Đây là lý do port giữ nguyên so-chuỗi thay vì "sửa" thành so ngày.
+//
+// 🔴 Bản port trước (#303) chỉ có `approvedDate` **một ngày, so bằng** ⇒ không diễn đạt được thao tác
+//   thật của form (ô *Ngày duyệt từ* `deMonth` + ô `dateTo`). Nay thêm `from`/`to` đúng 4 dạng trên;
+//   `approvedDate` giữ lại như lối tắt "from = to = ngày đó".
+//
+// 📌 **ĐỐI CHIẾU BẢN `_WH`** (lệ #376/#378 — hậu tố `_WH` KHÔNG mặc nhiên chỉ là đổi CSDL):
+//   diff thân hai hàm LIVE `SerWarrantyAcceptRpt_New20230417` (`WarrantyReport.cs:14575-14938`) vs
+//   `SerWarrantyAcceptRpt_WH_New20230417` (`WH.cs:20271-20632`) = **45 dòng lệch, KHÔNG dòng nào lệch nghiệp vụ**:
+//   `_dbDealer`→`_dbWH`, `Mst_Dealer` bỏ tiền tố `[@strDBName_CommonCenter]`, khác hoa/thường và khoảng trắng,
+//   và **một** `--//[mylock]` bị bỏ trên bảng tạm `#tblFinished`. ⇒ Ở hàm NÀY `_WH` đúng là bản đổi CSDL
+//   thuần tuý — khác hẳn `…_OnlyOneROWID_WH` ở #378 (chỗ đó đổi hẳn điều kiện chọn dòng).
+//   MiniHTC một CSDL ⇒ **không cần tham số `scope`** cho báo cáo này; ghi lại kết luận để lần sau khỏi dò.
 app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext t,
-    string? dealer, string? approvedDate, decimal? vat, string? month) =>
+    string? dealer, string? approvedDate, string? from, string? to, decimal? vat, string? month) =>
 {
     var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status == "Accepted");
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
@@ -22240,11 +22266,14 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
     var claims = await q.ToListAsync();
     // Lọc ngày duyệt: nguồn so CHUỖI `convert(char(10), ApprovedDate, 120)` = "yyyy-MM-dd",
     //   KHÔNG phải khoảng datetime ⇒ lọc sau khi nạp, đúng ngữ nghĩa chuỗi.
-    if (!string.IsNullOrWhiteSpace(approvedDate))
-    {
-        var d = approvedDate!.Trim();
-        claims = claims.Where(x => x.ApprovedDate?.ToString("yyyy-MM-dd") == d).ToList();
-    }
+    // #406 Bốn dạng của `GenDateRangeCondition`, so **CHUỖI** `yyyy-MM-dd` đúng như nguồn.
+    // `approvedDate` (bản #303) = lối tắt "from = to = ngày đó".
+    var dFrom = (from ?? approvedDate ?? "").Trim();
+    var dTo = (to ?? approvedDate ?? "").Trim();
+    if (dFrom.Length > 0) claims = claims
+        .Where(x => string.CompareOrdinal(x.ApprovedDate == null ? "" : x.ApprovedDate.Value.ToString("yyyy-MM-dd"), dFrom) >= 0).ToList();
+    if (dTo.Length > 0) claims = claims
+        .Where(x => string.CompareOrdinal(x.ApprovedDate == null ? "" : x.ApprovedDate.Value.ToString("yyyy-MM-dd"), dTo) <= 0).ToList();
     var ids = claims.Select(c => c.Id).ToList();
 
     var svcQ = db.WarrantyClaimServiceItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId));
@@ -22302,6 +22331,138 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
         grandPartPrice = rows.Sum(r => r.PartPrice),
         note = "Tiền = TỔNG mọi dòng; mã/tên lấy DÒNG CHÍNH (CVC/PTC). Lọc ACCE đặt ở đầu đề nghị, "
              + "KHÔNG lọc ở mức dòng (nguồn đã comment mất điều kiện đó).",
+        rows,
+    });
+}).RequireAuthorization();
+
+// ===== 🔴 #406 KẾT XUẤT EXCEL BÁO CÁO CHẤP THUẬN BẢO HÀNH — **MỌI ĐẠI LÝ** =====
+// Nguồn: `FrmWarrantyReportAcceptRpt.btnExportExcel_Click` →
+//   `SerWarrantyAcceptRptAllDealer(from, to, bFlagWH)` (`SerROWarrantyReportSerivce.cs:1393`).
+// ⚠️ Hàm này **KHÔNG có biz riêng**: nó gọi đúng WS `SerWarrantyAcceptRpt` như nút xem báo cáo,
+//   chỉ khác **hai tham số**: `strDealerCodeConditionList = ""` (⇒ **mọi đại lý**) và VAT = `""` (⇒ không lọc VAT).
+//   Tức "báo cáo toàn hệ thống" ở đây chỉ là *bỏ trống ô đại lý* — không phải một truy vấn khác.
+//
+// 🔴 SỐ LIỆU **KHÔNG GIỐNG** lưới trên màn, dù cùng nguồn — form nhào lại trước khi ghi file:
+//   1. `TOTALAMOUNT = Math.Round(partPrice + servicePrice, MidpointRounding.AwayFromZero)`
+//      ⇒ **làm tròn về SỐ NGUYÊN**, nửa lẻ làm tròn RA XA số 0. Chú thích nguồn nói thẳng lý do:
+//        *"làm tròn dữ liệu cột total để khớp dữ liệu các column và TotalAmount.Summary"*.
+//      ⚠️ Cộng-rồi-làm-tròn ⇒ **tổng cột Excel ≠ tổng tiền thật** khi có phần lẻ; đây là chủ đích của nguồn.
+//   2. `CusRequest` bỏ `-` `'` và **xuống dòng**; `CarStatus` bỏ `-` `'` và **TOÀN BỘ khoảng trắng**
+//      ⇒ *"Xe không nổ máy"* thành *"Xekhôngnổmáy"* trong file Excel. Đọc rất khó nhưng là hành vi thật.
+//   3. Cả hai cột **cắt còn 255 ký tự** sau khi dọn.
+//   4. Bỏ hẳn hai cột `ROWID` và `ROWNo`, rồi `SetOrdinal` ép **thứ tự cột cố định**.
+// ⚠️ `BulletinNoHMC` có trong lưới nhưng dòng `SetOrdinal` của nó **đã bị comment** ⇒ **không** ra file (luật B).
+// 📌 MiniHTC chưa mô hình hoá `HTCROWNo` và `WARRANTYSTATUSTEXT` ⇒ trả `null` và báo `columnsNotModelled`,
+//   thay vì bịa giá trị cho đủ cột.
+app.MapGet("/api/report/warranty-accept/export", async (AppDbContext db, ITenantContext t,
+    string? from, string? to) =>
+{
+    // Đại lý để TRỐNG = mọi đại lý (đúng `strDealerCodeConditionList = ""` của nguồn).
+    var claims = await db.ServiceWarrantyClaims
+        .Where(x => x.OrgId == t.OrgId && x.Status == "Accepted").ToListAsync();
+    var dFrom = (from ?? "").Trim(); var dTo = (to ?? "").Trim();
+    string DK(DateTime? d) => d == null ? "" : d.Value.ToString("yyyy-MM-dd");
+    if (dFrom.Length > 0) claims = claims.Where(x => string.CompareOrdinal(DK(x.ApprovedDate), dFrom) >= 0).ToList();
+    if (dTo.Length > 0) claims = claims.Where(x => string.CompareOrdinal(DK(x.ApprovedDate), dTo) <= 0).ToList();
+
+    var ids = claims.Select(c => c.Id).ToList();
+    var svcItems = await db.WarrantyClaimServiceItems
+        .Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId)).ToListAsync();
+    var partItems = await db.WarrantyClaimPartItems
+        .Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId)).ToListAsync();
+    var svcByClaim = svcItems.GroupBy(i => i.ClaimId).ToDictionary(g => g.Key, g => g.ToList());
+    var partByClaim = partItems.GroupBy(i => i.ClaimId).ToDictionary(g => g.Key, g => g.ToList());
+
+    var dealerNames = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync();
+    var dealerName = dealerNames.GroupBy(d => d.DealerCode)
+        .ToDictionary(g => g.Key, g => g.First().DealerName);
+    // Phụ tùng LỖI: nguồn join `Ser_MST_Part` theo `PartIDError` để lấy mã + tên.
+    var errIds = claims.Select(c => c.PartIDError).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    var errParts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && errIds.Contains(p.PartID))
+        .Select(p => new { p.PartID, p.PartCode, p.PartName }).ToListAsync();
+    var errByPartId = errParts.Where(p => p.PartID != null).GroupBy(p => p.PartID!)
+        .ToDictionary(g => g.Key, g => g.First());
+
+    // Dọn văn bản đúng nguồn — CarStatus bị bỏ CẢ khoảng trắng, CusRequest thì không.
+    static string? Clean(string? v, bool stripSpace)
+    {
+        if (v == null) return null;
+        var s = v.Replace("-", "").Replace("'", "").Replace("\n", "");
+        if (stripSpace) s = s.Replace(" ", "");
+        s = s.Trim();
+        return s.Length > 255 ? s.Substring(0, 255) : s;
+    }
+    static string? TitleOne(string? v)
+        => string.IsNullOrWhiteSpace(v) ? v : char.ToUpperInvariant(v![0]) + v.Substring(1).ToLowerInvariant();
+
+    var rows = new List<object>();
+    decimal roundedTotalSum = 0m, exactTotalSum = 0m;
+    foreach (var c in claims)
+    {
+        var svs = svcByClaim.TryGetValue(c.Id, out var s1) ? s1 : new List<WarrantyClaimServiceItem>();
+        var pts = partByClaim.TryGetValue(c.Id, out var p1) ? p1 : new List<WarrantyClaimPartItem>();
+        decimal servicePrice = svs.Sum(i => i.Factor * i.Price + i.Factor * i.Price * i.VAT * 0.01m);
+        decimal partPrice = pts.Sum(i => i.Factor * i.Price * i.Quantity
+                                        + i.Factor * i.Price * i.Quantity * i.Vat * 0.01m);
+        // 🔴 Làm tròn về SỐ NGUYÊN, nửa lẻ ra xa 0 — đúng `Math.Round(x, MidpointRounding.AwayFromZero)`.
+        decimal exact = servicePrice + partPrice;
+        decimal totalAmount = Math.Round(exact, 0, MidpointRounding.AwayFromZero);
+        roundedTotalSum += totalAmount; exactTotalSum += exact;
+
+        var mainSvc = svs.Where(i => i.ROWSerType == "CVC").OrderBy(i => i.Id).FirstOrDefault();
+        var mainPart = pts.Where(i => i.RowPartType == "PTC").OrderBy(i => i.Id).FirstOrDefault();
+        errByPartId.TryGetValue(c.PartIDError ?? "", out var ep);
+
+        // Thứ tự khai báo dưới đây = đúng thứ tự `SetOrdinal` của nguồn (ROWID/ROWNo đã bị bỏ).
+        rows.Add(new
+        {
+            DealerCode = c.DealerCode,
+            DealerName = c.DealerCode != null && dealerName.TryGetValue(c.DealerCode, out var dn) ? dn : null,
+            RONo = c.RONo,
+            HTCROWNo = (string?)null,          // chưa mô hình hoá trong MiniHTC
+            FrameNo = c.Vin,
+            PlateNo = c.PlateNo,
+            WarrantyRegistrationDate = c.WarrantyRegistrationDate,
+            Km = c.Km,
+            PartCodeError = ep?.PartCode,
+            PartNameError = ep?.PartName,
+            ITEMCODE = mainPart?.PartCode ?? mainSvc?.SerCode,
+            ITEMNAME = TitleOne(mainPart?.PartName ?? mainSvc?.SerName),
+            PartCode = mainPart?.PartCode,
+            VieName = mainPart?.PartName,
+            Quantity = mainPart?.Quantity,
+            SerCode = mainSvc?.SerCode,
+            SerName = mainSvc?.SerName,
+            StdManHour = mainSvc?.StdManHour,
+            ErrorCodePN = c.ErrorCodePN,
+            ErrorCodeCD = c.ErrorCodeCD,
+            CarStatus = Clean(c.CarStatus, true),    // 🔴 bỏ CẢ khoảng trắng
+            SERVICEPRICE = servicePrice,
+            PARTPRICE = partPrice,
+            TOTALAMOUNT = totalAmount,
+            WARRANTYSTATUSTEXT = (string?)null,      // chưa mô hình hoá trong MiniHTC
+            CusRequest = Clean(c.CusRequest, false),
+            StartDate = c.StartDate,
+            FinishedDate = c.FinishedDate,
+            CreatedDate = c.CreatedAt,
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        fileNameHint = "BaoCaoChapThuanBaoHanh_" + DateTime.Now.ToString("yyyy_MM_dd") + ".xls",
+        roundedTotalSum, exactTotalSum,
+        roundingNote = "TOTALAMOUNT làm tròn về SỐ NGUYÊN (AwayFromZero) TỪNG DÒNG rồi mới cộng ⇒ "
+            + "roundedTotalSum có thể LỆCH exactTotalSum. Đây là chủ đích của nguồn (khớp TotalAmount.Summary).",
+        textCleanNote = "CusRequest bỏ - ' và xuống dòng; CarStatus bỏ - ' VÀ TOÀN BỘ khoảng trắng; "
+            + "cả hai cắt còn 255 ký tự — đúng nguồn.",
+        columnsNotModelled = new[] { "HTCROWNo", "WARRANTYSTATUSTEXT" },
+        droppedByCommentNote = "BulletinNoHMC có trên lưới nhưng dòng SetOrdinal của nó đã bị COMMENT "
+            + "trong nguồn ⇒ KHÔNG ra file (port dòng active, luật B).",
+        allDealerNote = "Nút kết xuất gọi SerWarrantyAcceptRptAllDealer = CÙNG WS với nút xem báo cáo, "
+            + "chỉ bỏ trống điều kiện đại lý và VAT.",
         rows,
     });
 }).RequireAuthorization();
