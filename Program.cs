@@ -24371,7 +24371,26 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 //  · Hai nhánh đầu ghép bằng `union all` (giữ trùng), riêng bảng lịch sử ghép bằng `union` (khử trùng).
 // ⚠️ NỢ: bảng chốt `BaoCoCongNoKhachHang_20170101` nằm ở DB CommonCenter, MiniHTC chưa có ⇒ **KHÔNG bịa**;
 //   endpoint trả `legacyRows: null` kèm ghi chú thay vì lặng lẽ bỏ nguồn thứ ba.
-app.MapGet("/api/report/receivable-debit", async (AppDbContext db, ITenantContext t, DateTime? toDate) =>
+// ===== 🔴 #413 BẢN `_WH` CỦA BÁO CÁO NÀY **THIẾU HẲN MỘT NHÁNH UNION** =====
+// Diff thân hai hàm LIVE (bỏ khoảng trắng, bỏ khác biệt định tuyến CSDL):
+//   `Ser_ReportReceivableDebitRpt`      (`Service.Report.cs:2605-2830`, 226 dòng)
+//   `Ser_ReportReceivableDebitRpt_WH`   (`WH.cs:10764-10989`,           215 dòng)
+// Khác biệt nghiệp vụ **duy nhất nhưng lớn**: bản Main có nhánh thứ ba
+//   `union select … N'Khách hàng nợ' … from [@strDBName_CommonCenter].[dbo].BaoCoCongNoKhachHang_20170101`
+//   — bản `_WH` **KHÔNG có** (đếm được: chuỗi `BaoCoCongNoKhachHang` xuất hiện 1 lần ở Main, **0** lần ở `_WH`).
+// ⇒ Cùng một đại lý, cùng một mốc ngày, **hai màn cho hai TỔNG NỢ khác nhau** — bên kho thiếu toàn bộ
+//   phần nợ chốt theo bảng lịch sử. Không có cảnh báo nào; chỉ là một con số nhỏ hơn.
+// 📌 Lại đúng lệ #378/#406: hậu tố `_WH` **không** mặc nhiên chỉ là đổi CSDL. Ba lượt gần đây có hai lần
+//   `_WH` giống hệt (#406, #407, #409) và một lần lệch thật (#413) — nên vẫn phải diff từng hàm.
+//
+// ⚠️ Hai chi tiết của chính nhánh đó, đáng ngại độc lập với chuyện thiếu/đủ:
+//   · Tên bảng **đóng băng theo ngày**: `BaoCoCongNoKhachHang_20170101` — một bảng chốt năm 2017 nằm
+//     cứng trong báo cáo đang chạy. Không ai đổi tên bảng thì báo cáo mãi mãi đọc số liệu chốt 2017.
+//   · `and t.DealerCOde = '@DealerCode'` — mã đại lý **nhúng thẳng vào chuỗi SQL** bằng `StringUtils.Replace`,
+//     không phải tham số. Vừa là bề mặt tiêm SQL, vừa là kiểu trộn nháy-với-tham-số đã từng làm
+//     guard chết câm ở hệ khác (xem lệ `[BAKE-PARAM-MIX]`).
+app.MapGet("/api/report/receivable-debit", async (AppDbContext db, ITenantContext t, DateTime? toDate,
+    string? scope) =>
 {
     var cut = (toDate ?? DateTime.Today).Date;
 
@@ -24408,6 +24427,16 @@ app.MapGet("/api/report/receivable-debit", async (AppDbContext db, ITenantContex
         count = rows.Count,
         rows,
         legacyRows = (object?)null,
+        // #413 nhánh thứ ba chỉ có ở bản Main; bản _WH thiếu hẳn.
+        scope = string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase) ? "wh" : "main",
+        legacyBranchInSource = !string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase),
+        whDivergenceNote = "Bản _WH của nguồn (WH.cs:10764) THIẾU HẲN nhánh union "
+            + "BaoCoCongNoKhachHang_20170101 mà bản Main (Service.Report.cs:2605) có ⇒ cùng đại lý, cùng "
+            + "mốc ngày, hai màn cho HAI TỔNG NỢ khác nhau, không cảnh báo gì.",
+        legacyTableFrozenNote = "Tên bảng đóng băng theo ngày (_20170101): một bảng chốt 2017 nằm cứng "
+            + "trong báo cáo đang chạy.",
+        bakedDealerCodeNote = "Nguồn nhúng thẳng mã đại lý vào chuỗi SQL (StringUtils.Replace), không "
+            + "dùng tham số — bề mặt tiêm SQL và là kiểu trộn nháy/tham số đã từng gây guard chết câm.",
         note = "Nguồn còn union bảng chốt lịch sử BaoCoCongNoKhachHang_20170101 (DB CommonCenter) — MiniHTC chưa có bảng này, KHÔNG bịa dữ liệu."
     });
 }).RequireAuthorization();
