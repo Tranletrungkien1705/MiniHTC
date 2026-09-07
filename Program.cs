@@ -15827,9 +15827,37 @@ app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext 
     });
 }).RequireAuthorization();
 
-app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? vin, string? dealer) =>
+// ===== 🔴 #466 `Ser_ROWarrantyReportGetByROID` — TRA ĐỀ NGHỊ BẢO HÀNH THEO LỆNH =====
+// TRACE 4 TẦNG: `FrmQuotation` → `SerROWarrantyReportSerivce.Ser_ROWarrantyReportGetByROID` (`:160`)
+//   → WS `Ser_ROWarrantyReport_Get` (tên KHÁC tên hàm client) → biz **`…_Get_New20230417`**
+//   (`BizCarSv.WarrantyReport.cs:13388`; bản kho: `…_Get_WH_New20230417`).
+// ⚠️ Tầng service **đóng cứng 6 ô điều kiện thành `""`** và chỉ truyền ba thứ: `"=" + strROWID`,
+//   `"=" + strROID`, `"=" + SystemGlobal.strDealerCode` (đại lý ĐANG đăng nhập, không cho chọn),
+//   cộng `strIsGetDetail`. ⇒ Lối vào này **luôn bị giới hạn trong đại lý của người dùng**.
+//
+// 🔴🔴 **HAI MÀN CÙNG DỮ LIỆU NHƯNG NỐI XE KHÁC NHAU** — mâu thuẫn thật giữa hai nguồn:
+//   · #460 `Ser_RO_GetWarranty_V2_New20230417`: `inner join ser_car on ro.CarID=car.CarID`
+//     **`and ro.cusid = car.cusid`** (ĐANG CHẠY) ⇒ xe sang tên ⇒ **mất dòng**.
+//   · #466 `Ser_ROWarrantyReport_Get_New20230417`: cùng phép nối nhưng vế thứ hai **ĐÃ BỊ COMMENT**,
+//     kèm lý do ghi thẳng trong nguồn: `--and td.cusID=car.CusID // 2022-05-23. Confirm vs Ms.Đông`
+//     `KH ko bắt buộc phải giống nhau` ⇒ ở đây xe sang tên **VẪN ra dòng**.
+//   ⇒ Cùng một câu hỏi nghiệp vụ, hai màn trả **hai kết quả khác nhau**. Người ta đã sửa MỘT chỗ
+//     (2022-05-23) mà quên chỗ kia. Port giữ đúng từng bên và **nêu tên mâu thuẫn** để nghiệp vụ chốt.
+//     Cờ `carOwnerJoinInconsistentAcrossScreens`.
+// 🔴 Bảng lọc đầu tiên `left join Ser_MST_ROWarrantyType` nhưng WHERE có `zzzz…ROWTypeCodeConditionList`
+//   **đặt trên bảng LEFT** ⇒ LEFT **chết KHI VÀ CHỈ KHI** người gọi truyền bộ lọc đó (luật #414).
+//   Lối `…GetByROID` truyền `""` ⇒ LEFT còn sống; lối `Ser_ROWarrantyReportHTC_Get` truyền mã ⇒ LEFT chết.
+//   📌 "LEFT chết" **không phải thuộc tính của câu SQL**, mà của **từng người gọi**. Cờ `leftJoinDiesWhenRowTypeFiltered`.
+// ⚠️ Bảng kết quả thứ hai còn **ba `inner join`** (Ser_RO · Ser_Customer · ser_car) ⇒ vẫn mất dòng nếu
+//   thiếu khách hoặc thiếu xe. Đếm và trả `droppedByRequiredMaster`.
+// ⚠️ Cùng bảng dịch 6 mã trạng thái, **không có ELSE** ⇒ mã lạ ra **null** (đã có ở endpoint này).
+app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, string? status, string? plate,
+    string? vin, string? dealer, string? roId, string? rowId, string? isGetDetail) =>
 {
     var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    // #466: hai bộ lọc chính của lối vào theo lệnh sửa chữa (nguồn so BẰNG, không LIKE).
+    if (!string.IsNullOrWhiteSpace(roId)) q = q.Where(x => x.ROID == roId!.Trim());
+    if (!string.IsNullOrWhiteSpace(rowId)) q = q.Where(x => x.ROWNo == rowId!.Trim());
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin != null && x.Vin.Contains(vin!));
@@ -15858,7 +15886,26 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         i.CusRequest, i.CarStatus, i.NaturalCode, i.CauseCode, i.StartDate, i.ROWTID,
         i.ErrorCodeCD, i.ErrorCodePN, i.FlagReadySend, i.PartIDError, i.ApprovedBy, i.CreatedBy,
     }).ToList();
+    // #466: ba bảng bắt buộc của nguồn (Ser_RO · Ser_Customer · ser_car) — đếm dòng bị nuốt.
+    var roNos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId).Select(x => x.RONo).ToListAsync();
+    var cusCodes = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId).Select(x => x.CusCode).ToListAsync();
+    var carIds = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.CarID != null)
+        .Select(x => x.CarID!).ToListAsync();
+    var droppedByRequiredMaster = items.Count(i =>
+        (i.RONo != null && !roNos.Contains(i.RONo))
+        || (i.CusID != null && !cusCodes.Contains(i.CusID))
+        || (i.CarID != null && !carIds.Contains(i.CarID)));
+
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
+        // ===== #466 =====
+        droppedByRequiredMaster,
+        isGetDetail = isGetDetail,
+        dealerScopeForcedInSource = true,
+        leftJoinDiesWhenRowTypeFiltered = true,
+        carOwnerJoinInconsistentAcrossScreens = true,
+        carOwnerJoinNote = "Ser_ROWarrantyReport_Get_New20230417 ĐÃ BỎ vế `td.cusID = car.CusID` "
+            + "(comment 2022-05-23: khách không bắt buộc phải giống nhau), nhưng Ser_RO_GetWarranty_V2"
+            + "_New20230417 (#460) VẪN GIỮ vế đó ⇒ hai màn cho kết quả khác nhau khi xe đã sang tên.",
         pending = items.Count(i => i.Status == "Pending"), sent = items.Count(i => i.Status == "Sent"),
         accepted = items.Count(i => i.Status == "Accepted"), rejected = items.Count(i => i.Status == "Rejected"),
         confirmed = items.Count(i => i.Status == "Confirmed"), reverted = items.Count(i => i.Status == "Reverted"),
