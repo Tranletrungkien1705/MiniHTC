@@ -46705,6 +46705,129 @@ app.MapGet("/api/reports/ro-revenue-group-by-mix", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #515 DOANH THU PHỤ TÙNG / DẦU NHỚT THEO KỲ (máy tính bảng) =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:2549 Rpt_Ser_RO_RevenuePartShellX` (WS `…ForTab` :2813).
+// Endpoint: `GET /api/reports/ro-revenue-part-shell`. **§12** thêm `PartStockOut.DealerCode`.
+//
+// 🔴 **LẶP LẠI NGUYÊN VẸN LỖI KHOÁ NỐI CỦA #511 — LẦN NÀY TRÊN BA `left join`**:
+//   `t.MixCode = f.FinishMonth` · `t.MixCode = k.StockOutMonth` · `t.MixCode = z.StockOutMonth`,
+//   mà cả ba khoá phải là `convert(char(7), …, 126) + '-01'` ⇒ **luôn `yyyy-MM-01`**.
+//   ⇒ Chọn NGÀY: chỉ mồng 1 có số; chọn GIỜ: **cả 24 dòng = 0**. Cùng bệnh, cùng cụm, **ba** chỗ.
+//   ⇒ Xác nhận đây là **khuôn lỗi dùng lại**, không phải sơ suất một lần (#511 là ca đầu).
+// 🔴 **TÊN CỘT ĐÁNH LỪA**: `IsNull(f.PartAmountNotShell, 0.0) **RevenueRoRepair**` — cột trả về tên
+//   "doanh thu sửa chữa" nhưng giá trị là **tiền phụ tùng KHÔNG PHẢI dầu nhớt**. Ai đọc theo tên cột
+//   sẽ hiểu sai hoàn toàn. Port giữ **cả hai**: tên gốc `RevenueRoRepair` + tên đúng nghĩa
+//   `partAmountNotShell`, kèm cờ `aliasRevenueRoRepairIsActuallyNotShell`.
+// 🔴 Bộ lọc "dầu nhớt" là `smp.PartCode in @strListShellCode` — danh sách đọc từ **web.config**
+//   (`_strConfig_ListShellCode`) rồi **thả thẳng vào SQL** (họ `[BAKE-PARAM-MIX]`): danh sách rỗng ⇒
+//   `in ()` ⇒ **SQL sai cú pháp**, còn danh sách thiếu mã ⇒ **doanh thu dầu nhớt hụt câm**.
+//   MiniHTC lấy từ tham số `ListShellCode` (đã có sẵn ở #337) và trả cờ khi rỗng.
+// ⚠️ Hằng literal của phiếu xuất: `siso.Status = '3'` (đã duyệt) · `siso.StockOutType = '2'`
+//   (*"Phieu xuat thuong"* — chú thích nguyên văn trong SQL). Chép **đúng giá trị**, không đổi tên.
+// ⚠️ Mốc ngày so bằng **CHUỖI** `convert(nvarchar(20), …, 20)` và **bake** `'@objStockOutDateTimeFrom'`.
+app.MapGet("/api/reports/ro-revenue-part-shell", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? reportType, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenuePartShellX_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(reportType))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenuePartShellX_InvalidReportType" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenuePartShellX_DateFromAfterDateTo" });
+    var kind = reportType!.Trim().ToUpperInvariant();
+    if (kind != "HOUR" && kind != "DAY" && kind != "MONTH")
+        return Results.BadRequest(new { error = "reportType chỉ nhận HOUR, DAY hoặc MONTH." });
+
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var prm = (await db.DealerServiceOptions.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.ParamCode).ToDictionary(g => g.Key, g => g.First().ParamValue);
+    var shellCodes = (prm.TryGetValue("ListShellCode", out var sc) ? sc : "")
+        .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToHashSet();
+
+    var buckets = new List<(string MixCode, string MixName, DateTime Start, DateTime End)>();
+    if (kind == "HOUR")
+        for (var h = 0; h < 24; h++)
+        {
+            var st = from.AddHours(h);
+            buckets.Add((h.ToString(), h.ToString("00"), st, st.AddHours(1).AddSeconds(-1)));
+        }
+    else if (kind == "DAY")
+        for (var d = from; d <= toDate.Value.Date; d = d.AddDays(1))
+            buckets.Add((d.ToString("yyyy-MM-dd"), d.ToString("yyyy-MM-dd"), d, d.AddDays(1).AddSeconds(-1)));
+    else
+    {
+        var m = new DateTime(from.Year, from.Month, 1);
+        var mEnd = new DateTime(toDate.Value.Year, toDate.Value.Month, 1);
+        for (; m <= mEnd; m = m.AddMonths(1))
+            buckets.Add((m.ToString("yyyy-MM-01"), m.ToString("yyyy-MM-01"), m, m.AddMonths(1).AddSeconds(-1)));
+    }
+
+    // Tiền phụ tùng trên lệnh sửa chữa, tách dầu nhớt / không dầu nhớt.
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to)
+        .Select(x => new { x.Id, x.ActualDeliveryDate }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+    var roAt = ros.ToDictionary(x => x.Id, x => x.ActualDeliveryDate!.Value);
+    var roParts = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .Select(i => new { i.RoId, i.PartCode, i.Factor, i.NeedQty, i.UnitPrice, i.Vat }).ToListAsync();
+
+    // Phiếu xuất kho ĐÃ DUYỆT, loại "xuất thường" — hằng literal của nguồn.
+    const string kStockOutStatusApproved = "3";
+    const string kStockOutTypeNormal = "2";
+    var sos = await db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.Status == kStockOutStatusApproved && x.StockOutType == kStockOutTypeNormal
+            && x.StockOutDate >= from && x.StockOutDate <= to)
+        .Select(x => new { x.Id, x.StockOutDate }).ToListAsync();
+    var soIds = sos.Select(x => x.Id).ToList();
+    var soAt = sos.ToDictionary(x => x.Id, x => x.StockOutDate);
+    var soLines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && soIds.Contains(l.StockOutId))
+        .Select(l => new { l.StockOutId, l.PartCode, l.Quantity, l.Price, l.Vat }).ToListAsync();
+
+    var items = buckets.Select(b =>
+    {
+        var rp = roParts.Where(p => roAt[p.RoId] >= b.Start && roAt[p.RoId] <= b.End).ToList();
+        var shellRepair = rp.Where(p => shellCodes.Contains(p.PartCode))
+            .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1m + p.Vat * 0.01m));
+        var notShell = rp.Where(p => !shellCodes.Contains(p.PartCode))
+            .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1m + p.Vat * 0.01m));
+        var sl = soLines.Where(l => soAt[l.StockOutId] >= b.Start && soAt[l.StockOutId] <= b.End).ToList();
+        var shellOut = sl.Where(l => shellCodes.Contains(l.PartCode))
+            .Sum(l => l.Quantity * (l.Price ?? 0m) * (1m + (l.Vat ?? 0m) * 0.01m));
+        var partOut = sl.Where(l => !shellCodes.Contains(l.PartCode))
+            .Sum(l => l.Quantity * (l.Price ?? 0m) * (1m + (l.Vat ?? 0m) * 0.01m));
+        return new
+        {
+            b.MixCode, DealerCode = dealer, ReportType = kind, b.MixName,
+            DateTimeStart = b.Start, DateTimeEnd = b.End,
+            PartAmountShellRoRepair = shellRepair,
+            RevenueRoRepair = notShell,               // TÊN GỐC của nguồn — thực chất là "không dầu nhớt"
+            partAmountNotShell = notShell,            // tên đúng nghĩa, thêm để khỏi hiểu nhầm
+            AllRevenuePartRepair = shellRepair + notShell,
+            AllRevenuePartOut = shellOut + partOut,
+            shellAmountOut = shellOut, partAmountOut = partOut,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = kind,
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        count = items.Count, roCount = ros.Count, stockOutCount = sos.Count, items,
+        // Ba `left join` của nguồn đều nối theo khoá THÁNG ⇒ đo phần sẽ ra 0.
+        sourceJoinsOnMonthKeyOnly = new[] { "FinishMonth", "StockOutMonth(part)", "StockOutMonth(shell)" },
+        sourceWouldZero = buckets.Count(b => !b.MixCode.EndsWith("-01") || b.MixCode.Length != 10),
+        aliasRevenueRoRepairIsActuallyNotShell = true,
+        shellCodeListEmpty = shellCodes.Count == 0,
+        shellCodeListBakedIntoSql = true,
+        stockOutFilters = new { status = kStockOutStatusApproved, stockOutType = kStockOutTypeNormal },
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
