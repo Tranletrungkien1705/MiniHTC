@@ -17992,13 +17992,32 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 //   `ROWARRANTY` → `WarrantyAmountAfterVAT` · `LOCAL` → `LocalAmountAfterVAT`
 // Tổng: `RepairAmountAfterVAT = Σ(Repair + PartialRepair)` · `InsuranceAmountAfterVAT = Σ(PartialIns + FullIns)`
 //
-// 🔴 MÂU THUẪN CẦN NGƯỜI NGHIỆP VỤ CHỐT — cùng cột `InsurancePrice`, hai báo cáo hiểu NGƯỢC NHAU:
-//   • Ở ĐÂY: `InsurancePrice` được cộng vào **phía SỬA CHỮA** (`PartialRepair`), phần còn lại mới là bảo hiểm.
-//   • Ở #342 (`ProcessGetInsuranceDebit`): `when InsurancePrice > 0 then InsurancePrice` chính là
-//     **số tiền BẢO HIỂM** dùng để ghi công nợ hãng bảo hiểm.
-//   ⇒ Một bên coi nó là phần KHÁCH chịu, một bên coi là phần BẢO HIỂM chịu. Tôi **KHÔNG tự chọn bên nào**:
-//     port đúng công thức của TỪNG báo cáo và trả cờ `insurancePriceConventionConflict` để người có
-//     nghiệp vụ đối chiếu. Tự "thống nhất" hai bên là đổi số tiền trên chứng từ thật.
+// ===== 🔴 #435 ĐÍNH CHÍNH + CHỐT #357: mâu thuẫn KHÔNG nằm giữa hai báo cáo, mà giữa **HAI HÀM SINH ĐÔI**
+//        trong CÙNG một file, cách nhau `700 dòng =====
+// Đọc lại **bí danh cột** (không đọc riêng biểu thức) ở `BizCarSv.ZTemp.cs`:
+//   · `OSVeloca_Ser_RO_Get` (`:15002`), quanh `:15199`:
+//       `PartialRepairAmountAfterVAT`    = **InsurancePrice**
+//       `PartialInsuranceAmountAfterVAT` = **toàn dòng − InsurancePrice**
+//   · `OSVeloca_Ser_RO_GetByROID` (`:15373`), quanh `:15938`:
+//       `PartialRepairAmountAfterVAT`    = **toàn dòng − InsurancePrice**
+//       `PartialInsuranceAmountAfterVAT` = **InsurancePrice**
+//   ⇒ **Cùng một điều kiện, cùng một cột, hai bí danh HOÁN ĐỔI cho nhau.** Với một dòng có
+//     `InsurancePrice = X` và tổng dòng `Y`: hàm này nói bảo hiểm chịu `X`, hàm kia nói bảo hiểm chịu `Y − X`.
+//     Hai hàm **không thể cùng đúng**.
+//
+// 🔴 **ĐÍNH CHÍNH ghi chú #357 của chính tôi**: nó mô tả `InsurancePrice` nằm ở phía **SỬA CHỮA** —
+//   điều đó đúng với `OSVeloca_Ser_RO_Get`, nhưng **hàm đang port ở đây là `_GetByROID`**, và ở hàm đó
+//   `InsurancePrice` nằm ở phía **BẢO HIỂM**. Tôi đã gán nhầm quy ước của hàm này cho hàm kia.
+//
+// 📌 **BA BẰNG CHỨNG ĐỘC LẬP đều nói `InsurancePrice` = phần BẢO HIỂM chịu**:
+//   ① `OSVeloca_Ser_RO_GetByROID` đặt nó vào `PartialInsuranceAmountAfterVAT`;
+//   ② `ProcessGetInsuranceDebit` (`BizCarSv.Service01.cs:11856` — hàm GHI CÔNG NỢ hãng bảo hiểm):
+//      `when rsi.InsurancePrice > 0 then InsurancePrice` … cộng vào `InsuranceAmount`;
+//   ③ **Nhãn trên giao diện**: `CAPTION_INSURANCE = "Giá bảo hiểm"` (`FrmQuotationApp.cs:68`,
+//      `FrmInvoice.cs:75`) — cột người dùng nhập chính là *giá bảo hiểm duyệt cho dòng đó*.
+//   ⇒ `OSVeloca_Ser_RO_Get` là **bản LẺ LOI**, nhiều khả năng là bên sai. Nhưng nó vẫn đang chạy,
+//     nên **KHÔNG tự sửa**: giữ đúng công thức của TỪNG hàm, và cờ dưới đây nay chỉ **đích danh hàm lệch**
+//     thay vì nói chung chung "hai báo cáo hiểu ngược nhau".
 //
 // 🔴 CÔNG THỨC CŨ BỊ COMMENT kèm ghi chú của chính tác giả:
 //   `//, (ServiceAmountAfterVAT + PartAmountAfterVAT - TotalDebitAmount) TotalValCusPmt -- 20231209. HuongTTT: Sai`
@@ -18877,7 +18896,7 @@ app.MapGet("/api/osveloca/ro/{roNo}/amounts", async (string roNo, AppDbContext d
         // Bản ĐANG CHẠY của nguồn (bản cũ bị comment kèm ghi chú "Sai" — xem chú thích ở trên).
         totalValCusPmt = repairAfterVat - cusDebit,
         // 🔴 Cùng cột `InsurancePrice`, báo cáo này và #342 hiểu NGƯỢC nhau — cần người nghiệp vụ chốt.
-        insurancePriceConventionConflict = partialRepair > 0m,
+        insurancePriceConventionConflict /* #435: lệch nằm giữa OSVeloca_Ser_RO_Get và _GetByROID */ = partialRepair > 0m,
         insurancePriceNote = partialRepair > 0m
             ? "Ở đây InsurancePrice được tính vào phía SỬA CHỮA; ở #342 nó là số tiền BẢO HIỂM để ghi công nợ. "
               + "Hai quy ước ngược nhau — chưa tự thống nhất, chờ xác nhận nghiệp vụ."
