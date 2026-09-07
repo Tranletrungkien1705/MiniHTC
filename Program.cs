@@ -44786,6 +44786,104 @@ app.MapGet("/api/reports/customer-not-back", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #487 LỊCH SỬ GIÁ NHẬP PHỤ TÙNG — `Ser_ReportHistoryCost` (`Service.Report.cs:5686`) =====
+// ⚪ Cặp `_WH` (`WH.cs:6613`) khác **ĐÚNG HAI DÒNG**, và cả hai chỉ là **dấu `--//[mylock]` có/không**
+//   ⇒ **hoàn toàn tương đương**. Đóng thêm một ca của danh sách #484 (còn 15).
+//
+// 🔴 **LEFT JOIN CHẾT** (luật #414, cả ba câu hỏi đều "có"):
+//     `left join Ser_Inv_StockInDetail sid on spi.StockInID = sid.StockInID and …`
+//     `join      Ser_Inv_StockIn       si  on si.StockInID  = **sid**.StockInID and …`
+//   Bảng thứ hai nối **TRONG** và nối **qua cột của bảng LEFT** ⇒ LEFT bị ép thành INNER.
+//   Thêm `and si.Status not in ("4","5")` trong WHERE — lại là điều kiện trên bảng đó.
+//   ⇒ Bản ghi tồn kho **không khớp dòng chi tiết phiếu nhập** bị **loại im lặng** khỏi lịch sử giá.
+//   Port giữ đúng hành vi (INNER) nhưng **đếm** `droppedByStockInDetailJoin` để con số đó nhìn thấy được.
+//
+// 🔴 **CỘT `SLX` LUÔN BẰNG 0**: nguồn viết thẳng `0 as SLX` (số lượng XUẤT) trong khi nhãn báo cáo là
+//   "lịch sử giá" ⇒ **nửa XUẤT chưa bao giờ được cài**. Ai đọc báo cáo sẽ tưởng kỳ đó không xuất phụ tùng nào.
+//   Giữ nguyên cột (đúng nguồn) + cờ `slxIsAlwaysZeroPlaceholder`.
+// ⚠️ Mốc ngày bake thẳng: `spi.DateIn <= "@ToDate"` — không kèm giờ ⇒ **mất trọn ngày cuối** (#415).
+//   Port dùng `23:59:59` và đếm `lostByRawEndDate`.
+// ⚠️ `strPartID` lấy từ `CheckPartNotFound` rồi **có guard phòng hờ** `if (dtPart != null && Rows.Count > 0)`;
+//   nếu không vào nhánh đó thì `strPartID` ở lại **chuỗi rỗng** ⇒ SQL thành `PartID=""` ⇒ **0 dòng, không lỗi**.
+//   Port chặn thẳng (404) — sai lệch CỐ Ý, cờ `sourceReturnsEmptyWhenPartMissing`.
+// ⚠️ Tiền = `sum(Qty*SIPrice + Qty*SIPrice*0.01*VAT)` với `VAT` lấy từ bảng LEFT (`isnull(...,0)`).
+// ⚠️ Kết quả là **HAI bảng**: lịch sử + thông tin phụ tùng (`Ser_Mst_Part`).
+app.MapGet("/api/reports/part-cost-history", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
+    if (string.IsNullOrWhiteSpace(partCode)) return Results.BadRequest(new { error = "Cần partCode." });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var dealer = dealerCode!.Trim();
+    var code = partCode!.Trim().ToUpperInvariant();
+
+    var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code);
+    if (part is null)
+        return Results.NotFound(new
+        {
+            partCode = code,
+            error = "Ser_ReportHistoryCost: không tìm thấy phụ tùng.",
+            sourceReturnsEmptyWhenPartMissing = true,
+            note = "Nguồn để PartID rỗng rồi lọc PartID=\"\" ⇒ trả 0 dòng mà KHÔNG báo lỗi; port chặn thẳng.",
+        });
+
+    var from = fromDate.Value.Date;
+    var toRawMidnight = toDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.PartID == part.PartID
+            && x.DateIn != null && x.DateIn >= from && x.DateIn <= to
+            && x.Status != "4" && x.Status != "5").ToListAsync();
+    var lostByRawEndDate = inst.Count(x => x.DateIn > toRawMidnight);
+
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var lineByKey = lines.Where(l => l.PartCode != null)
+        .GroupBy(l => l.StockInId + "|" + l.PartCode)
+        .ToDictionary(g => g.Key, g => g.First());
+
+    // LEFT bị ép thành INNER ở nguồn ⇒ chỉ giữ dòng CÓ chi tiết phiếu nhập; đếm phần bị loại.
+    var kept = inst.Where(x => lineByKey.ContainsKey(x.StockInId + "|" + (x.PartCode ?? ""))).ToList();
+    var droppedByStockInDetailJoin = inst.Count - kept.Count;
+
+    var items = kept
+        .GroupBy(x => new { x.PartID, x.LocationID, x.StockInId, x.StockInNo, x.SIPrice, x.DateIn })
+        .Select(g =>
+        {
+            var vat = lineByKey.TryGetValue(g.Key.StockInId + "|" + (g.First().PartCode ?? ""), out var l)
+                ? l.VAT : 0m;
+            var price = g.Key.SIPrice ?? 0m;
+            var qty = g.Sum(x => x.Quantity);
+            return new
+            {
+                g.Key.PartID,
+                RefID = g.Key.StockInId,
+                RefNo = g.Key.StockInNo,
+                RefDate = g.Key.DateIn,
+                Remark = "Nhập kho",
+                g.Key.LocationID,
+                SLN = qty,
+                SLX = 0m,                                   // nguồn viết thẳng 0 — nửa XUẤT chưa cài
+                TGN = qty * price + qty * price * 0.01m * vat,
+                Price = price,
+            };
+        }).OrderBy(x => x.RefDate).ThenBy(x => x.RefNo).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, partCode = code,
+        from = from.ToString("yyyy-MM-dd HH:mm:ss"), to = to.ToString("yyyy-MM-dd HH:mm:ss"),
+        count = items.Count, items,
+        // bảng kết quả thứ hai của nguồn: thông tin phụ tùng
+        part = new { part.PartID, part.PartCode, VieName = part.PartName, part.Unit, Location = part.Location ?? "" },
+        droppedByStockInDetailJoin,
+        leftJoinDeadInSource = true,
+        slxIsAlwaysZeroPlaceholder = true,
+        endDateExclusiveInSource = true, lostByRawEndDate,
+        whTwinEquivalent = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
