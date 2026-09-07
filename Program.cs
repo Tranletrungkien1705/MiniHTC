@@ -25681,6 +25681,37 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         stockOutSearchChannelLag = new { webMainHasGuards = true, partnerBareLacksGuards = true,
             guardControls = "khoi chi tiet ton/vi tri (#tbl_sbb) theo co IsGetDetail",
             consequence = "Kenh doi tac: co IsGetDetail khong co tac dung, khong bao loi" },
+        // ===== 🔴🔴 #509 **RÚT LẠI #497**: KHÔNG HỀ CÓ "TÁC DỤNG PHỤ ĐẨY HMC" TRONG HÀM ĐỌC =====
+        // Đi trả nợ #497 (port tầng GHI sang HMC) thì phát hiện **không có gì để port** — vì tuyên bố gốc SAI.
+        // 📊 Đếm lại với ranh giới hàm ĐÚNG (mọi chữ ký method, không chỉ `public DataSet`/`public void`):
+        //     `Ser_ROWarrantyReportHTMV_Get`        (:21119..21610) → `Sync_Warranty_To_HMC` = **0**
+        //     `..._New20191108`                     (:21611..22111) → **0**
+        //     `..._New20230417`                     (:22112..22621) → **0**
+        //   Tám lần khớp đều nằm trong hàm **HÀNG XÓM** `public UtilHMC.WARTUtilHMC Sync_HMC(` (:22622),
+        //   do `Ser_ROWarrantyReport_SendHMC` gọi. ⇒ **Đọc báo cáo KHÔNG đẩy HMC**; việc đẩy nằm ở một
+        //   WebMethod GHI riêng, đúng như tên nó. #497 đọc thành "hàm _Get có tác dụng phụ" là **SAI**.
+        // 🔴 **NGUYÊN NHÂN GỐC LÀ LỖI CÔNG CỤ, KHÔNG PHẢI LỖI ĐỌC**: `diffguard.js` nhận diện ranh giới hàm
+        //   bằng `memberRe` với lớp ký tự kiểu trả về `[A-Za-z0-9_<>,\[\]\s]` — **thiếu dấu chấm**.
+        //   Kiểu `UtilHMC.WARTUtilHMC` có dấu chấm ⇒ `Sync_HMC` **không được tính là ranh giới** ⇒ thân nó
+        //   bị **nhập vào hàm liền trước**, thổi phồng mọi con số của hàm đó (`throw 4/1` chính là thế).
+        //   Sửa: thêm `.` vào lớp ký tự. **Chạy lại toàn bộ**:
+        //     trước: 86 cặp · giống hệt 77 · khác 9   →   **sau: 79 cặp · giống hệt 73 · khác 6**
+        //   Sáu cặp khác **đều là họ kẹp mốc ngày** đã port ở #472/#473/#498/#499/#500 + lát cắt #474.
+        //   ⇒ `Ser_ROWarrantyReportHTMV_Get` **biến mất khỏi danh sách lệch** — bản chính và bản kho
+        //     có **cùng 1 lệnh ném lỗi** và **cùng** khối làm giàu DMS Sales (đếm lại: throw 1/1,
+        //     `CarVINGetList_Sales` 1/1) ⇒ phát hiện #508 áp cho **cả hai** nhánh, không riêng bản chính.
+        // ⚪ **#505 vẫn ĐÚNG** (kiểm lại bằng tay với ranh giới mới): thân `SerStockOutSearch` trần
+        //   (`Inventory.StockOut.cs:3789..4021`) có `strIsGetDetail` = **0 lần** ⇒ kênh đối tác thật sự
+        //   không có khối chi tiết. Kết luận đứng vững dù tín hiệu sinh ra nó nay đã đổi.
+        // 📌 Bài học (họ #453/#478/#481): **một con số sai vì công cụ cắt sai ranh giới sẽ đẻ ra một
+        //   kết luận nghiệp vụ sai và một MỤC NỢ MA**. Nợ #497 nay **đóng vì không tồn tại**, không phải
+        //   vì đã làm xong. Trước khi ghi nợ theo số của công cụ: **kiểm tay một ca**.
+        hmcSideEffectClaimRetracted = new { retracts = "#497",
+            hmcCallsInsideHtmvGetFunctions = 0,
+            actualOwner = "Sync_HMC (:22622) do Ser_ROWarrantyReport_SendHMC goi",
+            rootCause = "diffguard memberRe thieu dau '.' trong kieu tra ve => nuot ham hang xom",
+            sweepBefore = "86/77/9", sweepAfter = "79/73/6",
+            debtClosedAsNonexistent = true },
         guardDiffListFullyRead = true,
             dateClampOnlyInMainBranch = 5,
             missingThrowsInWhBranch = "Ser_ROWarrantyReportHTMV_Get (throw 4 vs 1)" },

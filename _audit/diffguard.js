@@ -29,7 +29,7 @@ function wsLiveNames(wsArg){
 function walk(d,a){for(const e of fs.readdirSync(d,{withFileTypes:true})){const fp=path.join(d,e.name);
  if(e.isDirectory()){if(!/^(bin|obj|Properties|Web References|Service References)$/.test(e.name))walk(fp,a);}
  else if(e.name.endsWith('.cs'))a.push(fp);}return a;}
-const memberRe=/^\s*(?:public|private|protected|internal)\s+(?:static\s+)?[A-Za-z_][A-Za-z0-9_<>,\[\]\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+const memberRe=/^\s*(?:public|private|protected|internal)\s+(?:static\s+)?[A-Za-z_][A-Za-z0-9_<>.,\[\]\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
 const files=walk(BIZ,[]);
 console.log('  doc '+files.length+' file biz .cs');
 const bodies=new Map();
