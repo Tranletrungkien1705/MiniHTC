@@ -13802,12 +13802,54 @@ app.MapPost("/api/servicepartoos/import", async (
 }).RequireAuthorization();
 
 // ===== Phụ tùng nợ/chờ giao theo xe (ServicePartOO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor) =====
-app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, string? part, string? plate, string? status) =>
+// ===== 🔴 #491 BỔ SUNG BỘ LỌC THẬT CỦA `Ser_Part_OO_Get` (`BizCarSv.Service.cs:14874`) =====
+// ⚪ Cặp `_WH` (`WH.cs:27177`) khác **đúng một dòng khoảng trắng** ⇒ tương đương; đóng thêm một ca của
+//   #484 (**còn 11**).
+//
+// ⚪ **KIỂM TRA ÂM TÍNH QUAN TRỌNG (#410)** — thoạt nhìn tưởng bẫy nhưng KHÔNG phải:
+//   Năm tham số tên `…Pattern` (`OOPlateNo` · `PartCode` · `PartName` · `CVDV` · `GhiChu`) đi qua
+//   `SqlUtils.BuildClause` — vốn **ĐÒI toán tử ở đầu chuỗi**, thiếu là **bỏ im lặng**.
+//   Truy tới chỗ gọi (`MstPartService.cs:1428`): giá trị được bọc bằng `Util.GenLikeCondition2Percent(x)`,
+//   và hàm đó (`TERP.HTCClient/Common/Util.cs:81`) trả **`"like %{0}%"`** — **CÓ** toán tử ⇒ điều kiện CHẠY.
+//   ⇒ Ghi lại để lượt sau khỏi báo động nhầm. **Nhưng** phải kèm một sự thật khác:
+// 🔴 **BA bộ lọc CHẾT-THEO-NGƯỜI-GỌI**: cùng lời gọi đó truyền `""` cho `strCVDVPattern`,
+//   `strLoaiXePattern` và `strGhiChuPattern` ⇒ ba ô lọc này **không bao giờ chạy từ màn hiện có**
+//   (đúng lệ #466: "chết" là thuộc tính của TỪNG NGƯỜI GỌI, không phải của câu SQL).
+// ⚠️ `strLoaiXePattern` là ngoại lệ về CÁCH dựng: nó dùng `BuildClauseConditionSingle(…, "like", …)`
+//   ⇒ **tự cấp toán tử**, giá trị bind nguyên văn — khác hẳn năm cái kia. Ba lối dựng trong một hàm.
+// 🔴 Ô lọc **"còn nợ khách"** chỉ bật khi tham số bằng `Flag.Active` (**"1"**), và khi đó thêm
+//   `and t.SoLuongConNoKhach > 0` — điều kiện đặt trên **cột tính ở bảng tạm**, không phải cột gốc.
+//   MiniHTC chưa có cột đó ⇒ ánh xạ sang `QtyNeeded - QtyFulfilled > 0` và **nêu cờ**, không lặng lẽ đổi nghĩa.
+// ⚠️ `PartID`/`DealerCode` dùng `BuildClauseConditionList(…, "|")` ⇒ **danh sách IN**, mọi token là GIÁ TRỊ
+//   (không đọc toán tử) — người gọi truyền "= X" vào đây thì "=" thành một mã.
+app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, string? part, string? plate,
+    string? status, string? partCodes, string? dealerCodes, string? loaiXe, string? cvdv, string? ghiChu,
+    string? isConNoKhach) =>
 {
     var query = db.ServicePartOOs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode.Contains(part!.ToUpper()) || (x.PartName != null && x.PartName.Contains(part!)));
     if (!string.IsNullOrWhiteSpace(plate)) query = query.Where(x => x.PlateNo == plate);
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    // #491: hai ô danh sách IN (nguồn tách bằng "|", KHÔNG đọc toán tử).
+    if (!string.IsNullOrWhiteSpace(partCodes))
+    {
+        var codes = partCodes!.Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+        if (codes.Count > 0) query = query.Where(x => codes.Contains(x.PartCode));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodes))
+    {
+        var codes = dealerCodes!.Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+        if (codes.Count > 0) query = query.Where(x => x.DealerCode != null && codes.Contains(x.DealerCode));
+    }
+    // #491: ba ô mà màn hiện có của nguồn truyền rỗng ⇒ ở nguồn là CHẾT-theo-người-gọi; MiniHTC cho dùng thật.
+    if (!string.IsNullOrWhiteSpace(loaiXe)) query = query.Where(x => x.LoaiXe != null && x.LoaiXe.Contains(loaiXe!.Trim()));
+    if (!string.IsNullOrWhiteSpace(cvdv)) query = query.Where(x => x.CVDV != null && x.CVDV.Contains(cvdv!.Trim()));
+    if (!string.IsNullOrWhiteSpace(ghiChu)) query = query.Where(x => x.Note != null && x.Note.Contains(ghiChu!.Trim()));
+    // #491: "còn nợ khách" — nguồn chỉ bật khi tham số = "1" (Flag.Active).
+    var conNoKhachApplied = isConNoKhach == "1";
+    if (conNoKhachApplied) query = query.Where(x => x.QtyNeeded - x.QtyFulfilled > 0);
     var items = await query.OrderByDescending(x => x.Id).Take(500)
         .Select(x => new
         {
@@ -13817,7 +13859,18 @@ app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, stri
             x.LoaiXe, x.CVDV, x.DealerCode, x.NgayDatHang, x.NgayVeDuKien, x.NgayHenTra,
             createdAt = x.CreatedAt.ToString("yyyy-MM-dd")
         }).ToListAsync();
-    return Results.Ok(new { count = items.Count, openCount = items.Count(i => i.Status == "Open"), items });
+    return Results.Ok(new
+    {
+        count = items.Count, openCount = items.Count(i => i.Status == "Open"), items,
+        // ===== #491 =====
+        conNoKhachApplied,
+        conNoKhachMappedTo = "QtyNeeded - QtyFulfilled > 0",
+        conNoKhachSourceColumn = "SoLuongConNoKhach (cot tinh o bang tam cua nguon)",
+        patternParamsCarryOperator = true,      // GenLikeCondition2Percent tra "like %x%"
+        deadForCallerFilters = new[] { "CVDV", "LoaiXe", "GhiChu" },
+        listFiltersAreInNotOperator = new[] { "partCodes", "dealerCodes" },
+        whTwinEquivalent = true,
+    });
 }).RequireAuthorization();
 
 // Tạo phiếu nợ phụ tùng (SL nợ > 0).
