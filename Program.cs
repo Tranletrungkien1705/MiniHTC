@@ -22389,6 +22389,89 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
 //   nút này ghi dưới tên nút kia**. Tra log theo tên hàm sẽ lẫn hai nút vào nhau.
 // 📌 Bản `_GetAll_WH` (`WarrantyReport.cs:14329` — nằm cùng file, KHÔNG ở `WH.cs`): diff 24 dòng,
 //   **không dòng nào lệch nghiệp vụ** (`_dbDealer`→`_dbWH`, `Mst_Dealer` bỏ tiền tố). Không cần `scope`.
+// ===== 🔴 #409 Ô CHỌN ĐẠI LÝ LỌC THEO **NGÀY TẠO**, CÒN BÁO CÁO LỌC THEO **NGÀY DUYỆT** =====
+// TRACE (thân WS trước, lệ #405): `FrmWarrantyReportAcceptRpt.Init()` →
+//   `Ser_ROWarrantyReportHTCDealer_Get(deMonth.ToString("yyyy-MM"), bFlagWH)` (`…Serivce.cs:1528`)
+//   → WS `Ser_ROWarrantyReportHTCDealer_Get` (`WSCarSv.asmx.cs:20198`)
+//   → biz `Ser_ROWarrantyReportHTCDealer_Get` (`WarrantyReport.cs:18448`).
+//
+// 🔴 **BẤT ĐỐI XỨNG THẬT SỰ CỦA MÀN NÀY**: ô *Ngày duyệt từ* (`deMonth`) vừa nạp danh sách đại lý,
+//   vừa là mốc lọc báo cáo — nhưng **hai bên lọc trên HAI CỘT KHÁC NHAU**:
+//     · Nạp combo : `convert(char(7), td.**CreatedDate**, 120) = 'yyyy-MM'`
+//     · Báo cáo   : `convert(char(10), rwr.**ApprovedDate**, 120)` trong khoảng (#406)
+//   ⇒ Đề nghị **tạo tháng trước, duyệt tháng này**: đại lý đó **KHÔNG có trong danh sách chọn**,
+//     dù báo cáo của nó có dữ liệu. Người dùng không tìm thấy đại lý và kết luận "tháng này không có".
+//   ⇒ Ngược lại, đại lý **tạo tháng này nhưng chưa duyệt xong** vẫn hiện trong combo rồi cho ra
+//     báo cáo **rỗng**. Cả hai chiều đều im lặng.
+//   📌 Giữ 1:1 (lọc theo ngày TẠO) và trả kèm `dealersByApprovedDate` + `mismatch` để nhìn thấy lệch.
+//
+// ⚠️ **NGOẠI LỆ của lệ #401**: lần này toán tử **KHÔNG** nằm ở tầng service — form truyền chuỗi
+//   `yyyy-MM` **trần**, và chính **BIZ** ghép dấu bằng: `BuildClause(…, "=" + strMonthConditionList, …)`.
+//   ⇒ Vị trí toán tử **không có quy luật cố định**; phải đọc cả hai tầng, đừng suy từ hàm khác.
+// ⚠️ Dùng `with(nolock)` **viết thẳng**, không phải dấu `--//[mylock]` ⇒ chấp nhận đọc bẩn.
+// ⚠️ Tên hàm WH là `_GetWH` (**không** phải `_Get_WH`) — lại một quy ước đặt tên nữa trong cùng file.
+//   Diff hai thân: chỉ đổi CSDL, **không lệch nghiệp vụ** ⇒ không cần `scope`.
+app.MapGet("/api/report/warranty-accept/dealers", async (AppDbContext db, ITenantContext t,
+    string? month) =>
+{
+    // `WarrantyStatus in ('ACCE')` — chỉ đề nghị ĐÃ CHẤP THUẬN.
+    var accepted = await db.ServiceWarrantyClaims
+        .Where(x => x.OrgId == t.OrgId && x.Status == "Accepted")
+        .Select(x => new { x.DealerCode, x.CreatedAt, x.ApprovedDate })
+        .ToListAsync();
+
+    var m = (month ?? "").Trim();
+    // So CHUỖI `yyyy-MM` — đúng `convert(char(7), …, 120)` của nguồn.
+    var byCreated = accepted
+        .Where(x => m.Length == 0 || x.CreatedAt.ToString("yyyy-MM") == m)
+        .Select(x => x.DealerCode).Where(d => !string.IsNullOrWhiteSpace(d))
+        .Distinct().ToList();
+    // Chỉ để ĐỐI CHIẾU — không phải hành vi nguồn.
+    var byApproved = accepted
+        .Where(x => m.Length == 0
+            || (x.ApprovedDate != null && x.ApprovedDate.Value.ToString("yyyy-MM") == m))
+        .Select(x => x.DealerCode).Where(d => !string.IsNullOrWhiteSpace(d))
+        .Distinct().ToList();
+
+    var names = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync();
+    var nameOf = names.GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+
+    // `inner join Mst_Dealer` ⇒ mã không có trong danh mục đại lý thì BỊ LOẠI, không hiện lên combo.
+    var rows = byCreated.Where(d => nameOf.ContainsKey(d!))
+        .Select(d => new { dealerCode = d, dealerName = nameOf[d!] })
+        .OrderBy(x => x.dealerCode).ToList();
+    var notInMaster = byCreated.Where(d => !nameOf.ContainsKey(d!)).OrderBy(x => x).ToList();
+
+    var missingFromCombo = byApproved.Except(byCreated).OrderBy(x => x).ToList();
+    var comboButNoReport = byCreated.Except(byApproved).OrderBy(x => x).ToList();
+
+    return Results.Ok(new
+    {
+        month = m, count = rows.Count, rows,
+        filterColumnNote = "Danh sách này lọc theo NGÀY TẠO (CreatedDate), trong khi báo cáo lọc theo "
+            + "NGÀY DUYỆT (ApprovedDate) — hai cột khác nhau trên cùng một ô nhập.",
+        dealersByApprovedDate = byApproved.OrderBy(x => x),
+        missingFromCombo,
+        missingFromComboNote = missingFromCombo.Count > 0
+            ? "Các đại lý này CÓ đề nghị được duyệt trong tháng nhưng KHÔNG hiện trong ô chọn "
+              + "(đề nghị tạo từ tháng trước) ⇒ người dùng không chọn được, tưởng là không có dữ liệu."
+            : null,
+        comboButNoReport,
+        comboButNoReportNote = comboButNoReport.Count > 0
+            ? "Các đại lý này HIỆN trong ô chọn nhưng báo cáo sẽ RỖNG (tạo trong tháng, chưa duyệt xong)."
+            : null,
+        notInMaster,
+        notInMasterNote = notInMaster.Count > 0
+            ? "Có đề nghị mang mã đại lý KHÔNG nằm trong danh mục Mst_Dealer; inner join của nguồn loại "
+              + "chúng khỏi ô chọn ⇒ dữ liệu đó không ai xem được từ màn này."
+            : null,
+        operatorLocationNote = "Toán tử '=' do BIZ ghép (BuildClause(…, \"=\" + month, …)), KHÔNG do tầng "
+            + "service — ngược với các hàm khác cùng màn. Vị trí toán tử không có quy luật cố định.",
+        nolockNote = "Nguồn dùng with(nolock) viết thẳng (không phải dấu --//[mylock]) ⇒ chấp nhận đọc bẩn.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/warranty-accept/lines", async (AppDbContext db, ITenantContext t,
     string? dealer, string? from, string? to, decimal? vat) =>
 {
