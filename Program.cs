@@ -47809,6 +47809,83 @@ app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssi
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #530 TẠM DỪNG SỬA CHỮA — **GUARD VIẾT SAI TOÁN TỬ, VÀ HÀM KHÔNG GHI CỘT MANG TÊN NÓ** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:1541 Ser_AssignmentWork_UpdateFlagPause`.
+// Endpoint: `POST /api/serassignmentworks/{roNo}/pause`. **§12** thêm `SerAssignmentWork.WorkTypePause`.
+//
+// 🔴🔴 **GUARD DÙNG `&&` THAY VÌ `||` — HAI LẦN, Y HỆT NHAU**:
+//     `if (dt_Ser_AssignmentWork == null && dt_Ser_AssignmentWork.Rows.Count > 0) throw …_NotFoundRO;`
+//     `if (dt_Ser_RO == null && dt_Ser_RO.Rows.Count > 0) throw …_NotFoundRO;`
+//   Ý định rõ ràng là *"không có bản ghi thì báo lỗi"*, tức `== null || Rows.Count == 0`. Viết như trên thì:
+//     · bảng `null` ⇒ `&&` **đoản mạch**, vế hai không chạy ⇒ điều kiện **false** ⇒ **không throw**,
+//       và dòng ngay sau (`Rows[0][...]`) ném **NullReferenceException** — lỗi kỹ thuật, không phải lỗi
+//       nghiệp vụ mà người dùng hiểu được;
+//     · bảng rỗng (0 dòng) ⇒ điều kiện cũng **false** ⇒ vẫn rơi vào `Rows[0]` ⇒ **IndexOutOfRange**.
+//   ⇒ Hai mã lỗi `Ser_AssignmentWork_UpdateFlagPause_NotFoundRO` và `Ser_RO_UpdateFlagPause_NotFoundRO`
+//     **không bao giờ được ném ra**. Guard chết loại nặng nhất trong cụm này (họ #407).
+//   Port kiểm **đúng ý định** và trả đúng hai tên lỗi đó.
+// 🔴🔴 **HÀM TÊN `UpdateFlagPause` NHƯNG KHÔNG GHI `FlagPause` VÀO `Ser_AssignmentWork`**:
+//   trên bảng phân công chỉ ghi `WorkTypePause` · `LogLUDateTime` · `LogLUBy`.
+//   Cột `FlagPause` được ghi ở **bảng khác** — `Ser_RO` — và ghi bằng biến `strROPause` **ĐẢO NGƯỢC**:
+//     `bool bPause = StringEqual(strFlagPause, Flag.Active);` (Active = **"1"**)
+//     `string strROPause = bPause ? Flag.Inactive : Flag.Active;`
+//   kèm chú thích nguyên văn của nguồn: *"Bảng Ser_RO: FlagPause = 0 là Tạm dừng"*.
+//   ⇒ **Cùng tên cột `FlagPause`, hai bảng, hai quy ước ngược nhau**: gửi `"1"` (tạm dừng) thì
+//     `Ser_RO.FlagPause` nhận `"0"`. Port giữ đúng phép đảo + nêu cờ `flagPauseInvertedOnSerRo`.
+// 🔴 Guard trạng thái đọc được nguyên văn (#403): chỉ cho tạm dừng khi `Ser_RO.Status` là
+//   `Ser_RO_Stage.**Repaired** ("RPRD")` hoặc `**InGarage** ("INGA")`, ngược lại ném
+//   `Ser_RO_UpdateFlagPause_InvalidStatus`. (HẰNG ≠ GIÁ TRỊ: mở `Const.Main.cs:172` mới thấy mã bốn ký tự.)
+// ⚠️ `top 1 *` **không `ORDER BY`** trên cả hai bảng (như #529) ⇒ lệnh nhiều dòng phân công thì sửa dòng bất kỳ.
+// ⚠️ `LogLUDateTime = CUtils.StandardizeDate(DateTime.Now)` — `StandardizeDate` trả `yyyy-MM-dd` ⇒ **mất giờ**;
+//   cột nhật ký của thao tác tạm dừng chỉ còn **ngày**. Port ghi đủ giờ + cờ `sourceDropsTimeInLogColumn`.
+app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, AssignmentPauseDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    const string kFlagActive = "1";                 // TConst.Flag.Active
+    const string kFlagInactive = "0";               // TConst.Flag.Inactive
+    string[] kStatusAllowPause = { "RPRD", "INGA" };  // Ser_RO_Stage.Repaired / InGarage
+
+    var ro = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (ro is null) return Results.BadRequest(new { error = "Ser_RO_UpdateFlagPause_NotFoundRO", roNo });
+
+    var w = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (w is null)
+        return Results.BadRequest(new { error = "Ser_AssignmentWork_UpdateFlagPause_NotFoundRO", roNo });
+
+    if (!kStatusAllowPause.Contains(ro.Status))
+        return Results.BadRequest(new
+        {
+            error = "Ser_RO_UpdateFlagPause_InvalidStatus",
+            roId = ro.Id, roNo = ro.RONo, status = ro.Status, allowed = kStatusAllowPause,
+        });
+
+    // Bảng phân công: nguồn CHỈ ghi WorkTypePause + nhật ký (không ghi FlagPause).
+    w.WorkTypePause = dto.WorkTypePause;
+    w.LogLUDateTime = DateTime.Now;
+
+    // Ser_RO.FlagPause ĐẢO NGƯỢC: gửi "1" (tạm dừng) thì ghi "0".
+    var bPause = string.Equals(dto.FlagPause?.Trim(), kFlagActive, StringComparison.OrdinalIgnoreCase);
+    ro.FlagPause = bPause ? kFlagInactive : kFlagActive;
+    ro.ModifyDate = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        roNo = ro.RONo, assignmentId = w.Id,
+        flagPauseInput = dto.FlagPause, serRoFlagPauseStored = ro.FlagPause,
+        w.WorkTypePause,
+        flagPauseInvertedOnSerRo = "nguon: Ser_RO.FlagPause = 0 la Tam dung",
+        assignmentTableDoesNotStoreFlagPause = true,
+        sourceGuardUsesAndInsteadOfOr = "if (dt == null && dt.Rows.Count > 0) throw ... => khong bao gio nem, roi NRE/IndexOutOfRange",
+        deadErrorCodes = new[] { "Ser_AssignmentWork_UpdateFlagPause_NotFoundRO", "Ser_RO_UpdateFlagPause_NotFoundRO" },
+        sourceHasNoOrderBy = "top 1 * tren ca Ser_AssignmentWork lan Ser_RO",
+        sourceDropsTimeInLogColumn = "StandardizeDate(DateTime.Now) chi con yyyy-MM-dd",
+        statusAllowed = kStatusAllowPause,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49625,6 +49702,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record AssignmentPauseDto(string? FlagPause, string? WorkTypePause);   // #530
+
 record SerAssignmentWorkDto(string? RONo = null, string? ROID = null,
     DateTime? SCCPlanStartDTime = null, DateTime? SCCPlanFinishDTime = null, string? SCCCavityID = null,
     DateTime? SCDPlanStartDTime = null, DateTime? SCDPlanFinishDTime = null, string? SCDCavityID = null,

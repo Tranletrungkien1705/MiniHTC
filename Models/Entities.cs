@@ -5087,6 +5087,9 @@ public sealed class SerAssignmentWork
     public DateTime? SCKSCPlanStartDTime { get; set; }
     public DateTime? SCKSCPlanFinishDTime { get; set; }
     public string? SCKSCCavityID { get; set; }
+    /// <summary>#530 §12 Loại công việc lúc TẠM DỪNG (`WorkTypePause`) — cột **duy nhất** mà
+    /// `Ser_AssignmentWork_UpdateFlagPause` thực sự ghi vào bảng này.</summary>
+    public string? WorkTypePause { get; set; }
     // ===== #529 §12 MỐC THỰC TẾ theo bảy công đoạn (Ser_AssignmentWork.SC*Actual*DTime) =====
     public DateTime? SCCActualStartDTime { get; set; }
     public DateTime? SCCActualFinishDTime { get; set; }
