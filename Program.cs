@@ -14322,6 +14322,95 @@ app.MapGet("/api/carcolorspecs", async (
     });
 }).RequireAuthorization();
 
+// ===== #B94 XE ĐÃ PDI XONG, CHỜ NHẬP KHO — `HTMV_PDIStorageGet_New20181115` =====
+// Trace LIVE: WS → `_biz.HTMV_PDIStorageGet_New20181115` (`BizHTC.HTMV.cs:950`).
+//   3B đo thật, **khớp cả 2 máy**: start=950 md5 `30e7adb0646c3adfc88947de8cd3cc4d`.
+// 🔴 **HAI ĐIỀU KIỆN TRẠNG THÁI VIẾT CỨNG TRONG SQL, KHÔNG PHẢI THAM SỐ** (`:1049-1050`):
+//      `and ((scd.PDIDtlStatus     IN ('F')))`   — dòng PDI **đã hoàn tất**
+//      `and ((scd.PDIStorageStatus IN ('P')))`   — nhưng **CHƯA vào kho** (còn chờ)
+//    ⇒ Đây **chính là nghiệp vụ của màn**: "xe PDI xong, chờ nhập kho". Port bỏ hai điều kiện này
+//      là trả về **cả xe chưa PDI** — sai hẳn danh sách, không có lỗi nào báo.
+//    🔗 **Nối với #B81**: `ContractPackingListApproved` đặt `PDIStorageStatus = 'F'` cho mọi VIN của
+//      packing list ⇒ **duyệt packing list hợp đồng sẽ LOẠI xe khỏi danh sách này**. Hai màn ăn khớp
+//      qua đúng một cột.
+// 🔴 **`left join HTMV_PDIDtl` NHƯNG `where` lọc theo `scd.PDIDtlStatus`** ⇒ **inner join thực chất**:
+//    phiếu PDI **không có dòng nào** bị loại hẳn (cùng khuôn #B47/#B70/#B72).
+// 🔴 **`mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN as Color_Vn_Combined`** — nối chuỗi trong SQL
+//    Server: **một vế NULL ⇒ CẢ CHUỖI NULL**. Port dùng nội suy `$"{a}/{b}"` sẽ ra `"/Đen"` thay vì
+//    `null` — khác nguồn. Đã giữ đúng ngữ nghĩa NULL-lan-truyền.
+// 🔴 Ba `left join` làm giàu (`Car_VIN.ActualSpec`, `Mst_CarSpec.SpecDescription`, `Mst_CarColor`)
+//    là **left thật** — thiếu danh mục thì để trống, **không** loại dòng.
+// 🔴 **RBAC biến thể 2 — ca thứ 13**: `@strBUPatternOfUser` bind (`:1029`) nhưng **không** xuất hiện
+//    trong bất kỳ mệnh đề `where` nào (mọi `BuildClause` đều dùng `@p…`). ⇒ vô hiệu.
+app.MapGet("/api/pdi/storage-pending", async (
+    AppDbContext db, ITenantContext t,
+    string? pdiNo, string? pdiStatus, string? createdBy, DateTime? createdFrom, DateTime? createdTo,
+    string? vin, string? refNo, string? lcTemp, string? specCode, string? modelCode, string? colorCode) =>
+{
+    var heads = await db.HtmvPdis.Where(h => h.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(pdiNo)) heads = heads.Where(h => h.PDINo == pdiNo.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(pdiStatus)) heads = heads.Where(h => h.Status == pdiStatus.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(createdBy)) heads = heads.Where(h => h.CreatedBy == createdBy.Trim()).ToList();
+    if (createdFrom is not null) heads = heads.Where(h => h.CreatedAt >= createdFrom).ToList();
+    if (createdTo is not null) heads = heads.Where(h => h.CreatedAt <= createdTo).ToList();
+    var headById = heads.ToDictionary(h => h.Id);
+
+    // 🔴 HAI điều kiện trạng thái VIẾT CỨNG — nghiệp vụ của màn, không phải bộ lọc người dùng.
+    var dtls = await db.HtmvPdiDtls
+        .Where(d => d.OrgId == t.OrgId && d.PDIDtlStatus == "F" && d.PDIStorageStatus == "P")
+        .ToListAsync();
+    // `left join HTMV_PDIDtl` + `where scd.PDIDtlStatus…` ⇒ inner join thực chất.
+    dtls = dtls.Where(d => headById.ContainsKey(d.HtmvPdiId)).ToList();
+
+    if (!string.IsNullOrWhiteSpace(vin)) dtls = dtls.Where(d => d.VIN == vin.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(refNo)) dtls = dtls.Where(d => d.RefNo == refNo.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(lcTemp)) dtls = dtls.Where(d => d.LCTemp == lcTemp.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) dtls = dtls.Where(d => d.SpecCode == specCode.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(modelCode)) dtls = dtls.Where(d => d.ModelCode == modelCode.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(colorCode)) dtls = dtls.Where(d => d.ColorCode == colorCode.Trim().ToUpperInvariant()).ToList();
+
+    // Ba left join LÀM GIÀU — thiếu danh mục thì để trống, KHÔNG loại dòng.
+    var vins = dtls.Select(d => d.VIN).Distinct().ToList();
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.ActualSpec }).ToListAsync())
+        .GroupBy(c => c.VIN).ToDictionary(g => g.Key, g => g.First().ActualSpec);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtNameVN, c.ColorIntNameVN }).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
+
+    var items = dtls.OrderBy(d => d.VIN, StringComparer.Ordinal).Select(d =>
+    {
+        colors.TryGetValue((d.ModelCode ?? "", d.ColorCode ?? ""), out var mcc);
+        // 🔴 Nối chuỗi SQL Server: MỘT vế NULL ⇒ CẢ CHUỖI NULL.
+        string? colorCombined = (mcc?.ColorExtNameVN is null || mcc?.ColorIntNameVN is null)
+            ? null : mcc.ColorExtNameVN + "/" + mcc.ColorIntNameVN;
+        return new
+        {
+            scPDINo = headById[d.HtmvPdiId].PDINo,
+            scPDIStatus = headById[d.HtmvPdiId].Status,
+            scdVIN = d.VIN, scdRefNo = d.RefNo, scdLCTemp = d.LCTemp,
+            scdSpecCode = d.SpecCode, scdModelCode = d.ModelCode, scdColorCode = d.ColorCode,
+            scdEngineNo = d.EngineNo, scdProductionMonth = d.ProductionMonth,
+            scdPDIDtlStatus = d.PDIDtlStatus, scdPDIStorageStatus = d.PDIStorageStatus,
+            cvActualSpec = cars.TryGetValue(d.VIN, out var asp) ? asp : null,
+            mcsSpecDescription = specs.TryGetValue(d.SpecCode ?? "", out var sd) ? sd : null,
+            Color_Vn_Combined = colorCombined
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        hardCodedStatusNote = "HAI DIEU KIEN TRANG THAI VIET CUNG TRONG SQL, KHONG PHAI THAM SO: 'scd.PDIDtlStatus IN (F)' (dong PDI DA HOAN TAT) va 'scd.PDIStorageStatus IN (P)' (CHUA vao kho). Day CHINH LA nghiep vu cua man - 'xe PDI xong, cho nhap kho'. Port bo hai dieu kien nay la tra ve CA XE CHUA PDI, sai han danh sach ma khong co loi nao bao.",
+        linkToB81Note = "NOI VOI #B81: ContractPackingListApproved dat PDIStorageStatus = 'F' cho MOI VIN cua packing list => duyet packing list hop dong se LOAI xe khoi danh sach nay. Hai man an khop qua dung mot cot.",
+        joinShapeNote = "left join HTMV_PDIDtl NHUNG where loc theo scd.PDIDtlStatus => INNER JOIN THUC CHAT: phieu PDI khong co dong nao bi loai han (khuon #B47/#B70/#B72). Ba left join lam giau (Car_VIN.ActualSpec, Mst_CarSpec.SpecDescription, Mst_CarColor) la LEFT THAT - thieu danh muc thi de trong, KHONG loai dong.",
+        nullConcatNote = "Color_Vn_Combined = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN - noi chuoi SQL Server: MOT VE NULL => CA CHUOI NULL. Port dung noi suy $\"{a}/{b}\" se ra '/Den' thay vi null - KHAC nguon. Da giu dung ngu nghia NULL-lan-truyen.",
+        rbacHole = "LO HONG RBAC - bien the 2 (khai ma khong dung), ca thu 13: @strBUPatternOfUser bind (:1029) nhung KHONG xuat hien trong bat ky menh de where nao (moi BuildClause deu dung @p...). => VO HIEU."
+    });
+}).RequireAuthorization();
+
 // ===== #144: KẾ HOẠCH ĐẶT HÀNG GỬI NHÀ MÁY HTMV (Ord_OrderPlan_HTMV + Detail) =====
 // Nguồn: DMS40/zTemp.0.30.Order.cs (csproj 128) — _Create (9461) / _Update (10585). Chỉ có ở WS 64-bit.
 // ⛔ NỢ ghi rõ: `_Create` là JOB TỰ SINH — chỉ nhận `strFlagIsMonth` rồi TỰ TÍNH 8 loại số lượng
