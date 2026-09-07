@@ -14053,11 +14053,37 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
 //   `SENT` Chờ xem xét · `PEND` Chưa gửi · `CONF` Chờ duyệt · `ACCE` Chấp thuận B.H · `REJ` Không duyệt
 //   `REVERT` HTC Hoàn trả.  **KHÔNG có nhánh `else`** ⇒ mã lạ cho ra nhãn NULL (ô trống), không gộp.
 //   ⚠️ `PEND` nghĩa là **"Chưa gửi"**, KHÔNG phải "đang chờ xử lý" — dễ dịch ngược nghĩa.
-var warrantyClaimStatusNames = new Dictionary<string, string>
+// ===== 🔴 #394 HAI BỘ NHÃN cho CÙNG SÁU trạng thái bảo hành (`FrmWarrantyReportHTCApproved`) =====
+// Màn duyệt BCBH của HTC là một **hộp thoại**: nó KHÔNG gọi service nào, chỉ dựng bảng trạng thái
+// rồi trả về form cha qua `frmWarrantyReportHTCSeach.UpdateRowStatus(...)` — nên phần port được
+// của nó là **BẢNG MÃ + luật nhập liệu**, không phải một endpoint ghi.
+//
+// 🔴 Hằng trong `Constants.cs:294` là **NHÃN TIẾNG VIỆT**, không phải mã. Và có **TÁM** hằng cho
+//   **SÁU** trạng thái, vì hai trạng thái có **hai cách gọi khác nhau**:
+//     `VAULE_WARR_REJECT`     = *"Không chấp nhận B.H"*   ⟷ `VAULE_WARR_REJECTBiz` = *"Không duyệt"*
+//     `VAULE_WARR_REVERT`     = *"HTC hoàn trả Đại lý"*   ⟷ `VAULE_WARR_REVERTBiz` = *"HTC Hoàn trả"*
+//   ⇒ Bản đồ cũ của MiniHTC dùng nhãn **Biz** cho cả hai, nên **màn duyệt hiển thị sai chữ** so với
+//     nguồn. Không chọn một bên: giữ **CẢ HAI**, tách theo màn (cùng mẫu `…ByScreen` của #264).
+// ⚠️ Trong chính hộp thoại này, phần lớn guard nhập liệu **đã bị comment** — chỉ còn **một** guard sống
+//   (bắt buộc chọn dòng trước khi duyệt, `:904`). Đừng port các dòng đã comment.
+var warrantyClaimStatusNamesByScreen = new Dictionary<string, Dictionary<string, string>>
 {
-    ["Sent"] = "Chờ xem xét", ["Pending"] = "Chưa gửi", ["Confirmed"] = "Chờ duyệt",
-    ["Accepted"] = "Chấp thuận B.H", ["Rejected"] = "Không duyệt", ["Reverted"] = "HTC Hoàn trả",
+    // Bộ nhãn NGHIỆP VỤ (mặc định) — dùng ở danh sách/báo cáo.
+    ["biz"] = new()
+    {
+        ["Sent"] = "Chờ xem xét", ["Pending"] = "Chưa gửi", ["Confirmed"] = "Chờ duyệt",
+        ["Accepted"] = "Chấp thuận B.H", ["Rejected"] = "Không duyệt", ["Reverted"] = "HTC Hoàn trả",
+    },
+    // Bộ nhãn của MÀN DUYỆT (hộp thoại HTC) — hai ô cuối khác chữ.
+    ["approve"] = new()
+    {
+        ["Sent"] = "Chờ xem xét", ["Pending"] = "Chưa gửi", ["Confirmed"] = "Chờ duyệt",
+        ["Accepted"] = "Chấp thuận B.H",
+        ["Rejected"] = "Không chấp nhận B.H",
+        ["Reverted"] = "HTC hoàn trả Đại lý",
+    },
 };
+var warrantyClaimStatusNames = warrantyClaimStatusNamesByScreen["biz"];
 
 // ===== 🔴 #302 CHI TIẾT PHIẾU ĐỀ NGHỊ BẢO HÀNH — LUẬT ĐỌC của bản LIVE =====
 // TRACE TWIN: `Ser_ROWarrantyReport` có **BỐN** bản Get (`_GetOld` :12318 · bản trần :12605 ·
@@ -14450,6 +14476,23 @@ var rowPartTypeNames = new Dictionary<string, string>
     ["PTTT"] = "Phụ tùng thay thế",
     ["VTP"] = "Vật tư phụ",
 };
+
+// #394: trả bảng nhãn trạng thái theo MÀN. Mặc định `biz`; `?screen=approve` cho hộp thoại duyệt.
+app.MapGet("/api/warrantyclaims/statusnames", (string? screen) =>
+{
+    var key = string.IsNullOrWhiteSpace(screen) ? "biz" : screen!.Trim().ToLowerInvariant();
+    if (!warrantyClaimStatusNamesByScreen.TryGetValue(key, out var map))
+        return Results.BadRequest(new { error = "screen phải là biz | approve.", screen = key });
+    return Results.Ok(new
+    {
+        screen = key,
+        names = map.Select(kv => new { code = kv.Key, name = kv.Value }),
+        screens = warrantyClaimStatusNamesByScreen.Keys,
+        note = "Cùng SÁU trạng thái nhưng nguồn có TÁM hằng nhãn: Rejected và Reverted mỗi cái hai cách gọi "
+            + "(bản UI của màn duyệt vs bản nghiệp vụ). Giữ cả hai, tách theo màn.",
+        divergentCodes = new[] { "Rejected", "Reverted" },
+    });
+}).RequireAuthorization();
 
 app.MapGet("/api/warrantyclaims/rowparttypes", () => Results.Ok(new
 {
