@@ -25215,9 +25215,30 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   `Ser_InvReportCusDebitRpt_WH` 43→**36** · `Ser_InvReportPartTopVariationPrice_WH` 19→**12** ·
         //   `Ser_CampaignMarketing_Get_WH` 55→**63** · `SerROInvoiceBill_WH` 43→**52**.
         //   ⇒ Bản kho **THÊM hoặc BỚT hẳn khối SQL**, không chỉ đổi tên CSDL.
-        whTwinSweep = new { whFunctions = 91, pairedWithBase = 91, sqlIdentical = 64,
-            candidatesDiffering = 27, sameLineCountLikelyCosmetic = 10, differingLineCount = 17,
-            note = "27 la CAN TREN can soi, khong phai so da xac nhan khac luat." },
+        // ===== 🔴🔴 #468 ĐO LẠI HỌ `_WH`: #467 GHÉP SAI CẶP =====
+        // Sai ở đâu: `sweepwh.js` ghép `X_WH` với **tên trần `X`**. Nhưng bản MAIN đang chạy thường mang
+        //   hậu tố ngày, còn tên trần là **bản chết**. Ca lộ ra: `SerStockOutSearch_WH` bị báo "46→80";
+        //   thực tế WS gọi `SerStockOutSearch_New20180623`, và so đúng cặp thì **80/80 — GIỐNG HỆT**.
+        //   ⇒ Một phần "khác biệt" của #467 là **giả**, do so với bản chết.
+        // Công cụ mới `_audit/sweepwh2.js`: với mỗi `X_WH` lấy mọi ứng viên `X` và `X_New########`, **ưu tiên
+        //   bản được WebMethod gọi** (826 hàm biz có WS gọi), rồi mới so SQL đã chuẩn hoá.
+        // 📊 **91 cặp, ghép đủ 91 · GIỐNG HỆT 44 · KHÁC 47** (trong đó **37 lệch cả số dòng SQL**).
+        //   ⇒ Con số đúng **xấu hơn** #467 tưởng: chỉ `48%` bản kho trùng luật với bản chính.
+        //
+        // 🔴 HÌNH DẠNG CỦA SAI LỆCH — **bản `_WH` TỤT HẬU so với bản chính**, không phải khác thiết kế:
+        //   `Report_KPIGet_Real` 344→**232** · `Ser_ROWarrantyReport_Get` 77→**50** ·
+        //   `SerWarrantyAcceptRpt` 90→**73** · `Ser_ROWarrantyReportHTMV_Get` 99→**90** ·
+        //   `Ser_App_GetStatusList01` 46→**30** · `Ser_InvReportTotalStockOutRpt` 15→**5**.
+        //   Các bản chính đều là `_New2023…` ⇒ **đợt sửa 2023 KHÔNG được chép sang nhánh kho**.
+        //   ⇒ Màn "tra cả lịch sử / bản kho" đang trả số tính theo **bộ luật CŨ**. Đây là nợ hệ thống,
+        //     không phải nợ của một màn.
+        // ⚪ Hai ca đi NGƯỢC (bản chính gần như rỗng SQL, `_WH` mới là bản đầy đủ):
+        //   `Rpt_DMSSer_Chart_ThongKeBaoHanh` 2→**59** · `Rpt_DMSSer_Warranty_MainPart` 2→**25**
+        //   ⇒ bản chính là **vỏ bọc**, phải đọc tiếp mới thấy SQL (đúng cảnh báo "biz có thể chỉ là VỎ BỌC").
+        whTwinSweep = new { whFunctions = 91, pairedWithLiveMain = 91, sqlIdentical = 44,
+            differing = 47, differingLineCount = 37, sameLineCount = 10,
+            supersedes = "#467 (64 giong/27 khac) — do ghep _WH voi TEN TRAN (thuong la ban chet)",
+            note = "Ban _WH tut hau so voi ban chinh _New2023*; man tra theo kho dung bo luat CU." },
         proxyVsWebMethodSweep = new { proxyMethods = 728, webMethods = 732, matchedByName = 728,
             signatureMismatches = 0 },
         versionSuffixSweep = new { versionSuffixedFunctions = 264, reachable = 171, dead = 93,
