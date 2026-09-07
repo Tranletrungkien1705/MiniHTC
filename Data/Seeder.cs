@@ -974,6 +974,8 @@ public static class Seeder
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountSCSRoRepair\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountSCSRoWarranty\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountSPKLocal\" numeric",
+        "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountPDIRoRepair\" numeric",
+        "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountPDILocal\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountSPKRoRepair\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceProductivity\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceTechnicianQty\" numeric",

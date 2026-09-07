@@ -6015,6 +6015,8 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
         x.ServiceAmountSCSRoRepair,
         x.ServiceAmountSCSRoWarranty,
         x.ServiceAmountSPKLocal,
+        x.ServiceAmountPDIRoRepair,   // #336 §12
+        x.ServiceAmountPDILocal,   // #336 §12
         x.ServiceAmountSPKRoRepair,
         x.ServiceProductivity,
         x.ServiceTechnicianQty,
@@ -6136,10 +6138,23 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         .Where(r => r.OrgId == t.OrgId && r.Status == "Finished"
             && r.ActualDeliveryDate != null
             && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
-        .Select(r => new { r.Id, r.DealerCode }).ToListAsync();
+        .Select(r => new { r.Id, r.DealerCode, r.ActualDeliveryDate }).ToListAsync();
 
+    // #336: thêm Factor/Price/Vat để tính DOANH THU TIỀN CÔNG, ngoài phân loại để ĐẾM LƯỢT (#335).
     var items = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId)
-        .Select(i => new { i.RoId, i.ROType, i.ExpenseType }).ToListAsync();
+        .Select(i => new { i.RoId, i.ROType, i.ExpenseType, i.Factor, i.Price, i.Vat }).ToListAsync();
+
+    // ===== 🔴 #336 THAM SỐ ĐƠN GIÁ CÔNG — nguồn đọc `#tbl_Mst_Param` theo `ParamCode` =====
+    // `UnitPriceBDN` · `UnitPriceSCC` · `UnitPriceSCD` · `UnitPriceSCS` (đã có sẵn trong catalog
+    //   `DealerServiceOptCatalog` của MiniHTC).
+    // ⚠️ **BDD dùng tham số tên BDN**: loại công việc là `BDD` (Bảo Dưỡng) nhưng đơn giá tra bằng
+    //   `UnitPrice**BDN**` (Bảo Dưỡng Nhanh). Lệch tên CÓ THẬT trong nguồn — không phải gõ nhầm ở đây.
+    var prm = (await db.DealerServiceOptions.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.ParamCode).ToDictionary(g => g.Key, g => g.First().ParamValue);
+    decimal Prm(string code) => prm.TryGetValue(code, out var v)
+        && decimal.TryParse(v, out var d) ? d : 0m;
+    var upBDN = Prm("UnitPriceBDN"); var upSCC = Prm("UnitPriceSCC");
+    var upSCD = Prm("UnitPriceSCD"); var upSCS = Prm("UnitPriceSCS");
 
     var created = 0;
     foreach (var d in dealers)
@@ -6159,9 +6174,57 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
                 && (exp == null || i.ExpenseType == exp))
             .Select(i => i.RoId).Distinct().Count();
 
+        // ===== 🔴 #336 DOANH THU TIỀN CÔNG theo cặp loại×nguồn-tiền =====
+        //   `SUM(isnull(sri.Factor,0) * isnull(sri.Price,0) * (1 + (sri.VAT * 0.01)))`
+        //   ⇒ **ĐÃ GỒM VAT**; `Factor` là hệ số giờ công. Không có `distinct`: tính TỪNG DÒNG dịch vụ
+        //     (khác nhóm ĐẾM ở #335 vốn `distinct` theo lệnh) — hai nhóm chỉ tiêu, hai đơn vị.
+        decimal A(string type, string exp) => items
+            .Where(i => ro.Contains(i.RoId) && i.ROType == type && i.ExpenseType == exp)
+            .Sum(i => i.Factor * i.Price * (1m + i.Vat * 0.01m));
+
+        var aBDD = A("BDD", "ROREPAIR") + A("BDD", "LOCAL");
+        var aSCC = A("SCC", "ROREPAIR") + A("SCC", "ROWARRANTY") + A("SCC", "ROINSURANCE") + A("SCC", "LOCAL");
+        var aSCD = A("SCD", "ROREPAIR") + A("SCD", "ROWARRANTY") + A("SCD", "ROINSURANCE") + A("SCD", "LOCAL");
+        var aSCS = A("SCS", "ROREPAIR") + A("SCS", "ROWARRANTY") + A("SCS", "ROINSURANCE") + A("SCS", "LOCAL");
+
+        // ===== 🔴 #336 GIỜ CÔNG = DOANH THU ÷ ĐƠN GIÁ CÔNG (không phải giờ bấm máy) =====
+        //   `case when UnitPriceX = 0 then 0 else Round(round(<doanh thu>, 0) / UnitPriceX, 1) end`
+        //   ⚠️ Làm tròn **HAI BƯỚC**: doanh thu về 0 số lẻ TRƯỚC khi chia, thương về 1 số lẻ.
+        //   ⚠️ Đơn giá = 0 ⇒ trả 0, KHÔNG chia (guard chia-cho-không của nguồn).
+        decimal WH(decimal amount, decimal unitPrice) => unitPrice == 0m ? 0m
+            : Math.Round(Math.Round(amount, 0, MidpointRounding.AwayFromZero) / unitPrice, 1,
+                MidpointRounding.AwayFromZero);
+        var whBDN = WH(aBDD, upBDN); var whSCC = WH(aSCC, upSCC);
+        var whSCD = WH(aSCD, upSCD); var whSCS = WH(aSCS, upSCS);
+
+        // ===== 🔴 #336 SỐ NGÀY LÀM VIỆC — chú thích nguồn MÂU THUẪN với code =====
+        //   Chú thích: *"Bằng tổng số ngày **tạo RO** trong tháng"*
+        //   Code:      `group by t.DealerCode, t.**ActualDeliveryFormatDate**` rồi đếm nhóm
+        //   ⇒ thực chất là **số ngày CÓ GIAO XE** phân biệt, KHÔNG phải ngày tạo lệnh.
+        //     Port theo **CODE** (lệ: nguồn sự thật là câu lệnh đang chạy, không phải chú thích).
+        var workDayQty = roIds.Where(r => r.DealerCode == d && r.ActualDeliveryDate != null)
+            .Select(r => r.ActualDeliveryDate!.Value.Date).Distinct().Count();
+
         db.ReportKpis.Add(new ReportKpi
         {
             OrgId = t.OrgId, DealerCode = d, DateReport = dto.DateReport,
+
+            // #336 doanh thu tiền công — 18 cặp, đúng bộ mà `Report_KPICreateX_New20221101` ghi.
+            ServiceAmountBDDRoRepair = A("BDD", "ROREPAIR"), ServiceAmountBDDLocal = A("BDD", "LOCAL"),
+            ServiceAmountSCCRoRepair = A("SCC", "ROREPAIR"), ServiceAmountSCCRoWarranty = A("SCC", "ROWARRANTY"),
+            ServiceAmountSCCRoInsurance = A("SCC", "ROINSURANCE"), ServiceAmountSCCLocal = A("SCC", "LOCAL"),
+            ServiceAmountSCDRoRepair = A("SCD", "ROREPAIR"), ServiceAmountSCDRoWarranty = A("SCD", "ROWARRANTY"),
+            ServiceAmountSCDRoInsurance = A("SCD", "ROINSURANCE"), ServiceAmountSCDLocal = A("SCD", "LOCAL"),
+            ServiceAmountSCSRoRepair = A("SCS", "ROREPAIR"), ServiceAmountSCSRoWarranty = A("SCS", "ROWARRANTY"),
+            ServiceAmountSCSRoInsurance = A("SCS", "ROINSURANCE"), ServiceAmountSCSLocal = A("SCS", "LOCAL"),
+            ServiceAmountSPKRoRepair = A("SPK", "ROREPAIR"), ServiceAmountSPKLocal = A("SPK", "LOCAL"),
+            ServiceAmountPDIRoRepair = A("PDI", "ROREPAIR"), ServiceAmountPDILocal = A("PDI", "LOCAL"),
+
+            // #336 giờ công quy từ doanh thu + tổng giờ công có tính phí (= tổng 4 nhóm).
+            WorkHourBDNQty = whBDN, WorkHourSCCQty = whSCC,
+            WorkHourSCDQty = whSCD, WorkHourSCSQty = whSCS,
+            WorkHourFeeQty = whBDN + whSCC + whSCD + whSCS,
+            WorkDayQty = workDayQty,
             Status = "F",                       // nguồn đặt Finished ngay lúc tạo
             CreatedBy = dto.CreatedBy,
 
@@ -6201,9 +6264,21 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         //   – doanh thu tiền công `ServiceAmount*` (SUM Factor×Price×(1+VAT/100) theo 18 cặp)
         //   – giờ công `WorkHour*` (= doanh thu ÷ tham số đơn giá `UnitPrice{BDN,SCC,SCD,SCS}`)
         //   – các tỉ lệ /khoang /CVDV /ngày, doanh thu phụ tùng, lợi nhuận gộp
-        computedFigures = "counts-only",
-        computedGroups = new[] { "CountCarService", "Count<Loại>", "Count<Loại><NguồnTiền>" },
-        pendingGroups = new[] { "ServiceAmount*", "WorkHour*", "PerCavity/PerAdviser ratios", "PartAmount*", "ProfitRate*" },
+        computedFigures = "counts+amounts+feehours",
+        computedGroups = new[]
+        {
+            "CountCarService", "Count<Loại>", "Count<Loại><NguồnTiền>",           // #335
+            "ServiceAmount<Loại><NguồnTiền> (18 cặp)",                            // #336
+            "WorkHour{BDN,SCC,SCD,SCS}Qty", "WorkHourFeeQty", "WorkDayQty",       // #336
+        },
+        // Còn lại — vẫn CHƯA port, cần dữ liệu MiniHTC hiện chưa có:
+        //   `WorkHourQty` cần **danh mục KTV theo loại** (`Ser_Engineer.IsEngineer` ∈ BDN/SCC/KTVD/KTVS);
+        //   `WorkHourActualQty` cần **phút sửa chữa thực tế từng lệnh** (trừ thời gian tạm dừng);
+        //   `PartAmount*` cần dòng phụ tùng theo nguồn tiền; các tỉ lệ /khoang /CVDV /ngày ăn theo hai cái trên.
+        pendingGroups = new[] { "WorkHourQty", "WorkHourActualQty", "WorkHourPerCarRO", "PartAmount*", "PerCavity/PerAdviser ratios", "ProfitRate*" },
+        unitPrices = new { upBDN, upSCC, upSCD, upSCS },
+        // 🔴 Đơn giá = 0 ⇒ mọi giờ công của nhóm đó bằng 0 (guard của nguồn), KHÔNG phải lỗi tính.
+        unitPriceMissing = new[] { upBDN, upSCC, upSCD, upSCS }.Count(v => v == 0m),
         // 🔴 Nguồn ĐÓNG CỨNG 0 cho các chỉ tiêu tách nội bộ: `, 0 CountSCCLocal_SCL` và
         //   `, 0 CountSCCLocal_Khac` (lặp cho BDD/SCD/SCS) ⇒ "số lượt sửa chữa lại" và "khác
         //   (PDI, xe lưu kho, xe lái thử)" **luôn bằng 0 trong MỌI báo cáo**, không phải do thiếu dữ liệu.
@@ -6302,6 +6377,8 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         ServiceAmountSCSRoRepair = dto.ServiceAmountSCSRoRepair,
         ServiceAmountSCSRoWarranty = dto.ServiceAmountSCSRoWarranty,
         ServiceAmountSPKLocal = dto.ServiceAmountSPKLocal,
+        ServiceAmountPDIRoRepair = dto.ServiceAmountPDIRoRepair,
+        ServiceAmountPDILocal = dto.ServiceAmountPDILocal,
         ServiceAmountSPKRoRepair = dto.ServiceAmountSPKRoRepair,
         ServiceProductivity = dto.ServiceProductivity,
         ServiceTechnicianQty = dto.ServiceTechnicianQty,
@@ -38248,7 +38325,8 @@ record ReportKpiDto(
     decimal? ServiceAmountBDDRoRepair = null, decimal? ServiceAmountSCCLocal = null, decimal? ServiceAmountSCCRoInsurance = null, decimal? ServiceAmountSCCRoRepair = null,
     decimal? ServiceAmountSCCRoWarranty = null, decimal? ServiceAmountSCDLocal = null, decimal? ServiceAmountSCDRoInsurance = null, decimal? ServiceAmountSCDRoRepair = null,
     decimal? ServiceAmountSCDRoWarranty = null, decimal? ServiceAmountSCSLocal = null, decimal? ServiceAmountSCSRoInsurance = null, decimal? ServiceAmountSCSRoRepair = null,
-    decimal? ServiceAmountSCSRoWarranty = null, decimal? ServiceAmountSPKLocal = null, decimal? ServiceAmountSPKRoRepair = null, decimal? ServiceProductivity = null,
+    decimal? ServiceAmountSCSRoWarranty = null, decimal? ServiceAmountSPKLocal = null,
+    decimal? ServiceAmountPDIRoRepair = null, decimal? ServiceAmountPDILocal = null, decimal? ServiceAmountSPKRoRepair = null, decimal? ServiceProductivity = null,
     decimal? ServiceTechnicianQty = null, decimal? ShellAmountOut = null, string? SparePartsStaff = null, string? StaffOrther = null,
     string? Status = null, decimal? UnitPriceBDN = null, decimal? UnitPriceSCC = null, decimal? UnitPriceSCD = null,
     decimal? UnitPriceSCS = null, decimal? WorkDayQty = null, decimal? WorkHourActualQty = null, decimal? WorkHourBDNQty = null,

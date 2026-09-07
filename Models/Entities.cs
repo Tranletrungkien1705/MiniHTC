@@ -7312,6 +7312,9 @@ public sealed class ReportKpi
     public decimal? ServiceAmountSCSRoRepair { get; set; }
     public decimal? ServiceAmountSCSRoWarranty { get; set; }
     public decimal? ServiceAmountSPKLocal { get; set; }
+    // #336: hai cot doanh thu tien cong PDI — cung nhom thieu voi 3 cot CountPDI* cua #335.
+    public decimal? ServiceAmountPDIRoRepair { get; set; }
+    public decimal? ServiceAmountPDILocal { get; set; }
     public decimal? ServiceAmountSPKRoRepair { get; set; }
     public decimal? ServiceProductivity { get; set; }
     public decimal? ServiceTechnicianQty { get; set; }
