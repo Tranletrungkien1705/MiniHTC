@@ -45029,6 +45029,109 @@ app.MapGet("/api/reports/ro-variance-cost", async (AppDbContext db, ITenantConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #489 THỐNG KÊ KHÁCH ĐÃ SỬA CHỮA — `Ser_Count_Customer_OnlyHTC` (`Customer.cs:17780`) =====
+// ⚪ Cặp `_WH` (`WH.cs:18586`) khác **đúng hai dòng**, và chỉ là **khoảng trắng** trong lời gọi `BuildClause`
+//   ⇒ tương đương. Đóng thêm một ca của #484 (**còn 13**).
+// ⚠️ **TÊN NÓI DỐI**: hàm tên `Count_` nhưng **không đếm** — nó trả **danh sách dòng** khách + xe + lệnh.
+//
+// 🔴 **BA `left join` ĐỀU CHẾT** (luật #414 — đây là ca sách giáo khoa, cả ba lý do cùng xuất hiện):
+//   · `left join ser_ro ro` … rồi WHERE có `and ro.ROID is not null` ⇒ **giết thẳng** vế LEFT.
+//   · `left join ser_Customer cus on car.cusid = cus.cusid **and ro.DealerCode = cus.DealerCode**`
+//     ⇒ điều kiện nối lấy cột của **bảng LEFT khác** (`ro`) ⇒ chết theo.
+//   · `left join ser_mst_Model mdl … **and ro.DealerCode = mdl.DealerCode**` ⇒ cùng lý do.
+//   · và `join ser_mst_TradeMark tm … and ro.DealerCode = tm.DealerCode` là **INNER** ⇒ ép nốt `ro` thành INNER.
+//   ⇒ Thực chất **bốn bảng đều INNER**: xe chưa có lệnh, hoặc thiếu khách/model/hãng trong danh mục,
+//     đều **biến mất**. Port giữ đúng hành vi và **đếm** `droppedByRequiredJoins`.
+//
+// ⚪ KIỂM TRA ÂM TÍNH (#415) — **ngược với phần lớn báo cáo khác**: mốc ngày ở đây viết bằng
+//   `datediff(day, convert(datetime, "@FromDate", 20), ro.CheckInDate) >= 0` và đối xứng cho `@ToDate`
+//   ⇒ so **theo NGÀY**, nên **KHÔNG mất ngày cuối**. Ghi lại để lượt sau khỏi vá nhầm.
+// ⚠️ **BỘ LỌC TRÊN BIỂU THỨC GHÉP**, không phải trên cột:
+//   `BuildClause("and", "tm.TradeMarkName + ' - ' + mdl.modelName", strModelConditionList, …)`
+//   ⇒ người gọi phải truyền **đúng chuỗi đã ghép** ("Hyundai - Accent"), không phải mã model.
+// ⚠️ Phạm vi đại lý dùng `BuildClauseConditionSingle(…, "like", …)` ⇒ là **mẫu LIKE** (BU pattern),
+//   giá trị bind **nguyên văn** ⇒ người gọi phải tự thêm `%`.
+// ⚠️ Điện thoại: `Replace(isnull(cus.tel, cus.mobile), " ", "")` — **ưu tiên bàn, thiếu mới lấy di động**,
+//   và **bỏ hết khoảng trắng**; biển số cũng bị bỏ khoảng trắng. Giữ đúng.
+app.MapGet("/api/reports/customer-serviced", async (AppDbContext db, ITenantContext t,
+    string? dealerPattern, DateTime? fromDate, DateTime? toDate,
+    string? vin, string? plateNo, string? tradeMarkModel) =>
+{
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date;            // so theo NGÀY — đúng nguồn, không cần 23:59:59
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerPattern))
+    {
+        // LIKE nguyên văn của nguồn: người gọi tự đưa % vào.
+        var pat = dealerPattern!.Trim();
+        var like = new System.Text.RegularExpressions.Regex(
+            "^" + System.Text.RegularExpressions.Regex.Escape(pat).Replace("%", ".*") + "$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        cars = cars.Where(c => c.DealerCode != null && like.IsMatch(c.DealerCode)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(plateNo))
+        cars = cars.Where(c => c.PlateNo != null && c.PlateNo.Contains(plateNo!.Trim())).ToList();
+    if (!string.IsNullOrWhiteSpace(vin))
+        cars = cars.Where(c => c.FrameNo.Contains(vin!.Trim())).ToList();
+
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId
+            && (r.Status == "PAID" || r.Status == "FNS")
+            && r.CheckInDate != null).ToListAsync();
+    ros = ros.Where(r => r.CheckInDate!.Value.Date >= from && r.CheckInDate!.Value.Date <= to).ToList();
+
+    var custs = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var cusByKey = custs.Where(x => x.DealerCode != null)
+        .GroupBy(x => x.CusCode + "|" + x.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var mdlByKey = models.Where(x => x.DealerCode != null)
+        .GroupBy(x => x.ModelCode + "|" + x.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var marks = await db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var tmByCode = marks.GroupBy(x => x.TradeMarkCode).ToDictionary(g => g.Key, g => g.First());
+
+    var carById = cars.Where(c => c.CarID != null).GroupBy(c => c.CarID!).ToDictionary(g => g.Key, g => g.First());
+    var beforeJoins = 0; var rows = new List<object>();
+    foreach (var r in ros)
+    {
+        if (r.CarID == null || !carById.TryGetValue(r.CarID, out var car)) continue;
+        if (car.DealerCode != r.DealerCode) continue;      // nguồn nối car.DealerCode = ro.DealerCode
+        beforeJoins++;
+        // Ba bảng còn lại đều bị ép INNER (xem ghi chú) — thiếu bất kỳ cái nào là MẤT dòng.
+        if (car.CusID == null || r.DealerCode == null) continue;
+        if (!cusByKey.TryGetValue(car.CusID + "|" + r.DealerCode, out var cus)) continue;
+        if (car.ModelCode == null || !mdlByKey.TryGetValue(car.ModelCode + "|" + r.DealerCode, out var mdl)) continue;
+        if (car.TradeMark == null || !tmByCode.TryGetValue(car.TradeMark, out var tm)) continue;
+
+        var phone = (cus.Tel ?? cus.Mobile ?? "").Replace(" ", "");
+        var tmName = tm.TradeMarkName ?? "";
+        var combo = tmName + " - " + (mdl.ModelName ?? "");
+        if (!string.IsNullOrWhiteSpace(tradeMarkModel) && combo != tradeMarkModel!.Trim()) continue;
+
+        rows.Add(new
+        {
+            cus.CusName, CusId = cus.CusCode, cus.Address, phone,
+            car.CarID, PlateNo = (car.PlateNo ?? "").Replace(" ", ""), car.FrameNo,
+            TradeMarkName = tmName, TradeMarkNameModel = combo,
+            RONO = "LS-" + r.RONo, r.CheckInDate, r.CusRequest, r.FinishedDate,
+        });
+    }
+    var droppedByRequiredJoins = beforeJoins - rows.Count;
+
+    return Results.Ok(new
+    {
+        from = from.ToString("yyyy-MM-dd"), to = to.ToString("yyyy-MM-dd"),
+        count = rows.Count, items = rows,
+        droppedByRequiredJoins,
+        allLeftJoinsAreDeadInSource = true,
+        dateComparedByDayNoLastDayLoss = true,
+        modelFilterIsConcatenatedExpression = true,
+        dealerScopeIsLikePattern = true,
+        functionNameSaysCountButReturnsRows = true,
+        whTwinEquivalent = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
