@@ -46217,6 +46217,42 @@ app.MapGet("/api/reports/ro-warranty-htmv", async (AppDbContext db, ITenantConte
 
     var svc = await db.WarrantyClaimServiceItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId))
         .ToListAsync();
+
+    // ===== 🔴 #510 TRẢ NỢ #502 — SỐ ĐỀ NGHỊ BẢO HÀNH PHÍA HTC (`HTCROWNo`) =====
+    // Nguồn SQL viết `(select dbo.ROWarrantyGetHTCWRID(srr.ROWID))` — hàm vô hướng **chỉ có trong DB**,
+    //   grep cả **hai máy** đều **không có** `CREATE FUNCTION` (chỉ toàn chỗ gọi). Nhưng nguồn **CÓ**
+    //   một bản dựng lại bằng SQL thuần: macro `SqlTemplate_Ser_ROWarrantyReport.
+    //   zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE("ACCE")` (`BizCarSv.zSqlTemplate.Inv.cs:512`),
+    //   dùng ở 4 chỗ trong `WarrantyReport.cs`/`WH.cs`. ⇒ Port theo **macro** (đọc được), không đoán hàm DB.
+    // 📐 Công thức: `DealerCode + '-' + right(Year,2) + pad2(Month) + '-' + pad3(Idx)`
+    //   với `Idx = Row_Number() over (partition by DealerCode, MonthROW, YearROW order by ROWID asc)`.
+    // 🔴 **SỐ NÀY KHÔNG ĐƯỢC LƯU — TÍNH LẠI MỖI LẦN ĐỌC**, và chỉ đánh số các phiếu có
+    //   `WarrantyStatus = 'ACCE'` (hằng **literal "ACCE"** truyền vào ở cả 4 chỗ gọi).
+    //   ⇒ Một phiếu cũ trong cùng đại lý/tháng **đổi trạng thái** là **mọi phiếu sau nó ĐỔI SỐ**.
+    //     Số "định danh" mà **không ổn định theo thời gian** — in ra giấy hôm nay, tra lại tháng sau ra số khác.
+    // 🔴 `REPLICATE('0', 3 - LEN(HTCROIdx))`: tới phiếu thứ **1000** của một đại lý trong một tháng,
+    //   `3 - LEN` = **âm** ⇒ `REPLICATE` trả **NULL** ⇒ phép nối chuỗi cho **HTCROWNo = NULL** (không lỗi).
+    //   Port **không tái hiện NULL**: vượt 999 thì giữ nguyên số không đệm, và trả cờ đếm.
+    // ⚠️ Phiếu **không phải ACCE** không có trong bảng đánh số ⇒ `left join` cuối cho `HTCROWNo = null`.
+    //   Đây là **đúng nguồn**, không phải thiếu dữ liệu.
+    // ⚠️ Macro đọc `#Ser_ROWarrantyReport t with(nolock)` — đọc bẩn, và viết `with(nolock)` **thẳng**
+    //   thay vì dấu `--//[mylock]` như quy ước phần còn lại của file.
+    const string kHtcRowNoStatus = "ACCE";      // hằng literal của nguồn, chép nguyên văn
+    var acce = await db.ServiceWarrantyClaims
+        .Where(x => x.OrgId == t.OrgId && x.Status == kHtcRowNoStatus && x.DealerCode != null)
+        .Select(x => new { x.Id, x.DealerCode, x.CreatedAt }).ToListAsync();
+    var htcRowNo = new Dictionary<long, string>();
+    var overflow999 = 0;
+    foreach (var g in acce.GroupBy(x => new { x.DealerCode, x.CreatedAt.Year, x.CreatedAt.Month }))
+    {
+        var idx = 0;
+        foreach (var r in g.OrderBy(x => x.Id))
+        {
+            idx++;
+            if (idx > 999) overflow999++;                    // nguồn cho NULL ở đây; ta giữ số
+            htcRowNo[r.Id] = $"{g.Key.DealerCode}-{g.Key.Year % 100:00}{g.Key.Month:00}-{idx:000}";
+        }
+    }
     var prt = await db.WarrantyClaimPartItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId))
         .ToListAsync();
     // VAT: dòng ĐANG CHẠY của nguồn (comment `(1+1/VAT)` là công thức sai, không port).
@@ -46238,7 +46274,7 @@ app.MapGet("/api/reports/ro-warranty-htmv", async (AppDbContext db, ITenantConte
         ServicePrice = svc.Where(i => i.ClaimId == h.Id).Sum(AmtS),
         PartPrice = prt.Where(i => i.ClaimId == h.Id).Sum(AmtP),
         TotalAmount = svc.Where(i => i.ClaimId == h.Id).Sum(AmtS) + prt.Where(i => i.ClaimId == h.Id).Sum(AmtP),
-        HTCROWNo = (string?)null,        // cần dbo.ROWarrantyGetHTCWRID — nợ #502
+        HTCROWNo = htcRowNo.TryGetValue(h.Id, out var hrn) ? hrn : null,   // #510 dựng lại từ macro nguồn
         StoreDate = (DateTime?)null,     // chỉ có khi làm giàu được từ DMS Sales
         serviceItems = svc.Where(i => i.ClaimId == h.Id)
             .Select(i => new { i.Id, i.SerID, i.SerCode, i.SerName, i.Factor, i.Price, i.VAT,
@@ -46257,7 +46293,12 @@ app.MapGet("/api/reports/ro-warranty-htmv", async (AppDbContext db, ITenantConte
         hardcodedCutoffDate = "2017-04-01",
         enrichmentFailureChangesRowSet = true,
         distinctAfterFilterInSource = true,
-        htcRowNoNeedsSqlScalarFn = "dbo.ROWarrantyGetHTCWRID (#502)",
+        // #510: nợ #502 đã trả — dựng lại bằng macro nguồn, không cần hàm vô hướng DB.
+        htcRowNoRebuiltFromMacro = "zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE(\"ACCE\")",
+        htcRowNoRecomputedEveryRead = true,
+        htcRowNoOnlyForStatusACCE = true,
+        htcRowNoOverflowPast999 = overflow999,
+        htcRowNoNullInSourcePast999 = true,
         hmcSideEffectNotPorted = true,
         vatFormulaFromActiveLineNotComment = true,
     });
