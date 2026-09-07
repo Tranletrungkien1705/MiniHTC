@@ -3585,6 +3585,111 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    chất**: xe của đại lý **chưa gán vùng** (hoặc vùng đã ngưng) **bị LOẠI khỏi báo cáo**.
 //    Cùng khuôn đã gặp ở #B47/#B50 (`left join` + `is not null` ở `where`).
 // ✅ `@strZoneCode` dùng dạng **param** nhưng hàm này **có** dòng coalesce (`:11670`) — an toàn (#B58).
+
+// ===== #B71 XE HTC ĐÃ XUẤT — BÁN LẺ TỚI KHÁCH TIÊU DÙNG — `RptSellCustomerDealer_ForSale_Mst` =====
+// (`FrmFiveDealerSalesPivot`.) Trace LIVE: `ReportService.Report5DealerSalesDetail` (`:1728`) → WS
+//   `RptSellCustomerDealer_ForSale_Mst` (`WSHTC.asmx.cs:85815`) →
+//   **`_biz.RptSellCustomerDealer_ForSale_Mst_New2021601`** (`DataWH/BizHTC.zTemp.cs:65270`).
+//   ⚠️ **Hậu tố có vẻ THIẾU MỘT SỐ**: `_New2021601` (7 chữ số) — các bản khác dùng 8 (`_New20210601`).
+//      Giữ nguyên khi tra cứu; định vị bằng `_audit/md5_3b.sh` (thử 3 file, chỉ `BizHTC.zTemp.cs` khớp).
+// 🔴 **Khái niệm mới: "DEAL GIẢ"** — `left join Dls_DealDetail dlsdd … and dlsdd.DealNoPrevious is not
+//    null` kèm chú thích nguyên văn *"Lọc Bỏ qua những Deal_Giả"* (`:65381`).
+//    ⚠️ Điều kiện nằm **TRONG `on` của LEFT join** ⇒ chỉ **bỏ ghép** deal giả, **KHÔNG loại xe** khỏi
+//    báo cáo. Port thành `where` sẽ **mất hẳn** những xe chưa bán. (Đối chiếu: cùng khuôn nhưng ngược
+//    kết quả với #B47/#B50/#B70 nơi `left join` + điều kiện ở `where` = inner join thực chất.)
+// 🔴 **Bán lẻ**: `left join Dls_Deal … and dlsd.DealerCodeBuyer is null` — *"Lọc Bán Lẻ Khách Tiêu dùng"*
+//    (cũng trong `on`, không phải `where`).
+// 🔴 **Ba điều kiện `where`** (`:65385-65388`):
+//    · `cdod.ConfirmStatus in ('A','F')`
+//    · `cdod.DeliveryOutDate <= @strTDate_To` — *"Ngày Xuất xe HTC <= @strTDate_To"*
+//    · **`(dlsdd.DeliveryDate is null OR dlsdd.DeliveryDate >= @strTDate_From)`** —
+//      🔴 vế `is null` **được chấp nhận** ⇒ báo cáo gồm **cả xe CHƯA bán**; bỏ vế này là mất nửa dữ liệu.
+// ✅ `@strBUPatternOfUser` **dùng thật** (`where … and (md.BUCode like @strBUPatternOfUser)`, `:65368`).
+app.MapGet("/api/reports/dealer-retail-sales-detail", async (
+    AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? buPattern) =>
+{
+    if (toDate is null) return Results.BadRequest(new { error = "Cần ngày chốt (toDate)." });
+    var dTo = toDate.Value; var dFrom = fromDate;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `#tbl_Mst_Dealer` — lọc BU ngay ở `where` (lọc thật).
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    var scopeList = dealers.Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    // `#tbl_F1`: LXX đã xuất tới mốc.
+    var outed = await (from d in db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId
+                            && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                            && x.DeliveryOutDate != null && x.DeliveryOutDate <= dTo)
+                       join h in db.DeliveryOrders.Where(x => x.OrgId == t.OrgId) on d.DoId equals h.Id
+                       select new { Key = d.CarId ?? d.Vin, d.Vin, h.DoNo, h.DealerCode, d.DeliveryOutDate })
+                      .ToListAsync();
+    var beforeScope = outed.Count;
+    outed = outed.Where(x => x.DealerCode != null && scope.Contains(x.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - outed.Count;
+
+    // `left join Dls_DealDetail … and DealNoPrevious is not null` (BỎ QUA deal giả — trong `on`)
+    // + `left join Dls_Deal … and DealerCodeBuyer is null` (bán lẻ — cũng trong `on`).
+    var retail = await (from f in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.DealNoPrevious != null)
+                        join d in db.DealerDeals.Where(x => x.OrgId == t.OrgId
+                             && (x.DealerCodeBuyer == null || x.DealerCodeBuyer == ""))
+                             on f.DealId equals d.Id
+                        select new { f.CarId, f.DeliveryDate, d.DealNo, d.DealDate, d.DealerCode, d.CustomerCodeBuyer })
+                       .ToListAsync();
+    var retailByCar = retail.GroupBy(x => x.CarId)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.DeliveryDate).First());
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var carByVin = cars.ToDictionary(c => c.VIN);
+
+    var rows = outed.Select(x =>
+    {
+        retailByCar.TryGetValue(x.Key, out var r);
+        return new { Out = x, Retail = r };
+    })
+    // 🔴 `(DeliveryDate is null OR >= @strTDate_From)` — GIỮ cả xe CHƯA bán.
+    .Where(z => dFrom is null || z.Retail?.DeliveryDate is null || z.Retail.DeliveryDate >= dFrom)
+    .ToList();
+
+    var items = rows.Select(z =>
+    {
+        carByVin.TryGetValue(z.Out.Vin, out var cv);
+        var dl = scopeList.FirstOrDefault(d => d.DealerCode == z.Out.DealerCode);
+        return new
+        {
+            cdoDeliveryOrderNo = z.Out.DoNo, cdoDealerCode = z.Out.DealerCode, mdDealerName = dl?.DealerName,
+            cdodCarId = z.Out.Key, cvVIN = z.Out.Vin,
+            cvModelCode = cv?.ModelCode, cvSpecCode = cv?.SpecCode, cvColorCode = cv?.ColorCode,
+            cdodDeliveryOutDate = z.Out.DeliveryOutDate,
+            dlsdDealNo = z.Retail?.DealNo, dlsdDealDate = z.Retail?.DealDate,
+            dlsddDeliveryDate = z.Retail?.DeliveryDate,
+            dlsdCustomerCodeBuyer = z.Retail?.CustomerCodeBuyer,
+            soldToEndUser = z.Retail is not null ? 1 : 0
+        };
+    }).OrderBy(x => x.cdoDealerCode).ThenBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = dFrom, toDate = dTo, count = items.Count, items, droppedByDealerJoin,
+        totals = new
+        {
+            outedQty = items.Count,
+            soldToEndUserQty = items.Count(x => x.soldToEndUser == 1),
+            notSoldYetQty = items.Count(x => x.soldToEndUser == 0)
+        },
+        byDealer = items.GroupBy(x => x.cdoDealerCode ?? "?").Select(g => new
+        {
+            dealerCode = g.Key, dealerName = g.First().mdDealerName,
+            outedQty = g.Count(), soldQty = g.Count(x => x.soldToEndUser == 1), notSoldQty = g.Count(x => x.soldToEndUser == 0)
+        }).OrderByDescending(x => x.outedQty).ToList(),
+        fakeDealRule = "left join Dls_DealDetail ... and dlsdd.DealNoPrevious is not null - chu thich nguon: 'Loc Bo qua nhung Deal_Gia'. Dieu kien nam TRONG 'on' cua LEFT join => chi BO GHEP deal gia, KHONG loai xe. Port thanh 'where' se MAT HAN nhung xe chua ban.",
+        retailRule = "left join Dls_Deal ... and dlsd.DealerCodeBuyer is null - 'Loc Ban Le Khach Tieu dung' (cung trong 'on').",
+        whereRule = "ConfirmStatus in ('A','F') VA DeliveryOutDate <= @strTDate_To ('Ngay Xuat xe HTC') VA (dlsdd.DeliveryDate is null HOAC >= @strTDate_From) - ve 'is null' DUOC CHAP NHAN => bao cao gom CA XE CHUA BAN; bo ve nay la mat nua du lieu.",
+        suffixNote = "Ten biz co hau to 7 chu so '_New2021601' (cac ban khac dung 8, vd _New20210601) - giu nguyen khi tra cuu.",
+        rbacNote = "@strBUPatternOfUser DUNG THAT o where cua #tbl_Mst_Dealer (:65368)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/car-sold-ctm-care", async (
     AppDbContext db, ITenantContext t,
     DateTime? deliveryFrom, DateTime? deliveryTo, string? dealerCode, string? zoneCode,
