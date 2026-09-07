@@ -24427,6 +24427,104 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 //   ưu tiên số bàn, rơi về di động.
 // 📌 Tên cột MiniHTC lệch nguồn: `ServiceCar.TradeMark` (nguồn `TradeMarkCode`), `ModelCode` (nguồn `ModelID`),
 //   `ServiceCustomer.CusCode` (nguồn `CusID`) — ánh xạ theo Ý NGHĨA, ghi rõ ở đây để khỏi tưởng sai.
+// ===== 🔴 #415 "TOP PHỤ TÙNG DOANH THU CAO" — **KHÔNG SẮP XẾP, nên KHÔNG phải TOP** =====
+// TRACE: `FrmReportPartTopRevenue` (`Views/PartReport`, 218 dòng) →
+//   `InventoryReportService.Ser_InvReportPartTopRevenue` (`Inventory.ReportService.cs:759`)
+//   → WS (`WSCarSv.asmx.cs:24920`) → biz (`BizCarSv.Inventory.Report.cs:6571`).
+//
+// 🔴 **LỖI NẶNG NHẤT — câu cuối KHÔNG có `order by`**:
+//     `select @Top * from #tbl_Revenue where AmountFinal > 0;`
+//   Hai câu trước đó **có** `order by ... desc`, nhưng cả hai đều là `SELECT … INTO #tmp` —
+//   **ORDER BY trên SELECT INTO không bảo đảm thứ tự gì cả**. Đến câu lấy `TOP N` thì không còn
+//   tiêu chí sắp xếp nào ⇒ SQL Server trả về **N dòng BẤT KỲ** thoả điều kiện.
+//   ⇒ **Báo cáo "phụ tùng doanh thu cao nhất" không hề trả về những phụ tùng doanh thu cao nhất.**
+//     Nó vẫn ra đúng N dòng, vẫn có số tiền, vẫn trông hợp lý — nên gần như không thể phát hiện
+//     bằng mắt. Đây là loại sai tệ nhất: kết quả đẹp nhưng vô nghĩa.
+//   📌 **CỐ Ý LỆCH NGUỒN**: MiniHTC **sắp giảm dần theo doanh thu** rồi mới cắt N, vì tái hiện
+//     "N dòng bất kỳ" là tái hiện một hành vi không xác định — không thể kiểm chứng, không có giá trị.
+//     Trả cờ `sourceHasNoOrderBy` để người đọc biết số của WinForm có thể KHÁC.
+//
+// 🔴 **`TOP` ghép chuỗi từ ô nhập của người dùng**: tầng service làm `"Top " + txtTop.Text.Trim()`
+//   rồi biz `StringUtils.Replace(sql, "@Top", strTop)` ⇒ **nội dung ô nhập đi thẳng vào câu SQL**,
+//   không kiểm số, không tham số hoá. Vừa là bề mặt **tiêm SQL**, vừa là nguồn lỗi cú pháp câm.
+//   ⚠️ Ô để **trống** ⇒ chuỗi rỗng ⇒ câu thành `select  * from …` ⇒ **trả về TOÀN BỘ**, không giới hạn.
+//
+// ⚠️ Mốc ngày so **CHUỖI với cột datetime**: `sto.StockOutTime <= '@ToDate'` với `@ToDate` chỉ có ngày
+//   (`yyyy-MM-dd` ⇒ ngầm hiểu 00:00:00) ⇒ **mọi phiếu xuất trong ngày cuối sau 0 giờ đều BỊ LOẠI**.
+//   Lỗi lệch một ngày kinh điển, và nó im lặng. MiniHTC giữ đúng ngữ nghĩa đó, trả cờ `endDateExclusive`.
+// ⚠️ `sto.Status = 3` — trạng thái bằng **SỐ**, không phải mã chữ như các bảng khác cùng hệ.
+// ⚠️ Cột `AmountNoVat` được tính ở bảng tạm rồi **không bao giờ dùng** — câu gộp chỉ `sum(Amount)`.
+// ⚠️ `left join Ser_MST_Part` rồi `group by part.PartCode` ⇒ dòng xuất có mã phụ tùng **không có trong
+//   danh mục** sẽ gom chung vào một nhóm NULL. Không mất dòng, nhưng **trộn nhiều mã làm một**.
+// ⚠️ `where AmountFinal > 0` ⇒ phụ tùng doanh thu 0 hoặc ÂM (trả hàng) **không xuất hiện**.
+// ⚠️ `@DealerCode`/`@FromDate`/`@ToDate` nhúng thẳng vào chuỗi SQL — cùng bề mặt tiêm như #413/#414.
+app.MapGet("/api/report/part-top-revenue", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top, string? warehouse) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;   // ⚠️ nguồn coi là 00:00:00 của ngày này
+
+    var outs = await db.PartStockOuts.Where(s => s.OrgId == t.OrgId && s.Status == "3"
+            && (warehouse == null || s.WarehouseCode == warehouse))
+        .Select(s => new { s.Id, s.StockOutDate }).ToListAsync();
+    // Đúng nguồn: mốc trên so với 00:00 của ngày kết thúc ⇒ loại phiếu trong ngày cuối sau 0 giờ.
+    var okIds = outs.Where(s => s.StockOutDate >= f && s.StockOutDate <= to)
+        .Select(s => s.Id).ToHashSet();
+    var excludedOnEndDate = outs.Count(s => s.StockOutDate.Date == to && s.StockOutDate > to);
+
+    var lines = await db.PartStockOutLines
+        .Where(l => l.OrgId == t.OrgId && okIds.Contains(l.StockOutId)).ToListAsync();
+
+    var partNames = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    // Amount = giá*SL + giá*SL*VAT/100 (VAT là PHẦN TRĂM). AmountNoVat của nguồn là cột CHẾT.
+    var grouped = lines.GroupBy(l => l.PartCode).Select(g => new
+    {
+        partCode = g.Key,
+        partName = partNames.TryGetValue(g.Key, out var pn) ? pn.PartName : null,
+        unit = partNames.TryGetValue(g.Key, out var pu) ? pu.Unit : null,
+        amountFinal = g.Sum(l => (l.Price ?? 0) * l.Quantity
+                               + (l.Price ?? 0) * l.Quantity * (l.Vat ?? 0) / 100m),
+        lineCount = g.Count(),
+    }).Where(x => x.amountFinal > 0).ToList();
+
+    var notInMaster = grouped.Where(x => x.partName == null).Select(x => x.partCode).ToList();
+
+    // 📌 CỐ Ý LỆCH: sắp giảm dần rồi mới cắt N. Nguồn KHÔNG sắp ⇒ trả N dòng bất kỳ.
+    var n = top ?? 0;
+    var ordered = grouped.OrderByDescending(x => x.amountFinal).ToList();
+    var rows = n > 0 ? ordered.Take(n).ToList() : ordered;   // ô trống ⇒ nguồn trả TOÀN BỘ
+
+    return Results.Ok(new
+    {
+        count = rows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
+        grandTotal = rows.Sum(x => x.amountFinal),
+        sourceHasNoOrderBy = true,
+        orderByNote = "Câu lấy TOP của nguồn KHÔNG có ORDER BY (hai ORDER BY phía trước nằm trên "
+            + "SELECT INTO nên vô nghĩa) ⇒ WinForm trả N dòng BẤT KỲ, không phải N dòng doanh thu cao "
+            + "nhất. MiniHTC CỐ Ý sắp giảm dần rồi mới cắt — số hai bên có thể KHÁC nhau.",
+        emptyTopReturnsAllNote = "Ô Top để trống ⇒ nguồn sinh \"select  * from …\" ⇒ trả TOÀN BỘ, "
+            + "không giới hạn. MiniHTC giữ đúng: không truyền top thì trả hết.",
+        sqlInjectionNote = "Nguồn ghép \"Top \" + nội dung ô nhập rồi Replace thẳng vào SQL — không kiểm "
+            + "số, không tham số hoá.",
+        endDateExclusive = true,
+        endDateNote = "Nguồn so StockOutTime <= 'yyyy-MM-dd' (ngầm 00:00:00) ⇒ phiếu xuất trong NGÀY "
+            + "CUỐI sau 0 giờ bị loại — lệch một ngày, im lặng.",
+        excludedOnEndDate,
+        statusNote = "Lọc sto.Status = 3 — trạng thái bằng SỐ, khác các bảng dùng mã chữ cùng hệ.",
+        deadColumnNote = "Nguồn tính AmountNoVat ở bảng tạm rồi không bao giờ dùng.",
+        notInMaster,
+        notInMasterNote = notInMaster.Count > 0
+            ? "Mã phụ tùng không có trong danh mục: nguồn left join rồi group by cột của danh mục ⇒ các mã "
+              + "này bị GOM CHUNG vào một nhóm NULL (không mất dòng, nhưng trộn nhiều mã làm một)."
+            : null,
+        zeroExcludedNote = "where AmountFinal > 0 ⇒ phụ tùng doanh thu 0 hoặc ÂM (trả hàng) không xuất hiện.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/customer-to-htc", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? tradeMark, string? dealer) =>
 {
