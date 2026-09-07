@@ -19179,12 +19179,37 @@ app.MapPost("/api/dms40/soroots", async (Dms40SoRootDto dto, AppDbContext db, IT
 }).RequireAuthorization();
 
 // Duyệt số lượng theo dòng (khớp btnApprove_Click/DMS40_Ord_SalesOrderRoot_Approve gốc: P→A) — Approved1Quantity theo ModelCode+SpecCode+ColorCode.
-app.MapPost("/api/dms40/soroots/{no}/approve", async (string no, Dms40SoRootApproveDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #B88 VÁ PARITY `FlagAuto` — `DMS40_Ord_SalesOrderRoot_ApproveX_New20181119` =====
+// Nguồn: `Biz.HTC.WH.cs:76363`. 3B đo thật: md5 **khớp cả 2 máy** `7d29c5f7e3dc6892be89b5088d3d88ab`
+//   (start lệch 76363/76368 — bình thường, định vị bằng TÊN, xem `C0-…quinquagesimusprimus`).
+// 🔴 **`objFlagAuto` NỚI HAI THỨ CÙNG LÚC** (`bIsAuto = StringEqual(objFlagAuto, Flag.Yes)`):
+//    1) **Trạng thái được phép**: `!bIsAuto` ⇒ chỉ **`"P"`**; `bIsAuto` ⇒ **`"P, A"`**
+//       (tức chế độ tự động **được duyệt LẠI** đơn đã duyệt).
+//    2) **RBAC**: `!bIsAuto` mới chạy `myCommon_CheckHTCDirect(…)`; `bIsAuto` thì **BỎ QUA kiểm quyền**
+//       (job nền không có người dùng).
+//    ⚠️ Vì cờ này **vừa nới trạng thái vừa tắt RBAC**, để client tự bật được nó là **mở đường vòng
+//      qua phân quyền**. Port **KHÔNG** nhận `flagAuto` từ body; chỉ luồng nội bộ (`Spp_Dls_Deal_Update`,
+//      job tự động) mới truyền `"1"`.
+// 🔴 Hàm hỗ trợ **`Spp_Dls_Deal_Update`** (`DataWH/Biz.HTC.Support.cs:22`) **chỉ là VỎ**: gọi thẳng
+//    `…_ApproveX_New20181119` với `objFlagAuto = TConst.Flag.**Inactive**` ⇒ **KHÔNG** bật chế độ auto,
+//    tức vẫn kiểm `"P"` và vẫn kiểm quyền. ⚠️ **Không có lời gọi nào** tới `Spp_Dls_Deal_Update` trong
+//    `TERP.WSHTC.64/` lẫn `TERP.HTCClient/` ⇒ **không lộ ra qua WS**; là cửa hỗ trợ chạy tay.
+//    Vì hành vi của nó **trùng khít** endpoint approve này, KHÔNG đẻ route riêng.
+app.MapPost("/api/dms40/soroots/{no}/approve", async (string no, Dms40SoRootApproveDto dto, AppDbContext db, ITenantContext t, [Microsoft.AspNetCore.Mvc.FromQuery] string? flagAuto) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.Dms40SoRoots.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SORCode == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "P") return Results.BadRequest(new { error = "Chỉ có thể duyệt khi trạng thái là P (chờ duyệt)." });
+    // 🔴 #B88: `flagAuto` CHỈ dành cho luồng nội bộ — không đọc từ body (xem khối chú thích trên).
+    var isAuto = flagAuto == "1";
+    // `!bIsAuto` ⇒ chỉ "P"; `bIsAuto` ⇒ "P, A" (auto được duyệt LẠI đơn đã duyệt).
+    var allowed = isAuto ? new[] { "P", "A" } : new[] { "P" };
+    if (!allowed.Contains(h.Status))
+        return Results.BadRequest(new
+        {
+            error = "DMS40_Ord_SalesOrderRoot_Approve_InvalidStatus",
+            check = new { h.SORCode, h.Status, Allowed = string.Join(", ", allowed), FlagAuto = isAuto ? "1" : "0" }
+        });
     var rows = dto.Lines ?? new List<Dms40SoRootApproveLineDto>();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được duyệt." });
     var lines = await db.Dms40SoRootDetails.Where(l => l.OrgId == t.OrgId && l.SoRootId == h.Id).ToListAsync();
