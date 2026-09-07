@@ -46492,6 +46492,108 @@ app.MapGet("/api/reports/ro-type-expense-by-dealer", async (AppDbContext db, ITe
     });
 }).RequireAuthorization();
 
+// ===== #513 CÙNG THỐNG KÊ TRÊN NHƯNG GỘP THEO **CỐ VẤN DỊCH VỤ** (máy tính bảng) =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:1322 Rpt_Ser_RO_ExpTpAndROTpGroupByCVDVX` (WS `…ForTab` :1203).
+// Endpoint: `GET /api/reports/ro-type-expense-by-cvdv`.
+//
+// 📐 **DIFF HAI NHÁNH TRƯỚC KHI ĐỌC** (luật #414): so nguyên văn `…GroupByDealerX` (:1043) với
+//   `…GroupByCVDVX` (:1322) — **khác biệt thật vỏn vẹn ba chỗ**, và đúng như luật cảnh báo,
+//   **nằm ở DANH SÁCH CỘT chứ không ở WHERE**:
+//     1) macro gộp đổi sang bản `…GroupByCVDV_zzE` — gộp thêm `sr.DealerCode, sr.Creator`
+//        (bản Dealer **comment mất** `sr.DealerCode` nên gộp toàn bộ vào một dòng — xem #512),
+//     2) hai câu trả về thêm `su.UserCode su_UserCode` · `su.UserName su_UserName` +
+//        `left join Sys_User su on t.Creator = su.UserCode and t.DealerCode = su.DealerCode`,
+//     3) tên hai bảng trả về đổi hậu tố `…ByDealer` → `…ByCVDV` (và tên hằng lỗi kèm theo).
+//   Guard, mốc ngày, danh sách pivot: **y hệt** ⇒ mọi phát hiện #512 áp nguyên cho màn này.
+// ⚪ **Kiểm tra âm tính cho `left join Sys_User`** (ba câu hỏi #414): cột nối `t.Creator`/`t.DealerCode`
+//   lấy từ **chính bảng trái**, không bảng LEFT nào khác · không có bảng nào nối TRONG sau nó ·
+//   `where(1=1)` **không** có điều kiện trên `su` ⇒ **LEFT còn sống**. Cố vấn đã nghỉ / khác đại lý thì
+//   `su_UserName` = null nhưng **dòng vẫn còn** và số liệu **không mất** — port giữ đúng, kèm đếm.
+// 🔴 Nối theo **cặp** `UserCode + DealerCode`: cùng một mã cố vấn ở đại lý khác **không khớp** ⇒ tên rỗng.
+//   Đây là lọc-theo-cặp, không phải tra danh mục toàn cục — trả `rowsWithoutUserName` để đo.
+// ⚠️ Danh sách pivot vẫn **đóng băng 5 mã** `BDD, PDI, SCC, SCD, SCS` (thiếu `SPK`) — như #512.
+app.MapGet("/api/reports/ro-type-expense-by-cvdv", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_ExpTpAndROTpGroupByCVDVX_InvalidDealerCode" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_ExpTpAndROTpGroupByCVDVX_DateFromAfterDateTo" });
+
+    string[] pivotROType = { "BDD", "PDI", "SCC", "SCD", "SCS" };
+    string[] pivotExpenseType = { "LOCAL", "ROINSURANCE", "ROREPAIR", "ROWARRANTY" };
+
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to)
+        .Select(x => new { x.Id, x.DealerCode, x.Creator }).ToListAsync();
+    var roOf = ros.ToDictionary(x => x.Id, x => x);
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var roTypePairs = (await db.RoServiceItems
+            .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ROType != null)
+            .Select(i => new { i.RoId, i.ROType }).ToListAsync())
+        .Distinct().ToList();
+    var expSvc = await db.RoServiceItems
+        .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ExpenseType != null)
+        .Select(i => new { i.RoId, i.ExpenseType }).ToListAsync();
+    var expPrt = await db.RoPartItems
+        .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ExpenseType != null)
+        .Select(i => new { i.RoId, i.ExpenseType }).ToListAsync();
+    var expPairs = expSvc.Concat(expPrt).Distinct().ToList();
+
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.UserName, u.DealerCode }).ToListAsync();
+    // Nối theo CẶP (UserCode, DealerCode) — đúng nguồn.
+    string? NameOf(string? creator, string? dlr) => users
+        .FirstOrDefault(u => u.UserCode == creator && u.DealerCode == dlr)?.UserName;
+
+    var roTypeRows = roTypePairs
+        .GroupBy(x => new { roOf[x.RoId].DealerCode, roOf[x.RoId].Creator, x.ROType })
+        .Select(g => new
+        {
+            g.Key.DealerCode, g.Key.Creator, ROType = g.Key.ROType!,
+            QtyROType = (decimal)g.Count(),
+            su_UserCode = NameOf(g.Key.Creator, g.Key.DealerCode) is null ? null : g.Key.Creator,
+            su_UserName = NameOf(g.Key.Creator, g.Key.DealerCode),
+            inSourcePivot = pivotROType.Contains(g.Key.ROType!),
+        }).OrderBy(x => x.Creator).ThenBy(x => x.ROType).ToList();
+
+    var expRows = expPairs
+        .GroupBy(x => new { roOf[x.RoId].DealerCode, roOf[x.RoId].Creator, x.ExpenseType })
+        .Select(g => new
+        {
+            g.Key.DealerCode, g.Key.Creator, ExpenseType = g.Key.ExpenseType!,
+            QtyExpenseType = (decimal)g.Count(),
+            su_UserCode = NameOf(g.Key.Creator, g.Key.DealerCode) is null ? null : g.Key.Creator,
+            su_UserName = NameOf(g.Key.Creator, g.Key.DealerCode),
+            inSourcePivot = pivotExpenseType.Contains(g.Key.ExpenseType!),
+        }).OrderBy(x => x.Creator).ThenBy(x => x.ExpenseType).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = "MONTH",
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        roCount = ros.Count,
+        roTypeRows, expenseTypeRows = expRows,
+        // LEFT join Sys_User còn sống ⇒ không mất dòng, chỉ trống tên.
+        rowsWithoutUserName = roTypeRows.Count(x => x.su_UserName is null)
+            + expRows.Count(x => x.su_UserName is null),
+        userJoinIsPairUserCodeAndDealer = true,
+        leftJoinSysUserStillAlive = true,
+        sourcePivotROType = pivotROType, sourcePivotExpenseType = pivotExpenseType,
+        qtyDroppedByFrozenPivot = roTypeRows.Where(x => !x.inSourcePivot).Sum(x => x.QtyROType)
+            + expRows.Where(x => !x.inSourcePivot).Sum(x => x.QtyExpenseType),
+        rowIsRoTypePairNotRo = true,
+        deadGuardInvalidReportType = "strReportType gan cung = MONTH ngay dau ham",
+        divergesFromDealerVariantOnlyInColumns = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
