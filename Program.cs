@@ -36365,6 +36365,7 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status, r.RejectNote,
+        r.CusAddress, r.CusTel, r.CusTaxCode, r.ModelID, r.IsReRepair, r.ROType,   // #343 §12
         // #266 §12: 10 cột thẻ hội viên / điểm
         r.FlagCardExist, r.FlagIsDLQuery, r.Creator,   // #283 §12
         r.CardNoInv, r.CardTypeInv, r.CardTypeExpectInv,
@@ -36382,6 +36383,20 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
 {
     if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
     var no = "RO" + DateTime.Now.ToString("yyMMddHHmmss");
+    // ===== 🔴 #343 SÁU CỘT `Ser_RO` có entity nhưng CHƯA CÓ ĐƯỜNG GHI =====
+    // Tìm bằng `_audit/sweep_dead_column.js` (viết ở lượt này, tổng quát hoá cách dò tay của #337/#342).
+    //   Sweep đã **TỰ KIỂM**: chạy trên cây trước #337 thì tìm ra đúng hai cột `RoPartItem.ExpenseType`
+    //   và `RoServiceItem.ExpenseType` — hai ca trước đây phải dò tay ⇒ sweep bắt được ca đã biết.
+    // Đối chiếu nguồn, đếm số chỗ ghi vào **đúng bảng `dt_Ser_RO`**:
+    //   `CusAddress` 14 · `CusTel` 14 · `IsReRepair` 14 · `ROType` 10 · `CusTaxCode` 2 · `ModelID` 2
+    //
+    // ⚠️ `IsReRepair` (**sửa chữa lại**) chính là dữ liệu mà KPI cần cho chỉ tiêu "số lượt sửa chữa lại",
+    //   nhưng nguồn **ĐÓNG CỨNG 0** cho chỉ tiêu đó (`, 0 CountSCCLocal_SCL` — xem #335).
+    //   ⇒ Cột CÓ dữ liệu mà báo cáo KHÔNG dùng. Port cột theo nguồn; **không** tự tính chỉ tiêu (lệ #299).
+    // ⚠️ `ROType` ở **cấp LỆNH** khác `RoServiceItem.ROType` ở **cấp DÒNG**; KPI đếm theo cấp DÒNG (#335).
+    //   Hai cột trùng tên, khác cấp — đừng dùng thay cho nhau.
+    // 📌 KHÔNG port `FlagIsDLQuery` và `PointVoucher`: grep nguồn ra **0** chỗ ghi vào `Ser_RO`
+    //   ⇒ nghi là cột do chính port tự thêm. Để nguyên, không bịa đường ghi.
     var r = new RepairOrder
     {
         OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
@@ -36406,7 +36421,10 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         PlanedDuration = dto.PlanedDuration, ReminderMaintanceDate = dto.ReminderMaintanceDate,
         ReminderMaintanceKm = dto.ReminderMaintanceKm, ServiceStatus = dto.ServiceStatus,
         TermsOfRepair = dto.TermsOfRepair, UseSHPart = dto.UseSHPart, WorkDoneSoon = dto.WorkDoneSoon,
-        CreatedBy = dto.CreatedBy, LogLUBy = dto.LogLUBy, LogLUDateTime = dto.LogLUDateTime, FlagCardExist = dto.FlagCardExist
+        CreatedBy = dto.CreatedBy, LogLUBy = dto.LogLUBy, LogLUDateTime = dto.LogLUDateTime, FlagCardExist = dto.FlagCardExist,
+        // #343 §12 — sáu cột trước nay không đường nào ghi.
+        CusAddress = dto.CusAddress, CusTel = dto.CusTel, CusTaxCode = dto.CusTaxCode,
+        ModelID = dto.ModelID, IsReRepair = dto.IsReRepair, ROType = dto.ROType
     };
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     foreach (var s in dto.Services ?? new())
@@ -38178,7 +38196,10 @@ record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string?
     string? WorkDoneSoon = null, string? CreatedBy = null, string? LogLUBy = null,
     DateTime? LogLUDateTime = null,
     // #310 §12: phieu TIEP NHAN sinh ra lenh nay (1-NHIEU) — phai GAN duoc, khong chi doc duoc.
-    string? ReceptionFNo = null);
+    string? ReceptionFNo = null,
+    // #343: sau cot Ser_RO truoc nay KHONG duong nao ghi (tim bang sweep_dead_column.js).
+    string? CusAddress = null, string? CusTel = null, string? CusTaxCode = null,
+    string? ModelID = null, string? IsReRepair = null, string? ROType = null);
 // #321: DTO sửa lệnh sửa chữa. Hai nhóm ghi khác nhau — xem chú thích ở endpoint.
 record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
     string? Assistant = null, string? Engineer = null, string? QA = null,
