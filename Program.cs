@@ -25628,7 +25628,24 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   ⇒ bản kho **thiếu 3 lệnh ném lỗi** so với bản chính — nghĩa là có ba tình huống mà màn chính
         //     chặn còn màn kho **cho đi tiếp**. Chưa đọc từng cái nên **không kết luận hậu quả**; ghi thành nợ.
         // ⚪ Bốn cặp còn lại lệch nhẹ (1 `Check`, 1-2 `ifGuard`, 2 hằng) — xếp hàng đọc tay.
-        cSharpGuardSweep = new { sameChannelPairs = 86, guardMarksIdentical = 76, differing = 10,
+        // ===== ⚠️ #503 MỘT BÁO ĐỘNG GIẢ CỦA `diffguard`, VÀ MỘT BÀI HỌC VỀ CÁCH SỬA CÔNG CỤ =====
+        // `Ser_CampaignDealerRpt` bị #496 xếp "lệch `Check 1/0`". Đọc ra: dòng khớp là
+        //   `#region //CheckExistRptKPI` — **một chỉ thị vùng, không phải lời gọi**. Bộ lọc chỉ bỏ dòng
+        //   bắt đầu bằng `//`, nên dòng `#region` (thụt đầu dòng) vẫn lọt.
+        //   Sửa: bỏ luôn `#region`/`#endregion` ⇒ **86 cặp · giống hệt 77 · khác 9** (trước 76/10).
+        // 📌 Bài học thao tác (họ #427): sửa regex qua `node -e` trong bash **bị nuốt dấu `\\`** —
+        //   ba lần vá liên tiếp đều ra `/^s*#…/` thay vì `/^\\s*#…/`, và lần thứ tư còn **làm hỏng file**
+        //   (phải `git checkout` khôi phục). Cách đúng: **ghi bản vá ra FILE rồi chạy**, không nhét regex
+        //   qua dòng lệnh. Đã ghi vào sổ.
+        // ⚪ Chín cặp còn lại đã có lời giải hoặc đang là nợ có tên:
+        //   · **5 cặp** = khối kẹp mốc ngày (#496) — đã port hết ở #472/#473/#498/#499/#500.
+        //   · `Ser_ROWarrantyReportHTMV_Get` = thiếu cả tác dụng phụ HMC (#497, nợ có tên).
+        //   · `Ser_App_GetStatusList01` `ifGuard 2/1` = lát cắt thời điểm chỉ có ở bản chính (#474, đã port).
+        //   · `Rpt_Ser_ReceptionF_SumQtyRecepForTab` `TConstHang 2/0` và `SerStockOutSearch` `0/2`
+        //     ⇒ **hai ca CHƯA đọc** — ghi thành nợ, không đoán.
+        cSharpGuardSweep = new { sameChannelPairs = 86, guardMarksIdentical = 77, differing = 9,
+            falseAlarmFixed = "Ser_CampaignDealerRpt (#region bi dem nham la loi goi)",
+            unreadPairs = new[] { "Rpt_Ser_ReceptionF_SumQtyRecepForTab", "SerStockOutSearch" },
             dateClampOnlyInMainBranch = 5,
             missingThrowsInWhBranch = "Ser_ROWarrantyReportHTMV_Get (throw 4 vs 1)" },
 

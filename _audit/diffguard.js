@@ -58,6 +58,8 @@ function marks(lines){
   for(const [name] of MARKS) c[name]=0;
   for(const L of lines){
     if(/^\s*\/\//.test(L)) continue;
+    // #503: bo dong #region/#endregion - khong phai ma chay nhung van khop mau Check*/TConst*
+    if(/^[ \t]*#(region|endregion)\b/.test(L)) continue;
     for(const [name,re] of MARKS) if(re.test(L)) c[name]++;
   }
   return c;
