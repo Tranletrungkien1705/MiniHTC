@@ -13,6 +13,37 @@
 //
 // Ket qua chi la GOI Y (luat C0-...vicesimussecundus: sweep neu vi tri, khong neu tham quyen):
 // phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
+// ===== #381 HAI DIEU PHAI BIET TRUOC KHI TIN KET QUA SWEEP NAY =====
+//
+// 1) DIEM MU LON: gia dinh "nguon khong ghi cot X" chi dung khi lenh ghi CO liet ke cot.
+//    Do that tren 2 cay nguon: 6061 lenh SaveData, trong do 859 (14%) goi dang
+//    `SaveData(table, dt)` — KHONG truyen danh sach cot => ghi MOI cot cua DataTable ma
+//    CLIENT gui len. Vi du `Ser_Mst_Part` (Inventory.Report.cs:8001-8006): alEffectiveColumn
+//    duoc tao RONG roi truyen thang, con dt_Ser_MST_Part_Input lay nguyen tu ds client.
+//    => Voi nhung bang kieu nay, "0 hit ghi" KHONG chung minh duoc gi.
+//
+// 2) DO CHINH XAC THUC DO (#381, kiem tay 8/13 nghi van cua lan chay #380):
+//    - THAT:  ServicePart.InventoryQuantity  (da va o #380)
+//    - GIA:   AmountTotal x3 (MiniHTC tu tinh tu dong, khong nhan DTO; con tro cua sweep con
+//             tro nham vao mot danh sach ten bang)
+//    - GIA:   ExchangeRate, CreateDateTime, TotalValVAT, EffectiveDate, CustomerName
+//             (nguon CO ghi that: 8 / 64 / 18 / 46 / 23 lan)
+//    - GIA:   TotalPrice x2 (MiniHTC tu tinh = CostInCheck + CostOutCheck)
+//    => 1 that / 8 da kiem. Ket qua sweep la GOI Y RAT THO; luon kiem tay ca hai chieu:
+//       (a) nguon co ghi that khong, (b) MiniHTC co nhan tu DTO khong.
+//
+// Cac cot da kiem va LOAI dưới day se khong bao lai nua.
+const CLEARED = new Set([
+    'amounttotal',      // #381: MiniHTC tu tinh tu dong (h.AmountTotal = total)
+    'exchangerate',     // #381: nguon GHI that (8 lan)
+    'createdatetime',   // #381: nguon GHI that (64 lan)
+    'totalvalvat',      // #381: nguon GHI that (18 lan)
+    'effectivedate',    // #381: nguon GHI that (46 lan)
+    'customername',     // #381: nguon GHI that (23 lan)
+    'totalprice',       // #381: MiniHTC tu tinh (CostInCheck + CostOutCheck)
+    'inventoryquantity',// #380: DA VA — bo nhan tu DTO, them endpoint tinh tu PartStock
+]);
+
 const fs = require('fs'), path = require('path');
 
 function readText(p) {
@@ -21,7 +52,26 @@ function readText(p) {
     return b.toString('utf8');
 }
 
-const args = process.argv.slice(2);
+// 🔴 #381b BAT BUOC CHAY MOT LAN TREN TOAN BO FILE.
+//   Su co that: goi bang `find ... -print0 | xargs -0 node sweep.js` thi xargs CHIA NHO danh sach
+//   thanh nhieu lo, moi lo chay sweep MOT LAN voi tap nguon CAT KHUC. Tap W (cot co ghi) cua
+//   moi lo thieu => dương tinh gia bung len (do duoc 60, 78 nghi van o cac lo, trong khi chay
+//   day du chi con vai cai). Lan chay #380 bi dinh dung loi nay: con so "13 property" thuc ra
+//   la ket qua cua LO CUOI, khong phai cua toan cay.
+//   => Dung `--list <file>` : moi dong la mot duong dan. Vi du:
+//      find A B -name "*.cs" > /tmp/files.txt
+//      node sweep.js Models/Entities.cs --list /tmp/files.txt
+const rawArgs = process.argv.slice(2);
+const args = [];
+for (let i = 0; i < rawArgs.length; i++) {
+    if (rawArgs[i] === '--list') {
+        const lf = rawArgs[++i];
+        for (const ln of fs.readFileSync(lf, 'utf8').split(/\r?\n/)) {
+            const p = ln.trim();
+            if (p) args.push(p);
+        }
+    } else args.push(rawArgs[i]);
+}
 const entFile = args.find(a => /Entities\.cs$/i.test(a));
 const srcFiles = args.filter(a => a !== entFile);
 if (!entFile) { console.error('Thieu duong dan Models/Entities.cs'); process.exit(1); }
@@ -117,9 +167,20 @@ for (const h of hits) {
     if (!byCls.has(h.cls)) byCls.set(h.cls, []);
     byCls.get(h.cls).push(h.prop);
 }
+// #381: bo cac cot da kiem tay va loai.
+let nCleared = 0;
+for (const [c, ps] of [...byCls.entries()]) {
+    const keep = ps.filter(p => !CLEARED.has(p.toLowerCase()));
+    nCleared += ps.length - keep.length;
+    if (keep.length) byCls.set(c, keep); else byCls.delete(c);
+}
+
 for (const [c, ps] of [...byCls.entries()].sort((a, b) => b[1].length - a[1].length)) {
     console.log('🟠 ' + c + ':\n     ' + ps.map(p => p + '   [dan xuat tai ' + (D.get(p.toLowerCase()) || '?') + ']').join('\n     '));
 }
 console.log('\nTONG: nguon co ' + W.size + ' cot GHI, ' + D.size + ' ten trong nhu DAN XUAT; '
-    + hits.length + ' property MiniHTC nghi la DAN XUAT (tren ' + byCls.size + ' entity).');
+    + (hits.length - nCleared) + ' property MiniHTC CON nghi la DAN XUAT (tren ' + byCls.size + ' entity).');
+console.log('   (' + nCleared + ' cot da kiem tay o #381 va LOAI — xem danh sach CLEARED dau file)');
 console.log('⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.');
+console.log('⚠️  DIEM MU: 859/6061 lenh SaveData KHONG liet ke cot (ghi moi cot client gui)');
+console.log('    => voi nhung bang do, \"0 hit ghi\" KHONG chung minh duoc gi.');

@@ -1,156 +1,3 @@
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-🟠 PartStockIn:
-     StatusText   [dan xuat tai BizCarSv.Customer.cs:13312]
-     FlagOrderNCC   [dan xuat tai BizCarSv.Inventory.StockIn.cs:3545]
-🟠 OrderPartLine:
-     ExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1731]
-     TotalQuantityInExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1763]
-🟠 PmtPaymentGps:
-     CreateDateTime   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:82]
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PmtPaymentAvn:
-     CreateDateTime   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:82]
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PmtPaymentStorage:
-     CreateDateTime   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:82]
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 VatInvoice:
-     TotalValVAT   [dan xuat tai BizCarSv.Inventory.StockIn.cs:9498]
-     TotalValPmt   [dan xuat tai BizCarSv.ZTemp.cs:16089]
-🟠 ServicePart:
-     InventoryQuantity   [dan xuat tai BizCarSv.Appointment.cs:1323]
-     TotalPrice   [dan xuat tai BizCarSv.WarrantyReport.cs:14245]
-🟠 CarPrice:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 TestDrive:
-     CustomerName   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:51]
-🟠 GpsTransaction:
-     CreateDateTime   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:82]
-🟠 StoragePayment:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PdiFeePayment:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PdiFeePaymentLine:
-     TotalPrice   [dan xuat tai BizCarSv.WarrantyReport.cs:14245]
-🟠 TransportInsPayment:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 TransportInsPaymentLine:
-     TotalPrice   [dan xuat tai BizCarSv.WarrantyReport.cs:14245]
-🟠 Discount:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 DevicePrice:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 PartStockOut:
-     StatusText   [dan xuat tai BizCarSv.Customer.cs:13312]
-🟠 PartPrice:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 TstExchangeUnit:
-     ExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1731]
-🟠 SerStockOutOrder:
-     StatusText   [dan xuat tai BizCarSv.Customer.cs:13312]
-🟠 SerStockOutOrderLine:
-     OrderQuantity   [dan xuat tai BizCarSv.Inventory.StockOut.cs:8998]
-🟠 PaymentReqDiscountVin:
-     CustomerName   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:51]
-🟠 DocReqCar:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 SysObject:
-     ObjectType   [dan xuat tai BizCarSv.ZTemp.cs:16186]
-🟠 MrkCampaignDL:
-     CreateDateTime   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:82]
-🟠 VatHtcInvoiceDeviceDetail:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 PmtPaymentPdi:
-     TotalAmountAfterVAT   [dan xuat tai BizCarSv.WH.cs:21666]
-🟠 InvoiceID:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 MstInsuranceType:
-     EffectiveDate   [dan xuat tai BizHTC.MasterData.cs:381]
-🟠 StoFMaintain:
-     CreateDateTime   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:82]
-🟠 DriveTest:
-     CustomerName   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:51]
-🟠 DlrContract:
-     CustomerName   [dan xuat tai BizCarSv.PushToHyundaiMe.cs:51]
-🟠 DlrContractDetail:
-     TotalAmountAfterVAT   [dan xuat tai BizCarSv.WH.cs:21666]
-🟠 BankCarMortage:
-     DeliveryRangeType   [dan xuat tai BizHTC.Report.cs:4049]
-🟠 PartQuoteLine:
-     AmountBeforeVat   [dan xuat tai BizCarSv.Inventory.Quote.cs:2071]
-
-TONG: nguon co 2890 cot GHI, 868 ten trong nhu DAN XUAT; 43 property MiniHTC nghi la DAN XUAT (tren 36 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 84 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 289 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 180 cot GHI, 1 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 237 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 214 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 437 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2021.1.TCMotor).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 201 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-
-TONG: nguon co 1936 cot GHI, 6 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-🟠 PmtPayment:
-     TransferType   [dan xuat tai Biz.zzzz.iNOS.Sales.cs:275]
-🟠 PmtPaymentBulkDetailIHist:
-     TransferType   [dan xuat tai Biz.zzzz.iNOS.Sales.cs:275]
-
-TONG: nguon co 1344 cot GHI, 3 ten trong nhu DAN XUAT; 2 property MiniHTC nghi la DAN XUAT (tren 2 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
 🟠 EstimateOrderLine:
      QtySellCustomer   [dan xuat tai BizHTC.zTemp.cs:18561]
      QtySellDealer   [dan xuat tai BizHTC.zTemp.cs:18570]
@@ -168,8 +15,7 @@ TONG: nguon co 1344 cot GHI, 3 ten trong nhu DAN XUAT; 2 property MiniHTC nghi l
      ValGoodsVAT5   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:253]
      ValGoodsVAT10   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:269]
      TotalValInvoice   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:226]
-     TotalValVAT   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:225]
-     TotalValPmt   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:227]
+     TotalValPmt   [dan xuat tai BizCarSv.ZTemp.cs:16089]
 🟠 FnExpCalcLine:
      FnDepositAmount   [dan xuat tai BizHTC.zTemp.cs:36202]
      FnDepositCountDate   [dan xuat tai BizHTC.zTemp.cs:36142]
@@ -179,58 +25,50 @@ TONG: nguon co 1344 cot GHI, 3 ten trong nhu DAN XUAT; 2 property MiniHTC nghi l
 🟠 Quota:
      QtyCondition   [dan xuat tai Biz.HTC.WH.cs:75910]
      QtyPromotion   [dan xuat tai Biz.HTC.WH.cs:75911]
-🟠 StoragePayment:
-     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PdiFeePayment:
-     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
 🟠 PdiFeePaymentLine:
      CostInCheck   [dan xuat tai 0.34.Contract.cs:29629]
      CostOutCheck   [dan xuat tai 0.34.Contract.cs:29635]
-🟠 TransportInsPayment:
-     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 Discount:
-     FnExpPercent   [dan xuat tai BizHTC.zTemp.cs:36381]
-     PmtDsTCGPercent   [dan xuat tai BizHTC.zTemp.cs:36382]
 🟠 OrdOrderPlanHtmvDetail:
      QtySalesOrderP   [dan xuat tai zTemp.0.30.Order.cs:9117]
      QtyStockDealer   [dan xuat tai zTemp.0.30.Order.cs:9120]
 🟠 HrSalesManOfMonth:
      QtySMWorking   [dan xuat tai BizHTC.zzzzCode.cs:12859]
      QtySMNoWorking   [dan xuat tai BizHTC.zzzzCode.cs:12874]
+🟠 HrSalesManOfMonthDtl:
+     ListDealerHyundai   [dan xuat tai Biz.HTC.WH.Rel.20230823.cs:17777]
+     ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
 🟠 PmtPaymentStorageDetail:
      InCostStorageDate   [dan xuat tai 0.34.Contract.cs:26207]
      OutCostStorageDate   [dan xuat tai 0.34.Contract.cs:26267]
 🟠 PmtPaymentPdiDetail:
      CostInCheck   [dan xuat tai 0.34.Contract.cs:29629]
      CostOutCheck   [dan xuat tai 0.34.Contract.cs:29635]
-🟠 ServiceCar:
-     ProductYear   [dan xuat tai Biz.HTC.WH.cs:166859]
-     InsContractNo   [dan xuat tai 0.34.Contract.cs:18446]
 🟠 PmtLine:
      AmountAccum   [dan xuat tai BizHTC.Common.cs:1630]
 🟠 GpsPayment:
      TotalAfterVAT   [dan xuat tai 0.34.Contract.cs:26318]
+🟠 StoragePayment:
+     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 PdiFeePayment:
+     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 TransportInsPayment:
+     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 SalesManViolate:
+     ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
+🟠 PartStockIn:
+     FlagOrderNCC   [dan xuat tai BizCarSv.Inventory.StockIn.cs:3545]
+🟠 StockAdjLine:
+     QtyBalance   [dan xuat tai RptSQLQuery.cs:705]
 🟠 Dms40SoRootDetail:
      CancelQuantityTotal   [dan xuat tai Delete.BizHTC.zTemp.cs:23003]
 🟠 PartCostSnapshot:
      TotalValue   [dan xuat tai BizHTC.zTemp.cs:8348]
-🟠 DocReqCar:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 HrSalesManOfMonthDtl:
-     ListDealerHyundai   [dan xuat tai Biz.HTC.WH.Rel.20230823.cs:17777]
-🟠 PmtPaymentGps:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PmtPaymentAvn:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
-🟠 PmtPaymentStorage:
-     AmountTotal   [dan xuat tai BizHTC.Common.cs:795]
+🟠 OrderPartLine:
+     TotalQuantityInExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1763]
+🟠 SysObject:
+     ObjectType   [dan xuat tai BizCarSv.ZTemp.cs:16186]
 🟠 PmtPaymentPdi:
-     TotalAmountAfterVAT   [dan xuat tai 0.34.Contract.cs:29678]
-🟠 RqBankingTransPmt:
-     TransferAmount   [dan xuat tai BizHTC.VietinBank.cs:16293]
+     TotalAmountAfterVAT   [dan xuat tai BizCarSv.WH.cs:21666]
 🟠 RqBankingTransCtr:
      AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
 🟠 RqBankingTransWrtCtr:
@@ -240,259 +78,22 @@ TONG: nguon co 1344 cot GHI, 3 ten trong nhu DAN XUAT; 2 property MiniHTC nghi l
 🟠 BankingTrans:
      DisbursementDate   [dan xuat tai BizHTC.VietinBank.cs:792]
 🟠 DlrContractDetail:
-     TotalAmountAfterVAT   [dan xuat tai 0.34.Contract.cs:29678]
+     TotalAmountAfterVAT   [dan xuat tai BizCarSv.WH.cs:21666]
 🟠 BankCarMortage:
-     DeliveryRangeType   [dan xuat tai Report.cs:4610]
+     DeliveryRangeType   [dan xuat tai BizHTC.Report.cs:4049]
 🟠 BankGuaranteeDtl:
      DiscountValue   [dan xuat tai BizHTC.Report.cs:13171]
 🟠 BankPaymentCar:
      AmountAccum   [dan xuat tai BizHTC.Common.cs:1630]
-🟠 FnExpCalc:
-     FnExpPercent   [dan xuat tai BizHTC.zTemp.cs:36381]
 🟠 ServiceStockInLine:
      TotalBeforeVat   [dan xuat tai 0.34.Contract.cs:26319]
-🟠 DealerServiceOption:
-     ParamValue   [dan xuat tai 0.30.Order.cs:34]
+🟠 PartQuoteLine:
+     AmountBeforeVat   [dan xuat tai BizCarSv.Inventory.Quote.cs:2071]
 🟠 VinProductionYear:
      AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
-🟠 ParamPdi:
-     ParamValue   [dan xuat tai 0.30.Order.cs:34]
 
-TONG: nguon co 3429 cot GHI, 1263 ten trong nhu DAN XUAT; 68 property MiniHTC nghi la DAN XUAT (tren 38 entity).
+TONG: nguon co 6849 cot GHI, 2150 ten trong nhu DAN XUAT; 59 property MiniHTC CON nghi la DAN XUAT (tren 34 entity).
+   (4 cot da kiem tay o #381 va LOAI — xem danh sach CLEARED dau file)
 ⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-🟠 EstimateOrderLine:
-     QtySellCustomer   [dan xuat tai RptSQLQuery.cs:23857]
-     QtySellDealer   [dan xuat tai RptSQLQuery.cs:23858]
-     QtyInStock   [dan xuat tai RptSQLQuery.cs:23859]
-     QtyBuyDealer   [dan xuat tai RptSQLQuery.cs:23861]
-     QtyUnKnown   [dan xuat tai RptSQLQuery.cs:23862]
-     QtyBOChuaXuatKho   [dan xuat tai RptSQLQuery.cs:23863]
-     QtyBOKhongVINQuaKhu   [dan xuat tai RptSQLQuery.cs:23865]
-     QtyBOKhongVINHienTai   [dan xuat tai RptSQLQuery.cs:23866]
-     QtyBOKhongVINTuongLai   [dan xuat tai RptSQLQuery.cs:23867]
-     QtyOrdNotCarID   [dan xuat tai RptSQLQuery.cs:23868]
-🟠 VatInvoice:
-     ValGoodsNotTaxable   [dan xuat tai BizHTC.HDDTIntergration.cs:6213]
-     ValGoodsNotChargeTax   [dan xuat tai BizHTC.HDDTIntergration.cs:6221]
-     ValGoodsVAT5   [dan xuat tai BizHTC.HDDTIntergration.cs:6229]
-     ValGoodsVAT10   [dan xuat tai BizHTC.HDDTIntergration.cs:6245]
-     TotalValInvoice   [dan xuat tai BizHTC.HDDTIntergration.cs:6202]
-     TotalValVAT   [dan xuat tai BizHTC.HDDTIntergration.cs:6201]
-     TotalValPmt   [dan xuat tai BizHTC.HDDTIntergration.cs:6203]
-🟠 PdiFeePaymentLine:
-     ColorExtName   [dan xuat tai BizHTC.ZTempGPS.cs:7084]
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-     TotalPrice   [dan xuat tai RptSQLQuery.cs:22036]
-🟠 PaymentTerm:
-     DepositPercent   [dan xuat tai RptSQLQuery.cs:2150]
-     GuaranteePercent   [dan xuat tai RptSQLQuery.cs:9271]
-     GuaranteeDays   [dan xuat tai BizHTC.TCFIntergration.cs:1186]
-🟠 DmsDealerContract:
-     DepositPercent   [dan xuat tai RptSQLQuery.cs:2150]
-     GuaranteePercent   [dan xuat tai RptSQLQuery.cs:9271]
-     GuaranteeDays   [dan xuat tai BizHTC.TCFIntergration.cs:1186]
-🟠 StoragePaymentLine:
-     ColorExtNameVN   [dan xuat tai BizHTC.ZTempGPS.cs:7085]
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 Discount:
-     DiscountPercent   [dan xuat tai BizHTC.PaymentDiscount.cs:497]
-     PenaltyPercent   [dan xuat tai BizHTC.PaymentDiscount.cs:2198]
-🟠 PdiStoragePayment:
-     ColorExtName   [dan xuat tai BizHTC.ZTempGPS.cs:7084]
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 Dms40SoRootDetail:
-     RequestedQuantity   [dan xuat tai RptSQLQuery.cs:12293]
-     CancelQuantityTotal   [dan xuat tai RptSQLQuery.cs:11374]
-🟠 MstCarColor:
-     ColorExtName   [dan xuat tai BizHTC.ZTempGPS.cs:7084]
-     ColorExtNameVN   [dan xuat tai BizHTC.ZTempGPS.cs:7085]
-🟠 HrSalesManOfMonth:
-     QtySMWorking   [dan xuat tai RptSQLQuery.cs:14139]
-     QtySMNoWorking   [dan xuat tai RptSQLQuery.cs:14154]
-🟠 HrSalesManOfMonthDtl:
-     ListDealerHyundai   [dan xuat tai CommonSQLQuery.cs:1324]
-     ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
-🟠 BankCarMortage:
-     MortageBankCode   [dan xuat tai RptSQLQuery.cs:10453]
-     DeliveryRangeType   [dan xuat tai RptSQLQuery.cs:1152]
-🟠 BankGuaranteeDtl:
-     DiscountValue   [dan xuat tai RptSQLQuery.cs:15068]
-     DiscountPercent   [dan xuat tai BizHTC.PaymentDiscount.cs:497]
-🟠 VinProductionYear:
-     ProductionYear   [dan xuat tai RptSQLQuery.cs:24141]
-     AssemblyStatus   [dan xuat tai RptSQLQuery.cs:14634]
-🟠 PmtLine:
-     AmountAccum   [dan xuat tai RptSQLQuery.cs:14637]
-🟠 StoragePayment:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 PdiFeePayment:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 TransportInsPayment:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 TransportInsPaymentLine:
-     TotalPrice   [dan xuat tai RptSQLQuery.cs:22036]
-🟠 SalesManViolate:
-     ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
-🟠 RedeemRequestLine:
-     MortageBankCode   [dan xuat tai RptSQLQuery.cs:10453]
-🟠 RedeemInvoiceRequestLine:
-     MortageBankCode   [dan xuat tai RptSQLQuery.cs:10453]
-🟠 StockAdjLine:
-     QtyBalance   [dan xuat tai RptSQLQuery.cs:705]
-🟠 PaymentReqDiscountVin:
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 CarVinInvoiceInfo:
-     MortageBankCode   [dan xuat tai RptSQLQuery.cs:10453]
-🟠 Dms40SoRoot:
-     FinishDTime   [dan xuat tai BizHTC.HDDTIntergration.cs:10948]
-🟠 SupplierPayment:
-     PaymentType   [dan xuat tai BizHTC.TCFIntergration.cs:7789]
-🟠 ReqPartPrice:
-     FinishDTime   [dan xuat tai BizHTC.HDDTIntergration.cs:10948]
-🟠 ServiceInvoice:
-     PaymentType   [dan xuat tai BizHTC.TCFIntergration.cs:7789]
-🟠 DeliveryOrderCar:
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 DocReqCar:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 VinMyStatus:
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 SalesOrderLine:
-     RequestedQuantity   [dan xuat tai RptSQLQuery.cs:12293]
-🟠 PmtPaymentGps:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 PmtPaymentAvn:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 PmtPaymentStorage:
-     AmountTotal   [dan xuat tai BizHTC.TCFIntergration.cs:671]
-🟠 PmtPaymentStorageDetail:
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 RqBankingTransPmt:
-     PaymentType   [dan xuat tai BizHTC.TCFIntergration.cs:7789]
-🟠 RqBankingTransPmtLC:
-     PaymentType   [dan xuat tai BizHTC.TCFIntergration.cs:7789]
-🟠 RqBankingTransCtr:
-     AssemblyStatus   [dan xuat tai RptSQLQuery.cs:14634]
-🟠 RqBankingTransWrtCtr:
-     AssemblyStatus   [dan xuat tai RptSQLQuery.cs:14634]
-🟠 CarSpec:
-     AssemblyStatus   [dan xuat tai RptSQLQuery.cs:14634]
-🟠 StoragePdiVin:
-     FinishDTime   [dan xuat tai BizHTC.HDDTIntergration.cs:10948]
-🟠 DealerContract:
-     DealerContractNo   [dan xuat tai RptSQLQuery.cs:30376]
-🟠 DealerContractDetail:
-     DealerContractNo   [dan xuat tai RptSQLQuery.cs:30376]
-🟠 DmsCancelBankMD:
-     FinishDTime   [dan xuat tai BizHTC.HDDTIntergration.cs:10948]
-🟠 DmsDealerContractDtl:
-     ProductionYear   [dan xuat tai RptSQLQuery.cs:24141]
-🟠 CarVinMaster:
-     StorageCodeCurrent   [dan xuat tai CommonSQLQuery.cs:4032]
-🟠 StoFMaintainMain:
-     StorageCodeCurrent   [dan xuat tai CommonSQLQuery.cs:4032]
-🟠 DlrContract:
-     FinishDTime   [dan xuat tai BizHTC.HDDTIntergration.cs:10948]
-🟠 PmtPayment:
-     PaymentType   [dan xuat tai BizHTC.TCFIntergration.cs:7789]
-🟠 BankDoCar:
-     DeliveryOutDate   [dan xuat tai InsReq.cs:424]
-🟠 BankPaymentCar:
-     AmountAccum   [dan xuat tai RptSQLQuery.cs:14637]
-🟠 VatInvoiceCar:
-     ProductionYear   [dan xuat tai RptSQLQuery.cs:24141]
-🟠 ReqMortgage:
-     MortageBankCode   [dan xuat tai RptSQLQuery.cs:10453]
-🟠 ReqMortgageCar:
-     MortageBankCode   [dan xuat tai RptSQLQuery.cs:10453]
-🟠 ServicePart:
-     TotalPrice   [dan xuat tai RptSQLQuery.cs:22036]
-
-TONG: nguon co 2364 cot GHI, 818 ten trong nhu DAN XUAT; 89 property MiniHTC nghi la DAN XUAT (tren 58 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 52 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 218 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 146 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 196 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 143 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 2254 cot GHI, 1 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-
-TONG: nguon co 7 cot GHI, 0 ten trong nhu DAN XUAT; 0 property MiniHTC nghi la DAN XUAT (tren 0 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
-⚠️  CANH BAO: chi thay 1 cay nguon (2010.HTC).
-    Ket qua se co FALSE POSITIVE cho moi cot den tu he nguon KHONG duoc quet.
-    Truyen them cac cay khac (2010.HTC, 2021.1.TCMotor, ...) roi chay lai.
-
-🟠 PmtLine:
-     AmountAccum   [dan xuat tai CFormMain.cs:3234]
-🟠 StoragePayment:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 PdiFeePayment:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 TransportInsPayment:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 DocReqCar:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 PmtPaymentGps:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 PmtPaymentAvn:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 PmtPaymentStorage:
-     AmountTotal   [dan xuat tai CFormMain.cs:3194]
-🟠 RqBankingTransCtr:
-     AssemblyStatus   [dan xuat tai CFormMain.cs:3258]
-🟠 RqBankingTransWrtCtr:
-     AssemblyStatus   [dan xuat tai CFormMain.cs:3258]
-🟠 CarSpec:
-     AssemblyStatus   [dan xuat tai CFormMain.cs:3258]
-🟠 BankPaymentCar:
-     AmountAccum   [dan xuat tai CFormMain.cs:3234]
-🟠 VinProductionYear:
-     AssemblyStatus   [dan xuat tai CFormMain.cs:3258]
-
-TONG: nguon co 1423 cot GHI, 35 ten trong nhu DAN XUAT; 13 property MiniHTC nghi la DAN XUAT (tren 13 entity).
-⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
+⚠️  DIEM MU: 859/6061 lenh SaveData KHONG liet ke cot (ghi moi cot client gui)
+    => voi nhung bang do, "0 hit ghi" KHONG chung minh duoc gi.
