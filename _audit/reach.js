@@ -1,5 +1,33 @@
 // Kha dat (reachability) tu [WebMethod] cua WS xuong biz — ban toi uu: quet token 1 lan/dong.
 const fs=require('fs'), path=require('path');
+// #478: tap ham SONG phai gop CA BON project WS, khong chi HTCWSCarSv.
+function wsLiveNames(wsArg){
+  const dirs = String(wsArg).split(",").map(x=>x.trim()).filter(Boolean);
+  const out = new Set(); let files = 0;
+  const callRe = /_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+  const cmtRe = /^\s*\/\//;
+  for (const d of dirs) {
+    const stack=[d];
+    while(stack.length){
+      const cur=stack.pop();
+      for(const e of fs.readdirSync(cur,{withFileTypes:true})){
+        const fp=path.join(cur,e.name);
+        if(e.isDirectory()){ if(!/^(bin|obj)$/.test(e.name)) stack.push(fp); }
+        else if(e.name.endsWith(".cs")){
+          files++;
+          for(const L of fs.readFileSync(fp,"utf8").split(/\r?\n/)){
+            if(cmtRe.test(L)) continue;
+            const m=L.match(callRe); if(m) out.add(m[1]);
+          }
+        }
+      }
+    }
+  }
+  console.log("  doc "+files+" file WS tu "+dirs.length+" project; ten biz duoc goi = "+out.size);
+  return out;
+}
+const WSDIRS = true;
+
 const BIZ=process.argv[2], WS=process.argv[3], TARGETS=process.argv.slice(4);
 const memberRe=/^\s*(?:public|private|protected|internal)\s+(?:static\s+)?[A-Za-z_][A-Za-z0-9_<>,\[\]\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
 const callRe=/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;

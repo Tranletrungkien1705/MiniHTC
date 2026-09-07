@@ -1,6 +1,34 @@
 // Quet: moi ham biz co HAU TO NGAY/PHIEN BAN, ham nao KHA DAT, ham nao CHET,
 // va MiniHTC dang trich dan ham nao trong Program.cs.
 const fs=require('fs'),path=require('path'),cp=require('child_process');
+// #478: tap ham SONG phai gop CA BON project WS, khong chi HTCWSCarSv.
+function wsLiveNames(wsArg){
+  const dirs = String(wsArg).split(",").map(x=>x.trim()).filter(Boolean);
+  const out = new Set(); let files = 0;
+  const callRe = /_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+  const cmtRe = /^\s*\/\//;
+  for (const d of dirs) {
+    const stack=[d];
+    while(stack.length){
+      const cur=stack.pop();
+      for(const e of fs.readdirSync(cur,{withFileTypes:true})){
+        const fp=path.join(cur,e.name);
+        if(e.isDirectory()){ if(!/^(bin|obj)$/.test(e.name)) stack.push(fp); }
+        else if(e.name.endsWith(".cs")){
+          files++;
+          for(const L of fs.readFileSync(fp,"utf8").split(/\r?\n/)){
+            if(cmtRe.test(L)) continue;
+            const m=L.match(callRe); if(m) out.add(m[1]);
+          }
+        }
+      }
+    }
+  }
+  console.log("  doc "+files+" file WS tu "+dirs.length+" project; ten biz duoc goi = "+out.size);
+  return out;
+}
+const WSDIRS = true;
+
 const BIZ=process.argv[2],WS=process.argv[3],PROG=process.argv[4];
 function walk(d,a){for(const e of fs.readdirSync(d,{withFileTypes:true})){const fp=path.join(d,e.name);
  if(e.isDirectory()){if(!/^(bin|obj|Properties|Web References|Service References)$/.test(e.name))walk(fp,a);}

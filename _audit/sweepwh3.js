@@ -2,6 +2,34 @@
 // CA HAI phia deu co the mang hau to ngay (X_New######## va X_WH_New########);
 // ten tran thuong la ban CHET => phai chon theo tap ham duoc WebMethod goi.
 const fs=require('fs'),path=require('path');
+// #478: tap ham SONG phai gop CA BON project WS, khong chi HTCWSCarSv.
+function wsLiveNames(wsArg){
+  const dirs = String(wsArg).split(",").map(x=>x.trim()).filter(Boolean);
+  const out = new Set(); let files = 0;
+  const callRe = /_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+  const cmtRe = /^\s*\/\//;
+  for (const d of dirs) {
+    const stack=[d];
+    while(stack.length){
+      const cur=stack.pop();
+      for(const e of fs.readdirSync(cur,{withFileTypes:true})){
+        const fp=path.join(cur,e.name);
+        if(e.isDirectory()){ if(!/^(bin|obj)$/.test(e.name)) stack.push(fp); }
+        else if(e.name.endsWith(".cs")){
+          files++;
+          for(const L of fs.readFileSync(fp,"utf8").split(/\r?\n/)){
+            if(cmtRe.test(L)) continue;
+            const m=L.match(callRe); if(m) out.add(m[1]);
+          }
+        }
+      }
+    }
+  }
+  console.log("  doc "+files+" file WS tu "+dirs.length+" project; ten biz duoc goi = "+out.size);
+  return out;
+}
+const WSDIRS = true;
+
 const BIZ=process.argv[2], WS=process.argv[3];
 function walk(d,a){for(const e of fs.readdirSync(d,{withFileTypes:true})){const fp=path.join(d,e.name);
  if(e.isDirectory()){if(!/^(bin|obj|Properties|Web References|Service References)$/.test(e.name))walk(fp,a);}
@@ -19,14 +47,7 @@ for(const f of files){
     if(!bodies.has(mem[k].name)) bodies.set(mem[k].name, lines.slice(from,to));
   }
 }
-const wsFiles=fs.readdirSync(WS).filter(x=>x.endsWith('.cs'));
-console.log('  doc ' + wsFiles.length + ' file WS .cs');
-const live=new Set();
-for(const f of wsFiles) for(const L of fs.readFileSync(path.join(WS,f),'utf8').split(/\r?\n/)){
-  if(/^\s*\/\//.test(L)) continue;
-  const m=L.match(/_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/); if(m) live.add(m[1]);
-}
-console.log('  ham biz duoc WS goi = ' + live.size);
+const live = wsLiveNames(WS);
 
 // #475: SQL sinh boi macro zzB_..._zzE KHONG dem duoc bang dong chu.
 // Ham nay dem so cho dung macro de moi phep so deu co canh bao.

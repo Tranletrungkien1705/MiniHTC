@@ -25385,6 +25385,29 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   **không so sánh được**; chỉ **14 cặp không macro** mới là ứng viên lệch thật.
         // Ví dụ rõ:  — main ,  
         //   ⇒ bản chính **tiêm nhiều khối hơn**, nên con số 67→89 KHÔNG chứng minh điều gì.
+        // ===== 🔴🔴 #478 GỐC CỦA MỌI PHÉP ĐO LIVENESS BỊ SAI: TÔI CHỈ QUÉT **MỘT** PROJECT WS =====
+        // Cây nguồn có **BỐN** project web-service gọi tầng biz, không phải một:
+        //   `HTCWSCarSv` (830 tên) · `HTCWSCarSvTab` (97) · `TERP.WSCarSv` (436) · `TERP.WSHTC` (162).
+        //   Hợp lại = **1059 tên hàm biz được gọi**, so với **830** mà #452/#456/#468/#471 dùng
+        //   ⇒ tập "hàm sống" bị **thiếu 229 tên (22%)**.
+        // 🔴 HỆ QUẢ CỤ THỂ — **rút một kết luận của #461**: ở đó tôi viết cụm `Blt_Bulletin_Get_byVin`
+        //   "có 4 bản, WS chỉ gọi bản 2022-11-14 ⇒ ba bản kia chết". Kiểm trên CẢ BỐN project:
+        //     · `Blt_Bulletin_Get_byVin`            ← `TERP.WSCarSv`
+        //     · `…_New20180625`                     ← `HTCWSCarSv`
+        //     · `…_New20191104`                     ← `HTCWSCarSvTab`   ⇐ **SỐNG**, không phải chết
+        //     · `…_New20210618`                     ← thật sự CHẾT
+        //     · `…_New20221114`                     ← `HTCWSCarSv`
+        //   ⇒ **4/5 bản đều sống**, mỗi bản phục vụ một KÊNH khác nhau (web · máy tính bảng · đối tác).
+        //     Câu "ba bản kia chết" của #461 **bị rút**; phần port của #461 (bộ lọc DateExpired) vẫn đúng.
+        // ✅ Đã sửa GỐC: `_audit/reach.js`, `sweepversion.js`, `sweepwh3.js`, `sweepopen.js` nay nhận
+        //   **danh sách thư mục WS** (phân cách bằng dấu phẩy) và in số file + số tên đã đọc.
+        // 📊 Đo lại họ `_WH` với tập sống đầy đủ: **89 cặp so được · GIỐNG HỆT 60 · KHÁC 29**
+        //   (15 lệch số dòng, 12 cặp dính macro).
+        // ⚠️ Còn một điểm CHƯA chắc, ghi rõ thay vì lấp liếm: khi **cả bản trần lẫn bản `_New…` đều sống**
+        //   (mỗi cái phục vụ một kênh), "bản chính" là bản NÀO phụ thuộc kênh đang xét ⇒ so một cặp duy nhất
+        //   là chưa đủ. Công cụ hiện chọn bản nhiều dòng SQL nhất — **một heuristic**, không phải chân lý.
+        liveSetFix = new { wsProjects = 4, namesHTCWSCarSv = 830, namesAllProjects = 1059,
+            missedBefore = 229, whPairsRecomputed = 89, sqlIdentical = 60, differing = 29 },
         macroAwareness = new { differingPairs = 26, pairsUsingMacro = 12, macroFreeCandidates = 14,
             note = "So dong SQL chi so sanh duoc khi CA HAI phia macro=0." },
         whTwinSweep = new { basesWithWhVariant = 93, comparableBothLive = 88, skippedNoLiveSide = 5,
