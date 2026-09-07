@@ -25485,6 +25485,24 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   nhận bằng tay (dòng `inner join Ser_Part_OrderDetail` không khớp mẫu "bảng tạm"). Vậy con số phân
         //   loại ở đây là **do đọc tay**, không phải do công cụ. Giữ công cụ lại nhưng **không dùng số của nó**.
         //   📌 Đây là lần thứ chín của họ lỗi ĐO — lần này tôi bắt được TRƯỚC khi báo cáo, nhờ đã soi tay trước.
+        // ===== ⚪ #485 ĐÓNG CA `Ser_RO_Get` (main-only 4 / wh-only 4) — HAI LỐI VIẾT, CÙNG MỘT TẬP =====
+        // Main (`BizCarSv.Service.RO.cs:32`) lọc bằng `where exists (select ROID from ser_RO ro join ser_Customer`
+        //   `cus … join ser_car car … and ro0.ROID = ro.ROID + 6 mệnh đề zzzz…)`.
+        // `_WH` (`BizCarSv.zzzzCode.cs:7277`) dựng `select distinct ro.ROID into #tbl_ser_RO_Filter` với **đúng
+        //   hai phép nối và đúng sáu mệnh đề đó**, rồi `inner join` lại.
+        //   ⚪ Bảng tạm chỉ chứa **một cột ROID** và có `distinct` ⇒ **không nở dòng**; `EXISTS` cũng không.
+        //     ⇒ **Cùng một tập ROID.** Khác biệt là **lối viết**, không phải nghiệp vụ.
+        // ⚠️ Khác thật duy nhất: Main nối `ser_car` **chéo CSDL** (`[@strDBName_CommonCenter].[dbo].ser_car`),
+        //   bản kho nối bảng **cục bộ** — đúng khuôn định tuyến CSDL đã gặp ở #462.
+        // 🔴 **LỖI CHUNG CỦA CẢ HAI BẢN** (không phải lệch giữa hai bản): `select @ROID = ro0.ROID` lấy giá trị
+        //   từ một truy vấn **NHIỀU DÒNG, KHÔNG ORDER BY** ⇒ `@ROID` nhận **một dòng bất kỳ**.
+        //   ⚪ Ở đây **vô hại** vì giá trị chỉ dùng cho `IF not @ROID IS NULL` (kiểm tra TỒN TẠI), không dùng
+        //     làm khoá đọc dữ liệu. Ghi lại như **kiểm tra âm tính có lý do**, để lượt sau khỏi báo động lại.
+        //   ⇒ Nhưng nếu lượt nào thấy khuôn `select @X = …` mà giá trị **được dùng tiếp**, thì đó là bẫy #411 thật.
+        // ⇒ Trừ ca này khỏi hàng đợi: **còn 17 cặp** phải đọc tay.
+        roGetPairClosed = new { equivalentSets = true, differenceIsQueryForm = true,
+            mainUsesCrossDbSerCar = true, sharedScalarPickWithoutOrderBy = true,
+            harmlessBecauseExistenceCheckOnly = true },
         whDifferingTriage = new { macroFreeComparable = 76, identical = 53, needReview = 23,
             closedByHand = 4, remaining = 18,
             classifierFoundNothing = true,
