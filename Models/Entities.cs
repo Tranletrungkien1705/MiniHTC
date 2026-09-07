@@ -2962,6 +2962,11 @@ public sealed class ServicePackageService
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string SerCode { get; set; } = "";
+    // ===== #552 §12 BA CỘT NỮA MÀ `ProcessSaveServicePackageServiceItem` GHI =====
+    /// <summary>Giờ công THỰC TẾ của dòng (`ActManHour`) — khác `StdManHour` (định mức, nằm ở danh mục).</summary>
+    public decimal? ActManHour { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
     /// <summary>#547 §12 ĐỐI TƯỢNG THANH TOÁN của dòng công (`TConst.Ser_ROType`:
     /// `ROREPAIR · ROINSURANCE · ROWARRANTY · LOCAL · GENERAL`). Nguồn **bắt buộc**, rỗng là ném lỗi.</summary>
     public string? ExpenseType { get; set; }
@@ -2981,6 +2986,13 @@ public sealed class ServicePackagePart
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string PartCode { get; set; } = "";
+    // ===== #552 §12 CÁC CỘT MÀ `ProcessSaveServicePackagePartItem` GHI =====
+    /// <summary>SỐ LƯỢNG phụ tùng trong gói (`Quantity`) — trước nay MiniHTC **chỉ có `Factor`**,
+    /// nên gói hai cái lọc dầu và gói một cái **không phân biệt được**.</summary>
+    public decimal? Quantity { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
+    public string? ExpenseType { get; set; }
     public string? PartName { get; set; }
     public decimal Price { get; set; }
     public decimal Factor { get; set; } = 1;

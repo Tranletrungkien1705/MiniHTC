@@ -16720,8 +16720,11 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         if (string.IsNullOrWhiteSpace(s.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã." });
         var f = s.Factor <= 0 ? 1 : s.Factor; var amt = Math.Round(s.Price * f, 2);
         svcTotal += amt;
+        // #552 §12: rỗng ⇒ KHÔNG ghi (khuôn `if (!IsEmpty)` của ProcessSaveServicePackageServiceItem)
+        //   — khác #548 nơi rỗng ⇒ DBNull (XOÁ). Hai khuôn ngược nhau trong CÙNG một hàm Update.
         svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName,
-            ExpenseType = s.ExpenseType, ROType = s.ROType, Price = s.Price, Factor = f, Amount = amt });
+            ExpenseType = s.ExpenseType, ROType = s.ROType, Price = s.Price, Factor = f, Amount = amt,
+            ActManHour = s.ActManHour, VAT = s.VAT, Note = s.Note });
     }
     var partRows = new List<ServicePackagePart>();
     var seenP = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -16731,7 +16734,9 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         if (!seenP.Add(p.PartCode.Trim())) return Results.BadRequest(new { error = "Trùng mã PT trong gói: " + p.PartCode });
         var f = p.Factor <= 0 ? 1 : p.Factor; var amt = Math.Round(p.Price * f, 2);
         partTotal += amt;
-        partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt });
+        partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName,
+            Price = p.Price, Factor = f, Amount = amt,
+            Quantity = p.Quantity, VAT = p.VAT, Note = p.Note, ExpenseType = p.ExpenseType });
     }
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PackageNo == no);
     // #547-4: CheckExistServicePackageNo — nguồn CHẶN trùng mã khi TẠO (không upsert im lặng).
@@ -16941,6 +16946,7 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         {
             x.SerCode, x.SerName, x.ExpenseType, x.ROType,   // #547 §12
             x.Price, x.Factor, x.Amount,                      // giá CHỐT trên gói
+            x.ActManHour, x.VAT, x.Note,                      // #552 §12
             NewPrice = m?.Price, NewVAT = m?.Vat,             // giá HIỆN HÀNH trong danh mục
             NewAmount = m is null ? (decimal?)null : x.Factor * m.Price,
             StdManHour = m?.StdManHour,
@@ -16977,6 +16983,7 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         return new
         {
             x.PartCode, x.PartName,
+            x.Quantity, x.VAT, x.Note, x.ExpenseType,       // #552 §12
             x.Price,                                        // giá chốt trên dòng gói
             effectivePrice = eff?.Price,                    // giá theo bảng giá còn hiệu lực
             effectivePriceVAT = eff?.PriceVAT,
@@ -16999,6 +17006,21 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         expenseTypeCommentedOutInSource = "--, sps.ExpenseType — bat buoc nhap khi tao goi (#547) nhung KHONG tra ra",
         duplicatePriceColumnInSource = "sps.* roi Isnull(sps.Price,0) Price => DataTable co Price va Price1",
         serviceMasterJoinIsInner = "dich vu da xoa khoi danh muc ROI khoi goi",
+        // ===== #552 =====
+        // 🔴 `ProcessSaveServicePackage*Item` ghi thêm các cột mà bản port cũ KHÔNG có:
+        //   dòng công: `ActManHour` (giờ công THỰC TẾ — khác `StdManHour` định mức ở danh mục) · `VAT` · `Note`;
+        //   dòng phụ tùng: **`Quantity`** · `VAT` · `Note` · `ExpenseType`.
+        //   ⚠️ Thiếu `Quantity` là **mất thông tin nghiệp vụ**: gói có HAI lọc dầu và gói có MỘT
+        //     trước nay không phân biệt được (chỉ có `Factor`).
+        // ⚪ **Kiểm tra âm tính**: `Update` gọi `ProcessServicePackage*ItemDelete` **trước** rồi mới
+        //   `ProcessSave…` ⇒ **xoá-rồi-chèn**, không nhân đôi hạng mục. MiniHTC cũng `RemoveRange` rồi `Add`
+        //   ⇒ **khớp**, không phải sửa.
+        // ⚠️ Trong `ProcessSave…`, mỗi cột bọc `if (!StringUtils.IsEmpty(...))` ⇒ **rỗng = KHÔNG ghi**
+        //   (giữ null), **ngược** với phần header của cùng hàm `Update` nơi rỗng ⇒ `DBNull` (XOÁ) — #548.
+        //   Hai khuôn đối lập nằm trong **cùng một lời gọi nghiệp vụ**.
+        itemColumnsAdded = new[] { "ActManHour", "VAT", "Note", "Quantity", "ExpenseType" },
+        deleteThenInsertVerified = true,
+        emptyMeansSkipOnItemsButClearOnHeader = true,
         contrastWithAppointmentScreen = "#544 cong ca TotalInShipment",
         effectivePriceRule = "RANK() OVER(PARTITION BY PartId ORDER BY DateEffect DESC) = 1, DateEffect <= hom nay, IsActive = '1'",
         rankInsteadOfRowNumberDuplicatesRows = true,
@@ -52031,8 +52053,11 @@ record ServicePackageUpdateDto(string? PackageNo, string? DealerCode, string? Pa
 
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor,
-    string? ExpenseType = null, string? ROType = null);   // #547 §12
-record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+    string? ExpenseType = null, string? ROType = null,                       // #547 §12
+    decimal? ActManHour = null, decimal? VAT = null, string? Note = null);   // #552 §12
+record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor,
+    decimal? Quantity = null, decimal? VAT = null, string? Note = null,
+    string? ExpenseType = null);   // #552 §12
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);

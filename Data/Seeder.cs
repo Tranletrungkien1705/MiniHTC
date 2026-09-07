@@ -1281,6 +1281,14 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #552 cac cot hang muc ma ProcessSaveServicePackage*Item ghi
+        "ALTER TABLE public.\"ServicePackageServices\" ADD COLUMN IF NOT EXISTS \"ActManHour\" numeric",
+        "ALTER TABLE public.\"ServicePackageServices\" ADD COLUMN IF NOT EXISTS \"VAT\" numeric",
+        "ALTER TABLE public.\"ServicePackageServices\" ADD COLUMN IF NOT EXISTS \"Note\" text",
+        "ALTER TABLE public.\"ServicePackageParts\" ADD COLUMN IF NOT EXISTS \"Quantity\" numeric",
+        "ALTER TABLE public.\"ServicePackageParts\" ADD COLUMN IF NOT EXISTS \"VAT\" numeric",
+        "ALTER TABLE public.\"ServicePackageParts\" ADD COLUMN IF NOT EXISTS \"Note\" text",
+        "ALTER TABLE public.\"ServicePackageParts\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
         // #548 cac cot ma SerServicePackageUpdate ghi
         "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"TakingTime\" text",
