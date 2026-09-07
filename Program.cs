@@ -3297,6 +3297,113 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    `VAT_TCGInvoice.TCGInvoiceDate` **khoảng**; `Car_Car.DealerCode` **"in"**.
 // ⚠️ **DÒNG COMMENT, KHÔNG PORT**: `//sbSql.Append(" and ((Car_VIN.TCGUnitPrice -
 //    VAT_TCGInvoiceDetail.TCGUnitPrice) > 0)")` (`:15593`) — điều kiện "giá lệch dương" đã bị rem.
+
+// ===== #B52 TÌM VIN TỔNG QUÁT — `Car_VIN_Get_New20181119` (`FrmSearchVin`, `FrmSearchVinForCBreq`) =====
+// Trace LIVE: `salesSv.SearchVinlistDetail` (`SalesService.cs:14308`) → WS `Car_VIN_Get`
+//   (`WSHTC.asmx.cs:61154`) → `_biz.Car_VIN_Get_New20181119` (`Biz.HTC.WH.cs:61158`, **VỎ BỌC**)
+//   → **`Car_VIN_GetX`** (`:61411`) — SQL thật. ⚠️ Hàm `GetX` này **không có hậu tố ngày** dù hàm bao
+//   có (`_New20181119`) — tra theo hậu tố sẽ không thấy (luật `C0-…decimusquintus`).
+// 🔴 **BA cột DẪN XUẤT** của nguồn, port đúng công thức (không tự chế):
+//   1. **`FlagIsOnWay`** — *"đánh dấu xe đang ở kho hay đang trên đường"*:
+//      `sdm.FDlvMnStatus = 'A'` **và** `sdm.TDlvMnStatus = 'P'` **và**
+//      (`sdm.DlvEndDate is null` **hoặc** `sdm.DlvEndDate > getdate()`) ⇒ `N'Y'`, ngược lại `N'N'`.
+//      🔴 Biên bản dùng để xét là **biên bản MỚI NHẤT theo VIN**: `#tblmaxDlv` =
+//      `select max(dlv.DlvMnNo), dlv.VIN … group by dlv.vin` — **không** phải biên bản bất kỳ.
+//      ⚠️ `max(DlvMnNo)` là **max theo CHUỖI mã**, không phải theo ngày — port đúng như vậy.
+//   2. **`src_RearCBStatus`** — trạng thái đóng thùng: `select top 1 src.RearCBStatus … where
+//      srcdt.VIN = t.VIN order by src.CreatedDate desc` ⇒ **bản ghi đóng thùng MỚI NHẤT theo ngày tạo**.
+//   3. **`COYear`** (`20190507`): `case when (cv.CODate = '' or cv.CODate is null) then null
+//      else Convert(varchar(4), cv.CODate) + '-01' + '-01' end`.
+//      🔴 Nguồn **KHÔNG** lấy `year(CODate)`: nó `Convert(varchar(4), …)` — với cột datetime, SQL Server
+//      cắt **4 ký tự đầu của chuỗi ngày**, không phải năm. Port giữ nguyên ngữ nghĩa "4 ký tự đầu" và
+//      ghép `-01-01`; nếu cột lưu `yyyy-…` thì kết quả trùng năm, nhưng **không suy diễn** thay nguồn.
+// 🔴 `@strBUPatternOfUser` khai báo nhưng **KHÔNG DÙNG** — **ca thứ SÁU** liên tiếp.
+// ⚠️ NỢ CÓ NHÃN: nguồn còn nhiều `left join` làm giàu (CT_TKHQ/CT_PackingList/CT_LC/Mst_*) và cột
+//    `TOTAL = 1.0`; endpoint trả khối lõi + ba cột dẫn xuất trên.
+app.MapGet("/api/vins/search", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? specCode, string? modelCode, string? colorCode, string? dealerCode,
+    string? packingListNo, string? buPattern, string? enforceBuScope,
+    int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    var fVin = U(vin);
+    if (fVin is not null) cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(fVin)).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) { var set = specCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.SpecCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(modelCode)) { var set = modelCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ModelCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(colorCode)) { var set = colorCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ColorCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(dealerCode)) { var set = dealerCode.Split(',').Select(s => s.Trim().ToUpperInvariant()).ToHashSet(); cars = cars.Where(c => set.Contains(c.DealerCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(packingListNo)) { var k = packingListNo.Trim().ToUpperInvariant(); cars = cars.Where(c => (c.PackingListNo ?? "").ToUpperInvariant().Contains(k)).ToList(); }
+
+    var vinSet = cars.Select(c => c.VIN).ToHashSet();
+
+    // `#tblmaxDlv`: biên bản giao **MỚI NHẤT theo mã** (max chuỗi `DlvMnNo`) của từng VIN.
+    var dlvRows = await (from d in db.TranspDlvConfirmCars.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN))
+                         join h in db.TranspDlvConfirms.Where(x => x.OrgId == t.OrgId) on d.TranspDlvConfirmId equals h.Id
+                         select new { d.VIN, h.DlvMinutesNo, h.FDlvMnStatus, h.TDlvMnStatus, d.DlvStartDate, h.DlvEndDate }).ToListAsync();
+    var maxDlv = dlvRows.GroupBy(x => x.VIN)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.DlvMinutesNo, StringComparer.Ordinal).First());
+
+    // `src_RearCBStatus`: bản ghi đóng thùng **mới nhất theo `CreatedDate`**.
+    var rearCb = await (from d in db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN))
+                        join h in db.StoRearCBs.Where(x => x.OrgId == t.OrgId) on d.StoRearCBId equals h.Id
+                        select new { d.VIN, h.RearCBStatus, h.CreatedDate }).ToListAsync();
+    var lastRearCb = rearCb.GroupBy(x => x.VIN)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.CreatedDate).First().RearCBStatus);
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? dc)
+    {
+        if (pattern is null) return true;
+        var dl = dealers.FirstOrDefault(z => z.DealerCode == dc);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = cars.Count(c => !InScope(c.DealerCode));
+    if (enforceBuScope == "1") cars = cars.Where(c => InScope(c.DealerCode)).ToList();
+
+    cars = cars.OrderBy(c => c.VIN, StringComparer.Ordinal).ToList();
+    var myCount = cars.Count;
+    var now = DateTime.Now;
+    var items = cars.Skip(start).Take(count).Select(c =>
+    {
+        maxDlv.TryGetValue(c.VIN, out var dlv);
+        // `FlagIsOnWay`: 'A' + 'P' + (DlvEndDate null hoặc > getdate()).
+        var onWay = dlv is not null
+                    && dlv.FDlvMnStatus == "A" && dlv.TDlvMnStatus == "P"
+                    && (dlv.DlvEndDate is null || dlv.DlvEndDate > now) ? "Y" : "N";
+        // `COYear`: rỗng/null ⇒ null; ngược lại **4 ký tự đầu** của chuỗi ngày + "-01-01".
+        string? coYear = c.CODate is null ? null
+            : c.CODate.Value.ToString("yyyy-MM-dd").Substring(0, 4) + "-01" + "-01";
+        return new
+        {
+            cvVIN = c.VIN, cvModelCode = c.ModelCode, cvSpecCode = c.SpecCode, cvColorCode = c.ColorCode,
+            cvActualSpec = c.ActualSpec, cvEngineNo = c.EngineNo, cvKeyNo = c.KeyNo,
+            cvStorageCodeCurrent = c.StorageCodeCurrent, cvPackingListNo = c.PackingListNo,
+            cvCODate = c.CODate, ccDealerCode = c.DealerCode, ccCarCancelRemark = c.CarCancelRemark,
+            flagIsOnWay = onWay,
+            dlvMnNo = dlv?.DlvMinutesNo, fDlvMnStatus = dlv?.FDlvMnStatus, tDlvMnStatus = dlv?.TDlvMnStatus,
+            srcRearCBStatus = lastRearCb.TryGetValue(c.VIN, out var rs) ? rs : null,
+            coYear,
+            total = 1.0m                              // cột `TOTAL` hằng 1.0 của nguồn
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        flagIsOnWayRule = "FDlvMnStatus='A' VA TDlvMnStatus='P' VA (DlvEndDate is null HOAC > getdate()) => 'Y'; xet tren bien ban MOI NHAT theo max(DlvMnNo) (max CHUOI ma, khong phai theo ngay).",
+        rearCbRule = "src_RearCBStatus = top 1 RearCBStatus order by Sto_RearrangeCB.CreatedDate desc.",
+        coYearRule = "COYear = Convert(varchar(4), CODate) + '-01' + '-01' — nguon cat 4 KY TU DAU cua chuoi ngay, KHONG dung year().",
+        outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon - ca thu SAU lien tiep.",
+        debt = "NO co nhan: cac left join lam giau (CT_TKHQ / CT_PackingList / CT_LC / Mst_CarSpec / Mst_CarModel) chua port day du."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/for-tcg-invoice-adj", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? drListCode, DateTime? drCreatedFrom, DateTime? drCreatedTo,
