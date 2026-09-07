@@ -34911,6 +34911,115 @@ app.MapPost("/api/dlrcontracts/{no}/save-header", async (
     });
 }).RequireAuthorization();
 
+// ===== #B84 KÊNH iDEALER (ứng dụng đại lý) — HAI ĐIỂM VÀO TRA DANH MỤC =====
+//   `iDealer_MstDataCarModel_Get_New20190215` (`BizHTC.IDealer.cs:22`,  WS `:57078`)
+//   `iDealer_Mst_CarDrvTest_Get_New20190215`  (`BizHTC.IDealer.cs:146`, WS `:57160`)
+//   3B đo thật, **khớp cả 2 máy**: `22/0ca93e4adb9bc66f45dd3987107a3f6d` ·
+//   `146/6332a5c20627d2853ef9ebeefdab0f6b`.
+// 🔴 **CẢ HAI CHỈ LÀ VỎ** — gọi thẳng **cùng hàm `*_GetX` mà màn hình NỘI BỘ đang dùng**:
+//      `Mst_CarModel_GetX`     (`Biz.HTC.WH.cs:1432`)
+//      `Mst_CarDrvTest_GetX`   (`Biz.HTC.WH.cs:185081`)
+//    ⇒ **kênh ĐỐI TÁC dùng lại nguyên truy vấn nội bộ**, kể cả tham số lọc tự do
+//      `strFt_WhereClause` (ghép thẳng vào `where` qua `zzzzClauseWhere_strFilterWhereClause`).
+//      Port **KHÔNG** nhận where-clause thô từ client; chỉ mở các tham số lọc có tên.
+// 🔴🔴 **LỖ HỔNG RBAC — BIẾN THỂ THỨ TƯ, NẶNG NHẤT TỪ ĐẦU PHIÊN: THAY BẰNG HẰNG CỨNG.**
+//    Trong `Mst_CarDrvTest_GetX` (`Biz.HTC.WH.cs:185084-185102`):
+//      `//alParamsCoupleSql.AddRange(… "@strBUPatternOfUser", drAbilityOfUser["BUPattern"]);` ← COMMENT
+//      `alParamsCoupleSql.AddRange(new object[] { "@strBUPatternOfUser", **"HTC%"** });`        ← ĐANG CHẠY
+//      `ON md.DealerCode = mcdt.DealerCode AND (md.BUCode like (**'HTC%'**))--@strBUPatternOfUser)`
+//    ⇒ phạm vi BU **bị đóng cứng `'HTC%'`**, quyền thật của người dùng bị comment **HAI LẦN**
+//      (một ở chỗ bind, một ngay trong mệnh đề `on`). Hệ quả **hai chiều**:
+//        · người dùng thuộc BU khác **không thấy gì** (dữ liệu của họ bị chặn); và
+//        · dữ liệu nhóm **HTC bị lộ cho MỌI người gọi**, kể cả qua **kênh đối tác iDealer**.
+//    Bốn biến thể đã ghi nhận: `left join` mang điều kiện (#B45) · khai mà không dùng
+//    (#B46/#B47/#B50/#B52/#B53) · comment trong `on` (#B70) · **thay bằng hằng cứng (#B84)**.
+//    Đối chứng LÀNH: #B78, #B82. 📌 **Ưu tiên cao trong hồ sơ gửi nghiệp vụ/bảo mật** vì chạm kênh ngoài.
+//    Port **giữ đúng nguồn** (mặc định `HTC%`) nhưng cho truyền `buPattern` và trả `buPatternApplied`
+//    + `buPatternHardcoded` để đo; **không tự bịt**.
+// ✅ `Mst_CarModel_GetX` thì **không có RBAC nào cả** — danh mục model là dữ liệu chung; đây là
+//    thiết kế, không phải điều kiện bị bỏ quên (phân biệt theo `C0-…quinquagesimus`).
+// 🔴 **Phân trang theo khuôn chung**: `identity(bigint, 0, 1) MyIdxSeq` trên bảng nháp, rồi
+//    `select Count(0) MyCount` **TRƯỚC** khi cắt trang ⇒ `myCount` là **tổng toàn bộ**, không phải
+//    số dòng của trang. Port giữ đúng thứ tự này.
+app.MapGet("/api/idealer/carmodels", async (
+    AppDbContext db, ITenantContext t, int? recordStart, int? recordCount, string? modelCode, string? modelName) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+    var q = db.CarModelStds.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(m => m.ModelCode.Contains(modelCode.Trim()));
+    if (!string.IsNullOrWhiteSpace(modelName)) q = q.Where(m => m.ModelName != null && m.ModelName.Contains(modelName.Trim()));
+    var all = await q.OrderBy(m => m.ModelCode).ToListAsync();
+    var myCount = all.Count;                       // `MyCount` đếm TRƯỚC khi cắt trang
+    var items = all.Skip(start).Take(count).Select(m => new
+    {
+        mcmModelCode = m.ModelCode, mcmModelName = m.ModelName,
+        mcmFlagActive = m.FlagActive, mcmFlagBusinessPlan = m.FlagBusinessPlan
+    }).ToList();
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        wrapperNote = "iDealer_MstDataCarModel_Get_New20190215 CHI LA VO, goi thang Mst_CarModel_GetX (Biz.HTC.WH.cs:1432) - dung CHUNG ham voi man hinh noi bo.",
+        rbacNote = "Mst_CarModel_GetX KHONG co RBAC nao ca - danh muc model la du lieu chung. Day la THIET KE, khong phai dieu kien bi bo quen (phan biet theo C0-...quinquagesimus).",
+        whereClauseNote = "Nguon nhan strFt_WhereClause ghep THANG vao 'where' qua zzzzClauseWhere_strFilterWhereClause. Port KHONG nhan where-clause tho tu client; chi mo cac tham so loc co ten.",
+        pagingNote = "Khuon chung: identity(bigint,0,1) MyIdxSeq tren bang nhap, roi 'select Count(0) MyCount' TRUOC khi cat trang => myCount la TONG TOAN BO, khong phai so dong cua trang."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/idealer/cardrivetests", async (
+    AppDbContext db, ITenantContext t, int? recordStart, int? recordCount,
+    string? dealerCode, string? modelCode, string? buPattern) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+    // 🔴 Nguồn ĐÓNG CỨNG 'HTC%'. Giữ đúng nguồn làm mặc định, cho phép truyền để ĐO.
+    var hardcoded = "HTC%";
+    var applied = string.IsNullOrWhiteSpace(buPattern) ? hardcoded : buPattern.Trim();
+    var prefix = applied.TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    // `inner join Mst_Dealer … AND (md.BUCode like 'HTC%')` — inner join nên đại lý ngoài mẫu BỊ LOẠI.
+    var inScope = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(prefix))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    var q = db.CarDriverTests.Where(x => x.OrgId == t.OrgId);
+    var all = await q.ToListAsync();
+    var beforeScope = all.Count;
+    all = all.Where(x => x.DealerCode != null && inScope.Contains(x.DealerCode)).ToList();
+    var droppedOutOfBuPattern = beforeScope - all.Count;
+
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        all = all.Where(x => (x.DealerCode ?? "").ToUpperInvariant() == dealerCode.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(modelCode))
+        all = all.Where(x => (x.ModelCode ?? "").ToUpperInvariant() == modelCode.Trim().ToUpperInvariant()).ToList();
+
+    var myCount = all.Count;                       // `MyCount` đếm TRƯỚC khi cắt trang
+    var items = all.OrderBy(x => x.DealerCode).ThenBy(x => x.DrvTestVIN ?? "", StringComparer.Ordinal)
+        .Skip(start).Take(count).Select(x => new
+        {
+            mcdtDealerCode = x.DealerCode,
+            mdDealerName = dealers.FirstOrDefault(d => d.DealerCode == x.DealerCode)?.DealerName,
+            mcdtVIN = x.DrvTestVIN, mcdtPlateNo = x.DrvTestPlateNo, mcdtEngineNo = x.DrvTestEngineNo,
+            mcdtModelCode = x.ModelCode, mcdtSpecCode = x.SpecCode, mcdtColorCode = x.ColorCode,
+            mcdtFlagActive = x.FlagActive
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        buPatternApplied = applied,
+        buPatternHardcoded = hardcoded,
+        droppedOutOfBuPattern,
+        rbacHoleVariant4 = "LO HONG RBAC - BIEN THE THU TU, NANG NHAT: THAY BANG HANG CUNG. Trong Mst_CarDrvTest_GetX (Biz.HTC.WH.cs:185084-185102): dong bind '@strBUPatternOfUser = drAbilityOfUser[BUPattern]' BI COMMENT, dong DANG CHAY bind hang 'HTC%'; va ngay trong menh de 'on' cung la (md.BUCode like ('HTC%'))--@strBUPatternOfUser). Quyen that cua nguoi dung bi comment HAI LAN.",
+        rbacImpact = "He qua HAI CHIEU: (a) nguoi dung thuoc BU khac KHONG THAY GI - du lieu cua ho bi chan; (b) du lieu nhom HTC BI LO CHO MOI NGUOI GOI, ke ca qua KENH DOI TAC iDealer. Uu tien cao trong ho so gui nghiep vu/bao mat vi cham kenh ngoai.",
+        rbacVariantsSoFar = "Bon bien the: left join mang dieu kien (#B45) | khai ma khong dung (#B46/#B47/#B50/#B52/#B53) | comment trong 'on' (#B70) | THAY BANG HANG CUNG (#B84). Doi chung LANH: #B78, #B82.",
+        wrapperNote = "iDealer_Mst_CarDrvTest_Get_New20190215 CHI LA VO, goi thang Mst_CarDrvTest_GetX (Biz.HTC.WH.cs:185081) - KENH DOI TAC DUNG LAI NGUYEN TRUY VAN NOI BO.",
+        whereClauseNote = "Nguon nhan strFt_WhereClause ghep THANG vao 'where'. Port KHONG nhan where-clause tho tu client.",
+        pagingNote = "MyCount dem TRUOC khi cat trang => tong toan bo, khong phai so dong cua trang."
+    });
+}).RequireAuthorization();
+
 // Thân dùng chung — nguồn là HAI hàm gần như trùng khít, khác đúng giá trị trạng thái gán vào.
 async Task<IResult> DlrContractCancelSetStatusMulti(
     List<string> contractCNos, string newStatus, AppDbContext db, ITenantContext t,
