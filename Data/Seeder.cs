@@ -2264,6 +2264,8 @@ public static class Seeder
                 "ALTER TABLE public.\"ReqRedeemDtls\" ADD COLUMN IF NOT EXISTS \"DRListCode\" text NULL",
                 "ALTER TABLE public.\"ReqRedeemDtls\" ADD COLUMN IF NOT EXISTS \"DMReqDtlStatus\" text NULL",
                 "ALTER TABLE public.\"ReqInvoiceDtls\" ADD COLUMN IF NOT EXISTS \"RDReqIvDtlStatus\" text NULL",
+                // #B43 — Ord_SalesOrder.FlagPmtDelayDone: cot DUY NHAT ma OrderSO_Upd_02 ghi
+                "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"FlagPmtDelayDone\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

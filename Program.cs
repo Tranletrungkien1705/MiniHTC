@@ -29592,6 +29592,74 @@ app.MapPost("/api/salesorders/{no}/cancel", async (string no, AppDbContext db, I
 // 🔴 nguồn **KHÔNG dùng một transaction chung**: nó lặp từng mã, gọi WS riêng lẻ, và trả
 //    `Hashtable<soCode, bool>` — mã nào lỗi thì `false`, **các mã còn lại vẫn được huỷ**.
 //    Vì vậy endpoint này trả **kết quả TỪNG MÃ** thay vì fail cả lô ở mã hỏng đầu tiên.
+
+// ===== #B43 CỜ ĐÃ XỬ LÝ PHẠT TRẢ CHẬM — `OrderSO_Upd_02_New20181119` (`FrmMngOrderHtc`) =====
+// Trace LIVE: `FrmMngOrderHtc` (`:706-726`) → `salesSV.OrDerSOFlagDone(so)` (`SalesService.cs:259`)
+//   → WS `OrderSO_Upd_02` (`WSHTC.asmx.cs:6966`) → **`_biz.OrderSO_Upd_02_New20181119`**
+//   (`DataWH/Biz.HTC.WH.cs:26469`). Bản chết: `Delete.BizHTC.Report.cs:69001` (`_New20181115`),
+//   `Biz.HTC.WH.Rel.20230823.cs:24720` (ngoài csproj).
+// 🔴 **`SearchSO` của màn này ĐÃ CHẾT**: bị comment ở **cả ba tầng** — form (`:357-358`),
+//    `SalesService.cs:558` và `:771`. Tra theo tên hàm sẽ tưởng màn có chức năng tìm kiếm; **không có**.
+//    Nghiệp vụ GHI duy nhất còn sống của màn là cờ này ⇒ port đúng phần còn sống.
+// 🔴 `alColumnEffective` đúng **MỘT cột**: `FlagPmtDelayDone` (`:26597`), giá trị lấy thẳng từ input.
+// 🔴 Bốn guard: `myCommon_CheckHTCDirect(Flag.Active)` — **dòng ACTIVE**; `myOrder_CheckSO(Flag.Active,
+//    **Stage.Approved2**)` — đơn phải đã **duyệt cấp 2**; `myCommon_CheckDealer(Active, Active)`;
+//    `myCommon_CheckAccessDealerData(BUPattern, BUCode)`.
+// 🔴 Form chỉ gửi khi giá trị thuộc đúng **{"0","1"}** (`FrmMngOrderHtc.cs:611-617`) — không tự chế
+//    giá trị khác; và **lặp từng đơn**, lỗi một đơn thì `break` (dừng hẳn), không bỏ qua như huỷ đơn (#B38).
+app.MapPost("/api/salesorders/flag-pmtdelay-done", async (List<SoFlagDoneDto> rows, AppDbContext db,
+    ITenantContext t, string? flagDirect, string? buPattern) =>
+{
+    var list = (rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SOCode)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Không có đơn hàng thay đổi" });   // nguyên văn thông báo của form
+    // `myCommon_CheckHTCDirect(Flag.Active)` — dòng ACTIVE.
+    if (flagDirect == "0")
+        return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật cờ này.", guard = "myCommon_CheckHTCDirect" });
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var codes = list.Select(r => r.SOCode!.Trim().ToUpperInvariant()).Distinct().ToList();
+    var orders = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && codes.Contains(o.SoCode)).ToListAsync();
+    var dealerCodes = orders.Select(o => o.DealerCode).Distinct().ToList();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId && dealerCodes.Contains(d.DealerCode))
+        .Select(d => new { d.DealerCode, d.BUCode, d.FlagActive, d.Status }).ToListAsync();
+
+    // Nguồn lặp từng đơn; form **dừng hẳn** ở đơn lỗi đầu tiên (`break`) — port giữ đúng: validate hết trước.
+    foreach (var r in list)
+    {
+        var code = r.SOCode!.Trim().ToUpperInvariant();
+        var flag = (r.FlagPmtDelayDone ?? "").Trim();
+        // Form chỉ gửi khi thuộc {"0","1"} — không đẻ giá trị ngoài từ vựng nguồn.
+        if (flag is not ("0" or "1"))
+            return Results.BadRequest(new { error = $"Đơn {code}: FlagPmtDelayDone phải là '0' hoặc '1'.", allowed = new[] { "0", "1" } });
+        var o = orders.FirstOrDefault(x => x.SoCode == code);
+        if (o is null) return Results.BadRequest(new { error = $"Không tìm thấy đơn hàng {code}." });
+        // `myOrder_CheckSO(…, Stage.Approved2)`
+        if (o.Status != "A2")
+            return Results.BadRequest(new { error = $"Đơn {code} đang ở '{o.Status}' — chỉ đơn đã duyệt cấp 2 ('A2') mới đặt được cờ.", guard = "myOrder_CheckSO(Stage.Approved2)" });
+        // `myCommon_CheckDealer(Active, Active)`
+        var d = dealers.FirstOrDefault(x => x.DealerCode == o.DealerCode);
+        if (d is null) return Results.BadRequest(new { error = $"Đại lý {o.DealerCode} của đơn {code} không tồn tại.", guard = "myCommon_CheckDealer" });
+        if ((d.FlagActive ?? d.Status) == "0")
+            return Results.BadRequest(new { error = $"Đại lý {o.DealerCode} đang ngưng hoạt động.", guard = "myCommon_CheckDealer(FlagActive)" });
+        // `myCommon_CheckAccessDealerData(BUPattern, BUCode)`
+        if (pattern is not null && !(d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+            return Results.BadRequest(new { error = $"Ngoài phạm vi dữ liệu: BUCode {d.BUCode} không thuộc {buPattern}.", guard = "myCommon_CheckAccessDealerData" });
+    }
+
+    foreach (var r in list)
+    {
+        var o = orders.First(x => x.SoCode == r.SOCode!.Trim().ToUpperInvariant());
+        o.FlagPmtDelayDone = r.FlagPmtDelayDone!.Trim();   // alColumnEffective: ĐÚNG một cột
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated = list.Count, soCodes = codes,
+        columnsWritten = new[] { "FlagPmtDelayDone" },
+        deadFunctionNote = "SearchSO của FrmMngOrderHtc đã bị comment ở CẢ BA tầng (form + SalesService:558 + :771) — màn không còn chức năng tìm kiếm ở hệ nguồn.",
+        errorPolicy = "Form dừng hẳn ở đơn lỗi đầu tiên (break) — khác huỷ đơn hàng loạt (#B38) vốn bỏ qua đơn lỗi."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/salesorders/cancel-multi", async (List<string> soCodes, AppDbContext db,
     ITenantContext t, string? buPattern) =>
 {
@@ -35278,6 +35346,8 @@ record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? Pro
 // Dòng duyệt cấp 1 do người duyệt nhập — nguồn đối chiếu theo khoá SpecCode/ModelCode/ColorCode.
 record SoApprove1LineDto(string? ModelCode, string? SpecCode, string? ColorCode, int ApprovedQuantity, DateTime? ApprovedDate, decimal UnitPriceInit, string? Remark);
 record SoRejectDto(string? Reason);
+// #B43 — DTO 1:1 voi So.FlagPmtDelayDone ma form gui (chi "0"/"1")
+record SoFlagDoneDto(string? SOCode, string? FlagPmtDelayDone);
 record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);
 record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);

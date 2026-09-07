@@ -6081,6 +6081,11 @@ public sealed class SalesOrder
     public DateTime? GrtEndDate { get; set; }
     public DateTime? CarDueDate { get; set; }
     public decimal PenalizeActual { get; set; }   // tiền phạt trả chậm thực tế (FrmUpdatePenaltyPmtDelayReal)
+    /// <summary>🔴 #B43 — `Ord_SalesOrder.FlagPmtDelayDone`: cờ **đã xử lý xong phạt trả chậm**.
+    /// Là cột **DUY NHẤT** mà `OrderSO_Upd_02_New20181119` (`Biz.HTC.WH.cs:26469`) ghi — nghiệp vụ
+    /// duy nhất còn SỐNG của màn `FrmMngOrderHtc` (mọi lời gọi `SearchSO` ở màn đó **đã bị comment**).
+    /// Từ vựng: `"0"` / `"1"` (form chỉ gửi khi giá trị thuộc đúng hai giá trị này, `:611-617`).</summary>
+    public string? FlagPmtDelayDone { get; set; }
 }
 /// <summary>Lượt duyệt tự động đơn hàng DMS40 (D4OSORA — port 1:1 FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade):
 /// chọn luật (Rule1/Rule2/Rule2A/Rule3/RuleCancel) rồi chạy 1 lượt duyệt/hủy hàng loạt SO đang chờ (Status=Sent).
