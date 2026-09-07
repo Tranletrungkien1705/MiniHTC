@@ -24596,6 +24596,105 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 //   `effectiveDate` để mốc thật luôn nhìn thấy được.
 // 📊 Thống kê twin `_WH` tới #422: **giống hệt** #406, #407, #409, #418 · **lệch thật** #378, #413, #422.
 //   ⇒ 3/7 lệch. Tỉ lệ cao hơn hẳn cảm giác ban đầu — không bao giờ được suy từ hàm bên cạnh.
+// ===== 🔴 #423 `Ser_Inv_OrderInshipment_GetAll_01` — tên nói **"HÀNG ĐANG VỀ"**, thân đọc
+//        **PHỤ TÙNG MÀ LỆNH SỬA ĐANG CHỜ** =====
+// TRACE: `FrmPartROSearch.DoPaging` → `PartOrderService.Ser_Inv_OrderInshipment_GetAll_01`
+//   (`PartOrderService.cs:23`) → WS (`WSCarSv.asmx.cs:23891`) → biz (`BizCarSv.PartOrder.cs:3985`).
+//
+// 🔴 **TÊN HÀM SAI NGHĨA HOÀN TOÀN.** `OrderInshipment` gợi ý *hàng đặt đang trên đường về*, nhưng SQL
+//   thật đọc `ser_Ro` ⟕ `Ser_ROPartItems` với `ro.status = 'w4p'` (**chờ phụ tùng**) — tức là **NHU CẦU**
+//   phụ tùng của các lệnh sửa đang treo, **không phải hàng trong vận chuyển**.
+//   📌 Quan trọng cho MiniHTC: chú thích ở endpoint tồn kho tối ưu (`inShipmentNotModelled`) đang nợ
+//     khái niệm *"hàng đang về"* — **KHÔNG được lấy hàm này lấp vào**, hai khái niệm khác hẳn nhau.
+//     Lấp nhầm sẽ cộng nhu cầu vào tồn kho. Nợ đó vẫn còn, ghi rõ ở đây.
+//
+// 🔴 `ro.status = 'w4p'` — literal **CHỮ THƯỜNG**, trong khi mã trạng thái khắp hệ đều CHỮ HOA.
+//   Chạy được là nhờ đối chiếu (collation) không phân biệt hoa thường; đổi sang collation phân biệt
+//   thì câu này **trả rỗng, không báo lỗi**.
+// 🔴 `left join Ser_ROPartItems` và `left join Ser_MST_Part` rồi `where part.IsActive = '@IsActive'`
+//   ⇒ **LEFT join CHẾT** (lệ #414 — **lần thứ năm**). Lệnh sửa chưa có dòng phụ tùng nào **biến mất**,
+//   dù đó chính là lệnh đang chờ phụ tùng.
+// 🔴 `Row_Number() over (order by part.PartId desc)` — **thứ tự phân trang theo mã kỹ thuật phụ tùng**,
+//   không theo lệnh sửa, không theo ngày. Người dùng lật trang thấy dữ liệu nhảy không theo logic nào.
+// ⚠️ `'BG-' + ro.RoNo` — tiền tố cứng. Đối chiếu #414: cùng cột `RONo` nhưng báo cáo kia gắn `'LS-'`.
+//   **Cùng một số lệnh, hai báo cáo in ra hai tiền tố khác nhau** — không thể đối chiếu chéo bằng mắt.
+// ⚠️ `part.IsActive = '@IsActive'` **nhúng chuỗi** (StringUtils.Replace), không tham số hoá.
+// 📌 Phân trang ở form này là **THẬT** (truyền `page_size`, `currentPage`, `out myRowCount`) — **khác hẳn**
+//   `FrmOrderPartStockSearch` ở #421 (phân trang giả). Cùng thư mục, cùng kiểu màn, một cái chạy một cái không.
+//   ⚠️ Nhưng `DoPaging(int _currPage)` vẫn **không dùng tham số** `_currPage` mà đọc field `currentPage` —
+//     may là nút bấm gán field trước khi gọi, nên vẫn đúng. Tham số thừa là mầm lỗi.
+app.MapGet("/api/report/ro-waiting-parts", async (AppDbContext db, ITenantContext t,
+    string? dealer, int? page, int? pageSize) =>
+{
+    var size = pageSize is > 0 ? pageSize!.Value : 30;   // form mặc định 30
+    var cur = page is > 0 ? page!.Value : 1;
+
+    // ro.status = 'w4p' (chữ thường trong nguồn) — so KHÔNG phân biệt hoa thường, đúng collation nguồn.
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId
+            && r.Status.ToLower() == "w4p"
+            && (dealer == null || r.DealerCode == dealer))
+        .Select(r => new { r.Id, r.RONo, r.DealerCode }).ToListAsync();
+    var roIds = ros.Select(r => r.Id).ToHashSet();
+    var roById = ros.ToDictionary(r => r.Id);
+
+    var items = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId)).ToListAsync();
+    var activeParts = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1")
+        .Select(p => new { p.PartCode, p.PartName, p.EngName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    // LEFT join CHẾT: lệnh sửa không có dòng phụ tùng, hoặc phụ tùng không active ⇒ MẤT DÒNG.
+    var rosWithoutLines = ros.Count(r => !items.Any(i => i.RoId == r.Id));
+    var droppedInactivePart = items.Count(i => !activeParts.ContainsKey(i.PartCode));
+
+    var all = items.Where(i => activeParts.ContainsKey(i.PartCode)).Select(i =>
+    {
+        var ro = roById[i.RoId];
+        var pm = activeParts[i.PartCode];
+        return new
+        {
+            dealerCode = ro.DealerCode,
+            roId = ro.Id,
+            roNo = "BG-" + ro.RONo,          // tiền tố cứng của nguồn
+            partCode = i.PartCode,
+            engName = pm.EngName,
+            vieName = pm.PartName,
+            unit = pm.Unit,
+            quantity = i.NeedQty,
+            vat = i.Vat,
+            note = i.Note,
+        };
+    })
+    // Row_Number() over (order by part.PartId desc) — nguồn sắp theo MÃ PHỤ TÙNG giảm dần.
+    .OrderByDescending(x => x.partCode).ToList();
+
+    var total = all.Count;
+    var rows = all.Skip((cur - 1) * size).Take(size).ToList();
+    var pageCount = size == 0 ? 0 : (total % size > 0 ? total / size + 1 : total / size);
+
+    return Results.Ok(new
+    {
+        count = rows.Count, total, page = cur, pageSize = size, pageCount,
+        nameLiesNote = "Tên hàm Ser_Inv_OrderInshipment_GetAll_01 gợi ý 'hàng đang về', nhưng thân đọc "
+            + "ser_Ro + Ser_ROPartItems với ro.status = 'w4p' (chờ phụ tùng) ⇒ đây là NHU CẦU phụ tùng "
+            + "của lệnh sửa đang treo, KHÔNG phải hàng trong vận chuyển.",
+        inShipmentDebtNote = "KHÔNG được dùng số này lấp cho inShipment ở báo cáo tồn kho tối ưu — lấp "
+            + "nhầm là cộng NHU CẦU vào TỒN KHO. Nợ 'hàng đang về' vẫn còn nguyên.",
+        statusLiteralNote = "Nguồn so ro.status = 'w4p' viết CHỮ THƯỜNG trong khi mã trạng thái khắp hệ "
+            + "đều CHỮ HOA; chạy được nhờ collation không phân biệt hoa thường. Đổi collation ⇒ trả rỗng, "
+            + "không báo lỗi.",
+        rosWithoutLines, droppedInactivePart,
+        deadLeftJoinNote = "Hai left join bị WHERE part.IsActive giết ⇒ lệnh sửa CHƯA có dòng phụ tùng "
+            + "biến mất, dù đó chính là lệnh đang chờ phụ tùng (lệ #414, lần thứ năm).",
+        orderNote = "Nguồn đánh số dòng bằng Row_Number() over (order by part.PartId desc) ⇒ thứ tự phân "
+            + "trang theo MÃ KỸ THUẬT phụ tùng, không theo lệnh sửa hay ngày.",
+        prefixNote = "Nguồn gắn tiền tố cứng 'BG-' vào RONo; báo cáo ở #414 gắn 'LS-' cho CÙNG cột ⇒ "
+            + "cùng một số lệnh, hai báo cáo in hai tiền tố khác nhau.",
+        pagingRealNote = "Phân trang ở form này là THẬT (khác #421 phân trang giả) — nhưng DoPaging(int "
+            + "_currPage) vẫn không dùng tham số mà đọc field currentPage; tham số thừa là mầm lỗi.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/part-min-quantity", async (AppDbContext db, ITenantContext t,
     DateTime? toDate, string? dealer, string? scope) =>
 {
