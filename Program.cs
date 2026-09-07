@@ -3867,7 +3867,9 @@ app.MapGet("/api/reports/order-plan-tracking", async (
 //      `RptWO_OrderAndSchedule_01_WH_New20181119`  (`Biz.HTC.WH.cs:166472`)    ← nhánh `dataWH == true`
 //    Form đặt **`bool CheckWH = true;` CỨNG** ngay trước lời gọi (`FrmKHSXTongHopTTHangHoa.cs:408`)
 //    ⇒ **chỉ bản `_WH` chạy thật**; bản `_New20181115` **CHẾT từ giao diện**. Port theo bản `_WH`.
-//    3B: md5 khớp cả 2 máy — biz `31a75b2fdbf1d2ec46e2c1a2a1d1e3f1`(xem manifest), form UTF-16 (đọc bằng Select-String).
+//    3B đo thật: md5 **khớp cả 2 máy** = `70d3f9721d9081b73dfdf35b089a5b99` — nhưng `start` LỆCH
+//    (laptop 166472 · máy 150 166477): đúng như dự kiến, định vị bằng TÊN trên từng máy, không theo dòng.
+//    Form là UTF-16 ⇒ phải đọc bằng `Select-String`, `grep` bash trả 0 hit im lặng (luật E1).
 // 🔴 **GROUP-BY ĐỘNG do người dùng chọn**, nhưng **THỨ TỰ CỘT do MẢNG TRẮNG DANH quyết định**, không
 //    phải thứ tự người dùng tick: `foreach (var strScan in arrstrColumnGroupBy)` duyệt mảng cố định
 //    `[ModelCode, SpecCode, SpecDescription, ColorCode, ColorExtCode, ColorExtNameVN, ColorIntCode,
