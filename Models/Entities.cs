@@ -10111,6 +10111,10 @@ public sealed class CarVinMaster
     //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
     /// <summary>Ngày KẾT THÚC thế chấp (`Car_Vin.MortageEndDate`) — nguồn đặt = hôm nay khi duyệt.</summary>
     public DateTime? MortageEndDate { get; set; }
+    /// <summary>#B20 Ngày ĐỀ NGHỊ GIAO HỒ SƠ của xe (`Car_VIN.DocDeliveryReqDate`) — cột DUY NHẤT mà
+    /// `CarVINUpdate_DocDeliveryReqDate_New20181119` (`Biz.HTC.WH.cs:66562`) ghi (`alColumnEffective`
+    /// chỉ có đúng một phần tử, :66714). Nguồn chặn rỗng: `..._InvalidDocDeliveryReqDate`.</summary>
+    public DateTime? DocDeliveryReqDate { get; set; }
 
     // ===== #B19 parity `Car_VIN_Upd_BillNoAndMgrEndDate_New20191217` (Biz.HTC.WH.cs:61800) =====
     /// <summary>Ngày BẮT ĐẦU thế chấp (`Car_VIN.MortageStartDate`) — nguồn dùng để chặn

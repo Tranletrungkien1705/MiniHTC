@@ -16907,6 +16907,56 @@ app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? 
 // 🔴 **Ba cột ghi CÓ ĐIỀU KIỆN**, không phải ghi đè vô điều kiện (`:62230-62239`):
 //    `MortageEndDate` chỉ ghi khi khác DBNull · `BillNo` và `HandOverBankCode` chỉ ghi khi **khác rỗng và
 //    khác null** ⇒ gửi rỗng = **giữ nguyên giá trị cũ**, KHÔNG xoá. `LogLUDateTime`/`LogLUBy` luôn ghi.
+
+// ===== #B20 CẬP NHẬT HÀNG LOẠT NGÀY ĐỀ NGHỊ GIAO HỒ SƠ (port 1:1 `FrmMngCar`, 2010.HTC/Sales) =====
+// Trace twin LIVE: `FrmMngCar.cs:975` → `salesSv.CarVINUpdate_DocDeliveryReqDate(ds_Car_VIN)`
+//   (`SalesService.cs:6917`) → WS `CarVINUpdate_DocDeliveryReqDate` (`WSHTC.asmx.cs:15410`)
+//   → **`_biz.CarVINUpdate_DocDeliveryReqDate_New20181119`** (`Biz.HTC.WH.cs:66562`).
+//   Input là **DataSet/BẢNG** `#input_Car_VIN`, không phải một dòng.
+// 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:66620`) là DÒNG ACTIVE — chỉ HTC trực tiếp.
+// 🔴 `alColumnEffective` có **ĐÚNG MỘT** phần tử: `DocDeliveryReqDate` (`:66714`) — không ghi LogLU*,
+//    không ghi gì khác. Port thêm cột nào cũng là sai.
+app.MapPost("/api/carvinmasters/update-docdeliveryreqdate", async (
+    List<CarVinDocDlvReqDto> rows, AppDbContext db, ITenantContext t, string? flagDirect) =>
+{
+    // `..._TableDetailBeBlank`
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật đang rỗng." });
+    var list = rows.Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật đang rỗng." });
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật ngày đề nghị giao hồ sơ." });
+
+    // `..._DuplicateKeyDetail`
+    var dup = list.GroupBy(r => r.Vin!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong bảng!" });
+
+    var vins = list.Select(r => r.Vin!.Trim().ToUpperInvariant()).ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+
+    // Nguồn kiểm TỪNG DÒNG trong cùng transaction rồi mới ghi cả lô ⇒ validate hết trước.
+    foreach (var r in list)
+    {
+        var v = r.Vin!.Trim().ToUpperInvariant();
+        // `myCar_CheckVIN(..., TConst.Flag.Active)`
+        if (!cars.Any(c => c.VIN == v)) return Results.BadRequest(new { error = $"VIN {v} chưa khai báo trên hệ thống." });
+        // `..._InvalidDocDeliveryReqDate` — nguồn chặn ngày RỖNG (`StandardizeDate` ra null/độ dài < 1).
+        if (r.DocDeliveryReqDate is null) return Results.BadRequest(new { error = $"VIN {v} thiếu ngày đề nghị giao hồ sơ." });
+    }
+
+    int updated = 0;
+    foreach (var r in list)
+    {
+        var car = cars.First(c => c.VIN == r.Vin!.Trim().ToUpperInvariant());
+        car.DocDeliveryReqDate = r.DocDeliveryReqDate;   // cột DUY NHẤT của alColumnEffective
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated, columnsWritten = new[] { "DocDeliveryReqDate" },
+        note = "alColumnEffective của nguồn chỉ có ĐÚNG cột này — không ghi LogLUDateTime/LogLUBy.",
+        rbacNote = "myCommon_CheckHTCDirect(Flag.Active) là DÒNG ACTIVE ở nguồn — nhận qua cờ flagDirect (nợ tầng ability)."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/carvinmasters/{vin}/billno-mortage", async (
     string vin, CarVinBillNoDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
@@ -34284,6 +34334,8 @@ record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, 
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
+/// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
+record CarVinDocDlvReqDto(string? Vin, DateTime? DocDeliveryReqDate);
 /// <summary>#B17: một dòng của bảng `#input_Car_Car` — sửa hàng loạt quy cách theo CarId.</summary>
 record CarSpecBatchDto(string? CarId, string? SpecCode);
 /// <summary>#B11: sửa biển số dòng xe (`DealerSalesDealDetailUpdate_NormalInfo` — nguồn chỉ nhận PlateNo).</summary>

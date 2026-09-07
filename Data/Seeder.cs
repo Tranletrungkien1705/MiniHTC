@@ -1175,6 +1175,8 @@ public static class Seeder
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"BillNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"PackingListNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CODate\" timestamp NULL",
+        // #B20 Car_VIN.DocDeliveryReqDate
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DocDeliveryReqDate\" timestamp NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",
