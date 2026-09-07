@@ -46828,6 +46828,108 @@ app.MapGet("/api/reports/ro-revenue-part-shell", async (AppDbContext db, ITenant
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #516 LỊCH HẸN THEO KỲ VÀ TRẠNG THÁI — **NHÁNH GIỜ ĐẾM GẤP 24 LẦN** =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:2932 Rpt_Ser_App_GroupByDateAndStatusX` (WS `…ForTab` :3196).
+// Endpoint: `GET /api/reports/appointments-by-period-status`.
+//
+// 🔴🔴 **NHÂN ĐÔI DỮ LIỆU CÓ THẬT, KHÔNG PHẢI GIẢ THIẾT**: rổ nối kiểu `inner join … on (1=1)` rồi lọc
+//     `and t.AppDate >= convert(char(10), f.DateTimeStart, 126)`
+//     `and t.AppDate <= convert(char(10), f.DateTimeEnd, 126)`
+//   `char(10)` **cắt mất phần GIỜ** của mốc rổ. Với `reportType = HOUR`, cả **24** rổ đều nằm trong
+//   **cùng một ngày** ⇒ sau khi cắt, cả 24 rổ có mốc đầu/cuối **giống hệt nhau** ⇒ **mỗi lịch hẹn rơi vào
+//   CẢ 24 RỔ** ⇒ tổng của báo cáo **gấp 24 lần** số lịch hẹn thật. Không lỗi, không cảnh báo.
+//   (So với #506 dùng `nvarchar(20)` — **giữ giờ** — thì đây là cùng khuôn nhưng **sai độ dài**.)
+//   Port đếm đúng theo mốc có giờ và trả `sourceHourBranchMultipliesBy24` để nêu đích danh.
+//
+// 🔴 `case sa.AppStatus when '1' then N'MOITAO' when '2' … when '4' then N'HUY' end` — **KHÔNG CÓ `else`**
+//   ⇒ trạng thái ngoài `1..4` cho `AppStatusName = NULL`, mà `pivot … in (MOITAO, XACNHAN, TIEPNHAN, HUY)`
+//   **không nhận NULL** ⇒ lịch hẹn trạng thái lạ **biến mất khỏi báo cáo**. Hai tầng nuốt chồng nhau:
+//   thiếu `else` (#407) + danh sách pivot đóng băng (#512).
+//   ⚠️ HẰNG ≠ GIÁ TRỊ: bốn mã trạng thái là **'1'/'2'/'3'/'4'** và tên hiển thị viết **KHÔNG DẤU**
+//     (`MOITAO`, `XACNHAN`, `TIEPNHAN`, `HUY`) — chép nguyên văn, chúng là **tên CỘT** của pivot.
+// 🔴 Câu cuối `from #tbl_Return_Pvt` — **đi từ bảng kết quả, KHÔNG từ bảng rổ** ⇒ rổ không có lịch hẹn
+//   **không ra dòng**. Ngược hẳn #506/#511/#515 (cùng cụm, đi từ `#input_tbl_ReportType` nên rổ rỗng vẫn có
+//   dòng `Qty = 0`). ⇒ **Bốn báo cáo anh em, hai quy ước trình bày khác nhau**; màn hình vẽ biểu đồ theo
+//   báo cáo này sẽ **thiếu cột** ở những kỳ không có lịch hẹn.
+app.MapGet("/api/reports/appointments-by-period-status", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? reportType, DateTime? fromDate, DateTime? toDate, bool? keepEmptyBuckets) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_App_GroupByDateAndStatus_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(reportType))
+        return Results.BadRequest(new { error = "Rpt_Ser_App_GroupByDateAndStatus_InvalidReportType" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_App_GroupByDateAndStatus_DateFromAfterDateTo" });
+    var kind = reportType!.Trim().ToUpperInvariant();
+    if (kind != "HOUR" && kind != "DAY" && kind != "MONTH")
+        return Results.BadRequest(new { error = "reportType chỉ nhận HOUR, DAY hoặc MONTH." });
+
+    // Bảng mã trạng thái của nguồn — GIÁ TRỊ, và tên cột pivot KHÔNG DẤU.
+    var statusName = new Dictionary<string, string>
+    {
+        ["1"] = "MOITAO", ["2"] = "XACNHAN", ["3"] = "TIEPNHAN", ["4"] = "HUY",
+    };
+
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var buckets = new List<(string MixCode, string MixName, DateTime Start, DateTime End)>();
+    if (kind == "HOUR")
+        for (var h = 0; h < 24; h++)
+        {
+            var st = from.AddHours(h);
+            buckets.Add((h.ToString(), h.ToString("00"), st, st.AddHours(1).AddSeconds(-1)));
+        }
+    else if (kind == "DAY")
+        for (var d = from; d <= toDate.Value.Date; d = d.AddDays(1))
+            buckets.Add((d.ToString("yyyy-MM-dd"), d.ToString("yyyy-MM-dd"), d, d.AddDays(1).AddSeconds(-1)));
+    else
+    {
+        var m = new DateTime(from.Year, from.Month, 1);
+        var mEnd = new DateTime(toDate.Value.Year, toDate.Value.Month, 1);
+        for (; m <= mEnd; m = m.AddMonths(1))
+            buckets.Add((m.ToString("yyyy-MM-01"), m.ToString("yyyy-MM-01"), m, m.AddMonths(1).AddSeconds(-1)));
+    }
+
+    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.AppFrom >= from && x.AppFrom <= to)
+        .Select(x => new { x.Id, x.AppNo, x.AppFrom, x.Status }).ToListAsync();
+
+    var rows = buckets.Select(b =>
+    {
+        var inB = apps.Where(x => x.AppFrom >= b.Start && x.AppFrom <= b.End).ToList();
+        decimal Cnt(string code) => inB.Count(x => x.Status == code);
+        return new
+        {
+            b.MixCode, DealerCode = dealer, ReportType = kind, b.MixName,
+            DateTimeStart = b.Start, DateTimeEnd = b.End,
+            MOITAO = Cnt("1"), XACNHAN = Cnt("2"), TIEPNHAN = Cnt("3"), HUY = Cnt("4"),
+            other = (decimal)inB.Count(x => !statusName.ContainsKey(x.Status)),
+            total = (decimal)inB.Count,
+        };
+    }).ToList();
+
+    // Nguồn đi từ bảng KẾT QUẢ nên rổ rỗng biến mất; mặc định ở đây giữ đúng nguồn.
+    var keep = keepEmptyBuckets ?? false;
+    var items = keep ? rows : rows.Where(r => r.total > 0).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = kind,
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        count = items.Count, appointmentCount = apps.Count, items,
+        sourceHourBranchMultipliesBy24 = kind == "HOUR",
+        sourceComparesDateAsChar10LosingTime = true,
+        statusesOutsidePivot = apps.Where(x => !statusName.ContainsKey(x.Status))
+            .Select(x => x.Status).Distinct().ToList(),
+        qtyDroppedByMissingElseAndFrozenPivot = (decimal)apps.Count(x => !statusName.ContainsKey(x.Status)),
+        emptyBucketsDroppedInSource = true,
+        contrastWithSiblingReports = "#506/#511/#515 di tu bang RO nen ro rong van co dong Qty=0",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
