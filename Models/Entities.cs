@@ -9539,6 +9539,14 @@ public sealed class HtmvPdiDtl
     public string PDIStorageStatus { get; set; } = "P";
     /// <summary>⚠️ Giữ để đọc dữ liệu cũ; trục thật là hai cột trên. Port cũ dùng Pending/Passed/Failed.</summary>
     public string PdiResult { get; set; } = "Pending";
+    // ===== #B95 parity `HTMV_PDIDtl` — hai cột nghiệp vụ DUY NHẤT mà `HTMV_PDIUpdate` ghi =====
+    /// <summary>🔴 `HTMV_PDIDtl.FlagRepair` — cờ **cần sửa chữa** sau kiểm PDI. Cùng với
+    /// <see cref="RepairRemark"/> là **HAI cột duy nhất** mà `HTMV_PDIUpdate_New20181115`
+    /// (`BizHTC.HTMV.cs:3064`) cập nhật; hàm **không** đụng tới trạng thái nào.</summary>
+    public string? FlagRepair { get; set; }
+    /// <summary>`HTMV_PDIDtl.RepairRemark` — ghi chú sửa chữa. ⚠️ KHÁC `ReRepairRemark`
+    /// (triệu chứng tái sửa) của phân hệ bảo hành — hai cột khác nhau, đừng dùng lẫn.</summary>
+    public string? RepairRemark { get; set; }
 }
 
 /// <summary>Xe nhập kho PDI (PDI_VIN) — port 1:1 FrmStoragePDI (2010.HTC/Sales/HTMV). Xe tại kho PDI: model/spec/màu + số chìa/AVN/ắc quy.</summary>

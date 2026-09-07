@@ -14394,6 +14394,7 @@ app.MapGet("/api/pdi/storage-pending", async (
             scdSpecCode = d.SpecCode, scdModelCode = d.ModelCode, scdColorCode = d.ColorCode,
             scdEngineNo = d.EngineNo, scdProductionMonth = d.ProductionMonth,
             scdPDIDtlStatus = d.PDIDtlStatus, scdPDIStorageStatus = d.PDIStorageStatus,
+            scdFlagRepair = d.FlagRepair, scdRepairRemark = d.RepairRemark,   // #B95 §12 doc lai
             cvActualSpec = cars.TryGetValue(d.VIN, out var asp) ? asp : null,
             mcsSpecDescription = specs.TryGetValue(d.SpecCode ?? "", out var sd) ? sd : null,
             Color_Vn_Combined = colorCombined
@@ -14408,6 +14409,87 @@ app.MapGet("/api/pdi/storage-pending", async (
         joinShapeNote = "left join HTMV_PDIDtl NHUNG where loc theo scd.PDIDtlStatus => INNER JOIN THUC CHAT: phieu PDI khong co dong nao bi loai han (khuon #B47/#B70/#B72). Ba left join lam giau (Car_VIN.ActualSpec, Mst_CarSpec.SpecDescription, Mst_CarColor) la LEFT THAT - thieu danh muc thi de trong, KHONG loai dong.",
         nullConcatNote = "Color_Vn_Combined = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN - noi chuoi SQL Server: MOT VE NULL => CA CHUOI NULL. Port dung noi suy $\"{a}/{b}\" se ra '/Den' thay vi null - KHAC nguon. Da giu dung ngu nghia NULL-lan-truyen.",
         rbacHole = "LO HONG RBAC - bien the 2 (khai ma khong dung), ca thu 13: @strBUPatternOfUser bind (:1029) nhung KHONG xuat hien trong bat ky menh de where nao (moi BuildClause deu dung @p...). => VO HIEU."
+    });
+}).RequireAuthorization();
+
+// ===== #B95 CẬP NHẬT CỜ SỬA CHỮA CỦA DÒNG PDI — `HTMV_PDIUpdate_New20181115` =====
+// Trace LIVE: WS → `_biz.HTMV_PDIUpdate_New20181115` (`BizHTC.HTMV.cs:3064`).
+//   3B đo thật, **khớp cả 2 máy**: start=3064 md5 `6290560edff8743033085b623e731866`.
+// 🔴 **GHI ĐÚNG HAI CỘT NGHIỆP VỤ**: `FlagRepair` và `RepairRemark` (+ `LogLUDateTime`/`LogLUBy`).
+//    Hàm **KHÔNG đụng tới trạng thái nào** — không `PDIDtlStatus`, không `PDIStorageStatus`.
+//    Port thêm bất kỳ cột nào khác là **mở quyền ghi ngoài nguồn** (`C0-…quinquagesimusquintus`).
+// 🔴 **Khoá dòng HAI phần, mẫu KHÁC thường**: `string.Format("|{0}||{1}|", PDINo, VIN)` —
+//    **hai dấu `|` liền nhau ở giữa**, không phải `|a|b|`. Trùng trong lô ⇒ ném.
+//    ⚠️ **Lỗi NHÃN trong nguồn** (ghi nhận, không sửa): mã lỗi ném ra là
+//      **`HTMV_PDIApprove_DuplicateKeyDetail`** — mã của hàm **APPROVE**, không phải của Update.
+// 🔴 **Guard trạng thái NHẬN TẤT CẢ**: `myCar_CheckHTMV_PDIDtl(…, Flag.Active, **"P,A,R,C,F"**,
+//    **"P,A,R,C,F"**, …)` — cả hai danh sách liệt kê **đủ 5 giá trị** ⇒ thực chất **không lọc gì**,
+//    chỉ đòi dòng **tồn tại**. Port siết lại là **chặt hơn nguồn**.
+// 🔴 `myCar_CheckVIN(…, **""**, **""**, …)` — hai tham số kiểm truyền **chuỗi RỖNG** ⇒ **cố ý không
+//    kiểm** tồn tại/`DocumentsStatus` (khuôn `C0-…sexagesimusprimus`).
+// 🔴 Chỉ ghi **`_dbMain`**, KHÔNG ghi `_dbWH` — như #B81, khác #B75/#B92.
+// 📌 §12: `HtmvPdiDtl.FlagRepair` + `.RepairRemark` (entity + Seeder + DTO + POST + đọc ở #B94 GET).
+app.MapPost("/api/pdi/dtl/update-repair", async (
+    List<PdiDtlRepairDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "HTMV_PDIUpdate_TableDetailBeBlank" });
+
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var heads = await db.HtmvPdis.Where(h => h.OrgId == t.OrgId).ToListAsync();
+    var headByNo = heads.GroupBy(h => h.PDINo).ToDictionary(g => g.Key, g => g.First());
+
+    var targets = new List<HtmvPdiDtl>();
+    foreach (var (r, i) in rows.Select((r, i) => (r, i)))
+    {
+        var pdiNo = (r.PDINo ?? "").Trim();
+        var vin = (r.VIN ?? "").Trim().ToUpperInvariant();
+        // 🔴 Khoá "|PDINo||VIN|" — HAI dấu | liền nhau ở giữa.
+        var keyDetail = $"|{pdiNo}||{vin}|";
+        if (!seen.Add(keyDetail))
+            return Results.BadRequest(new
+            {
+                // ⚠️ Nguồn dùng mã lỗi của hàm APPROVE — giữ nguyên để đối chiếu log.
+                error = "HTMV_PDIApprove_DuplicateKeyDetail",
+                check = new { HTMV_PDIDtl_Idx = i, strKeyDetail = keyDetail }
+            });
+
+        if (!headByNo.TryGetValue(pdiNo, out var head))
+            return Results.BadRequest(new { error = "HTMV_PDI_NotExist", check = new { HTMV_PDIDtl_Idx = i, PDINo = pdiNo } });
+
+        // Guard: chỉ đòi dòng TỒN TẠI ("P,A,R,C,F" = đủ 5 giá trị = không lọc).
+        var d = await db.HtmvPdiDtls
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HtmvPdiId == head.Id && x.VIN == vin);
+        if (d is null)
+            return Results.BadRequest(new { error = "HTMV_PDIDtl_NotExist", check = new { HTMV_PDIDtl_Idx = i, PDINo = pdiNo, VIN = vin } });
+        targets.Add(d);
+    }
+
+    // Ghi ĐÚNG hai cột nghiệp vụ + dấu vết.
+    var updated = 0;
+    foreach (var (d, r) in targets.Zip(rows))
+    {
+        d.FlagRepair = r.FlagRepair;
+        d.RepairRemark = r.RepairRemark;
+        d.LogLUDateTime = now; d.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updated,
+        logLUDateTime = now, logLUBy = by,
+        writeScopeNote = "GHI DUNG HAI COT NGHIEP VU: FlagRepair va RepairRemark (+ LogLUDateTime/LogLUBy). Ham KHONG dung toi trang thai nao - khong PDIDtlStatus, khong PDIStorageStatus. Them cot khac la MO QUYEN GHI NGOAI NGUON.",
+        keyPatternNote = "Khoa dong HAI phan, mau KHAC thuong: string.Format(\"|{0}||{1}|\", PDINo, VIN) - HAI dau | lien nhau o giua, khong phai |a|b|.",
+        errorCodeQuirk = "LOI NHAN TRONG NGUON (ghi nhan, khong sua): ma loi nem ra khi trung khoa la HTMV_PDIApprove_DuplicateKeyDetail - ma cua ham APPROVE, khong phai cua Update.",
+        statusGuardNote = "Guard trang thai NHAN TAT CA: myCar_CheckHTMV_PDIDtl(..., Flag.Active, 'P,A,R,C,F', 'P,A,R,C,F', ...) - ca hai danh sach liet ke DU 5 gia tri => thuc chat KHONG LOC GI, chi doi dong TON TAI. Port siet lai la CHAT HON NGUON.",
+        checkVinNote = "myCar_CheckVIN(..., \"\", \"\", ...) - hai tham so kiem truyen CHUOI RONG => CO Y khong kiem ton tai/DocumentsStatus (khuon C0-...sexagesimusprimus).",
+        singleDbNote = "Chi ghi _dbMain, KHONG ghi _dbWH - nhu #B81, khac #B75/#B92.",
+        relatedNote = "Cap doc cua ham nay la #B94 (GET /api/pdi/storage-pending)."
     });
 }).RequireAuthorization();
 
@@ -40277,6 +40359,7 @@ record GrtClaimExtGenAutoCarDto(string? CarId, string? VIN, string? DealerCode, 
 record GrtClaimExtGenAutoDto(int NumberOfGuaranteeExt, string? Remark, string? FlagisHTC, List<GrtClaimExtGenAutoCarDto>? Cars);   // #B86
 record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   // #B87 - chi kiem, khong ghi
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
+record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
