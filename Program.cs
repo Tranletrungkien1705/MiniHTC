@@ -47400,6 +47400,70 @@ app.MapGet("/api/receptions/{no}/details", async (string no, AppDbContext db, IT
     });
 }).RequireAuthorization();
 
+// ===== #525 TỆP ĐÍNH KÈM PHIẾU TIẾP NHẬN — TRẢ NỢ `ds_Ser_ReceptionFAttachFile` (#522) =====
+// Nguồn: `ZTemp.cs` khối `#region //// Refine and Check Ser_ReceptionFAttachFile` (cùng hàm #524).
+// Endpoint: `POST /api/receptions/{no}/attachfiles` + `GET`. **§12**: entity + `DbSet` + Seeder.
+//
+// 📐 **DIFF với khối chi tiết (#524) — cùng khuôn, khác ở đúng ba điểm** (luật #414: diff trước, và
+//   khác biệt nằm ở DANH SÁCH CỘT):
+//   1) tên bảng hợp đồng đổi thành `Ser_ReceptionFAttachFile`, lỗi ném là
+//      `Ser_ReceptionF_SaveX_InvalidSer_**ReceptionFAttachFileTbl**` — ⚠️ **thiếu chữ `Ser_`** so với
+//      lỗi của khối chi tiết (`…InvalidSer_**Ser_**ReceptionFDtlTbl`). Hai hằng lệch nhau **một tiền tố**
+//      trong cùng một hàm; chép **nguyên văn**, không "sửa cho đều".
+//   2) **KHÔNG có guard tra danh mục** — khối chi tiết gọi `Ser_Mst_ReceptionFAudit_CheckDB` cho từng dòng,
+//      còn khối này **không kiểm gì cả**: `ReceptionFileType` chỉ được `StdParam` (chuẩn hoá chuỗi),
+//      **không** đối chiếu `Mst_FileTypeUpload` như `UploadFile_ForTab` (#523) vẫn làm.
+//      ⇒ **Cùng hệ, hai đường nạp tệp, một đường kiểm loại tệp và một đường không.**
+//   3) chỉ **ba** cột được máy điền (`ReceptionFNo`, `LogLUDateTime`, `LogLUBy`) và **cả ba đều được gán**
+//      ⇒ không có ca "tạo cột rồi bỏ trống" như `DeliveryAudStatus` của #524 (kiểm tra âm tính).
+// 🔴 `StdDataInTable(… "", "ReceptionFilePath", "", "ReceptionFileName" …)` — mã chuẩn hoá là **chuỗi rỗng**
+//   ⇒ hai cột đường dẫn/tên tệp **không được chuẩn hoá gì**: khoảng trắng thừa, hoa thường, dấu `\\` hay `/`
+//   đều giữ nguyên như client gửi. Kết hợp với #523 (đường dẫn do server sinh) thì **hai nguồn sinh đường dẫn**
+//   cùng ghi vào một bảng.
+// ⚠️ Nguồn lưu **đường dẫn**, không lưu nội dung ⇒ tệp thật nằm ngoài DB (thư mục `UploadedFiles\` của #523).
+app.MapPost("/api/receptions/{no}/attachfiles", async (string no, List<ReceptionAttachFileDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    var rec = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
+    if (rec is null) return Results.NotFound(new { error = "Không tìm thấy phiếu tiếp nhận: " + no });
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Ser_ReceptionF_SaveX_InvalidSer_ReceptionFAttachFileTbl" });
+
+    var now = DateTime.Now;
+    foreach (var r in rows)
+        db.ReceptionAttachFiles.Add(new ReceptionAttachFile
+        {
+            OrgId = t.OrgId, ReceptionFNo = no,
+            FileIndex = r.FileIndex?.Trim(),
+            // Nguồn KHÔNG chuẩn hoá hai cột này (mã "") — giữ nguyên văn client gửi.
+            ReceptionFilePath = r.ReceptionFilePath,
+            ReceptionFileName = r.ReceptionFileName,
+            ReceptionFileType = r.ReceptionFileType?.Trim(),
+            Remark = r.Remark, LogLUDateTime = now,
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        receptionFNo = no, count = rows.Count,
+        noFileTypeMasterCheckInSource = true,
+        contrastWithUploadEndpoint = "#523 UploadFile_ForTab CO kiem Mst_FileTypeUpload, duong nay KHONG",
+        pathAndNameNotStandardised = true,
+        errorConstantMissesSerPrefix = "Ser_ReceptionF_SaveX_InvalidSer_ReceptionFAttachFileTbl",
+        storesPathNotContent = true,
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.ReceptionAttachFiles.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no)
+        .OrderBy(x => x.Id)
+        .Select(x => new { x.Id, x.FileIndex, x.ReceptionFilePath, x.ReceptionFileName,
+            x.ReceptionFileType, x.Remark, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { receptionFNo = no, count = items.Count, items });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49216,6 +49280,9 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record ReceptionAttachFileDto(string? FileIndex, string? ReceptionFilePath,
+    string? ReceptionFileName, string? ReceptionFileType, string? Remark);   // #525
+
 record ReceptionDetailDto(string? ReceptionFAudCode, string? ReceptionFAudType,
     string? ReceptionAudStatus, string? Remark);   // #524
 

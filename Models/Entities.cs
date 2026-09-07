@@ -14845,6 +14845,27 @@ public sealed class SerFilePathVideo
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#525 TỆP ĐÍNH KÈM phiếu tiếp nhận (`Ser_ReceptionFAttachFile`) — ảnh/tệp chụp lúc nhận xe.
+/// Nguồn: cùng hàm `Ser_ReceptionF_ReceptionX_New20210727`, khối
+/// `#region //// Refine and Check Ser_ReceptionFAttachFile`.</summary>
+public sealed class ReceptionAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    /// <summary>Số thứ tự tệp trong phiếu (`FileIndex`, chuẩn hoá `StdParam`).</summary>
+    public string? FileIndex { get; set; }
+    /// <summary>🔴 Nguồn lưu **ĐƯỜNG DẪN**, không lưu nội dung — chuỗi thô, `StdDataInTable` dùng
+    /// mã `""` nên **không chuẩn hoá gì cả** (giữ nguyên khoảng trắng/hoa thường).</summary>
+    public string? ReceptionFilePath { get; set; }
+    public string? ReceptionFileName { get; set; }
+    /// <summary>Loại tệp (`StdParam`).</summary>
+    public string? ReceptionFileType { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>#524 CHI TIẾT phiếu tiếp nhận (`Ser_ReceptionFDtl`) — mỗi dòng là **một đầu mục kiểm tra**
 /// khi nhận xe. Nguồn: `Ser_ReceptionF_ReceptionX_New20210727` (`ZTemp.cs:21199`), khối
 /// `#region //// Refine and Check Ser_ReceptionFDtl` + ba lần `SaveTemp` (Main/WH/Dealer).</summary>
