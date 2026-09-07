@@ -342,7 +342,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(d => d.DealerCode.Contains(q) || d.DealerName.Contains(q));
     var items = await query.OrderBy(d => d.DealerCode).Select(d => new
     { d.DealerCode, d.DealerName, d.DealerType, d.BUCode, d.BuPattern, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode,
-      d.FlagDirect, d.FlagActive, d.FlagDealerHTC, d.DealerScale, d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
+      d.FlagDirect, d.FlagActive, d.FlagDealerHTC, d.OrgHCCID, d.NetworkHCCID, d.DealerScale,   // #349 §12 d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
       d.GarageAddress, d.GarageManagerPhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
@@ -365,6 +365,15 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.Address = dto.Address; d.Phone = dto.Phone; d.Fax = dto.Fax; d.Email = dto.Email; d.TaxCode = dto.TaxCode;
     d.FlagDirect = dto.FlagDirect; d.FlagActive = dto.FlagActive; d.DealerScale = dto.DealerScale;
     d.FlagDealerHTC = dto.FlagDealerHTC;   // #335 §12
+    // ===== 🔴 #349 HAI MÃ ĐỊNH DANH HCC của đại lý =====
+    // Trong **mọi** cây nguồn, `OrgHCCID`/`NetworkHCCID` chỉ xuất hiện ở mệnh đề ĐỌC
+    //   (`md.OrgHCCID OrgID`, `md.NetworkHCCID NetworkID` — `BizCarSv.HCC.cs:76`, `BizHTC.HCC.cs:367`…)
+    //   để dựng payload gửi HCC; **không có câu GHI nào**. Chúng là **dữ liệu master** của đại lý,
+    //   nhập qua màn danh mục chứ không do nghiệp vụ sinh ra.
+    // ⇒ Thiếu đường ghi thì payload HCC **vĩnh viễn rỗng hai trường định danh** — tích hợp không chạy được.
+    //   Đưa vào chính cổng master đại lý (cùng cách đã làm với `FlagDealerHTC` ở #335), KHÔNG phải
+    //   tự chế luật nghiệp vụ: đây là ô nhập danh mục như `50` trường master khác của endpoint này.
+    d.OrgHCCID = dto.OrgHCCID; d.NetworkHCCID = dto.NetworkHCCID;
     d.DealerPhoneNo = dto.DealerPhoneNo; d.DealerFaxNo = dto.DealerFaxNo; d.CompanyName = dto.CompanyName; d.CompanyAddress = dto.CompanyAddress;
     d.ShowroomAddress = dto.ShowroomAddress; d.GarageAddress = dto.GarageAddress; d.GarageManagerPhoneNo = dto.GarageManagerPhoneNo; d.GarageFaxNo = dto.GarageFaxNo;
     d.DirectorName = dto.DirectorName; d.DirectorPhoneNo = dto.DirectorPhoneNo; d.DirectorEmail = dto.DirectorEmail;
@@ -38212,7 +38221,10 @@ record MasterDto(string Code, string Name, string? ParentCode, string? Status);
 record ImportDealerRowDto(string? DealerCode, string? DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode,
     string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress, string? TaxCode,
     string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail, string? ContactName, string? FlagDirect, string? FlagActive, string? DealerScale, string? Remark);
-record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
+record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC,
+    // #349: hai ma dinh danh HCC — du lieu MASTER; o nguon chi duoc DOC de dung payload HCC.
+    string? OrgHCCID, string? NetworkHCCID,
+    string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
     string? FlagDirect, string? FlagActive, string? DealerScale, string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress,
     string? GarageAddress, string? GarageManagerPhoneNo, string? GarageFaxNo, string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail,
     string? SalesManagerName, string? SalesManagerPhoneNo, string? SalesManagerEmail, string? GarageManagerName, string? GarageManagerEmail,

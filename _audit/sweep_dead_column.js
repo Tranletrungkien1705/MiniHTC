@@ -75,7 +75,9 @@ function writtenColumns(entityName) {
             else if (prog[j] === '}') { depth--; if (depth === 0) break; }
         }
         const block = prog.slice(i, j + 1);
-        const reAssign = /([A-Za-z0-9_]+)\s*=(?!=)/g;
+        // 🔴 #349 PHÉP GÁN KÉP: `X += …` cũng là GHI. Mẫu cũ chỉ bắt `X =` nên bỏ sót
+        //   `+= -= *= /= ??=` ⇒ báo NHẦM cột đã có đường ghi là "chết" (ca `SupplierDebit`).
+        const reAssign = /([A-Za-z0-9_]+)\s*(?:\+|-|\*|\/|\?\?)?=(?!=)/g;
         let a;
         while ((a = reAssign.exec(block)) !== null) written.add(a[1]);
     }
@@ -88,7 +90,8 @@ function writtenColumns(entityName) {
 // tập mọi tên cột được gán qua biến ở BẤT KỲ đâu (dùng để giảm dương tính giả)
 const anyVarAssign = new Set();
 {
-    const re = /(?:^|[^A-Za-z0-9_])[a-z][A-Za-z0-9_]*\.([A-Za-z0-9_]+)\s*=(?!=)/g;
+    // #349: cũng phải chấp nhận phép gán kép (`h.PaidAmount += …`) và hậu tố `!` (`row!.X = …`).
+    const re = /(?:^|[^A-Za-z0-9_])[a-z][A-Za-z0-9_]*!?\.([A-Za-z0-9_]+)\s*(?:\+|-|\*|\/|\?\?)?=(?!=)/g;
     let a;
     while ((a = re.exec(prog)) !== null) anyVarAssign.add(a[1]);
     const re2 = /SetProperty\(\s*[A-Za-z0-9_]+\s*=>\s*[A-Za-z0-9_]+\.([A-Za-z0-9_]+)/g;
