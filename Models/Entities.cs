@@ -5087,6 +5087,11 @@ public sealed class SerAssignmentWork
     public DateTime? SCKSCPlanStartDTime { get; set; }
     public DateTime? SCKSCPlanFinishDTime { get; set; }
     public string? SCKSCCavityID { get; set; }
+    /// <summary>#531 §12 Cờ **PHÁT SINH** (`FlagArise`) — khác `FlagPause`: cột này được ghi
+    /// **ngay trên bảng phân công** và **KHÔNG đảo giá trị**.</summary>
+    public string? FlagArise { get; set; }
+    /// <summary>#531 §12 Loại công việc phát sinh (`WorkTypeArise`).</summary>
+    public string? WorkTypeArise { get; set; }
     /// <summary>#530 §12 Loại công việc lúc TẠM DỪNG (`WorkTypePause`) — cột **duy nhất** mà
     /// `Ser_AssignmentWork_UpdateFlagPause` thực sự ghi vào bảng này.</summary>
     public string? WorkTypePause { get; set; }

@@ -47886,6 +47886,63 @@ app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, Assignme
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #531 CỜ PHÁT SINH — ANH EM SONG SINH CỦA #530 NHƯNG **NGƯỢC BA ĐIỂM** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:1759 Ser_AssignmentWork_UpdateFlagArise`.
+// Endpoint: `POST /api/serassignmentworks/{roNo}/arise`. **§12** thêm `FlagArise` + `WorkTypeArise`.
+//
+// 📐 **DIFF NGUYÊN VĂN VỚI `…UpdateFlagPause` (#530)** — cùng khuôn, khác đúng **bốn** điểm:
+//   1) 🔴 **GHI ĐÚNG CỘT MANG TÊN MÌNH**: `dt_Ser_AssignmentWork.Rows[0]["FlagArise"] = strFlagAriseUpd`
+//      **ngay trên bảng phân công** — trong khi `UpdateFlagPause` **không** ghi `FlagPause` vào bảng này
+//      mà ghi sang `Ser_RO` (xem #530). Hai hàm anh em, hai kiểu hoàn toàn khác.
+//   2) 🔴 **KHÔNG ĐẢO GIÁ TRỊ**: `strFlagAriseUpd = bArise ? Flag.Active : Flag.Inactive` (thuận),
+//      còn `UpdateFlagPause` dùng `bPause ? Flag.Inactive : Flag.Active` (**đảo**).
+//      ⇒ Cùng một client gửi `"1"`, một hàm lưu `"1"`, hàm kia lưu `"0"`.
+//   3) 🔴 **KHÔNG có guard trạng thái và KHÔNG đụng `Ser_RO`**: bản `Pause` chặn theo
+//      `Ser_RO.Status ∈ {RPRD, INGA}` và còn ghi `Ser_RO.FlagPause` + chèn `Ser_ROWorkTime`;
+//      bản `Arise` **bỏ hết** ⇒ đánh dấu phát sinh được ở **mọi** trạng thái lệnh, kể cả đã thanh toán.
+//   4) ⚠️ Tên hằng lỗi đảo thứ tự chữ: `…_UpdateFlagArise_**RONotFound**` so với
+//      `…_UpdateFlagPause_**NotFoundRO**` — chép **nguyên văn**, không "sửa cho đều".
+// 🔴 **Vẫn dính y nguyên bug guard của #530**: `if (dt == null && dt.Rows.Count > 0) throw`
+//   ⇒ mã lỗi `…_RONotFound` **không bao giờ được ném**; bảng rỗng thì nổ `IndexOutOfRange`.
+//   ⇒ Lỗi này **không phải cá biệt** — nó là **khuôn dán lặp** trong cả cụm phân công.
+// ⚠️ `top 1 *` không `ORDER BY` (như #529/#530). `LogLUDateTime = StandardizeDate(DateTime.Now)` ⇒ mất giờ.
+// 📌 **Nợ có tên từ #530 mà lượt đó chưa nêu**: bản `Pause` còn **chèn `Ser_ROWorkTime`** qua
+//   `SequenceGetForDMS_Util(… SequenceTypeDMS.ROWorkTime …)` rồi `InsertSer_ROWorkTime(…, bPause ? Yes : No, …)`
+//   — MiniHTC **chưa port** bảng nhật ký thời gian làm việc đó; ghi nợ ở đây để không mất dấu.
+app.MapPost("/api/serassignmentworks/{roNo}/arise", async (string roNo, AssignmentAriseDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    const string kFlagActive = "1";                 // TConst.Flag.Active
+    const string kFlagInactive = "0";               // TConst.Flag.Inactive
+
+    var w = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (w is null)
+        return Results.BadRequest(new { error = "Ser_AssignmentWork_UpdateFlagArise_RONotFound", roNo });
+
+    // THUẬN, không đảo — khác hẳn FlagPause của #530.
+    var bArise = string.Equals(dto.FlagArise?.Trim(), kFlagActive, StringComparison.OrdinalIgnoreCase);
+    w.FlagArise = bArise ? kFlagActive : kFlagInactive;
+    w.WorkTypeArise = dto.WorkTypeArise;
+    w.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        roNo, assignmentId = w.Id, w.FlagArise, w.WorkTypeArise,
+        flagStoredOnAssignmentTable = true,
+        flagNotInverted = true,
+        contrastWithPause = "#530 ghi Ser_RO.FlagPause va DAO gia tri",
+        noStatusGuard = "ban Arise khong chan theo Ser_RO.Status (ban Pause chan RPRD/INGA)",
+        doesNotTouchSerRo = true,
+        sameBrokenGuardAsPause = "if (dt == null && dt.Rows.Count > 0) => ma loi RONotFound khong bao gio nem",
+        errorConstantWordOrderDiffers = "…_UpdateFlagArise_RONotFound vs …_UpdateFlagPause_NotFoundRO",
+        sourceHasNoOrderBy = "top 1 *",
+        sourceDropsTimeInLogColumn = true,
+        notPortedYet = "Ser_ROWorkTime (chi ban Pause chen, qua SequenceTypeDMS.ROWorkTime)",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49702,6 +49759,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record AssignmentAriseDto(string? FlagArise, string? WorkTypeArise);   // #531
+
 record AssignmentPauseDto(string? FlagPause, string? WorkTypePause);   // #530
 
 record SerAssignmentWorkDto(string? RONo = null, string? ROID = null,
