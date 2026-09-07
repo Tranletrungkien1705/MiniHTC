@@ -24488,6 +24488,121 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 // ⚠️ Ba mốc ngày cùng lúc: `DateOut` trong khoảng, **và** `DateIn <= @ToDate` (lô nhập sau kỳ bị loại).
 // ⚠️ Giá lấy theo thứ tự dự phòng: dòng chi tiết phiếu trước, không có thì mới lấy giá lưu ở lô
 //   (`isnull(sidd.Price, isnull(pf.SIPrice,0))`) — **hai nguồn giá cho cùng một lô**.
+// ===== 🔴 #417 "PHỤ TÙNG LUÂN CHUYỂN NHANH" — thứ tự sắp xếp **MÂU THUẪN với chú thích của chính nó**
+//        và phép nối TRONG làm **biến mất đúng nhóm hàng cần cảnh báo** =====
+// TRACE: `FrmReportPartTopRotate` (`Views/PartReport`, 286 dòng) → `InventoryReportService` → WS
+//   → biz `Ser_InvReportPartTopRotate` (`BizCarSv.Inventory.Report.cs:6902`).
+//
+// 📌 Kiểm ORDER BY (lệ #415): hàm này **CÓ** `order by` trong chính câu lấy `@Top` ⇒ **không** dính lỗi
+//   của #415. Ba báo cáo cùng họ: #415 hỏng, #416 lành, #417 lành. **Kiểm từng cái, đừng suy.**
+//
+// 🔴 **NHƯNG HƯỚNG SẮP XẾP TỰ MÂU THUẪN**. Chú thích ngay đầu hàm ghi thứ tự ưu tiên:
+//     `--1: So luong xuat / --2: So luong nhap / --3: So lan xuat / --4: So lan nhap`
+//   Còn câu lệnh thật là:
+//     `order by Outquantity desc, InQuantity **asc**, SoLanXuat **asc**, SoLanNhap **desc**`
+//   ⇒ Tiêu chí phụ `SoLanXuat asc` xếp **phụ tùng có ÍT lần xuất kho lên TRÊN** — ngược hẳn với
+//     nghĩa "luân chuyển nhanh". Bốn cột đảo chiều xen kẽ desc/asc/asc/desc, không khớp bất kỳ
+//     cách hiểu mạch lạc nào về tốc độ luân chuyển.
+//   📌 Đây là **NGHI VẤN có căn cứ**, không phải kết luận: hướng sắp là ý đồ nghiệp vụ, tôi không
+//     tự sửa. Port **giữ nguyên 1:1** và trả `sortDirectionSuspect` + `sortSpec` để người biết nghiệp vụ chốt.
+//
+// 🔴 **`#IN join #OUT on partid` là nối TRONG** ⇒ phụ tùng **chỉ nhập mà chưa xuất lần nào** trong kỳ
+//   **biến mất hoàn toàn** khỏi báo cáo. Mà đó chính là nhóm hàng **ứ đọng** — thứ đáng phải nhìn thấy nhất.
+//   Tương tự, hàng bán ra từ tồn kỳ trước (kỳ này không nhập) cũng biến mất. → cờ `inOnly`/`outOnly`.
+//
+// 🔴 `select DISTINCT` rồi mới `sum(Quantity)` và `count(StockInID)`: DISTINCT trải trên **chín cột**
+//   (gồm cả `Quantity`), nên **hai dòng chi tiết cùng phiếu, cùng phụ tùng, CÙNG số lượng** bị gộp làm một
+//   ⇒ **tổng số lượng và số lần đều bị ĐẾM THIẾU**. Sai âm thầm, chỉ lộ khi đối chiếu phiếu gốc.
+//
+// ⚠️ `left join ser_mst_part p` rồi `where p.dealercode = '@DealerCode'` ở WHERE ⇒ **LEFT join CHẾT**
+//   (lệ #414, lần thứ ba trong cụm này). ⚠️ `and p.PartId is not null` đặt sau nối TRONG ⇒ **thừa**.
+// ⚠️ `sti.Status = '3'` — **chuỗi**, trong khi #415 cùng ý nghĩa lại viết `= 3` **số**. Cùng hệ, hai lối viết.
+// ⚠️ Mốc `<= '@ToDate'` trên cột ngày ⇒ **mất trọn ngày cuối** (lệ #415).
+app.MapGet("/api/report/part-top-rotate", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top, string? dealer) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && (dealer == null || x.DealerCode == dealer)).ToListAsync();
+    var stockIns = (await db.PartStockIns.Where(s => s.OrgId == t.OrgId && s.Status == "3")
+        .Select(s => s.Id).ToListAsync()).ToHashSet();
+    var stockOuts = (await db.PartStockOuts.Where(s => s.OrgId == t.OrgId && s.Status == "3")
+        .Select(s => s.Id).ToListAsync()).ToHashSet();
+    var partMaster = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    // --- #tbl_partin: DISTINCT trên bộ cột gồm cả Quantity ⇒ gộp dòng trùng (nguồn đếm thiếu).
+    var inKeys = inst.Where(x => x.StockInId != null && stockIns.Contains(x.StockInId!.Value)
+            && x.DateIn != null && x.DateIn >= f && x.DateIn <= to)
+        .Select(x => new { x.PartCode, x.StockInId, x.Quantity, x.DateIn })
+        .Distinct().ToList();
+    var outKeys = inst.Where(x => x.StockOutId != null && stockOuts.Contains(x.StockOutId!.Value)
+            && x.DateOut != null && x.DateOut >= f && x.DateOut <= to)
+        .Select(x => new { x.PartCode, x.StockOutId, x.Quantity, x.DateOut })
+        .Distinct().ToList();
+
+    var inAgg = inKeys.GroupBy(x => x.PartCode).ToDictionary(g => g.Key,
+        g => new { Qty = g.Sum(x => x.Quantity), Times = g.Count() });
+    var outAgg = outKeys.GroupBy(x => x.PartCode).ToDictionary(g => g.Key,
+        g => new { Qty = g.Sum(x => x.Quantity), Times = g.Count() });
+
+    // 🔴 Nối TRONG: chỉ giữ phụ tùng CÓ CẢ nhập LẪN xuất trong kỳ.
+    var both = inAgg.Keys.Intersect(outAgg.Keys).ToList();
+    var inOnly = inAgg.Keys.Except(outAgg.Keys).OrderBy(x => x).ToList();
+    var outOnly = outAgg.Keys.Except(inAgg.Keys).OrderBy(x => x).ToList();
+
+    var droppedNotInMaster = 0;
+    var rows = new List<dynamic>();
+    foreach (var code in both)
+    {
+        if (!partMaster.TryGetValue(code, out var pm)) { droppedNotInMaster++; continue; }
+        rows.Add(new
+        {
+            partCode = code, partName = pm.PartName, unit = pm.Unit,
+            inQuantity = inAgg[code].Qty, outQuantity = outAgg[code].Qty,
+            soLanNhap = inAgg[code].Times, soLanXuat = outAgg[code].Times,
+        });
+    }
+
+    // Giữ NGUYÊN hướng sắp của nguồn, kể cả chỗ nghi ngờ.
+    var ordered = rows
+        .OrderByDescending(r => (decimal)r.outQuantity)
+        .ThenBy(r => (decimal)r.inQuantity)
+        .ThenBy(r => (int)r.soLanXuat)
+        .ThenByDescending(r => (int)r.soLanNhap)
+        .ToList();
+    var n = top ?? 0;
+    var outRows = n > 0 ? ordered.Take(n).ToList() : ordered;
+
+    return Results.Ok(new
+    {
+        count = outRows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
+        sortSpec = "outQuantity desc, inQuantity ASC, soLanXuat ASC, soLanNhap desc (nguyên văn nguồn)",
+        sortDirectionSuspect = true,
+        sortNote = "Chú thích đầu hàm ghi thứ tự ưu tiên 1..4 nhưng câu ORDER BY đảo chiều xen kẽ; "
+            + "riêng soLanXuat ASC xếp phụ tùng có ÍT lần xuất lên TRÊN — ngược nghĩa 'luân chuyển nhanh'. "
+            + "Giữ nguyên 1:1, KHÔNG tự sửa; cần người nắm nghiệp vụ chốt hướng đúng.",
+        innerJoinDropped = new { inOnlyCount = inOnly.Count, outOnlyCount = outOnly.Count },
+        inOnly, outOnly,
+        innerJoinNote = "Nguồn nối TRONG #IN với #OUT ⇒ phụ tùng CHỈ NHẬP mà chưa xuất lần nào trong kỳ "
+            + "biến mất hoàn toàn — đúng nhóm hàng Ứ ĐỌNG, thứ đáng nhìn thấy nhất. Hàng bán từ tồn kỳ "
+            + "trước (kỳ này không nhập) cũng biến mất. Hai danh sách trên là phần bị loại.",
+        distinctUndercountNote = "Nguồn select DISTINCT trên chín cột (gồm cả Quantity) RỒI mới sum/count "
+            + "⇒ hai dòng chi tiết cùng phiếu, cùng phụ tùng, CÙNG số lượng bị gộp làm một ⇒ tổng số lượng "
+            + "và số lần đều ĐẾM THIẾU. MiniHTC tái hiện đúng để số khớp WinForm.",
+        droppedNotInMaster,
+        deadLeftJoinNote = "left join ser_mst_part rồi đưa p.dealercode vào WHERE ⇒ LEFT join chết (lệ #414). "
+            + "and p.PartId is not null đặt sau nối TRONG là điều kiện THỪA.",
+        statusLiteralNote = "sti.Status = '3' viết dạng CHUỖI ở đây, nhưng #415 cùng ý nghĩa lại viết = 3 dạng SỐ.",
+        endDateExclusive = true,
+        endDateNote = "Mốc <= toDate trên cột ngày ⇒ mất trọn ngày cuối nếu cột có phần giờ (lệ #415).",
+        rows = outRows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/part-top-profit", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, int? top, string? dealer, string? costingMethod) =>
 {
