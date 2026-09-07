@@ -48338,6 +48338,81 @@ app.MapPost("/api/warrantyworkmsts/push-to-service", async (WarrantyWorkPushDto 
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #536 XOÁ CÔNG VIỆC BẢO HÀNH — **HAI HÀM CÙNG TÊN "DELETE", HAI NGHĨA KHÁC HẲN** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:5454 Ser_MST_ROWarrantyWork_Delete` (*Hàm CmCenter*) và
+//   `:5286 Ser_MST_ROWarrantyWork_Delete_Dealer`. Endpoint: `POST /api/warrantyworkmsts/delete`.
+//
+// 📐 **DIFF cặp — khác nhau ở BẢN CHẤT, không phải ở tham số** (luật #404):
+//   · `_Delete` (trung tâm): **XOÁ CỨNG** `delete Ser_MST_ROWarrantyWork where … ROWWorkCode …`
+//     trên `_dbMain` **và** `_dbWH` — **không** đụng DB đại lý.
+//   · `_Delete_Dealer`: **KHÔNG xoá gì cả** — chỉ đặt `Ser_Mst_Service.FlagWarranty = TConst.Flag.Inactive`
+//     ("0") + hai cột nhật ký ⇒ **xoá MỀM ở phía đại lý** (dịch vụ vẫn còn, chỉ hết diện bảo hành).
+//   ⇒ Cùng một chữ *Delete*: một bên **mất dữ liệu vĩnh viễn**, một bên **tắt cờ**. Port tách bạch,
+//     mặc định `mode=soft` và bắt gọi rõ `mode=hard` mới xoá thật.
+//
+// 🔴🔴 **CÂU `DELETE` KHÔNG THAM SỐ HOÁ**: điều kiện dựng bằng
+//     `SqlUtils.BuildClauseConditionList("and", "ROWWorkCode", <giá trị client gửi>, "|")`
+//   — hàm này **không nhận `ref alParamsCoupleSql`** ⇒ giá trị **bake thẳng vào chuỗi**, rồi
+//   `_dbMain.ExecNonQuery(strSQLDelete)` chạy **không kèm tham số nào**.
+//   ⇒ Bề mặt **tiêm SQL trên câu XOÁ**, ở tầng biz, với dữ liệu do client gửi. Nặng nhất trong cụm này.
+//   Port dùng tham số hoá qua EF; trả cờ `sourceDeleteIsNotParameterised`.
+// 🔴 **`Commit` GIỮA CHỪNG rồi mở giao dịch MỚI**: sau vòng xoá là `CommitSafety(_dbMain/_dbWH)`,
+//   **rồi** mới `BeginTransaction()` cho khối `#region // Push Dealer`. ⇒ Push hỏng thì **xoá cứng đã
+//   commit**, không quay lui được (họ #529/#534 — tác dụng phụ sau commit).
+// ⚠️ Guard đọc nguyên văn (#403): mã rỗng ⇒ ném `Ser_MST_ROWarrantyWorkSave_ROWWIDNotExistInList`
+//   (**tên hằng nói "Save" trong hàm Delete** — chép nguyên văn), ngược lại gọi `CheckExistROWarrantyWork`.
+// ⚠️ Vòng lặp gọi `ExecNonQuery` **mỗi dòng một lần** dù `BuildClauseConditionList` vốn nhận cả danh sách
+//   ngăn bằng `"|"` ⇒ N dòng = N lượt round-trip.
+app.MapPost("/api/warrantyworkmsts/delete", async (WarrantyWorkDeleteDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    const string kFlagInactive = "0";   // TConst.Flag.Inactive
+    var mode = (dto.Mode ?? "soft").Trim().ToLowerInvariant();
+    if (mode is not ("soft" or "hard"))
+        return Results.BadRequest(new { error = "mode chỉ nhận soft (Delete_Dealer) hoặc hard (Delete)." });
+
+    var codes = (dto.ROWWorkCodes ?? new()).Select(x => (x ?? "").Trim()).ToList();
+    if (codes.Count == 0)
+        return Results.BadRequest(new { error = "Cần danh sách ROWWorkCode." });
+    // Nguồn: mã rỗng ⇒ ném lỗi mang tên "…Save_ROWWIDNotExistInList" (tên hằng lệch, chép nguyên văn).
+    if (codes.Any(c => c.Length == 0))
+        return Results.BadRequest(new { error = "Ser_MST_ROWarrantyWorkSave_ROWWIDNotExistInList" });
+
+    var masters = await db.WarrantyWorkMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.ROWWorkCode))
+        .ToListAsync();
+    // CheckExistROWarrantyWork: mã phải có thật.
+    var missing = codes.Where(c => masters.All(m => m.ROWWorkCode != c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "CheckExistROWarrantyWork: mã không tồn tại.", missing });
+
+    var softened = 0; var deleted = 0;
+    if (mode == "soft")
+    {
+        // _Delete_Dealer: chỉ TẮT CỜ trên danh mục dịch vụ, không xoá dòng nào.
+        var svcs = await db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.SerCode))
+            .ToListAsync();
+        foreach (var svc in svcs) { svc.FlagWarranty = kFlagInactive; softened++; }
+    }
+    else
+    {
+        // _Delete (CmCenter): XOÁ CỨNG khỏi danh mục công việc bảo hành.
+        db.WarrantyWorkMsts.RemoveRange(masters);
+        deleted = masters.Count;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        mode, count = codes.Count, deleted, softened,
+        hardDeleteTouchesMainAndWhOnly = "nguon: _dbMain + _dbWH, KHONG dung DB dai ly",
+        softDeleteIsFlagOnly = "Ser_Mst_Service.FlagWarranty = \"0\" + hai cot nhat ky",
+        sourceDeleteIsNotParameterised = "BuildClauseConditionList bake gia tri; ExecNonQuery khong tham so",
+        commitBeforePushDealer = "CommitSafety roi moi BeginTransaction cho khoi Push Dealer",
+        errorConstantSaysSaveInsideDelete = "Ser_MST_ROWarrantyWorkSave_ROWWIDNotExistInList",
+        oneRoundTripPerRowInSource = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -50154,6 +50229,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record WarrantyWorkDeleteDto(List<string>? ROWWorkCodes, string? Mode);   // #536
+
 record WarrantyWorkPushDto(List<string>? ROWWorkCodes);   // #535
 
 record AssignmentActualDto(string? WorkType = null,
