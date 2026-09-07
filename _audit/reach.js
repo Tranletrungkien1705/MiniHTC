@@ -4,10 +4,19 @@ const BIZ=process.argv[2], WS=process.argv[3], TARGETS=process.argv.slice(4);
 const memberRe=/^\s*(?:public|private|protected|internal)\s+(?:static\s+)?[A-Za-z_][A-Za-z0-9_<>,\[\]\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
 const callRe=/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
 
+// #453: PHAI quet DE QUY - cay nguon co thu muc con (HCCIntergration, iCIC.KhieuNai, CampaignMarketing...)
+function walk(dir,acc){
+  for(const e of fs.readdirSync(dir,{withFileTypes:true})){
+    const fp=path.join(dir,e.name);
+    if(e.isDirectory()){ if(!/^(bin|obj|Properties|Web References|Service References)$/.test(e.name)) walk(fp,acc); }
+    else if(e.name.endsWith('.cs')) acc.push(fp);
+  }
+  return acc;
+}
 function scan(dir){
   const out={};
-  for(const f of fs.readdirSync(dir).filter(x=>x.endsWith('.cs'))){
-    const lines=fs.readFileSync(path.join(dir,f),'utf8').split(/\r?\n/);
+  for(const f of walk(dir,[])){
+    const lines=fs.readFileSync(f,'utf8').split(/\r?\n/);
     const members=[]; lines.forEach((L,i)=>{const m=L.match(memberRe); if(m) members.push({line:i,name:m[1]});});
     out[f]={lines,members};
   }

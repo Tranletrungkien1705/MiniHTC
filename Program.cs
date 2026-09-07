@@ -24903,8 +24903,27 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   ⇒ Kết luận giữ nguyên; **một dòng dẫn chứng bị rút**.
         // 📌 Bài học: "được gọi bởi một hàm không mang `xxx`" **chưa đủ** — hàm gọi đó có thể tự nó chết.
         //   Liveness phải tính **bắc cầu từ điểm vào thật**, và điểm vào ở hệ này là `[WebMethod]`.
-        deadSuffixReach = new { wsEntryPoints = 782, bizFunctions = 1580, reachable = 1217,
-            unreachable = 363, xxxReachable = 4, xxxDead = 56 },
+        // ===== 🔴 #453 ĐÍNH CHÍNH SỐ ĐO CỦA #452 — công cụ quét **KHÔNG ĐỆ QUY** =====
+        // Phát hiện nhờ BƯỚC 3B: đối chiếu điểm vào WS hai máy lệch **đúng 1** hàm — `HCC_NoShow_CreateOS`
+        //   chỉ có ở máy 150. Truy tiếp thì biz của nó nằm ở `TERP.BizCarSv/**HCCIntergration**/BizCarSv.HCC.cs`
+        //   — tức **thư mục con**. Mà `reach.js` dùng `fs.readdirSync(dir)` phẳng ⇒ chỉ đọc **40/57** file (bỏ 30%).
+        // 📊 Đo lại (quét đệ quy): **820 điểm vào WS · 1717 hàm biz · 1278 khả đạt**
+        //   ⇒ **439 hàm (25,6%) KHÔNG khả đạt** — không phải 363/23% như #452 công bố.
+        // 📊 Tập `xxx` **KHÔNG đổi** (60 · 10 · 4): toàn bộ hàm `xxx` nằm ở file mức trên, nên #450 vẫn đúng;
+        //   và `Blt_SerStockInStatusUpdate` vẫn **KHÔNG khả đạt** kể cả khi đã thêm 17 file ⇒ #452 giữ kết luận.
+        // 🔴 Đây là lần **thứ năm** cùng một họ lỗi ĐO (offset cứng #411 · grep trúng chỗ GỌI #425 ·
+        //   biên vùng thiếu `private void` #430 · thiếu kiểu trả về #450 · nay **quét không đệ quy** #453).
+        //   📌 Luật mới: công cụ quét cây nguồn phải **in ra số file đã đọc** và số đó phải khớp `find -name *.cs`.
+        // ⚠️ HỆ QUẢ LỚN HƠN: hai cây nguồn **KHÔNG bằng nhau** — máy 150 (`V20.2023.Release`) có thêm WebMethod
+        //   `HCC_NoShow_CreateOS` mà laptop (`V20.2023.Release.V2`) không có ⇒ giả định "V2 ≡ Release" là **sai**.
+        //   Từ nay mỗi lượt phải chấp nhận 150 có thể **mới hơn**, và ghi nợ đối chiếu toàn bộ delta hai cây.
+        deadSuffixReach = new { wsEntryPoints = 820, bizFunctions = 1717, reachable = 1278,
+            unreachable = 439, xxxReachable = 4, xxxDead = 56,
+            supersedes = "#452 (782/1580/1217/363) — do quét không đệ quy" },
+        sourceTreeDelta = new { laptop = "V20.2023.Release.V2", may150 = "V20.2023.Release",
+            wsEntryPointsLaptop = 830, wsEntryPoints150 = 831,
+            onlyOn150 = new[] { "HCC_NoShow_CreateOS" },
+            note = "Hai cây nguồn KHÔNG đồng nhất; 150 có thể mới hơn. Nợ: đối chiếu toàn bộ delta." },
         deadSuffixReachNote = "Reachability thật (BFS từ 782 điểm vào WebMethod): 1217/1580 hàm biz khả "
             + "đạt ⇒ 363 hàm (23%) là code chết. Trong 60 hàm hậu tố xxx: 4 khả đạt, 56 chết. "
             + "Blt_SerStockInStatusUpdate — từng được #450 dẫn như 'hàm sống' — thực ra KHÔNG khả đạt; "
