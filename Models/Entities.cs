@@ -10386,6 +10386,12 @@ public sealed class CarVinMaster
     /// **`Car_Car`**, KHÁC hẳn `TInvoicePrice` trên bảng DÒNG hoá đơn (`VatHtcInvoiceDetail` /
     /// `VatTcgInvoiceDetail`) — trùng tên nhưng khác bảng, đừng dùng lẫn.</summary>
     public decimal? TInvoicePrice { get; set; }
+    /// <summary>🔴 #B65 — `Car_Car.FlagEarlyCancel`: cờ **huỷ sớm**. Là một trong **bốn** điều kiện
+    /// định nghĩa back-order (`RptStatistic_HTCBackOrder_Util01…`, `BizHTC.Report.cs:8593`):
+    /// `cc.FlagActive = '1'` **và** `cc.FlagEarlyCancel = '0'`. Đây là **trục riêng**, KHÁC `FlagActive`
+    /// — xe có thể còn `FlagActive='1'` mà đã bị đánh dấu huỷ sớm. Thiếu cột thì back-order **đếm dư**.
+    /// ⚠️ Cột cùng tên đã có trên hai thực thể khác — đây là cột trên **`Car_Car`**.</summary>
+    public string? FlagEarlyCancel { get; set; }
     /// <summary>🔴 #B54 — `Car_VIN.MortageBankCode`: ngân hàng đang nhận thế chấp xe. Là điều kiện
     /// **ĐẦU TIÊN của cả bốn khối** báo cáo Nhập–Xuất–Tồn thế chấp (`mySql_Rpt_NhapXuatTonTrongKy_New20190213`,
     /// `RptSQLQuery.cs:10600`): `MortageBankCode is not null AND <> ''`. Thiếu cột ⇒ báo cáo không tồn tại được.

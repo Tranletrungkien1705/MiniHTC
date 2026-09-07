@@ -3481,6 +3481,98 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // 🔴 Bộ lọc thời gian dựng bằng `BuildClause("and", "<t>.VisitDTime"/"DriveTestDTime", strTDate, "@p", …)`
 //    — dạng **danh-sách-điều-kiện**, không phải khoảng cố định.
 // 🔴 Cột `1.0 TOTAL` (hằng) để pivot đếm — giữ nguyên.
+
+// ===== #B65 BÁO CÁO BACK-ORDER (xe chưa xuất kho) — `RptStatistic_HTCBackOrder_*_01_New20181115` =====
+// **HAI màn dùng chung một util**, chỉ khác `strGroupByClause`:
+//   · `FrmPivotBackOrder` → `ReportBackOrderBySpecDesc` → WS `RptStatistic_HTCBackOrder_Dealer_01`
+//     (`WSHTC.asmx.cs:29549`) → biz `BizHTC.Report.cs:8949` — gom `t.CCDealerCode, t.CCDealerName`
+//   · biz anh em `RptStatistic_HTCBackOrder_SpecCode_01_New20181115` (`:8821`) — gom
+//     `t.MCSSpecCode, t.MCSSpecDescription`
+//   Cả hai gọi **`RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH`** (`:8538`).
+//   ⚠️ Bản trùng tên trong `BizHTC.Report - Copy.cs` — file **ngoài csproj**.
+// 🔴 **ĐỊNH NGHĨA BACK-ORDER** (`:8592-8599`) — bốn điều kiện, hai trong đó là **LỌC NGƯỢC** `(*)`:
+//   · `cc.FlagActive = '1'`            — xe còn hiệu lực
+//   · `cc.FlagEarlyCancel = '0'`       — **chưa huỷ sớm** (cột riêng, khác `FlagActive`)
+//   · `vms.DeliveryOutDate is null` **(*)** — `VIN_MyStatus` chưa ghi nhận ngày xuất kho
+//   · `cdod.CarId is null` **(*)**      — **không** có dòng LXX active (`#tbl_CDOD_Active`)
+//   ⇒ back-order = **xe đã có nhưng CHƯA hề được xuất kho theo cả hai đường đo**. Bỏ một trong hai
+//     vế lọc ngược sẽ **đếm dư**.
+// 🔴 `#tbl_CDOD_Active` lấy từ **cùng mảnh dùng chung** `mySql_Car_DeliveryOrderDetail_FilterActive_01`
+//    đã port ở #B56 (`ConfirmStatus in ('A','F')`) — ở đây **không** kèm điều kiện ngày.
+// ✅ `@strBUPatternOfUser` **dùng thật** (`inner join Mst_Dealer`, `:8586-8587`).
+// ⚠️ NỢ CÓ NHÃN: hai khối `CachingForPaymentTotal` / `CachingForPayment_Deposit` (tiền cọc/thanh toán)
+//    chưa port — cùng món nợ #B37/#B56/#B59/#B60; các cột tiền trả `null`, **không suy số**.
+app.MapGet("/api/reports/back-order", async (
+    AppDbContext db, ITenantContext t, string? groupBy, string? buPattern, string? getDetail) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    var scopeList = dealers.Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    // `#tbl_CDOD_Active` — mảnh dùng chung: `ConfirmStatus in ('A','F')`, KHÔNG kèm điều kiện ngày.
+    var cdodActive = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F"))
+        .Select(x => x.CarId ?? x.Vin).ToListAsync()).ToHashSet();
+
+    // `VIN_MyStatus.DeliveryOutDate` — MiniHTC đo trên chính dòng LXX (chưa có bảng `VIN_MyStatus`).
+    var outedVins = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.DeliveryOutDate != null)
+        .Select(x => x.CarId ?? x.Vin).ToListAsync()).ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var beforeScope = cars.Count;
+    cars = cars.Where(c => c.DealerCode != null && scope.Contains(c.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - cars.Count;
+
+    // BỐN điều kiện back-order (hai vế cuối là LỌC NGƯỢC).
+    var backOrder = cars.Where(c =>
+        (c.FlagActive ?? "1") == "1"
+        && (c.FlagEarlyCancel ?? "0") == "0"
+        && !outedVins.Contains(c.VIN)          // (*) vms.DeliveryOutDate is null
+        && !cdodActive.Contains(c.VIN)         // (*) cdod.CarId is null
+    ).ToList();
+
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+
+    var detail = backOrder.Select(c => new
+    {
+        ccCarId = c.VIN, cvVIN = c.VIN, ccDealerCode = c.DealerCode,
+        ccDealerName = scopeList.FirstOrDefault(d => d.DealerCode == c.DealerCode)?.DealerName,
+        mcsSpecCode = c.SpecCode,
+        mcsSpecDescription = specs.FirstOrDefault(s => s.SpecCode == c.SpecCode)?.SpecDesc,
+        ccModelCode = c.ModelCode, ccColorCode = c.ColorCode,
+        ccUnitPriceActual = c.UnitPriceActual, ccCreatedDate = c.CreatedDate,
+        pmpdAmountTotal = (decimal?)null,        // NỢ: CachingForPaymentTotal
+        pmpdDepositAmount = (decimal?)null       // NỢ: CachingForPayment_Deposit
+    }).ToList();
+
+    // `strGroupByClause` — hai màn khác nhau đúng ở đây.
+    object summary = groupBy == "spec"
+        ? detail.GroupBy(x => new { x.mcsSpecCode, x.mcsSpecDescription })
+            .Select(g => new { specCode = g.Key.mcsSpecCode, specDescription = g.Key.mcsSpecDescription, qty = g.Count(), amount = g.Sum(x => x.ccUnitPriceActual ?? 0m) })
+            .OrderByDescending(x => x.qty).ToList()
+        : detail.GroupBy(x => new { x.ccDealerCode, x.ccDealerName })
+            .Select(g => new { dealerCode = g.Key.ccDealerCode, dealerName = g.Key.ccDealerName, qty = g.Count(), amount = g.Sum(x => x.ccUnitPriceActual ?? 0m) })
+            .OrderByDescending(x => x.qty).ToList();
+
+    return Results.Ok(new
+    {
+        groupBy = groupBy == "spec" ? "spec" : "dealer",
+        totalQty = detail.Count, totalAmount = detail.Sum(x => x.ccUnitPriceActual ?? 0m),
+        summary,
+        detail = getDetail == "1" ? detail : null,
+        detailIncluded = getDetail == "1",       // nguồn có cờ `strIsGetDetail`
+        droppedByDealerJoin,
+        definitionRule = "Back-order = FlagActive='1' VA FlagEarlyCancel='0' VA vms.DeliveryOutDate is null (*) VA cdod.CarId is null (*) - HAI ve cuoi la LOC NGUOC; bo mot ve se DEM DU.",
+        sharedUtilNote = "Hai man FrmPivotBackOrder (gom theo dai ly) va ban SpecCode (gom theo spec) dung CHUNG util RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH, chi khac strGroupByClause => mot endpoint + tham so groupBy.",
+        cdodNote = "#tbl_CDOD_Active dung manh chung mySql_Car_DeliveryOrderDetail_FilterActive_01 (da port o #B56): ConfirmStatus in ('A','F'), o day KHONG kem dieu kien ngay.",
+        vinMyStatusNote = "MiniHTC chua co bang VIN_MyStatus - do 'da xuat kho' tren chinh dong LXX (DeliveryOutDate != null). Ghi ro de doi chieu.",
+        debt = "NO co nhan: CachingForPaymentTotal / CachingForPayment_Deposit chua port - cac cot tien tra null, KHONG suy so."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/ctm-visit-pivot", async (
     AppDbContext db, ITenantContext t, DateTime? visitFrom, DateTime? visitTo,
     string? dealerCode, string? modelCode, string? buPattern) =>
