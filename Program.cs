@@ -3709,6 +3709,155 @@ app.MapGet("/api/reports/delivery-plan-weekly", async (
         zoneSafeNote = "Ham thuoc dot _New20260514 va CO coalesce zone (:5432) - an toan (#B58)."
     });
 }).RequireAuthorization();
+
+// ===== #B73 THEO DÕI / KIỂM TRA ĐẶT HÀNG — `Rpt_TheoDoiKiemTraDatHangX` =====
+// (`FrmBCTheoDoiKiemTraDatHang`.) Trace LIVE: WS `Rpt_TheoDoiKiemTraDatHang` (`WSHTC.asmx.cs:24147`)
+//   → `_biz.Rpt_TheoDoiKiemTraDatHang` → wrapper **`Rpt_TheoDoiKiemTraDatHangX`**
+//   (`TERP.BizHTC/DMS40/zTemp.Report.cs:7598`); SQL `RptSQLQuery.cs:13140`.
+//   3B: md5 khớp cả 2 máy — biz `7bfe3d33394c92a2edf81839accec2b0`, SQL `4b4d9af5415690ca309517d8befcadf6`.
+// 🔴 **PIVOT DỰNG TRONG C#, KHÔNG PHẢI TRONG SQL** — 12 tháng × 2 cột (`yyyy-MM-01_OrdN` /
+//    `yyyy-MM-01_EstN1`), tên cột chính là **khoá tra cứu**. Khác hẳn các báo cáo trước (group-by trong SQL).
+// 🔴 **DÒNG ACTIVE vs DÒNG COMMENT** (luật B của repo): ngay dưới vòng lặp 12 tháng là **bản cũ đã bị
+//    comment** dựng cột **theo dữ liệu** (`foreach tbl_Filter_Month`). Bản **ĐANG CHẠY** dựng
+//    **CỐ ĐỊNH 12 tháng của năm kế hoạch**. ⇒ Hệ quả: dòng dữ liệu có `OrderMonth` **ngoài năm kế
+//    hoạch** sẽ **không có cột để rót và bị BỎ IM LẶNG** (vòng lặp duyệt theo CỘT, không theo dữ liệu).
+//    Ở đây vô hại vì SQL đã lọc `like '@strOrderMonthNew'`, nhưng nới bộ lọc mà quên vòng lặp = mất số.
+// 🔴 **HAI TOÁN TỬ KHÁC NHAU cho năm nay vs năm trước** — rất dễ port sai thành một:
+//      năm nay  : `MonthEstimate like '@strOrderMonthNew'`, `@strOrderMonthNew = '{yyyy}%'`   → CẢ NĂM
+//      năm trước: `MonthEstimate  =   '@strOrderMonthOld'`, `@strOrderMonthOld = '{yyyy-1}-12-01'`
+//                                                                                → **CHỈ THÁNG 12**
+//    ⇒ cột `QtyEOrdN1_Old` **không phải "cả năm trước"** mà là **dự kiến của riêng tháng 12 năm trước**.
+// 🔴 **`#tbl_Filter_M_S` union BA nguồn** (đơn kế hoạch + dự kiến năm nay + **dự kiến T12 năm trước**)
+//    nhưng **`#tbl_Filter_M_S_Month` chỉ union HAI** (không có `_Old`). Bất đối xứng **có chủ đích**:
+//    model/spec chỉ xuất hiện ở T12 năm trước vẫn **có DÒNG** (để đọc `QtyEOrdN1_Old`) nhưng
+//    **không sinh Ô THÁNG** nào. Union cả ba vào `_M_S_Month` sẽ đẻ ô tháng ma.
+// 🔴 **Trạng thái**: `Plan_EstimateOrder.PLEOrdStatus = 'A2'` (**chỉ duyệt cấp 2**; "P"/"A1" bị loại) và
+//    `DMS40_Ord_SalesOrderRoot.SOType = 'P'` (đơn KẾ HOẠCH). Không phải `TConst.Stage` (xem #154).
+// ⚠️ **Nguồn KHÔNG có bộ lọc phạm vi BU** — không khai báo `@strBUPatternOfUser`, chỉ lọc
+//    `@strDealerCode` do người dùng chọn. Khác 8 ca RBAC đã ghi nhận: đây **không phải điều kiện bị
+//    comment/bỏ quên**, mà là **chưa từng có**. Vẫn trả `outOfScopeCount` + cờ `enforceBuScope` để đo.
+// 📌 Ghi nợ định dạng (KHÔNG tự suy): nguồn lưu `MonthEstimate`/`MonthOrder` dạng **CHUỖI** `'yyyy-MM-01'`
+//    (nên mới `like` được); MiniHTC lưu `EstimateOrder.MonthEstimate` là chuỗi `"yyyy-MM"` còn
+//    `Dms40SoRoot.OrderMonth` là **DateTime**. Port so theo **(năm, tháng)** — tương đương ngữ nghĩa.
+app.MapGet("/api/reports/order-plan-tracking", async (
+    AppDbContext db, ITenantContext t, string? yearPlan, string? dealerCode, string? buPattern, string? enforceBuScope) =>
+{
+    var year = int.TryParse((yearPlan ?? "").Trim(), out var y) && y > 1900 ? y : DateTime.Now.Year;
+    var yearOld = year - 1;
+    var dlr = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim().ToUpperInvariant();
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // Cột tháng: CỐ ĐỊNH 12 tháng của năm kế hoạch (dòng ACTIVE), khoá dạng "yyyy-MM".
+    var monthKeys = Enumerable.Range(1, 12).Select(m => year.ToString("D4") + "-" + m.ToString("D2")).ToList();
+    var monthOldKey = yearOld.ToString("D4") + "-12";   // `@strOrderMonthOld` — CHỈ tháng 12.
+    var yearPrefix = year.ToString("D4") + "-";
+
+    // `#tbl_Plan_EstimateOrder_Filter` — PLEOrdStatus = 'A2' (chỉ duyệt cấp 2).
+    var eoAll = await (from h in db.EstimateOrders.Where(x => x.OrgId == t.OrgId && x.Status == "A2")
+                       join l in db.EstimateOrderLines.Where(x => x.OrgId == t.OrgId) on h.Id equals l.EstimateOrderId
+                       select new { h.MonthEstimate, h.DealerCode, l.ModelCode, l.SpecCode, l.QtyEOrdN1 })
+                      .ToListAsync();
+    if (dlr is not null) eoAll = eoAll.Where(x => (x.DealerCode ?? "").ToUpperInvariant() == dlr).ToList();
+    static string MKey(string? s) => (s ?? "").Length >= 7 ? s!.Substring(0, 7) : (s ?? "");
+
+    // Năm nay: `like '{yyyy}%'` — CẢ NĂM.
+    var eoNew = eoAll.Where(x => MKey(x.MonthEstimate).StartsWith(yearPrefix, StringComparison.Ordinal)).ToList();
+    // Năm trước: `= '{yyyy-1}-12-01'` — CHỈ THÁNG 12 (toán tử KHÁC, không phải cả năm).
+    var eoOld = eoAll.Where(x => MKey(x.MonthEstimate) == monthOldKey).ToList();
+
+    // `#tbl_DMS40_Ord_SalesOrderRootDetail_*` — SOType = 'P', `MonthOrder like '{yyyy}%'`.
+    var soAll = await (from h in db.Dms40SoRoots.Where(x => x.OrgId == t.OrgId && x.SOType == "P" && x.OrderMonth != null)
+                       join l in db.Dms40SoRootDetails.Where(x => x.OrgId == t.OrgId) on h.Id equals l.SoRootId
+                       select new { h.OrderMonth, h.DealerCode, l.ModelCode, l.SpecCode, l.RequestedQuantity })
+                      .ToListAsync();
+    if (dlr is not null) soAll = soAll.Where(x => (x.DealerCode ?? "").ToUpperInvariant() == dlr).ToList();
+    var so = soAll.Where(x => x.OrderMonth!.Value.Year == year).ToList();
+
+    // Phạm vi BU: nguồn KHÔNG có — chỉ đo, chỉ lọc khi bật cờ.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? dc)
+    {
+        if (pattern is null) return true;
+        var d = dealers.FirstOrDefault(z => z.DealerCode == dc);
+        return d is not null && (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = so.Count(x => !InScope(x.DealerCode)) + eoNew.Count(x => !InScope(x.DealerCode));
+    if (enforceBuScope == "1")
+    {
+        so = so.Where(x => InScope(x.DealerCode)).ToList();
+        eoNew = eoNew.Where(x => InScope(x.DealerCode)).ToList();
+        eoOld = eoOld.Where(x => InScope(x.DealerCode)).ToList();
+    }
+
+    // `group by ModelCode, SpecCode, OrderMonth` — gộp TRƯỚC khi pivot (nguồn dựa vào đây để khoá DUY NHẤT:
+    // `Hashtable.Add` sẽ NÉM nếu trùng khoá, nên tính duy nhất là điều kiện sống của báo cáo).
+    var ordTot = so
+        .GroupBy(x => (M: x.ModelCode ?? "", S: x.SpecCode ?? "",
+                       K: x.OrderMonth!.Value.Year.ToString("D4") + "-" + x.OrderMonth.Value.Month.ToString("D2")))
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.RequestedQuantity));
+    var estTot = eoNew
+        .GroupBy(x => (M: x.ModelCode ?? "", S: x.SpecCode ?? "", K: MKey(x.MonthEstimate)))
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.QtyEOrdN1));
+    var estOldTot = eoOld
+        .GroupBy(x => (M: x.ModelCode ?? "", S: x.SpecCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.QtyEOrdN1));
+
+    // `#tbl_Filter_M_S` — union BA nguồn (kể cả `_Old`) ⇒ model/spec chỉ có ở T12 năm trước VẪN có dòng.
+    var pairs = ordTot.Keys.Select(k => (k.M, k.S))
+        .Union(estTot.Keys.Select(k => (k.M, k.S)))
+        .Union(estOldTot.Keys)
+        .Distinct()
+        .OrderBy(p => p.M, StringComparer.Ordinal).ThenBy(p => p.S, StringComparer.Ordinal).ToList();
+
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+    var specDesc = specs.GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+
+    var items = pairs.Select(p =>
+    {
+        var cells = new Dictionary<string, decimal>();
+        foreach (var mk in monthKeys)
+        {
+            cells[mk + "-01_OrdN"] = ordTot.TryGetValue((p.M, p.S, mk), out var qo) ? qo : 0m;
+            cells[mk + "-01_EstN1"] = estTot.TryGetValue((p.M, p.S, mk), out var qe) ? qe : 0m;
+        }
+        return new
+        {
+            modelCode = p.M,
+            specCode = p.S,
+            specDescription = specDesc.TryGetValue(p.S, out var sd) ? sd : null,
+            qtyEOrdN1_Old = estOldTot.TryGetValue((p.M, p.S), out var qold) ? qold : 0m,
+            months = cells
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        yearPlan = year.ToString("D4"),
+        yearOld = yearOld.ToString("D4"),
+        dealerCode = dlr,
+        monthColumns = monthKeys.SelectMany(mk => new[] { mk + "-01_OrdN", mk + "-01_EstN1" }).ToList(),
+        count = items.Count,
+        items,
+        outOfScopeCount,
+        buScopeEnforced = enforceBuScope == "1",
+        totals = new
+        {
+            ordN = items.Sum(x => x.months.Where(c => c.Key.EndsWith("_OrdN", StringComparison.Ordinal)).Sum(c => c.Value)),
+            estN1 = items.Sum(x => x.months.Where(c => c.Key.EndsWith("_EstN1", StringComparison.Ordinal)).Sum(c => c.Value)),
+            estN1Old = items.Sum(x => x.qtyEOrdN1_Old)
+        },
+        pivotNote = "PIVOT dung trong C# (khong phai SQL): 12 thang x 2 cot 'yyyy-MM-01_OrdN' / '_EstN1', TEN COT chinh la khoa tra cuu.",
+        activeVsCommentNote = "Ngay duoi vong lap 12 thang la ban CU DA BI COMMENT dung cot THEO DU LIEU (foreach tbl_Filter_Month). Ban DANG CHAY dung CO DINH 12 thang cua nam ke hoach => dong du lieu co OrderMonth NGOAI nam ke hoach KHONG co cot de rot va bi BO IM LANG (vong lap duyet theo COT, khong theo du lieu). Vo hai vi SQL da loc, nhung noi bo loc ma quen vong lap = mat so.",
+        operatorAsymmetryNote = "HAI TOAN TU KHAC NHAU: nam nay 'MonthEstimate like @strOrderMonthNew' voi '{yyyy}%' => CA NAM; nam truoc 'MonthEstimate = @strOrderMonthOld' voi '{yyyy-1}-12-01' => CHI THANG 12. Cot QtyEOrdN1_Old KHONG phai 'ca nam truoc' ma la du kien rieng THANG 12 nam truoc.",
+        unionAsymmetryNote = "#tbl_Filter_M_S union BA nguon (don ke hoach + du kien nam nay + du kien T12 nam truoc) nhung #tbl_Filter_M_S_Month chi union HAI (khong co _Old). Co chu dich: model/spec chi co o T12 nam truoc van CO DONG (de doc QtyEOrdN1_Old) nhung KHONG sinh o thang nao. Union ca ba vao _M_S_Month se de o thang ma.",
+        uniqueKeyNote = "Nguon dung Hashtable.Add lam cache pivot => TRUNG KHOA la NEM EXCEPTION, khong phai ghi de. Tinh duy nhat do 'select distinct #tbl_Filter_M_S_Month' + 'group by ModelCode, SpecCode, OrderMonth' bao dam. Them cot vao _M_S_Month ma quen group by se lam bao cao CHET runtime.",
+        statusRule = "Plan_EstimateOrder.PLEOrdStatus = 'A2' (CHI duyet cap 2; P/A1 bi loai) va DMS40_Ord_SalesOrderRoot.SOType = 'P' (don KE HOACH). Khong phai TConst.Stage (xem #154).",
+        rbacNote = "Nguon KHONG co bo loc pham vi BU - khong khai bao @strBUPatternOfUser, chi loc @strDealerCode do nguoi dung chon. KHAC 8 ca RBAC da ghi nhan: day khong phai dieu kien bi comment/bo quen ma la CHUA TUNG CO. Van tra outOfScopeCount de do.",
+        dataFormatDebt = "Nguon luu MonthEstimate/MonthOrder dang CHUOI 'yyyy-MM-01' (nen moi like duoc); MiniHTC luu EstimateOrder.MonthEstimate la chuoi 'yyyy-MM' va Dms40SoRoot.OrderMonth la DateTime. Port so theo (nam, thang) - tuong duong ngu nghia, nhung dong bo du lieu that phai chuan hoa dinh dang truoc."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-retail-sales-detail", async (
     AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? buPattern) =>
 {
