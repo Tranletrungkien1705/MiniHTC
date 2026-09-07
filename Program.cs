@@ -47223,6 +47223,83 @@ app.MapGet("/api/platecolormsts", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #523 TẢI TỆP TỪ MÁY TÍNH BẢNG — **GHI FILE HAI LẦN, GUARD TOÀN VẸN VÔ NGHĨA** =====
+// Nguồn: `BizCarSv.UploadFile.cs:1986 UploadFile_ForTab` — sống qua **kênh ClientService** (#519).
+// Endpoint: `POST /api/uploads/tab`. **§12** thêm entity `UploadedFile` + `DbSet` + Seeder.
+//
+// 🔴 **GHI RA ĐĨA HAI LẦN, LẦN ĐẦU THÀNH RÁC** (đọc nguyên văn khối `#region // Convert Input`):
+//     `filePath = "UploadedFiles\\" + yyyyMMdd.HHmmss.ffffff + Guid.NewGuid() + "\\";`
+//     `EnsureDirectoryExists(path); path += fileName; File.WriteAllBytes(path, fileContent);`   ← lần 1
+//     … rồi `filePath = "UploadedFiles\\" + fileName; path = rootPath + filePath;`
+//     `File.WriteAllBytes(path, fileContent);`                                                  ← lần 2
+//   ⇒ Mỗi lần tải lên đẻ ra **một thư mục con theo GUID chứa một bản sao KHÔNG AI THAM CHIẾU**
+//     (đường dẫn trả về là bản **lần hai**). Không có chỗ nào xoá ⇒ **đĩa phình vô hạn**.
+// 🔴 **GUARD TOÀN VẸN PHÁT HIỆN HỎNG NHƯNG KHÔNG DỪNG**:
+//     `byte[] fileContent1 = File.ReadAllBytes(path);`
+//     `if (fileContent.SequenceEqual(fileContent1) == false) { fileName = <thêm tiền tố lần nữa> + fileName; }`
+//   Đọc lại thấy **khác** — tức ghi hỏng — mà chỉ **đổi tên** rồi vẫn ghi tiếp, **không ném lỗi**,
+//   không báo về client. ⇒ Guard tồn tại **để yên tâm**, không để bảo vệ. (Họ #407: guard chết.)
+// 🔴 **VA CHẠM TÊN Ở LẦN GHI THỨ HAI**: tên cuối là `<yyyyMMdd_HHmmss_fff> + fileName` đặt **thẳng**
+//   trong `UploadedFiles\` — hai tệp cùng tên trong **cùng mili-giây** thì `WriteAllBytes` **ghi đè
+//   im lặng**. Bản lần một có GUID nên không đụng; bản **được dùng** thì có.
+// ⚠️ Guard loại tệp: `Path.GetExtension(fileName).ToUpper()` rồi `Mst_FileTypeUpload_CheckDB(…, Flag.Yes)`
+//   ⇒ đuôi tệp (**VIẾT HOA**, kèm dấu chấm) phải có trong danh mục. Tệp **không có đuôi** ⇒ mã rỗng `""`
+//   vẫn đem đi tra ⇒ phụ thuộc việc danh mục có dòng rỗng hay không.
+// ⚠️ `GC.Collect()` gọi tay ngay trước `Convert.FromBase64String` (chú thích nguồn: *"tránh đầy bộ nhớ"*)
+//   ⇒ dấu hiệu nguồn **không giới hạn kích thước** tệp: base64 nạp trọn vào RAM.
+// 📌 **Lệch CỐ Ý**: MiniHTC **lưu nội dung trong DB** (nền chạy không có đĩa bền) và **ghi MỘT lần**;
+//   vẫn trả `filePath` đúng khuôn nguồn để client cũ không vỡ, kèm cờ nêu rõ.
+app.MapPost("/api/uploads/tab", async (UploadFileDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.FileName))
+        return Results.BadRequest(new { error = "Cần fileName." });
+    if (string.IsNullOrWhiteSpace(dto.UploadFileAsBase64String))
+        return Results.BadRequest(new { error = "Cần uploadFileAsBase64String." });
+
+    // Đuôi tệp VIẾT HOA kèm dấu chấm — đúng `Path.GetExtension(...).ToUpper()` của nguồn.
+    var ext = Path.GetExtension(dto.FileName!)?.ToUpperInvariant() ?? "";
+    var typeOk = await db.MstFileTypes.AnyAsync(x => x.OrgId == t.OrgId && x.FileType == ext);
+    if (!typeOk)
+        return Results.BadRequest(new
+        {
+            error = "Mst_FileTypeUpload_CheckDB: loại tệp không có trong danh mục.",
+            fileTypeCode = ext,
+            noExtensionBecomesEmptyCode = ext.Length == 0,
+        });
+
+    byte[] content;
+    try { content = Convert.FromBase64String(dto.UploadFileAsBase64String!); }
+    catch (FormatException) { return Results.BadRequest(new { error = "uploadFileAsBase64String không hợp lệ." }); }
+
+    // Nguồn gắn tiền tố thời gian rồi ghi thẳng vào UploadedFiles\ ⇒ giữ đúng khuôn tên.
+    var stamped = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + dto.FileName!.Trim();
+    var filePath = "UploadedFiles\\" + stamped;
+
+    // Nguồn ghi đè im lặng khi trùng tên; ở đây phát hiện và BÁO, không giấu.
+    var clash = await db.UploadedFiles.AnyAsync(x => x.OrgId == t.OrgId && x.FilePath == filePath);
+
+    var f = new UploadedFile
+    {
+        OrgId = t.OrgId, FileName = stamped, FilePath = filePath, FileTypeCode = ext,
+        Content = content, SizeBytes = content.LongLength,
+    };
+    db.UploadedFiles.Add(f);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        f.Id, f.FileName, f.FilePath, f.FileTypeCode, f.SizeBytes,
+        remark = filePath,                       // nguồn trả đường dẫn qua CMyDataSet.SetRemark
+        message = "Upload file thành công!",     // chuỗi nguyên văn của nguồn
+        nameClashDetected = clash,
+        sourceWritesFileTwice = "ban 1 vao UploadedFiles\\<timestamp><guid>\\ khong ai tham chieu",
+        sourceIntegrityCheckDoesNotAbort = true,
+        sourceOverwritesOnSameMillisecond = true,
+        sourceHasNoSizeLimit = "GC.Collect() truoc FromBase64String",
+        storedInDatabaseNotDisk = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49039,6 +49116,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record UploadFileDto(string FileName, string UploadFileAsBase64String);   // #523
+
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest,
     string? DealerCode = null, string? CusID = null, string? CarID = null,
     string? Km = null, string? FuelLevel = null, string? LevelOfInspection = null,

@@ -7668,6 +7668,25 @@ public sealed class MstQuater
 }
 
 /// <summary>Master LOẠI FILE (`Mst_FileType` — `Mst_FileType_Get_New20181115`, dòng 13008).</summary>
+/// <summary>#523 Tệp tải lên (`UploadFile_ForTab` — `BizCarSv.UploadFile.cs:1986`).
+/// Nguồn ghi ra **đĩa** dưới `UploadedFiles\`; MiniHTC lưu **nội dung trong DB** (lệch CỐ Ý,
+/// vì nền chạy không có đĩa bền) và giữ nguyên `FilePath` mà nguồn trả về.</summary>
+public sealed class UploadedFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Tên tệp SAU khi nguồn gắn tiền tố `yyyyMMdd_HHmmss_fff`.</summary>
+    public string FileName { get; set; } = "";
+    /// <summary>Đường dẫn nguồn trả về: `UploadedFiles\&lt;FileName&gt;` (bản ghi LẦN HAI).</summary>
+    public string FilePath { get; set; } = "";
+    /// <summary>Phần mở rộng VIẾT HOA — nguồn kiểm bằng `Mst_FileTypeUpload_CheckDB`.</summary>
+    public string? FileTypeCode { get; set; }
+    public byte[]? Content { get; set; }
+    public long SizeBytes { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
 public sealed class MstFileType
 {
     public long Id { get; set; }
