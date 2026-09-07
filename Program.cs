@@ -3502,6 +3502,123 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // ✅ `@strBUPatternOfUser` **dùng thật** (`inner join Mst_Dealer`, `:8586-8587`).
 // ⚠️ NỢ CÓ NHÃN: hai khối `CachingForPaymentTotal` / `CachingForPayment_Deposit` (tiền cọc/thanh toán)
 //    chưa port — cùng món nợ #B37/#B56/#B59/#B60; các cột tiền trả `null`, **không suy số**.
+
+// ===== #B66 TÌNH TRẠNG BÁN THEO NHÓM ĐẠI LÝ — `RptStatistic_GrpDealer01_New20260514` =====
+// (`FrmFiveDealerStatus`.) Trace LIVE: `ReportService.Report5DealerSalesStatus` (`:1688`) → WS
+//   `RptStatistic_GrpDealer01` (`WSHTC.asmx.cs:29137`) → **`_biz.RptStatistic_GrpDealer01_New20260514`**
+//   (`BizHTC.Report.cs:6778`); SQL ở `RptSQLQuery.cs:52190`.
+// ✅ Thuộc đợt zone `_New20260514` và **có** dòng coalesce (`:6828`) — an toàn (xem audit #B58/#B61).
+// 🔴 **Tập xe xét** (`:52194-52206`) — chú thích nguyên văn của nguồn:
+//    `cc.FlagActive = '1'` ∧ `cdod.DeliveryEndDate is not null and <= @strTDate`
+//    (*"Xe đã Được Đại lý Tiếp nhận cho tới Hôm nay"*) ∧ **`cdod.ConfirmStatus in ('F')`**
+//    (*"Xe còn Active Chưa bị Thu hồi"*).
+//    ⚠️ Siết về **chỉ `'F'`** — hẹp hơn `('A','F')` dùng ở #B55/#B56/#B65. Cùng khuôn với #B57.
+// 🔴 **"ĐÃ BÁN" chỉ tính BÁN LẺ**: bảng con lồng lọc `dlsdd.DeliveryStatus in ('A','F')` **và**
+//    `dlsd.DealerCodeBuyer is null` — *"Bán tới Khách Cuối là Người tiêu dùng"* (giống #B57).
+//    ⚠️ Điều kiện `DeliveryStatus in ('A','F')` xuất hiện **HAI LẦN**: trong bảng con **và** lặp lại ở
+//    mệnh đề `on` của `left join` (`:52234`). Port giữ một lần là đủ (cùng tập), nhưng ghi nhận để
+//    không tưởng là hai điều kiện khác nhau.
+// 🔴 **NĂM cột đếm** theo mốc, mỗi cột là `case when … then 1 else 0`:
+//    · `Tt_CarId` = xe có mặt (1/0)
+//    · `Tt_Date`  = `dlsdd.DeliveryDate = @strTDate`            (bán **đúng ngày** chốt)
+//    · `Tt_Month` = `@strTMonth <= DeliveryDate <= @strTDate`   (luỹ kế **tháng**)
+//    · `Tt_Year`  = `@strTYear  <= DeliveryDate <= @strTDate`   (luỹ kế **năm**)
+//    · `Tt_Stock` = `DeliveryDate is null OR DeliveryDate > @strTDate` (**còn tồn** tại mốc)
+//    🔴 `Tt_Date` dùng **`=`** (bằng đúng ngày), không phải khoảng — port thành `>=`/`<=` sẽ sai.
+//    🔴 `Tt_Stock` gồm **cả** `is null` **lẫn** ngày bán ở **tương lai** so với mốc.
+app.MapGet("/api/reports/dealer-group-sales-status", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? zoneCode, string? buPattern) =>
+{
+    var asOf = (tDate ?? DateTime.Now).Date;
+    var tMonth = new DateTime(asOf.Year, asOf.Month, 1);
+    var tYear = new DateTime(asOf.Year, 1, 1);
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    // Khuôn an toàn của MiniHTC (luật `C0-…vicesimussextus`): rỗng ⇒ KHÔNG lọc.
+    var zone = string.IsNullOrWhiteSpace(zoneCode) ? null : zoneCode.Trim().ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    var scopeList = dealers.Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    // Vùng đại lý (`Mst_DealerZone`) — chỉ lọc khi người gọi truyền zone.
+    var zones = await db.DealerZones.Where(z => z.OrgId == t.OrgId)
+        .Select(z => new { z.DealerCode, z.ZoneCode }).ToListAsync();
+    if (zone is not null)
+    {
+        var inZone = zones.Where(z => (z.ZoneCode ?? "").ToUpperInvariant() == zone).Select(z => z.DealerCode).ToHashSet();
+        scopeList = scopeList.Where(d => inZone.Contains(d.DealerCode)).ToList();
+        scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+    }
+
+    // `#tbl_Car_Car_Filter`: xe đã được đại lý TIẾP NHẬN tính tới mốc, `ConfirmStatus` chỉ `'F'`.
+    var received = await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.ConfirmStatus == "F"
+                    && x.DeliveryEndDate != null && x.DeliveryEndDate <= asOf)
+        .Select(x => x.CarId ?? x.Vin).ToListAsync();
+    var receivedSet = received.ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    cars = cars.Where(c => (c.FlagActive ?? "1") == "1"
+                           && receivedSet.Contains(c.VIN)
+                           && c.DealerCode != null && scope.Contains(c.DealerCode)).ToList();
+
+    // Bán LẺ tới người tiêu dùng: `DeliveryStatus in ('A','F')` + `DealerCodeBuyer is null`.
+    var soldRetail = await (from f in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId
+                                && (x.DeliveryStatus == "A" || x.DeliveryStatus == "F"))
+                            join d in db.DealerDeals.Where(x => x.OrgId == t.OrgId
+                                && (x.DealerCodeBuyer == null || x.DealerCodeBuyer == ""))
+                                 on f.DealId equals d.Id
+                            select new { f.CarId, f.DeliveryDate }).ToListAsync();
+    var deliveryByCar = soldRetail.GroupBy(x => x.CarId)
+        .ToDictionary(g => g.Key, g => g.Max(x => x.DeliveryDate));
+
+    var rows = cars.Select(c =>
+    {
+        deliveryByCar.TryGetValue(c.VIN, out var dd);
+        var d = dd?.Date;
+        return new
+        {
+            c.DealerCode, c.VIN,
+            ttCarId = 1,
+            ttDate = d == asOf ? 1 : 0,                                  // `=` đúng ngày
+            ttMonth = (d != null && d >= tMonth && d <= asOf) ? 1 : 0,
+            ttYear = (d != null && d >= tYear && d <= asOf) ? 1 : 0,
+            ttStock = (d == null || d > asOf) ? 1 : 0,                   // null HOẶC bán ở tương lai
+            deliveryDate = d
+        };
+    }).ToList();
+
+    var byDealer = rows.GroupBy(x => x.DealerCode!).Select(g =>
+    {
+        var dl = scopeList.FirstOrDefault(d => d.DealerCode == g.Key);
+        var z = zones.FirstOrDefault(x => x.DealerCode == g.Key);
+        return new
+        {
+            dealerCode = g.Key, dealerName = dl?.DealerName, zoneCode = z?.ZoneCode,
+            ttCarId = g.Sum(x => x.ttCarId), ttDate = g.Sum(x => x.ttDate),
+            ttMonth = g.Sum(x => x.ttMonth), ttYear = g.Sum(x => x.ttYear),
+            ttStock = g.Sum(x => x.ttStock)
+        };
+    }).OrderBy(x => x.dealerCode).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf, monthFrom = tMonth, yearFrom = tYear,
+        zoneCode = zone, count = byDealer.Count, byDealer,
+        totals = new
+        {
+            ttCarId = rows.Sum(x => x.ttCarId), ttDate = rows.Sum(x => x.ttDate),
+            ttMonth = rows.Sum(x => x.ttMonth), ttYear = rows.Sum(x => x.ttYear),
+            ttStock = rows.Sum(x => x.ttStock)
+        },
+        carSetRule = "FlagActive='1' VA DeliveryEndDate is not null & <= @strTDate ('Xe da Duoc Dai ly Tiep nhan cho toi Hom nay') VA ConfirmStatus in ('F') ('Xe con Active Chua bi Thu hoi') - SIET VE CHI 'F', hep hon ('A','F') dung o #B55/#B56/#B65.",
+        soldRule = "DA BAN chi tinh BAN LE: DeliveryStatus in ('A','F') VA Dls_Deal.DealerCodeBuyer is null ('Ban toi Khach Cuoi la Nguoi tieu dung') - giong #B57.",
+        countersRule = "Tt_Date dung '=' DUNG NGAY chot (khong phai khoang); Tt_Month/Tt_Year la luy ke tu dau thang/dau nam den moc; Tt_Stock = DeliveryDate is null HOAC > moc (gom ca ban o TUONG LAI so voi moc).",
+        duplicateCondNote = "Dieu kien DeliveryStatus in ('A','F') xuat hien HAI LAN o nguon (trong bang con va lap lai o 'on' cua left join) - cung mot tap, port giu mot lan.",
+        zoneNote = "Ham nay thuoc dot _New20260514 va CO dong coalesce zone (:6828) - an toan (audit #B58/#B61). MiniHTC dung khuon IsNullOrWhiteSpace: rong => KHONG loc."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/back-order", async (
     AppDbContext db, ITenantContext t, string? groupBy, string? buPattern, string? getDetail) =>
 {
