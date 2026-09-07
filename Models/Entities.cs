@@ -1206,6 +1206,46 @@ public sealed class TransportReqCar
 }
 
 /// <summary>Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2):
+/// <summary>
+/// 🔴 #B90 — **ĐẦU phiên bản chi phí vận chuyển** (`Mst_TranspFeeVer`). Nguồn có **BA** bảng, port cũ
+/// gộp còn **một**: `Mst_TranspFeeVer` (đầu phiên bản) · `Mst_TranspFee` (bảng ĐANG hiệu lực) ·
+/// <see cref="TranspFeeHist"/> (`Mst_TranspFeeHist`, **ảnh chụp** dòng phí của từng phiên bản).
+/// Port cũ chỉ gắn `TFVCode` lên `TranspFee` ⇒ **không có đầu phiên bản** (không có ngày tạo/cờ
+/// hiệu lực của phiên bản) và **không có ảnh chụp lịch sử**.
+/// </summary>
+public sealed class TranspFeeVer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TFVCode { get; set; } = "";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+}
+
+/// <summary>
+/// 🔴 #B90 — **ẢNH CHỤP dòng phí theo phiên bản** (`Mst_TranspFeeHist`). `Mst_TranspFeeVerGet_Hist`
+/// đọc **bảng này**, KHÔNG đọc `Mst_TranspFee`: xem lại một phiên bản cũ phải thấy đúng số của lúc đó.
+/// ⚠️ Nguồn nối **BỐN `INNER JOIN`** tới `Mst_Province`/`Mst_District` (from + to) ⇒ dòng có
+/// tỉnh/huyện **không tra được trong danh mục sẽ BỊ LOẠI khỏi kết quả**, không phải hiện với ô trống.
+/// </summary>
+public sealed class TranspFeeHist
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TFVCode { get; set; } = "";
+    public string ProvinceCodeFrom { get; set; } = "";
+    public string ProvinceCodeTo { get; set; } = "";
+    public string? DistrictCodeFrom { get; set; }
+    public string? DistrictCodeTo { get; set; }
+    public string TransporterCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public decimal ValFee { get; set; }
+    public int ExpectedDays { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+}
+
 /// ma trận phí tỉnh/huyện From→To + nhà VC + model → giá phí + số ngày dự kiến.</summary>
 public sealed class TranspFee
 {

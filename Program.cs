@@ -2679,6 +2679,119 @@ app.MapPost("/api/transpfees/versions/delete-batch", async (TranspFeeVerDeleteDt
     return Results.Ok(new { deletedVersions = codes.Count, deletedRows });
 }).RequireAuthorization();
 
+// ===== #B90 LỊCH SỬ PHIÊN BẢN CHI PHÍ VẬN CHUYỂN — `Mst_TranspFeeVerGet_Hist_New20181115` =====
+// Trace LIVE: WS `:39282` → **`_biz.Mst_TranspFeeVerGet_Hist_New20181115`**
+//   (`BizHTC.MasterData.cs:2257`). ⚠️ Sinh đôi gần kề: `Mst_TranspFeeVerGet_New20181115` (WS `:39187`)
+//   là hàm **KHÁC** — đọc bảng ĐANG hiệu lực; hàm này đọc **LỊCH SỬ**.
+//   3B đo thật, **khớp cả 2 máy**: start=2257 md5 `fe1c586bc61f2994d987f3bfcc64728f`.
+// 🔴 **NGUỒN CÓ BA BẢNG, PORT CŨ GỘP CÒN MỘT**:
+//      `Mst_TranspFeeVer`  — **đầu** phiên bản (ngày tạo, cờ hiệu lực)
+//      `Mst_TranspFee`     — bảng **ĐANG** hiệu lực
+//      `Mst_TranspFeeHist` — **ẢNH CHỤP** dòng phí của từng phiên bản
+//    Port cũ chỉ gắn `TFVCode` lên `TranspFee` ⇒ **không có đầu phiên bản** và **không có ảnh chụp**.
+//    ⇒ Xem lại một phiên bản cũ sẽ ra **số HIỆN TẠI**, không phải số của lúc đó. Đã thêm 2 entity §12.
+// 🔴 **Hàm này đọc `Mst_TranspFeeHist`, KHÔNG đọc `Mst_TranspFee`** — đó là toàn bộ lý do nó tồn tại.
+// 🔴 **BỐN `INNER JOIN` danh mục địa lý** (`Mst_Province` ×2 + `Mst_District` ×2, cả đầu ĐI và ĐẾN):
+//    dòng có tỉnh/huyện **không tra được trong danh mục sẽ BỊ LOẠI khỏi kết quả** — **không** hiện ra
+//    với ô trống. Port đếm `droppedNoGeo` để đo được phần bị mất.
+// 🔴 **`strIsGetDetail` quyết định có trả BẢNG CHI TIẾT hay không**: mặc định
+//    `zzzzClauseSelect_Mst_TranspFee_Hist = "-- Nothing."`; chỉ khi cờ = `Flag.Active` mới nối câu
+//    select dòng chi tiết (kèm `ProvinceNameFrom`… lấy từ join). ⇒ **không phải "ẩn cột"** mà là
+//    **không chạy hẳn câu truy vấn thứ ba**.
+// 🔴 **LỖ HỔNG RBAC — biến thể 2 (khai mà KHÔNG dùng), ca thứ 10**: nguồn bind
+//    `alParamsCoupleSql.AddRange(new object[] { "@strBUPatternOfUser", drAbilityOfUser["BUPattern"] });`
+//    (`:2342`) nhưng **`@strBUPatternOfUser` KHÔNG xuất hiện lần nào trong câu SQL** (đã đếm: đúng 1
+//    lần trong cả hàm, chính là dòng bind). ⇒ **phạm vi BU vô hiệu**. Cùng khuôn
+//    #B46/#B47/#B50/#B52/#B53. Port trả `outOfScopeCount` + cờ `enforceBuScope`, **không tự bịt**.
+app.MapGet("/api/transpfees/versions/history", async (
+    AppDbContext db, ITenantContext t,
+    string? tfvCode, string? flagActive, DateTime? createdFrom, DateTime? createdTo,
+    string? provinceCodeFrom, string? provinceCodeTo, string? transporterCode, string? modelCode,
+    string? isGetDetail, string? buPattern, string? enforceBuScope) =>
+{
+    var wantDetail = (isGetDetail ?? "").Trim() == "1";
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `#tbl_Mst_TranspFeeVer_Filter` — lọc TFVCode qua bảng LỊCH SỬ (không phải bảng hiện hành).
+    var hist = await db.TranspFeeHists.Where(h => h.OrgId == t.OrgId).ToListAsync();
+
+    // BỐN inner join danh mục địa lý: thiếu một mã là LOẠI dòng.
+    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
+        .Select(m => new { m.Code, m.Name }).ToListAsync());
+    var provName = provinces.GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First().Name);
+    var districts = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "District")
+        .Select(m => new { m.Code, m.Name }).ToListAsync());
+    var distName = districts.GroupBy(d => d.Code).ToDictionary(g => g.Key!, g => g.First().Name);
+
+    var beforeGeo = hist.Count;
+    hist = hist.Where(h =>
+        provName.ContainsKey(h.ProvinceCodeFrom) && provName.ContainsKey(h.ProvinceCodeTo)
+        && h.DistrictCodeFrom != null && distName.ContainsKey(h.DistrictCodeFrom)
+        && h.DistrictCodeTo != null && distName.ContainsKey(h.DistrictCodeTo)).ToList();
+    var droppedNoGeo = beforeGeo - hist.Count;
+
+    if (!string.IsNullOrWhiteSpace(tfvCode)) hist = hist.Where(h => h.TFVCode == tfvCode.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(provinceCodeFrom)) hist = hist.Where(h => h.ProvinceCodeFrom == provinceCodeFrom.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(provinceCodeTo)) hist = hist.Where(h => h.ProvinceCodeTo == provinceCodeTo.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(transporterCode)) hist = hist.Where(h => h.TransporterCode == transporterCode.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(modelCode)) hist = hist.Where(h => h.ModelCode == modelCode.Trim().ToUpperInvariant()).ToList();
+
+    var tfvCodes = hist.Select(h => h.TFVCode).Distinct().ToList();
+    var vers = await db.TranspFeeVers
+        .Where(v => v.OrgId == t.OrgId && tfvCodes.Contains(v.TFVCode)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(flagActive)) vers = vers.Where(v => v.FlagActive == flagActive.Trim()).ToList();
+    if (createdFrom is not null) vers = vers.Where(v => v.CreatedDate >= createdFrom).ToList();
+    if (createdTo is not null) vers = vers.Where(v => v.CreatedDate <= createdTo).ToList();
+    var keep = vers.Select(v => v.TFVCode).ToHashSet();
+    hist = hist.Where(h => keep.Contains(h.TFVCode)).ToList();
+
+    // Phạm vi BU: nguồn bind mà KHÔNG dùng ⇒ chỉ đo, chỉ lọc khi bật cờ.
+    var transporters = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? code)
+    {
+        if (pattern is null) return true;
+        var d = transporters.FirstOrDefault(x => x.DealerCode == code);
+        return d is not null && (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = hist.Count(h => !InScope(h.TransporterCode));
+    if (enforceBuScope == "1") hist = hist.Where(h => InScope(h.TransporterCode)).ToList();
+
+    var versions = vers.Where(v => hist.Any(h => h.TFVCode == v.TFVCode))
+        .OrderByDescending(v => v.CreatedDate).Select(v => new
+        {
+            mtfvTFVCode = v.TFVCode, mtfvCreatedDate = v.CreatedDate, mtfvCreatedBy = v.CreatedBy,
+            mtfvFlagActive = v.FlagActive, mtfvRemark = v.Remark,
+            lineCount = hist.Count(h => h.TFVCode == v.TFVCode)
+        }).ToList();
+
+    object? detail = null;
+    if (wantDetail)
+        detail = hist.OrderBy(h => h.TFVCode, StringComparer.Ordinal)
+            .ThenBy(h => h.ProvinceCodeFrom, StringComparer.Ordinal).Select(h => new
+            {
+                mtfhTFVCode = h.TFVCode,
+                mtfhProvinceCodeFrom = h.ProvinceCodeFrom, ProvinceNameFrom = provName[h.ProvinceCodeFrom],
+                mtfhProvinceCodeTo = h.ProvinceCodeTo, ProvinceNameTo = provName[h.ProvinceCodeTo],
+                mtfhDistrictCodeFrom = h.DistrictCodeFrom, DistrictNameFrom = distName[h.DistrictCodeFrom!],
+                mtfhDistrictCodeTo = h.DistrictCodeTo, DistrictNameTo = distName[h.DistrictCodeTo!],
+                mtfhTransporterCode = h.TransporterCode, mtfhModelCode = h.ModelCode,
+                mtfhValFee = h.ValFee, mtfhExpectedDays = h.ExpectedDays, mtfhCreatedDate = h.CreatedDate
+            }).ToList();
+
+    return Results.Ok(new
+    {
+        versionCount = versions.Count, versions,
+        isGetDetail = wantDetail, detail,
+        droppedNoGeo, outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        threeTablesNote = "NGUON CO BA BANG, PORT CU GOP CON MOT: Mst_TranspFeeVer (dau phien ban) + Mst_TranspFee (dang hieu luc) + Mst_TranspFeeHist (ANH CHUP dong phi cua tung phien ban). Port cu chi gan TFVCode len TranspFee => khong co dau phien ban va khong co anh chup => xem lai mot phien ban cu se ra SO HIEN TAI, khong phai so cua luc do.",
+        readsHistNote = "Ham nay doc Mst_TranspFeeHist, KHONG doc Mst_TranspFee - do la toan bo ly do no ton tai. Sinh doi gan ke Mst_TranspFeeVerGet_New20181115 (WS :39187) moi la ban doc bang DANG hieu luc.",
+        geoJoinNote = "BON INNER JOIN danh muc dia ly (Mst_Province x2 + Mst_District x2, ca dau DI va DEN): dong co tinh/huyen KHONG tra duoc trong danh muc se BI LOAI khoi ket qua - KHONG hien ra voi o trong. Da dem o droppedNoGeo.",
+        isGetDetailNote = "strIsGetDetail quyet dinh CO CHAY cau truy van thu ba hay khong: mac dinh zzzzClauseSelect_Mst_TranspFee_Hist = '-- Nothing.'; chi khi co = Flag.Active moi noi cau select dong chi tiet (kem ProvinceNameFrom... lay tu join). KHONG phai 'an cot' ma la khong chay han cau truy van.",
+        rbacHole = "LO HONG RBAC - bien the 2 (khai ma KHONG dung), ca thu 10: nguon bind '@strBUPatternOfUser' = drAbilityOfUser['BUPattern'] (:2342) nhung @strBUPatternOfUser KHONG xuat hien lan nao trong cau SQL (dem duoc dung 1 lan trong ca ham, chinh la dong bind) => PHAM VI BU VO HIEU. Cung khuon #B46/#B47/#B50/#B52/#B53. Port tra outOfScopeCount + co enforceBuScope; KHONG tu bit."
+    });
+}).RequireAuthorization();
+
 // ===== Biên bản vận chuyển / giao nhận (TransportMinutes — port 1:1 FrmNewTransportMinutes/FrmMngTransportMinutes) =====
 app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
