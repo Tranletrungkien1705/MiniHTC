@@ -14669,7 +14669,14 @@ app.MapPost("/api/warrantyclaims/approve-auto", async (WarrantyClaimAutoDto dto,
 
     // --- VÒNG 2: GOM THEO ĐẠI LÝ, mỗi đại lý MỘT lời gọi.
     var batches = new List<object>();
-    var apprAt = dto.ApprovedDate ?? DateTime.Now;
+    // 🔴 #398 ĐÍNH CHÍNH #397: nhánh LÔ **không nhận ngày duyệt từ người gọi**.
+    //   Đầu nhận `…_HTCApproved_ForDealerAuto` (`:11433`) gán thẳng
+    //     `string objApprovedDate = dtimeSys.ToString("yyyy-MM-dd")`
+    //   ⇒ **ngày HỆ THỐNG, và CHỈ NGÀY — bỏ giờ** (cùng lệ cắt giờ ở #391).
+    //   ⇒ Vì luôn là hôm nay nên nhánh lô **không cần** guard 'ngày duyệt < ngày tạo' mà nhánh thủ công
+    //     có (#396) — **thiếu guard ở đây là NHẤT QUÁN, không phải sót**.
+    //   #397 của tôi nhận `dto.ApprovedDate` là **sai 1:1**; nay bỏ, giữ trường trong DTO cho tương thích.
+    var apprAt = DateTime.Today;
     foreach (var g in claims.GroupBy(c => c.DealerCode!))
     {
         var dealer = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == g.Key);
@@ -14698,6 +14705,12 @@ app.MapPost("/api/warrantyclaims/approve-auto", async (WarrantyClaimAutoDto dto,
         claimCount = claims.Count,
         dealerBatches = batches.Count,
         batches,
+        approvedDate = apprAt,
+        approvedDateFromServer = true,
+        approvedDateNote = "Nhánh LÔ đóng dấu NGÀY HỆ THỐNG (bỏ giờ) và BỎ QUA ngày do client gửi — đúng nguồn; "
+            + "vì thế nhánh này không có guard 'ngày duyệt < ngày tạo' như nhánh thủ công.",
+        receiverParityNote = "Đầu nhận lô (…_ForDealerAuto) làm y hệt đầu nhận đơn (…_ForDealer): ghi 3 bảng "
+            + "× 3 CSDL và cập nhật Btl_Bulletin_VIN; khác biệt DUY NHẤT là nguồn của ApprovedDate.",
         twoPassNote = "Nguồn kiểm TOÀN BỘ dòng ở vòng 1 rồi mới ghi ở vòng 2 ⇒ một dòng hỏng là cả lô không ghi gì.",
         oneCallPerDealerNote = "MỘT lời gọi WS cho MỖI ĐẠI LÝ, không phải mỗi hồ sơ — nguồn gom hồ sơ theo DealerCode.",
         asymmetryNote = "Trùng đại lý thì bỏ qua êm, nhưng thiếu mạng lưới/WSUrlAddr thì THROW ⇒ huỷ cả lô "
