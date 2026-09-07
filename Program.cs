@@ -16289,6 +16289,92 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // ⚠️ `FinishDTimeUTC` lấy `sr.FinishedDate` = lúc **SỬA XONG** (xem #340), KHÔNG phải lúc giao xe.
 // ⚠️ `CusPmtDateUTC` và `PaidDTimeUTC` **cùng lấy** `PaidCreatedDate` — nguồn trả hai tên cho một mốc.
 // ⚠️ `FlagRetry = sr.IsReRepair` — chính cột port ở #343; nếu không vá lượt đó thì trường này luôn rỗng.
+// ===== 🔴 #363 CHĂM SÓC 72h + NHẮC BẢO DƯỠNG gửi Veloca (`Table 18` & `Table 19`) =====
+// 🔴 HAI BẢNG MÃ TRẠNG THÁI KHÁC NHAU cho **cùng ba trạng thái** — trong cùng một API:
+//   `Table 18` (chăm sóc 72h) dùng mã CHỮ:  `PEND → PENDING` · `CINFB → CONTACTED`
+//                                            `CIFB → CONTACTED` · `REJ → CANCEL`
+//   `Table 19` (nhắc bảo dưỡng) dùng mã SỐ: `'0' → PENDING` · `'1' → CONTACTED` · `'2' → CANCEL`
+//   ⇒ Đừng dùng chung một hàm đổi mã cho hai bảng.
+// 🔴 `CINFB` và `CIFB` (đã liên hệ CÓ / KHÔNG phản hồi) **gộp làm một** `CONTACTED`
+//   ⇒ bên Veloca **không phân biệt được** khách có phản hồi hay không.
+// 🔴 Trường tên `ContactDateUTC`/`ContactDTimeUTC` **KHÔNG hề đổi sang UTC**: nguồn gán thẳng
+//   `scc.ContactDate`, khác hẳn các mốc khác vốn dùng `DateAdd(hh, -7, …)` (#356).
+//   ⇒ **Tên trường nói dối**: hậu tố `UTC` nhưng giá trị là giờ ĐỊA PHƯƠNG. Giữ 1:1 và báo cờ,
+//     vì "sửa cho đúng tên" sẽ lệch 7 giờ so với dữ liệu Veloca đang có.
+// ⚠️ Nguồn trả **hai tên cho một giá trị** ở cả hai bảng (`ContactDateUTC` = `ContactDTimeUTC`;
+//   `Note` = `CusCare72hRemark`) — cùng thói quen đã thấy ở `Table 8` (#362).
+// ⚠️ Chính tả nguồn: `CusCare72hSatus` (thiếu chữ "t"). Giữ nguyên tên trường theo nguồn.
+app.MapGet("/api/osveloca/ro/{roNo}/care72h", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var rows = await db.CustomerCares.Where(c => c.OrgId == t.OrgId && c.RONo == roNo).ToListAsync();
+
+    // MiniHTC lưu nhãn tiếng Anh; ánh xạ sang từ vựng Veloca đúng bảng mã CHỮ của Table 18.
+    static string? StatusOf(string? s) => s switch
+    {
+        "Pending" or "PEND" => "PENDING",
+        "Contacted" or "CINFB" or "CIFB" => "CONTACTED",
+        "Rejected" or "REJ" => "CANCEL",
+        _ => null,   // nguồn không có nhánh else
+    };
+
+    var items = rows.Select(c => new
+    {
+        c.DealerCode, roNoSys = roNo,
+        contactDateUTC = c.ContactDate,      // ⚠️ KHÔNG đổi UTC — đúng nguồn
+        contactDTimeUTC = c.ContactDate,     // trùng contactDateUTC — đúng nguồn
+        note = c.Note, cusCare72hRemark = c.Note,
+        cusCare72hSatus = StatusOf(c.Status),   // giữ nguyên chính tả thiếu "t" của nguồn
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        roNo, count = items.Count, care72h = items,
+        utcSuffixIsMisleading = true,
+        utcNote = "ContactDateUTC/ContactDTimeUTC mang GIỜ ĐỊA PHƯƠNG — nguồn không đổi UTC dù tên có hậu tố UTC.",
+        statusCollapseNote = "CINFB (có phản hồi) và CIFB (không phản hồi) đều thành CONTACTED — Veloca không phân biệt được.",
+        unmappedStatuses = rows.Select(c => c.Status).Where(x => StatusOf(x) is null).Distinct().ToList(),
+    });
+}).RequireAuthorization();
+
+// Nhắc bảo dưỡng (Table 19) — mã trạng thái là SỐ, khác Table 18 dùng mã CHỮ.
+app.MapGet("/api/osveloca/ro/{roNo}/maintenance-reminder", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var rows = await db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId && c.RONo == roNo).ToListAsync();
+
+    // Bảng mã SỐ của nguồn; MiniHTC lưu nhãn chữ nên chấp nhận cả hai.
+    // ⚠️ Trạng thái thứ ba: nguồn `'2'` = CANCEL, còn MiniHTC đặt tên `NotContacted` — khác nghĩa,
+    //   cùng ô. Ánh xạ theo nguồn và ghi rõ để không ai tưởng "chưa liên hệ" = "huỷ".
+    static string? StatusOf(string? s) => s switch
+    {
+        "0" or "Pending" => "PENDING",
+        "1" or "Contacted" => "CONTACTED",
+        "2" or "NotContacted" => "CANCEL",
+        _ => null,
+    };
+
+    var items = rows.Select(c => new
+    {
+        roNoSys = roNo,
+        contactDateUTC = c.ContactDate,      // ⚠️ KHÔNG đổi UTC — đúng nguồn
+        contactDTimeUTC = c.ContactDate,
+        reminderRemark = c.Remark,
+        reminderStatus = StatusOf(c.Status),
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        roNo, count = items.Count, reminders = items,
+        utcSuffixIsMisleading = true,
+        statusVocabNote = "Table 19 dùng mã SỐ (0/1/2) trong khi Table 18 dùng mã CHỮ (PEND/CINFB/CIFB/REJ) "
+            + "cho cùng ba trạng thái — không dùng chung hàm đổi mã.",
+        thirdStateNote = "Nguồn: '2' = CANCEL (huỷ). MiniHTC đặt tên ô này là NotContacted (chưa liên hệ) — "
+            + "hai cách gọi khác nghĩa cho cùng một ô, cần nghiệp vụ xác nhận.",
+        unmappedStatuses = rows.Select(c => c.Status).Where(x => StatusOf(x) is null).Distinct().ToList(),
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
