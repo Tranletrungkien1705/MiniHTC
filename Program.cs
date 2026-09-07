@@ -1480,8 +1480,23 @@ app.MapGet("/api/purchaseorders", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
+    // ===== #B34 ĐỐI CHIẾU THÊM VỚI TWIN **2010.HTC** `OrderPOCreate_New2018119` =====
+    //   (`DataWH/Biz.HTC.WH.cs:27908`; WS 64-bit `WSHTC.asmx.cs:7103` → tên biz có **lỗi chính tả
+    //   `_New2018119`** thiếu một chữ số — giữ nguyên khi tra cứu). Bản chết cùng họ:
+    //   `Delete.BizHTC.Report.cs:69144` (`_New2018115`) và `Biz.HTC.WH.Rel.20230823.cs:25814` (file
+    //   không nằm trong `TERP.BizHTC.csproj`).
+    // #174 trước đây đối chiếu twin **TCMotor DMSCarSv** (`BizHTC.Order.cs:2780`). Bản 2010.HTC lệch 2 chỗ:
+    // 🔴 GAP A — **RBAC**: `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` (`:27972-27976`) là **DÒNG
+    //    ACTIVE** ở bản 2010.HTC ⇒ chỉ người dùng HTC trực tiếp được tạo đơn mua. Port thiếu hẳn.
+    // 🔴 GAP B — **ĐỊNH DẠNG THÁNG**: `TUtils.CUtils.StandardizeMonth` (`TERP.Utils/Utils.cs:382-389`)
+    //    trả **`"yyyy-MM-01"`** (`return string.Format("{0}-01", dtime.ToString("yyyy-MM"))`), KHÔNG
+    //    phải `"yyyyMM"`. Port ghi `"202609"` ⇒ lệch hẳn dữ liệu hệ nguồn và bộ lọc `?month=` của GET
+    //    không bao giờ khớp. Đã sửa ở **CẢ HAI** site cùng khuôn (đơn mua + lệnh đặt xe).
+    if (flagDirect == "0")
+        return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được tạo đơn mua xe.", guard = "myCommon_CheckHTCDirect(Flag.Active)" });
     // ===== #174 port TRỌN `OrderPOCreate` (TCMotor DMSCarSv, TERP.BizHTC/BizHTC.Order.cs:2780) =====
     // BƯỚC 3B — ca "TÊN THƯ MỤC KHÁC, NỘI DUNG GIỐNG": laptop có `DMSCarSv/V20.2023.Release.**V2**`,
     //   máy 150 có `DMSCarSv/V20.2023.Release` (không hậu tố V2) — **md5 `b1c089a3` GIỐNG HỆT**.
@@ -1507,9 +1522,10 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào." });
 
     var now = DateTime.Now;
-    var orderMonth = now.ToString("yyyyMM");
-    var productionMonth = now.AddMonths(1).ToString("yyyyMM");
-    var expectedMonth = now.AddMonths(2).ToString("yyyyMM");
+    // #B34 StandardizeMonth (Utils.cs:382-389) tra "yyyy-MM-01", KHONG phai "yyyyMM".
+    var orderMonth = now.ToString("yyyy-MM") + "-01";
+    var productionMonth = now.AddMonths(1).ToString("yyyy-MM") + "-01";
+    var expectedMonth = now.AddMonths(2).ToString("yyyy-MM") + "-01";
 
     var seen = new HashSet<string>();
     var built = new List<PurchaseOrderLine>();
@@ -30532,9 +30548,10 @@ app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenant
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào." });
 
     var now = DateTime.Now;
-    var orderMonth = now.ToString("yyyyMM");
-    var productionMonth = now.AddMonths(1).ToString("yyyyMM");
-    var expectedMonth = now.AddMonths(2).ToString("yyyyMM");
+    // #B34 StandardizeMonth (Utils.cs:382-389) tra "yyyy-MM-01", KHONG phai "yyyyMM".
+    var orderMonth = now.ToString("yyyy-MM") + "-01";
+    var productionMonth = now.AddMonths(1).ToString("yyyy-MM") + "-01";
+    var expectedMonth = now.AddMonths(2).ToString("yyyy-MM") + "-01";
 
     // Quét từng dòng: khoá trùng · số lượng · spec · cặp model–màu.
     var seen = new HashSet<string>();
