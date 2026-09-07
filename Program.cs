@@ -16259,6 +16259,73 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // `Factor` vẫn mang hai nghĩa như #359 (≤1 chiết khấu, >1 nhân giá).
 // ⚠️ Lại một CẶP COMMENT/ACTIVE: `ValInsAfterVATPart` bản cũ tính thẳng theo `ROINSURANCE`; bản đang
 //   chạy dùng `PartialInsuranceAmountAfterVAT + FullInsuranceAmountAfterVAT` (phép tách #357).
+// ===== 🔴 #361 KỸ THUẬT VIÊN của báo giá gửi Veloca (`Table 11`) =====
+// Hai dòng **bị comment kèm ngày** ở đây mang **quyết định tích hợp**, không phải rác:
+//   `--, sawe.EngineerID EngineerNo   --20241204. Không dùng mã hệ thống để đồng bộ`
+//     ⇒ **KHÔNG gửi mã nội bộ** (`EngineerID`) sang Veloca; phải gửi `EngineerNo` (mã nghiệp vụ).
+//     MiniHTC vốn đã lưu `EngineerNo` trên `SerAssignmentWorkEngineer` nên khớp sẵn.
+//   `--inner join Ser_ROServiceItemsEngineer srsie  -- 20240215.`
+//     ⇒ nguồn **ĐỔI BẢNG NGUỒN**: trước lấy KTV gán theo **dòng dịch vụ**, nay lấy KTV theo **PHÂN CÔNG**
+//       (`Ser_AssignmentWorkEngineer`), nối bằng `WorkType`. Port bảng nào là khác biệt thật về dữ liệu.
+//
+// 🔴 NỐI THEO `WorkType` ⇒ **TÍCH CHÉO**: một KTV được phân công loại SCC sẽ xuất hiện cạnh **MỌI** dòng
+//   dịch vụ có `WorkType = SCC`. Lệnh có 3 dòng SCC và 2 KTV SCC ⇒ **6 dòng**. Đây là ý đồ của nguồn
+//   (Veloca cần biết ai làm việc gì), nhưng **đừng đếm số dòng này ra "số KTV"**.
+// ⚠️ `WorkType` dùng ở đây là bản **ĐÃ GỘP 6→3** (`#tbl_Ser_ROServiceItems_WorkType`, chú thích 20240215)
+//   — cùng phép gộp của `Table 12`, KHÁC `RepairType` cấp dòng vốn giữ đủ 6 (#359).
+app.MapGet("/api/osveloca/ro/{roNo}/engineers", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { roNo });
+
+    // Gộp 6→3 đúng `#tbl_Ser_ROServiceItems_WorkType`.
+    static string? WorkTypeOf(string? roType) => roType switch
+    {
+        "BDD" or "PDI" or "SPK" or "SCC" => "SCC",
+        "SCD" => "SCD", "SCS" => "SCS", _ => null,
+    };
+
+    var items = (await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == ro.Id)
+            .Select(i => new { i.Id, i.ROType }).ToListAsync())
+        .Select(i => new { i.Id, WorkType = WorkTypeOf(i.ROType) })
+        .Where(i => i.WorkType != null).ToList();
+
+    var aw = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    var assigned = aw is null ? new List<(string EngineerNo, string? WorkType)>()
+        : (await db.SerAssignmentWorkEngineers.Where(e => e.OrgId == t.OrgId && e.AssignmentWorkId == aw.Id)
+            .Select(e => new { e.EngineerNo, e.WorkType }).ToListAsync())
+          .Select(e => (e.EngineerNo, e.WorkType)).ToList();
+
+    var names = (await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId)
+            .Select(e => new { e.EngineerNo, e.EngineerName }).ToListAsync())
+        .GroupBy(e => e.EngineerNo).ToDictionary(g => g.Key, g => g.First().EngineerName);
+
+    // Tích chéo theo WorkType — đúng phép nối của nguồn.
+    var rows = (from i in items
+                join e in assigned on i.WorkType equals e.WorkType
+                select new
+                {
+                    roNoSys = roNo,
+                    idxPrdService = i.Id,
+                    engineerNo = e.EngineerNo,
+                    engineerName = names.TryGetValue(e.EngineerNo, out var n) ? n : null,
+                }).OrderBy(x => x.idxPrdService).ThenBy(x => x.engineerNo).ToList();
+
+    return Results.Ok(new
+    {
+        roNo, count = rows.Count, engineers = rows,
+        // 🔴 Số DÒNG là tích chéo (dòng dịch vụ × KTV cùng WorkType) — KHÔNG phải số KTV.
+        distinctEngineerCount = rows.Select(x => x.engineerNo).Distinct().Count(),
+        serviceItemCount = items.Count,
+        crossJoinNote = "Số dòng = (dòng dịch vụ) × (KTV cùng WorkType). Đừng đếm dòng ra số KTV — "
+            + "dùng distinctEngineerCount.",
+        sourceNote = "KTV lấy từ PHÂN CÔNG (Ser_AssignmentWorkEngineer), không phải KTV gán theo dòng "
+            + "dịch vụ — nguồn đã đổi bảng ngày 20240215. Mã gửi đi là EngineerNo, không phải mã nội bộ "
+            + "(quyết định 20241204).",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/parts", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
