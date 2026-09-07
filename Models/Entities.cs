@@ -5700,6 +5700,7 @@ public sealed class CampaignMarketingPart
 /// chương trình CSKH riêng theo MaceType (mã do hãng quy định), khác CustomerCare thường (24h/72h/DOB/Maint).
 /// WinForm gốc chỉ SEARCH + cập nhật trạng thái liên hệ (không tạo tay từng bản — nguồn phát sinh từ hãng);
 /// ở đây thêm POST tạo để có đường nhập liệu thủ công tương đương.</summary>
+// ===== #490 §12: bốn khoá/cột của `Ser_CustomerCareMace` mà bản port cũ chưa có =====
 public sealed class CustomerCareMace
 {
     public long Id { get; set; }
@@ -5714,6 +5715,16 @@ public sealed class CustomerCareMace
     public DateTime? ApointDate { get; set; }
     public DateTime? MaceRecomentDate { get; set; }
     public string? Remark { get; set; }
+    /// <summary>#490 `DealerCode` — nguồn lọc `t.DealerCode` và ghi từ `Ser_RO.DealerCode`.</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>#490 `CusID` / `CarID` — hai khoá nối sang khách và xe (nguồn nối `t.CusID = cus.CusID`,
+    /// `t.CarId = car.CarId`; vế `and t.cusId = car.CusId` **đã bị COMMENT** ở nguồn).</summary>
+    public string? CusID { get; set; }
+    public string? CarID { get; set; }
+    /// <summary>#490 `ROID` — nguồn nối `join ser_ro ro on t.ROID = ro.ROID` (**INNER**).</summary>
+    public string? ROID { get; set; }
+    /// <summary>#490 `CreatedDate` — nguồn ghi mốc tạo phiếu nhắc.</summary>
+    public DateTime? CreatedDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

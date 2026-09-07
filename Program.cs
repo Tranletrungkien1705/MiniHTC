@@ -45132,6 +45132,108 @@ app.MapGet("/api/reports/customer-serviced", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #490 NHẮC BẢO DƯỠNG — `Ser_CustomerCareMace_Get` (`BizCarSv.Customer.cs:13215`) =====
+// ⚪ Cặp `_WH` (`WH.cs:26394`) khác **ba dòng**, toàn là xuống dòng / dấu `--//[mylock]` ⇒ tương đương.
+//   Đóng thêm một ca của #484 (**còn 12**).
+//
+// 🔴🔴 **LỌC SAI CỘT — bộ lọc "loại nhắc" bắn vào một cột KHÁC**:
+//     `BuildClause("and", "t.**CareType**", str**MaceType**ConditionList, …)`
+//   trong khi **mọi cột SELECT và cả bảng nhãn** đều dùng `t.**MaceType**`, và đường GHI
+//   (`BizCarSv.Service01.cs:9667` …) chỉ đặt `dtCareMace.Rows[0]["MaceType"]` — **không bao giờ ghi `CareType`**.
+//   ⇒ Hai cách đọc, **cả hai đều hỏng**: nếu bảng **không có** cột `CareType` thì truyền lọc là **lỗi SQL**;
+//     nếu **có** cột đó (di sản) thì nó **luôn rỗng** ⇒ lọc trả **0 dòng**.
+//   Không truy được DB thật ở đây nên **không chốt** cách nào; port lọc theo `MaceType` (cột đang dùng thật)
+//   và trả cờ `sourceFiltersWrongColumn` + `sourceFilterColumn = "CareType"` để nghiệp vụ xác nhận.
+//   ⚠️ Lỗi này xuất hiện ở **HAI** hàm (`:13354` và `:13568`) — không phải gõ nhầm một chỗ.
+//
+// 🔴 `join ser_ro ro on t.ROID = ro.ROID` là **INNER** ⇒ phiếu nhắc **chưa gắn lệnh sửa chữa biến mất**.
+//   Đếm `droppedByRoJoin`. ⚠️ `inner join Ser_Car car on t.CarId = car.CarId` — vế thứ hai
+//   `--and t.cusId = car.CusId` **ĐÃ BỊ COMMENT** ⇒ ở màn này xe sang tên **VẪN ra dòng**
+//   (ngược với #460, giống #466). Port theo dòng ACTIVE.
+// ⚪ `left join ser_mst_model`: WHERE không đụng tới ⇒ **LEFT còn sống** (kiểm âm tính).
+// ⚠️ HAI bảng nhãn, **cả hai KHÔNG có ELSE** ⇒ mã lạ cho nhãn **null** nhưng dòng **vẫn được đếm**:
+//   `MaceType` 1 = "CVDV chỉ định" · 2 = "Thời hạn sau 6 tháng" · 3 = "Thời hạn theo tần suất vào xưởng";
+//   `Status` 0 = "Chưa liên hệ" · 1 = "Đã liên hệ" · 2 = "Không liên hệ".
+//   ⚠️ HẰNG ≠ GIÁ TRỊ đã truy: đường ghi đặt `Status = Constants.Flag.Inactive`, mà `Flag.Inactive = "0"`
+//     ⇒ phiếu mới tạo đúng là **"Chưa liên hệ"**.
+app.MapGet("/api/reports/care-mace", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? cusId, string? cusName, string? frameNo, string? plateNo,
+    string? status, string? maceType, DateTime? recomentFrom, DateTime? recomentTo) =>
+{
+    var q = db.CustomerCareMaces.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusId)) q = q.Where(x => x.CusID == cusId!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status!.Trim());
+    // ⚠️ Nguồn lọc t.CareType; port lọc t.MaceType (cột thật đang dùng) — xem ghi chú.
+    if (!string.IsNullOrWhiteSpace(maceType)) q = q.Where(x => x.MaceType == maceType!.Trim());
+    if (recomentFrom.HasValue) q = q.Where(x => x.MaceRecomentDate >= recomentFrom);
+    if (recomentTo.HasValue) q = q.Where(x => x.MaceRecomentDate <= recomentTo);
+    var maces = await q.ToListAsync();
+
+    var custs = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var cusByCode = custs.GroupBy(x => x.CusCode).ToDictionary(g => g.Key, g => g.First());
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.CarID != null).ToListAsync();
+    var carById = cars.GroupBy(x => x.CarID!).ToDictionary(g => g.Key, g => g.First());
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var roByNo = ros.GroupBy(x => x.RONo).ToDictionary(g => g.Key, g => g.First());
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var modelName = models.GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    static string? MaceTypeText(string? c) => c switch
+    {
+        "1" => "CVDV chỉ định",
+        "2" => "Thời hạn sau 6 tháng",
+        "3" => "Thời hạn theo tần suất vào xưởng",
+        _ => null,          // nguồn KHÔNG có ELSE
+    };
+    static string? StatusText(string? c) => c switch
+    {
+        "0" => "Chưa liên hệ",
+        "1" => "Đã liên hệ",
+        "2" => "Không liên hệ",
+        _ => null,
+    };
+
+    var before = maces.Count; var rows = new List<object>();
+    foreach (var m in maces)
+    {
+        // INNER: khách + xe + lệnh đều bắt buộc (ROID là INNER ở nguồn).
+        if (m.CusID == null || !cusByCode.TryGetValue(m.CusID, out var cus)) continue;
+        if (m.CarID == null || !carById.TryGetValue(m.CarID, out var car)) continue;
+        if (m.RONo == null || !roByNo.TryGetValue(m.RONo, out var ro)) continue;
+        if (!string.IsNullOrWhiteSpace(cusName) && !(cus.CusName ?? "").Contains(cusName!.Trim())) continue;
+        if (!string.IsNullOrWhiteSpace(frameNo) && !car.FrameNo.Contains(frameNo!.Trim())) continue;
+        if (!string.IsNullOrWhiteSpace(plateNo) && !(car.PlateNo ?? "").Contains(plateNo!.Trim())) continue;
+        rows.Add(new
+        {
+            cus.CusName, cus.Tel, cus.Mobile, cus.Email,
+            cus.ContName, cus.ContAddress, cus.ContEmail, cus.ContTel, cus.ContMobile,
+            car.PlateNo, TradeMarkCode = car.TradeMark,
+            ModelName = car.ModelCode != null && modelName.ContainsKey(car.ModelCode) ? modelName[car.ModelCode] : null,
+            ro.CheckInDate, ro.Km,
+            MaceId = m.CareNo, m.DealerCode, m.CreatedDate, m.MaceRecomentDate,
+            m.CarID, m.CusID, m.MaceType, m.ROID, m.Status,
+            MaceTypeText = MaceTypeText(m.MaceType),
+            StatusText = StatusText(m.Status),
+            m.ContactDate, m.ApointDate, m.Remark,
+        });
+    }
+    var droppedByRoJoin = before - rows.Count;
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        droppedByRoJoin,
+        sourceFiltersWrongColumn = true,
+        sourceFilterColumn = "CareType",
+        actualColumnUsedEverywhereElse = "MaceType",
+        wrongColumnAppearsInTwoFunctions = true,
+        carOwnerJoinCommentedOutInSource = true,
+        labelTablesHaveNoElse = true,
+        whTwinEquivalent = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
