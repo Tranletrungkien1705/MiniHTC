@@ -10372,7 +10372,17 @@ app.MapPost("/api/mktactivitytypes/update", async (MktActivityTypeUpdateDto dto,
     var row = await db.MktActivityTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTActivityTypeCode == code);
     if (row is null) return Results.NotFound(new { error = $"Không có loại hoạt động {code}." });
     var cols = (dto.Cols ?? new()).Select(c => c.Trim().ToUpperInvariant()).ToHashSet();
-    bool Upd(string c) => cols.Contains(c.ToUpperInvariant());
+    // 🔴 #B85 SỬA LỆCH PARITY: nguồn so `strFt_Cols_Upd.Contains("<Bảng>.<Cột>".ToUpper())` —
+    //    **so CHUỖI CON trên tên ĐẦY ĐỦ `Bảng.Cột`**, không phải so phần tử theo tên cột trần.
+    //    Port cũ dùng `cols.Contains(<tên cột trần>)` ⇒ client gửi đúng định dạng của nguồn
+    //    (`"Mst_MarketingActivityType.MKTActivityTypeName"`) sẽ **KHÔNG khớp** và endpoint
+    //    **chỉ ghi `LogLU*` rồi trả 200** — sửa không ăn, không báo lỗi.
+    //    Nay chấp nhận **cả hai** dạng: tên trần và tên đầy đủ `Bảng.Cột` (so chuỗi con như nguồn).
+    bool Upd(string c)
+    {
+        var u = c.ToUpperInvariant();
+        return cols.Any(x => x == u || x.EndsWith("." + u, StringComparison.Ordinal) || x.Contains(u, StringComparison.Ordinal));
+    }
 
     if (Upd("MKTActivityTypeName"))
     {
@@ -10451,7 +10461,17 @@ app.MapPost("/api/mktactivities/update", async (MktActivityUpdateDto dto, AppDbC
     var row = await db.MktActivities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == code);
     if (row is null) return Results.NotFound(new { error = $"Không có hoạt động {code}." });
     var cols = (dto.Cols ?? new()).Select(c => c.Trim().ToUpperInvariant()).ToHashSet();
-    bool Upd(string c) => cols.Contains(c.ToUpperInvariant());
+    // 🔴 #B85 SỬA LỆCH PARITY: nguồn so `strFt_Cols_Upd.Contains("<Bảng>.<Cột>".ToUpper())` —
+    //    **so CHUỖI CON trên tên ĐẦY ĐỦ `Bảng.Cột`**, không phải so phần tử theo tên cột trần.
+    //    Port cũ dùng `cols.Contains(<tên cột trần>)` ⇒ client gửi đúng định dạng của nguồn
+    //    (`"Mst_MarketingActivityType.MKTActivityTypeName"`) sẽ **KHÔNG khớp** và endpoint
+    //    **chỉ ghi `LogLU*` rồi trả 200** — sửa không ăn, không báo lỗi.
+    //    Nay chấp nhận **cả hai** dạng: tên trần và tên đầy đủ `Bảng.Cột` (so chuỗi con như nguồn).
+    bool Upd(string c)
+    {
+        var u = c.ToUpperInvariant();
+        return cols.Any(x => x == u || x.EndsWith("." + u, StringComparison.Ordinal) || x.Contains(u, StringComparison.Ordinal));
+    }
 
     if (Upd("MKTActivityName"))
     {
