@@ -5133,6 +5133,16 @@ public sealed class ServiceWarrantyClaimTransaction
 /// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
 public sealed class ServiceWarrantyClaim
 {
+    // 🔴 #369 §12 — HAI mã phân loại BCBH. Nguồn dùng CHÚNG để chọn **luật duyệt nào áp dụng**,
+    //   và hai luật đó **ngược chiều nhau** (xem `/api/warrantyclaims/{id}/approve-check`).
+    //   Thiếu chúng ⇒ không có cách nào biết phải áp luật nào, mọi hồ sơ sẽ bị xét bằng một luật
+    //   duy nhất — sai đúng một nửa số trường hợp.
+    /// <summary>Loại BCBH: `XM` xe mới chưa bán · `SB` sau bán (mặc định) · `PT` bảo hành phụ tùng
+    /// · `TC` thiện chí · `BT` bản tin/chiến dịch.</summary>
+    public string? ROWTypeCode { get; set; }
+    /// <summary>Loại chi tiết: `A` AVN · `B` ắc quy · `P` sơn · `W` thông thường · `S` phụ tùng
+    /// · `R` thiện chí · `C` bản tin/chiến dịch.</summary>
+    public string? ROWTypeDtlCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string ClaimNo { get; set; } = "";

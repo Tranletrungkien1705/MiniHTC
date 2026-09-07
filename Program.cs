@@ -13828,6 +13828,117 @@ var warrantyClaimStatusNames = new Dictionary<string, string>
 // ⚠️ QUYẾT ĐỊNH NGHIỆP VỤ CÓ GHI LÝ DO (nên BẮT CHƯỚC, theo lệ #275): nguồn **cố ý bỏ** điều kiện
 //   `and td.cusID = car.CusID` kèm chú thích *"2022-05-23. Confirm vs Ms.Đông KH ko bắt buộc phải giống
 //   nhau"* ⇒ khách trên phiếu bảo hành **KHÔNG bắt buộc** là chủ xe. Ghép xe **CHỈ theo `CarID`**.
+// ===== 🔴 #369 GUARD DUYỆT BCBH theo "lần thay PHỤ TÙNG CHÍNH gần nhất" =====
+// Nguồn: `BizCarSv.WarrantyReport.cs` — `ROWarrantyReport_Approve_Check_CreatedDate_OtherROActualDeliveryDate`
+//   (7120) và biến thể `…DeliveryDate2` (7276). Bản ở 7015 là **khối comment ⇒ luật ĐÃ CHẾT** (lệ #305).
+//
+// 🔴 HAI BIẾN THỂ ĐỀU LIVE, và điều kiện **NGƯỢC CHIỀU NHAU** — chọn theo loại BCBH:
+//   • `XM`/`W` (5839) và `SB`/`W` (6019) → bản **2**: từ chối khi phụ tùng chính được thay
+//     **TRONG VÒNG 6 tháng** VÀ xe mới chạy **DƯỚI 10.000 km**. Ý nghĩa: lần thay trước còn
+//     trong hạn bảo hành của chính nó, không cho khai lại.
+//   • `PT`/`S` (6065) → bản **1**: từ chối khi phụ tùng chính được thay **QUÁ 6 tháng** hoặc xe đã
+//     chạy **TRÊN 10.000 km**. Ý nghĩa: bảo hành PHỤ TÙNG chỉ còn hiệu lực trong hạn đó.
+//   ⇒ Đây **không phải mâu thuẫn**: hai chế độ bảo hành khác nhau trên cùng một mốc 6 tháng /
+//     10.000 km. **Port chung một luật cho cả hai là sai đúng một nửa số hồ sơ.**
+//
+// 🔴 NHÁNH CHẾT trong bản 2 (giữ 1:1 nhưng phải biết): nguồn viết
+//   `if (kmDiff < 10000 && trong6Thang) { if (trong6Thang) {…throw…} if (kmDiff < 10000) {…throw…} }`
+//   ⇒ `if` trong cùng LUÔN đúng nên luôn ném trước; lỗi *"Xe chạy chưa được 10.000 KM…"* của nhánh
+//     thứ hai **KHÔNG BAO GIỜ hiện ra được**. Người dùng chỉ thấy lý do 6 tháng.
+//
+// ⚠️ Truy vấn tìm RO gần nhất chạy trên **DB Main** và **KHÔNG lọc đại lý** — cố ý: *"Check theo VIN
+//   không phân biệt đại lý"*. Lọc thêm đại lý sẽ bỏ sót lần thay ở đại lý khác.
+// ⚠️ Nó là `select top 1 … order by sr.ActualDeliveryDate desc` — **có** `order by`, nên KHÔNG thuộc
+//   nhóm "top 1 không tất định"; cột `order` nằm trong danh sách select, chỉ không đứng đầu.
+// 📌 Đối chiếu 2 máy: md5 CẢ FILE **khác nhau** (laptop `ba1fb715` / 150 `19b741ca`) nhưng md5 **vùng
+//   7120-7440** giống hệt (`42a367f1`) ⇒ khác biệt nằm ngoài guard, port an toàn.
+app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { id });
+
+    var violations = new List<object>();
+    void Deny(string code, string desc, object? ctx = null) => violations.Add(new { code, desc, ctx });
+
+    if (string.IsNullOrWhiteSpace(c.Km)) Deny("InvalidKM", "Số Km của BCBH trống!");
+
+    // Phụ tùng CHÍNH của hồ sơ (PTC) — nguồn lọc đúng loại này, không phải mọi dòng phụ tùng.
+    var ptcCodes = await db.WarrantyClaimPartItems
+        .Where(x => x.OrgId == t.OrgId && x.ClaimId == id && x.RowPartType == "PTC")
+        .Select(x => x.PartCode).Distinct().ToListAsync();
+
+    // RO gần nhất (theo NGÀY GIAO XE) của cùng VIN có chứa một trong các PTC đó.
+    // KHÔNG lọc đại lý — chủ ý của nguồn. Bỏ RO hiện tại và các RO đã từ chối.
+    var roQ =
+        from ro in db.RepairOrders
+        join pi in db.RoPartItems on ro.Id equals pi.RoId
+        where ro.OrgId == t.OrgId && pi.OrgId == t.OrgId
+              && ro.Vin == c.Vin && ptcCodes.Contains(pi.PartCode)
+              && ro.ActualDeliveryDate != null && ro.Status != "Rejected"
+              && (c.ROID == null || ro.RONo != c.ROID)
+        orderby ro.ActualDeliveryDate descending
+        select new { ro.RONo, ro.Km, ro.ActualDeliveryDate };
+    var other = ptcCodes.Count == 0 ? null : await roQ.FirstOrDefaultAsync();
+
+    var isPartWarranty = c.ROWTypeCode == "PT" && c.ROWTypeDtlCode == "S";
+    var rule = isPartWarranty ? "PT/S — bảo hành PHỤ TÙNG (bản 1)" : "XM|SB + W — bảo hành thường (bản 2)";
+
+    if (other is null)
+    {
+        Deny("InvalidPTC", "Phụ tùng chính của BCBH không được sửa chữa gần đây!");
+    }
+    else
+    {
+        var replacedAt = other.ActualDeliveryDate!.Value;
+        var submittedAt = c.CreatedAt;
+        var within6Months = replacedAt.AddMonths(6) > submittedAt;
+        decimal.TryParse(c.Km, out var kmNow);
+        decimal.TryParse(other.Km, out var kmThen);
+        var kmDiff = kmNow - kmThen;
+        var ctx = new { otherRONo = other.RONo, otherKm = other.Km, replacedAt, kmDiff };
+
+        if (string.IsNullOrWhiteSpace(other.Km))
+            Deny("InvalidOtherKM", "Số KM của báo giá có phụ tùng chính gần nhất trống!", ctx);
+
+        if (isPartWarranty)
+        {
+            // BẢN 1 — hết hạn thì từ chối.
+            if (!within6Months)
+                Deny("InvalidCreatedDate_OtherROActualDeliveryDate",
+                     "Phụ tùng chính đã được thay thế hơn 6 tháng trước!", ctx);
+            if (kmDiff > 10000m)
+                Deny("InvalidKM", "Xe đã chạy được hơn 10,000 KM từ khi Phụ tùng chính đã được thay thế!", ctx);
+        }
+        else
+        {
+            // BẢN 2 — CÒN trong hạn của lần thay trước thì từ chối. Điều kiện là phép VÀ.
+            if (!string.IsNullOrWhiteSpace(other.Km) && kmThen > kmNow)
+                Deny("InvalidOtherKM", "Số KM của báo giá có phụ tùng chính gần nhất lớn hơn số KM của BCBH!", ctx);
+
+            if (kmDiff < 10000m && within6Months)
+            {
+                // Nguồn còn một nhánh KM ngay sau đây nhưng KHÔNG BAO GIỜ tới được (xem chú thích trên).
+                Deny("InvalidCreatedDate_OtherROActualDeliveryDate",
+                     "Phụ tùng chính đã được thay thế trong 6 tháng gần đây!", ctx);
+            }
+        }
+    }
+
+    return Results.Ok(new
+    {
+        claimId = id, c.ClaimNo, c.ROWTypeCode, c.ROWTypeDtlCode,
+        ruleApplied = rule,
+        canApprove = violations.Count == 0,
+        violations,
+        ptcPartCodes = ptcCodes,
+        ruleClassified = c.ROWTypeCode != null && c.ROWTypeDtlCode != null,
+        ruleNote = "Hai luật NGƯỢC CHIỀU: PT/S từ chối khi ĐÃ QUÁ 6 tháng; XM|SB+W từ chối khi CÒN TRONG 6 tháng.",
+        deadBranchNote = "Bản 2 của nguồn có nhánh lỗi KM không bao giờ chạy tới (if lồng luôn đúng) — "
+            + "người dùng chỉ nhận được lý do 6 tháng.",
+        dealerScopeNote = "Tìm RO gần nhất theo VIN trên toàn hệ, KHÔNG lọc đại lý — chủ ý của nguồn.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -13902,6 +14013,8 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         x.Id, x.ClaimNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.Status, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote, x.WarrantySerCode, x.ApprovedDate,
         // #302 §12: cột mới có mặt ở CẢ GET lẫn POST
         x.ROWNo, x.ROID, x.CusID, x.CarID, x.Creator, x.Assistant, x.Km, x.CheckInDate, x.FinishedDate,
+        // #369 §12: hai ma phan loai quyet dinh AP LUAT DUYET NAO
+        x.ROWTypeCode, x.ROWTypeDtlCode,
         // #322 §12: bản chụp khách + xe (ghi bởi _Update_V2)
         x.CusName, x.CusAddress, x.CusTel, x.ModelID, x.BatteryNo, x.SerialNo,
         x.WarrantyRegistrationDate, x.WarrantyExpiresDate, x.WarrantyKM, x.Note,
@@ -13934,6 +14047,7 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
     if (dto.Amount < 0) return Results.BadRequest(new { error = "Số tiền bảo hành không được âm." });
     var no = "WC" + DateTime.Now.ToString("yyMMddHHmmss");
     var c = new ServiceWarrantyClaim { OrgId = t.OrgId, ClaimNo = no, DealerCode = dto.DealerCode, RONo = dto.RONo,
+        ROWTypeCode = dto.ROWTypeCode, ROWTypeDtlCode = dto.ROWTypeDtlCode,   // #369 §12
         Vin = dto.Vin, PlateNo = dto.PlateNo, WarrantyType = dto.WarrantyType, PartCode = dto.PartCode, Description = dto.Description,
         Amount = dto.Amount, Status = "Pending", WarrantySerCode = dto.WarrantySerCode,
         // #302 §12 POST: 20 cột thật của `Ser_ROWarrantyReport` phải GÁN được, không chỉ ĐỌC được.
@@ -40742,6 +40856,8 @@ record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? P
     // #302: cột THẬT của `Ser_ROWarrantyReport` (`td.*`) mà DTO cũ thiếu.
     string? ROWNo = null, string? ROID = null, string? CusID = null, string? CarID = null,
     string? Assistant = null, string? Km = null, DateTime? CheckInDate = null, DateTime? FinishedDate = null,
+    string? ROWTypeCode = null, string? ROWTypeDtlCode = null,   // #369 §12 — chon luat duyet
+
     string? CusRequest = null, string? CarStatus = null, string? NaturalCode = null, string? CauseCode = null,
     DateTime? StartDate = null, string? ROWTID = null, string? ErrorCodeCD = null, string? ErrorCodePN = null,
     string? FlagReadySend = null, string? PartIDError = null, string? CreatedBy = null,

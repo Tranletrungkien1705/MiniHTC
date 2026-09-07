@@ -991,6 +991,9 @@ public static class Seeder
         "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"UnitCode\" text NULL",
         "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"RoFactor\" numeric NULL",
         "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"RoPrice\" numeric NULL",
+        // #369 hai ma phan loai BCBH — quyet dinh AP LUAT DUYET NAO (hai luat nguoc chieu)
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ROWTypeCode\" text NULL",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ROWTypeDtlCode\" text NULL",
         // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",
