@@ -17018,6 +17018,26 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         // ⚠️ Trong `ProcessSave…`, mỗi cột bọc `if (!StringUtils.IsEmpty(...))` ⇒ **rỗng = KHÔNG ghi**
         //   (giữ null), **ngược** với phần header của cùng hàm `Update` nơi rỗng ⇒ `DBNull` (XOÁ) — #548.
         //   Hai khuôn đối lập nằm trong **cùng một lời gọi nghiệp vụ**.
+        // ===== 🔴 #553 CƠ CHẾ ĐỒNG BỘ BA DB: **CHÉP KHOÁ CHÍNH**, KHÔNG PHẢI SINH LẠI =====
+        // Đọc `ProcessSaveServicePackagePartItem` (`BizCarSv.ServicePackage.cs:1031`) tới tận câu ghi:
+        //   1) `_dbMain.SaveData("Ser_ServicePackagePartItems", dt_PartItem)` — Main sinh `ItemID` (PK tự tăng);
+        //   2) đọc **ngược lại** từ Main: `select * from Ser_ServicePackagePartItems where ServicePackageID = @…`;
+        //   3) với **từng dòng**, chạy `insert into Ser_ServicePackagePartItems (**ItemID**, …) values (@ItemID, …)`
+        //      trên `_dbWH`, rồi trên `_dbDealer` nếu `!bIsWSMain`.
+        // ⇒ **Khoá chính được CHÉP nguyên, không sinh lại** ⇒ ba DB **bắt buộc cùng `ItemID`**.
+        //   Đây là ràng buộc kiến trúc mà nợ `_dbWH`/`_dbDealer` phải tôn trọng: nếu bản port sau này
+        //   sinh khoá riêng ở từng DB thì **mọi phép đối chiếu chéo DB sẽ vỡ** (và câu `insert` này sẽ
+        //   đụng PK khi chạy lại).
+        // ⚪ **KIỂM TRA ÂM TÍNH (đã đọc tận nơi)**: `ProcessServicePackagePartItemDelete` xoá ở **cả ba**
+        //   `_dbMain` · `_dbWH` · `_dbDealer` ⇒ chu trình *xoá-3-nơi rồi chèn-3-nơi* **không** đụng PK.
+        //   Nếu Delete chỉ xoá Main thì lần sửa thứ hai đã nổ khoá trùng ở WH — nó **không** xảy ra.
+        // ⚠️ `LogLUDateTime`/`LogLUBy` được **đọc từ bản Main vừa ghi**, nhưng `ProcessSave…` **không gán**
+        //   hai cột đó ⇒ chép sang WH/Dealer là chép **NULL**. Cột nhật ký của hạng mục gói **luôn rỗng**.
+        // ⚠️ Mỗi dòng tốn **hai** round-trip phụ (WH + Dealer) ⇒ gói 30 phụ tùng = 60 lượt gọi DB thêm.
+        threeDbSyncCopiesPrimaryKey = "insert ... (ItemID, ...) values (@ItemID, ...) tren _dbWH va _dbDealer",
+        deleteCoversAllThreeDbVerified = true,
+        logColumnsAreNullBecauseSaveDoesNotSetThem = new[] { "LogLUDateTime", "LogLUBy" },
+        extraRoundTripsPerItem = 2,
         itemColumnsAdded = new[] { "ActManHour", "VAT", "Note", "Quantity", "ExpenseType" },
         deleteThenInsertVerified = true,
         emptyMeansSkipOnItemsButClearOnHeader = true,
