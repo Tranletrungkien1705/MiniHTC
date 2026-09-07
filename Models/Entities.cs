@@ -14216,6 +14216,29 @@ public sealed class SupplierPartOrderLine
 /// Năm `[WebMethod]` sống: Create · Update · Delete · Get · Cancel (`WSCarSv.asmx.cs:21500-21827`).
 /// Cột lấy từ **chữ ký `Email_ConfigSendAuto_Create`** (11 trường nghiệp vụ), không lấy theo lưới.
 /// </summary>
+/// <summary>🔴 #433 CẤU HÌNH MÁY CHỦ THƯ (`Email_Config`) — **KHÁC** <see cref="EmailConfigSendAuto"/>
+/// (cái kia là lịch gửi tự động). Đây là thông số SMTP: địa chỉ, cổng, tài khoản, mật khẩu, SSL, thời gian chờ.</summary>
+public sealed class EmailServerConfig
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`IDCONFIG` — khoá do nguồn sinh khi tạo.</summary>
+    public string IdConfig { get; set; } = "";
+    /// <summary>⚠️ Nguồn ĐỌC có lọc đại lý (`Email_Config_Get(SystemGlobal.strDealerCode, …)`, thêm 2012)
+    /// nhưng khi GHI lại truyền **chuỗi rỗng** ⇒ bản ghi tạo ra không mang mã đại lý.</summary>
+    public string? DealerCode { get; set; }
+    public string? MailServerAddress { get; set; }
+    public string? MailServerUser { get; set; }
+    /// <summary>🔴 Nguồn lưu **NGUYÊN VĂN**, không băm không mã hoá.</summary>
+    public string? MailServerPassword { get; set; }
+    public string? Port { get; set; }
+    public string? TimeOut { get; set; }
+    /// <summary>⚠️ Nguồn lưu chuỗi `"True"`/`"False"` (từ `Convert.ToString(chk.Checked)`), **không** phải
+    /// `"1"`/`"0"` như quy ước cờ của hệ; lúc đọc lại so `== "False"`.</summary>
+    public string? EnableSSL { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class EmailConfigSendAuto
 {
     public long Id { get; set; }

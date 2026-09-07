@@ -487,6 +487,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<BulletinVin> BulletinVins => Set<BulletinVin>();
     public DbSet<SharePart> ShareParts => Set<SharePart>();
     // #290: cấu hình gửi email tự động (Email_ConfigSendAuto — DMSCarSv)
+    public DbSet<EmailServerConfig> EmailServerConfigs => Set<EmailServerConfig>();   // #433
     public DbSet<EmailConfigSendAuto> EmailConfigSendAutos => Set<EmailConfigSendAuto>();
     // #287: đơn đặt phụ tùng gửi NCC (Ser_Part_Order — KHÁC Ser_Order_Part của TST)
     public DbSet<SupplierPartOrder> SupplierPartOrders => Set<SupplierPartOrder>();

@@ -25826,6 +25826,128 @@ var emailSendModeNames = new Dictionary<string, string>
     ["1"] = "Gửi một lần", ["2"] = "Gửi hàng ngày", ["3"] = "Gửi hàng tuần",
 };
 
+// ===== 🔴 #433 CẤU HÌNH MÁY CHỦ THƯ (`Email_Config`) — **KHÁC** `Email_ConfigSendAuto` của #290 =====
+// Nguồn: `Views/SendEmail/FrmEmail_ConfigCreate.cs` (238 dòng) → `EmailSendEmailService`
+//   `Email_Config_Get / _Create / _Update`.
+// ⚠️ Hai bảng tên gần giống nhau: `Email_ConfigSendAuto` (#290) là **lịch gửi tự động**;
+//   `Email_Config` là **thông số SMTP**. Grep theo "Email_Config" trúng cả hai — dễ tưởng đã port.
+//
+// 🔴 **ĐỌC CÓ LỌC ĐẠI LÝ, GHI THÌ KHÔNG**:
+//     `db.Email_Config_Get(**SystemGlobal.strDealerCode**, strID_config, …)  //20121010 huongkt`
+//     `db.Email_Config_Create(**""**, strPort, strTimeOut, …)`   ← tham số đầu để **RỖNG**
+//   Chú thích `20121010` cho thấy phạm vi theo đại lý được thêm vào **đường ĐỌC** mà **quên đường GHI**.
+//   ⇒ Cấu hình vừa tạo **không mang mã đại lý** nên chính màn đó **đọc lại không thấy**; người dùng bấm
+//     Tạo thành công rồi mở lại thấy trống, và bấm Tạo tiếp ⇒ **sinh ra nhiều bản ghi mồ côi**.
+//   📌 MiniHTC **CỐ Ý LỆCH**: ghi kèm `dealerCode` để đọc-ghi cùng phạm vi, và trả cờ `dealerScopeFixed`.
+//
+// 🔴 **MẬT KHẨU SMTP LƯU NGUYÊN VĂN**: form lấy `txtmailServerPassword.Text.Trim()` rồi truyền thẳng
+//   xuống, không băm, không mã hoá. Ô nhập chỉ đổi `PasswordChar` **sau khi lưu xong** — tức lúc gõ vẫn
+//   hiện rõ. Đây là dữ liệu nhạy cảm, ghi vào log để bên nghiệp vụ quyết cách xử lý.
+//
+// ⚠️ `EnableSSL` lưu chuỗi `"True"`/`"False"` (từ `Convert.ToString(chk.Checked)`), **không** theo quy ước
+//   cờ `"1"`/`"0"` của hệ; lúc đọc lại nguồn so `== "False"` ⇒ **mọi giá trị khác "False" đều thành bật**.
+// ⚠️ Guard của form (`ValidateInput`) bắt buộc **năm** ô: địa chỉ máy chủ · TimeOut · Port · Mật khẩu · User.
+//   ⚠️ **KHÔNG** kiểm Port/TimeOut có phải số hay không ⇒ nhập chữ vẫn lưu được.
+// ⚠️ Nhánh tạo và nhánh sửa **hỏi xác nhận bằng hai thông điệp khác nhau** rồi mới gọi; sau khi tạo,
+//   form tự chuyển sang chế độ sửa (`b_isUpdate = true`) và giữ `IdConfig` vừa nhận.
+app.MapGet("/api/emailserverconfigs", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    var qy = db.EmailServerConfigs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim());
+    var items = await qy.OrderBy(x => x.Id).Select(x => new
+    {
+        x.IdConfig, x.DealerCode, x.MailServerAddress, x.MailServerUser,
+        x.Port, x.TimeOut, x.EnableSSL,
+        // Không trả mật khẩu ra danh sách; chỉ báo đã đặt hay chưa.
+        hasPassword = !string.IsNullOrEmpty(x.MailServerPassword),
+    }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        passwordNote = "Nguồn lưu mật khẩu SMTP NGUYÊN VĂN. Endpoint này KHÔNG trả mật khẩu ra danh sách "
+            + "(chỉ báo hasPassword) — cố ý khác nguồn, vì trả ra là phát tán thêm.",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/emailserverconfigs", async (EmailServerConfigDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // Guard của form: NĂM ô bắt buộc, đúng thứ tự báo lỗi của nguồn.
+    if (string.IsNullOrWhiteSpace(dto.MailServerAddress))
+        return Results.BadRequest(new { error = "Chưa nhập Địa chỉ mail server" });
+    if (string.IsNullOrWhiteSpace(dto.TimeOut))
+        return Results.BadRequest(new { error = "Chưa nhập TimeOut" });
+    if (string.IsNullOrWhiteSpace(dto.Port))
+        return Results.BadRequest(new { error = "Chưa nhập Port" });
+    if (string.IsNullOrWhiteSpace(dto.MailServerPassword))
+        return Results.BadRequest(new { error = "Chưa nhập Mật khẩu" });
+    if (string.IsNullOrWhiteSpace(dto.MailServerUser))
+        return Results.BadRequest(new { error = "Chưa nhập User" });
+
+    // Nguồn KHÔNG kiểm Port/TimeOut là số — giữ 1:1, chỉ BÁO CỜ.
+    var portNotNumeric = !int.TryParse(dto.Port!.Trim(), out _);
+    var timeOutNotNumeric = !int.TryParse(dto.TimeOut!.Trim(), out _);
+
+    var id = "EC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var r = new EmailServerConfig
+    {
+        OrgId = t.OrgId, IdConfig = id,
+        // 🔴 CỐ Ý LỆCH: nguồn truyền chuỗi rỗng ở đây nên bản ghi không đọc lại được.
+        DealerCode = dto.DealerCode?.Trim(),
+        MailServerAddress = dto.MailServerAddress!.Trim(),
+        MailServerUser = dto.MailServerUser!.Trim(),
+        MailServerPassword = dto.MailServerPassword!.Trim(),
+        Port = dto.Port!.Trim(), TimeOut = dto.TimeOut!.Trim(),
+        // Nguồn lưu chuỗi "True"/"False", không phải "1"/"0".
+        EnableSSL = (dto.EnableSSL ?? false) ? "True" : "False",
+    };
+    db.EmailServerConfigs.Add(r);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        r.IdConfig, r.DealerCode, message = "Đã thêm mới thành công",
+        dealerScopeFixed = true,
+        dealerScopeNote = "Nguồn gọi Email_Config_Create(\"\", …) — bỏ TRỐNG mã đại lý, trong khi "
+            + "Email_Config_Get lại LỌC theo mã đại lý (thêm 2012) ⇒ bản ghi vừa tạo không đọc lại được, "
+            + "bấm Tạo nhiều lần sinh ra bản ghi mồ côi. MiniHTC ghi kèm dealerCode để đọc-ghi cùng phạm vi.",
+        portNotNumeric, timeOutNotNumeric,
+        numericNote = (portNotNumeric || timeOutNotNumeric)
+            ? "Port hoặc TimeOut KHÔNG phải số. Nguồn không kiểm nên vẫn lưu — giữ 1:1, chỉ báo cờ."
+            : null,
+        enableSslNote = "Lưu chuỗi \"True\"/\"False\" theo nguồn (không phải \"1\"/\"0\"); nguồn đọc lại "
+            + "chỉ so == \"False\" ⇒ mọi giá trị khác đều hiểu là BẬT.",
+        passwordPlainNote = "Nguồn lưu mật khẩu SMTP NGUYÊN VĂN, không băm không mã hoá — ghi lại để "
+            + "bên nghiệp vụ quyết cách xử lý.",
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/emailserverconfigs/{idConfig}", async (string idConfig, EmailServerConfigDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.EmailServerConfigs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.IdConfig == idConfig);
+    if (r is null) return Results.NotFound(new { idConfig });
+    // Nguồn dùng CHUNG hàm ValidateInput cho cả tạo lẫn sửa ⇒ năm ô vẫn bắt buộc.
+    if (string.IsNullOrWhiteSpace(dto.MailServerAddress) || string.IsNullOrWhiteSpace(dto.TimeOut)
+        || string.IsNullOrWhiteSpace(dto.Port) || string.IsNullOrWhiteSpace(dto.MailServerPassword)
+        || string.IsNullOrWhiteSpace(dto.MailServerUser))
+        return Results.BadRequest(new { error = "Thiếu một trong năm trường bắt buộc (địa chỉ, TimeOut, Port, mật khẩu, user)." });
+
+    r.MailServerAddress = dto.MailServerAddress!.Trim();
+    r.MailServerUser = dto.MailServerUser!.Trim();
+    r.MailServerPassword = dto.MailServerPassword!.Trim();
+    r.Port = dto.Port!.Trim(); r.TimeOut = dto.TimeOut!.Trim();
+    r.EnableSSL = (dto.EnableSSL ?? false) ? "True" : "False";
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) r.DealerCode = dto.DealerCode!.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        r.IdConfig, r.DealerCode,
+        sharedValidateNote = "Nguồn dùng CHUNG ValidateInput cho tạo và sửa (khác lệ #404 nơi hai thao "
+            + "tác có guard khác nhau) — ở màn này hai bên GIỐNG nhau, đã kiểm.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/emailconfigsendauto/vocab", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "config" : screen!.Trim().ToLowerInvariant();
@@ -44785,6 +44907,10 @@ record SupplierPartOrderDto(string? SupplierID, string? OrderNo = null, string? 
     string? TypeTransport = null, string? VIN = null, string? ConfirmNo = null, string? CusCharges = null,
     List<SupplierPartOrderLineDto>? Lines = null);
 // #290: cấu hình gửi email tự động — 11 trường của `Email_ConfigSendAuto_Create`.
+// #433 Cấu hình máy chủ thư (Email_Config) — KHÁC EmailConfigSendAutoDto (lịch gửi tự động).
+record EmailServerConfigDto(string? DealerCode, string? MailServerAddress, string? MailServerUser,
+    string? MailServerPassword, string? Port, string? TimeOut, bool? EnableSSL);
+
 record EmailConfigSendAutoDto(string? DealerCode = null, string? AutoTime = null,
     DateTime? StartDate = null, DateTime? EndDate = null, string? Description = null,
     string? SendMode = null, string? IsActive = null, string? TypeEmail = null,
