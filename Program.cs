@@ -24518,6 +24518,95 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 //   (lệ #414, lần thứ ba trong cụm này). ⚠️ `and p.PartId is not null` đặt sau nối TRONG ⇒ **thừa**.
 // ⚠️ `sti.Status = '3'` — **chuỗi**, trong khi #415 cùng ý nghĩa lại viết `= 3` **số**. Cùng hệ, hai lối viết.
 // ⚠️ Mốc `<= '@ToDate'` trên cột ngày ⇒ **mất trọn ngày cuối** (lệ #415).
+// ===== 🔴 #419 "PHỤ TÙNG BIẾN ĐỘNG GIÁ" — `CountPrice` **không phải số lần nhập** =====
+// TRACE: `FrmReportPartVariationPrice` → `InventoryReportService.Ser_InvReportPartTopVariationPrice`
+//   → WS → biz `Ser_InvReportPartTopVariationPrice` (`BizCarSv.Inventory.Report.cs:7125`).
+//
+// 📌 Kiểm ORDER BY (lệ #415): hàm này **CÓ** `order by countPrice desc` trong chính câu lấy `@Top`.
+//   Bốn báo cáo cùng họ đã kiểm: **#415 hỏng · #416 lành · #417 lành · #419 lành**. Đúng như đã ghi:
+//   kiểm từng cái, suy từ cái bên cạnh là sai.
+//
+// 🔴 **`count(price)` ĐẾM SỐ MỨC GIÁ KHÁC NHAU, KHÔNG PHẢI SỐ LẦN NHẬP** — vì bảng tạm dựng bằng
+//   `select DISTINCT` trên `(partid, partcode, vieName, unit, price, status)`. Nhập **50 lần cùng một giá**
+//   ⇒ DISTINCT gộp còn **một** dòng ⇒ `CountPrice = 1`.
+//   ⇒ Với ý đồ "biến động giá" thì đây là **đúng** (đếm số mức giá đã từng nhập), nhưng **tên cột nói dối**:
+//     ai đọc `CountPrice` mà hiểu là "số lần nhập" sẽ dùng sai con số. MiniHTC đặt tên rõ:
+//     `distinctPriceCount`, và trả thêm `stockInLineCount` (số dòng nhập thật) để phân biệt hai khái niệm.
+//   ⚠️ Hệ quả kèm: `MinPrice`/`MaxPrice` cũng tính trên **tập giá DUY NHẤT**, không theo trọng số lần nhập.
+//
+// ⚠️ `count(price)` của SQL **bỏ qua NULL** ⇒ phụ tùng mà mọi dòng nhập đều thiếu giá sẽ hiện với
+//   `CountPrice = 0`, `Min/Max = NULL` — vẫn có mặt trong báo cáo nhưng vô nghĩa. → `rowsWithoutPrice`.
+// ⚠️ `st.Status` nằm trong danh sách DISTINCT nhưng WHERE đã ghim `Status = '3'` ⇒ cột hằng, **thừa**.
+// ⚠️ `join Ser_mst_part` là nối TRONG ⇒ phụ tùng không có trong danh mục **biến mất** (nhất quán với
+//   #416/#417 — cả cụm báo cáo kho đều loại nhóm này).
+// ⚠️ Mốc `st.StockinDate <= '@ToDate'` ⇒ **mất trọn ngày cuối** (lệ #415). ⚠️ `@Top` vẫn ghép chuỗi
+//   từ ô nhập, không tham số hoá (lệ #415).
+// ⚠️ Chỉ xét **giá NHẬP** (`Ser_Inv_StockInDetail.price`), không dính gì tới giá bán.
+app.MapGet("/api/report/part-variation-price", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var inIds = (await db.PartStockIns.Where(s => s.OrgId == t.OrgId && s.Status == "3"
+            && s.StockInDate >= f && s.StockInDate <= to)
+        .Select(s => s.Id).ToListAsync()).ToHashSet();
+    var lines = await db.PartStockInLines
+        .Where(l => l.OrgId == t.OrgId && inIds.Contains(l.StockInId)).ToListAsync();
+    var partMaster = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var droppedNotInMaster = 0; var rowsWithoutPrice = 0;
+    var rows = new List<dynamic>();
+    foreach (var g in lines.GroupBy(l => l.PartCode))
+    {
+        // Nối TRONG với danh mục: không có thì MẤT DÒNG.
+        if (!partMaster.TryGetValue(g.Key, out var pm)) { droppedNotInMaster++; continue; }
+
+        // 🔴 DISTINCT của nguồn ⇒ tập MỨC GIÁ duy nhất, không phải số lần nhập.
+        var prices = g.Select(l => l.Price).Distinct().ToList();   // Price khong nullable trong entity nay
+        if (prices.Count == 0) rowsWithoutPrice++;
+        rows.Add(new
+        {
+            partCode = g.Key, partName = pm.PartName, unit = pm.Unit,
+            minPrice = prices.Count == 0 ? (decimal?)null : prices.Min(),
+            maxPrice = prices.Count == 0 ? (decimal?)null : prices.Max(),
+            distinctPriceCount = prices.Count,          // = CountPrice của nguồn
+            stockInLineCount = g.Count(),               // số dòng nhập THẬT — nguồn không có
+            priceSpread = prices.Count == 0 ? (decimal?)null : prices.Max() - prices.Min(),
+        });
+    }
+
+    var ordered = rows.OrderByDescending(r => (int)r.distinctPriceCount).ToList();
+    var n = top ?? 0;
+    var outRows = n > 0 ? ordered.Take(n).ToList() : ordered;
+
+    return Results.Ok(new
+    {
+        count = outRows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
+        countPriceMeaningNote = "CountPrice của nguồn ĐẾM SỐ MỨC GIÁ KHÁC NHAU, KHÔNG phải số lần nhập "
+            + "(bảng tạm dựng bằng select DISTINCT gồm cả cột price). Nhập 50 lần cùng một giá ⇒ CountPrice = 1. "
+            + "MiniHTC đặt tên rõ: distinctPriceCount, và trả thêm stockInLineCount là số dòng nhập thật.",
+        minMaxNote = "MinPrice/MaxPrice cũng tính trên tập giá DUY NHẤT, không theo trọng số lần nhập.",
+        rowsWithoutPrice,
+        nullPriceNote = rowsWithoutPrice > 0
+            ? "count(price) của SQL bỏ qua NULL ⇒ phụ tùng mà mọi dòng nhập đều thiếu giá vẫn có mặt "
+              + "với CountPrice = 0 và Min/Max = NULL — hiện trong báo cáo nhưng vô nghĩa."
+            : null,
+        droppedNotInMaster,
+        droppedNotInMasterNote = "join Ser_mst_part là nối TRONG ⇒ phụ tùng không có trong danh mục biến "
+            + "mất; nhất quán với #416/#417 — cả cụm báo cáo kho đều loại nhóm này.",
+        orderByOkNote = "CÓ order by countPrice desc trong chính câu lấy TOP ⇒ không dính lỗi #415. "
+            + "Bốn báo cáo cùng họ đã kiểm: #415 hỏng, #416/#417/#419 lành.",
+        redundantColumnNote = "st.Status nằm trong danh sách DISTINCT nhưng WHERE đã ghim Status = '3' "
+            + "⇒ cột hằng, thừa.",
+        endDateExclusive = true,
+        scopeNote = "Chỉ xét GIÁ NHẬP (Ser_Inv_StockInDetail.price), không liên quan giá bán.",
+        rows = outRows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/part-top-rotate", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, int? top, string? dealer) =>
 {
