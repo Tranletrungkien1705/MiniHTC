@@ -53,6 +53,11 @@ const EXPECTED = {
     // #343 da tra nguon: grep ra 0 cho ghi vao Ser_RO => nghi la cot do port tu them.
     'RepairOrder.FlagIsDLQuery': '#343 nguon khong ghi vao Ser_RO',
     'RepairOrder.PointVoucher': '#343 nguon khong ghi vao Ser_RO',
+    // #353: bon cot da tra nguon, moi cot mot LY DO KHAC nhau — xem manifest #353.
+    'CustomerCare.IsSendmail': '#353 chi ghi boi Ser_CustomerCare_Update — ham KHONG CO CALLER (chet)',
+    'HmcReport.AutoID': '#353 identity CSDL; cac hit that ra la dieu kien JOIN on t.X = f.X',
+    'WarrantyExtensionDateLog.ROWRID': '#353 dong ghi duy nhat BI COMMENT',
+    'ReqPartPriceLine.TSTPartCode': '#353 cho ghi duy nhat thuoc bang KHAC (TST_Mst_Part)',
 };
 
 // ---- 1. gom entity → danh sách thuộc tính ----
