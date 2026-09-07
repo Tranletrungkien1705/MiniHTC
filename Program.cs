@@ -24920,10 +24920,34 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         deadSuffixReach = new { wsEntryPoints = 820, bizFunctions = 1717, reachable = 1278,
             unreachable = 439, xxxReachable = 4, xxxDead = 56,
             supersedes = "#452 (782/1580/1217/363) — do quét không đệ quy" },
+        // ===== ✅ #456 QUÉT ĐẾM ĐƯỢC: "bản có hậu tố ngày" có phải bản đang chạy không? =====
+        // Lý do quét: đây là lần **thứ ba** cùng một bẫy (#448 đọc `…Cavity**xxx**` thay vì bản trần ·
+        //   #455 port từ `CommonSignIn**2026NC**` đã chết · #449/#450 với `…_New20240115`).
+        //   Theo luật "gặp lần thứ hai thì QUÉT CẢ CÂY", công cụ `_audit/sweepversion.js` (in kèm SỐ FILE
+        //   đọc được — luật #453) lọc mọi tên hàm biz có hậu tố phiên bản rồi đối chiếu với khả đạt.
+        // 📊 **264 hàm mang hậu tố phiên bản: 171 khả đạt · 93 CHẾT (35%)**.
+        //   MiniHTC trích dẫn **36** hàm trong số đó ⇒ **33 sống, 3 chết**:
+        //   `SerStockInCreate_New20240115` · `SerStockInUpdate_New20240115` · `SerStockOutUpdate_New20240115`
+        //   — cả ba **đã được ghi đúng là CHẾT** ở #302/#320/#450 (WS gọi bản TRẦN: `_biz.SerStockInCreate(` …).
+        // ✅ **TẬP ĐÓNG — 0 chỗ còn sai**: không có hàm chết nào đang được port dùng như luật sống.
+        //   Ghi lại con số để lượt sau khỏi quét lại; quét lại chỉ khi cây nguồn đổi.
+        versionSuffixSweep = new { versionSuffixedFunctions = 264, reachable = 171, dead = 93,
+            citedByMiniHtc = 36, citedAndDead = 3, citedDeadAlreadyFlagged = 3, openIssues = 0 },
         sourceTreeDelta = new { laptop = "V20.2023.Release.V2", may150 = "V20.2023.Release",
             wsEntryPointsLaptop = 830, wsEntryPoints150 = 831,
             onlyOn150 = new[] { "HCC_NoShow_CreateOS" },
-            note = "Hai cây nguồn KHÔNG đồng nhất; 150 có thể mới hơn. Nợ: đối chiếu toàn bộ delta." },
+            // ✅ #456 ĐÃ TRẢ XONG NỢ "đối chiếu toàn bộ delta hai cây" (mở ở #453):
+            //   **1766 file laptop · 1797 file 150 · 1828 đường dẫn chung**.
+            //   · **0 file chỉ có ở laptop** ⇒ laptop ⊂ 150.
+            //   · **31 file chỉ có ở 150** = trọn project job `Refs/Jobs/DMS.Service.Job.OSHCC` (đã port #269/#272).
+            //   · File chung LỆCH NỘI DUNG (bỏ SDK bên thứ ba `Reader2100DemoSDK`): `WSCarSv.asmx.cs` ·
+            //     `BizCarSv.Common.cs` · `.Tab.cs` · `.WarrantyReport.cs` · `.ZTemp.cs` · `HCCIntergration/*` ·
+            //     `Error.CarSv.cs` — đều đã soi: `SendHMCX_20260227` (#302), wiring `HCC_Appointment_AddOSX`
+            //     (#270), danh sách chặn đăng nhập (#318 → **sửa ở #455**).
+            filesLaptop = 1766, files150 = 1797, sharedPaths = 1828,
+            onlyOnLaptop = 0, onlyOn150Files = 31,
+            deltaAuditClosed = true,
+            note = "Laptop ⊂ 150. Delta = trọn project job OSHCC + 10 file lệch nội dung, đã soi hết." },
         deadSuffixReachNote = "Reachability thật (BFS từ 782 điểm vào WebMethod): 1217/1580 hàm biz khả "
             + "đạt ⇒ 363 hàm (23%) là code chết. Trong 60 hàm hậu tố xxx: 4 khả đạt, 56 chết. "
             + "Blt_SerStockInStatusUpdate — từng được #450 dẫn như 'hàm sống' — thực ra KHÔNG khả đạt; "
