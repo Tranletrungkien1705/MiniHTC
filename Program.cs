@@ -14629,6 +14629,84 @@ app.MapDelete("/api/warrantyclaims/{id}/parts/{lineId}", async (
 //     'duyệt xong rồi đồng bộ sau'. Đây là món **nợ tầng HTTP** đã ghi trong hàng đợi.
 // 📌 MiniHTC chưa có tầng gọi WS đại lý ⇒ giữ nguyên ba guard, và trả cờ `dealerPushPending`
 //   thay vì lặng lẽ coi như đã đẩy.
+// ===== 🔴 #397 DUYỆT HÀNG LOẠT (`…_HTCApproved_ForAuto`, `:10797`) — GOM THEO ĐẠI LÝ =====
+// Nhánh tự động của cùng cụm #395/#396. Khác bản thủ công ở **chữ ký**: thay 11 tham số lẻ
+// + 2 DataSet chi tiết bằng **MỘT DataSet lô hồ sơ** (`ds_Ser_ROWarrantyReport`).
+//
+// 🔴 **HAI VÒNG LẶP TÁCH BIỆT**, và đó là luật:
+//   · Vòng 1 — **kiểm TOÀN BỘ** dòng: `ROWID` hợp lệ (`…ForAuto_InvalidROWID`) và có `DealerCode`
+//     (`…ForAuto_DealerCode_NotFound`).
+//   · Vòng 2 — mới lưu. ⇒ Một dòng hỏng là **cả lô không ghi gì**, không phải 'ghi được dòng nào hay dòng đó'.
+// 🔴 **MỘT LỜI GỌI WS CHO MỖI ĐẠI LÝ, KHÔNG PHẢI MỖI HỒ SƠ**: vòng 2 giữ `listDealer`; gặp đại lý
+//   đã xử lý thì `continue`, gặp đại lý mới thì `Select("DealerCode = '…'")` **gom hết hồ sơ của đại lý
+//   đó** rồi đẩy sang WS của họ một lần.
+// ⚠️ **BẤT ĐỐI XỨNG khi lỗi**: trùng đại lý thì `continue` (bỏ qua êm), nhưng thiếu bản ghi mạng lưới
+//   hoặc thiếu `WSUrlAddr` thì **`throw`** ⇒ **huỷ cả lô ngay giữa chừng**, kể cả các đại lý đã đẩy xong.
+// ⚠️ Bộ lọc gom theo đại lý dựng bằng `string.Format("DealerCode = '{0}'")` — mã đại lý chứa dấu nháy
+//   sẽ làm hỏng biểu thức lọc.
+// 📌 MiniHTC chưa có tầng gọi WS ⇒ gom nhóm + guard đầy đủ, trả `dealerBatches` để thấy rõ số lời gọi
+//   mà nguồn sẽ thực hiện.
+app.MapPost("/api/warrantyclaims/approve-auto", async (WarrantyClaimAutoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Claims ?? new();
+    if (rows.Count == 0)
+        return Results.BadRequest(new { error = "Ser_ROWarrantyReport_HTCApproved_ForAutoTableNotBlank",
+            message = "Bảng hồ sơ đầu vào rỗng." });
+
+    // --- VÒNG 1: kiểm TOÀN BỘ trước khi ghi bất cứ gì.
+    var claims = new List<ServiceWarrantyClaim>();
+    foreach (var r in rows)
+    {
+        var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == r.ClaimId);
+        if (c is null)
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_HTCApproved_ForAuto_InvalidROWID",
+                message = "Không tìm thấy đề nghị.", claimId = r.ClaimId });
+        if (string.IsNullOrWhiteSpace(c.DealerCode))
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_HTCApproved_ForAuto_DealerCode_NotFound",
+                message = "Đề nghị không có mã đại lý.", claimId = r.ClaimId });
+        claims.Add(c);
+    }
+
+    // --- VÒNG 2: GOM THEO ĐẠI LÝ, mỗi đại lý MỘT lời gọi.
+    var batches = new List<object>();
+    var apprAt = dto.ApprovedDate ?? DateTime.Now;
+    foreach (var g in claims.GroupBy(c => c.DealerCode!))
+    {
+        var dealer = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == g.Key);
+        if (dealer is null)
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_HTCApproved_ForAuto_NetworkID_NotFound",
+                message = "Đại lý chưa khai trong master mạng lưới — nguồn HUỶ CẢ LÔ tại đây.",
+                dealerCode = g.Key, batchesAlreadyPushed = batches.Count });
+        if (string.IsNullOrWhiteSpace(dealer.WsUrlAddr))
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_HTCApproved_ForAuto_WSUrlAddr_NotFound",
+                message = "Đại lý chưa có địa chỉ web service — nguồn HUỶ CẢ LÔ tại đây.",
+                dealerCode = g.Key, batchesAlreadyPushed = batches.Count });
+
+        foreach (var c in g)
+        {
+            c.Status = "Accepted";
+            c.ApprovedDate = apprAt;
+            if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
+            c.UpdatedAt = DateTime.Now;
+        }
+        batches.Add(new { dealerCode = g.Key, wsUrl = dealer.WsUrlAddr, claims = g.Select(x => x.Id).ToList() });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        claimCount = claims.Count,
+        dealerBatches = batches.Count,
+        batches,
+        twoPassNote = "Nguồn kiểm TOÀN BỘ dòng ở vòng 1 rồi mới ghi ở vòng 2 ⇒ một dòng hỏng là cả lô không ghi gì.",
+        oneCallPerDealerNote = "MỘT lời gọi WS cho MỖI ĐẠI LÝ, không phải mỗi hồ sơ — nguồn gom hồ sơ theo DealerCode.",
+        asymmetryNote = "Trùng đại lý thì bỏ qua êm, nhưng thiếu mạng lưới/WSUrlAddr thì THROW ⇒ huỷ cả lô "
+            + "giữa chừng, kể cả các đại lý đã đẩy xong.",
+        filterInjectionNote = "Nguồn gom bằng string.Format(\"DealerCode = '{0}'\") — mã đại lý có dấu nháy sẽ hỏng bộ lọc.",
+        dealerPushPending = true,
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -42354,6 +42432,9 @@ record WarrantyClaimServiceItemDto(string? SerID = null, string? SerCode = null,
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
 // #268: `Creator` = bên tạo bước chuyển (nguồn truyền riêng, KHÁC tài khoản đăng nhập `CreatedBy`).
+// #397: dau vao duyet HANG LOAT (nguon: ..._HTCApproved_ForAuto, nhan MOT bang ho so).
+record WarrantyAutoItemDto(long ClaimId);
+record WarrantyClaimAutoDto(List<WarrantyAutoItemDto>? Claims, DateTime? ApprovedDate, string? Note);
 // #396 §12: ApprovedDate/ApprovedBy — moc duyet lan xuong dong cong + dong phu tung.
 record WarrantyClaimActionDto(string Action, string? Note, string? Creator = null,
     DateTime? ApprovedDate = null, string? ApprovedBy = null);
