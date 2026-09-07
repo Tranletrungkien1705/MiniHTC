@@ -24559,9 +24559,36 @@ app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantCon
 //   bỏ trống thì **không lọc**, KHÔNG rơi vào bẫy `<= ''` trả 0 dòng. Ghi lại để lượt sau khỏi soi lại.
 // ⚪ `inner join` (Main) vs `join` (WH) sang `Ser_Customer`/`Ser_Car`/`Ser_MST_TradeMark` — **cùng nghĩa**,
 //   không phải khác biệt. (Nhưng vẫn là 3 INNER ⇒ thiếu khách/xe/hãng là **mất dòng lúc ĐỌC**.)
+// ===== 🔴 #542 VÁ TRA CỨU LỊCH HẸN THEO BẢN MÁY TÍNH BẢNG `Ser_App_GetX_New20220926` =====
+// Nguồn: `BizCarSv.Tab.cs:2329 Ser_App_GetForTab_New20210108` — **vỏ bọc**, thân thật là
+//   `Ser_App_GetX_New20220926` (`:4114`). Bản port cũ (#474) mới phủ 4 bộ lọc, còn thiếu **ba** thứ:
+//
+// 🔴 **1) KHOẢNG THỜI GIAN GIAO NHAU — BỐN VẾ `OR`, không phải một mốc**:
+//   Nguồn dựng khi có **cả** `DateTimelineFrom` lẫn `DateTimelineTo`:
+//     `and (( AppDateTime BETWEEN từ..đến )`
+//     ` or ( AppDateTimeFrom BETWEEN từ..đến )`
+//     ` or ( AppDateTimeFrom >= từ and AppDateTime <= đến )`
+//     ` or ( AppDateTimeFrom <= từ and AppDateTime >= đến ))`
+//   ⇒ Bốn kiểu **chồng lấn** giữa lịch hẹn và khoảng hỏi (bắt đầu trong, kết thúc trong, nằm trong,
+//     bao trùm). Bản port cũ chỉ có `timeline` **một mốc** ⇒ **bỏ sót** lịch hẹn bao trùm/giao một phần.
+// 🔴 **2) NỐI CHUỖI THẲNG GIÁ TRỊ CLIENT**: bốn vế trên ghép bằng `"... >= '" + strDateTimelineFrom + "'"`
+//   — **không tham số hoá** ⇒ bề mặt **tiêm SQL ở bộ lọc ĐỌC** (họ #536/#538 vốn ở câu XOÁ).
+// 🔴 **3) PHÂN TRANG + TỔNG SỐ**: nguồn có `#tbl_Ser_App_Filter_Draft` với `identity()` rồi lọc
+//   `MyIdxSeq` theo `@nFilterRecordStart/@nFilterRecordEnd`, và trả riêng `select Count(0) MyCount`.
+//   Bản port cũ cắt cứng `Take(500)`, **không** trả tổng ⇒ client không biết còn bao nhiêu.
+//   ⚠️ Nhưng `identity()` lại gán trên `select distinct … **không có `order by`**` (y hệt #533)
+//     ⇒ **trang không ổn định**. Port sắp tường minh trước khi cắt + cờ `sourceHasNoOrderBy`.
+// 🔴 **4) HAI `inner join` LÀM RƠI DÒNG**: `inner join ser_Customer on sera.CusID = cus.CusID` và
+//   `inner join ser_car on sera.carid = car.carid and sera.cusid = car.cusid` ⇒ lịch hẹn **chưa gắn
+//   khách/xe** (khách vãng lai đặt hẹn) **biến mất khỏi danh sách** — luật #410. MiniHTC lưu lịch hẹn
+//   phẳng nên **không** rơi; nêu cờ `sourceInnerJoinsDropUnlinkedAppointments` để biết vì sao số lệch.
+// ⚪ `left join sys_user su on Creator = UserCode and DealerCode = DealerCode` — **không cột nào của `su`**
+//   được select, **không** điều kiện WHERE nào trên `su` ⇒ LEFT **còn sống nhưng THỪA** (họ #414
+//   "khai báo rồi không dùng"): chỉ tốn một phép nối cross-DB mỗi lần tra.
 app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status,
     DateTime? date, string? cusName, string? creator, string? appTypeCodes,
-    DateTime? appDateTimeFrom, DateTime? timeline, string? scope) =>
+    DateTime? appDateTimeFrom, DateTime? timeline, string? scope,
+    DateTime? timelineFrom, DateTime? timelineTo, int? recordStart, int? recordCount) =>
 {
     var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
     var q = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
@@ -24586,7 +24613,23 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
         q = q.Where(x => x.AppFrom <= timeline && x.AppTo >= timeline);
         timelineApplied = true;
     }
-    var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
+    // #542 Khoảng GIAO NHAU bốn vế — đúng nguồn (chỉ áp khi có ĐỦ hai đầu, như nguồn).
+    var timelineRangeApplied = false;
+    if (timelineFrom.HasValue && timelineTo.HasValue)
+    {
+        var f = timelineFrom.Value; var e = timelineTo.Value;
+        q = q.Where(x => (x.AppTo >= f && x.AppTo <= e)
+            || (x.AppFrom >= f && x.AppFrom <= e)
+            || (x.AppFrom >= f && x.AppTo <= e)
+            || (x.AppFrom <= f && x.AppTo >= e));
+        timelineRangeApplied = true;
+    }
+
+    // #542 Tổng số TRƯỚC khi cắt trang — nguồn trả riêng bảng MySummary (Count(0) MyCount).
+    var myCount = await q.CountAsync();
+    var start = Math.Max(0, recordStart ?? 0);
+    var take = recordCount is > 0 ? recordCount!.Value : 500;
+    var items = await q.OrderBy(x => x.AppFrom).ThenBy(x => x.Id).Skip(start).Take(take).Select(x => new
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
         x.CarID,          // #319 §12: phải có ở CẢ GET lẫn POST
@@ -24605,6 +24648,14 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new
     {
         count = items.Count, items,
+        // ===== #542 =====
+        myCount, recordStart = start, recordCount = take,
+        timelineRangeApplied,
+        timelineRangeIsFourWayOverlap = "AppDateTime trong / AppDateTimeFrom trong / nam trong / bao trum",
+        timelineValuesConcatenatedInSource = "'\" + strDateTimelineFrom + \"' — khong tham so hoa",
+        sourceHasNoOrderBy = "identity() tren select distinct khong order by => trang khong on dinh",
+        sourceInnerJoinsDropUnlinkedAppointments = "inner join ser_Customer + ser_car",
+        deadLeftJoinInSource = "left join sys_user su — khong select cot nao, khong dieu kien nao",
         // ===== #474 =====
         scope = isWh ? "wh" : "main",
         timelineApplied,
