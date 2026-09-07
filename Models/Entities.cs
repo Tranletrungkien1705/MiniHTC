@@ -14754,6 +14754,19 @@ public sealed class MaintenanceLevelMst
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#541 Danh mục **LOẠI GIA HẠN BẢO HÀNH** (`Ser_MST_ROWarrantyRenewalCategory`).
+/// Chính là nửa còn lại của khoá upsert ở `WarrantyExtensionDateLog.ExtCategoryCode` (`WrtReneCateCode`)
+/// — trước nay MiniHTC dùng mã đó **mà không có danh mục** để đối chiếu.</summary>
+public sealed class WarrantyRenewalCategoryMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string WrtReneCateCode { get; set; } = "";
+    public string? WrtReneCateName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>#539 ĐỊNH MỨC công phát sinh **theo loại bảo hành chi tiết** (`Ser_MST_ROWorkArisingQuota`).
 /// Khoá nghiệp vụ = (`ROWArisCode`, `ROWTypeDtlCode`). Nguồn kiểm `ROWTypeDtlCode` phải có trong
 /// `Ser_MST_ROWarrantyType` — nhưng **chỉ ở nhánh THÊM MỚI** (xem chú thích endpoint).</summary>

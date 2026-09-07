@@ -48734,6 +48734,100 @@ app.MapPost("/api/complainterrorcodes/delete", async (List<string> errorCodes,
     });
 }).RequireAuthorization();
 
+// ===== #541 DANH MỤC LOẠI GIA HẠN BẢO HÀNH — MẢNH GHÉP CÒN THIẾU CỦA `WarrantyExtensionDateLog` =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:9037 Ser_MST_ROWarrantyRenewalCategory_Get` · `:9157 _Save`
+//   · `:9418 _Delete`. Endpoint: `GET`/`POST /api/warrantyrenewalcategorymsts` + `…/delete`.
+// **§12**: entity `WarrantyRenewalCategoryMst` + `DbSet` + Seeder.
+//
+// 📌 **Vì sao đáng port**: MiniHTC đã có `WarrantyExtensionDateLog` (gia hạn theo VIN) với khoá upsert
+//   **(VIN, ExtCategoryCode)** — mà `ExtCategoryCode` chính là `WrtReneCateCode` của bảng này.
+//   Từ trước tới nay mã loại gia hạn được nhận **tự do, không đối chiếu danh mục**. Nay có danh mục thật.
+// ⚠️ **KHÁC hẳn các master anh em trong cùng file**: bảng này đọc từ **DB hiện hành**
+//   (`from Ser_MST_ROWarrantyRenewalCategory smrowrc`), **không** có tiền tố
+//   `[@strDBName_CommonCenter].[dbo].` như `Ser_MST_ROWorkArising`/`PartExtra`/`ROComplaintDiagnosticError`.
+//   ⇒ Danh mục này là **của từng DB**, không dùng chung toàn hệ — khác biệt về phạm vi dữ liệu, không
+//     phải khác biệt cú pháp. Nêu cờ `masterIsPerDatabaseNotCommonCenter`.
+// ⚠️ Chỉ có **một** bộ lọc (`FlagActive`) qua `BuildClause` (bẫy #410) và **không có `order by`**.
+// ⚠️ Bảng đầu vào bắt buộc tên `"Ser_MST_ROWarrantyRenewalCategory"`, **không có `Tables.Contains`**
+//   (họ #535/#538) ⇒ sai tên là NRE. Khuôn *rỗng ⇒ `DBNull`* cho `WrtReneCateName` (**gửi rỗng XOÁ**).
+// ⚠️ `_Delete` có kiểm mã tồn tại rồi mới xoá, nhưng **không** có guard tham chiếu sang bảng gia hạn
+//   (`Ser_MST_ROWarrantyRenewal`) — **khác #540** vốn chặn xoá khi mã đang được dùng.
+//   ⇒ Xoá một loại gia hạn đang được VIN nào đó dùng thì **dữ liệu gia hạn thành mồ côi**, không ai báo.
+//   Port **thêm** phép kiểm đó (lệch cố ý, có cờ `orphanGuardAddedNotInSource`).
+app.MapGet("/api/warrantyrenewalcategorymsts", async (AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var qy = db.WarrantyRenewalCategoryMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+    var items = await qy.OrderBy(x => x.WrtReneCateCode).Take(1000)
+        .Select(x => new { x.Id, x.WrtReneCateCode, x.WrtReneCateName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        tableName = "Ser_MST_ROWarrantyRenewalCategory",
+        masterIsPerDatabaseNotCommonCenter = true,
+        sourceHasNoOrderBy = true,
+        pairsWith = "WarrantyExtensionDateLog.ExtCategoryCode",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyrenewalcategorymsts", async (List<WarrantyRenewalCategoryDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Cần bảng Ser_MST_ROWarrantyRenewalCategory." });
+    var created = 0; var updated = 0;
+    foreach (var r in rows)
+    {
+        var code = (r.WrtReneCateCode ?? "").Trim();
+        if (code.Length == 0) return Results.BadRequest(new { error = "WrtReneCateCode rỗng." });
+        var row = await db.WarrantyRenewalCategoryMsts
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WrtReneCateCode == code);
+        if (row is null)
+        {
+            row = new WarrantyRenewalCategoryMst { OrgId = t.OrgId, WrtReneCateCode = code };
+            db.WarrantyRenewalCategoryMsts.Add(row); created++;
+        }
+        else updated++;
+        // Rỗng ⇒ null (khuôn DBNull: gửi rỗng XOÁ).
+        row.WrtReneCateName = string.IsNullOrWhiteSpace(r.WrtReneCateName) ? null : r.WrtReneCateName;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { count = rows.Count, created, updated, emptyMeansClear = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyrenewalcategorymsts/delete", async (List<string> codes,
+    AppDbContext db, ITenantContext t) =>
+{
+    var list = (codes ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Cần danh sách WrtReneCateCode." });
+    var rows = await db.WarrantyRenewalCategoryMsts
+        .Where(x => x.OrgId == t.OrgId && list.Contains(x.WrtReneCateCode)).ToListAsync();
+    var missing = list.Where(c => rows.All(r => r.WrtReneCateCode != c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "Mã loại gia hạn không tồn tại.", missing });
+
+    // LỆCH CỐ Ý: nguồn KHÔNG kiểm tham chiếu; ở đây chặn để không sinh dữ liệu mồ côi.
+    var used = await db.WarrantyExtensionDateLogs
+        .Where(x => x.OrgId == t.OrgId && x.ExtCategoryCode != null && list.Contains(x.ExtCategoryCode!))
+        .Select(x => new { x.VIN, x.ExtCategoryCode }).Take(50).ToListAsync();
+    if (used.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Loại gia hạn đang được dùng ở bản ghi gia hạn theo VIN.",
+            usedBy = used, orphanGuardAddedNotInSource = true,
+        });
+
+    db.WarrantyRenewalCategoryMsts.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        requested = list.Count, deleted = rows.Count,
+        orphanGuardAddedNotInSource = true,
+        contrastWith = "#540 (ma loi) CO guard tham chieu; ham nay thi KHONG",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -50550,6 +50644,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record WarrantyRenewalCategoryDto(string? WrtReneCateCode, string? WrtReneCateName, string? FlagActive);   // #541
+
 record RoWorkArisingQuotaDto(string? ROWArisCode, string? ROWArisName, string? ROWTypeDtlCode, string? FlagActive);   // #539
 
 record PartExtraMstDto(string? PartCode, string? ROMSID, string? VieName, string? Unit,
