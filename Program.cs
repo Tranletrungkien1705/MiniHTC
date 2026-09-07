@@ -24877,6 +24877,22 @@ app.MapGet("/api/appointments/{appNo}/quotation", async (string appNo, AppDbCont
         candidateCount = candidates.Count,
         ro.Id, ro.RONo, ro.Status, ro.CusRequest, ro.CarStatus, ro.Assistant, ro.Km,
         ro.CusID, ro.CarID, ro.DealerCode,
+        // ===== ✅ #447 QUÉT TRỌN BIZ (luật #441): mẫu "chọn một dòng vào biến" dùng **33 lần, 0 lần có
+        //        tiêu chí chọn** =====
+        // Duyệt mọi `select @X = …` trong SQL nguồn, bỏ các `@@Identity`/`SCOPE_IDENTITY()` (đó là lấy khoá
+        // vừa sinh, không phải chọn dòng):
+        //     **33 chỗ · 0 chỗ có `ORDER BY` hoặc `TOP` · 22/33 lọc bằng mệnh đề ĐỘNG (`zzzzClauseWhere…`)**.
+        // ⚠️ **Không kết luận cả 33 đều sai**: khi `WHERE` khoá vào một cột duy nhất (số RO, số phiếu) thì
+        //   "lấy dòng bất kỳ" vẫn ra đúng. Điều đo được là: **tính đúng đắn phụ thuộc HOÀN TOÀN vào việc
+        //   mệnh đề lọc có duy nhất hay không — và không chỗ nào tự bảo đảm điều đó.**
+        //   22 chỗ lọc bằng mệnh đề **dựng động lúc chạy** ⇒ tính duy nhất **không thể biết khi đọc code**.
+        // 📌 Ở #446 thì mệnh đề là `ro.AppId` — **không** phải khoá duy nhất (một cuộc hẹn có thể có nhiều
+        //   lệnh sửa) ⇒ đây là chỗ mẫu này **thật sự nguy hiểm**, và là lý do endpoint trả `candidateCount`.
+        scalarPickSweep = new { sites = 33, withOrderByOrTop = 0, filteredByDynamicClause = 22 },
+        scalarPickSweepNote = "Quét toàn TERP.BizCarSv: mẫu `select @X = …` (bỏ @@Identity/SCOPE_IDENTITY) "
+            + "dùng 33 lần, KHÔNG lần nào kèm ORDER BY hay TOP; 22/33 lọc bằng mệnh đề dựng ĐỘNG lúc chạy. "
+            + "Không phải cả 33 đều sai — nhưng tính đúng đắn phụ thuộc hoàn toàn vào việc mệnh đề lọc có "
+            + "duy nhất hay không, và không chỗ nào tự bảo đảm điều đó.",
         arbitraryPickNote = candidates.Count > 1
             ? $"Cuộc hẹn này có {candidates.Count} lệnh sửa. NGUỒN chọn bằng `select @ROID = ro0.ROID … "
               + "where exists(…)` KHÔNG có TOP/ORDER BY ⇒ lấy một cái BẤT KỲ; người dùng có thể được mở "
