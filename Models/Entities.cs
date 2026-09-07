@@ -10759,14 +10759,30 @@ public sealed class DlrPdiRequest
     public string? ApprovedBy { get; set; }
     /// <summary>Ghi chú của người duyệt (`Dlr_PDIRequest.Remark`).</summary>
     public string? Remark { get; set; }
+
+    /// <summary>
+    /// 🔴 #B15 Cờ "có phụ kiện" (`Dlr_PDIRequest.FlagAccessory`) — nguồn nhận từ client và ghi thẳng vào
+    /// đầu yêu cầu (`DlrPDIRequestCreateX_New20230306`, `Biz.HTC.WH.DlrPDIRequest.cs:820`).
+    /// Port cũ không có ⇒ mất hẳn phân biệt yêu cầu PDI có/không kèm phụ kiện.
+    /// </summary>
+    public string? FlagAccessory { get; set; }
+    /// <summary>Ngày/người TẠO (`CreatedDate`/`CreatedBy`) — nguồn ghi cùng lúc với `DlrPDIReqStatus = "P"`.</summary>
+    public string? CreatedBy { get; set; }
 }
 public sealed class DlrPdiRequestDetail
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long DlrPdiReqId { get; set; }
-    public string RONo { get; set; } = "";
+    /// <summary>
+    /// 🔴 #B15 Số lệnh sửa chữa — **nguồn gán `DBNull` LÚC TẠO** (`…DlrPDIRequest.cs:840`), chỉ được điền
+    /// sau khi hệ dịch vụ trả RO về. Port cũ **bắt buộc** `RONo` khi tạo và dùng nó làm KHOÁ DÒNG ⇒ sai hẳn
+    /// mô hình: khoá dòng của nguồn là **`VIN`** (`strKeyDetail = "|{VIN}|"`, :673).
+    /// </summary>
+    public string? RONo { get; set; }
     public DateTime? ROCreatedDate { get; set; }
+    /// <summary>Trạng thái RO (`ROStatus`) — nguồn khởi tạo bằng literal **`"NORE"`** (NotResponding,
+    /// chú thích ngay trên dòng gán :842). Không phải chuỗi rỗng, không phải NULL.</summary>
     public string? ROStatus { get; set; }
     /// <summary>
     /// 🔴 Trạng thái của TỪNG DÒNG (`Dlr_PDIRequestDtl.DlrPDIReqDtlStatus`) — trục port cũ THIẾU.

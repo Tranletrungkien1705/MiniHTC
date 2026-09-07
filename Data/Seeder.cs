@@ -1166,6 +1166,10 @@ public static class Seeder
         "ALTER TABLE public.\"DealerDealDetails\" ADD COLUMN IF NOT EXISTS \"CtrCarId\" text NULL",
         // #B11 Car_Car.SellStatus - dat "F" o lan xac nhan giao dau tien
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"SellStatus\" text NULL",
+        // #B15 Dlr_PDIRequest.FlagAccessory + CreatedBy; RONo cho phep NULL (nguon gan DBNull luc tao)
+        "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"FlagAccessory\" text NULL",
+        "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+        "ALTER TABLE public.\"DlrPdiRequestDetails\" ALTER COLUMN \"RONo\" DROP NOT NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",

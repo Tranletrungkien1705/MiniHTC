@@ -28006,20 +28006,92 @@ app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // ===== #B15 PORT LẠI 1:1 `DlrPDIRequestCreate` (FrmNewDlr_PDIRequest / …2) =====
+    // Trace: `Dlr_PDIRequestService.DlrPDIRequestCreate` (:45) → WS `DlrPDIRequestCreate`
+    //   (`WSHTC.asmx.cs:84744`) → `_biz.DlrPDIRequestCreate` (`Biz.HTC.WH.DlrPDIRequest.cs:1438`, **VỎ BỌC**)
+    //   → **`DlrPDIRequestCreateX_New20230306`** (`:584`) — SQL/guard thật ở đây.
+    // 🔴 KHOÁ DÒNG SAI Ở PORT CŨ: nguồn khoá theo **VIN** (`strKeyDetail = "|{VIN}|"`, :673) và bắt buộc
+    //    `DlrContractNo` + `CtrCarId`; `RONo`/`ROCreatedDate` nguồn gán **DBNull lúc tạo** (:840-841),
+    //    `ROStatus` khởi tạo bằng literal **"NORE"**. Port cũ **bắt buộc RONo** và dùng nó làm khoá ⇒
+    //    không thể tạo yêu cầu đúng nghiệp vụ, và không lưu VIN/hợp đồng/xe-hợp-đồng.
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
-    var ros = (dto.Items ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.RONo)).ToList();
-    if (ros.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 xe/RO." });
-    var dupe = ros.GroupBy(r => r.RONo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"RO {dupe.Key} bị trùng!" });
-    var no = "PDIR" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new DlrPdiRequest { OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
+    var cars = (dto.Cars ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    // `..._TableDetailBeBlank`
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe cho yêu cầu PDI." });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var no = "PDIR" + now.ToString("yyMMddHHmmss");
+    // `if (strDlrPDIReqNo.Length < TConst.HTCConst.MinLengthCode)` ⇒ **5** (Const.Main.cs:322)
+    if (no.Length < 5) return Results.BadRequest(new { error = "Số yêu cầu PDI quá ngắn (tối thiểu 5 ký tự)." });
+    var dealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+
+    // `myCommon_CheckDealer(..., Flag.Active exist, Flag.Active active)`
+    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode);
+    if (dealer is null) return Results.BadRequest(new { error = $"Đại lý {dealerCode} không tồn tại." });
+    if ((dealer.FlagActive ?? dealer.Status) == "0") return Results.BadRequest(new { error = $"Đại lý {dealerCode} đang ngưng hoạt động." });
+
+    // `..._DuplicateKeyDetail` — khoá là **VIN**, không phải RONo.
+    var dupVin = cars.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupVin != null) return Results.BadRequest(new { error = $"VIN {dupVin.Key} bị trùng trong yêu cầu!" });
+    // `..._DuplicateCtrCarId`
+    var dupCtr = cars.Where(r => !string.IsNullOrWhiteSpace(r.CtrCarId))
+        .GroupBy(r => r.CtrCarId!.Trim()).FirstOrDefault(g => g.Count() > 1);
+    if (dupCtr != null) return Results.BadRequest(new { error = $"Xe hợp đồng {dupCtr.Key} bị trùng trong yêu cầu!" });
+
+    var vinKeys = cars.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToList();
+    var vinMasters = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vinKeys.Contains(x.VIN))
+        .Select(x => new { x.VIN, x.ModelCode, x.SpecCode, x.ColorCode }).ToListAsync();
+    // `Car_Car_CheckDB(..., strCDODConfirmStatusListToCheck = TConst.Stage.Finished)` — "Đại lý phải đã Nhập xe."
+    var confirmedVins = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.ConfirmStatus == "F" && vinKeys.Contains(x.Vin))
+        .Select(x => x.Vin).ToListAsync()).ToHashSet();
+    var ctrCars = await db.DlrContractCars.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var ctrDtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId).ToListAsync();
+
+    foreach (var r in cars)
+    {
+        var v = r.VIN!.Trim().ToUpperInvariant();
+        var m = vinMasters.FirstOrDefault(x => x.VIN == v);
+        if (m is null) return Results.BadRequest(new { error = $"Xe {v} chưa khai báo trên hệ thống." });
+        if (!confirmedVins.Contains(v)) return Results.BadRequest(new { error = $"Xe {v} đại lý chưa nhập kho (ConfirmStatus phải = 'F')." });
+        // `..._InvalidDlrContractNo` / `..._InvalidCtrCarId`
+        if (string.IsNullOrWhiteSpace(r.DlrContractNo)) return Results.BadRequest(new { error = $"Xe {v} thiếu số hợp đồng đại lý." });
+        if (string.IsNullOrWhiteSpace(r.CtrCarId)) return Results.BadRequest(new { error = $"Xe {v} thiếu mã xe trên hợp đồng (CtrCarId)." });
+        // `..._InputDetailNotInDlrContract` — bộ (Model, Spec, Color) của VIN phải khớp một dòng hợp đồng.
+        var inCtr = ctrDtls.Any(x => x.DlrContractNo == r.DlrContractNo!.Trim()
+                                     && x.ModelCode == m.ModelCode && x.SpecCode == m.SpecCode && x.ColorCode == m.ColorCode);
+        if (!inCtr) return Results.BadRequest(new { error = $"Xe {v} không nằm trong hợp đồng {r.DlrContractNo}." });
+        // `Dlr_ContractCar_CheckDB(..., FlagExist = Flag.Yes, FlagCancel = Inactive, FlagDelivery = Inactive)`
+        var cc = ctrCars.FirstOrDefault(x => x.DlrContractNo == r.DlrContractNo!.Trim() && x.CtrCarId == r.CtrCarId!.Trim());
+        if (cc is null) return Results.BadRequest(new { error = $"Xe hợp đồng {r.CtrCarId} không tồn tại." });
+        if (cc.FlagCancel != "0") return Results.BadRequest(new { error = $"Xe hợp đồng {r.CtrCarId} đã huỷ." });
+        if (cc.FlagDelivery != "0") return Results.BadRequest(new { error = $"Xe hợp đồng {r.CtrCarId} đã giao." });
+    }
+
+    // Đầu yêu cầu (`dt_Dlr_PDIRequest`, :806-820): Approved* để **NULL**, trạng thái **Stage.Pending "P"**.
+    var p = new DlrPdiRequest
+    {
+        OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dealerCode, Status = "P",
+        CreatedAt = now, CreatedBy = who, ApprovedDate = null, ApprovedBy = null,
+        FlagAccessory = dto.FlagAccessory, Remark = dto.Remark
+    };
     db.DlrPdiRequests.Add(p); await db.SaveChangesAsync();
-    foreach (var r in ros)
-        db.DlrPdiRequestDetails.Add(new DlrPdiRequestDetail { OrgId = t.OrgId, DlrPdiReqId = p.Id, RONo = r.RONo.Trim().ToUpperInvariant(), ROCreatedDate = r.ROCreatedDate, ROStatus = r.ROStatus });
+    foreach (var r in cars)
+        db.DlrPdiRequestDetails.Add(new DlrPdiRequestDetail
+        {
+            OrgId = t.OrgId, DlrPdiReqId = p.Id,
+            VIN = r.VIN!.Trim().ToUpperInvariant(),
+            DlrContractNo = r.DlrContractNo!.Trim(), CtrCarId = r.CtrCarId!.Trim(),
+            RONo = null, ROCreatedDate = null,      // nguồn gán DBNull lúc tạo
+            ROStatus = "NORE",                       // literal của nguồn: NotResponding
+            DlrPDIReqDtlStatus = "P"                 // TConst.Stage.Pending
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.DlrPdiReqNo, cars = ros.Count });
+    return Results.Ok(new { p.DlrPdiReqNo, cars = cars.Count, status = p.Status, p.FlagAccessory,
+        rowKey = "VIN (khoá dòng của nguồn), KHÔNG phải RONo — RONo/ROCreatedDate để NULL, ROStatus='NORE'" });
 }).RequireAuthorization();
 
 app.MapGet("/api/dlrpdirequests/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -33448,7 +33520,10 @@ record VerifyCtmCareDto(string? Remark = null);
 record EditDealCtmCareDto(List<EditDealCtmCareRowDto>? Rows);
 record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? CustomerCodeHolder, string? CustomerCodeDriver);
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
-record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items);
+/// <summary>#B15: yêu cầu PDI của đại lý — dòng khoá theo **VIN** (nguồn), kèm hợp đồng + xe hợp đồng.
+/// `Items`(RONo) giữ lại cho tương thích ngược nhưng KHÔNG còn là khoá; nguồn để RONo NULL lúc tạo.</summary>
+record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items, List<DlrPdiCarDto>? Cars = null, string? FlagAccessory = null, string? Remark = null);
+record DlrPdiCarDto(string? VIN, string? DlrContractNo, string? CtrCarId);
 record DlrPdiApproveDto(string? Remark);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
 // #124: sửa KH đại lý. IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng, đúng như nguồn.
