@@ -3320,6 +3320,131 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // 🔴 `@strBUPatternOfUser` khai báo nhưng **KHÔNG DÙNG** — **ca thứ SÁU** liên tiếp.
 // ⚠️ NỢ CÓ NHÃN: nguồn còn nhiều `left join` làm giàu (CT_TKHQ/CT_PackingList/CT_LC/Mst_*) và cột
 //    `TOTAL = 1.0`; endpoint trả khối lõi + ba cột dẫn xuất trên.
+
+// ===== #B53 TÌM YÊU CẦU ĐÓNG THÙNG & LỆNH ĐIỀU CHUYỂN ĐÓNG THÙNG (`FrmSearchVinForCBreq`) =====
+// Hai hàm tìm của cùng một màn, port chung một lượt:
+//   (1) `salesSv.Sto_CBReqGet` (`SalesService.cs:27897`) → WS `Sto_CBReq_Get` (`WSHTC.asmx.cs:71185`)
+//       → `_biz.Sto_CBReq_Get_New20181119` (`Biz.HTC.WH.cs:115485`, **VỎ BỌC**)
+//       → **`Sto_CBReqGet_GetX_New20181119`** (`:115753`).
+//       🔴 **BẪY TÊN `#region`**: khối được đặt tên `// Sto_CBReq_GetX_New20181119` (`:115548`) nhưng
+//          hàm thật được gọi là **`Sto_CBReqGet_GetX_New20181119`** (thừa "Get"). Grep theo tên region
+//          sẽ **không tìm thấy định nghĩa** và dễ kết luận nhầm "hàm không tồn tại".
+//   (2) `salesSv.Sto_RearrangeCBGet` (`:28314`) → WS `Sto_RearrangeCB_Get` (`:65635`)
+//       → `_biz.Sto_RearrangeCB_Get_New20181119` → **`Sto_RearrangeCB_GetX_New20181119`** (`:117568`).
+// 🔴 Cả hai cùng khuôn: `#tbl_…_Draft` gắn `identity(bigint,0,1) MyIdxSeq` trên `select distinct <mã>`,
+//    `order by <mã>`; `MyCount` đếm **trước** khi cắt trang; `#tbl_…_Filter` cắt theo `MyIdxSeq`;
+//    khối trả về `order by t.MyIdxSeq asc` (**giữ đúng thứ tự trang**, không sắp lại).
+// 🔴 Chuỗi join của (1): `Sto_CBReq` ⟵ `Sto_CBReqDetail` ⟵ `Car_VIN` ⟵ `Car_Car`, **toàn `left join`**
+//    ⇒ yêu cầu **chưa có dòng nào vẫn ra** (khác các màn dùng `inner join Car_VIN` như #B45/#B16).
+// 🔴 `@strBUPatternOfUser` khai báo nhưng **KHÔNG DÙNG** — **ca thứ BẢY**.
+app.MapGet("/api/stocbreqs/search", async (
+    AppDbContext db, ITenantContext t,
+    string? cbReqNo, string? cbReqStatus, DateTime? createdFrom, DateTime? createdTo,
+    string? vin, string? cbReqDtlStatus, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var heads = await db.StoCBReqs.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(cbReqNo))
+    { var k = cbReqNo.Trim().ToUpperInvariant(); heads = heads.Where(h => h.CBReqNo.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(cbReqStatus))
+    { var set = cbReqStatus.Split(',').Select(s => s.Trim()).ToHashSet(); heads = heads.Where(h => set.Contains(h.CBReqStatus)).ToList(); }
+    if (createdFrom is not null) heads = heads.Where(h => h.CreatedDate >= createdFrom).ToList();
+    if (createdTo is not null) heads = heads.Where(h => h.CreatedDate <= createdTo).ToList();
+
+    var headIds = heads.Select(h => h.Id).ToList();
+    var dtls = await db.StoCBReqDtls.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.StoCBReqId)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin))
+    { var k = vin.Trim().ToUpperInvariant(); dtls = dtls.Where(x => x.VIN.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(cbReqDtlStatus)) dtls = dtls.Where(x => x.CBReqDtlStatus == cbReqDtlStatus.Trim()).ToList();
+
+    // 🔴 `left join` toàn tuyến ⇒ chỉ thu hẹp đầu yêu cầu khi NGƯỜI DÙNG lọc theo cột của DÒNG.
+    var filterOnDetail = !string.IsNullOrWhiteSpace(vin) || !string.IsNullOrWhiteSpace(cbReqDtlStatus);
+    if (filterOnDetail)
+    {
+        var keep = dtls.Select(x => x.StoCBReqId).ToHashSet();
+        heads = heads.Where(h => keep.Contains(h.Id)).ToList();
+    }
+
+    // `MyIdxSeq` trên `distinct sc.CBReqNo`, `order by sc.CBReqNo`; `MyCount` đếm TRƯỚC khi cắt.
+    var orderedNos = heads.Select(h => h.CBReqNo).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+    var myCount = orderedNos.Count;
+    var pageNos = orderedNos.Skip(start).Take(count).ToList();
+    var idx = pageNos.Select((no, i) => new { no, i }).ToDictionary(x => x.no, x => x.i);
+    heads = heads.Where(h => idx.ContainsKey(h.CBReqNo)).OrderBy(h => idx[h.CBReqNo]).ToList();  // giữ thứ tự MyIdxSeq
+    var pageIds = heads.Select(h => h.Id).ToHashSet();
+    dtls = dtls.Where(x => pageIds.Contains(x.StoCBReqId)).ToList();
+
+    var items = heads.Select(h => new
+    {
+        scCBReqNo = h.CBReqNo, scCBReqStatus = h.CBReqStatus, scCreatedDate = h.CreatedDate,
+        scCreatedBy = h.CreatedBy, scApprovedBy = h.ApprovedBy, scApprovedAt = h.ApprovedAt, scRemark = h.Remark,
+        details = dtls.Where(d => d.StoCBReqId == h.Id)
+            .Select(d => new { d.VIN, d.ModelCode, d.SpecCode, d.EngineNo, d.CBReqDtlStatus }).ToList()
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        joinNote = "Nguon dung LEFT JOIN toan tuyen (Sto_CBReq <- Sto_CBReqDetail <- Car_VIN <- Car_Car) => yeu cau CHUA CO DONG NAO VAN RA, khac cac man dung inner join Car_VIN.",
+        pagingRule = "MyIdxSeq tren distinct CBReqNo, order by CBReqNo; MyCount dem TRUOC khi cat trang; khoi tra ve order by MyIdxSeq asc (giu dung thu tu trang).",
+        regionNameTrap = "Khoi #region ten 'Sto_CBReq_GetX_New20181119' nhung ham that la 'Sto_CBReqGet_GetX_New20181119' (thua 'Get') - grep theo ten region se khong thay dinh nghia.",
+        rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon - ca thu BAY."
+    });
+}).RequireAuthorization();
+
+// (2) Lệnh ĐIỀU CHUYỂN đóng thùng — `Sto_RearrangeCB_GetX_New20181119` (`Biz.HTC.WH.cs:117568`).
+app.MapGet("/api/storearcbs/search", async (
+    AppDbContext db, ITenantContext t,
+    string? stoRearCBNo, string? rearCBStatus, DateTime? createdFrom, DateTime? createdTo,
+    string? vin, string? rearCBDtlStatus, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var heads = await db.StoRearCBs.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(stoRearCBNo))
+    { var k = stoRearCBNo.Trim().ToUpperInvariant(); heads = heads.Where(h => h.StoRearCBNo.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(rearCBStatus))
+    { var set = rearCBStatus.Split(',').Select(s => s.Trim()).ToHashSet(); heads = heads.Where(h => set.Contains(h.RearCBStatus)).ToList(); }
+    if (createdFrom is not null) heads = heads.Where(h => h.CreatedDate >= createdFrom).ToList();
+    if (createdTo is not null) heads = heads.Where(h => h.CreatedDate <= createdTo).ToList();
+
+    var headIds = heads.Select(h => h.Id).ToList();
+    var dtls = await db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.StoRearCBId)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin))
+    { var k = vin.Trim().ToUpperInvariant(); dtls = dtls.Where(x => x.VIN.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(rearCBDtlStatus)) dtls = dtls.Where(x => x.RearCBDtlStatus == rearCBDtlStatus.Trim()).ToList();
+
+    if (!string.IsNullOrWhiteSpace(vin) || !string.IsNullOrWhiteSpace(rearCBDtlStatus))
+    {
+        var keep = dtls.Select(x => x.StoRearCBId).ToHashSet();
+        heads = heads.Where(h => keep.Contains(h.Id)).ToList();
+    }
+
+    var orderedNos = heads.Select(h => h.StoRearCBNo).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+    var myCount = orderedNos.Count;
+    var pageNos = orderedNos.Skip(start).Take(count).ToList();
+    var idx = pageNos.Select((no, i) => new { no, i }).ToDictionary(x => x.no, x => x.i);
+    heads = heads.Where(h => idx.ContainsKey(h.StoRearCBNo)).OrderBy(h => idx[h.StoRearCBNo]).ToList();
+    var pageIds = heads.Select(h => h.Id).ToHashSet();
+    dtls = dtls.Where(x => pageIds.Contains(x.StoRearCBId)).ToList();
+
+    var items = heads.Select(h => new
+    {
+        srcStoRearCBNo = h.StoRearCBNo, srcRearCBStatus = h.RearCBStatus, srcCreatedDate = h.CreatedDate,
+        srcCreatedBy = h.CreatedBy, srcApprovedBy = h.ApprovedBy, srcApprovedDate = h.ApprovedDate, srcRemark = h.Remark,
+        details = dtls.Where(d => d.StoRearCBId == h.Id)
+            .Select(d => new { d.VIN, d.SpecCode, d.EngineNo, d.RearCBDtlStatus }).ToList()
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        pagingRule = "Cung khuon voi /api/stocbreqs/search: MyIdxSeq tren distinct so lenh, MyCount dem TRUOC khi cat trang, tra ve theo MyIdxSeq asc."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/search", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? specCode, string? modelCode, string? colorCode, string? dealerCode,
