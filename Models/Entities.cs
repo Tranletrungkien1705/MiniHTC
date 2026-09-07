@@ -2538,6 +2538,36 @@ public sealed class Reception
 
 /// <summary>Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate, TCMotor DMSCarSv/Inventory):
 /// nhập phụ tùng vào kho. Draft → Posted (ghi sổ, tăng tồn PartStock).</summary>
+/// <summary>🔴 #416 MỘT LẦN LƯU KHO CỦA MỘT PHỤ TÙNG (`Ser_Inv_PartInstance`) — bản ghi nối
+/// **phiếu NHẬP** với **phiếu XUẤT** của cùng một lô hàng ở cùng một vị trí kho.
+/// Đây là bảng mà mọi báo cáo lãi/lỗ phụ tùng dựa vào: không có nó thì không ghép được
+/// giá vốn với giá bán theo từng lô.</summary>
+public sealed class PartInstance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartID { get; set; }
+    /// <summary>⚠️ Nguồn lọc `Status not in ('4','5')` — **danh sách ĐEN**, không phải danh sách trắng.</summary>
+    public string? Status { get; set; }
+    public string? StockInNo { get; set; }
+    public long? StockInId { get; set; }
+    /// <summary>⚠️ Nguồn lọc `StockOutNo like '%%'` — trông như không lọc gì, nhưng `like` **loại NULL**
+    /// ⇒ thực chất là "chỉ lấy lô ĐÃ XUẤT". Một bộ lọc nghiệp vụ trá hình.</summary>
+    public string? StockOutNo { get; set; }
+    public long? StockOutId { get; set; }
+    public string? LocationID { get; set; }
+    public decimal Quantity { get; set; }
+    /// <summary>Giá nhập của lô (dự phòng khi dòng chi tiết phiếu nhập không có giá).</summary>
+    public decimal? SIPrice { get; set; }
+    /// <summary>Giá xuất của lô (dự phòng khi dòng chi tiết phiếu xuất không có giá).</summary>
+    public decimal? SOPrice { get; set; }
+    public DateTime? DateIn { get; set; }
+    public DateTime? DateOut { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class PartStockIn
 {
     public long Id { get; set; }

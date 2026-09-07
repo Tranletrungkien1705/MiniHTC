@@ -24458,6 +24458,121 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 //   danh mục** sẽ gom chung vào một nhóm NULL. Không mất dòng, nhưng **trộn nhiều mã làm một**.
 // ⚠️ `where AmountFinal > 0` ⇒ phụ tùng doanh thu 0 hoặc ÂM (trả hàng) **không xuất hiện**.
 // ⚠️ `@DealerCode`/`@FromDate`/`@ToDate` nhúng thẳng vào chuỗi SQL — cùng bề mặt tiêm như #413/#414.
+// ===== 🔴 #416 "TOP PHỤ TÙNG LỢI NHUẬN CAO" — phương pháp tính giá vốn KHÔNG PHẢI FIFO thì
+//        GIÁ VỐN = 0, tức **LỢI NHUẬN = DOANH THU** =====
+// TRACE: `FrmReportPartTopProfit` (`Views/PartReport`, 275 dòng) → `InventoryReportService`
+//   → WS → biz `Ser_InvReportPartTopProfit` (`BizCarSv.Inventory.Report.cs:6729`).
+//
+// 📌 **KIỂM TỪNG CÁI, ĐỪNG SUY** (đúng ghi chú hàng đợi ở #415): hàm này **CÓ** `order by Profit desc,`
+//   `t.partcode` ngay trong câu lấy `@Top` ⇒ **KHÔNG dính lỗi thiếu ORDER BY của #415**. Hai báo cáo
+//   sinh đôi về hình thức nhưng chỉ một cái hỏng. Suy từ cái kia là kết luận sai.
+//
+// 🔴 **LỖI THẬT — giá vốn bằng 0 khi không dùng FIFO**:
+//     `case when (select paramvalue from mst_param where paramcode='MCC' …) = 'FIFO'`
+//     `     then sum(giá nhập × SL + VAT…)`
+//     `     Else '0'`   ← nhánh bình quân gia quyền **đã bị COMMENT hết**
+//     `end TongGiaNhap`
+//   ⇒ Đại lý **không cấu hình MCC = FIFO** sẽ có `TongGiaNhap = 0`, và vì
+//     `Profit = TongGiaBan − TongGiaNhap` nên **toàn bộ doanh thu bị báo là lợi nhuận**.
+//     Báo cáo vẫn chạy, vẫn xếp hạng, vẫn ra số đẹp — chỉ là mỗi con số đều sai và sai RẤT LỚN.
+//     Không cảnh báo, không log, không cách nào nhận ra từ giao diện.
+//   ⚠️ Nhánh `Else` trả **CHUỖI `'0'`** trong khi nhánh kia trả số ⇒ `case` trộn kiểu.
+//   📌 MiniHTC: trả `costingMethod` + cờ `zeroCostFallback` và **vẫn tính giá vốn thật**; đồng thời
+//     trả `profitIfSourceBehaviour` để thấy nguồn sẽ ra con số nào. Không im lặng bắt chước.
+//
+// 🔴 `and StockOutNo like '%%'` — nhìn như **không lọc gì**, nhưng `like` **loại NULL** ⇒ thực chất là
+//   *"chỉ lấy lô ĐÃ XUẤT"*. Một điều kiện nghiệp vụ quan trọng được viết dưới dạng vô hại.
+// 🔴 `left join ser_mst_part p` rồi `where p.Dealercode = '@DealerCode'` **ở WHERE** ⇒ LEFT join CHẾT
+//   (đúng lệ #414): phụ tùng không có trong danh mục **biến mất** khỏi báo cáo lãi.
+// ⚠️ `Status not in ('4','5')` — **danh sách ĐEN**: mã lạ/NULL **vẫn được tính**.
+// ⚠️ Ba mốc ngày cùng lúc: `DateOut` trong khoảng, **và** `DateIn <= @ToDate` (lô nhập sau kỳ bị loại).
+// ⚠️ Giá lấy theo thứ tự dự phòng: dòng chi tiết phiếu trước, không có thì mới lấy giá lưu ở lô
+//   (`isnull(sidd.Price, isnull(pf.SIPrice,0))`) — **hai nguồn giá cho cùng một lô**.
+app.MapGet("/api/report/part-top-profit", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top, string? dealer, string? costingMethod) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+    var mcc = (costingMethod ?? "FIFO").Trim().ToUpperInvariant();
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && (dealer == null || x.DealerCode == dealer)
+            && x.Status != "4" && x.Status != "5"          // danh sách ĐEN, không phải trắng
+            && x.StockOutNo != null                        // `like '%%'` loại NULL ⇒ chỉ lô ĐÃ XUẤT
+            && x.DateOut != null && x.DateOut >= f && x.DateOut <= to
+            && x.DateIn != null && x.DateIn <= to)
+        .ToListAsync();
+
+    var inLines = (await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(l => l.StockInId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var outLines = (await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(l => l.StockOutId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var partMaster = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var droppedNotInMaster = 0;
+    var rows = new List<dynamic>();
+    foreach (var g in inst.GroupBy(x => x.PartCode))
+    {
+        // LEFT join chết: nguồn đưa p.Dealercode vào WHERE ⇒ không có trong danh mục là MẤT DÒNG.
+        if (!partMaster.TryGetValue(g.Key, out var pm)) { droppedNotInMaster++; continue; }
+
+        decimal cost = 0m, sale = 0m;
+        foreach (var x in g)
+        {
+            inLines.TryGetValue(x.StockInId + "|" + x.PartCode, out var il);
+            outLines.TryGetValue(x.StockOutId + "|" + x.PartCode, out var ol);
+            var inPrice = il?.Price ?? x.SIPrice ?? 0m;      // isnull(sidd.Price, isnull(pf.SIPrice,0))
+            var inVat = il?.VAT ?? 0m;
+            var outPrice = ol?.Price ?? x.SOPrice ?? 0m;
+            var outVat = ol?.Vat ?? 0m;
+            cost += inPrice * x.Quantity + inVat * 0.01m * inPrice * x.Quantity;
+            sale += outPrice * x.Quantity + outVat * 0.01m * outPrice * x.Quantity;
+        }
+
+        rows.Add(new
+        {
+            partCode = g.Key, partName = pm.PartName, unit = pm.Unit,
+            tongGiaNhap = cost, tongGiaBan = sale, profit = sale - cost,
+            // Con số mà NGUỒN sẽ ra nếu đại lý không dùng FIFO: giá vốn coi như 0.
+            profitIfSourceBehaviour = mcc == "FIFO" ? sale - cost : sale,
+            instanceCount = g.Count(),
+        });
+    }
+
+    // Nguồn CÓ order by Profit desc, partcode — giữ đúng.
+    var ordered = rows.OrderByDescending(r => (decimal)r.profit).ThenBy(r => (string)r.partCode).ToList();
+    var n = top ?? 0;
+    var outRows = n > 0 ? ordered.Take(n).ToList() : ordered;
+
+    return Results.Ok(new
+    {
+        count = outRows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
+        costingMethod = mcc,
+        zeroCostFallback = mcc != "FIFO",
+        zeroCostNote = mcc != "FIFO"
+            ? "NGUỒN sẽ trả TongGiaNhap = 0 vì tham số MCC của đại lý không phải FIFO (nhánh bình quân "
+              + "gia quyền đã bị COMMENT) ⇒ toàn bộ doanh thu bị báo là lợi nhuận. MiniHTC VẪN tính giá "
+              + "vốn thật (cột profit); xem profitIfSourceBehaviour để biết con số nguồn sẽ ra."
+            : "MCC = FIFO ⇒ nguồn và MiniHTC tính giống nhau.",
+        orderByNote = "Hàm này CÓ order by Profit desc, partcode trong chính câu lấy TOP ⇒ KHÔNG dính "
+            + "lỗi thiếu ORDER BY của #415. Hai báo cáo sinh đôi về hình thức, chỉ một cái hỏng.",
+        soldOnlyNote = "Nguồn lọc StockOutNo like '%%' — trông như không lọc, nhưng like LOẠI NULL "
+            + "⇒ thực chất chỉ lấy lô ĐÃ XUẤT.",
+        droppedNotInMaster,
+        droppedNotInMasterNote = droppedNotInMaster > 0
+            ? "Phụ tùng không có trong danh mục bị loại: nguồn left join ser_mst_part rồi đưa "
+              + "p.Dealercode vào WHERE ⇒ LEFT join chết (lệ #414)."
+            : null,
+        statusBlacklistNote = "Status not in ('4','5') là danh sách ĐEN — mã lạ hoặc NULL VẪN được tính.",
+        dateNote = "Ba mốc cùng lúc: DateOut trong khoảng, VÀ DateIn <= toDate (lô nhập sau kỳ bị loại).",
+        priceFallbackNote = "Giá lấy dòng chi tiết phiếu trước, không có mới lấy giá lưu ở lô "
+            + "(isnull(sidd.Price, isnull(pf.SIPrice,0))) — hai nguồn giá cho cùng một lô.",
+        rows = outRows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/part-top-revenue", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, int? top, string? warehouse) =>
 {

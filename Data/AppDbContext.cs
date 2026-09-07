@@ -208,6 +208,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<StockReq> StockReqs => Set<StockReq>();
     public DbSet<StockReqLine> StockReqLines => Set<StockReqLine>();
     public DbSet<Reception> Receptions => Set<Reception>();
+    public DbSet<PartInstance> PartInstances => Set<PartInstance>();   // #416
     public DbSet<PartStockIn> PartStockIns => Set<PartStockIn>();
     public DbSet<PartStockInLine> PartStockInLines => Set<PartStockInLine>();
     public DbSet<PartStock> PartStocks => Set<PartStock>();
