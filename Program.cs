@@ -6632,6 +6632,66 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
 //    ⇒ Cùng một ô trên cùng một form: tạo xong để trống thì cột NULL, sửa xong để trống thì cột 0.
 //      Báo cáo tổng hợp phân biệt NULL với 0 sẽ ra hai kết quả khác nhau tuỳ người dùng bấm gì.
 // ⚠️ `alColumnEffective` của SỬA **có liệt kê cột** (khác lệnh TẠO dùng `SaveData` hai tham số).
+// ===== 🔴 #405 SỐ KPI **THỰC TẾ** (`RptKPIGetReal`) — và một BẤT ĐỒNG MÃ HOÁ nguy hiểm =====
+// TRACE (theo lệ #400, đọc thân từng tầng): form `FrmReportCreate_KPI` → `DBSerReportKPI.RptKPIGetReal`
+//   → WS `RptKPIGetReal` → biz **`RptKPIGetReal_New20160602`** (`CampaignMarketing/BizCarSv.ZTemp.cs:2438`).
+//   ⚠️ Có bản `RptKPIGetReal` **không hậu tố** ở `Service.Report.cs:4758` — **KHÔNG phải bản LIVE**;
+//     đọc nhầm bản đó là chuyện suýt xảy ra ở chính lượt này.
+//
+// 🔴 **CÙNG MỘT CỘT, HAI BẢNG MÃ KHÁC NHAU** trong cùng cây nguồn:
+//   · Bản LIVE (2016) đếm nhân sự bằng **SỐ**: `IsEngineer=1` (cố vấn DV) · `=2` (KTV) · `=3` (KTV đồng sơn)
+//     · `=4` (nhân viên khác); và khoang bằng `CavityType=1/2/3`.
+//   · Các hàm mới hơn (ví dụ `Report_KPIGet_Real_WH_New20221101`, 2022) so cùng cột đó với **CHUỖI**:
+//     `'CVDV'` · `'KTVD'` · `'KTVS'` · `'BDN'` · `'SCC'` · `'KHAC'` · `'NVPT'` (đo được: 20 chỗ dùng số, 45 chỗ dùng chuỗi).
+//   ⇒ Nếu dữ liệu hiện dùng mã CHỮ thì **bốn chỉ tiêu nhân sự của màn KPI luôn bằng 0** — đúng kiểu
+//     'số 0 câm': báo cáo vẫn chạy, vẫn ra kết quả, chỉ là sai.
+// 📌 MiniHTC lưu mã CHỮ (`ServiceEngineer.EngineerType`, `Cavity.CavityType`) ⇒ endpoint đếm theo mã chữ
+//   và trả kèm **phân bố mã thực có** để người dùng tự đối chiếu, thay vì im lặng trả 0.
+app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
+    string? dealer, string? year, string? month) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer))
+        return Results.BadRequest(new { error = "Thiếu mã đại lý." });
+
+    var engineers = await db.ServiceEngineers
+        .Where(e => e.OrgId == t.OrgId && e.DealerCode == dealer)
+        .Select(e => new { e.EngineerType }).ToListAsync();
+    var cavities = await db.Cavities
+        .Where(c => c.OrgId == t.OrgId && c.DealerCode == dealer)
+        .Select(c => new { c.CavityType }).ToListAsync();
+
+    int NE(params string[] codes) => engineers.Count(e => e.EngineerType != null && codes.Contains(e.EngineerType));
+    int NC(params string[] codes) => cavities.Count(c => c.CavityType != null && codes.Contains(c.CavityType));
+
+    return Results.Ok(new
+    {
+        dealer, year, month,
+        // Bốn chỉ tiêu NHÂN SỰ — nguồn LIVE đếm bằng số 1..4, MiniHTC đếm bằng mã chữ tương ứng.
+        advisoryNumber = NE("CVDV"),
+        enginerNumber = NE("KTVD"),
+        enginerBP = NE("KTVS"),
+        staffOrther = NE("NVPT", "KHAC"),
+        // Ba chỉ tiêu KHOANG — nguồn LIVE đếm bằng CavityType 1/2/3.
+        cavityRONumber = NC("SCC"),
+        cavityBPNumber = NC("BS"),
+        cavityParkingNumber = NC("KD"),
+        // Phân bố mã THỰC CÓ trong dữ liệu — để đối chiếu, không đoán.
+        engineerTypeDistribution = engineers.GroupBy(e => e.EngineerType ?? "(null)")
+            .Select(g => new { code = g.Key, count = g.Count() }).OrderByDescending(x => x.count),
+        cavityTypeDistribution = cavities.GroupBy(c => c.CavityType ?? "(null)")
+            .Select(g => new { code = g.Key, count = g.Count() }).OrderByDescending(x => x.count),
+        encodingConflict = true,
+        encodingNote = "Cùng cột IsEngineer/CavityType: bản LIVE (2016) so với SỐ 1..4, các hàm 2022 so với "
+            + "CHUỖI (CVDV/KTVD/KTVS/BDN/SCC/KHAC/NVPT). Đo được 20 chỗ dùng số, 45 chỗ dùng chuỗi.",
+        zeroRiskNote = "Nếu dữ liệu dùng mã CHỮ thì bốn chỉ tiêu nhân sự của bản LIVE luôn bằng 0 — báo cáo "
+            + "vẫn chạy, chỉ là sai. Xem *Distribution để biết mã thực tế đang có.",
+        mappingUnverifiedNote = "Ánh xạ số→chữ (1↔CVDV, 2↔KTVD, 3↔KTVS, 4↔NVPT/KHAC; khoang 1↔SCC, 2↔BS, "
+            + "3↔KD) suy từ chú thích nguồn, CHƯA đối chiếu được với dữ liệu thật — cần nghiệp vụ xác nhận.",
+        liveTwinNote = "Bản LIVE là RptKPIGetReal_New20160602 (ZTemp.cs:2438); bản không hậu tố ở "
+            + "Service.Report.cs:4758 KHÔNG phải bản WS gọi.",
+    });
+}).RequireAuthorization();
+
 app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
 {
     var r = await db.ReportKpis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
