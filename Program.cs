@@ -25645,7 +25645,24 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //     ⇒ **hai ca CHƯA đọc** — ghi thành nợ, không đoán.
         cSharpGuardSweep = new { sameChannelPairs = 86, guardMarksIdentical = 77, differing = 9,
             falseAlarmFixed = "Ser_CampaignDealerRpt (#region bi dem nham la loi goi)",
-            unreadPairs = new[] { "Rpt_Ser_ReceptionF_SumQtyRecepForTab", "SerStockOutSearch" },
+        // ===== 🔴🔴 #504 ĐỌC CA THỨ NHẤT: BẢN KHO **BỎ HẲN NHÁNH RẼ THEO KIỂU BÁO CÁO** =====
+        // `Rpt_Ser_ReceptionF_SumQtyRecepForTab` (`Tab/BizCarSv.Tab.Report.cs:26`) — bản CHÍNH rẽ hai nhánh:
+        //     `if (StringEqualIgnoreCase(TConst.ReportType.Hour, strReportType))` → `Rpt_Ser_ReceptionF_SumQtyRecepX`
+        //     `else`                                                             → `Rpt_Ser_RO_RevenueByReportTypeX(…, TConst.Flag.No)`
+        //   Bản `_WH` (`:160`) **không có `if/else`** — nó **luôn** gọi `Rpt_Ser_ReceptionF_SumQtyRecepX`.
+        //   ⇒ Người dùng chọn **NGÀY / THÁNG / NĂM** ở màn kho thì vẫn nhận **số liệu theo GIỜ**,
+        //     không có cảnh báo nào. Đây là `TConstHang 2/0` mà #496 khoanh — nay đã đọc ra nghĩa.
+        // ⚠️ HẰNG ≠ GIÁ TRỊ (đã mở `Const.Main.cs:219`): `Hour="HOUR"` · `DAY="DAY"` · `Month="MONTH"`
+        //   · `Year="YEAR"`. Lưu ý **tên hằng không nhất quán** (`DAY` viết hoa cả cụm, ba cái kia Pascal)
+        //   — dễ gõ nhầm `ReportType.Day` (không tồn tại) khi port.
+        // ⚠️ So khớp bằng `StringEqualIgnoreCase` ⇒ **không phân biệt hoa thường**; truyền "hour" vẫn trúng.
+        // 📌 MiniHTC **chưa có** cụm báo cáo tiếp nhận cho máy tính bảng ⇒ ghi thành **nợ có tên**,
+        //   kèm đúng luật rẽ nhánh ở trên để lượt sau port không bỏ sót nửa DAY/MONTH/YEAR.
+        receptionSumByReportType = new { mainBranchesByReportType = true, whAlwaysUsesHourPath = true,
+            reportTypeValues = new[] { "HOUR", "DAY", "MONTH", "YEAR" },
+            comparisonIsCaseInsensitive = true,
+            notPortedYet = "MiniHTC chua co cum bao cao tiep nhan cho may tinh bang" },
+            unreadPairs = new[] { "SerStockOutSearch" },
             dateClampOnlyInMainBranch = 5,
             missingThrowsInWhBranch = "Ser_ROWarrantyReportHTMV_Get (throw 4 vs 1)" },
 
