@@ -13863,6 +13863,126 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
 // ⚠️ `WarrantyRegistrationDate` nguồn `Convert.ToDateTime(...).ToString("yyyy-MM-dd")` ⇒ **CẮT còn NGÀY**.
 //
 // Upsert theo số khung (VIN). Guard km không giảm (chỉ tăng hoặc giữ).
+// ===== 🔴 #458 TRA CỨU XE KÈM DỮ LIỆU GHÉP — `SerCarGet_New20210816` (`BizCarSv.Car.cs:1181`) =====
+// TRACE 4 TẦNG (không map theo tên): nút *"Cập nhật TTKH"* của màn báo giá lịch hẹn
+//   (`Views/Appointment/FrmQuotationApp.cs:1955 btnCapNhatTTKH_Click`) → `MstCarService.SerCarGet`
+//   (`:161`, 11 tham số) → WS `SerCarGet` → biz **`SerCarGet_New20210816`**.
+//   ⚠️ Trong `BizCarSv.Car.cs` CÒN một hàm tên trần `SerCarGet` (`:967`) — **KHÔNG WebMethod nào gọi**
+//     (WS chỉ gọi `_New20210816`, `_FromMemberNo`, `_WH`) ⇒ bản trần **CHẾT**. Đây đúng là trường hợp
+//     ngược với #455: lần này bản MANG HẬU TỐ NGÀY mới là bản sống. ⇒ Chỉ `grep` nơi gọi mới biết.
+//
+// 🔴 KẾT QUẢ SAI HÌNH DẠNG Ở NGUỒN: câu lệnh chọn `t.*` **và** `cus.*` — hai bảng dùng chung nhiều tên cột
+//   (`DealerCode`, `CusID`, `CreatedAt`…) ⇒ `DataTable` tự đổi tên cột trùng thành `CusID1`, `DealerCode1`…
+//   Form đọc theo TÊN nên thứ tự cột đổi là hỏng. Port trả **đối tượng lồng** (`car` / `customer`) để
+//   không tái hiện cái bẫy đó — sai lệch **CỐ Ý**, ghi cờ `wildcardColumnCollisionInSource`.
+// 🔴 `inner join Ser_Customer cus on cus.DealerCode = t.DealerCode **and** cus.CusID = t.CusID` — nối HAI
+//   cột và là INNER ⇒ xe có khách thuộc **đại lý khác** thì **mất hẳn lúc ĐỌC** (luật #410).
+//   Đếm và trả `droppedByCustomerDealerMismatch`.
+// ⚪ `left join ser_insurance` nối `InsNo` **và** `DealerCode`, WHERE không đụng tới `sin` ⇒ LEFT còn SỐNG.
+//   Ba `left join` danh mục (tỉnh/huyện/model) cũng sống. Kiểm tra âm tính, ghi để khỏi soi lại.
+// ⚠️ `#region // Check` của nguồn **RỖNG** — không có guard nào (đã đọc, không suy đoán).
+// ⚠️ **KHÔNG có `ORDER BY`** ⇒ thứ tự trả về không xác định. Port sắp theo `FrameNo` + cờ `sourceHasNoOrderBy`.
+// ⚠️ Tầng service bọc **mọi** tham số thành `"= " + giá trị` ⇒ `BuildClause` đủ toán tử, **không** dính bẫy
+//   điều kiện chết (#410). Nhưng màn này truyền `strIsActive = ""` ⇒ **xe đã ngừng theo dõi VẪN hiện**.
+// ⚠️ Cột lệch tên: nguồn lấy `sin.TelePhone`, MiniHTC lưu `SerInsurance.Phone`; và `SerInsurance` chưa có
+//   `DealerCode` nên vế nối theo đại lý của bảo hiểm **chưa áp** — ghi cờ, không bịa cột.
+app.MapGet("/api/servicecars/detail", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? carId, string? cusId, string? plateNo, string? frameNo,
+    string? engineNo, string? modelId, string? tradeMarkCode, string? salesCarId,
+    string? insNo, string? isActive) =>
+{
+    var cars = db.ServiceCars.Where(x => x.OrgId == t.OrgId);
+    // 11 bộ lọc của nguồn, tất cả là so BẰNG (service bọc "= "), không phải LIKE.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) cars = cars.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(carId)) cars = cars.Where(x => x.CarID == carId);
+    if (!string.IsNullOrWhiteSpace(cusId)) cars = cars.Where(x => x.CusID == cusId);
+    if (!string.IsNullOrWhiteSpace(plateNo)) cars = cars.Where(x => x.PlateNo == plateNo);
+    if (!string.IsNullOrWhiteSpace(frameNo)) cars = cars.Where(x => x.FrameNo == frameNo);
+    if (!string.IsNullOrWhiteSpace(engineNo)) cars = cars.Where(x => x.EngineNo == engineNo);
+    if (!string.IsNullOrWhiteSpace(modelId)) cars = cars.Where(x => x.ModelCode == modelId);
+    if (!string.IsNullOrWhiteSpace(tradeMarkCode)) cars = cars.Where(x => x.TradeMark == tradeMarkCode);
+    if (!string.IsNullOrWhiteSpace(salesCarId)) cars = cars.Where(x => x.SalesCarID == salesCarId);
+    if (!string.IsNullOrWhiteSpace(insNo)) cars = cars.Where(x => x.InsNo == insNo);
+    if (!string.IsNullOrWhiteSpace(isActive)) cars = cars.Where(x => x.FlagActive == isActive);
+
+    var carList = await cars.OrderBy(x => x.FrameNo).Take(500).ToListAsync();
+
+    var custs = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.CusCode, x.CusName, x.DealerCode, x.Address, x.Mobile, x.Tel, x.Email,
+                           x.ProvinceCode, x.DistrictCode, x.Sex, x.ContName, x.ContMobile }).ToListAsync();
+    // Khoá ghép ĐÚNG nguồn: (DealerCode, CusID) — không phải mình CusID.
+    var custByKey = custs.Where(x => x.DealerCode != null)
+        .GroupBy(x => x.DealerCode + "|" + x.CusCode).ToDictionary(g => g.Key, g => g.First());
+
+    var before = carList.Count;
+    var paired = carList
+        .Select(c => new { c, cus = (c.DealerCode != null && c.CusID != null
+                                     && custByKey.ContainsKey(c.DealerCode + "|" + c.CusID))
+                                    ? custByKey[c.DealerCode + "|" + c.CusID] : null })
+        .Where(p => p.cus != null).ToList();   // INNER join của nguồn
+    var droppedByCustomerDealerMismatch = before - paired.Count;
+
+    var provinces = await db.MstProvinces.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ProvinceCode, x.ProvinceName }).ToListAsync();
+    var provByCode = provinces.GroupBy(x => x.ProvinceCode).ToDictionary(g => g.Key, g => g.First().ProvinceName);
+    var districts = await db.MstDistricts.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName }).ToListAsync();
+    var distByKey = districts.GroupBy(x => x.ProvinceCode + "|" + x.DistrictCode)
+        .ToDictionary(g => g.Key, g => g.First().DistrictName);
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ModelCode, x.ModelName, x.ProductionCode }).ToListAsync();
+    var modelByCode = models.GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var inss = await db.SerInsurances.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.InsNo, x.InsVieName, x.Phone, x.TaxCode, x.Address }).ToListAsync();
+    var insByNo = inss.GroupBy(x => x.InsNo).ToDictionary(g => g.Key, g => g.First());
+
+    var items = paired.Select(p => new
+    {
+        car = new
+        {
+            p.c.CarID, p.c.FrameNo, p.c.PlateNo, p.c.EngineNo, p.c.ModelCode, p.c.ColorCode,
+            p.c.TradeMark, p.c.ProductYear, p.c.CurrentKm, p.c.DealerCode, p.c.CusID,
+            p.c.SalesCarID, p.c.InsNo, p.c.FlagActive, p.c.CurrentServiceDate,
+        },
+        customer = new
+        {
+            CusID = p.cus!.CusCode, p.cus.CusName, p.cus.Address, p.cus.Mobile, p.cus.Tel,
+            p.cus.Email, p.cus.Sex, p.cus.ContName, p.cus.ContMobile,
+            p.cus.ProvinceCode, p.cus.DistrictCode,
+        },
+        // 4 cột từ bảo hiểm (nguồn: sin.InsVieName/TelePhone/TaxCode/Address)
+        InsName = p.c.InsNo != null && insByNo.ContainsKey(p.c.InsNo) ? insByNo[p.c.InsNo].InsVieName : null,
+        InsPhone = p.c.InsNo != null && insByNo.ContainsKey(p.c.InsNo) ? insByNo[p.c.InsNo].Phone : null,
+        InsTaxCode = p.c.InsNo != null && insByNo.ContainsKey(p.c.InsNo) ? insByNo[p.c.InsNo].TaxCode : null,
+        InsAddress = p.c.InsNo != null && insByNo.ContainsKey(p.c.InsNo) ? insByNo[p.c.InsNo].Address : null,
+        // tỉnh / huyện của KHÁCH (nguồn đặt tiền tố mp_ / md_)
+        mp_ProvinceCode = p.cus.ProvinceCode,
+        mp_ProvinceName = p.cus.ProvinceCode != null && provByCode.ContainsKey(p.cus.ProvinceCode)
+            ? provByCode[p.cus.ProvinceCode] : null,
+        md_DistrictCode = p.cus.DistrictCode,
+        md_DistrictName = p.cus.ProvinceCode != null && p.cus.DistrictCode != null
+            && distByKey.ContainsKey(p.cus.ProvinceCode + "|" + p.cus.DistrictCode)
+            ? distByKey[p.cus.ProvinceCode + "|" + p.cus.DistrictCode] : null,
+        // model (nguồn đặt tiền tố smm_)
+        smm_ModelID = p.c.ModelCode,
+        smm_ModelName = p.c.ModelCode != null && modelByCode.ContainsKey(p.c.ModelCode)
+            ? modelByCode[p.c.ModelCode].ModelName : null,
+        smm_ProductionCode = p.c.ModelCode != null && modelByCode.ContainsKey(p.c.ModelCode)
+            ? modelByCode[p.c.ModelCode].ProductionCode : null,
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        droppedByCustomerDealerMismatch,
+        sourceHasNoOrderBy = true,
+        wildcardColumnCollisionInSource = true,
+        inactiveCarsIncludedWhenIsActiveEmpty = string.IsNullOrWhiteSpace(isActive),
+        insuranceDealerLegNotApplied = true,
+        deadTwinNote = "Biz tên trần SerCarGet (Car.cs:967) KHÔNG có WebMethod nào gọi — bản sống là _New20210816.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.FrameNo)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
