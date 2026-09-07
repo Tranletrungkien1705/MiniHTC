@@ -12512,8 +12512,26 @@ app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantC
 //   phép trừ nằm ở hai CSDL khác nhau.
 // ⚠️ `DebitType='1'` (nợ KHÁCH) và `PaymentType='1'` — hai bảng, hai cột, cùng quy ước số `1`.
 // ⚠️ `AND c.DealerCode = '@DealerCode'` nhúng thẳng vào chuỗi SQL (cùng bề mặt tiêm như #413/#414).
+// ===== 🔴 #440 BẢN `_WH` LẠI THIẾU ĐÚNG NHÁNH `BaoCoCongNoKhachHang_20170101` — **lần thứ hai** =====
+// Diff `Ser_InvReportCusDebitRpt` (`Service.Report.cs:1923`) vs `_WH` (`WH.cs:11180`):
+//   đếm chuỗi 7 mốc **bằng nhau** (`DebitType='1'` · `PaymentType` · `substring(…,1,11)` ·
+//   `full outer join` · `is not null or dk.CusID` · `Ser_CustomerGroup`), **nhưng**
+//   `strDBName_CommonCenter` = **5 ở Main, 0 ở `_WH`**, và bản `_WH` **không có** khối cuối:
+//     `select rpt.* from ( <báo cáo tính được> **union all**`
+//     `  select q.DealerCode, …, q.TGD, **0 PST, 0 PSG**, q.TGD TGC`
+//     `  from [@strDBName_CommonCenter].[dbo].**BaoCoCongNoKhachHang_20170101** q`
+//     `  where q.DealerCode = '@DealerCode' ) rpt`
+//   ⇒ Bản Main **cộng thêm** dư đầu từ bảng chốt 2017 (chỉ góp `TGD`/`TGC`, không góp phát sinh);
+//     bản kho **không có phần đó** ⇒ **hai màn, hai TỔNG CÔNG NỢ khác nhau** trên cùng đại lý, cùng kỳ.
+//
+// 📌 **ĐÂY LÀ LẦN THỨ HAI** cùng một bảng chốt bị bỏ ở bản `_WH` (lần đầu: #413,
+//   `Ser_ReportReceivableDebitRpt`). Không còn là ngẫu nhiên — nó là **một nếp**: nhánh gộp dữ liệu chốt
+//   2017 được thêm vào bản Main mà **không nhân bản sang bản kho**.
+//   ⇒ Từ nay gặp báo cáo công nợ có bản `_WH` thì **kiểm ngay** `grep -c BaoCoCongNoKhachHang` hai bên.
+// 📊 Thống kê twin `_WH` tới #440: giống nghiệp vụ **6** (#406/#407/#409/#418/#426/#430) ·
+//   **lệch thật 4** (#378/#413/#422/#440) ⇒ **4/10**.
 app.MapGet("/api/report/customer-debit", async (AppDbContext db, ITenantContext t,
-    DateTime? fromDate, DateTime? toDate, string? dealer) =>
+    DateTime? fromDate, DateTime? toDate, string? dealer, string? scope) =>
 {
     var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
     var to = (toDate ?? DateTime.Today).Date;
@@ -12578,6 +12596,14 @@ app.MapGet("/api/report/customer-debit", async (AppDbContext db, ITenantContext 
         substring11Note = "Nguồn so chuỗi substring(DebitDate,1,11) — yyyy-MM-dd chỉ 10 ký tự, ký tự thứ "
             + "11 là DẤU CÁCH. Chạy được nhờ SQL Server bỏ qua khoảng trắng cuối khi so varchar; đổi kiểu "
             + "hoặc đối chiếu là hỏng câm. Cột ngày ở đây lưu dạng CHUỖI (mới substring được).",
+        scope = string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase) ? "wh" : "main",
+        legacySnapshotMissingInWhNote = "Bản Main có khối `union all` cộng thêm dư đầu từ bảng chốt "
+            + "BaoCoCongNoKhachHang_20170101 (chỉ góp TGD/TGC, PST = PSG = 0); bản _WH KHÔNG có ⇒ hai màn "
+            + "cho HAI TỔNG CÔNG NỢ khác nhau trên cùng đại lý, cùng kỳ. Đây là LẦN THỨ HAI cùng bảng chốt "
+            + "này bị bỏ ở bản _WH (lần đầu #413) — một NẾP, không phải ngẫu nhiên.",
+        legacySnapshotNotModelled = true,
+        legacySnapshotNote = "MiniHTC chưa có bảng chốt 2017 ⇒ KHÔNG bịa; số ở đây tương đương nhánh "
+            + "tính được, chưa gồm dư đầu lịch sử.",
         twoDatabaseNote = "ser_cusdebit đọc CỤC BỘ nhưng Ser_Payment đọc từ CSDL TRUNG TÂM ⇒ hai vế của "
             + "cùng một phép trừ nằm ở hai CSDL khác nhau.",
         screenNameNote = "Màn nguồn tên FrmEmail_ReportAutoSend (báo cáo gửi tự động qua email) nhưng dữ "
