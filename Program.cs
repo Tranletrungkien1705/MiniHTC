@@ -3565,6 +3565,117 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //      như #B66/#B57 — hai trục ngày khác nhau, đừng dùng lẫn.
 // 🔴 Cây địa lý ba tầng của nguồn: `Mst_Dealer` → `Mst_Province` → `Mst_Area`, dựng qua `#tbl_Dealer`
 //    → `#tbl_AreaDealer` → `#tbl_Mst_Dealer`; ✅ `BUCode like @strBUPatternOfUser` **lọc thật**.
+
+// ===== #B70 XE ĐÃ BÁN — CHĂM SÓC KHÁCH HÀNG — `RptSales_CtmCare_01_New20260514` =====
+// (`FrmPivotCarVerifiedCtmCare`.) Trace LIVE: `ReportService.ReportCarVerifiedCtmCare` → WS
+//   `RptSales_CtmCare_01` (`WSHTC.asmx.cs:29936`) → **`_biz.RptSales_CtmCare_01_New20260514`**
+//   (`BizHTC.Report.cs:11602`); SQL ở `RptSQLQuery.cs:54006` = `mySql_RptSales_CtmCare_01()`.
+//   (Đo bằng `_audit/md5_3b.sh` — công cụ #B69.)
+// 🔴 **LỖ HỔNG RBAC — BIẾN THỂ THỨ BA, ca thứ 8**: `inner join Mst_Dealer md`
+//    `on dlsd.DealerCode = md.DealerCode` **`--and (md.BUCode like @strBUPatternOfUser)`**
+//    (`RptSQLQuery.cs:54016`) — điều kiện BU **BỊ COMMENT NGAY TRONG MỆNH ĐỀ `on`**, trong khi chú thích
+//    ngay trên vẫn ghi *"Must inner join to filter AbilityOfUser"*.
+//    ⇒ `inner join` vẫn loại đại lý không tồn tại, nhưng **phạm vi BU hoàn toàn vô hiệu**.
+//    Ba biến thể đã gặp: `left join` mang điều kiện (#B45) · khai báo rồi không dùng (#B46/#B47/#B50/
+//    #B52/#B53) · **comment trong `on`** (#B70). Port giữ đúng nguồn nhưng trả `outOfScopeCount` +
+//    cờ `enforceBuScope`; **không tự bịt**. 📌 Bổ sung vào hồ sơ gửi nghiệp vụ/bảo mật.
+// 🔴 **Hai điều kiện lõi** (chú thích nguyên văn): `dlsdd.DeliveryDate is not null` (*"Xe Đã Bán"*)
+//    ∧ `dlsd.DealerCodeBuyer is null` (*"Deal với Khách Lẻ"*) — lại là khuôn "chỉ bán lẻ" của #B57/#B66.
+// 🔴 **`left join Mst_DealerZone mdz` nhưng `where … and mdz.FlagActive = '1'`** ⇒ **INNER JOIN thực
+//    chất**: xe của đại lý **chưa gán vùng** (hoặc vùng đã ngưng) **bị LOẠI khỏi báo cáo**.
+//    Cùng khuôn đã gặp ở #B47/#B50 (`left join` + `is not null` ở `where`).
+// ✅ `@strZoneCode` dùng dạng **param** nhưng hàm này **có** dòng coalesce (`:11670`) — an toàn (#B58).
+app.MapGet("/api/reports/car-sold-ctm-care", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? deliveryFrom, DateTime? deliveryTo, string? dealerCode, string? zoneCode,
+    string? ctmCareFlag, string? buPattern, string? enforceBuScope) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var zone = string.IsNullOrWhiteSpace(zoneCode) ? null : zoneCode.Trim().ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
+
+    // `left join Mst_DealerZone` + `where mdz.FlagActive = '1'` ⇒ INNER JOIN thực chất.
+    var dz = await db.DealerZones.Where(z => z.OrgId == t.OrgId && z.FlagActive == "1")
+        .Select(z => new { z.DealerCode, z.ZoneCode }).ToListAsync();
+    var zoneByDealer = dz.GroupBy(x => x.DealerCode).ToDictionary(g => g.Key, g => g.First().ZoneCode);
+
+    // Bán LẺ đã giao: `DeliveryDate is not null` + `DealerCodeBuyer is null`.
+    var sold = await (from f in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.DeliveryDate != null)
+                      join d in db.DealerDeals.Where(x => x.OrgId == t.OrgId
+                           && (x.DealerCodeBuyer == null || x.DealerCodeBuyer == ""))
+                           on f.DealId equals d.Id
+                      select new
+                      {
+                          f.CarId, f.DeliveryDate, d.DealNo, d.DealDate, d.DealerCode,
+                          d.CustomerCodeBuyer, d.CtmCareFlag, d.CtmCareUpdDate, d.FlagInitDeal
+                      }).ToListAsync();
+
+    if (deliveryFrom is not null) sold = sold.Where(x => x.DeliveryDate >= deliveryFrom).ToList();
+    if (deliveryTo is not null) sold = sold.Where(x => x.DeliveryDate <= deliveryTo).ToList();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) sold = sold.Where(x => x.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(ctmCareFlag)) sold = sold.Where(x => x.CtmCareFlag == ctmCareFlag.Trim()).ToList();
+
+    // `mdz.FlagActive = '1'` ở `where` ⇒ loại xe của đại lý chưa gán vùng / vùng ngưng.
+    var beforeZone = sold.Count;
+    sold = sold.Where(x => x.DealerCode != null && zoneByDealer.ContainsKey(x.DealerCode)).ToList();
+    var droppedNoActiveZone = beforeZone - sold.Count;
+    if (zone is not null)
+        sold = sold.Where(x => (zoneByDealer[x.DealerCode!] ?? "").ToUpperInvariant() == zone).ToList();
+
+    // Phạm vi BU: nguồn **đã comment** điều kiện ⇒ không lọc; đo được + bật bằng cờ.
+    bool InScope(string? dc)
+    {
+        if (pattern is null) return true;
+        var dl = dealers.FirstOrDefault(z => z.DealerCode == dc);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = sold.Count(x => !InScope(x.DealerCode));
+    if (enforceBuScope == "1") sold = sold.Where(x => InScope(x.DealerCode)).ToList();
+
+    var vins = sold.Select(x => x.CarId).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+    var carByVin = cars.ToDictionary(c => c.VIN);
+    var droppedNoCarCar = sold.Count(x => !carByVin.ContainsKey(x.CarId));
+    sold = sold.Where(x => carByVin.ContainsKey(x.CarId)).ToList();      // `inner join Car_Car`
+
+    var provinces = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
+        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync();
+    var areas = await db.Areas.Where(a => a.OrgId == t.OrgId).Select(a => new { a.AreaCode, a.AreaName }).ToListAsync();
+
+    var items = sold.Select(x =>
+    {
+        var cv = carByVin[x.CarId];
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == x.DealerCode);
+        var pv = provinces.FirstOrDefault(p => p.Code == dl?.ProvinceCode);
+        var ar = areas.FirstOrDefault(a => a.AreaCode == pv?.ParentCode);
+        return new
+        {
+            dlsdDealNo = x.DealNo, dlsdDealDate = x.DealDate, dlsddDeliveryDate = x.DeliveryDate,
+            dlsdDealerCode = x.DealerCode, mdDealerName = dl?.DealerName,
+            mdzZoneCode = zoneByDealer.TryGetValue(x.DealerCode!, out var z) ? z : null,
+            provinceCodeDealer = pv?.Code, provinceNameDealer = pv?.Name,
+            areaCode = ar?.AreaCode, areaName = ar?.AreaName,
+            ccCarId = cv.VIN, cvModelCode = cv.ModelCode, cvSpecCode = cv.SpecCode, cvColorCode = cv.ColorCode,
+            dlsdCustomerCodeBuyer = x.CustomerCodeBuyer,
+            dlsdCtmCareFlag = x.CtmCareFlag, dlsdCtmCareUpdDate = x.CtmCareUpdDate,
+            dlsdFlagInitDeal = x.FlagInitDeal
+        };
+    }).OrderBy(x => x.dlsdDealerCode).ThenByDescending(x => x.dlsddDeliveryDate).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        droppedNoActiveZone, droppedNoCarCar, outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        byCtmCareFlag = items.GroupBy(x => x.dlsdCtmCareFlag ?? "?")
+            .Select(g => new { ctmCareFlag = g.Key, qty = g.Count() }).OrderByDescending(x => x.qty).ToList(),
+        coreRule = "dlsdd.DeliveryDate is not null ('Xe Da Ban') VA dlsd.DealerCodeBuyer is null ('Deal voi Khach Le') - khuon 'chi ban le' giong #B57/#B66.",
+        zoneJoinNote = "left join Mst_DealerZone NHUNG where co 'mdz.FlagActive = 1' => INNER JOIN THUC CHAT: xe cua dai ly CHUA GAN VUNG (hoac vung da ngung) BI LOAI khoi bao cao. Da dem o droppedNoActiveZone.",
+        rbacQuirk = "LO HONG RBAC - BIEN THE THU BA (ca thu 8): dieu kien '--and (md.BUCode like @strBUPatternOfUser)' BI COMMENT NGAY TRONG MENH DE 'on' cua inner join (RptSQLQuery.cs:54016), du chu thich ngay tren van ghi 'Must inner join to filter AbilityOfUser'. Inner join van loai dai ly khong ton tai nhung PHAM VI BU VO HIEU. Port giu dung nguon; bat loc bang enforceBuScope=1.",
+        zoneSafeNote = "@strZoneCode dung dang param nhung ham nay CO dong coalesce (:11670) - an toan (audit #B58)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-delivery-periods", async (
     AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern, string? areaCode) =>
 {
