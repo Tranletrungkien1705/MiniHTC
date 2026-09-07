@@ -10179,6 +10179,7 @@ app.MapPost("/api/smssends/{batchNo}/status", async (
     if (rows.Count == 0) return Results.NotFound(new { batchNo });
 
     var updated = 0;
+    var exceededTry = 0;   // #353: số dòng bị bỏ qua vì vượt hạn mức thử lại
     foreach (var row in rows)
     {
         var current = smsLegacyStatusMap.TryGetValue(row.Status, out var mapped) ? mapped : row.Status;
@@ -10186,6 +10187,29 @@ app.MapPost("/api/smssends/{batchNo}/status", async (
         if (row.InvalidMobile) continue;
         // Đã kết thúc (F/C) thì không đổi nữa.
         if (current is "F" or "C") continue;
+
+        // ===== 🔴 #353 BỘ ĐẾM SỐ LẦN THỬ GỬI — khai mà chưa nối =====
+        // Nguồn `BizSMS.SMSBackground.cs` (hệ `SMS.V10`, **CHỈ có trên máy 150** — đúng cảnh báo 3B):
+        //   chọn tin để gửi:  `and (t.TryCount <= @nTryCountMax)`  (`:450`, `:470`, `:538`)
+        //   mỗi lần thử:      `, (t.TryCount + 1) TryCount`        (`:829`, `:1019`, `:1337`, `:1528`)
+        // ⚠️ Ở nguồn bộ đếm nằm trên bảng **`Tmp_SupplierSmsStatus`** (trạng thái phía NHÀ CUNG CẤP),
+        //   KHÔNG phải `Sms_Send`. MiniHTC gộp hai bảng làm một ⇒ cột `TryCount` nằm trên `SmsSend`.
+        //   Gộp thì được, nhưng bộ đếm **chưa bao giờ được tăng** và `TryCountMax` (đã lộ ra ở
+        //   `/api/smssends/costinfo`) **chưa bao giờ được dùng làm chặn** ⇒ tin lỗi có thể thử lại vô hạn
+        //   mà sổ vẫn ghi 0 lần. Cùng loại "cơ chế khai mà không nối" với vế đóng HCC ở #351.
+        //
+        // 🔴 Chỉ đếm lần thử THẬT SỰ GỬI: chuyển sang `G` (đang gửi) hoặc `F` (xong) là một lượt thử;
+        //   `C` (huỷ) / `R` (từ chối) là quyết định hành chính, không phải một lần gửi.
+        if (target is "G" or "F")
+        {
+            if (row.TryCount > SmsCost.TryCountMax)
+            {
+                exceededTry++;
+                continue;   // vượt hạn mức thử ⇒ bộ gửi của nguồn KHÔNG chọn nữa
+            }
+            row.TryCount += 1;
+        }
+
         row.Status = target; updated++;
 
         // 🔴 #231 CHỐT TIỀN THỰC khi lô gửi xong: nguồn đặt `ss.CostActual = t.UnitPrice * t.MyPartCount`
@@ -10204,7 +10228,10 @@ app.MapPost("/api/smssends/{batchNo}/status", async (
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { batchNo, status = target, statusName = smsStageNames[target], updated, total = rows.Count,
-                            costActual = hdr?.CostActual });
+                            costActual = hdr?.CostActual,
+                            // #353: so dong bi bo qua vi vuot han muc thu lai (TryCountMax).
+                            exceededTry,
+                            tryCountMax = SmsCost.TryCountMax });
 }).RequireAuthorization();
 
 // ===== 🔴 #231 HUỶ LÔ TIN NHẮN — `Sms_Batch_Cancel` (SMS.V10/SMS.Biz/BizSMS.SMS.cs:1464 →
