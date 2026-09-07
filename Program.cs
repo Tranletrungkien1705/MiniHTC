@@ -37437,6 +37437,99 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
 //   3. Ghi bảng nối `Ser_Inv_StockOutOrderStockOut` để phiếu mới gắn vào **cùng lệnh xuất** (#294).
 // ⚠️ Bước 1 `UpdateStockOut` chỉ chạy khi `strIsUpdate = '1'`; nếu không, phiếu mới giữ nguyên nội dung
 //   đã tạo trước đó — tham số này quyết định có ghi đè đầu + dòng hay không.
+// ===== 🔴 #388 ĐIỀU CHỈNH PHIẾU XUẤT **KHÔNG theo lệnh** (`FrmStockOutCreateSvAdj`) =====
+// Anh em với #387 nhưng là hàm KHÁC: `SerStockOutStatusUpdateToFinishedAdjusmnet` (`:7541`)
+// so với `…AdjusmnetOrder` (`:7741`). Diff từng dòng cho **NĂM** khác biệt thật:
+//
+// 🔴 1. **PHẠM VI GHI KHÁC HẲN**: bản này chỉ mở giao dịch trên `_dbMain` và có **đúng MỘT** lệnh
+//      ghi `_dbMain.SaveData("Ser_Inv_StockOut")`. Bản #387 ghi **Main + WH + Dealer** (+ bảng nối).
+//      ⇒ Điều chỉnh kiểu này **DB kho và DB đại lý KHÔNG hề biết** phiếu đã bị điều chỉnh.
+// 🔴 2. **BỎ HẲN BƯỚC 'Tiến hành'**: đi thẳng `Finished ('3')`, không gọi `ProcessExecuteStockOut`
+//      ⇒ **không có bước trừ tồn có bù trừ** như #387; thay vào đó gọi hàm hậu xử lý RIÊNG
+//      `ProcessFinishStockOutAdjustment` (khác `ProcessFinishStockOut` của bản Order).
+// 🔴 3. `UpdateStockOut` gọi **VÔ ĐIỀU KIỆN** — không có cờ `strIsUpdate` như #387 ⇒ đầu + dòng
+//      **luôn bị ghi đè** theo dữ liệu gửi lên.
+// 🔴 4. **KHÔNG ghi bảng nối** `Ser_Inv_StockOutOrderStockOut` (bản Order có).
+// 🔴 5. **SINH ĐƠN BÙ**: `ProcessGenerateBackOrder(_dbDealer, …)` — ghi vào **DB đại lý** trong khi
+//      giao dịch **chỉ mở trên `_dbMain`** ⇒ rollback Main **không cuốn theo** đơn bù đã sinh.
+//      ⚠️ Ngay tại dòng đó nguồn tự ghi chú `// check lại` — chính tác giả cũng nghi ngờ.
+//      Sau đó `ProcessFinishOrderByStockOut` đóng lệnh.
+//
+// MiniHTC một CSDL ⇒ không tái hiện được (1) và (5); trả cờ để không ai tưởng port thiếu.
+app.MapPost("/api/stockouts/{no}/adjust-svc", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var old = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (old is null) return Results.NotFound(new { no });
+    if (old.Status == "4") return Results.BadRequest(new { error = "Phiếu này đã được điều chỉnh trước đó." });
+    if (old.Status == "5") return Results.BadRequest(new { error = "Phiếu đã huỷ, không điều chỉnh được." });
+
+    old.Status = "4";
+    old.StatusText = stockOutStatusNames.TryGetValue("4", out var a4) ? a4 : null;
+    old.AdjustmentBy = dto.AdjustmentBy;
+    old.AdjustmentDate = dto.AdjustmentDate ?? DateTime.Now;
+    old.AdjustmentNote = dto.AdjustmentNote;
+
+    var newNo = "PX" + DateTime.Now.ToString("yyMMddHHmmss");
+    var neu = new PartStockOut
+    {
+        OrgId = t.OrgId, StockOutNo = newNo,
+        StockOutDate = dto.StockOutDate ?? DateTime.Now,
+        StockOutDateTime = dto.StockOutDate ?? DateTime.Now,
+        StockOutType = old.StockOutType, WarehouseCode = old.WarehouseCode,
+        Reason = dto.Reason ?? old.Reason,
+        DealerCode = old.DealerCode, CusID = old.CusID, UserCode = dto.AdjustmentBy ?? old.UserCode,
+        Description = dto.Description ?? old.Description,
+        DriverName = dto.DriverName ?? old.DriverName, DriverID = dto.DriverID ?? old.DriverID,
+        DrivingLicense = dto.DrivingLicense ?? old.DrivingLicense, TruckNo = dto.TruckNo ?? old.TruckNo,
+        OldStockOutID = old.Id.ToString(), OldStockOutNo = old.StockOutNo,
+        // Đi THẲNG sang Kết thúc — bản này không qua "Tiến hành".
+        Status = "3",
+        StatusText = stockOutStatusNames.TryGetValue("3", out var a3) ? a3 : null,
+        PostedAt = DateTime.Now,
+        LogLUDateTime = DateTime.Now, LogLUBy = dto.AdjustmentBy,
+    };
+    db.PartStockOuts.Add(neu);
+    await db.SaveChangesAsync();
+
+    // Ghi đè dòng VÔ ĐIỀU KIỆN (không có cờ strIsUpdate như #387); thiếu Lines thì chép phiếu cũ.
+    var srcLines = dto.Lines is { Count: > 0 }
+        ? dto.Lines!.Select(l => new PartStockOutLine
+          {
+              OrgId = t.OrgId, StockOutId = neu.Id,
+              PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
+              Location = l.Location, Quantity = l.Quantity,
+              Price = l.Price, Vat = l.Vat, UnitCode = l.UnitCode,
+              RoFactor = l.RoFactor, RoPrice = l.RoPrice,
+          }).ToList()
+        : (await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.StockOutId == old.Id).ToListAsync())
+          .Select(l => new PartStockOutLine
+          {
+              OrgId = t.OrgId, StockOutId = neu.Id,
+              PartCode = l.PartCode, PartName = l.PartName, Location = l.Location, Quantity = l.Quantity,
+              Price = l.Price, Vat = l.Vat, UnitCode = l.UnitCode, RoFactor = l.RoFactor, RoPrice = l.RoPrice,
+          }).ToList();
+    db.PartStockOutLines.AddRange(srcLines);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        oldStockOutNo = old.StockOutNo, oldStatus = old.Status,
+        newStockOutNo = neu.StockOutNo, newStatus = neu.Status,
+        lines = srcLines.Count,
+        junctionNotWritten = true,
+        junctionNote = "Bản KHÔNG theo lệnh không ghi bảng nối Ser_Inv_StockOutOrderStockOut (khác #387).",
+        noExecutingStepNote = "Đi thẳng Kết thúc (3), không qua Tiến hành (2) ⇒ KHÔNG có bước trừ tồn có bù trừ; "
+            + "nguồn dùng hàm hậu xử lý riêng ProcessFinishStockOutAdjustment.",
+        mainOnlyWriteNote = "Nguồn chỉ ghi _dbMain (1 lệnh SaveData) ⇒ DB kho và DB đại lý KHÔNG biết phiếu đã điều chỉnh. "
+            + "MiniHTC một CSDL nên không tái hiện được.",
+        backOrderNotModelled = true,
+        backOrderNote = "Nguồn gọi ProcessGenerateBackOrder(_dbDealer, …) sinh ĐƠN BÙ ghi vào DB đại lý trong khi "
+            + "giao dịch chỉ mở trên _dbMain ⇒ rollback Main KHÔNG cuốn theo. Nguồn tự chú `// check lại`.",
+        unconditionalOverwriteNote = "UpdateStockOut gọi vô điều kiện — đầu + dòng LUÔN bị ghi đè (khác #387).",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockouts/{no}/adjust", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
