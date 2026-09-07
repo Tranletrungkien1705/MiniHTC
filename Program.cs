@@ -13681,6 +13681,65 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
     return Results.Ok(new { r.PartCode, updated = false });
 }).RequireAuthorization();
 
+// ===== 🔴 #374 XOÁ MASTER PHỤ TÙNG (`Ser_Mst_Part_Delete`, `Service.cs:4482`) =====
+// Guard: phụ tùng **đang được tham chiếu ở BẤT KỲ đâu** thì không cho xoá. Nguồn chạy MỘT câu lệnh
+// trả về **5 bảng kết quả** (mỗi bảng một nơi tham chiếu) rồi `foreach` qua **tất cả** các bảng —
+// bảng nào có dòng là ném lỗi `Ser_Part_NotDelete`. Vì chỉ hỏi "có tồn tại không", `select top 1`
+// **không** `order by` ở đây là **vô hại** (đúng loại guard).
+// Năm nơi tham chiếu: `Ser_ROPartItems` · `Ser_ServicePackagePartItems` ·
+//   `Ser_Inv_StockOutOrderDetail` · `Ser_Inv_StockInDetail` · `Ser_ROWarrantyReportPartItems`.
+//
+// 🔴 **PHẠM VI KIỂM ≠ PHẠM VI XOÁ** — lỗ hổng thật của nguồn:
+//   Guard chạy trên `_dbDealer`, nhưng lệnh xoá chạy trên `_dbMain` **và** `_dbWH`, còn `_dbDealer`
+//   thì **chỉ xoá khi** `bNeedTransaction_Dealer`. ⇒ Phụ tùng chỉ được tham chiếu ở Main/WH mà không
+//   có ở DB đại lý vẫn **qua được guard** rồi bị xoá khỏi Main/WH.
+// 🔴 **GUARD CÓ THỂ ĐẬU VÌ LÝ DO SAI**: bảng tạm `#tbl_part` dựng từ `ser_mst_part` **trên DB đại lý**.
+//   Phụ tùng không tồn tại ở DB đại lý ⇒ `#tbl_part` RỖNG ⇒ mọi `join` không ra dòng nào ⇒ guard đậu
+//   **rỗng tuếch**, rồi vẫn xoá ở Main/WH.
+// ⚠️ Nguồn khai `dtROPartItems` và `dtROServicePackagePartItems` rồi **không dùng đến** — biến chết;
+//   vòng lặp duyệt hết mọi bảng nên hai biến đó thừa.
+// 📌 MiniHTC dùng MỘT cơ sở dữ liệu ⇒ không tái hiện được lệch phạm vi; kiểm và xoá cùng một chỗ,
+//   và trả cờ `scopeDivergenceNote` để không ai tưởng đã port thiếu.
+app.MapDelete("/api/serviceparts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = (code ?? "").Trim().ToUpperInvariant();
+    var part = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
+    if (part is null) return Results.NotFound(new { code });
+
+    // Năm nơi tham chiếu — ĐÚNG thứ tự của nguồn.
+    var used = new List<string>();
+    if (await db.RoPartItems.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == code))
+        used.Add("Ser_ROPartItems (dòng phụ tùng của lệnh sửa chữa)");
+    if (await db.ServicePackageParts.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == code))
+        used.Add("Ser_ServicePackagePartItems (gói dịch vụ)");
+    if (await db.SerStockOutOrderLines.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == code))
+        used.Add("Ser_Inv_StockOutOrderDetail (dòng lệnh xuất)");
+    if (await db.PartStockInLines.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == code))
+        used.Add("Ser_Inv_StockInDetail (dòng phiếu nhập)");
+    if (await db.WarrantyClaimPartItems.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == code))
+        used.Add("Ser_ROWarrantyReportPartItems (dòng phụ tùng của BCBH)");
+
+    if (used.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Ser_Part_NotDelete",
+            message = "Phụ tùng đang được tham chiếu, không xoá được.",
+            code, referencedIn = used,
+        });
+
+    db.ServiceParts.Remove(part);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        code, deleted = true,
+        checkedTables = 5,
+        scopeDivergenceNote = "Nguồn KIỂM trên DB đại lý nhưng XOÁ trên Main + WH (đại lý chỉ khi có giao dịch) "
+            + "⇒ phụ tùng chỉ tham chiếu ở Main/WH vẫn qua guard. MiniHTC một CSDL nên kiểm và xoá cùng phạm vi.",
+        vacuousGuardNote = "Nguồn dựng #tbl_part từ DB đại lý: phụ tùng không có ở đó ⇒ guard đậu rỗng tuếch.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
