@@ -24786,6 +24786,76 @@ app.MapGet("/api/appointments/statuses", () => Results.Ok(new
          + "Done không có ở nguồn — giữ cho dữ liệu port cũ."
 })).RequireAuthorization();
 
+// ===== 🔴 #448 SỬA CUỘC HẸN — nguồn dùng **OVERLOAD KHÁC** của guard chống trùng khoang =====
+// `MyCheck_DateTime_Cavity` có **HAI overload LIVE** trong `BizCarSv.ZTemp.cs`, cùng tên, khác đúng một tham số:
+//   · `:23125` — **5 tham số** (không có `strAppId`) ← **TẠO** gọi bản này (`Ser_App_CreateX_New20201230:24119`)
+//   · `:23175` — **6 tham số**, thêm `strAppId`, và SQL có thêm đúng một dòng: `and t.AppId <> @strAppId`
+//     ← đây là bản dành cho **SỬA**: **tự loại chính cuộc hẹn đang sửa** khỏi phép kiểm trùng.
+//   ⇒ Thiếu dòng đó thì **sửa giờ một cuộc hẹn sẽ báo trùng với CHÍNH NÓ** — lỗi kinh điển của guard
+//     chồng lịch. Nguồn đã xử lý đúng bằng cách tách overload; bản port trước **chưa có đường SỬA nào**.
+//
+// 📌 **ĐÍNH CHÍNH MỘT NHẦM LẪN CỦA CHÍNH TÔI trong lượt này**: ban đầu tôi đọc trúng
+//   `MyCheck_DateTime_Cavity**xxx**` (`:23078`) — bản **CHẾT** theo quy ước hậu tố `xxx` — và bản chết đó
+//   chỉ có **HAI** nhánh chồng giờ nên **bỏ sót ca "khoảng mới BAO TRÙM khoảng cũ"**. Đếm lại trên hai bản
+//   LIVE: `concat(t.AppDateTimeFrom` xuất hiện **3 lần ở CẢ HAI** ⇒ bản đang chạy **có đủ ba nhánh**,
+//   đúng như #325 đã ghi. ⇒ Lỗ hổng bao trùm là của **bản cũ đã bị bỏ**, không phải của bản đang chạy.
+//   (Lại đúng lệ #425: grep khớp nhầm site — lần này là khớp vào **bản chết** vì tên là tiền tố của tên sống.)
+//
+// ⚠️ Phép so của nguồn là **so CHUỖI** `concat(t.AppDateTimeFrom, ' ', t.AppTimeFrom)` — nối hai cột
+//   **văn bản** ngày và giờ. Chỉ đúng khi cả hai đều đệm 0 và cùng định dạng; lệch định dạng là **hỏng câm**.
+app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == appNo);
+    if (a is null) return Results.NotFound(new { appNo });
+
+    if (dto.AppTo <= dto.AppFrom)
+        return Results.BadRequest(new { error = "Giờ kết thúc phải sau giờ bắt đầu." });
+
+    var cavity = (dto.CavityName ?? "").Trim();
+    var cavityId = (dto.CavityID ?? "").Trim();
+    if (cavity != "" || cavityId != "")
+    {
+        // 🔴 ĐÚNG overload 6 tham số: loại CHÍNH cuộc hẹn đang sửa (and t.AppId <> @strAppId).
+        var overlap = cavityId.Length > 0
+            ? await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavityId
+                  && x.AppNo != appNo
+                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo)
+            : await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity
+                  && x.AppNo != appNo
+                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
+        if (overlap) return Results.BadRequest(new
+        {
+            error = "Khoang " + (cavityId.Length > 0 ? cavityId : cavity) + " đã có lịch trùng khung giờ.",
+            selfExcluded = true,
+            selfExcludedNote = "Đã loại chính cuộc hẹn đang sửa khỏi phép kiểm (đúng overload 6 tham số "
+                + "của nguồn: and t.AppId <> @strAppId). Thiếu dòng này thì sửa giờ sẽ báo trùng với CHÍNH NÓ.",
+        });
+    }
+
+    if (!string.IsNullOrWhiteSpace(dto.CavityName)) a.CavityName = dto.CavityName!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.CavityID)) a.CavityID = dto.CavityID!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.PlateNo)) a.PlateNo = dto.PlateNo!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.CusName)) a.CusName = dto.CusName!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.ModelName)) a.ModelName = dto.ModelName!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.AppType)) a.AppType = dto.AppType!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.CusRequest)) a.CusRequest = dto.CusRequest!.Trim();
+    a.AppFrom = dto.AppFrom; a.AppTo = dto.AppTo;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        a.AppNo, a.CavityName, a.CavityID, a.AppFrom, a.AppTo, a.Status,
+        overloadNote = "Nguồn có HAI overload LIVE cùng tên MyCheck_DateTime_Cavity: bản 5 tham số cho TẠO "
+            + "(ZTemp.cs:23125) và bản 6 tham số cho SỬA (:23175) — bản sửa thêm đúng một dòng "
+            + "`and t.AppId <> @strAppId` để tự loại chính nó.",
+        deadTwinNote = "Còn một bản CHẾT MyCheck_DateTime_Cavityxxx (:23078) chỉ có HAI nhánh chồng giờ "
+            + "⇒ bỏ sót ca 'khoảng mới bao trùm khoảng cũ'. Hai bản LIVE đều có ĐỦ BA nhánh (đếm chuỗi "
+            + "concat(t.AppDateTimeFrom = 3 ở cả hai) ⇒ lỗ hổng đó thuộc về bản cũ đã bỏ.",
+        stringCompareNote = "Nguồn so CHUỖI concat(cột ngày, ' ', cột giờ) — hai cột VĂN BẢN; chỉ đúng khi "
+            + "cùng định dạng và đệm 0, lệch định dạng là hỏng câm.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t) =>
 {
     var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
