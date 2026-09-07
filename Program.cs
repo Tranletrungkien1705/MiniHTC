@@ -46139,6 +46139,99 @@ app.MapGet("/api/reports/ro-revenue-by-period", async (AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #508 BÁO CÁO ĐỀ NGHỊ BẢO HÀNH GỬI HÃNG (HTMV) — VÀ MỘT `inner join` LÀM RƠI DÒNG =====
+// Nguồn: `BizCarSv.WarrantyReport.cs:21119 Ser_ROWarrantyReportHTMV_Get` (+ hai bản ngày
+//   `_New20191108` :21611 · `_New20230417` :22112). Trả nợ #497 phần **đọc báo cáo**.
+//
+// 🔴 **KHỐI LÀM GIÀU TỪ DMS SALES LÀM RƠI DÒNG NGAY Ở BƯỚC ĐỌC** (luật #410, ca nặng nhất tới nay):
+//   Sau khi lấy xong dữ liệu, hàm gom danh sách VIN rồi gọi WS ngoài
+//   `WSDMSSale.WSHTC64.CarVINGetList_Sales(...)`, lọc `dv.RowFilter = "StoreDate > '2017-04-01'"`,
+//   rồi **`DataTableUtils.Join(c_strJoinType_InnerJoin, …)`** trên `FrameNo = VIN`.
+//   ⇒ Xe **không có trong DMS Sales**, hoặc **bán/nhập kho trước 01-04-2017**, thì **dòng đề nghị bảo hành
+//     BIẾN MẤT khỏi báo cáo** — không cảnh báo, không đếm. Người dùng chỉ thấy "ít phiếu hơn mình nhớ".
+//   ⚠️ `'2017-04-01'` là **mốc gõ cứng trong C#**, họ hàng với `HTC_WareHouse = "2017-12-31"` (#472):
+//     mốc thời gian nghiệp vụ nằm trong code, không nằm trong tham số cũng không nằm trong bảng cấu hình.
+//   ⚠️ Cả **ba** bản (chính, `_New20191108`, `_New20230417`) đều dùng **cùng** kiểu join và **cùng** mốc
+//     ⇒ không phải lỗi của một bản cũ sót lại; đây là hành vi hiện hành của cả họ hàm.
+//   ⚠️ `dv.ToTable(true)` = **distinct** trên bảng đã lọc ⇒ một VIN nhiều dòng bán chỉ còn một.
+// 🔴 Khối này bọc trong `try/catch` mà `catch` chỉ gọi `CProcessException.Process(ref mdsFinal, …)`
+//   rồi **chảy tiếp** xuống `MoveDataTable` + `CommitSafety` ⇒ WS DMS Sales hỏng thì báo cáo **vẫn trả về**,
+//   chỉ khác là **không có cột `StoreDate`** và không bị lọc. ⇒ **Cùng một yêu cầu, hai hình dạng kết quả
+//   và hai tập dòng khác nhau, tuỳ hệ ngoài đang sống hay chết.** Cờ `enrichmentFailureChangesRowSet`.
+//
+// ⚠️ Tiền: `#tbl_amount` ghép hai nhánh bằng `full outer join` rồi `Isnull(rsv.ROWID, rsp.ROWID)` —
+//   phiếu **chỉ có phụ tùng** hoặc **chỉ có dịch vụ** vẫn ra dòng (kiểm tra âm tính: `full outer` ở đây
+//   là **cố ý và đúng**, khác với các ca `left join` chết ở #414).
+// ⚠️ Công thức VAT viết dạng `case when VAT is null or VAT = 0 then F*P else F*P*(1+VAT/100) end`,
+//   và **ngay cạnh có comment `--F*P*(1+1/VAT)`** — công thức SAI để lại trong chú thích.
+//   Port theo **dòng ĐANG CHẠY**, không theo dòng comment (luật port ACTIVE).
+// ⚠️ `(select dbo.ROWarrantyGetHTCWRID(srr.ROWID)) AS HTCROWNo` — hàm vô hướng SQL **chưa có** trong
+//   MiniHTC (nợ #502) ⇒ endpoint này trả `HTCROWNo = null` kèm cờ, **không bịa số**.
+// 📌 Tác dụng phụ đẩy HMC (#497) **chỉ có ở bản chính**; bản port này là **ĐỌC THUẦN** — nêu cờ
+//   `hmcSideEffectNotPorted` để không ai tưởng gọi endpoint này là đã đồng bộ sang hãng.
+app.MapGet("/api/reports/ro-warranty-htmv", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? status, string? frameNo, string? plateNo,
+    DateTime? fromDate, DateTime? toDate) =>
+{
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.Vin == frameNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim());
+    if (fromDate is not null) qy = qy.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate is not null) qy = qy.Where(x => x.CreatedAt <= toDate.Value.Date.AddDays(1).AddSeconds(-1));
+
+    var heads = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var ids = heads.Select(x => x.Id).ToList();
+
+    var svc = await db.WarrantyClaimServiceItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId))
+        .ToListAsync();
+    var prt = await db.WarrantyClaimPartItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId))
+        .ToListAsync();
+    // VAT: dòng ĐANG CHẠY của nguồn (comment `(1+1/VAT)` là công thức sai, không port).
+    decimal AmtS(WarrantyClaimServiceItem i) => i.VAT == 0m ? i.Factor * i.Price
+        : i.Factor * i.Price * (1m + i.VAT / 100m);
+    decimal AmtP(WarrantyClaimPartItem i) => i.Vat == 0m ? i.Factor * i.Price * i.Quantity
+        : i.Factor * i.Price * i.Quantity * (1m + i.Vat / 100m);
+
+    var items = heads.Select(h => new
+    {
+        ROWID = h.Id, h.ROWNo, h.ROID, h.RONo, h.DealerCode, h.Vin, h.PlateNo,
+        h.Status, WarrantyStatus = h.Status,
+        statusName = h.Status switch
+        {
+            "SENT" => "Chờ xem xét", "APPROVED" => "Đã duyệt", "REJECTED" => "Từ chối",
+            _ => h.Status,
+        },
+        h.StartDate, h.FinishedDate, h.CreatedAt,
+        ServicePrice = svc.Where(i => i.ClaimId == h.Id).Sum(AmtS),
+        PartPrice = prt.Where(i => i.ClaimId == h.Id).Sum(AmtP),
+        TotalAmount = svc.Where(i => i.ClaimId == h.Id).Sum(AmtS) + prt.Where(i => i.ClaimId == h.Id).Sum(AmtP),
+        HTCROWNo = (string?)null,        // cần dbo.ROWarrantyGetHTCWRID — nợ #502
+        StoreDate = (DateTime?)null,     // chỉ có khi làm giàu được từ DMS Sales
+        serviceItems = svc.Where(i => i.ClaimId == h.Id)
+            .Select(i => new { i.Id, i.SerID, i.SerCode, i.SerName, i.Factor, i.Price, i.VAT,
+                AmountBeforeVat = i.Factor * i.Price, Amount = AmtS(i), i.WarrantyStatus }),
+        partItems = prt.Where(i => i.ClaimId == h.Id)
+            .Select(i => new { i.Id, i.PartCode, i.PartName, Need = i.Quantity, i.Factor, i.Price, i.Vat,
+                AmountBeforeVat = i.Factor * i.Price * i.Quantity, Amount = AmtP(i), i.WarrantyStatus }),
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // Nguồn CẮT dòng theo DMS Sales; bản port KHÔNG cắt vì không có nguồn StoreDate.
+        dmsSaleEnrichmentNotAvailable = true,
+        sourceInnerJoinDropsRowsWithoutSale = "StoreDate > '2017-04-01' + InnerJoin FrameNo=VIN",
+        hardcodedCutoffDate = "2017-04-01",
+        enrichmentFailureChangesRowSet = true,
+        distinctAfterFilterInSource = true,
+        htcRowNoNeedsSqlScalarFn = "dbo.ROWarrantyGetHTCWRID (#502)",
+        hmcSideEffectNotPorted = true,
+        vatFormulaFromActiveLineNotComment = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
