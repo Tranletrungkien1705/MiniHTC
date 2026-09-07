@@ -16607,18 +16607,56 @@ app.MapGet("/api/warrantyclaims/{id}/transactions", async (long id, AppDbContext
 }).RequireAuthorization();
 
 // ===== Gói dịch vụ (ServicePackage — port 1:1 FrmServicePackageCreate/Search, TCMotor/Services) =====
-app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+// ===== 🔴 #550 VÁ TRA CỨU GÓI DỊCH VỤ THEO `SerServicePackageGet` — **KHÁC MÀN, KHÁC LỌC** =====
+// Nguồn: `BizCarSv.ServicePackage.cs:1329 SerServicePackageGet`. **Endpoint**: `GET /api/servicepackages` (vá).
+//
+// 📐 **DIFF `SerServicePackageGet` ↔ `SerServicePackageGetSearchCreateRO`** (#546) — hai hàm gần **giống hệt**,
+//   khác đúng **ba** điểm, và cả ba đều nói lên **hai màn khác nhau**:
+//   1) 🔴 Bản này lọc `Creator` và `IsPublicFlag` **THẲNG trong mệnh đề chính**;
+//      bản kia **comment cả hai** ở đó rồi áp lại trong **hai nhánh `Union`** (công khai ∪ riêng của mình).
+//      ⇒ Màn **quản lý gói** (đây) xem theo đúng bộ lọc người dùng chọn; màn **tạo lệnh sửa chữa** (#546)
+//        luôn hợp hai tập. **Không** dùng chung một endpoint.
+//   2) 🔴 Bản này **có thêm** bộ lọc `TakingTime` (thời gian thực hiện gói) — bản kia **không có**.
+//   3) ⚠️ Bản kia có thêm `IsPrivateFlag` và **không** có `TakingTime`; mã lỗi mặc định cũng khác
+//      (`SerServicePackageGet` vs `Ser_ServicePackage_GetRO` — **tên hằng lỗi không theo tên hàm**).
+//   ⇒ Đây là **cặp sinh đôi** đúng nghĩa: khác biệt thật nằm ở **danh sách mệnh đề lọc**, không ở WHERE
+//     tổng thể — đúng cảnh báo của luật #414.
+// ⚠️ Tám bộ lọc của nguồn đều qua `BuildClause` (bẫy #410) và **không có `order by`** ở câu cuối.
+// ⚠️ Hai cờ `strIsGetService`/`strIsGetPart` quyết định có ghép hai khối bảng con hay không —
+//   MiniHTC luôn trả **số đếm** dòng con (rẻ hơn) và có endpoint `/detail` riêng (#546) cho chi tiết.
+app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, string? q, string? active,
+    string? dealerCode, string? packageNo, string? packageName, string? takingTime,
+    string? creator, DateTime? createdDate, string? isPublicFlag) =>
 {
     var query = db.ServicePackages.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PackageNo.Contains(q!) || (x.PackageName != null && x.PackageName.Contains(q!)));
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
+    // #550 sáu bộ lọc còn thiếu của nguồn (lọc THẲNG, không qua Union).
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(packageNo)) query = query.Where(x => x.PackageNo == packageNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(packageName)) query = query.Where(x => x.PackageName != null && x.PackageName!.Contains(packageName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(takingTime)) query = query.Where(x => x.TakingTime == takingTime!.Trim());
+    if (!string.IsNullOrWhiteSpace(creator)) query = query.Where(x => x.Creator == creator!.Trim());
+    if (createdDate is not null) query = query.Where(x => x.CreatedDate != null && x.CreatedDate!.Value.Date == createdDate.Value.Date);
+    if (!string.IsNullOrWhiteSpace(isPublicFlag)) query = query.Where(x => x.IsPublicFlag == isPublicFlag!.Trim());
+
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.PackageNo, x.PackageName, x.ServiceTotal, x.PartTotal, x.GrandTotal, x.FlagActive,
+        x.Id, x.PackageNo, x.PackageName, x.DealerCode, x.TakingTime, x.Creator, x.CreatedDate,
+        x.IsPublicFlag, x.IsUserBasePrice, x.Description,
+        x.ServiceTotal, x.PartTotal, x.GrandTotal, x.FlagActive,
         services = db.ServicePackageServices.Count(s => s.OrgId == t.OrgId && s.ServicePackageId == x.Id),
         parts = db.ServicePackageParts.Count(p => p.OrgId == t.OrgId && p.ServicePackageId == x.Id)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        filtersAppliedDirectlyNotViaUnion = true,
+        contrastWithCreateRoScreen = "#546 comment Creator + IsPublicFlag roi ap lai o hai nhanh Union",
+        takingTimeFilterOnlyExistsHere = true,
+        errorConstantDiffersFromFunctionName = "Ser_ServicePackage_GetRO (ham kia) vs SerServicePackageGet",
+        sourceHasNoOrderBy = true,
+    });
 }).RequireAuthorization();
 
 // Tạo/cập nhật gói theo PackageNo: thay toàn bộ dòng CV + PT, tính tổng (Price×Factor mỗi dòng).
