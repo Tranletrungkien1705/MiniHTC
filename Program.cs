@@ -6764,6 +6764,93 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
 //     'số 0 câm': báo cáo vẫn chạy, vẫn ra kết quả, chỉ là sai.
 // 📌 MiniHTC lưu mã CHỮ (`ServiceEngineer.EngineerType`, `Cavity.CavityType`) ⇒ endpoint đếm theo mã chữ
 //   và trả kèm **phân bố mã thực có** để người dùng tự đối chiếu, thay vì im lặng trả 0.
+// ===== 🔴 #411 GUARD "ĐỦ 12 THÁNG" TRƯỚC KHI KẾT XUẤT — kiểm tra bằng **VỊ TRÍ DÒNG** =====
+// Nguồn: `FrmReportDisplay_KPI.exportToExcelByXML` (`:331`). Trước khi ghi file, form bắt buộc
+//   **mọi tháng từ 1 đến tháng hiện tại** của năm đang xem phải có báo cáo KPI đã lưu.
+//
+// 🔴 Cách kiểm tra **KHÔNG tra theo tháng, mà tra theo CHỈ SỐ DÒNG**:
+//     `if (iMonth != Convert.ToInt16(dt.Rows[iMonth - 1][RptMonth])) { cảnh báo; return; }`
+//   Tức nó **giả định dòng thứ i-1 chính là tháng i**. Điều đó chỉ đúng nhờ `order by t.RptYear,`
+//   `CAST(t.RptMonth AS INT)` ở biz (#410) — một **phụ thuộc ngầm giữa hai tầng**: đổi ORDER BY của
+//   truy vấn là guard này sai ngay, mà không ai sửa dòng nào ở form.
+//   ⚠️ Truy vấn lọc theo NĂM lấy từ ô `txtNam`. Ô đó **để trống** thì không có mệnh đề năm ⇒ dòng của
+//     **nhiều năm** trộn vào nhau, `Rows[0]` là tháng 1 của năm CŨ NHẤT ⇒ guard so nhầm năm mà vẫn
+//     có thể **PASS**. Kết xuất ra file với dữ liệu năm khác.
+//
+// ⚠️ `catch { cảnh báo "tháng N chưa lưu"; return; }` **nuốt MỌI ngoại lệ**, không riêng thiếu dòng.
+//   Lỗi ép kiểu (tháng chứa chữ) cũng bị báo thành *"tháng N chưa được lưu"* ⇒ **chẩn đoán sai**,
+//   người dùng đi tạo lại báo cáo đã có sẵn.
+// ⚠️ Mốc trên là `iMonth < GetServerDateTime().Month + 1` ⇒ tháng 1..tháng HIỆN TẠI **theo giờ SERVER**,
+//   không theo năm đang xem: xem năm cũ vào tháng 3 thì chỉ đòi 3 tháng, xem vào tháng 12 thì đòi 12.
+// ⚠️ Mẫu file cứng ở `C://DMSTemp//Tmp.KPI.xml` (`File.Copy`) — không có mẫu thì ném lỗi. Không port được.
+app.MapGet("/api/reportkpis/export-check", async (AppDbContext db, ITenantContext t,
+    string? dealer, string? year, int? upToMonth) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer))
+        return Results.BadRequest(new { error = "Thiếu mã đại lý." });
+
+    var y = (year ?? "").Trim();
+    var rows = await db.ReportKpis
+        .Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer!.Trim().ToUpperInvariant())
+        .Select(x => new { x.RptYear, x.RptMonth }).ToListAsync();
+    // Ô năm để TRỐNG ⇒ nguồn KHÔNG lọc năm. Giữ 1:1 và báo cờ.
+    var yearFilterMissing = y.Length == 0;
+    if (!yearFilterMissing) rows = rows.Where(x => x.RptYear == y).ToList();
+
+    // Thứ tự nguồn (#410): năm tăng, rồi tháng theo SỐ.
+    var ordered = rows
+        .OrderBy(x => x.RptYear)
+        .ThenBy(x => int.TryParse((x.RptMonth ?? "").Trim(), out var mi) ? mi : int.MaxValue)
+        .ToList();
+
+    var last = upToMonth ?? DateTime.Now.Month;   // nguồn: tháng hiện tại theo giờ SERVER
+    string? firstMissingReason = null;
+    int? firstMissingMonth = null;
+    for (var m = 1; m <= last; m++)
+    {
+        // 🔴 TRA THEO VỊ TRÍ, đúng nguồn: dòng thứ m-1 phải là tháng m.
+        if (ordered.Count < m)
+        {
+            firstMissingMonth = m; firstMissingReason = "thiếu dòng ở vị trí " + (m - 1); break;
+        }
+        if (!int.TryParse((ordered[m - 1].RptMonth ?? "").Trim(), out var got))
+        {
+            firstMissingMonth = m;
+            firstMissingReason = "RptMonth không phải số ('" + ordered[m - 1].RptMonth + "') — nguồn ném "
+                + "lỗi ép kiểu rồi BÁO NHẦM thành 'tháng chưa lưu'";
+            break;
+        }
+        if (got != m)
+        {
+            firstMissingMonth = m;
+            firstMissingReason = "vị trí " + (m - 1) + " đang là tháng " + got + ", không phải tháng " + m;
+            break;
+        }
+    }
+
+    var ok = firstMissingMonth == null;
+    var yearsPresent = ordered.Select(x => x.RptYear).Distinct().ToList();
+    return Results.Ok(new
+    {
+        dealer, year = y, upToMonth = last, canExport = ok,
+        firstMissingMonth, firstMissingReason,
+        message = ok ? null : $"Dữ liệu báo cáo KPI của tháng {firstMissingMonth} chưa được lưu.",
+        monthsFound = ordered.Select(x => x.RptMonth).ToList(),
+        positionalCheckNote = "Nguồn KHÔNG tra theo tháng mà tra theo VỊ TRÍ DÒNG (Rows[i-1] phải là "
+            + "tháng i) — chỉ đúng nhờ ORDER BY của biz. Đổi ORDER BY là guard sai ngay, không ai sửa form.",
+        yearFilterMissing,
+        yearFilterMissingNote = yearFilterMissing
+            ? "KHÔNG truyền năm ⇒ nguồn không lọc năm ⇒ dòng NHIỀU NĂM trộn vào nhau, vị trí 0 là tháng 1 "
+              + "của năm CŨ NHẤT ⇒ guard có thể PASS nhầm và kết xuất dữ liệu năm khác."
+            : null,
+        yearsPresent,
+        serverMonthNote = "Mốc trên lấy theo tháng HIỆN TẠI của server, không theo năm đang xem: xem năm "
+            + "cũ vào tháng 3 thì chỉ đòi 3 tháng, xem vào tháng 12 thì đòi đủ 12.",
+        templateNote = "Nguồn còn File.Copy mẫu cứng C://DMSTemp//Tmp.KPI.xml — phần dựng file XML không "
+            + "port được sang API.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
     string? dealer, string? year, string? month) =>
 {
