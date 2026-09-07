@@ -28856,24 +28856,68 @@ app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? por
 }).RequireAuthorization();
 
 // Sửa hàng loạt ngày nộp thuế (port 1:1 FrmMngCT_TKHQ btnUpdateTaxPaymentDate_Click) — guard TaxPaymentDate >= OpenDate.
-app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #B26 PARITY `ContractTKHQUpdate_TaxPaymentDate_New20181119` (Biz.HTC.WH.cs:38199) =====
+// Trace twin LIVE: `FrmMngCT_TKHQ.cs:501` → `salesSv.ContractTKHQUpdate_TaxPaymentDate(ds_Car_VIN)`
+//   → WS (`WSHTC.asmx.cs:8794`) → `_biz.ContractTKHQUpdate_TaxPaymentDate_New20181119`.
+//   Khoá dòng của nguồn = **`DeclarationNo`** (`strKeyDetail = "|{DeclarationNo}|"`, `:38297`).
+// 🔴 BỐN GUARD nguồn mà port cũ THIẾU — và ba trong đó nguồn **NÉM LỖI** còn port cũ **bỏ qua im lặng**:
+//   · `..._DuplicateKeyDetail`   — trùng `DeclarationNo` trong bảng gửi lên
+//   · `..._InvalidOpenDate`      — TKHQ **chưa có ngày mở** (`OpenDate` rỗng) ⇒ chặn
+//   · `..._InvalidTaxPaymentDate`— ngày nộp thuế RỖNG ⇒ chặn (port cũ `continue`, coi như thành công)
+//   · `CT_TKHQ_CheckDB(Flag.Active)` — TKHQ không tồn tại ⇒ **ném lỗi** (port cũ gom `notFound` rồi trả 200)
+//   + `..._OpenDateAfterTaxPaymentDate` — `OpenDate > TaxPaymentDate` ⇒ chặn (port cũ đã có).
+// 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:38258`) là DÒNG ACTIVE.
+// ⚠️ **QUIRK CỦA NGUỒN — CỐ Ý KHÔNG PORT NGUYÊN:** dòng ghi của nguồn là
+//      `dt_CT_TKHQ.Rows[i]["TaxPaymentDate"] = dt_CT_TKHQ_Input.Rows[**0**]["TaxPaymentDate"];`  (`:38386`)
+//    tức **mọi dòng đều nhận ngày của DÒNG ĐẦU TIÊN**, trong khi vòng kiểm phía trên lại kiểm **từng dòng**
+//    (`dr = ..._Input.Rows[i]`). Đây gần như chắc chắn là **lỗi chỉ số của nguồn** và port nguyên sẽ **ghi sai
+//    ngày cho các dòng 2..n**. Đã port theo ngữ nghĩa ĐÚNG (mỗi dòng ngày của chính nó) và **phơi quirk ra
+//    trong response** (`sourceQuirk`) để người dùng quyết — KHÔNG im lặng chọn hộ.
+app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật ngày nộp thuế." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DeclarationNo)).ToList();
+    // `..._TableDetailBeBlank`
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
-    int updated = 0; var notFound = new List<string>();
+    // `..._DuplicateKeyDetail`
+    var dup = rows.GroupBy(r => r.DeclarationNo!.Trim()).FirstOrDefault(g => g.Count() > 1);
+    if (dup != null) return Results.BadRequest(new { error = $"Tờ khai {dup.Key} bị trùng trong bảng gửi lên!" });
+
+    var nos = rows.Select(r => r.DeclarationNo!.Trim()).ToList();
+    var tkhqs = await db.CtTkhqs.Where(x => x.OrgId == t.OrgId && nos.Contains(x.DeclarationNo)).ToListAsync();
+
+    // Nguồn kiểm TỪNG DÒNG rồi mới ghi cả lô (một transaction) ⇒ validate hết trước, ghi sau.
     foreach (var r in rows)
     {
         var no = r.DeclarationNo!.Trim();
-        var k = await db.CtTkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
-        if (k is null) { notFound.Add(no); continue; }
-        if (r.TaxPaymentDate is null) continue;
-        if (r.TaxPaymentDate.Value < k.OpenDate)
+        var k = tkhqs.FirstOrDefault(x => x.DeclarationNo == no);
+        if (k is null) return Results.BadRequest(new { error = $"Tờ khai {no} không tồn tại." });
+        // `..._InvalidOpenDate` — `StandardizeDate(OpenDate)` rỗng ⇒ chặn.
+        if (k.OpenDate == default) return Results.BadRequest(new { error = $"Tờ khai {no} chưa có ngày mở tờ khai." });
+        // `..._InvalidTaxPaymentDate`
+        if (r.TaxPaymentDate is null) return Results.BadRequest(new { error = $"Tờ khai {no} thiếu ngày nộp thuế." });
+        // `..._OpenDateAfterTaxPaymentDate` — nguồn so bằng `strOpenDate.CompareTo(strTaxPaymentDate) > 0`
+        //   trên chuỗi "yyyy-MM-dd" ⇒ so theo NGÀY, không theo giờ.
+        if (k.OpenDate.Date > r.TaxPaymentDate.Value.Date)
             return Results.BadRequest(new { error = $"TKHQ: {no} ngày nộp thuế phải sau Ngày mở TKHQ!" });
-        k.TaxPaymentDate = r.TaxPaymentDate;
+    }
+
+    int updated = 0;
+    foreach (var r in rows)
+    {
+        var k = tkhqs.First(x => x.DeclarationNo == r.DeclarationNo!.Trim());
+        k.TaxPaymentDate = r.TaxPaymentDate;   // ngữ nghĩa ĐÚNG: mỗi dòng ngày của chính nó
         updated++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+    return Results.Ok(new
+    {
+        updated, columnsWritten = new[] { "TaxPaymentDate" },
+        sourceQuirk = rows.Count > 1
+            ? "⚠️ Nguồn gán ..._Input.Rows[0][TaxPaymentDate] cho MỌI dòng (Biz.HTC.WH.cs:38386) — gần như chắc chắn là lỗi chỉ số. Bản port này gán ĐÚNG ngày của từng dòng. Nếu cần khớp tuyệt đối hành vi nguồn, xác nhận để đổi."
+            : null,
+        guardsAdded = new[] { "DuplicateKeyDetail", "InvalidOpenDate", "InvalidTaxPaymentDate", "TKHQ không tồn tại ⇒ lỗi (không còn trả 200)", "CheckHTCDirect" }
+    });
 }).RequireAuthorization();
 
 // Xóa hàng loạt tờ khai (port 1:1 FrmMngCT_TKHQ btnDeleteTk_Click)
