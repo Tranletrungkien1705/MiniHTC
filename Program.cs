@@ -43773,7 +43773,29 @@ app.MapPost("/api/receptions/{no}/linkro", async (string no, ReceptionLinkDto dt
 }).RequireAuthorization();
 
 // Giao xe (Approved) — cần đã gắn RO
-app.MapPost("/api/receptions/{no}/deliver", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #527 GIAO XE — CẶP CREATE/UPDATE ĐỐI XỨNG VỚI #524 (luật #404) =====
+// Nguồn LIVE: `BizCarSv.Tab.cs:11676 Ser_ReceptionF_DeliveryX_New20180921` (WS gọi qua
+//   `Ser_ReceptionF_Delivery_New20180921` — cả `HTCWSCarSv` lẫn `HTCWSCarSvTab`).
+//
+// 📐 **ĐỐI CHIẾU GUARD CẢ HAI VẾ** — và chúng khớp nhau như hai nửa của một cặp:
+//   · Tiếp nhận (#524): chuẩn hoá `"StdFlag", "**ReceptionAudStatus**"` · gán
+//     `ReceptionFStatusDtl = ReceptionFStatus.**Pending** ("P")` · tạo cột `DeliveryAudStatus` **không gán**.
+//   · Giao xe (đây):     chuẩn hoá `"StdFlag", "**DeliveryAudStatus**"` · gán
+//     `ReceptionFStatusDtl = ReceptionFStatus.**Approve** ("A")` · **không** đụng `ReceptionAudStatus`.
+//   ⇒ `DeliveryAudStatus` mà #524 để trống **được điền đúng ở đây** — xác nhận kết luận "cột chờ khâu sau",
+//     và là **kiểm tra dương tính** cho luật #404 (đọc guard CẢ HAI vế mới hiểu "rỗng" nghĩa là gì).
+// 🔴 Guard vào: `Ser_ReceptionF_CheckDB(…, TConst.ReceptionFStatus.**Pending**)` ⇒ **chỉ giao được phiếu
+//   đang ở "P"**; phiếu đã giao ("A") gọi lại là **ném lỗi**, không phải bỏ qua.
+// 🔴 **CẬP NHẬT CHỈ, KHÔNG THÊM DÒNG**: câu `update t … from Ser_ReceptionFDtl t inner join #input… on
+//   ReceptionFNo + ReceptionFAudCode + ReceptionFAudType` ⇒ dòng chi tiết **chưa có từ khâu tiếp nhận** thì
+//   **không được tạo**, và **không có lỗi nào báo** — kết quả kiểm khi giao xe của đầu mục đó **mất trắng**.
+// ⚠️ Mệnh đề `set` chỉ gồm **năm** cột: `LogLUDateTime` · `LogLUBy` · `DeliveryAudStatus` ·
+//   `ReceptionFStatusDtl` · `Remark` ⇒ `ReceptionAudStatus` (kết quả kiểm lúc **nhận**) **giữ nguyên**.
+// ⚠️ Tệp đính kèm ở khâu giao xe là **INSERT** (`zzzzClauseInsert_Ser_ReceptionFAttachFile_zSave`),
+//   khác khâu tiếp nhận vốn nạp bảng mới ⇒ giao xe **cộng thêm** ảnh, không thay ảnh cũ.
+// ⚠️ Nguồn cập nhật `Ser_ReceptionF` ở **ba** DB (Main/WH/Dealer) — MiniHTC một DB (nợ kiến trúc đã ghi).
+app.MapPost("/api/receptions/{no}/deliver", async (string no, ReceptionDeliverDto? dto,
+    AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
@@ -43785,9 +43807,46 @@ app.MapPost("/api/receptions/{no}/deliver", async (string no, AppDbContext db, I
         .OrderByDescending(x => x.CreatedAt).FirstOrDefaultAsync();
     if (string.IsNullOrWhiteSpace(r.RONO) && latest is null)
         return Results.BadRequest(new { error = "Chưa gắn RO, không thể giao xe." });
+    // #527 Cập nhật kết quả kiểm khi GIAO XE — chỉ UPDATE, không thêm dòng (đúng nguồn).
+    const string kReceptionFStatusApprove = "A";     // TConst.ReceptionFStatus.Approve — GIÁ TRỊ
+    var updated = 0; var notFoundRows = new List<object>();
+    if (dto?.Details is { Count: > 0 })
+    {
+        var dtls = await db.ReceptionDetails.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no).ToListAsync();
+        foreach (var d in dto.Details)
+        {
+            if (!string.IsNullOrWhiteSpace(d.DeliveryAudStatus)
+                && d.DeliveryAudStatus!.Trim() is not ("1" or "0"))
+                return Results.BadRequest(new { error = "DeliveryAudStatus la CO, chi nhan 1 hoac 0.", d.ReceptionFAudCode });
+            var row = dtls.FirstOrDefault(x => x.ReceptionFAudCode == d.ReceptionFAudCode
+                && x.ReceptionFAudType == d.ReceptionFAudType);
+            if (row is null)
+            {
+                // Nguồn: UPDATE không khớp ⇒ IM LẶNG bỏ qua. Ở đây ĐẾM và trả về.
+                notFoundRows.Add(new { d.ReceptionFAudCode, d.ReceptionFAudType });
+                continue;
+            }
+            row.DeliveryAudStatus = d.DeliveryAudStatus;
+            row.ReceptionFStatusDtl = kReceptionFStatusApprove;
+            if (d.Remark is not null) row.Remark = d.Remark;
+            row.LogLUDateTime = DateTime.Now;
+            updated++;
+        }
+    }
+
     r.Status = "Approved"; r.DeliveredAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, status = r.Status, roNoLatest = latest?.RONo, r.RONO });
+    return Results.Ok(new
+    {
+        r.ReceptionFNo, status = r.Status, roNoLatest = latest?.RONo, r.RONO,
+        detailsUpdated = updated,
+        // Nguồn bỏ qua IM LẶNG những dòng chưa có từ khâu tiếp nhận — nêu tên để không mất dấu.
+        detailRowsNotFoundSourceSilentlySkips = notFoundRows,
+        receptionFStatusDtl = kReceptionFStatusApprove,
+        receptionAudStatusUntouched = true,
+        attachFilesAreInsertedNotReplaced = true,
+        sourceUpdatesThreeDatabases = "Main + WH + Dealer",
+    });
 }).RequireAuthorization();
 
 // ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
@@ -49342,6 +49401,10 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record ReceptionDeliverDetailDto(string? ReceptionFAudCode, string? ReceptionFAudType,
+    string? DeliveryAudStatus, string? Remark);   // #527
+record ReceptionDeliverDto(List<ReceptionDeliverDetailDto>? Details);   // #527
+
 record ReceptionAttachFileDto(string? FileIndex, string? ReceptionFilePath,
     string? ReceptionFileName, string? ReceptionFileType, string? Remark);   // #525
 
