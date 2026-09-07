@@ -35995,6 +35995,146 @@ app.MapGet("/api/os/dealercustomers", async (
     });
 }).RequireAuthorization();
 
+// ===== #B102 BÁO CÁO SSI CHO ĐỐI TÁC BẢO HIỂM — `RptSSI_ICIC_New2011119` =====
+// Trace LIVE: WS → **`_biz.RptSSI_ICIC_New2011119`** (`BizHTC.DealerSales.cs:6504`).
+//   ⚠️ Hậu tố **`_New2011119`** — **9 chữ số**, thiếu/thừa so với khuôn `_NewYYYYMMDD` (8).
+//     Giữ nguyên khi tra cứu (cùng loại quirk với `_New2021601` ở #B71).
+//   3B đo thật, **khớp cả 2 máy**: start=6504 md5 `2c7ed5b6f621da6bd77342f43a9fd213`.
+// 🔴🔴 **RBAC — biến thể 4 (HẰNG CỨNG), KÊNH ĐỐI TÁC BẢO HIỂM `ICIC`** (`:6573`):
+//    `alParamsCoupleSql.AddRange(new object[] { "@strBUPatternOfUser", **"HTC%"** });`
+//    rồi `inner join Mst_Dealer md … and (md.BUCode like @strBUPatternOfUser)` **kèm đúng** chú thích
+//    *"Must inner join to filter AbilityOfUser"*. ⇒ quyền thật của người gọi **không hề được dùng**;
+//    đối tác bảo hiểm nhận **toàn bộ nhóm HTC**. Cùng khuôn #B84, **ca thứ 17**.
+// 🔴 **BA điều kiện lọc VIẾT CỨNG trong `where`** (nghiệp vụ, không phải tham số):
+//    · `dd.DealerCodeBuyer is null` — chú thích nguồn: *"Không tính giao dịch bán ngang 20170703"*;
+//    · `dd.FlagInitDeal = '0'`;
+//    · ⚠️ `-- and dd.CtmCareFlag = '1'` **ĐÃ BỊ COMMENT**, kèm giải thích dài: *"Báo cáo SSI: hiện
+//      nay dữ liệu chỉ hiển thị các kiểm chứng trạng thái A → yêu cầu: dữ liệu hiển thị **cả** các
+//      kiểm chứng trạng thái P"* ⇒ **cố ý nới**, port thêm lại điều kiện này là **chặt hơn nguồn**.
+// 🔴 **BA VAI KHÁCH HÀNG tách riêng**, mỗi vai một `left join DLS_DealerCustomer` + một
+//    `left join Mst_Province`: **Buyer** (sở hữu) · **Holder** (giao dịch) · **Driver** (quản lý xe).
+//    Bí danh có tiền tố `dlsdc_Buyer_` / `_Holder_` / `_Driver_` để không đè nhau (khuôn #B93/#B97).
+// 🔴 **`dlsd_Previous`** — `left join DLS_Deal on ddd.DealNoPrevious = dlsd_Previous.DealNo`:
+//    trả **đại lý NGUỒN** (`DLSDPDealerCode`) bên cạnh **đại lý kiểm chứng** (`dd.DealerCode`).
+//    Hai cột đại lý khác nhau trong cùng một dòng — đừng gộp.
+// 🔴 `ColorName = ColorExtNameVN + '/' + ColorIntNameVN` — nối chuỗi SQL: **một vế NULL ⇒ NULL**
+//    (cùng bẫy #B94).
+// 🔴 Phân trang bằng **`Row_Number() over (order by ddd.DealNo desc)`** (khác `identity(bigint,0,1)`
+//    của các hàm khác); `MyRowIdx_Start = start + 1`; `MyCount` đếm **trước** khi cắt trang.
+app.MapGet("/api/icic/rpt-ssi", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? deliveryFrom, DateTime? deliveryTo,
+    DateTime? ctmCareUpdFrom, DateTime? ctmCareUpdTo,
+    int? recordStart, int? recordCount, string? enforceBuScope, string? buPatternOfUser) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+
+    // 🔴 Nguồn ĐÓNG CỨNG "HTC%"; giữ làm mặc định, cho ép phạm vi thật bằng cờ.
+    const string Hardcoded = "HTC%";
+    var realPattern = (buPatternOfUser ?? "").Trim();
+    var applied = (enforceBuScope == "1" && realPattern.Length > 0) ? realPattern : Hardcoded;
+    var prefix = applied.TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var inScope = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(prefix))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    // `#tbl_DLS_DealDetail_Filter` — BA điều kiện viết cứng (một cái đã bị comment ở nguồn).
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId
+            && (d.DealerCodeBuyer == null || d.DealerCodeBuyer == "")   // "Không tính giao dịch bán ngang"
+            && d.FlagInitDeal == "0")
+        .ToListAsync();
+    deals = deals.Where(d => d.DealerCode != null && inScope.Contains(d.DealerCode)).ToList();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        deals = deals.Where(d => d.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+    if (ctmCareUpdFrom is not null) deals = deals.Where(d => d.CtmCareUpdDate >= ctmCareUpdFrom).ToList();
+    if (ctmCareUpdTo is not null) deals = deals.Where(d => d.CtmCareUpdDate <= ctmCareUpdTo).ToList();
+    var dealById = deals.ToDictionary(d => d.Id);
+
+    var lines = await db.DealerDealDetails.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    lines = lines.Where(l => dealById.ContainsKey(l.DealId)).ToList();
+    if (deliveryFrom is not null) lines = lines.Where(l => l.DeliveryDate >= deliveryFrom).ToList();
+    if (deliveryTo is not null) lines = lines.Where(l => l.DeliveryDate <= deliveryTo).ToList();
+
+    var myCount = lines.Count;                        // `MyCount` đếm TRƯỚC khi cắt trang
+    // `Row_Number() over (order by ddd.DealNo desc)`
+    var page = lines
+        .OrderByDescending(l => dealById[l.DealId].DealNo, StringComparer.Ordinal)
+        .Skip(start).Take(count).ToList();
+
+    var vins = page.Select(l => l.CarId).Where(x => x != null).Distinct().ToList()!;
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync())
+        .GroupBy(c => c.VIN).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.SpecDesc, s.GradeCode }).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtNameVN, c.ColorIntNameVN }).ToListAsync())
+        .GroupBy(c => (c.ModelCode ?? "", c.ColorCode ?? "")).ToDictionary(g => g.Key, g => g.First());
+    var custs = (await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.DealerCode, c.CustomerCode)).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
+        .Select(m => new { m.Code, m.Name }).ToListAsync())
+        .GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First().Name);
+    var dealsByNo = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealNo, d.DealerCode, d.DealerCodeBuyer }).ToListAsync())
+        .GroupBy(d => d.DealNo).ToDictionary(g => g.Key, g => g.First());
+
+    var items = page.Select(l =>
+    {
+        var dd = dealById[l.DealId];
+        cars.TryGetValue(l.CarId ?? "", out var cv);
+        specs.TryGetValue(cv?.SpecCode ?? "", out var mcs);
+        colors.TryGetValue((cv?.ModelCode ?? "", cv?.ColorCode ?? ""), out var mcc);
+        // 🔴 nối chuỗi SQL: một vế NULL ⇒ CẢ CHUỖI NULL.
+        string? colorName = (mcc?.ColorExtNameVN is null || mcc?.ColorIntNameVN is null)
+            ? null : mcc.ColorExtNameVN + "/" + mcc.ColorIntNameVN;
+        // BA vai khách hàng, mỗi vai một left join.
+        custs.TryGetValue((dd.DealerCode ?? "", dd.CustomerCodeBuyer ?? ""), out var buyer);
+        custs.TryGetValue((dd.DealerCode ?? "", dd.CustomerCodeHolder ?? ""), out var holder);
+        custs.TryGetValue((dd.DealerCode ?? "", dd.CustomerCodeDriver ?? ""), out var driver);
+        // `dlsd_Previous` — đại lý NGUỒN, khác đại lý KIỂM CHỨNG.
+        dealsByNo.TryGetValue(l.DealNoPrevious ?? "", out var prev);
+        return new
+        {
+            dddDealNo = dd.DealNo, dddCarId = l.CarId, dddDeliveryDate = l.DeliveryDate,
+            DLSDPDealerCode = prev?.DealerCode, DLSDPDealerCodeBuyer = prev?.DealerCodeBuyer,
+            ddDealerCode = dd.DealerCode, ddDlrContractNo = dd.DlrContractNo, ddSalesType = dd.SalesType,
+            ddCtmCareFlag = dd.CtmCareFlag, ddCtmCareUpdDate = dd.CtmCareUpdDate,
+            ddCtmCareUpdBy = dd.CtmCareUpdBy, ddCtmCareRemark = dd.CtmCareRemark,
+            cvModelCode = cv?.ModelCode, mcsSpecDescription = mcs?.SpecDesc, mcsGradeCode = mcs?.GradeCode,
+            mccColorCode = mcc?.ColorCode, ColorName = colorName, cvVIN = cv?.VIN,
+            dlsdc_Buyer_FullName = buyer?.FullName, dlsdc_Buyer_PhoneNo = buyer?.PhoneNo,
+            dlsdc_Buyer_Address = buyer?.Address, dlsdc_Buyer_ProvinceCode = buyer?.ProvinceCode,
+            dlsdc_Buyer_Email = buyer?.Email,
+            dlsdc_Holder_FullName = holder?.FullName, dlsdc_Holder_PhoneNo = holder?.PhoneNo,
+            dlsdc_Holder_Address = holder?.Address, dlsdc_Holder_ProvinceCode = holder?.ProvinceCode,
+            dlsdc_Holder_Email = holder?.Email,
+            dlsdc_Driver_FullName = driver?.FullName, dlsdc_Driver_PhoneNo = driver?.PhoneNo,
+            dlsdc_Driver_Address = driver?.Address, dlsdc_Driver_ProvinceCode = driver?.ProvinceCode,
+            dlsdc_Driver_Email = driver?.Email,
+            mp_Buyer_ProvinceName = provinces.TryGetValue(buyer?.ProvinceCode ?? "", out var pb) ? pb : null,
+            mp_Holder_ProvinceName = provinces.TryGetValue(holder?.ProvinceCode ?? "", out var ph) ? ph : null,
+            mp_Driver_ProvinceName = provinces.TryGetValue(driver?.ProvinceCode ?? "", out var pd) ? pd : null
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        buPatternApplied = applied, buPatternHardcoded = Hardcoded,
+        rbacHole = "RBAC bien the 4 (HANG CUNG), KENH DOI TAC BAO HIEM ICIC (:6573): alParamsCoupleSql bind '@strBUPatternOfUser' = 'HTC%' roi dung trong inner join Mst_Dealer ... and (md.BUCode like @strBUPatternOfUser), KEM DUNG chu thich 'Must inner join to filter AbilityOfUser'. Quyen that cua nguoi goi KHONG HE duoc dung => doi tac bao hiem nhan TOAN BO nhom HTC. Cung khuon #B84, ca thu 17.",
+        hardFiltersNote = "BA dieu kien loc VIET CUNG trong where (nghiep vu, khong phai tham so): dd.DealerCodeBuyer is null ('Khong tinh giao dich ban ngang 20170703') va dd.FlagInitDeal = '0'. Dieu kien thu ba '-- and dd.CtmCareFlag = 1' DA BI COMMENT kem giai thich: 'Bao cao SSI: hien nay du lieu chi hien thi cac kiem chung trang thai A -> yeu cau: du lieu hien thi CA cac kiem chung trang thai P'. => CO Y NOI; port them lai dieu kien nay la CHAT HON NGUON.",
+        threeRolesNote = "BA VAI KHACH HANG tach rieng, moi vai mot left join DLS_DealerCustomer + mot left join Mst_Province: Buyer (so huu) | Holder (giao dich) | Driver (quan ly xe). Bi danh co tien to dlsdc_Buyer_/_Holder_/_Driver_ de khong de nhau (khuon #B93/#B97).",
+        previousDealNote = "dlsd_Previous: left join DLS_Deal on ddd.DealNoPrevious = dlsd_Previous.DealNo => tra DAI LY NGUON (DLSDPDealerCode) ben canh DAI LY KIEM CHUNG (dd.DealerCode). HAI cot dai ly khac nhau trong cung mot dong - dung gop.",
+        nullConcatNote = "ColorName = ColorExtNameVN + '/' + ColorIntNameVN - noi chuoi SQL: MOT VE NULL => CA CHUOI NULL (cung bay #B94).",
+        pagingNote = "Phan trang bang Row_Number() over (order by ddd.DealNo desc) - KHAC identity(bigint,0,1) cua cac ham khac; MyRowIdx_Start = start + 1; MyCount dem TRUOC khi cat trang.",
+        suffixQuirk = "Hau to _New2011119 co 9 chu so (khuon chuan la 8: _NewYYYYMMDD). Giu nguyen khi tra cuu - cung loai quirk voi _New2021601 o #B71."
+    });
+}).RequireAuthorization();
+
 // ===== #B97 THÔNG TIN NGƯỜI DÙNG ĐANG ĐĂNG NHẬP — `SysGetUser_ForCurrentUser_New20181115` =====
 // Trace LIVE: WS → `_biz.SysGetUser_ForCurrentUser_New20181115` (`BizHTC.System.cs:202`).
 //   3B đo thật, **khớp cả 2 máy**: start=202 md5 `d8dfab486c1899d56f9e59cbf9c5a077`.
