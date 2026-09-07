@@ -22462,6 +22462,117 @@ app.MapGet("/api/report/warranty-accept/lines", async (AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #408 KẾT XUẤT CHI TIẾT — **HAI KIỂU LÀM TRÒN KHÁC NHAU trong CÙNG một dòng** =====
+// Nguồn: `FrmWarrantyReportAcceptRpt.btnExportExcelDtl_Click` (`:703`) →
+//   `SerWarrantyAcceptRptDtlAllDealer(from, to, bFlagWH)` (`SerROWarrantyReportSerivce.cs:1442`).
+// ⚠️ Hàm service này gọi đúng WS `SerWarrantyAcceptRpt_GetAll` của #407, chỉ bỏ trống đại lý và VAT
+//   ⇒ **không có truy vấn mới**. Toàn bộ giá trị của lượt này nằm ở phần form NHÀO LẠI dữ liệu.
+//
+// 🔴 **Ba số tiền trên một dòng, làm tròn theo BA cách — nên chúng KHÔNG cộng khớp nhau**:
+//   1. `ServicePrice` và `PartPrice` bị **ghi đè** bằng `Convert.ToInt32(...)` ⇒ làm tròn **NGÂN HÀNG**
+//      (ties-to-even): `0.5`→`0`, `1.5`→`2`, `2.5`→`2`.
+//   2. `TOTALAMOUNT` tính từ **giá trị GỐC chưa làm tròn** (biến `partPrice`/`servicePrice` mà `TryParse`
+//      lấy ra **TRƯỚC** khi ghi đè), rồi `Math.Round(..., AwayFromZero)` ⇒ làm tròn **RA XA SỐ 0**.
+//   ⇒ Ví dụ công `0.5` + phụ tùng `0.5`: hai cột hiển thị `0` và `0`, cột tổng hiển thị `1`.
+//     Người đọc file thấy **0 + 0 = 1**. Không có lỗi nào được báo — đây là hành vi thật của nguồn.
+//   3. Cột `TOTALPRICE` **do SQL tính** (tổng chính xác, không làm tròn) thì bị **XOÁ khỏi file**
+//      cùng với `RANKTYPE` ⇒ con số đúng duy nhất bị bỏ đi, giữ lại con số đã bị nhào.
+//
+// ⚠️ `Convert.ToInt32` **NÉM OverflowException** khi vượt `2_147_483_647`. Với tiền VNĐ đây không phải
+//   giả thuyết xa vời: một dòng > 2,1 tỷ là **sập cả thao tác kết xuất**, không phải sai một ô.
+//   📌 **CỐ Ý LỆCH NGUỒN**: MiniHTC KHÔNG ném — kẹp giá trị và đếm vào `int32OverflowRows`,
+//     vì một API sập vì dữ liệu thì không nói cho ai biết điều gì; con số đếm thì có.
+// ⚠️ Dòng công có `PartPrice` rỗng ⇒ `double.TryParse("")` **thất bại** ⇒ nhánh ghi đè **không chạy**,
+//   và biến cục bộ giữ nguyên `0`. Vô tình đúng, nhưng đúng do `TryParse` hỏng chứ không do guard nào.
+app.MapGet("/api/report/warranty-accept/lines/export", async (AppDbContext db, ITenantContext t,
+    string? from, string? to) =>
+{
+    // Đại lý + VAT để TRỐNG = mọi đại lý, mọi mức VAT (đúng nguồn).
+    var claims = await db.ServiceWarrantyClaims
+        .Where(x => x.OrgId == t.OrgId && x.Status == "Accepted").ToListAsync();
+    string DK(DateTime? d) => d == null ? "" : d.Value.ToString("yyyy-MM-dd");
+    var dFrom = (from ?? "").Trim(); var dTo = (to ?? "").Trim();
+    if (dFrom.Length > 0) claims = claims.Where(x => string.CompareOrdinal(DK(x.ApprovedDate), dFrom) >= 0).ToList();
+    if (dTo.Length > 0) claims = claims.Where(x => string.CompareOrdinal(DK(x.ApprovedDate), dTo) <= 0).ToList();
+
+    var byId = claims.ToDictionary(c => c.Id);
+    var ids = claims.Select(c => c.Id).ToList();
+    var svcItems = await db.WarrantyClaimServiceItems
+        .Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId)).ToListAsync();
+    var partItems = await db.WarrantyClaimPartItems
+        .Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId)).ToListAsync();
+
+    // INNER JOIN của #407 vẫn áp: đề nghị không có dòng nào thì không xuất hiện.
+    var raw = new List<(string? RONo, string? FrameNo, string ItemType, decimal VAT,
+        string? ItemCode, string? ItemName, decimal Service, decimal Part, string ItemIndex, string Rank)>();
+    foreach (var i in svcItems)
+    {
+        if (!byId.TryGetValue(i.ClaimId, out var c)) continue;
+        var p = i.Factor * i.Price + i.Factor * i.Price * i.VAT * 0.01m;
+        raw.Add((c.RONo, c.Vin, "Công", i.VAT, i.SerCode, i.SerName, p, 0m, "2",
+            i.ROWSerType == "CVC" ? "1" : i.ROWSerType == "CVPSN" ? "2" : "3"));
+    }
+    foreach (var i in partItems)
+    {
+        if (!byId.TryGetValue(i.ClaimId, out var c)) continue;
+        var p = i.Factor * i.Price * i.Quantity + i.Factor * i.Price * i.Quantity * i.Vat * 0.01m;
+        raw.Add((c.RONo, c.Vin, "Phụ tùng", i.Vat, i.PartCode, i.PartName, 0m, p, "1",
+            i.RowPartType == "PTC" ? "1" : i.RowPartType == "PTTT" ? "2"
+                : i.RowPartType == "VTP" ? "3" : "4"));
+    }
+    raw = raw.OrderBy(r => r.RONo).ThenByDescending(r => r.ItemIndex).ThenBy(r => r.Rank).ToList();
+
+    // Convert.ToInt32 trên decimal = làm tròn NGÂN HÀNG (ties-to-even) — giống hệt nguồn.
+    int overflow = 0;
+    long ToInt32Like(decimal v)
+    {
+        var r = Math.Round(v, 0, MidpointRounding.ToEven);
+        if (r > int.MaxValue || r < int.MinValue) { overflow++; return r > 0 ? int.MaxValue : int.MinValue; }
+        return (long)r;
+    }
+
+    var rows = new List<object>();
+    decimal sumColumns = 0m, sumTotalAmount = 0m, sumExact = 0m;
+    foreach (var r in raw)
+    {
+        // 🔴 Cột: ToEven. Tổng: AwayFromZero TRÊN GIÁ TRỊ GỐC. Hai kiểu làm tròn, một dòng.
+        var svcCol = ToInt32Like(r.Service);
+        var partCol = ToInt32Like(r.Part);
+        var totalAmount = Math.Round(r.Service + r.Part, 0, MidpointRounding.AwayFromZero);
+        sumColumns += svcCol + partCol; sumTotalAmount += totalAmount; sumExact += r.Service + r.Part;
+        rows.Add(new
+        {
+            RONo = r.RONo, FrameNo = r.FrameNo, ItemType = r.ItemType, VAT = r.VAT,
+            ItemCode = r.ItemCode, ItemName = r.ItemName,
+            SERVICEPRICE = svcCol,      // đã Convert.ToInt32 (ToEven)
+            PARTPRICE = partCol,        // đã Convert.ToInt32 (ToEven)
+            TOTALAMOUNT = totalAmount,  // Math.Round(gốc, AwayFromZero)
+            // TOTALPRICE và RANKTYPE bị nguồn XOÁ khỏi file ⇒ không trả.
+        });
+    }
+
+    var columnsDisagree = sumColumns != sumTotalAmount;
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        fileNameHint = "BaoCaoChapThuanBaoHanhChiTiet_" + DateTime.Now.ToString("yyyy_MM_dd") + ".xls",
+        sumColumns, sumTotalAmount, sumExact, columnsDisagree,
+        roundingNote = "SERVICEPRICE/PARTPRICE làm tròn NGÂN HÀNG (Convert.ToInt32, ties-to-even); "
+            + "TOTALAMOUNT làm tròn RA XA 0 trên GIÁ TRỊ GỐC chưa làm tròn. Hai kiểu khác nhau ⇒ trong file "
+            + "SERVICEPRICE + PARTPRICE có thể KHÁC TOTALAMOUNT ngay trên cùng một dòng (0 + 0 = 1).",
+        droppedColumnsNote = "Nguồn XOÁ hai cột TOTALPRICE (tổng CHÍNH XÁC do SQL tính) và RANKTYPE khỏi "
+            + "file ⇒ con số đúng duy nhất bị bỏ đi. sumExact ở đây chính là tổng TOTALPRICE đó.",
+        int32OverflowRows = overflow,
+        int32OverflowNote = overflow > 0
+            ? $"{overflow} dòng vượt Int32: nguồn sẽ NÉM OverflowException và SẬP cả thao tác kết xuất. "
+              + "MiniHTC CỐ Ý lệch — kẹp giá trị và đếm ra đây thay vì ném."
+            : "Nguồn dùng Convert.ToInt32 ⇒ một dòng > 2.147.483.647 VNĐ sẽ làm SẬP cả thao tác kết xuất.",
+        sameQueryNote = "Dùng chung WS SerWarrantyAcceptRpt_GetAll với /lines (#407), chỉ bỏ trống đại lý "
+            + "và VAT — không có truy vấn mới.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/warranty-accept/export", async (AppDbContext db, ITenantContext t,
     string? from, string? to) =>
 {
