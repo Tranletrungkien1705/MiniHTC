@@ -47943,6 +47943,92 @@ app.MapPost("/api/serassignmentworks/{roNo}/arise", async (string roNo, Assignme
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #532 NHẬT KÝ BẤM GIỜ TRÊN LỆNH — TRẢ NỢ `Ser_ROWorkTime` CỦA #530/#531 =====
+// Nguồn: `BizCarSv.zzzzCode.cs:208 InsertSer_ROWorkTime`. Endpoint: `POST` + `GET /api/roworktimes`.
+// **§12**: entity `RoWorkTime` + `DbSet` + Seeder.
+//
+// ⚠️ **HAI BẢN CÙNG TÊN trong cùng file**: `:25` và `:208`. Bản `:25` mang chú thích nguyên văn
+//   `// _dbAction ????` — dấu hỏi của chính tác giả. Luồng tạm dừng (#530) gọi bản **7 tham số** ở `:208`.
+// 🔴 **THAM SỐ `dbAction` CHỈ DÙNG ĐỂ ĐỌC, KHÔNG QUYẾT ĐỊNH NƠI GHI**:
+//   phần kiểm gọi `dbAction.ExecQuery(strSqlCheckRo …)` (ở #530 truyền `_dbDealer`), nhưng phần ghi lại
+//   dùng thẳng `_dbMain.ExecQuery` · `_dbWH.ExecQuery` · `_dbDealer.ExecQuery` (nếu `!bIsWSMain`).
+//   ⇒ Truyền `dbAction` khác đi **không đổi được đích ghi** — tham số gây hiểu nhầm.
+// 🔴 **GUARD TRẠNG THÁI RỘNG HƠN HÀM GỌI NÓ**: ở đây cho phép **năm** mã
+//   `CRE · PRT · HRO · INGA · RPRD` (chuỗi `"CRE,PRT,HRO,INGA,RPRD"` ghi thẳng vào tham số lỗi),
+//   trong khi `UpdateFlagPause` (#530) chỉ cho `RPRD`/`INGA`.
+//   ⇒ **Hai guard trạng thái trong cùng một luồng, không nhất quán**: hàm ngoài chặt hơn hàm trong,
+//     nên ba mã `CRE/PRT/HRO` ở đây là **nhánh không bao giờ tới** khi đi từ luồng tạm dừng.
+// 🔴 Ba guard cờ đều theo khuôn `if (x != Flag.Yes && x != Flag.No) throw` — **chỉ nhận "1"/"0"**,
+//   rỗng cũng bị chặn: `InvalidFlagBegin` · `InvalidFlagEnd` · `InvalidFlagPlay` (HẰNG ≠ GIÁ TRỊ:
+//   `Flag.Yes = Active = "1"`, `Flag.No = Inactive = "0"`).
+// ⚪ **Kiểm tra âm tính**: mốc giờ dùng `StandardizeDTime` (**giữ giờ**), không phải `StandardizeDate`
+//   như cột nhật ký của #530 ⇒ ở bảng này giờ **không bị mất**.
+// ⚠️ Câu kiểm dùng `select top 1 sr.* … where sr.ROID = @ROID and sr.RONo = @RONo` — `top 1` **không**
+//   `ORDER BY` (họ #529/#530), nhưng cặp khoá (ROID, RONo) vốn duy nhất nên **vô hại** — nêu để khỏi soi lại.
+app.MapPost("/api/roworktimes", async (RoWorkTimeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    const string kYes = "1";   // TConst.Flag.Yes = Active
+    const string kNo = "0";    // TConst.Flag.No  = Inactive
+    string[] kStatusAllow = { "CRE", "PRT", "HRO", "INGA", "RPRD" };
+
+    if (string.IsNullOrWhiteSpace(dto.RONo))
+        return Results.BadRequest(new { error = "Cần RONo." });
+
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == dto.RONo!.Trim()
+        && (dto.ROID == null || x.Id.ToString() == dto.ROID));
+    if (ro is null)
+        return Results.BadRequest(new { error = "InsertSer_ROWorkTime_NotExistRO", dto.RONo, dto.ROID });
+
+    if (!kStatusAllow.Contains(ro.Status))
+        return Results.BadRequest(new
+        {
+            error = "InsertSer_ROWorkTime_InvalidROStatus",
+            roStatusError = ro.Status, roStatusValid = "CRE,PRT,HRO,INGA,RPRD",
+        });
+
+    // Ba cờ chỉ nhận "1"/"0" — rỗng cũng bị chặn, đúng nguồn.
+    if (dto.FlagBegin is not (kYes or kNo))
+        return Results.BadRequest(new { error = "InsertSer_ROWorkTime_InvalidFlagBegin", dto.FlagBegin });
+    if (dto.FlagEnd is not (kYes or kNo))
+        return Results.BadRequest(new { error = "InsertSer_ROWorkTime_InvalidFlagEnd", dto.FlagEnd });
+    if (dto.FlagPlay is not (kYes or kNo))
+        return Results.BadRequest(new { error = "InsertSer_ROWorkTime_InvalidFlagPlay", dto.FlagPlay });
+
+    var no = string.IsNullOrWhiteSpace(dto.ROWTNo)
+        ? "ROWT" + DateTime.Now.ToString("yyMMddHHmmssfff")   // nguồn xin số qua SequenceGetForDMS_Util
+        : dto.ROWTNo!.Trim();
+    var w = new RoWorkTime
+    {
+        OrgId = t.OrgId, ROWTNo = no, ROID = dto.ROID ?? ro.Id.ToString(), RONo = ro.RONo,
+        PointDateTime = dto.PointDateTime ?? DateTime.Now,   // StandardizeDTime: GIỮ giờ
+        FlagPlay = dto.FlagPlay, FlagBegin = dto.FlagBegin, FlagEnd = dto.FlagEnd,
+        LogLUDateTime = DateTime.Now,
+    };
+    db.RoWorkTimes.Add(w);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        w.Id, w.ROWTNo, w.RONo, w.ROID, w.PointDateTime, w.FlagPlay, w.FlagBegin, w.FlagEnd,
+        statusAllowedHere = kStatusAllow,
+        callerGuardIsStricter = "UpdateFlagPause (#530) chi cho RPRD/INGA => CRE/PRT/HRO khong bao gio toi tu luong do",
+        dbActionParamOnlyUsedForCheck = "phan ghi dung thang _dbMain/_dbWH/_dbDealer",
+        keepsTimeUnlikePauseLogColumn = true,
+        twoOverloadsSameNameInSource = "zzzzCode.cs:25 (co chu thich // _dbAction ????) va :208",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/roworktimes", async (AppDbContext db, ITenantContext t, string? roNo) =>
+{
+    var qy = db.RoWorkTimes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim());
+    var items = await qy.OrderBy(x => x.PointDateTime).ThenBy(x => x.Id)
+        .Select(x => new { x.Id, x.ROWTNo, x.RONo, x.ROID, x.PointDateTime,
+            x.FlagPlay, x.FlagBegin, x.FlagEnd, x.CreatedDate, x.CreatedBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49759,6 +49845,9 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record RoWorkTimeDto(string? RONo, string? ROID, string? ROWTNo, DateTime? PointDateTime,
+    string? FlagPlay, string? FlagBegin, string? FlagEnd);   // #532
+
 record AssignmentAriseDto(string? FlagArise, string? WorkTypeArise);   // #531
 
 record AssignmentPauseDto(string? FlagPause, string? WorkTypePause);   // #530

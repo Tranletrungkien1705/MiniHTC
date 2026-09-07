@@ -5059,6 +5059,29 @@ public sealed class WarrantyExtensionDateLog
 }
 
 /// <summary>Phân công công đoạn sửa chữa theo RO (Ser_AssignmentWork header) — port 1:1 FrmSer_AssignmentWork (TCMotor DMSCarSv/Services). Header theo RO; 7 công đoạn (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) mỗi công đoạn gán khoang (Cavity) + kế hoạch/thực tế bắt đầu-kết thúc → SerAssignmentWorkStage.</summary>
+/// <summary>#532 NHẬT KÝ THỜI GIAN LÀM VIỆC trên lệnh sửa chữa (`Ser_ROWorkTime`) — mỗi dòng là
+/// **một mốc bấm giờ**: bắt đầu / kết thúc / chạy-dừng. Nguồn: `BizCarSv.zzzzCode.cs:208
+/// InsertSer_ROWorkTime` (bản thứ HAI trong file — bản ở `:25` có chú thích `// _dbAction ????`).</summary>
+public sealed class RoWorkTime
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số nhật ký, nguồn xin từ `SequenceGetForDMS_Util(… SequenceTypeDMS.ROWorkTime …)`.</summary>
+    public string ROWTNo { get; set; } = "";
+    public string? ROID { get; set; }
+    public string RONo { get; set; } = "";
+    /// <summary>Mốc bấm giờ (`StandardizeDTime` ⇒ giữ cả giờ, khác `StandardizeDate` của #530).</summary>
+    public DateTime? PointDateTime { get; set; }
+    /// <summary>Cờ CHẠY/DỪNG — chỉ nhận "1"/"0"; ở luồng tạm dừng nguồn truyền `bPause ? Yes : No`.</summary>
+    public string? FlagPlay { get; set; }
+    public string? FlagBegin { get; set; }
+    public string? FlagEnd { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 // ===== #528 §12 KẾ HOẠCH PHÂN CÔNG THEO **BẢY** CÔNG ĐOẠN (Ser_AssignmentWork) =====
 // Nguồn `BizCarSv.AssignmentOfWork.cs:203 Ser_AssignmentWork_CreateX` nhận **21** tham số kế hoạch:
 //   bảy nhóm `SCC / SCD / SCN / SCS / SCDB / SCLR / SCKSC` × ba cột (bắt đầu · kết thúc · khoang).
