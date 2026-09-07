@@ -16304,6 +16304,89 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // ⚠️ Nguồn trả **hai tên cho một giá trị** ở cả hai bảng (`ContactDateUTC` = `ContactDTimeUTC`;
 //   `Note` = `CusCare72hRemark`) — cùng thói quen đã thấy ở `Table 8` (#362).
 // ⚠️ Chính tả nguồn: `CusCare72hSatus` (thiếu chữ "t"). Giữ nguyên tên trường theo nguồn.
+// ===== 🔴 #364 CỤM BẢO HIỂM gửi Veloca (`Table 15/16/17`) =====
+// 🔴 `Table 15`: **hãng bảo hiểm được gửi sang Veloca NHƯ MỘT KHÁCH HÀNG** — các trường đều mang tiền tố
+//   `Customer*` (`CustomerCode = InsNo`, `CustomerName = InsVieName`…) và `CustomerGender` đóng cứng
+//   **`'TOCHUC'`** (tổ chức). ⇒ Bên Veloca, hãng bảo hiểm nằm chung danh mục KHÁCH HÀNG, không phải
+//   danh mục riêng. Đừng port thành một master tách biệt.
+// ⚠️ Nguồn đóng cứng RỖNG/NULL **không nhất quán trong cùng một câu lệnh**:
+//   `CustomerMobilePhone = ''` · `ContactPhone = ''` nhưng `CustomerDateOfBirth = null` ·
+//   `ContactName = null` · `ContactEmail = null`. Giữ đúng từng loại — chuỗi rỗng và NULL khác nhau
+//   ở phía nhận.
+//
+// `Table 16` (hợp đồng bảo hiểm) và `Table 17` (ghép HĐBH–hãng–xe) **cùng dùng lại quy tắc hợp nhất mã
+//   khách `SalesCusID`** của #362 (chú thích `20240401`) ⇒ ba bảng, một quy tắc; sửa một chỗ phải sửa cả ba.
+// ⚠️ `Table 16` trả **BA TÊN cho MỘT giá trị**: `InsContractNoSys` = `InsContractNo` = `SealNo`
+//   (đều là `sc.InsContractNo`) — mức trùng lặp cao hơn cả `Table 8`/`Table 18` (hai tên).
+// Bộ lọc chung của 16/17: `InsContractNo is not null and <> ''` ⇒ xe chưa có số hợp đồng thì **không gửi**.
+app.MapGet("/api/osveloca/ro/{roNo}/insurance", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { roNo });
+
+    var car = r.Vin == null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == r.Vin);
+    if (car is null) return Results.Ok(new { roNo, carResolved = false, insurer = (object?)null, contracts = Array.Empty<object>() });
+
+    // Hãng bảo hiểm — gửi đi dưới dạng KHÁCH HÀNG tổ chức (Table 15).
+    var ins = car.InsNo == null ? null
+        : await db.ServiceInsurances.FirstOrDefaultAsync(i => i.OrgId == t.OrgId && i.InsNo == car.InsNo);
+    object? insurer = ins is null ? null : new
+    {
+        customerCode = ins.InsNo,
+        customerName = ins.InsVieName,
+        customerNameEN = ins.InsEngName,
+        customerGender = "TOCHUC",              // đóng cứng: hãng bảo hiểm là TỔ CHỨC
+        customerPhoneNo = ins.Telephone,
+        customerMobilePhone = "",               // nguồn đóng cứng chuỗi RỖNG
+        customerAddress = ins.Address,
+        customerEmail = ins.Email,
+        customerDateOfBirth = (DateTime?)null,  // nguồn đóng cứng NULL (khác chuỗi rỗng ở trên)
+        taxCode = ins.Taxcode,
+        contactName = (string?)null,            // NULL
+        contactPhone = "",                      // chuỗi RỖNG
+        contactEmail = (string?)null,           // NULL
+        fax = ins.Fax,
+    };
+
+    // Hợp đồng bảo hiểm (Table 16) + bản ghép (Table 17). Chỉ gửi khi CÓ số hợp đồng.
+    var cus = r.CusName == null ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusName == r.CusName);
+    // Quy tắc hợp nhất mã khách — CÙNG quy tắc với #362 (Table 8).
+    var customerCode = !string.IsNullOrWhiteSpace(cus?.SalesCusID) ? cus!.SalesCusID : cus?.CusCode;
+
+    var hasContract = !string.IsNullOrWhiteSpace(car.InsContractNo);
+    var contracts = !hasContract ? new List<object>() : new List<object>
+    {
+        new
+        {
+            car.DealerCode,
+            insContractNoSys = car.InsContractNo,
+            insContractNo = car.InsContractNo,
+            sealNo = car.InsContractNo,          // BA tên, MỘT giá trị — đúng nguồn
+            customerCode,
+            plateNoSys = car.CarID,
+            insCode = car.InsNo,
+            insStartDate = car.InsStartDate,
+            insEndDate = car.InsFinishedDate,
+            customerBuyName = cus?.CusName,
+        },
+    };
+
+    return Results.Ok(new
+    {
+        roNo, carResolved = true, insurer, contracts,
+        customerCodeSource = !string.IsNullOrWhiteSpace(cus?.SalesCusID) ? "SalesCusID" : "CusCode (CarSv)",
+        insurerAsCustomerNote = "Hãng bảo hiểm gửi sang Veloca dưới dạng KHÁCH HÀNG tổ chức (CustomerGender = TOCHUC).",
+        contractSkipped = !hasContract,
+        contractSkipNote = !hasContract
+            ? "Xe chưa có số hợp đồng bảo hiểm ⇒ nguồn KHÔNG gửi bảng 16/17 (lọc InsContractNo <> rỗng)."
+            : null,
+        threeNamesOneValueNote = "InsContractNoSys = InsContractNo = SealNo — nguồn trả ba tên cho một giá trị.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/care72h", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
