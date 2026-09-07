@@ -519,6 +519,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerBank> DealerBanks => Set<DealerBank>();
     public DbSet<DealerInventoryThreshold> DealerInventoryThresholds => Set<DealerInventoryThreshold>();
     public DbSet<DealerZone> DealerZones => Set<DealerZone>();
+    public DbSet<MstZone> MstZones => Set<MstZone>();   // #B89 danh muc VUNG (Mst_Zone)
     public DbSet<PaymentTerm> PaymentTerms => Set<PaymentTerm>();
     public DbSet<PaymentTermDetail> PaymentTermDetails => Set<PaymentTermDetail>();
     public DbSet<CarSpec> CarSpecs => Set<CarSpec>();

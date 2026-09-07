@@ -9195,6 +9195,25 @@ public sealed class DealerInventoryThreshold
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// 🔴 #B89 — **Danh mục VÙNG** (`Mst_Zone`), tách hẳn khỏi <see cref="DealerZone"/> (`Mst_DealerZone`,
+/// bảng GHÉP đại lý↔vùng). Nguồn: `Mst_Zone_Get`/`Mst_Zone_Update` (`BizHTC.MasterData.cs:4141`/`:4431`).
+/// Port cũ chỉ có bảng ghép ⇒ **không có nơi khai báo vùng**, mọi `ZoneCode` là chuỗi tự do.
+/// ⚠️ Cột dấu vết của bảng này tên **`LogLUDTime`** (KHÔNG có chữ "ate") — khác `LogLUDateTime`
+/// dùng ở hầu hết bảng khác. Giữ đúng tên nguồn.
+/// </summary>
+public sealed class MstZone
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ZoneCode { get; set; } = "";
+    public string? ZoneName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    /// <summary>`Mst_Zone.LogLUDTime` — tên cột nguồn viết TẮT, không phải `LogLUDateTime`.</summary>
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Vùng đại lý (Mst_DealerZone) — port 1:1 FrmMst_DealerZone (2010.HTC/Admin/Product). Gán đại lý vào vùng.</summary>
 public sealed class DealerZone
 {

@@ -35305,6 +35305,84 @@ app.MapPost("/api/carspecs/update-check", async (
     });
 }).RequireAuthorization();
 
+// ===== #B89 DANH MỤC VÙNG — `Mst_Zone_Get` + `Mst_Zone_Update` =====
+// Trace LIVE: WS `:99922` → `_biz.Mst_Zone_Get` (`BizHTC.MasterData.cs:4141`, thân ở
+//   **`Mst_Zone_GetX`** `:4265`) · WS `:100001` → `_biz.Mst_Zone_Update` (`:4431`).
+//   3B đo thật, **khớp cả 2 máy**: `4265/207ad15202991ad10621599e58cc211e` ·
+//   `4431/62f7e5d22c9eb3fa63863af1caf6ce4a`.
+// 🔴 **`Mst_Zone` là BẢNG DANH MỤC RIÊNG, KHÔNG phải `Mst_DealerZone`**. Port cũ chỉ có bảng **GHÉP**
+//    đại lý↔vùng (`/api/dealerzones`) ⇒ **không có nơi khai báo vùng**, mọi `ZoneCode` trên toàn hệ
+//    thống là **chuỗi tự do** không đối chiếu được. Đã thêm entity + bảng ở §12.
+//    ⚠️ Nhiều báo cáo phiên B (#B70/#B72/#B78…) lọc theo `Mst_DealerZone.FlagActive` — đó là cờ của
+//      **bản GHÉP**, khác `Mst_Zone.FlagActive` (cờ của **chính vùng**). Hai cờ độc lập.
+// 🔴 **`Mst_Zone_Update` CHỈ đổi được `FlagActive`** — `zzB_Update_Mst_Zone_ClauseSet_zzE` chỉ có
+//    `LogLUDTime`, `LogLUBy`, **`FlagActive`** (`:4657-4660`). **Không** sửa được `ZoneName`, và
+//    **không** có đường THÊM/XOÁ vùng qua WS này ⇒ vùng phải được tạo bằng con đường khác.
+//    Port đúng phạm vi đó: endpoint là **toggle**, không phải upsert.
+// ⚠️ **Tên cột dấu vết là `LogLUDTime`** (KHÔNG có "ate") — khác `LogLUDateTime` dùng ở hầu hết bảng
+//    khác của 2010.HTC. Giữ đúng tên nguồn để đối chiếu dữ liệu thật về sau.
+// 🔴 Nguồn ghi **cả `_dbMain` và `_dbWH`** (hai lần `MyBuildDBDT_Common` + cùng một câu update).
+// 🔴 `Mst_Zone_CheckDB(…, TConst.Flag.Yes, **""**, …)` — vùng **phải tồn tại**, nhưng tham số
+//    `strFlagActiveListToCheck` truyền **chuỗi RỖNG** ⇒ **cố ý KHÔNG kiểm** vùng đang bật hay tắt
+//    (nếu không thì không bao giờ bật lại được vùng đã tắt). Xem `C0-…sexagesimusprimus`.
+// 🔴 Phân trang khuôn chung: `identity(bigint, 0, 1) MyIdxSeq` + `select Count(0) MyCount` **TRƯỚC**
+//    khi cắt trang; nguồn `order by mz.ZoneCode asc`.
+app.MapGet("/api/zones", async (
+    AppDbContext db, ITenantContext t, int? recordStart, int? recordCount, string? zoneCode, string? flagActive) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+    var q = db.MstZones.Where(z => z.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(zoneCode)) q = q.Where(z => z.ZoneCode.Contains(zoneCode.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(z => z.FlagActive == flagActive.Trim());
+    var all = await q.OrderBy(z => z.ZoneCode).ToListAsync();     // `order by mz.ZoneCode asc`
+    var myCount = all.Count;                                       // `MyCount` đếm TRƯỚC khi cắt trang
+    var items = all.Skip(start).Take(count).Select(z => new
+    {
+        mzZoneCode = z.ZoneCode, mzZoneName = z.ZoneName, mzFlagActive = z.FlagActive,
+        mzLogLUDTime = z.LogLUDTime, mzLogLUBy = z.LogLUBy
+    }).ToList();
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        tableNote = "Mst_Zone la BANG DANH MUC RIENG, KHONG phai Mst_DealerZone (bang GHEP dai ly<->vung). Port cu chi co bang ghep => khong co noi khai bao vung, moi ZoneCode la chuoi tu do.",
+        twoFlagsNote = "Nhieu bao cao (#B70/#B72/#B78...) loc theo Mst_DealerZone.FlagActive - do la co cua BAN GHEP, KHAC Mst_Zone.FlagActive (co cua CHINH VUNG). Hai co DOC LAP.",
+        columnNameQuirk = "Cot dau vet ten la LogLUDTime (KHONG co 'ate') - khac LogLUDateTime dung o hau het bang khac cua 2010.HTC.",
+        pagingNote = "identity(bigint,0,1) MyIdxSeq + 'select Count(0) MyCount' TRUOC khi cat trang; nguon order by mz.ZoneCode asc."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/zones/{code}/toggle", async (
+    string code, MstZoneToggleDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var zoneCode = (code ?? "").Trim();
+    // `Mst_Zone_CheckDB(…, Flag.Yes, "", …)` — phải TỒN TẠI; KHÔNG kiểm đang bật/tắt.
+    var z = await db.MstZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ZoneCode == zoneCode);
+    if (z is null)
+        return Results.NotFound(new { error = "Mst_Zone_NotExist", check = new { ZoneCode = zoneCode } });
+
+    var flag = (dto.FlagActive ?? "").Trim();
+    if (flag != "0" && flag != "1")
+        return Results.BadRequest(new { error = "Mst_Zone_Update_InvalidFlagActive", check = new { FlagActive = flag } });
+
+    var before = z.FlagActive;
+    // `zzB_Update_Mst_Zone_ClauseSet_zzE` — ĐÚNG BA cột, không hơn.
+    z.FlagActive = flag;
+    z.LogLUDTime = DateTime.Now;
+    z.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        zoneCode, flagActiveBefore = before, flagActive = z.FlagActive,
+        z.LogLUDTime, z.LogLUBy,
+        scopeNote = "Mst_Zone_Update CHI doi duoc FlagActive: menh de set cua nguon chi co LogLUDTime, LogLUBy, FlagActive (:4657-4660). KHONG sua duoc ZoneName va KHONG co duong THEM/XOA vung qua WS nay => endpoint la TOGGLE, khong phai upsert.",
+        checkDbNote = "Mst_Zone_CheckDB(..., TConst.Flag.Yes, \"\", ...) - vung PHAI TON TAI nhung tham so strFlagActiveListToCheck truyen CHUOI RONG => CO Y KHONG kiem dang bat hay tat (neu khong thi khong bao gio bat lai duoc vung da tat).",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH (hai lan MyBuildDBDT_Common + cung mot cau update)."
+    });
+}).RequireAuthorization();
+
 // Thân dùng chung — nguồn là HAI hàm gần như trùng khít, khác đúng giá trị trạng thái gán vào.
 async Task<IResult> DlrContractCancelSetStatusMulti(
     List<string> contractCNos, string newStatus, AppDbContext db, ITenantContext t,
@@ -39775,6 +39853,7 @@ record DlrContractHeaderSaveDto(string? FlagIsDelete, DateTime? ContractDate, st
 record GrtClaimExtGenAutoCarDto(string? CarId, string? VIN, string? DealerCode, string? BankCode, string? GuaranteeNo);   // #B86
 record GrtClaimExtGenAutoDto(int NumberOfGuaranteeExt, string? Remark, string? FlagisHTC, List<GrtClaimExtGenAutoCarDto>? Cars);   // #B86
 record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   // #B87 - chi kiem, khong ghi
+record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
