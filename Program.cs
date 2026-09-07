@@ -32477,7 +32477,7 @@ app.MapGet("/api/salesorders", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(type)) query = query.Where(o => o.OrderType == type);
     var items = await query.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
-        o.SoCode, o.OrderType, o.PayType, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
+        o.SoCode, o.OrderType, o.PayType, o.SORCode, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
         o.SalesPolicy, o.ExpectedMonth, o.LatestDeliveryDate, o.Approved1At, o.Approved2At, o.RejectReason,
         lines = db.SalesOrderLines.Count(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id),
         qty = db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id).Sum(l => (int?)l.RequestedQuantity) ?? 0
@@ -32494,7 +32494,7 @@ app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITena
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng model." });
     if (lines.Any(l => l.RequestedQuantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
     var no = (type == "Plan" ? "SOP" : "SOU") + DateTime.Now.ToString("yyMMddHHmmss");
-    var o = new SalesOrder { OrgId = t.OrgId, SoCode = no, OrderType = type, PayType = dto.PayType, // 🔴 Nguồn tạo đơn là "P" (chờ duyệt) NGAY — không có bước nháp/gửi.
+    var o = new SalesOrder { OrgId = t.OrgId, SoCode = no, OrderType = type, PayType = dto.PayType, SORCode = string.IsNullOrWhiteSpace(dto.SORCode) ? null : dto.SORCode.Trim(), // 🔴 Nguồn tạo đơn là "P" (chờ duyệt) NGAY — không có bước nháp/gửi.
     DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
     db.SalesOrders.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
@@ -34395,6 +34395,168 @@ app.MapDelete("/api/pis/by-ref/{refNo}", async (string refNo, AppDbContext db, I
         woWorkOrderCleanupSkipped = true,
         woDebt = "NO: bang WO_WorkOrder chua co trong MiniHTC => GUARD 2 port duoc (chi can Car_VIN.WorkOrderNo - them o #B74 - va PiLine.WorkOrderNo) nhung LENH DON WO_WorkOrder thi khong. Khong bia.",
         rbacNote = "Nguon goi myCommon_CheckHTCDirect(..., TConst.Flag.Active) - BAT BUOC FlagDirect."
+    });
+}).RequireAuthorization();
+
+// ===== #B79 DỰNG NỘI DUNG UỶ NHIỆM CHI (UNC) — `Pmt_Payment_GetUNCContent_New20221111` =====
+// Trace LIVE: WS `Pmt_Payment_GetUNCContent` (`WSHTC.asmx.cs:11049`) →
+//   **`_biz.Pmt_Payment_GetUNCContent_New20221111`** (`DataWH/Biz.HTC.WH.My.cs:26601`).
+// 🔴 **BẪY SINH ĐÔI — đã TRACE**: cùng file còn `Pmt_Payment_GetUNCContent_New20200327` (`:25895`).
+//    WS **chỉ gọi bản `_New20221111`** ⇒ bản 2020 **CHẾT**. Không đoán theo tên/hậu tố lớn hơn.
+//   3B đo thật, **khớp cả 2 máy**: start=26601 md5 `5bf8e8859096fbbccf1bbf28d00d0c81`.
+// 🔴 **Đầu vào là BẢNG `Input_CarId`**, không phải danh sách phẳng: thiếu bảng ⇒ ném
+//    `Pmt_Payment_GetUNCContent_InputVinTblNotFound`.
+// ⚠️ **LỖI MÃ LỖI TRONG NGUỒN (ghi nhận, KHÔNG tự sửa)**: `if (String.IsNullOrEmpty(strDealerCode))`
+//    ném **`…_InvalidPaymentType`** (`:26684`) — đáng lẽ phải là mã lỗi của mã đại lý. Hơn nữa phép
+//    kiểm này đứng **SAU** `myCommon_CheckDealer(strDealerCode, …)` vốn đã ném khi rỗng ⇒ nhánh này
+//    **không bao giờ chạy tới**. Port giữ đúng thứ tự và mã của nguồn, ghi rõ ở `sourceQuirks`.
+// 🔴 **NHÁNH `TTC` — dựng mã đơn nhiều tầng, KHÔNG phải nối chuỗi đơn giản**:
+//    Chuỗi join: `Input_CarId → Car_Car.SOCode → Ord_SalesOrder.SOCode`, rồi
+//    `Ord_SalesOrder.SORCode → DMS40_Ord_SalesOrderRoot.SORCode`.
+//    Với **mỗi `SORCode`**: lấy phần **trước dấu `.` ĐẦU TIÊN** làm gốc, rồi lọc lại các `SOCode`
+//    bằng **`like '<gốc>%'`** (⚠️ `SOCode` **mang `SORCode` làm TIỀN TỐ**), lấy phần **sau dấu `.`**
+//    của từng `SOCode` và nối:
+//      · phần tử **ĐẦU TIÊN** nối bằng **`.`**  → `GOC.suffix1`
+//      · các phần tử **SAU** nối bằng **`-`**   → `GOC.suffix1-suffix2-…`
+//    Nhiều `SORCode` thì nối tiếp bằng **`-`**.
+//    ⚠️ **Bộ lọc ký tự**: chỉ nhận `suffix` mà **KÝ TỰ ĐẦU là chữ số 0-9** (nguồn viết hẳn 10 phép
+//      `StringEqualIgnoreCase` liệt kê "0".."9"); suffix bắt đầu bằng chữ **bị BỎ IM LẶNG**.
+//    Không có `SORCode` nào ⇒ ném `…_SOCodeNotFound`.
+//    Kết quả: **`DealerCode-PaymentType-PaymentNo-<multiSOCode>`**, `.Trim()`.
+// 🔴 **NHÁNH `TTBL` — rẽ theo `Mst_Dealer.FlagTCG`** (`:26940` / `:27005`):
+//    · `FlagTCG = '1'` ⇒ nối **6 KÝ TỰ CUỐI của VIN** (`Right(cv.VIN, 6)`), ngăn bằng `-`.
+//    · `FlagTCG = '0'` ⇒ nối theo **`BankGuaranteeNo`** của bảo lãnh, kèm danh sách VIN mỗi bảo lãnh
+//      (`'-' + BankGuaranteeNo + '-' + MultiVIN`), và **lọc `BankGuaranteeNo is not null`**.
+//    Không tìm được bảo lãnh ⇒ ném `…_GuaranteeNoNotFound`.
+//    ⚠️ Nguồn nối chuỗi bằng `STUFF(( … FOR XML PATH('') ), 1, 1, '')` — kỹ thuật SQL Server thuần;
+//      port dùng `string.Join`, **thứ tự do `order by` của nguồn quyết định** (nguồn KHÔNG có
+//      `order by` ⇒ thứ tự **không tất định**; port sắp theo VIN/số bảo lãnh để tái lập được).
+// ✅ RBAC/validate: `myCommon_CheckDealer(…, Active, Active, …)` (đại lý phải tồn tại **và** đang hoạt
+//    động) và `myCar_CheckCar(…, Active, Active, …)` cho **TỪNG** `CarId` trong bảng đầu vào.
+// 📌 §12: `SalesOrder.SORCode` (entity + Seeder + DTO + POST + GET) — không có thì nhánh `TTC` không dựng được.
+app.MapPost("/api/payments/unc-content", async (
+    UncContentDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var paymentType = (dto.PaymentType ?? "").Trim().ToUpperInvariant();
+    var paymentNo = (dto.PaymentNo ?? "").Trim();
+    var carIds = (dto.CarIds ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
+
+    // Thứ tự kiểm ĐÚNG như nguồn: đại lý trước (tồn tại + đang hoạt động).
+    var dealer = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId
+                    && d.DealerCode != null && d.DealerCode.ToUpper() == dealerCode);
+    if (dealer is null || dealer.FlagActive != "1")
+        return Results.BadRequest(new { error = "Common_InvalidDealerCode", check = new { DealerCode = dealerCode } });
+    // ⚠️ Nhánh của nguồn dùng SAI mã lỗi và không bao giờ chạy tới — giữ nguyên để đối chiếu.
+    if (dealerCode.Length < 1)
+        return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_InvalidPaymentType" });
+    if (paymentType.Length < 1)
+        return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_InvalidPaymentType" });
+    if (paymentNo.Length < 1)
+        return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_InvalidPaymentNo" });
+    if (dto.CarIds is null)
+        return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_InputVinTblNotFound" });
+
+    // `myCar_CheckCar(…, Active, Active, …)` cho TỪNG CarId.
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    var missing = carIds.Where(id => !cars.Any(c => c.VIN == id)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "Common_InvalidCarId", check = new { CarId = missing[0] }, missing });
+    var inactive = cars.Where(c => c.FlagActive != "1").Select(c => c.VIN).ToList();
+    if (inactive.Count > 0)
+        return Results.BadRequest(new { error = "Common_InvalidCarIdNotActive", check = new { CarId = inactive[0] }, inactive });
+
+    string result;
+    var skippedSuffixes = new List<string>();
+
+    if (paymentType == "TTC")
+    {
+        // `Car_Car.SOCode → Ord_SalesOrder.SOCode`, rồi `SORCode → DMS40_Ord_SalesOrderRoot.SORCode`.
+        var soCodes = cars.Select(c => c.SOCode).Where(x => x != null).Distinct().ToList();
+        var sos = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && soCodes.Contains(o.SoCode))
+            .Select(o => new { o.SoCode, o.SORCode }).ToListAsync();
+        var roots = (await db.Dms40SoRoots.Where(r => r.OrgId == t.OrgId).Select(r => r.SORCode).ToListAsync()).ToHashSet();
+        // `inner join DMS40_Ord_SalesOrderRoot` — đơn không có gốc bị LOẠI.
+        var pairs = sos.Where(o => o.SORCode != null && roots.Contains(o.SORCode))
+            .Select(o => new { o.SoCode, SORCode = o.SORCode! }).Distinct().ToList();
+
+        var sorList = pairs.Select(p => p.SORCode).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+        if (sorList.Count == 0)
+            return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_SOCodeNotFound" });
+
+        string? multi = null;
+        foreach (var sor in sorList)
+        {
+            // Gốc = phần TRƯỚC dấu '.' ĐẦU TIÊN.
+            var rootCode = sor.Split('.')[0];
+            var built = rootCode.Trim();
+            // Lọc lại SOCode bằng `like '<gốc>%'` — SOCode MANG SORCode làm TIỀN TỐ.
+            var mine = pairs.Where(p => p.SoCode.StartsWith(rootCode, StringComparison.Ordinal))
+                .Select(p => p.SoCode).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+            var idx = 0;
+            foreach (var soCode in mine)
+            {
+                var parts = soCode.Split('.');
+                if (parts.Length <= 1 || parts[1].Length < 1) continue;
+                var suffix = parts[1].Trim();
+                // ⚠️ Chỉ nhận suffix có KÝ TỰ ĐẦU là chữ số 0-9; còn lại BỎ IM LẶNG.
+                if (!char.IsDigit(suffix[0])) { skippedSuffixes.Add(soCode); continue; }
+                built = idx == 0 ? $"{built}.{suffix}".Trim() : $"{built}-{suffix}".Trim();
+                idx++;
+            }
+            multi = string.IsNullOrEmpty(multi) ? built.Trim() : $"{multi}-{built}".Trim();
+        }
+        result = $"{dealerCode}-{paymentType}-{paymentNo}-{multi}".Trim();
+    }
+    else if (paymentType == "TTBL")
+    {
+        if (dealer.FlagTCG == "1")
+        {
+            // `Right(cv.VIN, 6)` nối bằng '-'.
+            var six = cars.Select(c => c.VIN.Length >= 6 ? c.VIN.Substring(c.VIN.Length - 6) : c.VIN)
+                .OrderBy(x => x, StringComparer.Ordinal).ToList();
+            if (six.Count == 0)
+                return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_GuaranteeNoNotFound" });
+            result = $"{dealerCode}-{paymentType}-{paymentNo}-{string.Join("-", six)}".Trim();
+        }
+        else
+        {
+            // `FlagTCG = '0'`: theo BankGuaranteeNo + danh sách VIN mỗi bảo lãnh; lọc BankGuaranteeNo is not null.
+            var vins = cars.Select(c => c.VIN).ToHashSet();
+            var dtls = await db.BankGuaranteeDtls.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN))
+                .Select(x => new { x.GuaranteeId, x.VIN }).ToListAsync();
+            var grtIds = dtls.Select(x => x.GuaranteeId).Distinct().ToList();
+            var grts = await db.BankGuarantees.Where(g => g.OrgId == t.OrgId && grtIds.Contains(g.Id))
+                .Select(g => new { g.Id, g.BankGuaranteeNo }).ToListAsync();
+            var usable = grts.Where(g => !string.IsNullOrWhiteSpace(g.BankGuaranteeNo)).ToList();
+            if (usable.Count == 0)
+                return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_GuaranteeNoNotFound" });
+            var chunks = usable.OrderBy(g => g.BankGuaranteeNo, StringComparer.Ordinal).Select(g =>
+            {
+                var mine = dtls.Where(d => d.GuaranteeId == g.Id).Select(d => d.VIN)
+                    .Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+                return $"{g.BankGuaranteeNo}-{string.Join("-", mine)}";
+            }).ToList();
+            result = $"{dealerCode}-{paymentType}-{paymentNo}-{string.Join("-", chunks)}".Trim();
+        }
+    }
+    else
+        return Results.BadRequest(new { error = "Pmt_Payment_GetUNCContent_InvalidPaymentType", check = new { PaymentType = paymentType } });
+
+    return Results.Ok(new
+    {
+        uncContent = result,
+        dealerCode, paymentType, paymentNo,
+        carCount = carIds.Count,
+        flagTCG = dealer.FlagTCG,
+        skippedSuffixes,
+        twinNote = "BAY SINH DOI DA TRACE: cung file con Pmt_Payment_GetUNCContent_New20200327 (:25895); WS CHI goi ban _New20221111 (:26601) => ban 2020 CHET. Khong doan theo hau to lon hon.",
+        ttcRuleNote = "Nhanh TTC dung ma don NHIEU TANG: Input_CarId -> Car_Car.SOCode -> Ord_SalesOrder.SOCode, roi SORCode -> DMS40_Ord_SalesOrderRoot.SORCode. Voi MOI SORCode: lay phan TRUOC dau '.' DAU TIEN lam goc, loc lai SOCode bang like '<goc>%' (SOCode MANG SORCode lam TIEN TO), lay phan SAU dau '.' cua tung SOCode roi noi: phan tu DAU TIEN bang '.', cac phan tu SAU bang '-'. Nhieu SORCode noi tiep bang '-'.",
+        digitFilterNote = "BO LOC KY TU: chi nhan suffix ma KY TU DAU la chu so 0-9 (nguon viet han 10 phep StringEqualIgnoreCase liet ke '0'..'9'); suffix bat dau bang chu BI BO IM LANG. Da liet ke o skippedSuffixes.",
+        ttblRuleNote = "Nhanh TTBL re theo Mst_Dealer.FlagTCG: '1' => noi 6 KY TU CUOI cua VIN (Right(cv.VIN,6)) ngan bang '-'; '0' => noi theo BankGuaranteeNo kem danh sach VIN moi bao lanh, LOC BankGuaranteeNo is not null. Khong tim duoc bao lanh => GuaranteeNoNotFound.",
+        orderNote = "Nguon noi chuoi bang STUFF((... FOR XML PATH('')),1,1,'') va KHONG CO 'order by' => thu tu KHONG TAT DINH. Port sap theo VIN / so bao lanh de tai lap duoc - day la KHAC BIET CO Y, khong phai port sai.",
+        sourceQuirks = "LOI MA LOI TRONG NGUON (ghi nhan, KHONG tu sua): 'if (String.IsNullOrEmpty(strDealerCode))' nem _InvalidPaymentType (:26684) - dang le la ma loi cua ma dai ly. Hon nua phep kiem nay dung SAU myCommon_CheckDealer von da nem khi rong => nhanh nay KHONG BAO GIO chay toi.",
+        validateNote = "myCommon_CheckDealer(..., Active, Active) (dai ly ton tai VA dang hoat dong) + myCar_CheckCar(..., Active, Active) cho TUNG CarId trong bang dau vao."
     });
 }).RequireAuthorization();
 
@@ -38773,6 +38935,7 @@ record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null);
 record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp, string? FlagDelete, string? FlagAutoPL);
+record UncContentDto(string? DealerCode, string? PaymentType, string? PaymentNo, string? GuaranteeType, List<string>? CarIds);   // #B79 - dau vao la BANG Input_CarId cua nguon
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
@@ -38807,7 +38970,7 @@ record CtTkhqDeleteDto(List<string>? DeclarationNos);
 record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null, string? CarId = null);
 record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
 record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
-record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, List<SalesOrderLineDto>? Lines);
+record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, string? SORCode, List<SalesOrderLineDto>? Lines);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate, string? SPCode = null, List<SoApprove1LineDto>? Lines = null);
 // Dòng duyệt cấp 1 do người duyệt nhập — nguồn đối chiếu theo khoá SpecCode/ModelCode/ColorCode.
 record SoApprove1LineDto(string? ModelCode, string? SpecCode, string? ColorCode, int ApprovedQuantity, DateTime? ApprovedDate, decimal UnitPriceInit, string? Remark);

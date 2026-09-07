@@ -6086,6 +6086,11 @@ public sealed class SalesOrder
     public string Status { get; set; } = "P";
     /// <summary>Chính sách bán áp cho đơn khi duyệt cấp 1 (`Ord_SalesOrder.SPCode`) — nguồn ghi ở Approve1.</summary>
     public string? SPCode { get; set; }
+    /// <summary>🔴 #B79 — `Ord_SalesOrder.SORCode`: mã **đơn hàng GỐC DMS40** mà đơn bán này thuộc về.
+    /// Nguồn dựng nội dung UNC bằng chuỗi join `Car_Car.SOCode → Ord_SalesOrder.SOCode` rồi
+    /// `Ord_SalesOrder.SORCode → DMS40_Ord_SalesOrderRoot.SORCode` (`Biz.HTC.WH.My.cs:26821-26824`).
+    /// ⚠️ `SOCode` **mang chính `SORCode` làm TIỀN TỐ** — nguồn lọc lại bằng `SOCode like '&lt;SORCode&gt;%'`.</summary>
+    public string? SORCode { get; set; }
     /// <summary>Người duyệt cấp 1 (`ApprovedBy1`) — nguồn ghi kèm `ApprovedDate1`; port cũ chỉ có thời điểm.</summary>
     public string? ApprovedBy1 { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
