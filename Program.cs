@@ -342,7 +342,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(d => d.DealerCode.Contains(q) || d.DealerName.Contains(q));
     var items = await query.OrderBy(d => d.DealerCode).Select(d => new
     { d.DealerCode, d.DealerName, d.DealerType, d.BUCode, d.BuPattern, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode,
-      d.FlagDirect, d.FlagActive, d.DealerScale, d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
+      d.FlagDirect, d.FlagActive, d.FlagDealerHTC, d.DealerScale, d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
       d.GarageAddress, d.GarageManagerPhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
@@ -364,6 +364,7 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.DealerName = dto.DealerName.Trim(); d.DealerType = dto.DealerType; d.BUCode = dto.BUCode; d.BuPattern = dto.BuPattern; d.ProvinceCode = dto.ProvinceCode;
     d.Address = dto.Address; d.Phone = dto.Phone; d.Fax = dto.Fax; d.Email = dto.Email; d.TaxCode = dto.TaxCode;
     d.FlagDirect = dto.FlagDirect; d.FlagActive = dto.FlagActive; d.DealerScale = dto.DealerScale;
+    d.FlagDealerHTC = dto.FlagDealerHTC;   // #335 §12
     d.DealerPhoneNo = dto.DealerPhoneNo; d.DealerFaxNo = dto.DealerFaxNo; d.CompanyName = dto.CompanyName; d.CompanyAddress = dto.CompanyAddress;
     d.ShowroomAddress = dto.ShowroomAddress; d.GarageAddress = dto.GarageAddress; d.GarageManagerPhoneNo = dto.GarageManagerPhoneNo; d.GarageFaxNo = dto.GarageFaxNo;
     d.DirectorName = dto.DirectorName; d.DirectorPhoneNo = dto.DirectorPhoneNo; d.DirectorEmail = dto.DirectorEmail;
@@ -5973,6 +5974,9 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
         x.CountSCSRoWarranty,
         x.CountSPK,
         x.CountSPKLocal,
+        x.CountPDI,   // #335 §12
+        x.CountPDIRoRepair,   // #335 §12
+        x.CountPDILocal,   // #335 §12
         x.CountSPKRoRepair,
         x.DateReport,
         x.DealerCode,
@@ -6099,12 +6103,43 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
             dateReport = dateStr, boundary,
         });
 
+    // ===== 🔴 #335 LỌC ĐẠI LÝ — #330 port THIẾU HẲN, đây là GAP của chính lượt trước =====
+    // Nguồn (`ZTemp.cs`, trong cả hai job auto):
+    //   `from Mst_Dealer t where t.DealerCode not in ('VN101') -- Đại lý idocNet Test`
+    //   `and t.FlagActive = '1' and t.FlagDealerHTC = '1'`
+    // #330 dùng `db.Dealers.Where(d => d.OrgId == t.OrgId)` — **không lọc gì** ⇒ sẽ sinh báo cáo KPI cho
+    //   đại lý đã ngừng hoạt động, đại lý KHÔNG thuộc HTC, và cả **đại lý TEST VN101**. Nay vá đủ ba điều kiện.
     var oneDealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
     var allDealers = oneDealer.Length == 0;
 
-    var dealers = allDealers
-        ? await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => d.DealerCode).ToListAsync()
-        : new List<string> { oneDealer };
+    var dq = db.Dealers.Where(d => d.OrgId == t.OrgId
+        && d.DealerCode != "VN101"          // đại lý idocNet Test — nguồn loại đích danh
+        && d.FlagActive == "1"
+        && d.FlagDealerHTC == "1");
+    if (!allDealers) dq = dq.Where(d => d.DealerCode == oneDealer);
+    var dealers = await dq.Select(d => d.DealerCode).ToListAsync();
+
+    // ===== 🔴 #335 CỬA SỔ KỲ BÁO CÁO — nguồn tính từ `strDateReport` =====
+    //   `strDateFrom = dtimeReport.ToString("yyyy-MM-01")`  (mùng 1 của tháng kỳ)
+    //   `strDateTo   = dtimeReport.AddMonths(1).ToString("yyyy-MM-01") rồi AddDays(-1)` (ngày cuối tháng)
+    var rp = dto.DateReport!.Value;
+    var dateFrom = new DateTime(rp.Year, rp.Month, 1);
+    var dateTo = dateFrom.AddMonths(1).AddDays(-1);
+
+    // ===== 🔴 #335 QUẦN THỂ LỆNH được tính (`#tbl_Ser_RO`) =====
+    //   `and sr.ActualDeliveryDate >= @strDateFrom and sr.ActualDeliveryDate <= @strDateTo`
+    //   `and sr.[status] in ('FNS')`
+    // ⚠️ Mốc lọc là **ActualDeliveryDate (giờ giao xe thực tế)**, KHÔNG phải ngày lập lệnh hay
+    //   `FinishedDate` ⇒ lệnh hoàn tất cuối tháng trước mà giao xe tháng này thì tính vào **tháng này**.
+    // ⚠️ `'FNS'` là từ vựng của nguồn; MiniHTC dùng nhãn `"Finished"` cho cùng trạng thái đó.
+    var roIds = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId && r.Status == "Finished"
+            && r.ActualDeliveryDate != null
+            && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
+        .Select(r => new { r.Id, r.DealerCode }).ToListAsync();
+
+    var items = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId)
+        .Select(i => new { i.RoId, i.ROType, i.ExpenseType }).ToListAsync();
 
     var created = 0;
     foreach (var d in dealers)
@@ -6112,11 +6147,45 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         // Không sinh trùng kỳ cho cùng đại lý.
         if (await db.ReportKpis.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == d
                 && x.DateReport == dto.DateReport)) continue;
+
+        var ro = roIds.Where(r => r.DealerCode == d).Select(r => r.Id).ToHashSet();
+        // ===== 🔴 #335 CÁCH ĐẾM: đếm **LỆNH (lượt xe)**, KHÔNG đếm dòng dịch vụ =====
+        //   `select count(0) from #tbl_Ser_RO q where q.ROID in (select t.ROID from items where …)`
+        //   ⇒ một lệnh có 5 dòng SCC vẫn chỉ tính **1 lượt**. Đếm dòng dịch vụ là SAI.
+        //   ⇒ cũng vì thế `CountSCC` **KHÔNG** bằng tổng 4 mã nguồn tiền: một lệnh vừa có dòng
+        //     khách trả tiền vừa có dòng bảo hành sẽ được đếm ở **cả hai**.
+        int N(string type, string? exp = null) => items
+            .Where(i => ro.Contains(i.RoId) && i.ROType == type
+                && (exp == null || i.ExpenseType == exp))
+            .Select(i => i.RoId).Distinct().Count();
+
         db.ReportKpis.Add(new ReportKpi
         {
             OrgId = t.OrgId, DealerCode = d, DateReport = dto.DateReport,
             Status = "F",                       // nguồn đặt Finished ngay lúc tạo
             CreatedBy = dto.CreatedBy,
+
+            // I. Tổng số lượt xe dịch vụ = đếm TOÀN BỘ lệnh trong kỳ (không lọc theo loại).
+            CountCarService = ro.Count,
+
+            // 1. Bảo dưỡng — chỉ có ROREPAIR và LOCAL (không có bảo hành/bảo hiểm).
+            CountBDD = N("BDD"), CountBDDRoRepair = N("BDD", "ROREPAIR"), CountBDDLocal = N("BDD", "LOCAL"),
+            // 2. Sửa chữa chung — đủ bốn nguồn tiền.
+            CountSCC = N("SCC"), CountSCCRoRepair = N("SCC", "ROREPAIR"),
+            CountSCCRoWarranty = N("SCC", "ROWARRANTY"), CountSCCRoInsurance = N("SCC", "ROINSURANCE"),
+            CountSCCLocal = N("SCC", "LOCAL"),
+            // 3. Sửa chữa đồng.
+            CountSCD = N("SCD"), CountSCDRoRepair = N("SCD", "ROREPAIR"),
+            CountSCDRoWarranty = N("SCD", "ROWARRANTY"), CountSCDRoInsurance = N("SCD", "ROINSURANCE"),
+            CountSCDLocal = N("SCD", "LOCAL"),
+            // 4. Sửa chữa sơn.
+            CountSCS = N("SCS"), CountSCSRoRepair = N("SCS", "ROREPAIR"),
+            CountSCSRoWarranty = N("SCS", "ROWARRANTY"), CountSCSRoInsurance = N("SCS", "ROINSURANCE"),
+            CountSCSLocal = N("SCS", "LOCAL"),
+            // 5. Phụ kiện — chỉ ROREPAIR và LOCAL.
+            CountSPK = N("SPK"), CountSPKRoRepair = N("SPK", "ROREPAIR"), CountSPKLocal = N("SPK", "LOCAL"),
+            // 6. PDI — chỉ ROREPAIR và LOCAL.
+            CountPDI = N("PDI"), CountPDIRoRepair = N("PDI", "ROREPAIR"), CountPDILocal = N("PDI", "LOCAL"),
         });
         created++;
     }
@@ -6126,9 +6195,19 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
     {
         dateReport = dateStr, mode = allDealers ? "AutoAllDealer" : "AutoDealer",
         dealers = dealers.Count, created,
-        // 📌 NỢ ĐÃ KHAI: hai job của nguồn TÍNH số liệu KPI từ dữ liệu xưởng rồi mới ghi;
-        //   ở đây mới tạo BẢN GHI KHUNG (đại lý + kỳ + trạng thái). Phần tính 98 chỉ tiêu chưa port.
-        computedFigures = false,
+        dateFrom = dateFrom.ToString("yyyy-MM-dd"), dateTo = dateTo.ToString("yyyy-MM-dd"),
+        // 📌 #335: đã port **nhóm ĐẾM LƯỢT** (25 chỉ tiêu: tổng lượt xe + 6 tổng theo loại + 18 cặp
+        //   loại×nguồn-tiền). Các nhóm còn lại của nguồn **CHƯA** port ⇒ khai rõ, không nhận vơ:
+        //   – doanh thu tiền công `ServiceAmount*` (SUM Factor×Price×(1+VAT/100) theo 18 cặp)
+        //   – giờ công `WorkHour*` (= doanh thu ÷ tham số đơn giá `UnitPrice{BDN,SCC,SCD,SCS}`)
+        //   – các tỉ lệ /khoang /CVDV /ngày, doanh thu phụ tùng, lợi nhuận gộp
+        computedFigures = "counts-only",
+        computedGroups = new[] { "CountCarService", "Count<Loại>", "Count<Loại><NguồnTiền>" },
+        pendingGroups = new[] { "ServiceAmount*", "WorkHour*", "PerCavity/PerAdviser ratios", "PartAmount*", "ProfitRate*" },
+        // 🔴 Nguồn ĐÓNG CỨNG 0 cho các chỉ tiêu tách nội bộ: `, 0 CountSCCLocal_SCL` và
+        //   `, 0 CountSCCLocal_Khac` (lặp cho BDD/SCD/SCS) ⇒ "số lượt sửa chữa lại" và "khác
+        //   (PDI, xe lưu kho, xe lái thử)" **luôn bằng 0 trong MỌI báo cáo**, không phải do thiếu dữ liệu.
+        alwaysZeroInSource = new[] { "Count*Local_SCL", "Count*Local_Khac" },
         columnSetNote = allDealers
             ? "Nguồn: job TẤT CẢ đại lý gọi Report_KPICreateX (61 cột) — THIẾU 44 cột so với job một đại lý."
             : "Nguồn: job MỘT đại lý gọi Report_KPICreateX_New20221101 (105 cột) — bộ đầy đủ.",
@@ -6182,6 +6261,9 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         CountSCSRoWarranty = dto.CountSCSRoWarranty,
         CountSPK = dto.CountSPK,
         CountSPKLocal = dto.CountSPKLocal,
+        CountPDI = dto.CountPDI,
+        CountPDIRoRepair = dto.CountPDIRoRepair,
+        CountPDILocal = dto.CountPDILocal,
         CountSPKRoRepair = dto.CountSPKRoRepair,
         DateReport = dto.DateReport,
         DealerCode = dto.DealerCode,
@@ -37497,7 +37579,7 @@ record MasterDto(string Code, string Name, string? ParentCode, string? Status);
 record ImportDealerRowDto(string? DealerCode, string? DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode,
     string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress, string? TaxCode,
     string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail, string? ContactName, string? FlagDirect, string? FlagActive, string? DealerScale, string? Remark);
-record DealerDto(string DealerCode, string DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
+record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
     string? FlagDirect, string? FlagActive, string? DealerScale, string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress,
     string? GarageAddress, string? GarageManagerPhoneNo, string? GarageFaxNo, string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail,
     string? SalesManagerName, string? SalesManagerPhoneNo, string? SalesManagerEmail, string? GarageManagerName, string? GarageManagerEmail,
@@ -38156,6 +38238,7 @@ record ReportKpiDto(
     decimal? CountSCDRoInsurance = null, decimal? CountSCDRoRepair = null, decimal? CountSCDRoWarranty = null, decimal? CountSCS = null,
     decimal? CountSCSLocal = null, decimal? CountSCSPerCabinetPaint = null, decimal? CountSCSPerCavityBP = null, decimal? CountSCSRoInsurance = null,
     decimal? CountSCSRoRepair = null, decimal? CountSCSRoWarranty = null, decimal? CountSPK = null, decimal? CountSPKLocal = null,
+    decimal? CountPDI = null, decimal? CountPDIRoRepair = null, decimal? CountPDILocal = null,
     decimal? CountSPKRoRepair = null, DateTime? DateReport = null, string? DealerCode = null, decimal? EmploymentRate = null,
     string? EnginerBP = null, decimal? EnginerNumber = null, decimal? LaborProductivity = null, string? LogLUBy = null,
     DateTime? LogLUDateTime = null, decimal? PaintingTechnicianQty = null, decimal? PartAmountLocal = null, decimal? PartAmountOut = null,

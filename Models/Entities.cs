@@ -77,6 +77,10 @@ public sealed class Dealer
     /// <summary>`OrgHCCID` — mã tổ chức bên HCC. **Cổng chặn của cả job NoShow**: nguồn lọc
     /// `and md.OrgHCCID is not null` ở CẢ HAI câu (chọn đại lý và ghép dữ liệu) ⇒ đại lý chưa đăng ký
     /// HCC thì không bao giờ được đẩy.</summary>
+    /// <summary>🔴 #335 FLAGDEALERHTC — đại lý có thuộc mạng lưới **HTC** hay không. Job sinh KPI của
+    /// nguồn lọc `and t.FlagDealerHTC = '1'` **cùng với** `FlagActive = '1'` và loại đích danh `VN101`
+    /// (đại lý idocNet Test). Thiếu cột này thì không thể lọc đúng đại lý được sinh báo cáo.</summary>
+    public string? FlagDealerHTC { get; set; }
     public string? OrgHCCID { get; set; }
     /// <summary>`NetworkHCCID` — mã mạng lưới bên HCC (khác `NetworkID` của bảng `CmCt_Mst_Network`).</summary>
     public string? NetworkHCCID { get; set; }
@@ -7264,6 +7268,12 @@ public sealed class ReportKpi
     public decimal? CountSCSRoWarranty { get; set; }
     public decimal? CountSPK { get; set; }
     public decimal? CountSPKLocal { get; set; }
+    // #335: ba cot PDI — co trong 105 cot cua Report_KPICreateX_New20221101 nhung KHONG
+    //   nam trong 98 cot ma #329 port tu Report_KPICreate_New20221101. Chinh la mot phan
+    //   cua do lech 61 vs 105 da ghi o #330.
+    public decimal? CountPDI { get; set; }
+    public decimal? CountPDIRoRepair { get; set; }
+    public decimal? CountPDILocal { get; set; }
     public decimal? CountSPKRoRepair { get; set; }
     public DateTime? DateReport { get; set; }
     public string? DealerCode { get; set; }
