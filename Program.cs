@@ -3462,6 +3462,125 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // ⚠️ NỢ CÓ NHÃN: khối `#tbl_Pmt_PaymentDetailTotal_Temp` (tổng đã thanh toán) ở nguồn **đã bị comment**
 //    kèm lý do *"Hàm này gây chậm ⇒ tách thành 2 hàm ở dưới"*; MiniHTC chưa có tầng thanh toán ⇒
 //    `paidPercent` / `amountNotPaid` trả `null`, **không suy số** (cùng món nợ #B37/#B56/#B59).
+
+// ===== #B62 PIVOT LƯỢT KHÁCH THĂM & LÁI THỬ — `RptPivot_DlrCtmVisit` / `RptPivot_DlrDriveTest` =====
+// (`FrmPivotCtmVisit`, `FrmPivotDriverTest`.) Trace LIVE:
+//   · `ReportService.ReportCtmVisitPivot` (`:2996`) → WS `RptPivot_DlrCtmVisit` (`WSHTC.asmx.cs:30550`)
+//     → **`_biz.RptPivot_DlrCtmVisit_New20181115`** (`BizHTC.Report.cs:15198`)
+//   · `ReportService.ReportDriverTestPivot` (`:3036`) → WS `RptPivot_Dlr_TestDriver` (`:30616`)
+//     → **`_biz.RptPivot_DlrDriveTest_New20181115`** (`:15375`)
+//   ⚠️ Tên WS (`…_Dlr_TestDriver`) và tên biz (`…_DlrDriveTest`) **đảo chữ** — tra theo tên WS sẽ trượt.
+// 🔴 **Bộ lọc lõi giống nhau ở cả hai**:
+//    `inner join Mst_Dealer dl on <t>.DealerCode = dl.DealerCode` **và `dl.FlagActive = '1'`**
+//    **và** `(dl.BUCode like @strBUPatternOfUser)` — ✅ **BU lọc thật** (như #B55/#B56/#B57).
+//    ⚠️ `dl.FlagActive = '1'` nằm **trong mệnh đề `on` của INNER join** ⇒ **loại luôn** lượt khách của
+//    đại lý đã ngưng hoạt động (không chỉ bỏ ghép) — khác hẳn khi nằm ở `left join`.
+//    Cộng `where … and <t>.FlagActive = '1'` trên chính bản ghi lượt khách.
+// 🔴 `Mst_CarSpec` bị **COMMENT** ở cả hai (`:15276-15277`, `:15460-15461`) ⇒ **không** trả `SpecDescription`.
+//    Port theo dòng ACTIVE: chỉ join `Mst_CarModel` và `Mst_CtmRangeAge`.
+// 🔴 Bộ lọc thời gian dựng bằng `BuildClause("and", "<t>.VisitDTime"/"DriveTestDTime", strTDate, "@p", …)`
+//    — dạng **danh-sách-điều-kiện**, không phải khoảng cố định.
+// 🔴 Cột `1.0 TOTAL` (hằng) để pivot đếm — giữ nguyên.
+app.MapGet("/api/reports/ctm-visit-pivot", async (
+    AppDbContext db, ITenantContext t, DateTime? visitFrom, DateTime? visitTo,
+    string? dealerCode, string? modelCode, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `inner join Mst_Dealer … and dl.FlagActive = '1' and BUCode like @strBUPatternOfUser`.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.FlagActive, d.Status }).ToListAsync();
+    var scopeList = dealers
+        .Where(d => (d.FlagActive ?? d.Status) == "1")
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    // Bảng lượt khách — sau khi hợp nhất song trùng, nguồn dữ liệu duy nhất là `CustomerVisits`.
+    var q = db.CustomerVisits.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(v => v.DealerCode == dealerCode.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(v => v.ModelCode == modelCode.Trim());
+    if (visitFrom is not null) q = q.Where(v => v.CreatedAt >= visitFrom);
+    if (visitTo is not null) q = q.Where(v => v.CreatedAt <= visitTo);
+    var all = await q.ToListAsync();
+
+    var beforeScope = all.Count;
+    all = all.Where(v => v.DealerCode != null && scope.Contains(v.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - all.Count;
+
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var ages = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "CtmRangeAge")
+        .Select(m => new { m.Code, m.Name }).ToListAsync();
+
+    var items = all.Select(v => new
+    {
+        dcvCusVisitCode = v.CusVisitCode, dcvDealerCode = v.DealerCode,
+        dlDealerName = scopeList.FirstOrDefault(d => d.DealerCode == v.DealerCode)?.DealerName,
+        dcvGender = v.Gender, dcvRangeAgeCode = v.RangeAgeCode,
+        mcraRangeAgeName = ages.FirstOrDefault(a => a.Code == v.RangeAgeCode)?.Name,
+        dcvModelCode = v.ModelCode,
+        mcmModelName = models.FirstOrDefault(m => m.ModelCode == v.ModelCode)?.ModelName,
+        dcvVisitDTime = v.CreatedAt,
+        total = 1.0m                                  // cột `1.0 TOTAL` của nguồn
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, droppedByDealerJoin,
+        byDealer = items.GroupBy(x => x.dcvDealerCode ?? "?").Select(g => new { dealerCode = g.Key, visits = g.Count() }).OrderByDescending(x => x.visits).ToList(),
+        byModel = items.GroupBy(x => x.dcvModelCode ?? "?").Select(g => new { modelCode = g.Key, visits = g.Count() }).OrderByDescending(x => x.visits).ToList(),
+        byGender = items.GroupBy(x => x.dcvGender ?? "?").Select(g => new { gender = g.Key, visits = g.Count() }).ToList(),
+        byRangeAge = items.GroupBy(x => x.dcvRangeAgeCode ?? "?").Select(g => new { rangeAgeCode = g.Key, visits = g.Count() }).ToList(),
+        dealerFilterNote = "inner join Mst_Dealer ... and dl.FlagActive = '1' and BUCode like @strBUPatternOfUser => LOAI LUON luot khach cua dai ly da ngung hoat dong (dieu kien nam trong 'on' cua INNER join).",
+        notPorted = "Mst_CarSpec bi COMMENT o nguon (:15276-15277) => KHONG tra SpecDescription. Port dong ACTIVE.",
+        mergeNote = "#B62 da hop nhat song trung CtmVisit/CustomerVisit - truoc do luot khach vao HAI bang khac nhau nen pivot chi thay mot nua du lieu."
+    });
+}).RequireAuthorization();
+
+// Pivot LÁI THỬ — cùng khuôn, khác bảng gốc (`Dlr_DriveTest`) và cột thời gian (`DriveTestDTime`).
+// ⚠️ Tên WS `RptPivot_Dlr_TestDriver` nhưng biz là `RptPivot_DlrDriveTest_New20181115` — **đảo chữ**.
+app.MapGet("/api/reports/drive-test-pivot", async (
+    AppDbContext db, ITenantContext t, DateTime? testFrom, DateTime? testTo,
+    string? dealerCode, string? modelCode, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.FlagActive, d.Status }).ToListAsync();
+    var scopeList = dealers.Where(d => (d.FlagActive ?? d.Status) == "1")
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    var q = db.DriveTests.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(x => x.TestModelCode == modelCode.Trim());
+    if (testFrom is not null) q = q.Where(x => x.DriveDate >= testFrom);
+    if (testTo is not null) q = q.Where(x => x.DriveDate <= testTo);
+    var all = await q.ToListAsync();
+
+    var beforeScope = all.Count;
+    all = all.Where(x => x.DealerCode != null && scope.Contains(x.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - all.Count;
+
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+
+    var items = all.Select(x => new
+    {
+        ddtDealerCode = x.DealerCode,
+        dlDealerName = scopeList.FirstOrDefault(d => d.DealerCode == x.DealerCode)?.DealerName,
+        ddtModelCode = x.TestModelCode,
+        mcmModelName = models.FirstOrDefault(m => m.ModelCode == x.TestModelCode)?.ModelName,
+        ddtDriveTestDTime = x.DriveDate,
+        total = 1.0m
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, droppedByDealerJoin,
+        byDealer = items.GroupBy(x => x.ddtDealerCode ?? "?").Select(g => new { dealerCode = g.Key, tests = g.Count() }).OrderByDescending(x => x.tests).ToList(),
+        byModel = items.GroupBy(x => x.ddtModelCode ?? "?").Select(g => new { modelCode = g.Key, tests = g.Count() }).OrderByDescending(x => x.tests).ToList(),
+        nameTrap = "Ten WS 'RptPivot_Dlr_TestDriver' nhung ten biz 'RptPivot_DlrDriveTest_New20181115' - DAO CHU, tra theo ten WS se truot.",
+        dealerFilterNote = "Giong pivot tham khach: inner join Mst_Dealer + FlagActive='1' + BUCode like @strBUPatternOfUser."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/guarantee-due-payment", async (
     AppDbContext db, ITenantContext t, DateTime? dateEndFrom, DateTime? dateEndTo) =>
 {
@@ -10278,7 +10397,7 @@ app.MapGet("/api/report/dlrcontract", async (AppDbContext db, ITenantContext t, 
 // ===== Báo cáo CRM: lượt khách thăm & lái thử (port 1:1 báo cáo CtmVisit/DriveTest) — tái dùng CtmVisit + DriveTest =====
 app.MapGet("/api/report/crm", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
 {
-    var vq = db.CtmVisits.Where(v => v.OrgId == t.OrgId);
+    var vq = db.CustomerVisits.Where(v => v.OrgId == t.OrgId);   // #B62 tro chung bang (song trung da hop nhat)
     var dq = db.DriveTests.Where(d => d.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) { vq = vq.Where(v => v.DealerCode == dealer); dq = dq.Where(d => d.DealerCode == dealer); }
     if (!string.IsNullOrWhiteSpace(model)) { vq = vq.Where(v => v.ModelCode == model); dq = dq.Where(d => d.TestModelCode == model); }
@@ -10289,7 +10408,7 @@ app.MapGet("/api/report/crm", async (AppDbContext db, ITenantContext t, string? 
     string GenderLabel(string g) => g == "1" ? "Nữ" : g == "0" ? "Nam" : "(chưa rõ)";
     var visitByDealer = visits.GroupBy(v => string.IsNullOrEmpty(v.DealerCode) ? "(chưa rõ)" : v.DealerCode).Select(g => new { dealerCode = g.Key, visits = g.Count() }).OrderByDescending(x => x.visits).ToList();
     var visitByGender = visits.GroupBy(v => GenderLabel(v.Gender)).Select(g => new { gender = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
-    var visitByAge = visits.GroupBy(v => string.IsNullOrEmpty(v.RangeAge) ? "(chưa rõ)" : v.RangeAge).Select(g => new { rangeAge = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var visitByAge = visits.GroupBy(v => string.IsNullOrEmpty(v.RangeAgeCode) ? "(chưa rõ)" : v.RangeAgeCode).Select(g => new { rangeAge = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
     var visitByModel = visits.GroupBy(v => string.IsNullOrEmpty(v.ModelCode) ? "(chưa rõ)" : v.ModelCode).Select(g => new { modelCode = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
     var driveByModel = drives.GroupBy(d => string.IsNullOrEmpty(d.TestModelCode) ? "(chưa rõ)" : d.TestModelCode).Select(g => new { modelCode = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
     var driveByType = drives.GroupBy(d => string.IsNullOrEmpty(d.DriverTestType) ? "(chưa rõ)" : d.DriverTestType).Select(g => new { driveType = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
@@ -14870,7 +14989,8 @@ app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext d
 app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
 {
     var qry = db.CustomerVisits.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    // #B62-fix: chuẩn hoá giống nhánh `/api/ctmvisits` và pivot `ctm-visit-pivot` (cùng chuẩn `Mst_Dealer.DealerCode`).
+    if (!string.IsNullOrWhiteSpace(dealer)) { var dk = dealer.Trim().ToUpperInvariant(); qry = qry.Where(x => x.DealerCode == dk); }
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     if (from.HasValue) qry = qry.Where(x => x.CreatedAt >= from.Value);
     if (to.HasValue) qry = qry.Where(x => x.CreatedAt <= to.Value);
@@ -14887,8 +15007,12 @@ app.MapPost("/api/customervisits", async (CustomerVisitDto dto, AppDbContext db,
     var v = new CustomerVisit
     {
         OrgId = t.OrgId,
-        CusVisitCode = string.IsNullOrWhiteSpace((dto.CusVisitCode ?? "").Trim()) ? "CV" + DateTime.Now.ToString("yyyyMMddHHmmssfff") : dto.CusVisitCode!.Trim(),
-        DealerCode = dto.DealerCode, Gender = dto.Gender, RangeAgeCode = dto.RangeAgeCode, ModelCode = dto.ModelCode!.Trim(),
+        // #B62-fix: cùng khuôn mã sinh với `/api/ctmvisits` ("CV" + yyMMddHHmmssfff) — sau hợp nhất hai
+        // endpoint ghi CHUNG cột `CusVisitCode`, để hai khuôn (yyyy… 19 ký tự vs yy… 17 ký tự) là mã nhào.
+        CusVisitCode = string.IsNullOrWhiteSpace((dto.CusVisitCode ?? "").Trim()) ? "CV" + DateTime.Now.ToString("yyMMddHHmmssfff") : dto.CusVisitCode!.Trim(),
+        // #B62-fix: `DealerCode` thô sẽ bị INNER join `Mst_Dealer` trong pivot LOẠI IM LẶNG (đếm vào
+        // `droppedByDealerJoin`) vì nguồn không trim/upper. Chuẩn hoá đúng như nhánh song trùng đã làm.
+        DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), Gender = dto.Gender, RangeAgeCode = dto.RangeAgeCode, ModelCode = dto.ModelCode!.Trim(),
         CreatedAt = DateTime.Now
     };
     db.CustomerVisits.Add(v);
@@ -28297,13 +28421,21 @@ app.MapPost("/api/cardrivertests/{plate}/toggle", async (string plate, AppDbCont
     return Results.Ok(new { c.DrvTestPlateNo, flagActive = c.FlagActive });
 }).RequireAuthorization();
 
-// ===== Lượt khách thăm showroom (CtmVisit — port 1:1 FrmCusVisit, DMSales.Foton/RetailContract) =====
+// ===== #B62 HOP NHAT THUC THE SONG TRUNG (ca thu 6) =====
+// `CtmVisit` (DMSales.Foton `DLR_CtmVisit`) va `CustomerVisit` (2010.HTC `Dlr_CtmVisit`) la
+// **CUNG MOT BANG NGUON**: cung khoa `CusVisitCode`, cung cot DealerCode/Gender/ModelCode, chi khac
+// ten cot do tuoi (`RangeAge` vs `RangeAgeCode`). Truoc luot nay CA HAI deu duoc GHI
+// (`db.CtmVisits.Add` va `db.CustomerVisits.Add`) => luot khach vao HAI BANG KHAC NHAU tuy endpoint,
+// nen bao cao pivot (#B62 `RptPivot_DlrCtmVisit`) chi thay mot nua du lieu du nguoi dung nhap dung.
+// Nay ca hai endpoint tro chung ve **`CustomerVisits`** - chon bang nay vi cot `RangeAgeCode` khop
+// dung khoa join cua nguon 2010.HTC (`Mst_CtmRangeAge.RangeAgeCode`). `CtmVisit` giu lai nhung
+// KHONG con duoc ghi (cung tien le voi `WholesaleDeal` o #B09).
 app.MapGet("/api/ctmvisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model) =>
 {
-    var q = db.CtmVisits.Where(v => v.OrgId == t.OrgId);
+    var q = db.CustomerVisits.Where(v => v.OrgId == t.OrgId);   // #B62 tro chung bang
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(v => v.ModelCode == model);
-    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new { v.CusVisitCode, v.DealerCode, v.Gender, v.RangeAge, v.ModelCode, v.CreatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new { v.CusVisitCode, v.DealerCode, v.Gender, RangeAge = v.RangeAgeCode, v.ModelCode, v.CreatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -28313,8 +28445,8 @@ app.MapPost("/api/ctmvisits", async (CtmVisitDto dto, AppDbContext db, ITenantCo
     if (string.IsNullOrWhiteSpace(dto.Gender)) return Results.BadRequest(new { error = "Hãy chọn giới tính." });
     if (string.IsNullOrWhiteSpace(dto.RangeAge)) return Results.BadRequest(new { error = "Hãy chọn độ tuổi." });
     var code = "CV" + DateTime.Now.ToString("yyMMddHHmmssfff");
-    var v = new CtmVisit { OrgId = t.OrgId, CusVisitCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), Gender = dto.Gender.Trim(), RangeAge = dto.RangeAge.Trim(), ModelCode = dto.ModelCode.Trim() };
-    db.CtmVisits.Add(v); await db.SaveChangesAsync();
+    var v = new CustomerVisit { OrgId = t.OrgId, CusVisitCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), Gender = dto.Gender.Trim(), RangeAgeCode = dto.RangeAge.Trim(), ModelCode = dto.ModelCode.Trim() };
+    db.CustomerVisits.Add(v); await db.SaveChangesAsync();   // #B62 tro chung bang
     return Results.Ok(new { v.CusVisitCode, message = "Thêm mới lượt khách thăm showroom thành công" });
 }).RequireAuthorization();
 
