@@ -3001,6 +3001,110 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
 // 🔴 Side-effect y như #B31: sau khi xoá dòng, **xoá luôn đầu đề nghị nếu không còn dòng nào**
 //    (`delete Car_DocReqTCGList … left join Car_DocReqTCGDtl … where is null` — "kỹ thuật lọc ngược",
 //    nguyên văn chú thích nguồn), rồi mới gọi rollup trạng thái.
+
+// ===== #B45 TÌM ĐỀ NGHỊ GIẤY TỜ **TCG** — `Car_DocReqTCGList_Get_New20181119` (`FrmMngDocReqTCG`) =====
+// Trace LIVE: `sv.SearchCarDocReqTCG` (`SalesService.cs:25072`) → WS `Car_DocReqTCGList_Get`
+//   (`WSHTC.asmx.cs:71495`) → `_biz.Car_DocReqTCGList_Get_New20181119` (`Biz.HTC.WH.cs:141763`,
+//   **VỎ BỌC**) → **`Car_DocReqTCGList_GetX_New20181119`** (`:142031`) — SQL thật.
+//   Bản song song `..._GetWH_New20181119` (`:141897`) chạy trên DB Warehouse (cờ `dataWH` của service).
+// 🔴 **LỖ HỔNG RBAC CỦA CHÍNH HỆ NGUỒN — port dòng ACTIVE, KHÔNG tự sửa**:
+//    SQL ghi `left join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like
+//    @strBUPatternOfUser)` kèm chú thích **"Must inner join to filter AbilityOfUser"** (`:142102-142103`).
+//    Chú thích nói INNER, code là **LEFT** ⇒ điều kiện `BUCode like …` **không loại được dòng nào**:
+//    người dùng thấy cả đề nghị của đại lý **ngoài phạm vi BU** của mình.
+//    ⚠️ Đối chiếu #B37 (`RptCarCarGetSummary01`): **cùng câu chú thích** nhưng ở đó là `inner join` THẬT.
+//    ⇒ Đây là **lệch giữa hai màn**, gần như chắc chắn là **lỗi của nguồn**, không phải chủ ý.
+//    Port giữ đúng hành vi nguồn (không lọc) nhưng **đo được**: tham số `enforceBuScope=1` bật lọc theo
+//    ý định trong chú thích, và `outOfScopeCount` luôn trả về số dòng lẽ ra phải bị loại.
+//    📌 **Cần người nghiệp vụ/bảo mật chốt** có bịt hay không — không tự ý đổi.
+// 🔴 `inner join Car_VIN cv on cv.VIN = cdrtcgd.VIN` ⇒ dòng có VIN **chưa khai trong `Car_VIN` bị LOẠI**.
+// 🔴 `left join Car_DeliveryOrderDetail … and cdod.ConfirmStatus not in ('R','C')` — điều kiện nằm **TRONG
+//    mệnh đề `on`**, không phải `where`: dòng giao đã huỷ/từ chối chỉ bị **bỏ qua**, không loại cả xe.
+// 🔴 Phân trang `identity(bigint,0,1) MyIdxSeq` trên `select distinct DRTCGListCode`, `order by
+//    cdrtcgl.DRTCGListCode`; `MyCount` đếm **TRƯỚC** khi cắt trang.
+// 🔴 Bảy bộ lọc, ba hình dạng (`SalesService.cs:25086-25130`): LIKE `%…%` cho `DRTCGListCode`/`VIN`/
+//    `CarId`; `"in"` cho `DRTCGListStatus`; `"="` cho `DRTCGDtlStatus`; khoảng `>=`/`<=` cho `CreatedDate`.
+app.MapGet("/api/docreqs/search-tcg", async (
+    AppDbContext db, ITenantContext t,
+    string? drTcgListCode, string? drTcgListStatus, DateTime? createdFrom, DateTime? createdTo,
+    string? carId, string? vin, string? drTcgDtlStatus,
+    string? buPattern, string? enforceBuScope, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // Luồng TCG nằm cùng bảng với ĐNGT thường, phân biệt bằng `TypeCRR` (nợ mô hình đã ghi ở #B40).
+    var heads = await db.DocReqs.Where(x => x.OrgId == t.OrgId && x.TypeCRR == "DEALERTCG").ToListAsync();
+    if (!string.IsNullOrWhiteSpace(drTcgListCode))
+    { var k = drTcgListCode.Trim().ToUpperInvariant(); heads = heads.Where(h => h.DocReqNo.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(drTcgListStatus))
+    { var set = drTcgListStatus.Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToHashSet(); heads = heads.Where(h => set.Contains(h.Status)).ToList(); }
+    if (createdFrom is not null) heads = heads.Where(h => h.CreatedAt >= createdFrom).ToList();
+    if (createdTo is not null) heads = heads.Where(h => h.CreatedAt <= createdTo).ToList();
+
+    var headIds = heads.Select(h => h.Id).ToList();
+    var dtls = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.DocReqId)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin))
+    { var k = vin.Trim().ToUpperInvariant(); dtls = dtls.Where(x => x.Vin.ToUpperInvariant().Contains(k)).ToList(); }
+    if (!string.IsNullOrWhiteSpace(drTcgDtlStatus)) dtls = dtls.Where(x => x.DRDtlStatus == drTcgDtlStatus.Trim()).ToList();
+
+    // `inner join Car_VIN` — VIN chưa khai bị LOẠI.
+    var vinKeys = dtls.Select(x => x.Vin).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vinKeys.Contains(c.VIN)).ToListAsync();
+    var known = cars.Select(c => c.VIN).ToHashSet();
+    var droppedNoCarVin = dtls.Count(x => !known.Contains(x.Vin));
+    dtls = dtls.Where(x => known.Contains(x.Vin)).ToList();
+    if (!string.IsNullOrWhiteSpace(carId))
+    { var k = carId.Trim().ToUpperInvariant(); dtls = dtls.Where(x => x.Vin.ToUpperInvariant().Contains(k)).ToList(); }
+
+    // Phạm vi BU: nguồn dùng LEFT JOIN ⇒ **không loại**. Đo số dòng lẽ ra bị loại; chỉ lọc khi bật cờ.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? dealerCode)
+    {
+        if (pattern is null) return true;
+        var dl = dealers.FirstOrDefault(x => x.DealerCode == dealerCode);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var carDealer = cars.ToDictionary(c => c.VIN, c => c.DealerCode);
+    var outOfScopeCount = dtls.Count(x => !InScope(carDealer.TryGetValue(x.Vin, out var dc) ? dc : null));
+    if (enforceBuScope == "1")
+        dtls = dtls.Where(x => InScope(carDealer.TryGetValue(x.Vin, out var dc) ? dc : null)).ToList();
+
+    // Phân trang trên `distinct DRTCGListCode`, `order by DRTCGListCode`; MyCount đếm TRƯỚC khi cắt.
+    var keptHeadIds = dtls.Select(x => x.DocReqId).ToHashSet();
+    heads = heads.Where(h => keptHeadIds.Contains(h.Id)).ToList();
+    var orderedNos = heads.Select(h => h.DocReqNo).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+    var myCount = orderedNos.Count;
+    var pageNos = orderedNos.Skip(start).Take(count).ToHashSet();
+    heads = heads.Where(h => pageNos.Contains(h.DocReqNo)).ToList();
+    var pageIds = heads.Select(h => h.Id).ToHashSet();
+    dtls = dtls.Where(x => pageIds.Contains(x.DocReqId)).ToList();
+
+    var items = dtls.Select(x =>
+    {
+        var h = heads.First(z => z.Id == x.DocReqId);
+        var cv = cars.First(c => c.VIN == x.Vin);
+        return new
+        {
+            drTcgListCode = h.DocReqNo, drTcgListStatus = h.Status, cdrtcglCreatedDate = h.CreatedAt,
+            cdrtcgdVIN = x.Vin, drTcgDtlStatus = x.DRDtlStatus,
+            x.CancelDate, x.CancelBy, x.Remark, x.ApprovedDate1, x.ApprovedBy1, x.ApprovedDate2, x.ApprovedBy2,
+            cvModelCode = cv.ModelCode, cvSpecCode = cv.SpecCode, cvColorCode = cv.ColorCode,
+            ccDealerCode = cv.DealerCode
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        droppedNoCarVin,
+        outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        rbacQuirk = "Nguồn dùng LEFT JOIN Mst_Dealer nhưng chú thích ghi 'Must inner join to filter AbilityOfUser' ⇒ phạm vi BU KHÔNG lọc được. Port giữ đúng nguồn; bật enforceBuScope=1 để lọc theo ý định trong chú thích. CẦN NGHIỆP VỤ CHỐT.",
+        filterShapes = "LIKE: DRTCGListCode/VIN/CarId · 'in': DRTCGListStatus · '=': DRTCGDtlStatus · khoảng: CreatedDate",
+        joinNote = "inner join Car_VIN ⇒ VIN chưa khai bị LOẠI; điều kiện ConfirmStatus not in ('R','C') nằm TRONG mệnh đề on, không loại cả xe."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/docreqs/{no}/cars/delete-tcg", async (string no, CdrCancelDto dto,
     AppDbContext db, ITenantContext t) =>
 {
@@ -3141,7 +3245,8 @@ app.MapPost("/api/docreqs/{no}/cancel", async (string no, DocReqCarActionDto? dt
     var now = DateTime.Now;
     d.Status = "C"; d.CancelDate = now; d.CancelBy = who;
     // Nguồn lan xuống MỌI dòng bằng một câu update (không lọc theo trạng thái dòng).
-    foreach (var c in cars) c.DRDtlStatus = "C";
+    // #B45 SS12 - ghi luon CancelDate/CancelBy cho DONG (nguon Car_DocReqTCGDtl co hai cot nay)
+    foreach (var c in cars) { c.DRDtlStatus = "C"; c.CancelDate = now; c.CancelBy = who; }
 
     // Nguồn gửi email thông báo khi đề nghị do ĐẠI LÝ tạo (`TypeCRR == DEALER`) — nhánh dễ bị bỏ sót.
     var mailed = false;
@@ -3250,7 +3355,7 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
     var specialIds = db.DocReqs.Where(x => x.OrgId == t.OrgId && x.TypeCRR == "SPECIAL" && x.Id != d.Id).Select(x => x.Id);
     if (await db.DocReqCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin && specialIds.Contains(x.DocReqId)))
         return Results.BadRequest(new { error = $"Xe {vin} đang thuộc một đề nghị loại đặc biệt khác — không huỷ được." });
-    c.DRDtlStatus = "C"; c.Remark = dto?.Remark;
+    c.DRDtlStatus = "C"; c.Remark = dto?.Remark; c.CancelDate = DateTime.Now; c.CancelBy = user.Identity?.Name ?? "system";   // #B45 SS12
     await db.SaveChangesAsync();
     return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Huỷ" });}).RequireAuthorization();
 

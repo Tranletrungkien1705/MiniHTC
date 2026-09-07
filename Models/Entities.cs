@@ -5835,6 +5835,13 @@ public sealed class DocReqCar
     public string? ApprovedBy2 { get; set; }
     public DateTime? RejectDate { get; set; }
     public string? RejectBy { get; set; }
+    /// <summary>🔴 #B45 — `Car_DocReqTCGDtl.CancelDate` / `CancelBy`. Câu `select` trả về của
+    /// `Car_DocReqTCGList_GetX_New20181119` (`Biz.HTC.WH.cs:142155-142160`) liệt kê hai cột này cạnh
+    /// `ApprovedDate1/2` — tức màn tìm ĐNGT TCG **hiển thị ai huỷ, huỷ lúc nào**. Port cũ thiếu ⇒
+    /// cột trên lưới rỗng. (Cặp tương ứng ở luồng thường đã thêm tại #B39 trên `CarDocRequestCar`.)</summary>
+    public DateTime? CancelDate { get; set; }
+    /// <summary>Người huỷ dòng — xem chú thích của [CancelDate].</summary>
+    public string? CancelBy { get; set; }
     /// <summary>Ghi chú khi từ chối/huỷ dòng (`Car_DocReqDtl.Remark`).</summary>
     public string? Remark { get; set; }
     public DateTime? LetterRepresentationDate { get; set; }  // ngày tờ trình — port FrmUpdateDocReq
