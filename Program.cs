@@ -28915,14 +28915,68 @@ app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #482 NHÁNH KHO TRẢ THÊM MỘT BẢNG KẾT QUẢ — `Ser_CampaignMarketingFullVIN` =====
+// DIFF `Ser_CampaignMarketing_Get` (Main, 55 dòng SQL) vs `…_Get_WH` (63) — **chi o main = 0**, và
+//   toàn bộ phần dôi là MỘT khối truy vấn phụ mà bản Main không có:
+//     `select t.MyIdxSeq, scmfv.* from #tbl_Ser_CampaignMarketing_Filter t`
+//     `inner join Ser_CampaignMarketingFullVIN scmfv on t.CamMarketingNo = scmfv.CamMarketingNo`
+//     `order by t.MyIdxSeq asc`
+//   ⇒ Khác biệt là **HÌNH DẠNG KẾT QUẢ** (số bảng trả về), không phải bộ lọc — đúng loại mà §12 không bắt.
+// ⚠️ Khối này nằm trong `#region // bGet_Ser_CampaignMarketingFullVIN:` — tên vùng gợi ý từng có cờ bật/tắt,
+//   nhưng **không còn `if` nào**: biến khởi tạo `"-- Nothing."` rồi bị gán đè **vô điều kiện**.
+//   Port theo dòng ACTIVE ⇒ nhánh kho **luôn** trả bảng này.
+// ⚠️ Nguồn nối theo **SỐ chiến dịch** (`CamMarketingNo`), không theo khoá nội bộ ⇒ entity giữ `CamNo`.
+// 📌 Trả nợ một phần của #392/#393: trong năm bảng con (VIN · PlateNo · Dealer · FullVIN · Part),
+//   nay đã mô hình hoá **Part** (cũ) + **FullVIN** (lượt này); còn **ba** bảng ⇒ cờ `childTablesNotModelled`
+//   vẫn giữ cho ba cái còn lại.
+app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, ITenantContext t,
+    string? scope) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
     if (c is null) return Results.NotFound(new { no });
     var parts = await db.CampaignMarketingParts.Where(p => p.OrgId == t.OrgId && p.CampaignId == c.Id).Select(p => new { p.PartCode, p.PercentDiscount }).ToListAsync();
+    // Chỉ nhánh KHO mới kèm danh sách VIN đầy đủ (đúng nguồn).
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    var fullVins = isWh
+        ? await db.CampaignMarketingFullVins.Where(v => v.OrgId == t.OrgId && v.CamNo == c.CamNo)
+            .OrderBy(v => v.MyIdxSeq)
+            .Select(v => new { v.VinNo, v.CamMarketingFullVinStatus, v.MyIdxSeq }).ToListAsync()
+        : null;
     return Results.Ok(new
-    { c.CamNo, c.CamName, c.CamDesc, c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd, c.ConditionVin, c.ConditionPlateNo, c.ConditionDealer, parts });
+    {
+        c.CamNo, c.CamName, c.CamDesc, c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart,
+        c.WarrantyDateEnd, c.ConditionVin, c.ConditionPlateNo, c.ConditionDealer, parts,
+        scope = isWh ? "wh" : "main",
+        fullVins,
+        fullVinOnlyInWhBranch = true,
+        fullVinAlwaysIncludedInWh = true,
+        childTablesNotModelled = new[] { "CamMarketingVIN", "CamMarketingPlateNo", "CamMarketingDealer" },
+    });
+}).RequireAuthorization();
+
+// #482 §12: ghi danh sách VIN đầy đủ của chiến dịch (bảng con thứ năm).
+app.MapPost("/api/campaignmarketings/{no}/fullvins", async (string no, CampaignFullVinDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var vins = (dto.VinNos ?? new List<string>()).Select(x => (x ?? "").Trim().ToUpperInvariant())
+        .Where(x => x.Length > 0).Distinct().ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất một VIN." });
+    // Nguồn SỬA = XOÁ SẠCH rồi ghi lại (#393) — giữ đúng lệ đó cho bảng con này.
+    var old = await db.CampaignMarketingFullVins.Where(v => v.OrgId == t.OrgId && v.CamNo == no).ToListAsync();
+    db.CampaignMarketingFullVins.RemoveRange(old);
+    var seq = 0;
+    foreach (var v in vins)
+        db.CampaignMarketingFullVins.Add(new CampaignMarketingFullVin
+        {
+            OrgId = t.OrgId, CamNo = no, VinNo = v, MyIdxSeq = ++seq,
+            CamMarketingFullVinStatus = dto.Status ?? "P",
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { camNo = no, count = vins.Count, replacedRows = old.Count });
 }).RequireAuthorization();
 
 // Khớp checkForm() + btnApply_Click gốc: guard tên/nội dung/ngày bắt buộc, PercentDiscount 0-100, PartCode không trùng trong 1 lần tạo.
@@ -46408,6 +46462,7 @@ record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 // #392: dau vao duyet chien dich marketing. Remark = null khi rong (dung nguon).
 record CampaignApproveDto(string? ApprBy, string? Remark);
+record CampaignFullVinDto(List<string>? VinNos, string? Status);   // #482 §12
 record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
 record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note, string? DealerCode = null);
 record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);

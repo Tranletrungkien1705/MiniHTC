@@ -15041,3 +15041,22 @@ public sealed class MstParam
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+
+// ===== 🔴 #482 DANH SÁCH VIN ĐẦY ĐỦ CỦA CHIẾN DỊCH (`Ser_CampaignMarketingFullVIN`) =====
+/// <summary>Bảng con thứ **năm** của chiến dịch marketing — bốn bảng kia (`VIN`, `PlateNo`, `Dealer`,
+/// `Part`) đã ghi nợ ở #392/#393. Chỉ nhánh **KHO** (`Ser_CampaignMarketing_Get_WH`) trả bảng này
+/// ra kết quả; nhánh đại lý thì không ⇒ đây là khác biệt **HÌNH DẠNG KẾT QUẢ**, không phải bộ lọc.</summary>
+public sealed class CampaignMarketingFullVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`CamMarketingNo` — khoá nối sang chiến dịch (nguồn nối theo SỐ, không theo Id).</summary>
+    public string CamNo { get; set; } = "";
+    public string VinNo { get; set; } = "";
+    /// <summary>`CamMarketingFullVINStatus` — trạng thái lan theo bước duyệt (#392): `P` chờ · `A` đã duyệt.</summary>
+    public string? CamMarketingFullVinStatus { get; set; }
+    /// <summary>`MyIdxSeq` — nguồn `order by t.MyIdxSeq asc` (thứ tự do bảng lọc quyết định).</summary>
+    public int MyIdxSeq { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
