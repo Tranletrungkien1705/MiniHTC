@@ -15644,6 +15644,83 @@ app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db
 }).RequireAuthorization();
 
 // ===== Công nợ khách hàng dịch vụ + thu tiền (CusDebit — port 1:1 FrmCusDebitCreate/FrmCusPaymentCreate, TCMotor) =====
+// ===== 🔴 #554 CHI TIẾT CÔNG NỢ KHÁCH — BA BẢNG, MỘT BỘ LỌC DÙNG CHUNG QUA **ALIAS** =====
+// Nguồn: `BizCarSv.Debit.cs:997 SerCusDebitDetailGet`. Endpoint: `GET /api/cusdebits/{cusId}/detail`.
+// Nguồn trả **ba bảng** trong một lời gọi: `Ser_Customer` · `Ser_CusDebit` · `Ser_Payment`.
+//
+// 🔴 **`JOIN Ser_Car` (INNER) Ở CÂU KHÁCH HÀNG — HAI HẬU QUẢ CÙNG LÚC**:
+//     `FROM Ser_Customer d JOIN Ser_Car car ON d.CusID = car.CusID`
+//   · Khách **chưa có xe** ⇒ **không ra dòng nào** ⇒ màn công nợ **không hiện được tên khách**
+//     dù bảng công nợ bên dưới vẫn có số (luật #410).
+//   · Khách có **nhiều xe** ⇒ bảng "khách hàng" trả **nhiều dòng cho một khách** (mỗi xe một dòng)
+//     ⇒ hình dạng kết quả **không phải một-khách-một-dòng** như tên bảng gợi ý (§12: "một bản ghi là gì?").
+//   Port: lấy khách **một dòng**, kèm **danh sách biển số**, và đếm `plateCount`.
+// 🔴 **MỘT CẶP MỆNH ĐỀ LỌC DÙNG LẠI CHO CẢ BA CÂU QUA ALIAS `d`**:
+//   `BuildClause("and", "**d**.DealerCode", …)` · `BuildClause("and", "**d**.CusID", …)` — mà `d` lần lượt là
+//   `Ser_Customer` · `Ser_CusDebit` · `Ser_Payment`. Tiết kiệm nhưng **giòn**: đổi alias ở **một** câu là
+//   mệnh đề bám sang bảng khác hoặc **SQL nổ** (đúng lớp lỗi alias của #537).
+// ⚠️ **Câu thứ nhất KHÔNG có dấu `;`** kết thúc (hai câu sau đều có) — hợp lệ với SQL Server nên chỉ là
+//   bất nhất về hình thức; ghi lại để lượt sau khỏi tưởng thiếu câu.
+// ⚠️ HẰNG literal: `DebitType = '1'` (công nợ **khách hàng**) và `PaymentType = '1'` (thu **của khách**)
+//   — hai bảng dùng **hai tên cột khác nhau** cho cùng ý "loại 1".
+// ⚠️ **Phạm vi dữ liệu khác nhau**: `Ser_Payment` nằm ở `[@strDBName_CommonCenter].[dbo]` (**dùng chung**
+//   toàn hệ) còn `Ser_Customer`/`Ser_CusDebit` ở **DB hiện hành** — cùng lớp phát hiện với #541.
+// ⚪ Hai `left join` ở câu công nợ (`Ser_RO`, `ser_car`) **còn sống**: không điều kiện WHERE nào trên chúng
+//   ⇒ công nợ **không gắn lệnh sửa chữa** vẫn ra dòng, chỉ trống `RONo`/`PlateNo` (kiểm tra âm tính).
+app.MapGet("/api/cusdebits/{cusId}/detail", async (string cusId, AppDbContext db, ITenantContext t,
+    string? dealerCode) =>
+{
+    const string kDebitTypeCustomer = "1";     // DebitType = '1'
+    const string kPaymentTypeCustomer = "1";   // PaymentType = '1'
+    var cus = (cusId ?? "").Trim();
+    if (cus.Length == 0) return Results.BadRequest(new { error = "Cần cusId." });
+
+    // Bảng 1 — khách hàng. Nguồn INNER JOIN xe ⇒ ở đây lấy MỘT dòng + danh sách biển số.
+    var customer = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == cus);
+    var plates = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.CusID == cus)
+        .Select(x => x.PlateNo).ToListAsync();
+
+    // Bảng 2 — công nợ khách (DebitType = 1).
+    var debitQuery = db.CusDebits.Where(x => x.OrgId == t.OrgId && x.CusId == cus);
+    var debits = await debitQuery.OrderByDescending(x => x.Id)
+        .Select(x => new { x.Id, x.DebitNo, x.CusId, x.CusName, x.RONo, x.DebitAmount, x.PaidAmount,
+            balance = x.DebitAmount - x.PaidAmount, x.DebitDate, x.Status, x.Note })
+        .ToListAsync();
+    var debitIds = debits.Select(x => x.Id).ToList();
+
+    // Bảng 3 — phiếu thu của khách (PaymentType = 1).
+    var payQuery = db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.CusDebitId));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) payQuery = payQuery.Where(x => x.DealerCode == dealerCode!.Trim());
+    var payments = await payQuery.OrderByDescending(x => x.Id)
+        .Select(x => new { x.Id, x.CusDebitId, x.PaymentNo, x.DealerCode, x.PayPersonName,
+            x.PayPersonIDCardNo, x.PaymentAmount, x.PayDate, x.Note })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        customer = customer is null ? null : new
+        {
+            customer.CusCode, customer.CusName, customer.Address, customer.ContName,
+            plateNos = plates,
+        },
+        customerFound = customer is not null,
+        plateCount = plates.Count,
+        // Nguồn INNER JOIN xe ⇒ khách chưa có xe thì BẢNG KHÁCH RỖNG dù công nợ vẫn có.
+        sourceInnerJoinCarDropsCarlessCustomer = plates.Count == 0,
+        sourceDuplicatesCustomerPerCar = plates.Count > 1,
+        debits, debitCount = debits.Count,
+        payments, paymentCount = payments.Count,
+        totalDebit = debits.Sum(x => x.DebitAmount),
+        totalPaid = debits.Sum(x => x.PaidAmount),
+        totalBalance = debits.Sum(x => x.balance),
+        filterAliasSharedAcrossThreeTables = "d.DealerCode / d.CusID — alias d lan luot la Ser_Customer, Ser_CusDebit, Ser_Payment",
+        constants = new { debitType = kDebitTypeCustomer, paymentType = kPaymentTypeCustomer },
+        paymentTableIsCommonCenter = true,
+        firstStatementHasNoSemicolonInSource = true,
+        leftJoinsOnDebitAreAlive = true,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
     var query = db.CusDebits.Where(x => x.OrgId == t.OrgId);
