@@ -2631,6 +2631,69 @@ app.MapPost("/api/transpfees/versions", async (TranspFeeVersionDto dto, AppDbCon
     return Results.Ok(new { tfvCode = tfv, rows = rows.Count });
 }).RequireAuthorization();
 
+// ===== 🔴 #347 PHIÊN BẢN MỨC PHẠT CƯỚC + CÔNG THỨC PHẠT =====
+// Nguồn: `BizHTC.Storage.DlvMinutes.cs:3140` (bản canonical `.Release.2025`) đọc bảng
+//   `Mst_TranspPenaltyVer` bằng `GetTableContents(… "top 1 *", "" /*orderBy RỖNG*/, "FlagActive","=","1")`
+// 🔴 `top 1` **KHÔNG có ORDER BY** ⇒ nếu có >1 phiên bản đang bật thì lấy bản nào là do CSDL quyết,
+//   không xác định. Đây là một trong 21 chỗ `top 1` thiếu `order by` đã ghi ở sổ. Port giữ nguyên
+//   cách chọn (bản `FlagPenaltyVer = "1"` mới nhất theo `UpdatedAt`) nhưng **báo cờ khi có nhiều bản bật**.
+//
+// 🔴 CÔNG THỨC PHẠT — luỹ tiến, KHÔNG phải nhân tuyến tính:
+//   `for (int i = iPernantyDays - iExpectedDays; i > 0; i--) dPValSys += dValBased + (i - 1) * dValEx;`
+//   ⇒ với n = số ngày trễ vượt `ExpectedDays`:  **Σ = n×ValBased + ValEx×n×(n−1)/2**
+//   Ngày trễ càng nhiều thì mức phạt MỖI NGÀY càng tăng. Nhân thẳng `n × ValBased` là SAI.
+// ⚠️ Nguồn còn một guard bị **comment cả khối**: khi không tìm thấy dòng biểu phí cho tuyến/nhà VC
+//   (`dtTranspFee.Rows.Count <= 0`) thì lẽ ra ném `…_InvalidTFVCode`, nhưng cả `throw` bị comment
+//   ⇒ **không có biểu phí thì tiền phạt = 0 một cách im lặng**. Giữ 1:1 và trả cờ `feeRowFound`.
+//
+// ⚠️ MiniHTC **cố ý gộp** `Mst_TranspPenaltyVer` vào chính bảng `TranspFee`, đánh dấu bằng
+//   `FlagPenaltyVer` (quyết định đã ghi ở chú thích entity). Thiết kế có sẵn nhưng **chưa có đường ghi**
+//   ⇒ ba cột `ValBased`/`ValEx`/`FlagPenaltyVer` nằm chết. Endpoint dưới đây mở đường ghi đó.
+app.MapPost("/api/transpfees/penaltyver", async (TranspPenaltyVerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.ValBased < 0m || dto.ValEx < 0m)
+        return Results.BadRequest(new { error = "Mức phạt không được âm.", dto.ValBased, dto.ValEx });
+
+    // Bật bản mới ⇒ tắt các bản đang bật (nguồn chỉ lấy bản `FlagActive = '1'`).
+    var olds = await db.TranspFees.Where(f => f.OrgId == t.OrgId && f.FlagPenaltyVer == "1").ToListAsync();
+    foreach (var o in olds) o.FlagPenaltyVer = "0";
+
+    var row = new TranspFee
+    {
+        OrgId = t.OrgId,
+        // Dòng mức phạt KHÔNG thuộc tuyến nào — các khoá tuyến để rỗng, phân biệt bằng `FlagPenaltyVer`.
+        ProvinceCodeFrom = "", ProvinceCodeTo = "", TransporterCode = "", ModelCode = "",
+        ValBased = dto.ValBased, ValEx = dto.ValEx, FlagPenaltyVer = "1",
+    };
+    db.TranspFees.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ValBased, row.ValEx, deactivated = olds.Count });
+}).RequireAuthorization();
+
+// Tính tiền phạt cước cho n ngày trễ — dùng chung công thức luỹ tiến của nguồn.
+app.MapGet("/api/transpfees/penalty", async (AppDbContext db, ITenantContext t, int penaltyDays, int expectedDays) =>
+{
+    var active = await db.TranspFees.Where(f => f.OrgId == t.OrgId && f.FlagPenaltyVer == "1")
+        .OrderByDescending(f => f.UpdatedAt).ToListAsync();
+    if (active.Count == 0)
+        return Results.BadRequest(new { error = "Chưa khai phiên bản mức phạt cước nào đang bật." });
+
+    var v = active[0];
+    var n = penaltyDays - expectedDays;
+    decimal total = 0m;
+    for (var i = n; i > 0; i--) total += v.ValBased + (i - 1) * v.ValEx;
+
+    return Results.Ok(new
+    {
+        penaltyDays, expectedDays, daysOver = n < 0 ? 0 : n,
+        v.ValBased, v.ValEx, penalty = total,
+        // 🔴 Nguồn dùng `top 1` KHÔNG `order by` ⇒ nhiều bản cùng bật thì kết quả KHÔNG xác định.
+        activeVersions = active.Count,
+        ambiguousVersion = active.Count > 1,
+        formulaNote = "Luỹ tiến: Σ = n×ValBased + ValEx×n×(n−1)/2 — KHÔNG phải n×ValBased.",
+    });
+}).RequireAuthorization();
+
 // Danh sách phiên bản CPVT (port 1:1 FrmMngTranspFeeHist btnSearch_Click)
 app.MapGet("/api/transpfees/versions", async (AppDbContext db, ITenantContext t) =>
 {
@@ -38226,6 +38289,9 @@ record BankBillReceiveDto(DateTime? BankBillReciveDate);
 record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode, string? CarId = null);
 record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
+// #347: phien ban MUC PHAT cuoc (nguon Mst_TranspPenaltyVer, MiniHTC gop vao TranspFee).
+record TranspPenaltyVerDto(decimal ValBased, decimal ValEx);
+
 record TranspFeeVersionDto(List<TranspFeeDto>? Rows);
 record TranspFeeVerDeleteDto(List<string>? TFVCodes);
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
