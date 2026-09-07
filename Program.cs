@@ -30162,6 +30162,22 @@ app.MapPost("/api/cardocrequests/{no}/cars/cancel", async (string no, CdrCancelD
         guardsChecked = new[] { "ExistAnotherSpecial", "ExistInvoice(HTC/TCG)", "ExistRedeem", "ExistRDInvoice" }
     });
 }).RequireAuthorization();
+// ===== #B42 CẢNH BÁO — **KHÔNG PORT** `Car_DocReqDtlDelete_ByDealer_New20181119` (`:84003`) =====
+// Hàm anh em "ByDealer" của khối dưới đây là **HÀM CHẾT LOGIC**: nó gọi `myCar_CheckCarDocReq` **HAI LẦN**
+// cho **CÙNG một `strDRListCode`**, với hai danh sách trạng thái **loại trừ nhau**:
+//   · `:84076` → `TConst.Stage.Cancel` = `"C"`      (chú thích: *"chỉ xóa Đề nghị ở trạng thái C"*)
+//   · `:84107` → `"P,A1,A2,F"`                       (**không chứa "C"**)
+// `myCar_CheckCarDocReq` chỉ có **MỘT chữ ký** (`BizHTC.Car.Profile.cs:147`), luôn kiểm **cùng cột**
+// `Car_DocReqList.DRListStatus` bằng `strRequestStatusListToCheck.Contains(status)` (`:190`).
+// ⇒ Không trạng thái thật nào thoả **cả hai** ⇒ hàm **luôn ném `CommonAppData_DRListStatusNotMatched`**.
+// ⚠️ Kẽ hở duy nhất: `.Contains` là so **chuỗi con**, nên `DRListStatus` **RỖNG** sẽ lọt cả hai guard
+//    (`"C".Contains("")` và `"P,A1,A2,F".Contains("")` đều `true`). Thực tế mọi đề nghị đều có trạng thái.
+// 🔴 Vì vậy **KHÔNG tạo endpoint** cho nó: port một hàm mà hệ nguồn không bao giờ chạy được thành API
+//    chạy được chính là **bịa nghiệp vụ**. Ghi nhận ở đây để lượt sau không "port cho đủ danh sách".
+// 📌 Cần người nghiệp vụ chốt ý định thật (đầu đề nghị phải "C" hay "P,A1,A2,F") rồi mới port.
+// 📌 Đối chiếu: bản HTC (`Car_DocReqDtlDelete_New20181119`, ngay dưới) **không** mắc lỗi này — chỉ gọi
+//    guard đầu đề nghị **một lần** với `"P,A1,A2,F"`.
+
 // ===== #B31 XOÁ DÒNG XE KHỎI ĐỀ NGHỊ GIAO HỒ SƠ — `Car_DocReqDtlDelete_New20181119` =====
 // Trace twin LIVE: `SalesService.DeleteCDRDetail` (`:26022`) → WS (`WSHTC.asmx.cs:38579`) →
 //   **`_biz.Car_DocReqDtlDelete_New20181119`** (`Biz.HTC.WH.cs:83620`).
