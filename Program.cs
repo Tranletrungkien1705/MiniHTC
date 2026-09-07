@@ -44682,6 +44682,110 @@ app.MapGet("/api/reports/inventory-balance-by-location", async (AppDbContext db,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #486 KHÁCH CHƯA QUAY LẠI — `Ser_ReportCustomerNotBack` (`BizCarSv.Service.Report.cs:5878`) =====
+// Ca lệch THẬT đầu tiên tìm được trong 23 cặp của #484 (main-only 5 / wh-only 5, macro=0).
+//
+// 🔴🔴 **NHÁNH KHO NUỐT DÒNG — bản chính đã sửa, bản kho thì chưa** (luật #410):
+//   Bản chính nối **`LEFT JOIN`** sang bốn bảng danh mục, kèm chú thích nguyên văn của tác giả:
+//     *"có khoảng 200 bản ghi nhưng phải sửa inner join thành lefjoin để tăng tốc mà vẫn đảm bảo kết quả đúng"*
+//     — `Mst_Dealer` · `Mst_District` · `Mst_Province` · `Ser_MST_Model`.
+//   Bản `_WH` (cùng file, `:6072`) **vẫn là `INNER JOIN` cả bốn**.
+//   ⇒ Khách có `DealerCode`/`DistrictCode`/`ProvinceCode`/`ModelID` **thiếu trong danh mục** thì:
+//     · màn chính  → **VẪN hiện** (cột tên để trống);
+//     · màn kho    → **BIẾN MẤT** khỏi danh sách "khách chưa quay lại".
+//   Đây là **mất dòng lúc ĐỌC**, im lặng, và lệch **theo hướng nguy hiểm**: đúng nhóm khách hồ sơ thiếu
+//   thông tin lại là nhóm dễ bị bỏ quên nhất. Port theo **bản chính** (LEFT) + đếm `droppedIfInnerJoined`
+//   để thấy được đúng số dòng mà nhánh kho sẽ đánh rơi.
+//
+// ⚠️ **GUARD ĐẦU VÀO CHỈ NHẬN BỐN GIÁ TRỊ** (đọc `#region //Check`, trích nguyên văn):
+//   `if (!(strDateCount.Equals("6") || …("12") || …("24") || …("36"))) throw …_InputInvalid_DateCount`
+//   ⇒ chỉ 6 · 12 · 24 · 36. Không phải "số tháng bất kỳ".
+// 🔴 **"THÁNG" Ở ĐÂY = 30 NGÀY**: `dtimeSys.AddDays(0 - Convert.ToInt16(strDateCount) * 30)` —
+//   không dùng `AddMonths` ⇒ mốc 36 "tháng" thực ra là **1080 ngày**, lệch `3 tuần so với 3 năm lịch.
+//   Giữ đúng nguồn (đây là con số nghiệp vụ đang chạy), trả cờ `monthIsThirtyDays`.
+// ⚠️ Mốc là **`<` (nhỏ hơn)**, KHÔNG phải `<=`; và dòng `-- and t.CurrentServiceDate >= @strDate` đã bị
+//   **COMMENT** ⇒ báo cáo **không có cận dưới**: xe chưa từng quay lại từ 2010 cũng vào danh sách.
+// ⚠️ Lọc `f.IsActive = "1"` là của **KHÁCH**, không phải xe. Đại lý lấy từ `Ser_Customer.DealerCode`.
+// ⚪ Hai `inner join` còn lại (`Ser_Customer`, `Ser_Car`) là **có chủ đích** — không có khách/xe thì bản ghi
+//   không có nghĩa. Kiểm tra âm tính, không đếm vào `droppedIfInnerJoined`.
+app.MapGet("/api/reports/customer-not-back", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, int? dateCount) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
+    var months = dateCount ?? 6;
+    if (months != 6 && months != 12 && months != 24 && months != 36)
+        return Results.BadRequest(new
+        {
+            error = "Ser_ReportCustomerNotBack_InputInvalid_DateCount",
+            message = "dateCount chỉ nhận 6, 12, 24 hoặc 36 (đúng guard của nguồn).",
+        });
+    var dealer = dealerCode!.Trim();
+    // Nguồn: AddDays(-months*30) — KHÔNG phải AddMonths.
+    var cutoff = DateTime.Now.AddDays(-months * 30).Date;
+
+    var pairs = await (from car in db.ServiceCars
+                       join cus in db.ServiceCustomers on car.CusID equals cus.CusCode
+                       where car.OrgId == t.OrgId && cus.OrgId == t.OrgId
+                             && car.CurrentServiceDate < cutoff        // "<" đúng nguồn, KHÔNG có cận dưới
+                             && cus.DealerCode == dealer
+                             && cus.FlagActive == "1"                  // IsActive của KHÁCH
+                       select new { car, cus }).ToListAsync();
+
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.DealerCode, x.DealerName }).ToListAsync();
+    var dealerName = dealers.GroupBy(x => x.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+    var provinces = await db.MstProvinces.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ProvinceCode, x.ProvinceName }).ToListAsync();
+    var provName = provinces.GroupBy(x => x.ProvinceCode).ToDictionary(g => g.Key, g => g.First().ProvinceName);
+    var districts = await db.MstDistricts.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName }).ToListAsync();
+    var distName = districts.GroupBy(x => x.ProvinceCode + "|" + x.DistrictCode)
+        .ToDictionary(g => g.Key, g => g.First().DistrictName);
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ModelCode, x.ModelName }).ToListAsync();
+    var modelName = models.GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    // Số dòng mà nhánh kho (INNER JOIN cả bốn danh mục) sẽ ĐÁNH RƠI.
+    var droppedIfInnerJoined = pairs.Count(p =>
+        (p.cus.DealerCode == null || !dealerName.ContainsKey(p.cus.DealerCode))
+        || (p.cus.ProvinceCode == null || !provName.ContainsKey(p.cus.ProvinceCode))
+        || (p.cus.ProvinceCode == null || p.cus.DistrictCode == null
+            || !distName.ContainsKey(p.cus.ProvinceCode + "|" + p.cus.DistrictCode))
+        || (p.car.ModelCode == null || !modelName.ContainsKey(p.car.ModelCode)));
+
+    var items = pairs.Select(p => new
+    {
+        p.cus.DealerCode,
+        DealerName = p.cus.DealerCode != null && dealerName.ContainsKey(p.cus.DealerCode)
+            ? dealerName[p.cus.DealerCode] : null,
+        p.cus.CusName, p.cus.Mobile, p.cus.Address,
+        p.cus.DistrictCode,
+        DistrictName = p.cus.ProvinceCode != null && p.cus.DistrictCode != null
+            && distName.ContainsKey(p.cus.ProvinceCode + "|" + p.cus.DistrictCode)
+            ? distName[p.cus.ProvinceCode + "|" + p.cus.DistrictCode] : null,
+        p.cus.ProvinceCode,
+        ProvinceName = p.cus.ProvinceCode != null && provName.ContainsKey(p.cus.ProvinceCode)
+            ? provName[p.cus.ProvinceCode] : null,
+        p.car.PlateNo, p.car.FrameNo,
+        ModelID = p.car.ModelCode,
+        ModelName = p.car.ModelCode != null && modelName.ContainsKey(p.car.ModelCode)
+            ? modelName[p.car.ModelCode] : null,
+        p.car.ColorCode, p.car.WarrantyExpiresDate, p.car.CurrentKm, p.car.CurrentServiceDate,
+    }).OrderBy(x => x.CusName).ThenBy(x => x.PlateNo).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, dateCount = months,
+        cutoff = cutoff.ToString("yyyy-MM-dd HH:mm:ss"),
+        count = items.Count, items,
+        droppedIfInnerJoined,
+        whBranchStillInnerJoins = true,
+        monthIsThirtyDays = true,
+        noLowerBound = true,
+        allowedDateCounts = new[] { 6, 12, 24, 36 },
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
