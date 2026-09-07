@@ -4,7 +4,7 @@ const fs=require('fs'), path=require('path');
 function wsLiveNames(wsArg){
   const dirs = String(wsArg).split(",").map(x=>x.trim()).filter(Boolean);
   const out = new Set(); let files = 0;
-  const callRe = /_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
+  const callRe = /\b_?biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/;   // #519: them kenh ClientService
   const cmtRe = /^\s*\/\//;
   for (const d of dirs) {
     const stack=[d];

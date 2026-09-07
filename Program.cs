@@ -25410,6 +25410,37 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         deadClaimAudit = new { claimsChecked = 10, confirmedDead = 9, wrongClaims = 1,
             falseAlarmsFromProximityTool = 9,
             wrongOne = "SerCarGet — song qua TERP.WSCarSv/App_Code" },
+        // ===== 🔴🔴 #519 **CÓ KÊNH VÀO THỨ NĂM** — MÔ HÌNH "BỐN DỰ ÁN WS" VẪN CÒN THIẾU =====
+        // Đi port `RptCrdCardForServiceFortab` (:3656) thì thấy **không WS nào gọi** ⇒ theo mô hình #481
+        //   nó là **CHẾT**. Nhưng grep toàn cây thì có người gọi:
+        //   `TERP.HTCService.ClientService/Services/CrdCardService.cs:61` — **tầng dịch vụ CLIENT**
+        //   (ứng dụng desktop/máy tính bảng gọi thẳng `BizCarSv`, **không qua SOAP**).
+        //   ⇒ Đây là **kênh vào thứ NĂM**, ngang hàng bốn dự án WS, mà #478/#481 chưa từng tính.
+        // ⚠️ Vì sao công cụ bỏ sót: `reach.js` chỉ bắt `_biz.Ten(` — kênh này viết `biz.Ten(` (**không gạch
+        //   dưới**, biz là **tham số truyền vào hàm**). Một ký tự khác nhau ⇒ mất trắng một kênh.
+        //   Đã sửa `callRe` thành `\b_?biz\.` và chạy lại.
+        // 📊 **Đo lại toàn bộ**: 4 kênh → `diemVao=852 · khaDat=1364 · chet=353`
+        //                       5 kênh → `diemVao=859 · khaDat=**1373** · chet=**344**` (đọc 116 file, 1016 tên).
+        // 🔴 **BẢY hàm bị mô hình cũ kết luận CHẾT nhưng thực tế CÒN SỐNG** (kiểm từng cái bằng reach.js
+        //   với tập 4 kênh — cả bảy đều trả "KHONG kha dat"):
+        //     `CarSv_Ser_CustomerCar_Create_New20220926` (TẠO xe khách hàng — hàm GHI!) ·
+        //     `Ser_ReceptionF_Reception_New20210727` (tiếp nhận — hàm GHI!) · `UploadFile_ForTab` ·
+        //     `Mst_Compartment_Get` · `Mst_PlateColor_Get` · `Mst_Staff_Get` · `RptCrdCardForServiceFortab`.
+        //   Hai trong số đó là **hàm GHI dữ liệu** — xoá nhầm/bỏ port vì tưởng chết là mất tính năng thật.
+        // ⚪ MiniHTC **chưa từng trích dẫn** bảy tên này (grep = 0) ⇒ **không có kết luận cũ nào phải rút**;
+        //   đây là **kiểm tra âm tính có giá trị**: sai sót của mô hình chưa kịp gây hậu quả trong bản port.
+        // 📌 Bài học (họ #453/#478/#481/#509): **mỗi lần mở rộng tập kênh vào lại lòi ra kênh mới**.
+        //   Quy tắc từ nay: trước khi gọi một hàm là "chết", phải grep `<Ten>(` trên **toàn cây**, không chỉ
+        //   trong tập kênh đã biết; tập kênh là **giả thiết**, grep toàn cây là **bằng chứng**.
+        liveSetV4 = new { entryChannels = 5, wsEntryPoints = 859, reachable = 1373, unreachable = 344,
+            fifthChannel = "TERP.HTCService.ClientService (goi biz.Ten( truc tiep, khong qua SOAP)",
+            toolBugFixed = "reach.js callRe chi bat _biz. => bo sot biz.",
+            revivedFromDead = new[] { "CarSv_Ser_CustomerCar_Create_New20220926",
+                "Ser_ReceptionF_Reception_New20210727", "UploadFile_ForTab", "Mst_Compartment_Get",
+                "Mst_PlateColor_Get", "Mst_Staff_Get", "RptCrdCardForServiceFortab" },
+            writeFunctionsAmongRevived = 2,
+            citedByMiniHtc = 0,
+            supersedes = "#481 liveSetV3 (852/1364/353) — do thieu kenh ClientService" },
         liveSetV3 = new { compiledOnlyNames = 1009, archivedFilesExcluded = 3,
             wsEntryPoints = 852, reachable = 1364, unreachable = 353,
             supersedes = "#478/#479 (1059/896/1413) — do gom ca ban luu tru khong duoc bien dich" },
