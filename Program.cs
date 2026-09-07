@@ -2792,6 +2792,67 @@ app.MapGet("/api/transpfees/versions/history", async (
     });
 }).RequireAuthorization();
 
+// ===== #B91 TRA NGÀY HẠN THANH TOÁN CỌC — `Mst_Calendar_GetForDepositDuty_New20181115` =====
+// Trace LIVE: WS `:1513` → `_biz.Mst_Calendar_GetForDepositDuty_New20181115`
+//   (`BizHTC.MasterData.cs:1366`). 3B đo thật, **khớp cả 2 máy**: start=1366 md5
+//   `cd698e82176516841d4757ae96660c5d`.
+// 🔴 **Đây chính là mảnh còn thiếu của #B77**: hàm dùng **cùng khuôn**
+//    `mySql_GetClauseSelect_Mst_Calendar_GetForDayT()` (`BizHTC.Common.cs:1682`) và **cùng tham số
+//    hệ thống** `TConst.HTCParamCode.Calendar_DepositDuty_DayT`, nhưng ở đây chỉ **TRA CỨU** —
+//    không ghi gì. Dùng để xem trước ngày hạn trước khi chạy `Ord_SalesOrder_Update_Calc` (#B77).
+// 🔴 Nhắc lại quy tắc "ngày thứ T" (`C0-…quinquagesimusseptimus`): đánh số **liên tiếp các NGÀY LÀM
+//    VIỆC** (`CalendarType='WorkingDay'` ∧ **`StatusValue = 0`** ∧ `Date >= @strMCALDate_From`) bằng
+//    `identity(bigint,0,1) MyIdxSeq`, rồi self-join `MyIdxSeq + @nDayT` ⇒ **nhảy T VỊ TRÍ**, không
+//    phải cộng T ngày lịch. Trả nguyên bảng `#tbl_Mst_Calendar_DayT` (mỗi ngày làm việc một dòng,
+//    kèm ngày-thứ-T tương ứng), **không** phải một giá trị đơn lẻ.
+// 🔴 **LỖ HỔNG RBAC — biến thể 2, ca thứ 11**: `@strBUPatternOfUser` được bind (`:1388`) nhưng
+//    **đếm được đúng 1 lần trong cả hàm** — chính là dòng bind; câu SQL lịch **không dùng đến**.
+//    Ở đây tác hại thấp (lịch làm việc là dữ liệu chung), nhưng vẫn ghi vào hồ sơ để **đủ mẫu**.
+// 📌 NỢ (giống #B77): tham số `Calendar_DepositDuty_DayT` nằm ở bảng tham số hệ thống
+//    (`myUtils_GetParamsRaw`) **chưa có trong MiniHTC** ⇒ **KHÔNG đoán**, nhận qua query `dayT`;
+//    thiếu ⇒ trả `Mst_Calendar_GetForDepositDuty_ParamNotSet`.
+app.MapGet("/api/calendars/deposit-duty", async (
+    AppDbContext db, ITenantContext t, DateTime? fromDate, int? dayT) =>
+{
+    if (fromDate is null)
+        return Results.BadRequest(new { error = "Mst_Calendar_GetForDepositDuty_InvalidDateFrom" });
+    if (dayT is null)
+        return Results.BadRequest(new
+        {
+            error = "Mst_Calendar_GetForDepositDuty_ParamNotSet",
+            missing = "Calendar_DepositDuty_DayT",
+            note = "Tham so nay nam o bang tham so he thong (myUtils_GetParamsRaw) chua co trong MiniHTC. KHONG doan gia tri - phai truyen vao (giong no cua #B77)."
+        });
+
+    var from = fromDate.Value.Date;
+    // `CalendarType = 'WorkingDay'` AND `StatusValue = 0` (0 = NGÀY LÀM VIỆC) AND `Date >= @from`.
+    var workDays = await db.MstCalendars
+        .Where(c => c.OrgId == t.OrgId && c.CalendarType == "WorkingDay" && c.StatusValue == "0" && c.Date >= from)
+        .OrderBy(c => c.Date).Select(c => c.Date).ToListAsync();
+
+    // `identity(bigint, 0, 1) MyIdxSeq` rồi `left join … on t.MyIdxSeq + @nDayT = t1.MyIdxSeq`.
+    var items = workDays.Select((d, i) => new
+    {
+        myIdxSeq = i,
+        mcalDate = d,
+        myIdxSeqDayT = (i + dayT.Value) < workDays.Count ? (int?)(i + dayT.Value) : null,
+        dateDayT = (i + dayT.Value) < workDays.Count ? (DateTime?)workDays[i + dayT.Value] : null
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, dayT,
+        workingDayCount = workDays.Count,
+        count = items.Count, items,
+        dayTRule = "'Ngay thu T' la NGAY LAM VIEC THU T, KHONG phai cong T ngay lich: danh so lien tiep cac ngay da loc (CalendarType='WorkingDay' AND StatusValue=0 AND Date >= @strMCALDate_From) bang identity(bigint,0,1) MyIdxSeq roi self-join 'MyIdxSeq + @nDayT' de NHAY T VI TRI. Xem luat C0-...quinquagesimusseptimus.",
+        statusValueNote = "StatusValue = 0 NGHIA LA NGAY LAM VIEC (0 = khong nghi). Hieu nguoc dau la lech toan bo moc han.",
+        shapeNote = "Nguon tra NGUYEN bang #tbl_Mst_Calendar_DayT - moi ngay lam viec mot dong kem ngay-thu-T tuong ung - KHONG phai mot gia tri don le. Dong co dateDayT = null la ngay ma lich chua khai bao du xa.",
+        relatedNote = "Day chinh la manh con thieu cua #B77 (Ord_SalesOrder_Update_Calc): CUNG khuon mySql_GetClauseSelect_Mst_Calendar_GetForDayT (BizHTC.Common.cs:1682) va CUNG tham so Calendar_DepositDuty_DayT, nhung o day chi TRA CUU - khong ghi gi.",
+        rbacHole = "LO HONG RBAC - bien the 2 (khai ma khong dung), ca thu 11: @strBUPatternOfUser duoc bind (:1388) nhung dem duoc dung 1 lan trong ca ham - chinh la dong bind; cau SQL lich KHONG dung den. Tac hai thap (lich lam viec la du lieu chung) nhung van ghi de DU MAU.",
+        paramDebt = "NO giong #B77: Calendar_DepositDuty_DayT o bang tham so he thong chua co trong MiniHTC => nhan qua query dayT."
+    });
+}).RequireAuthorization();
+
 // ===== Biên bản vận chuyển / giao nhận (TransportMinutes — port 1:1 FrmNewTransportMinutes/FrmMngTransportMinutes) =====
 app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
