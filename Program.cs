@@ -34481,7 +34481,8 @@ app.MapPost("/api/customercarebirthdays", async (
     else
     {
         careBthId = "CBT" + now.ToString("yyMMddHHmmssfff");
-        row = new CustomerCareBirthday { OrgId = t.OrgId, CareBthId = careBthId, CreatedDate = now };
+        // #354: `CreatedBy` nằm trong danh sách cột nguồn chép sang WH nhưng port cũ bỏ trống.
+        row = new CustomerCareBirthday { OrgId = t.OrgId, CareBthId = careBthId, CreatedDate = now, CreatedBy = actor };
         db.CustomerCareBirthdays.Add(row);
     }
 
@@ -34495,8 +34496,23 @@ app.MapPost("/api/customercarebirthdays", async (
     row.UpdatedAt = now;
     row.UpdatedBy = actor;
 
+    // ===== 🔴 #354 ĐÓNG DẤU `LogLu*` — cột NGUỒN thật sự mang, port cũ chỉ có `UpdatedAt/By` riêng =====
+    // Nguồn `Ser_CustomerCareBth_Update` (`BizCarSv.Customer.cs:14982`) chép Main→WH bằng **SQL INSERT
+    //   THUẦN** — dạng ghi **thứ NĂM**, ngoài bốn dạng đã ghi ở #314:
+    //   `insert into Ser_CustomerCareBth (CareBthId, CreatedDate, ContactDate, Status, Remark,`
+    //   `LogLuDateTime, LogLUBy, DealerCode, CusID, DateBth, CreatedBy) VALUES (@…)`
+    //   ⇒ máy quét đếm theo `["X"] =` **không thấy** ⇒ suýt kết luận nhầm là cột port tự đặt.
+    // ⚠️ CHÍNH TẢ CỦA NGUỒN KHÔNG NHẤT QUÁN ngay trong **một câu lệnh**: `LogL**u**DateTime` (chữ u
+    //   thường) đứng cạnh `LogL**U**By` (chữ U hoa). Entity giữ nguyên cách viết của nguồn — đừng
+    //   "sửa cho đẹp", vì tên cột phải khớp lược đồ.
+    // ⚠️ `UpdatedAt`/`UpdatedBy` là quy ước RIÊNG của MiniHTC, KHÔNG thay được `LogLu*`: bản ghi chép
+    //   sang kho dữ liệu (WH) đọc đúng hai cột `LogLu*` này.
+    row.LogLuDateTime = now;
+    row.LogLUBy = actor;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.CareBthId, row.CusId, row.DateBth, row.Status, statusText = birthdayCareStatusTexts[status] });
+    return Results.Ok(new { row.CareBthId, row.CusId, row.DateBth, row.Status, statusText = birthdayCareStatusTexts[status],
+        row.CreatedBy, row.LogLuDateTime, row.LogLUBy });   // #354 §12
 }).RequireAuthorization();
 
 app.MapDelete("/api/customercarebirthdays/{careBthId}", async (string careBthId, AppDbContext db, ITenantContext t) =>

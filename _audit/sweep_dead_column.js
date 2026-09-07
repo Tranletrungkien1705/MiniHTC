@@ -58,6 +58,18 @@ const EXPECTED = {
     'HmcReport.AutoID': '#353 identity CSDL; cac hit that ra la dieu kien JOIN on t.X = f.X',
     'WarrantyExtensionDateLog.ROWRID': '#353 dong ghi duy nhat BI COMMENT',
     'ReqPartPriceLine.TSTPartCode': '#353 cho ghi duy nhat thuoc bang KHAC (TST_Mst_Part)',
+    // ===== #354: 8 cot cuoi cua sweep — da tra nguon, chia BA loai =====
+    // (a) KHONG TON TAI trong nguon (0 file) => cot do chinh port dat ra:
+    'RetrieveRequest.TranspReqTypeHeaderOnly': '#354 khong ton tai trong nguon (0 file)',
+    'DocReq.SubmittedAt': '#354 khong ton tai trong nguon (0 file)',
+    'CarDocRequestCar.CarDocReqTypeCRR': '#354 khong ton tai trong nguon (0 file)',
+    // (b) ALIAS DAN XUAT trong SELECT, nguon KHONG luu:
+    'SerStockOutOrder.StatusText': '#354 alias hien thi: case ... end StatusText',
+    'PartStockOut.OldStockOutNo': '#354 alias self-join: oldso.StockOutNo OldStockOutNo',
+    'Dms40SoRootDetail.CancelQuantityTotal': '#354 alias dan xuat; mot nhanh dong cung 0.0',
+    // (c) THAM SO CHET / COT CUA BANG KHAC:
+    'PartStockIn.IsAdjustment': '#354 tham so bi COMMENT (//, strIsAdjustment)',
+    'BankTransportMinute.BankBUCode': '#354 cot cua bang Mst_Bank, khong phai bang nay',
 };
 
 // ---- 1. gom entity → danh sách thuộc tính ----
