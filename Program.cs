@@ -24625,6 +24625,91 @@ app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, IT
 // ⚠️ Tầng service truyền `Remark` = **null khi rỗng** (không phải chuỗi rỗng) — giữ đúng phân biệt.
 // 📌 MiniHTC hiện chỉ có bảng con `CampaignMarketingPart`; bốn bảng VIN/PlateNo/Dealer/FullVIN chưa
 //   mô hình hoá ⇒ trả cờ `childTablesNotModelled` thay vì lặng lẽ bỏ qua.
+// ===== 🔴 #393 SỬA + XOÁ chiến dịch marketing (cùng màn `FrmSer_CampaignMarketingDetail`) =====
+// TRACE TWIN: WS `Ser_CampaignMarketing_Update` → biz **`…_Update_20220626`** (`:5385`);
+//             WS `Ser_CampaignMarketing_Delete` → biz **`…_Delete_20220926`** (`:6571`).
+//   Ba thao tác của màn này dùng **ba twin có NGÀY KHÁC NHAU** (Update 2022-06-26,
+//   Delete và Approve 2022-09-26) ⇒ chúng được sửa ở những đợt khác nhau, đừng giả định đồng bộ.
+//
+// 🔴 **CẢ HAI đều guard 'chỉ khi đang CHỜ DUYỆT (P)'** — cùng `Ser_CampaignMarketing_CheckDB(…, Pending)`
+//   như Approve (#392). Chiến dịch đã duyệt thì **không sửa, không xoá được**.
+// 🔴 **SỬA = XOÁ SẠCH DANH SÁCH CON RỒI GHI LẠI** (nguồn có **10** câu `delete t` trong hàm Update,
+//   trên các bảng `VIN` · `PlateNo` · `FullVIN` · `Dealer` · `Part`) ⇒ **KHÔNG phải trộn từng dòng**.
+//   Gửi lên danh sách thiếu là **mất phần còn lại**. Đây là điểm dễ port sai nhất của màn.
+// 🔴 **XOÁ lan đúng SÁU bảng**, đối xứng với Approve (#392): bảng chính + `Dealer` + `FullVIN`
+//   + `Part` + `PlateNo` + `VIN`.
+// 📌 MiniHTC mới mô hình hoá bảng con `Part` ⇒ cả hai endpoint đều trả `childTablesNotModelled`.
+app.MapPut("/api/campaignmarketings/{no}", async (string no, CampaignMarketingDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = (no ?? "").Trim().ToUpperInvariant();
+    var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.CamMarketingStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ sửa được chiến dịch đang CHỜ DUYỆT (P).",
+            currentStatus = c.CamMarketingStatus });
+
+    c.CamName = dto.CamName ?? c.CamName;
+    c.CamDesc = dto.CamDesc;
+    // EffDate* KHONG nullable tren entity => giu gia tri cu khi DTO khong gui.
+    if (dto.EffDateStart is not null) c.EffDateStart = dto.EffDateStart.Value;
+    if (dto.EffDateEnd is not null) c.EffDateEnd = dto.EffDateEnd.Value;
+    c.WarrantyDateStart = dto.WarrantyDateStart; c.WarrantyDateEnd = dto.WarrantyDateEnd;
+    c.ConditionVin = dto.ConditionVin; c.ConditionPlateNo = dto.ConditionPlateNo;
+    c.ConditionDealer = dto.ConditionDealer;
+
+    // 🔴 XOÁ SẠCH rồi ghi lại — đúng nguồn, KHÔNG trộn từng dòng.
+    var oldParts = await db.CampaignMarketingParts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id).ToListAsync();
+    db.CampaignMarketingParts.RemoveRange(oldParts);
+    var newParts = dto.Parts ?? new();
+    foreach (var p in newParts)
+        db.CampaignMarketingParts.Add(new CampaignMarketingPart
+        {
+            OrgId = t.OrgId, CampaignId = c.Id,
+            PartCode = p.PartCode, PercentDiscount = p.PercentDiscount,
+            CamMarketingPartStatus = c.CamMarketingStatus,
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        c.CamNo, status = c.CamMarketingStatus,
+        partsRemoved = oldParts.Count, partsAdded = newParts.Count,
+        replaceAllNote = "SỬA = XOÁ SẠCH danh sách con rồi ghi lại (nguồn có 10 câu `delete` trong hàm Update). "
+            + "Gửi lên danh sách thiếu là MẤT phần còn lại — không phải trộn từng dòng.",
+        pendingOnlyNote = "Chỉ sửa được khi đang CHỜ DUYỆT (P), giống guard của Approve.",
+        childTablesNotModelled = new[] { "Ser_CampaignMarketingVIN", "Ser_CampaignMarketingPlateNo",
+            "Ser_CampaignMarketingFullVIN", "Ser_CampaignMarketingDealer" },
+        twinDateNote = "Update dùng twin _20220626, còn Delete/Approve dùng _20220926 — ba thao tác sửa ở ba đợt khác nhau.",
+    });
+}).RequireAuthorization();
+
+// XOÁ: lan đúng SÁU bảng, và cũng chỉ khi đang CHỜ DUYỆT.
+app.MapDelete("/api/campaignmarketings/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = (no ?? "").Trim().ToUpperInvariant();
+    var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    if (c.CamMarketingStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ xoá được chiến dịch đang CHỜ DUYỆT (P).",
+            currentStatus = c.CamMarketingStatus });
+
+    var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id).ToListAsync();
+    db.CampaignMarketingParts.RemoveRange(parts);
+    db.CampaignMarketings.Remove(c);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        camNo = no, deleted = true, partsDeleted = parts.Count,
+        cascadeNote = "Nguồn xoá lan đúng SÁU bảng: chính + Dealer + FullVIN + Part + PlateNo + VIN "
+            + "(đối xứng với Approve ở #392).",
+        pendingOnlyNote = "Chỉ xoá được khi đang CHỜ DUYỆT (P).",
+        childTablesNotModelled = new[] { "Ser_CampaignMarketingVIN", "Ser_CampaignMarketingPlateNo",
+            "Ser_CampaignMarketingFullVIN", "Ser_CampaignMarketingDealer" },
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/campaignmarketings/{no}/approve", async (string no, CampaignApproveDto? dto,
     AppDbContext db, ITenantContext t) =>
 {
