@@ -1,43 +1,43 @@
 cot                         GAN  ADD  SQLSET SQLINS  DOC   => KET LUAN
 AmountAccum                 0    0    0      0      866   KHONG THAY GHI
 AmountBeforeVat             0    0    0      0      0     KHONG THAY GHI
-AssemblyStatus              0    0    0      0      2149  KHONG THAY GHI
+AssemblyStatus              0    0    0      8      2141  CO GHI (BizHTC.VietinBank.cs:7421 BizHTC.VietinBank.cs:7464 BizHTC.VietinBank.cs:11047)
 CancelQuantityTotal         0    0    0      0      44    KHONG THAY GHI
-CostInCheck                 0    0    0      0      56    KHONG THAY GHI
-CostOutCheck                0    0    0      0      52    KHONG THAY GHI
-DeliveryRangeType           0    0    0      0      307   KHONG THAY GHI
+CostInCheck                 0    0    0      2      54    CO GHI (0.34.Contract.cs:29910 0.34.Contract.cs:29968)
+CostOutCheck                0    0    0      2      50    CO GHI (0.34.Contract.cs:29911 0.34.Contract.cs:29969)
+DeliveryRangeType           0    0    0      4      303   CO GHI (BizHTC.Report.cs:34837 BizHTC.Report.cs:36070 RptSQLQuery.cs:23978)
 DisbursementDate            0    0    0      0      61    KHONG THAY GHI
 DiscountValue               0    0    0      0      533   KHONG THAY GHI
 ExchangeRate                0    0    0      1      145   CO GHI (BizCarSv.Service.cs:17471)
 FlagOrderNCC                0    0    0      0      8     KHONG THAY GHI
-FnDepositAmount             0    0    0      0      206   KHONG THAY GHI
-FnDepositCountDate          0    0    0      0      290   KHONG THAY GHI
-FnGrtAmount                 0    0    0      0      207   KHONG THAY GHI
-FnGrtCountDate              0    0    0      0      291   KHONG THAY GHI
-FnTotalAmount               0    0    0      0      184   KHONG THAY GHI
-InCostStorageDate           0    0    0      0      29    KHONG THAY GHI
-ListDealerHyundai           0    0    0      0      41    KHONG THAY GHI
+FnDepositAmount             0    0    0      6      200   CO GHI (0.41.CalcFnExp.cs:2487 MyDeleting.cs:3543 MyDeleting.cs:26212)
+FnDepositCountDate          0    0    0      6      284   CO GHI (0.41.CalcFnExp.cs:2486 MyDeleting.cs:3542 MyDeleting.cs:26211)
+FnGrtAmount                 0    0    0      6      201   CO GHI (0.41.CalcFnExp.cs:2489 MyDeleting.cs:3545 MyDeleting.cs:26214)
+FnGrtCountDate              0    0    0      6      285   CO GHI (0.41.CalcFnExp.cs:2488 MyDeleting.cs:3544 MyDeleting.cs:26213)
+FnTotalAmount               0    0    0      6      178   CO GHI (0.41.CalcFnExp.cs:2490 MyDeleting.cs:3546 MyDeleting.cs:26215)
+InCostStorageDate           0    0    0      2      27    CO GHI (0.34.Contract.cs:26505 0.34.Contract.cs:26563)
+ListDealerHyundai           0    0    0      2      39    CO GHI (RptSQLQuery.cs:14490 RptSQLQuery.cs:15567)
 ObjectType                  0    0    0      0      1489  KHONG THAY GHI
-OutCostStorageDate          0    0    0      0      21    KHONG THAY GHI
-QtyBOChuaXuatKho            0    0    0      0      213   KHONG THAY GHI
-QtyBOKhongVINHienTai        0    0    0      0      169   KHONG THAY GHI
-QtyBOKhongVINQuaKhu         0    0    0      0      169   KHONG THAY GHI
-QtyBOKhongVINTuongLai       0    0    0      0      169   KHONG THAY GHI
+OutCostStorageDate          0    0    0      2      19    CO GHI (0.34.Contract.cs:26507 0.34.Contract.cs:26565)
+QtyBOChuaXuatKho            0    0    0      18     195   CO GHI (BizHTC.PlanDelivery.cs:2739 BizHTC.PlanDelivery.cs:3285 BizHTC.zTemp.cs:18785)
+QtyBOKhongVINHienTai        0    0    0      8      161   CO GHI (BizHTC.zTemp.cs:18788 BizHTC.zTemp.cs:47864 BizHTC.zTemp.cs:18789)
+QtyBOKhongVINQuaKhu         0    0    0      8      161   CO GHI (BizHTC.zTemp.cs:18787 BizHTC.zTemp.cs:47863 BizHTC.zTemp.cs:18788)
+QtyBOKhongVINTuongLai       0    0    0      8      161   CO GHI (BizHTC.zTemp.cs:18789 BizHTC.zTemp.cs:47865 BizHTC.zTemp.cs:18790)
 QtyBalance                  0    0    0      0      121   KHONG THAY GHI
-QtyBuyDealer                0    0    0      10     199   CO GHI (BizHTC.PlanDelivery.cs:2737 BizHTC.PlanDelivery.cs:3283 0.20.MapVIN.2024.cs:713)
-QtyCondition                0    0    0      0      87    KHONG THAY GHI
+QtyBuyDealer                0    0    0      18     191   CO GHI (BizHTC.PlanDelivery.cs:2737 BizHTC.PlanDelivery.cs:3283 BizHTC.zTemp.cs:18783)
+QtyCondition                0    0    0      2      85    CO GHI (0.01.Master.cs:4630 0.01.Master.cs:4630)
 QtyInStock                  0    0    0      18     252   CO GHI (BizHTC.PlanDelivery.cs:2736 BizHTC.PlanDelivery.cs:3282 BizHTC.zTemp.cs:18781)
-QtyOrdNotCarID              0    0    0      0      169   KHONG THAY GHI
-QtyPromotion                0    0    0      0      81    KHONG THAY GHI
+QtyOrdNotCarID              0    0    0      8      161   CO GHI (BizHTC.zTemp.cs:18791 BizHTC.zTemp.cs:47867 BizHTC.zTemp.cs:18792)
+QtyPromotion                0    0    0      2      79    CO GHI (0.01.Master.cs:4631 0.01.Master.cs:4631)
 QtySMNoWorking              0    0    0      4      124   CO GHI (BizHTC.zzzzCode.cs:12975 BizHTC.zzzzCode.cs:12975 RptSQLQuery.cs:14442)
 QtySMWorking                0    0    0      4      124   CO GHI (BizHTC.zzzzCode.cs:12974 BizHTC.zzzzCode.cs:12974 RptSQLQuery.cs:14441)
 QtySalesOrderP              0    0    0      2      58    CO GHI (zTemp.0.30.Order.cs:10495 zTemp.0.30.Order.cs:10496)
 QtySellCustomer             0    0    0      8      161   CO GHI (BizHTC.zTemp.cs:18779 BizHTC.zTemp.cs:47856 BizHTC.zTemp.cs:18780)
 QtySellDealer               0    0    0      8      57    CO GHI (BizHTC.zTemp.cs:18780 BizHTC.zTemp.cs:47857 BizHTC.zTemp.cs:18781)
-QtyStockDealer              0    0    0      0      17    KHONG THAY GHI
-QtyUnKnown                  0    0    0      0      65    KHONG THAY GHI
+QtyStockDealer              0    0    0      2      15    CO GHI (zTemp.0.30.Order.cs:10498 zTemp.0.30.Order.cs:10499)
+QtyUnKnown                  0    0    0      8      57    CO GHI (BizHTC.zTemp.cs:18784 BizHTC.zTemp.cs:47861 BizHTC.zTemp.cs:18785)
 TotalAfterVAT               0    0    0      0      70    KHONG THAY GHI
-TotalAmountAfterVAT         0    0    0      0      50    KHONG THAY GHI
+TotalAmountAfterVAT         0    0    0      2      48    CO GHI (0.34.Contract.cs:29832 0.34.Contract.cs:29890)
 TotalBeforeVAT              0    0    0      0      9     KHONG THAY GHI
 TotalBeforeVat              0    0    0      0      0     KHONG THAY GHI
 TotalQuantityInExchangeRate 0    0    0      0      45    KHONG THAY GHI
@@ -49,4 +49,4 @@ ValGoodsNotChargeTax        0    0    0      0      54    KHONG THAY GHI
 ValGoodsNotTaxable          0    0    0      0      54    KHONG THAY GHI
 ValGoodsVAT10               0    0    0      0      54    KHONG THAY GHI
 ValGoodsVAT5                0    0    0      0      54    KHONG THAY GHI
-ViolateNumber               0    0    0      1      220   CO GHI (Biz.HTC.WH.cs:210677)
+ViolateNumber               0    0    0      2      219   CO GHI (Biz.HTC.WH.cs:210677 RptSQLQuery.cs:15580)

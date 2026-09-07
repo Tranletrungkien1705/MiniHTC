@@ -30,9 +30,19 @@ for(const f of files){
         const lo=Math.max(0,i-12);
         if(/\bupdate\s+[A-Za-z0-9_]+/i.test(lines.slice(lo,i).join('\n'))){ r.sqlset++; if(r.where.length<3) r.where.push(path.basename(f)+':'+(i+1)); continue; }
       }
-      // 5: insert into ... (cot)
-      const lo2=Math.max(0,i-6);
-      if(/insert\s+into\s+/i.test(lines.slice(lo2,i+1).join('\n')) && new RegExp('(^|[,(\\s])'+c+'([,)\\s]|$)').test(ln)){ r.sqlins++; if(r.where.length<3) r.where.push(path.basename(f)+':'+(i+1)); continue; }
+      // 5: insert into <bang> ( ... cot ... )
+      //   🔴 #384 SUA AM TINH GIA: cua so nhin lai truoc day chi 6 dong. Danh sach cot cua
+      //   `insert into` trong nguon nay moi cot MOT DONG, nen cot thu 8 tro di khong con thay
+      //   `insert into` => bao "KHONG THAY GHI" oan. Vi du that: Auto_EstimateDelivery_BODtl
+      //   (BizHTC.PlanDelivery.cs:2731) co QtyBOChuaXuatKho o dong thu 8 sau `insert into`.
+      //   Nay: quet nguoc toi da 60 dong, DUNG lai khi gap `)` dong danh sach hoac `select`.
+      let inIns=false;
+      for(let k=i-1;k>=Math.max(0,i-60);k--){
+        const p=lines[k];
+        if(/^\s*\)/.test(p) || /\bselect\b/i.test(p)) break;
+        if(/insert\s+into\s+/i.test(p)){ inIns=true; break; }
+      }
+      if(inIns && new RegExp('(^|[,(\\s])'+c+'([,)\\s]|$)').test(ln)){ r.sqlins++; if(r.where.length<3) r.where.push(path.basename(f)+':'+(i+1)); continue; }
       r.read++;
     }
   }
