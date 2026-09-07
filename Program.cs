@@ -14383,6 +14383,21 @@ app.MapGet("/api/servicecars/search-paging", async (AppDbContext db, ITenantCont
             + "trong khi mọi ô khác trên cùng form đều tìm gần đúng.",
         logGapNote = "Danh sách tham số ghi log lỗi của cả Get20220626 lẫn GetX BỎ SÓT strPhonePattern ⇒ "
             + "khi hàm ném lỗi, nhật ký không ghi người dùng đã tìm số điện thoại nào.",
+        // ===== #426 ĐỐI CHIẾU TWIN Ser_CustomerCar_Get_WH (WH.cs:31401-31777) =====
+        // Bản _WH KHÔNG gọi lại GetX mà CHÉP TOÀN BỘ SQL vào thân mình (352 vs 361 dòng).
+        // Đếm chuỗi: BuildClauseConditionSingle 9=9 · like 7=7 · t.Tel 2=2 · t.Mobile 2=2 ·
+        //   car.TradeMarkCode 2=2 · car.ModelId 1=1 · MyRowIdx_Start 2=2 · rt.status FNS 1=1.
+        // ⇒ KHÔNG có lệch nghiệp vụ. Khác biệt là CÁCH TÍNH, không phải KẾT QUẢ:
+        //   · bản Main gom sẵn vào hai bảng tạm (#tbl_customer_tmp_CheckInDate/_CheckInCount) rồi nối;
+        //   · bản _WH dùng HAI TRUY VẤN CON TƯƠNG QUAN chạy LẠI CHO TỪNG DÒNG kết quả.
+        //   Cùng số liệu, nhưng chi phí khác hẳn khi tập kết quả lớn — lệch HIỆU NĂNG, không lệch số.
+        // ⚠️ Bản Main còn một bảng tạm trung gian #tbl_ID_CusName (4 lần) mà _WH không có, và giữ lại
+        //   một dòng Row_Number ĐÃ COMMENT; bản _WH đã bỏ dòng chết đó.
+        // 📊 Thống kê twin _WH tới #426: giống nghiệp vụ #406/#407/#409/#418/#426 · lệch #378/#413/#422.
+        whTwinNote = "Ser_CustomerCar_Get_WH chép toàn bộ SQL thay vì gọi lại GetX; KHÔNG lệch nghiệp vụ "
+            + "(đếm chuỗi 8 mốc đều bằng nhau) nhưng tính FirstCheckInDate/CheckInCount bằng HAI TRUY VẤN "
+            + "CON TƯƠNG QUAN cho TỪNG DÒNG, trong khi bản Main gom sẵn vào bảng tạm ⇒ lệch HIỆU NĂNG.",
+
         pagingBoundNote = "Nguồn: MyRowIdx_Start = start + 1 (C# đếm từ 0, SQL đếm từ 1), MyRowIdx_End = "
             + "start + count ⇒ bao gồm cả hai đầu.",
         rows,
