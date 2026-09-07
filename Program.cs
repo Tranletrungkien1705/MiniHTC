@@ -14898,6 +14898,35 @@ app.MapGet("/api/servicecars/search-paging", async (AppDbContext db, ITenantCont
             + "(đếm chuỗi 8 mốc đều bằng nhau) nhưng tính FirstCheckInDate/CheckInCount bằng HAI TRUY VẤN "
             + "CON TƯƠNG QUAN cho TỪNG DÒNG, trong khi bản Main gom sẵn vào bảng tạm ⇒ lệch HIỆU NĂNG.",
 
+        // ===== 🔴 #442 MÀN GỬI SMS DÙNG CHUNG THÂN NÀY, NHƯNG **BỎ TRỐNG Ô SỐ ĐIỆN THOẠI** =====
+        // `FrmSMSCustomerSearch` (`Views/SMS`, 420 dòng) → `MstCustomerService.SerCustomerCarGet`
+        //   (`MstCustomerService.cs:540`) → WS `Ser_CustomerCar_**GetDL**` (`WSCarSv.asmx.cs:6709`)
+        //   → biz `Ser_CustomerCar_GetDL20220626` (`Customer.cs:1387`) → **cùng thân `Ser_CustomerCar_GetX`**
+        //   như #425, chỉ khác: truyền `_dbDealer` thay vì `_dbMain`.
+        //   ⇒ Hậu tố `DL` ở đây = **CSDL đại lý**; SQL y hệt. (Đối chiếu xong, không lệch nghiệp vụ.)
+        //
+        // 🔴 **Ô SỐ ĐIỆN THOẠI KHÔNG ĐƯỢC TRUYỀN**: lời gọi của màn SMS để **chuỗi rỗng** ở đúng vị trí đó,
+        //   kèm chú thích `//So dien thoai 20130103`. Tra ngược chữ ký service:
+        //   `string strPhonePattern, //20130103 -issue 986` — tham số được **thêm năm 2013 cho issue 986**
+        //   và ở `Ser_CustomerCar_GetX` nó **có hoạt động thật** (lọc `t.Tel` **HOẶC** `t.Mobile`, đã kiểm ở #425).
+        //   ⇒ Tính năng tìm theo số điện thoại **đã làm xong ở tầng dưới** nhưng **màn SMS không nối dây**.
+        //     Trớ trêu: đây đúng là màn mà số điện thoại quan trọng nhất — nó dùng để **chọn người nhận tin nhắn**.
+        //     Màn cũng **không có ô nhập** số điện thoại (kiểm cả file `.Designer.cs`) ⇒ không phải điều khiển
+        //     chết, mà là tính năng **chưa bao giờ được đưa lên giao diện**.
+        //
+        // ⚠️ Màn SMS gọi với `startRow = 0`, `numRow = Int32.MaxValue` ⇒ **tải TOÀN BỘ khách hàng một lần**,
+        //   không phân trang, dù thân hàm có sẵn cơ chế phân trang bằng `Row_Number`.
+        // ⚠️ Nó **có** truyền `TradeMarkCode` và `ModelId` — hai ô mà #425 đã chỉ ra là dùng `=` (khớp CHÍNH XÁC)
+        //   trong khi mọi ô khác dùng `like`. Trên màn SMS hai ô này là hộp chọn nên khớp chính xác là hợp lý;
+        //   chính ở màn nhập tay (#425) thì nó mới gây khó.
+        smsScreenPhoneNotWiredNote = "Màn FrmSMSCustomerSearch dùng CHUNG thân Ser_CustomerCar_GetX nhưng "
+            + "truyền chuỗi rỗng vào tham số số điện thoại (chú thích //So dien thoai 20130103). Tham số này "
+            + "được thêm 2013 cho issue 986 và CHẠY THẬT ở tầng dưới (Tel HOẶC Mobile, đã kiểm #425) — chỉ là "
+            + "màn SMS không nối dây, và cũng không có ô nhập trên giao diện. Đúng màn cần số điện thoại nhất.",
+        dlVariantNote = "Ser_CustomerCar_GetDL20220626 gọi CÙNG thân GetX, chỉ đổi _dbMain → _dbDealer ⇒ "
+            + "hậu tố DL = CSDL đại lý, SQL y hệt, không lệch nghiệp vụ.",
+        smsLoadsAllNote = "Màn SMS gọi với startRow = 0, numRow = Int32.MaxValue ⇒ tải TOÀN BỘ khách hàng "
+            + "một lần, bỏ qua cơ chế phân trang có sẵn trong thân hàm.",
         pagingBoundNote = "Nguồn: MyRowIdx_Start = start + 1 (C# đếm từ 0, SQL đếm từ 1), MyRowIdx_End = "
             + "start + count ⇒ bao gồm cả hai đầu.",
         rows,
