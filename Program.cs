@@ -25466,6 +25466,29 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   là chưa đủ. Công cụ hiện chọn bản nhiều dòng SQL nhất — **một heuristic**, không phải chân lý.
         liveSetFix = new { wsProjects = 4, namesHTCWSCarSv = 830, namesAllProjects = 1059,
             missedBefore = 229, whPairsRecomputed = 89, sqlIdentical = 60, differing = 29 },
+        // ===== ✅ #484 PHÂN LOẠI 23 CẶP `_WH` CÒN LỆCH (macro-free, tập sống đã sửa ở #481) =====
+        // 📊 **76 cặp macro-free so được · GIỐNG HỆT 53 · CẦN SOI 23.**
+        // Đã soi tay và **đóng 4 ca**:
+        //   ✅ `Ser_Part_OrderGet_StatusList` (91→81): Main gom `#tbl_Ser_Part_Order_SumTotal`
+        //     (`group by OrderPartID, OrderNO`, `where(1=1)`) rồi LEFT join; `_WH` dùng **truy vấn con tương quan**
+        //     `(select sum(t.DeliveryQuantity) … where t.OrderPartID = si.OrderPartID)`.
+        //     Bộ lọc chỉ giới hạn **ĐƠN**, không giới hạn **DÒNG** ⇒ tổng mỗi đơn **như nhau**;
+        //     đơn không có dòng nào thì cả hai đều ra `NULL`. ⇒ **Lệch HIỆU NĂNG, không lệch số.**
+        //   ✅ `Ser_CustomerCar_Get` (105→92): cùng đúng khuôn đó, đã đóng ở #480.
+        //   ✅ `Ser_CampaignMarketing_Get` (55→63): bảng kết quả phụ, đã port ở #482.
+        //   ⚪ `Rpt_SerCamMarketingHTC_Summary` và `Rpt_Ser_ReceptionF_SumQtyRecepForTab`: **main-only 0 /**
+        //     **wh-only 0** ⇒ hai tập dòng SQL **bằng nhau**, chỉ khác THỨ TỰ xuất hiện ⇒ cosmetic.
+        //   ⇒ Còn **18 cặp** thực sự phải đọc tay.
+        //
+        // ⚠️ THÀNH THẬT VỀ CÔNG CỤ: tôi có viết bộ phân loại tự động "Main dùng bảng tạm ↔ `_WH` dùng truy vấn
+        //   con" (`_audit/sweeprewrite.js`) — nó trả **0 cặp**, tức **KHÔNG nhận ra** ngay cả hai ca tôi vừa xác
+        //   nhận bằng tay (dòng `inner join Ser_Part_OrderDetail` không khớp mẫu "bảng tạm"). Vậy con số phân
+        //   loại ở đây là **do đọc tay**, không phải do công cụ. Giữ công cụ lại nhưng **không dùng số của nó**.
+        //   📌 Đây là lần thứ chín của họ lỗi ĐO — lần này tôi bắt được TRƯỚC khi báo cáo, nhờ đã soi tay trước.
+        whDifferingTriage = new { macroFreeComparable = 76, identical = 53, needReview = 23,
+            closedByHand = 4, remaining = 18,
+            classifierFoundNothing = true,
+            note = "Con so phan loai la do DOC TAY; bo phan loai tu dong tra 0 va da bi bo qua." },
         macroAwareness = new { differingPairs = 26, pairsUsingMacro = 12, macroFreeCandidates = 14,
             note = "So dong SQL chi so sanh duoc khi CA HAI phia macro=0." },
         whTwinSweep = new { basesWithWhVariant = 93, comparableBothLive = 88, skippedNoLiveSide = 5,
