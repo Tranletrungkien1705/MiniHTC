@@ -16107,6 +16107,78 @@ app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴 #355 KHÁCH ĐỦ ĐIỀU KIỆN KHẢO SÁT J.D. POWER — `Ser_Customer_GetByJDPowerTerm` =====
+// (`BizCarSv.Service01.cs:16692`; WS `WSCarSv.asmx.cs` CÓ gọi ⇒ LIVE). MiniHTC trước nay mới port
+//   **master kỳ khảo sát** (CRUD), chưa có phần **dùng** cửa sổ kỳ để lọc lệnh.
+//
+// 🔴 LỖI TIỀM ẨN CỦA NGUỒN — cửa sổ kỳ lấy bằng **HAI truy vấn `TOP 1` ĐỘC LẬP, đều KHÔNG `order by`**:
+//   `AND RO.CheckInDate >= (SELECT TOP 1 JDPStartDate FROM JDP_Mst_JDPowerTerm WHERE FlagActive='1')`
+//   `AND RO.CheckInDate <= (SELECT TOP 1 JPDEndDate   FROM JDP_Mst_JDPowerTerm WHERE FlagActive='1')`
+//   ⇒ Nếu có **nhiều hơn một** kỳ đang hiệu lực thì ngày ĐẦU và ngày CUỐI có thể đến từ **HAI BẢN GHI
+//     KHÁC NHAU** — cửa sổ lai, không tương ứng kỳ nào cả. Nặng hơn "lấy dòng bất kỳ" thông thường.
+//   ⇒ Port đọc **MỘT** bản ghi kỳ (thứ tự xác định) cho cả hai đầu, và **báo cờ** khi >1 kỳ đang hiệu lực.
+// ⚠️ Chính tả nguồn: `JDPStartDate` nhưng `J**PD**EndDate` (đảo PD/DP) — giữ nguyên khi đối chiếu.
+//
+// Bộ lọc của nguồn:
+//   `RO.Status NOT IN ('CRE','PRT','HPA','NORE','REJ')` — **danh sách ĐEN**, mã lạ vẫn được tính
+//   `cus.IsActive = '1'` · `CheckInDate` trong cửa sổ kỳ
+//   `ltrim(rtrim(car.TradeMarkCode)) IN ('Hyundai','HYUNDAI')` — nguồn liệt kê **hai biến thể hoa/thường**
+//     vì đối chiếu chuỗi có phân biệt; port dùng so sánh không phân biệt hoa thường, kết quả bao trùm.
+// ⚠️ Nguồn trả `TOP 1` (cũng không `order by`) ⇒ "một khách bất kỳ đủ điều kiện". Port giữ 1 bản ghi
+//   nhưng sắp xếp xác định để gọi hai lần ra cùng kết quả.
+app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext t,
+    string? cusCode, string? dealerCode, string? roNo) =>
+{
+    var terms = await db.JDPowerTerms.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1")
+        .OrderBy(x => x.Id).ToListAsync();
+    if (terms.Count == 0)
+        return Results.BadRequest(new { error = "Chưa khai kỳ khảo sát J.D. Power nào đang hiệu lực." });
+
+    var term = terms[0];
+    if (term.StartDate is null || term.EndDate is null)
+        return Results.BadRequest(new { error = "Kỳ khảo sát thiếu ngày bắt đầu hoặc ngày kết thúc.", term.JDPTermCode });
+
+    // Danh sách ĐEN đúng nguồn — dùng mã của nguồn rồi đổi sang nhãn MiniHTC.
+    var blocked = new[] { "Created", "PrintedQuote", "HasPart", "NotResponding", "Rejected" };
+
+    var qy = from r in db.RepairOrders
+             join c in db.ServiceCustomers on r.CusName equals c.CusName
+             where r.OrgId == t.OrgId && c.OrgId == t.OrgId
+                && !blocked.Contains(r.Status)
+                && c.FlagActive == "1"
+                && r.CheckInDate != null
+                && r.CheckInDate >= term.StartDate && r.CheckInDate <= term.EndDate
+             select new { r.RONo, r.Status, r.CheckInDate, c.CusCode, c.CusName, c.DealerCode, r.Vin };
+
+    if (!string.IsNullOrWhiteSpace(cusCode)) qy = qy.Where(x => x.CusCode == cusCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim().ToUpperInvariant());
+
+    // Nguồn lọc hãng xe trên `Ser_Car.TradeMarkCode`; MiniHTC nối xe qua số khung của lệnh.
+    var rows = await qy.OrderBy(x => x.RONo).Take(50).ToListAsync();
+    var vins = rows.Select(x => x.Vin).ToList();
+    var hyundaiVins = (await db.ServiceCars
+            .Where(c => c.OrgId == t.OrgId && c.FrameNo != null && vins.Contains(c.FrameNo))
+            .Select(c => new { c.FrameNo, c.TradeMark }).ToListAsync())
+        .Where(c => string.Equals((c.TradeMark ?? "").Trim(), "Hyundai", StringComparison.OrdinalIgnoreCase))
+        .Select(c => c.FrameNo).ToHashSet();
+    var hit = rows.FirstOrDefault(x => x.Vin != null && hyundaiVins.Contains(x.Vin));
+
+    return Results.Ok(new
+    {
+        term = new { term.JDPTermCode, term.JDPTermName, term.StartDate, term.EndDate },
+        eligible = hit,
+        found = hit is not null,
+        // 🔴 Nguồn lấy ngày đầu/cuối bằng HAI `TOP 1` độc lập ⇒ nhiều kỳ hiệu lực thì cửa sổ có thể LAI.
+        activeTermCount = terms.Count,
+        mixedWindowRisk = terms.Count > 1,
+        mixedWindowNote = terms.Count > 1
+            ? "Có " + terms.Count + " kỳ đang hiệu lực. Nguồn lấy JDPStartDate và JPDEndDate bằng hai TOP 1 "
+              + "ĐỘC LẬP không order by ⇒ cửa sổ của nguồn có thể ghép từ hai kỳ khác nhau. Web dùng MỘT kỳ."
+            : null,
+    });
+}).RequireAuthorization();
+
 // ===== Master kỳ khảo sát JD Power (JDPowerTerm — port 1:1 FrmJDPowerTermCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
