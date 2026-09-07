@@ -10111,6 +10111,13 @@ public sealed class CarVinMaster
     /// and cv.ColorCode = mcc.ColorCode`.
     /// </summary>
     public string? ColorCode { get; set; }
+    /// <summary>#B23 Trạng thái GIAO của xe (`Car_Car.DeliveryStatus`) — `Car_BigUpdate_CDOD_New20181115`
+    /// (`BizHTC.Storage.DlvMinutes.cs:6003`) đặt **`Stage.Finished` = "F"** kèm chú thích nguồn
+    /// *"Đánh dấu Car_Car.DeliveryStatus là Xe đã được giao tới Đại lý"*. Guard cùng hàm đòi trạng thái
+    /// hiện tại thuộc **danh sách "A,F"**.</summary>
+    public string? DeliveryStatus { get; set; }
+    /// <summary>#B23 Trạng thái VIN tự do (`Car_Car.VINFreeStatus`) — guard `Car_BigUpdate_CDOD` đòi **"0"**.</summary>
+    public string? VINFreeStatus { get; set; }
 
     /// <summary>
     /// 🔴 #B11 Trạng thái BÁN của xe (`Car_Car.SellStatus`). `DealerSalesDealDetailUpdate_DeliveryDate_New20181119`

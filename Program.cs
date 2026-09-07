@@ -14603,6 +14603,78 @@ app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, st
 //    im lặng. Đã sửa: chỉ ghi cột thuộc `typeStatus`.
 // 🔴 Port cũ dùng `r.TTCStatus == "1" ? "1" : "0"` ⇒ **nuốt giá trị sai** thành "0"; nguồn NÉM LỖI
 //    `..._InvalidTypeTTCStatus` / `..._InvalidTypeCPTCStatus` khi giá trị không phải "1" hoặc "0".
+
+// ===== #B23 XÁC NHẬN GIAO XE TỚI ĐẠI LÝ — "sửa lớn" CDOD (port 1:1 `FrmMngDO`, 2010.HTC/Sales) =====
+// Trace twin LIVE: `FrmMngDO.cs:1131` → `salesSv.Car_BigUpdate_CDOD(...)` → WS `Car_BigUpdate_CDOD`
+//   (`WSHTC.asmx.cs:36715`) → **`_biz.Car_BigUpdate_CDOD_New20181115`**
+//   (`BizHTC.Storage.DlvMinutes.cs:6003` — **KHÔNG** nằm ở `Biz.HTC.WH.cs` như đa số hàm khác).
+// 🔴 GUARD NGƯỢC DẤU với #B17: `myCar_CheckCar(..., strDeliveryStatusListToCheck = **"A,F"**,
+//    strFlagAllowChangeVINListToCheck = **Flag.Inactive ("0")**, strVINFreeStatusToCheck = **"0"**).
+//    Màn sửa quy cách (#B17) đòi hai cờ đó = **"1"**; màn này đòi **"0"**. Chép guard từ màn anh em là sai.
+//    ⚠️ `"A,F"` là **DANH SÁCH** (chuỗi hai mã ngăn bởi dấu phẩy), không phải một mã.
+// 🔴 NGUỒN SAO LƯU TRƯỚC KHI SỬA: chèn bản ghi hiện tại vào **8 bảng `*_MyBk`**
+//    (`Car_DeliveryOrderDetail_MyBk`, `Car_Car_MyBk`, `HMC_Report_MyBk`, `Car_VIN_MyBk`,
+//    `DLS_DealDetail_MyBk`, `Sto_DlvMinutes_MyBk`, `Sto_TranspReqDtl_MyBk`, `Sto_TranspReq_MyBk`)
+//    **trước** mọi câu update (`:6162-6240`). ⚠️ MiniHTC chưa có tầng `_MyBk` ⇒ **ghi nợ có nhãn**,
+//    không giả vờ đã sao lưu.
+app.MapPost("/api/deliveryorders/{doNo}/cars/{carId}/confirm-delivered", async (
+    string doNo, string carId, BigUpdateCdodDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = doNo.Trim().ToUpperInvariant();
+    var cid = carId.Trim().ToUpperInvariant();
+
+    var order = await db.DeliveryOrders.FirstOrDefaultAsync(o => o.OrgId == t.OrgId && o.DoNo == no);
+    if (order is null) return Results.NotFound(new { deliveryOrderNo = no });
+    // `myCar_CheckDeliveryOrderDetail(..., strConfirmStatusListToCheck = "A,F")`
+    var line = await db.DeliveryOrderCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DoId == order.Id && c.Vin == cid);
+    if (line is null) return Results.NotFound(new { deliveryOrderNo = no, carId = cid });
+    if (line.ConfirmStatus != "A" && line.ConfirmStatus != "F")
+        return Results.BadRequest(new { error = $"Dòng lệnh giao phải ở trạng thái A hoặc F (đang '{line.ConfirmStatus}').", confirmStatusListToCheck = "A,F" });
+
+    // `myCar_CheckCar(...)` — bốn điều kiện, hai trong đó NGƯỢC với màn sửa quy cách.
+    var car = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == cid);
+    if (car is null) return Results.BadRequest(new { error = $"Xe {cid} chưa khai báo trên hệ thống." });
+    if (car.FlagActive == "0") return Results.BadRequest(new { error = $"Xe {cid} đã bị huỷ/ngưng hoạt động." });
+    if (car.DeliveryStatus is not null && car.DeliveryStatus != "A" && car.DeliveryStatus != "F")
+        return Results.BadRequest(new { error = $"Xe {cid}: DeliveryStatus phải thuộc 'A,F' (đang '{car.DeliveryStatus}')." });
+    if ((car.FlagAllowChangeVIN ?? "0") != "0")
+        return Results.BadRequest(new { error = $"Xe {cid}: FlagAllowChangeVIN phải = '0' cho thao tác này (ngược với màn sửa quy cách)." });
+    if ((car.VINFreeStatus ?? "0") != "0")
+        return Results.BadRequest(new { error = $"Xe {cid}: VINFreeStatus phải = '0' cho thao tác này." });
+
+    // `myCommon_CheckDealer(..., Flag.Active, Flag.Active)` theo `Car_Car.DealerCode`.
+    var dealerCode = car.DealerCode;
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+    {
+        var dl = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealerCode);
+        if (dl is null) return Results.BadRequest(new { error = $"Đại lý {dealerCode} của xe không tồn tại." });
+        if ((dl.FlagActive ?? dl.Status) == "0") return Results.BadRequest(new { error = $"Đại lý {dealerCode} đang ngưng hoạt động." });
+    }
+    // ⚠️ `myCommon_CheckAccessDealerData(BUCode)` — nợ tầng ability chung fleet.
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    // Ghi `Car_DeliveryOrderDetail` (`:6258-6266`): `DeliveryOutDate` **ghi CÓ ĐIỀU KIỆN**, còn
+    // `DeliveryEndDate` + `ConfirmStatus="F"` + `ConfirmDate` + `ConfirmBy` ghi vô điều kiện.
+    var written = new List<string>();
+    if (dto.DeliveryOutDate is not null) { line.DeliveryOutDate = dto.DeliveryOutDate; written.Add("DeliveryOutDate"); }
+    line.DeliveryEndDate = dto.DeliveryEndDate; written.Add("DeliveryEndDate");
+    line.ConfirmStatus = "F";        // TConst.Stage.Finished
+    line.ConfirmDate = now; line.ConfirmBy = who;
+    written.AddRange(new[] { "ConfirmStatus", "ConfirmDate", "ConfirmBy" });
+
+    // Ghi `Car_Car.DeliveryStatus = Stage.Finished` — chú thích nguồn: "Xe đã được giao tới Đại lý".
+    car.DeliveryStatus = "F";
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        deliveryOrderNo = no, carId = cid, columnsWritten = written,
+        carDeliveryStatus = car.DeliveryStatus,
+        guardNote = "DeliveryStatus/ConfirmStatus phải thuộc DANH SÁCH 'A,F'; FlagAllowChangeVIN và VINFreeStatus phải = '0' (NGƯỢC với #B17).",
+        backupDebt = "NỢ: nguồn sao lưu 8 bảng vào *_MyBk (Car_DeliveryOrderDetail/Car_Car/HMC_Report/Car_VIN/DLS_DealDetail/Sto_DlvMinutes/Sto_TranspReqDtl/Sto_TranspReq) TRƯỚC khi sửa — MiniHTC chưa có tầng _MyBk.",
+        remainingDebt = "NỢ: các bước sau của nguồn chưa port — cập nhật DLS_DealDetail, post-check Sto_TranspReqDtl, cập nhật Car_VIN.StorageCodeCurrent, sinh HMC_Report."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
     // `myCommon_CheckHTCDirect(..., Flag.Active)` (`:59765`) — DÒNG ACTIVE.
@@ -34421,6 +34493,8 @@ record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);
 /// <summary>#B22: `strTypeStatus` của nguồn quyết định GHI CỘT NÀO — TConst.CarCarTypeStatus: TTC | CPTC.</summary>
 record CarStatusImportDto(List<CarStatusRowDto>? Rows, string? TypeStatus = null);
+/// <summary>#B23: xác nhận giao xe tới đại lý — ngày xuất kho (ghi có điều kiện) + ngày kết thúc giao.</summary>
+record BigUpdateCdodDto(DateTime? DeliveryOutDate, DateTime? DeliveryEndDate);
 record CarStatusRowDto(string? CarId, string? TTCStatus, string? CPTCStatus);
 /// <summary>Lô mã xe để huỷ / phục hồi hàng loạt (tương ứng lưới của FrmCapNhatTTHuyXe).</summary>
 record CarIdBatchDto(List<string>? CarIds);

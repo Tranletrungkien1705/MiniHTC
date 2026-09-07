@@ -1183,6 +1183,10 @@ public static class Seeder
         "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LoanSupportDay\" integer NULL",
         "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
         "ALTER TABLE public.\"DocReqs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+        // #B23 Car_Car: trang thai giao + 2 co dieu kien doi VIN
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DeliveryStatus\" text NULL",
+
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"VINFreeStatus\" text NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",
