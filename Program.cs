@@ -22354,6 +22354,114 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
 // ⚠️ `BulletinNoHMC` có trong lưới nhưng dòng `SetOrdinal` của nó **đã bị comment** ⇒ **không** ra file (luật B).
 // 📌 MiniHTC chưa mô hình hoá `HTCROWNo` và `WARRANTYSTATUSTEXT` ⇒ trả `null` và báo `columnsNotModelled`,
 //   thay vì bịa giá trị cho đủ cột.
+// ===== 🔴 #407 CÙNG BÁO CÁO, **HAI HÌNH DẠNG KẾT QUẢ KHÁC HẲN NHAU** =====
+// TRACE (đọc thân WS TRƯỚC, lệ #405): form `FrmWarrantyReportAcceptRpt.PrintDtl` →
+//   `SerWarrantyAcceptRpt_GetAll(dealer, from, to, VAT)` → WS `SerWarrantyAcceptRpt_GetAll`
+//   (`WSCarSv.asmx.cs:19912`) → biz `SerWarrantyAcceptRpt_GetAll` (`WarrantyReport.cs:14083`).
+//   ⚠️ Ở đây WS gọi bản **KHÔNG hậu tố** — khác hẳn nút xem báo cáo (#406) gọi `_New20230417`.
+//     Cùng một màn, hai nút, hai quy ước đặt tên. Chỉ đọc thân WS mới biết.
+//
+// 🔴 `_GetAll` **KHÔNG phải** `SerWarrantyAcceptRpt` + "lấy tất cả đại lý". Nó là **báo cáo MỨC DÒNG**:
+//   · Bản #406 gộp mỗi đề nghị thành **một dòng** (`#tbl_rowr_tmp` full outer join + `sum`),
+//     lấy mã/tên của dòng chính rồi cộng tiền.
+//   · Bản `_GetAll` **bỏ hẳn khối gộp đó** ⇒ trả **từng dòng công và từng dòng phụ tùng**, mỗi dòng
+//     một mã, một mức VAT, một số tiền riêng.
+//   ⇒ Hai báo cáo cùng bộ lọc cho ra **số dòng khác nhau**; đừng dùng cái này kiểm tra cái kia.
+//
+// 🔴 **INNER JOIN, không phải RIGHT JOIN** (khác #406): `_GetAll` nối `#tbl_RO_Customer` với bảng dòng bằng
+//   `inner join` ⇒ **đề nghị đã duyệt nhưng KHÔNG có dòng nào sẽ BIẾN MẤT** khỏi báo cáo chi tiết,
+//   trong khi vẫn **hiện** ở báo cáo tổng (bản #406 dùng `RIGHT JOIN #tbl_RO_Customer` giữ chúng lại).
+//   Đây là lý do thật khiến tổng hai màn lệch nhau — không phải lỗi cộng tiền.
+//
+// 🔴 **`rankType` — thứ tự ưu tiên trong một RO**, chỉ có ở bản này:
+//   công: `CVC`→`1` · `CVPSN`→`2` · còn lại→`3`;  phụ tùng: `PTC`→`1` · `PTTT`→`2` · `VTP`→`3` · còn lại→`4`.
+//   Sắp xếp cuối: `order by RONo asc, ItemIndex DESC, rankType asc` — `ItemIndex` **giảm dần** nên
+//   `2` (Công) đứng TRƯỚC `1` (Phụ tùng). Đọc lướt rất dễ đảo ngược chỗ này.
+//
+// ⚠️ `PartPrice` của dòng công (và `ServicePrice` của dòng phụ tùng) là `''` — **chuỗi rỗng, KHÔNG phải NULL**.
+//   Nên `isnull(t.PartPrice, 0.0)` ở dòng tổng **không bao giờ kích hoạt**; số 0 có được là nhờ SQL Server
+//   ép ngầm `''` → 0 khi hợp kiểu UNION. Guard chống NULL ở đây là **guard chết**.
+// ⚠️ `order by RONo, ItemIndex` đặt trong câu `SELECT … INTO #tbl_part_tmp` — ORDER BY trên SELECT INTO
+//   **không bảo đảm thứ tự gì cả**; thứ tự thật do câu SELECT cuối quyết định. Dòng thừa.
+// ⚠️ `--AND rwrs.WarrantyStatus = 'ACCE'` bị comment ở **cả hai** nhánh (giống #303): lọc ACCE chỉ đặt ở
+//   **đầu đề nghị**, mọi dòng con đều được tính. Giữ 1:1 (luật B).
+// ⚠️ WS đặt `strFunctionName = "SerWarrantyAcceptRpt"` (KHÔNG có `_GetAll`) ⇒ **nhật ký và phân quyền của
+//   nút này ghi dưới tên nút kia**. Tra log theo tên hàm sẽ lẫn hai nút vào nhau.
+// 📌 Bản `_GetAll_WH` (`WarrantyReport.cs:14329` — nằm cùng file, KHÔNG ở `WH.cs`): diff 24 dòng,
+//   **không dòng nào lệch nghiệp vụ** (`_dbDealer`→`_dbWH`, `Mst_Dealer` bỏ tiền tố). Không cần `scope`.
+app.MapGet("/api/report/warranty-accept/lines", async (AppDbContext db, ITenantContext t,
+    string? dealer, string? from, string? to, decimal? vat) =>
+{
+    var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status == "Accepted");
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var claims = await q.ToListAsync();
+
+    // Lọc ngày duyệt: KHOẢNG, so CHUỖI `yyyy-MM-dd` — cùng luật #406.
+    string DK(DateTime? d) => d == null ? "" : d.Value.ToString("yyyy-MM-dd");
+    var dFrom = (from ?? "").Trim(); var dTo = (to ?? "").Trim();
+    if (dFrom.Length > 0) claims = claims.Where(x => string.CompareOrdinal(DK(x.ApprovedDate), dFrom) >= 0).ToList();
+    if (dTo.Length > 0) claims = claims.Where(x => string.CompareOrdinal(DK(x.ApprovedDate), dTo) <= 0).ToList();
+
+    var byId = claims.ToDictionary(c => c.Id);
+    var ids = claims.Select(c => c.Id).ToList();
+    var svcQ = db.WarrantyClaimServiceItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId));
+    var partQ = db.WarrantyClaimPartItems.Where(i => i.OrgId == t.OrgId && ids.Contains(i.ClaimId));
+    if (vat.HasValue) { svcQ = svcQ.Where(i => i.VAT == vat.Value); partQ = partQ.Where(i => i.Vat == vat.Value); }
+    var svcItems = await svcQ.ToListAsync();
+    var partItems = await partQ.ToListAsync();
+
+    var rows = new List<WarrantyAcceptLineRow>();
+    // --- Nhánh CÔNG: ItemIndex = "2", PartPrice = 0 (nguồn để '' rồi bị ép về 0).
+    foreach (var i in svcItems)
+    {
+        if (!byId.TryGetValue(i.ClaimId, out var c)) continue;
+        var price = i.Factor * i.Price + i.Factor * i.Price * i.VAT * 0.01m;
+        var rank = i.ROWSerType == "CVC" ? "1" : i.ROWSerType == "CVPSN" ? "2" : "3";
+        rows.Add(new WarrantyAcceptLineRow(c.RONo, c.Vin, "Công", i.VAT,
+            i.SerCode, i.SerName, price, 0m, price, "2", rank));
+    }
+    // --- Nhánh PHỤ TÙNG: ItemIndex = "1", ServicePrice = 0. Quantity CHỈ nhân ở nhánh này.
+    foreach (var i in partItems)
+    {
+        if (!byId.TryGetValue(i.ClaimId, out var c)) continue;
+        var price = i.Factor * i.Price * i.Quantity + i.Factor * i.Price * i.Quantity * i.Vat * 0.01m;
+        var rank = i.RowPartType == "PTC" ? "1" : i.RowPartType == "PTTT" ? "2"
+                 : i.RowPartType == "VTP" ? "3" : "4";
+        rows.Add(new WarrantyAcceptLineRow(c.RONo, c.Vin, "Phụ tùng", i.Vat,
+            i.PartCode, i.PartName, 0m, price, price, "1", rank));
+    }
+
+    // 🔴 ItemIndex sắp GIẢM DẦN ⇒ Công ("2") đứng TRƯỚC Phụ tùng ("1").
+    rows = rows.OrderBy(r => r.RONo).ThenByDescending(r => r.ItemIndex).ThenBy(r => r.RankType).ToList();
+
+    // INNER JOIN của nguồn ⇒ đề nghị không có dòng nào bị LOẠI. Đếm ra để thấy chênh với báo cáo tổng.
+    var claimsWithLines = rows.Select(r => r.RONo).Distinct().Count();
+    var claimsDropped = claims.Count - claims.Count(c => svcItems.Any(i => i.ClaimId == c.Id)
+                                                      || partItems.Any(i => i.ClaimId == c.Id));
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        acceptedClaims = claims.Count, claimsWithLines, claimsDropped,
+        grandServicePrice = rows.Sum(r => r.ServicePrice),
+        grandPartPrice = rows.Sum(r => r.PartPrice),
+        shapeNote = "Đây là báo cáo MỨC DÒNG (mỗi dòng công / mỗi dòng phụ tùng một bản ghi), KHÁC "
+            + "/api/report/warranty-accept vốn gộp mỗi đề nghị thành MỘT dòng. Số dòng hai bên khác nhau "
+            + "là đúng, không phải lỗi.",
+        droppedNote = claimsDropped > 0
+            ? $"{claimsDropped} đề nghị đã duyệt KHÔNG có dòng nào nên bị INNER JOIN loại khỏi báo cáo chi "
+              + "tiết, nhưng VẪN hiện ở báo cáo tổng (bên đó dùng RIGHT JOIN). Đây là nguồn lệch tổng thật sự."
+            : null,
+        sortNote = "Sắp xếp: RONo tăng, ItemIndex GIẢM (Công trước Phụ tùng), rankType tăng "
+            + "(công CVC<CVPSN<khác; phụ tùng PTC<PTTT<VTP<khác).",
+        deadGuardNote = "Nguồn dùng isnull(PartPrice, 0.0) nhưng giá trị là CHUỖI RỖNG chứ không phải NULL "
+            + "⇒ guard đó không bao giờ kích hoạt; số 0 do SQL ép ngầm '' → 0 khi hợp kiểu UNION.",
+        logNameNote = "WS đặt strFunctionName = \"SerWarrantyAcceptRpt\" (thiếu _GetAll) ⇒ nhật ký/phân "
+            + "quyền của nút chi tiết ghi lẫn với nút xem báo cáo.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/warranty-accept/export", async (AppDbContext db, ITenantContext t,
     string? from, string? to) =>
 {
@@ -43035,6 +43143,12 @@ record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? P
     decimal? WarrantyKM = null, string? Note = null);
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 // #303: một dòng của báo cáo chấp thuận bảo hành (`SerWarrantyAcceptRpt_New20230417`).
+// #407 Một DÒNG của báo cáo chấp thuận bảo hành mức chi tiết (`SerWarrantyAcceptRpt_GetAll`).
+//   `ItemType` là văn bản tiếng Việt do SQL sinh (N'Công' / N'Phụ tùng'), không phải mã.
+record WarrantyAcceptLineRow(string? RONo, string? FrameNo, string ItemType, decimal VAT,
+    string? ItemCode, string? ItemName, decimal ServicePrice, decimal PartPrice, decimal TotalPrice,
+    string ItemIndex, string RankType);
+
 record WarrantyAcceptRptRow(long RowId, string? RowNo, string? RONo, string? FrameNo, string? DealerCode,
     DateTime? ApprovedDate, string? ItemCode, string? ItemName,
     string? PartCode, string? PartName, decimal? Quantity,
