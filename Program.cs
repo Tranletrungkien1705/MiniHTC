@@ -24578,13 +24578,33 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 // ⚠️ Điều kiện `Minquantity >= SLC` bị **comment** trong câu gộp rồi đặt lại ở câu cuối
 //   (`select * from #tbl_Final where Minquantity >= SLC`) — port theo dòng ACTIVE.
 // ⚠️ `'1' as Factor` — cột hằng viết cứng, không phải dữ liệu.
+// ===== 🔴 #422 BẢN `_WH` **KHÔNG CÓ** khối kẹp ngày — hai màn, hai MỐC THỜI GIAN khác nhau =====
+// Diff hai hàm LIVE (bỏ khoảng trắng + định tuyến CSDL + cách ghi log):
+//   `Ser_InvReportPartMinQuantity_New20181027`     (`Inventory.Report.cs:6395-6570`, 166 dòng)
+//   `Ser_InvReportPartMinQuantity_WH_New20181027`  (`WH.cs:7976-8150`,               169 dòng)
+// 📌 Đếm chuỗi (lệ #413 — đừng đọc lướt): `Minquantity >= SLC` 2=2 · `IsActive='1'` 1=1 · `as Factor` 1=1
+//   · `23:59:59` 1=1 · **`HTC_WareHouse` 2 ở bản Main, 0 ở bản `_WH`**.
+//   ⇒ Bản `_WH` **KHÔNG có khối `#region // Refine and Check`**, tức **không kẹp mốc về 2017-12-31**.
+//
+// 🔴 Ghép với #421 thì hệ quả rất lớn: người gọi truyền `DateTime.Now.ToString()` theo văn hoá máy,
+//   chuỗi đó thường **thua** `"2017-12-31"` khi so chuỗi ⇒
+//     · màn **Main**: bị kẹp ⇒ báo cáo tồn kho **cuối năm 2017**;
+//     · màn **kho (`_WH`)**: không kẹp ⇒ báo cáo **đúng ngày yêu cầu**.
+//   Cùng một phụ tùng, cùng một lúc, **hai màn cho hai danh sách "chạm tồn tối thiểu" khác hẳn nhau**,
+//   lệch nhau nhiều NĂM dữ liệu — và không màn nào nói mình đang xem mốc nào.
+// 📌 MiniHTC thêm `scope`: `main` (mặc định, có kẹp) · `wh` (không kẹp, đúng bản `_WH`). Cả hai đều trả
+//   `effectiveDate` để mốc thật luôn nhìn thấy được.
+// 📊 Thống kê twin `_WH` tới #422: **giống hệt** #406, #407, #409, #418 · **lệch thật** #378, #413, #422.
+//   ⇒ 3/7 lệch. Tỉ lệ cao hơn hẳn cảm giác ban đầu — không bao giờ được suy từ hàm bên cạnh.
 app.MapGet("/api/report/part-min-quantity", async (AppDbContext db, ITenantContext t,
-    DateTime? toDate, string? dealer) =>
+    DateTime? toDate, string? dealer, string? scope) =>
 {
     // Mốc sàn của nguồn: hằng TÊN LÀ "WareHouse" nhưng GIÁ TRỊ là ngày 2017-12-31.
+    // 🔴 Bản _WH KHÔNG có khối kẹp này ⇒ scope=wh thì bỏ qua sàn.
+    var isWh = string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase);
     var floor = new DateTime(2017, 12, 31);
     var asked = (toDate ?? DateTime.Today).Date;
-    var clamped = asked <= floor;
+    var clamped = !isWh && asked <= floor;
     var cut = clamped ? floor : asked;
     var cutEnd = cut.AddDays(1).AddSeconds(-1);          // nguồn ghép " 23:59:59"
 
@@ -24623,6 +24643,11 @@ app.MapGet("/api/report/part-min-quantity", async (AppDbContext db, ITenantConte
     {
         count = rows.Count, askedDate = asked, effectiveDate = cut,
         clampedToFloor = clamped, floorDate = floor,
+        scope = isWh ? "wh" : "main",
+        whTwinDivergesNote = "Bản _WH (WH.cs:7976) KHÔNG có khối Refine kẹp mốc về 2017-12-31 mà bản Main "
+            + "có (đếm chuỗi HTC_WareHouse: 2 ở Main, 0 ở _WH). Ghép với lỗi ngày ở #421: màn Main thường "
+            + "báo tồn CUỐI 2017 còn màn kho báo đúng ngày yêu cầu ⇒ hai màn cho hai danh sách khác hẳn "
+            + "nhau, lệch nhiều NĂM dữ liệu, và không màn nào nói mình đang xem mốc nào.",
         clampNote = clamped
             ? "Mốc ngày yêu cầu đã bị KÉO về 2017-12-31: nguồn có khối Refine kẹp strToDate về hằng "
               + "TConst.HTCConst.HTC_WareHouse — tên đọc như MÃ KHO nhưng giá trị thật là NGÀY '2017-12-31'. "
