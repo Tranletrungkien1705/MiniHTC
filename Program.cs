@@ -26047,23 +26047,82 @@ app.MapGet("/api/devicecars", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/devicecars", async (List<DeviceCarDto> dto, AppDbContext db, ITenantContext t) =>
+// ===== #B32 AUDIT PARITY `Mng_Device_Car_UpdateMulti` (`FrmMng_Device_Car_Upd`) — 4 GAP THẬT =====
+// Trace LIVE: `FrmMng_Device_Car_Upd` → `sv.Mng_Device_Car_UpdateMulti` (`SalesService.cs:36943`)
+//   → WS (`WSHTC.asmx.cs:94959`) → **`_biz.Mng_Device_Car_UpdateMulti`** (`DataWH/Biz.HTC.WH.cs:206242`).
+// Port cũ viết theo phản xạ "upsert theo VIN" — đối chiếu SQL nguồn thì sai bốn chỗ:
+// 🔴 GAP 1 — **KHOÁ DÒNG LÀ BỘ BA** `(VIN, DeviceTypeCode, SpecCode)` (`inner join … on t.VIN = f.VIN
+//    and t.DeviceTypeCode = f.DeviceTypeCode and t.SpecCode = f.SpecCode`). Port cũ khớp **chỉ VIN**
+//    ⇒ xe có nhiều thiết bị thì các dòng **ghi đè lẫn nhau**; và chặn trùng theo VIN đơn còn **chặn nhầm**
+//    lô hợp lệ (một VIN nhiều loại thiết bị).
+// 🔴 GAP 2 — nguồn là **UPDATE-ONLY**: `Mng_Device_Car_CheckDB(…, TConst.Flag.Yes)` bắt bản ghi **PHẢI
+//    TỒN TẠI**, SQL chỉ có `update … inner join`, không có nhánh insert. Port cũ **INSERT khi không thấy**
+//    ⇒ đẻ dữ liệu mà nguồn không cho đẻ (thiết bị của xe do lập packing list sinh ra — xem chú thích #162).
+// 🔴 GAP 3 — **hai guard "sửa được nhưng KHÔNG được xoá trắng"** (`:206358-206396`, chú thích nguyên văn
+//    của nguồn: *"Đã nhập dữ liệu thì được sửa nhưng ko được xóa trắng"*): DB đang có `InputInvoiceNo`
+//    (hoặc `InputInvoiceDate`) mà gửi rỗng ⇒ **CHẶN**. Port cũ gán thẳng ⇒ **xoá trắng được** = mất dữ liệu.
+// 🔴 GAP 4 — `ClauseSet` đúng **4 cột**: `LogLUDateTime` · `LogLUBy` · `InputInvoiceNo` · `InputInvoiceDate`.
+//    Port cũ còn ghi đè `DeviceTypeCode` — đó là **cột KHOÁ**, không phải cột được ghi.
+// ⚠️ NỢ CÓ NHÃN: chú thích nguồn còn viết *"Ngày hóa đơn đầu vào <= Ngày hóa đơn đầu ra (nếu có)"* nhưng
+//    **không có dòng code nào kiểm** điều đó. Port **dòng ACTIVE**, không port ý định trong chú thích.
+app.MapPost("/api/devicecars", async (List<DeviceCarDto> dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // `..._TableBlank`
     var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
     if (rows.Any(c => string.IsNullOrWhiteSpace(c.DeviceTypeCode))) return Results.BadRequest(new { error = "Chưa nhập loại thiết bị." });
-    var dupe = rows.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    int inserted = 0, updated = 0;
+    if (rows.Any(c => string.IsNullOrWhiteSpace(c.SpecCode)))
+        return Results.BadRequest(new { error = "Thiếu SpecCode — SpecCode nằm trong KHOÁ DÒNG (VIN, DeviceTypeCode, SpecCode)." });
+
+    // GAP 1 — chặn trùng theo BỘ BA, không theo VIN.
+    string Key(DeviceCarDto c) => $"{c.VIN.Trim().ToUpperInvariant()}|{c.DeviceTypeCode.Trim().ToUpperInvariant()}|{c.SpecCode!.Trim().ToUpperInvariant()}";
+    var dupe = rows.GroupBy(Key).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Dòng (VIN|DeviceTypeCode|SpecCode) = {dupe.Key} bị trùng trong bảng!" });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var vins = rows.Select(c => c.VIN.Trim().ToUpperInvariant()).Distinct().ToList();
+    var db_rows = await db.DeviceCars.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
+
+    // Nguồn kiểm TỪNG DÒNG trong cùng transaction rồi mới ghi cả lô ⇒ validate hết trước, ghi sau.
+    var targets = new List<(DeviceCar Row, DeviceCarDto In)>();
     foreach (var c in rows)
     {
         var vin = c.VIN.Trim().ToUpperInvariant();
-        var ex = await db.DeviceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-        if (ex is null) { db.DeviceCars.Add(new DeviceCar { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(), InputInvoiceNo = c.InputInvoiceNo, InputInvoiceDate = c.InputInvoiceDate }); inserted++; }
-        else { ex.DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(); ex.InputInvoiceNo = c.InputInvoiceNo; ex.InputInvoiceDate = c.InputInvoiceDate; ex.UpdatedAt = DateTime.Now; updated++; }
+        var dev = c.DeviceTypeCode.Trim().ToUpperInvariant();
+        var spec = c.SpecCode!.Trim().ToUpperInvariant();
+        // GAP 2 — `Mng_Device_Car_CheckDB(…, Flag.Yes)`: bản ghi phải TỒN TẠI, không insert.
+        var ex = db_rows.FirstOrDefault(x => x.VIN == vin
+                                             && (x.DeviceTypeCode ?? "").ToUpperInvariant() == dev
+                                             && (x.SpecCode ?? "").ToUpperInvariant() == spec);
+        if (ex is null)
+            return Results.BadRequest(new { error = $"Không có dòng thiết bị (VIN={vin}, DeviceTypeCode={dev}, SpecCode={spec}) — hàm nguồn chỉ SỬA, không tạo mới.", guard = "Mng_Device_Car_CheckDB(FlagExist=Yes)" });
+        // GAP 3 — đã có dữ liệu thì không được xoá trắng.
+        if (!string.IsNullOrEmpty(ex.InputInvoiceNo) && string.IsNullOrWhiteSpace(c.InputInvoiceNo))
+            return Results.BadRequest(new { error = $"Xe {vin}: số hoá đơn đầu vào đã có ('{ex.InputInvoiceNo}') — sửa được nhưng KHÔNG được xoá trắng.", guard = "Mng_Device_Car_UpdateMulti_InputInvoiceNoNotUpdNull" });
+        if (ex.InputInvoiceDate is not null && c.InputInvoiceDate is null)
+            return Results.BadRequest(new { error = $"Xe {vin}: ngày hoá đơn đầu vào đã có ({ex.InputInvoiceDate:yyyy-MM-dd}) — sửa được nhưng KHÔNG được xoá trắng.", guard = "Mng_Device_Car_UpdateMulti_InputInvoiceDateNotUpdNull" });
+        targets.Add((ex, c));
+    }
+
+    // GAP 4 — ghi ĐÚNG 4 cột của `ClauseSet`; KHÔNG đụng vào cột khoá.
+    foreach (var (row, c) in targets)
+    {
+        row.InputInvoiceNo = c.InputInvoiceNo;
+        row.InputInvoiceDate = c.InputInvoiceDate;
+        row.LogLUDateTime = now; row.LogLUBy = who;
+        row.UpdatedAt = now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
+    return Results.Ok(new
+    {
+        total = rows.Count, updated = targets.Count, inserted = 0,
+        rowKey = "(VIN, DeviceTypeCode, SpecCode) — khoá BỘ BA của nguồn",
+        columnsWritten = new[] { "InputInvoiceNo", "InputInvoiceDate", "LogLUDateTime", "LogLUBy" },
+        updateOnlyNote = "Nguồn chỉ UPDATE (inner join), không có nhánh INSERT.",
+        debt = "NỢ: chú thích nguồn nhắc 'ngày HĐ đầu vào <= ngày HĐ đầu ra' nhưng KHÔNG có code kiểm — không tự chế guard.",
+        message = "Lưu thành công!"
+    });
 }).RequireAuthorization();
 
 // ===== Đăng ký xe trưng bày/test (TestCarRegister — port 1:1 FrmMngRegister_TestCar, 2010.HTC/Sales) =====
