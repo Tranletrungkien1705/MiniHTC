@@ -16314,7 +16314,7 @@ app.MapGet("/api/osveloca/ro/{roNo}/schedule", async (string roNo, AppDbContext 
         : v.Value.AddHours(-7).ToString("yyyy-MM-dd HH:mm:ss");
 
     var replaced = 0;
-    var rows = stages.OrderBy(x => x.StageCode).Select(x =>
+    var full = stages.OrderBy(x => x.StageCode).Select(x =>
     {
         var g = x.StageCode;
         var inHeader = headerTypes.Contains(g);
@@ -16333,9 +16333,44 @@ app.MapGet("/api/osveloca/ro/{roNo}/schedule", async (string roNo, AppDbContext 
         };
     }).ToList();
 
+    // ===== 🔴 #358 SỬA LỖI CỦA CHÍNH #356 — PHẢI GỘP KHOÁ, MỖI LOẠI CHỈ MỘT KHOANG =====
+    // Chú thích nguồn (`20241118`) ghi lại một **SỰ CỐ THẬT** đã xảy ra:
+    //   *"Trước thì đây chính là KQ để đồng bộ sang Veloca nhưng do TH 1 LoaiCV gan voi nhieu khoang
+    //    dan den **duplicate key ben Veloca** nen xu ly moi LoaiCV chi lay 1 khoang"*
+    // ⇒ Nguồn thêm hai bước: `_ReturnGrpBy` (`group by RONoSys, GroupRepairType, IdxPrdSvType`) rồi
+    //   `_Return` (`select top 1 f.RepairCabinCode` cho mỗi khoá; bốn mốc thời gian cũng `top 1`).
+    // 🔴 #356 của tôi trả **một dòng mỗi công đoạn** ⇒ **tái tạo đúng lỗi trùng khoá họ đã sửa**.
+    //   Nay gộp theo đúng khoá của nguồn. Nguồn lấy `top 1` **không `order by`** ⇒ khoang/mốc là
+    //   dòng bất kỳ trong nhóm; port chọn **xác định** (theo mã khoang) và trả `collapsed` để thấy
+    //   trường hợp một loại công việc gắn nhiều khoang.
+    var rows = full
+        .GroupBy(x => new { x.roNoSys, x.groupRepairType, x.idxPrdSvType })
+        .Select(g =>
+        {
+            var pick = g.OrderBy(x => x.repairCabinCode).First();
+            return new
+            {
+                pick.roNoSys, pick.groupRepairType, pick.idxPrdSvType,
+                pick.repairCabinCode,
+                pick.planStartDTimeUTC, pick.planEndDTimeUTC,
+                pick.actualStartDTimeUTC, pick.actualEndDTimeUTC,
+                pick.replacedType,
+                // Số khoang bị bỏ khi gộp — >0 nghĩa là một loại công việc gắn nhiều khoang.
+                droppedCabins = g.Count() - 1,
+            };
+        })
+        .OrderBy(x => x.groupRepairType).ToList();
+
+    var collapsed = full.Count - rows.Count;
+
     return Results.Ok(new
     {
         roNo, serviceTypes = headerTypes, schedule = rows,
+        // #358: số dòng bị gộp bỏ. Nguồn buộc phải gộp vì Veloca trùng khoá (sự cố 20241118).
+        stageRowCount = full.Count, collapsed,
+        collapsedNote = collapsed > 0
+            ? "Một loại công việc gắn nhiều khoang — nguồn CHỈ gửi 1 khoang/loại để Veloca không trùng khoá."
+            : null,
         // 🔴 Bốn loại (BDD/PDI/SPK/SCC) đều ra "SCC" ⇒ hạt của Veloca THÔ hơn KPI nội bộ.
         typeCollapseNote = "BDD/PDI/SPK/SCC đều báo là SCC; Veloca chỉ biết 3 nhóm.",
         // `case` không có `else` ⇒ mã ROType lạ cho ra NULL, không bị loại.
