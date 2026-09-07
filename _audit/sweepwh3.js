@@ -28,6 +28,10 @@ for(const f of wsFiles) for(const L of fs.readFileSync(path.join(WS,f),'utf8').s
 }
 console.log('  ham biz duoc WS goi = ' + live.size);
 
+// #475: SQL sinh boi macro zzB_..._zzE KHONG dem duoc bang dong chu.
+// Ham nay dem so cho dung macro de moi phep so deu co canh bao.
+function macroCount(lines){ return lines.filter(x=>/zzB_[A-Za-z0-9_]+_zzE/.test(x)).length; }
+
 function sqlOf(lines){
   return lines.map(x=>x.replace(/\r/g,''))
     .filter(x=>!/^\s*\/\/\//.test(x))
@@ -53,13 +57,14 @@ const bases=new Set();
 for(const n of names){
   const m=n.match(/^(.*)_WH(_New\d{6,8})?$/); if(m) bases.add(m[1]);
 }
-let considered=0, skipped=0, same=0; const diff=[];
+let considered=0, skipped=0, same=0; const diff=[]; let macroPairs=0;
 for(const b of bases){
   const mainC=names.filter(n=>n===b || new RegExp('^'+b.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'_New\\d{6,8}$').test(n));
   const whC  =names.filter(n=>n===b+'_WH' || new RegExp('^'+b.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'_WH_New\\d{6,8}$').test(n));
   const M=pick(mainC), W=pick(whC);
   if(!M||!W){ skipped++; continue; }
   considered++;
+  if(macroCount(bodies.get(M))>0||macroCount(bodies.get(W))>0) macroPairs++;
   const a=sqlOf(bodies.get(M)).join('\n'), c=sqlOf(bodies.get(W)).join('\n');
   if(a===c) same++;
   else diff.push({b,M,W,la:sqlOf(bodies.get(M)).length,lb:sqlOf(bodies.get(W)).length});
@@ -67,6 +72,7 @@ for(const b of bases){
 console.log('base co bien the _WH=' + bases.size + '  so duoc (CA HAI phia deu SONG)=' + considered
   + '  bo qua (mot phia khong co ban song)=' + skipped);
 console.log('SQL GIONG HET=' + same + '  KHAC=' + diff.length);
+console.log('CANH BAO: cap co dung macro zzB_..._zzE (so dong SQL KHONG day du) = ' + macroPairs);
 const eq=diff.filter(d=>d.la===d.lb).length;
 console.log('  trong KHAC: cung so dong=' + eq + '  lech so dong=' + (diff.length-eq));
 for(const d of diff.filter(x=>x.la!==x.lb).sort((x,y)=>Math.abs(y.la-y.lb)-Math.abs(x.la-x.lb)))

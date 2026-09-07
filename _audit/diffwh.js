@@ -16,6 +16,10 @@ for(const f of files){
     if(!bodies.has(mem[k].name)) bodies.set(mem[k].name,{f,from,to,lines:lines.slice(from,to)});
   }
 }
+// #475: SQL sinh boi macro zzB_..._zzE KHONG dem duoc bang dong chu.
+// Ham nay dem so cho dung macro de moi phep so deu co canh bao.
+function macroCount(lines){ return lines.filter(x=>/zzB_[A-Za-z0-9_]+_zzE/.test(x)).length; }
+
 function sqlOf(o){
   return o.lines.map(x=>x.replace(/\r/g,''))
     .filter(x=>!/^\s*\/\/\//.test(x))   // #469: bo dong XML-doc ///
@@ -31,7 +35,7 @@ function sqlOf(o){
 for(const n of [A,B]){
   if(!bodies.has(n)){ console.log(n+' : KHONG CO'); continue; }
   const o=bodies.get(n);
-  console.log(n+' : '+path.basename(o.f)+':'+(o.from+1)+'  sqlLines='+sqlOf(o).length);
+  console.log(n+' : '+path.basename(o.f)+':'+(o.from+1)+'  sqlLines='+sqlOf(o).length+'  macro='+macroCount(o.lines));
 }
 if(!bodies.has(A)||!bodies.has(B)) process.exit(0);
 const a=sqlOf(bodies.get(A)), b=sqlOf(bodies.get(B));

@@ -25363,6 +25363,16 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         openingBalanceSweep = new { comparablePairs = 88, bothInline = 1, whInlineOnly = 2,
             mainInlineOnly = 0, neitherInline = 85,
             caveat = "Dem chu SQL VIET THANG; ban chinh dung macro zzB_..._zzE nen khoi bi coi la thieu." },
+        // ===== ✅ #476 CÔNG CỤ ĐÃ BIẾT ĐẾM MACRO — con số nào còn dùng được =====
+        // Nâng  và : mỗi lần so đều in thêm 
+        //   (số dòng giữ chỗ ). Nhờ vậy chỗ nào không so được là **nhìn thấy ngay**,
+        //   không còn im lặng như #472/#473.
+        // 📊 Trong **26 cặp KHÁC** của #471: **12 cặp có dùng macro** ⇒ số dòng SQL của chúng
+        //   **không so sánh được**; chỉ **14 cặp không macro** mới là ứng viên lệch thật.
+        // Ví dụ rõ:  — main ,  
+        //   ⇒ bản chính **tiêm nhiều khối hơn**, nên con số 67→89 KHÔNG chứng minh điều gì.
+        macroAwareness = new { differingPairs = 26, pairsUsingMacro = 12, macroFreeCandidates = 14,
+            note = "So dong SQL chi so sanh duoc khi CA HAI phia macro=0." },
         whTwinSweep = new { basesWithWhVariant = 93, comparableBothLive = 88, skippedNoLiveSide = 5,
             sqlIdentical = 62, differing = 26, differingLineCount = 12,
             supersedes = "#467 (64/27) va #468 (44/47) — ca hai deu ghep voi ban CHET o mot phia",
