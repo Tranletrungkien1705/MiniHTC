@@ -14617,6 +14617,93 @@ app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, st
 //    `DLS_DealDetail_MyBk`, `Sto_DlvMinutes_MyBk`, `Sto_TranspReqDtl_MyBk`, `Sto_TranspReq_MyBk`)
 //    **trước** mọi câu update (`:6162-6240`). ⚠️ MiniHTC chưa có tầng `_MyBk` ⇒ **ghi nợ có nhãn**,
 //    không giả vờ đã sao lưu.
+
+// ===== #B24 LỌC BẢO LÃNH ĐỦ ĐIỀU KIỆN ĐỀ NGHỊ CHIẾT KHẤU THANH TOÁN (port 1:1 `FrmReq_PaymentDiscount`) =====
+// Trace twin LIVE: WS `CarCarGet_ForReqPaymentDiscount` (`WSHTC.asmx.cs:93637`) →
+//   `_biz.CarCarGet_ForReqPaymentDiscount` (`BizHTC.PaymentDiscount.cs:24`, **VỎ BỌC**)
+//   → **`CarCarGet_ForReqPaymentDiscountX_20230310`** (`:1389`) — SQL thật.
+// 🔴 HẰNG ≠ GIÁ TRỊ (đã mở file hằng, không gõ theo trí nhớ):
+//   `TConst.HTCConst.HTC_SalesPolicy_KCK` = **"KCK"** (Không Chiết Khấu) · `…_NG` = **"NG"** (CS Ngoại giao)
+//   (`Const.Main.cs:341/345`) · `TConst.Stage.Approved` = **"A"** · `Cancel` = **"C"** · `Rejected` = **"R"`.
+// 🔴 LUẬT "TẤT CẢ XE TRONG BẢO LÃNH" — nguồn làm bằng **hai temp + LEFT JOIN loại trừ**:
+//   `#tbl_..._Temp1_1` = các dòng THOẢ; `#tbl_..._Temp1_2` = bảo lãnh **CÒN dòng vi phạm**
+//   (`DateStart is null` và trạng thái dòng **không thuộc** {Cancel, Rejected});
+//   kết quả = Temp1_1 `left join` Temp1_2 rồi **loại các bảo lãnh có mặt ở Temp1_2**.
+//   ⇒ Không thể port bằng một `where` phẳng — phải giữ đúng hai bước, nếu không sẽ nhận cả bảo lãnh
+//   còn xe chưa có ngày hiệu lực.
+app.MapGet("/api/paymentdiscountreqs/eligible-guarantees", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, DateTime? dateEndFrom, DateTime? dateEndTo) =>
+{
+    if (dateEndFrom is null || dateEndTo is null)
+        return Results.BadRequest(new { error = "Cần khoảng ngày tất toán bảo lãnh (dateEndFrom, dateEndTo)." });
+    var dealerKey = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim().ToUpperInvariant();
+
+    // `(@strDealerCode = '' or pg.DealerCode = @strDealerCode)` — rỗng nghĩa là KHÔNG lọc.
+    var grts = await db.BankGuarantees.Where(g => g.OrgId == t.OrgId
+        && g.DateEnd >= dateEndFrom && g.DateEnd <= dateEndTo      // `pg.DateEnd >= … and <= …`
+        && g.DiscountPmtValue == null                               // `pg.DiscountPmtValue is null`
+        && g.Status == "A")                                         // `pg.GuaranteeStatus = Stage.Approved`
+        .ToListAsync();
+    if (dealerKey is not null) grts = grts.Where(g => g.DealerCode == dealerKey).ToList();
+
+    var grtIds = grts.Select(g => g.Id).ToList();
+    var dtls = await db.BankGuaranteeDtls.Where(d => d.OrgId == t.OrgId && grtIds.Contains(d.GuaranteeId)).ToListAsync();
+    var vins = dtls.Select(d => d.VIN).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.SOCode, c.DealerCode }).ToListAsync();
+    var soCodes = cars.Where(c => c.SOCode != null).Select(c => c.SOCode!).Distinct().ToList();
+    var orders = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && soCodes.Contains(o.SoCode))
+        .Select(o => new { o.SoCode, o.SPCode }).ToListAsync();
+
+    // --- Bước 1 (`#tbl_Pmt_Guarantee_Temp1_1`): dòng THOẢ mọi điều kiện ---
+    var temp1 = new List<(long GrtId, string GuaranteeNo, string VIN)>();
+    int droppedNoCar = 0, droppedNoOrder = 0, droppedPolicy = 0, droppedNoDateStart = 0, droppedDtlStatus = 0;
+    foreach (var d in dtls)
+    {
+        var g = grts.First(x => x.Id == d.GuaranteeId);
+        var car = cars.FirstOrDefault(c => c.VIN == d.VIN);
+        if (car is null) { droppedNoCar++; continue; }                    // `inner join Car_Car`
+        var so = car.SOCode is null ? null : orders.FirstOrDefault(o => o.SoCode == car.SOCode);
+        if (so is null) { droppedNoOrder++; continue; }                   // `inner join Ord_SalesOrder`
+        // `and not oso.SPCode in ('KCK', 'NG')`
+        if (so.SPCode == "KCK" || so.SPCode == "NG") { droppedPolicy++; continue; }
+        if (d.DateStart is null) { droppedNoDateStart++; continue; }      // `pgdt.DateStart is not null`
+        if (d.GuaranteeDetailStatus != "A") { droppedDtlStatus++; continue; }  // `in (Stage.Approved)`
+        temp1.Add((g.Id, g.GuaranteeNo, d.VIN));
+    }
+
+    // --- Bước 2 (`#tbl_Pmt_Guarantee_Temp1_2`): bảo lãnh CÒN dòng VI PHẠM ⇒ bị loại ---
+    var candidateGrtIds = temp1.Select(x => x.GrtId).Distinct().ToHashSet();
+    var violating = dtls
+        .Where(d => candidateGrtIds.Contains(d.GuaranteeId)
+                    && d.DateStart is null                                          // chưa có ngày hiệu lực
+                    && d.GuaranteeDetailStatus != "C" && d.GuaranteeDetailStatus != "R")  // không thuộc {Cancel, Rejected}
+        .Select(d => d.GuaranteeId).Distinct().ToHashSet();
+
+    var items = temp1.Where(x => !violating.Contains(x.GrtId))
+        .Select(x =>
+        {
+            var g = grts.First(z => z.Id == x.GrtId);
+            var car = cars.First(c => c.VIN == x.VIN);
+            var so = orders.FirstOrDefault(o => o.SoCode == car.SOCode);
+            return new
+            {
+                guaranteeNo = x.GuaranteeNo, vin = x.VIN, carId = x.VIN,
+                dealerCode = g.DealerCode, carDealerCode = car.DealerCode,
+                g.DateEnd, g.DiscountPmtValue, guaranteeStatus = g.Status,
+                soCode = car.SOCode, spCode = so?.SPCode
+            };
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        excludedGuarantees = violating.Count(),
+        excludeRule = "Bảo lãnh bị loại nếu CÒN dòng xe có DateStart null và trạng thái dòng KHÔNG thuộc {C, R} — đúng cơ chế 2 temp + left-join-loại-trừ của nguồn.",
+        constants = new { salesPolicyExcluded = new[] { "KCK", "NG" }, guaranteeStatus = "A", detailStatus = "A", detailStatusIgnored = new[] { "C", "R" } },
+        droppedNoCar, droppedNoOrder, droppedPolicy, droppedNoDateStart, droppedDtlStatus
+    });
+}).RequireAuthorization();
 app.MapPost("/api/deliveryorders/{doNo}/cars/{carId}/confirm-delivered", async (
     string doNo, string carId, BigUpdateCdodDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>

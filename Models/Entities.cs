@@ -10111,6 +10111,9 @@ public sealed class CarVinMaster
     /// and cv.ColorCode = mcc.ColorCode`.
     /// </summary>
     public string? ColorCode { get; set; }
+    /// <summary>#B24 Mã đơn hàng của xe (`Car_Car.SOCode`) — mốc nối xe sang `Ord_SalesOrder` để đọc
+    /// chính sách bán `SPCode`. Bộ lọc chiết khấu thanh toán loại xe thuộc đơn có SPCode "KCK"/"NG".</summary>
+    public string? SOCode { get; set; }
     /// <summary>#B23 Trạng thái GIAO của xe (`Car_Car.DeliveryStatus`) — `Car_BigUpdate_CDOD_New20181115`
     /// (`BizHTC.Storage.DlvMinutes.cs:6003`) đặt **`Stage.Finished` = "F"** kèm chú thích nguồn
     /// *"Đánh dấu Car_Car.DeliveryStatus là Xe đã được giao tới Đại lý"*. Guard cùng hàm đòi trạng thái
@@ -10912,6 +10915,8 @@ public sealed class BankGuarantee
     /// </summary>
     public string Status { get; set; } = "P";
     public string FlagSettled { get; set; } = "0";        // 1 = da tat toan
+    /// <summary>#B24 Giá trị chiết khấu THỰC TRẢ đại lý (`Pmt_Guarantee.DiscountPmtValue`) — bộ lọc của `CarCarGet_ForReqPaymentDiscountX_20230310` đòi cột này **is null** (chưa trả chiết khấu).</summary>
+    public decimal? DiscountPmtValue { get; set; }
     public string Remark { get; set; } = "";
 
     /// <summary>Lý do TỪ CHỐI (`RemarkReject`) — nguồn ghi riêng, không dùng chung `Remark`.</summary>
