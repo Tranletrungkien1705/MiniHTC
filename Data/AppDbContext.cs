@@ -120,6 +120,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstQuater> MstQuaters => Set<MstQuater>();
     public DbSet<MstFileType> MstFileTypes => Set<MstFileType>();
     public DbSet<UploadedFile> UploadedFiles => Set<UploadedFile>();   // #523
+    public DbSet<ReceptionDetail> ReceptionDetails => Set<ReceptionDetail>();   // #524
     public DbSet<MstDisbursment> MstDisbursments => Set<MstDisbursment>();
     public DbSet<MstDoc> MstDocs => Set<MstDoc>();
     public DbSet<MrkCampaignDLRegister> MrkCampaignDLRegisters => Set<MrkCampaignDLRegister>();

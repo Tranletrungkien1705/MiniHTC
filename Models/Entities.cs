@@ -14845,6 +14845,29 @@ public sealed class SerFilePathVideo
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#524 CHI TIẾT phiếu tiếp nhận (`Ser_ReceptionFDtl`) — mỗi dòng là **một đầu mục kiểm tra**
+/// khi nhận xe. Nguồn: `Ser_ReceptionF_ReceptionX_New20210727` (`ZTemp.cs:21199`), khối
+/// `#region //// Refine and Check Ser_ReceptionFDtl` + ba lần `SaveTemp` (Main/WH/Dealer).</summary>
+public sealed class ReceptionDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    /// <summary>Mã đầu mục kiểm tra — nguồn tra `Ser_Mst_ReceptionFAudit_CheckDB(code, type, exist, active)`.</summary>
+    public string ReceptionFAudCode { get; set; } = "";
+    public string ReceptionFAudType { get; set; } = "";
+    /// <summary>Kết quả kiểm khi TIẾP NHẬN (nguồn chuẩn hoá bằng `StdFlag` ⇒ cờ "1"/"0").</summary>
+    public string? ReceptionAudStatus { get; set; }
+    /// <summary>🔴 Nguồn **tạo cột này rồi KHÔNG BAO GIỜ GÁN** trong hàm tiếp nhận ⇒ luôn rỗng;
+    /// chỉ khâu GIAO XE mới điền. Xem chú thích tại endpoint.</summary>
+    public string? DeliveryAudStatus { get; set; }
+    /// <summary>Trạng thái dòng — nguồn gán cứng `TConst.ReceptionFStatus.Pending` = **"P"**.</summary>
+    public string ReceptionFStatusDtl { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Ảnh mẫu trên phiếu tiếp nhận-giao xe (Ser_Mst_ModelAudImage — port 1:1 FrmSerMstModelAudImageCreate/Search, TCMotor DMSCarSv/Admin):
 /// ảnh minh họa theo Model + đầu mục kiểm tra (ReceptionFAudType, mã tự do — chưa có master riêng), khóa hợp = (ModelCode, ReceptionFAudType).
 /// FilePath lưu URL (thay browse-file bằng dán link).</summary>

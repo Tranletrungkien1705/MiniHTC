@@ -47300,6 +47300,106 @@ app.MapPost("/api/uploads/tab", async (UploadFileDto dto, AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #524 CHI TIẾT PHIẾU TIẾP NHẬN — TRẢ NỢ `ds_Ser_ReceptionFDtl` CỦA #522 =====
+// Nguồn: `BizCarSv.ZTemp.cs:21199 Ser_ReceptionF_ReceptionX_New20210727`, khối
+//   `#region //// Refine and Check Ser_ReceptionFDtl`. Endpoint: `POST /api/receptions/{no}/details`
+//   + `GET /api/receptions/{no}/details`. **§12**: entity `ReceptionDetail` + `DbSet` + Seeder.
+//
+// 🔴 **BẢNG ĐẦU VÀO PHẢI ĐÚNG TÊN, KHÔNG THÌ NÉM LỖI**: nguồn kiểm
+//   `if (!ds_Ser_ReceptionFDtl.Tables.Contains("Ser_ReceptionFDtl")) throw`
+//   `Ser_ReceptionF_SaveX_InvalidSer_Ser_ReceptionFDtlTbl` ⇒ **tên bảng trong DataSet là một phần
+//   của hợp đồng API**, không phải chi tiết nội bộ.
+// 🔴 **MỘT CỘT ĐƯỢC TẠO RỒI KHÔNG BAO GIỜ GÁN**: bốn lệnh `MyForceNewColumn` thêm `ReceptionFNo`,
+//   `DeliveryAudStatus`, `ReceptionFStatusDtl`, `LogLUDateTime`, `LogLUBy`; nhưng vòng lặp bên dưới
+//   chỉ gán **bốn** trong số đó — `DeliveryAudStatus` **không hề được gán** ⇒ lưu xuống **rỗng**.
+//   Đây **không phải lỗi**: cột ấy dành cho khâu **GIAO XE** điền sau. Nhưng nếu port theo "có cột thì
+//   phải có giá trị" sẽ **bịa dữ liệu**. Ghi cờ `deliveryAudStatusFilledLaterAtDelivery`.
+// ⚠️ HẰNG ≠ GIÁ TRỊ (mở `Const.Main.cs:212`): `ReceptionFStatus.Pending = **"P"**` (*Tiếp nhận*) ·
+//   `Approve = **"A"**` (*Giao xe*) — **một ký tự**, không phải chữ "Pending". Nguồn gán cứng `"P"`
+//   cho **mọi** dòng chi tiết lúc tiếp nhận. ⚠️ Cột `Reception.Status` của MiniHTC lại đang dùng chuỗi
+//   `"Pending"` (bản port cũ) ⇒ **hai bảng, hai bảng mã trạng thái** — nêu cờ, không tự sửa lan sang
+//   dữ liệu đã có.
+// 🔴 Mỗi dòng chi tiết bị tra danh mục: `Ser_Mst_ReceptionFAudit_CheckDB(code, type, Flag.Yes, Flag.Active)`
+//   ⇒ đầu mục kiểm tra phải **tồn tại VÀ đang hoạt động**; sai một dòng là **cả phiếu ném lỗi**
+//   (guard nằm TRONG vòng lặp, trước mọi lệnh ghi) ⇒ **tất cả hoặc không gì cả**.
+//   MiniHTC chưa có master `Ser_Mst_ReceptionFAudit` ⇒ kiểm qua `MasterItem` nếu có danh mục,
+//   không có thì **cho qua** và nêu cờ `auditMasterNotModelled` (không giả vờ đã kiểm).
+// ⚠️ Chuẩn hoá đầu vào theo `"StdParam"` (mã) / `"StdFlag"` (cờ) / `""` (ghi chú giữ nguyên) —
+//   `ReceptionAudStatus` là **CỜ** nên chỉ nhận "1"/"0".
+app.MapPost("/api/receptions/{no}/details", async (string no, List<ReceptionDetailDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    var rec = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
+    if (rec is null) return Results.NotFound(new { error = "Không tìm thấy phiếu tiếp nhận: " + no });
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Ser_ReceptionF_SaveX_InvalidSer_Ser_ReceptionFDtlTbl" });
+
+    const string kReceptionFStatusPending = "P";      // TConst.ReceptionFStatus.Pending — GIÁ TRỊ, không phải tên
+    var auditMaster = await db.Masters
+        .Where(x => x.OrgId == t.OrgId && x.Category == "ReceptionFAudit")
+        .Select(x => new { x.Code, x.Status }).ToListAsync();
+
+    // Guard nằm TRONG vòng lặp và TRƯỚC mọi lệnh ghi ⇒ sai một dòng là hỏng cả phiếu.
+    var bad = new List<object>();
+    foreach (var r in rows)
+    {
+        if (string.IsNullOrWhiteSpace(r.ReceptionFAudCode) || string.IsNullOrWhiteSpace(r.ReceptionFAudType))
+        { bad.Add(new { r.ReceptionFAudCode, r.ReceptionFAudType, why = "thieu ma hoac loai" }); continue; }
+        if (auditMaster.Count > 0)
+        {
+            var m = auditMaster.FirstOrDefault(x => x.Code == r.ReceptionFAudCode!.Trim());
+            if (m is null) bad.Add(new { r.ReceptionFAudCode, r.ReceptionFAudType, why = "khong co trong danh muc" });
+            else if (m.Status != "1") bad.Add(new { r.ReceptionFAudCode, r.ReceptionFAudType, why = "dau muc ngung hoat dong" });
+        }
+        if (!string.IsNullOrWhiteSpace(r.ReceptionAudStatus) && r.ReceptionAudStatus!.Trim() is not ("1" or "0"))
+            bad.Add(new { r.ReceptionFAudCode, r.ReceptionFAudType, why = "ReceptionAudStatus la CO, chi nhan 1 hoac 0" });
+    }
+    if (bad.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Ser_Mst_ReceptionFAudit_CheckDB: co dong khong hop le — nguon huy CA phieu.",
+            allOrNothing = true, invalidRows = bad,
+        });
+
+    var now = DateTime.Now;
+    foreach (var r in rows)
+        db.ReceptionDetails.Add(new ReceptionDetail
+        {
+            OrgId = t.OrgId, ReceptionFNo = no,
+            ReceptionFAudCode = r.ReceptionFAudCode!.Trim(), ReceptionFAudType = r.ReceptionFAudType!.Trim(),
+            ReceptionAudStatus = r.ReceptionAudStatus,
+            // DeliveryAudStatus: nguồn KHÔNG gán ở khâu tiếp nhận — để rỗng, đúng nguồn.
+            ReceptionFStatusDtl = kReceptionFStatusPending,
+            Remark = r.Remark, LogLUDateTime = now,
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        receptionFNo = no, count = rows.Count,
+        receptionFStatusDtl = kReceptionFStatusPending,
+        deliveryAudStatusFilledLaterAtDelivery = true,
+        auditMasterNotModelled = auditMaster.Count == 0,
+        inputTableNameIsPartOfContract = "Ser_ReceptionFDtl",
+        statusVocabMismatch = "ReceptionDetails dung \"P\" (dung nguon) con Receptions dung \"Pending\" (ban port cu)",
+        sourceWritesThreeDatabases = "Main + WH + Dealer",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/receptions/{no}/details", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.ReceptionDetails.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no)
+        .OrderBy(x => x.Id)
+        .Select(x => new { x.Id, x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionAudStatus,
+            x.DeliveryAudStatus, x.ReceptionFStatusDtl, x.Remark, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        receptionFNo = no, count = items.Count, items,
+        emptyDeliveryAudStatusIsExpected = items.Count(x => string.IsNullOrEmpty(x.DeliveryAudStatus)),
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49116,6 +49216,9 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record ReceptionDetailDto(string? ReceptionFAudCode, string? ReceptionFAudType,
+    string? ReceptionAudStatus, string? Remark);   // #524
+
 record UploadFileDto(string FileName, string UploadFileAsBase64String);   // #523
 
 record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest,
