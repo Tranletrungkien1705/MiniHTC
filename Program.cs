@@ -25586,6 +25586,30 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //     phép đo khác. Diff SQL mà báo "giống hệt" **không** kết luận được "hai bản hành xử như nhau".
         //   📌 Luật: sau khi diff SQL, phải **đếm thêm các mốc trong thân C#** (hằng, guard, `throw`,
         //     `Convert`) rồi mới nói hai bản tương đương.
+        // ===== 🔴🔴 #496 CÔNG CỤ MỚI `_audit/diffguard.js` — SO **PHẦN C#**, KHÔNG CHỈ SQL =====
+        // Dựng để bịt đúng lỗ hổng #495 nêu: đếm các mốc trong thân hàm (`throw` · `Check*` · hằng `TConst.*`
+        //   · `Convert.To*` · `if (` · `.AddDays/Months` · `SaveData/ExecNonQuery`), ghép **cùng hậu tố**
+        //   để không lẫn kênh (luật #495).
+        // 📊 **86 cặp cùng-kênh · mốc C# GIỐNG HỆT 76 · KHÁC 10.**
+        //
+        // 🔴 **TỔNG QUÁT HOÁ #422 TỪ 1 LÊN 5 BÁO CÁO**: chữ ký `TConstHang 2/0` + `ifGuard 2/1` chính là
+        //   **khối kẹp mốc ngày `HTC_WareHouse` ("2017-12-31") CHỈ có ở bản chính**. Đã mở từng thân hàm
+        //   đếm lại, cả năm đều `HTC_WareHouse = 2` ở bản chính và **0** ở bản kho:
+        //     · `Ser_InvReportBalanceRpt_New20221011`
+        //     · `Ser_InvReportBalanceRpt_SumLocation_New20221011`
+        //     · `Ser_InvReportCardStockRpt_New20230623`
+        //     · `Ser_InvReportPartMinQuantity_New20181027`   (ca #422 đã biết)
+        //     · `Ser_InventoryReport_InOutBalance_New20191112`
+        //   ⇒ Với **năm** báo cáo kho này, màn chính và màn kho **xem hai mốc thời gian khác nhau** khi người
+        //     dùng xin mốc ≤ 31-12-2017. #422 chỉ mới thấy một; nay là **một họ**.
+        //     (#472/#473 đã port hai trong số đó kèm `scope=main|wh`; ba cái còn lại là **nợ có tên**.)
+        // 🔴 `Ser_ROWarrantyReportHTMV_Get`: `throw 4/1` · `Convert 8/1` · `ifGuard 13/10`
+        //   ⇒ bản kho **thiếu 3 lệnh ném lỗi** so với bản chính — nghĩa là có ba tình huống mà màn chính
+        //     chặn còn màn kho **cho đi tiếp**. Chưa đọc từng cái nên **không kết luận hậu quả**; ghi thành nợ.
+        // ⚪ Bốn cặp còn lại lệch nhẹ (1 `Check`, 1-2 `ifGuard`, 2 hằng) — xếp hàng đọc tay.
+        cSharpGuardSweep = new { sameChannelPairs = 86, guardMarksIdentical = 76, differing = 10,
+            dateClampOnlyInMainBranch = 5,
+            missingThrowsInWhBranch = "Ser_ROWarrantyReportHTMV_Get (throw 4 vs 1)" },
         whDiffToolLimits = new { mainChoiceDependsOnChannel = true, sqlOnlyDiffMissesCSharpGuards = true,
             caseChecked = "Ser_InvReportPartMinQuantity: SQL 9/9 giong het nhung guard kep ngay 2 vs 0" },
         whDifferingTriage = new { macroFreeComparable = 76, identical = 53, needReview = 23,
