@@ -25662,7 +25662,26 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
             reportTypeValues = new[] { "HOUR", "DAY", "MONTH", "YEAR" },
             comparisonIsCaseInsensitive = true,
             notPortedYet = "MiniHTC chua co cum bao cao tiep nhan cho may tinh bang" },
-            unreadPairs = new[] { "SerStockOutSearch" },
+        // ===== 🔴 #505 ĐỌC CA CUỐI — VÀ NÓ **KHÔNG PHẢI** LỆCH MAIN↔KHO, MÀ LÀ **KÊNH ĐỐI TÁC TỤT HẬU** =====
+        // `diffguard` báo `SerStockOutSearch` vs `SerStockOutSearch_WH` lệch `TConstHang 0/2 · ifGuard 1/3`
+        //   — tức bản kho có **NHIỀU** guard hơn bản chính, nghe đã ngược đời.
+        // Kiểm đúng cặp cùng kênh (luật #495): bản LIVE của kênh WEB là `SerStockOutSearch_New20180623`,
+        //   và nó **CÓ đủ hai guard** `if (StringEqual(strIsGetDetail, TConst.Flag.Active))` (đếm = 2).
+        //   Bản **trần** `SerStockOutSearch` chỉ sống qua `TERP.WSCarSv` (**kênh ĐỐI TÁC**) và **thiếu cả hai**.
+        //   ⇒ Không phải "bản kho làm thêm" — mà là **bản đối tác chưa được cập nhật**.
+        // 🔴 Hai guard đó bọc khối `zzzzClauseSelect_Inv_StockOutDetail` (mặc định `"-- Nothing."`):
+        //   chỉ khi `strIsGetDetail = "1"` mới ghép thêm truy vấn **chi tiết tồn/vị trí** (`#tbl_sbb`).
+        //   ⇒ Ở kênh đối tác, cờ `IsGetDetail` **không có tác dụng** — hình dạng kết quả cố định.
+        //     Đối tác gửi `IsGetDetail=1` mà không nhận được khối chi tiết thì **không có lỗi nào báo về**.
+        // 📌 Đây là ca thứ ba cho thấy: mọi con số của `diffguard`/`diffwh` phải đọc kèm câu hỏi
+        //   **"hai bên có cùng KÊNH không?"** — #495 nêu, #504 và #505 xác nhận bằng hai ca độc lập.
+        // ⇒ **Danh sách 9 cặp lệch của #503 nay đã đọc HẾT**: 5 kẹp mốc ngày (đã port) · 1 tác dụng phụ HMC
+        //   (#497, nợ) · 1 lát cắt thời điểm (#474, đã port) · 1 rẽ nhánh kiểu báo cáo (#504, nợ) ·
+        //   1 kênh đối tác tụt hậu (ca này). **Không còn cặp nào chưa đọc.**
+        stockOutSearchChannelLag = new { webMainHasGuards = true, partnerBareLacksGuards = true,
+            guardControls = "khoi chi tiet ton/vi tri (#tbl_sbb) theo co IsGetDetail",
+            consequence = "Kenh doi tac: co IsGetDetail khong co tac dung, khong bao loi" },
+        guardDiffListFullyRead = true,
             dateClampOnlyInMainBranch = 5,
             missingThrowsInWhBranch = "Ser_ROWarrantyReportHTMV_Get (throw 4 vs 1)" },
 
