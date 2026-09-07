@@ -45721,6 +45721,97 @@ app.MapGet("/api/reports/part-in-out-balance", async (AppDbContext db, ITenantCo
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #500 PHỤ TÙNG CHẠM TỒN TỐI THIỂU — `Ser_InvReportPartMinQuantity_New20181027` =====
+// (`Inventory.Report.cs:6395`) — **trả nợ cuối** trong ba nợ `scope` mà #496 khoanh vùng.
+// ⚠️ #421/#422 đã mô tả rất kỹ màn này và **hứa** "MiniHTC thêm `scope`", nhưng grep lại thì **chưa hề có
+//   endpoint nào** — chỉ có ghi chú. Đây đúng là loại nợ dễ trôi: **mô tả xong tưởng là đã làm**.
+//   📌 Bài học ghi vào sổ: ghi chú "MiniHTC sẽ thêm X" phải kèm ngay endpoint, nếu không thì ghi là NỢ.
+//
+// 🔴 **KẸP MỐC** (họ #496, ca thứ ba và là ca cuối được port): `HTC_WareHouse = "2017-12-31"` kẹp
+//   **`strToDate`** (khác #498/#499 kẹp `FromDate`) ⇒ xin mốc ≤ 31-12-2017 thì bản chính kéo về 2017-12-31;
+//   bản `_WH` **không kẹp** (đếm 2 vs 0). Giữ `scope=main|wh` + luôn trả `effectiveDate`.
+// ⚠️ Tồn tính qua macro với khoảng **["1900-01-01", strToDate]** ⇒ đây là **tồn LUỸ KẾ tới mốc**, không
+//   phải tồn trong kỳ — báo cáo này chỉ có **một** mốc ngày, không có FromDate.
+//
+// 🔴 **HAI `left join` ĐỀU CHẾT** (luật #414): `left join ser_mst_part p` rồi WHERE có
+//   `and p.IsActive = "1"` **và** `and p.DealerCode = "@DealerCode"` ⇒ ép thành INNER.
+//   ⇒ Dòng tồn của phụ tùng **đã ngừng theo dõi** hoặc **thuộc đại lý khác** bị loại — kể cả khi vẫn còn tồn.
+//   `left join ser_mst_location sml` thì WHERE không đụng ⇒ **còn sống**, nhưng cột của nó **không được
+//   dùng ở đâu cả** (không có trong SELECT lẫn GROUP BY) ⇒ phép nối **thừa**.
+// 🔴 **ĐIỀU KIỆN LÕI BỊ COMMENT RỒI ĐẶT LẠI Ở CÂU NGOÀI**: trong câu gộp có `--and p.Minquantity >= SLC`
+//   (đã comment), còn câu cuối là `select * from #tbl_Final where Minquantity >= SLC`.
+//   ⇒ Port theo **dòng ACTIVE**: lọc ở BƯỚC CUỐI, sau khi đã `sum` theo phụ tùng.
+//   ⚠️ Ngữ nghĩa: `Minquantity >= SLC` tức **tồn hiện tại KHÔNG VƯỢT mức tối thiểu** (chạm hoặc dưới).
+// ⚠️ `sum(Isnull(op.SLC,0)) SLC` — cộng tồn **qua mọi vị trí kho** rồi mới so với mức tối thiểu
+//   ⇒ phụ tùng để rải nhiều vị trí vẫn được coi là đủ nếu TỔNG đủ.
+// ⚠️ `'1' as Factor` — cột **hằng viết cứng**, không phải dữ liệu (cùng lệ #487 với `0 as SLX`).
+// ⚠️ `order by p.PartCode` nằm ở câu `INTO #tbl_Final` ⇒ **vô nghĩa** (lệ #415); câu cuối **không** có
+//   ORDER BY ⇒ thứ tự thật **không xác định**. Port sắp theo `PartCode` + cờ `sourceHasNoOrderBy`.
+app.MapGet("/api/reports/part-min-quantity", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? toDate, string? scope) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
+    if (toDate is null) return Results.BadRequest(new { error = "Cần toDate." });
+    var dealer = dealerCode!.Trim();
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    var floor = new DateTime(2017, 12, 31);
+    var asked = toDate.Value.Date;
+    var clamped = !isWh && asked <= floor;
+    var effective = clamped ? floor : asked;
+
+    // Tồn LUỸ KẾ tới mốc: ["1900-01-01", effective] — đúng khoảng macro của nguồn.
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.Status != "4" && x.Status != "5").ToListAsync();
+    var qtyIn = inst.Where(x => x.DateIn != null && x.DateIn.Value.Date <= effective)
+        .GroupBy(x => x.PartID ?? "").ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
+    var qtyOut = inst.Where(x => x.DateOut != null && x.DateOut.Value.Date <= effective)
+        .GroupBy(x => x.PartID ?? "").ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
+
+    // Hai left join bị ép INNER: phụ tùng phải còn hiệu lực VÀ đúng đại lý.
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId
+            && p.FlagActive == "1" && p.DealerCode == dealer).ToListAsync();
+    var partById = parts.Where(p => p.PartID != null).GroupBy(p => p.PartID!)
+        .ToDictionary(g => g.Key, g => g.First());
+
+    var keys = qtyIn.Keys.Concat(qtyOut.Keys).Distinct().ToList();
+    var beforeInner = keys.Count;
+    var rows = keys.Where(k => partById.ContainsKey(k)).Select(k =>
+    {
+        var p = partById[k];
+        // sum qua MỌI vị trí kho rồi mới so mức tối thiểu — đúng nguồn.
+        var slc = (qtyIn.TryGetValue(k, out var i) ? i : 0m) - (qtyOut.TryGetValue(k, out var o) ? o : 0m);
+        return new
+        {
+            PartID = k, p.PartCode, VieName = p.PartName, p.Unit,
+            SLC = slc, p.MinQuantity, p.Price, p.EngName, p.Cost, p.VAT, p.Model, p.Note, p.Quantity,
+            Factor = "1",              // cột hằng viết cứng ở nguồn
+        };
+    }).ToList();
+    var droppedByPartMasterJoin = beforeInner - rows.Count;
+
+    // Dòng ACTIVE: lọc ở BƯỚC CUỐI (điều kiện trong câu gộp đã bị comment).
+    var items = rows.Where(x => x.MinQuantity >= x.SLC)
+        .OrderBy(x => x.PartCode).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, scope = isWh ? "wh" : "main",
+        askedDate = asked.ToString("yyyy-MM-dd"),
+        effectiveDate = effective.ToString("yyyy-MM-dd"),
+        clampedToFloor = clamped, floorDate = "2017-12-31",
+        stockIsCumulativeToDate = true,
+        lowerBoundIsConstant = "1900-01-01",
+        count = items.Count, items,
+        droppedByPartMasterJoin,
+        leftJoinDeadInSource = true,
+        locationJoinUnused = true,
+        thresholdAppliedAtFinalSelect = true,
+        stockSummedAcrossLocations = true,
+        factorIsHardcoded = true,
+        sourceHasNoOrderBy = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
