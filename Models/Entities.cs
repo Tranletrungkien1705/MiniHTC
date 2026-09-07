@@ -9262,6 +9262,13 @@ public sealed class DealerZone
     public string DealerCode { get; set; } = "";
     public string ZoneCode { get; set; } = "";
     public string FlagActive { get; set; } = "1";
+    // ===== #B92 parity `Mst_DealerZone` (`BizHTC.MasterData.cs:5208`) =====
+    /// <summary>`Mst_DealerZone.Remark` — nguồn mang cột này trong `MyBuildDBDT_Common`; port cũ thiếu.</summary>
+    public string? Remark { get; set; }
+    /// <summary>🔴 Dấu vết sửa. Nguồn đặt tên **`LogLUDTime`** (như `Mst_Zone` ở #B89, KHÔNG có "ate");
+    /// MiniHTC dùng `LogLUDateTime` cho thống nhất — giữ ánh xạ khi đồng bộ dữ liệu thật.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

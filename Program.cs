@@ -25567,20 +25567,96 @@ app.MapGet("/api/dealerzones", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(zone)) q = q.Where(z => z.ZoneCode == zone);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(z => z.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(z => z.FlagActive == active);
-    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new { z.DealerCode, z.ZoneCode, z.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new { z.DealerCode, z.ZoneCode, z.FlagActive, z.Remark, z.LogLUDateTime, z.LogLUBy }).ToListAsync();   // #B92 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealerzones", async (DealerZoneDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #B92 GẮN ĐẠI LÝ VÀO VÙNG — `Mst_DealerZone_Add` (viết lại) =====
+// Trace LIVE: WS → `_biz.Mst_DealerZone_Add` (`BizHTC.MasterData.cs:5078`, thân **`Mst_DealerZone_AddX`**
+//   `:5208`). 3B đo thật, **khớp cả 2 máy**: start=5208 md5 `7eb65378ebb16e8f7b50965aa3bf21f8`.
+// 🔴 **"Add" THỰC CHẤT LÀ UPSERT CÓ HỒI SINH — port cũ chặn nhầm**:
+//      · cặp (Dealer, Zone) **đã có VÀ `FlagActive = '1'`** ⇒ **NÉM** `…_DealerZoneExist`;
+//      · cặp **đã có NHƯNG `FlagActive = '0'`** ⇒ `bIsUpdate = true` ⇒ **UPDATE bật lại (HỒI SINH)**;
+//      · cặp **chưa có** ⇒ `bIsUpdate = false` ⇒ **INSERT**.
+//    ⇒ Nguồn **không bao giờ sinh dòng thứ hai** cho cùng cặp, và **luôn** bật lại được cặp đã tắt.
+//    Port cũ chặn **mọi** cặp đã tồn tại (kể cả đã tắt) ⇒ cặp bị tắt **vĩnh viễn không thêm lại được**.
+// 🔴 **`bIsUpdate` đi xuống SQL dưới dạng CHUỖI** `'true'` / `'false'`
+//    (`and f.bIsUpdate = 'true'` / `and t.bIsUpdate = 'false'`) vì `MyBuildDBDT_Common` đổ `bool`
+//    ra chuỗi. Port đừng quy ước `1/0`.
+// 🔴 **HAI guard danh mục — CẢ HAI đều đòi ĐANG HOẠT ĐỘNG**:
+//      `Mst_Dealer_CheckDB_New20210415(…, Flag.Yes, **Flag.Active**, …)`
+//      `Mst_Zone_CheckDB(…, Flag.Yes, **Flag.Active**, …)`
+//    ⚠️ **Chú ý đối chiếu #B89**: cũng là `Mst_Zone_CheckDB` nhưng ở `Mst_Zone_Update` tham số thứ ba
+//      truyền **chuỗi RỖNG** (cố ý không kiểm active, để còn bật lại vùng đã tắt). **Cùng một hàm
+//      check, hai cách gọi khác nhau tuỳ nghiệp vụ** — phải đọc từng lời gọi.
+// 🔴 Nguồn ghi **cả `_dbMain` và `_dbWH`**; đầu vào là **BẢNG** (`#input_Mst_DealerZone`) nhiều dòng,
+//    rỗng ⇒ **BỊ TỪ CHỐI** (`…_Input_DealerZoneTblInvalid`) — khuôn #B82/#B86.
+// 🔴 Cột dấu vết là **`LogLUDTime`** ở nguồn (như #B89); MiniHTC đặt `LogLUDateTime` — giữ ánh xạ.
+app.MapPost("/api/dealerzones", async (List<DealerZoneDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
-    if (string.IsNullOrWhiteSpace(dto.ZoneCode)) return Results.BadRequest(new { error = "Chưa nhập mã vùng." });
-    var dl = dto.DealerCode.Trim().ToUpperInvariant(); var zn = dto.ZoneCode.Trim().ToUpperInvariant();
-    if (await db.DealerZones.AnyAsync(z => z.OrgId == t.OrgId && z.DealerCode == dl && z.ZoneCode == zn))
-        return Results.BadRequest(new { error = $"Đại lý {dl} đã ở vùng {zn}!" });
-    var z = new DealerZone { OrgId = t.OrgId, DealerCode = dl, ZoneCode = zn, FlagActive = "1" };
-    db.DealerZones.Add(z); await db.SaveChangesAsync();
-    return Results.Ok(new { z.DealerCode, z.ZoneCode });
+    // Đầu vào là BẢNG; rỗng ⇒ TỪ CHỐI.
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_DealerZone_AddX_Input_DealerZoneTblInvalid" });
+
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var inserted = new List<object>(); var revived = new List<object>();
+
+    foreach (var (r, i) in rows.Select((r, i) => (r, i)))
+    {
+        var dl = (r.DealerCode ?? "").Trim().ToUpperInvariant();
+        var zn = (r.ZoneCode ?? "").Trim().ToUpperInvariant();
+        if (dl.Length == 0 || zn.Length == 0)
+            return Results.BadRequest(new { error = "Mst_DealerZone_AddX_Input_DealerZoneTblInvalid", check = new { Idx = i, DealerCode = dl, ZoneCode = zn } });
+
+        // Guard 1: đại lý phải TỒN TẠI và ĐANG HOẠT ĐỘNG.
+        var dealer = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == dl);
+        if (dealer is null || dealer.FlagActive != "1")
+            return Results.BadRequest(new { error = "Common_InvalidDealerCode", check = new { Idx = i, DealerCode = dl } });
+
+        // Guard 2: VÙNG phải TỒN TẠI và ĐANG HOẠT ĐỘNG (khác #B89 vốn truyền "" = không kiểm).
+        var zone = await db.MstZones.FirstOrDefaultAsync(z => z.OrgId == t.OrgId && z.ZoneCode == zn);
+        if (zone is null || zone.FlagActive != "1")
+            return Results.BadRequest(new { error = "Mst_Zone_InvalidOrInactive", check = new { Idx = i, ZoneCode = zn } });
+
+        var cur = await db.DealerZones.FirstOrDefaultAsync(z => z.OrgId == t.OrgId && z.DealerCode == dl && z.ZoneCode == zn);
+        if (cur is not null && cur.FlagActive == "1")
+            return Results.BadRequest(new
+            {
+                error = "Mst_DealerZone_AddX_Input_DealerZoneExist",
+                check = new { Idx = i, DealerCode = dl, ZoneCode = zn, FlagActiveDB = cur.FlagActive }
+            });
+
+        if (cur is not null)
+        {
+            // bIsUpdate = true ⇒ HỒI SINH, KHÔNG insert dòng mới.
+            cur.FlagActive = "1"; cur.Remark = r.Remark;
+            cur.LogLUDateTime = now; cur.LogLUBy = by;
+            revived.Add(new { dealerCode = dl, zoneCode = zn });
+        }
+        else
+        {
+            db.DealerZones.Add(new DealerZone
+            {
+                OrgId = t.OrgId, DealerCode = dl, ZoneCode = zn, FlagActive = "1",
+                Remark = r.Remark, LogLUDateTime = now, LogLUBy = by
+            });
+            inserted.Add(new { dealerCode = dl, zoneCode = zn });
+        }
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        insertedCount = inserted.Count, revivedCount = revived.Count, inserted, revived,
+        upsertReviveNote = "'Add' THUC CHAT LA UPSERT CO HOI SINH: cap da co VA FlagActive='1' => NEM _DealerZoneExist; cap da co NHUNG FlagActive='0' => bIsUpdate=true => UPDATE BAT LAI (hoi sinh); cap chua co => INSERT. Nguon KHONG BAO GIO sinh dong thu hai cho cung cap. Port cu chan MOI cap da ton tai (ke ca da tat) => cap bi tat VINH VIEN khong them lai duoc.",
+        bIsUpdateNote = "bIsUpdate di xuong SQL duoi dang CHUOI 'true'/'false' (and f.bIsUpdate = 'true' / and t.bIsUpdate = 'false') vi MyBuildDBDT_Common do bool ra chuoi. Dung quy uoc 1/0.",
+        twoGuardsNote = "HAI guard danh muc, CA HAI deu doi DANG HOAT DONG: Mst_Dealer_CheckDB_New20210415(..., Flag.Yes, Flag.Active) va Mst_Zone_CheckDB(..., Flag.Yes, Flag.Active). DOI CHIEU #B89: cung la Mst_Zone_CheckDB nhung o Mst_Zone_Update tham so thu ba truyen CHUOI RONG (co y khong kiem active, de con bat lai vung da tat). CUNG MOT HAM CHECK, HAI CACH GOI KHAC NHAU tuy nghiep vu.",
+        emptyInputNote = "Dau vao la BANG nhieu dong; RONG => BI TU CHOI (_Input_DealerZoneTblInvalid) - khuon #B82/#B86.",
+        columnNameNote = "Cot dau vet o nguon la LogLUDTime (nhu #B89); MiniHTC dat LogLUDateTime - giu anh xa.",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH."
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/dealerzones/{dealer}/{zone}/toggle", async (string dealer, string zone, AppDbContext db, ITenantContext t) =>
@@ -40680,7 +40756,7 @@ record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, de
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
 record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? BankBranchName, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt, string? Remark);
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
-record DealerZoneDto(string DealerCode, string ZoneCode);
+record DealerZoneDto(string DealerCode, string ZoneCode, string? Remark);   // #B92 +Remark
 /// <summary>Một dòng lưới model/quy cách của điều khoản thanh toán.</summary>
 record PaymentTermDetailDto(string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? FlagDepositPmt);
 /// <summary>
