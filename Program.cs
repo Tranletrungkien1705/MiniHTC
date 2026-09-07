@@ -13164,9 +13164,39 @@ app.MapPost("/api/servicepartoos/import", async (
         return Results.BadRequest(new { error = "Danh sách phụ tùng import không có trong hệ thống" });
 
     var knownPartCodeSet = knownPartCodes.ToHashSet();
-    var missingPartCode = importedPartCodes.FirstOrDefault(code => !knownPartCodeSet.Contains(code));
+    // ===== 🔴 #427 CÁCH NGUỒN TRA DANH MỤC: chuỗi điều kiện DỰNG TAY, và một "bản vá" 2019
+    //        chữa TRIỆU CHỨNG chứ không chữa NGUYÊN NHÂN =====
+    // Nguồn (`FrmImportSerPartOO`) gom mã phụ tùng đã khử trùng rồi **tự nối chuỗi**:
+    //     `strPartCodeList = "in |" + "A|B|C"`
+    //     `// 20190528 Thêm dấu | sau đk IN mới tìm được phần tử đầu tiên. VD: "in |001CHU01|001CHU02"`
+    //   rồi đưa vào `MstPartGet2GetPaging` với cỡ trang `Int32.MaxValue` (⇒ lấy hết, không phân trang).
+    //
+    // 🔴 **HAI HÀM DỰNG MỆNH ĐỀ CÓ QUY ƯỚC NGƯỢC NHAU** — đây mới là nguyên nhân thật:
+    //   · `SqlUtils.BuildClause`             (`DataUtils.cs:1074`) **ĐÒI** tiền tố toán tử (`"in …"`, `"= …"`);
+    //     thiếu tiền tố thì nó **bỏ im lặng** cả mệnh đề (lệ #410).
+    //   · `SqlUtils.BuildClauseConditionList` (`DataUtils.cs:1015`) **KHÔNG đọc toán tử**: nó cắt chuỗi theo
+    //     dấu phân cách rồi tự dựng danh sách IN từ **mọi** token.
+    //   Người viết truyền tiền tố `"in "` cho hàm **THỨ HAI** ⇒ token đầu thành `"IN A"` thay vì `"A"`
+    //   ⇒ **phần tử đầu tiên của danh sách bị mất**. Bản vá 2019 thêm một dấu phân cách để tiền tố tách
+    //   thành token riêng — cứu được phần tử đầu, **nhưng chuỗi rác `IN` vẫn đi vào SQL** như một giá trị
+    //   trong danh sách ở **mọi** truy vấn. Chữa triệu chứng, để nguyên nguyên nhân.
+    //   ⚠️ Chú thích trong nguồn chỉ ghi lại **hiện tượng** ("thêm dấu | mới tìm được phần tử đầu"),
+    //     không ghi vì sao — nên bẫy này còn nguyên cho người sửa sau.
+    // 📌 MiniHTC không dựng chuỗi điều kiện nên không dính; ghi lại vì đây là **bẫy chung của cả hệ**:
+    //   trước khi truyền một chuỗi điều kiện, phải biết hàm nhận nó thuộc **quy ước nào**.
+    var missingPartCodes = importedPartCodes.Where(code => !knownPartCodeSet.Contains(code)).ToList();
+    var missingPartCode = missingPartCodes.FirstOrDefault();
     if (missingPartCode is not null)
-        return Results.BadRequest(new { error = $"Mã phụ tùng '{missingPartCode}' không có trong hệ thống!" });
+        return Results.BadRequest(new
+        {
+            // Thông điệp giữ 1:1 với nguồn (nguồn chỉ báo MỘT mã).
+            error = $"Mã phụ tùng '{missingPartCode}' không có trong hệ thống!",
+            // Bổ sung KHÔNG lệch hành vi: liệt kê hết để sửa một lần thay vì nhập lại nhiều lượt.
+            missingPartCodes,
+            conditionBuilderNote = "Nguồn dựng tay chuỗi \"in |A|B\" cho BuildClauseConditionList — hàm "
+                + "này KHÔNG đọc toán tử, nên tiền tố 'in' trở thành một GIÁ TRỊ rác trong danh sách IN. "
+                + "Bản vá 2019 thêm dấu phân cách chỉ cứu được phần tử đầu bị mất, không bỏ được giá trị rác.",
+        });
 
     // --- Pha 3: mọi dòng hợp lệ → tạo phụ tùng nợ (nguồn gọi SerPartOOCreate từng dòng) ---
     var createdCount = 0;
