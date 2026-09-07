@@ -24663,6 +24663,13 @@ var appointmentStatusSourceCodes = new Dictionary<string, string>
     ["Confirmed"] = "2",       // Xác nhận
     ["Arrived"] = "3",         // Tiếp nhận (xe đã tới)
     ["Cancelled"] = "4",       // Hủy
+    // ===== 🔴 #444 MÃ '5' KHÔNG CHỈ LÀ NHÃN — nó là TRẠNG THÁI GHI ĐƯỢC =====
+    // #289 đã tìm ra nhãn `'5' = "Đã liên hệ & Chưa xác nhận"`, nhưng **bộ máy trạng thái** ở đây vẫn
+    //   dừng ở 1..4 ⇒ MiniHTC **không có đường nào ĐẶT** trạng thái đó.
+    // Nay đã thấy nơi GHI: `FrmQuotationApp.btnDaLHChuaXN_Click` (`:2765`) gọi thẳng
+    //   `DB.Ser_AppUpdateStatus(strAppID, **stDaLHVaChuaXN**)` với `private const string stDaLHVaChuaXN = "5"`
+    //   (`:39`). ⇒ Mã `5` được **ghi vào CSDL** từ một nút có thật trên màn báo giá lịch hẹn.
+    ["ContactedUnconfirmed"] = "5",   // Đã liên hệ & Chưa xác nhận
     // "Done" KHÔNG có trong nguồn (CASE chỉ có 1..4) — port cũ tự thêm. Giữ cho dữ liệu cũ, đánh dấu rõ.
     ["Done"] = "(port-only)",
 };
@@ -24709,13 +24716,29 @@ var appointmentStatusHyundaiMe = new Dictionary<string, string>
     ["2"] = "confirm", ["4"] = "reject",
 };
 
+// ===== 🔴 #444 BẢNG CHUYỂN TIẾP CŨ SAI HAI CHỖ — đọc từ **nút nào được BẬT sau mỗi thao tác** =====
+// Nguồn không khai bảng chuyển tiếp; nó nằm trong các dòng `btnX.Enabled = …` ngay sau khi đổi trạng thái
+// (`FrmQuotationApp.cs:2536/2578/2765`). Đọc đúng ba khối đó:
+//   · Sau **Xác nhận** (→2): `btnConfirm.Enabled = false` ⇒ không xác nhận lại.
+//   · Sau **Huỷ** (→4): `btnConfirm=true · btnSave=true · btnCancel=false · btnDelete=true`
+//     `· btnCreateRO=false · btnDaLHChuaXN=true`
+//     ⇒ 🔴 **HUỶ KHÔNG PHẢI TRẠNG THÁI CUỐI**: huỷ xong vẫn **xác nhận lại được**, vẫn **sửa và lưu được**,
+//       vẫn chuyển sang "đã liên hệ" được. Bảng cũ ghi `["Cancelled"] = rỗng` ⇒ **chặn oan** một luồng
+//       nghiệp vụ có thật (khách huỷ rồi gọi lại đặt tiếp).
+//   · Sau **Đã liên hệ & chưa xác nhận** (→5): `btnConfirm=true · btnDelete=true · btnCancel=true`
+//     `· btnCreateRO=true · btnDaLHChuaXN=false` ⇒ từ 5 đi được sang 2, 4 và tạo lệnh sửa (3).
+//
+// ⚠️ Đây đúng lệ đã ghi trước đây: **`Visible = true` ≠ nút sống** — phải truy `Enabled` theo trạng thái.
+//   Ở màn này bảng chuyển tiếp **chỉ tồn tại dưới dạng các dòng gán `Enabled`**, không ở đâu khác.
 var appointmentTransitions = new Dictionary<string, string[]>
 {
-    ["Booked"] = new[] { "Confirmed", "Arrived", "Cancelled" },
+    ["Booked"] = new[] { "Confirmed", "Arrived", "Cancelled", "ContactedUnconfirmed" },
     ["Confirmed"] = new[] { "Arrived", "Cancelled" },
     ["Arrived"] = new[] { "Done", "Cancelled" },
     ["Done"] = Array.Empty<string>(),
-    ["Cancelled"] = Array.Empty<string>(),
+    // 🔴 Huỷ KHÔNG phải trạng thái cuối — xem khối ghi chú ngay trên.
+    ["Cancelled"] = new[] { "Confirmed", "ContactedUnconfirmed" },
+    ["ContactedUnconfirmed"] = new[] { "Confirmed", "Arrived", "Cancelled" },
 };
 
 app.MapGet("/api/appointments/statuses", () => Results.Ok(new
@@ -24734,6 +24757,15 @@ app.MapGet("/api/appointments/statuses", () => Results.Ok(new
         screen = s.Key, names = s.Value.Select(kv => new { code = kv.Key, name = kv.Value }),
     }),
     transitions = appointmentTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
+    statusFiveWritableNote = "#444: mã '5' (Đã liên hệ & Chưa xác nhận) KHÔNG chỉ là nhãn — "
+        + "FrmQuotationApp.btnDaLHChuaXN_Click gọi Ser_AppUpdateStatus(appId, \"5\") ⇒ ghi thẳng vào CSDL. "
+        + "Bộ máy trạng thái của bản port cũ dừng ở 1..4 nên KHÔNG có đường nào đặt được trạng thái này.",
+    statusFiveDisplaysBlankNote = "🔴 LỖI NGUỒN: CASE hiển thị ở Ser_App…(BizCarSv.Appointment.cs:1497) chỉ "
+        + "có when '1'..'4' và KHÔNG có ELSE ⇒ lịch hẹn ở trạng thái '5' hiện StatusName = NULL, tức Ô "
+        + "TRẠNG THÁI TRỐNG trên lưới. Chính màn đặt được trạng thái đó lại không hiển thị được nó.",
+    cancelNotTerminalNote = "#444: HUỶ KHÔNG phải trạng thái cuối. Sau khi huỷ, nguồn bật lại btnConfirm/"
+        + "btnSave/btnDelete/btnDaLHChuaXN ⇒ vẫn xác nhận lại, sửa, hoặc chuyển 'đã liên hệ' được. Bảng "
+        + "chuyển tiếp cũ ghi Cancelled = rỗng nên CHẶN OAN luồng 'khách huỷ rồi gọi lại đặt tiếp'.",
     note = "#285: mã nguồn của AppStatus là CHỮ SỐ 1..4 (kiểm bằng lệnh GHI, tham số LỌC và CASE hiển thị). "
          + "Lớp hằng TConst.Ser_App (CREA/CONF/ACCE/REJ) KHÔNG được dùng ở đâu trong cây ⇒ hằng chết. "
          + "Done không có ở nguồn — giữ cho dữ liệu port cũ."
