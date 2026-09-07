@@ -14698,9 +14698,47 @@ app.MapPost("/api/redeemrequests/{id}/{action}", async (long id, string action, 
     h.Status = target;
     h.ApprovedDate = DateTime.Now;
     var allLines = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == h.Id).ToListAsync();
-    foreach (var ln in allLines) { ln.DMReqDtlStatus = target; ln.ApprovedDate = DateTime.Now; }
+    var stampAt = DateTime.Now;
+    foreach (var ln in allLines) { ln.DMReqDtlStatus = target; ln.ApprovedDate = stampAt; }
+
+    // ===== 🔴 #352 DUYỆT GIẢI CHẤP PHẢI ĐÓNG LUÔN DÒNG THẾ CHẤP =====
+    // Nguồn `RD_ReqRedeemDtl_Approve_New20230306` (`BizHTC.GiaiChap.cs:2810`, md5 giống hệt 2 máy)
+    //   cập nhật `RM_ReqMortgageDtl` bằng **một cụm 5 trường** trong cùng thao tác duyệt:
+    //     `t.ReqDMNo = f.ReqDMNo` · `t.RMDtlStatus = f.RMDtlStatus`
+    //     `t.FinishDate = f.**ApprovedDate**` · `t.FinishBy = f.**ApprovedBy**` · LogLU*
+    // 🔴 ÁNH XẠ ĐỔI TÊN QUA BẢNG: mốc `ApprovedDate`/`ApprovedBy` của phiếu **giải chấp** trở thành
+    //   `FinishDate`/`FinishBy` của dòng **thế chấp** — "duyệt giải chấp" chính là "kết thúc thế chấp".
+    //   Cùng tên trường mà khác nghĩa hai bên; chép thẳng tên sang là sai.
+    // 🔴 `ReqDMNo` trên dòng thế chấp là **CON TRỎ** sang phiếu giải chấp (#140 đã ghi: tạo thì để
+    //   trống, chỉ điền khi có đề nghị giải chấp). Thiếu nó thì **không lần ngược được** xe này
+    //   được giải chấp bằng phiếu nào — cùng mô-típ cặp Old/Curr ở #348.
+    // ⚠️ CHỈ làm ở nhánh DUYỆT: nguồn đặt cụm này trong hàm `_Approve`, từ chối thì không đụng.
+    var mortgageClosed = 0;
+    if (target == "A")
+    {
+        var vins = allLines.Select(x => x.VIN).Where(v => v != null).ToList();
+        var rmLines = await db.ReqMortgageCars
+            .Where(x => x.OrgId == t.OrgId && x.VIN != null && vins.Contains(x.VIN)).ToListAsync();
+        foreach (var rm in rmLines)
+        {
+            rm.ReqDMNo = h.ReqRedeemNo;      // con trỏ sang phiếu giải chấp
+            rm.RMDtlStatus = target;
+            rm.FinishDate = stampAt;         // = ApprovedDate của phiếu giải chấp
+            rm.FinishBy = h.ApprovedBy;      // = ApprovedBy của phiếu giải chấp
+            rm.LogLUDateTime = stampAt; rm.LogLUBy = h.ApprovedBy;
+            mortgageClosed++;
+        }
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.Status });
+    return Results.Ok(new
+    {
+        h.Id, h.Status,
+        // #352: số dòng THẾ CHẤP được đóng theo — phải khớp số VIN của phiếu giải chấp.
+        mortgageClosed,
+        mortgageNote = target == "A" && mortgageClosed == 0
+            ? "Không tìm thấy dòng thế chấp nào khớp VIN — kiểm tra lại: giải chấp lẽ ra phải đóng một dòng thế chấp."
+            : null,
+    });
 }).RequireAuthorization();
 
 // ===== Khóa đào tạo NVBH + tham gia (TrainingCourse/TrainingParticipant — port 1:1 FrmMst_TrainingCreate/Mng + FrmMst_TrainingDtlCreate/Mng, 2010.HTC/Admin) =====
