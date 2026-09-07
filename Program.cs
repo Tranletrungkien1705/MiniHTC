@@ -14609,6 +14609,26 @@ app.MapDelete("/api/warrantyclaims/{id}/parts/{lineId}", async (
     return Results.Ok(new { deleted = lineId });
 }).RequireAuthorization();
 
+// ===== 🔴 #395 DUYỆT BCBH PHÍA HTC LÀ MỘT **LỜI GỌI LIÊN HỆ THỐNG**, không phải đổi cột =====
+// TRACE 4 tầng (khó vì **hai lần sai chính tả**):
+//   `FrmWarrantyReportHTCApproved.cs:928` → lớp `SerROWarrantyReportSerivce` (**'Serivce'**, nên grep
+//   `Service\.` **bỏ sót** cả màn) → WS `Ser_ROWarrantyReport_HTCApproved` (`asmx:19416`)
+//   → biz **`Ser_ROWarrantyReport_HTCApproved_ForHTC`** (`WarrantyReport.cs:10528`).
+//   Có **BỐN** twin: `_New20230112` · bản trần · **`_ForHTC` (LIVE)** · `_ForAuto`.
+//   ⚠️ Form cha `FrmWarrantyReportHTCSearch` **chỉ ĐỌC**; `UpdateRowStatus` chỉ làm mới lưới.
+//
+// 🔴 Bản LIVE **KHÔNG tự ghi trạng thái**. Nó đi ba bước rồi **đẩy quyết định sang hệ ĐẠI LÝ**:
+//   1. `CheckExistROWarrantyReport(_dbMain, …)` — đề nghị phải tồn tại (đọc trên **DB Main**).
+//   2. `DealerCode` trên đề nghị **không được rỗng** ⇒ `Ser_ROWarrantyReport_Dealer_DealerCode_NotFound`.
+//   3. Tra **master mạng lưới** `CmCt_Mst_Network` theo `NetworkID = DealerCode`
+//      ⇒ không có thì `Ser_ROWarrantyReport_NetworkID_NotFound`;
+//      lấy tiếp **địa chỉ WS của đại lý**, thiếu thì `Ser_ROWarrantyReport_WSUrlAddr_NotFound`.
+//   4. Gọi `ws.Ser_ROWarrantyReport_HTCApproved_ForDealer(...)` — **web service của chính đại lý đó**;
+//      lỗi thì ném `Call_Ser_ROWarrantyReport_HTCApproved_ForDealer` và **KHÔNG duyệt**.
+//   ⇒ Đại lý chưa khai trong mạng lưới, hoặc thiếu địa chỉ WS, thì **duyệt bị CHẶN** — không phải
+//     'duyệt xong rồi đồng bộ sau'. Đây là món **nợ tầng HTTP** đã ghi trong hàng đợi.
+// 📌 MiniHTC chưa có tầng gọi WS đại lý ⇒ giữ nguyên ba guard, và trả cờ `dealerPushPending`
+//   thay vì lặng lẽ coi như đã đẩy.
 app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -14628,10 +14648,33 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     if (!rule.from.Contains(c.Status)) return Results.BadRequest(new { error = $"Không thể '{act}' khi đang ở trạng thái {c.Status}." });
     if ((act == "reject" || act == "revert") && string.IsNullOrWhiteSpace(dto.Note))
         return Results.BadRequest(new { error = "Từ chối/hoàn trả phải ghi lý do." });
+    // --- #395 CHUỖI GUARD của bản LIVE, chỉ áp cho hành động phía HTC (duyệt / từ chối / hoàn trả).
+    var htcSide = act is "approve" or "reject" or "revert";
+    Dealer? dealerRow = null;
+    if (htcSide)
+    {
+        if (string.IsNullOrWhiteSpace(c.DealerCode))
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_Dealer_DealerCode_NotFound",
+                message = "Đề nghị không có mã đại lý — nguồn chặn duyệt." });
+
+        dealerRow = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == c.DealerCode);
+        if (dealerRow is null)
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_NetworkID_NotFound",
+                message = "Đại lý chưa khai trong master mạng lưới (CmCt_Mst_Network) — nguồn chặn duyệt.",
+                c.DealerCode });
+
+        if (string.IsNullOrWhiteSpace(dealerRow.WsUrlAddr))
+            return Results.BadRequest(new { error = "Ser_ROWarrantyReport_WSUrlAddr_NotFound",
+                message = "Đại lý chưa có địa chỉ web service — nguồn chặn duyệt, KHÔNG phải đồng bộ sau.",
+                c.DealerCode });
+    }
+
     c.Status = rule.to;
     // Mốc duyệt dùng cho job đẩy HMC (nguồn lọc ApprovedDate trên đề nghị đang ở "CONF").
     if (rule.to == "Confirmed") c.ApprovedDate = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
+    // #395: nguồn ĐẨY quyết định sang WS của đại lý ngay trong lời gọi này. MiniHTC chưa có tầng đó.
+    var dealerPushPending = htcSide;
     c.UpdatedAt = DateTime.Now;
 
     // 🔴 #268: MỌI bước chuyển đều ghi một dòng nhật ký — nguồn gọi
@@ -14643,7 +14686,19 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
         Note = dto.Note, CreatedBy = dto.Creator, LogLUDateTime = DateTime.Now, LogLUBy = dto.Creator,
     });
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.Id, c.Status });
+    return Results.Ok(new
+    {
+        c.Id, c.Status,
+        // #395: nguon DAY quyet dinh sang WS cua dai ly ngay trong loi goi nay.
+        dealerPushPending,
+        dealerWsUrl = dealerRow?.WsUrlAddr,
+        dealerPushNote = dealerPushPending
+            ? "Nguon goi ..._ForDealer sang WS cua dai ly ngay tai buoc nay; loi thi KHONG duyet. "
+              + "MiniHTC chua co tang goi WS => trang thai da doi nhung CHUA day."
+            : null,
+        guardsNote = "Duyet phia HTC bi chan neu: thieu DealerCode, dai ly chua khai trong master mang luoi, "
+            + "hoac dai ly chua co dia chi WS. Ba guard lay tu ban LIVE _ForHTC.",
+    });
 }).RequireAuthorization();
 
 // #268: đọc nhật ký chuyển trạng thái của một đề nghị (cũ nhất → mới nhất, như nguồn `order by`

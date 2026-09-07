@@ -37,6 +37,12 @@ public sealed class ReportHeader
 
 public sealed class Dealer
 {
+    /// <summary>🔴 #395 §12 ĐỊA CHỈ WEB SERVICE CỦA ĐẠI LÝ (`WSUrlAddr` trong `CmCt_Mst_Network`).
+    /// HTC duyệt đề nghị bảo hành xong **gọi thẳng web service của đại lý**
+    /// (`Ser_ROWarrantyReport_HTCApproved_ForDealer`); thiếu địa chỉ này thì nguồn **ném lỗi**
+    /// `Ser_ROWarrantyReport_WSUrlAddr_NotFound` và **KHÔNG duyệt**. Xem
+    /// `POST /api/warrantyclaims/{id}/action`.</summary>
+    public string? WsUrlAddr { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string DealerCode { get; set; } = "";

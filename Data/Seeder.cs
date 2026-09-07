@@ -1012,6 +1012,8 @@ public static class Seeder
         "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"ApprDTime\" timestamp NULL",
         "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"ApprBy\" text NULL",
         "ALTER TABLE public.\"CampaignMarketingParts\" ADD COLUMN IF NOT EXISTS \"CamMarketingPartStatus\" text NULL",
+        // #395 dia chi WS cua dai ly — HTC duyet xong phai goi sang he dai ly
+        "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"WsUrlAddr\" text NULL",
         // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",
