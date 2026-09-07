@@ -10585,58 +10585,111 @@ app.MapPost("/api/mbanklogs", async (MBankLogDto dto, AppDbContext db, ITenantCo
     return Results.Ok(new { logged = true, dto.Functionname });
 }).RequireAuthorization();
 
-// ===== #148: LOG SỬA MỐC NGÀY CỦA ĐƠN HÀNG (Ord_SalesOrder_SupportLog + …Detail_SupportLog) =====
-// Nguồn: DataWH/Biz.HTC.WH.My.cs (csproj 273) — Ord_SalesOrder_UpdateMulti (19901), ghi log tại 20466/20538.
-// 🔴 Chỉ có ở WS 64-bit. Mô hình: cặp Old/New cho từng mốc ngày — bảng log lưu SONG SONG giá trị
-//    trước và sau, nên truy được "ai đổi ngày duyệt từ bao giờ sang bao giờ".
-// ⚠️ Nguồn hiện chỉ THỰC SỰ sửa ApprovedDate: hai dòng DepositDutyEndDate / CarDueDate trong bảng tạm
-//    đầu vào ĐÃ BỊ COMMENT (Biz.HTC.WH.My.cs:20083-20084). Endpoint dưới đây giữ nguyên hành vi đó:
-//    nhận đủ 4 mốc để không mất dữ liệu client gửi, nhưng CHỈ ghi log cặp Old/New cho các mốc
-//    thực sự thay đổi, và ghi chú rõ mốc nào nguồn chưa bật.
-app.MapPost("/api/salesorders/support-update", async (SoSupportUpdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+// ===== #B33 AUDIT PARITY `Ord_SalesOrder_UpdateMulti` (`FrmUpdate_SO_Approved_Date`) — 5 GAP =====
+// Trace LIVE: `sv.Ord_SalesOrder_UpdateMulti` → **`_biz.Ord_SalesOrder_UpdateMulti`**
+//   (`DataWH/Biz.HTC.WH.My.cs:19901`, chỉ có ở WS 64-bit).
+// 🔴 GAP 1 — **PORT CŨ KHÔNG SỬA GÌ CẢ**: nó chỉ ghi hai bảng `*_SupportLog`. Nguồn thì `update
+//    Ord_SalesOrder` **VÀ** `update Ord_SalesOrderDetail` (`:20135`, `:20174`), log chỉ là **tác dụng phụ**
+//    chụp lại trước/sau. Hệ quả: màn "sửa ngày duyệt SO" **ghi nhật ký một thay đổi chưa từng xảy ra** —
+//    cùng loại lỗi với "đổi màu xe mà không đổi màu" (#B25).
+// 🔴 GAP 2 — **Giá trị CŨ lấy sai nguồn**: nguồn chụp `#tblOrd_SalesOrderOld` từ **BẢNG ĐƠN THẬT** ngay
+//    trước khi update; port cũ đọc bản ghi log gần nhất ⇒ lần đầu sửa thì Old = null, và mọi thay đổi
+//    do luồng khác gây ra đều **không được ghi nhận**.
+// 🔴 GAP 3 — **Đầu vào là BẢNG NHIỀU SO**, mỗi dòng đúng **hai** cột nghiệp vụ `SOCode` + `ApprovedDate`
+//    (`MyBuildDBDT_Common :20080-20090`; `DepositDutyEndDate`/`CarDueDate` **đã bị comment**). Port cũ nhận
+//    một SO kèm danh sách dòng có 4 mốc ngày riêng — **bịa bề mặt đầu vào** mà nguồn không có.
+// 🔴 GAP 4 — **Một ngày ghi vào BA chỗ**: header `ApprovedDate1 = ApprovedDate2 = f.ApprovedDate`
+//    (cùng MỘT giá trị vào **cả hai** cột), và **MỌI dòng** của SO (`update … on t.SOCode = f.SOCode`,
+//    **không** lọc theo Model/Spec/Color). Port cũ để client gửi hai ngày khác nhau và khớp dòng theo bộ ba.
+// 🔴 GAP 5 — **Log ghi VÔ ĐIỀU KIỆN** cho mọi SO/mọi dòng đụng tới; port cũ tự chế điều kiện
+//    "chỉ ghi khi có thay đổi" ⇒ mất vết những lần lưu-không-đổi (chính là thứ nhật ký hỗ trợ cần).
+// ⚠️ NỢ CÓ NHÃN — hậu xử lý `DepositDutyEndDate` (`:20208-20255`): nguồn tính lại "ngày ĐL cam kết thanh
+//    toán hết cọc" bằng lịch làm việc (`Mst_Calendar`, hàm `dbo.f_WorkingDate_Get_01`, tham số
+//    `TConst.HTCParamCode.Calendar_DepositDuty_DayT`) rồi **PostCheck** báo lỗi nếu còn dòng NULL.
+//    MiniHTC chưa có tầng lịch làm việc ⇒ **KHÔNG đoán công thức**, để nguyên và ghi nợ.
+app.MapPost("/api/salesorders/support-update", async (List<SoSupportUpdDto> dto, AppDbContext db,
+    ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var so = (dto.SOCode ?? "").Trim().ToUpperInvariant();
-    if (so.Length == 0) return Results.BadRequest(new { error = "Thiếu số đơn hàng (SOCode)." });
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var rows = (dto ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.SOCode)).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng đơn hàng cần sửa ngày duyệt đang rỗng." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
 
-    // Đầu đơn: chỉ ghi log khi có ÍT NHẤT một mốc đổi (nguồn join #tblOrd_SalesOrderOld để lấy giá trị cũ).
-    var head = await db.OrdSalesOrderSupportLogs
-        .Where(x => x.OrgId == t.OrgId && x.SOCode == so).OrderByDescending(x => x.Id).FirstOrDefaultAsync();
-    var old1 = head?.ApprovedDate1; var old2 = head?.ApprovedDate2;
-    var headChanged = dto.ApprovedDate1 != old1 || dto.ApprovedDate2 != old2;
-    if (headChanged)
-        db.OrdSalesOrderSupportLogs.Add(new OrdSalesOrderSupportLog { OrgId = t.OrgId, SOCode = so,
-            UpdDTime = now, UpdBy = who, DealerCode = dto.DealerCode,
-            ApprovedDate1Old = old1, ApprovedDate1 = dto.ApprovedDate1,
-            ApprovedDate2Old = old2, ApprovedDate2 = dto.ApprovedDate2,
-            LogLUDateTime = now, LogLUBy = who });
+    var codes = rows.Select(x => x.SOCode.Trim().ToUpperInvariant()).Distinct().ToList();
+    var orders = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && codes.Contains(o.SoCode)).ToListAsync();
 
-    int lineLogs = 0;
-    foreach (var l in dto.Lines ?? new())
+    // Nguồn kiểm TỪNG DÒNG trong cùng transaction rồi mới ghi cả lô ⇒ validate hết trước.
+    foreach (var x in rows)
     {
-        var model = (l.ModelCode ?? "").Trim().ToUpperInvariant();
-        var spec = (l.SpecCode ?? "").Trim().ToUpperInvariant();
-        var color = (l.ColorCode ?? "").Trim().ToUpperInvariant();
-        var prev = await db.OrdSalesOrderDetailSupportLogs
-            .Where(x => x.OrgId == t.OrgId && x.SOCode == so && x.ModelCode == model && x.SpecCode == spec && x.ColorCode == color)
-            .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
-        var changed = l.ApprovedDate != prev?.ApprovedDate
-            || l.DepositDutyEndDate != prev?.DepositDutyEndDate
-            || l.GrtEndDate != prev?.GrtEndDate
-            || l.CarDueDate != prev?.CarDueDate;
-        if (!changed) continue;
-        db.OrdSalesOrderDetailSupportLogs.Add(new OrdSalesOrderDetailSupportLog { OrgId = t.OrgId, SOCode = so,
-            UpdDTime = now, UpdBy = who, ModelCode = model, SpecCode = spec, ColorCode = color,
-            ApprovedDateOld = prev?.ApprovedDate, ApprovedDate = l.ApprovedDate,
-            DepositDutyEndDateOld = prev?.DepositDutyEndDate, DepositDutyEndDate = l.DepositDutyEndDate,
-            GrtEndDateOld = prev?.GrtEndDate, GrtEndDate = l.GrtEndDate,
-            CarDueDateOld = prev?.CarDueDate, CarDueDate = l.CarDueDate,
-            LogLUDateTime = now, LogLUBy = who });
-        lineLogs++;
+        var code = x.SOCode.Trim().ToUpperInvariant();
+        // `..._SOCodeNotFound`
+        if (!orders.Any(o => o.SoCode == code))
+            return Results.BadRequest(new { error = $"Không tìm thấy đơn hàng {code}.", guard = "Ord_SalesOrder_UpdateMulti_SOCodeNotFound" });
+        // `..._ApprovedDateEmpty` — ngày duyệt BẮT BUỘC (hai guard cùng họ cho cọc/đến hạn đã bị comment).
+        if (x.ApprovedDate is null)
+            return Results.BadRequest(new { error = $"Đơn {code}: thiếu ngày duyệt (ApprovedDate).", guard = "Ord_SalesOrder_UpdateMulti_ApprovedDateEmpty" });
+    }
+
+    var orderIds = orders.Select(o => o.Id).ToList();
+    var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && orderIds.Contains(l.SalesOrderId)).ToListAsync();
+
+    int headersUpdated = 0, linesUpdated = 0, headerLogs = 0, lineLogs = 0;
+    foreach (var x in rows)
+    {
+        var code = x.SOCode.Trim().ToUpperInvariant();
+        var o = orders.First(z => z.SoCode == code);
+        var newDate = x.ApprovedDate!.Value;
+
+        // `#tblOrd_SalesOrderOld` — chụp giá trị cũ TỪ BẢNG THẬT, trước khi update.
+        var old1 = o.Approved1At; var old2 = o.Approved2At;
+        // `ClauseSet`: LogLUDateTime · LogLUBy · ApprovedDate1 = ApprovedDate2 = f.ApprovedDate.
+        o.Approved1At = newDate; o.Approved2At = newDate;
+        headersUpdated++;
+
+        // Log đầu đơn — VÔ ĐIỀU KIỆN, không phụ thuộc "có đổi hay không".
+        db.OrdSalesOrderSupportLogs.Add(new OrdSalesOrderSupportLog
+        {
+            OrgId = t.OrgId, SOCode = code, UpdDTime = now, UpdBy = who, DealerCode = o.DealerCode,
+            ApprovedDate1Old = old1, ApprovedDate1 = o.Approved1At,
+            ApprovedDate2Old = old2, ApprovedDate2 = o.Approved2At,
+            LogLUDateTime = now, LogLUBy = who
+        });
+        headerLogs++;
+
+        // `update Ord_SalesOrderDetail … on t.SOCode = f.SOCode` — MỌI dòng của SO, không lọc Model/Spec/Color.
+        foreach (var l in lines.Where(z => z.SalesOrderId == o.Id))
+        {
+            // `#tblOrd_SalesOrderDetailOld` giữ cả 4 mốc, nhưng `ClauseSet` chỉ ghi `ApprovedDate`;
+            // ba mốc kia vào log với Old == New (nguồn chụp lại sau update, chúng không đổi).
+            var oldApproved = l.ApprovedDate;
+            l.ApprovedDate = newDate;
+            linesUpdated++;
+            db.OrdSalesOrderDetailSupportLogs.Add(new OrdSalesOrderDetailSupportLog
+            {
+                OrgId = t.OrgId, SOCode = code, UpdDTime = now, UpdBy = who,
+                ModelCode = l.ModelCode, SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "",
+                ApprovedDateOld = oldApproved, ApprovedDate = l.ApprovedDate,
+                DepositDutyEndDateOld = null, DepositDutyEndDate = null,
+                GrtEndDateOld = null, GrtEndDate = null,
+                CarDueDateOld = null, CarDueDate = null,
+                LogLUDateTime = now, LogLUBy = who
+            });
+            lineLogs++;
+        }
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { soCode = so, headerLogged = headChanged, lineLogs,
-        note = "Nguồn hiện chỉ bật sửa ApprovedDate; DepositDutyEndDate/CarDueDate đang bị comment ở bảng tạm đầu vào." });
+    return Results.Ok(new
+    {
+        orders = codes.Count, headersUpdated, linesUpdated, headerLogs, lineLogs,
+        columnsWritten = new
+        {
+            header = new[] { "ApprovedDate1", "ApprovedDate2", "LogLUDateTime", "LogLUBy" },
+            detail = new[] { "ApprovedDate", "LogLUDateTime", "LogLUBy" }
+        },
+        oneDateThreePlaces = "MỘT ApprovedDate đầu vào ghi vào ApprovedDate1 + ApprovedDate2 của đầu đơn VÀ ApprovedDate của MỌI dòng.",
+        logRule = "Log ghi VÔ ĐIỀU KIỆN (nguồn không có điều kiện 'chỉ khi đổi').",
+        debt = "NỢ: hậu xử lý DepositDutyEndDate theo lịch làm việc (Mst_Calendar + f_WorkingDate_Get_01 + tham số Calendar_DepositDuty_DayT) và PostCheck 'còn dòng NULL thì báo lỗi' — MiniHTC chưa có tầng lịch, KHÔNG đoán công thức."
+    });
 }).RequireAuthorization();
 
 app.MapGet("/api/salesorders/{so}/support-history", async (string so, AppDbContext db, ITenantContext t) =>
@@ -35349,9 +35402,8 @@ record SessionHistDto(string SessionId, string? RootSvCode, string? RootUserCode
 record ValidateIdDto(string Id);
 record MBankLogDto(string? BulkInfo, string? Functionname, string? RQ, string? RS);
 
-// ---- #148: DTO log sửa mốc ngày đơn hàng + cấu hình chạy job ----
-record SoSupportLineDto(string? ModelCode, string? SpecCode, string? ColorCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
-record SoSupportUpdDto(string SOCode, string? DealerCode, DateTime? ApprovedDate1, DateTime? ApprovedDate2, List<SoSupportLineDto>? Lines);
+// ---- #B33: DTO 1:1 voi #input_Ord_SalesOrder — dung HAI cot nghiep vu SOCode + ApprovedDate ----
+record SoSupportUpdDto(string SOCode, DateTime? ApprovedDate);
 record SettingRunJobDto(string JobCode, string? JobName, string? FlagActive);
 
 // ---- #147: DTO tỉ lệ duyệt đơn tối đa ----
