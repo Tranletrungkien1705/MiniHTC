@@ -2936,6 +2936,18 @@ public sealed class ServicePackage
     public Guid OrgId { get; set; }
     public string PackageNo { get; set; } = "";
     public string? PackageName { get; set; }
+    // ===== #548 §12 CÁC CỘT MÀ `SerServicePackageUpdate` GHI =====
+    /// <summary>Đại lý sở hữu gói — cùng `PackageNo` tạo thành khoá chống trùng của nguồn.</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Thời gian thực hiện gói (`TakingTime`).</summary>
+    public string? TakingTime { get; set; }
+    public string? Description { get; set; }
+    public string? Creator { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>Cờ gói CÔNG KHAI — nguồn dùng nó ở nhánh `Union` thứ nhất (#546).</summary>
+    public string? IsPublicFlag { get; set; }
+    /// <summary>1 = dùng **giá chung**; 0 = dùng **giá riêng của gói** (chú thích nguyên văn của nguồn).</summary>
+    public string? IsUserBasePrice { get; set; }
     public decimal ServiceTotal { get; set; }
     public decimal PartTotal { get; set; }
     public decimal GrandTotal { get; set; }

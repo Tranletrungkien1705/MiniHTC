@@ -16723,6 +16723,79 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #548 SỬA GÓI DỊCH VỤ — `SerServicePackageUpdate`, VÀ MỘT LỜI GỌI GUARD **LẶP THỪA** =====
+// Nguồn: `BizCarSv.ServicePackage.cs:546 SerServicePackageUpdate`. Endpoint: `POST /api/servicepackages/{id}/update`.
+// **§12**: thêm 7 cột `DealerCode · TakingTime · Description · Creator · CreatedDate · IsPublicFlag · IsUserBasePrice`.
+//
+// 📐 **DIFF `Create` ↔ `Update`** (luật #404) — khác ở **guard**, không ở phần ghi:
+//   · `Create`: `CheckExistServicePackageNo` (chặn trùng mã).
+//   · `Update`: `CheckExistServicePackage(ID)` · `CheckServicePackageFieldEmpty(No, DealerCode, Name)`
+//     · `CheckExistServicePackage(ID)` **LẦN HAI** · `CheckExistServicePackageNoModify(No, DealerCode, ID)`.
+// 🔴 **`CheckExistServicePackage` ĐƯỢC GỌI HAI LẦN, CÙNG THAM SỐ, CÁCH NHAU MỘT LỜI GỌI** —
+//   lần thứ hai **thừa hoàn toàn** (cùng họ `SetDataRowStateOfAllRows` gọi hai lần ở #528).
+//   Vô hại về kết quả, nhưng là **một truy vấn DB thừa mỗi lần sửa gói**.
+// 🔴 **Chống trùng khi SỬA dùng hàm KHÁC**: `…NoModify(No, DealerCode, **ID**)` — có thêm `ID` để
+//   **loại trừ chính bản ghi đang sửa**; nếu port dùng nhầm hàm của `Create` thì **không sửa được**
+//   chính gói đó (tự báo trùng với chính mình). ⚠️ Khoá chống trùng là **cặp** `(No, DealerCode)`,
+//   không phải riêng `No` — nghĩa là **hai đại lý được dùng chung một mã gói**.
+// 🔴 **Rỗng ⇒ `DBNull`** cho **năm** cột (`TakingTime · Description · Creator · CreatedDate · IsPublicFlag`
+//   · `IsUserBasePrice`): ở đây gửi rỗng là **XOÁ** — ngược hẳn #528 (rỗng = giữ nguyên).
+//   Ba cột bắt buộc (`No · DealerCode · Name`) được `CheckServicePackageFieldEmpty` chặn từ trước.
+// ⚠️ `ServicePackageNo` được `.ToUpper()` trước khi ghi (chuẩn hoá **chỉ ở nhánh sửa**).
+app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePackageUpdateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    // CheckExistServicePackage(ID) — nguồn gọi HAI lần; ở đây một lần là đủ (nêu cờ).
+    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { error = "CheckExistServicePackage: không tìm thấy gói.", id });
+
+    // CheckServicePackageFieldEmpty(No, DealerCode, Name) — ba trường BẮT BUỘC.
+    var no = (dto.PackageNo ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var name = (dto.PackageName ?? "").Trim();
+    if (no.Length == 0 || dealer.Length == 0 || name.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "CheckServicePackageFieldEmpty: thiếu ServicePackageNo / DealerCode / ServicePackageName.",
+            packageNo = no, dealerCode = dealer, packageName = name,
+        });
+
+    // CheckExistServicePackageNoModify(No, DealerCode, ID) — trùng theo CẶP (No, DealerCode), TRỪ chính mình.
+    var dup = await db.ServicePackages.AnyAsync(x => x.OrgId == t.OrgId && x.Id != id
+        && x.PackageNo == no.ToUpperInvariant() && x.DealerCode == dealer);
+    if (dup)
+        return Results.BadRequest(new
+        {
+            error = "CheckExistServicePackageNoModify: mã gói đã tồn tại ở đại lý này.",
+            packageNo = no, dealerCode = dealer,
+            uniqueKeyIsPair = "(ServicePackageNo, DealerCode)",
+        });
+
+    h.PackageNo = no.ToUpperInvariant();          // nguồn .ToUpper() CHỈ ở nhánh sửa
+    h.DealerCode = dealer;
+    h.PackageName = name;
+    // Rỗng ⇒ null (khuôn DBNull của nguồn: gửi rỗng XOÁ).
+    h.TakingTime = string.IsNullOrWhiteSpace(dto.TakingTime) ? null : dto.TakingTime;
+    h.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description;
+    h.Creator = string.IsNullOrWhiteSpace(dto.Creator) ? null : dto.Creator;
+    h.CreatedDate = dto.CreatedDate;
+    h.IsPublicFlag = string.IsNullOrWhiteSpace(dto.IsPublicFlag) ? null : dto.IsPublicFlag;
+    h.IsUserBasePrice = string.IsNullOrWhiteSpace(dto.IsUserBasePrice) ? null : dto.IsUserBasePrice;
+    h.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        h.Id, h.PackageNo, h.DealerCode, h.PackageName, h.TakingTime, h.Description,
+        h.Creator, h.CreatedDate, h.IsPublicFlag, h.IsUserBasePrice,
+        duplicateGuardExcludesSelf = "CheckExistServicePackageNoModify(No, DealerCode, ID)",
+        uniqueKeyIsPair = "(ServicePackageNo, DealerCode) — hai dai ly duoc trung ma goi",
+        emptyMeansClear = "5 cot: TakingTime/Description/Creator/CreatedDate/IsPublicFlag/IsUserBasePrice",
+        duplicateGuardCallInSource = "CheckExistServicePackage(ID) goi HAI lan cung tham so — lan hai thua",
+        packageNoUpperCasedOnUpdateOnly = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #546 VÁ CHI TIẾT GÓI DỊCH VỤ THEO `SerServicePackageGetSearchCreateRO` =====
 // Nguồn: `BizCarSv.ServicePackage.cs:1582 SerServicePackageGetSearchCreateRO` (kênh ClientService).
 // Bản port cũ trả gói + hai bảng con **giá cố định trên dòng**; nguồn còn kèm **giá hiệu lực** và **tồn kho**.
@@ -51820,6 +51893,10 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
+record ServicePackageUpdateDto(string? PackageNo, string? DealerCode, string? PackageName,
+    string? TakingTime, string? Description, string? Creator, DateTime? CreatedDate,
+    string? IsPublicFlag, string? IsUserBasePrice);   // #548
+
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor,
     string? ExpenseType = null, string? ROType = null);   // #547 §12

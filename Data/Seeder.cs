@@ -1281,6 +1281,14 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #548 cac cot ma SerServicePackageUpdate ghi
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"TakingTime\" text",
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"Description\" text",
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"Creator\" text",
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"IsPublicFlag\" text",
+        "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"IsUserBasePrice\" text",
         // #547 doi tuong thanh toan + loai cong viec cua dong cong trong goi dich vu
         "ALTER TABLE public.\"ServicePackageServices\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
         "ALTER TABLE public.\"ServicePackageServices\" ADD COLUMN IF NOT EXISTS \"ROType\" text",
