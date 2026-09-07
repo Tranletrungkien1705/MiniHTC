@@ -29276,17 +29276,35 @@ app.MapPut("/api/campaignmarketings/{no}", async (string no, CampaignMarketingDt
             PartCode = p.PartCode, PercentDiscount = p.PercentDiscount,
             CamMarketingPartStatus = c.CamMarketingStatus,
         });
+    // ===== 🔴 #501 NỐI NỐT BỐN BẢNG CON (đã mô hình hoá ở #482/#483) VÀO SỬA/XOÁ/DUYỆT =====
+    // #482/#483 dựng xong bốn bảng con nhưng **ba endpoint ghi vẫn chưa đụng tới** — và tệ hơn, chúng
+    //   vẫn **khai nợ `childTablesNotModelled`** cho đúng những bảng **đã có**. Nợ đã trả nhưng sổ chưa xoá
+    //   ⇒ người đọc sau tưởng còn thiếu. Đây là lỗi **sổ sách lệch hiện trạng**, nguy hiểm ngang nợ thật.
+    // Nguồn: hàm Update có **10 câu `delete t`** trên các bảng `VIN` · `PlateNo` · `FullVIN` · `Dealer` · `Part`
+    //   ⇒ **XOÁ SẠCH rồi ghi lại**, không trộn từng dòng. Nay áp đúng lệ đó cho cả bốn bảng còn lại.
+    var oldVins = await db.CampaignMarketingVins.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    var oldPlates = await db.CampaignMarketingPlateNos.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    var oldDealers = await db.CampaignMarketingDealers.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    var oldFullVins = await db.CampaignMarketingFullVins.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    db.CampaignMarketingVins.RemoveRange(oldVins);
+    db.CampaignMarketingPlateNos.RemoveRange(oldPlates);
+    db.CampaignMarketingDealers.RemoveRange(oldDealers);
+    db.CampaignMarketingFullVins.RemoveRange(oldFullVins);
     await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
         c.CamNo, status = c.CamMarketingStatus,
         partsRemoved = oldParts.Count, partsAdded = newParts.Count,
+        // #501: bốn bảng con nay CÓ bị xoá sạch theo đúng lệ của nguồn.
+        vinsRemoved = oldVins.Count, plateNosRemoved = oldPlates.Count,
+        dealersRemoved = oldDealers.Count, fullVinsRemoved = oldFullVins.Count,
         replaceAllNote = "SỬA = XOÁ SẠCH danh sách con rồi ghi lại (nguồn có 10 câu `delete` trong hàm Update). "
             + "Gửi lên danh sách thiếu là MẤT phần còn lại — không phải trộn từng dòng.",
         pendingOnlyNote = "Chỉ sửa được khi đang CHỜ DUYỆT (P), giống guard của Approve.",
-        childTablesNotModelled = new[] { "Ser_CampaignMarketingVIN", "Ser_CampaignMarketingPlateNo",
-            "Ser_CampaignMarketingFullVIN", "Ser_CampaignMarketingDealer" },
+        // #501: nợ đã TRẢ — bốn bảng con đã mô hình hoá (#482/#483) và nay đã được nối vào lệnh sửa.
+        childTablesNotModelled = Array.Empty<string>(),
+        childRowsAreReplacedNotMerged = true,
         twinDateNote = "Update dùng twin _20220626, còn Delete/Approve dùng _20220926 — ba thao tác sửa ở ba đợt khác nhau.",
     });
 }).RequireAuthorization();
@@ -29302,6 +29320,15 @@ app.MapDelete("/api/campaignmarketings/{no}", async (string no, AppDbContext db,
             currentStatus = c.CamMarketingStatus });
 
     var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id).ToListAsync();
+    // #501b XOA lan dung SAU bang nhu nguon (bang chinh + 5 bang con).
+    var dVins = await db.CampaignMarketingVins.Where(x => x.OrgId == t.OrgId && x.CamNo == no).ToListAsync();
+    var dPlates = await db.CampaignMarketingPlateNos.Where(x => x.OrgId == t.OrgId && x.CamNo == no).ToListAsync();
+    var dDealers = await db.CampaignMarketingDealers.Where(x => x.OrgId == t.OrgId && x.CamNo == no).ToListAsync();
+    var dFull = await db.CampaignMarketingFullVins.Where(x => x.OrgId == t.OrgId && x.CamNo == no).ToListAsync();
+    db.CampaignMarketingVins.RemoveRange(dVins);
+    db.CampaignMarketingPlateNos.RemoveRange(dPlates);
+    db.CampaignMarketingDealers.RemoveRange(dDealers);
+    db.CampaignMarketingFullVins.RemoveRange(dFull);
     db.CampaignMarketingParts.RemoveRange(parts);
     db.CampaignMarketings.Remove(c);
     await db.SaveChangesAsync();
@@ -29309,11 +29336,13 @@ app.MapDelete("/api/campaignmarketings/{no}", async (string no, AppDbContext db,
     return Results.Ok(new
     {
         camNo = no, deleted = true, partsDeleted = parts.Count,
+        vinsDeleted = dVins.Count, plateNosDeleted = dPlates.Count,
+        dealersDeleted = dDealers.Count, fullVinsDeleted = dFull.Count,
         cascadeNote = "Nguồn xoá lan đúng SÁU bảng: chính + Dealer + FullVIN + Part + PlateNo + VIN "
             + "(đối xứng với Approve ở #392).",
         pendingOnlyNote = "Chỉ xoá được khi đang CHỜ DUYỆT (P).",
-        childTablesNotModelled = new[] { "Ser_CampaignMarketingVIN", "Ser_CampaignMarketingPlateNo",
-            "Ser_CampaignMarketingFullVIN", "Ser_CampaignMarketingDealer" },
+        // #501b: no da TRA — xoa lan du sau bang.
+        childTablesNotModelled = Array.Empty<string>(),
     });
 }).RequireAuthorization();
 
@@ -29334,9 +29363,17 @@ app.MapPost("/api/campaignmarketings/{no}/approve", async (string no, CampaignAp
     c.ApprDTime = now;
     c.ApprBy = dto?.ApprBy;
 
-    // LAN trạng thái xuống bảng con mà MiniHTC có.
+    // LAN trạng thái xuống bảng con — #501: nay đủ NĂM bảng như nguồn, không còn thiếu bốn cái.
     var parts = await db.CampaignMarketingParts.Where(x => x.OrgId == t.OrgId && x.CampaignId == c.Id).ToListAsync();
     foreach (var p in parts) p.CamMarketingPartStatus = "A";
+    var cvins = await db.CampaignMarketingVins.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    foreach (var v in cvins) v.CamMarketingVinStatus = "A";
+    var cplates = await db.CampaignMarketingPlateNos.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    foreach (var v in cplates) v.CamMarketingPlateNoStatus = "A";
+    var cdealers = await db.CampaignMarketingDealers.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    foreach (var v in cdealers) v.CamMarketingDealerStatus = "A";
+    var cfull = await db.CampaignMarketingFullVins.Where(x => x.OrgId == t.OrgId && x.CamNo == c.CamNo).ToListAsync();
+    foreach (var v in cfull) v.CamMarketingFullVinStatus = "A";
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -29345,9 +29382,11 @@ app.MapPost("/api/campaignmarketings/{no}/approve", async (string no, CampaignAp
         // Remark: null khi rỗng, đúng cách tầng service của nguồn truyền lên.
         remark = string.IsNullOrWhiteSpace(dto?.Remark) ? null : dto!.Remark,
         cascadedParts = parts.Count,
+        // #501: lan đủ năm bảng con — nợ đã trả.
+        cascadedVins = cvins.Count, cascadedPlateNos = cplates.Count,
+        cascadedDealers = cdealers.Count, cascadedFullVins = cfull.Count,
         cascadeNote = "Duyệt LAN trạng thái xuống SÁU bảng con trong nguồn (VIN, PlateNo, Dealer, FullVIN, Part).",
-        childTablesNotModelled = new[] { "CamMarketingVINStatus", "CamMarketingPlateNoStatus",
-            "CamMarketingDealerStatus", "CamMarketingFullVINStatus" },
+        childTablesNotModelled = Array.Empty<string>(),
         statusVocabNote = "Chỉ có HAI mã: P = chờ duyệt, A = đã duyệt. Không có mã từ chối.",
     });
 }).RequireAuthorization();
