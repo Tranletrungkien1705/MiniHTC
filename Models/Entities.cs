@@ -14754,6 +14754,21 @@ public sealed class MaintenanceLevelMst
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#539 ĐỊNH MỨC công phát sinh **theo loại bảo hành chi tiết** (`Ser_MST_ROWorkArisingQuota`).
+/// Khoá nghiệp vụ = (`ROWArisCode`, `ROWTypeDtlCode`). Nguồn kiểm `ROWTypeDtlCode` phải có trong
+/// `Ser_MST_ROWarrantyType` — nhưng **chỉ ở nhánh THÊM MỚI** (xem chú thích endpoint).</summary>
+public sealed class RoWorkArisingQuotaMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWArisCode { get; set; } = "";
+    public string? ROWArisName { get; set; }
+    /// <summary>Mã loại bảo hành CHI TIẾT — khoá ngoại tới `Ser_MST_ROWarrantyType.ROWTypeDtlCode`.</summary>
+    public string ROWTypeDtlCode { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>#538 Phụ tùng phát sinh **của CommonCenter** (`Ser_MST_PartExtra`) — **KHÁC** `ExtraPartMst`
 /// (vốn port từ `Tbl_Mst_Extra_Parts_Mng`). Hai bảng khác nhau, cùng nói về "phụ tùng phát sinh":
 /// bảng này có thêm `ROMSID` (khoá bộ định mức) và dùng tên cột `VieName`/`TotalLimit`.</summary>

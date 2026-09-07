@@ -125,6 +125,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ReceptionFAuditMst> ReceptionFAuditMsts => Set<ReceptionFAuditMst>();   // #526
     public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #532
     public DbSet<PartExtraMst> PartExtraMsts => Set<PartExtraMst>();   // #538
+    public DbSet<RoWorkArisingQuotaMst> RoWorkArisingQuotaMsts => Set<RoWorkArisingQuotaMst>();   // #539
     public DbSet<MstDisbursment> MstDisbursments => Set<MstDisbursment>();
     public DbSet<MstDoc> MstDocs => Set<MstDoc>();
     public DbSet<MrkCampaignDLRegister> MrkCampaignDLRegisters => Set<MrkCampaignDLRegister>();

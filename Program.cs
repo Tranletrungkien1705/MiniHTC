@@ -48564,6 +48564,113 @@ app.MapPost("/api/partextramsts/delete", async (List<string> partCodes, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #539 ĐỊNH MỨC CÔNG PHÁT SINH THEO LOẠI BẢO HÀNH — **GUARD CHỈ CÓ Ở NHÁNH THÊM** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:7121 Ser_MST_ROWorkArisingQuota_Get` · `:7242 …_Save`
+//   · `:7594 …_Delete`. Endpoint: `GET`/`POST /api/roworkarisingquotamsts` + `POST …/delete`.
+// **§12**: entity `RoWorkArisingQuotaMst` + `DbSet` + Seeder.
+// ⚠️ Grep trước: MiniHTC có `ExtraWorkLimitationMst` (giới hạn **giá** theo loại BH) — **khác** bảng này
+//   (định mức **công phát sinh** theo loại BH); tên gần nhau, đừng gộp (bài học #538).
+//
+// 🔴🔴 **GUARD `ROWTypeDtlCode` NẰM TRONG `#region Check DB Insert` — CHỈ CHẠY KHI THÊM MỚI** (luật #404):
+//   nhánh **thêm** truy `select … from Ser_MST_ROWarrantyType where ROWTypeDtlCode = '@strROWTypeDtlCode'`
+//   và ném `Ser_MST_ROWorkArisingQuota_Save` nếu `Rows.Count < 1`;
+//   nhánh **cập nhật** (bản ghi đã tồn tại) **không có phép kiểm nào** ⇒ **sửa** một dòng sang mã loại BH
+//   **không tồn tại** thì **lọt**. Port kiểm ở **cả hai** nhánh + cờ `guardOnlyOnInsertInSource`.
+// 🔴 Mã loại BH **bake vào chuỗi**: `and t.ROWTypeDtlCode = '@strROWTypeDtlCode'` lấy thẳng từ
+//   `Rows[i]["ROWTypeDtlCode"].ToString()` (họ `[BAKE-PARAM-MIX]`, như #535).
+// ⚠️ `CheckExistROWorkArising` chạy **trước** vòng ghi cho mọi dòng ⇒ mã công việc phát sinh phải có thật.
+// ⚠️ Đọc: `from [CommonCenter].[dbo].Ser_MST_ROWorkArisingQuota t **with (nolock)**` (viết thẳng, như #538),
+//   hai bộ lọc `ROWArisCode`/`ROWArisName` qua `BuildClause` (bẫy #410), và **không có `order by`**.
+app.MapGet("/api/roworkarisingquotamsts", async (AppDbContext db, ITenantContext t,
+    string? rowArisCode, string? rowArisName, string? rowTypeDtlCode) =>
+{
+    var qy = db.RoWorkArisingQuotaMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(rowArisCode)) qy = qy.Where(x => x.ROWArisCode == rowArisCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(rowArisName)) qy = qy.Where(x => x.ROWArisName != null && x.ROWArisName!.Contains(rowArisName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(rowTypeDtlCode)) qy = qy.Where(x => x.ROWTypeDtlCode == rowTypeDtlCode!.Trim());
+    var items = await qy.OrderBy(x => x.ROWArisCode).ThenBy(x => x.ROWTypeDtlCode).Take(1000)
+        .Select(x => new { x.Id, x.ROWArisCode, x.ROWArisName, x.ROWTypeDtlCode, x.FlagActive })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        tableName = "Ser_MST_ROWorkArisingQuota",
+        sourceUsesRawNolock = true, sourceHasNoOrderBy = true,
+        notTheSameAs = "ExtraWorkLimitationMst (gioi han GIA theo loai BH)",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/roworkarisingquotamsts", async (List<RoWorkArisingQuotaDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Cần bảng Ser_MST_ROWorkArisingQuota." });
+
+    // CheckExistROWorkArising: mã công việc phát sinh phải có trong danh mục (ExtraWorkMst, #537).
+    var arisCodes = rows.Select(r => (r.ROWArisCode ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    var known = await db.ExtraWorkMsts.Where(x => x.OrgId == t.OrgId && arisCodes.Contains(x.ExtraWorkCode))
+        .Select(x => x.ExtraWorkCode).ToListAsync();
+    var missingAris = arisCodes.Except(known).ToList();
+    if (missingAris.Count > 0)
+        return Results.BadRequest(new { error = "CheckExistROWorkArising: mã công việc phát sinh không tồn tại.", missingAris });
+
+    // Nguồn CHỈ kiểm ở nhánh thêm mới; ở đây kiểm cho CẢ hai (lệch cố ý, nêu cờ).
+    var dtlCodes = rows.Select(r => (r.ROWTypeDtlCode ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    var knownDtl = await db.ROWarrantyTypes.Where(x => x.OrgId == t.OrgId && dtlCodes.Contains(x.ROWTypeDtlCode))
+        .Select(x => x.ROWTypeDtlCode).ToListAsync();
+    var missingDtl = dtlCodes.Except(knownDtl).ToList();
+    if (missingDtl.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Ser_MST_ROWorkArisingQuota_Save: ROWTypeDtlCode not exists in table Ser_MST_ROWarrantyType",
+            missingDtl, guardOnlyOnInsertInSource = true,
+        });
+
+    var created = 0; var updated = 0;
+    foreach (var r in rows)
+    {
+        var code = (r.ROWArisCode ?? "").Trim();
+        var dtl = (r.ROWTypeDtlCode ?? "").Trim();
+        if (code.Length == 0 || dtl.Length == 0)
+            return Results.BadRequest(new { error = "ROWArisCode và ROWTypeDtlCode không được rỗng." });
+        var row = await db.RoWorkArisingQuotaMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+            && x.ROWArisCode == code && x.ROWTypeDtlCode == dtl);
+        if (row is null)
+        {
+            row = new RoWorkArisingQuotaMst { OrgId = t.OrgId, ROWArisCode = code, ROWTypeDtlCode = dtl };
+            db.RoWorkArisingQuotaMsts.Add(row); created++;
+        }
+        else updated++;
+        row.ROWArisName = string.IsNullOrWhiteSpace(r.ROWArisName) ? null : r.ROWArisName;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, created, updated,
+        guardOnlyOnInsertInSource = "Check DB Insert chi chay o nhanh THEM; nhanh SUA khong kiem ROWTypeDtlCode",
+        dtlCodeBakedIntoSql = "and t.ROWTypeDtlCode = '@strROWTypeDtlCode'",
+        businessKey = "ROWArisCode + ROWTypeDtlCode",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/roworkarisingquotamsts/delete", async (List<RoWorkArisingQuotaDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Cần danh sách." });
+    var deleted = 0;
+    foreach (var r in rows)
+    {
+        var code = (r.ROWArisCode ?? "").Trim(); var dtl = (r.ROWTypeDtlCode ?? "").Trim();
+        var hit = await db.RoWorkArisingQuotaMsts.Where(x => x.OrgId == t.OrgId && x.ROWArisCode == code
+            && (dtl.Length == 0 || x.ROWTypeDtlCode == dtl)).ToListAsync();
+        db.RoWorkArisingQuotaMsts.RemoveRange(hit); deleted += hit.Count;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { requested = rows.Count, deleted, deletesMainAndWhOnly = true });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -50380,6 +50487,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record RoWorkArisingQuotaDto(string? ROWArisCode, string? ROWArisName, string? ROWTypeDtlCode, string? FlagActive);   // #539
+
 record PartExtraMstDto(string? PartCode, string? ROMSID, string? VieName, string? Unit,
     decimal? Price, decimal? TotalLimit, string? FlagActive);   // #538
 
