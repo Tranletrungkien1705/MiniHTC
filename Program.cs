@@ -16659,13 +16659,84 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
     return Results.Ok(new { h.Id, h.PackageNo, h.ServiceTotal, h.PartTotal, h.GrandTotal });
 }).RequireAuthorization();
 
+// ===== 🔴 #546 VÁ CHI TIẾT GÓI DỊCH VỤ THEO `SerServicePackageGetSearchCreateRO` =====
+// Nguồn: `BizCarSv.ServicePackage.cs:1582 SerServicePackageGetSearchCreateRO` (kênh ClientService).
+// Bản port cũ trả gói + hai bảng con **giá cố định trên dòng**; nguồn còn kèm **giá hiệu lực** và **tồn kho**.
+//
+// 🔴 **GIÁ PHỤ TÙNG LẤY THEO NGÀY HIỆU LỰC** (đúng luật #412 — danh mục CÓ hiệu lực và CÓ dùng):
+//     `left join (SELECT PartPriceID, PartId, Price, DateEffect,`
+//     `   RANK() OVER(PARTITION BY PartId ORDER BY DateEffect DESC) AS rn`
+//     ` FROM Ser_Inv_Partprice WHERE DateEffect <= <hôm nay> and IsActive = '1') tmpprice WHERE rn = 1`
+//   ⇒ Giá **mới nhất còn hiệu lực tính đến hôm nay**, chỉ lấy dòng `IsActive = '1'`.
+//   🔴 **DÙNG `RANK()` CHỨ KHÔNG PHẢI `ROW_NUMBER()`**: hai bảng giá **cùng `DateEffect`** cho cùng mã
+//     ⇒ **cả hai đều có `rn = 1`** ⇒ `left join` **NHÂN ĐÔI dòng phụ tùng** của gói, và tổng tiền
+//     hiển thị bị đếm lặp. Port lấy **một** dòng (mới nhất, rồi tới Id lớn nhất) + đếm `priceTies`
+//     để nêu đúng chỗ nguồn sẽ nhân dòng.
+//   ⚠️ Mốc so là **CHUỖI**: `Replace(CONVERT(VARCHAR, Getdate(), 111), '/', '-')` ⇒ `yyyy-mm-dd`.
+// 🔴 **`InventoryQuantity` Ở ĐÂY CHỈ LÀ TỒN KHO**: `(isnull(sb.TotalInStock, 0))` — **không** cộng
+//   "hàng đang về" như màn hẹn (#544). Xác nhận lần thứ hai rằng **hai công thức là chủ đích**,
+//   không hợp nhất (đã ghi ở `/api/serviceparts/{code}/inventory`).
+// ⚠️ Bảng con nối `INNER JOIN Ser_Mst_Part` ⇒ phụ tùng **đã xoá khỏi danh mục** thì **rơi khỏi gói**
+//   (luật #410) — khác các bảng con của lịch hẹn (#544) vốn `left join`.
+// ⚠️ Ở câu lọc gói: hai mệnh đề bị **comment trong bảng lọc đầu** rồi áp lại ở **hai nhánh `Union`** —
+//   nhánh 1 lọc `IsPublicFlag`, nhánh 2 lọc `Creator` + `IsPrivateFlag` ⇒ *gói công khai* **hợp** *gói riêng
+//   của người tạo*. `Union` (không `ALL`) nên gói vừa công khai vừa của mình **chỉ ra một lần**.
+// ⚠️ `case sp.IsUserBasePrice when 1 then N'Giá chung' when 0 then N'Giá theo gói dịch vụ'
+//   else N'Giá theo gói dịch vụ' end` — **nhánh `else` trùng nhánh `0`** ⇒ NULL cũng hiện *"Giá theo gói"*.
 app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount }).ToListAsync();
-    var parts = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.PartCode, x.PartName, x.Price, x.Factor, x.Amount }).ToListAsync();
-    return Results.Ok(new { h.PackageNo, h.PackageName, h.ServiceTotal, h.PartTotal, h.GrandTotal, services = svcs, parts });
+    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
+        .Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount }).ToListAsync();
+    var partRows = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
+        .ToListAsync();
+    var codes = partRows.Select(x => x.PartCode).ToList();
+
+    // Giá hiệu lực: mới nhất tính đến HÔM NAY, chỉ dòng IsActive = "1".
+    var today = DateTime.Now.Date;
+    var prices = await db.PartPrices
+        .Where(p => p.OrgId == t.OrgId && codes.Contains(p.PartCode)
+            && p.EffectiveDate <= today && p.IsActive == "1")
+        .Select(p => new { p.Id, p.PartCode, p.Price, p.PriceVAT, p.EffectiveDate }).ToListAsync();
+    // Nguồn dùng RANK() ⇒ hoà mốc hiệu lực thì NHÂN DÒNG; ở đây đếm số mã bị hoà.
+    var priceTies = prices.GroupBy(p => p.PartCode)
+        .Count(g => g.Count(x => x.EffectiveDate == g.Max(y => y.EffectiveDate)) > 1);
+
+    var stock = await db.PartStocks.Where(s => s.OrgId == t.OrgId && codes.Contains(s.PartCode))
+        .GroupBy(s => s.PartCode).Select(g => new { PartCode = g.Key, OnHand = g.Sum(x => x.OnHand) })
+        .ToListAsync();
+
+    var parts = partRows.Select(x =>
+    {
+        var eff = prices.Where(p => p.PartCode == x.PartCode)
+            .OrderByDescending(p => p.EffectiveDate).ThenByDescending(p => p.Id).FirstOrDefault();
+        return new
+        {
+            x.PartCode, x.PartName,
+            x.Price,                                        // giá chốt trên dòng gói
+            effectivePrice = eff?.Price,                    // giá theo bảng giá còn hiệu lực
+            effectivePriceVAT = eff?.PriceVAT,
+            effectiveDate = eff?.EffectiveDate,
+            x.Factor, x.Amount,
+            // Công thức của MÀN GÓI DỊCH VỤ: CHỈ tồn kho (khác #544).
+            InventoryQuantity = stock.FirstOrDefault(v => v.PartCode == x.PartCode)?.OnHand ?? 0m,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        h.PackageNo, h.PackageName, h.ServiceTotal, h.PartTotal, h.GrandTotal,
+        services = svcs, parts,
+        inventoryFormulaOfThisScreen = "isnull(TotalInStock,0) — KHONG cong hang dang ve",
+        contrastWithAppointmentScreen = "#544 cong ca TotalInShipment",
+        effectivePriceRule = "RANK() OVER(PARTITION BY PartId ORDER BY DateEffect DESC) = 1, DateEffect <= hom nay, IsActive = '1'",
+        rankInsteadOfRowNumberDuplicatesRows = true,
+        priceTies,
+        sourceInnerJoinsPartMaster = "phu tung da xoa khoi danh muc thi ROI khoi goi",
+        packageFilterUsesUnionOfPublicAndOwn = "nhanh 1: IsPublicFlag; nhanh 2: Creator + IsPrivateFlag",
+        userBasePriceElseEqualsZeroBranch = true,
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
