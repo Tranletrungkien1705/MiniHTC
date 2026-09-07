@@ -26419,6 +26419,105 @@ app.MapGet("/api/params/{code}", async (string code, AppDbContext db, ITenantCon
 //   (#410 mã đại lý bị thay bằng phiên đăng nhập · #420 tự gán chính nó · #423 tên nói sai khái niệm).
 // ⚠️ Khoảng ngày dựng thành `">=from|<=to"` (giống #406) và áp lên `si.CreateDate`.
 // ⚠️ `BuildClause` gọi `.ToUpper()` lên **cả giá trị tham số** ⇒ dữ liệu lưu chữ thường có thể không khớp.
+// ===== 🔴 #429 BÁO CÁO CHIẾN DỊCH THEO ĐẠI LÝ (`Ser_CampaignDealerRpt`) =====
+// TRACE: `FrmCamExportRpt` (722 dòng) → `Ser_CampaignDealerRpt` / `_WH` tuỳ ô "toàn bộ lịch sử"
+//   → WS (`WSCarSv.asmx.cs:13161`) → biz (`BizCarSv.Service.Report.cs:3323`).
+//
+// 🔴 **MỘT THAM SỐ ĐẠI LÝ, HAI BẢNG Ở HAI CSDL** (cùng kiểu #420, nhưng nặng hơn):
+//   `zzzzClauseWhereDealerCodeConditionList` được nhét vào **CẢ HAI**:
+//     · `#tbl_cam`  ← `from [@strDBName_CommonCenter].[dbo].Ser_Campaign` (**CSDL TRUNG TÂM**)
+//     · `#tbl_ro`   ← `from ser_ro` (CSDL đại lý)
+//   ⇒ Lọc "đại lý X" đòi **chiến dịch cũng phải mang mã đại lý X**. Nếu chiến dịch được khai ở trung
+//     tâm dưới một mã khác (hoặc để trống), tập `#tbl_cam` **rỗng** ⇒ mọi phép nối sau đó rỗng theo
+//     ⇒ **báo cáo trắng**, trông y hệt "đại lý này không tham gia chiến dịch nào".
+//
+// 📌 **KẾT QUẢ ÂM TÍNH — đã kiểm, KHÔNG phải bug** (ghi để lượt sau khỏi dò lại):
+//   Khối gộp tầng 1 (`#tbl_ser_ROPartItems`) có `group by` chứa **chính các cột đang được `sum`**
+//     (`Factor`, `Price`, `Quantity`, `VAT`) — nhìn rất giống lỗi gộp sai. **Nhưng** ngay sau đó có
+//     tầng 2 (`#tbl_ser_ROPartItems_PartAmount`) gộp lại theo `ROID + CamID` ⇒ tổng cuối **đúng**.
+//     Hai tầng gộp bù nhau; đọc một tầng rồi kết luận là sai.
+//   ⚠️ Có một khối `#tmpAmount` dùng `full outer join` **đã bị comment trọn vẹn** — bản ACTIVE là
+//     hai khối gộp riêng rồi nối sau. Port theo dòng active.
+//
+// ⚠️ Tiền **công** tính `Factor × Price` (**không** nhân số lượng), tiền **phụ tùng** tính
+//   `Factor × Price × Quantity` — bất đối xứng CÓ CHỦ Ý, giống hệt lệ #303.
+// ⚠️ VAT là **phần trăm** (`× VAT × 0.01`), không phải hệ số 0..1.
+// ⚠️ `#tbl_ro` chỉ lấy lệnh `Status = 'FNS'` (đã hoàn tất) và nối `ser_customer`/`ser_car` bằng
+//   **nối TRONG** kèm `DealerCode` ở cả hai vế ⇒ xe/khách lệch đại lý là **mất dòng**.
+app.MapGet("/api/report/campaign-dealer", async (AppDbContext db, ITenantContext t,
+    string? camNo, string? dealer, DateTime? fromDate, DateTime? toDate) =>
+{
+    // #tbl_cam — nguồn lọc chiến dịch bằng CÙNG mã đại lý dùng cho lệnh sửa.
+    var camQ = db.Campaigns.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(camNo)) camQ = camQ.Where(c => c.CamNo == camNo!.Trim());
+    var cams = await camQ.ToListAsync();
+    var camIds = cams.Select(c => c.CamNo).ToHashSet();   // Campaign: khoa nghiep vu la CamNo (khong co cot CamID)
+
+    // #tbl_ro — chỉ lệnh đã hoàn tất.
+    var roQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.Status == "FNS");
+    if (!string.IsNullOrWhiteSpace(dealer)) roQ = roQ.Where(r => r.DealerCode == dealer!.Trim());
+    if (fromDate.HasValue) roQ = roQ.Where(r => r.CheckInDate >= fromDate.Value.Date);
+    if (toDate.HasValue) roQ = roQ.Where(r => r.CheckInDate <= toDate.Value.Date);
+    var ros = await roQ.ToListAsync();
+    var roIds = ros.Select(r => r.Id).ToHashSet();
+
+    var partItems = (await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .ToListAsync()).Where(i => i.CamID != null && camIds.Contains(i.CamID!)).ToList();
+    var svcItems = (await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .ToListAsync()).Where(i => i.CamID != null && camIds.Contains(i.CamID!)).ToList();
+
+    // Tiền: phụ tùng CÓ nhân số lượng, công KHÔNG. VAT là phần trăm.
+    var partAmt = partItems.GroupBy(i => (i.RoId, i.CamID!))
+        .ToDictionary(g => g.Key, g => g.Sum(i =>
+            i.Factor * i.NeedQty * i.UnitPrice
+          + i.Factor * i.NeedQty * i.UnitPrice * i.Vat * 0.01m));
+    var svcAmt = svcItems.GroupBy(i => (i.RoId, i.CamID!))
+        .ToDictionary(g => g.Key, g => g.Sum(i =>
+            i.Factor * i.Price + i.Factor * i.Price * i.Vat * 0.01m));
+
+    var keys = partAmt.Keys.Union(svcAmt.Keys).ToList();
+    var roById = ros.ToDictionary(r => r.Id);
+    var camByCode = cams.GroupBy(c => c.CamNo)
+        .ToDictionary(g => g.Key, g => g.First());
+
+    var rows = keys.Select(k =>
+    {
+        var ro = roById[k.Item1];
+        camByCode.TryGetValue(k.Item2, out var cam);
+        var pa = partAmt.TryGetValue(k, out var p) ? p : 0m;
+        var sa = svcAmt.TryGetValue(k, out var s) ? s : 0m;
+        return new
+        {
+            roId = ro.Id, roNo = ro.RONo, dealerCode = ro.DealerCode,
+            checkInDate = ro.CheckInDate, km = ro.Km, cusRequest = ro.CusRequest,
+            camId = k.Item2, camNo = cam?.CamNo, camName = cam?.CamName,
+            partAmount = pa, serviceAmount = sa, sumAmount = pa + sa,
+        };
+    }).OrderBy(x => x.roNo).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        campaignCount = cams.Count, finishedRoCount = ros.Count,
+        grandPartAmount = rows.Sum(r => r.partAmount),
+        grandServiceAmount = rows.Sum(r => r.serviceAmount),
+        dealerFilterOnCampaignNote = "Nguồn nhét CÙNG mệnh đề mã đại lý vào CẢ HAI bảng: Ser_Campaign ở "
+            + "CSDL TRUNG TÂM và ser_ro ở CSDL đại lý. Nếu chiến dịch khai ở trung tâm dưới mã khác (hoặc "
+            + "để trống) thì #tbl_cam rỗng ⇒ BÁO CÁO TRẮNG, trông y hệt 'đại lý không tham gia chiến dịch'. "
+            + "MiniHTC chỉ lọc đại lý trên LỆNH SỬA.",
+        twoStageAggregateNote = "KIỂM RỒI, KHÔNG phải bug: tầng gộp 1 có group by chứa chính các cột đang "
+            + "sum (Factor/Price/Quantity/VAT) — nhìn như gộp sai — nhưng tầng gộp 2 gộp lại theo ROID+CamID "
+            + "nên tổng cuối đúng. Hai tầng bù nhau.",
+        deadBlockNote = "Khối #tmpAmount dùng full outer join đã bị COMMENT trọn vẹn; bản active là hai "
+            + "khối gộp riêng rồi nối sau. Port theo dòng active.",
+        amountFormulaNote = "Tiền CÔNG = Factor × Price (KHÔNG nhân số lượng); tiền PHỤ TÙNG = Factor × "
+            + "Price × Quantity. VAT là PHẦN TRĂM (× 0.01). Bất đối xứng có chủ ý, giống lệ #303.",
+        innerJoinNote = "Nguồn nối ser_customer/ser_car bằng nối TRONG kèm DealerCode ở cả hai vế ⇒ xe "
+            + "hoặc khách lệch đại lý là MẤT DÒNG.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
     string? bulletinId, string? bulletinNo, DateTime? createDateFrom, DateTime? createDateTo,
     string? remark, string? userCreate, string? vin, bool? includeInactive, bool? getDetail) =>
