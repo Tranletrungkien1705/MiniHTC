@@ -16913,9 +16913,45 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
 {
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
-        .Select(x => new { x.SerCode, x.SerName, x.ExpenseType, x.ROType, x.Price, x.Factor, x.Amount })   // #547 §12
+    // ===== 🔴 #551 KHỐI DỊCH VỤ CỦA GÓI — **HAI BỘ GIÁ SONG SONG** =====
+    // Nguồn: `zzzzClauseSelect_ServicePackageServiceItems` trong `SerServicePackageGetSearchCreateRO`
+    //   (`BizCarSv.ServicePackage.cs:1582`). Bản port cũ chỉ trả **một** bộ giá.
+    // 🔴 Nguồn trả **hai bộ**: `Isnull(sps.Price,0) Price` · `sps.Factor * Isnull(sps.Price,0) Amount`
+    //   (**giá CHỐT trên gói**) và `s.Price NewPrice` · `s.VAT NewVAT` ·
+    //   `sps.Factor * Isnull(s.Price,0) NewAmount` (**giá HIỆN HÀNH trong danh mục**).
+    //   ⇒ Màn tạo lệnh sửa chữa cho người dùng thấy **chênh lệch giá** giữa lúc lập gói và hôm nay.
+    //     Thiếu nó thì báo giá theo gói cũ mà **không ai biết giá đã đổi**.
+    // 🔴 **Ba cột HẰNG SỐ CỨNG** để khớp hình dạng bảng khi tạo RO:
+    //   `WarrantyStatus = ''` · `InsurancePrice = 0.0` · `'' CamID` — **không** đọc từ đâu cả.
+    // 🔴 `--, sps.ExpenseType` **BỊ COMMENT** ⇒ dù #547 **bắt buộc** nhập `ExpenseType` khi tạo gói,
+    //   khối này **không trả nó ra** ⇒ tạo lệnh sửa chữa từ gói thì **đối tượng thanh toán bị mất**,
+    //   người dùng phải chọn lại. **Mâu thuẫn nội bộ của nguồn** — port **vẫn trả** (có cờ) vì dữ liệu đã có.
+    // ⚠️ `sps.*` rồi mới tới `Isnull(sps.Price,0) Price` ⇒ DataTable có **hai cột `Price`** (cột sau thành
+    //   `Price1`). ⚠️ `INNER JOIN ser_mst_service` ⇒ dịch vụ **đã xoá khỏi danh mục rơi khỏi gói**
+    //   (giống phần phụ tùng ở #546).
+    var svcRows = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
         .ToListAsync();
+    var svcCodes = svcRows.Select(x => x.SerCode).ToList();
+    var svcMaster = await db.ServiceItemMsts.Where(m => m.OrgId == t.OrgId && svcCodes.Contains(m.SerCode))
+        .Select(m => new { m.SerCode, m.SerName, m.Price, m.Vat, m.StdManHour, m.FlagWarranty }).ToListAsync();
+    var svcs = svcRows.Select(x =>
+    {
+        var m = svcMaster.FirstOrDefault(v => v.SerCode == x.SerCode);
+        return new
+        {
+            x.SerCode, x.SerName, x.ExpenseType, x.ROType,   // #547 §12
+            x.Price, x.Factor, x.Amount,                      // giá CHỐT trên gói
+            NewPrice = m?.Price, NewVAT = m?.Vat,             // giá HIỆN HÀNH trong danh mục
+            NewAmount = m is null ? (decimal?)null : x.Factor * m.Price,
+            StdManHour = m?.StdManHour,
+            m?.FlagWarranty,
+            // Ba cột hằng số cứng của nguồn — giữ để khớp hình dạng khi tạo RO.
+            WarrantyStatus = "",
+            InsurancePrice = 0.0m,
+            CamID = "",
+            priceChanged = m is not null && m.Price != x.Price,
+        };
+    }).ToList();
     var partRows = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
         .ToListAsync();
     var codes = partRows.Select(x => x.PartCode).ToList();
@@ -16956,6 +16992,13 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         h.PackageNo, h.PackageName, h.ServiceTotal, h.PartTotal, h.GrandTotal,
         services = svcs, parts,
         inventoryFormulaOfThisScreen = "isnull(TotalInStock,0) — KHONG cong hang dang ve",
+        // ===== #551 =====
+        twoPriceSetsForServices = "Price/Amount (chot tren goi) vs NewPrice/NewVAT/NewAmount (danh muc hien hanh)",
+        servicesWithChangedPrice = svcs.Count(x => x.priceChanged),
+        hardcodedColumnsInSource = new[] { "WarrantyStatus=''", "InsurancePrice=0.0", "'' CamID" },
+        expenseTypeCommentedOutInSource = "--, sps.ExpenseType — bat buoc nhap khi tao goi (#547) nhung KHONG tra ra",
+        duplicatePriceColumnInSource = "sps.* roi Isnull(sps.Price,0) Price => DataTable co Price va Price1",
+        serviceMasterJoinIsInner = "dich vu da xoa khoi danh muc ROI khoi goi",
         contrastWithAppointmentScreen = "#544 cong ca TotalInShipment",
         effectivePriceRule = "RANK() OVER(PARTITION BY PartId ORDER BY DateEffect DESC) = 1, DateEffect <= hom nay, IsActive = '1'",
         rankInsteadOfRowNumberDuplicatesRows = true,
