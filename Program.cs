@@ -35543,14 +35543,30 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
             //    Mặc định lấy bằng số đặt để tổng tiền không ra 0; bước duyệt sẽ ghi đè.
             QtyAppr = l.QtyAppr ?? l.OrderQty,
             UPBeforeDc = l.UPBeforeDc ?? l.Price, DiscountRate = l.DiscountRate, VAT = l.VAT,
-            // #307 §12: đơn vị nhập kho + tỷ lệ quy đổi phải GÁN được (đây LÀ cột thật của nguồn).
-            UnitStockIn = l.UnitStockIn, ExchangeRate = l.ExchangeRate,
+            // 🔴 #382 ĐÍNH CHÍNH #307: hai cột này **KHÔNG phải cột thật của dòng đơn hàng**.
+            //   #307 ghi *'đây LÀ cột thật của nguồn'* dựa trên việc grep thấy tên cột xuất hiện trong
+            //   nguồn — nhưng **mọi lần xuất hiện đều là ĐỌC**. Bộ dò ghi đúng chuẩn (5 dạng ghi) cho
+            //   kết quả: `ExchangeRate` chỉ được GHI vào **master `TST_Mst_Exchange_Unit`**
+            //   (`Service.cs:17471`, câu `insert into`), `UnitStockIn` **không có chỗ ghi nào**.
+            //   Trên DÒNG ĐƠN HÀNG cả hai là **DẪN XUẤT** từ master theo mã phụ tùng:
+            //     `ExchangeRate` = `OTHER ⇒ 1.0` · `TST ⇒ ISNULL(tmeu.ExchangeRate, 1.0)`
+            //     `UnitStockIn`  = `tmeu.DMSUnit` (đơn vị nhập kho theo master quy đổi)
+            //   ⇒ Nhận từ client nghĩa là client tự đặt tỷ lệ quy đổi — cùng họ sự cố #312/#380.
+            //   DTO giữ hai trường cho tương thích nhưng **BỎ QUA**; giá trị lấy từ master bên dưới.
             // 🔴 #312 KHÔNG gán TotalQuantityIn / TotalQuantityInExchangeRate từ client nữa.
             //   Hai cột đó là DẪN XUẤT (SUM dòng phiếu nhập Status='3' theo OrderPartNo+PartID).
             //   #307 cho ghi qua DTO ⇒ client gửi gì cũng thành "đã nhập", sai lệch số liệu kho mà build
             //   vẫn xanh. Nay endpoint TÍNH lại khi đọc; DTO giữ hai trường cho tương thích nhưng BỎ QUA.
             LogLUDateTime = DateTime.Now, LogLUBy = who,
         };
+        // #382: lấy tỷ lệ quy đổi + đơn vị nhập kho từ MASTER TST theo mã phụ tùng.
+        //   Đơn KHÔNG phải loại TST ⇒ tỷ lệ đóng cứng 1.0, đúng nhánh `OTHER` của nguồn.
+        var isTstOrder = (dto.OrderPartType ?? "").Trim().ToUpperInvariant() == "TST";
+        var tst = isTstOrder
+            ? await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == line.PartCode)
+            : null;
+        line.ExchangeRate = isTstOrder ? (tst?.ExchangeRate ?? 1.0m) : 1.0m;
+        line.UnitStockIn = tst?.DMSUnit;
         RecalcOrderPartLine(line);
         db.OrderPartLines.Add(line);
         newLines.Add(line);

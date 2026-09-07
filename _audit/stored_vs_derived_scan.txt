@@ -15,6 +15,7 @@
      ValGoodsVAT5   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:253]
      ValGoodsVAT10   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:269]
      TotalValInvoice   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:226]
+     TotalValVAT   [dan xuat tai BizCarSv.Inventory.StockIn.cs:9498]
      TotalValPmt   [dan xuat tai BizCarSv.ZTemp.cs:16089]
 🟠 FnExpCalcLine:
      FnDepositAmount   [dan xuat tai BizHTC.zTemp.cs:36202]
@@ -28,6 +29,9 @@
 🟠 PdiFeePaymentLine:
      CostInCheck   [dan xuat tai 0.34.Contract.cs:29629]
      CostOutCheck   [dan xuat tai 0.34.Contract.cs:29635]
+🟠 OrderPartLine:
+     ExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1731]
+     TotalQuantityInExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1763]
 🟠 OrdOrderPlanHtmvDetail:
      QtySalesOrderP   [dan xuat tai zTemp.0.30.Order.cs:9117]
      QtyStockDealer   [dan xuat tai zTemp.0.30.Order.cs:9120]
@@ -57,14 +61,14 @@
      ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
 🟠 PartStockIn:
      FlagOrderNCC   [dan xuat tai BizCarSv.Inventory.StockIn.cs:3545]
+🟠 TstExchangeUnit:
+     ExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1731]
 🟠 StockAdjLine:
      QtyBalance   [dan xuat tai RptSQLQuery.cs:705]
 🟠 Dms40SoRootDetail:
      CancelQuantityTotal   [dan xuat tai Delete.BizHTC.zTemp.cs:23003]
 🟠 PartCostSnapshot:
      TotalValue   [dan xuat tai BizHTC.zTemp.cs:8348]
-🟠 OrderPartLine:
-     TotalQuantityInExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1763]
 🟠 SysObject:
      ObjectType   [dan xuat tai BizCarSv.ZTemp.cs:16186]
 🟠 PmtPaymentPdi:
@@ -92,8 +96,8 @@
 🟠 VinProductionYear:
      AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
 
-TONG: nguon co 6849 cot GHI, 2150 ten trong nhu DAN XUAT; 59 property MiniHTC CON nghi la DAN XUAT (tren 34 entity).
-   (4 cot da kiem tay o #381 va LOAI — xem danh sach CLEARED dau file)
+TONG: nguon co 6849 cot GHI, 2150 ten trong nhu DAN XUAT; 62 property MiniHTC CON nghi la DAN XUAT (tren 35 entity).
+   (1 cot da kiem tay o #381 va LOAI — xem danh sach CLEARED dau file)
 ⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
 ⚠️  DIEM MU: 859/6061 lenh SaveData KHONG liet ke cot (ghi moi cot client gui)
     => voi nhung bang do, "0 hit ghi" KHONG chung minh duoc gi.

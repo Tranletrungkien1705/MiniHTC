@@ -35,11 +35,14 @@
 // Cac cot da kiem va LOAI dưới day se khong bao lai nua.
 const CLEARED = new Set([
     'amounttotal',      // #381: MiniHTC tu tinh tu dong (h.AmountTotal = total)
-    'exchangerate',     // #381: nguon GHI that (8 lan)
-    'createdatetime',   // #381: nguon GHI that (64 lan)
-    'totalvalvat',      // #381: nguon GHI that (18 lan)
-    'effectivedate',    // #381: nguon GHI that (46 lan)
-    'customername',     // #381: nguon GHI that (23 lan)
+    // 🔴 #382 RUT LAI 5 muc duoi day khoi CLEARED: chung duoc "loai" o #381 bang phep dem
+    //   SO LAN XUAT HIEN cua ten cot, ma moi lan xuat hien deu la DOC (vd ExchangeRate: 8/8 hit
+    //   la drPartItem["ExchangeRate"] dung lam GIA TRI). Phai dung _audit/detect_column_write.js
+    //   (5 dang ghi) roi moi ket luan. Da kiem lai bang bo do do:
+    //     ExchangeRate  -> CO ghi, nhung chi vao MASTER TST_Mst_Exchange_Unit; tren DONG DON HANG
+    //                      la DAN XUAT => THAT SU LA LOI, da va o #382.
+    //     UnitStockIn   -> KHONG co cho ghi nao => cung dan xuat, da va o #382.
+    //   Bon muc con lai chua kiem lai bang bo do dung => KHONG dam loai, tra ve danh sach nghi.
     'totalprice',       // #381: MiniHTC tu tinh (CostInCheck + CostOutCheck)
     'inventoryquantity',// #380: DA VA — bo nhan tu DTO, them endpoint tinh tu PartStock
 ]);
