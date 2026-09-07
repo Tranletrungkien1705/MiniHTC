@@ -2279,6 +2279,9 @@ public static class Seeder
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdCategoryTypeMMS\" text NULL",
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdMonthMMSDelivery\" text NULL",
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdCategoryTypeMMSDelivery\" text NULL",
+                // #B51 - Car_VIN.FlagisHTC + VAT_TCGInvoice.FlagisHTC (bo loc ap tren CA HAI bang)
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagisHTC\" text NULL",
+                "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"FlagisHTC\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

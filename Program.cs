@@ -3281,6 +3281,102 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    Và như #B47: `left join` + `is not null` ở `where` = **INNER JOIN thực chất**.
 // 🔴 `@strBUPatternOfUser` **khai báo nhưng KHÔNG DÙNG** — **ca thứ NĂM** liên tiếp
 //    (#B45/#B46/#B47/#B48/#B50). Trả `outOfScopeCount` + cờ `enforceBuScope`; không tự bịt.
+
+// ===== #B51 TÌM VIN LẬP HOÁ ĐƠN TCG ĐIỀU CHỈNH — `Car_VIN_GetForTCGInvoice` =====
+// (`FrmSearchVinForTCGInvoice`, nhánh `_type == typeInvoiceAdj`, `:430`.)
+// 🔴 **BẪY OVERLOAD — suýt kết luận sai**: `SalesService` có **HAI** hàm cùng tên `SearchVinForTCGInvoice`:
+//    `:14985` **bị comment TOÀN BỘ** (chữ ký ~20 tham số) và `:15538` **CÒN SỐNG** (chữ ký 10 tham số).
+//    Form gọi bản 10 tham số. Grep thấy bản đầu bị comment mà kết luận "màn chết" là **SAI** —
+//    phải đối chiếu **chữ ký** ở chỗ gọi với từng overload.
+//    📌 Sổ ghi `Car_VIN_GetForTCGInvoice` là "bẫy map theo tên"; ở đây **trace từ form** cho thấy nó
+//       **đúng là twin** của nhánh này — bẫy nằm ở việc map bừa, không phải ở bản thân tên hàm.
+// 🔴 `FlagisHTC` lọc trên **CẢ HAI** bảng cùng lúc: `Car_VIN.FlagisHTC` **và** `VAT_TCGInvoice.FlagisHTC`
+//    (`:15553-15554`) — lọc thiếu một bên là **nới lỏng** bộ lọc. Cả hai cột đều **thiếu ở port**, đã thêm §12.
+// 🔴 `VAT_TCGInvoiceDetail.TCGStatusDetail in ('F')` (`:15592`) — chỉ xe đã có hoá đơn TCG **hoàn tất**.
+// 🔴 Bộ lọc `Car_DocReqList`: `DRListCode` **LIKE**, `CreatedDate` **khoảng**, `TypeCRR` **"in"**;
+//    `VAT_TCGInvoice.TCGInvoiceDate` **khoảng**; `Car_Car.DealerCode` **"in"**.
+// ⚠️ **DÒNG COMMENT, KHÔNG PORT**: `//sbSql.Append(" and ((Car_VIN.TCGUnitPrice -
+//    VAT_TCGInvoiceDetail.TCGUnitPrice) > 0)")` (`:15593`) — điều kiện "giá lệch dương" đã bị rem.
+app.MapGet("/api/vins/for-tcg-invoice-adj", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? drListCode, DateTime? drCreatedFrom, DateTime? drCreatedTo,
+    DateTime? invoiceDateFrom, DateTime? invoiceDateTo, string? docRequestType,
+    string? dealerCode, string? flagisHTC, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin))
+    { var k = vin.Trim().ToUpperInvariant(); cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(k)).ToList(); }
+    // `Car_Car.DealerCode` dùng **"in"** (danh sách), không phải "=".
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+    { var set = dealerCode.Split(',').Select(s => s.Trim().ToUpperInvariant()).ToHashSet(); cars = cars.Where(c => set.Contains(c.DealerCode ?? "")).ToList(); }
+    // 🔴 `FlagisHTC` — vế thứ nhất, trên `Car_VIN`.
+    if (!string.IsNullOrWhiteSpace(flagisHTC))
+    { var k = flagisHTC.Trim(); cars = cars.Where(c => c.FlagisHTC == k).ToList(); }
+
+    var vinSet = cars.Select(c => c.VIN).ToHashSet();
+
+    // `VAT_TCGInvoiceDetail.TCGStatusDetail in ('F')` + đầu hoá đơn.
+    var invDtls = await db.VatTcgInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && vinSet.Contains(d.VIN) && d.TCGStatusDetail == "F").ToListAsync();
+    var invCodes = invDtls.Select(d => d.TCGInvoiceCode).Distinct().ToList();
+    var invHeadsQ = db.VatTcgInvoices.Where(h => h.OrgId == t.OrgId && invCodes.Contains(h.TCGInvoiceCode));
+    var invHeads = await invHeadsQ.ToListAsync();
+    // 🔴 `FlagisHTC` — vế thứ hai, trên `VAT_TCGInvoice` (lọc thiếu vế này là nới lỏng).
+    if (!string.IsNullOrWhiteSpace(flagisHTC))
+    { var k = flagisHTC.Trim(); invHeads = invHeads.Where(h => h.FlagisHTC == k).ToList(); }
+    if (invoiceDateFrom is not null) invHeads = invHeads.Where(h => h.TCGInvoiceDate >= invoiceDateFrom).ToList();
+    if (invoiceDateTo is not null) invHeads = invHeads.Where(h => h.TCGInvoiceDate <= invoiceDateTo).ToList();
+    var keptCodes = invHeads.Select(h => h.TCGInvoiceCode).ToHashSet();
+    invDtls = invDtls.Where(d => keptCodes.Contains(d.TCGInvoiceCode)).ToList();
+
+    // Bộ lọc theo ĐỀ NGHỊ GIẤY TỜ (`Car_DocReqList`): DRListCode LIKE · CreatedDate khoảng · TypeCRR "in".
+    var needDocReq = !string.IsNullOrWhiteSpace(drListCode) || drCreatedFrom is not null
+                     || drCreatedTo is not null || !string.IsNullOrWhiteSpace(docRequestType);
+    HashSet<string>? docReqVins = null;
+    if (needDocReq)
+    {
+        var heads = await db.CarDocRequests.Where(r => r.OrgId == t.OrgId).ToListAsync();
+        if (!string.IsNullOrWhiteSpace(drListCode))
+        { var k = drListCode.Trim().ToUpperInvariant(); heads = heads.Where(r => r.RequestNo.ToUpperInvariant().Contains(k)).ToList(); }
+        if (drCreatedFrom is not null) heads = heads.Where(r => r.CreatedAt >= drCreatedFrom).ToList();
+        if (drCreatedTo is not null) heads = heads.Where(r => r.CreatedAt <= drCreatedTo).ToList();
+        if (!string.IsNullOrWhiteSpace(docRequestType))
+        { var set = docRequestType.Split(',').Select(s => s.Trim().ToUpperInvariant()).ToHashSet(); heads = heads.Where(r => set.Contains(r.TypeCRR.ToUpperInvariant())).ToList(); }
+        var ids = heads.Select(r => r.Id).ToList();
+        docReqVins = (await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.RequestId))
+            .Select(c => c.CarId).ToListAsync()).ToHashSet();
+    }
+
+    var rows = invDtls
+        .Where(d => docReqVins is null || docReqVins.Contains(d.VIN))
+        .Select(d =>
+        {
+            var cv = cars.First(c => c.VIN == d.VIN);
+            var h = invHeads.First(x => x.TCGInvoiceCode == d.TCGInvoiceCode);
+            return new
+            {
+                cvVIN = cv.VIN, cvModelCode = cv.ModelCode, cvSpecCode = cv.SpecCode, cvColorCode = cv.ColorCode,
+                cvFlagisHTC = cv.FlagisHTC, ccDealerCode = cv.DealerCode, ccUnitPriceActual = cv.UnitPriceActual,
+                vtiTCGInvoiceCode = h.TCGInvoiceCode, vtiTCGInvoiceDate = h.TCGInvoiceDate, vtiFlagisHTC = h.FlagisHTC,
+                vtidTCGUnitPrice = d.TCGUnitPrice, vtidTCGStatusDetail = d.TCGStatusDetail
+            };
+        })
+        .OrderBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
+
+    var myCount = rows.Count;
+    var items = rows.Skip(start).Take(count).ToList();
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        overloadTrap = "SalesService co HAI overload SearchVinForTCGInvoice: :14985 bi comment TOAN BO (~20 tham so), :15538 CON SONG (10 tham so). Form goi ban 10 tham so - phai doi chieu CHU KY, dung ket luan 'man chet' tu ban bi comment.",
+        flagisHtcRule = "FlagisHTC loc tren CA HAI bang: Car_VIN va VAT_TCGInvoice - thieu mot ve la NOI LONG bo loc.",
+        notPorted = "Dieu kien '(Car_VIN.TCGUnitPrice - VAT_TCGInvoiceDetail.TCGUnitPrice) > 0' da bi REM o nguon (:15593) - khong port.",
+        filterShapes = "LIKE: VIN, DRListCode · 'in': DealerCode, TypeCRR, TCGStatusDetail('F') · '=': FlagisHTC · khoang: DR.CreatedDate, TCGInvoiceDate"
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/for-rearcb-trans-req", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? specCode, string? modelCode, string? colorCode,

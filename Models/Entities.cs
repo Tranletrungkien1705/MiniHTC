@@ -6254,6 +6254,10 @@ public sealed class VatTcgInvoice
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string TCGInvoiceCode { get; set; } = "";
+    /// <summary>🔴 #B51 — `VAT_TCGInvoice.FlagisHTC`. Màn `FrmSearchVinForTCGInvoice` lọc cờ này trên
+    /// **CẢ HAI** bảng cùng lúc: `Car_VIN.FlagisHTC` **và** `VAT_TCGInvoice.FlagisHTC`
+    /// (`SalesService.cs:15553-15554`) — lọc thiếu một bên là **nới lỏng** bộ lọc.</summary>
+    public string? FlagisHTC { get; set; }
     /// <summary>Hoá đơn gốc khi đây là hoá đơn điều chỉnh.</summary>
     public string? SourceInvoiceCode { get; set; }
     /// <summary>Loại điều chỉnh (`InvoiceAdjType`).</summary>
@@ -10365,6 +10369,10 @@ public sealed class CarVinMaster
     /// **`Car_Car`**, KHÁC hẳn `TInvoicePrice` trên bảng DÒNG hoá đơn (`VatHtcInvoiceDetail` /
     /// `VatTcgInvoiceDetail`) — trùng tên nhưng khác bảng, đừng dùng lẫn.</summary>
     public decimal? TInvoicePrice { get; set; }
+    /// <summary>🔴 #B51 — `Car_VIN.FlagisHTC` (phép nhận HTC / đại lý). Bộ lọc của
+    /// `FrmSearchVinForTCGInvoice` áp cờ này trên **CẢ HAI** bảng: `Car_VIN` **và** `VAT_TCGInvoice`
+    /// (`SalesService.cs:15553-15554`).</summary>
+    public string? FlagisHTC { get; set; }
     /// <summary>🔴 #B48 — `Car_Car.FlagInvoiceAdj`. Cùng điều kiện trên còn đòi
     /// **`(cc.FlagInvoiceAdj is null or cc.FlagInvoiceAdj = '1')`** ⇒ **NULL cũng được chấp nhận**,
     /// không phải chỉ "1". Port theo phản xạ `== "1"` sẽ loại nhầm toàn bộ xe chưa từng đặt cờ.</summary>
