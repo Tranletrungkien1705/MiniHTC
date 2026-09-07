@@ -46594,6 +46594,117 @@ app.MapGet("/api/reports/ro-type-expense-by-cvdv", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #514 DOANH THU GỘP THEO CVDV / ĐẠI LÝ — **`inner join Sys_User` NUỐT TIỀN** =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:2041 Rpt_Ser_RO_RevenueGroupByMixX` (WS `…GroupByCVDVForTab` :2307
+//   và `…GroupByDealerForTab` :2428 — **một biz, hai WebMethod**, phân nhánh bằng cờ `strFlagCVDV`).
+// Endpoint: `GET /api/reports/ro-revenue-group-by-mix` (`groupBy=CVDV|DEALER`).
+//
+// 🔴🔴 **CÙNG MỘT CỤM, HAI BÁO CÁO, HAI KIỂU NỐI NGƯỢC NHAU**:
+//   · #513 (`…ExpTpAndROTpGroupByCVDVX`) dùng `**left** join Sys_User` ⇒ cố vấn đã nghỉ vẫn còn dòng.
+//   · Ở đây (`:2236`) là `**inner** join Sys_User su on t.DealerCode = su.DealerCode and t.Creator = su.UserCode`
+//     ⇒ cố vấn **nghỉ việc / bị xoá / đổi đại lý** thì **toàn bộ doanh thu của người đó BIẾN MẤT**
+//     khỏi báo cáo. Không phải mất tên — **mất TIỀN**, và tổng báo cáo **nhỏ hơn thực tế**, không cảnh báo.
+//   ⇒ Luật #410 ("nối sang bảng người dùng = mất dữ liệu lúc ĐỌC") ở dạng nặng nhất: mất **số tiền**.
+//   Port dùng LEFT + trả `revenueOrphanedByUserJoin` = đúng số tiền mà nguồn đang giấu.
+//
+// 🔴 **CỜ `strFlagCVDV` KHÔNG CÓ NHÁNH MẶC ĐỊNH**: chỉ `Flag.Active` dựng khối CVDV, `Flag.No` dựng khối
+//   đại lý; giá trị **bất kỳ khác** ⇒ **cả hai macro giữ nguyên `"--Nothing"`** ⇒ câu SQL **không trả bảng nào**,
+//   và hai lệnh đặt tên bảng bên dưới cũng **không chạy** ⇒ trả về DataSet **rỗng, không lỗi**.
+//   (Ca "0 im lặng" thứ **năm** của cụm máy tính bảng.) Port **chặn thẳng** giá trị lạ.
+// ⚠️ HẰNG ≠ GIÁ TRỊ (mở `Const.Main.cs:28-33`): `Flag.Active = "1"` · `Flag.Yes = Active` (**cùng giá trị**)
+//   · `Flag.No = Inactive`. Khối dựng SQL so bằng `Flag.Active` còn khối đặt tên bảng so bằng `Flag.Yes` —
+//   **hai tên hằng khác nhau cho cùng một giá trị** trong cùng một hàm; hiện vô hại, nhưng tách giá trị
+//   của một trong hai là hỏng câm.
+// ⚠️ Bộ cột tiền lại **đóng băng 5 loại công việc** `BDD/SCC/SCD/SCS/PDI` (thiếu `SPK` — xem #512) và
+//   **4 đối tượng thanh toán** `Local/Insurance/Warranty/Repair`; lần này là **TIỀN**, không phải số đếm.
+app.MapGet("/api/reports/ro-revenue-group-by-mix", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? groupBy, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenueGroupByMix_InvalidDealerCode" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenueGroupByMix_DateFromAfterDateTo" });
+    var mode = (groupBy ?? "").Trim().ToUpperInvariant();
+    if (mode != "CVDV" && mode != "DEALER")
+        return Results.BadRequest(new
+        {
+            error = "groupBy chỉ nhận CVDV hoặc DEALER.",
+            sourceReturnsEmptyDataSetForOtherValues = true,
+        });
+
+    string[] roTypes = { "BDD", "SCC", "SCD", "SCS", "PDI" };          // đóng băng như nguồn
+    string[] expenseTypes = { "LOCAL", "ROINSURANCE", "ROWARRANTY", "ROREPAIR" };
+
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to)
+        .Select(x => new { x.Id, x.DealerCode, x.Creator }).ToListAsync();
+    var roOf = ros.ToDictionary(x => x.Id, x => x);
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var svc = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .Select(i => new { i.RoId, i.ROType, i.ExpenseType, i.Factor, i.Price, i.Vat }).ToListAsync();
+    var prt = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .Select(i => new { i.RoId, i.ExpenseType, i.Factor, i.NeedQty, i.UnitPrice, i.Vat }).ToListAsync();
+
+    // Nhóm theo (đại lý, cố vấn) khi CVDV; gộp hết về một dòng khi DEALER (nguồn bake @strDealerCode).
+    var keys = mode == "CVDV"
+        ? ros.Select(x => (Dealer: x.DealerCode, Creator: x.Creator)).Distinct().ToList()
+        : new List<(string? Dealer, string? Creator)> { (dealer, null) };
+
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.UserName, u.DealerCode }).ToListAsync();
+
+
+    var rows = keys.Select(k =>
+    {
+        var ids = ros.Where(r => mode != "CVDV" || (r.DealerCode == k.Dealer && r.Creator == k.Creator))
+            .Select(r => r.Id).ToHashSet();
+        var sv = svc.Where(i => ids.Contains(i.RoId)).ToList();
+        var pt = prt.Where(i => ids.Contains(i.RoId)).ToList();
+        decimal ByType(string ty) => sv.Where(i => i.ROType == ty)
+            .Sum(i => i.Factor * i.Price * (1m + i.Vat * 0.01m));
+        decimal ByExp(string ex) => sv.Where(i => i.ExpenseType == ex)
+                .Sum(i => i.Factor * i.Price * (1m + i.Vat * 0.01m))
+            + pt.Where(i => i.ExpenseType == ex)
+                .Sum(i => i.Factor * i.NeedQty * i.UnitPrice * (1m + i.Vat * 0.01m));
+        var u = users.FirstOrDefault(x => x.UserCode == k.Creator && x.DealerCode == k.Dealer);
+        return new
+        {
+            DealerCode = k.Dealer, Creator = k.Creator,
+            su_UserCode = u?.UserCode, su_UserName = u?.UserName,
+            userMissing = mode == "CVDV" && u is null,
+            ServiceAmountBDD = ByType("BDD"), ServiceAmountSCC = ByType("SCC"),
+            ServiceAmountSCD = ByType("SCD"), ServiceAmountSCS = ByType("SCS"),
+            ServiceAmountPDI = ByType("PDI"),
+            RevenueROLocal = ByExp("LOCAL"), RevenueRoInsurance = ByExp("ROINSURANCE"),
+            RevenueRoWarranty = ByExp("ROWARRANTY"), RevenueRoRepair = ByExp("ROREPAIR"),
+        };
+    }).ToList();
+
+    // Đúng số tiền mà `inner join Sys_User` của nguồn đang giấu đi.
+    var orphaned = rows.Where(r => r.userMissing)
+        .Sum(r => r.RevenueROLocal + r.RevenueRoInsurance + r.RevenueRoWarranty + r.RevenueRoRepair);
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, groupBy = mode,
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        tableName = mode == "CVDV" ? "Rpt_Ser_RO_RevenueGroupByCVDV" : "Rpt_Ser_RO_RevenueByDealer",
+        roCount = ros.Count, count = rows.Count, items = rows,
+        sourceUsesInnerJoinSysUser = mode == "CVDV",
+        rowsDroppedBySourceUserJoin = rows.Count(r => r.userMissing),
+        revenueOrphanedByUserJoin = orphaned,
+        contrastWithLeftJoinVariant = "#513 dung LEFT join cho cung bang Sys_User",
+        frozenTypeColumns = roTypes, frozenExpenseColumns = expenseTypes,
+        sourceReturnsEmptyDataSetForOtherFlagValues = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
