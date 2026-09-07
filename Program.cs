@@ -34719,6 +34719,136 @@ app.MapPost("/api/packinglists/{no}/approve-contract", async (
     });
 }).RequireAuthorization();
 
+// ===== #B82 DUYỆT / HUỶ HÀNG LOẠT ĐỀ NGHỊ HUỶ HỢP ĐỒNG ĐẠI LÝ =====
+//   `Dlr_ContractCancel_ApproveMulti` (`BizHTC.Contract.cs:3615` → `…MultiX` `:3323`)
+//   `Dlr_ContractCancel_CancelMulti`  (`:3991` → `…MultiX` `:3745`)
+//   3B đo thật, **khớp cả 2 máy**: ApproveMultiX start=3323 md5 `6a821f3dd4a185e74103fae0aef5131a`
+//   · CancelMultiX start=3745 md5 `23342c4b781753efe3e6b4523eec35bb`.
+// 🔴 **HAI HÀM GIỐNG NHAU GẦN NHƯ HOÀN TOÀN — KHÁC ĐÚNG MỘT DÒNG**:
+//      duyệt : `drScan["ContractCancelStatus"] = TConst.ContractCancelStatus.**Approved**` ("A")
+//      huỷ   : `drScan["ContractCancelStatus"] = TConst.ContractCancelStatus.**Cancel**`   ("C")
+//    ⚠️ **CẢ HAI đều đóng dấu vào `ApprovedDate` / `ApprovedBy`** — hàm HUỶ **KHÔNG** có cặp
+//      `CancelDate`/`CancelBy` riêng. Nghe phản trực giác nhưng là hành vi THẬT; port thêm cặp
+//      `Cancel*` là **đẻ cột ngoài nguồn**.
+// 🔴 **BOM HẸN GIỜ TỪ VỰNG — guard dùng HẰNG CỦA PHÂN HỆ KHÁC**:
+//      `Dlr_ContractCancel_CheckDB(…, TConst.**TestCarStatus**.Pending, …)`  (`:3390` và `:3846`)
+//    Đáng lẽ phải là `TConst.**ContractCancelStatus**.Pending`. Hiện **chạy đúng** vì cả hai hằng đều
+//    `= "P"` (`Const.Main.DMS40.cs:127` và `:142`), nhưng đây là **liên kết chéo phân hệ**: đổi
+//    `TestCarStatus.Pending` (xe chạy thử) sẽ **âm thầm làm hỏng** duyệt/huỷ hợp đồng đại lý.
+//    Port dùng đúng từ vựng `ContractCancelStatus` và **ghi nhận** ở `vocabTimeBomb`, không tự sửa nguồn.
+// 🔴 **Điều kiện vào**: chỉ phiếu đang **"P"** mới được duyệt/huỷ (`strStatusListToCheck`).
+// 🔴 **CASCADE xuống DÒNG**: `update Dlr_ContractCancelDtl set t.ContractCancelDtlStatus =
+//    **f.ContractCancelStatus**` — trạng thái dòng **bám theo trạng thái phiếu vừa gán**, không phải
+//    một hằng cố định. Port thiếu bước này ⇒ phiếu "A" mà dòng vẫn "P".
+// 🔴 **Đầu vào là BẢNG `Dlr_ContractCancel`** (`MyBuildDBDT_Common` → `#input_Dlr_ContractCancel`),
+//    không phải danh sách phẳng: thiếu bảng ⇒ `…_Input_ContractCancelTblNotFound`; **rỗng** ⇒
+//    `…_Input_ContractCancelTblInvalid`. ⚠️ Khác #B76: ở đây danh sách rỗng **BỊ TỪ CHỐI**.
+// ✅ **RBAC ba tầng, kiểm THEO TỪNG DÒNG** (không phải một lần cho cả lô):
+//    `myCommon_CheckHTCDirect(…, Active)` · `myCommon_CheckDealer(…, Active, Active)` ·
+//    **`myCommon_CheckAccessDealerData(drAbilityOfUser["BUPattern"], md.BUCode)`** — phạm vi BU
+//    **được thực thi thật**, đối chứng lành thứ hai sau #B78.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`** (hai lần `MyBuildDBDT_Common` + hai lần update).
+app.MapPost("/api/dlrcontractcancels/approve-multi", async (
+    List<string> contractCNos, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? buPattern, string? enforceBuScope) =>
+    await DlrContractCancelSetStatusMulti(contractCNos, "A", db, t, user, buPattern, enforceBuScope))
+    .RequireAuthorization();
+
+app.MapPost("/api/dlrcontractcancels/cancel-multi", async (
+    List<string> contractCNos, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? buPattern, string? enforceBuScope) =>
+    await DlrContractCancelSetStatusMulti(contractCNos, "C", db, t, user, buPattern, enforceBuScope))
+    .RequireAuthorization();
+
+// Thân dùng chung — nguồn là HAI hàm gần như trùng khít, khác đúng giá trị trạng thái gán vào.
+async Task<IResult> DlrContractCancelSetStatusMulti(
+    List<string> contractCNos, string newStatus, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? buPattern, string? enforceBuScope)
+{
+    // Bảng đầu vào rỗng BỊ TỪ CHỐI (khác #B76).
+    if (contractCNos is null)
+        return Results.BadRequest(new { error = "Dlr_ContractCancel_ApproveMulti_Input_ContractCancelTblNotFound" });
+    var nos = contractCNos.Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (nos.Count == 0)
+        return Results.BadRequest(new { error = "Dlr_ContractCancel_ApproveMulti_Input_ContractCancelTblInvalid" });
+
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    var heads = await db.DlrContractCancels
+        .Where(c => c.OrgId == t.OrgId && nos.Contains(c.ContractCNo)).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode, d.FlagActive }).ToListAsync();
+
+    // Kiểm TỪNG DÒNG, dừng ngay ở dòng đầu tiên hỏng (nguồn ném trong vòng lặp).
+    var outOfScope = new List<string>();
+    foreach (var no in nos)
+    {
+        var h = heads.FirstOrDefault(x => x.ContractCNo == no);
+        if (h is null)
+            return Results.BadRequest(new { error = "Dlr_ContractCancel_NotExist", check = new { ContractCNo = no } });
+        // 🔴 Chỉ phiếu đang "P" — xem `vocabTimeBomb` về hằng nguồn dùng.
+        if (h.ContractCancelStatus != "P")
+            return Results.BadRequest(new
+            {
+                error = "Dlr_ContractCancel_InvalidStatus",
+                check = new { ContractCNo = no, h.ContractCancelStatus, Expected = "P" }
+            });
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == h.DealerCode);
+        if (dl is null || dl.FlagActive != "1")
+            return Results.BadRequest(new { error = "Common_InvalidDealerCode", check = new { ContractCNo = no, h.DealerCode } });
+        // `myCommon_CheckAccessDealerData(BUPattern, BUCode)` — phạm vi BU THẬT.
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+            outOfScope.Add(no);
+    }
+    if (outOfScope.Count > 0 && enforceBuScope != "0")
+        return Results.BadRequest(new
+        {
+            error = "Common_AccessDealerDataDenied",
+            check = new { ContractCNo = outOfScope[0] },
+            outOfScope,
+            note = "Nguon goi myCommon_CheckAccessDealerData(BUPattern, BUCode) cho TUNG dong va NEM ngay khi mot dong ngoai pham vi."
+        });
+
+    // Gán trạng thái + dấu vết. CẢ HAI hàm đều đóng dấu ApprovedDate/ApprovedBy.
+    foreach (var h in heads.Where(x => nos.Contains(x.ContractCNo)))
+    {
+        h.ContractCancelStatus = newStatus;
+        h.ApprovedDate = now.Date;
+        h.ApprovedBy = by;
+        h.LogLUDateTime = now;
+        h.LogLUBy = by;
+    }
+
+    // CASCADE: trạng thái DÒNG bám theo trạng thái phiếu vừa gán.
+    var dtls = await db.DlrContractCancelDtls
+        .Where(d => d.OrgId == t.OrgId && nos.Contains(d.ContractCNo)).ToListAsync();
+    foreach (var d in dtls)
+    {
+        d.ContractCancelDtlStatus = newStatus;
+        d.LogLUDateTime = now;
+        d.LogLUBy = by;
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        action = newStatus == "A" ? "ApproveMulti" : "CancelMulti",
+        newStatus,
+        headUpdated = heads.Count,
+        dtlUpdated = dtls.Count,
+        approvedDate = now.Date, approvedBy = by,
+        twinDiffNote = "HAI HAM GIONG NHAU GAN NHU HOAN TOAN - KHAC DUNG MOT DONG: duyet gan ContractCancelStatus.Approved ('A'), huy gan ContractCancelStatus.Cancel ('C'). CA HAI deu dong dau vao ApprovedDate/ApprovedBy - ham HUY KHONG co cap CancelDate/CancelBy rieng. Nghe phan truc giac nhung la hanh vi THAT; port them cap Cancel* la DE COT NGOAI NGUON.",
+        vocabTimeBomb = "BOM HEN GIO TU VUNG: guard cua nguon goi Dlr_ContractCancel_CheckDB(..., TConst.TestCarStatus.Pending, ...) - dang le phai la TConst.ContractCancelStatus.Pending. Hien CHAY DUNG vi ca hai hang deu = 'P' (Const.Main.DMS40.cs:127 va :142), nhung day la LIEN KET CHEO PHAN HE: doi TestCarStatus.Pending (xe chay thu) se AM THAM lam hong duyet/huy hop dong dai ly. Port dung tu vung ContractCancelStatus; KHONG tu sua nguon.",
+        cascadeNote = "CASCADE xuong DONG: 'update Dlr_ContractCancelDtl set t.ContractCancelDtlStatus = f.ContractCancelStatus' - trang thai dong BAM THEO trang thai phieu vua gan, khong phai mot hang co dinh. Port thieu buoc nay => phieu 'A' ma dong van 'P'.",
+        emptyInputNote = "Dau vao la BANG Dlr_ContractCancel (MyBuildDBDT_Common -> #input_Dlr_ContractCancel). Thieu bang => Input_ContractCancelTblNotFound; RONG => Input_ContractCancelTblInvalid. KHAC #B76: o day danh sach rong BI TU CHOI.",
+        rbacNote = "RBAC BA TANG kiem THEO TUNG DONG (khong phai mot lan cho ca lo): myCommon_CheckHTCDirect(Active) + myCommon_CheckDealer(Active, Active) + myCommon_CheckAccessDealerData(BUPattern, BUCode). Pham vi BU DUOC THUC THI THAT - doi chung lanh thu hai sau #B78.",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH (hai lan MyBuildDBDT_Common + hai lan update)."
+    });
+}
+
 // ===== Cập nhật giá xe thực tế theo VIN (CarActualPrice — port 1:1 FrmUpdateCar, DMSales.Foton) =====
 app.MapGet("/api/caractualprices", async (AppDbContext db, ITenantContext t, string? car) =>
 {
