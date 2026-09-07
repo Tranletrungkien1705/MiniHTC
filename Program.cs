@@ -35040,6 +35040,137 @@ app.MapGet("/api/idealer/cardrivetests", async (
     });
 }).RequireAuthorization();
 
+// ===== #B86 TỰ SINH CÔNG VĂN GIA HẠN BẢO LÃNH — `Pmt_GrtClaimExt_GenAutoX_New20201210` =====
+// Trace LIVE: WS `Pmt_GrtClaimExt_GenAuto` (`WSHTC.asmx.cs:82383`) →
+//   `_biz.Pmt_GrtClaimExt_GenAuto_New20201210` (`Biz.HTC.PaymentGrtExt.cs:3072`) →
+//   **`Pmt_GrtClaimExt_GenAutoX_New20201210`** (`:2774`).
+//   ⚠️ Ngay tại lời gọi WS còn dấu vết bản cũ bị comment: `…_New20201210(//…_New20200522(` ⇒ bản
+//     `_New20200522` **CHẾT**. 3B đo thật, **khớp cả 2 máy**: start=2774 md5 `f999e20e3047024e762262d27e5b4da0`.
+// 🔴 **GOM NHÓM THEO CẶP `(DealerCode, BankCode)`** — `select distinct t.DealerCode, t.BankCode`
+//    (`:2933-2938`) rồi lặp từng cặp. ⇒ **một công văn cho MỖI cặp (đại lý, ngân hàng)**:
+//      · KHÔNG phải một công văn cho cả lô xe;
+//      · KHÔNG phải một công văn cho mỗi xe.
+//    Port gom sai khoá là **sinh sai số lượng công văn** — lỗi không lộ ra ở bất kỳ guard nào.
+// 🔴 **Số công văn sinh THEO ĐẠI LÝ**: `SequenceGetForGrtClaimExtNo(…, TConst.SequenceTypeDMS
+//    .GrtClaimExtNo, **strDealerCode**, …)` — tham số áp chót là **mã đại lý** ⇒ dãy số **riêng cho
+//    từng đại lý**, không phải một dãy toàn cục.
+//    ⚠️ Ngay trên đó, hai cách sinh cũ **bị comment**: `Seq_Common_MyGet(…)` và
+//      `string.Format("{0}{1}{2}", yyMM, "GRTCEXTNO", …)`. Port theo dòng ACTIVE.
+// 🔴 **TÁI DÙNG CHÍNH HÀM LƯU THỦ CÔNG**: mỗi nhóm gọi `Pmt_GrtClaimExt_SaveX_New20201210(…,
+//    objFlagIsDelete = "0", …)` với danh sách xe **của riêng nhóm đó** (`where DealerCode = @… and
+//    BankCode = @…`). ⇒ tự sinh **không có đường ghi riêng**; mọi guard của luồng thủ công vẫn áp dụng.
+// 🔴 **`NumberOfGuaranteeExt` / `Remark` / `FlagisHTC` là THAM SỐ CẤP LÔ**, truyền thẳng xuống mọi
+//    nhóm — **mặc dù bảng đầu vào CÓ cột `NumberOfGuaranteeExt` riêng cho từng xe**
+//    (`MyBuildDBDT_Common` mang nó vào `#input_Car_Car`, `:2890`). Cột theo dòng **bị tham số cấp lô
+//    ghi đè**. Đây là bất nhất CÓ THẬT của nguồn — port giữ nguyên, ghi ở `perRowVsBatchNote`.
+// 🔴 **DÒNG ACTIVE vs COMMENT — cả khối kiểm bảo lãnh BỊ TẮT**: trong `#input_Car_Car_Full`, ba
+//    `left join` **bị comment** (`Pmt_GuaranteeDetail` + điều kiện `GuaranteeDetailStatus not in
+//    ('R','C')`, `Pmt_Guarantee` + `GuaranteeStatus not in ('R','C')`, và `Mst_CarInvoice`)
+//    (`:2921-2932`). Dòng đang chạy chỉ còn `left join Car_VIN` rồi `left join Car_Car`.
+//    ⇒ **tự sinh KHÔNG kiểm trạng thái bảo lãnh**: xe có bảo lãnh đã huỷ/từ chối vẫn được gom vào.
+//    Hành vi THẬT; **không tự thêm điều kiện**, chỉ đo và báo.
+// 🔴 Đầu vào là **BẢNG `Car_Car`**: thiếu ⇒ `…_Input_Car_CarTblNotFound`; **rỗng ⇒ BỊ TỪ CHỐI**
+//    (`…_Input_Car_CarTblInvalid`) — cùng khuôn #B82, khác #B76.
+// 📌 NỢ: `BankCode` **không có** trên `GrtClaimExt` của MiniHTC (chỉ có ở dòng xe nếu client gửi).
+//    Vì nó là **một nửa khoá gom nhóm**, port nhận `bankCode` **theo từng xe trong body** và ghi rõ;
+//    KHÔNG suy từ bảo lãnh (tầng `Pmt_Guarantee` chưa đủ) — xem `bankCodeDebt`.
+app.MapPost("/api/grtclaimexts/gen-auto", async (
+    GrtClaimExtGenAutoDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Cars is null)
+        return Results.BadRequest(new { error = "Pmt_GrtClaimExt_GenAuto_Input_Car_CarTblNotFound" });
+    var rows = dto.Cars.Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
+    if (rows.Count == 0)
+        return Results.BadRequest(new { error = "Pmt_GrtClaimExt_GenAuto_Input_Car_CarTblInvalid" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // `#input_Car_Car_Full`: dòng ACTIVE chỉ `left join Car_VIN` rồi `left join Car_Car`
+    // (khối kiểm bảo lãnh đã bị comment ở nguồn).
+    var vins = rows.Select(r => (r.VIN ?? "").Trim().ToUpperInvariant()).ToHashSet();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.DealerCode }).ToListAsync();
+    var dealerByVin = cars.ToDictionary(c => c.VIN, c => c.DealerCode);
+    var noCarRow = rows.Count(r => !dealerByVin.ContainsKey((r.VIN ?? "").Trim().ToUpperInvariant()));
+
+    // 🔴 Gom nhóm theo CẶP (DealerCode, BankCode) — `select distinct`.
+    var enriched = rows.Select(r =>
+    {
+        var vin = (r.VIN ?? "").Trim().ToUpperInvariant();
+        dealerByVin.TryGetValue(vin, out var dcFromCar);
+        return new
+        {
+            VIN = vin,
+            CarId = (r.CarId ?? "").Trim(),
+            DealerCode = (string.IsNullOrWhiteSpace(r.DealerCode) ? dcFromCar : r.DealerCode.Trim().ToUpperInvariant()) ?? "",
+            BankCode = (r.BankCode ?? "").Trim().ToUpperInvariant(),
+            GuaranteeNo = (r.GuaranteeNo ?? "").Trim()
+        };
+    }).ToList();
+
+    var groups = enriched.GroupBy(x => (x.DealerCode, x.BankCode))
+        .OrderBy(g => g.Key.DealerCode, StringComparer.Ordinal)
+        .ThenBy(g => g.Key.BankCode, StringComparer.Ordinal).ToList();
+
+    var created = new List<object>();
+    foreach (var g in groups)
+    {
+        // 🔴 Dãy số RIÊNG theo đại lý (tham số áp chót của SequenceGetForGrtClaimExtNo là DealerCode).
+        var seqPrefix = $"{now:yyMM}GRTCEXT{g.Key.DealerCode}";
+        var used = await db.GrtClaimExts
+            .Where(x => x.OrgId == t.OrgId && x.GrtClaimExtNo.StartsWith(seqPrefix)).CountAsync();
+        var no = $"{seqPrefix}{(used + 1):D4}";
+
+        var head = new GrtClaimExt
+        {
+            OrgId = t.OrgId,
+            GrtClaimExtNo = no,
+            DealerCode = g.Key.DealerCode,
+            // 🔴 Tham số CẤP LÔ ghi đè cột theo dòng.
+            NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt <= 0 ? 1 : dto.NumberOfGuaranteeExt,
+            TotalCarNoStart = g.Count(),
+            SignStatus = "P",
+            Remark = dto.Remark,
+            CreatedBy = by,
+            LogLUDateTime = now, LogLUBy = by
+        };
+        db.GrtClaimExts.Add(head);
+        await db.SaveChangesAsync();
+
+        foreach (var c in g)
+            db.GrtClaimExtCars.Add(new GrtClaimExtCar
+            {
+                OrgId = t.OrgId, GrtClaimExtId = head.Id,
+                CarId = c.CarId, VIN = c.VIN, GuaranteeNo = c.GuaranteeNo,
+                SignStatusDtl = "P", LogLUDateTime = now, LogLUBy = by
+            });
+        await db.SaveChangesAsync();
+
+        created.Add(new { grtClaimExtNo = no, dealerCode = g.Key.DealerCode, bankCode = g.Key.BankCode, carCount = g.Count() });
+    }
+
+    return Results.Ok(new
+    {
+        inputCars = rows.Count,
+        groupCount = groups.Count,
+        created,
+        noCarRow,
+        numberOfGuaranteeExt = dto.NumberOfGuaranteeExt,
+        remark = dto.Remark,
+        flagIsHTC = dto.FlagisHTC,
+        groupingNote = "GOM NHOM THEO CAP (DealerCode, BankCode) - 'select distinct t.DealerCode, t.BankCode' roi lap tung cap => MOT cong van cho MOI cap (dai ly, ngan hang). KHONG phai mot cong van cho ca lo, cung KHONG phai mot cong van moi xe. Gom sai khoa la SINH SAI SO LUONG cong van - loi khong lo ra o bat ky guard nao.",
+        sequenceNote = "So cong van sinh THEO DAI LY: SequenceGetForGrtClaimExtNo(..., SequenceTypeDMS.GrtClaimExtNo, strDealerCode, ...) - tham so ap chot la MA DAI LY => day so RIENG cho tung dai ly, khong phai mot day toan cuc. Hai cach sinh cu (Seq_Common_MyGet va string.Format yyMM+GRTCEXTNO) DA BI COMMENT.",
+        reuseSaveNote = "TAI DUNG CHINH HAM LUU THU CONG: moi nhom goi Pmt_GrtClaimExt_SaveX_New20201210(..., objFlagIsDelete='0', ...) voi danh sach xe CUA RIENG NHOM DO. Tu sinh KHONG co duong ghi rieng; moi guard cua luong thu cong van ap dung.",
+        perRowVsBatchNote = "NumberOfGuaranteeExt / Remark / FlagisHTC la THAM SO CAP LO, truyen thang xuong moi nhom - MAC DU bang dau vao CO cot NumberOfGuaranteeExt rieng cho tung xe (MyBuildDBDT_Common mang no vao #input_Car_Car). Cot theo dong BI THAM SO CAP LO GHI DE. Bat nhat CO THAT cua nguon - port giu nguyen.",
+        guaranteeCheckDisabledNote = "DONG ACTIVE vs COMMENT: trong #input_Car_Car_Full, BA left join BI COMMENT - Pmt_GuaranteeDetail (+ GuaranteeDetailStatus not in ('R','C')), Pmt_Guarantee (+ GuaranteeStatus not in ('R','C')) va Mst_CarInvoice. Dong dang chay chi con left join Car_VIN roi left join Car_Car => TU SINH KHONG KIEM TRANG THAI BAO LANH: xe co bao lanh da huy/tu choi VAN duoc gom vao. Hanh vi THAT; KHONG tu them dieu kien.",
+        emptyInputNote = "Dau vao la BANG Car_Car: thieu => Input_Car_CarTblNotFound; RONG => BI TU CHOI (Input_Car_CarTblInvalid). Cung khuon #B82, khac #B76.",
+        deadVersionNote = "Ngay tai loi goi WS con dau vet ban cu bi comment: '_New20201210(//_New20200522(' => ban _New20200522 CHET.",
+        bankCodeDebt = "NO: BankCode KHONG co tren GrtClaimExt cua MiniHTC (chi co o dong xe neu client gui). Vi no la MOT NUA KHOA GOM NHOM, port nhan bankCode theo TUNG XE trong body. KHONG suy tu bao lanh (tang Pmt_Guarantee chua du)."
+    });
+}).RequireAuthorization();
+
 // Thân dùng chung — nguồn là HAI hàm gần như trùng khít, khác đúng giá trị trạng thái gán vào.
 async Task<IResult> DlrContractCancelSetStatusMulti(
     List<string> contractCNos, string newStatus, AppDbContext db, ITenantContext t,
@@ -39507,6 +39638,8 @@ record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? 
 record UncContentDto(string? DealerCode, string? PaymentType, string? PaymentNo, string? GuaranteeType, List<string>? CarIds);   // #B79 - dau vao la BANG Input_CarId cua nguon
 record CarUpdateFlagsDto(string? CarCancelRemark, string? FlagMapVIN, string? FlagEarlyCancel, string? FlagCarDeliveryOrder, string? FlagTestCar);   // #B80
 record DlrContractHeaderSaveDto(string? FlagIsDelete, DateTime? ContractDate, string? CustomerCode, string? TransactorCode, string? DealerCode, string? DealerCodeBuyer, string? DlrContractNoUser, string? SalesType, string? SMCode, string? BankCode);   // #B83
+record GrtClaimExtGenAutoCarDto(string? CarId, string? VIN, string? DealerCode, string? BankCode, string? GuaranteeNo);   // #B86
+record GrtClaimExtGenAutoDto(int NumberOfGuaranteeExt, string? Remark, string? FlagisHTC, List<GrtClaimExtGenAutoCarDto>? Cars);   // #B86
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
