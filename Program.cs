@@ -6851,6 +6851,92 @@ app.MapGet("/api/reportkpis/export-check", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #432 CHỐT ĐƯỢC CÂU HỎI TREO TỪ #405: `IsEngineer` lưu **MÃ CHỮ**, không phải số =====
+// Bằng chứng nằm trong `SerEmployeeGetStatus` (`BizCarSv.Service.cs:12368`) — hàm nạp danh sách nhân sự
+// cho màn báo giá lịch hẹn (`FrmQuotationApp`, bản 2023):
+//     `LEFT JOIN [@strDBName_CommonCenter].[dbo].Mst_Staff ms ON sp.**IsEngineer = ms.StaffCode**`
+//     `SELECT … ms.StaffName TypeEngineer`
+// ⇒ `IsEngineer` **là khoá ngoại trỏ tới `Mst_Staff.StaffCode`** — một **mã loại nhân sự** ở danh mục
+//   trung tâm, và tên loại lấy từ `StaffName`. Không phải cờ số 1..4.
+// ⇒ Thêm bằng chứng từ nơi GỌI: `FrmQuotationApp` truyền thẳng chuỗi `"CVDV"` vào tham số `strIsEngineer`.
+//
+// 📌 **KẾT LUẬN cho #405/#412**: dữ liệu hiện dùng **mã chữ** ⇒ hàm KPI 2016
+//   (`RptKPIGetReal_New20160602`) so `IsEngineer = 1..4` sẽ **không khớp dòng nào** ⇒ bốn chỉ tiêu nhân sự
+//   của màn KPI **luôn bằng 0**. Đây chính là "số 0 câm" đã cảnh báo ở #405 — nay có căn cứ, không còn là
+//   giả thuyết. MiniHTC đang đếm theo mã chữ ⇒ **đúng hướng**; `mappingUnverifiedNote` vẫn giữ vì bảng ánh
+//   xạ số→chữ (1↔CVDV…) thì chưa có nguồn nào xác nhận, chỉ suy từ chú thích.
+//
+// 🔴 **VÀ MỘT LỖI SỐNG PHÁT HIỆN KÈM** (cùng gốc #427/#428 — lần thứ BA):
+//   Tầng service dựng `strIsEngineerConditionList = "=" + strIsEngineer` ⇒ `"=CVDV"`,
+//   nhưng biz đưa nó vào `SqlUtils.BuildClauseConditionList("and", "sp.IsEngineer", …, "|")` —
+//   hàm **KHÔNG đọc toán tử**, mọi token đều thành GIÁ TRỊ ⇒ SQL thành `sp.IsEngineer in (N'=CVDV')`
+//   ⇒ **không khớp gì**. Nghĩa là danh sách **cố vấn dịch vụ trên màn báo giá lịch hẹn là RỖNG**.
+//   Ba ô lọc khác cùng hàm (`EngineerID`, `EngineerNo`, `EngineerName`) đi qua `BuildClause` nên **chạy đúng**.
+//
+// 📌 **KẾT QUẢ ÂM TÍNH đã kiểm**: `strStatus` truyền **trần** `"1"` — theo lệ #410 tưởng chết câm, **nhưng**
+//   biz **không** đưa nó qua `BuildClause` mà tự viết tay `if (strStatusConditionList == "1") …` ⇒ **chạy đúng**.
+//
+// 🔴 **HAI ĐỊNH NGHĨA "ĐANG LÀM VIỆC" KHÁC NHAU trong cùng hệ**:
+//   · `SerEmployeeGetStatus` (trạng thái "1"): `StartWorkDate is null **or** = ''` **VẪN TÍNH LÀ ĐANG LÀM**;
+//   · `RptKPIGetReal_New20160602` (#412): đòi `substring(StartWorkDate,1,7) <= kỳ` ⇒ ngày trống **BỊ LOẠI**.
+//   ⇒ Nhân sự chưa khai ngày vào làm **có mặt ở màn báo giá nhưng biến mất khỏi KPI**. Cùng một người,
+//     hai màn trả lời khác nhau câu hỏi "đang làm việc?".
+app.MapGet("/api/serviceengineers/by-type", async (AppDbContext db, ITenantContext t,
+    string? engineerType, string? status, string? dealer) =>
+{
+    var all = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId
+            && (dealer == null || e.DealerCode == dealer)).ToListAsync();
+
+    // Lọc theo MÃ LOẠI NHÂN SỰ (mã chữ, khoá ngoại tới Mst_Staff.StaffCode).
+    var typeQ = (engineerType ?? "").Trim();
+    var byType = typeQ.Length == 0 ? all
+        : all.Where(e => string.Equals(e.EngineerType, typeQ, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    // Trạng thái làm việc — nguồn tự viết tay SQL, KHÔNG qua BuildClause.
+    var now = DateTime.Now;
+    bool Working(ServiceEngineer e)
+        => e.StartWorkDate == null                                   // 🔴 ngày trống = ĐANG LÀM (theo màn này)
+        || (e.StartWorkDate <= now && e.FinishWorkDate == null)
+        || (e.StartWorkDate <= now && e.FinishWorkDate >= now);
+
+    var rows = status switch
+    {
+        "1" => byType.Where(Working).ToList(),
+        "2" => byType.Where(e => !Working(e)).ToList(),
+        _ => byType,
+    };
+
+    var noStartDate = byType.Count(e => e.StartWorkDate == null);
+    var typeDistribution = all.GroupBy(e => e.EngineerType ?? "(null)")
+        .Select(g => new { code = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        rows = rows.Select(e => new
+        {
+            e.EngineerNo, e.EngineerName, e.EngineerType, e.GroupRCode, e.DealerCode,
+            e.Status, e.StartWorkDate, e.FinishWorkDate,
+        }),
+        typeDistribution,
+        isEngineerIsCodeNote = "CHỐT #405: IsEngineer là KHOÁ NGOẠI tới Mst_Staff.StaffCode (mã CHỮ), "
+            + "bằng chứng: LEFT JOIN Mst_Staff ms ON sp.IsEngineer = ms.StaffCode, và màn FrmQuotationApp "
+            + "truyền thẳng chuỗi \"CVDV\". ⇒ Hàm KPI 2016 so IsEngineer = 1..4 KHÔNG khớp dòng nào ⇒ bốn "
+            + "chỉ tiêu nhân sự của màn KPI luôn bằng 0.",
+        sourceTypeFilterBroken = true,
+        sourceTypeFilterNote = "Trong NGUỒN, bộ lọc loại nhân sự HỎNG: service dựng \"=CVDV\" rồi đưa vào "
+            + "BuildClauseConditionList (hàm KHÔNG đọc toán tử) ⇒ SQL thành sp.IsEngineer in (N'=CVDV') "
+            + "⇒ không khớp gì ⇒ danh sách cố vấn dịch vụ trên màn báo giá lịch hẹn là RỖNG. Ba ô lọc khác "
+            + "cùng hàm đi qua BuildClause nên chạy đúng. Đây là lần thứ BA của cùng một gốc (#427/#428).",
+        statusFilterOkNote = "KẾT QUẢ ÂM TÍNH: strStatus truyền trần \"1\" — tưởng chết câm theo lệ #410, "
+            + "nhưng biz KHÔNG dùng BuildClause mà tự viết tay if (strStatusConditionList == \"1\") ⇒ chạy đúng.",
+        noStartDate,
+        workingDefinitionConflictNote = "HAI định nghĩa 'đang làm việc' khác nhau: màn này coi "
+            + "StartWorkDate rỗng LÀ ĐANG LÀM; còn RptKPIGetReal (#412) đòi StartWorkDate <= kỳ nên ngày "
+            + "trống BỊ LOẠI ⇒ nhân sự chưa khai ngày vào làm có mặt ở màn báo giá nhưng biến mất khỏi KPI.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
     string? dealer, string? year, string? month) =>
 {
