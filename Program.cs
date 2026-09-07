@@ -43608,6 +43608,129 @@ app.MapPost("/api/repairorders/{no}/services/{serCode}/engineers", async (string
     return Results.Ok(new { no, serCode, engineers = codes });
 }).RequireAuthorization();
 
+// ===== 🔴 #460 MÀN BẢO HÀNH CỦA BÁO GIÁ — `Ser_RO_GetWarranty_V2_New20230417` =====
+// TRACE 4 TẦNG: `Views/Services/FrmQuotation.cs` → `SerROService.Ser_RO_GetWarranty_V2` (`:235`)
+//   → WS `Ser_RO_GetWarranty_V2` → biz **`Ser_RO_GetWarranty_V2_New20230417`** (`Service01.cs:3216`).
+//   ⚠️ Cùng file còn `Ser_RO_GetWarranty_V2` (`:2735`) và `Ser_RO_GetWarranty` (`:2378`).
+//     WS chỉ gọi `_New20230417` và bản trần `Ser_RO_GetWarranty` ⇒ **bản `_V2` không hậu tố là CHẾT**.
+//
+// 🔴 DIFF HAI NHÁNH SQL TRƯỚC (luật #414): hai hàm dài **455 dòng bằng nhau**, khác biệt **NẰM TRỌN TRONG
+//   DANH SÁCH CỘT**, WHERE y hệt. Bản 2023-04-17 đổi nguồn dữ liệu khách–xe:
+//     cũ : `cus.CusID` · `cus.CusName` · `car.PlateNo` · `car.Frameno` · `car.WarrantyExpiresDate` …
+//     mới: `ro.CusID` · `ro.CusName` · `ro.PlateNo` · `ro.Frameno` · `ro.WarrantyExpiresDate` …
+//   ⇒ **ẢNH CHỤP tại thời điểm sửa chữa**, không phải dữ liệu danh mục HIỆN TẠI. Đổi tên khách hay
+//     sang tên xe **không còn viết lại lịch sử** đề nghị bảo hành. Đây là ý nghĩa thật của bản mới.
+//   ⚠️ Nhưng **HAI cột vẫn lấy từ danh mục**: `car.ProductYear` và `car.CusConfirmedWarrantyDate`
+//     ⇒ nguồn dữ liệu **TRỘN**. Không phải quên — nhưng cũng không nhất quán; ghi cờ `mixedSnapshotAndMaster`.
+//   ⚠️ Bản CŨ có `case when not ro.CusName is null then **cus.Tel**` — nhánh nói "lấy theo RO" nhưng lại đọc
+//     cột của `cus`; lỗi đó **chết theo bản cũ**, ghi lại để không ai port ngược.
+//
+// 🔴 HAI `inner join` NỐI HAI CỘT (luật #410 — mất dòng lúc ĐỌC):
+//     `inner join ser_Customer on ro.CusID=cus.CusID **and** ro.DealerCode=cus.DealerCode`
+//     `inner join ser_car      on ro.CarID=car.CarID **and** ro.cusid=car.cusid`
+//   ⇒ xe đã **sang tên** thì vế thứ hai gãy ⇒ **cả màn bảo hành trả VỀ RỖNG**, không báo lỗi gì.
+//   Trả cờ `headerDroppedByMasterJoin` khi rơi vào đúng tình huống đó, thay vì im lặng.
+// ⚪ `left join Ser_ROWarrantyReport` nối `ROID` + `DealerCode`, WHERE không đụng tới ⇒ **LEFT còn SỐNG**
+//   (lệnh chưa có đề nghị bảo hành vẫn ra header). Kiểm tra âm tính, ghi để khỏi soi lại.
+// 🔴 **HAI khối `union all` bị COMMENT** ở cả hai bản: chúng lấy dòng dịch vụ / phụ tùng **chỉ có trên đề
+//   nghị bảo hành mà KHÔNG có trên lệnh sửa chữa** (`rs.ROID is null` / `rp.ROID is null`), gắn `FlagAdd=1`.
+//   Port dòng ACTIVE ⇒ **dòng phát sinh thêm ở đề nghị bảo hành KHÔNG hiện**; mọi dòng đều `FlagAdd = "0"`.
+//   Cờ `warrantyOnlyLinesHiddenByCommentedUnion` — đây là dữ liệu bị giấu, không phải dữ liệu không có.
+// ⚠️ Thứ tự dịch vụ theo `odrby`: `CVC`→1, `CVPSN`→2, còn lại→100 (ORDER BY nằm ở câu SELECT cuối, hợp lệ).
+// ⚠️ Bảng dịch nhãn trạng thái bảo hành có **6 mã, KHÔNG có ELSE** ⇒ mã lạ cho ra nhãn **NULL**, không phải "".
+app.MapGet("/api/repairorders/{no}/warranty", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    // Hai INNER join hai-cột của nguồn — kiểm ĐÚNG hình dạng đó rồi mới dựng header.
+    var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.CusCode == r.CusID && x.DealerCode == r.DealerCode);
+    var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.CarID == r.CarID && x.CusID == r.CusID);
+    if (cus is null || car is null)
+        return Results.Ok(new
+        {
+            no, header = (object?)null, services = Array.Empty<object>(), parts = Array.Empty<object>(),
+            headerDroppedByMasterJoin = true,
+            reason = cus is null
+                ? "Khách của lệnh không khớp (CusID, DealerCode) trong Ser_Customer."
+                : "Xe của lệnh không khớp (CarID, CusID) trong Ser_Car — thường do xe đã sang tên.",
+        });
+
+    var claim = await db.ServiceWarrantyClaims
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == r.RONo && x.DealerCode == r.DealerCode);
+
+    // 6 mã, KHÔNG có ELSE ⇒ mã lạ ra null.
+    var warrantyStatusText = claim?.Status switch
+    {
+        "SENT" => "Chờ xem xét",
+        "PEND" => "Chưa gửi",
+        "CONF" => "Chờ duyệt",
+        "ACCE" => "Chấp thuận B.H",
+        "REJ" => "Không duyệt",
+        "REVERT" => "HTC Hoàn trả",
+        _ => (string?)null,
+    };
+
+    var header = new
+    {
+        r.RONo,
+        // isnull(rowr.X, ro.X) — ưu tiên giá trị trên ĐỀ NGHỊ BẢO HÀNH, thiếu thì lấy của lệnh.
+        CusRequest = claim?.CusRequest ?? r.CusRequest,
+        CarStatus = claim?.CarStatus ?? r.CarStatus,
+        r.CheckInDate, r.Assistant,
+        StartDate = claim?.StartDate ?? r.StartDate,
+        FinishedDate = claim?.FinishedDate ?? r.FinishedDate,
+        r.Km, r.Status,
+        // ẢNH CHỤP trên lệnh (đổi của bản 2023-04-17)
+        r.CusID,
+        OwnerName = r.CusName,
+        // isnull(ro.CusName, isnull(cus.ContName, cus.CusName)) — ba mức, không phải hai.
+        CusName = r.CusName ?? cus.ContName ?? cus.CusName,
+        r.CusAddress, r.CusTel, r.CusMobile,
+        TaxCode = r.CusTaxCode,
+        WarrantyRegistrationDate = r.WarrantyRegistrationDate.HasValue
+            ? r.WarrantyRegistrationDate.Value.ToString("yyyy-MM-dd") : null,
+        r.CarID, PlateNo = r.LicensePlate, r.TradeMarkCode, r.ColorCode,
+        FrameNo = r.Vin, r.EngineNo, r.BatteryNo, r.SerialNo,
+        // HAI cột duy nhất vẫn lấy từ DANH MỤC xe (nguồn trộn hai lối)
+        car.ProductYear, car.CusConfirmedWarrantyDate,
+        r.WarrantyExpiresDate,
+        WRROID = claim?.ROID, ROWID = claim?.Id, claim?.ROWNo,
+        claim?.NaturalCode, claim?.CauseCode,
+        WarrantyStatus = claim?.Status, warrantyStatusText,
+        claim?.ErrorCodeCD, claim?.ErrorCodePN, claim?.ROWTID,
+        claim?.ROWTypeCode, claim?.ROWTypeDtlCode,
+        claim?.FlagReadySend, claim?.PartIDError,
+    };
+
+    // Dòng dịch vụ: sắp theo odrby CVC=1 · CVPSN=2 · còn lại=100.
+    static int OdrBy(string? rowSerType) => rowSerType switch { "CVC" => 1, "CVPSN" => 2, _ => 100 };
+    var svcRows = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+    var services = svcRows.Select(x => new
+    {
+        x.SerCode, x.SerName, x.ActManHour, x.Factor, x.Price, x.Vat,
+        Amount = x.Factor * x.Price * (1 + x.Vat / 100),
+        x.ExpenseType, x.InsurancePrice,
+        WarrantyStatus = claim?.Status ?? "PEND",   // Isnull(rsw.WarrantyStatus, PEND)
+        odrby = OdrBy(x.ROType),
+        FlagAdd = "0",   // union bổ sung FlagAdd=1 đã bị COMMENT ở nguồn
+    }).OrderBy(x => x.odrby).ToList();
+
+    var partRows = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+
+    return Results.Ok(new
+    {
+        no, header, services, partCount = partRows.Count,
+        mixedSnapshotAndMaster = true,
+        warrantyOnlyLinesHiddenByCommentedUnion = true,
+        headerDroppedByMasterJoin = false,
+        deadTwinNote = "Ser_RO_GetWarranty_V2 (Service01.cs:2735) KHÔNG có WebMethod nào gọi — bản sống là _New20230417.",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
