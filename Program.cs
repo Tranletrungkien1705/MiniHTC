@@ -3440,6 +3440,99 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // ⚠️ NỢ CÓ NHÃN: `Pmt_GuaranteeDetail` và khối `CachingForPaymentTotal`/`CachingForPayment_Deposit`
 //    (tiền cọc) MiniHTC **chưa có** — hai vế tử số trả `null`, `DutyCompletedPercent` cũng `null`.
 //    Đây là cùng món nợ đã ghi ở #B37/#B56, **không suy số**.
+
+// ===== #B60 BẢO LÃNH ĐẾN HẠN / QUÁ HẠN THANH TOÁN — `Rpt_BLDenHanThanhToan_New20181115` =====
+// (`FrmDuKienDongTienTT`.) Trace LIVE: `ReportService.Rpt_DuKienDongTienTT` (`:4752`) → WS
+//   `Rpt_BLDenHanThanhToan` (`WSHTC.asmx.cs:45150`) → **`_biz.Rpt_BLDenHanThanhToan_New20181115`**
+//   (`BizHTC.Report.cs:21717`); SQL ở `RptSQLQuery.cs:10125`.
+// 📌 Nguồn **ghi sẵn đặc tả nghiệp vụ bằng tiếng Việt** ngay trong SQL (`:10130-10145`) — port bám đúng:
+//   *"Theo dõi số lượng xe, giá trị bảo lãnh quá hạn thanh toán · Gửi thông tin chi tiết tới Ngân hàng
+//    giám sát/Chi nhánh phát hành bảo lãnh"*.
+// 🔴 **Điều kiện lấy VIN** (nguyên văn chú thích + code `:10152-10171`):
+//   · *"Có bảo lãnh A"* → `pgd.GuaranteeDetailStatus in ('A')`
+//   · *"Có ngày kết thúc bảo lãnh từ [a;b]"* → `pgd.DateEnd >= @From and <= @To`
+//   · *"Không lấy VIN có NH phát hành là TCGBANK và Dealer"* → `pg.BankCode not in ('TCGBANK','DEALER')`
+//     🔴 Đây là **loại trừ theo mã ngân hàng**, không phải theo loại bảo lãnh — dễ port nhầm thành
+//     `GuaranteeType`. Hai mã này là **hằng chuỗi trong SQL**, không phải hằng của `TConst`.
+//   · *"Tổng % đã thanh toán < 100% đến today"* — ⚠️ **chưa port** (cần tầng `Pmt_PaymentDetail`).
+//   · *"Số ngày chậm TT BL = Ngày hiện tại − Ngày kết thúc >= 0"* →
+//     `NgayCham = datediff(day, pgd.DateEnd, getdate())`.
+//     🔴 Vế `>= 0` nằm ở **chú thích**, KHÔNG có trong `where` của khối lọc — port **dòng ACTIVE**:
+//     không chặn, nhưng trả `ngayCham` (có thể âm = **chưa tới hạn**) để người dùng tự lọc, và đếm riêng.
+// ⚠️ NỢ CÓ NHÃN: khối `#tbl_Pmt_PaymentDetailTotal_Temp` (tổng đã thanh toán) ở nguồn **đã bị comment**
+//    kèm lý do *"Hàm này gây chậm ⇒ tách thành 2 hàm ở dưới"*; MiniHTC chưa có tầng thanh toán ⇒
+//    `paidPercent` / `amountNotPaid` trả `null`, **không suy số** (cùng món nợ #B37/#B56/#B59).
+app.MapGet("/api/reports/guarantee-due-payment", async (
+    AppDbContext db, ITenantContext t, DateTime? dateEndFrom, DateTime? dateEndTo) =>
+{
+    if (dateEndFrom is null || dateEndTo is null)
+        return Results.BadRequest(new { error = "Cần khoảng ngày kết thúc bảo lãnh (dateEndFrom, dateEndTo)." });
+    var dFrom = dateEndFrom.Value; var dTo = dateEndTo.Value;
+    var today = DateTime.Now.Date;
+
+    var rows = await (from d in db.BankGuaranteeDtls.Where(x => x.OrgId == t.OrgId
+                            && x.GuaranteeDetailStatus == "A"
+                            && x.DateEnd != null && x.DateEnd >= dFrom && x.DateEnd <= dTo)
+                      join h in db.BankGuarantees.Where(x => x.OrgId == t.OrgId
+                            && x.BankCode != "TCGBANK" && x.BankCode != "DEALER")
+                           on d.GuaranteeId equals h.Id
+                      select new
+                      {
+                          d.VIN, d.DateEnd, d.GrtValue, d.DateStart,
+                          h.GuaranteeNo, h.BankCode, h.BankGuaranteeNo, h.DealerCode
+                      }).ToListAsync();
+
+    // `inner join Car_VIN` / `inner join Car_Car` của nguồn ⇒ VIN chưa khai bị LOẠI.
+    var vins = rows.Select(r => r.VIN).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+    var known = cars.ToDictionary(c => c.VIN);
+    var droppedNoCarVin = rows.Count(r => !known.ContainsKey(r.VIN));
+    rows = rows.Where(r => known.ContainsKey(r.VIN)).ToList();
+
+    var banks = await db.MstBanks.Where(b => b.OrgId == t.OrgId).Select(b => new { b.BankCode, b.BankName }).ToListAsync();
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId).Select(x => new { x.DealerCode, x.DealerName }).ToListAsync();
+
+    var items = rows.Select(r =>
+    {
+        var cv = known[r.VIN];
+        // `NgayCham = datediff(day, pgd.DateEnd, getdate())` — ÂM nghĩa là chưa tới hạn.
+        var ngayCham = (int)(today - r.DateEnd!.Value.Date).TotalDays;
+        return new
+        {
+            ccCarId = cv.VIN, cvVIN = r.VIN,
+            cvModelCode = cv.ModelCode, cvSpecCode = cv.SpecCode, cvColorCode = cv.ColorCode,
+            ccUnitPriceActual = cv.UnitPriceActual,
+            pgdDateEnd = r.DateEnd, pgdDateStart = r.DateStart, pgdGuaranteeValue = r.GrtValue,
+            pgGuaranteeNo = r.GuaranteeNo, pgBankCode = r.BankCode,
+            bankName = banks.FirstOrDefault(b => b.BankCode == r.BankCode)?.BankName,
+            pgBankGuaranteeNo = r.BankGuaranteeNo,
+            dealerCode = r.DealerCode,
+            dealerName = dealers.FirstOrDefault(x => x.DealerCode == r.DealerCode)?.DealerName,
+            ngayCham,
+            overdue = ngayCham >= 0,
+            paidPercent = (decimal?)null,      // NỢ: cần Pmt_PaymentDetail
+            amountNotPaid = (decimal?)null     // NỢ
+        };
+    }).OrderBy(x => x.pgBankCode).ThenByDescending(x => x.ngayCham).ToList();
+
+    return Results.Ok(new
+    {
+        dateEndFrom = dFrom, dateEndTo = dTo, asOfDate = today,
+        count = items.Count, droppedNoCarVin,
+        overdueCount = items.Count(x => x.overdue),
+        notYetDueCount = items.Count(x => !x.overdue),
+        totalGuaranteeValue = items.Sum(x => x.pgdGuaranteeValue),
+        conditionsFromSource = new[]
+        {
+            "Co bao lanh A: GuaranteeDetailStatus in ('A')",
+            "Ngay ket thuc bao lanh trong [a;b]: DateEnd >= @From and <= @To",
+            "KHONG lay VIN co NH phat hanh la TCGBANK va DEALER: BankCode not in ('TCGBANK','DEALER') - loai tru theo MA NGAN HANG, khong phai theo loai bao lanh",
+            "So ngay cham TT BL = datediff(day, DateEnd, getdate())"
+        },
+        ngayChamNote = "Chu thich nguon noi 'So ngay cham >= 0' nhung dieu kien do KHONG co trong WHERE cua khoi loc => port DONG ACTIVE: khong chan, tra ca dong ngayCham AM (chua toi han) va dem rieng o notYetDueCount.",
+        debt = "NO co nhan: dieu kien 'Tong % da thanh toan < 100% den today' va cot paidPercent/amountNotPaid can tang Pmt_PaymentDetail - MiniHTC chua co, tra null, KHONG suy so. Khoi #tbl_Pmt_PaymentDetailTotal_Temp o nguon cung DA BI COMMENT ('Ham nay gay cham => tach thanh 2 ham o duoi')."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/car-doc-req-pivot", async (
     AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern) =>
 {
