@@ -30402,13 +30402,17 @@ app.MapPost("/api/lcs/{no}/close", async (string no, AppDbContext db, ITenantCon
 }).RequireAuthorization();
 
 // ===== Proforma Invoice nhập xe (Pi — port 1:1 FrmNewPI/FrmMngPI, DMSales.Foton) =====
-app.MapGet("/api/pis", async (AppDbContext db, ITenantContext t, string? status) =>
+app.MapGet("/api/pis", async (AppDbContext db, ITenantContext t, string? status, string? flagAutoPL) =>
 {
     var q = db.Pis.Where(p => p.OrgId == t.OrgId);
+    // ⚠️ #B35 — `status` là TỪ VỰNG BỊA của port cũ (`Ord_PerformanceInvoice` không có cột trạng thái).
+    //    Giữ tham số để không vỡ lời gọi cũ, nhưng cờ THẬT của nguồn là `FlagAutoPL`.
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(flagAutoPL)) q = q.Where(p => p.FlagAutoPL == flagAutoPL);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
         p.PiNo, p.RefNo, p.ProductionMonth, p.OrderMonth, p.ExpectedMonth, p.Status,
+        p.FlagAutoPL, p.CreatedBy, p.CreatedAt,
         lines = db.PiLines.Count(l => l.OrgId == t.OrgId && l.PiId == p.Id),
         totalQty = db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).Sum(l => (int?)l.Quantity) ?? 0,
         totalAmount = db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).Sum(l => (decimal?)(l.Quantity * l.UnitPrice)) ?? 0
@@ -30416,47 +30420,131 @@ app.MapGet("/api/pis", async (AppDbContext db, ITenantContext t, string? status)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/pis", async (PiDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #B35 PORT LẠI 1:1 `OrderPICreate` (`FrmNewPIHMC`, 2010.HTC/Sales) — 8 GAP =====
+// Trace LIVE: `FrmNewPIHMC` → `salesSv.InsertPi` (`SalesService.cs:7354`) → WS `OrderPICreate`
+//   (`WSHTC.asmx.cs:7366`) → `_biz.OrderPICreate_New20181119` (`Biz.HTC.WH.cs:29473`, **VỎ BỌC**)
+//   → **`OrderPICreateX_New20181119`** (`:29242`) — guard và SQL thật ở đây.
+//   ⚠️ **5 bản CHẾT** cùng họ trong `Delete.BizHTC.Report.cs` (`:69871`, `:170758`, `:170887`,
+//      `:171005`, `:171134`) + bản trong `Biz.HTC.WH.Rel.20230823.cs` (**ngoài `TERP.BizHTC.csproj`**).
+// Bảng nguồn: **`Ord_PerformanceInvoice`** / **`Ord_PerformanceInvoiceDetail`**.
+// 🔴 GAP 1 — **KHOÁ LÀ `RefNo` DO NGƯỜI DÙNG NHẬP**, guard `Length >= TConst.HTCConst.MinLengthCode` (=5).
+//    Port cũ tự sinh `PiNo = "PI"+timestamp` và coi `RefNo` là cột phụ ⇒ mã không tra được ở hệ nguồn.
+// 🔴 GAP 2 — **TỪ VỰNG TRẠNG THÁI BỊA**: `Ord_PerformanceInvoice` **không có cột trạng thái**; cờ duy nhất
+//    nguồn ghi là `FlagAutoPL = Flag.Active`. Port cũ đẻ `Draft → Confirmed` **và một nút `/confirm`** —
+//    đúng loại vi phạm "cấm tự chế nút hoàn tất / đẻ trạng thái ngoài từ vựng nguồn". Nút đã bị **GỠ**.
+// 🔴 GAP 3 — **`LCTemp` BẮT BUỘC** (`_InvalidDetailLCTemp`) và nằm trong **khoá dòng 5 thành phần**
+//    `|RefNo||LCTemp||SpecCode||ModelCode||ColorCode|`. Port cũ thiếu hẳn cột này.
+// 🔴 GAP 4 — **`WorkOrderNo` BẮT BUỘC**, `Length >= 5` (`_InvalidDetailWorkOrderNo`); port cũ để tuỳ chọn.
+// 🔴 GAP 5 — **`ModelCode` SUY RA từ `SpecCode`** (`dr["ModelCode"] = dt_Mst_CarSpec.Rows[0]["ModelCode"]`),
+//    KHÔNG lấy input; rồi cặp model–màu phải khớp master (`myCommon_CheckMatchingModelAndColor`).
+// 🔴 GAP 6 — nguồn chỉ chặn `Quantity < 0` ⇒ **dòng 0 xe HỢP LỆ**; port cũ lọc `> 0` ⇒ vứt âm thầm.
+// 🔴 GAP 7 — **ba mốc tháng do CLIENT gửi** (service truyền cả `OrderMonth`/`ProductionMonth`/
+//    `ExpectedMonth`, `SalesService.cs:7364-7372`); port cũ tự chế `ExpectedMonth = ProductionMonth + 1`.
+// 🔴 GAP 8 — **RBAC** `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` (`:29268`) là **DÒNG ACTIVE**.
+// ⚠️ NỢ CÓ NHÃN: nguồn **KHÔNG ghi `UnitPrice`** ở dòng PI (không có trong khối gán). Giữ cột để không mất
+//    dữ liệu port cũ, nhưng ghi rõ là **cột ngoài nguồn**. Và `ContractNo` nguồn để `DBNull` lúc tạo.
+app.MapPost("/api/pis", async (PiDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
+    // `myCommon_CheckHTCDirect(Flag.Active)` — dòng ACTIVE.
+    if (flagDirect == "0")
+        return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được tạo PI.", guard = "myCommon_CheckHTCDirect(Flag.Active)" });
+
+    // `OrderPICreate_InvalidPIRefNo` — RefNo do NGƯỜI DÙNG nhập, tối thiểu `HTCConst.MinLengthCode` = 5.
+    var refNo = (dto.RefNo ?? "").Trim().ToUpperInvariant();
+    if (refNo.Length < 5)
+        return Results.BadRequest(new { error = "Số PI (RefNo) phải có ít nhất 5 ký tự.", guard = "OrderPICreate_InvalidPIRefNo" });
+    if (await db.Pis.AnyAsync(x => x.OrgId == t.OrgId && x.PiNo == refNo))
+        return Results.BadRequest(new { error = $"PI {refNo} đã tồn tại!" });
+
+    // `OrderPICreate_TableDetailBeBlank`
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào.", guard = "OrderPICreate_TableDetailBeBlank" });
     if (dto.ProductionMonth is null) return Results.BadRequest(new { error = "Cần ProductionMonth." });
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode) && l.Quantity > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng (SpecCode + Quantity > 0)." });
-    var no = "PI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var prod = dto.ProductionMonth.Value;
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    var seen = new HashSet<string>();
+    var built = new List<PiLine>();
+    foreach (var l in lines)
+    {
+        var spec = l.SpecCode.Trim().ToUpperInvariant();
+        var color = (l.ColorCode ?? "").Trim().ToUpperInvariant();
+        var lcTemp = (l.LCTemp ?? "").Trim();
+        var wo = (l.WorkOrderNo ?? "").Trim();
+
+        // `OrderPICreate_InvalidDetailLCTemp` — `Convert.ToString(dr["LCTemp"]).Trim().Length < 1`.
+        if (lcTemp.Length < 1)
+            return Results.BadRequest(new { error = $"Spec {spec}: thiếu LC tạm (LCTemp).", guard = "OrderPICreate_InvalidDetailLCTemp" });
+        // `OrderPICreate_InvalidDetailQuantity` — chặn ÂM, **0 hợp lệ**.
+        if (l.Quantity < 0)
+            return Results.BadRequest(new { error = $"Spec {spec}: số lượng không hợp lệ.", guard = "OrderPICreate_InvalidDetailQuantity" });
+        // `OrderPICreate_InvalidDetailWorkOrderNo` — bắt buộc, tối thiểu 5 ký tự.
+        if (wo.Length < 5)
+            return Results.BadRequest(new { error = $"Spec {spec}: số lệnh sản xuất (WorkOrderNo) phải có ít nhất 5 ký tự.", guard = "OrderPICreate_InvalidDetailWorkOrderNo" });
+
+        // `myCommon_CheckSpecCode(…, Flag.Active)` rồi **SUY RA** ModelCode từ spec.
+        var sp = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.FlagActive == "1");
+        if (sp is null) return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động." });
+        var model = sp.ModelCode;   // KHÔNG lấy từ input
+
+        // `myCommon_CheckMatchingModelAndColor`
+        if (color.Length > 0)
+        {
+            var okColor = await db.MstCarColors.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color && x.FlagActive == "1");
+            if (!okColor) return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", specCode = spec });
+        }
+
+        // `OrderPICreate_DuplicateKeyDetail` — khoá NĂM thành phần, có `LCTemp`.
+        var key = $"|{refNo}||{lcTemp}||{spec}||{model}||{color}|";
+        if (!seen.Add(key))
+            return Results.BadRequest(new { error = $"Dòng trùng khoá (LCTemp/Spec/Model/Màu): {lcTemp}/{spec}/{model}/{color}.", key });
+
+        built.Add(new PiLine
+        {
+            OrgId = t.OrgId, LCTemp = lcTemp, SpecCode = spec, ModelCode = model, ColorCode = color,
+            WorkOrderNo = wo, PortCode = l.PortCode, PlantCode = l.PlantCode,
+            Quantity = l.Quantity, UnitPrice = l.UnitPrice,
+            ContractNo = null   // nguồn gán DBNull lúc tạo
+        });
+    }
+
     var p = new Pi
     {
-        OrgId = t.OrgId, PiNo = no, RefNo = dto.RefNo, ProductionMonth = prod, OrderMonth = dto.OrderMonth,
-        ExpectedMonth = prod.AddMonths(1), Status = "Draft"   // ExpectedMonth = SX + 1 tháng (đúng FrmNewPI)
+        OrgId = t.OrgId,
+        PiNo = refNo, RefNo = refNo,          // khoá của nguồn CHÍNH LÀ RefNo
+        OrderMonth = dto.OrderMonth,
+        ProductionMonth = dto.ProductionMonth.Value,
+        ExpectedMonth = dto.ExpectedMonth ?? dto.ProductionMonth.Value,   // client gửi; không tự chế +1
+        FlagAutoPL = "1",                     // `Flag.Active` — cờ DUY NHẤT của đầu PI
+        CreatedAt = now, CreatedBy = who
     };
     db.Pis.Add(p); await db.SaveChangesAsync();
-    foreach (var l in lines)
-        db.PiLines.Add(new PiLine { OrgId = t.OrgId, PiId = p.Id, SpecCode = l.SpecCode.Trim().ToUpperInvariant(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, WorkOrderNo = l.WorkOrderNo, Quantity = l.Quantity, UnitPrice = l.UnitPrice });
+    foreach (var b in built) { b.PiId = p.Id; db.PiLines.Add(b); }
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PiNo, p.ProductionMonth, p.ExpectedMonth, lines = lines.Count, totalQty = lines.Sum(l => l.Quantity), status = p.Status });
+    return Results.Ok(new
+    {
+        refNo = p.PiNo, p.OrderMonth, p.ProductionMonth, p.ExpectedMonth, p.FlagAutoPL, p.CreatedBy,
+        lines = built.Count, totalQty = built.Sum(l => l.Quantity),
+        rowKey = "|RefNo||LCTemp||SpecCode||ModelCode||ColorCode| — khoá NĂM thành phần của nguồn",
+        noStatusNote = "Ord_PerformanceInvoice KHÔNG có cột trạng thái; luồng tạo không ghi Status và lệnh /confirm đã bị gỡ.",
+        debt = "NỢ: UnitPrice là cột NGOÀI nguồn (nguồn không ghi đơn giá ở dòng PI); ContractNo để NULL, điền khi gắn hợp đồng ngoại."
+    });
 }).RequireAuthorization();
-
 app.MapGet("/api/pis/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.Pis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PiNo == no);
     if (p is null) return Results.NotFound(new { no });
     var lines = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id)
-        .Select(l => new { l.SpecCode, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.WorkOrderNo, l.Quantity, l.UnitPrice, lineTotal = l.Quantity * l.UnitPrice }).ToListAsync();
-    return Results.Ok(new { p.PiNo, p.Status, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity), totalAmount = lines.Sum(x => x.lineTotal) });
+        // #B35 — `LCTemp` (thành phần khoá dòng) + `ContractNo` phải ĐỌC RA ĐƯỢC, không chỉ ghi vào.
+        .Select(l => new { l.LCTemp, l.SpecCode, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.WorkOrderNo, l.ContractNo, l.Quantity, l.UnitPrice, lineTotal = l.Quantity * l.UnitPrice }).ToListAsync();
+    return Results.Ok(new { p.PiNo, p.RefNo, p.FlagAutoPL, p.CreatedBy, p.Status, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity), totalAmount = lines.Sum(x => x.lineTotal) });
 }).RequireAuthorization();
 
-app.MapPost("/api/pis/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var p = await db.Pis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PiNo == no);
-    if (p is null) return Results.NotFound(new { no });
-    if (p.Status != "Draft") return Results.BadRequest(new { error = "Chỉ xác nhận PI Nháp." });
-    p.Status = "Confirmed";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { p.PiNo, status = p.Status });
-}).RequireAuthorization();
-
-// Sửa chi tiết PI (FrmUpdatePIDetail) — thay toàn bộ dòng chi tiết, chỉ khi PI còn Nháp
+// #B35 GO endpoint BIA: POST /api/pis/{no}/confirm (Draft->Confirmed).
+// Bang nguon Ord_PerformanceInvoice KHONG co cot trang thai; khong co lenh "xac nhan PI" o nguon.
 app.MapPost("/api/pis/{no}/detail", async (string no, List<PiLineDto> lines, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -30469,7 +30557,9 @@ app.MapPost("/api/pis/{no}/detail", async (string no, List<PiLineDto> lines, App
     var old = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).ToListAsync();
     db.PiLines.RemoveRange(old);
     foreach (var l in rows)
-        db.PiLines.Add(new PiLine { OrgId = t.OrgId, PiId = p.Id, SpecCode = l.SpecCode.Trim(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, WorkOrderNo = l.WorkOrderNo, Quantity = l.Quantity, UnitPrice = l.UnitPrice });
+        // #B35 — mang theo `LCTemp`: nó là THÀNH PHẦN KHOÁ dòng, thay chi tiết mà đánh rơi
+        //   thì dòng ghi lại không còn tra được theo khoá 5 phần của nguồn.
+        db.PiLines.Add(new PiLine { OrgId = t.OrgId, PiId = p.Id, LCTemp = (l.LCTemp ?? "").Trim(), SpecCode = l.SpecCode.Trim(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, WorkOrderNo = l.WorkOrderNo, Quantity = l.Quantity, UnitPrice = l.UnitPrice });
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PiNo, lines = rows.Count, replaced = old.Count });
 }).RequireAuthorization();
@@ -34704,8 +34794,8 @@ record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount
     string? CardTypeExpect = null);    // txtCardTypeExpect — hạng thẻ dự kiến sau tích
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null);
 record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
-record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice);
-record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, List<PiLineDto>? Lines);
+record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp);
+record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
 record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);

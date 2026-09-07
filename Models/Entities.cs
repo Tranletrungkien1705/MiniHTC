@@ -5570,8 +5570,17 @@ public sealed class Pi
     public DateTime ProductionMonth { get; set; }      // tháng sản xuất
     public DateTime? OrderMonth { get; set; }          // tháng đặt
     public DateTime ExpectedMonth { get; set; }        // = ProductionMonth + 1 tháng
-    public string Status { get; set; } = "Draft";      // Draft → Confirmed
+    /// <summary>🔴 #B35 — **TỪ VỰNG BỊA**: bảng nguồn `Ord_PerformanceInvoice`
+    /// (`OrderPICreateX_New20181119`, `Biz.HTC.WH.cs:29242`) **KHÔNG có cột trạng thái** nào;
+    /// cột cờ duy nhất nguồn ghi là `FlagAutoPL`. "Draft"/"Confirmed" là port cũ tự đẻ ra.
+    /// Giữ cột để không phá dữ liệu cũ, nhưng luồng tạo **không còn ghi** và lệnh `/confirm` đã bị gỡ.</summary>
+    public string Status { get; set; } = "Draft";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>Người tạo (`Ord_PerformanceInvoice.CreatedBy`) — port cũ không lưu.</summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>`Ord_PerformanceInvoice.FlagAutoPL` — nguồn gán **cứng `TConst.Flag.Active`** lúc tạo
+    /// (`:29452`). Đây là cột cờ DUY NHẤT của đầu PI, không phải trạng thái vòng đời.</summary>
+    public string FlagAutoPL { get; set; } = "1";
 }
 
 /// <summary>Dòng PI (PiDetail): spec/model/màu + cảng/nhà máy + WO + SL + đơn giá.</summary>
@@ -5588,6 +5597,14 @@ public sealed class PiLine
     public string? WorkOrderNo { get; set; }
     public int Quantity { get; set; } = 1;
     public decimal UnitPrice { get; set; }
+    /// <summary>🔴 #B35 — `Ord_PerformanceInvoiceDetail.LCTemp` (LC tạm). **BẮT BUỘC** (`_InvalidDetailLCTemp`,
+    /// `Biz.HTC.WH.cs:29334`) và là **thành phần của khoá dòng 5 phần**
+    /// `|RefNo||LCTemp||SpecCode||ModelCode||ColorCode|` (`:29320`). Port cũ thiếu hẳn ⇒ khoá hẹp hơn nguồn,
+    /// hai dòng khác LC tạm bị coi là trùng.</summary>
+    public string? LCTemp { get; set; }
+    /// <summary>`Ord_PerformanceInvoiceDetail.ContractNo` — nguồn gán **`DBNull` lúc tạo** (`:29465`),
+    /// điền sau khi gắn hợp đồng ngoại. Guard xoá PI cũng kiểm cột này.</summary>
+    public string? ContractNo { get; set; }
 }
 
 /// <summary>Thư tín dụng nhập khẩu (LC — port 1:1 FrmNewLC/FrmMngLC, TCMotor DMSales.Foton):
