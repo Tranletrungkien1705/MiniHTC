@@ -16319,6 +16319,93 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // ⚠️ `Table 16` trả **BA TÊN cho MỘT giá trị**: `InsContractNoSys` = `InsContractNo` = `SealNo`
 //   (đều là `sc.InsContractNo`) — mức trùng lặp cao hơn cả `Table 8`/`Table 18` (hai tên).
 // Bộ lọc chung của 16/17: `InsContractNo is not null and <> ''` ⇒ xe chưa có số hợp đồng thì **không gửi**.
+// ===== 🔴 #365 MASTER XE + KHÁCH + MAP gửi Veloca (`Table 4/5/6`) =====
+// 🔴 `ContactPhone` — **WORKAROUND cho ràng buộc của HỆ NHẬN**:
+//   `case when sc.ContMobile = sc.Mobile then '' else sc.ContMobile end`
+//   `-- 20240203. HuongTTT: Vì luật check trùng sdt ở CustomerCenter`
+//   ⇒ SĐT người liên hệ **TRÙNG** SĐT khách thì gửi **RỖNG**, vì bên CustomerCenter có luật chống
+//     trùng số điện thoại. Bỏ qua bước này ⇒ **bản ghi bị hệ nhận từ chối**. Rất dễ port sót vì
+//     nhìn vào chỉ thấy "gán ContMobile".
+// 🔴 `CustomerGender`: `Sex = '0' → FEMALE` · `'1' → MALE` · **else `OTHER`** — bảng mã này CÓ nhánh
+//   `else` (khác các bảng mã khác trong cùng API vốn ra NULL). ⇒ Nay đã biết nghĩa của guard giới tính
+//   ở #332 (chỉ nhận rỗng/"0"/"1"): **1 = NAM, 0 = NỮ**.
+// 🔴 `CustomerType` (`20240206`): `CusTypeID` rỗng/null **HOẶC** loại người = cá nhân ⇒ `CANHAN`, còn lại
+//   `TOCHUC` — **thiếu thông tin cũng thành CÁ NHÂN**, không phải để trống.
+// ⚠️ `BHInvoiceCTMCode = 'HTV'` đóng cứng (`20240220`: *"Xe con mặc định đơn vị bảo hành mã là HTV"*).
+// ⚠️ `BankCode` và `BankName` **cùng lấy** `sc.Bank` — lại hai tên một giá trị (#362/#363/#364).
+// ⚠️ `CustomerPhoneNo = Isnull(Tel, '')` ⇒ NULL hoá **chuỗi rỗng**, trong khi `CustomerMobilePhone`
+//   giữ nguyên NULL. Cùng câu lệnh, hai cách xử lý NULL (cùng lệ #364).
+// ⚠️ `Table 4`: `ProductGrpCode` = `'OTHER'` khi `ModelID` null **hoặc bằng 0**; `WarrantyDate` lấy
+//   `WarrantyRegistrationDate` — chính cột đã vá ở #334, không có nó thì trường này luôn rỗng.
+// 📌 Quy tắc mã khách `SalesCusID` (#362) xuất hiện ở **bốn** bảng: 5 · 6 · 8 · 16/17.
+app.MapGet("/api/osveloca/ro/{roNo}/masters", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { roNo });
+
+    var car = r.Vin == null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == r.Vin);
+    var cus = r.CusName == null ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusName == r.CusName);
+
+    var customerCode = !string.IsNullOrWhiteSpace(cus?.SalesCusID) ? cus!.SalesCusID : cus?.CusCode;
+
+    // Table 4 — master XE.
+    object? carRow = car is null ? null : new
+    {
+        plateNoSys = car.CarID, car.PlateNo, vin = car.FrameNo, car.ColorCode,
+        brandCode = car.TradeMark, car.EngineNo,
+        manufactureYear = car.ProductYear,
+        // ModelID null HOẶC bằng 0 ⇒ "OTHER" (không phải để trống).
+        productGrpCode = string.IsNullOrWhiteSpace(car.ModelCode) || car.ModelCode == "0" ? "OTHER" : car.ModelCode,
+        warrantyDate = car.WarrantyRegistrationDate,   // cột vá ở #334
+    };
+
+    // Table 5 — master KHÁCH.
+    string genderOf(string? sex) => sex == "0" ? "FEMALE" : sex == "1" ? "MALE" : "OTHER";
+    // SĐT liên hệ TRÙNG SĐT khách ⇒ gửi RỖNG (luật chống trùng của CustomerCenter).
+    var contactPhoneSuppressed = cus != null && !string.IsNullOrEmpty(cus.ContMobile) && cus.ContMobile == cus.Mobile;
+    object? cusRow = cus is null ? null : new
+    {
+        customerCode,
+        customerName = cus.CusName, customerNameEN = cus.CusName,
+        customerGender = genderOf(cus.Sex),
+        customerPhoneNo = cus.Tel ?? "",              // NULL ⇒ chuỗi RỖNG
+        customerMobilePhone = cus.Mobile,             // giữ NULL — khác dòng trên, đúng nguồn
+        customerAddress = cus.Address, customerEmail = cus.Email,
+        customerDateOfBirth = cus.DOB,
+        cus.TaxCode,
+        bankCode = cus.Bank, bankName = cus.Bank,     // hai tên, một giá trị
+        contactName = cus.ContName,
+        contactPhone = contactPhoneSuppressed ? "" : cus.ContMobile,
+        contactEmail = cus.ContEmail,
+        cus.ProvinceCode, cus.DistrictCode,
+        // Thiếu loại khách ⇒ CÁ NHÂN (không để trống).
+        customerType = string.IsNullOrWhiteSpace(cus.CusTypeID) ? "CANHAN" : "TOCHUC",
+        bhInvoiceCTMCode = "HTV",                     // đóng cứng: xe con mặc định đơn vị bảo hành HTV
+        govIDCardNo = cus.IDCardNo,
+    };
+
+    // Table 6 — MAP khách ⇄ xe theo lệnh.
+    object? mapRow = (car is null || cus is null) ? null : new
+    {
+        roNoSys = r.Id, roNo = r.RONo, plateNoSys = car.CarID, customerCode,
+    };
+
+    return Results.Ok(new
+    {
+        roNo, car = carRow, customer = cusRow, customerCarMap = mapRow,
+        customerCodeSource = !string.IsNullOrWhiteSpace(cus?.SalesCusID) ? "SalesCusID" : "CusCode (CarSv)",
+        contactPhoneSuppressed,
+        contactPhoneNote = contactPhoneSuppressed
+            ? "SĐT liên hệ TRÙNG SĐT khách ⇒ gửi RỖNG, theo luật chống trùng của CustomerCenter (20240203)."
+            : null,
+        genderNote = "Sex: 1 = NAM, 0 = NỮ, còn lại = OTHER (bảng mã này CÓ nhánh else).",
+        customerTypeNote = "Thiếu CusTypeID ⇒ CANHAN, không để trống.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/insurance", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
