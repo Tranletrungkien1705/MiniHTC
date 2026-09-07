@@ -2406,6 +2406,11 @@ public sealed class RoPartItem
 
     public string? Note { get; set; }
 
+    /// <summary>🔴 #337 FLAGACCESSORY — dòng này là **PHỤ KIỆN** hay phụ tùng sửa chữa.
+    /// Báo cáo KPI cộng doanh thu phụ tùng với `and sri.FlagAccessory = '0'` ⇒ **loại phụ kiện ra**;
+    /// phụ kiện được cộng riêng ở nhóm khác. Từ vựng cờ "1"/"0".</summary>
+    public string? FlagAccessory { get; set; }
+
     /// <summary>#280 `ExpenseType` — đối tượng thanh toán của dòng phụ tùng, cùng bộ mã
     /// <see cref="RoServiceItem.ExpenseType"/>.</summary>
     public string? ExpenseType { get; set; }

@@ -976,6 +976,8 @@ public static class Seeder
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountSPKLocal\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountPDIRoRepair\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountPDILocal\" numeric",
+        // #337 co PHU KIEN tren dong phu tung — KPI loc FlagAccessory = '0'
+        "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"FlagAccessory\" text NULL",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceAmountSPKRoRepair\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceProductivity\" numeric",
         "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"ServiceTechnicianQty\" numeric",

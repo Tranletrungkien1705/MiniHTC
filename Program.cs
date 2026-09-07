@@ -2128,7 +2128,7 @@ app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbCont
     var canShow = myDealer != "" && (r.DealerCode ?? "").ToUpperInvariant() == myDealer;
 
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
-        .Select(p => new { p.PartCode, p.PartName, qty = p.NeedQty }).ToListAsync();
+        .Select(p => new { p.PartCode, p.PartName, qty = p.NeedQty, p.ExpenseType, p.FlagAccessory }).ToListAsync();
 
     if (!canShow)
         return Results.Ok(new { r.RONo, canShowDetail = 0, mode = "PartsOnly", partCount = parts.Count, parts });
@@ -6156,6 +6156,21 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
     var upBDN = Prm("UnitPriceBDN"); var upSCC = Prm("UnitPriceSCC");
     var upSCD = Prm("UnitPriceSCD"); var upSCS = Prm("UnitPriceSCS");
 
+    // ===== 🔴 #337 DOANH THU PHỤ TÙNG =====
+    // Danh sách mã **dầu nhớt** — nguồn đọc từ web.config; ở đây là tham số `ListShellCode`.
+    var shellCodes = (prm.TryGetValue("ListShellCode", out var sc) ? sc : "")
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).ToHashSet();
+
+    // ⚠️ Nguồn `inner join Ser_Mst_Part smp` ⇒ dòng phụ tùng **không có trong danh mục** bị LOẠI khỏi
+    //   doanh thu (không phải cộng 0 — mà biến mất). Giữ đúng: lọc theo tập mã có trong danh mục.
+    var partMaster = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => p.PartCode).ToListAsync()).ToHashSet();
+
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.RoId, p.PartCode, p.ExpenseType, p.FlagAccessory,
+            p.Factor, p.NeedQty, p.UnitPrice, p.Vat }).ToListAsync();
+
     var created = 0;
     foreach (var d in dealers)
     {
@@ -6205,9 +6220,38 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         var workDayQty = roIds.Where(r => r.DealerCode == d && r.ActualDeliveryDate != null)
             .Select(r => r.ActualDeliveryDate!.Value.Date).Distinct().Count();
 
+        // ===== 🔴 #337 DOANH THU PHỤ TÙNG theo nguồn tiền =====
+        //   `SUM(isnull(Factor,0) * isnull(Quantity,0) * isnull(Price,0) * (1 + VAT*0.01))`
+        //   ⚠️ Công thức phụ tùng có **THÊM `Quantity`** so với công thức tiền công (#336) —
+        //     tiền công chỉ `Factor × Price × (1+VAT)`. Bốn thừa số, không phải ba.
+        //   Bộ lọc chung: `ExpenseType = <mã>` **và** `FlagAccessory = '0'` (loại phụ kiện)
+        //     **và** `PartCode NOT IN <danh sách dầu nhớt>` **và** có trong danh mục phụ tùng.
+        decimal PA(string exp) => parts
+            .Where(p => ro.Contains(p.RoId) && p.ExpenseType == exp
+                && p.FlagAccessory == "0"
+                && !shellCodes.Contains(p.PartCode.ToUpperInvariant())
+                && partMaster.Contains(p.PartCode))
+            .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1m + p.Vat * 0.01m));
+
+        // 🔴 NHÓM DẦU NHỚT LỌC **KHÁC HẲN** bốn nhóm trên: chỉ `PartCode IN <danh sách>` —
+        //   **KHÔNG** lọc `ExpenseType`, **KHÔNG** lọc `FlagAccessory`. Bất đối xứng CÓ THẬT trong nguồn
+        //   ⇒ một dòng dầu nhớt là phụ kiện, hoặc thuộc nguồn tiền bất kỳ, vẫn được cộng vào đây.
+        var paShell = parts
+            .Where(p => ro.Contains(p.RoId)
+                && shellCodes.Contains(p.PartCode.ToUpperInvariant())
+                && partMaster.Contains(p.PartCode))
+            .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1m + p.Vat * 0.01m));
+
         db.ReportKpis.Add(new ReportKpi
         {
             OrgId = t.OrgId, DealerCode = d, DateReport = dto.DateReport,
+
+            // #337 doanh thu phụ tùng — nguồn `round(..., 0)` khi ghi ra báo cáo.
+            PartAmountRoRepair = Math.Round(PA("ROREPAIR"), 0, MidpointRounding.AwayFromZero),
+            PartAmountRoWarranty = Math.Round(PA("ROWARRANTY"), 0, MidpointRounding.AwayFromZero),
+            PartAmountRoInsurance = Math.Round(PA("ROINSURANCE"), 0, MidpointRounding.AwayFromZero),
+            PartAmountLocal = Math.Round(PA("LOCAL"), 0, MidpointRounding.AwayFromZero),
+            PartAmountShell = Math.Round(paShell, 0, MidpointRounding.AwayFromZero),
 
             // #336 doanh thu tiền công — 18 cặp, đúng bộ mà `Report_KPICreateX_New20221101` ghi.
             ServiceAmountBDDRoRepair = A("BDD", "ROREPAIR"), ServiceAmountBDDLocal = A("BDD", "LOCAL"),
@@ -6270,12 +6314,19 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
             "CountCarService", "Count<Loại>", "Count<Loại><NguồnTiền>",           // #335
             "ServiceAmount<Loại><NguồnTiền> (18 cặp)",                            // #336
             "WorkHour{BDN,SCC,SCD,SCS}Qty", "WorkHourFeeQty", "WorkDayQty",       // #336
+            "PartAmount{RoRepair,RoWarranty,RoInsurance,Local,Shell}",            // #337
         },
+        // 🔴 #337 Danh sách mã dầu nhớt CHƯA khai ⇒ `PartAmountShell` = 0 và bốn nhóm kia **không loại**
+        //   dầu nhớt ra, nên bị cộng dư. Trả cờ để phân biệt "chưa cấu hình" với "không có số liệu".
+        shellCodeConfigured = shellCodes.Count > 0,
         // Còn lại — vẫn CHƯA port, cần dữ liệu MiniHTC hiện chưa có:
         //   `WorkHourQty` cần **danh mục KTV theo loại** (`Ser_Engineer.IsEngineer` ∈ BDN/SCC/KTVD/KTVS);
         //   `WorkHourActualQty` cần **phút sửa chữa thực tế từng lệnh** (trừ thời gian tạm dừng);
         //   `PartAmount*` cần dòng phụ tùng theo nguồn tiền; các tỉ lệ /khoang /CVDV /ngày ăn theo hai cái trên.
-        pendingGroups = new[] { "WorkHourQty", "WorkHourActualQty", "WorkHourPerCarRO", "PartAmount*", "PerCavity/PerAdviser ratios", "ProfitRate*" },
+        // `PartAmountOut` CHƯA port: nguồn lấy từ **phiếu XUẤT KHO** (`Ser_Inv_StockOut` + chi tiết),
+        //   không phải dòng phụ tùng của lệnh; lại lọc bằng `smpt.TypeName <> N'Phụ kiện'` —
+        //   **so khớp theo TÊN loại phụ tùng**, không theo mã ⇒ đổi tên danh mục là hỏng bộ lọc.
+        pendingGroups = new[] { "WorkHourQty", "WorkHourActualQty", "WorkHourPerCarRO", "PartAmountOut", "PerCavity/PerAdviser ratios", "ProfitRate*" },
         unitPrices = new { upBDN, upSCC, upSCD, upSCS },
         // 🔴 Đơn giá = 0 ⇒ mọi giờ công của nhóm đó bằng 0 (guard của nguồn), KHÔNG phải lỗi tính.
         unitPriceMissing = new[] { upBDN, upSCC, upSCD, upSCS }.Count(v => v == 0m),
@@ -21927,6 +21978,10 @@ var DealerServiceOptCatalog = new (string Code, string Label, string Type, strin
     ("UnitPriceSCC", "Đơn giá công SCC", "number", "0"),
     ("UnitPriceSCD", "Đơn giá công SCD", "number", "0"),
     ("UnitPriceSCS", "Đơn giá công SCS", "number", "0"),
+    // 🔴 #337 DANH SÁCH MÃ DẦU NHỚT — nguồn lấy từ web.config (`_strConfig_ListShellCode`) rồi thả
+    //   thẳng vào SQL: `smp.PartCode Not in @strListShellCode` / `in @strListShellCode`.
+    //   MiniHTC không có web.config theo đại lý ⇒ đưa vào chính kho tham số này (ngăn cách bằng dấu phẩy).
+    ("ListShellCode", "Mã phụ tùng tính là dầu nhớt (phẩy ngăn cách)", "text", ""),
 };
 app.MapGet("/api/dealerserviceoptions", async (AppDbContext db, ITenantContext t) =>
 {
@@ -36247,7 +36302,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền dòng PHỤ TÙNG theo nguồn: Factor * Quantity * Price * (1 + VAT*0.01).
         var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
         var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
-        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note });
+        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0" });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
@@ -37836,7 +37891,11 @@ record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTy
 record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null);
-record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0);
+// #337: ExpenseType (nguon tien) va FlagAccessory (co phu kien) — HAI truong bao cao KPI loc theo,
+//   ma truoc nay KHONG duong nao ghi duoc: cot ExpenseType them tu #280 nhung dong tao RO khong gan.
+//   Thieu chung thi nhom PartAmount* cua bao cao LUON bang 0.
+record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0,
+    string? ExpenseType = null, string? FlagAccessory = "0");
 // #266: chỉ nhận `MemberNo` + `FlagCardExist` lúc tạo LSC. Nhóm `*Inv` và `PointVoucher` do luồng lập
 //   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
