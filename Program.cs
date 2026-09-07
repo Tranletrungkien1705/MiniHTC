@@ -6896,11 +6896,56 @@ app.MapPost("/api/mrkcampaigndls/update", async (MrkCampaignDLUpdateDto dto, App
     row.BonusPoint = dto.BonusPoint;
     row.ObligationKPI = dto.ObligationKPI;
     row.KPIRank = dto.KPIRank;
+
+    // ===== 🔴 #345 TÍNH LẠI 5 CỘT TỔNG HỢP — port cũ chỉ ghi 3 trường người dùng nhập =====
+    // Nguồn `myMRK_CampaignDL_Update` (`BizHTC.Marketing.cs:8365`, bản canonical `.Release.2025`,
+    //   md5 giống hệt 2 máy). Năm cột này được ghi bằng **SQL `update … set`** (dạng ghi thứ 4,
+    //   lệ #314) nên máy quét đếm theo `["X"] =` **không thấy** — phải grep thêm `t.Col = f.Col`.
+    //
+    // Nguồn số liệu: `MRK_CampaignDLQuarterKPI` của **đúng** (đại lý, năm, quý), tách theo `KPIType`:
+    //   `SalePromotionPoint` = SUM(`ActualPoint`) khi `KPIType = 'SALEPROMOTION'`
+    //   `BrandingPoint`      = SUM(`ActualPoint`) khi `KPIType = 'BRANDING'`
+    //   `TotalRegisterPoint` = SUM(`RegisterStandardPoint`) — **KHÔNG lọc KPIType** (cả hai loại)
+    //   `TotalRealPoint`     = SalePromotion + Branding + **BonusPoint**
+    //   `DegreeCompletionKPI`= TotalRealPoint / TotalRegisterPoint
+    // ⚠️ `BonusPoint` vừa được người dùng sửa ở ngay trên và là **đầu vào** của `TotalRealPoint`
+    //   ⇒ bắt buộc tính lại SAU khi gán, không phải trước.
+    var kpis = await db.MrkCampaignDLQuarterKPIs
+        .Where(k => k.OrgId == t.OrgId && k.DealerCode == dealer
+            && k.MRKCamDLYear == year && k.MRKCamDLQuarter == quarter)
+        .Select(k => new { k.KPIType, k.ActualPoint, k.RegisterStandardPoint }).ToListAsync();
+
+    row.SalePromotionPoint = kpis.Where(k => k.KPIType == "SALEPROMOTION").Sum(k => k.ActualPoint);
+    row.BrandingPoint = kpis.Where(k => k.KPIType == "BRANDING").Sum(k => k.ActualPoint);
+    row.TotalRegisterPoint = kpis.Sum(k => k.RegisterStandardPoint);
+    row.TotalRealPoint = row.SalePromotionPoint + row.BrandingPoint + row.BonusPoint;
+
+    // 🔴 LỆCH CÓ CHỦ ĐÍCH: nguồn chia THẲNG, **không guard mẫu = 0**:
+    //   `((f.SalePromotionPoint + f.BrandingPoint + t.BonusPoint) / f.TotalRegisterPoint) DegreeCompletionKPI`
+    //   ⇒ đại lý chưa đăng ký điểm nào (`TotalRegisterPoint = 0`) sẽ làm **CẢ CÂU UPDATE ném lỗi**
+    //     chia-cho-không, hỏng luôn những đại lý khác trong cùng mẻ. Khác hẳn các tỉ lệ KPI xưởng
+    //     dịch vụ (#338) vốn đều có `case when <mẫu> = 0 then 0`.
+    //   ⇒ Không bắt chước (lệ #272/#275): trả 0 và **báo cờ** để chỗ đối chiếu biết vì sao web có số
+    //     mà WinForm thì lỗi.
+    var noRegisterPoint = row.TotalRegisterPoint == 0m;
+    row.DegreeCompletionKPI = noRegisterPoint ? 0m : row.TotalRealPoint / row.TotalRegisterPoint;
     row.LUDateTime = DateTime.Now;
     row.LUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     row.LogLUDateTime = row.LUDateTime.Value; row.LogLUBy = row.LUBy;
     await db.SaveChangesAsync();
-    return Results.Ok(new { dealer, year, quarter, row.BonusPoint, row.ObligationKPI, row.KPIRank });
+    return Results.Ok(new
+    {
+        dealer, year, quarter, row.BonusPoint, row.ObligationKPI, row.KPIRank,
+        // #345 §12: năm cột tổng hợp vừa tính lại phải NHÌN THẤY ĐƯỢC ở kết quả.
+        row.SalePromotionPoint, row.BrandingPoint, row.TotalRegisterPoint,
+        row.TotalRealPoint, row.DegreeCompletionKPI,
+        // 🔴 Đại lý chưa đăng ký điểm nào: nguồn CHIA CHO 0 ⇒ cả câu update ném lỗi;
+        //   web trả 0 và bật cờ này để lệch là lệch nhìn thấy được.
+        noRegisterPoint,
+        degreeNote = noRegisterPoint
+            ? "TotalRegisterPoint = 0 ⇒ web trả DegreeCompletionKPI = 0; nguồn sẽ LỖI chia-cho-không."
+            : null,
+    });
 }).RequireAuthorization();
 
 // 🔴 Approve đồng bộ trạng thái xuống CẢ NĂM bảng con.
