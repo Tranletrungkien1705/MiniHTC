@@ -35889,6 +35889,112 @@ app.MapGet("/api/syspartners", async (AppDbContext db, ITenantContext t, string?
     });
 }).RequireAuthorization();
 
+// ===== #B101 TRA KHÁCH HÀNG ĐẠI LÝ — KÊNH `OS_` — `OS_DLS_DealerCustomer_Get` =====
+// Trace LIVE: WS → **`_biz.OS_DLS_DealerCustomer_Get`** (`BizHTC.DealerSales.cs:1260`).
+//   3B đo thật, **khớp cả 2 máy**: start=1260 md5 `f01a6eaa3af03ca8295bab10bc11b303`.
+// 🔴🔴🔴 **LỖ HỔNG RBAC — BIẾN THỂ THỨ NĂM, NẶNG NHẤT CỦA CẢ PHIÊN B:
+//    `@strBUPatternOfUser` ĐƯỢC DỰNG TỪ THAM SỐ DO CHÍNH CLIENT GỬI LÊN.**
+//    `BizHTC.DealerSales.cs:1332-1346`:
+//      `if (strDealerCodeConditionList != null && != "" && != "HTC")`
+//          `strBUPatternGet = "HTC." + **strDealerCodeConditionList** + "%";`
+//      `if (strDealerCodeConditionList == "HTC" || == null || == "")`
+//          `strBUPatternGet = **"HTC%"**;`
+//      `alParamsCoupleSql.AddRange(new object[] { "@strBUPatternOfUser", strBUPatternGet`
+//          `//**drAbilityOfUser["BUPattern"]** //HTC.VC006 % });`  ← quyền THẬT bị comment tại chỗ bind
+//    rồi dùng nguyên trong `inner join Mst_Dealer md on … and (md.BUCode like @strBUPatternOfUser)`
+//    — **kèm đúng chú thích** *"Must inner join to filter AbilityOfUser"*.
+//    ⇒ **CLIENT TỰ CHỌN PHẠM VI DỮ LIỆU MÌNH ĐƯỢC XEM**: gửi `dealerCode` rỗng / `"HTC"` ⇒ pattern
+//      thành **`"HTC%"`** = **TOÀN BỘ khách hàng của MỌI đại lý nhóm HTC**.
+//    ⚠️ Nặng hơn #B84 (hằng cứng `'HTC%'`): ở #B84 phạm vi **sai nhưng CỐ ĐỊNH**; ở đây phạm vi
+//      **do client điều khiển**. Và tiền tố **`OS_`** cho thấy đây là **kênh ngoài**.
+//    📌 **XẾP ƯU TIÊN SỐ 1** trong hồ sơ gửi nghiệp vụ/bảo mật, trên cả #B84.
+//    Port **giữ đúng hành vi nguồn** (để đối chiếu số liệu) nhưng: trả `buPatternApplied` +
+//    `buPatternFromClient = true`, và mở cờ **`enforceBuScope=1`** để ép về phạm vi thật khi cần.
+//    **KHÔNG tự bịt** — quyết định là của nghiệp vụ/bảo mật.
+// 🔴 `GenderText` là cột **SUY RA trong SQL**: `case when Gender='0' then N'Nam' when '1' then N'Nữ' end`
+//    — **KHÔNG có nhánh `else`** ⇒ giá trị khác "0"/"1" (kể cả NULL) ⇒ **`GenderText` = NULL**.
+// 🔴 `left join Mst_District` nối bằng **CẶP `(DistrictCode, ProvinceCode)`**, không chỉ mã huyện —
+//    mã huyện của 2010.HTC **không duy nhất toàn quốc**.
+// 🔴 Phân trang: `MyRowIdx_Start = nResultRecordStart + 1` — nguồn ghi rõ *"C# based from 0 but
+//    SqlIdx based from 1"*; `MyCount` đếm **TRƯỚC** khi cắt trang.
+app.MapGet("/api/os/dealercustomers", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? fullNamePattern, string? phoneNoPattern,
+    int? recordStart, int? recordCount, string? enforceBuScope, string? buPatternOfUser) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+
+    // 🔴 Dựng pattern ĐÚNG như nguồn — từ tham số CLIENT.
+    var dlrParam = (dealerCode ?? "").Trim();
+    var buPatternFromClient = (dlrParam.Length == 0 || dlrParam.Equals("HTC", StringComparison.OrdinalIgnoreCase))
+        ? "HTC%"
+        : "HTC." + dlrParam + "%";
+    // Phạm vi THẬT của người dùng (nguồn đã comment) — chỉ dùng khi bật cờ.
+    var realPattern = (buPatternOfUser ?? "").Trim();
+    var applied = (enforceBuScope == "1" && realPattern.Length > 0) ? realPattern : buPatternFromClient;
+    var prefix = applied.TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    // `inner join Mst_Dealer md … and (md.BUCode like @strBUPatternOfUser)` — inner join, loại thẳng.
+    var inScope = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(prefix))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    var all = await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var beforeScope = all.Count;
+    all = all.Where(c => inScope.Contains(c.DealerCode)).ToList();
+    var droppedOutOfScope = beforeScope - all.Count;
+
+    if (!string.IsNullOrWhiteSpace(fullNamePattern))
+        all = all.Where(c => (c.FullName ?? "").Contains(fullNamePattern.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+    if (!string.IsNullOrWhiteSpace(phoneNoPattern))
+        all = all.Where(c => (c.PhoneNo ?? "").Contains(phoneNoPattern.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+    var myCount = all.Count;                        // `MyCount` đếm TRƯỚC khi cắt trang
+    var page = all.OrderBy(c => c.CustomerCode, StringComparer.Ordinal).Skip(start).Take(count).ToList();
+
+    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
+        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync())
+        .GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First());
+    // `left join Mst_District` theo CẶP (DistrictCode, ProvinceCode).
+    var districts = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "District")
+        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync())
+        .GroupBy(d => (d.Code ?? "", d.ParentCode ?? "")).ToDictionary(g => g.Key, g => g.First());
+
+    var items = page.Select(c =>
+    {
+        provinces.TryGetValue(c.ProvinceCode ?? "", out var mp);
+        districts.TryGetValue((c.DistrictCode ?? "", c.ProvinceCode ?? ""), out var md);
+        return new
+        {
+            dlsdcCustomerCode = c.CustomerCode, dlsdcDealerCode = c.DealerCode,
+            dlsdcFullName = c.FullName, dlsdcFullNameEN = c.FullNameEN,
+            dlsdcAddress = c.Address, dlsdcPhoneNo = c.PhoneNo, dlsdcEmail = c.Email,
+            dlsdcTaxCode = c.TaxCode, dlsdcGender = c.Gender,
+            // 🔴 `case … end` KHÔNG có `else` ⇒ giá trị khác "0"/"1" (kể cả NULL) ⇒ NULL.
+            GenderText = c.Gender == "0" ? "Nam" : c.Gender == "1" ? "Nữ" : null,
+            mp_AreaCode = mp?.ParentCode, mp_ProvinceCode = mp?.Code, mp_ProvinceName = mp?.Name,
+            md_DistrictCode = md?.Code, md_DistrictName = md?.Name
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        buPatternApplied = applied,
+        buPatternFromClient,
+        buPatternIsClientControlled = enforceBuScope != "1",
+        droppedOutOfScope,
+        rbacHoleVariant5 = "LO HONG RBAC - BIEN THE THU NAM, NANG NHAT CUA CA PHIEN B: @strBUPatternOfUser DUOC DUNG TU THAM SO DO CHINH CLIENT GUI LEN (BizHTC.DealerSales.cs:1332-1346). Neu strDealerCodeConditionList khac rong/khac 'HTC' => pattern = 'HTC.' + <gia tri client> + '%'; neu rong hoac 'HTC' => pattern = 'HTC%'. Dong lay quyen that drAbilityOfUser['BUPattern'] BI COMMENT NGAY TAI CHO BIND. Sau do dung nguyen trong inner join Mst_Dealer ... and (md.BUCode like @strBUPatternOfUser), KEM DUNG chu thich 'Must inner join to filter AbilityOfUser'.",
+        rbacImpact = "CLIENT TU CHON PHAM VI DU LIEU MINH DUOC XEM: gui dealerCode rong hoac 'HTC' => thay TOAN BO khach hang cua MOI dai ly nhom HTC. NANG HON #B84: o #B84 pham vi SAI nhung CO DINH; o day pham vi DO CLIENT DIEU KHIEN. Tien to 'OS_' cho thay day la KENH NGOAI. => XEP UU TIEN SO 1 trong ho so gui nghiep vu/bao mat, tren ca #B84.",
+        rbacPortNote = "Port GIU DUNG hanh vi nguon de doi chieu so lieu; mo co enforceBuScope=1 (kem buPatternOfUser) de ep ve pham vi that khi nghiep vu quyet dinh. KHONG tu bit.",
+        genderTextNote = "GenderText la cot SUY RA trong SQL: case when Gender='0' then N'Nam' when '1' then N'Nu' end - KHONG co nhanh else => gia tri khac '0'/'1' (ke ca NULL) => GenderText = NULL.",
+        districtJoinNote = "left join Mst_District noi bang CAP (DistrictCode, ProvinceCode), khong chi ma huyen - ma huyen cua 2010.HTC KHONG duy nhat toan quoc.",
+        pagingNote = "MyRowIdx_Start = nResultRecordStart + 1 - nguon ghi ro 'C# based from 0 but SqlIdx based from 1'; MyCount dem TRUOC khi cat trang."
+    });
+}).RequireAuthorization();
+
 // ===== #B97 THÔNG TIN NGƯỜI DÙNG ĐANG ĐĂNG NHẬP — `SysGetUser_ForCurrentUser_New20181115` =====
 // Trace LIVE: WS → `_biz.SysGetUser_ForCurrentUser_New20181115` (`BizHTC.System.cs:202`).
 //   3B đo thật, **khớp cả 2 máy**: start=202 md5 `d8dfab486c1899d56f9e59cbf9c5a077`.
