@@ -1196,6 +1196,9 @@ public static class Seeder
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"UnitPriceActual\" numeric NULL",
         // #B29 Car_VIN.DeclarationNo - moc noi sang CT_TKHQ
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DeclarationNo\" text NULL",
+        // #B30 Car_Car: thu hang map VIN + trang thai thanh toan cua xe
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MapVINRanking\" text NULL",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"PaymentStatus\" text NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",

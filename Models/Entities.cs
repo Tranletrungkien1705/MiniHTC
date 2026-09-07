@@ -10111,6 +10111,12 @@ public sealed class CarVinMaster
     /// and cv.ColorCode = mcc.ColorCode`.
     /// </summary>
     public string? ColorCode { get; set; }
+    /// <summary>#B30 Thứ hạng ưu tiên map VIN (`Car_Car.MapVINRanking`) — `CarCarUpdate01_New20181119`
+    /// (`Biz.HTC.WH.cs:59243`) chỉ cho sửa khi xe **CHƯA map VIN** (`..._VINMapped`).</summary>
+    public string? MapVINRanking { get; set; }
+    /// <summary>#B30 Trạng thái thanh toán của xe (`Car_Car.PaymentStatus`) — guard sửa ĐƠN GIÁ THỰC TẾ đòi
+    /// `Stage.Pending` ("P"), khác thì ném `CarCarUpdate01_PaymentStatusNotMatched`.</summary>
+    public string? PaymentStatus { get; set; }
     /// <summary>#B29 Số tờ khai hải quan của xe (`Car_VIN.DeclarationNo`) — mốc nối sang `CT_TKHQ`
     /// (`left join CT_TKHQ ctt on ctt.DeclarationNo = **cv**.DeclarationNo`, `BizHTC.zTemp.cs:465`);
     /// nối qua **Car_VIN**, không qua `Car_Car`.</summary>

@@ -14666,6 +14666,77 @@ app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, st
 //   — nối TRONG theo **`Car_Car.DealerCode`** (đại lý ĐANG GIỮ xe), khác các màn giao dịch dùng `DealerCodeBuyer`.
 // 🔴 Mọi join enrich còn lại đều là **LEFT** (spec/model/color/province/đơn hàng/Car_VIN/TKHQ/packing list)
 //   ⇒ thiếu master **không** làm mất dòng xe. Chỉ `Mst_Dealer` là inner.
+
+// ===== #B30 SỬA ĐƠN GIÁ / HẠNG MAP VIN / CHẶN MAP VIN (port 1:1 `CarCarUpdate01`) =====
+// Trace twin LIVE: `FrmVinUnmap` nút **"Chặn Map Vin"** → `SalesService.DisableMapVin(carId)` (`:98`)
+//   → WS `CarCarUpdate01` (`WSHTC.asmx.cs:13545`) → **`_biz.CarCarUpdate01_New20181119`**
+//   (`Biz.HTC.WH.cs:59243`).
+// 🔴 MỘT HÀM, BA NHÁNH ĐỘC LẬP theo tham số nào KHÁC RỖNG (`:59345`, `:59363`, `:59369`) —
+//    mỗi nhánh guard riêng, `alColumnEffective` riêng:
+//   (a) `strUnitPriceActualNew` ≠ rỗng ⇒ guard **`PaymentStatus` phải = `Stage.Pending` ("P")**
+//       (`..._PaymentStatusNotMatched`), ghi `UnitPriceActual`.
+//   (b) `strMapVINRankingNew`  ≠ rỗng ⇒ guard **xe chưa map VIN** (`..._VINMapped`), ghi `MapVINRanking`.
+//   (c) `strFlagAllowChangeVINNew` ≠ rỗng ⇒ guard giá trị **BẮT BUỘC là `Flag.Inactive` ("0")**
+//       (`..._InvalidFlagAllowChangeVINNew` — **không cho bật lại "1"**) **và** xe chưa map VIN;
+//       ghi `FlagAllowChangeVIN`.  ← Đây là nhánh mà nút "Chặn Map Vin" dùng (client truyền `Flag.No`).
+// 🔴 Guard PHỤ THUỘC VAI TRÒ: chỉ khi `strIsUserFromSales == Flag.Active` mới chạy kiểm
+//    "xe đã có dòng bảo lãnh **ở MỌI trạng thái**" (`inner join Pmt_GuaranteeDetail`, `:59409-59440`)
+//    ⇒ `..._ExistGrtDetail`. Client `DisableMapVin` truyền **chuỗi rỗng** ⇒ nhánh này KHÔNG chạy.
+// 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:59308`) là DÒNG ACTIVE.
+app.MapPost("/api/cars/{carId}/update01", async (
+    string carId, CarUpdate01Dto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
+{
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa thông tin này." });
+    var cid = carId.Trim().ToUpperInvariant();
+    // `myCar_CheckCar(..., Flag.Active exist, Flag.Active active)`
+    var car = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == cid);
+    if (car is null) return Results.NotFound(new { carId = cid });
+    if (car.FlagActive == "0") return Results.BadRequest(new { error = $"Xe {cid} đã ngưng hoạt động." });
+
+    var written = new List<string>();
+    var vinMapped = !string.IsNullOrWhiteSpace(car.VIN) && car.VINFreeStatus == "0";
+
+    // (a) Sửa ĐƠN GIÁ THỰC TẾ.
+    if (dto.UnitPriceActualNew is not null)
+    {
+        if ((car.PaymentStatus ?? "P") != "P")
+            return Results.BadRequest(new { error = $"Xe {cid}: chỉ sửa được đơn giá khi trạng thái thanh toán = 'P' (đang '{car.PaymentStatus}')." });
+        car.UnitPriceActual = dto.UnitPriceActualNew; written.Add("UnitPriceActual");
+    }
+    // (b) Sửa HẠNG MAP VIN.
+    if (!string.IsNullOrWhiteSpace(dto.MapVINRankingNew))
+    {
+        if (vinMapped) return Results.BadRequest(new { error = $"Xe {cid} đã map VIN — không sửa được hạng map VIN.", vin = car.VIN });
+        car.MapVINRanking = dto.MapVINRankingNew!.Trim(); written.Add("MapVINRanking");
+    }
+    // (c) CHẶN MAP VIN — chỉ nhận "0".
+    if (!string.IsNullOrWhiteSpace(dto.FlagAllowChangeVINNew))
+    {
+        if (dto.FlagAllowChangeVINNew!.Trim() != "0")
+            return Results.BadRequest(new { error = "FlagAllowChangeVIN chỉ được đặt về '0' (chặn) — nguồn không cho bật lại '1'." });
+        if (vinMapped) return Results.BadRequest(new { error = $"Xe {cid} đã map VIN — không chặn map VIN được.", vin = car.VIN });
+        car.FlagAllowChangeVIN = "0"; written.Add("FlagAllowChangeVIN");
+    }
+    if (written.Count == 0) return Results.BadRequest(new { error = "Không có trường nào để cập nhật (cả ba tham số đều rỗng)." });
+
+    // Guard PHỤ THUỘC VAI TRÒ: chỉ chạy khi người dùng thuộc phòng Sales.
+    if (dto.IsUserFromSales == "1")
+    {
+        var hasGrt = await db.BankGuaranteeDtls.AnyAsync(d => d.OrgId == t.OrgId && d.VIN == cid);
+        if (hasGrt) return Results.BadRequest(new { error = $"Xe {cid} đã có dòng bảo lãnh (mọi trạng thái) — người dùng phòng Sales không sửa được.", guard = "CarCarUpdate01_ExistGrtDetail" });
+    }
+
+    car.LogLUDateTime = DateTime.Now; car.LogLUBy = user.Identity?.Name ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        carId = cid, columnsWritten = written,
+        car.UnitPriceActual, car.MapVINRanking, car.FlagAllowChangeVIN, car.PaymentStatus,
+        branchNote = "Một hàm nguồn, BA nhánh độc lập theo tham số nào khác rỗng — mỗi nhánh guard riêng và tập cột ghi riêng.",
+        salesGuardNote = "Kiểm 'đã có bảo lãnh' CHỈ chạy khi IsUserFromSales='1'; nút 'Chặn Map Vin' truyền rỗng nên bỏ qua."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/cars/for-dealer-create-cdr", async (
     AppDbContext db, ITenantContext t, string? vins, string? buPattern) =>
 {
@@ -34933,6 +35004,8 @@ record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOve
 record CarVinDocDlvReqDto(string? Vin, DateTime? DocDeliveryReqDate);
 /// <summary>#B27: một dòng bảng cập nhật cờ FlagDocReq — chỉ nhận "0" hoặc "1".</summary>
 record CarVinFlagDocReqDto(string? Vin, string? FlagDocReq);
+/// <summary>#B30: ba nhánh độc lập của `CarCarUpdate01` — chỉ nhánh có tham số khác rỗng mới chạy.</summary>
+record CarUpdate01Dto(decimal? UnitPriceActualNew, string? MapVINRankingNew, string? FlagAllowChangeVINNew, string? IsUserFromSales);
 /// <summary>#B21: một dòng bảng cập nhật tờ trình của đề nghị giao hồ sơ (khoá `DRListCode`).</summary>
 record DocReqLetterRepDto(string? DRListCode, string? LetterRepresentationNo, DateTime? LetterRepresentationDate, int? LoanSupportDay);
 /// <summary>#B17: một dòng của bảng `#input_Car_Car` — sửa hàng loạt quy cách theo CarId.</summary>
