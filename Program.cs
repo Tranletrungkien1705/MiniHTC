@@ -25567,6 +25567,27 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   Mỗi lần gỡ một lớp, danh sách "cần soi" ngắn lại mà **không phải đọc thêm hàm nào**
         //   ⇒ luôn gỡ nhiễu TRƯỚC khi ngồi đọc tay.
         innerJoinNormalized = true,
+
+        // ===== 🔴 #495 HAI GIỚI HẠN CỦA CÔNG CỤ SO SÁNH — ghi rõ thay vì để nó nói dối tiếp =====
+        // Ca kiểm: `Ser_InvReportPartMinQuantity` bị sweep xếp "lệch 28 → 9 dòng".
+        //
+        // 🔴 (1) **CHỌN "BẢN CHÍNH" SAI KÊNH**. Cả hai bản đều SỐNG, mỗi bản một kênh:
+        //     `Ser_InvReportPartMinQuantity_New20181027` ← `HTCWSCarSv`      (kênh WEB)
+        //     `Ser_InvReportPartMinQuantity` (trần)      ← `TERP.WSCarSv`    (kênh ĐỐI TÁC)
+        //   Công cụ chọn bản **nhiều dòng SQL nhất** ⇒ vớ phải bản đối tác rồi so với bản kho ⇒ số vô nghĩa.
+        //   So **đúng cặp cùng kênh** (`_New20181027` vs `_WH_New20181027`): **9/9 dòng, macro 6/6, GIỐNG HỆT**.
+        //   📌 Khi cả bản trần lẫn bản hậu-tố cùng sống, "bản chính" **phụ thuộc KÊNH** — không có một
+        //     lựa chọn đúng duy nhất, nên mọi con số của sweep phải đọc kèm câu hỏi "so với kênh nào?".
+        //
+        // 🔴 (2) **CÔNG CỤ CHỈ ĐỌC SQL, KHÔNG ĐỌC GUARD C#**. Cặp trên SQL giống hệt, nhưng thân C# thì:
+        //     bản chính có **2** lần `TConst.HTCConst.HTC_WareHouse` · bản `_WH` có **0**
+        //   ⇒ chỉ bản chính **kẹp mốc ngày về 2017-12-31** — đúng như #422 đã kết luận bằng cách **đếm chuỗi
+        //     trong toàn thân hàm**, không phải bằng diff SQL. ⇒ **#422 vẫn đúng**, và nó đúng *nhờ* dùng
+        //     phép đo khác. Diff SQL mà báo "giống hệt" **không** kết luận được "hai bản hành xử như nhau".
+        //   📌 Luật: sau khi diff SQL, phải **đếm thêm các mốc trong thân C#** (hằng, guard, `throw`,
+        //     `Convert`) rồi mới nói hai bản tương đương.
+        whDiffToolLimits = new { mainChoiceDependsOnChannel = true, sqlOnlyDiffMissesCSharpGuards = true,
+            caseChecked = "Ser_InvReportPartMinQuantity: SQL 9/9 giong het nhung guard kep ngay 2 vs 0" },
         whDifferingTriage = new { macroFreeComparable = 76, identical = 53, needReview = 23,
             closedByHand = 4, remaining = 18,
             classifierFoundNothing = true,
