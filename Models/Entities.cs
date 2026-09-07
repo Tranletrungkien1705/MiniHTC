@@ -10099,6 +10099,14 @@ public sealed class CarVinMaster
     /// </summary>
     public string? ColorCode { get; set; }
 
+    /// <summary>
+    /// 🔴 #B11 Trạng thái BÁN của xe (`Car_Car.SellStatus`). `DealerSalesDealDetailUpdate_DeliveryDate_New20181119`
+    /// đặt **`Stage.Finished` = "F"** ở **đúng lần xác nhận giao đầu tiên** (`bConfirmFirstTime`,
+    /// `Biz.HTC.WH.cs:95770`) — cùng lượt sinh dòng `HMC_Report`. Không có cột này thì không phân biệt được
+    /// xe đã bán với xe còn trong lệnh giao.
+    /// </summary>
+    public string? SellStatus { get; set; }
+
     // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
     //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
     /// <summary>Ngày KẾT THÚC thế chấp (`Car_Vin.MortageEndDate`) — nguồn đặt = hôm nay khi duyệt.</summary>

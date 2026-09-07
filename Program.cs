@@ -27411,6 +27411,124 @@ app.MapPost("/api/dealerdeals/edit-platenumber", async (EditDealPlateNoDto dto, 
 //     `DlvExpectedDate` THẬT, và **tự thêm guard `dc.DlrCtrStatus = TConst.Stage.Approved` ("A")**
 //     — guard này CHỈ tồn tại ở nhánh này (`:3837`).
 //   · KHÔNG có → truy vấn gọn hơn, ba cột kia trả **chuỗi RỖNG** (nguồn `select '' DlrContractNo`…).
+
+// ===== #B11 SỬA DÒNG XE TRÊN GIAO DỊCH BÁN (port 1:1 FrmMngDeal — 2 nút sửa) =====
+// Trace twin LIVE (đọc WS TRƯỚC):
+//   `DealerService.UpdateNormalInfoDealDetail` (:1384) → WS `DealerSalesDealDetailUpdate_NormalInfo`
+//     → **`_biz.…_NormalInfo_New20181119`** (`Biz.HTC.WH.cs:94997`)
+//   `DealerService.UpdateDeliveryDateDealDetail` (:1434) → WS `…_DeliveryDate`
+//     → **`_biz.…_DeliveryDate_New20181119`** (`Biz.HTC.WH.cs:95592`)
+// Khoá nghiệp vụ của CẢ HAI = cặp (`DealNo`, `CarId`).
+
+// --- 1) Sửa BIỂN SỐ (NormalInfo) ---
+app.MapPost("/api/deals/{dealNo}/cars/{carId}/plateno", async (
+    string dealNo, string carId, DealDetailPlateNoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = dealNo.Trim().ToUpperInvariant();
+    var cid = carId.Trim().ToUpperInvariant();
+    // `..._InvalidPlateNo` — nguồn chặn biển số rỗng.
+    if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Biển số không hợp lệ." });
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { dealNo = no });
+    var line = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == cid);
+    if (line is null) return Results.NotFound(new { dealNo = no, carId = cid });
+
+    // `Car_Car_CheckDB(..., strCDODConfirmStatusListToCheck = TConst.Stage.Finished)`
+    //   -- chú thích nguồn: "Đại lý phải đã Nhập xe."  (Stage.Finished = "F")
+    var vinOfLine = line.VIN ?? line.CarId;
+    var inStorage = await db.DeliveryOrderCars.AnyAsync(c => c.OrgId == t.OrgId && c.Vin == vinOfLine && c.ConfirmStatus == "F");
+    if (!inStorage) return Results.BadRequest(new { error = $"Xe {vinOfLine} đại lý chưa nhập kho (ConfirmStatus phải = 'F')." });
+
+    // `myCommon_CheckDealer(..., Flag.Active, Flag.Active)` — đại lý của giao dịch phải tồn tại & hoạt động.
+    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == d.DealerCode);
+    if (dealer is null) return Results.BadRequest(new { error = $"Đại lý {d.DealerCode} không tồn tại." });
+    if ((dealer.FlagActive ?? dealer.Status) == "0") return Results.BadRequest(new { error = $"Đại lý {d.DealerCode} đang ngưng hoạt động." });
+    // ⚠️ `myCommon_CheckAccessDealerData(BUCode)` — tầng ability BUPattern, nợ chung fleet.
+
+    // 🔴 GUARD CỐT LÕI mà port cũ không có: `CtmCareFlag = TConst.Flag.Active` ("1") ⇒ CẤM sửa biển số.
+    //    Nguyên văn thông điệp nguồn (Biz.HTC.WH.cs:95229): "Đã kiểm chứng, không được nhập (sửa) biển số".
+    if (d.CtmCareFlag == "1")
+        return Results.BadRequest(new { error = "Đã kiểm chứng, không được nhập (sửa) biển số", dealNo = no, ctmCareFlag = d.CtmCareFlag });
+
+    // `alColumnEffective` chỉ có ĐÚNG MỘT cột: PlateNo (:95246).
+    line.PlateNo = dto.PlateNo.Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        dealNo = no, carId = cid, line.PlateNo,
+        // ⚠️ NỢ: sau khi lưu, nguồn gọi WS NGOÀI của hệ dịch vụ (`_strConfig_OS_URLWSCarSv`) đẩy thông tin
+        //    người mua/người đứng tên sang CarSv; lỗi chỉ `SetWarning` (KHÔNG chặn lưu). MiniHTC chưa có tầng đó.
+        carSvPushNote = "NỢ: nguồn đẩy thông tin KH sang WS CarSv sau khi lưu (lỗi chỉ cảnh báo, không chặn) — chưa port."
+    });
+}).RequireAuthorization();
+
+// --- 2) Xác nhận / sửa NGÀY GIAO XE (DeliveryDate) ---
+app.MapPost("/api/deals/{dealNo}/cars/{carId}/deliverydate", async (
+    string dealNo, string carId, DealDetailDeliveryDateDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var no = dealNo.Trim().ToUpperInvariant();
+    var cid = carId.Trim().ToUpperInvariant();
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { dealNo = no });
+    var line = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == cid);
+    if (line is null) return Results.NotFound(new { dealNo = no, carId = cid });
+
+    var vinOfLine = line.VIN ?? line.CarId;
+    var inStorage = await db.DeliveryOrderCars.AnyAsync(c => c.OrgId == t.OrgId && c.Vin == vinOfLine && c.ConfirmStatus == "F");
+    if (!inStorage) return Results.BadRequest(new { error = $"Xe {vinOfLine} đại lý chưa nhập kho (ConfirmStatus phải = 'F')." });
+
+    // 🔴 "Check SellToDealer" (:95706-95714): `DLSDDealerCodeBuyer` CÓ giá trị ⇒ ném
+    //    `..._CannotUpdateDealWithAnotherDealer`. Nghĩa là **KHÔNG được sửa ngày giao của giao dịch
+    //    bán buôn ĐL→ĐL** — chỉ giao dịch bán lẻ cho khách mới được.
+    if (!string.IsNullOrWhiteSpace(d.DealerCodeBuyer))
+        return Results.BadRequest(new { error = "Không sửa được ngày giao của giao dịch bán cho đại lý khác.", dealerCodeBuyer = d.DealerCodeBuyer });
+
+    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == d.DealerCode);
+    if (dealer is null) return Results.BadRequest(new { error = $"Đại lý {d.DealerCode} không tồn tại." });
+    if ((dealer.FlagActive ?? dealer.Status) == "0") return Results.BadRequest(new { error = $"Đại lý {d.DealerCode} đang ngưng hoạt động." });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var oldDate = line.DeliveryDate;
+    // `bDeliveryConfirm` = client gửi ngày (form: rỗng ⇒ chuỗi ""), tức đây là lượt XÁC NHẬN giao.
+    var bDeliveryConfirm = dto.DeliveryDate is not null;
+    // `bConfirmFirstTime` = confirm && DeliveryStatus == Stage.Pending ("P")
+    var bConfirmFirstTime = bDeliveryConfirm && line.DeliveryStatus == "P";
+    // `bConfirmOrReconfirm` = confirm && ( "P"  ||  ("A" && ngày MỚI khác ngày CŨ) )
+    var bConfirmOrReconfirm = bDeliveryConfirm &&
+        (line.DeliveryStatus == "P" || (line.DeliveryStatus == "A" && oldDate != dto.DeliveryDate));
+
+    if (bConfirmOrReconfirm)
+    {
+        // 4 cột của `alColumnEffective` (:95744-95747).
+        line.DeliveryDate = dto.DeliveryDate;
+        line.DeliveryStatus = "A";            // TConst.Stage.Approved
+        line.ConfirmDate = now;
+        line.ConfirmBy = who;
+    }
+
+    int hmcRows = 0;
+    if (bConfirmFirstTime)
+    {
+        // 🔴 CHỈ lần xác nhận ĐẦU TIÊN mới có hai side-effect này (nhánh `bConfirmFirstTime`, :95770+):
+        //   (a) `Car_Car.SellStatus = TConst.Stage.Finished` ("F") — xe chuyển sang trạng thái ĐÃ BÁN;
+        //   (b) sinh `HMC_Report` với `DeliveryType = TConst.HTCConst.HMCRpt_DeliveryToEndUser` = **"001A"**.
+        var car = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == vinOfLine);
+        if (car is not null) car.SellStatus = "F";
+        var contents = BuildHmcPerformContents(d.DealerCode, dto.DeliveryDate ?? now, vinOfLine, "001A", d.SalesType, now);
+        db.HmcReports.Add(new HmcReport { OrgId = t.OrgId, DealerCode = d.DealerCode, DealNo = no,
+            CarId = cid, VIN = vinOfLine, DeliveryType = "001A", SalesType = d.SalesType,
+            PerformDate = dto.DeliveryDate ?? now, CreatedDate = now, CreatedBy = who, PerformContents = contents });
+        hmcRows = 1;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        dealNo = no, carId = cid, line.DeliveryDate, line.DeliveryStatus, line.ConfirmDate, line.ConfirmBy,
+        bDeliveryConfirm, bConfirmFirstTime, bConfirmOrReconfirm, hmcReportRows = hmcRows,
+        sellStatusSetToFinished = bConfirmFirstTime
+    });
+}).RequireAuthorization();
 app.MapGet("/api/dealerdeals/cars-to-pdi", async (
     AppDbContext db, ITenantContext t,
     string? dealerCodeBuyer, string? vin, string? modelCode, string? dlrContractNo, string? inStock, string? buPattern) =>
@@ -33520,6 +33638,10 @@ record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCAppr
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
+/// <summary>#B11: sửa biển số dòng xe (`DealerSalesDealDetailUpdate_NormalInfo` — nguồn chỉ nhận PlateNo).</summary>
+record DealDetailPlateNoDto(string? PlateNo);
+/// <summary>#B11: xác nhận/sửa ngày giao xe (`…_DeliveryDate`). Không gửi ngày = không xác nhận.</summary>
+record DealDetailDeliveryDateDto(DateTime? DeliveryDate);
 record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);
 record SPSupportRetailImportDto(List<SPSupportRetailRowDto>? Rows);
 record DealerDealAttachRowDto(string? DealNo, string? FileNameNew, string? FilePathNew);
