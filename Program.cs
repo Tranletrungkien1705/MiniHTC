@@ -48156,6 +48156,102 @@ app.MapGet("/api/serassignmentworks/search", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #534 BẤM GIỜ THỰC TẾ TỪ MÁY TÍNH BẢNG — **BỐN CÔNG ĐOẠN KHÔNG BAO GIỜ ĐỔI TRẠNG THÁI** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:895 Ser_AssignmentWork_Update_ForTab`.
+// Endpoint: `POST /api/serassignmentworks/{roNo}/actual`. Nhận **14** mốc thực tế + `WorkType`.
+//
+// 🔴🔴 **HAI `switch (strWorkType)` CHỈ CÓ BA NHÁNH: `SCC` · `SCD` · `SCS`** — trong khi chữ ký hàm
+//   nhận đủ **bảy** công đoạn (`SCC SCD SCN SCS SCDB SCLR SCKSC`, xem #528). Đếm nguyên văn:
+//   khối *Start* có 3 `case`, khối *Finish* có 3 `case`, cả hai đều `default: break;`.
+//   ⇒ Bấm **Bắt đầu/Kết thúc** ở `SCN`, `SCDB`, `SCLR`, `SCKSC` thì `strDateTimeStart/Finish` giữ `""`
+//     ⇒ **không** gọi `SerROStatusUpdateForAssignmentWork` ⇒ lệnh **không chuyển sang `INGA`/`RPRD`**,
+//     và `bPushRoToHyundaiMeFinish` **không bật** ⇒ **không đẩy hãng**. Mốc giờ vẫn được ghi,
+//     nên nhìn màn hình thấy "đã bấm" mà **trạng thái đứng yên** — không lỗi, không cảnh báo.
+//   Port **xử lý đủ bảy** công đoạn và trả cờ `stagesMissingInSourceSwitch` để đo đúng phần nguồn bỏ.
+// 🔴 **KIỂM SAU KHI GHI**: ba lệnh `SaveData` (Main/WH/Dealer) nằm **TRƯỚC** khối `#region // ReCheck:`
+//   gọi `MyCheck_SerAssignmentWork_ActualStartDTime_Cavity` / `…ActualFinishDTime_Cavity` (14 lời gọi).
+//   Chúng vẫn trong `try` nên ném lỗi thì rollback được, nhưng **thứ tự ghi-rồi-mới-kiểm** khiến mọi
+//   `SaveData` chạy vô ích khi dữ liệu sai — và nếu sau này ai chèn `Commit` vào giữa thì thành mất bò.
+// 🔴 **Đẩy hãng lại nằm SAU `CommitSafety`** (giống #529): `Commit(Main/WH/Dealer)` rồi mới
+//   `PushDataROToHyundaiMe(...)`; và có **hai** kiểu đẩy — kết thúc thì đẩy
+//   `string.Format("'{0}'", Ser_RO_Stage.Repaired)` (**bọc nháy trong tham số khoang**), còn đổi khoang
+//   thì đẩy `strCavityIDPushToHyundaiMe`. Cùng một tham số mang **hai loại giá trị khác hẳn nhau**.
+// ⚠️ Trạng thái đích là hằng: `Ser_RO_Stage.InGarage = "INGA"` (bắt đầu) · `Repaired = "RPRD"` (kết thúc).
+// ⚠️ Điều kiện vào nhánh là `strWorkType == dt["WorkTypeStart"]` / `== dt["WorkTypeFinish"]` — so với
+//   **giá trị đã lưu trên bản ghi**, nên gửi `WorkType` lệch với cấu hình thì cũng **im lặng không làm gì**.
+app.MapPost("/api/serassignmentworks/{roNo}/actual", async (string roNo, AssignmentActualDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    string[] kStagesInSourceSwitch = { "SCC", "SCD", "SCS" };
+    string[] kAllStages = { "SCC", "SCD", "SCN", "SCS", "SCDB", "SCLR", "SCKSC" };
+    const string kStageInGarage = "INGA";   // Ser_RO_Stage.InGarage
+    const string kStageRepaired = "RPRD";   // Ser_RO_Stage.Repaired
+
+    var ro = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (ro is null) return Results.BadRequest(new { error = "Không tìm thấy lệnh sửa chữa.", roNo });
+    var w = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
+    if (w is null) return Results.NotFound(new { error = "Chưa có bản phân công cho lệnh " + roNo });
+
+    // Nguồn KIỂM SAU KHI GHI; ở đây kiểm TRƯỚC (lệch cố ý, an toàn hơn, có nêu cờ).
+    foreach (var g in kAllStages)
+    {
+        var st = (DateTime?)typeof(AssignmentActualDto).GetProperty(g + "ActualStartDTime")!.GetValue(dto);
+        var fi = (DateTime?)typeof(AssignmentActualDto).GetProperty(g + "ActualFinishDTime")!.GetValue(dto);
+        if (st is not null && fi is not null && st > fi)
+            return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_Actual*DTime_Cavity: " + g + " bat dau sau ket thuc." });
+    }
+
+    if (dto.SCCActualStartDTime is not null) w.SCCActualStartDTime = dto.SCCActualStartDTime;
+    if (dto.SCCActualFinishDTime is not null) w.SCCActualFinishDTime = dto.SCCActualFinishDTime;
+    if (dto.SCDActualStartDTime is not null) w.SCDActualStartDTime = dto.SCDActualStartDTime;
+    if (dto.SCDActualFinishDTime is not null) w.SCDActualFinishDTime = dto.SCDActualFinishDTime;
+    if (dto.SCNActualStartDTime is not null) w.SCNActualStartDTime = dto.SCNActualStartDTime;
+    if (dto.SCNActualFinishDTime is not null) w.SCNActualFinishDTime = dto.SCNActualFinishDTime;
+    if (dto.SCSActualStartDTime is not null) w.SCSActualStartDTime = dto.SCSActualStartDTime;
+    if (dto.SCSActualFinishDTime is not null) w.SCSActualFinishDTime = dto.SCSActualFinishDTime;
+    if (dto.SCDBActualStartDTime is not null) w.SCDBActualStartDTime = dto.SCDBActualStartDTime;
+    if (dto.SCDBActualFinishDTime is not null) w.SCDBActualFinishDTime = dto.SCDBActualFinishDTime;
+    if (dto.SCLRActualStartDTime is not null) w.SCLRActualStartDTime = dto.SCLRActualStartDTime;
+    if (dto.SCLRActualFinishDTime is not null) w.SCLRActualFinishDTime = dto.SCLRActualFinishDTime;
+    if (dto.SCKSCActualStartDTime is not null) w.SCKSCActualStartDTime = dto.SCKSCActualStartDTime;
+    if (dto.SCKSCActualFinishDTime is not null) w.SCKSCActualFinishDTime = dto.SCKSCActualFinishDTime;
+    w.LogLUDateTime = DateTime.Now;
+
+    // Đồng bộ tiến độ: nguồn chỉ nhận WorkType trùng cấu hình đã lưu trên bản ghi.
+    var workType = (dto.WorkType ?? "").Trim();
+    string? newStatus = null; var stageHandledBySource = kStagesInSourceSwitch.Contains(workType);
+    DateTime? Start(string g) => (DateTime?)typeof(AssignmentActualDto)
+        .GetProperty(g + "ActualStartDTime")!.GetValue(dto);
+    DateTime? Finish(string g) => (DateTime?)typeof(AssignmentActualDto)
+        .GetProperty(g + "ActualFinishDTime")!.GetValue(dto);
+
+    if (workType.Length > 0 && workType == w.WorkTypeStart && Start(workType) is not null)
+        newStatus = kStageInGarage;
+    if (workType.Length > 0 && workType == w.WorkTypeFinish && Finish(workType) is not null)
+        newStatus = kStageRepaired;
+    var pushToHyundaiMe = newStatus is not null;
+    var pushFinish = newStatus == kStageRepaired;
+    if (newStatus is not null) ro.Status = newStatus;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        roNo, assignmentId = w.Id, roStatus = ro.Status, newStatus,
+        workType, stageHandledBySource,
+        // Đo đúng phần nguồn bỏ sót: bốn công đoạn không có nhánh switch.
+        stagesMissingInSourceSwitch = kAllStages.Except(kStagesInSourceSwitch).ToArray(),
+        sourceWouldNotChangeStatusForThisWorkType = !stageHandledBySource && newStatus is not null,
+        pushToHyundaiMe, pushFinish,
+        pushHappensAfterCommitInSource = true,
+        pushParamCarriesTwoKinds = "khoang (CavityID) HOAC chuoi \"'RPRD'\" boc nhay",
+        sourceChecksAfterSave = "SaveData(Main/WH/Dealer) chay TRUOC #region ReCheck (14 loi goi kiem khoang)",
+        workTypeMustMatchStoredConfig = "so voi WorkTypeStart/WorkTypeFinish da luu tren ban ghi",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -49972,6 +50068,16 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record AssignmentActualDto(string? WorkType = null,
+    DateTime? SCCActualStartDTime = null, DateTime? SCCActualFinishDTime = null,
+    DateTime? SCDActualStartDTime = null, DateTime? SCDActualFinishDTime = null,
+    DateTime? SCNActualStartDTime = null, DateTime? SCNActualFinishDTime = null,
+    DateTime? SCSActualStartDTime = null, DateTime? SCSActualFinishDTime = null,
+    DateTime? SCDBActualStartDTime = null, DateTime? SCDBActualFinishDTime = null,
+    DateTime? SCLRActualStartDTime = null, DateTime? SCLRActualFinishDTime = null,
+    DateTime? SCKSCActualStartDTime = null, DateTime? SCKSCActualFinishDTime = null,
+    string? Note = null);   // #534
+
 record RoWorkTimeDto(string? RONo, string? ROID, string? ROWTNo, DateTime? PointDateTime,
     string? FlagPlay, string? FlagBegin, string? FlagEnd);   // #532
 
