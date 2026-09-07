@@ -33855,6 +33855,99 @@ app.MapPost("/api/pis/{no}/detail", async (string no, List<PiLineDto> lines, App
     return Results.Ok(new { p.PiNo, lines = rows.Count, replaced = old.Count });
 }).RequireAuthorization();
 
+// ===== #B75 XOÁ PI (Performance Invoice) — `OrderPIDelete_New20181119` =====
+// Trace LIVE: WS `OrderPIDelete` (`WSHTC.asmx.cs:7438`) → **`_biz.OrderPIDelete_New20181119`**
+//   (`Biz.HTC.WH.cs:29601`), kèm hàm con **`WO_WorkOrder_DelSmart_New20181119`** (`:29790`).
+//   ⚠️ Ba file khác cũng chứa tên này đều là RÁC: `BK.WSHTC/WSHTC.asmx.20210208.cs`,
+//     `WSHTC.asmx - Copy.cs`, `Web References/…/Reference.cs` (proxy sinh tự động). Đã bỏ qua.
+//   3B đo thật, **khớp cả 2 máy**: `OrderPIDelete_New20181119` start=29601 md5
+//   `cb0c3efae8634aa4c66ed7c4dc8b2281` · `WO_WorkOrder_DelSmart_New20181119` start=29790 md5
+//   `03ba60852eb47f10a774b1510081bc27`.
+// 🔴 **KHOÁ LÀ `RefNo`, KHÔNG PHẢI `PiNo`** — mọi mệnh đề của nguồn (`opid.RefNo = @RefNo`,
+//    `delete … where t.RefNo = @RefNo`) đều theo `RefNo`. Endpoint này vì thế nhận `refNo`.
+// 🔴 **GHI VÀO HAI CƠ SỞ DỮ LIỆU**: cùng một câu delete chạy trên **`_dbMain` VÀ `_dbWH`**, mỗi bên một
+//    transaction riêng (`bNeedTransaction` / `bNeedTransaction_WH`), rồi `CommitSafety` **lần lượt**.
+//    ⚠️ Đây **KHÔNG phải 2-phase commit**: nếu `_dbWH` hỏng **sau khi** `_dbMain` đã commit thì hai DB
+//    **lệch vĩnh viễn**. MiniHTC chỉ có một DB nên port ghi một lần — ghi nhận khác biệt, không mô phỏng.
+// 🔴 **GUARD 1 — từ chối xoá nếu PI đã gắn HỢP ĐỒNG NGOẠI**: `select top 1 … where opid.RefNo = @RefNo
+//    and opid.ContractNo is not null` ⇒ ném `OrderPIDelete_ExistRefToContract`, kèm **6 tham số chẩn
+//    đoán** (`RefNo, LCTemp, SpecCode, ModelCode, ColorCode, ContractNo`) lấy từ **`Rows[0]`**.
+// 🔴 **GUARD 2 — `WO_WorkOrder_DelSmart`: PHẠM VI TOÀN CỤC, KHÔNG giới hạn theo PI đang xoá.**
+//    Câu kiểm là `select t.* from Car_VIN t left join Ord_PerformanceInvoiceDetail opid
+//    on t.WorkOrderNo = opid.WorkOrderNo where opid.RefNo is null` — **không có `@RefNo`**, không có
+//    mệnh đề nào buộc về PI vừa xoá. ⇒ **Xoá BẤT KỲ PI nào cũng thất bại nếu TRONG TOÀN HỆ THỐNG còn
+//    một VIN trỏ tới WO không còn dòng PI nào**, kể cả VIN chẳng liên quan gì tới PI này.
+//    Lỗi: `WO_WorkOrder_DelSmart_PIBlankButVINExist`. Đây là hành vi THẬT của nguồn, port giữ nguyên
+//    và trả `orphanVinScope = "GLOBAL"` để người dùng hiểu vì sao bị chặn.
+// 🔴 **DÒNG ACTIVE vs DÒNG COMMENT — lệch Main/WH CÓ THẬT**: lệnh dọn `WO_WorkOrder` chỉ chạy trên
+//    `_dbWH`; lời gọi `_dbMain.ExecQuery(strSqlSave)` **bị comment** (`:29838-29840`).
+//    ⇒ `WO_WorkOrder` bên **DB Main giữ lại dòng mồ côi vĩnh viễn**. Port theo dòng ACTIVE (chỉ WH).
+// 🔴 Thứ tự xoá: **DÒNG trước, ĐẦU sau** (`Ord_PerformanceInvoiceDetail` → `Ord_PerformanceInvoice`).
+// ✅ RBAC: `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` — **bắt buộc FlagDirect**.
+// ✅ `myOrder_CheckPI(…, TConst.Flag.Active, …)` — PI **phải tồn tại** trước khi xoá.
+// 📌 NỢ: bảng `WO_WorkOrder` chưa có trong MiniHTC ⇒ **GUARD 2 port được** (chỉ cần `Car_VIN.WorkOrderNo`
+//    — đã thêm ở #B74 — và `PiLine.WorkOrderNo`), nhưng **lệnh DỌN `WO_WorkOrder` thì không**;
+//    cờ `woWorkOrderCleanupSkipped` báo rõ, không bịa.
+app.MapDelete("/api/pis/by-ref/{refNo}", async (string refNo, AppDbContext db, ITenantContext t) =>
+{
+    refNo = refNo.Trim().ToUpperInvariant();
+
+    // `myOrder_CheckPI(…, Flag.Active, …)` — PI phải tồn tại.
+    var heads = await db.Pis.Where(p => p.OrgId == t.OrgId && p.RefNo != null
+                                        && p.RefNo.ToUpper() == refNo).ToListAsync();
+    if (heads.Count == 0) return Results.NotFound(new { refNo, error = "OrderPIDelete_PINotExist" });
+    var headIds = heads.Select(h => h.Id).ToHashSet();
+    var lines = await db.PiLines.Where(l => l.OrgId == t.OrgId && headIds.Contains(l.PiId)).ToListAsync();
+
+    // ---- GUARD 1: có dòng nào đã gắn hợp đồng ngoại ⇒ TỪ CHỐI.
+    var hit = lines.FirstOrDefault(l => !string.IsNullOrWhiteSpace(l.ContractNo));   // `Rows[0]` của nguồn
+    if (hit is not null)
+        return Results.BadRequest(new
+        {
+            error = "OrderPIDelete_ExistRefToContract",
+            check = new
+            {
+                RefNo = refNo, hit.LCTemp, hit.SpecCode, hit.ModelCode, hit.ColorCode, hit.ContractNo
+            },
+            note = "Nguon tu choi xoa PI khi con dong tro toi HOP DONG NGOAI (opid.ContractNo is not null), kem 6 tham so chan doan lay tu Rows[0]."
+        });
+
+    // ---- GUARD 2: VIN mồ côi WO — PHẠM VI TOÀN CỤC (nguồn KHÔNG lọc theo @RefNo).
+    var woWithPi = (await db.PiLines.Where(l => l.OrgId == t.OrgId && l.WorkOrderNo != null)
+        .Select(l => l.WorkOrderNo!).ToListAsync()).ToHashSet();
+    var orphanVin = await db.CarVinMasters
+        .Where(c => c.OrgId == t.OrgId && c.WorkOrderNo != null)
+        .Select(c => new { c.VIN, c.WorkOrderNo }).ToListAsync();
+    var orphan = orphanVin.FirstOrDefault(v => !woWithPi.Contains(v.WorkOrderNo!));
+    if (orphan is not null)
+        return Results.BadRequest(new
+        {
+            error = "WO_WorkOrder_DelSmart_PIBlankButVINExist",
+            check = new { orphan.WorkOrderNo, orphan.VIN },
+            orphanVinScope = "GLOBAL",
+            note = "Cau kiem cua nguon KHONG co @RefNo: 'select t.* from Car_VIN t left join Ord_PerformanceInvoiceDetail opid on t.WorkOrderNo = opid.WorkOrderNo where opid.RefNo is null'. => xoa BAT KY PI nao cung that bai neu TRONG TOAN HE THONG con mot VIN tro toi WO khong con dong PI nao, ke ca VIN chang lien quan gi toi PI nay. Day la hanh vi THAT cua nguon."
+        });
+
+    // ---- Xoá: DÒNG trước, ĐẦU sau.
+    db.PiLines.RemoveRange(lines);
+    db.Pis.RemoveRange(heads);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        refNo,
+        deletedHeads = heads.Count,
+        deletedLines = lines.Count,
+        keyNote = "KHOA LA RefNo, KHONG PHAI PiNo - moi menh de cua nguon deu theo RefNo.",
+        deleteOrderNote = "Xoa DONG truoc (Ord_PerformanceInvoiceDetail), DAU sau (Ord_PerformanceInvoice), trong cung mot batch.",
+        twoDbNote = "Nguon chay CUNG cau delete tren CA _dbMain VA _dbWH, moi ben mot transaction rieng roi CommitSafety LAN LUOT - KHONG phai 2-phase commit: neu _dbWH hong SAU KHI _dbMain da commit thi hai DB lech vinh vien. MiniHTC chi co mot DB nen ghi mot lan.",
+        activeVsCommentNote = "Lenh don WO_WorkOrder chi chay tren _dbWH; loi goi _dbMain.ExecQuery(strSqlSave) BI COMMENT (Biz.HTC.WH.cs:29838-29840) => WO_WorkOrder ben DB Main giu lai dong mo coi VINH VIEN. Port theo dong ACTIVE.",
+        woWorkOrderCleanupSkipped = true,
+        woDebt = "NO: bang WO_WorkOrder chua co trong MiniHTC => GUARD 2 port duoc (chi can Car_VIN.WorkOrderNo - them o #B74 - va PiLine.WorkOrderNo) nhung LENH DON WO_WorkOrder thi khong. Khong bia.",
+        rbacNote = "Nguon goi myCommon_CheckHTCDirect(..., TConst.Flag.Active) - BAT BUOC FlagDirect."
+    });
+}).RequireAuthorization();
+
 // ===== Cập nhật giá xe thực tế theo VIN (CarActualPrice — port 1:1 FrmUpdateCar, DMSales.Foton) =====
 app.MapGet("/api/caractualprices", async (AppDbContext db, ITenantContext t, string? car) =>
 {
