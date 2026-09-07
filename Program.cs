@@ -26505,6 +26505,22 @@ app.MapGet("/api/report/campaign-dealer", async (AppDbContext db, ITenantContext
             + "CSDL TRUNG TÂM và ser_ro ở CSDL đại lý. Nếu chiến dịch khai ở trung tâm dưới mã khác (hoặc "
             + "để trống) thì #tbl_cam rỗng ⇒ BÁO CÁO TRẮNG, trông y hệt 'đại lý không tham gia chiến dịch'. "
             + "MiniHTC chỉ lọc đại lý trên LỆNH SỬA.",
+        // ===== #430 ĐỐI CHIẾU TWIN `Ser_CampaignDealerRpt_WH` (`WH.cs:8791-9164`) =====
+        // Đếm chuỗi 8 mốc: `Status='FNS'` 1=1 · `zzzzClauseWhereDealerCodeConditionList` **5=5** ·
+        //   `full outer join` 1=1 (comment cả hai bên) · `ropAmount` 4=4 · `rsiAmount` 4=4 · `group by` 5=5.
+        // ⇒ **KHÔNG lệch nghiệp vụ.** Hai khác biệt duy nhất:
+        //   ① `strDBName_CommonCenter` 3 ở Main, **0** ở `_WH` — bản kho đọc `Ser_Campaign` **cục bộ**
+        //     thay vì CSDL trung tâm (đúng bản chất hậu tố `_WH`).
+        //   ② Bản Main có **bảy** câu `drop table` dọn bảng tạm; bản `_WH` **bỏ hết**. Không đổi kết quả
+        //     (bảng `#temp` tự huỷ khi phiên kết nối được đặt lại) nhưng là khác biệt về vệ sinh tài nguyên.
+        // ⚠️ Bài học đo lường: lần bound đầu tôi cắt hàm Main bằng mốc `public DataSet` nên **lấn sang**
+        //   hai hàm `private void CheckExistRptKPI*` phía sau ⇒ diff nhiễu. Mốc kết thúc phải gồm **cả**
+        //   `private void` / `private DataSet`, không chỉ `public DataSet`.
+        // 📊 Thống kê twin `_WH` tới #430: **giống nghiệp vụ 6** (#406/#407/#409/#418/#426/#430) ·
+        //   **lệch thật 3** (#378/#413/#422) ⇒ 3/9.
+        whTwinNote = "Ser_CampaignDealerRpt_WH: đếm chuỗi 8 mốc đều bằng nhau ⇒ KHÔNG lệch nghiệp vụ. "
+            + "Khác biệt: bản kho đọc Ser_Campaign CỤC BỘ (không qua CSDL trung tâm) và bỏ hết bảy câu "
+            + "drop table dọn bảng tạm.",
         twoStageAggregateNote = "KIỂM RỒI, KHÔNG phải bug: tầng gộp 1 có group by chứa chính các cột đang "
             + "sum (Factor/Price/Quantity/VAT) — nhìn như gộp sai — nhưng tầng gộp 2 gộp lại theo ROID+CamID "
             + "nên tổng cuối đúng. Hai tầng bù nhau.",
