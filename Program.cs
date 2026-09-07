@@ -36138,6 +36138,158 @@ app.MapPost("/api/salesmen/create-multi", async (
     });
 }).RequireAuthorization();
 
+// ===== #B100 ĐỔI TRẠNG THÁI NHÂN SỰ NVBH — `Mst_SalesMan_UpdateStatus` =====
+// Trace LIVE: WS `:5366` → **`_biz.Mst_SalesMan_UpdateStatus`** (`Biz.HTC.WH.cs:19424`) —
+//   **không có hậu tố `_NewYYYYMMDD`** (hiếm, như #B77). 3B đo thật, **khớp cả 2 máy**:
+//   start=19424 md5 `5582245304d83752b4f4e2f17247b722`.
+// 🔴 **HAI TRỤC TRẠNG THÁI TÁCH BIỆT — đừng gộp**:
+//      `SMStatus`   = **trạng thái nhân sự**, 4 giá trị (`TConst.SMStatus`): **"0"** nghỉ việc ·
+//                     **"1"** chính thức · **"2"** thử việc · **"3"** cộng tác viên;
+//      `FlagActive` = **suy ra**, chỉ "1"/"0" — `SMStatus == "0"` ⇒ `"0"`, còn lại ⇒ `"1"`.
+//    Client **không** gửi `FlagActive` (cùng khuôn #B99).
+// 🔴 **MÁY TRẠNG THÁI CÓ HƯỚNG**: đang **"1" (chính thức)** thì **CHỈ** được về **"1"** hoặc **"0"**
+//    — **không lùi** về thử việc/cộng tác viên. Trạng thái khác thì đi đâu cũng được.
+// 🔴 **Khi chuyển sang NGHỈ VIỆC (`FlagActive` → "0")** — ba trường **BẮT BUỘC**:
+//    `SMReason` (`…_InvalidSMReason`) · `SMDesc` (`…_InvalidSMDesc`) ·
+//    `SMEndDate` (`…_SMEndDateNotNull`, và phải đúng định dạng ⇒ `…_InvalidSMEndDate`).
+// 🔴 **Khi ĐI LÀM LẠI** (`FlagActive` → "1" **và** trạng thái CŨ là "0"): nguồn **XOÁ VỀ NULL**
+//    `SMReason`, `SMDesc`, `SMEndDate` **và** đặt `SMStartDate` mới. ⇒ Đây là **reset hồ sơ nghỉ
+//    việc**, không phải chỉ đổi cờ. Port bỏ bước xoá ⇒ nhân viên đang làm vẫn mang lý do nghỉ cũ.
+// 🔴 **`SMStartDate` phải LỚN HƠN ngày nghỉ việc gần nhất**: `select max(t.SMEndDate) from
+//    Mst_SalesManHistoryInactive t where t.**SMHyundaiCode** = @…` — lại dò theo **mã CÁ NHÂN**
+//    (như guard chế tài #B99), không phải `SMCode`. So bằng **`string.CompareTo` trên chuỗi ngày**
+//    `"yyyy-MM-dd"` (so chuỗi vẫn đúng thứ tự vì định dạng cố định) ⇒ `<= 0` là **chặn**.
+// 🔴 **GHI LỊCH SỬ TRƯỚC KHI INACTIVE** — chỉ khi **thật sự chuyển** Active → Inactive
+//    (`strFlagActive == "0"` **và** `FlagActive` **hiện tại trong DB** == `"1"`): chụp một dòng vào
+//    `Mst_SalesManHistoryInactive` (`SMCode`, `SMHyundaiCode`, `DealerCode`, `SMStatus`,
+//    `IdentityCardNo`, `SMFlagActive`, `SMStartDate`, `SMEndDate`, `SMReason`, `SMDesc`).
+//    ⚠️ Chụp **giá trị CŨ** (`dt_Mst_SalesManCur`), không phải giá trị vừa gán.
+// 🔴 Guard **chế tài** lặp lại như #B99 (`HR_SalesManViolate`, `ViolateTypeId='TT'` còn hạn).
+// 🔴 `alColumnEffective` **thay đổi theo nhánh** — luôn có `FlagActive`/`SMStatus`/`UpdateStatusDtime`
+//    /`UpdateStatusBy`; thêm `SMReason`/`SMDesc` khi nghỉ việc; thêm cả `SMStartDate`/`SMEndDate` khi
+//    đi làm lại. Ghi **cả `_dbMain` và `_dbWH`**.
+app.MapPost("/api/salesmen/{code}/update-status", async (
+    string code, SalesManUpdateStatusDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var smCode = (code ?? "").Trim().ToUpperInvariant();
+    var sm = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == smCode);
+    if (sm is null) return Results.NotFound(new { error = "Mst_SalesMan_NotExist", check = new { SMCode = smCode } });
+
+    var smStatus = (dto.SMStatus ?? "").Trim();
+    if (smStatus != "0" && smStatus != "1" && smStatus != "2" && smStatus != "3")
+        return Results.BadRequest(new { error = "Mst_SalesMan_UpdateStatus_InvalidSMStatus", check = new { SMCode = smCode, SMStatus = smStatus } });
+
+    // 🔴 Máy trạng thái CÓ HƯỚNG: "1" chỉ về được "1" hoặc "0".
+    var smStatusCur = sm.SMStatus ?? "";
+    if (smStatusCur == "1" && !(smStatus == "1" || smStatus == "0"))
+        return Results.BadRequest(new
+        {
+            error = "Mst_SalesMan_UpdateStatus_InvalidSMStatus",
+            check = new { SMCode = smCode, SMStatus = smStatus, SMStatusCur = smStatusCur },
+            transitionNote = "Dang CHINH THUC ('1') thi CHI duoc ve '1' hoac '0' - khong lui ve thu viec/cong tac vien."
+        });
+
+    var flagActive = smStatus == "0" ? "0" : "1";
+    var smHyundaiCode = (dto.SMHyundaiCode ?? sm.SMHyundaiCode ?? "").Trim();
+    var today = DateTime.Now.Date;
+
+    // 🔴 SMStartDate phải LỚN HƠN ngày nghỉ việc gần nhất — dò theo SMHyundaiCode (CÁ NHÂN).
+    if (dto.SMStartDate is not null && smHyundaiCode.Length > 0)
+    {
+        var lastEnd = await db.SalesManHistoryInactives
+            .Where(h => h.OrgId == t.OrgId && h.SMHyundaiCode == smHyundaiCode && h.SMEndDate != null)
+            .MaxAsync(h => (DateTime?)h.SMEndDate);
+        if (lastEnd is not null && dto.SMStartDate.Value.Date <= lastEnd.Value.Date)
+            return Results.BadRequest(new
+            {
+                error = "Mst_SalesMan_UpdateStatus_InvalidSMStartDate",
+                check = new { SMCode = smCode, SMStartDate = dto.SMStartDate, SMEndDateLast = lastEnd },
+                DESC = "Ngay bat dau phai lon hon ngay nghi viec gan nhat"
+            });
+    }
+
+    // 🔴 Guard chế tài (như #B99): 'TT' còn hạn ⇒ chặn.
+    if (smHyundaiCode.Length > 0)
+    {
+        var peers = await db.SalesMen.Where(x => x.OrgId == t.OrgId && x.SMHyundaiCode == smHyundaiCode)
+            .Select(x => x.SalesManCode).ToListAsync();
+        var v = await db.SalesManViolates.Where(x => x.OrgId == t.OrgId && peers.Contains(x.SalesManCode))
+            .OrderByDescending(x => x.ViolateNumber).FirstOrDefaultAsync();
+        if (v is not null && string.Equals(v.ViolateTypeId, "TT", StringComparison.OrdinalIgnoreCase)
+            && v.ViolateDateEnd is not null && v.ViolateDateEnd.Value.Date >= today)
+            return Results.BadRequest(new
+            {
+                error = "Mst_SalesMan_UpdateStatus_SalesManViolate",
+                check = new { SMCode = smCode, SMHyundaiCode = smHyundaiCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateEnd }
+            });
+    }
+
+    var reason = (dto.SMReason ?? "").Trim();
+    var desc = (dto.SMDesc ?? "").Trim();
+
+    // 🔴 Nghỉ việc ⇒ BA trường bắt buộc.
+    if (flagActive == "0")
+    {
+        if (reason.Length == 0) return Results.BadRequest(new { error = "Mst_SalesMan_UpdateStatus_InvalidSMReason", check = new { SMCode = smCode } });
+        if (desc.Length == 0) return Results.BadRequest(new { error = "Mst_SalesMan_UpdateStatus_InvalidSMDesc", check = new { SMCode = smCode } });
+        if (dto.SMEndDate is null)
+            return Results.BadRequest(new { error = "Mst_SalesMan_UpdateStatus_SMEndDateNotNull", check = new { SMCode = smCode }, DESC = "Khi nhan vien nghi viec thi can phai nhap ngay ket thuc" });
+    }
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var flagActiveCur = sm.Status;                 // giá trị CŨ, dùng cho bước ghi lịch sử
+
+    // 🔴 GHI LỊCH SỬ TRƯỚC KHI INACTIVE — chụp giá trị CŨ, chỉ khi THẬT SỰ chuyển "1" → "0".
+    var historyWritten = false;
+    if (flagActive == "0" && flagActiveCur == "1")
+    {
+        db.SalesManHistoryInactives.Add(new SalesManHistoryInactive
+        {
+            OrgId = t.OrgId,
+            SMCode = sm.SalesManCode, SMHyundaiCode = sm.SMHyundaiCode, DealerCode = sm.DealerCode,
+            SMStatus = sm.SMStatus, IdentityCardNo = sm.IdentityCardNo,
+            SMFlagActive = sm.Status, SMStartDate = sm.StartDate,
+            SMEndDate = dto.SMEndDate, SMReason = reason, SMDesc = desc,
+            InactiveDateTime = now, InactiveBy = by
+        });
+        historyWritten = true;
+    }
+
+    // `alColumnEffective` — bốn cột luôn ghi.
+    sm.Status = flagActive; sm.SMStatus = smStatus;
+    sm.UpdateStatusDtime = now; sm.UpdateStatusBy = by;
+
+    var resetOnRehire = false;
+    if (flagActive == "0") { sm.SMReason = reason; sm.SMDesc = desc; sm.EndDate = dto.SMEndDate; }
+    else if (smStatusCur == "0")
+    {
+        // 🔴 ĐI LÀM LẠI: XOÁ hồ sơ nghỉ việc về null + đặt SMStartDate mới.
+        sm.SMReason = null; sm.SMDesc = null; sm.EndDate = null;
+        sm.StartDate = dto.SMStartDate ?? sm.StartDate;
+        resetOnRehire = true;
+    }
+    else sm.EndDate = dto.SMEndDate;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        smCode, smStatusBefore = smStatusCur, smStatus, flagActiveBefore = flagActiveCur, flagActive = sm.Status,
+        historyWritten, resetOnRehire,
+        sm.SMReason, sm.SMDesc, sm.StartDate, sm.EndDate, sm.UpdateStatusDtime, sm.UpdateStatusBy,
+        twoAxisNote = "HAI TRUC TRANG THAI TACH BIET: SMStatus = trang thai NHAN SU (4 gia tri: 0 nghi viec | 1 chinh thuc | 2 thu viec | 3 cong tac vien); FlagActive = SUY RA, chi '1'/'0' (SMStatus=='0' => '0'). Client KHONG gui FlagActive (cung khuon #B99).",
+        transitionNote = "MAY TRANG THAI CO HUONG: dang '1' (chinh thuc) thi CHI duoc ve '1' hoac '0' - KHONG lui ve thu viec/cong tac vien. Trang thai khac thi di dau cung duoc.",
+        requiredOnQuitNote = "Khi chuyen sang NGHI VIEC: BA truong BAT BUOC - SMReason (_InvalidSMReason), SMDesc (_InvalidSMDesc), SMEndDate (_SMEndDateNotNull, sai dinh dang => _InvalidSMEndDate).",
+        rehireResetNote = "Khi DI LAM LAI (FlagActive -> '1' VA trang thai CU la '0'): nguon XOA VE NULL SMReason/SMDesc/SMEndDate VA dat SMStartDate moi. Day la RESET HO SO NGHI VIEC, khong phai chi doi co. Port bo buoc xoa => nhan vien dang lam van mang ly do nghi cu.",
+        startDateGuardNote = "SMStartDate phai LON HON ngay nghi viec gan nhat: 'select max(t.SMEndDate) from Mst_SalesManHistoryInactive t where t.SMHyundaiCode = @...' - do theo MA CA NHAN (nhu guard che tai #B99), khong phai SMCode. Nguon so bang string.CompareTo tren chuoi ngay 'yyyy-MM-dd' (dung thu tu vi dinh dang co dinh); <= 0 la CHAN.",
+        historyNote = "GHI LICH SU TRUOC KHI INACTIVE - chi khi THAT SU chuyen Active -> Inactive (strFlagActive=='0' VA FlagActive HIEN TAI TRONG DB == '1'). Chup GIA TRI CU (dt_Mst_SalesManCur), khong phai gia tri vua gan.",
+        effectiveColsNote = "alColumnEffective THAY DOI THEO NHANH: luon co FlagActive/SMStatus/UpdateStatusDtime/UpdateStatusBy; them SMReason/SMDesc khi nghi viec; them ca SMStartDate/SMEndDate khi di lam lai. Ghi CA _dbMain va _dbWH.",
+        noSuffixNote = "Ten biz KHONG co hau to _NewYYYYMMDD (hiem, nhu #B77)."
+    });
+}).RequireAuthorization();
+
 // Dấu ngăn của nguồn là `|`; chấp nhận thêm `,` để client hiện tại không vỡ (khác biệt CÓ Ý).
 static List<string> SplitConditionList(string? s) =>
     string.IsNullOrWhiteSpace(s)
@@ -40649,6 +40801,7 @@ record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   //
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record SalesManUpdateStatusDto(string? SMHyundaiCode, string? SMStatus, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);   // #B100 - KHONG co FlagActive: biz suy tu SMStatus
 record SalesManCreateMultiDto(string? SMCode, string? DealerCode, string? SMName, string? SMGender,
     DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
     string? QualificationCode, string? SMSpecialized, string? SMYearExperence, DateTime? SMStartDate,

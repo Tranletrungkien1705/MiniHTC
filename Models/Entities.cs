@@ -132,6 +132,20 @@ public sealed class SalesMan
     public string? GroupLink { get; set; }
     public string? ZaloLink { get; set; }
     public string? AccountHTA { get; set; }
+    // ===== #B100 parity `Mst_SalesMan` — trục TRẠNG THÁI NHÂN SỰ (`Mst_SalesMan_UpdateStatus`) =====
+    /// <summary>🔴 `Mst_SalesMan.SMStatus` — **trạng thái nhân sự** theo `TConst.SMStatus`
+    /// (`Const.Main.cs:1213-1219`): **"0"** nghỉ việc · **"1"** chính thức · **"2"** thử việc ·
+    /// **"3"** cộng tác viên. ⚠️ **KHÁC** <see cref="Status"/> (= `FlagActive`, chỉ "1"/"0") —
+    /// `FlagActive` được **suy ra** từ `SMStatus`, không nhập tay.</summary>
+    public string? SMStatus { get; set; }
+    /// <summary>Mốc đổi trạng thái gần nhất (`UpdateStatusDtime`/`UpdateStatusBy`) — nguồn ghi
+    /// **mỗi lần** đổi trạng thái, tách khỏi `LogLU*`.</summary>
+    public DateTime? UpdateStatusDtime { get; set; }
+    public string? UpdateStatusBy { get; set; }
+    /// <summary>🔴 Lý do + diễn giải nghỉ việc (`SMReason`/`SMDesc`). **Bắt buộc khi chuyển sang nghỉ
+    /// việc**, và bị **XOÁ VỀ NULL** khi nhân viên đi làm lại — xem endpoint `/api/salesmen/{code}/update-status`.</summary>
+    public string? SMReason { get; set; }
+    public string? SMDesc { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
