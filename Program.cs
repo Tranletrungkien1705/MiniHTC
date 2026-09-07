@@ -26392,6 +26392,100 @@ app.MapGet("/api/params/{code}", async (string code, AppDbContext db, ITenantCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #428 TRA BẢN TIN KỸ THUẬT (`Blt_BulletinSearch`) — ô **GHI CHÚ** không bao giờ ra kết quả =====
+// TRACE: `FrmBulletinHTCSearch` → `BltBulletin.Blt_BulletinSearch` (`BltBulletin.cs:801`)
+//   → WS `Blt_Bulletin_Get` → biz **`Blt_Bulletin_Get_20210224`** (`BizCarSv.Bulletin.cs:2523`).
+//   ⚠️ Có **11 hàm cùng họ `Blt_Bulletin_Get*`** trong một file; WS chỉ gọi bản `_20210224`.
+//
+// 🔴 **LỖI THẬT — HAI QUY ƯỚC DỰNG MỆNH ĐỀ TRỘN TRONG CÙNG MỘT HÀM** (cùng gốc với #427):
+//   Biz dùng `BuildClause` cho `BulletinID` · `BulletinNo` · `CreateDate` · `UserCreate` · `VinNo`
+//     ⇒ chuỗi truyền vào **PHẢI kèm toán tử** (`"like%abc%"`, `">=2026-01-01"`).
+//   nhưng dùng `BuildClauseConditionSingle("and", "si.Remark", **"like"**, @p, giá trị)` cho `Remark`
+//     ⇒ hàm này **tự cấp toán tử** và đưa giá trị vào tham số **NGUYÊN VĂN** (đọc thân: nó chỉ
+//       `string.Format("{0} ({1} {2} {3})")` rồi `AddRange(paramName, paramValue)`, **không cắt gì cả**).
+//   Mà tầng service lại dựng `strRemarkConditionList = "like" + "%abc%"` cho **cả hai** loại như nhau.
+//   ⇒ Với Remark, câu SQL thành `si.Remark like @p` với `@p = "like%abc%"`
+//     ⇒ **tìm những ghi chú bắt đầu bằng đúng chữ "like"**. Người dùng gõ gì cũng ra **rỗng**.
+//     Không lỗi, không cảnh báo — ô tìm kiếm chỉ đơn giản là không bao giờ khớp.
+//   📌 MiniHTC lọc Remark bằng **chứa (contains)** đúng ý định của màn, và trả cờ `remarkFilterBrokenInSource`.
+//
+// 📌 **KẾT QUẢ ÂM TÍNH đã kiểm** (đừng "phát hiện" lại): service nối `"like"` + `"%x%"` **KHÔNG có dấu cách**
+//   (`"like%x%"`) cho BulletinNo/Vin/Remark, chỉ `UserCreate` có dấu cách (`"like "`). Với `BuildClause` thì
+//   **không sao**: nó nhận diện tiền tố bằng `StartsWith("LIKE")` rồi cắt đúng `Substring(4)` ⇒ ba ô kia chạy đúng.
+//   Chỉ `Remark` hỏng, vì nó đi vào hàm KHÁC.
+//
+// 🔴 **THAM SỐ CHẾT**: service khai `strIsActive` nhưng khi gọi WS lại truyền cứng `Constants.Flag.Active`
+//   (= `"1"`) ⇒ **không bao giờ tra được bản tin đã ngừng hiệu lực**. Đây là ca **thứ tư** cùng kiểu
+//   (#410 mã đại lý bị thay bằng phiên đăng nhập · #420 tự gán chính nó · #423 tên nói sai khái niệm).
+// ⚠️ Khoảng ngày dựng thành `">=from|<=to"` (giống #406) và áp lên `si.CreateDate`.
+// ⚠️ `BuildClause` gọi `.ToUpper()` lên **cả giá trị tham số** ⇒ dữ liệu lưu chữ thường có thể không khớp.
+app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
+    string? bulletinId, string? bulletinNo, DateTime? createDateFrom, DateTime? createDateTo,
+    string? remark, string? userCreate, string? vin, bool? includeInactive, bool? getDetail) =>
+{
+    var qy = db.Bulletins.Where(b => b.OrgId == t.OrgId);
+
+    // Nguồn ghim cứng Flag.Active — tham số strIsActive của service KHÔNG được dùng.
+    var wantInactive = includeInactive ?? false;
+    if (!wantInactive) qy = qy.Where(b => b.FlagActive == "1");
+
+    if (!string.IsNullOrWhiteSpace(bulletinId))
+        qy = qy.Where(b => b.Id.ToString() == bulletinId!.Trim());
+    if (!string.IsNullOrWhiteSpace(bulletinNo))
+        qy = qy.Where(b => b.BulletinNo.Contains(bulletinNo!.Trim()));
+    if (createDateFrom.HasValue) qy = qy.Where(b => b.CreateDate >= createDateFrom.Value.Date);
+    if (createDateTo.HasValue) qy = qy.Where(b => b.CreateDate <= createDateTo.Value.Date);
+
+    var items = await qy.ToListAsync();
+
+    // 🔴 Remark: nguồn HỎNG (tìm chuỗi "like…"). MiniHTC làm đúng ý định = CHỨA.
+    var remarkQ = (remark ?? "").Trim();
+    if (remarkQ.Length > 0)
+        items = items.Where(b => (b.Remark ?? "").Contains(remarkQ, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    var userQ = (userCreate ?? "").Trim();
+    if (userQ.Length > 0)
+        items = items.Where(b => (b.UserCreate ?? "").Contains(userQ, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    // VIN nằm ở bảng chi tiết (Blt_Bulletin_VIN) — nguồn lọc si d.VinNo like %x%.
+    var vinQ = (vin ?? "").Trim();
+    List<string>? vinBulletinIds = null;
+    if (vinQ.Length > 0)
+    {
+        vinBulletinIds = await db.BulletinVins
+            .Where(v => v.OrgId == t.OrgId && v.VinNo.Contains(vinQ))
+            .Select(v => v.BulletinNo).Distinct().ToListAsync();
+        items = items.Where(b => vinBulletinIds.Contains(b.BulletinNo)).ToList();
+    }
+
+    var rows = items.OrderByDescending(b => b.CreateDate).Select(b => new
+    {
+        b.Id, b.BulletinNo, b.BulletinNoHMC, b.Remark, b.PartCode, b.PartName,
+        b.SerCode, b.SerName, b.DateExpired, b.FlagActive, b.CreateDate, b.UserCreate,
+        b.FileNameAttachment,
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        remarkFilterBrokenInSource = true,
+        remarkNote = "Trong NGUỒN, ô Ghi chú KHÔNG BAO GIỜ ra kết quả: tầng service dựng chuỗi "
+            + "\"like%abc%\" (kèm toán tử) rồi đưa vào BuildClauseConditionSingle — hàm này TỰ cấp toán tử "
+            + "và bind giá trị NGUYÊN VĂN ⇒ SQL thành `si.Remark like 'like%abc%'`, chỉ khớp ghi chú bắt "
+            + "đầu bằng đúng chữ 'like'. MiniHTC lọc theo CHỨA, đúng ý định của màn.",
+        verifiedNotABugNote = "Ba ô BulletinNo/Vin/UserCreate cũng nối \"like\" liền \"%x%\" không dấu "
+            + "cách, NHƯNG chúng đi qua BuildClause — hàm này cắt theo ĐỘ DÀI toán tử nên vẫn đúng. "
+            + "Chỉ Remark hỏng vì đi qua hàm khác.",
+        isActiveParamDead = true,
+        isActiveNote = "Service khai tham số strIsActive nhưng khi gọi WS truyền cứng Flag.Active ('1') "
+            + "⇒ nguồn KHÔNG BAO GIỜ tra được bản tin đã ngừng hiệu lực. MiniHTC mở bằng includeInactive.",
+        liveTwinNote = "Có 11 hàm cùng họ Blt_Bulletin_Get* trong một file; WS chỉ gọi bản _20210224.",
+        upperCaseNote = "BuildClause gọi .ToUpper() lên cả GIÁ TRỊ tham số ⇒ dữ liệu lưu chữ thường có "
+            + "thể không khớp trong nguồn.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     string? vins, string? dealers, string? status, string? active) =>
 {
