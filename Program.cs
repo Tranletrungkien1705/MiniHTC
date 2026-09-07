@@ -12346,11 +12346,38 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
         // #222 §12: 8 trường mới phải chiếu ở CẢ GET
         x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note,
         x.PlateColorCode,   // #332 §12
+        x.SerialNo, x.BatteryNo, x.ProductionCode,                                    // #333 §12
+        x.CusConfirmedWarrantyDate, x.WarrantyExpiresDate, x.WarrantyKM,              // #333 §12
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #333 MA TRẬN KÊNH ⇄ CỘT của họ `ProcessSaveCar01` (`BizCarSv.Customer.cs`) =====
+// **NĂM WebMethod LIVE** trong `WSCarSv.asmx.cs`, mỗi cái dùng một biến thể riêng ghi **cùng bảng `Ser_Car`**:
+//   `SerCustomerCarSalesCreate_New20180817` (:20859) → `…_New20180817`
+//   `SerCustomerCarSalesCreate_SBHOnline`   (:20936) → `…_SBHOnline`
+//   `SerCustomerCarSync_FromPDI`            (:34830) → `…_FromPDI` **và** `…_FromPDIExt`
+//   `CarSv_Ser_CustomerCar_SalesCreate_New20180622` (:37005) ┐ **cùng** dùng `…_New20180622`
+//   `CarSv_Ser_CustomerCar_MBSCreate`               (:37099) ┘
+//   Bản trần `ProcessSaveCar01` chỉ được gọi từ `WSCarSv.cs` (KHÔNG phải codebehind `.asmx.cs`) ⇒ chết.
+//
+// Cột NGOÀI 12 cột chung — không kênh nào ghi đủ:
+//   kênh          | Serial | Battery | ModelID | 3 cột bảo hành | ProductionCode | Created* | LogLU*
+//   N20180817     |   ✔    |    ✔    |    –    |       –        |       –        |    –     |   –
+//   SBHOnline     |   ✔    |    ✔    |    –    |       ✔        |       –        |    –     |   –
+//   FromPDI       |   ✔    |    ✔    |    ✔    |       –        |       –        |    ✔     |   –
+//   FromPDIExt    |   ✔    |    ✔    |    –    |       –        |       –        |    –     |   –  (SQL update)
+//   N20180622     |   –    |    –    |    ✔    |       –        |       ✔        |    –     |   ✔
+//
+// 🔴 `_New20180622` là biến thể **NGÀY MỚI NHẤT** nhưng lại là bản LIVE **DUY NHẤT KHÔNG** ghi
+//   `SerialNo`/`BatteryNo` — thêm một lần "mới nhất = đầy đủ nhất" là SAI. Nó còn phục vụ **hai** WebMethod.
+// ⚠️ `FromPDIExt` ghi bằng **SQL `update … set t.SerialNo/t.BatteryNo`**, không qua DataTable ⇒ máy quét
+//   đếm cột theo `["X"] =` trả về **0 cột** cho nó. Bốn dạng ghi cột (lệ #314) vẫn còn hiệu lực.
+// ⚠️ `VIN` **không phải cột ghi**: nguồn dùng `row["VIN"]` làm **cột ĐẦU VÀO** rồi gán
+//   `newRow["FrameNo"] = row["VIN"]`. Mẫu quét `\["X"\]\s*=` bắt nhầm cả `row["VIN"] ==` (so sánh)
+//   ⇒ đã siết thành `=[^=]`. Cùng loại lỗi đếm với #310/#314.
+//
 // Upsert theo số khung (VIN). Guard km không giảm (chỉ tăng hoặc giữ).
 app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -12378,15 +12405,40 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
         ex.InsStartDate = dto.InsStartDate;
         ex.InsFinishedDate = dto.InsFinishedDate;
         ex.Note = dto.Note;
-        ex.PlateColorCode = dto.PlateColorCode;   // #332 §12 — phải có ở CẢ nhánh sửa lẫn nhánh tạo
+        ex.PlateColorCode = dto.PlateColorCode;   // #332 §12
+        // ===== 🔴 #333 BẤT ĐỐI XỨNG TẠO/SỬA CỦA NGUỒN — port CÓ CHỦ ĐÍCH khác nguồn =====
+        // `ProcessSaveCar01_SBHOnline` ghi ba cột bảo hành ở nhánh **TẠO**, nhưng ở nhánh **SỬA**
+        //   cả khối bị **comment** (`//20210408`):
+        //     `//if (!StringUtils.IsEmpty(row["CusConfirmedWarrantyDate"]…)) { … }`
+        //   ⇒ sửa xe thì ba cột bảo hành **rơi im lặng**, người dùng không được báo gì.
+        //   Không có chú thích giải thích ⇒ là sót, không phải luật (lệ #272/#275) ⇒ web GHI cả khi sửa,
+        //   và trả `warrantyFieldsUpdatedWebOnly` để lệch với WinForm là lệch **nhìn thấy được**.
+        ex.SerialNo = dto.SerialNo; ex.BatteryNo = dto.BatteryNo;
+        ex.ProductionCode = dto.ProductionCode;
+        var warrantyTouched = dto.CusConfirmedWarrantyDate is not null
+            || dto.WarrantyExpiresDate is not null || dto.WarrantyKM is not null;
+        ex.CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate;
+        ex.WarrantyExpiresDate = dto.WarrantyExpiresDate;
+        ex.WarrantyKM = dto.WarrantyKM;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.FrameNo, updated = true });
+        return Results.Ok(new
+        {
+            ex.FrameNo, updated = true,
+            warrantyFieldsUpdatedWebOnly = warrantyTouched,
+            warrantyNote = warrantyTouched
+                ? "Nguồn KHÔNG ghi ba cột bảo hành khi SỬA (khối bị comment 20210408); web có ghi."
+                : null,
+        });
     }
     var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile,
         MemberCarID = dto.MemberCarID, DealerCode = dto.DealerCode, CusID = dto.CusID, FlagActive = "1",
         // #222 parity: 8 trường của `CarUpdate`
         CarID = dto.CarID, SalesCarID = dto.SalesCarID, DateBuyCar = dto.DateBuyCar, InsNo = dto.InsNo, InsContractNo = dto.InsContractNo, InsStartDate = dto.InsStartDate, InsFinishedDate = dto.InsFinishedDate, Note = dto.Note,
-        PlateColorCode = dto.PlateColorCode };   // #332 §12
+        PlateColorCode = dto.PlateColorCode,   // #332 §12
+        // #333 §12 — sáu cột của họ `ProcessSaveCar01`.
+        SerialNo = dto.SerialNo, BatteryNo = dto.BatteryNo, ProductionCode = dto.ProductionCode,
+        CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate,
+        WarrantyExpiresDate = dto.WarrantyExpiresDate, WarrantyKM = dto.WarrantyKM };
     db.ServiceCars.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.FrameNo, updated = false });
 }).RequireAuthorization();
@@ -38234,7 +38286,10 @@ record ServicePartDto(string PartCode, string? PartName, string? EngName, string
     decimal? TotalPrice = null, string? BalanceLocationId = null, decimal? FreqUsed = null,
     DateTime? PriceEffect = null, decimal? TSTPrice = null, decimal? TSTPriceBefore = null,
     string? FlagInTST = null);
-record ServiceCarDto(string FrameNo, string? PlateColorCode, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
+// #333: 6 truong cua ho ProcessSaveCar01 (AVN / ac quy / lo SX / bao hanh mo rong).
+record ServiceCarDto(string FrameNo, string? SerialNo, string? BatteryNo, string? ProductionCode,
+    DateTime? CusConfirmedWarrantyDate, DateTime? WarrantyExpiresDate, decimal? WarrantyKM,
+    string? PlateColorCode, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate
     string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
 record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);

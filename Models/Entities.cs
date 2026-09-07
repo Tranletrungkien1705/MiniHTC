@@ -13465,6 +13465,23 @@ public sealed class ServiceCar
     /// Bản `CustomerCar` (phía bán hàng) đã có cột này từ lâu; `ServiceCar` (`Ser_Car`, phía dịch vụ)
     /// **thiếu** — chính là toàn bộ độ lệch giữa hai đường ghi LIVE của `CarSv_Ser_CustomerCar_Create`.</summary>
     public string? PlateColorCode { get; set; }
+
+    // ===== 🔴 #333 SÁU CỘT của họ `ProcessSaveCar01` — **KHÔNG kênh nào ghi đủ cả sáu** =====
+    // Ma trận kênh ⇄ cột (đo bằng tập cột ghi thật, xem chú thích ở `POST /api/servicecars`).
+    /// <summary>SERIALNO — mã **đài AVN** (chú thích nguồn `20210508` "Cập nhật mã đài AVN").</summary>
+    public string? SerialNo { get; set; }
+    /// <summary>BATTERYNO — mã **bình ắc quy** (chú thích nguồn `20210508`).</summary>
+    public string? BatteryNo { get; set; }
+    /// <summary>PRODUCTIONCODE — mã lô sản xuất. CHỈ kênh `_New20180622` (Sales + MBS) ghi.</summary>
+    public string? ProductionCode { get; set; }
+    /// <summary>CUSCONFIRMEDWARRANTYDATE — ngày khách XÁC NHẬN bảo hành. CHỈ kênh `_SBHOnline`.
+    /// ⚠️ Kênh đó ghi khi **TẠO**, nhưng ở nhánh **SỬA** ba cột bảo hành bị **comment cả khối**
+    /// (`//20210408`) ⇒ tạo thì lưu, sửa thì **rơi im lặng**. Xem chú thích ở endpoint.</summary>
+    public DateTime? CusConfirmedWarrantyDate { get; set; }
+    /// <summary>WARRANTYEXPIRESDATE — ngày hết hạn bảo hành. Cùng nhóm bất đối xứng tạo/sửa ở trên.</summary>
+    public DateTime? WarrantyExpiresDate { get; set; }
+    /// <summary>WARRANTYKM — số km hết hạn bảo hành. Cùng nhóm bất đối xứng tạo/sửa ở trên.</summary>
+    public decimal? WarrantyKM { get; set; }
     /// <summary>Mã xe nội bộ của hệ dịch vụ (`CarID`) — khác `FrameNo` (số khung).</summary>
     public string? CarID { get; set; }
     /// <summary>Mã xe bên hệ BÁN HÀNG (`SalesCarID`) — cầu nối sang cụm Car_Car.</summary>

@@ -877,6 +877,13 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"MemberCarID\" text NULL",
                 // #332 mau bien so (trang/vang/xanh) — thuoc tinh phap ly, thieu o phia dich vu
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"PlateColorCode\" text NULL",
+                // #333 sau cot cua ho ProcessSaveCar01 (AVN / ac quy / lo SX / bao hanh mo rong)
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"BatteryNo\" text NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"SerialNo\" text NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CusConfirmedWarrantyDate\" timestamp NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"WarrantyExpiresDate\" timestamp NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"WarrantyKM\" numeric NULL",
+                "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"ProductionCode\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CusID\" text NULL",
                 // Đóng thùng / sắp xếp kho: mã trạng thái đúng nguồn + trạng thái theo DÒNG
