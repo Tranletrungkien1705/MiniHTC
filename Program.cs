@@ -13044,6 +13044,74 @@ app.MapPost("/api/servicecars/{frameNo}/membercar", async (
     return Results.Ok(new { car.FrameNo, car.DealerCode, car.CusID, car.MemberCarID });
 }).RequireAuthorization();
 
+// ===== 🔴 #399 SỬA THÔNG TIN XE (`FrmCustomerCarSearch` → `SerCarUpdate`, `BizCarSv.Car.cs:328`) =====
+// TRACE 4 tầng: form → `MstCarService.CarUpdate` (`:109`) → WS `SerCarUpdate` → biz `SerCarUpdate`.
+//
+// 🔴 **THAM SỐ ĐI HẾT BỐN TẦNG RỒI KHÔNG AI DÙNG**: tầng service `JsonConvert.SerializeObject(objCrdMember)`
+//   (đối tượng **hội viên Loyalty**) và truyền lên WS; biz nhận `string objCrdMember` — nhưng **toàn bộ**
+//   khối `#region // Update PlateNo Loyalty` ở cuối hàm **đã bị COMMENT**. ⇒ Đổi biển số **KHÔNG**
+//   đồng bộ sang hệ Loyalty; công sức serialize JSON qua bốn tầng là **vô ích**.
+//   Đừng port cái tham số này thành đường ghi — nó là **luật đã chết** (lệ #305).
+// 🔴 HAI guard của nguồn, cả hai đọc trên **DB đại lý**:
+//   · `CheckExistCarID` — xe phải tồn tại;
+//   · `CheckExistPlateNoModify` — **biển số không được trùng xe khác** (loại trừ chính nó).
+// ⚠️ Ghi `Ser_Car` trên **Main + WH + Dealer** (Dealer có điều kiện), `alColumnEffective` liệt kê
+//   **20 cột** — không phải cả bảng.
+// 📌 Màn tìm kiếm khách–xe cũng gọi `SerCustomerGetByCusIDOrPlateNo(strCusID, "")`: tên có 'OrPlateNo'
+//   nhưng thân hàm **không dùng tham số biển số**, và **cả 4 nơi gọi đều truyền rỗng** ⇒ nửa 'tìm theo
+//   biển số' chưa bao giờ chạy. Endpoint `/api/servicecustomers/search` hiện có **đúng nguồn**: không tìm
+//   theo biển số.
+app.MapPut("/api/servicecars/{vin}", async (string vin, ServiceCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    vin = (vin ?? "").Trim().ToUpperInvariant();
+    var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == vin);
+    if (car is null) return Results.NotFound(new { vin });
+
+    // Guard: biển số không trùng XE KHÁC (loại trừ chính nó) — đúng CheckExistPlateNoModify.
+    if (!string.IsNullOrWhiteSpace(dto.PlateNo))
+    {
+        var plate = dto.PlateNo!.Trim().ToUpperInvariant();
+        var dup = await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId && x.Id != car.Id && x.PlateNo == plate);
+        if (dup) return Results.BadRequest(new { error = "Biển số đã thuộc về xe khác.", plateNo = plate });
+    }
+
+    var plateOld = car.PlateNo;
+
+    // 20 cột của alColumnEffective, giữ đúng danh sách nguồn.
+    car.DealerCode = dto.DealerCode ?? car.DealerCode;
+    car.CusID = dto.CusID ?? car.CusID;
+    car.ModelCode = dto.ModelID ?? car.ModelCode;
+    if (!string.IsNullOrWhiteSpace(dto.PlateNo)) car.PlateNo = dto.PlateNo!.Trim().ToUpperInvariant();
+    if (!string.IsNullOrWhiteSpace(dto.FrameNo)) car.FrameNo = dto.FrameNo!.Trim().ToUpperInvariant();
+    car.EngineNo = dto.EngineNo ?? car.EngineNo;
+    car.ProductYear = dto.ProductYear ?? car.ProductYear;
+    car.ColorCode = dto.ColorCode ?? car.ColorCode;
+    car.WarrantyRegistrationDate = dto.WarrantyRegistrationDate ?? car.WarrantyRegistrationDate;
+    car.DateBuyCar = dto.DateBuyCar ?? car.DateBuyCar;
+    if (dto.CurrentKm is not null) car.CurrentKm = dto.CurrentKm.Value;
+    car.TradeMark = dto.TradeMarkCode ?? car.TradeMark;
+    car.SalesCarID = dto.SalesCarID ?? car.SalesCarID;
+    car.InsStartDate = dto.InsStartDate ?? car.InsStartDate;
+    car.InsNo = dto.InsNo ?? car.InsNo;
+    car.InsFinishedDate = dto.InsFinishedDate ?? car.InsFinishedDate;
+    car.InsContractNo = dto.InsContractNo ?? car.InsContractNo;
+    car.FlagActive = dto.IsActive ?? car.FlagActive;
+    car.Note = dto.Note ?? car.Note;
+    await db.SaveChangesAsync();
+
+    var plateChanged = !string.Equals(plateOld, car.PlateNo, StringComparison.OrdinalIgnoreCase);
+    return Results.Ok(new
+    {
+        car.FrameNo, car.PlateNo, car.DealerCode, car.CusID, car.ModelCode, car.FlagActive,
+        plateChanged, plateOld,
+        loyaltySyncDead = true,
+        loyaltyNote = "Nguồn nhận đối tượng hội viên Loyalty dưới dạng JSON qua CẢ BỐN tầng, nhưng khối "
+            + "\"Update PlateNo Loyalty\" ĐÃ BỊ COMMENT ⇒ đổi biển số KHÔNG đồng bộ sang Loyalty. Luật đã chết.",
+        columnsNote = "Nguồn liệt kê ĐÚNG 20 cột trong alColumnEffective — không ghi cả bảng.",
+        dualWriteNote = "Nguồn ghi Ser_Car trên Main + WH + Dealer; MiniHTC một CSDL.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db, ITenantContext t) =>
 {
     vin = vin.Trim().ToUpperInvariant();
@@ -41589,6 +41657,15 @@ record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
 // #375 §12: tieu de bao cao. Showroom1/2/3 THUC CHAT la Tel/Fax/Mobile (ten cot noi doi).
 record ReportHeaderDto(string DealerCode, string? DealerName, string? CompanyName, string? CompanyAddress,
     string? Website, string? Showroom1, string? Showroom2, string? Showroom3);
+// #399: DTO sua thong tin xe (nguon SerCarUpdate, 20 cot cua alColumnEffective).
+//   KHONG co truong hoi vien Loyalty: nguon co nhan nhung khoi dung no da bi comment.
+//   LUU Y kieu: ProductYear = int?, CurrentKm = decimal (khong nullable tren entity),
+//   con DateBuyCar / InsStartDate / InsFinishedDate nguon LUU DANG CHUOI.
+record ServiceCarUpdateDto(string? DealerCode, string? CusID, string? ModelID, string? PlateNo,
+    string? FrameNo, string? EngineNo, int? ProductYear, string? ColorCode,
+    DateTime? WarrantyRegistrationDate, string? DateBuyCar, decimal? CurrentKm,
+    string? TradeMarkCode, string? SalesCarID, string? InsStartDate, string? InsNo,
+    string? InsFinishedDate, string? InsContractNo, string? IsActive, string? Note);
 record ServiceCustomerDto(string? SalesCusID,string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
     // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
     string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
