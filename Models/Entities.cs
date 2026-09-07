@@ -5906,6 +5906,13 @@ public sealed class CarDocRequestCar
     public string? DRDtlStatus { get; set; }
     public DateTime? RejectDate { get; set; }
     public string? RejectBy { get; set; }
+    /// <summary>🔴 #B39 — `Car_DocReqDtl.CancelDate` / `CancelBy`. `alColumnEffective` của
+    /// `CarDocReqDtlCancel_New20210223` (`Biz.HTC.WH.cs:83262-83266`) đúng **4 cột**:
+    /// `DRDtlStatus` = `Stage.Cancel` ("C") · `CancelDate` · `CancelBy` · `Remark`.
+    /// Nguồn tách hẳn cặp HUỶ với cặp TỪ CHỐI (`RejectDate`/`RejectBy`) — hai đường khác nhau.</summary>
+    public DateTime? CancelDate { get; set; }
+    /// <summary>Người huỷ dòng đề nghị — xem chú thích của [CancelDate].</summary>
+    public string? CancelBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -9418,6 +9425,10 @@ public sealed class ReqInvoiceDtl
     public string? HTCInvoiceNo { get; set; }
     public string? InvoiceNoFactory { get; set; }
     public string? TCGInvoiceNo { get; set; }
+    /// <summary>🔴 #B39 — `RD_ReqInvoiceDtl.RDReqIvDtlStatus`. Guard `CarDocReqDtlCancel_ExistRDInvoice`
+    /// join `rrid.VIN = cdrd.VIN` và chỉ tính dòng **`not in ('R','C')`** (`Biz.HTC.WH.cs:83238-83240`).
+    /// 🔴 Lưu ý join của nguồn **CHỈ theo VIN**, KHÔNG kèm `DRListCode` — khác hẳn nhánh giải chấp.</summary>
+    public string? RDReqIvDtlStatus { get; set; }
 }
 
 /// <summary>Hợp đồng đại lý (DC/DealerContract + Detail) — port 1:1 FrmNewDC/FrmMngDC (2010.HTC/Sales/Contract). HĐ đại lý mua xe: xe + đơn giá + tổng tiền + duyệt.</summary>
@@ -9975,6 +9986,12 @@ public sealed class ReqRedeemDtl
     public string? DealerCode { get; set; }
     public string? TypeDMReq { get; set; }       // loại đề nghị giải chấp
     public string? BankCode { get; set; }        // ngân hàng bàn giao (không được HTC.HO)
+    /// <summary>🔴 #B39 — `RD_ReqRedeemDtl.DRListCode`: dòng giải chấp trỏ về **đề nghị giấy tờ** nào.
+    /// Guard `CarDocReqDtlCancel_ExistRedeem` join `rrrd.DRListCode = cdrl.DRListCode AND rrrd.VIN = cdrd.VIN`
+    /// (`Biz.HTC.WH.cs:83234-83236`) — thiếu cột này thì guard không kiểm được.</summary>
+    public string? DRListCode { get; set; }
+    /// <summary>`RD_ReqRedeemDtl.DMReqDtlStatus` — guard chỉ tính dòng **`not in ('R','C')`** (còn sống).</summary>
+    public string? DMReqDtlStatus { get; set; }
 }
 
 /// <summary>Đặt hàng sản xuất (MnfPl_Order + Dtl) — port 1:1 FrmDatHangSX/FrmQLDatHangSX (2010.HTC/Sales/WorkOrder). Đơn đặt hàng sản xuất theo model/spec/màu/SL + thứ tự SX.</summary>

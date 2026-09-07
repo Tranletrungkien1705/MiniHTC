@@ -2258,6 +2258,12 @@ public static class Seeder
                 // #B37 — Car_Car.CreatedDate / CreatedBy: bo loc DUY NHAT cua FrmDealerMngCar
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #B39 — CarDocReqDtlCancel: 4 cot alColumnEffective + 3 cot phuc vu guard Redeem/RDInvoice
+                "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"CancelDate\" timestamp NULL",
+                "ALTER TABLE public.\"CarDocRequestCars\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text NULL",
+                "ALTER TABLE public.\"ReqRedeemDtls\" ADD COLUMN IF NOT EXISTS \"DRListCode\" text NULL",
+                "ALTER TABLE public.\"ReqRedeemDtls\" ADD COLUMN IF NOT EXISTS \"DMReqDtlStatus\" text NULL",
+                "ALTER TABLE public.\"ReqInvoiceDtls\" ADD COLUMN IF NOT EXISTS \"RDReqIvDtlStatus\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

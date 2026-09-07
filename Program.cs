@@ -29977,6 +29977,97 @@ app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, I
     return Results.Ok(new { r.RequestNo, r.Status, r.TypeCRR, count = cars.Count, cars });
 }).RequireAuthorization();
 
+
+// ===== #B39 HUỶ DÒNG XE CỦA ĐỀ NGHỊ GIẤY TỜ — `CarDocReqDtlCancel_New20210223` =====
+// Trace LIVE: `FrmMngDocReqDealer` → `salesSv.CancelCDRDetail(strDRListCode, List<string> lstVin)`
+//   (`SalesService.cs:25935`) → WS `CarDocReqDtlCancel` (`WSHTC.asmx.cs:38387`) →
+//   **`_biz.CarDocReqDtlCancel_New20210223`** (`DataWH/Biz.HTC.WH.cs:82986`).
+//   ⚠️ **4 bản CHẾT** cùng họ: `Delete.BizHTC.Report.cs:118296` (không hậu tố) và `:118610`
+//      (`_New20181115`), `DataWH/Delete.Biz.HTC.WH.My.cs:18445` (`_New20181119`), và bản trong
+//      `Biz.HTC.WH.Rel.20230823.cs:79103` (file ngoài `TERP.BizHTC.csproj`).
+// 🔴 Đây là **bước BẮT BUỘC TRƯỚC** lệnh xoá đã port ở #B31: `Car_DocReqDtlDelete` chỉ nhận dòng
+//    đang ở `"C"`. Trước lượt này MiniHTC **không có đường nào đưa dòng về "C"** ⇒ lệnh xoá vô dụng.
+// 🔴 Đầu vào là **một `DRListCode` + DANH SÁCH VIN**, nguồn lặp từng VIN trong CÙNG transaction.
+// 🔴 `alColumnEffective` đúng **4 cột** (`:83262-83266`): `DRDtlStatus = Stage.Cancel ("C")` ·
+//    `CancelDate` · `CancelBy` · `Remark`. Nguồn tách hẳn cặp HUỶ với cặp TỪ CHỐI (`RejectDate`/`RejectBy`).
+// 🔴 NĂM guard, trong đó **hai guard cuối chính là NỢ đã ghi ở #B31** — nay đọc được SQL nên đóng luôn:
+//    · `_ExistAnotherSpecial` — chú thích nguồn: *"Muốn hủy Đề nghị Normal ⇒ phải hủy ĐN Special trước"*;
+//    · `_ExistInvoice` — `VAT_HTCInvoiceDetail.HTCInvoiceCode` hoặc `VAT_TCGInvoiceDetail.TCGInvoiceCode`;
+//    · `_ExistRedeem` — `RD_ReqRedeemDtl` join **`DRListCode` VÀ `VIN`**, chỉ dòng `DMReqDtlStatus not in ('R','C')`;
+//    · `_ExistRDInvoice` — `RD_ReqInvoiceDtl` join **CHỈ theo `VIN`** (KHÔNG kèm `DRListCode` — khác hẳn
+//      nhánh giải chấp ngay bên trên; chép nhầm là đổi hẳn nghiệp vụ), dòng `RDReqIvDtlStatus not in ('R','C')`.
+app.MapPost("/api/cardocrequests/{no}/cars/cancel", async (string no, CdrCancelDto dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    // `CarDocReqDtlCancel_TblVINTblNotFound` / `_TblVINTblNotInvalid`
+    var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v))
+        .Select(v => v.Trim().ToUpperInvariant()).Distinct().ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe nào để huỷ.", guard = "CarDocReqDtlCancel_TblVINTblNotFound" });
+
+    var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var lines = await db.CarDocRequestCars.Where(x => x.OrgId == t.OrgId && x.RequestId == r.Id && vins.Contains(x.CarId)).ToListAsync();
+
+    // Nguồn lặp từng VIN trong CÙNG một transaction ⇒ validate hết trước, ghi sau.
+    foreach (var vin in vins)
+    {
+        // `myCar_CheckCar_DocReqDtl(…, Flag.Active)`
+        var line = lines.FirstOrDefault(x => x.CarId == vin);
+        if (line is null) return Results.BadRequest(new { error = $"Xe {vin} không nằm trong đề nghị {no}." });
+
+        // GUARD 1 — chéo NORMAL ↔ SPECIAL.
+        if (string.Equals(r.TypeCRR, "NORMAL", StringComparison.OrdinalIgnoreCase))
+        {
+            var aliveSpecial = await (
+                from c in db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && c.CarId == vin && c.DRDtlStatus != "R" && c.DRDtlStatus != "C")
+                join h in db.CarDocRequests.Where(h => h.OrgId == t.OrgId && h.Id != r.Id
+                                                       && h.TypeCRR != "NORMAL" && h.Status != "R" && h.Status != "C")
+                     on c.RequestId equals h.Id
+                select h.RequestNo).FirstOrDefaultAsync();
+            if (aliveSpecial is not null)
+                return Results.BadRequest(new { error = $"Xe {vin} còn trong đề nghị SPECIAL {aliveSpecial} còn sống — huỷ đề nghị SPECIAL trước.", guard = "CarDocReqDtlCancel_ExistAnotherSpecial" });
+        }
+
+        // GUARD 2 — đã có hoá đơn HTC hoặc TCG.
+        var hasHtcInv = await db.VatHtcInvoiceDetails.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        var hasTcgInv = await db.VatTcgInvoiceDetails.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (hasHtcInv || hasTcgInv)
+            return Results.BadRequest(new { error = $"Xe {vin} đã có hoá đơn (HTC={hasHtcInv}, TCG={hasTcgInv}) — không huỷ được dòng đề nghị.", guard = "CarDocReqDtlCancel_ExistInvoice" });
+
+        // GUARD 3 — `_ExistRedeem`: join theo **DRListCode VÀ VIN**.
+        var redeem = await db.ReqRedeemDtls.Where(x => x.OrgId == t.OrgId && x.VIN == vin
+                && x.DRListCode == no && x.DMReqDtlStatus != "R" && x.DMReqDtlStatus != "C")
+            .Select(x => x.ReqRedeemId).FirstOrDefaultAsync();
+        if (redeem != 0)
+            return Results.BadRequest(new { error = $"Xe {vin} đã có đề nghị GIẢI CHẤP còn sống (id {redeem}) — không huỷ được.", guard = "CarDocReqDtlCancel_ExistRedeem" });
+
+        // GUARD 4 — `_ExistRDInvoice`: join **CHỈ theo VIN**, không kèm DRListCode.
+        var rdInv = await db.ReqInvoiceDtls.Where(x => x.OrgId == t.OrgId && x.VIN == vin
+                && x.RDReqIvDtlStatus != "R" && x.RDReqIvDtlStatus != "C")
+            .Select(x => x.ReqInvoiceId).FirstOrDefaultAsync();
+        if (rdInv != 0)
+            return Results.BadRequest(new { error = $"Xe {vin} đã có đề nghị HOÁ ĐƠN giải chấp còn sống (id {rdInv}) — không huỷ được.", guard = "CarDocReqDtlCancel_ExistRDInvoice", joinNote = "Nguồn join CHỈ theo VIN, không kèm DRListCode." });
+    }
+
+    foreach (var vin in vins)
+    {
+        var line = lines.First(x => x.CarId == vin);
+        line.DRDtlStatus = "C";                 // `TConst.Stage.Cancel`
+        line.CancelDate = now; line.CancelBy = who;
+        line.Remark = dto.Remark;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        requestNo = no, cancelled = vins.Count, vins,
+        columnsWritten = new[] { "DRDtlStatus", "CancelDate", "CancelBy", "Remark" },
+        nextStep = "Dòng đã ở 'C' — nay mới xoá được bằng DELETE /api/cardocrequests/{no}/cars/{carId} (#B31).",
+        guardsChecked = new[] { "ExistAnotherSpecial", "ExistInvoice(HTC/TCG)", "ExistRedeem", "ExistRDInvoice" }
+    });
+}).RequireAuthorization();
 // ===== #B31 XOÁ DÒNG XE KHỎI ĐỀ NGHỊ GIAO HỒ SƠ — `Car_DocReqDtlDelete_New20181119` =====
 // Trace twin LIVE: `SalesService.DeleteCDRDetail` (`:26022`) → WS (`WSHTC.asmx.cs:38579`) →
 //   **`_biz.Car_DocReqDtlDelete_New20181119`** (`Biz.HTC.WH.cs:83620`).
@@ -30031,6 +30122,20 @@ app.MapDelete("/api/cardocrequests/{no}/cars/{carId}", async (string no, string 
     if (hasHtcInv || hasTcgInv)
         return Results.BadRequest(new { error = $"Xe {carId} đã có hoá đơn (HTC={hasHtcInv}, TCG={hasTcgInv}) — không xoá được dòng đề nghị.", guard = "CarDocReqDtlDelete_ExistInvoice" });
 
+    // ✅ #B39 ĐÓNG NỢ #B31 — hai guard cuối, SQL đọc được ở hàm HUỶ anh em (`Biz.HTC.WH.cs:83225-83246`).
+    // GUARD 5 — `_ExistRedeem`: `RD_ReqRedeemDtl` join **DRListCode VÀ VIN**, dòng `not in ('R','C')`.
+    var delRedeem = await db.ReqRedeemDtls.Where(x => x.OrgId == t.OrgId && x.VIN == carId
+            && x.DRListCode == no && x.DMReqDtlStatus != "R" && x.DMReqDtlStatus != "C")
+        .Select(x => x.ReqRedeemId).FirstOrDefaultAsync();
+    if (delRedeem != 0)
+        return Results.BadRequest(new { error = $"Xe {carId} đã có đề nghị GIẢI CHẤP còn sống (id {delRedeem}) — không xoá được.", guard = "Car_DocReqDtlDelete_ExistRedeem" });
+    // GUARD 6 — `_ExistRDInvoice`: `RD_ReqInvoiceDtl` join **CHỈ theo VIN**, dòng `not in ('R','C')`.
+    var delRdInv = await db.ReqInvoiceDtls.Where(x => x.OrgId == t.OrgId && x.VIN == carId
+            && x.RDReqIvDtlStatus != "R" && x.RDReqIvDtlStatus != "C")
+        .Select(x => x.ReqInvoiceId).FirstOrDefaultAsync();
+    if (delRdInv != 0)
+        return Results.BadRequest(new { error = $"Xe {carId} đã có đề nghị HOÁ ĐƠN giải chấp còn sống (id {delRdInv}) — không xoá được.", guard = "Car_DocReqDtlDelete_ExistRDInvoice" });
+
     db.CarDocRequestCars.Remove(line);
     await db.SaveChangesAsync();
 
@@ -30044,7 +30149,7 @@ app.MapDelete("/api/cardocrequests/{no}/cars/{carId}", async (string no, string 
         deleted = new { no, carId }, remainingCars = remain, headerDeleted,
         headerDeleteRule = "Nguồn xoá luôn Car_DocReqList khi không còn Car_DocReqDtl tương ứng (left join … where is null).",
         guardsChecked = new[] { "DRDtlStatus='C'", "DRListStatus in (P,A1,A2,F)", "ExistAnotherSpecial", "ExistInvoice(HTC/TCG)" },
-        debt = "NỢ: 2 guard còn lại của nguồn chưa port — _ExistRedeem và _ExistRDInvoice (đề nghị/hoá đơn giải chấp)."
+        debt = "ĐÃ ĐÓNG ở #B39: _ExistRedeem và _ExistRDInvoice nay đã kiểm (SQL đọc được từ hàm HUỶ anh em)."
     });
 }).RequireAuthorization();
 
@@ -35020,6 +35125,8 @@ record ForeignContractLineDto(string? RefNo, string LcTemp);
 record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
 record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars, string? TypeCRR);
+// #B39 — DTO 1:1 voi CancelCDRDetail(strDRListCode, List<string> lstVin) + Remark cua alColumnEffective
+record CdrCancelDto(List<string>? Vins, string? Remark);
 record PackingListVinDto(string Vin, string? CrateType);
 record StorageTransactionDto(string? Vin, string? RefNo, string? RefType, string? StorageCode, string? StorageCodeTo, DateTime? DTimeFrom, DateTime? DTimeTo, string? Remark);
 record PackingListStorageDto(string? Vin, DateTime? StoreDate, string? StorageCodeCurrent);
