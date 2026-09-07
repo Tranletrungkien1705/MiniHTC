@@ -6260,6 +6260,14 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         var cavMaintain = NC("BDN"); var cavRO = NC("SCC"); var cavOther = NC("KHAC");
         var cavCopper = NC("KD"); var cavBP = NC("KS"); var cabinetPaint = NC("BS");
 
+        // A.I — bốn vai trò còn lại. Bảy mã `IsEngineer` của nguồn phủ đủ ở đây:
+        //   CVDV (cố vấn) · BDN · SCC · KTVD (đồng) · KTVS (sơn) · NVPT (phụ tùng) · KHAC.
+        var serviceTechQty = NE("BDN");      // KTV bảo dưỡng nhanh
+        var enginerBP = NE("KTVD");          // KTV đồng
+        var paintingTechQty = NE("KTVS");    // KTV sơn
+        var sparePartsStaff = NE("NVPT");    // nhân viên phụ tùng
+        var staffOrther = NE("KHAC");        // nhân viên khác (rửa xe, thu ngân…)
+
         // A.IV.2 — giờ công HÀNH CHÍNH = (số KTV 4 loại) × số ngày làm việc × 8.
         // ⚠️ Nguồn có **HAI công thức cũ bị comment** dùng tập loại KTV khác hẳn
         //   (KTVD/KTVS/NVPT/KHAC, và một bản đếm theo KHOANG) — chỉ port bản **đang chạy**:
@@ -6269,6 +6277,10 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
 
         // Tỉ lệ — mẫu chung: `<tử> / <mẫu1> / <mẫu2>`, làm tròn 1 số lẻ,
         //   guard `khi mẫu nào = 0 thì trả 0` (không chia).
+        // Mẫu MỘT mẫu số (nguồn: `case when <mẫu> = 0 then 0 else Round(tử/mẫu, 1) end`).
+        decimal Ratio1(decimal num, decimal den) =>
+            den == 0m ? 0m : Math.Round(num / den, 1, MidpointRounding.AwayFromZero);
+
         decimal Ratio(decimal num, decimal den1, decimal den2) =>
             den1 == 0m || den2 == 0m ? 0m
             : Math.Round(num / den1 / den2, 1, MidpointRounding.AwayFromZero);
@@ -6330,6 +6342,29 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
             WorkHourQty = workHourQty,
 
             // #338 tỉ lệ khai thác — lượt xe / nguồn lực / ngày.
+            // #339 số lượng nhân sự theo vai trò.
+            ServiceTechnicianQty = serviceTechQty, EnginerBP = enginerBP,
+            PaintingTechnicianQty = paintingTechQty, SparePartsStaff = sparePartsStaff,
+            StaffOrther = staffOrther,
+
+            // ===== 🔴 #339 CHỤP LẠI THAM SỐ vào chính bản báo cáo =====
+            // Nguồn ghi thẳng `SerProfitRate`/`PartProfitRate`/`UnitPrice*` vào `Report_KPI`.
+            // ⇒ Báo cáo giữ **ảnh chụp** tham số tại thời điểm sinh; sửa tham số sau đó **không**
+            //   làm đổi báo cáo cũ. Nhờ vậy mới truy ngược được vì sao giờ công tháng trước ra thế.
+            SerProfitRate = Prm("SerProfitRate"), PartProfitRate = Prm("PartProfitRate"),
+            UnitPriceBDN = upBDN, UnitPriceSCC = upSCC, UnitPriceSCD = upSCD, UnitPriceSCS = upSCS,
+
+            // #339 doanh thu tiền công bình quân đầu KTV — mỗi loại chia cho ĐÚNG vai trò của nó.
+            RevenuePerKTVBDN = Ratio1(aBDD, serviceTechQty),
+            RevenuePerKTVSCC = Ratio1(aSCC, enginerNumber),
+            RevenuePerKTVSCD = Ratio1(aSCD, enginerBP),
+            RevenuePerKTVSCS = Ratio1(aSCS, paintingTechQty),
+
+            // #339 năng suất xưởng = giờ công CÓ TÍNH PHÍ / giờ công HÀNH CHÍNH.
+            ServiceProductivity = Ratio1(whBDN + whSCC + whSCD + whSCS, workHourQty),
+            // #339 số khoang BDN+SCC trên mỗi KTV BDN+SCC.
+            CavityQtyPerEngineerBDNSCC = Ratio1(cavMaintain + cavRO, serviceTechQty + enginerNumber),
+
             CarPerAdviserDay = Ratio(ro.Count, advisoryNumber, workDayQty),
             CountBDDPerCavityMaintain = Ratio(N("BDD"), cavMaintain, workDayQty),
             CountSCCPerCavityRO = Ratio(N("SCC"), cavRO, workDayQty),
@@ -6384,6 +6419,9 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
             "PartAmount{RoRepair,RoWarranty,RoInsurance,Local,Shell}",            // #337
             "AdvisoryNumber/EnginerNumber", "Cavity*Number/CabinetPaintNumber",   // #338
             "WorkHourQty", "CarPerAdviserDay", "Count<Loại>Per<Khoang>",          // #338
+            "ServiceTechnicianQty/EnginerBP/PaintingTechnicianQty/SparePartsStaff/StaffOrther", // #339
+            "SerProfitRate/PartProfitRate/UnitPrice* (ảnh chụp tham số)",         // #339
+            "RevenuePerKTV*", "ServiceProductivity", "CavityQtyPerEngineerBDNSCC",// #339
         },
         // 🔴 #338 `CavityParkingNumber`: nguồn có cột nhưng **câu tính đã bị COMMENT**
         //   (`--, (select count(0) … CavityType='BS') CavityParkingNumber`) ⇒ **luôn rỗng trong MỌI
@@ -6401,7 +6439,14 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         //   **so khớp theo TÊN loại phụ tùng**, không theo mã ⇒ đổi tên danh mục là hỏng bộ lọc.
         // Còn lại đều cần dữ liệu MiniHTC chưa theo dõi: `WorkHourActualQty` (phút sửa chữa thực tế,
         //   trừ thời gian tạm dừng) — và `WorkHourPerCarRO` ăn theo nó; `PartAmountOut` (phiếu xuất kho).
-        pendingGroups = new[] { "WorkHourActualQty", "WorkHourPerCarRO", "PartAmountOut", "ProfitRate*" },
+        // Còn lại đều **chặn bởi dữ liệu**, không phải bởi công thức:
+        //   `WorkHourActualQty` (phút sửa chữa thực tế, trừ tạm dừng) — và `WorkHourPerCarRO`,
+        //     `LaborProductivity`, `EmploymentRate` đều chia cho nó nên cùng bị chặn;
+        //   `PartAmountOut` · `ShellAmountOut` · `AccessoryAmountOut` · `AccessoryAmountAfterVAT`
+        //     lấy từ **phiếu xuất kho**, và `RevenuePerAdviser` cộng chúng qua `AllPartAmount`
+        //     ⇒ tính bây giờ sẽ ra số **THẤP HƠN thực tế**, nên KHÔNG tính, thà để trống.
+        pendingGroups = new[] { "WorkHourActualQty", "WorkHourPerCarRO", "LaborProductivity", "EmploymentRate",
+            "PartAmountOut", "ShellAmountOut", "AccessoryAmountOut", "AccessoryAmountAfterVAT", "RevenuePerAdviser" },
         unitPrices = new { upBDN, upSCC, upSCD, upSCS },
         // 🔴 Đơn giá = 0 ⇒ mọi giờ công của nhóm đó bằng 0 (guard của nguồn), KHÔNG phải lỗi tính.
         unitPriceMissing = new[] { upBDN, upSCC, upSCD, upSCS }.Count(v => v == 0m),
@@ -38453,7 +38498,7 @@ record ReportKpiDto(
     decimal? CountSCSRoRepair = null, decimal? CountSCSRoWarranty = null, decimal? CountSPK = null, decimal? CountSPKLocal = null,
     decimal? CountPDI = null, decimal? CountPDIRoRepair = null, decimal? CountPDILocal = null,
     decimal? CountSPKRoRepair = null, DateTime? DateReport = null, string? DealerCode = null, decimal? EmploymentRate = null,
-    string? EnginerBP = null, decimal? EnginerNumber = null, decimal? LaborProductivity = null, string? LogLUBy = null,
+    decimal? EnginerBP = null, decimal? EnginerNumber = null, decimal? LaborProductivity = null, string? LogLUBy = null,
     DateTime? LogLUDateTime = null, decimal? PaintingTechnicianQty = null, decimal? PartAmountLocal = null, decimal? PartAmountOut = null,
     decimal? PartAmountRoInsurance = null, decimal? PartAmountRoRepair = null, decimal? PartAmountRoWarranty = null, decimal? PartAmountShell = null,
     decimal? PartProfitRate = null, decimal? RevenuePerAdviser = null, decimal? RevenuePerKTVBDN = null, decimal? RevenuePerKTVSCC = null,
@@ -38463,7 +38508,7 @@ record ReportKpiDto(
     decimal? ServiceAmountSCDRoWarranty = null, decimal? ServiceAmountSCSLocal = null, decimal? ServiceAmountSCSRoInsurance = null, decimal? ServiceAmountSCSRoRepair = null,
     decimal? ServiceAmountSCSRoWarranty = null, decimal? ServiceAmountSPKLocal = null,
     decimal? ServiceAmountPDIRoRepair = null, decimal? ServiceAmountPDILocal = null, decimal? ServiceAmountSPKRoRepair = null, decimal? ServiceProductivity = null,
-    decimal? ServiceTechnicianQty = null, decimal? ShellAmountOut = null, string? SparePartsStaff = null, string? StaffOrther = null,
+    decimal? ServiceTechnicianQty = null, decimal? ShellAmountOut = null, decimal? SparePartsStaff = null, decimal? StaffOrther = null,
     string? Status = null, decimal? UnitPriceBDN = null, decimal? UnitPriceSCC = null, decimal? UnitPriceSCD = null,
     decimal? UnitPriceSCS = null, decimal? WorkDayQty = null, decimal? WorkHourActualQty = null, decimal? WorkHourBDNQty = null,
     decimal? WorkHourFeeQty = null, decimal? WorkHourPerCarRO = null, decimal? WorkHourQty = null, decimal? WorkHourSCCQty = null,

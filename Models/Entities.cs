@@ -7292,7 +7292,13 @@ public sealed class ReportKpi
     public DateTime? DateReport { get; set; }
     public string? DealerCode { get; set; }
     public decimal? EmploymentRate { get; set; }
-    public string? EnginerBP { get; set; }
+    // ===== 🔴 #339 SỬA KIỂU: ba cột dưới đây là **SỐ ĐẾM**, không phải chuỗi =====
+    // Nguồn: `(select count(0) from #tbl_Ser_Engineer where IsEngineer='KTVD') EnginerBP` …
+    // #329 sinh entity bằng bảng phân loại theo TÊN cột và xếp nhầm ba cột này vào nhóm text
+    //   (`EnginerBP` · `SparePartsStaff` · `StaffOrther`), trong khi hai cột **cùng nhóm nghiệp vụ**
+    //   là `ServiceTechnicianQty` / `PaintingTechnicianQty` lại đúng `decimal?` vì tên có đuôi "Qty".
+    //   ⇒ Phân loại theo TÊN là nguồn lỗi; phải theo **biểu thức SQL sinh ra cột**.
+    public decimal? EnginerBP { get; set; }
     public decimal? EnginerNumber { get; set; }
     public decimal? LaborProductivity { get; set; }
     public string? LogLUBy { get; set; }
@@ -7333,8 +7339,8 @@ public sealed class ReportKpi
     public decimal? ServiceProductivity { get; set; }
     public decimal? ServiceTechnicianQty { get; set; }
     public decimal? ShellAmountOut { get; set; }
-    public string? SparePartsStaff { get; set; }
-    public string? StaffOrther { get; set; }
+    public decimal? SparePartsStaff { get; set; }
+    public decimal? StaffOrther { get; set; }
     public string? Status { get; set; }
     public decimal? UnitPriceBDN { get; set; }
     public decimal? UnitPriceSCC { get; set; }
