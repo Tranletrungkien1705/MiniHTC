@@ -24864,10 +24864,34 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   **bỏ mất một guard đang chạy**.
         // 📌 Sửa lệ: gặp `xxx`/`zzzz`/`Delete.`/` - Copy` thì **vẫn phải tìm nơi GỌI** rồi xét xem hàm gọi
         //   có sống không, y như trace twin. Chỉ tên thôi không kết luận được.
-        deadSuffixSweep = new { xxxFunctions = 50, stillCalled = 8, calledFromLiveCaller = 5 },
-        deadSuffixSweepNote = "Quét TERP.BizCarSv: 50 hàm có hậu tố xxx, 8 vẫn được gọi, trong đó 5 được "
-            + "gọi từ hàm KHÔNG mang xxx (gồm SerStockInCreate_New20240115 — bản 2024). Hậu tố xxx là Ý "
-            + "ĐỊNH, KHÔNG phải sự thật về liveness; phải trace nơi gọi.",
+        // ===== 🔴 #450 ĐÍNH CHÍNH SỐ LIỆU CỦA #449 — phép đo cũ dùng mẫu nhận diện THIẾU =====
+        // Sai ở đâu: #449 dò định nghĩa hàm bằng `grep` liệt kê tay **bốn** kiểu trả về
+        //   (`public DataSet` · `private void` · `public void` · `private DataSet`). Cây nguồn còn có
+        //   `private ArrayList`, `private DataTable`, `private string`… ⇒ **bỏ sót cả định nghĩa lẫn hàm GỌI**.
+        //   Hệ quả cụ thể: lời gọi ở `Inventory.StockIn.cs:1649` bị quy nhầm cho `SerStockInCreate_New20240115`,
+        //   trong khi nó thật sự nằm trong `private **ArrayList** UpdateOldStockInForAdjxxx` (`:1635`) —
+        //   một hàm `xxx` khác. Câu "bản 2024 gọi guard đã bỏ" ở #449 vì thế **KHÔNG đúng**.
+        //
+        // Đo lại bằng `_audit/sweepxxx.js` (nhận diện thành viên bằng biểu thức chính quy đầy đủ, và xác
+        // định hàm bao quanh theo **định nghĩa gần nhất phía trên**):
+        //     **60** hàm có hậu tố `xxx` · **10** còn được gọi · **4** được gọi từ hàm KHÔNG mang `xxx`
+        //     · 6 chỉ được gọi từ hàm `xxx` khác (chết-gọi-chết).
+        // Bốn hàm mang tên "đã bỏ" nhưng **đang được code sống gọi** — kèm ĐÍCH DANH nơi gọi:
+        //   · `CheckExistStockInxxx`        ← `Blt_SerStockInStatusUpdate` (`Bulletin.cs:342`)
+        //                                     · `SerStockInStatusUpdateToFinishedAdjustment` (`StockIn.cs:6857`)
+        //   · `UpdateStockInStatusxxx`      ← `Blt_SerStockInStatusUpdate` · `SerStockInStatusUpdate` (`:4362`)
+        //   · `CheckExistStockInNoxxx`      ← `CreateStockIn` (`StockIn.cs:2399`)
+        //   · `CheckExistPartInstancexxx`   ← `ProcessStockIn01` (`Stock.cs:1833`)
+        // ⇒ **KẾT LUẬN CỦA #449 VẪN ĐÚNG** (hậu tố `xxx` không chứng minh hàm đã chết), nhưng **bằng chứng
+        //   đã được thay bằng bản đo đúng**. Cái sai là con số và một lời quy kết, không phải cái kết luận.
+        // 📌 Bài học công cụ: đây là lần **thứ tư** cùng một họ lỗi đo (offset cứng #411 · grep trúng chỗ GỌI
+        //   #425 · biên vùng thiếu `private void` #430 · nay thiếu **kiểu trả về** #450). Từ nay dò định nghĩa
+        //   thành viên C# phải dùng script, không dùng danh sách kiểu liệt kê tay.
+        deadSuffixSweep = new { xxxFunctions = 60, stillCalled = 10, calledFromLiveCaller = 4 },
+        deadSuffixSweepNote = "Quét lại bằng script (mẫu nhận diện thành viên ĐẦY ĐỦ): 60 hàm hậu tố xxx, "
+            + "10 còn được gọi, 4 được gọi từ hàm KHÔNG mang xxx — CheckExistStockInxxx, UpdateStockInStatusxxx, "
+            + "CheckExistStockInNoxxx, CheckExistPartInstancexxx. Hậu tố xxx là Ý ĐỊNH, không phải sự thật "
+            + "về liveness. (#450 đính chính số liệu của #449: bản đo cũ liệt kê tay 4 kiểu trả về nên bỏ sót.)",
         deadTwinNote = "Còn một bản CHẾT MyCheck_DateTime_Cavityxxx (:23078) chỉ có HAI nhánh chồng giờ "
             + "⇒ bỏ sót ca 'khoảng mới bao trùm khoảng cũ'. Hai bản LIVE đều có ĐỦ BA nhánh (đếm chuỗi "
             + "concat(t.AppDateTimeFrom = 3 ở cả hai) ⇒ lỗ hổng đó thuộc về bản cũ đã bỏ.",
