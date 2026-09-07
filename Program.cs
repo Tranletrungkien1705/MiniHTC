@@ -23801,6 +23801,95 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
 //   trực tiếp vào SQL. Port dùng tham số thật.
 // ⚠️ `Status` của dòng VIN: `isnull(bv.Status, 'P')` ⇒ trống hiểu là **P** (chờ xử lý).
 // ⚠️ Bộ lọc VIN/đại lý/trạng thái đều là **DANH SÁCH ngăn cách `|`** (`BuildClauseConditionList`).
+// ===== 🔴 #379 HẠN THANH TOÁN CỌC = NGÀY LÀM VIỆC **T+N**, KHÔNG PHẢI CỘNG NGÀY THƯỜNG =====
+// Nguồn: `BizHTC.Order.cs:1773` + `BizHTC.MasterData.cs:2276` gọi
+//   `myUtils_GetParamsRaw(TConst.HTCParamCode.Calendar_DepositDuty_DayT)` lấy N, rồi dùng
+//   `mySql_GetClauseSelect_Mst_Calendar_GetForDayT()` (`BizHTC.Common.cs:959`) để tra lịch:
+//     1. lọc `Mst_Calendar` `CalendarType = 'WorkingDay'` **và** `StatusValue = 0`, `Date >= hôm nay`,
+//        đánh số tuần tự bằng `identity(bigint, 0, 1)` ⇒ **chỉ ngày LÀM VIỆC mới có số thứ tự**;
+//     2. tự nối `t.MyIdxSeq + @nDayT = t1.MyIdxSeq` ⇒ ngày làm việc **thứ N kể từ** ngày đang xét;
+//     3. `update osod set DepositDutyEndDate = mcDayT.DateDayT ... on osod.ApprovedDate = mcDayT.Date`.
+//   ⇒ Cộng N **ngày lịch** là SAI: N ở đây đếm **ngày làm việc**, nhảy qua mọi ngày nghỉ.
+//
+// 🔴 `StatusValue = 0` **nghĩa là NGÀY LÀM VIỆC** (chú thích nguồn `-- Only WorkingDay`) — trực giác
+//   dễ hiểu ngược thành 'trạng thái rỗng/chưa set'. Khác 0 = ngày nghỉ.
+// 🔴 **BẢNG LỊCH LỌC TỪ HÔM NAY**, không phải từ `ApprovedDate`: `and mcal.Date >= @strMCALDate_From`
+//   với `@strMCALDate_From = DateTime.Now`. ⇒ Đơn có `ApprovedDate` **trong QUÁ KHỨ** không khớp dòng
+//   nào, `left join` trả NULL và câu `update` **ghi NULL đè lên hạn cọc đang có** — lưu lại một đơn cũ
+//   là **xoá trắng hạn thanh toán cọc** của nó mà không báo gì.
+// 🔴 `myUtils_GetParamsRaw` (`Common.cs:648`) đọc `Mst_Param` bằng `top 1` không `order by` rồi trả
+//   `Rows[0][0]` **không kiểm `Rows.Count`** ⇒ thiếu bản ghi tham số thì **NÉM LỖI CHỈ SỐ**, không phải
+//   trả rỗng; lỗi hiện ra rất xa nơi thực sự sai (thiếu cấu hình).
+// ⚠️ Câu `update` đặt `with (nolock)` **trên chính bảng bị GHI** (`Ord_SalesOrderDetail`).
+app.MapGet("/api/calendar/workday-offset", async (AppDbContext db, ITenantContext t,
+    DateTime? date, int? days, DateTime? from) =>
+{
+    var baseDate = (date ?? DateTime.Today).Date;
+    var n = days ?? 0;
+    // Đúng nguồn: mốc lọc lịch là HÔM NAY, không phải ngày đang xét.
+    var fromDate = (from ?? DateTime.Today).Date;
+
+    // Chỉ NGÀY LÀM VIỆC mới được đánh số: CalendarType = WorkingDay và StatusValue = 0.
+    var workdays = await db.MstCalendars
+        .Where(c => c.OrgId == t.OrgId && c.CalendarType == "WorkingDay" && c.StatusValue == "0"
+                    && c.Date >= fromDate)
+        .OrderBy(c => c.Date).Select(c => c.Date).ToListAsync();
+
+    var idx = workdays.FindIndex(d => d.Date == baseDate);
+    if (idx < 0)
+        return Results.Ok(new
+        {
+            date = baseDate, days = n, found = false,
+            resultDate = (DateTime?)null,
+            reason = "Ngày đang xét KHÔNG nằm trong dải lịch làm việc lọc từ mốc `from`.",
+            pastDateWipesValue = baseDate < fromDate,
+            wipeNote = baseDate < fromDate
+                ? "Nguồn lọc lịch từ HÔM NAY: ngày duyệt trong QUÁ KHỨ không khớp dòng nào, `left join` ra NULL "
+                  + "và câu `update` GHI NULL ĐÈ lên hạn cọc đang có."
+                : null,
+            calendarFrom = fromDate, workdayCount = workdays.Count,
+        });
+
+    var targetIdx = idx + n;
+    DateTime? result = targetIdx >= 0 && targetIdx < workdays.Count ? workdays[targetIdx] : null;
+
+    return Results.Ok(new
+    {
+        date = baseDate, days = n, found = true,
+        resultDate = result,
+        calendarExhausted = result is null,
+        exhaustedNote = result is null
+            ? "Lịch làm việc chưa kéo dài đủ N ngày ⇒ nguồn trả NULL (không báo lỗi)."
+            : null,
+        calendarDaysSpanned = result is null ? (int?)null : (int)(result.Value - baseDate).TotalDays,
+        workdayIndex = idx, workdayCount = workdays.Count, calendarFrom = fromDate,
+        semanticsNote = "N đếm theo NGÀY LÀM VIỆC (nhảy qua ngày nghỉ), không phải cộng ngày lịch.",
+        statusValueNote = "StatusValue = 0 nghĩa là NGÀY LÀM VIỆC; khác 0 là ngày nghỉ (dễ hiểu ngược).",
+    });
+}).RequireAuthorization();
+
+// Tham số hệ thống đọc thô (`myUtils_GetParamsRaw`) — nguồn CRASH khi thiếu bản ghi.
+app.MapGet("/api/params/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = (code ?? "").Trim();
+    var rows = await db.Masters
+        .Where(m => m.OrgId == t.OrgId && m.Category == "Mst_Param" && m.Code == code)
+        .Select(m => m.Name).ToListAsync();
+
+    return Results.Ok(new
+    {
+        code, found = rows.Count > 0,
+        value = rows.FirstOrDefault(),          // nguồn: top 1 KHÔNG order by
+        matchCount = rows.Count,
+        ambiguous = rows.Count > 1,
+        sourceCrashesWhenMissing = rows.Count == 0,
+        crashNote = rows.Count == 0
+            ? "Nguồn đọc Rows[0][0] mà KHÔNG kiểm Rows.Count ⇒ thiếu tham số là NÉM LỖI CHỈ SỐ, "
+              + "không phải trả rỗng. MiniHTC trả found = false thay vì ném."
+            : null,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     string? vins, string? dealers, string? status, string? active) =>
 {
