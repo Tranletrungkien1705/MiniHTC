@@ -1322,8 +1322,19 @@ app.MapPost("/api/dlvminutes/update-dates", async (DlvUpdDatesDto dto, AppDbCont
         };
         if (!string.IsNullOrWhiteSpace(r.DlvMnNo))
         {
+            // 🔴 #B36 GAP: nguồn khoá **CẶP (`DlvMnNo`, `VIN`)** — cả ở guard tồn tại
+            //    (`Biz.HTC.WH.hkt.cs:8257-8261`: `and t.DlvMnNo = @strDlvMnNo and t.VIN = @strVIN`)
+            //    lẫn ở câu update (`:8464-8466`: `on t.DlvMnNo = f.DlvMnNo and t.VIN = f.VIN`).
+            //    Port cũ khớp **chỉ số biên bản** rồi ghi vào **HEADER** ⇒ một biên bản chở nhiều xe thì
+            //    sửa ngày xuất kho của MỘT xe **đổi luôn cho cả lô**. Dòng xe (`TranspDlvConfirmCar`)
+            //    đã có sẵn cột `DlvStartDate` đúng khuôn nguồn — port cũ không dùng tới.
             var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo);
-            if (m is not null) { his.DlvStartDateOld = m.DlvStartDate; m.DlvStartDate = newDate; nDlv++; }
+            if (m is null)
+                return Results.BadRequest(new { error = $"Không tìm thấy biên bản {r.DlvMnNo}.", vin });
+            var mc = await db.TranspDlvConfirmCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id && x.VIN == vin);
+            if (mc is null)
+                return Results.BadRequest(new { error = $"Xe {vin} không nằm trong biên bản {r.DlvMnNo}.", rowKey = "(DlvMnNo, VIN)" });
+            his.DlvStartDateOld = mc.DlvStartDate; mc.DlvStartDate = newDate; nDlv++;
         }
         if (!string.IsNullOrWhiteSpace(r.DeliveryOrderNo))
         {
@@ -1351,8 +1362,15 @@ app.MapPost("/api/dlvminutes/update-province", async (DlvUpdProvinceDto dto, App
     var updated = 0;
     foreach (var r in rows)
     {
-        var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo);
-        if (m is null) return Results.BadRequest(new { error = $"Không tìm thấy biên bản {r.DlvMnNo}." });
+        var hdr = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == r.DlvMnNo);
+        if (hdr is null) return Results.BadRequest(new { error = $"Không tìm thấy biên bản {r.DlvMnNo}.", guard = "…_DlvMnNoNotExist" });
+        // 🔴 #B36 GAP (cùng loại với hàm sửa ngày): nguồn khoá **CẶP (`DlvMnNo`, `VIN`)** — mỗi xe trong
+        //    biên bản có **tuyến riêng** (`Biz.HTC.WH.hkt.cs:9022`: `and t.VIN = @strVIN`; và cả sáu bảng
+        //    tạm cập nhật đều mang `drInput["VIN"]` làm khoá, `:9150-9250`). Port cũ khớp **chỉ số biên
+        //    bản** rồi ghi vào **HEADER** ⇒ đổi tuyến của MỘT xe **đổi luôn cho cả lô**.
+        var m = await db.TranspDlvConfirmCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+            && x.TranspDlvConfirmId == hdr.Id && x.VIN == r.VIN!.Trim().ToUpperInvariant());
+        if (m is null) return Results.BadRequest(new { error = $"Xe {r.VIN} không nằm trong biên bản {r.DlvMnNo}.", rowKey = "(DlvMnNo, VIN)" });
         // ✅ GUARD ĐÃ PORT (nợ #92 đóng ở #116, sau khi có master `Mst_District` từ #115).
         // Nguồn (`Biz.HTC.WH.hkt.cs:9072-9140`) kiểm CẶP (ProvinceCode, DistrictCode) phải tồn tại
         // trong `Mst_District`, làm RIÊNG cho từng đầu tuyến: F (nơi đi) và T (nơi đến).
