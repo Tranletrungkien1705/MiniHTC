@@ -41,6 +41,18 @@ const EXPECTED = {
     'OrderPartLine.TSTID': '#346 he ngoai ghi, tang biz chi TRA',
     // #346: nguon KHONG co cot nay — objValDiscount la TEN THAM SO, gan vao DiscountRate.
     'OrderPart.ValDiscount': '#346 cot ma, nguon dung DiscountRate',
+    // #350: cung ho TSTID — he TST/ngoai ghi thang, tang biz chi DOC (ghi = 0 trong ca 2 cay canonical).
+    'OrderComplain.TSTOrderComplainNo': '#350 he TST ghi, biz chi DOC',
+    'OrderComplain.TSTEmployeeCode': '#350 he TST ghi, biz chi DOC',
+    'ReqPartPrice.TSTReqPartPriceID': '#350 he TST ghi, biz chi DOC',
+    'ReqPartPrice.IsUpdatePrice': '#350 nguon khong ghi (ghi = 0)',
+    // #350: hai cot nay o nguon CHI duoc SAO CHEP lai tu ban ghi cu trong luong dong bo DataWH
+    //   (dr["X"] = dt_CheckOnDB.Rows[i]["X"]), khong phai dong dau duyet do nghiep vu sinh ra.
+    'TranspDlvConfirm.FApprovedDate': '#350 chi sao chep trong luong dong bo, khong phai dong dau',
+    'TranspDlvConfirm.FApprovedBy': '#350 chi sao chep trong luong dong bo, khong phai dong dau',
+    // #343 da tra nguon: grep ra 0 cho ghi vao Ser_RO => nghi la cot do port tu them.
+    'RepairOrder.FlagIsDLQuery': '#343 nguon khong ghi vao Ser_RO',
+    'RepairOrder.PointVoucher': '#343 nguon khong ghi vao Ser_RO',
 };
 
 // ---- 1. gom entity → danh sách thuộc tính ----

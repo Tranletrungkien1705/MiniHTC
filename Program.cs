@@ -2356,6 +2356,41 @@ app.MapPost("/api/grts/{grtNo}/approve", async (string grtNo, AppDbContext db, I
     return Results.Ok(new { g.GrtNo, status = g.Status });
 }).RequireAuthorization();
 
+// ===== 🔴 #350 NGÂN HÀNG GIÁM SÁT của bảo lãnh (`Pmt_Guarantee.BankCodeMonitor`) =====
+// Nguồn `PaymentGuaranteeUpdate_BankMonitor_New20190403` (`Biz.HTC.WH.My.cs:13198`,
+//   md5 file giống hệt 2 máy). WS nhận đúng hai tham số: `strGuaranteeNo` + `strBankCodeMonitor`.
+//
+// 🔴 BẪY `alColumnEffective` — code TRÔNG như "rỗng = xoá" nhưng THỰC TẾ là "rỗng = GIỮ NGUYÊN":
+//   `if (objBankCodeMonitor != null && … != "")`
+//   `{ dt.Rows[0]["BankCodeMonitor"] = obj; alColumnEffective.Add("BankCodeMonitor"); }`
+//   `else dt.Rows[0]["BankCodeMonitor"] = DBNull.Value;`   ← **KHÔNG có `alColumnEffective.Add`**
+//   `SaveData(…, alColumnEffective.ToArray())` chỉ lưu cột **có trong danh sách** ⇒ nhánh `else`
+//   gán DBNull vào DataTable rồi **không lưu gì cả**: gửi rỗng KHÔNG xoá được mã cũ.
+//   ⇒ Port theo hành vi THỰC (giữ nguyên), không theo vẻ ngoài của code. Đây đúng là cái bẫy đã ghi
+//     ở #334: tập cột lưu thật = (cột được gán) ∩ (danh sách hiệu lực).
+app.MapPost("/api/grts/{grtNo}/bankmonitor", async (string grtNo, GrtBankMonitorDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    grtNo = grtNo.Trim().ToUpperInvariant();
+    var g = await db.Guarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtNo == grtNo);
+    if (g is null) return Results.NotFound(new { grtNo });
+
+    var code = (dto.BankCodeMonitor ?? "").Trim();
+    var cleared = code.Length == 0;
+    if (!cleared) g.BankCodeMonitor = code;   // rỗng ⇒ KHÔNG đụng vào (xem bẫy ở trên)
+    g.LogLUDateTime = DateTime.Now; g.LogLUBy = dto.LogLUBy;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        g.GrtNo, g.BankCodeMonitor,
+        keptOldValue = cleared,
+        note = cleared
+            ? "Gửi rỗng KHÔNG xoá mã ngân hàng giám sát — nguồn quên Add cột vào alColumnEffective ở nhánh else."
+            : null,
+    });
+}).RequireAuthorization();
+
 // Sửa ngày hết hạn (FrmEditGrtExpiredDate / FrmEditGrtEndDate)
 app.MapPost("/api/grts/{grtNo}/expiry", async (string grtNo, GrtExpiryDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -38356,6 +38391,9 @@ record MortgageDto(string BankCode, List<string>? Vins);
 record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
 record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
 record GrtDto(string DealerCode, string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
+// #350: ngan hang giam sat cua bao lanh. Rong = GIU NGUYEN (xem bay alColumnEffective).
+record GrtBankMonitorDto(string? BankCodeMonitor, string? LogLUBy = null);
+
 record GrtExpiryDto(DateTime? DateExpired);
 record GrtExpiryEditDto(List<GrtExpiryRowDto>? Lines);
 record GrtExpiryRowDto(string? VIN, DateTime? DateExpired, DateTime? DateEnd);
