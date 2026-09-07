@@ -6122,6 +6122,14 @@ public sealed class DealerDeal
     /// khởi tạo khỏi giao dịch bán thật.
     /// </summary>
     public string FlagInitDeal { get; set; } = "0";
+
+    // ===== #B09 HỢP NHẤT SONG TRÙNG #5 — `DLS_Deal` là bảng nguồn DUY NHẤT cho cả bán lẻ lẫn bán buôn ĐL→ĐL.
+    //      `WholesaleDeal` (⛔ deprecated) từng là bộ RIÊNG ⇒ xe bán buôn KHÔNG hiện ở màn tìm xe (#B08)
+    //      và hai báo cáo GPS (#B04/#B05) vì chúng đọc `DealerDeal`. Đây là mất dữ liệu lúc ĐỌC.
+    /// <summary>Người tạo (`DLS_Deal.CreatedBy`) — nguồn ghi cùng `CreatedDate`.</summary>
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 public sealed class DealerDealDetail
 {
@@ -6161,6 +6169,14 @@ public sealed class DealerDealDetail
     /// <summary>Ngày/người xác nhận dòng (`ConfirmDate`/`ConfirmBy`) — hai bộ lọc riêng của hàm tìm kiếm.</summary>
     public DateTime? ConfirmDate { get; set; }
     public string? ConfirmBy { get; set; }
+
+    // ===== #B09 hợp nhất song trùng #5 =====
+    /// <summary>VIN của xe (`DLS_DealDetail.VIN`) — nguồn gán từ `Car_Car` sau khi kiểm tra xe
+    /// (`Biz.HTC.WH.cs:93088`: `dr["VIN"] = dt_Car_Car_Check.Rows[0]["VIN"]`).</summary>
+    public string? VIN { get; set; }
+    /// <summary>Xe trên hợp đồng đại lý VỪA ĐƯỢC SINH RA (`CtrCarId`) — mốc nối dòng giao dịch với
+    /// `Dlr_ContractCar`. Nguồn gán ngay trong vòng lặp tạo dòng, cùng chỉ số i.</summary>
+    public string? CtrCarId { get; set; }
 }
 
 /// <summary>
@@ -11474,6 +11490,13 @@ public sealed class HmcReport
     public long? AutoID { get; set; }
 }
 
+/// <summary>
+/// ⛔ **DEPRECATED — THỰC THỂ SONG TRÙNG (ca thứ 5, vá ở #B09).** Lớp này và <see cref="DealerDeal"/>
+/// cùng port bảng nguồn `DLS_Deal`; `WholesaleDealCar` và <see cref="DealerDealDetail"/> cùng port
+/// `DLS_DealDetail`. Hậu quả THẬT: giao dịch bán buôn ghi riêng vào đây nên **màn tìm xe để bán cho đại lý
+/// (#B08) và hai báo cáo GPS (#B04/#B05) không bao giờ thấy** — mất dữ liệu lúc ĐỌC.
+/// Đã hợp nhất về <see cref="DealerDeal"/>; `/api/wholesaledeals` không còn ghi vào lớp này.
+/// </summary>
 public sealed class WholesaleDeal
 {
     public long Id { get; set; }
@@ -11515,6 +11538,7 @@ public sealed class WholesaleDeal
 }
 
 /// <summary>Xe trên giao dịch bán buôn ĐL→ĐL — port 1:1 FrmNewDealToDealer detail.</summary>
+/// <summary>⛔ DEPRECATED cùng <see cref="WholesaleDeal"/> — xem ghi chú ở đó (#B09).</summary>
 public sealed class WholesaleDealCar
 {
     public long Id { get; set; }

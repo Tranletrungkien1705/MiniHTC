@@ -1158,6 +1158,12 @@ public static class Seeder
         "ALTER TABLE public.\"DlrPdiRequestDetails\" ADD COLUMN IF NOT EXISTS \"VIN\" text NULL",
         "ALTER TABLE public.\"DlrPdiRequestDetails\" ADD COLUMN IF NOT EXISTS \"CtrCarId\" text NULL",
         "ALTER TABLE public.\"DlrPdiRequestDetails\" ADD COLUMN IF NOT EXISTS \"DlrContractNo\" text NULL",
+        // #B09 hop nhat song trung #5: DLS_Deal / DLS_DealDetail la bang chuan cho ca ban buon
+        "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+        "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+        "ALTER TABLE public.\"DealerDealDetails\" ADD COLUMN IF NOT EXISTS \"VIN\" text NULL",
+        "ALTER TABLE public.\"DealerDealDetails\" ADD COLUMN IF NOT EXISTS \"CtrCarId\" text NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",

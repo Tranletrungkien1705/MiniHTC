@@ -4837,19 +4837,28 @@ app.MapGet("/api/hmcreports", async (AppDbContext db, ITenantContext t, string? 
         invalidLength = items.Count(i => i.contentsLength != 54), items });
 }).RequireAuthorization();
 
-app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, string? buyer, string? no, string? status) =>
+// ===== #B09 HỢP NHẤT THỰC THỂ SONG TRÙNG #5 (sau #56 RD_ReqInvoice, #60 Sto_DlvMinutes, #B06 StoF_MaintainMain) =====
+// `WholesaleDeal`/`WholesaleDealCar` và `DealerDeal`/`DealerDealDetail` **cùng port `DLS_Deal`/`DLS_DealDetail`**.
+// 🔴 Hậu quả THẬT (không phải lý thuyết): giao dịch bán buôn ĐL→ĐL ghi vào bộ RIÊNG nên **màn "tìm xe để bán
+//    cho đại lý" (#B08) và hai báo cáo GPS (#B04/#B05) — vốn đọc `DealerDeal` — không bao giờ thấy chúng.**
+// ⇒ Giữ `DealerDeal`/`DealerDealDetail` làm bảng chuẩn (đúng nguồn, nhiều màn khác đã dùng); cụm
+//   `/api/wholesaledeals` nay ĐỌC/GHI thẳng vào đó. `WholesaleDeal*` ⛔ ngưng ghi.
+// Trace twin LIVE: `FrmNewDealToDealer.btnSave_Click:212` → `DealerService.InsertDealToDealer` (:1274)
+//   → WS `DealerSalesDealCreate_SellToDealer` → **`_biz.DealerSalesDealCreate_SellToDealer_New20230306`**
+//   (`Biz.HTC.WH.cs:92880`) — ghi **BẢY bảng**.
+app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, string? buyer, string? no) =>
 {
-    var q = db.WholesaleDeals.Where(d => d.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(d => d.BuyerDealerCode == buyer);
-    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(d => d.DealNo.Contains(no!) || d.DealNoUser.Contains(no!));
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.Status == status);
+    // Bán buôn ĐL→ĐL = dòng `DLS_Deal` có `DealerCodeBuyer` (đại lý mua), phân biệt với bán lẻ cho khách.
+    var q = db.DealerDeals.Where(d => d.OrgId == t.OrgId && d.DealerCodeBuyer != null && d.DealerCodeBuyer != "");
+    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(d => d.DealerCodeBuyer == buyer);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(d => d.DealNo.Contains(no!) || (d.DealNoUser != null && d.DealNoUser.Contains(no!)));
     var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
     {
-        d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.SalesManCode, d.Status, d.TotalAmount, d.CreatedAt, d.ConfirmedAt,
-        // #157 parity DLS_Deal.
-        d.DealerCode, d.SalesType, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver,
-        d.CreatedBy, d.FlagInitDeal, d.DlrContractNo, d.LogLUDateTime, d.LogLUBy,
-        cars = db.WholesaleDealCars.Count(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
+        d.DealNo, d.DealNoUser, buyerDealerCode = d.DealerCodeBuyer, d.SalesManCode, d.DealerCode, d.SalesType,
+        d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver,
+        d.CreatedAt, d.CreatedBy, d.FlagInitDeal, d.CtmCareFlag, d.DlrContractNo, d.LogLUDateTime, d.LogLUBy,
+        cars = db.DealerDealDetails.Count(c => c.OrgId == t.OrgId && c.DealId == d.Id),
+        totalAmount = db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).Sum(c => (decimal?)c.PriceAFVAT) ?? 0m
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -4861,93 +4870,167 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe giao dịch" });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var no = "DTD" + DateTime.Now.ToString("yyMMddHHmmss");
-    var d2 = new WholesaleDeal { OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser.Trim(), BuyerDealerCode = dto.BuyerDealerCode.Trim(), SalesManCode = dto.SalesManCode ?? "", Status = "Draft", TotalAmount = cars.Sum(c => c.UnitPrice) ,
-        // #157 parity DLS_Deal.
-        DealerCode = dto.DealerCode, SalesType = dto.SalesType, DealDate = dto.DealDate,
-        CustomerCodeBuyer = dto.BuyerDealerCode,   // nguồn: CustomerCodeBuyer = DealerCodeBuyer
-        CustomerCodeHolder = dto.CustomerCodeHolder, CustomerCodeDriver = dto.CustomerCodeDriver,
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", FlagInitDeal = dto.FlagInitDeal, DlrContractNo = dto.DlrContractNo,
-        LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
-    db.WholesaleDeals.Add(d2); await db.SaveChangesAsync();
-    foreach (var c in cars)
-        db.WholesaleDealCars.Add(new WholesaleDealCar { OrgId = t.OrgId, WholesaleDealId = d2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", UnitPrice = c.UnitPrice ,
-            // #157 parity DLS_DealDetail.
-            CarId = c.CarId, DealNoPrevious = c.DealNoPrevious, PlateNo = c.PlateNo,
-            DeliveryDate = c.DeliveryDate, DeliveryStatus = c.DeliveryStatus,
-            FlagCurrent = "1",          // nguồn đánh dấu dòng vừa tạo là dòng hiện hành
-            CtrCarId = c.CtrCarId, LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
-    // ===== #158 side-effect: NGUỒN TỰ SINH HỢP ĐỒNG ĐẠI LÝ + BÁO CÁO HÃNG =====
-    // `DealerSalesDealCreate_SellToDealer_New20230306` (Biz.HTC.WH.cs:92880) ghi BẢY bảng, không phải hai:
-    //   DLS_Deal · DLS_DealDetail · Dlr_Contract · Dlr_ContractDtl · Dlr_ContractCar · Dlr_ContractDtlHis · HMC_Report.
-    // Nợ này ghi ở #157, nay trả. Thứ tự đúng như nguồn: hợp đồng trước, dòng/xe, lịch sử, rồi báo cáo hãng.
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });   // ..._DuplicateKeyDetail
+
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var no = "DTD" + now.ToString("yyMMddHHmmss");
+    // `if (strDealNo.Length < TConst.HTCConst.MinLengthCode)` ⇒ **MinLengthCode = 5** (Const.Main.cs:322).
+    if (no.Length < 5) return Results.BadRequest(new { error = "Số giao dịch quá ngắn (tối thiểu 5 ký tự)." });
+    var buyerCode = dto.BuyerDealerCode.Trim().ToUpperInvariant();
+    var sellerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+
+    // `myCommon_CheckDealer(..., Flag.Active exist, Flag.Active active)` — đại lý MUA phải tồn tại & đang hoạt động.
+    var buyerDealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == buyerCode);
+    if (buyerDealer is null) return Results.BadRequest(new { error = $"Đại lý mua {buyerCode} không tồn tại." });
+    if ((buyerDealer.FlagActive ?? buyerDealer.Status) == "0") return Results.BadRequest(new { error = $"Đại lý mua {buyerCode} đang ngưng hoạt động." });
+    // ⚠️ `myCommon_CheckAccessDealerData(BUCode)` — tầng ability BUPattern là nợ chung fleet, chưa port.
+
+    // `GetTableContents("Mst_Customer", ..., "DealerCode","=",TConst.HTCConst.HTCPublicDealerCode)` rỗng ⇒
+    // `..._CustomerNotFound`. GIÁ TRỊ hằng = **"HTC.PUBLIC"** (Const.Main.cs:320), không phải tên hằng.
+    const string HtcPublicDealerCode = "HTC.PUBLIC";
+
+    // Kiểm từng xe: `Car_Car_CheckDB(..., FlagCurrent = Flag.Active, CDODConfirmStatus = Stage.Finished)`
+    // — chú thích nguồn: "Đại lý phải đã Nhập xe." (Stage.Finished = "F", Const.Main.cs:121).
+    var vinKeys = cars.Select(c => c.VIN.Trim().ToUpperInvariant()).ToList();
+    var vinMasters = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vinKeys.Contains(x.VIN))
+        .Select(x => new { x.VIN, x.ModelCode, x.SpecCode, x.ColorCode }).ToListAsync();
+    var confirmedVins = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.ConfirmStatus == "F" && vinKeys.Contains(x.Vin))
+        .Select(x => x.Vin).ToListAsync()).ToHashSet();
+    foreach (var v in vinKeys)
     {
-        var nowSe = DateTime.Now;
-        var whoSe = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-        var ctrNo = (dto.DlrContractNo ?? "").Trim();
-        if (ctrNo.Length == 0) ctrNo = "DLRCTR" + nowSe.ToString("yyMMddHHmmss");
-        var versionCurr = nowSe;
+        if (!vinMasters.Any(x => x.VIN == v)) return Results.BadRequest(new { error = $"Xe {v} chưa khai báo trên hệ thống." });
+        if (!confirmedVins.Contains(v)) return Results.BadRequest(new { error = $"Xe {v} đại lý chưa nhập kho (ConfirmStatus phải = 'F')." });
+    }
 
-        db.DlrContracts.Add(new DlrContract { OrgId = t.OrgId, DlrContractNo = ctrNo,
-            DealerCode = dto.DealerCode, DealerCodeBuyer = dto.BuyerDealerCode,
-            CustomerCode = dto.BuyerDealerCode, DlrContractNoUser = dto.DealNoUser,
-            SalesType = dto.SalesType, SalesManCode = dto.SalesManCode,
-            ContractDate = dto.DealDate ?? nowSe, CreatedAt = nowSe, CreatedBy = whoSe,
-            VersionDTimeCurr = versionCurr, VersionCount = 1, VersionUpdateBy = whoSe,
-            FlagActive = "1", Status = "P", LogLUDateTime = nowSe, LogLUBy = whoSe });
+    // ---- 1/7 `Dlr_Contract`: nguồn TỰ SINH hợp đồng đại lý và **DUYỆT LUÔN** ----
+    var ctrNo = (dto.DlrContractNo ?? "").Trim();
+    if (ctrNo.Length == 0) ctrNo = "DLRCTR" + now.ToString("yyMMddHHmmss");
+    db.DlrContracts.Add(new DlrContract { OrgId = t.OrgId, DlrContractNo = ctrNo,
+        DealerCode = sellerCode, DealerCodeBuyer = buyerCode,
+        CustomerCode = sellerCode,                       // nguồn: CustomerCode = DealerCode (bên BÁN)
+        DlrContractNoUser = dto.DealNoUser, SalesType = dto.SalesType, SalesManCode = dto.SalesManCode,
+        ContractDate = dto.DealDate ?? now, CreatedAt = now, CreatedBy = who,
+        VersionDTimeCurr = now, VersionCount = 1, VersionUpdateBy = who,
+        FlagActive = "1",
+        // 🔴 `DlrCtrStatus = TConst.Stage.Approved` = **"A"** — hợp đồng sinh ra ở trạng thái ĐÃ DUYỆT,
+        //    kèm `ApproveDTime`; `FlagDealFinish = Flag.Inactive` = "0"; `TransactorCode = DealerCode`.
+        Status = "A", ApproveDTime = now, FlagDealFinish = "0", TransactorCode = sellerCode,
+        LogLUDateTime = now, LogLUBy = who });
 
-        // Dlr_ContractDtl: nguồn GỘP NHÓM theo (Spec, Model, Color) và lấy SumQty — không phải 1 dòng/xe.
-        foreach (var grp in cars.GroupBy(c => new { c.ModelCode, SpecCode = (string?)null, ColorCode = (string?)null }))
-            db.DlrContractDetails.Add(new DlrContractDetail { OrgId = t.OrgId, DlrContractNo = ctrNo,
-                ModelCode = grp.Key.ModelCode, Qty = grp.Count(),
-                DlvExpectedDate = dto.DealDate ?? nowSe, LogLUDateTime = nowSe, LogLUBy = whoSe });
+    // ---- 2/7 `Dlr_ContractDtl`: GỘP NHÓM theo (Spec, Model, Color) + SumQty, KHÔNG phải 1 dòng/xe ----
+    var grouped = cars.Select(c => new { c, m = vinMasters.First(x => x.VIN == c.VIN.Trim().ToUpperInvariant()) })
+        .GroupBy(x => new { x.m.ModelCode, x.m.SpecCode, x.m.ColorCode }).ToList();
+    foreach (var grp in grouped)
+        db.DlrContractDetails.Add(new DlrContractDetail { OrgId = t.OrgId, DlrContractNo = ctrNo,
+            ModelCode = grp.Key.ModelCode, SpecCode = grp.Key.SpecCode, ColorCode = grp.Key.ColorCode,
+            Qty = grp.Count(), DlvExpectedDate = dto.DealDate ?? now, LogLUDateTime = now, LogLUBy = who });
 
-        // Dlr_ContractCar: một dòng mỗi XE, mang CtrCarId — chính là mốc nối sang DLS_DealDetail.
-        foreach (var c in cars)
-            db.DlrContractCars.Add(new DlrContractCar { OrgId = t.OrgId, DlrContractNo = ctrNo,
-                ModelCode = c.ModelCode, CtrCarId = c.CtrCarId ?? c.VIN,
-                DlvExpectedDate = dto.DealDate ?? nowSe, FlagCancel = "0", FlagDelivery = "0",
-                LogLUDateTime = nowSe, LogLUBy = whoSe });
+    // ---- 3/7 `Dlr_ContractCar`: 1 dòng/xe, sinh `CtrCarId` "<SốHĐ>.NN" (2 chữ số, đúng quy ước entity) ----
+    var ctrCarIds = new Dictionary<string, string>();
+    int seq = 0;
+    foreach (var c in cars)
+    {
+        var v = c.VIN.Trim().ToUpperInvariant();
+        var m = vinMasters.First(x => x.VIN == v);
+        var ctrCarId = $"{ctrNo}.{++seq:00}";
+        ctrCarIds[v] = ctrCarId;
+        db.DlrContractCars.Add(new DlrContractCar { OrgId = t.OrgId, DlrContractNo = ctrNo, CtrCarId = ctrCarId,
+            ModelCode = m.ModelCode, SpecCode = m.SpecCode, ColorCode = m.ColorCode,
+            DlvExpectedDate = dto.DealDate ?? now, FlagCancel = "0", FlagDelivery = "0",
+            LogLUDateTime = now, LogLUBy = who });
+    }
 
-        // HMC_Report: MỘT dòng mỗi xe. Bán buôn ĐL→ĐL nguồn dùng DeliveryType = "001A"
-        // (HMCRpt_DeliveryToEndUser) — dòng "010A" (DeliveryToDealer) nằm ngay cạnh nhưng ĐÃ BỊ COMMENT.
-        foreach (var c in cars)
+    // ---- 4/7 `Dlr_ContractDtlHis`: ảnh chụp dòng hợp đồng tại thời điểm tạo ----
+    foreach (var grp in grouped)
+        db.DlrContractDtlHiss.Add(new DlrContractDtlHis { OrgId = t.OrgId, DlrContractNo = ctrNo,
+            ModelCode = grp.Key.ModelCode, SpecCode = grp.Key.SpecCode, ColorCode = grp.Key.ColorCode,
+            Qty = grp.Count(),
+            // Khoá nhóm lịch sử = `Dlr_Contract.VersionDTimeCurr` lúc ghi; `ContractUpdateType` NULL = bản ghi lúc TẠO.
+            VersionDTimeCurr = now, ContractUpdateType = null, DlvExpectedDate = dto.DealDate ?? now,
+            LogLUDateTime = now, LogLUBy = who });
+
+    // ---- 5/7 `DLS_Deal` (bảng CHUẨN `DealerDeal`) ----
+    var d2 = new DealerDeal
+    {
+        OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser.Trim(),
+        DealerCode = sellerCode, DealerCodeBuyer = buyerCode,
+        // Nguồn gán CẢ BA cột khách hàng = DealerCodeBuyer (đại lý mua đóng vai khách).
+        CustomerCodeBuyer = buyerCode, CustomerCodeHolder = buyerCode, CustomerCodeDriver = buyerCode,
+        SalesType = dto.SalesType ?? "", SalesManCode = dto.SalesManCode,
+        DealDate = dto.DealDate ?? now, CreatedAt = now, CreatedBy = who,
+        FlagInitDeal = "0",            // TConst.Flag.Inactive
+        CtmCareFlag = "1",             // TConst.Flag.Active — nguồn đánh dấu đã kiểm chứng CSKH ngay khi tạo
+        CtmCareUpdDate = now, CtmCareUpdBy = who, CtmCareRemark = null,
+        DlrContractNo = ctrNo,
+        LogLUDateTime = now, LogLUBy = who
+    };
+    db.DealerDeals.Add(d2); await db.SaveChangesAsync();
+
+    // ---- 6/7 `DLS_DealDetail` + 7/7 `HMC_Report` ----
+    foreach (var c in cars)
+    {
+        var v = c.VIN.Trim().ToUpperInvariant();
+        db.DealerDealDetails.Add(new DealerDealDetail
         {
-            var contents = BuildHmcPerformContents(dto.DealerCode, dto.DealDate ?? nowSe,
-                (c.VIN ?? "").Trim().ToUpperInvariant(), "001A", dto.SalesType, nowSe);
-            db.HmcReports.Add(new HmcReport { OrgId = t.OrgId, DealerCode = dto.DealerCode, DealNo = no,
-                CarId = c.CarId, VIN = (c.VIN ?? "").Trim().ToUpperInvariant(), DeliveryType = "001A",
-                SalesType = dto.SalesType, PerformDate = dto.DealDate ?? nowSe,
-                CreatedDate = nowSe, CreatedBy = whoSe, PerformContents = contents });
-        }
-        d2.DlrContractNo = ctrNo;   // gắn số hợp đồng vừa sinh trở lại đầu giao dịch
+            OrgId = t.OrgId, DealId = d2.Id, CarId = c.CarId ?? v, VIN = v, PlateNo = c.PlateNo,
+            PriceAFVAT = c.UnitPrice, DealNoPrevious = null,          // nguồn gán DBNull
+            DeliveryDate = dto.DealDate ?? now,                        // = DealDate, không phải ngày hôm nay
+            DeliveryStatus = "A",                                      // TConst.Stage.Approved
+            ConfirmDate = now, ConfirmBy = who,
+            FlagCurrent = "1",                                         // TConst.Flag.Active
+            CtrCarId = ctrCarIds[v]
+        });
+        // 🔴 DeliveryType = **"001A"** (`HMCRpt_DeliveryToEndUser`, Const.Main.cs:330). Dòng dùng
+        //    `HMCRpt_DeliveryToDealer` = "010A" nằm NGAY CẠNH nhưng **đã bị COMMENT** — port dòng ACTIVE.
+        var contents = BuildHmcPerformContents(sellerCode, dto.DealDate ?? now, v, "001A", dto.SalesType, now);
+        db.HmcReports.Add(new HmcReport { OrgId = t.OrgId, DealerCode = sellerCode, DealNo = no,
+            CarId = c.CarId ?? v, VIN = v, DeliveryType = "001A", SalesType = dto.SalesType,
+            PerformDate = dto.DealDate ?? now, CreatedDate = now, CreatedBy = who, PerformContents = contents });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { d2.DealNo, cars = cars.Count, totalAmount = d2.TotalAmount });
+    return Results.Ok(new { d2.DealNo, dlrContractNo = ctrNo, cars = cars.Count,
+        totalAmount = cars.Sum(c => c.UnitPrice), contractDtlRows = grouped.Count,
+        htcPublicDealerCode = HtcPublicDealerCode,
+        tablesWritten = new[] { "DLS_Deal", "DLS_DealDetail", "Dlr_Contract", "Dlr_ContractDtl", "Dlr_ContractCar", "Dlr_ContractDtlHis", "HMC_Report" } });
 }).RequireAuthorization();
 
 app.MapGet("/api/wholesaledeals/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var d = await db.WholesaleDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
     if (d is null) return Results.NotFound(new { no });
-    var cars = await db.WholesaleDealCars.Where(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
-        .Select(c => new { c.VIN, c.ModelCode, c.UnitPrice , c.CarId, c.DealNoPrevious, c.PlateNo, c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.Status, d.TotalAmount, count = cars.Count, cars });
+    var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
+        .Select(c => new { c.VIN, c.CarId, c.PlateNo, unitPrice = c.PriceAFVAT, c.Price, c.DealNoPrevious,
+            c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId }).ToListAsync();
+    return Results.Ok(new { d.DealNo, d.DealNoUser, buyerDealerCode = d.DealerCodeBuyer, d.DlrContractNo,
+        count = cars.Count, totalAmount = cars.Sum(c => c.unitPrice), cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/wholesaledeals/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// 🔴 #B09 GỠ nút `confirm|cancel` TỰ CHẾ (Draft/Confirmed/Cancelled): bảng nguồn `DLS_Deal` **không có cột
+//    trạng thái nào** — toàn bộ khối `insert` của `DealerSalesDealCreate_SellToDealer_New20230306` không ghi
+//    cột status nào cho đầu giao dịch. Ba giá trị kia là BỊA (luật C0-…sextus).
+//    Thao tác THẬT của nguồn ngoài Tạo/Sửa chỉ còn **XOÁ**: `DealerSalesDealDelete_New20210412`
+//    (`Biz.HTC.WH.cs:98210`), WS `DealerSalesDealDelete` (`WSHTC.asmx.cs:26897`).
+app.MapDelete("/api/wholesaledeals/{no}", async (string no, AppDbContext db, ITenantContext t, string? force) =>
 {
-    if (action is not ("confirm" or "cancel")) return Results.BadRequest(new { error = "action = confirm|cancel" });
     no = no.Trim().ToUpperInvariant();
-    var d = await db.WholesaleDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
     if (d is null) return Results.NotFound(new { no });
-    if (d.Status != "Draft") return Results.BadRequest(new { error = action == "confirm" ? "Không thể xác nhận giao dịch này." : "Không thể hủy giao dịch này." });
-    d.Status = action == "confirm" ? "Confirmed" : "Cancelled";
-    if (action == "confirm") d.ConfirmedAt = DateTime.Now;
+    // `DLS_Deal_CheckDB(..., strFlagInitDealListToCheck = TConst.Flag.Inactive)` ⇒ chỉ xoá được giao dịch
+    // KHÔNG phải giao dịch khởi tạo.
+    if (d.FlagInitDeal != "0") return Results.BadRequest(new { error = "Không xoá được giao dịch khởi tạo (FlagInitDeal phải = '0')." });
+    var isForce = force == "1" || force == "true";      // `bIsForceDelete = StringEqual(strIsForceDelete, Flag.Active)`
+    var details = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).ToListAsync();
+    // `..._CarDeliveried`: xe đã giao thì không cho xoá.
+    var delivered = details.FirstOrDefault(c => c.DeliveryDate != null && c.DeliveryStatus == "A" && !isForce);
+    if (delivered is not null)
+        return Results.BadRequest(new { error = $"Xe {delivered.VIN ?? delivered.CarId} đã giao — không xoá được giao dịch (dùng force=1 nếu được phép)." });
+    db.DealerDealDetails.RemoveRange(details);
+    db.DealerDeals.Remove(d);
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DealNo, d.Status });
+    return Results.Ok(new { deleted = no, cars = details.Count, forced = isForce });
 }).RequireAuthorization();
 
 // ===== Sửa thông tin giao dịch bán xe (DealRecord — port 1:1 cụm FrmEditDeal_*: DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung) =====
@@ -8086,7 +8169,10 @@ app.MapGet("/api/report/summary", async (AppDbContext db, ITenantContext t) =>
     var so = await db.SalesOrders.Where(o => o.OrgId == org).Select(o => o.Status).ToListAsync();
     var soLineAmt = await db.SalesOrderLines.Where(l => l.OrgId == org).SumAsync(l => (decimal?)(l.UnitPrice * l.RequestedQuantity)) ?? 0;
     // Bán buôn ĐL->ĐL
-    var ws = await db.WholesaleDeals.Where(w => w.OrgId == org).Select(w => new { w.Status, w.TotalAmount }).ToListAsync();
+    // #B09: sau hợp nhất song trùng #5, bán buôn ĐL→ĐL nằm trong `DealerDeal` (DLS_Deal) — nhận diện bằng
+    // `DealerCodeBuyer` khác rỗng; tiền lấy từ Σ `PriceAFVAT` của dòng (đầu giao dịch không có cột tổng).
+    var wsDeals = await db.DealerDeals.Where(w => w.OrgId == org && w.DealerCodeBuyer != null && w.DealerCodeBuyer != "").Select(w => w.Id).ToListAsync();
+    var wsAmount = await db.DealerDealDetails.Where(c => c.OrgId == org && wsDeals.Contains(c.DealId)).SumAsync(c => (decimal?)c.PriceAFVAT) ?? 0m;
     // Bảo lãnh ngân hàng
     var grt = await db.BankGuarantees.Where(g => g.OrgId == org).Select(g => new { g.Status, g.FlagSettled, g.TotalAmount }).ToListAsync();
     // Phiếu thanh toán
@@ -8099,7 +8185,8 @@ app.MapGet("/api/report/summary", async (AppDbContext db, ITenantContext t) =>
     var summary = new
     {
         salesOrders = new { count = so.Count, byStatus = so.GroupBy(s => s).Select(g => new { status = g.Key, count = g.Count() }).ToList(), totalAmount = soLineAmt },
-        wholesaleDeals = new { count = ws.Count, confirmed = ws.Count(w => w.Status == "Confirmed"), totalAmount = ws.Sum(w => w.TotalAmount) },
+        // #B09: bỏ `confirmed` — `DLS_Deal` không có cột trạng thái (Draft/Confirmed/Cancelled là BỊA).
+        wholesaleDeals = new { count = wsDeals.Count, totalAmount = wsAmount },
         guarantees = new { count = grt.Count, approved = grt.Count(g => g.Status == "Approved"), debit = grt.Where(g => g.Status == "Approved" && g.FlagSettled != "1").Sum(g => g.TotalAmount), settled = grt.Count(g => g.FlagSettled == "1") },
         payments = new { count = pm.Count, approved = pm.Count(p => p.PaymentStatus == "Approved"), totalAmount = pm.Sum(p => p.TotalAmount) },
         dealerContracts = new { count = dc },
@@ -8197,32 +8284,41 @@ app.MapGet("/api/report/vatinvoice", async (AppDbContext db, ITenantContext t, s
         cancelled = invs.Count(v => v.VatHTCStatus == "C"), rejected = invs.Count(v => v.VatHTCStatus == "R"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
-// ===== Báo cáo bán buôn ĐL→ĐL (port 1:1 báo cáo Deal To Dealer) — tái dùng WholesaleDeal + Car =====
-app.MapGet("/api/report/wholesale", async (AppDbContext db, ITenantContext t, string? buyer, string? status, string? salesman, DateTime? from, DateTime? to) =>
+// ===== Báo cáo bán buôn ĐL→ĐL (port 1:1 báo cáo Deal To Dealer) =====
+// #B09: đọc thẳng bảng CHUẨN `DealerDeal`/`DealerDealDetail` (`DLS_Deal`/`DLS_DealDetail`) sau khi hợp nhất
+//       song trùng #5. Trước đó báo cáo đọc `WholesaleDeal` nên **không thấy** giao dịch nào ghi qua
+//       `/api/dealerdeals/todealer` — và ngược lại. Tiền tệ lấy từ Σ `PriceAFVAT` của dòng, đúng nguồn
+//       (đầu `DLS_Deal` KHÔNG có cột tổng tiền).
+// 🔴 Bỏ bộ lọc/nhóm theo `status`: `DLS_Deal` không có cột trạng thái nào (Draft/Confirmed/Cancelled là BỊA).
+app.MapGet("/api/report/wholesale", async (AppDbContext db, ITenantContext t, string? buyer, string? salesman, DateTime? from, DateTime? to) =>
 {
-    var q = db.WholesaleDeals.Where(w => w.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(w => w.BuyerDealerCode == buyer);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(w => w.Status == status);
+    var q = db.DealerDeals.Where(w => w.OrgId == t.OrgId && w.DealerCodeBuyer != null && w.DealerCodeBuyer != "");
+    if (!string.IsNullOrWhiteSpace(buyer)) q = q.Where(w => w.DealerCodeBuyer == buyer);
     if (!string.IsNullOrWhiteSpace(salesman)) q = q.Where(w => w.SalesManCode == salesman);
     if (from is not null) q = q.Where(w => w.CreatedAt >= from.Value.Date);
     if (to is not null) q = q.Where(w => w.CreatedAt < to.Value.Date.AddDays(1));
     var deals = await q.ToListAsync();
     var ids = deals.Select(d => d.Id).ToHashSet();
-    var carCount = await db.WholesaleDealCars.Where(c => c.OrgId == t.OrgId && ids.Contains(c.WholesaleDealId))
-        .GroupBy(c => c.WholesaleDealId).Select(g => new { g.Key, cars = g.Count() }).ToListAsync();
-    var carMap = carCount.ToDictionary(x => x.Key, x => x.cars);
+    var lines = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && ids.Contains(c.DealId))
+        .GroupBy(c => c.DealId).Select(g => new { g.Key, cars = g.Count(), amount = g.Sum(x => x.PriceAFVAT) }).ToListAsync();
+    var carMap = lines.ToDictionary(x => x.Key, x => x.cars);
+    var amtMap = lines.ToDictionary(x => x.Key, x => x.amount);
     int Cars(long id) => carMap.TryGetValue(id, out var v) ? v : 0;
-    var byBuyer = deals.GroupBy(d => string.IsNullOrEmpty(d.BuyerDealerCode) ? "(chưa rõ)" : d.BuyerDealerCode)
-        .Select(g => new { buyerDealerCode = g.Key, count = g.Count(), cars = g.Sum(d => Cars(d.Id)), amount = g.Sum(d => d.TotalAmount), confirmed = g.Count(d => d.Status == "Confirmed") })
+    decimal Amt(long id) => amtMap.TryGetValue(id, out var v) ? v : 0m;
+    var byBuyer = deals.GroupBy(d => string.IsNullOrEmpty(d.DealerCodeBuyer) ? "(chưa rõ)" : d.DealerCodeBuyer!)
+        .Select(g => new { buyerDealerCode = g.Key, count = g.Count(), cars = g.Sum(d => Cars(d.Id)), amount = g.Sum(d => Amt(d.Id)) })
         .OrderByDescending(x => x.amount).ToList();
-    var byStatus = deals.GroupBy(d => d.Status).Select(g => new { status = g.Key, count = g.Count(), amount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.count).ToList();
-    var bySalesman = deals.Where(d => !string.IsNullOrEmpty(d.SalesManCode)).GroupBy(d => d.SalesManCode)
-        .Select(g => new { salesManCode = g.Key, count = g.Count(), amount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.amount).ToList();
+    var bySalesType = deals.GroupBy(d => string.IsNullOrEmpty(d.SalesType) ? "(chưa rõ)" : d.SalesType)
+        .Select(g => new { salesType = g.Key, count = g.Count(), amount = g.Sum(x => Amt(x.Id)) }).OrderByDescending(x => x.count).ToList();
+    var bySalesman = deals.Where(d => !string.IsNullOrEmpty(d.SalesManCode)).GroupBy(d => d.SalesManCode!)
+        .Select(g => new { salesManCode = g.Key, count = g.Count(), amount = g.Sum(x => Amt(x.Id)) }).OrderByDescending(x => x.amount).ToList();
     var detail = deals.OrderByDescending(d => d.Id).Take(500).Select(d => new
     {
-        d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.SalesManCode, d.Status, d.TotalAmount, cars = Cars(d.Id), createdAt = d.CreatedAt.ToString("yyyy-MM-dd")
+        d.DealNo, d.DealNoUser, buyerDealerCode = d.DealerCodeBuyer, d.SalesManCode, d.SalesType, d.DlrContractNo,
+        totalAmount = Amt(d.Id), cars = Cars(d.Id), createdAt = d.CreatedAt.ToString("yyyy-MM-dd")
     }).ToList();
-    return Results.Ok(new { total = deals.Count, totalAmount = deals.Sum(d => d.TotalAmount), confirmedAmount = deals.Where(d => d.Status == "Confirmed").Sum(d => d.TotalAmount), totalCars = deals.Sum(d => Cars(d.Id)), byBuyer, byStatus, bySalesman, detail });
+    return Results.Ok(new { total = deals.Count, totalAmount = deals.Sum(d => Amt(d.Id)),
+        totalCars = deals.Sum(d => Cars(d.Id)), byBuyer, bySalesType, bySalesman, detail });
 }).RequireAuthorization();
 
 // ===== Báo cáo yêu cầu bảo hiểm (port 1:1 báo cáo Ins_InsuranceReq) — tái dùng InsuranceReq + Dtl =====
@@ -27417,30 +27513,10 @@ app.MapGet("/api/dealerdeals/cars-to-sell-to-dealer", async (
     });
 }).RequireAuthorization();
 
-// Chuyển xe sang đại lý khác (FrmNewDealToDealer) — DealerDeal buyer là đại lý, SalesType F7
-app.MapPost("/api/dealerdeals/todealer", async (DealToDealerDto dto, AppDbContext db, ITenantContext t) =>
-{
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý gửi." });
-    if (string.IsNullOrWhiteSpace(dto.DealerCodeBuyer)) return Results.BadRequest(new { error = "Vui lòng chọn đại lý nhận." });
-    if (string.IsNullOrWhiteSpace(dto.DealNoUser)) return Results.BadRequest(new { error = "Cần số HĐ bán lẻ user." });
-    if (string.Equals(dto.DealerCode.Trim(), dto.DealerCodeBuyer.Trim(), StringComparison.OrdinalIgnoreCase))
-        return Results.BadRequest(new { error = "Đại lý gửi và nhận không được trùng." });
-    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
-    var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
-    var no = "DD" + DateTime.Now.ToString("yyMMddHHmmss");
-    var d = new DealerDeal
-    {
-        OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
-        DealerCodeBuyer = dto.DealerCodeBuyer.Trim().ToUpperInvariant(), SalesManCode = dto.SalesManCode, SalesType = "F7", CustomerCodeBuyer = "", FlagPDI = "1"
-    };
-    db.DealerDeals.Add(d); await db.SaveChangesAsync();
-    foreach (var c in cars)
-        db.DealerDealDetails.Add(new DealerDealDetail { OrgId = t.OrgId, DealId = d.Id, CarId = c.CarId.Trim().ToUpperInvariant(), PriceAFVAT = c.PriceAFVAT });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { d.DealNo, from = d.DealerCode, to = d.DealerCodeBuyer, salesType = d.SalesType, cars = cars.Count });
-}).RequireAuthorization();
+// 🔴 #B09 ĐÃ GỠ `POST /api/dealerdeals/todealer` — bản port MỎNG TRÙNG của cùng màn `FrmNewDealToDealer`:
+//    nó chỉ ghi 2/7 bảng, KHÔNG có guard nào của nguồn (xe phải `FlagCurrent="1"` + đã nhập kho
+//    `ConfirmStatus="F"`, đại lý mua phải active, số giao dịch ≥ 5 ký tự), và **hardcode `SalesType = "F7"`**
+//    trong khi nguồn nhận `strSalesType` từ client. Dùng `POST /api/wholesaledeals` (bản đầy đủ).
 
 // ===== Yêu cầu PDI của đại lý (DlrPdiRequest — port 1:1 FrmNewDlr_PDIRequest, DMSales.Foton/SalesDealer) =====
 app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
