@@ -32445,58 +32445,74 @@ app.MapDelete("/api/deliveryorders/{no}/cars/{vin}", async (string no, string vi
     }
     return Results.Ok(new { no, vin, carsLeft = left, headerRemoved, flagAllowChangeVinSet = freed });
 }).RequireAuthorization();
-
-// ===== Tờ khai hải quan (Tkhq — port 1:1 FrmNewTKHQ/FrmMngTKHQ, DMSales.Foton) =====
-app.MapGet("/api/tkhqs", async (AppDbContext db, ITenantContext t, string? status, string? contract) =>
+// ===== #B64 HỢP NHẤT SONG TRÙNG `Tkhq`/`CtTkhq` (ca thứ 8) — cụm `/api/tkhqs` trỏ về `CtTkhq*` =====
+// Hai thực thể cùng ánh xạ **`CT_TKHQ`** và **cùng khoá nghiệp vụ `DeclarationNo`**; cả hai đều đang
+// được ghi (`db.Tkhqs.Add` `:32471`, `db.CtTkhqs.Add` `:31176`) ⇒ tờ khai vào **hai bảng khác nhau**.
+// 🔴 **`Tkhq` là thực thể BỊA**, đối chiếu writer thật của nguồn (`Biz.HTC.WH.cs:37860-37917`,
+//    `SaveData("CT_TKHQ", …)`) — cột nguồn đúng **6**: `DeclarationNo` · `OpenDate` · `PortCode` ·
+//    `Remark` · `CreatedDate` · `CreatedBy`; bảng con là **VIN** (`dr["VIN"]`).
+//    ⇒ `CT_TKHQ` **KHÔNG có `Status`** và **KHÔNG có `ContractNo`**. Vậy:
+//      · `Status = "Open" → "Cleared"` là **từ vựng BỊA** ⇒ endpoint `POST /api/tkhqs/{no}/clear`
+//        (thông quan) **không có ở nguồn** ⇒ **ĐÃ GỠ** (cùng loại vi phạm đã gỡ ở #B31, #B35).
+//      · `ContractNo` là **cột ngoài nguồn** ⇒ bỏ khỏi guard bắt buộc.
+//      · Bảng con `TkhqPL` (packing list) **không phải quan hệ của `CT_TKHQ`** ở nguồn — quan hệ thật là
+//        **VIN** (`CtTkhqVin`, đã có). `TkhqPL` giữ lại, **ngừng ghi**.
+// ⇒ Cụm `/api/tkhqs` nay đọc/ghi **`CtTkhqs` + `CtTkhqVins`**, giữ nguyên đường dẫn để không vỡ lời gọi cũ.
+//    `Tkhq`/`TkhqPL` giữ lại nhưng không còn được ghi (tiền lệ `WholesaleDeal` #B09, `CtmVisit` #B62,
+//    `CBReq` #B63) — xoá sẽ mất dữ liệu đã nhập.
+app.MapGet("/api/tkhqs", async (AppDbContext db, ITenantContext t, string? contract, string? declarationNo) =>
 {
-    var q = db.Tkhqs.Where(k => k.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(k => k.Status == status);
-    if (!string.IsNullOrWhiteSpace(contract)) q = q.Where(k => k.ContractNo.Contains(contract.ToUpper()));
+    var q = db.CtTkhqs.Where(k => k.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(declarationNo))
+    { var kk = declarationNo.Trim().ToUpperInvariant(); q = q.Where(k => k.DeclarationNo.Contains(kk)); }
     var items = await q.OrderByDescending(k => k.Id).Take(500).Select(k => new
     {
-        k.DeclarationNo, k.ContractNo, k.PortCode, k.OpenDate, k.Remark, k.Status, k.ClearedAt,
-        pls = db.TkhqPLs.Count(p => p.OrgId == t.OrgId && p.TkhqId == k.Id)
+        k.DeclarationNo, k.PortCode, k.OpenDate, k.Remark, k.TaxPaymentDate, k.CreatedAt,
+        vins = db.CtTkhqVins.Count(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        droppedFilter = string.IsNullOrWhiteSpace(contract) ? null
+            : "Bo loc 'contract' KHONG dung duoc: CT_TKHQ cua nguon khong co cot ContractNo (writer Biz.HTC.WH.cs:37860-37917).",
+        mergeNote = "#B64 hop nhat song trung ca 8: cum /api/tkhqs nay doc CtTkhqs (bang dung theo nguon CT_TKHQ). Tkhq/TkhqPL ngung ghi."
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/tkhqs", async (TkhqDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DeclarationNo)) return Results.BadRequest(new { error = "Cần số TKHQ (DeclarationNo)." });
-    if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Cần số hợp đồng (ContractNo)." });
     var no = dto.DeclarationNo.Trim().ToUpperInvariant();
-    if (await db.Tkhqs.AnyAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no))
+    if (await db.CtTkhqs.AnyAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no))
         return Results.BadRequest(new { error = $"Số TKHQ {no} đã tồn tại." });
-    var k = new Tkhq { OrgId = t.OrgId, DeclarationNo = no, ContractNo = dto.ContractNo.Trim().ToUpperInvariant(), PortCode = dto.PortCode, OpenDate = dto.OpenDate, Remark = dto.Remark, Status = "Open" };
-    db.Tkhqs.Add(k); await db.SaveChangesAsync();
-    foreach (var p in dto.PLs ?? new())
-        if (!string.IsNullOrWhiteSpace(p.PackingListNo))
-            db.TkhqPLs.Add(new TkhqPL { OrgId = t.OrgId, TkhqId = k.Id, PackingListNo = p.PackingListNo.Trim().ToUpperInvariant(), ShippingDateEnd = p.ShippingDateEnd });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { k.DeclarationNo, k.ContractNo, pls = (dto.PLs ?? new()).Count, status = k.Status });
+    // Sáu cột của writer nguồn; `ContractNo` KHÔNG có ở `CT_TKHQ` nên không nhận làm guard bắt buộc.
+    var k = new CtTkhq
+    {
+        OrgId = t.OrgId, DeclarationNo = no, PortCode = dto.PortCode,
+        OpenDate = dto.OpenDate ?? DateTime.Now, Remark = dto.Remark, CreatedAt = DateTime.Now
+    };
+    db.CtTkhqs.Add(k); await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        k.DeclarationNo, k.PortCode, k.OpenDate, k.Remark,
+        columnsWritten = new[] { "DeclarationNo", "OpenDate", "PortCode", "Remark", "CreatedDate" },
+        notPorted = "ContractNo va Status/ClearedAt KHONG co trong CT_TKHQ cua nguon - da bo. Quan he con cua CT_TKHQ la VIN (dung POST /api/cttkhqs de gan VIN), khong phai packing list."
+    });
 }).RequireAuthorization();
 
-app.MapGet("/api/tkhqs/{no}/pls", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/tkhqs/{no}/vins", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var k = await db.Tkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
+    var k = await db.CtTkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
     if (k is null) return Results.NotFound(new { no });
-    var pls = await db.TkhqPLs.Where(p => p.OrgId == t.OrgId && p.TkhqId == k.Id)
-        .Select(p => new { p.PackingListNo, p.ShippingDateEnd }).ToListAsync();
-    return Results.Ok(new { k.DeclarationNo, k.Status, count = pls.Count, pls });
+    var vins = await db.CtTkhqVins.Where(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id)
+        .Select(v => v.Vin).ToListAsync();
+    return Results.Ok(new
+    {
+        k.DeclarationNo, k.OpenDate, k.TaxPaymentDate, count = vins.Count, vins,
+        replacesNote = "Thay cho GET /api/tkhqs/{no}/pls cu: quan he that cua CT_TKHQ la VIN, khong phai packing list."
+    });
 }).RequireAuthorization();
-
-app.MapPost("/api/tkhqs/{no}/clear", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var k = await db.Tkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
-    if (k is null) return Results.NotFound(new { no });
-    if (k.Status != "Open") return Results.BadRequest(new { error = "TKHQ đã thông quan." });
-    k.Status = "Cleared"; k.ClearedAt = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { k.DeclarationNo, status = k.Status });
-}).RequireAuthorization();
-
 // ===== Thư tín dụng (LC — port 1:1 FrmNewLC/FrmMngLC, DMSales.Foton) =====
 app.MapGet("/api/lcs", async (AppDbContext db, ITenantContext t, string? status, string? contract) =>
 {
