@@ -28004,6 +28004,75 @@ app.MapGet("/api/dealerdeals/cars-to-sell-to-dealer", async (
 //    Đây là mất dữ liệu lúc ĐỌC, không có cảnh báo nào.
 // 🔴 Chín bộ lọc, HAI hình dạng: `DlrPDIReqNo`/`VIN`/`DlrContractNo`/`CtrCarId` = **LIKE %…%**;
 //    `DealerCode`/`DlrPDIReqStatus`/`ROStatus` = **"="**; `CreatedDate` = **">=" và "<="** (một khoảng).
+
+// ===== #B17 SỬA HÀNG LOẠT QUY CÁCH XE THEO CarId (port 1:1 `FrmUpdateSpec_CarID`, 2010.HTC/Sales) =====
+// Trace twin LIVE: `FrmUpdateSpec_CarID.cs:136` → `sv.CarCar_UpdateMultiSpecCode(table)` → WS
+//   `CarCar_UpdateMultiSpecCode` (`WSHTC.asmx.cs:13476`) → **`_biz.CarCar_UpdateMultiSpecCode`**
+//   (`BizHTC.zTemp.cs:32`). Input là **BẢNG** (`#input_Car_Car`), update join theo `t.CarId = f.CarId`.
+// 🔴 RBAC **DÒNG ACTIVE, không phải comment**: `myCommon_CheckHTCDirect(..., TConst.Flag.Active)` (`:97-101`)
+//    ⇒ chỉ người dùng **HTC trực tiếp** được chạy màn này. (Đối chiếu: cùng file, nhiều hàm khác có khối này
+//    bị comment — ở đây thì KHÔNG.) MiniHTC chưa có tầng ability ⇒ nhận cờ `flagDirect` và ghi rõ nợ.
+// 🔴 `alColumnEffective` chỉ có **BA cột**: `SpecCode` + `LogLUDateTime` + `LogLUBy` (`:242-246`).
+app.MapPost("/api/cars/update-multi-speccode", async (
+    List<CarSpecBatchDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
+{
+    // `..._CarCarTblNotFound` / `..._CarCarTblInvalid`
+    if (rows is null) return Results.BadRequest(new { error = "Thiếu bảng xe cần sửa quy cách." });
+    var list = rows.Where(r => !string.IsNullOrWhiteSpace(r.CarId) && !string.IsNullOrWhiteSpace(r.SpecCode)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Bảng xe cần sửa quy cách rỗng hoặc thiếu CarId/SpecCode." });
+
+    // `myCommon_CheckHTCDirect(..., Flag.Active)` — port thành cờ vì chưa có tầng ability.
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa quy cách hàng loạt." });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var carIds = list.Select(r => r.CarId!.Trim().ToUpperInvariant()).ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync();
+
+    // Nguồn kiểm **TỪNG DÒNG rồi mới ghi cả lô** — một dòng hỏng là **ném lỗi, không ghi gì**
+    // (toàn bộ nằm trong một transaction `_dbMain`). Port đúng: validate hết trước, ghi sau.
+    foreach (var r in list)
+    {
+        var cid = r.CarId!.Trim().ToUpperInvariant();
+        var spec = r.SpecCode!.Trim();
+        // `myCar_CheckCar(..., FlagExist=Yes, FlagActive=Active, "", "",
+        //                 strFlagAllowChangeVINListToCheck = Flag.Yes, strVINFreeStatusToCheck = Flag.Active, "")`
+        // ⇒ xe phải TỒN TẠI, đang hoạt động, **cho phép đổi VIN** và **VIN đang TỰ DO**.
+        var car = cars.FirstOrDefault(c => c.VIN == cid);
+        if (car is null) return Results.BadRequest(new { error = $"Xe {cid} không tồn tại." });
+        if ((car.FlagActive ?? "1") == "0") return Results.BadRequest(new { error = $"Xe {cid} đã bị huỷ/ngưng hoạt động." });
+        // ⚠️ NỢ: `FlagAllowChangeVIN` và `VINFreeStatus` chưa có cột trong `CarVinMaster` ⇒ hai guard này
+        //    CHƯA kiểm được. Ghi nợ, không giả vờ đã kiểm.
+        // `myCommon_CheckSpecCode(..., Flag.Active)` + kiểm `FlagActive` của chính bản ghi quy cách.
+        var sp = specs.FirstOrDefault(s => s.SpecCode == spec);
+        if (sp is null) return Results.BadRequest(new { error = $"Quy cách {spec} không tồn tại." });
+        if (sp.FlagActive == "0")
+            return Results.BadRequest(new { error = $"Quy cách {spec} đang ngưng hoạt động (FlagActive='0')." });
+        // `myCommon_CheckMatchingModelAndSpecCode(..., dt_Car_Car_Check["ModelCode"], drInput["SpecCode"])`
+        // ⇒ quy cách mới phải THUỘC ĐÚNG dòng xe (ModelCode) của chiếc xe đó.
+        if (!string.IsNullOrEmpty(sp.ModelCode) && !string.IsNullOrEmpty(car.ModelCode)
+            && !string.Equals(sp.ModelCode, car.ModelCode, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = $"Quy cách {spec} không thuộc dòng xe {car.ModelCode} của xe {cid}." });
+    }
+
+    int updated = 0;
+    foreach (var r in list)
+    {
+        var cid = r.CarId!.Trim().ToUpperInvariant();
+        var car = cars.First(c => c.VIN == cid);
+        car.SpecCode = r.SpecCode!.Trim();          // 3 cột của `alColumnEffective`
+        car.LogLUDateTime = now; car.LogLUBy = who;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated, columnsWritten = new[] { "SpecCode", "LogLUDateTime", "LogLUBy" },
+        rbacNote = "Nguồn có myCommon_CheckHTCDirect(Flag.Active) ở DÒNG ACTIVE — chỉ HTC trực tiếp; MiniHTC nhận qua cờ flagDirect (nợ tầng ability).",
+        unverifiedGuards = "FlagAllowChangeVIN='1' và VINFreeStatus='1' chưa kiểm được — CarVinMaster chưa có 2 cột đó (nợ có nhãn)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/dlrpdirequests/search", async (
     AppDbContext db, ITenantContext t,
     string? dlrPDIReqNo, string? dealerCode, DateTime? createdFrom, DateTime? createdTo,
@@ -34075,6 +34144,8 @@ record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCAppr
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
+/// <summary>#B17: một dòng của bảng `#input_Car_Car` — sửa hàng loạt quy cách theo CarId.</summary>
+record CarSpecBatchDto(string? CarId, string? SpecCode);
 /// <summary>#B11: sửa biển số dòng xe (`DealerSalesDealDetailUpdate_NormalInfo` — nguồn chỉ nhận PlateNo).</summary>
 record DealDetailPlateNoDto(string? PlateNo, bool IsHTC = true, bool ConfirmDuplicatePlateNo = false);
 /// <summary>#B11: xác nhận/sửa ngày giao xe (`…_DeliveryDate`). Không gửi ngày = không xác nhận.</summary>
