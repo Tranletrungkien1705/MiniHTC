@@ -15821,13 +15821,99 @@ app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q
 }).RequireAuthorization();
 
 // Tạo công nợ (theo RO/khách). DebitAmount > 0.
+// ===== 🔴 #556 TẠO / SỬA CÔNG NỢ — **CREATE BẮT BUỘC BA TRƯỜNG, UPDATE CHO XOÁ TRẮNG CHÚNG** =====
+// Nguồn: `BizCarSv.Debit.cs:432 SerCusDebitCreate` · `:645 SerCusDebitUpdate`.
+// Endpoint: `POST /api/cusdebits` (vá guard) + `POST /api/cusdebits/{id}/update` (mới).
+//
+// 📐 **DIFF CẶP CREATE/UPDATE** (luật #404) — khác nhau ở **guard** và ở **nghĩa của rỗng**:
+//   · `Create`: `checkCusDebitFieldEmpty(strDealerCode, strDebitAmount, strDebitDate)` ⇒ **ba trường
+//     BẮT BUỘC**. Khuôn ghi: `if (!IsEmpty) gán` (rỗng ⇒ **bỏ qua**, cột giữ mặc định).
+//   · `Update`: **CHỈ** `CheckExistCusDebit(ID)` — **KHÔNG có `checkCusDebitFieldEmpty`**!
+//     Khuôn ghi: `if (!IsEmpty) gán **else DBNull**` (rỗng ⇒ **XOÁ**).
+//   🔴 ⇒ **Ba trường mà Create bắt buộc thì Update cho phép xoá trắng**: gửi `DebitDate` rỗng khi sửa là
+//     công nợ **mất ngày**; `Note` cũng vậy. Lỗ hổng nằm ở **guard thiếu**, không ở câu ghi.
+//     Port: **kiểm cả hai vế** (lệch cố ý, an toàn hơn) và nêu cờ `sourceUpdateSkipsFieldEmptyGuard`.
+// ⚠️ `DebitDate` ở nhánh sửa còn bị chuẩn hoá `Convert.ToDateTime(x).ToString("yyyy-MM-dd **HH:mm**")`
+//   ⇒ **mất giây**, và **chỉ ở nhánh sửa** — tạo mới ghi thẳng chuỗi người dùng gửi.
+//   ⇒ Cùng một cột, hai độ chính xác tuỳ đường ghi.
+// ⚠️ `DebitAmount` / `Note` ở nhánh **tạo** gán **thẳng, không guard rỗng** (chỉ có guard tổng ở
+//   `checkCusDebitFieldEmpty`) — nên số tiền rỗng bị chặn ở guard chứ không ở câu gán.
+// ⚠️ Cột `SupplierID` (không phải `SupplierCode`) mới là tên cột thật trên `Ser_CusDebit` ở hàm ghi —
+//   trong khi câu ĐỌC của #555 select `d.SupplierCode`. **Hai tên cho một khái niệm**; MiniHTC dùng
+//   `SupplierCode` (theo câu đọc) và nêu cờ.
 app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantContext t) =>
 {
+    // checkCusDebitFieldEmpty(DealerCode, DebitAmount, DebitDate) — BA trường bắt buộc của nguồn.
+    if (string.IsNullOrWhiteSpace(dto.DealerCode))
+        return Results.BadRequest(new { error = "checkCusDebitFieldEmpty: thiếu DealerCode." });
     if (dto.DebitAmount <= 0) return Results.BadRequest(new { error = "Số tiền công nợ phải lớn hơn 0." });
+    if (dto.DebitDate is null)
+        return Results.BadRequest(new { error = "checkCusDebitFieldEmpty: thiếu DebitDate." });
+
+    var type = string.IsNullOrWhiteSpace(dto.DebitType) ? "1" : dto.DebitType!.Trim();
+    if (type is not ("1" or "2" or "3"))
+        return Results.BadRequest(new { error = "DebitType chỉ nhận 1 (khách), 2 (bảo hiểm), 3 (nhà cung cấp)." });
+
     var no = "CD" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new CusDebit { OrgId = t.OrgId, DebitNo = no, CusId = dto.CusId, CusName = dto.CusName, RONo = dto.RONo, DebitAmount = dto.DebitAmount, PaidAmount = 0, DebitDate = dto.DebitDate ?? DateTime.Now, Note = dto.Note, Status = "Open" };
+    var r = new CusDebit
+    {
+        OrgId = t.OrgId, DebitNo = no, DebitType = type,
+        CusId = dto.CusId, CusName = dto.CusName, RONo = dto.RONo,
+        // Rỗng ⇒ BỎ QUA (đúng khuôn `if (!IsEmpty)` của nhánh TẠO).
+        InsNo = string.IsNullOrWhiteSpace(dto.InsNo) ? null : dto.InsNo,
+        SupplierCode = string.IsNullOrWhiteSpace(dto.SupplierCode) ? null : dto.SupplierCode,
+        StockInID = string.IsNullOrWhiteSpace(dto.StockInID) ? null : dto.StockInID,
+        DebitAmount = dto.DebitAmount, PaidAmount = 0,
+        DebitDate = dto.DebitDate, Note = dto.Note, Status = "Open",
+    };
     db.CusDebits.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.DebitNo });
+    return Results.Ok(new
+    {
+        r.DebitNo, r.DebitType,
+        requiredFields = new[] { "DealerCode", "DebitAmount", "DebitDate" },
+        emptyMeansSkipOnCreate = true,
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    // CheckExistCusDebit(ID) — guard DUY NHẤT của nguồn ở nhánh sửa.
+    var r = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { error = "CheckExistCusDebit: không tìm thấy công nợ.", id });
+
+    // LỆCH CỐ Ý: nguồn KHÔNG kiểm ba trường bắt buộc ở nhánh sửa ⇒ cho xoá trắng. Ở đây kiểm.
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || dto.DebitAmount <= 0 || dto.DebitDate is null)
+        return Results.BadRequest(new
+        {
+            error = "checkCusDebitFieldEmpty (bo sung o nhanh SUA): can DealerCode, DebitAmount > 0, DebitDate.",
+            sourceUpdateSkipsFieldEmptyGuard = true,
+        });
+
+    // Rỗng ⇒ DBNull (đúng khuôn nhánh SỬA — ngược nhánh TẠO).
+    r.CusId = string.IsNullOrWhiteSpace(dto.CusId) ? null : dto.CusId;
+    r.CusName = string.IsNullOrWhiteSpace(dto.CusName) ? null : dto.CusName;
+    r.RONo = string.IsNullOrWhiteSpace(dto.RONo) ? null : dto.RONo;
+    r.InsNo = string.IsNullOrWhiteSpace(dto.InsNo) ? null : dto.InsNo;
+    r.SupplierCode = string.IsNullOrWhiteSpace(dto.SupplierCode) ? null : dto.SupplierCode;
+    r.StockInID = string.IsNullOrWhiteSpace(dto.StockInID) ? null : dto.StockInID;
+    r.DebitAmount = dto.DebitAmount;
+    // Nguồn chuẩn hoá "yyyy-MM-dd HH:mm" ⇒ MẤT GIÂY, và chỉ ở nhánh sửa.
+    r.DebitDate = new DateTime(dto.DebitDate!.Value.Year, dto.DebitDate.Value.Month, dto.DebitDate.Value.Day,
+        dto.DebitDate.Value.Hour, dto.DebitDate.Value.Minute, 0);
+    r.Note = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note;
+    if (!string.IsNullOrWhiteSpace(dto.DebitType)) r.DebitType = dto.DebitType!.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        r.Id, r.DebitNo, r.DebitType, r.DebitAmount, r.DebitDate, r.Status,
+        emptyMeansClearOnUpdate = true,
+        contrastWithCreate = "nhanh TAO: rong = BO QUA; nhanh SUA: rong = XOA",
+        sourceUpdateSkipsFieldEmptyGuard = "nguon chi co CheckExistCusDebit(ID)",
+        debitDateLosesSecondsOnUpdateOnly = "Convert.ToDateTime(x).ToString(\"yyyy-MM-dd HH:mm\")",
+        supplierColumnNameDiffersBetweenReadAndWrite = "ghi: SupplierID / doc: SupplierCode",
+    });
 }).RequireAuthorization();
 
 app.MapGet("/api/cusdebits/{no}/payments", async (string no, AppDbContext db, ITenantContext t) =>
@@ -52503,7 +52589,9 @@ record PartLocationImportDto(List<PartLocationImportRow>? Rows);
 record InventoryImportRow(string? PartCode, string? LocationCode, decimal Quantity);
 record InventoryImportDto(List<InventoryImportRow>? Rows);
 record ServicePartFulfillDto(decimal Qty);
-record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
+record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note,
+    string? DealerCode = null, string? DebitType = null, string? InsNo = null,
+    string? SupplierCode = null, string? StockInID = null);   // #556 §12
 record SerPaymentAllocateDto(string? DealerCode, string? SubjectKey, decimal PaymentAmount, string? PayPersonName, string? PayPersonIDCardNo, DateTime? PayDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat, decimal? Factor = null, string? PartPriceId = null, string? Note = null);
