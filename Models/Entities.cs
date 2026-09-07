@@ -2175,6 +2175,16 @@ public sealed class RepairOrder
     public string? EngineerID { get; set; }
     public string? FlagOnlyPoint { get; set; }
     public string? FlagPause { get; set; }           // tạm dừng sửa chữa
+
+    // ===== 🔴 #341 HAI MỐC còn thiếu của chuỗi trạng thái (`SerROStatusUpdate`) =====
+    /// <summary>CHECKENDDATE — mốc **KIỂM TRA CUỐI CÙNG** (bước `CheckEnd`).
+    /// Nguồn lưu `"yyyy-MM-dd HH:mm"` ⇒ cắt GIÂY, như mọi mốc khác của lệnh.</summary>
+    public DateTime? CheckEndDate { get; set; }
+
+    /// <summary>TOTALACTHOURS — **tổng giờ công thực tế** của lệnh, ghi kèm ở bước `Repaired`.
+    /// ⚠️ Nguồn chỉ ghi khi tham số **khác rỗng** (`if (!IsEmpty(strTotalActHours))`) ⇒ rỗng thì
+    /// GIỮ NGUYÊN giá trị cũ — khác nhóm "rỗng = xoá" của đường sửa xe (#334).</summary>
+    public decimal? TotalActHours { get; set; }
     public string? IDCardNo { get; set; }            // CMND/CCCD — bản chụp trên lệnh (chuỗi isnull #301)
     public string? InsNo { get; set; }               // số đơn bảo hiểm
     public decimal? InsuranceDeductible { get; set; }// mức khấu trừ bảo hiểm

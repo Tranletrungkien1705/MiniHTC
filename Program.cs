@@ -36487,8 +36487,47 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     var curIdx = Array.IndexOf(_roFlow, r.Status);
     var tgtIdx = Array.IndexOf(_roFlow, target);
     if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
-    if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}." });
+    // ===== 🔴 #341 BƯỚC `InGarage` CÓ **BA** TIỀN NHIỆM, không phải một =====
+    // Nguồn (`Service01.cs:9507`): ném lỗi chỉ khi trạng thái cũ **không thuộc** ba mã
+    //   `Create` (**CRE** — lập báo giá) · `Print` (**PRT** — in báo giá) · `HasRO` (**HRO** — lập lệnh).
+    //   ⇒ Xe có thể vào xưởng thẳng từ lúc **mới lập / đã in báo giá**, không bắt buộc qua "Lập lệnh".
+    // Luồng thẳng `_roFlow` chỉ cho `HasRO → InGarage` ⇒ chặn nhầm hai lối vào có thật.
+    var inGarageFrom = new[] { "Created", "PrintedQuote", "HasRO" };
+    var okStep = target == "InGarage"
+        ? inGarageFrom.Contains(r.Status)
+        : tgtIdx == curIdx + 1;
+    if (!okStep)
+        return Results.BadRequest(new
+        {
+            error = target == "InGarage"
+                ? $"Vào xưởng chỉ được từ {string.Join(" / ", inGarageFrom)} — hiện tại {r.Status}."
+                : $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}.",
+        });
+
+    // ===== 🔴 #341 GUARD TẠM DỪNG ở bước `Repaired` =====
+    // Nguồn: `if (StringEqualIgnoreCase(Constants.Flag.Inactive, strFlagPause)) throw …InvalidFlagPause`
+    //   ⇒ ném lỗi khi `FlagPause == "0"`. ⚠️ **Chiều cờ ngược trực giác** ("Inactive" mà lại CHẶN),
+    //     nhưng đó đúng là điều kiện nguồn viết ⇒ port **NGUYÊN VĂN**, không tự đảo cho "hợp lý".
+    if (target == "Repaired" && string.Equals(r.FlagPause, "0", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new
+        {
+            error = "Lệnh đang ở trạng thái tạm dừng (FlagPause = \"0\") — không chuyển sang Sửa xong được.",
+            flagPause = r.FlagPause,
+        });
+
     r.Status = target;
+
+    // ===== 🔴 #341 BẢN ĐỒ MỐC ⇄ BƯỚC (đo bằng tập cột ghi của `SerROStatusUpdate`) =====
+    //   `InGarage` → `StartDate` · `CheckEnd` → `CheckEndDate` · `Repaired` → `FinishedDate` + `TotalActHours`
+    //   `Finished` → `ActualDeliveryDate` · `Paid` → `PaidCreatedDate` + `IsCusPaymentAll`
+    // ✅ ĐÃ SO hai đường vào: `SerROStatusUpdate` (:9415) và `SerROStatusUpdateForAssignmentWork` (:9805)
+    //   — **tập cột ghi từng bước TRÙNG KHÍT**. Ghi lại vì lệch giữa hai đường là điều đã gặp ở
+    //   #332/#333/#334; lần này kiểm ra không lệch, nên không cần tách nhánh theo kênh.
+    // Cat GIAY, dung "yyyy-MM-dd HH:mm" cua nguon. (`ToMinute` o endpoint khac la local function
+    //   cua lambda do nen khong dung lai duoc o day.)
+    static DateTime CutSec(DateTime v) => new DateTime(v.Year, v.Month, v.Day, v.Hour, v.Minute, 0);
+    if (target == "InGarage") r.StartDate = CutSec(dto.StatusDate ?? DateTime.Now);
+    if (target == "CheckEnd") r.CheckEndDate = CutSec(dto.StatusDate ?? DateTime.Now);
     // ===== 🔴 #340 SỬA NGỮ NGHĨA HAI MỐC — #326 đóng dấu `FinishedDate` SAI BƯỚC =====
     // TRACE TWIN: **HAI** WebMethod cùng sống trong codebehind `WSCarSv.asmx.cs`, khác hẳn việc chúng làm:
     //   `SerROToFinishedStatus` (:11358) → `_biz.SerROToFinishedStatus` (`Service01.cs:11394`) — bản TRẦN,
@@ -36512,6 +36551,8 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         // Bước SỬA XONG mới là chỗ đóng dấu `FinishedDate` (kèm `TotalActHours` — chưa port, xem nợ).
         var fin = dto.StatusDate ?? DateTime.Now;
         r.FinishedDate = new DateTime(fin.Year, fin.Month, fin.Day, fin.Hour, fin.Minute, 0);
+        // `TotalActHours` chỉ ghi khi KHÁC RỖNG ⇒ rỗng = GIỮ NGUYÊN (khác nhóm "rỗng = xoá" #334).
+        if (dto.TotalActHours is not null) r.TotalActHours = dto.TotalActHours;
     }
     if (target == "Finished")
     {
@@ -36643,6 +36684,7 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     {
         r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate,
         // #340: nói rõ mốc nào thuộc bước nào để chỗ đối chiếu không hiểu nhầm theo tên cột.
+        r.StartDate, r.CheckEndDate, r.TotalActHours,   // #341 §12
         finishedDateMeaning = "Lúc SỬA XONG (bước Repaired) — KHÔNG phải lúc giao xe.",
         actualDeliveryDateMeaning = "Lúc GIAO XE (bước Finished).",
         // #326: các việc kéo theo, trả về để đối chiếu với WinForm.
@@ -38091,7 +38133,8 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
     DateTime? FirstContactDateTime = null, DateTime? LastContactDateTime = null);
 // #326: ToStatus + co "khach tra toan bo?" (nguon: strIsCusPaymentAll).
 //   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
-record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null,
+// #341: TotalActHours ghi kem o buoc Repaired (rong = giu nguyen).
+record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null, decimal? TotalActHours = null,
     // #328 §12: 12 truong bo sung cua buoc THANH TOAN (SerROStatusUpdatePaid_New20230228).
     DateTime? StatusDate = null, decimal? AmountFromMC = null, decimal? PointTotal = null,
     decimal? AmountDiscountOther = null, string? MemberNo = null, string? CardNoInv = null,

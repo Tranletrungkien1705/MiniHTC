@@ -980,6 +980,9 @@ public static class Seeder
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"FlagAccessory\" text NULL",
         // #338 dai ly cua KTV — KPI dem KTV theo tung dai ly
         "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+        // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",
         // #339 ba cot nay la SO DEM chu khong phai chuoi (xem chu thich o Entities).
         //   ADD COLUMN IF NOT EXISTS khong doi duoc kieu cot DA TON TAI => phai ALTER ... TYPE.
         //   USING NULLIF(...) de chuoi rong thanh NULL thay vi loi ep kieu.
