@@ -44240,6 +44240,113 @@ app.MapGet("/api/reports/inventory-balance", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #473 TỒN KHO THEO VỊ TRÍ — `Ser_InvReportBalanceRpt_SumLocation` (Main) vs `…_WH` =====
+// Cặp thứ hai trong nhóm "bản kho là TẬP CHA" của #471 (23 → 45 dòng SQL, `chi o main = 0`).
+// Phần bản kho làm THÊM **giống hệt #472**: `#tbl_sd` / `#tbl_sdo` / `#tbl_Open` dựng từ
+//   `Ser_Inv_PartInstance` + `Ser_Inv_StockInDetail`, giá vốn rẽ theo `Mst_Param(MCC)` và `Else "0"`.
+//   ⇒ Cùng một cặp anh em ⇒ **cùng một luật**, không phải trùng hợp. Dùng lại đúng cách tính của #472.
+//
+// 🔴 **CHỈ BẢN MAIN KẸP MỐC NGÀY** (đúng hình dạng #421/#422, nay gặp ở báo cáo thứ hai):
+//   `if (StringCompareIgnoreCase(strToDate, TConst.HTCConst.HTC_WareHouse) < 1) strToDate = …`
+//   với `HTC_WareHouse = "2017-12-31"` (`Const.Main.cs:138` — tên đọc như MÃ KHO nhưng là một **NGÀY**).
+//   ⇒ Xin mốc **≤ 31-12-2017** thì bản Main **âm thầm kéo về 31-12-2017**; bản `_WH` **không kẹp**.
+//   Giữ `scope=main|wh` như #422 và luôn trả `effectiveDate` để mốc thật nhìn thấy được.
+// ⚪ KIỂM TRA ÂM TÍNH (#415): `select top 1 f.StockInDate … order by f.StockInDate desc` — TOP 1 **CÓ**
+//   ORDER BY ⇒ xác định, lấy lần nhập **gần nhất**. Không phải bẫy "TOP không ORDER BY".
+// 🔴 **TUỔI TỒN TÍNH TỚI HÔM NAY, KHÔNG TỚI MỐC BÁO CÁO**:
+//   `DATEDIFF(day, g.StockInDate, GETDATE()) AgeOfExist` — dùng `GETDATE()` chứ không dùng `@ToDate`.
+//   ⇒ Xem lại báo cáo của một mốc quá khứ thì cột "tuổi tồn" vẫn **đếm tới ngày chạy**; in hai lần cách
+//     nhau một tuần ra hai con số khác nhau cho cùng một mốc. Đây là lỗi "báo cáo theo KỲ" (#412).
+//     Port trả **cả hai**: `ageOfExist` (giữ đúng nguồn) và `ageAtReportDate` (tính tới mốc) + cờ.
+app.MapGet("/api/reports/inventory-balance-by-location", async (AppDbContext db, ITenantContext t,
+    DateTime? toDate, string? dealerCode, string? scope) =>
+{
+    if (toDate is null) return Results.BadRequest(new { error = "Cần toDate." });
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
+    var dealer = dealerCode!.Trim();
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+
+    // Mốc kẹp CHỈ ở bản Main (hằng HTC_WareHouse = "2017-12-31").
+    var floor = new DateTime(2017, 12, 31);
+    var asked = toDate.Value.Date;
+    var clamped = !isWh && asked <= floor;
+    var effective = clamped ? floor : asked;
+    var to = effective.AddDays(1).AddSeconds(-1);
+
+    var mcc = await db.MstParams.Where(p => p.OrgId == t.OrgId && p.DealerCode == dealer
+            && p.ParamCode == "MCC" && p.ParamType == "MCC")
+        .Select(p => p.ParamValue).FirstOrDefaultAsync();
+    var isFifo = string.Equals(mcc, "FIFO", StringComparison.OrdinalIgnoreCase);
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.Status != "4" && x.Status != "5").ToListAsync();
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var lineByKey = lines.Where(l => l.PartCode != null)
+        .GroupBy(l => l.StockInId + "|" + l.PartCode + "|" + (l.Location ?? ""))
+        .ToDictionary(g => g.Key, g => g.First());
+    decimal Val(PartInstance x)
+    {
+        if (!isFifo) return 0m;
+        var k = x.StockInId + "|" + (x.PartCode ?? "") + "|" + (x.LocationID ?? "");
+        var p = lineByKey.TryGetValue(k, out var l) ? l.Price : (x.SIPrice ?? 0m);
+        return p * x.Quantity + (x.SIVAT ?? 0m) * 0.01m * p * x.Quantity;
+    }
+
+    var inRows = inst.Where(x => x.DateIn != null && x.DateIn <= to).ToList();
+    var outRows = inst.Where(x => x.DateOut != null && x.DateOut <= to).ToList();
+    string Key(string? p, string? loc) => (p ?? "") + "|" + (loc ?? "");
+    var sd = inRows.GroupBy(x => Key(x.PartID, x.LocationID))
+        .ToDictionary(g => g.Key, g => new { SD = g.Sum(x => x.Quantity), TD = g.Sum(Val) });
+    var sdo = outRows.GroupBy(x => Key(x.PartID, x.LocationID))
+        .ToDictionary(g => g.Key, g => new { SX = g.Sum(x => x.Quantity), TX = g.Sum(Val) });
+
+    // Lần nhập GẦN NHẤT của từng phụ tùng (top 1 ... order by StockInDate desc).
+    var lastIn = inRows.Where(x => x.PartID != null)
+        .GroupBy(x => x.PartID!)
+        .ToDictionary(g => g.Key, g => g.Max(x => x.DateIn));
+
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartID, p.PartCode, p.PartName, p.Unit, p.Model }).ToListAsync();
+    var partById = parts.Where(p => p.PartID != null)
+        .GroupBy(p => p.PartID!).ToDictionary(g => g.Key, g => g.First());
+
+    var now = DateTime.Now.Date;
+    var items = sd.Select(kv =>
+    {
+        var partId = kv.Key.Split((char)124)[0];
+        var loc = kv.Key.Split((char)124)[1];
+        var din = lastIn.TryGetValue(partId, out var d) ? d : null;
+        return new
+        {
+            PartID = partId,
+            PartCode = partById.TryGetValue(partId, out var p) ? p.PartCode : null,
+            VieName = partById.TryGetValue(partId, out var p2) ? p2.PartName : null,
+            Unit = partById.TryGetValue(partId, out var p3) ? p3.Unit : null,
+            Model = partById.TryGetValue(partId, out var p4) ? p4.Model : null,
+            Location = loc,
+            SLC = kv.Value.SD - (sdo.TryGetValue(kv.Key, out var o) ? o.SX : 0m),
+            TGC = kv.Value.TD - (sdo.TryGetValue(kv.Key, out var o2) ? o2.TX : 0m),
+            StockInDate = din,
+            // đúng nguồn: đếm tới HÔM NAY
+            AgeOfExist = din.HasValue ? (int)(now - din.Value.Date).TotalDays : (int?)null,
+            // bổ sung: đếm tới MỐC báo cáo (nguồn không có)
+            AgeAtReportDate = din.HasValue ? (int)(effective - din.Value.Date).TotalDays : (int?)null,
+        };
+    }).OrderBy(x => x.PartCode).ThenBy(x => x.Location).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, scope = isWh ? "wh" : "main",
+        askedDate = asked.ToString("yyyy-MM-dd"),
+        effectiveDate = effective.ToString("yyyy-MM-dd"),
+        clampedToFloor = clamped, floorDate = "2017-12-31",
+        costMethod = mcc, isFifo, costMethodNotFifoGivesZero = !isFifo,
+        ageCountedToTodayNotReportDate = true,
+        topOneHasOrderBy = true,
+        count = items.Count, items,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
