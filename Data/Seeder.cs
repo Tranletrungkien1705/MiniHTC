@@ -1021,6 +1021,10 @@ public static class Seeder
         "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
         // #400 CUSDEBT — ten cot noi "cong no" nhung man Ton kho toi uu dung lam SO LUONG BO nhap tay
         "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"CusDebt\" numeric NULL",
+        // #403 ky bao cao KPI — guard trung ky dua tren (DealerCode, RptYear, RptMonth)
+        "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"RptYear\" text NULL",
+        "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"RptMonth\" text NULL",
+        "ALTER TABLE public.\"ReportKpis\" ADD COLUMN IF NOT EXISTS \"RptBy\" text NULL",
         // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",

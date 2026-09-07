@@ -7367,6 +7367,17 @@ public sealed class SeqCounter
 /// </summary>
 public sealed class ReportKpi
 {
+    // ===== 🔴 #403 §12 KỲ BÁO CÁO — ba cột khung mà bản port cũ THIẾU HẲN =====
+    //   Nguồn `RptKPICreate` **luôn** gán `RptYear` · `RptMonth` · `RptBy` (cùng `DealerCode`,
+    //   `Status`), và guard `CheckExistRptKPIYearMonth` dựa trên đúng bộ ba (đại lý, năm, tháng).
+    //   Không có hai cột kỳ này thì **báo cáo KPI không có danh tính kỳ** và guard trùng kỳ
+    //   **không thể viết được**.
+    /// <summary>Năm của kỳ báo cáo (`RptYear`).</summary>
+    public string? RptYear { get; set; }
+    /// <summary>Tháng của kỳ báo cáo (`RptMonth`).</summary>
+    public string? RptMonth { get; set; }
+    /// <summary>Người lập báo cáo (`RptBy`) — khác <see cref="CreatedBy"/> của tầng port.</summary>
+    public string? RptBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public decimal? AccessoryAmountAfterVAT { get; set; }

@@ -6075,6 +6075,8 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
     var items = await qy.OrderByDescending(x => x.DateReport).Take(500).Select(x => new
     {
         x.Id,
+        // #403 §12 ky bao cao
+        x.RptYear, x.RptMonth, x.RptBy,
         x.AccessoryAmountAfterVAT,
         x.AccessoryAmountOut,
         x.AdvisoryNumber,
@@ -6602,12 +6604,42 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #403 ĐÍNH CHÍNH: nguồn CÓ guard duy nhất (đại lý, năm, tháng) =====
+// TRACE 4 tầng của màn `FrmReportCreate_KPI`: form → `DBSerReportKPI.RptKPICreate` (37 tham số)
+//   → WS `RptKPICreate` → biz `RptKPICreate` (`BizCarSv.Service.Report.cs:3759`).
+//
+// 🔴 Chú thích cũ ở đây ghi *"Nguồn không chặn trường nào ở mức biz"* — **SAI**. Đọc biz thấy khối
+//   `#region //Check` gọi `CheckExistRptKPIYearMonth(DealerCode, RptYear, RptMonth)`
+//   ⇒ **một đại lý chỉ có MỘT báo cáo KPI cho mỗi cặp (năm, tháng)**. Thiếu guard này thì mỗi lần
+//     bấm Tạo lại sinh thêm một bản trùng kỳ, và mọi báo cáo tổng hợp đếm hai lần.
+// ⚠️ Nguồn gán **luôn luôn** năm cột khung: `DealerCode` · `RptYear` · `RptMonth` · `RptBy` · `Status`;
+//   còn **mọi chỉ tiêu số** chỉ gán khi **khác rỗng** (`if (!StringUtils.IsEmpty(...))`) ⇒ ô để trống
+//   thành **NULL**, không phải 0. Giữ đúng: DTO dùng kiểu nullable, không ép về 0.
+// ⚠️ Ghi bằng `_dbMain.SaveData("Rpt_KPI", dt_KPI)` — **dạng HAI THAM SỐ**, tức ghi mọi cột của
+//   DataTable (lệ đã đo ở #374/#381), và chỉ ghi trên **DB Main** (không WH/Dealer).
 app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
 {
-    // Nguồn không chặn trường nào ở mức biz ⇒ KHÔNG tự thêm validate (lệ #299).
+    // 🔴 #403 Guard của nguồn: KHÔNG cho hai báo cáo cùng (đại lý, năm, tháng).
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)
+        && !string.IsNullOrWhiteSpace(dto.RptYear) && !string.IsNullOrWhiteSpace(dto.RptMonth))
+    {
+        var dup = await db.ReportKpis.AnyAsync(x => x.OrgId == t.OrgId
+            && x.DealerCode == dto.DealerCode
+            && x.RptYear == dto.RptYear && x.RptMonth == dto.RptMonth);
+        if (dup)
+            return Results.BadRequest(new
+            {
+                error = "Ser_RptKPI_Create_Exist",
+                message = "Đại lý này đã có báo cáo KPI cho kỳ (năm, tháng) đó.",
+                dto.DealerCode, dto.RptYear, dto.RptMonth,
+            });
+    }
+
     var r = new ReportKpi
     {
         OrgId = t.OrgId,
+        // #403 §12 kỳ báo cáo
+        RptYear = dto.RptYear, RptMonth = dto.RptMonth, RptBy = dto.RptBy,
         AccessoryAmountAfterVAT = dto.AccessoryAmountAfterVAT,
         AccessoryAmountOut = dto.AccessoryAmountOut,
         AdvisoryNumber = dto.AdvisoryNumber,
@@ -42207,7 +42239,9 @@ record ReportKpiApproveDto(string? DealerCode, DateTime? DateReport, string? App
 record ReportKpiAutoDto(DateTime? DateReport, string? DealerCode = null, string? CreatedBy = null);
 
 // #329: bao cao KPI xuong dich vu — 98 truong cua Report_KPICreate_New20221101 (ban LIVE).
-record ReportKpiDto(
+// #403 §12: ba cot ky bao cao (RptYear/RptMonth/RptBy) — guard trung ky dua tren chung.
+record ReportKpiPeriodDto(string? RptYear, string? RptMonth, string? RptBy);
+record ReportKpiDto(string? RptYear, string? RptMonth, string? RptBy,
     decimal? AccessoryAmountAfterVAT = null, decimal? AccessoryAmountOut = null, decimal? AdvisoryNumber = null, string? ApprovedBy = null,
     DateTime? ApprovedDate = null, decimal? CabinetPaintNumber = null, decimal? CarPerAdviserDay = null, decimal? CavityBPNumber = null,
     decimal? CavityCopperNumber = null, decimal? CavityMaintainNumber = null, decimal? CavityOtherNumber = null, decimal? CavityParkingNumber = null,
