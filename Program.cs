@@ -41681,6 +41681,27 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
 //
 // ⚠️ MiniHTC lưu 24h/72h trên CÙNG bảng `CustomerCares`, phân biệt bằng `CareType` (#220: mã nguồn `24h`/`72h`)
 //    ⇒ tách hai nhóm bằng CareType, đúng ngữ nghĩa nguồn (nguồn tách bằng hai bảng tạm).
+//
+// ===== 🔴🔴 #492 ĐÍNH CHÍNH #219 — **MỌI NHÓM ĐỀU LỌC SAI CỘT NGÀY** =====
+// #219 lọc cả năm nhóm bằng `ContactDate`. Đọc lại từng bảng tạm của nguồn thì **mỗi nhóm lọc một cột KHÁC**:
+//   · Nhắc bảo dưỡng : `zzzzClauseWhere**MaceRecomentDate**ConditionList` (ngày HẸN bảo dưỡng)
+//   · Sinh nhật      : `AND t.DateBth is not null` + `zzzzClauseWhere**DateBth**ConditionList`
+//   · 72h            : mốc trên **`ro.ActualDeliveryDate`** (ngày GIAO XE), **không** phải ngày liên hệ
+//   · 24h            : `zzzzClauseWhere**FinishedDate24**ConditionList`
+//   · Chiến dịch     : `t.StartDate >= @FromDate` **và** `t.FinishedDate <= @ToDate` (hai cột khác nhau!)
+//   ⇒ Lọc theo `ContactDate` làm **rơi mọi phiếu chưa liên hệ** (cột đó còn NULL) — tức chính nhóm `Pending`
+//     mà báo cáo cần đếm. #219 có `x.ContactDate == null ||` nên không rơi hết, nhưng **khoảng thời gian**
+//     vẫn sai hoàn toàn về ngữ nghĩa. Nay sửa từng nhóm về đúng cột.
+//
+// 🔴 **72h vs 24h KHÔNG chỉ khác bảng — khác cả ĐIỀU KIỆN NGHIỆP VỤ**:
+//     72h: `AND ro.IsReRepair = "0"`   (lệnh **không** phải sửa lại)
+//     24h: `AND ro.IsReRepair = "1"`   (lệnh **SỬA LẠI** — gọi lại sau 24 giờ)
+//   #219 chỉ tách bằng `CareType` ⇒ **thiếu hẳn** vế này. Nay lọc thêm theo lệnh sửa chữa.
+// 🔴 **CỬA SỔ 72h BỊ DỊCH, KHÔNG ĐỐI XỨNG**:
+//     `DATEADD(day, 1, ro.ActualDeliveryDate) >= "@FromDate"`  ⇒ `ActualDeliveryDate >= From - 1 ngày`
+//     `DATEADD(day, 3, ro.ActualDeliveryDate) <= "@ToDate"`    ⇒ `ActualDeliveryDate <= To - 3 ngày`
+//   ⇒ Không phải "giao xe trong kỳ" mà là **"cửa sổ gọi 72h rơi trong kỳ"**. Lệch hai đầu khác nhau
+//     (−1 và −3) nên **không thể rút gọn thành một khoảng quanh kỳ**. Giữ nguyên công thức.
 app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
 {
@@ -41688,9 +41709,32 @@ app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantCo
     var to = toDate?.Date;
 
     // --- nhóm 1+2: 24h / 72h trên bảng CustomerCares (mã PEND / CINFB|CIFB / REJ) ---
+    // #492: mốc thời gian lấy từ LỆNH SỬA CHỮA, không phải ContactDate của phiếu.
+    var allRos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var roByNoAll = allRos.GroupBy(x => x.RONo).ToDictionary(g => g.Key, g => g.First());
     var cares = await db.CustomerCares.Where(x => x.OrgId == t.OrgId).ToListAsync();
-    if (from.HasValue) cares = cares.Where(x => x.ContactDate == null || x.ContactDate.Value.Date >= from.Value).ToList();
-    if (to.HasValue) cares = cares.Where(x => x.ContactDate == null || x.ContactDate.Value.Date <= to.Value).ToList();
+
+    // 72h: IsReRepair = "0", cửa sổ DỊCH (−1 / −3 ngày) trên ActualDeliveryDate.
+    var cares72 = cares.Where(x => x.CareType == "72h").Where(x =>
+    {
+        if (x.RONo == null || !roByNoAll.TryGetValue(x.RONo, out var ro)) return false;
+        if ((ro.IsReRepair ?? "") != "0") return false;
+        var d = ro.ActualDeliveryDate?.Date; if (d is null) return false;
+        if (from.HasValue && d.Value.AddDays(1) < from.Value) return false;
+        if (to.HasValue && d.Value.AddDays(3) > to.Value) return false;
+        return true;
+    }).ToList();
+
+    // 24h: IsReRepair = "1", mốc trên FinishedDate của lệnh.
+    var cares24 = cares.Where(x => x.CareType == "24h").Where(x =>
+    {
+        if (x.RONo == null || !roByNoAll.TryGetValue(x.RONo, out var ro)) return false;
+        if ((ro.IsReRepair ?? "") != "1") return false;
+        var d = ro.FinishedDate?.Date; if (d is null) return false;
+        if (from.HasValue && d.Value < from.Value) return false;
+        if (to.HasValue && d.Value > to.Value) return false;
+        return true;
+    }).ToList();
 
     object CareGroup(string label, IEnumerable<CustomerCare> src)
     {
@@ -41705,13 +41749,15 @@ app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantCo
         };
     }
 
-    var g24 = CareGroup("24h", cares.Where(x => x.CareType == "24h"));
-    var g72 = CareGroup("72h", cares.Where(x => x.CareType == "72h"));
+    var g24 = CareGroup("24h", cares24);
+    var g72 = CareGroup("72h", cares72);
 
     // --- nhóm 3: nhắc bảo dưỡng (mã 0/1/2) ---
     var maces = await db.CustomerCareMaces.Where(x => x.OrgId == t.OrgId).ToListAsync();
-    if (from.HasValue) maces = maces.Where(x => x.ContactDate == null || x.ContactDate.Value.Date >= from.Value).ToList();
-    if (to.HasValue) maces = maces.Where(x => x.ContactDate == null || x.ContactDate.Value.Date <= to.Value).ToList();
+    // #492: nguồn lọc MaceRecomentDate (ngày HẸN bảo dưỡng), KHÔNG phải ContactDate.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) maces = maces.Where(x => x.DealerCode == dealerCode).ToList();
+    if (from.HasValue) maces = maces.Where(x => x.MaceRecomentDate != null && x.MaceRecomentDate.Value.Date >= from.Value).ToList();
+    if (to.HasValue) maces = maces.Where(x => x.MaceRecomentDate != null && x.MaceRecomentDate.Value.Date <= to.Value).ToList();
     var gMace = new { group = "MACE", total = maces.Count,
         pending = maces.Count(x => x.Status == "0"),
         isContact = maces.Count(x => x.Status == "1"),
@@ -41720,8 +41766,10 @@ app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantCo
     // --- nhóm 4: sinh nhật (mã 0/1/2) ---
     var bths = await db.CustomerCareBirthdays.Where(x => x.OrgId == t.OrgId).ToListAsync();
     if (!string.IsNullOrWhiteSpace(dealerCode)) bths = bths.Where(x => x.DealerCode == dealerCode).ToList();
-    if (from.HasValue) bths = bths.Where(x => x.ContactDate == null || x.ContactDate.Value.Date >= from.Value).ToList();
-    if (to.HasValue) bths = bths.Where(x => x.ContactDate == null || x.ContactDate.Value.Date <= to.Value).ToList();
+    // #492: nguồn lọc DateBth và bắt buộc `DateBth is not null`, KHÔNG phải ContactDate.
+    bths = bths.Where(x => x.DateBth != null).ToList();
+    if (from.HasValue) bths = bths.Where(x => x.DateBth!.Value.Date >= from.Value).ToList();
+    if (to.HasValue) bths = bths.Where(x => x.DateBth!.Value.Date <= to.Value).ToList();
     var gBth = new { group = "BIRTHDAY", total = bths.Count,
         pending = bths.Count(x => x.Status == "0"),
         isContact = bths.Count(x => x.Status == "1"),
@@ -41737,6 +41785,17 @@ app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantCo
     var groups = new List<object> { g24, g72, gMace, gBth, gCamp };
     return Results.Ok(new { fromDate = from, toDate = to, groups,
         note = "Mỗi nhóm dùng bảng mã RIÊNG (24h/72h: PEND/CINFB|CIFB/REJ · Mace+Bth: 0/1/2 · Campaign: 2/1/3 — đảo).",
+        // ===== #492 =====
+        dateColumnPerGroup = new
+        {
+            care72h = "ro.ActualDeliveryDate (cua so DICH -1/-3 ngay)",
+            care24h = "ro.FinishedDate",
+            mace = "MaceRecomentDate",
+            birthday = "DateBth (bat buoc not null)",
+            campaign = "StartDate >= From VA FinishedDate <= To",
+        },
+        reRepairSplit = new { care72h = "IsReRepair = 0", care24h = "IsReRepair = 1" },
+        supersedes = "#219 loc ca 5 nhom bang ContactDate — sai cot ngay o moi nhom",
         skipped = "Nguồn lọc thêm theo DealerCode cho mọi nhóm; MiniHTC chỉ có DealerCode trên nhóm sinh nhật, các nhóm khác chưa lưu ⇒ KHÔNG bịa." });
 }).RequireAuthorization();
 
