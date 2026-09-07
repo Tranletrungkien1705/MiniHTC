@@ -16273,6 +16273,108 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 //   (Veloca cần biết ai làm việc gì), nhưng **đừng đếm số dòng này ra "số KTV"**.
 // ⚠️ `WorkType` dùng ở đây là bản **ĐÃ GỘP 6→3** (`#tbl_Ser_ROServiceItems_WorkType`, chú thích 20240215)
 //   — cùng phép gộp của `Table 12`, KHÁC `RepairType` cấp dòng vốn giữ đủ 6 (#359).
+// ===== 🔴 #362 ĐẦU LỆNH gửi Veloca (`Table 8` — bảng trung tâm của `OSVeloca_Ser_RO_GetByROID`) =====
+// 🔴 `CustomerCode` — quyết định hợp nhất mã khách (`20240401`):
+//   `case when sc.SalesCusID is not null and sc.SalesCusID <> '' then sc.SalesCusID else CusID end`
+//   *"Dùng mã KH Sales để đồng bộ… Mục đích: 1 KH ở cả DMS và Veloca đều có 1 mã KH duy nhất"*
+//   ⇒ Dùng thẳng `CusID` là **tạo trùng khách bên Veloca**. Đã thêm cột `SalesCusID` (§12).
+// 🔴 `InsCode` (`20240205`): đổi từ `sr.InsNo` (số bảo hiểm trên **LỆNH**) sang `scar.InsNo` (trên **XE**).
+//   Lại một cặp comment/active đổi **nguồn dữ liệu**, không phải dọn code.
+// ⚠️ `TotalValAfterVATRO` (`20240124`): bản cũ **trừ** `AmountDiscountOther`, bản đang chạy **KHÔNG trừ**.
+//   Giảm trừ đó chỉ vào `TotalValEnd` và `TotalValCusROAfterVAT`.
+// 🔴 MIỄN THƯỜNG (`InsuranceDeductible`) là phần **KHÁCH chịu**:
+//   `TotalValCusROAfterVAT = RepairAmountAfterVAT + InsuranceDeductible − AmountDiscountOther − AmountFromMC`
+//   `TotalValInsROAfterVAT = InsuranceAmountAfterVAT − InsuranceDeductible` — **khớp đúng** công thức ghi
+//   công nợ bảo hiểm ở #342 (nợ = tiền bảo hiểm − miễn thường).
+// ⚠️ `FinishDTimeUTC` lấy `sr.FinishedDate` = lúc **SỬA XONG** (xem #340), KHÔNG phải lúc giao xe.
+// ⚠️ `CusPmtDateUTC` và `PaidDTimeUTC` **cùng lấy** `PaidCreatedDate` — nguồn trả hai tên cho một mốc.
+// ⚠️ `FlagRetry = sr.IsReRepair` — chính cột port ở #343; nếu không vá lượt đó thì trường này luôn rỗng.
+app.MapGet("/api/osveloca/ro/{roNo}", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { roNo });
+
+    var cus = r.CusName == null ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusName == r.CusName);
+    var car = r.Vin == null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == r.Vin);
+
+    static string? Utc(DateTime? v) => v is null ? null : v.Value.AddHours(-7).ToString("yyyy-MM-dd HH:mm:ss");
+
+    var svc = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == r.Id).ToListAsync();
+    var prt = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id).ToListAsync();
+
+    decimal svcAfterVat = svc.Sum(i => i.Factor * i.Price * (1m + i.Vat * 0.01m));
+    decimal prtAfterVat = prt.Sum(p => p.Factor * p.UnitPrice * p.NeedQty * (1m + p.Vat * 0.01m));
+
+    // Tách theo nguồn chi trả — dùng lại đúng phép tách đã port ở #357.
+    decimal repairAfterVat = 0m, insAfterVat = 0m, warrantyAfterVat = 0m, localAfterVat = 0m;
+    foreach (var p in prt)
+    {
+        var full = p.Factor * p.UnitPrice * p.NeedQty * (1m + p.Vat * 0.01m);
+        var ip = p.InsurancePrice ?? 0m;
+        switch (p.ExpenseType)
+        {
+            case "ROREPAIR": repairAfterVat += full; break;
+            case "ROINSURANCE":
+                if (ip > 0m) { repairAfterVat += ip; insAfterVat += full - ip; } else insAfterVat += full;
+                break;
+            case "ROWARRANTY": warrantyAfterVat += full; break;
+            case "LOCAL": localAfterVat += full; break;
+        }
+    }
+
+    var cusDebit = await db.CusDebits.Where(d => d.OrgId == t.OrgId && d.RONo == roNo).SumAsync(d => (decimal?)d.DebitAmount) ?? 0m;
+    var insDebit = await db.InsDebits.Where(d => d.OrgId == t.OrgId && d.RONo == roNo).SumAsync(d => (decimal?)d.DebitAmount) ?? 0m;
+    var deductible = r.InsuranceDeductible ?? 0m;
+    var discOther = r.AmountDiscountOther ?? 0m;
+    var fromCard = r.AmountFromMC ?? 0m;
+    var roStatus = r.Status switch { "Paid" => "PAIDED", "Finished" => "FINISH", _ => (string?)null };
+
+    // Ưu tiên mã KH Sales; rỗng thì mới dùng mã CarSv.
+    var customerCode = !string.IsNullOrWhiteSpace(cus?.SalesCusID) ? cus!.SalesCusID : cus?.CusCode;
+
+    return Results.Ok(new
+    {
+        roNoSys = r.Id, roNo = r.RONo, r.DealerCode,
+        customerCode,
+        customerCodeSource = !string.IsNullOrWhiteSpace(cus?.SalesCusID) ? "SalesCusID" : "CusCode (CarSv)",
+        customerName = r.CusName, customerNameEN = r.CusName,   // nguồn dùng CÙNG tên cho cả hai
+        customerAddress = r.CusAddress, customerMobilePhone = r.CusMobile, customerPhoneNo = r.CusTel,
+        customerEmail = cus?.Email, customerContactName = cus?.ContName,
+        customerContactPhone = cus?.ContMobile, customerContactEmail = cus?.ContEmail,
+        plateNo = r.LicensePlate, vin = r.Vin, colorCode = r.ColorCode,
+        brandCode = r.TradeMarkCode, engineNo = r.EngineNo,
+        insCode = car?.InsNo,                                   // 20240205: lấy trên XE, không trên LỆNH
+        planedDeliveryDTimeUTC = Utc(r.PlanedDeliveryDate),
+        actualDeliveryDTimeUTC = Utc(r.ActualDeliveryDate),
+        km = r.Km, r.ReminderMaintanceDate, r.ReminderMaintanceKm,
+        r.WorkDoneSoon, r.TermsOfRepair,
+        totalValAfterVATService = svcAfterVat,
+        totalValAfterVATPart = prtAfterVat,
+        totalValAfterVATRO = svcAfterVat + prtAfterVat,          // 20240124: KHÔNG trừ giảm trừ khác
+        valPmtFromCard = fromCard,
+        totalValEnd = svcAfterVat + prtAfterVat - discOther - fromCard,
+        totalValPmt = svcAfterVat + prtAfterVat,
+        totalValCusROAfterVAT = repairAfterVat + deductible - discOther - fromCard,
+        totalValInsROAfterVAT = insAfterVat - deductible,
+        totalValWarrantyROAfterVAT = warrantyAfterVat,
+        totalValLocalROAfterVAT = localAfterVat,
+        totalValDebit = cusDebit + insDebit,
+        totalValCusPmt = repairAfterVat - cusDebit,              // bản active (bản cũ ghi "Sai", xem #357)
+        createDTimeUTC = Utc(r.CreatedAt), createBy = r.Creator,
+        roStatus, repairStatus = roStatus,                       // nguồn trả CÙNG giá trị cho hai trường
+        flagRetry = r.IsReRepair,                                // cột port ở #343
+        flagWashCar = r.CarWashRequested, flagGetOldPart = r.UseSHPart,
+        cusPmtDateUTC = Utc(r.PaidCreatedDate),
+        paidDTimeUTC = Utc(r.PaidCreatedDate),                   // trùng cusPmtDateUTC — đúng nguồn
+        finishDTimeUTC = Utc(r.FinishedDate),                    // = lúc SỬA XONG (#340), không phải giao xe
+        requestCustomer = r.CusRequest, valFeeInsurance = deductible,
+        deductibleNote = "Miễn thường CỘNG vào phần KHÁCH trả và TRỪ khỏi phần bảo hiểm — khớp #342.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/engineers", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
@@ -34498,7 +34600,7 @@ app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, st
             || (c.Mobile != null && c.Mobile.Contains(q)) || (c.Tel != null && c.Tel.Contains(q)) || (c.TaxCode != null && c.TaxCode.Contains(q)));
     var rows = await query.OrderBy(c => c.CusName).Take(500).ToListAsync();
     var items = rows.Select(c => new
-    { c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode, c.Sex, c.DOB, c.ContName, c.ContMobile,
+    { c.CusCode, c.SalesCusID, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email, c.TaxCode, c.Sex, c.DOB, c.ContName, c.ContMobile,
       // #221 §12: 15 trường mới phải chiếu ở CẢ GET
       c.DealerCode, c.ProvinceCode, c.DistrictCode, c.Fax, c.Website, c.IDCardNo, c.Bank, c.BankAccountNo,
       c.OrgTypeID, c.IsNormal, c.IsContact, c.ContAddress, c.ContFax, c.ContSex, c.Note,
@@ -34644,6 +34746,8 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); }
     c.CusName = dto.CusName; c.CusTypeID = dto.CusTypeID; c.Address = dto.Address; c.Mobile = dto.Mobile; c.Tel = dto.Tel;
     c.Email = dto.Email; c.TaxCode = dto.TaxCode; c.Sex = dto.Sex; c.DOB = dto.DOB;
+    // #362 §12: khong co dong nay thi SalesCusID la COT CHET — dung benh #337/#342.
+    c.SalesCusID = dto.SalesCusID;
     c.ContName = dto.ContName; c.ContMobile = dto.ContMobile; c.ContTel = dto.ContTel; c.ContEmail = dto.ContEmail; c.UpdatedAt = DateTime.Now;
     // ===== #221 parity: 15 trường còn thiếu của `CustomerCreate`/`CustomerUpdate` =====
     c.DealerCode = dto.DealerCode;
@@ -39239,7 +39343,8 @@ record DlvCorrectDto(string? TPlateNo, string? TDriverId, string? TDriverName, s
 record TransportInsPaymentDto(DateTime? PmtMonth, List<TransportInsPaymentLineDto>? Lines);
 record TransportInsPaymentEditLineDto(string? Vin, decimal TFValReal, decimal TPValReal, decimal InsuranceCost);
 record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
-record ServiceCustomerDto(string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
+// #362: SalesCusID — ma KH ben he Sales, dung de hop nhat ma KH khi dong bo Veloca.
+record ServiceCustomerDto(string? SalesCusID,string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
     // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
     string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
 // #235: khối giá + ngữ cảnh phụ tùng, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.

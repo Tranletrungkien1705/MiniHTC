@@ -5649,6 +5649,11 @@ public sealed class ServiceCustomer
     /// <summary>Website (khách doanh nghiệp).</summary>
     public string? Website { get; set; }
     /// <summary>Số CMND/CCCD.</summary>
+    /// <summary>🔴 #362 SALESCUSID — **mã khách hàng bên hệ SALES**. Đồng bộ sang Veloca ưu tiên mã này,
+    /// chỉ rơi về mã CarSv khi nó trống. Chú thích nguồn (`20240401`): *"Dùng mã KH Sales để đồng bộ từ
+    /// CarSv → VelocaDV… Mục đích: 1 KH được đồng bộ ở cả DMS và Veloca đều có 1 mã KH người dùng duy nhất"*.
+    /// ⇒ Thiếu cột này thì mọi khách sang Veloca đều mang mã CarSv ⇒ **hỏng đúng mục đích hợp nhất mã**.</summary>
+    public string? SalesCusID { get; set; }
     public string? IDCardNo { get; set; }
     /// <summary>Ngân hàng giao dịch.</summary>
     public string? Bank { get; set; }
