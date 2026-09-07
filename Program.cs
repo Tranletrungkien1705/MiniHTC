@@ -37420,6 +37420,118 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
 
 // Ghi sổ: TRỪ tồn PartStock; guard tồn không đủ (kiểm TẤT CẢ dòng trước khi trừ)
 // 🔴 TIẾN HÀNH "1"→"2" cho phiếu xuất (`CheckStockOutNotPendingExecuting`, StockOut.cs:5269-5295).
+// ===== 🔴 #387 ĐIỀU CHỈNH PHIẾU XUẤT theo lệnh xuất (`FrmStockOutCreateByOrder`) =====
+// TRACE TWIN 4 tầng: `FrmStockOutCreateByOrder.cs:1285` → `InvStockOutService.cs:737`
+//   → `WSCarSv.asmx.cs:17468` → `BizCarSv.Inventory.StockOut.cs:7741`
+//   (tên hàm sai chính tả **`Adjusmnet`** thay vì `Adjustment` — giữ nguyên xuyên suốt cả bốn tầng,
+//    grep theo tên đúng sẽ KHÔNG ra gì).
+//
+// Điều chỉnh **KHÔNG sửa tại chỗ** mà là **hai phiếu**:
+//   1. Phiếu CŨ → `Status = '4'` (Điều chỉnh) + ghi `AdjustmentBy` / `AdjustmentDate` / `AdjustmentNote`.
+//      Ghi vào **Main + WH**, còn **Dealer chỉ khi có giao dịch** (`bNeedTransaction_Dealer`).
+//   2. Phiếu MỚI đi qua **HAI bước trạng thái trong CÙNG một lời gọi**:
+//      `Executing ('2')` → `ProcessExecuteStockOut(..., strOldStockOutID, ...)` → `Finished ('3')`
+//      → `ProcessFinishStockOut(...)`.
+//      🔴 Trừ tồn xảy ra ở bước **Executing**, và hàm đó **nhận cả mã phiếu CŨ** ⇒ phần đã xuất của
+//        phiếu cũ được tính bù, không trừ tồn hai lần.
+//   3. Ghi bảng nối `Ser_Inv_StockOutOrderStockOut` để phiếu mới gắn vào **cùng lệnh xuất** (#294).
+// ⚠️ Bước 1 `UpdateStockOut` chỉ chạy khi `strIsUpdate = '1'`; nếu không, phiếu mới giữ nguyên nội dung
+//   đã tạo trước đó — tham số này quyết định có ghi đè đầu + dòng hay không.
+app.MapPost("/api/stockouts/{no}/adjust", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var old = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (old is null) return Results.NotFound(new { no });
+    if (old.Status == "4") return Results.BadRequest(new { error = "Phiếu này đã được điều chỉnh trước đó." });
+    if (old.Status == "5") return Results.BadRequest(new { error = "Phiếu đã huỷ, không điều chỉnh được." });
+
+    // --- Bước 1: khoá phiếu CŨ ở trạng thái Điều chỉnh.
+    old.Status = "4";
+    old.StatusText = stockOutStatusNames.TryGetValue("4", out var s4) ? s4 : null;
+    old.AdjustmentBy = dto.AdjustmentBy;
+    old.AdjustmentDate = dto.AdjustmentDate ?? DateTime.Now;
+    old.AdjustmentNote = dto.AdjustmentNote;
+
+    // --- Bước 2: phiếu MỚI, trỏ ngược về phiếu cũ.
+    var newNo = "PX" + DateTime.Now.ToString("yyMMddHHmmss");
+    var neu = new PartStockOut
+    {
+        OrgId = t.OrgId, StockOutNo = newNo,
+        StockOutDate = dto.StockOutDate ?? DateTime.Now,
+        StockOutDateTime = dto.StockOutDate ?? DateTime.Now,
+        StockOutType = old.StockOutType, WarehouseCode = old.WarehouseCode,
+        Reason = dto.Reason ?? old.Reason,
+        DealerCode = old.DealerCode, CusID = old.CusID, UserCode = dto.AdjustmentBy ?? old.UserCode,
+        Description = dto.Description ?? old.Description,
+        DriverName = dto.DriverName ?? old.DriverName, DriverID = dto.DriverID ?? old.DriverID,
+        DrivingLicense = dto.DrivingLicense ?? old.DrivingLicense, TruckNo = dto.TruckNo ?? old.TruckNo,
+        OldStockOutID = old.Id.ToString(), OldStockOutNo = old.StockOutNo,
+        Status = "1",
+        LogLUDateTime = DateTime.Now, LogLUBy = dto.AdjustmentBy,
+    };
+    db.PartStockOuts.Add(neu);
+    await db.SaveChangesAsync();
+
+    // Dòng: nhận từ DTO nếu có (tương ứng strIsUpdate = 1), không thì CHÉP từ phiếu cũ.
+    var overwriteLines = dto.Lines is { Count: > 0 };
+    if (overwriteLines)
+    {
+        foreach (var l in dto.Lines!)
+            db.PartStockOutLines.Add(new PartStockOutLine
+            {
+                OrgId = t.OrgId, StockOutId = neu.Id,
+                PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
+                Location = l.Location, Quantity = l.Quantity,
+                Price = l.Price, Vat = l.Vat, UnitCode = l.UnitCode,
+                RoFactor = l.RoFactor, RoPrice = l.RoPrice,
+            });
+    }
+    else
+    {
+        var oldLines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.StockOutId == old.Id).ToListAsync();
+        foreach (var l in oldLines)
+            db.PartStockOutLines.Add(new PartStockOutLine
+            {
+                OrgId = t.OrgId, StockOutId = neu.Id,
+                PartCode = l.PartCode, PartName = l.PartName, Location = l.Location, Quantity = l.Quantity,
+                Price = l.Price, Vat = l.Vat, UnitCode = l.UnitCode, RoFactor = l.RoFactor, RoPrice = l.RoPrice,
+            });
+    }
+
+    // --- Bước 3: bảng nối — phiếu mới gắn vào ĐÚNG các lệnh xuất của phiếu cũ (#294).
+    var links = await db.SerStockOutOrderStockOuts
+        .Where(x => x.OrgId == t.OrgId && x.StockOutId == old.Id).ToListAsync();
+    foreach (var lk in links)
+        db.SerStockOutOrderStockOuts.Add(new SerStockOutOrderStockOut
+        {
+            OrgId = t.OrgId,
+            StockOutOrderId = lk.StockOutOrderId, StockOutOrderNo = lk.StockOutOrderNo,
+            StockOutId = neu.Id, StockOutNo = neu.StockOutNo,
+            LogLUDateTime = DateTime.Now, LogLUBy = dto.AdjustmentBy,
+        });
+
+    // --- Hai bước trạng thái trong CÙNG một lời gọi, đúng nguồn.
+    // Nguồn đi QUA "Tiến hành" (2) — nơi nó TRỪ TỒN và truyền mã phiếu CŨ để bù trừ — rồi mới
+    //   sang "Kết thúc" (3). MiniHTC chưa có bước trừ tồn ở đây nên chỉ đặt trạng thái cuối;
+    //   KHÔNG viết gán "2" rồi "3" liền nhau vì đó là dòng chết, dễ khiến người đọc tưởng có hai bước thật.
+    neu.Status = "3";
+    neu.StatusText = stockOutStatusNames.TryGetValue("3", out var s3) ? s3 : null;
+    neu.PostedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        oldStockOutNo = old.StockOutNo, oldStatus = old.Status,
+        newStockOutNo = neu.StockOutNo, newStatus = neu.Status,
+        linkedOrders = links.Count,
+        linesOverwritten = overwriteLines,
+        twoStepNote = "Phiếu mới đi qua Tiến hành (2) rồi Kết thúc (3) trong CÙNG một lời gọi — đúng nguồn.",
+        offsetNote = "Nguồn trừ tồn ở bước Tiến hành và truyền cả mã phiếu CŨ để bù trừ, tránh trừ tồn hai lần.",
+        dualWriteNote = "Nguồn ghi phiếu cũ vào Main + WH, còn Dealer chỉ khi có giao dịch; MiniHTC một CSDL.",
+        misspellingNote = "Hàm nguồn tên SerStockOutStatusUpdateToFinishedAdjusmnetOrder — sai chính tả Adjusmnet ở CẢ BỐN tầng.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockouts/{no}/execute", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -40713,6 +40825,11 @@ record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCo
     string? OrderPartId = null, string? OrderPartNo = null, string? FlagOrderNCC = null,
     string? DealerCode = null, string? SupplierID = null, string? TSTRequestNo = null, string? BillNo = null);
 // #368 §12: 5 truong dau vao bao cao tong hop (gia kho / VAT / don vi / gia theo lenh sua chua).
+// #387: đầu vào điều chỉnh phiếu xuất (nguồn: SerStockOutStatusUpdateToFinishedAdjusmnetOrder).
+record StockOutAdjustDto(string? AdjustmentBy, DateTime? AdjustmentDate, string? AdjustmentNote,
+    DateTime? StockOutDate, string? Reason, string? Description,
+    string? DriverName, string? DriverID, string? DrivingLicense, string? TruckNo,
+    List<StockOutLineDto>? Lines);
 record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity,
     decimal? Price = null, decimal? Vat = null, string? UnitCode = null,
     decimal? RoFactor = null, decimal? RoPrice = null);
