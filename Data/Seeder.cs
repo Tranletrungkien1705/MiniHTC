@@ -1249,6 +1249,9 @@ public static class Seeder
         "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"FlagInitDeal\" text",
         // #278 parity iCIC: dai ly cua phieu CSKH (loc danh sach dai ly bi loai)
         "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
+        // #457 parity Ser_CustomerCare_GetNew: hai khoa noi that cua nguon
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
+        "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         // #277b parity Ser_CustomerCare_Get72h: 2 cot loc o dau lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"IsReRepair\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"ROType\" text",

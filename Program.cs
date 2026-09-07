@@ -40392,9 +40392,96 @@ app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, strin
 
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt,
-      c.IsCall, c.IsFeedback, c.CusFeedback, c.IsSendmail, c.Note, c.DealerCode }).ToListAsync();   // #210 §12 · #278
+      c.IsCall, c.IsFeedback, c.CusFeedback, c.IsSendmail, c.Note, c.DealerCode,
+      c.CusID, c.CarID }).ToListAsync();   // #210 §12 · #278 · #457
     // "Chưa liên hệ" nhận cả mã nguồn PEND lẫn giá trị Pending của dữ liệu tạo trước khi vá mã trạng thái.
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status is "PEND" or "Pending"), items });
+}).RequireAuthorization();
+
+// ===== 🔴 #457 TWIN THẬT CỦA MÀN `FrmCustomerCare` — trước nay map NHẦM =====
+// Ghi chú cũ ở đầu cụm ghi "port 1:1 FrmCustomerCare", nhưng luật lọc lại lấy từ **bản iCIC**
+//   `Ser_CustomerCare_Get72h_New20230315` (#278). Trace lại từ chính form
+//   (`Views/Customer/FrmCustomerCare.cs:197 DoPaging`): form gọi
+//     `_serMain.Ser_CustomerCare_GetNew(...)`   — 22 tham số, **PHÂN TRANG PHÍA MÁY CHỦ**
+//     `_serWH.Ser_CustomerCare_GetNew_WH(...)`  — bản kho, chỉ khi tick "tra CẢ lịch sử"
+//   ⇒ twin đúng là `BizCarSv.Customer.cs:12288` (bản WH: `BizCarSv.WH.cs:26604`).
+//   📌 Bẫy "map twin theo TÊN": tên màn có chữ *CustomerCare* nên endpoint cũ bám vào bảng
+//     `Ser_CustomerCare`, còn màn thì chạy một hàm khác hẳn. Endpoint cũ GIỮ NGUYÊN (nó đúng với
+//     bản iCIC); endpoint này bổ sung đúng đường của màn WinForm.
+//
+// 🔴 BỐN `left join` nhưng **BA CÁI CHẾT** (luật #414): WHERE có `ro.IsReRepair=0` và
+//   `ro.Status in (FNS)` đặt trên bảng **LEFT** `ser_ro` ⇒ LEFT hoá INNER. Mà `ro` chỉ nối được qua
+//   `c72.ROID` (bảng 72h) ⇒ **phiếu DOB và phiếu Bảo dưỡng KHÔNG BAO GIỜ ra kết quả**, dù nguồn có nối
+//   hẳn `Ser_CustomerCareDOB` và `Ser_CustomerCareMaintance`. Màn này thực chất **chỉ hiện ca 72h đã
+//   giao xe xong**. Trả cờ `dobAndMaintenanceUnreachable` để không ai tưởng là thiếu dữ liệu.
+// 🔴 `join ser_car car on tt.carID=car.carID AND tt.CusID=car.CusID` — INNER, nối HAI cột ⇒ xe sang
+//   tên chủ khác là **mất phiếu lúc ĐỌC** (luật #410). Đếm và trả `droppedByCarOwnerMismatch`.
+// ⚪ `SELECT distinct … , Row_Number() over(…) MyRowIdx` — `MyRowIdx` duy nhất từng dòng nên **DISTINCT
+//   VÔ HIỆU**. Giữ nguyên hành vi (không tự khử trùng), ghi cờ `distinctIneffectiveInSource`.
+// ⚠️ Sắp xếp phân trang theo `ro.ActualDeliveryDate DESC` — **ngày giao xe của lệnh sửa chữa**, KHÔNG
+//   phải ngày tạo phiếu CSKH. `ORDER BY` nằm TRONG `Row_Number()` nên hợp lệ (không dính bẫy #415).
+// ⚠️ Cửa sổ trang: `@MyRowIdx_Start = start + 1` (C# đếm từ 0, SQL từ 1), `@MyRowIdx_End = start + count`.
+// ⚠️ Ba thủ tục sinh phiếu tự động (`ProcCusToCareDoB`, `ProcCusToCareManitance`, `ProcCusToCareManitanceByKm`)
+//   **đều bị comment** ⇒ port dòng ACTIVE: API đọc KHÔNG sinh phiếu.
+// ⚠️ Giới tính lưu dạng CHUỖI "True"/"False" (không phải bool/1/0): True→"Nam", False→"Nữ".
+app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t,
+    string? cusName, string? plateNo, string? status, string? careType,
+    DateTime? deliveryFrom, DateTime? deliveryTo, DateTime? checkInFrom, DateTime? checkInTo,
+    int? start, int? count) =>
+{
+    var st = Math.Max(0, start ?? 0);
+    var cnt = Math.Clamp(count ?? 50, 1, 500);
+
+    // Bảng lệnh sửa chữa đã bị hai điều kiện WHERE ép thành INNER (xem ghi chú).
+    var ros = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && r.IsReRepair == "0" && r.Status == "FNS");
+    if (deliveryFrom.HasValue) ros = ros.Where(r => r.ActualDeliveryDate >= deliveryFrom);
+    if (deliveryTo.HasValue) ros = ros.Where(r => r.ActualDeliveryDate <= deliveryTo);
+    if (checkInFrom.HasValue) ros = ros.Where(r => r.CheckInDate >= checkInFrom);
+    if (checkInTo.HasValue) ros = ros.Where(r => r.CheckInDate <= checkInTo);
+
+    var joined = await (from c in db.CustomerCares
+                        join r in ros on c.RONo equals r.RONo
+                        where c.OrgId == t.OrgId
+                        select new { c, r.ActualDeliveryDate, r.CheckInDate }).ToListAsync();
+
+    var beforeCarJoin = joined.Count;
+    // INNER join hai cột sang xe — chỉ áp khi phiếu có đủ hai khoá (dữ liệu cũ có thể trống).
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.CarID, x.CusID }).ToListAsync();
+    var carKey = new HashSet<string>(cars.Where(x => x.CarID != null && x.CusID != null)
+        .Select(x => x.CarID + "|" + x.CusID));
+    var rows = joined.Where(j => string.IsNullOrEmpty(j.c.CarID) || string.IsNullOrEmpty(j.c.CusID)
+                                 || carKey.Contains(j.c.CarID + "|" + j.c.CusID)).ToList();
+    var droppedByCarOwnerMismatch = beforeCarJoin - rows.Count;
+
+    if (!string.IsNullOrWhiteSpace(cusName))
+        rows = rows.Where(j => (j.c.CusName ?? "").Contains(cusName!.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+    if (!string.IsNullOrWhiteSpace(plateNo))
+        rows = rows.Where(j => (j.c.PlateNo ?? "").Contains(plateNo!.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+    if (!string.IsNullOrWhiteSpace(status)) rows = rows.Where(j => j.c.Status == status).ToList();
+    if (!string.IsNullOrWhiteSpace(careType)) rows = rows.Where(j => j.c.CareType == careType!.ToLowerInvariant()).ToList();
+
+    var total = rows.Count;   // nguồn trả MyCount từ #tbl_ID TRƯỚC khi cắt trang
+    var page = rows.OrderByDescending(j => j.ActualDeliveryDate).Skip(st).Take(cnt)
+        .Select(j => new
+        {
+            j.c.CareNo, j.c.CareType, j.c.RONo, j.c.PlateNo, j.c.CusName, j.c.CusPhone,
+            j.c.CusID, j.c.CarID, j.c.DealerCode, j.c.Status, j.c.Result,
+            ActualDeliveryDate = j.ActualDeliveryDate, CheckInDate = j.CheckInDate,
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        total, start = st, count = cnt,
+        rowIdxStart = st + 1, rowIdxEnd = st + cnt,   // đúng @MyRowIdx_Start/@MyRowIdx_End của nguồn
+        items = page,
+        droppedByCarOwnerMismatch,
+        dobAndMaintenanceUnreachable = true,
+        distinctIneffectiveInSource = true,
+        autoGenerateProcsCommentedOut = true,
+        note = "Twin của FrmCustomerCare là Ser_CustomerCare_GetNew (không phải bản iCIC 72h).",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, ITenantContext t) =>
@@ -40409,6 +40496,7 @@ app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, I
     {
         OrgId = t.OrgId, CareNo = no, CareType = type, RONo = dto.RONo, PlateNo = dto.PlateNo?.Trim().ToUpperInvariant(),
         CusName = dto.CusName, CusPhone = dto.CusPhone, ContactDate = dto.ContactDate,
+        CusID = dto.CusID?.Trim(), CarID = dto.CarID?.Trim(),   // #457 §12
         Status = "PEND"   // mã nguồn SerCareStatus.Pending
     };
     db.CustomerCares.Add(c); await db.SaveChangesAsync();
@@ -45199,7 +45287,8 @@ record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status,
     string? Remark = null, string? IsActive = null);   // #295
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
-record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate);
+record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
+    string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
 record CareContactDto(string? Result);
 /// <summary>Khảo sát CSKH sau dịch vụ — 6 câu trả lời + trạng thái chốt (CINFB/CIFB/REJ).</summary>
 record PartCostCalculateDto(DateTime? FromDate, DateTime? ToDate);

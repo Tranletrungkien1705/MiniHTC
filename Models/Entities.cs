@@ -5461,7 +5461,12 @@ public sealed class CustomerCare
     /// <summary>#278 DealerCode — đại lý của phiếu CSKH. Bản tổng đài iCIC lọc **danh sách đại lý bị
     /// loại** trên CẢ BA bảng (tt/cus/car); MiniHTC gộp về một cột trên phiếu.</summary>
     public string? DealerCode { get; set; }
-
+    // ===== 🔴 #457 §12 HAI KHOÁ THẬT của phiếu CSKH (`Ser_CustomerCare.CusID` / `.CarID`) =====
+    /// <summary>`CusID` — nguồn nối `inner join Ser_Customer cus on tt.CusID = cus.CusID`.</summary>
+    public string? CusID { get; set; }
+    /// <summary>`CarID` — nguồn nối `join ser_car car on tt.carID = car.carID **and tt.CusID = car.CusID**`
+    /// (nối HAI cột, và là INNER) ⇒ xe đã sang tên chủ khác thì phiếu CSKH biến mất khỏi danh sách.</summary>
+    public string? CarID { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ContactedAt { get; set; }
 }
