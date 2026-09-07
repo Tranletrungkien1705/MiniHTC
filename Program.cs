@@ -12597,6 +12597,21 @@ app.MapGet("/api/report/customer-debit", async (AppDbContext db, ITenantContext 
             + "11 là DẤU CÁCH. Chạy được nhờ SQL Server bỏ qua khoảng trắng cuối khi so varchar; đổi kiểu "
             + "hoặc đối chiếu là hỏng câm. Cột ngày ở đây lưu dạng CHUỖI (mới substring được).",
         scope = string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase) ? "wh" : "main",
+        // ===== ✅ #441 QUÉT TRỌN CÂY — "nếp" này ĐÃ ĐÓNG, không còn chỗ nào bị bỏ sót =====
+        // `grep` toàn bộ `TERP.BizCarSv`: chuỗi `BaoCoCongNoKhachHang_20170101` xuất hiện
+        //   **đúng HAI lần**, cả hai ở `BizCarSv.Service.Report.cs` (bản Main):
+        //     · `:2093` → trong `Ser_InvReportCusDebitRpt`      (`:1923`) — đã xử lý ở #440
+        //     · `:2771` → trong `Ser_ReportReceivableDebitRpt`  (`:2605`) — đã xử lý ở #413
+        //   và **0 lần** trong `BizCarSv.WH.cs`, dù **cả hai** đều có twin `_WH` tồn tại.
+        // ⇒ Không phải hai ca lẻ: đây là **toàn bộ tập** báo cáo dùng bảng chốt 2017, và **tất cả**
+        //   bản `_WH` của chúng đều thiếu nhánh đó. Đã kiểm hết — **không còn chỗ nào bị bỏ sót**.
+        // 📌 Giá trị của lượt quét: biến "một hiện tượng gặp hai lần" thành **một tập đã đếm đủ**,
+        //   nên từ nay không phải nghi ngờ còn báo cáo thứ ba nào nữa.
+        legacySnapshotSweepComplete = true,
+        legacySnapshotSweepNote = "Đã grep toàn cây TERP.BizCarSv: BaoCoCongNoKhachHang_20170101 xuất "
+            + "hiện ĐÚNG 2 lần, cả hai ở bản Main (Ser_InvReportCusDebitRpt #440 và "
+            + "Ser_ReportReceivableDebitRpt #413), 0 lần trong WH.cs dù cả hai đều CÓ twin _WH. "
+            + "Tập đã đếm đủ — không còn báo cáo thứ ba.",
         legacySnapshotMissingInWhNote = "Bản Main có khối `union all` cộng thêm dư đầu từ bảng chốt "
             + "BaoCoCongNoKhachHang_20170101 (chỉ góp TGD/TGC, PST = PSG = 0); bản _WH KHÔNG có ⇒ hai màn "
             + "cho HAI TỔNG CÔNG NỢ khác nhau trên cùng đại lý, cùng kỳ. Đây là LẦN THỨ HAI cùng bảng chốt "
