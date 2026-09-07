@@ -24760,6 +24760,21 @@ app.MapGet("/api/appointments/statuses", () => Results.Ok(new
     statusFiveWritableNote = "#444: mã '5' (Đã liên hệ & Chưa xác nhận) KHÔNG chỉ là nhãn — "
         + "FrmQuotationApp.btnDaLHChuaXN_Click gọi Ser_AppUpdateStatus(appId, \"5\") ⇒ ghi thẳng vào CSDL. "
         + "Bộ máy trạng thái của bản port cũ dừng ở 1..4 nên KHÔNG có đường nào đặt được trạng thái này.",
+    // ===== ✅ #445 QUÉT TRỌN BIZ (áp luật #441) — đếm được mức độ của lỗi, không còn ước lượng =====
+    // Duyệt **mọi** khối `case ro.AppStatus` / `case tpro.AppStatus` trong `TERP.BizCarSv`, bỏ dòng comment,
+    // rồi kiểm 10 dòng kế xem có `when '5'` không:
+    //     **19 khối ACTIVE · chỉ 6 khối có mã '5' · 13 khối THIẾU** (thêm 2 khối đã bị comment).
+    //   Danh sách thiếu: `Appointment.cs` 1497/1527/1692/1726 (**cả bốn** — chính là màn danh sách lịch hẹn)
+    //   · `PushToHyundaiMe.cs:315` · `TVO.cs` 959/1029 · `WH.cs` 3228/3262 · `ZTemp.cs` 26125/26159/26553/26587.
+    // ⇒ Trạng thái `5` **ghi được** từ nút trên màn báo giá lịch hẹn, nhưng **13/19 đường hiển thị không**
+    //   **dịch nổi nó** — và vì các `CASE` đó **không có `ELSE`**, kết quả là **ô trạng thái TRỐNG**,
+    //   không phải chữ "Không xác định". Người dùng thấy một dòng lịch hẹn **không có trạng thái**.
+    // 📌 Chỉ 6/19 khối biết mã `5` ⇒ đây không phải "một màn quên", mà là **tính năng thêm sau mà chỉ
+    //   vá vào vài chỗ hiển thị**. MiniHTC có nhãn cho cả 5 mã ở **mọi** đường đọc.
+    statusFiveDisplaySweep = new { caseBlocksActive = 19, withCode5 = 6, missingCode5 = 13, commentedOut = 2 },
+    statusFiveDisplaySweepNote = "Quét toàn TERP.BizCarSv: 19 khối CASE AppStatus đang chạy, chỉ 6 khối có "
+        + "when '5', 13 khối THIẾU (gồm CẢ BỐN khối ở Appointment.cs — màn danh sách lịch hẹn). Các CASE "
+        + "đó không có ELSE ⇒ ô trạng thái TRỐNG, không phải 'Không xác định'.",
     statusFiveDisplaysBlankNote = "🔴 LỖI NGUỒN: CASE hiển thị ở Ser_App…(BizCarSv.Appointment.cs:1497) chỉ "
         + "có when '1'..'4' và KHÔNG có ELSE ⇒ lịch hẹn ở trạng thái '5' hiện StatusName = NULL, tức Ô "
         + "TRẠNG THÁI TRỐNG trên lưới. Chính màn đặt được trạng thái đó lại không hiển thị được nó.",
