@@ -14845,6 +14845,20 @@ public sealed class SerFilePathVideo
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#526 Master **ĐẦU MỤC KIỂM TRA** khi tiếp nhận/giao xe (`Ser_Mst_ReceptionFAudit`).
+/// Nguồn: `BizCarSv.Tab.cs:14946 Ser_Mst_ReceptionFAudit_Get` → thân thật `…_GetX` (`:15070`).
+/// Khoá hợp = (`ReceptionFAudCode`, `ReceptionFAudType`) — nguồn nối bằng **cả hai** cột.</summary>
+public sealed class ReceptionFAuditMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFAudCode { get; set; } = "";
+    public string ReceptionFAudType { get; set; } = "";
+    public string? ReceptionFAudName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>#525 TỆP ĐÍNH KÈM phiếu tiếp nhận (`Ser_ReceptionFAttachFile`) — ảnh/tệp chụp lúc nhận xe.
 /// Nguồn: cùng hàm `Ser_ReceptionF_ReceptionX_New20210727`, khối
 /// `#region //// Refine and Check Ser_ReceptionFAttachFile`.</summary>

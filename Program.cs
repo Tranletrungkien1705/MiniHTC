@@ -47336,7 +47336,7 @@ app.MapPost("/api/receptions/{no}/details", async (string no, List<ReceptionDeta
 
     const string kReceptionFStatusPending = "P";      // TConst.ReceptionFStatus.Pending — GIÁ TRỊ, không phải tên
     var auditMaster = await db.Masters
-        .Where(x => x.OrgId == t.OrgId && x.Category == "ReceptionFAudit")
+        .Where(x => x.OrgId == t.OrgId && x.Category == "ReceptionFAudit")   // #526 đã có master riêng ReceptionFAuditMsts
         .Select(x => new { x.Code, x.Status }).ToListAsync();
 
     // Guard nằm TRONG vòng lặp và TRƯỚC mọi lệnh ghi ⇒ sai một dòng là hỏng cả phiếu.
@@ -47462,6 +47462,68 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
             x.ReceptionFileType, x.Remark, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new { receptionFNo = no, count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== 🔴🔴 #526 MASTER ĐẦU MỤC KIỂM TRA — **PHÂN TRANG BỊ COMMENT, VẪN TRẢ TỔNG SỐ** =====
+// Nguồn: `BizCarSv.Tab.cs:14946 Ser_Mst_ReceptionFAudit_Get` (vỏ bọc) → `…_GetX` (`:15070`, có SQL).
+// Endpoint: `GET /api/receptionfauditmsts`. **§12**: entity + `DbSet` + Seeder. Đây là master mà #524
+//   cần để tra `Ser_Mst_ReceptionFAudit_CheckDB` — nay có thật, không còn `auditMasterNotModelled`.
+//
+// 🔴🔴 **HAI DÒNG PHÂN TRANG ĐỀU BỊ COMMENT** (đúng luật *port dòng ACTIVE*):
+//     `--and (t.MyIdxSeq >= @nFilterRecordStart)`
+//     `--and (t.MyIdxSeq <= @nFilterRecordEnd)`
+//   Hai tham số `strFt_RecordStart` / `strFt_RecordCount` **vẫn được nhận, vẫn được `Convert.ToInt64`,**
+//   **vẫn bind vào câu lệnh** — nhưng **không mệnh đề nào dùng** ⇒ **phân trang KHÔNG có tác dụng**:
+//   mọi lời gọi trả **toàn bộ** danh mục. Trong khi đó bảng `MySummaryTable` **vẫn trả `Count(0)`**
+//   ⇒ client thấy tổng số đúng, tưởng đang phân trang, thực ra **luôn nhận hết**.
+//   ⚠️ Với danh mục lớn thì đây là lỗi **hiệu năng + băng thông**, không phải lỗi số liệu — nêu cờ,
+//     và bản port **có phân trang thật** (`skip`/`take`) kèm `sourcePagingCommentedOut`.
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` **không có guard rỗng** ⇒ client không truyền là **ném lỗi**
+//   `FormatException` ngay, dù giá trị đó rốt cuộc **không được dùng** vào đâu cả.
+// ⚠️ `select distinct identity(bigint, 0, 1) MyIdxSeq … order by ReceptionFAudCode, ReceptionFAudType`
+//   — `ORDER BY` nằm trên `SELECT … INTO` (luật #415): nó **không** bảo đảm thứ tự của kết quả TRẢ VỀ,
+//   chỉ ảnh hưởng cách đánh số `identity`. Câu cuối lấy `t.MyIdxSeq, smrfa.*` **không có `order by`**
+//   ⇒ thứ tự dòng là **tuỳ engine**. Port **sắp tường minh** theo (mã, loại) + cờ `sourceHasNoOrderBy`.
+// ⚠️ Cờ `strIsGet_Ser_Mst_ReceptionFAudit`: chỉ cần **khác rỗng** (không so giá trị) mới ghép khối
+//   trả chi tiết; rỗng ⇒ macro giữ `"-- Nothing."` ⇒ **chỉ có bảng tổng số**, không có dòng nào.
+// ⚠️ Bảng nằm ở **DB khác**: `[@strDBName_CommonCenter].[dbo].Ser_Mst_ReceptionFAudit` (thay bằng
+//   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
+// ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
+//   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
+    string? code, string? type, string? flagActive, int? recordStart, int? recordCount, bool? isGetDetail) =>
+{
+    var qy = db.ReceptionFAuditMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(code)) qy = qy.Where(x => x.ReceptionFAudCode == code!.Trim());
+    if (!string.IsNullOrWhiteSpace(type)) qy = qy.Where(x => x.ReceptionFAudType == type!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+
+    // MySummaryTable: nguồn LUÔN trả tổng số, kể cả khi không lấy chi tiết.
+    var myCount = await qy.CountAsync();
+
+    // Nguồn chỉ ghép khối chi tiết khi cờ KHÁC RỖNG (không so giá trị).
+    var wantDetail = isGetDetail ?? true;
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = recordCount is > 0 ? recordCount!.Value : myCount;
+
+    var items = wantDetail
+        ? await qy.OrderBy(x => x.ReceptionFAudCode).ThenBy(x => x.ReceptionFAudType)   // nguồn KHÔNG sắp ở câu cuối
+            .Skip(start).Take(count)
+            .Select(x => new { x.Id, x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionFAudName, x.FlagActive })
+            .ToListAsync()
+        : new();
+
+    return Results.Ok(new
+    {
+        myCount, count = items.Count, items,
+        tableNames = new[] { "MySummaryTable", "Ser_Mst_ReceptionFAudit" },
+        sourcePagingCommentedOut = "--and (t.MyIdxSeq >= @nFilterRecordStart) / <= @nFilterRecordEnd",
+        sourceAlwaysReturnsAllRows = true,
+        sourceThrowsOnEmptyRecordStart = "Convert.ToInt64 khong co guard rong",
+        sourceHasNoOrderBy = "cau cuoi lay t.MyIdxSeq, smrfa.* ma khong co order by",
+        detailFlagIsPresenceNotValue = true,
+        masterLivesInCommonCenterDb = true,
+    });
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
