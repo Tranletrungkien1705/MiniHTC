@@ -3121,7 +3121,28 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
             c.DRDtlStatus = "A2";
             c.ApprovedDate1 = now; c.ApprovedBy1 = who; c.ApprovedDate2 = now; c.ApprovedBy2 = who;
             await db.SaveChangesAsync();
-            return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Duyệt cấp 2 (TCG, một bước)" });
+
+            // ===== #B40 GAP — SIDE-EFFECT `SetStatusCar_DocReqTCGList_New20181119` (`Biz.HTC.WH.cs:82627`) =====
+            // Nguồn gọi ngay sau khi ghi dòng (`:82936`) để **TÍNH LẠI trạng thái ĐẦU đề nghị** từ trạng thái
+            // của TẤT CẢ các dòng. Port cũ thiếu hẳn ⇒ đầu đề nghị **đứng nguyên trạng thái cũ mãi mãi**,
+            // dù mọi dòng đã duyệt xong. Chuỗi `if / else if` — **nhánh đầu khớp là dừng**, đúng thứ tự:
+            //   1. có **BẤT KỲ** dòng "A1"            → "A1"   (một dòng A1 thắng tất cả)
+            //   2. `countF + countC == countAll && countF > 0` → "F"
+            //   3. `countC == countAll`               → "C"
+            //   4. `countP == countAll`               → "P"
+            //   5. `countA2 == countAll`              → "A2"
+            //   6. `countAll == countF + countA2`     → "A2"
+            //   7. `else`                             → **KHÔNG LÀM GÌ** (thân đã bị comment sạch ở nguồn)
+            var allDtl = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && x.DocReqId == d.Id)
+                .Select(x => x.DRDtlStatus).ToListAsync();
+            var headerStatusNew = RollupDocReqTcgListStatus(allDtl);
+            if (headerStatusNew is not null) { d.Status = headerStatusNew; await db.SaveChangesAsync(); }
+            return Results.Ok(new
+            {
+                no, vin, status = c.DRDtlStatus, statusName = "Duyệt cấp 2 (TCG, một bước)",
+                headerStatus = d.Status, headerStatusChanged = headerStatusNew is not null,
+                rollupRule = "SetStatusCar_DocReqTCGList: A1 nếu có bất kỳ dòng A1; F nếu F+C=All và F>0; C nếu toàn C; P nếu toàn P; A2 nếu toàn A2 hoặc F+A2=All; else GIỮ NGUYÊN."
+            });
         }
         // Nguồn: `strRequestStatusListToCheck = Stage.Approved1` ⇒ CHỈ từ "A1".
         if (c.DRDtlStatus != "A1") return Results.BadRequest(new { error = $"Xe {vin} phải ở trạng thái duyệt cấp 1 (A1)." });
@@ -34754,6 +34775,31 @@ app.MapGet("/api/reports/dealer-cars-summary", async (
         debt = "NỢ có nhãn (trả null, không bịa số): khối Pmt_GuaranteeDetail+Pmt_Guarantee (lọc GuaranteeDetailStatus in P,A,F và GuaranteeStatus in A,F) với PMGDFlagWarning/PMGDPercentGP; khối PaymentDetailWithDiscount_01 với PMPDAmount_SumForNoneGuarantee/PaymentTotalPercent/PercentGG/GuaranteeRemain/Remain; Mst_Calendar_GetForDayT (HTC_DiscountPolicy_MaxDeclare_WorkingDays)."
     });
 }).RequireAuthorization();
+
+// ===== #B40 `SetStatusCar_DocReqTCGList_New20181119` (`Biz.HTC.WH.cs:82627`) =====
+// Tính lại trạng thái ĐẦU đề nghị giấy tờ TCG từ trạng thái TẤT CẢ các dòng.
+// 🔴 Chuỗi `if / else if` của nguồn — **nhánh đầu khớp là dừng**; thứ tự có ý nghĩa nghiệp vụ:
+//    nhánh 1 kiểm A1 TRƯỚC mọi thứ, nên **một dòng A1 kéo cả đề nghị về A1** dù các dòng khác đã xong.
+// 🔴 Nhánh `else` cuối cùng ở nguồn **đã bị comment sạch** (`:82816-82836`) ⇒ **GIỮ NGUYÊN** trạng thái
+//    đầu đề nghị, KHÔNG được tự đặt "A2" cho tiện — trả `null` để nơi gọi biết là không đổi.
+// 🔴 Nguồn cũng thoát sớm khi **không còn dòng nào** (`Rows.Count < 1`) — không đổi gì.
+static string? RollupDocReqTcgListStatus(List<string?> dtlStatuses)
+{
+    if (dtlStatuses is null || dtlStatuses.Count == 0) return null;
+    int countAll = dtlStatuses.Count;
+    int countP = dtlStatuses.Count(s => s == "P");
+    int countC = dtlStatuses.Count(s => s == "C");
+    int countA1 = dtlStatuses.Count(s => s == "A1");
+    int countA2 = dtlStatuses.Count(s => s == "A2");
+    int countF = dtlStatuses.Count(s => s == "F");
+    if (countA1 > 0) return "A1";                                   // bExistDtlA1
+    if (countF + countC == countAll && countF > 0) return "F";
+    if (countC == countAll) return "C";
+    if (countP == countAll) return "P";
+    if (countA2 == countAll) return "A2";
+    if (countAll == countF + countA2) return "A2";
+    return null;                                                    // else — nguồn không làm gì
+}
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
