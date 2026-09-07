@@ -25556,6 +25556,17 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         roGetPairClosed = new { equivalentSets = true, differenceIsQueryForm = true,
             mainUsesCrossDbSerCar = true, sharedScalarPickWithoutOrderBy = true,
             harmlessBecauseExistenceCheckOnly = true },
+        // ===== ✅ #494 BỎ THÊM MỘT LỚP NHIỄU: `inner join` ≡ `join` =====
+        // Ca lộ ra: `Ser_RO_ReportResult_Revenue` bị xếp "lệch 15/15 dòng", nhưng đọc ra thì phần lớn là
+        //   bản chính viết `inner join` còn bản kho viết `join` — **cùng nghĩa trong T-SQL**.
+        //   Sau khi chuẩn hoá, cặp này còn **3/3 dòng**, và cả ba chỉ khác **vị trí dấu ngoặc/khoảng trắng**
+        //   (`(select …` vs `select …` · `,(select` vs `, ( select`) ⇒ **tương đương**. Đóng thêm một ca.
+        // 📊 Sweep sau khi thêm chuẩn hoá: **88 cặp so được · GIỐNG HỆT 60 · KHÁC 28**
+        //   (15 lệch số dòng · 12 cặp dính macro).
+        // 📌 Đây là **lớp nhiễu thứ ba** đã gỡ (sau dấu `--//[mylock]` và chú thích đuôi `--…`).
+        //   Mỗi lần gỡ một lớp, danh sách "cần soi" ngắn lại mà **không phải đọc thêm hàm nào**
+        //   ⇒ luôn gỡ nhiễu TRƯỚC khi ngồi đọc tay.
+        innerJoinNormalized = true,
         whDifferingTriage = new { macroFreeComparable = 76, identical = 53, needReview = 23,
             closedByHand = 4, remaining = 18,
             classifierFoundNothing = true,

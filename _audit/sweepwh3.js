@@ -62,6 +62,7 @@ function sqlOf(lines){
     .map(x=>x.replace(/\[@strDBName_CommonCenter\]\.\[dbo\]\./g,'')
              .replace(/_WH\b/g,'').replace(/_New\d{6,8}/g,'')
              .replace(/with\s*\(\s*nolock\s*\)/ig,'--//[mylock]')
+             .replace(/\binner\s+join\b/ig,'join')   // #494: 'inner join' == 'join'
              .replace(/--(?!\/\/\[mylock\]).*$/,'')
              .replace(/\(\s*1\s*=\s*1\s*\)/g,'1=1')
              .replace(/\s+/g,' ').trim().toLowerCase())
