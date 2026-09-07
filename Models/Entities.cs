@@ -10418,6 +10418,21 @@ public sealed class CarVinMaster
     /// — xe có thể còn `FlagActive='1'` mà đã bị đánh dấu huỷ sớm. Thiếu cột thì back-order **đếm dư**.
     /// ⚠️ Cột cùng tên đã có trên hai thực thể khác — đây là cột trên **`Car_Car`**.</summary>
     public string? FlagEarlyCancel { get; set; }
+    /// <summary>🔴 #B80 — `Car_Car.FlagMapVIN`: cho phép ghép VIN cho xe này. Xem guard bất đối xứng
+    /// ở endpoint `/api/cars/{carId}/update-flags` — xe **đã có VIN** chỉ được tắt cờ này khi
+    /// `FlagEarlyCancel = '0'`.</summary>
+    public string? FlagMapVIN { get; set; }
+    /// <summary>#B80 — `Car_Car.FlagCarDeliveryOrder`: cờ cho phép lập lệnh xuất xe.</summary>
+    public string? FlagCarDeliveryOrder { get; set; }
+    /// <summary>🔴 #B80 — `Car_Car.FlagTestCar`: xe chạy thử. **CHỈ CÓ ở bản `_New20260409`**;
+    /// bản `_New20230306` không nhận tham số này và cũng **không ghi `LogLU*`**.</summary>
+    public string? FlagTestCar { get; set; }
+    /// <summary>🔴 #B80 — **`Car_Car.VIN` (VIN ĐÃ GHÉP)**, khác hẳn khoá dòng.
+    /// Nguồn có **HAI** cột phân biệt: `Car_Car.CarId` là **khoá xe** còn `Car_Car.VIN` là **VIN đã
+    /// ghép** (NULL khi chưa ghép). MiniHTC gộp `Car_Car` + `Car_VIN` thành một bảng khoá theo
+    /// <see cref="VIN"/>, nên **mất** chỗ chứa "đã ghép VIN hay chưa" ⇒ thêm cột này để giữ đúng
+    /// ngữ nghĩa nguồn. Guard `CarCarUpdate02` chỉ kích hoạt khi cột này **có giá trị**.</summary>
+    public string? MappedVin { get; set; }
     /// <summary>🔴 #B72 — `Car_VIN.CQStartDate` / `CQExpectedDate` (mốc kiểm định CQ: ngày BẮT ĐẦU và
     /// ngày DỰ KIẾN). Báo cáo kế hoạch giao xe suy ra `RefDate` theo THU TU UU TIEN
     /// `CQStartDate` -> `CQExpectedDate` -> `DateMax` (`RptSQLQuery.cs:52142-52148`) roi phan 4 nhom

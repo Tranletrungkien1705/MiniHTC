@@ -5505,6 +5505,9 @@ app.MapGet("/api/vins/search", async (
         return new
         {
             cvVIN = c.VIN, cvModelCode = c.ModelCode, cvSpecCode = c.SpecCode, cvColorCode = c.ColorCode,
+            // #B80 §12 — bốn cột cờ/VIN-đã-ghép của `CarCarUpdate02_New20260409`.
+            ccFlagMapVIN = c.FlagMapVIN, ccFlagCarDeliveryOrder = c.FlagCarDeliveryOrder,
+            ccFlagTestCar = c.FlagTestCar, ccMappedVin = c.MappedVin,
             cvActualSpec = c.ActualSpec, cvEngineNo = c.EngineNo, cvKeyNo = c.KeyNo,
             cvStorageCodeCurrent = c.StorageCodeCurrent, cvPackingListNo = c.PackingListNo,
             cvCODate = c.CODate, ccDealerCode = c.DealerCode, ccCarCancelRemark = c.CarCancelRemark,
@@ -34560,6 +34563,90 @@ app.MapPost("/api/payments/unc-content", async (
     });
 }).RequireAuthorization();
 
+// ===== #B80 SỬA CỜ TRẠNG THÁI CỦA XE — `CarCarUpdate02_New20260409` =====
+// Trace LIVE: WS `CarCarUpdate02` (`WSHTC.asmx.cs:13561`) → **`_biz.CarCarUpdate02_New20260409`**
+//   (`DataWH/Biz.HTC.WH.My.cs:27486`). 3B đo thật, **khớp cả 2 máy**: start=27486 md5
+//   `528324fe3b941c1b7ad621d011f79fd2`.
+// 🔴 **NĂM bản trùng tên — đã TRACE, KHÔNG đoán theo hậu tố**:
+//      `…_New20260409` (`:27486`)  ← **WS gọi bản này**
+//      `…_New20230306` (`:27320`)  ← cùng file, **CHẾT**
+//      `…_New20200805` (`Delete.Biz.HTC.WH.My.cs`) · `CarCarUpdate02` + `…_New20181115`
+//      (`Delete.BizHTC.Report.cs`) ← file RÁC.
+// 🔴 **BẢN 2026 THÊM GÌ so với bản 2023** (đối chiếu `alColumnEffective` hai bên):
+//    · tham số + cột **`FlagTestCar`** (xe chạy thử) — bản 2023 **không có**;
+//    · **`LogLUDateTime` / `LogLUBy`** — bản 2023 **KHÔNG ghi dấu vết gì cả**.
+//    ⇒ Port theo bản 2026: **7 cột** trong `alColumnEffective`, không phải 4.
+// 🔴 **GUARD BẤT ĐỐI XỨNG — rất dễ port nhầm `&&` thành `||`** (`:27578-27581`):
+//      `if (VIN != DBNull.Value)`
+//         `if (strFlagMapVIN != Flag.Active && strFlagEarlyCancel != Flag.Inactive) throw …`
+//    Đọc cho đúng: chỉ **NÉM** khi **cả hai** đồng thời — `FlagMapVIN` **khác "1"** *và*
+//    `FlagEarlyCancel` **khác "0"**. Nghĩa nghiệp vụ: **xe ĐÃ ghép VIN chỉ được TẮT cờ `FlagMapVIN`
+//    khi `FlagEarlyCancel = "0"`**; nếu xe đang ở diện huỷ sớm thì không được tắt.
+//    ⚠️ Hai vế dùng **hằng NGƯỢC NHAU** (`Active` ở vế trái, `Inactive` ở vế phải) — không phải lỗi
+//      gõ. Đổi `&&` thành `||`, hoặc "thống nhất" hai hằng, đều làm sai luật.
+//    Lỗi: `CarCarUpdate02_CarIdMappedVIN_InvalidFlagMapVINorFlagEarlyCancel`, kèm `CarId` + `VINMapped`.
+// 🔴 `TUtils.CUtils.StandardizeFlag` áp cho **cả bốn cờ** (không áp cho `CarCancelRemark`).
+// 🔴 Nguồn `SaveData("Car_Car", …)` **hai lần** — `_dbMain` rồi `_dbWH` (cùng khuôn #B75/#B76/#B77).
+// ✅ `myCar_CheckCar(…, Flag.Active, Flag.Active, "", "", "", "", "", …)` — xe phải **tồn tại và đang
+//    hoạt động**; **năm** tham số kiểm còn lại truyền **chuỗi RỖNG** ⇒ **cố ý KHÔNG kiểm** trạng thái
+//    thanh toán / giao xe / cho-đổi-VIN / VIN-free / đại lý. Đừng "thêm cho chặt".
+// 📌 §12: `CarVinMaster.FlagMapVIN` · `.FlagCarDeliveryOrder` · `.FlagTestCar` · `.MappedVin` (= `Car_Car.VIN`,
+//    VIN ĐÃ GHÉP — nguồn tách `CarId` khoá xe với `VIN` đã ghép; MiniHTC gộp bảng nên phải thêm cột này).
+app.MapPost("/api/cars/{carId}/update-flags", async (
+    string carId, CarUpdateFlagsDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var id = (carId ?? "").Trim();
+    var car = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == id);
+    // `myCar_CheckCar(…, Active, Active, …)` — tồn tại VÀ đang hoạt động.
+    if (car is null) return Results.NotFound(new { error = "Common_InvalidCarId", check = new { CarId = id } });
+    if (car.FlagActive != "1")
+        return Results.BadRequest(new { error = "Common_InvalidCarIdNotActive", check = new { CarId = id } });
+
+    static string? StdFlag(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    var flagMapVIN = StdFlag(dto.FlagMapVIN);
+    var flagEarlyCancel = StdFlag(dto.FlagEarlyCancel);
+    var flagCarDeliveryOrder = StdFlag(dto.FlagCarDeliveryOrder);
+    var flagTestCar = StdFlag(dto.FlagTestCar);
+
+    // 🔴 GUARD: chỉ ném khi CẢ HAI — FlagMapVIN khác "1" VÀ FlagEarlyCancel khác "0".
+    var mappedVin = car.MappedVin;   // = `Car_Car.VIN` (VIN đã ghép), KHÁC khoá dòng.
+    if (!string.IsNullOrWhiteSpace(mappedVin))
+    {
+        if (flagMapVIN != "1" && flagEarlyCancel != "0")
+            return Results.BadRequest(new
+            {
+                error = "CarCarUpdate02_CarIdMappedVIN_InvalidFlagMapVINorFlagEarlyCancel",
+                check = new { CarId = id, VINMapped = mappedVin },
+                guardNote = "Chi NEM khi CA HAI: FlagMapVIN khac '1' VA FlagEarlyCancel khac '0'. Nghia: xe DA ghep VIN chi duoc TAT co FlagMapVIN khi FlagEarlyCancel = '0'."
+            });
+    }
+
+    // `alColumnEffective` của bản 2026: BẢY cột.
+    car.CarCancelRemark = dto.CarCancelRemark;
+    car.FlagMapVIN = flagMapVIN;
+    car.FlagEarlyCancel = flagEarlyCancel;
+    car.FlagCarDeliveryOrder = flagCarDeliveryOrder;
+    car.FlagTestCar = flagTestCar;
+    car.LogLUDateTime = DateTime.Now;
+    car.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        carId = id,
+        car.CarCancelRemark, car.FlagMapVIN, car.FlagEarlyCancel,
+        car.FlagCarDeliveryOrder, car.FlagTestCar, car.LogLUDateTime, car.LogLUBy,
+        twinNote = "NAM ban trung ten - DA TRACE: WS goi _New20260409 (:27486); _New20230306 (:27320) cung file la CHET; _New20200805 (Delete.Biz.HTC.WH.My.cs) va CarCarUpdate02/_New20181115 (Delete.BizHTC.Report.cs) la file RAC.",
+        versionDiffNote = "Ban 2026 THEM so voi ban 2023: (a) tham so + cot FlagTestCar; (b) LogLUDateTime/LogLUBy - ban 2023 KHONG ghi dau vet gi ca. Vay alColumnEffective la BAY cot, khong phai bon.",
+        guardAsymmetryNote = "GUARD BAT DOI XUNG: 'if (VIN != DBNull) { if (strFlagMapVIN != Flag.Active && strFlagEarlyCancel != Flag.Inactive) throw }'. Hai ve dung HANG NGUOC NHAU (Active o ve trai, Inactive o ve phai) - KHONG phai loi go. Doi && thanh ||, hoac 'thong nhat' hai hang, deu lam SAI luat.",
+        checkCarNote = "myCar_CheckCar(..., Flag.Active, Flag.Active, '', '', '', '', '', ...) - xe phai ton tai VA dang hoat dong; NAM tham so kiem con lai truyen CHUOI RONG => CO Y KHONG kiem trang thai thanh toan / giao xe / cho-doi-VIN / VIN-free / dai ly. Dung 'them cho chat'.",
+        stdFlagNote = "StandardizeFlag ap cho CA BON co; KHONG ap cho CarCancelRemark.",
+        twoDbNote = "Nguon SaveData('Car_Car', ...) HAI LAN - _dbMain roi _dbWH (cung khuon #B75/#B76/#B77).",
+        vinIdentityNote = "Nguon phan biet Car_Car.CarId (khoa xe) voi Car_Car.VIN (VIN da ghep). MiniHTC gop lam mot bang CarVinMaster khoa theo VIN, nen 'da ghep VIN' doc qua cot rieng - xem MappedVin."
+    });
+}).RequireAuthorization();
+
 // ===== Cập nhật giá xe thực tế theo VIN (CarActualPrice — port 1:1 FrmUpdateCar, DMSales.Foton) =====
 app.MapGet("/api/caractualprices", async (AppDbContext db, ITenantContext t, string? car) =>
 {
@@ -38936,6 +39023,7 @@ record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, st
 record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp, string? FlagDelete, string? FlagAutoPL);
 record UncContentDto(string? DealerCode, string? PaymentType, string? PaymentNo, string? GuaranteeType, List<string>? CarIds);   // #B79 - dau vao la BANG Input_CarId cua nguon
+record CarUpdateFlagsDto(string? CarCancelRemark, string? FlagMapVIN, string? FlagEarlyCancel, string? FlagCarDeliveryOrder, string? FlagTestCar);   // #B80
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
