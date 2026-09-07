@@ -6067,13 +6067,87 @@ app.MapGet("/api/seqcommon", async (AppDbContext db, ITenantContext t) =>
 // 📌 Bề mặt KPI của nguồn có **9 WebMethod**: Create · Update · Approved · Get · Get_Real · Get_WH ·
 //   Get_Real_WH · Create_AutoAllDealer · Create_AutoDealer. Lượt này port **bản ghi + Create/Get**;
 //   duyệt (`Approved`) và hai job tự sinh theo đại lý là **NỢ ĐÃ KHAI**.
-app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? dealer, string? status) =>
+// ===== 🔴 #410 BỘ LỌC TRẠNG THÁI CỦA MÀN DANH SÁCH KPI **KHÔNG BAO GIỜ CHẠY** =====
+// TRACE: `FrmReportDisplay_KPI` (`:336`, `:759`) → `DBSerReportKPI.RptKPIGet` (`:230`) → WS `RptKPIGet`
+//   (`WSCarSv.asmx.cs:13471`) → biz `RptKPIGet` (`Service.Report.cs:4391`) → **`RptKPIGetWithParams`**
+//   (`:4527` — hàm `private` chứa toàn bộ SQL; bản `RptKPIGet` chỉ là vỏ bọc gán tên hàm/mã lỗi).
+//
+// 🔴 **LỖI THẬT**: form gọi với `Constants.Flag.Active`, mà `Flag.Active = "1"` (`Const.Main.cs:28`) —
+//   một giá trị **TRẦN, không có toán tử**. Biz đưa thẳng vào `SqlUtils.BuildClause("and", "t.Status", "1", …)`.
+//   Đọc thân `BuildClause` (`CommonUtils/DataUtils.cs:1074`): nó nhận diện tiền tố `=` `!=` `>=` `<=` `>` `<`
+//   `LIKE` `NOT LIKE` `IS NULL` `IS NOT NULL` `IN` `NOT IN`. Không khớp cái nào ⇒ `nCase` giữ **0**,
+//   **không nhánh nào chạy**, hàm trả `""` ⇒ **mệnh đề lọc biến mất, không lỗi, không log**.
+//   ⇒ Màn danh sách tưởng đang lọc "chỉ báo cáo còn hiệu lực" nhưng thật ra **trả về MỌI trạng thái**,
+//     kể cả bản đã huỷ. So sánh: `RptYear`/`RptMonth` được tầng service ghép `"=" +` nên **có** chạy.
+//     Ba tham số, ba số phận khác nhau, trong cùng một lời gọi.
+//   📌 MiniHTC **giữ bộ lọc hoạt động** (mặc định) vì bỏ đi là chặn hồi quy bản port trước; muốn tái hiện
+//     đúng nguồn thì truyền `statusFilter=source`. Cả hai chiều đều báo cờ, không im lặng.
+//
+// 🔴 **HAI PHÉP NỐI ẨN, cả hai đều LOẠI BỎ DÒNG mà màn hình không hề nói**:
+//   1. `join mst_Dealer dl on t.DealerCode = dl.DealerCode **and dl.FlagDealerHTC = '1'**`
+//      ⇒ báo cáo của đại lý **ngoài mạng lưới HTC** có trong bảng nhưng **không hiện**.
+//   2. `join sys_user u on t.RptBy = u.UserCode **and t.DealerCode = u.DealerCode**` — nối TRONG.
+//      ⇒ người lập báo cáo **nghỉ việc / bị xoá / CHUYỂN SANG ĐẠI LÝ KHÁC** thì **cả dòng KPI biến mất**
+//        khỏi danh sách, dù báo cáo vẫn nằm nguyên trong CSDL và có thể đã được duyệt.
+//        Đây là mất dữ liệu **lúc ĐỌC**: không ai xoá gì cả, chỉ là không còn nhìn thấy.
+//
+// ⚠️ Thứ tự nguồn: `order by t.RptYear, CAST(t.RptMonth AS INT)` — tháng lưu **CHỮ** nhưng sắp **SỐ**
+//   (sắp theo chữ sẽ ra 1, 10, 11, 12, 2…). ⚠️ Và nếu có bản ghi `RptMonth` không phải số thì `CAST`
+//   **ném lỗi và cả truy vấn hỏng** — không phải một dòng sai, mà là màn hình trắng.
+// ⚠️ `BuildClause` gọi `.ToUpper()` trên **cả chuỗi điều kiện lẫn giá trị tham số** ⇒ so sánh luôn ở dạng
+//   HOA. Giá trị lưu dạng thường trong CSDL sẽ **không khớp**.
+// ⚠️ Mọi chỉ tiêu số đều bọc `isnull(...,0)` ⇒ NULL và 0 **trả về giống hệt nhau**. Nghĩa là khác biệt
+//   NULL-hay-0 giữa lệnh TẠO (#403) và lệnh SỬA (#404) **không nhìn thấy được qua endpoint này**;
+//   nó chỉ lộ ra ở các báo cáo tổng hợp khác. Ghi lại để khỏi tưởng #404 đã tự hết.
+// ⚠️ Tham số `strDealerCode` của tầng service là **THAM SỐ CHẾT**: thân hàm bỏ qua nó và luôn truyền
+//   `"=" + SystemGlobal.strDealerCode` (phiên đăng nhập). Hiện các nơi gọi đều truyền đúng giá trị đó
+//   nên chưa gây sai; nhưng ai đó lọc theo đại lý khác sẽ **âm thầm nhận dữ liệu đại lý mình**.
+app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? dealer, string? status,
+    long? autoId, string? year, string? month, string? statusFilter) =>
 {
     var qy = db.ReportKpis.Where(x => x.OrgId == t.OrgId);
+    if (autoId.HasValue) qy = qy.Where(x => x.Id == autoId.Value);
     if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
-    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
-    var items = await qy.OrderByDescending(x => x.DateReport).Take(500).Select(x => new
+    if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.RptYear == year!.Trim());
+    if (!string.IsNullOrWhiteSpace(month)) qy = qy.Where(x => x.RptMonth == month!.Trim());
+    // `statusFilter=source` ⇒ tái hiện đúng nguồn: BỎ QUA bộ lọc trạng thái.
+    var statusDropped = string.Equals(statusFilter, "source", StringComparison.OrdinalIgnoreCase);
+    if (!statusDropped && !string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+
+    var all = await qy.ToListAsync();
+    var beforeJoins = all.Count;
+
+    // --- Phép nối ẩn 1: chỉ đại lý thuộc mạng lưới HTC.
+    var htcDealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagDealerHTC == "1")
+        .Select(d => d.DealerCode).ToListAsync()).ToHashSet();
+    var afterDealer = all.Where(x => x.DealerCode != null && htcDealers.Contains(x.DealerCode)).ToList();
+    var droppedByDealerFlag = beforeJoins - afterDealer.Count;
+
+    // --- Phép nối ẩn 2: người lập phải còn trong sys_user VÀ vẫn thuộc đúng đại lý đó.
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.DealerCode, u.UserName }).ToListAsync();
+    var userKey = users.Where(u => u.DealerCode != null)
+        .GroupBy(u => u.UserCode + "\u0001" + u.DealerCode)
+        .ToDictionary(g => g.Key, g => g.First().UserName);
+    var kept = afterDealer.Where(x => x.RptBy != null && x.DealerCode != null
+        && userKey.ContainsKey(x.RptBy + "\u0001" + x.DealerCode)).ToList();
+    var droppedByAuthorJoin = afterDealer.Count - kept.Count;
+
+    // --- Thứ tự nguồn: năm tăng, rồi THÁNG SẮP THEO SỐ (nguồn CAST(RptMonth AS INT)).
+    var nonNumericMonths = kept.Where(x => !int.TryParse((x.RptMonth ?? "").Trim(), out _))
+        .Select(x => x.RptMonth).Distinct().ToList();
+    var items = kept
+        .OrderBy(x => x.RptYear)
+        .ThenBy(x => int.TryParse((x.RptMonth ?? "").Trim(), out var mi) ? mi : int.MaxValue)
+        .Take(500).Select(x => new
     {
+        // #410 Cột dẫn xuất do SQL nguồn tính, không lưu trong bảng.
+        UserName = x.RptBy != null && x.DealerCode != null
+            && userKey.TryGetValue(x.RptBy + "\u0001" + x.DealerCode, out var un) ? un : null,
+        RptMonthText = x.RptMonth == null ? null : "Tháng " + x.RptMonth,
+        EmployeeNumber = (x.EnginerNumber ?? 0) + (x.AdvisoryNumber ?? 0)
+                       + (x.EnginerBP ?? 0) + (x.StaffOrther ?? 0),
+        CavityNumber = (x.CavityRONumber ?? 0) + (x.CavityBPNumber ?? 0) + (x.CavityParkingNumber ?? 0),
         x.Id,
         // #403 §12 ky bao cao
         x.RptYear, x.RptMonth, x.RptBy,
@@ -6181,8 +6255,51 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
         x.WorkHourSCDQty,
         x.WorkHourSCSQty,
         x.CreatedBy, x.CreatedAt,
-    }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    }).ToList();   // #410 co: `kept` da la List trong bo nho (hai phep noi an loc trong C#)
+
+    return Results.Ok(new
+    {
+        count = items.Count,
+        matchedBeforeJoins = beforeJoins,
+        droppedByDealerFlag,
+        droppedByDealerFlagNote = droppedByDealerFlag > 0
+            ? "Bị loại vì đại lý KHÔNG có FlagDealerHTC = '1'. Nguồn nối mst_Dealer kèm điều kiện này "
+              + "nên báo cáo của đại lý ngoài mạng lưới HTC tồn tại trong bảng nhưng không bao giờ hiện."
+            : null,
+        droppedByAuthorJoin,
+        droppedByAuthorJoinNote = droppedByAuthorJoin > 0
+            ? "Bị loại vì người lập (RptBy) không còn trong sys_user, HOẶC đã chuyển sang đại lý khác "
+              + "(nguồn nối TRONG theo cả UserCode LẪN DealerCode). Báo cáo vẫn nằm trong CSDL, chỉ là "
+              + "không ai nhìn thấy nữa — mất dữ liệu lúc ĐỌC, không phải lúc ghi."
+            : null,
+        statusFilterApplied = !statusDropped,
+        statusFilterNote = statusDropped
+            ? "Đang tái hiện NGUỒN: bộ lọc trạng thái BỊ BỎ. Nguồn truyền Flag.Active = \"1\" (không có "
+              + "toán tử) vào BuildClause ⇒ nCase = 0 ⇒ mệnh đề biến mất, không lỗi, không log."
+            : "MiniHTC ĐANG lọc theo trạng thái. Nguồn thì KHÔNG (Flag.Active = \"1\" thiếu toán tử nên "
+              + "BuildClause bỏ qua) ⇒ màn WinForm trả về MỌI trạng thái. Truyền statusFilter=source để so.",
+        nonNumericMonths,
+        nonNumericMonthNote = nonNumericMonths.Count > 0
+            ? "Có RptMonth không phải số. Nguồn sắp bằng CAST(RptMonth AS INT) ⇒ những bản ghi này làm "
+              + "CẢ TRUY VẤN ném lỗi (màn hình trắng), không phải sai một dòng. MiniHTC đẩy chúng xuống cuối."
+            : null,
+        derivedComputed = new[] { "EmployeeNumber", "CavityNumber", "RptMonthText", "UserName" },
+        derivedNotComputable = new[]
+        {
+            "CountCarGJ", "CountCarBP", "CountCarService(SQL)", "AmountGJ", "AmountBP",
+            "AmountService", "AmountPart", "AmountWork", "HourWork",
+        },
+        derivedNotComputableNote = "Nguồn còn tính 9 cột tổng nữa, nhưng các cột NGUỒN của chúng "
+            + "(CountPaymentGJ/CountWarrantyGJ/CountLocalGJ/CountPaymentBP/…, AmountGJ*/AmountBP*/"
+            + "AmountPart*/AmountService*/Hour*) CHƯA có trong entity ReportKpi ⇒ không tính được. "
+            + "Lưu ý CountCarService: nguồn DẪN XUẤT bằng phép cộng, MiniHTC lại LƯU thành cột — hai "
+            + "nguồn sự thật cho cùng một con số.",
+        nullFlattenedNote = "Nguồn bọc isnull(...,0) mọi chỉ tiêu ⇒ NULL và 0 trả về GIỐNG HỆT NHAU. "
+            + "Khác biệt NULL-hay-0 giữa lệnh TẠO (#403) và SỬA (#404) KHÔNG nhìn thấy qua endpoint này.",
+        deadParamNote = "Tầng service có tham số strDealerCode nhưng BỎ QUA nó, luôn dùng "
+            + "SystemGlobal.strDealerCode của phiên đăng nhập — tham số chết.",
+        items,
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #330 DUYỆT BÁO CÁO KPI (`Report_KPIApproved`, `zzzzCode.cs:1635`) =====
