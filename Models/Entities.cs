@@ -2532,7 +2532,10 @@ public sealed class Reception
     public string? CusAddress { get; set; }
     public string? CusPhoneNo { get; set; }
     public string? CusRequest { get; set; }
-    public string? RONO { get; set; }                  // RO liên kết (nếu đã lập lệnh)
+    public string? RONO { get; set; }
+    /// <summary>#506 §12 `DealerCode` — nguồn lọc phiếu tiếp nhận theo đại lý
+    /// (`SqlTemplate_Ser_ReceptionF.zzB_tbl_Ser_ReceptionF_Filter_zzE(strDealerCode, …)`).</summary>
+    public string? DealerCode { get; set; }                  // RO liên kết (nếu đã lập lệnh)
     public string Status { get; set; } = "Pending";    // Pending(Tiếp nhận) → Approved(Giao xe)
 
     /// <summary>

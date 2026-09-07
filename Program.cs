@@ -45925,6 +45925,109 @@ app.MapGet("/api/reports/part-min-quantity", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #506 TỔNG HỢP SỐ PHIẾU TIẾP NHẬN THEO KỲ (máy tính bảng) =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:26 Rpt_Ser_ReceptionF_SumQtyRecepForTab` → thân thật
+//   `Rpt_Ser_ReceptionF_SumQtyRecepX` (`:304`). Trả nợ #504.
+//
+// 🔴 **THIẾU HẲN NHÁNH `YEAR`**: khối dựng "rổ" thời gian chỉ có ba nhánh —
+//   `Hour` → `zzB_Build_HourInDay_zzE` · `DAY` → `zzB_Build_Day_zzE` · `Month` → `zzB_Build_Month_zzE`.
+//   Hằng `TConst.ReportType.Year = "YEAR"` **có tồn tại** nhưng **không có nhánh nào bắt** ⇒ chọn NĂM thì
+//   bảng rổ **rỗng**, và câu cuối lấy `from #input_tbl_ReportType` ⇒ **báo cáo rỗng, KHÔNG báo lỗi**.
+//   ⇒ Đây là "0 im lặng" thứ ba trong cụm này (sau #472 giá vốn, #504 màn kho luôn chạy nhánh giờ).
+//   Port **chặn thẳng** YEAR + nêu cờ `yearBranchMissingInSource` — lệch CỐ Ý, không tái hiện im lặng.
+// ⚠️ Nhánh `Hour` chỉ dùng **ngày FROM** (`StandardizeDate(strReportDTimeFrom)`) ⇒ chọn khoảng nhiều ngày
+//   vẫn chỉ dựng 24 rổ giờ **của ngày đầu**; các ngày sau **không có rổ nào** để rơi vào.
+//
+// 🔴 `inner join #input_tbl_ReportType f on (1=1)` — **TÍCH DESCARTES trá hình**: mỗi phiếu nhân với **mọi
+//   rổ**, rồi lọc bằng `CreatedDateTime` trong [`DateTimeStart`, `DateTimeEnd`]. Đúng ý đồ, nhưng nếu hai rổ
+//   **chồng lấn** thì **một phiếu bị đếm ở cả hai** — bảng rổ do code dựng nên hiện không chồng, nhưng đây là
+//   phụ thuộc ngầm; trả cờ `bucketsMustNotOverlap`.
+// ⚪ `left join #tbl_Return` ở câu cuối đi từ **bảng rổ** ⇒ rổ không có phiếu **vẫn ra dòng với `Qty = 0`**
+//   (đủ 24 giờ / đủ ngày). Kiểm tra âm tính — LEFT này **cố ý và còn sống**.
+// ⚠️ So mốc bằng **CHUỖI**: `convert(nvarchar(20), srf.CreatedDateTime, 20) >= f.DateTimeStart`.
+//   Định dạng 20 là `yyyy-MM-dd HH:mm:ss` nên so chuỗi **tương đương so ngày** (kiểm tra âm tính),
+//   nhưng mất index. Guard `strReportDateFrom.CompareTo(strReportDateTo) > 0` cũng **so CHUỖI**.
+// ⚠️ Cột `DealerCode` bị **comment trong GROUP BY** rồi gán lại bằng `'@strDealerCode'` (bake) ở câu cuối
+//   ⇒ số liệu **gộp qua mọi đại lý** khớp bộ lọc, rồi dán nhãn mã đại lý đầu vào.
+app.MapGet("/api/reports/reception-qty-by-period", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? reportType, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_ReceptionF_SumQtyRecep_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(reportType))
+        return Results.BadRequest(new { error = "Rpt_Ser_ReceptionF_SumQtyRecep_InvalidReportType" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_ReceptionF_SumQtyRecep_DateFromAfterDTimeTo" });
+
+    var dealer = dealerCode!.Trim();
+    var kind = reportType!.Trim().ToUpperInvariant();      // nguồn so KHÔNG phân biệt hoa thường
+    if (kind == "YEAR")
+        return Results.BadRequest(new
+        {
+            error = "reportType = YEAR không được nguồn dựng rổ.",
+            yearBranchMissingInSource = true,
+            note = "Hằng ReportType.Year tồn tại nhưng không có nhánh nào bắt ⇒ nguồn trả RỖNG mà không báo lỗi.",
+        });
+    if (kind != "HOUR" && kind != "DAY" && kind != "MONTH")
+        return Results.BadRequest(new { error = "reportType chỉ nhận HOUR, DAY hoặc MONTH." });
+
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    // Dựng "rổ" thời gian đúng ba nhánh của nguồn.
+    var buckets = new List<(string MixCode, string MixName, DateTime Start, DateTime End)>();
+    if (kind == "HOUR")
+    {
+        // ⚠️ Nguồn chỉ dùng NGÀY FROM — giữ đúng.
+        for (var h = 0; h < 24; h++)
+        {
+            var st = from.AddHours(h);
+            buckets.Add((h.ToString("00"), h.ToString("00") + " giờ", st, st.AddHours(1).AddSeconds(-1)));
+        }
+    }
+    else if (kind == "DAY")
+    {
+        for (var d = from; d <= toDate.Value.Date; d = d.AddDays(1))
+            buckets.Add((d.ToString("yyyy-MM-dd"), d.ToString("dd/MM/yyyy"), d, d.AddDays(1).AddSeconds(-1)));
+    }
+    else
+    {
+        var m = new DateTime(from.Year, from.Month, 1);
+        var mEnd = new DateTime(toDate.Value.Year, toDate.Value.Month, 1);
+        for (; m <= mEnd; m = m.AddMonths(1))
+            buckets.Add((m.ToString("yyyy-MM"), m.ToString("MM/yyyy"), m, m.AddMonths(1).AddSeconds(-1)));
+    }
+
+    var recs = await db.Receptions.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.CreatedAt >= from && x.CreatedAt <= to).ToListAsync();
+
+    // Tích Descartes có kiểm soát: mỗi phiếu rơi vào MỌI rổ chứa nó (đúng nguồn).
+    var items = buckets.Select(b => new
+    {
+        b.MixCode, DealerCode = dealer, ReportType = kind, b.MixName,
+        DateTimeStart = b.Start, DateTimeEnd = b.End,
+        Qty = (decimal)recs.Count(r => r.CreatedAt >= b.Start && r.CreatedAt <= b.End),
+    }).ToList();
+
+    // Một phiếu rơi vào >1 rổ ⇒ rổ đang chồng lấn (nguồn không kiểm).
+    var doubleCounted = recs.Count(r => buckets.Count(b => r.CreatedAt >= b.Start && r.CreatedAt <= b.End) > 1);
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = kind,
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        bucketCount = buckets.Count, receptionCount = recs.Count,
+        count = items.Count, items,
+        emptyBucketsKeptWithZero = true,
+        bucketsMustNotOverlap = true, doubleCounted,
+        hourBranchUsesFromDateOnly = kind == "HOUR",
+        yearBranchMissingInSource = true,
+        dateComparedAsStringInSource = true,
+        dealerGroupedOutThenRelabelled = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
