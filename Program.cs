@@ -15171,6 +15171,67 @@ app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #370 §  PHIẾU XUẤT ĐẠI DIỆN cho một LỆNH XUẤT (`#tbl_Ser_Inv_StockOutOrderStockOut`) =====
+// Nguồn: `BizCarSv.Inventory.Report.cs:8531-8560` (và 3 cặp lặp lại ở 9055/9068, 9617/9630).
+//
+// Một lệnh xuất có thể ứng với **NHIỀU phiếu xuất** (bảng nối nhiều-nhiều, #294). Báo cáo cần đúng
+// MỘT phiếu để hiển thị, nên nguồn lấy:
+//   `select top 1 f.StockOutID  … where f.Status = '3' order by f.StockOutNo asc`
+//   `select top 1 f.StockOutTime … where f.Status = '3' order by f.StockOutNo asc`
+//
+// 🔴 **LỆCH TRỤC**: trục sắp xếp là **SỐ PHIẾU**, không phải THỜI GIAN — và là `asc` nên lấy phiếu
+//   **ĐẦU TIÊN theo số**, không phải phiếu mới nhất. ⇒ Ô `StockOutTime` trả về là giờ của **phiếu có
+//   số nhỏ nhất**, KHÔNG phải lần xuất sớm nhất. Hai thứ chỉ trùng nhau khi số phiếu tăng đúng theo
+//   thời gian; khác dải số / khác quầy / phiếu lập bù là lệch ngay. Đây chính là lệ đã ghi ở #307
+//   (`StockInDateLastest` sắp theo `CreatedDate` nhưng lấy `StockInDate`).
+// ⚠️ Hai `top 1` tuy độc lập nhưng **cùng một** `order by` ⇒ chúng luôn chỉ về CÙNG một phiếu.
+//   Khác hẳn ca #368 (ba `top 1` KHÔNG `order by`, có thể ra ba dòng khác nhau). Đừng gộp hai lệ.
+// ⚠️ Chỉ xét phiếu `Status = 3` (Kết thúc). Lệnh chỉ có phiếu đang dở ⇒ **không có phiếu đại diện**,
+//   và nguồn để trống chứ không báo lỗi.
+app.MapGet("/api/stockoutorders/{id}/issued-slip", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var o = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (o is null) return Results.NotFound(new { id });
+
+    // Mọi phiếu xuất nối với lệnh này qua bảng nối nhiều-nhiều (#294).
+    var links = await db.SerStockOutOrderStockOuts
+        .Where(x => x.OrgId == t.OrgId && x.StockOutOrderId == id)
+        .Select(x => x.StockOutId).ToListAsync();
+
+    var slips = await db.PartStockOuts
+        .Where(s => s.OrgId == t.OrgId && links.Contains(s.Id))
+        .Select(s => new { s.Id, s.StockOutNo, s.StockOutDateTime, s.Status })
+        .ToListAsync();
+
+    const string FinishStatus = "3";   // "Kết thúc"
+    var finished = slips.Where(s => s.Status == FinishStatus).ToList();
+
+    // ĐÚNG NGUỒN: sắp theo SỐ PHIẾU tăng dần rồi lấy phiếu đầu tiên.
+    var picked = finished.OrderBy(s => s.StockOutNo, StringComparer.Ordinal).FirstOrDefault();
+
+    // Đối chứng (KHÔNG thay nguồn): phiếu sớm nhất theo THỜI GIAN.
+    var earliestByTime = finished.Where(s => s.StockOutDateTime != null)
+        .OrderBy(s => s.StockOutDateTime).FirstOrDefault();
+    var axisDisagrees = picked != null && earliestByTime != null && picked.Id != earliestByTime.Id;
+
+    return Results.Ok(new
+    {
+        stockOutOrderId = id, o.OrderNo,
+        linkedSlipCount = slips.Count, finishedSlipCount = finished.Count,
+        stockOutId = picked?.Id, stockOutNo = picked?.StockOutNo,
+        stockOutTime = picked?.StockOutDateTime,
+        // Không có phiếu nào Kết thúc ⇒ nguồn để TRỐNG, không báo lỗi.
+        noFinishedSlip = picked is null,
+        axisNote = "Nguồn chọn phiếu theo SỐ PHIẾU tăng dần (`order by StockOutNo asc`), KHÔNG theo thời gian.",
+        axisDisagrees,
+        earliestByTimeNo = axisDisagrees ? earliestByTime!.StockOutNo : null,
+        earliestByTimeAt = axisDisagrees ? earliestByTime!.StockOutDateTime : null,
+        axisDisagreeNote = axisDisagrees
+            ? "Phiếu có SỐ nhỏ nhất KHÁC phiếu SỚM NHẤT theo thời gian — ô stockOutTime không phải lần xuất đầu tiên."
+            : null,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/stockoutorders/{id}", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);

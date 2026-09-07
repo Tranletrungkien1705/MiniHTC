@@ -18,7 +18,7 @@ function readText(p) {
 }
 const bare = c => (c || '').split('.').pop().toLowerCase();
 
-let nMismatch = 0, nNoOrder = 0, nOk = 0, nGuard = 0;
+let nMismatch = 0, nNoOrder = 0, nOk = 0, nGuard = 0, nInSel = 0;   // #370
 for (const f of process.argv.slice(2)) {
     const raw = readText(f).split(/\r?\n/);
     // bo phan sau '--' (bai hoc #305: dong comment la luat DA CHET)
@@ -35,6 +35,25 @@ for (const f of process.argv.slice(2)) {
         let sel = (/\bselect\s+top\s+1\s+(.+)$/i.exec(lines[i]) || [])[1] || '';
         let j = i;
         while (!sel.trim() && j + 1 < lines.length && j - i < 3) { j++; sel = lines[j]; }
+        // #370: TRUOC DAY chi lay COT DAU TIEN cua danh sach select roi so voi cot order.
+        //   => moi cau `select top 1 a, b, c ... order by c` deu bi bao "LECH TRUC" oan.
+        //   Vi du that: WarrantyReport.cs:7155 select ROID,RONo,Km,ActualDeliveryDate
+        //   order by ActualDeliveryDate desc — dung nghia "RO gan nhat", HOAN TOAN khong lech.
+        //   Nay gom CA danh sach select (tu sau `top 1` den `from`) lam tap hop.
+        const selCols = new Set();
+        {
+            let buf = sel;
+            for (let z = j; z < Math.min(j + 40, lines.length); z++) {
+                if (z > j) buf += " , " + lines[z];
+                if (/\bfrom\b/i.test(lines[z])) break;
+            }
+            buf = buf.replace(/\bfrom\b[\s\S]*$/i, "");
+            for (const piece of buf.split(",")) {
+                for (const tok of piece.match(/[A-Za-z0-9_]+\.[A-Za-z0-9_]+|[A-Za-z0-9_]+/g) || []) {
+                    selCols.add(bare(tok));
+                }
+            }
+        }
         sel = sel.trim().replace(/,.*$/, '');
         const selCol = (/([A-Za-z0-9_]+\.[A-Za-z0-9_]+|[A-Za-z0-9_]+)/.exec(sel) || [])[1];
         if (!selCol) continue;
@@ -95,9 +114,13 @@ for (const f of process.argv.slice(2)) {
             continue;
         }
         if (bare(selCol) === bare(ordCol)) { nOk++; continue; }
+        // #370: cot `order by` van NAM TRONG danh sach select, chi khong dung dau
+        //   => "top 1 theo thu tu do" hoan toan tat dinh, KHONG phai lech truc.
+        if (selCols.has(bare(ordCol))) { nInSel++; continue; }
         nMismatch++;
         console.log('🔴 LECH TRUC  ' + where + '   select ' + selCol + '   |   order by ' + ordCol);
     }
 }
 console.log('\nTONG: ' + nMismatch + ' LECH, ' + nNoOrder + ' khong-order-by DANG LO, '
-    + nGuard + ' guard (vo hai, da loai), ' + nOk + ' khop truc');
+    + nGuard + ' guard (vo hai, da loai), ' + nOk + ' khop truc, '
+    + nInSel + ' order-nam-trong-select (vo hai, #370)');
