@@ -3337,6 +3337,94 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // 🔴 Chuỗi join của (1): `Sto_CBReq` ⟵ `Sto_CBReqDetail` ⟵ `Car_VIN` ⟵ `Car_Car`, **toàn `left join`**
 //    ⇒ yêu cầu **chưa có dòng nào vẫn ra** (khác các màn dùng `inner join Car_VIN` như #B45/#B16).
 // 🔴 `@strBUPatternOfUser` khai báo nhưng **KHÔNG DÙNG** — **ca thứ BẢY**.
+
+// ===== #B54 BÁO CÁO NHẬP–XUẤT–TỒN **THẾ CHẤP** TRONG KỲ — `Rpt_NhapXuatTonTrongKy_New20190213` =====
+// (`FrmNhapXuatTon`.) Trace LIVE: `ReportService.cs:4668` → WS `Rpt_NhapXuatTonTrongKy`
+//   (`WSHTC.asmx.cs:45014`) → **`_biz.Rpt_NhapXuatTonTrongKy_New20190213`** (`BizHTC.Report.cs:21404`);
+//   SQL ở `TERP.BizHTC.SQLQuery/RptSQLQuery.cs:10600`.
+//   ⚠️ Bản chết: `BizHTC.Report - Copy.cs:22882` (file **ngoài csproj**), `Delete.BizHTC.Report.cs:223341`
+//      và `:223730`. Bản `_WH_New2019213` (`Biz.HTC.WH.cs:148888`) — chú ý **thiếu số 0**: `2019213`.
+// 🔴 **KHÔNG PHẢI KHO VẬT LÝ**: bốn khối đều lọc trên **thế chấp ngân hàng** của `Car_VIN`, không phải
+//    nhập/xuất kho xe. Đặt tên endpoint theo nghĩa thật để lượt sau không nhầm với tồn kho.
+// 🔴 Điều kiện chung của **cả bốn** khối: `MortageBankCode is not null AND <> ''` **và**
+//    `DocumentsStatus = 'A'`. Bốn khối khác nhau ở mốc ngày:
+//    · **Đầu kỳ**: `MortageStartDate < @From` ∧ (`MortageEndDate > @From` ∨ null ∨ `''`)
+//    · **Tăng**  : `MortageStartDate` ∈ [`@From`, `@To`]
+//    · **Giảm**  : `MortageStartDate` không rỗng ∧ `MortageEndDate` ∈ [`@From`, `@To`]
+//    · **Cuối kỳ**: `MortageStartDate` không rỗng ∧ (`MortageEndDate is null` ∨ `''`)
+//      🔴 **Cuối kỳ KHÔNG dùng `@To`** — nó là "còn thế chấp tính đến HIỆN TẠI", không phải tại cuối kỳ.
+//      Đây là hành vi thật của nguồn (`:10667-10678`); port giữ nguyên và nêu ở `sourceQuirk`, **không tự sửa**.
+// 🔴 Bốn khối `union all` thành một bảng với **4 cột cờ 1/0** (`DauKy`,`Tang`,`Giam`,`CuoiKy`) ⇒ **một VIN
+//    có thể xuất hiện ở NHIỀU nhóm** (mỗi nhóm một dòng), không phải phân loại loại trừ.
+// 🔴 Giá lấy từ `Mst_CarPrice` theo `max(EffectiveDate)` gom theo (Model, Spec, Color) — **bảng giá theo
+//    thời điểm**, không phải giá hiện hành duy nhất.
+app.MapGet("/api/reports/mortage-in-out-stock", async (
+    AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? getDetail) =>
+{
+    if (fromDate is null || toDate is null)
+        return Results.BadRequest(new { error = "Cần khoảng thời gian (fromDate, toDate)." });
+    var from = fromDate.Value; var to = toDate.Value;
+
+    var cars = await db.CarVinMasters
+        .Where(c => c.OrgId == t.OrgId
+                    && c.MortageBankCode != null && c.MortageBankCode != ""
+                    && c.DocumentsStatus == "A")
+        .ToListAsync();
+
+    static bool HasStart(CarVinMaster c) => c.MortageStartDate is not null;
+    var dauKy = cars.Where(c => c.MortageStartDate < from
+                                && (c.MortageEndDate == null || c.MortageEndDate > from)).ToList();
+    var tang = cars.Where(c => c.MortageStartDate >= from && c.MortageStartDate <= to).ToList();
+    var giam = cars.Where(c => HasStart(c) && c.MortageEndDate >= from && c.MortageEndDate <= to).ToList();
+    var cuoiKy = cars.Where(c => HasStart(c) && c.MortageEndDate == null).ToList();
+
+    // `Mst_CarPrice` theo `max(EffectiveDate)` gom (Model, Spec, Color).
+    var prices = await db.CarPrices.Where(p => p.OrgId == t.OrgId).ToListAsync();
+    var lastPrice = prices
+        .GroupBy(p => new { p.ModelCode, Spec = p.SpecCode ?? "", Color = p.ColorCode ?? "" })
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.EffectiveDate).First().Price);
+    decimal PriceOf(CarVinMaster c)
+    {
+        var k = new { ModelCode = c.ModelCode ?? "", Spec = c.SpecCode ?? "", Color = c.ColorCode ?? "" };
+        return lastPrice.TryGetValue(k, out var p) ? p : 0m;
+    }
+
+    // `union all` với 4 cột cờ — một VIN có thể nằm ở nhiều nhóm.
+    var rows = new List<object>();
+    void Add(List<CarVinMaster> src, string flag)
+    {
+        foreach (var c in src)
+            rows.Add(new
+            {
+                dauKy = flag == "DauKy" ? 1 : 0, tang = flag == "Tang" ? 1 : 0,
+                giam = flag == "Giam" ? 1 : 0, cuoiKy = flag == "CuoiKy" ? 1 : 0,
+                c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.DealerCode,
+                c.MortageBankCode, c.MortageStartDate, c.MortageEndDate, c.DocumentsStatus,
+                price = PriceOf(c)
+            });
+    }
+    Add(dauKy, "DauKy"); Add(tang, "Tang"); Add(giam, "Giam"); Add(cuoiKy, "CuoiKy");
+
+    var summary = new
+    {
+        dauKy = new { qty = dauKy.Count, amount = dauKy.Sum(PriceOf) },
+        tang = new { qty = tang.Count, amount = tang.Sum(PriceOf) },
+        giam = new { qty = giam.Count, amount = giam.Sum(PriceOf) },
+        cuoiKy = new { qty = cuoiKy.Count, amount = cuoiKy.Sum(PriceOf) }
+    };
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, summary,
+        detail = getDetail == "1" ? rows : null,
+        detailIncluded = getDetail == "1",     // nguồn có cờ `strIsGetDetail`, chỉ trả bảng chi tiết khi bật
+        scopeNote = "BAO CAO THE CHAP NGAN HANG (Car_VIN.MortageBankCode), KHONG phai nhap-xuat-ton kho vat ly.",
+        commonFilter = "MortageBankCode is not null AND <> '' AND DocumentsStatus = 'A' (ca 4 khoi).",
+        sourceQuirk = "Khoi CUOI KY KHONG dung @strTDate_To: dieu kien chi la MortageEndDate is null/'' => 'con the chap tinh den HIEN TAI', khong phai tai cuoi ky. Day la hanh vi that cua nguon (RptSQLQuery.cs:10667-10678) - port giu nguyen, khong tu sua.",
+        overlapNote = "4 khoi union all voi 4 cot co 1/0 => MOT VIN co the xuat hien o NHIEU nhom, khong phai phan loai loai tru.",
+        priceNote = "Gia lay tu Mst_CarPrice theo max(EffectiveDate) gom (Model, Spec, Color) - bang gia THEO THOI DIEM."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/stocbreqs/search", async (
     AppDbContext db, ITenantContext t,
     string? cbReqNo, string? cbReqStatus, DateTime? createdFrom, DateTime? createdTo,

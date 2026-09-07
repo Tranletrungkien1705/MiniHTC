@@ -2282,6 +2282,9 @@ public static class Seeder
                 // #B51 - Car_VIN.FlagisHTC + VAT_TCGInvoice.FlagisHTC (bo loc ap tren CA HAI bang)
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagisHTC\" text NULL",
                 "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"FlagisHTC\" text NULL",
+                // #B54 - Car_VIN.MortageBankCode / DocumentsStatus (dieu kien cua ca 4 khoi bao cao the chap)
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MortageBankCode\" text NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DocumentsStatus\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

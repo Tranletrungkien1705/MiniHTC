@@ -10369,6 +10369,14 @@ public sealed class CarVinMaster
     /// **`Car_Car`**, KHÁC hẳn `TInvoicePrice` trên bảng DÒNG hoá đơn (`VatHtcInvoiceDetail` /
     /// `VatTcgInvoiceDetail`) — trùng tên nhưng khác bảng, đừng dùng lẫn.</summary>
     public decimal? TInvoicePrice { get; set; }
+    /// <summary>🔴 #B54 — `Car_VIN.MortageBankCode`: ngân hàng đang nhận thế chấp xe. Là điều kiện
+    /// **ĐẦU TIÊN của cả bốn khối** báo cáo Nhập–Xuất–Tồn thế chấp (`mySql_Rpt_NhapXuatTonTrongKy_New20190213`,
+    /// `RptSQLQuery.cs:10600`): `MortageBankCode is not null AND <> ''`. Thiếu cột ⇒ báo cáo không tồn tại được.
+    /// ⚠️ Cột cùng tên đã có trên thực thể khác (`:2780`, `:2849`) — đây là cột trên **`Car_VIN`**, khác bảng.</summary>
+    public string? MortageBankCode { get; set; }
+    /// <summary>🔴 #B54 — `Car_VIN.DocumentsStatus`: trạng thái GIẤY TỜ của xe. Cả bốn khối đều đòi
+    /// **`= 'A'`**. Đây là trục riêng, không phải `FlagActive` hay `DeliveryStatus`.</summary>
+    public string? DocumentsStatus { get; set; }
     /// <summary>🔴 #B51 — `Car_VIN.FlagisHTC` (phép nhận HTC / đại lý). Bộ lọc của
     /// `FrmSearchVinForTCGInvoice` áp cờ này trên **CẢ HAI** bảng: `Car_VIN` **và** `VAT_TCGInvoice`
     /// (`SalesService.cs:15553-15554`).</summary>
