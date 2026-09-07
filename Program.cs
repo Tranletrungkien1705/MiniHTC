@@ -3358,6 +3358,93 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    có thể xuất hiện ở NHIỀU nhóm** (mỗi nhóm một dòng), không phải phân loại loại trừ.
 // 🔴 Giá lấy từ `Mst_CarPrice` theo `max(EffectiveDate)` gom theo (Model, Spec, Color) — **bảng giá theo
 //    thời điểm**, không phải giá hiện hành duy nhất.
+
+// ===== #B55 BÁO CÁO XE ĐANG TRÊN ĐƯỜNG — `RptStatistic_HTCStockOutOnWay_New20181115` =====
+// (`FrmPivotCarOnWay`.) Trace LIVE: `ReportService.ReportCarOnWay` (`:627`) → WS
+//   `RptStatistic_HTCStockOutOnWay` (`WSHTC.asmx.cs:28350`) →
+//   **`_biz.RptStatistic_HTCStockOutOnWay_New20181115`** (`BizHTC.Report.cs:6570`).
+//   ⚠️ Bản trùng tên trong `BizHTC.Report - Copy.cs:6915` — file **ngoài `TERP.BizHTC.csproj`** (đã kiểm).
+// 🔴 **BA điều kiện lõi** (`:6626-6628`), chú thích nguyên văn của nguồn:
+//    · `cdod.ConfirmStatus in ('A','F')` — *"Lệnh Xuất Xe được Phê duyệt trở lên và còn Active"*
+//    · `cdod.DeliveryOutDate is not null and cdod.DeliveryOutDate <= @strTDate` — *"Xe đã Xuất kho tính tới TDate"*
+//    · `cdod.DeliveryEndDate is null` — *"Xe Chưa tới Đại lý"*
+//    ⇒ "đang trên đường" ở báo cáo này định nghĩa theo **lệnh xuất xe**, KHÁC cột `FlagIsOnWay` của #B52
+//    vốn xét theo **biên bản giao** (`FDlvMnStatus='A'` + `TDlvMnStatus='P'`). Hai định nghĩa song song
+//    trong cùng hệ — đừng dùng lẫn.
+// ✅ **`@strBUPatternOfUser` Ở ĐÂY DÙNG THẬT**: `inner join Mst_Dealer md on cdo.DealerCode = md.DealerCode
+//    and (md.BUCode like @strBUPatternOfUser)` kèm chú thích *"Must inner join to filter AbilityOfUser"*
+//    (`:6621-6622`) — **chú thích khớp code**. Đây là bằng chứng các ca #B45–#B53 (khai báo rồi bỏ quên,
+//    hoặc dùng `left join`) là **LỆCH so với chuẩn của chính hệ nguồn**, không phải quy ước.
+//    ⇒ Ở endpoint này phạm vi BU **lọc thật**, không cần cờ bật/tắt.
+// 🔴 Chuỗi làm giàu: `Sto_TranspReqDtl` join theo **CẶP** (`CarId`, `DeliveryOrderNo = RefOrdNo`) và chỉ
+//    lấy YCVT `TranspReqDtlStatus in ('A','F')` — join thiếu `RefOrdNo` sẽ dính YCVT của chứng từ khác.
+app.MapGet("/api/reports/car-on-way", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern) =>
+{
+    var asOf = tDate ?? DateTime.Now;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `inner join Mst_Dealer … and (md.BUCode like @strBUPatternOfUser)` — INNER JOIN thật, lọc thật.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var scope = dealers
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    var rows = await (from d in db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId)
+                      join h in db.DeliveryOrders.Where(x => x.OrgId == t.OrgId) on d.DoId equals h.Id
+                      select new
+                      {
+                          d.Vin, d.CarId, d.ModelCode, d.ColorCode, d.StorageCode,
+                          d.ConfirmStatus, d.DeliveryOutDate, d.DeliveryEndDate, d.DeliveryStartDate,
+                          DoNo = h.DoNo, h.DealerCode, h.CreatedAt
+                      }).ToListAsync();
+
+    var beforeScope = rows.Count;
+    rows = rows.Where(x => x.DealerCode != null && scope.Contains(x.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - rows.Count;
+
+    // BA điều kiện lõi.
+    rows = rows.Where(x => (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                           && x.DeliveryOutDate is not null && x.DeliveryOutDate <= asOf
+                           && x.DeliveryEndDate is null).ToList();
+
+    // `Sto_TranspReqDtl` join theo CẶP (CarId, RefOrdNo = DeliveryOrderNo), chỉ 'A'/'F'.
+    var carIds = rows.Select(x => x.CarId ?? x.Vin).Distinct().ToList();
+    var trDtls = await (from d in db.TransportReqCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId)
+                            && (x.TransportReqDtlStatus == "A" || x.TransportReqDtlStatus == "F"))
+                        join h in db.TransportRequests.Where(x => x.OrgId == t.OrgId) on d.ReqId equals h.Id
+                        select new { d.CarId, RefOrdNo = d.DoNo, h.TranspReqNo, h.TransporterCode, TranspReqDtlStatus = d.TransportReqDtlStatus }).ToListAsync();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).Select(c => new { c.VIN, c.SpecCode, c.LoaiThung }).ToListAsync();
+
+    var items = rows.Select(x =>
+    {
+        var key = x.CarId ?? x.Vin;
+        // 🔴 Khớp CẶP: cùng CarId **và** RefOrdNo = số lệnh xuất — thiếu vế sau là dính YCVT chứng từ khác.
+        var tr = trDtls.FirstOrDefault(z => z.CarId == key && z.RefOrdNo == x.DoNo);
+        var cv = cars.FirstOrDefault(c => c.VIN == x.Vin);
+        return new
+        {
+            cdoDeliveryOrderNo = x.DoNo, cdoDealerCode = x.DealerCode, cdoCreatedDate = x.CreatedAt,
+            cdodCarId = key, cvVIN = x.Vin, cvModelCode = x.ModelCode, cvSpecCode = cv?.SpecCode,
+            cvColorCode = x.ColorCode, cvLoaiThung = cv?.LoaiThung, cdodStorageCode = x.StorageCode,
+            cdodConfirmStatus = x.ConfirmStatus, cdodDeliveryOutDate = x.DeliveryOutDate,
+            cdodDeliveryStartDate = x.DeliveryStartDate, cdodDeliveryEndDate = x.DeliveryEndDate,
+            ctrTranspReqNo = tr?.TranspReqNo, ctrTransporterCode = tr?.TransporterCode,
+            ctrdTranspReqDtlStatus = tr?.TranspReqDtlStatus,
+            daysOnWay = x.DeliveryOutDate is null ? (int?)null : (int)(asOf.Date - x.DeliveryOutDate.Value.Date).TotalDays
+        };
+    }).OrderBy(x => x.cdoDealerCode).ThenBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf, count = items.Count, items, droppedByDealerJoin,
+        coreRule = "ConfirmStatus in ('A','F') VA DeliveryOutDate is not null & <= @strTDate VA DeliveryEndDate is null (chua toi dai ly).",
+        onWayDefinitionNote = "Dinh nghia 'dang tren duong' o day theo LENH XUAT XE, KHAC cot FlagIsOnWay cua #B52 von xet theo BIEN BAN GIAO (FDlvMnStatus='A' + TDlvMnStatus='P'). Hai dinh nghia song song trong cung he - dung dung lan.",
+        rbacNote = "@strBUPatternOfUser o ham nay DUNG THAT (inner join Mst_Dealer) - chu thich khop code. Bang chung cac ca #B45-#B53 la LECH so voi chuan cua chinh he nguon.",
+        joinNote = "Sto_TranspReqDtl khop CAP (CarId, RefOrdNo = DeliveryOrderNo) + TranspReqDtlStatus in ('A','F')."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/mortage-in-out-stock", async (
     AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? getDetail) =>
 {
