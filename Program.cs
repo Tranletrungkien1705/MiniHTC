@@ -24432,12 +24432,55 @@ app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantCon
 }).RequireAuthorization();
 
 // ===== Lịch hẹn dịch vụ + bảng khoang/bay (ServiceAppointment — port 1:1 FrmAppList + FrmShowCavityStatus, TCMotor) =====
-app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status, DateTime? date) =>
+// ===== 🔴 #474 BỘ LỌC THẬT CỦA MÀN DANH SÁCH LỊCH HẸN — `Ser_App_GetStatusList01_New20201230` =====
+// #285 mới port **bảng nhãn trạng thái**; bản thân **bộ lọc** thì endpoint này còn thiếu 4/6.
+// Nguồn (`ZTemp.cs:26252`) dùng **BA bộ dựng mệnh đề khác quy ước nhau trong CÙNG một truy vấn**:
+//   · `BuildClauseConditionSingle("and","car.PlateNo","like","@strPlateNoParttern",…)` — **tự cấp toán tử**,
+//     giá trị bind NGUYÊN VĂN ⇒ người gọi phải tự thêm `%`.
+//   · `BuildClause("and","cus.CusName", …)` · `"ro.AppDateTimeFrom"` · `"ro.Creator"` — **ĐÒI toán tử ở đầu
+//     chuỗi**; thiếu toán tử là **bỏ im lặng** (luật #410).
+//   · `BuildClauseConditionList("and","ro.AppTypeCode", strAppTypeCodeList, "|")` — **KHÔNG đọc toán tử**,
+//     mọi token thành giá trị IN. Truyền `"= TYPE1"` vào đây thì `"="` bị coi là **một mã loại**.
+//   ⇒ Cùng một màn, ba tham số ba luật. Port mô hình hoá theo NGHĨA (contains / equals / IN) và ghi rõ.
+//
+// 🔴 **BỘ LỌC "LÁT CẮT THỜI ĐIỂM" `strDateTimeline`** — chỉ bản Main có:
+//     `and (ro.AppDateTimeFrom <= X and ro.AppDateTime >= X)`
+//   tức "lịch hẹn **đang mở tại thời điểm X**" (X nằm trong khoảng từ–đến), KHÔNG phải "hẹn trong ngày X".
+//   Bản `_WH_New20201230` **không có** mệnh đề này (46 → 37 dòng SQL) ⇒ màn kho **không lọc được theo lát
+//   cắt thời điểm**, trả nhiều dòng hơn. Cờ `timelineFilterMissingInWhBranch`.
+// ⚠️ **BAKE-PARAM MIX**: riêng mệnh đề này nối chuỗi có nháy (`"… <= '" + strDateTimeline + "'"`) trong khi
+//   các mệnh đề anh em đều dùng tham số ⇒ trộn hai lối trong một câu (lệ đã ghi ở sổ). Port dùng tham số thật.
+// ⚪ KIỂM TRA ÂM TÍNH (#403): mệnh đề này **CÓ** guard `if (!StringUtils.IsEmpty(strDateTimeline))` ⇒
+//   bỏ trống thì **không lọc**, KHÔNG rơi vào bẫy `<= ''` trả 0 dòng. Ghi lại để lượt sau khỏi soi lại.
+// ⚪ `inner join` (Main) vs `join` (WH) sang `Ser_Customer`/`Ser_Car`/`Ser_MST_TradeMark` — **cùng nghĩa**,
+//   không phải khác biệt. (Nhưng vẫn là 3 INNER ⇒ thiếu khách/xe/hãng là **mất dòng lúc ĐỌC**.)
+app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status,
+    DateTime? date, string? cusName, string? creator, string? appTypeCodes,
+    DateTime? appDateTimeFrom, DateTime? timeline, string? scope) =>
 {
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
     var q = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (date.HasValue) { var d0 = date.Value.Date; var d1 = d0.AddDays(1); q = q.Where(x => x.AppFrom >= d0 && x.AppFrom < d1); }
+    // #474: bốn bộ lọc còn thiếu của nguồn.
+    if (!string.IsNullOrWhiteSpace(cusName)) q = q.Where(x => x.CusName != null && x.CusName.Contains(cusName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(creator)) q = q.Where(x => x.Creator == creator!.Trim());
+    if (appDateTimeFrom.HasValue) q = q.Where(x => x.AppFrom >= appDateTimeFrom);
+    if (!string.IsNullOrWhiteSpace(appTypeCodes))
+    {
+        // BuildClauseConditionList: tách theo "|", MỌI token là giá trị IN (không có toán tử).
+        var codes = appTypeCodes!.Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+        if (codes.Count > 0) q = q.Where(x => x.AppTypeCode != null && codes.Contains(x.AppTypeCode));
+    }
+    // Lát cắt thời điểm — CHỈ bản Main có; bản kho bỏ qua.
+    var timelineApplied = false;
+    if (timeline.HasValue && !isWh)
+    {
+        q = q.Where(x => x.AppFrom <= timeline && x.AppTo >= timeline);
+        timelineApplied = true;
+    }
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
@@ -24454,7 +24497,17 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
         serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
         partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #474 =====
+        scope = isWh ? "wh" : "main",
+        timelineApplied,
+        timelineFilterMissingInWhBranch = true,
+        appTypeCodesIsInListNotOperator = true,
+        bakeParamMixInSource = true,
+        timelineHasEmptyGuard = true,
+    });
 }).RequireAuthorization();
 
 // Đặt lịch hẹn. Guard: giờ kết thúc > bắt đầu; không trùng khoang cùng lúc (bay không được đặt chồng giờ).
