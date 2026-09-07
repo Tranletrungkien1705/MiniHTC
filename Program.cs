@@ -25310,6 +25310,35 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   đúng là CHẾT** từ trước (`SerStockIn/Out…_New20240115` · `Ser_InvReportBalanceRpt_New20180610` ·
         //   `Ser_RO_GetWarranty_V2`) ⇒ **tập vẫn đóng, 0 chỗ sai**.
         // 📌 Con số cũ ở dòng dưới giữ lại để đối chiếu, KHÔNG dùng nữa.
+        // ===== 🔴 #481 RÀ LẠI MỌI KẾT LUẬN "CHẾT" + TINH CHỈNH TẬP SỐNG LẦN NỮA =====
+        // (a) **Bản lưu trữ không được biên dịch**: trong thư mục WS còn các bản chụp theo ngày
+        //   `WSCarSv.asmx.20210208.cs` · `…20210412.cs` · `WSCarSvTab.asmx.20210412.cs`.
+        //   Mở `HTCWSCarSv.csproj` thì `<Compile Include>` **chỉ có 2 mục** (`WSCarSv.asmx.cs` và `AssemblyInfo.cs`)
+        //   ⇒ ba file kia **KHÔNG vào bản build**. #478 gộp cả chúng nên **thổi phồng** tập sống.
+        //   Loại đúng ba file đó: **1009 tên** (không phải 1059) · **852 điểm vào · 1364 khả đạt · 353 chết**.
+        //   ⚠️ `TERP.WSCarSv`/`TERP.WSHTC` là **website project** (thư mục `App_Code`, không có `.csproj`)
+        //     ⇒ mọi file trong `App_Code` **đều được biên dịch** — vẫn tính là sống.
+        //
+        // (b) **Rà 10 tên đã bị ghi là CHẾT** trên tập sống đã sửa. Kết quả: **9 đúng, 1 SAI**.
+        //   🔴 SAI: `SerCarGet` — #458 viết "bản trần không WebMethod nào gọi ⇒ CHẾT". Thực ra nó **SỐNG**,
+        //     gọi từ `TERP.WSCarSv/App_Code/WSCarSv.cs:12682` (kênh **đối tác**, không phải kênh web).
+        //     ⇒ Cùng bài học #480: nhiều bản cùng sống, mỗi bản một KÊNH. Câu "bản trần chết" của #458 **bị rút**;
+        //     phần port của #458 (endpoint `/api/servicecars/detail` theo `_New20210816`) **vẫn đúng** vì kênh
+        //     web thật sự dùng bản `_New20210816`.
+        //   ✅ 9 tên còn lại xác nhận CHẾT thật: `CommonSignIn2026NC` · `SerStockIn/Out…_New20240115` ·
+        //     `Ser_RO_GetWarranty_V2` · `Blt_SerStockInStatusUpdate` · `Ser_InvReportBalanceRpt_New20180610` ·
+        //     `…_SumLocation_New20180601` · `SerWarrantyAcceptRpt_WH` · `Blt_Bulletin_Get_byVin_New20210618`.
+        // ⚠️ Công cụ dò theo KHOẢNG CÁCH chữ ("tên nằm gần chữ CHẾT") cho **9/10 báo động giả** vì tên này là
+        //   TIỀN TỐ của tên kia (`CommonSignIn` vs `CommonSignIn2026NC`). Đã phải đọc từng câu mới kết luận —
+        //   ghi lại để không tin con số thô của công cụ đó.
+        // 📌 Bài học: "file có trong thư mục" ≠ "file được biên dịch". Project có `.csproj` thì phải đọc
+        //   `<Compile Include>`; website project (`App_Code`) thì mọi file đều tính.
+        deadClaimAudit = new { claimsChecked = 10, confirmedDead = 9, wrongClaims = 1,
+            falseAlarmsFromProximityTool = 9,
+            wrongOne = "SerCarGet — song qua TERP.WSCarSv/App_Code" },
+        liveSetV3 = new { compiledOnlyNames = 1009, archivedFilesExcluded = 3,
+            wsEntryPoints = 852, reachable = 1364, unreachable = 353,
+            supersedes = "#478/#479 (1059/896/1413) — do gom ca ban luu tru khong duoc bien dich" },
         deadSuffixReachV2 = new { wsEntryPoints = 896, bizFunctions = 1717, reachable = 1413,
             unreachable = 304, versionSuffixed = 264, versionReachable = 186, versionDead = 78,
             citedByMiniHtc = 45, citedAndDead = 5, citedDeadAlreadyFlagged = 5,

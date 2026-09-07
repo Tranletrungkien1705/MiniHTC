@@ -14,7 +14,9 @@ function wsLiveNames(wsArg){
       for(const e of fs.readdirSync(cur,{withFileTypes:true})){
         const fp=path.join(cur,e.name);
         if(e.isDirectory()){ if(!/^(bin|obj)$/.test(e.name)) stack.push(fp); }
-        else if(e.name.endsWith(".cs")){
+        // #481 BO QUA BAN LUU TRU: file .asmx.<yyyymmdd>.cs KHONG nam trong <Compile Include> cua csproj
+        //   (da kiem: HTCWSCarSv.csproj chi liet ke WSCarSv.asmx.cs) ⇒ khong duoc bien dich.
+        else if(e.name.endsWith(".cs") && !/\.20\d{6}\.cs$/.test(e.name)){
           files++;
           for(const L of fs.readFileSync(fp,"utf8").split(/\r?\n/)){
             if(cmtRe.test(L)) continue;
