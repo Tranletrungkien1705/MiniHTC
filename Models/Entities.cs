@@ -5087,6 +5087,21 @@ public sealed class SerAssignmentWork
     public DateTime? SCKSCPlanStartDTime { get; set; }
     public DateTime? SCKSCPlanFinishDTime { get; set; }
     public string? SCKSCCavityID { get; set; }
+    // ===== #529 §12 MỐC THỰC TẾ theo bảy công đoạn (Ser_AssignmentWork.SC*Actual*DTime) =====
+    public DateTime? SCCActualStartDTime { get; set; }
+    public DateTime? SCCActualFinishDTime { get; set; }
+    public DateTime? SCDActualStartDTime { get; set; }
+    public DateTime? SCDActualFinishDTime { get; set; }
+    public DateTime? SCNActualStartDTime { get; set; }
+    public DateTime? SCNActualFinishDTime { get; set; }
+    public DateTime? SCSActualStartDTime { get; set; }
+    public DateTime? SCSActualFinishDTime { get; set; }
+    public DateTime? SCDBActualStartDTime { get; set; }
+    public DateTime? SCDBActualFinishDTime { get; set; }
+    public DateTime? SCLRActualStartDTime { get; set; }
+    public DateTime? SCLRActualFinishDTime { get; set; }
+    public DateTime? SCKSCActualStartDTime { get; set; }
+    public DateTime? SCKSCActualFinishDTime { get; set; }
     /// <summary>Loại công việc lúc BẮT ĐẦU / KẾT THÚC (`WorkTypeStart` / `WorkTypeFinish`).</summary>
     public string? WorkTypeStart { get; set; }
     public string? WorkTypeFinish { get; set; }

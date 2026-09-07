@@ -47700,6 +47700,115 @@ app.MapGet("/api/serassignmentworks", async (AppDbContext db, ITenantContext t, 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #529 SỬA PHÂN CÔNG — `top 1` KHÔNG `ORDER BY`, VÀ ĐẨY HÃNG **SAU KHI ĐÃ COMMIT** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:403 Ser_AssignmentWork_Update` → `…_UpdateX` (`:584`).
+// Endpoint: `POST /api/serassignmentworks/{roNo}/update`. **§12**: thêm 14 cột mốc THỰC TẾ.
+//
+// 📐 **DIFF CreateX ↔ UpdateX trước khi đọc** (luật #414) — bốn khác biệt thật:
+//   1) `MyCheck_Ser_RO` → `MyCheck**Update**_Ser_RO(… out dtSer_RO)` rồi lấy `RONo` từ chính bản ghi;
+//   2) guard trùng khoang đổi sang `MyCheck**Update**_…_20211007(…, strROID, strRONo)` — **có thêm hai
+//      tham số** để **loại trừ chính lệnh đang sửa** khỏi phép kiểm trùng (create không cần);
+//   3) lấy bản ghi hiện có thay vì tạo mới;
+//   4) thêm toàn bộ khối **đẩy sang HyundaiMe**.
+//
+// 🔴🔴 **`top 1 *` KHÔNG CÓ `ORDER BY`** (luật #415, lần này ở tầng C#, không phải SQL thuần):
+//     `GetTableContents(dbAction, "Ser_AssignmentWork", "**top 1 ***", "", "ROID", "=", strROID)`
+//   ⇒ một lệnh có **nhiều** dòng phân công thì sửa **một dòng bất kỳ**, và dòng nào là do engine chọn.
+//   Port lấy bản ghi **mới nhất theo Id** + cờ `sourceHasNoOrderBy`.
+// 🔴🔴 **ĐẨY SANG HÃNG NẰM SAU `CommitSafety`**:
+//     `CommitSafety(_dbMain); CommitSafety(_dbWH); if (!bIsWSMain) CommitSafety(_dbDealer);`
+//     `if (bPushRoToHyundaiMe) PushDataROToHyundaiMe(strROID, strCavityIDPushToHyundaiMe);`
+//   ⇒ **đẩy hỏng thì DB đã ghi rồi**, không rollback được: dữ liệu nội bộ đổi khoang mà hãng **không biết**.
+//   (Đúng họ sự cố "nạp tiền chạy TRƯỚC INSERT rồi rollback" đã ghi trong luật nâng cấp biz.)
+// 🔴 Điều kiện đẩy — đọc nguyên văn, **ba vế** phải cùng đúng, xét theo **từng công đoạn** và
+//   **dừng ở nhóm đầu tiên khớp** (`if (!bPushRoToHyundaiMe && …)`):
+//     · khoang cũ **khác** khoang mới · đã có `…ActualStartDTime` · **chưa** có `…ActualFinishDTime`
+//   ⇒ chỉ đẩy khi **đang thi công dở mà bị chuyển khoang**. Nếu hai công đoạn cùng đổi khoang thì
+//     **chỉ nhóm đầu được đẩy**, nhóm sau im lặng.
+// ⚠️ Vẫn giữ nguyên bẫy #528: mọi trường bọc `if (!IsEmpty(...))` ⇒ **không xoá được mốc kế hoạch**.
+app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssignmentWorkDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.BadRequest(new { error = "MyCheckUpdate_Ser_RO: không tìm thấy lệnh sửa chữa." });
+
+    // Nguồn: `top 1 *` KHÔNG order by ⇒ dòng bất kỳ. Ở đây lấy bản mới nhất và nêu cờ.
+    var all = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .OrderByDescending(x => x.Id).ToListAsync();
+    var w = all.FirstOrDefault();
+    if (w is null) return Results.NotFound(new { error = "Chưa có bản phân công cho lệnh " + roNo });
+
+    var pushToHyundaiMe = false; string? cavityIDPushToHyundaiMe = null;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCCCavityID)
+        && w.SCCCavityID != dto.SCCCavityID
+        && w.SCCActualStartDTime is not null && w.SCCActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCCCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCCCavityID)) w.SCCCavityID = dto.SCCCavityID;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCDCavityID)
+        && w.SCDCavityID != dto.SCDCavityID
+        && w.SCDActualStartDTime is not null && w.SCDActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCDCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCDCavityID)) w.SCDCavityID = dto.SCDCavityID;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCNCavityID)
+        && w.SCNCavityID != dto.SCNCavityID
+        && w.SCNActualStartDTime is not null && w.SCNActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCNCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCNCavityID)) w.SCNCavityID = dto.SCNCavityID;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCSCavityID)
+        && w.SCSCavityID != dto.SCSCavityID
+        && w.SCSActualStartDTime is not null && w.SCSActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCSCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCSCavityID)) w.SCSCavityID = dto.SCSCavityID;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCDBCavityID)
+        && w.SCDBCavityID != dto.SCDBCavityID
+        && w.SCDBActualStartDTime is not null && w.SCDBActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCDBCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCDBCavityID)) w.SCDBCavityID = dto.SCDBCavityID;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCLRCavityID)
+        && w.SCLRCavityID != dto.SCLRCavityID
+        && w.SCLRActualStartDTime is not null && w.SCLRActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCLRCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCLRCavityID)) w.SCLRCavityID = dto.SCLRCavityID;
+    if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCKSCCavityID)
+        && w.SCKSCCavityID != dto.SCKSCCavityID
+        && w.SCKSCActualStartDTime is not null && w.SCKSCActualFinishDTime is null)
+    { pushToHyundaiMe = true; cavityIDPushToHyundaiMe = dto.SCKSCCavityID; }
+    if (!string.IsNullOrWhiteSpace(dto.SCKSCCavityID)) w.SCKSCCavityID = dto.SCKSCCavityID;
+
+    if (dto.SCCPlanStartDTime is not null) w.SCCPlanStartDTime = dto.SCCPlanStartDTime;
+    if (dto.SCCPlanFinishDTime is not null) w.SCCPlanFinishDTime = dto.SCCPlanFinishDTime;
+    if (dto.SCDPlanStartDTime is not null) w.SCDPlanStartDTime = dto.SCDPlanStartDTime;
+    if (dto.SCDPlanFinishDTime is not null) w.SCDPlanFinishDTime = dto.SCDPlanFinishDTime;
+    if (dto.SCNPlanStartDTime is not null) w.SCNPlanStartDTime = dto.SCNPlanStartDTime;
+    if (dto.SCNPlanFinishDTime is not null) w.SCNPlanFinishDTime = dto.SCNPlanFinishDTime;
+    if (dto.SCSPlanStartDTime is not null) w.SCSPlanStartDTime = dto.SCSPlanStartDTime;
+    if (dto.SCSPlanFinishDTime is not null) w.SCSPlanFinishDTime = dto.SCSPlanFinishDTime;
+    if (dto.SCDBPlanStartDTime is not null) w.SCDBPlanStartDTime = dto.SCDBPlanStartDTime;
+    if (dto.SCDBPlanFinishDTime is not null) w.SCDBPlanFinishDTime = dto.SCDBPlanFinishDTime;
+    if (dto.SCLRPlanStartDTime is not null) w.SCLRPlanStartDTime = dto.SCLRPlanStartDTime;
+    if (dto.SCLRPlanFinishDTime is not null) w.SCLRPlanFinishDTime = dto.SCLRPlanFinishDTime;
+    if (dto.SCKSCPlanStartDTime is not null) w.SCKSCPlanStartDTime = dto.SCKSCPlanStartDTime;
+    if (dto.SCKSCPlanFinishDTime is not null) w.SCKSCPlanFinishDTime = dto.SCKSCPlanFinishDTime;
+    if (!string.IsNullOrWhiteSpace(dto.WorkTypeStart)) w.WorkTypeStart = dto.WorkTypeStart;
+    if (!string.IsNullOrWhiteSpace(dto.WorkTypeFinish)) w.WorkTypeFinish = dto.WorkTypeFinish;
+    w.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        w.Id, w.RONo, w.ROID,
+        // Nguồn gọi PushDataROToHyundaiMe SAU khi commit ⇒ ở đây chỉ ĐÁNH DẤU, không tự đẩy.
+        pushToHyundaiMe, cavityIDPushToHyundaiMe,
+        pushHappensAfterCommitInSource = true,
+        pushStopsAtFirstMatchingStage = true,
+        pushCondition = "khoang doi + da co ActualStart + chua co ActualFinish",
+        sourceHasNoOrderBy = "GetTableContents(... top 1 * ..., ROID = @ROID)",
+        rowsForThisRo = all.Count,
+        emptyMeansKeepNotClear = true,
+        updateGuardExcludesSelf = "MyCheckUpdate_..._20211007(..., strROID, strRONo)",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
