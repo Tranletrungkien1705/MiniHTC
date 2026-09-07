@@ -1192,6 +1192,8 @@ public static class Seeder
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"DiscountPmtValue\" numeric NULL",
         // #B27 Car_VIN.FlagDocReq
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagDocReq\" text NULL",
+        // #B28 Car_Car.UnitPriceActual - mau so cua nguong CBU 30% / CKD 15%
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"UnitPriceActual\" numeric NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",

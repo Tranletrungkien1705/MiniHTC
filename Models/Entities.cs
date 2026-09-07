@@ -10111,6 +10111,9 @@ public sealed class CarVinMaster
     /// and cv.ColorCode = mcc.ColorCode`.
     /// </summary>
     public string? ColorCode { get; set; }
+    /// <summary>#B28 Đơn giá THỰC TẾ của xe (`Car_Car.UnitPriceActual`) — mẫu số của ngưỡng thanh toán
+    /// tối thiểu: CBU **≥ 30%**, CKD **≥ 15%** (`Biz.HTC.WH.My.cs:1914-1915`).</summary>
+    public decimal? UnitPriceActual { get; set; }
     /// <summary>#B27 Cờ "đã lập đề nghị giao hồ sơ" (`Car_VIN.FlagDocReq`) — `Car_VIN_UpdMulti_FlagDocReq`
     /// (`BizHTC.Car.cs:3146`) cập nhật HÀNG LOẠT cột này. Màn gọi (`FrmCapNhatThongTinHoaDon.cs:440-444`)
     /// **chỉ đưa vào lô những dòng có giá trị "0" hoặc "1"** — client lọc trước, biz `StdFlag` chuẩn hoá.</summary>

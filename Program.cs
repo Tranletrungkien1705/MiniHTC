@@ -14631,6 +14631,100 @@ app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, st
 //   kết quả = Temp1_1 `left join` Temp1_2 rồi **loại các bảo lãnh có mặt ở Temp1_2**.
 //   ⇒ Không thể port bằng một `where` phẳng — phải giữ đúng hai bước, nếu không sẽ nhận cả bảo lãnh
 //   còn xe chưa có ngày hiệu lực.
+
+// ===== #B28 TÌM VIN ĐỦ ĐIỀU KIỆN ĐỀ NGHỊ CHIẾT KHẤU THANH TOÁN (port 1:1 `FrmPayReDiscount`) =====
+// Trace twin LIVE: `FrmPayReDiscount.cs:188` → `sv.Discount_SearchCar(vin, from, to)`
+//   (`SalesService.cs:31627`) → WS `PRD_PaymentReqDiscount_GetVINWH` (`WSHTC.asmx.cs:11412`)
+//   → `_biz.PRD_PaymentReqDiscount_GetVINWH` (`Biz.HTC.WH.My.cs:2237`, **VỎ BỌC**)
+//   → **`PRD_PaymentReqDiscount_GetVIN_X`** (`:1758`) — SQL thật (4 khối temp).
+// 🔴 KHỐI JOIN NỀN dùng ở CẢ BA temp đầu, với 3 điều kiện đặt **TRONG mệnh đề `on`** (không phải `where`):
+//      `dd.DealerCodeBuyer is null`  ⇒ **chỉ giao dịch BÁN LẺ** (loại bán buôn ĐL→ĐL)
+//      `dd.CustomerCodeBuyer is not null`
+//      `ddd.FlagCurrent = '1'`       ⇒ chỉ dòng HIỆN HÀNH
+//    ⚠️ Đặt trong `on` của `left join` ⇒ **không loại dòng cha**, chỉ làm vế phải NULL — khác hẳn khi
+//    chuyển xuống `where`. Port sai chỗ này là đổi tập kết quả.
+// 🔴 `cdodtl.ConfirmStatus not in ('R','C')` — cũng nằm trong `on` của `left join`.
+// 🔴 Thanh toán chỉ tính khi `pmp.PaymentStatus in ('F')` (**inner join**, có loại dòng).
+// 🔴 Hai temp đầu KHÁC NHAU đúng MỘT dòng: temp 2 thêm `and (pmpd.GuaranteeNo is null)`
+//    ⇒ temp1 = cọc **+** thanh toán bảo lãnh; temp2 = **chỉ tiền cọc**.
+// 🔴 NGƯỠNG THANH TOÁN TỐI THIỂU (`:1911-1916`): `AssemblyStatus` lấy **`Min(mcs.AssemblyStatus)`** và chỉ
+//    xét khi thuộc {`CBU`,`CKD`}; đủ điều kiện khi
+//      CBU: `AmountAccum >= 30.00/100 * cc.UnitPriceActual` · CKD: `>= 15.00/100 * …`
+//    ⇒ hai ngưỡng KHÁC NHAU theo loại lắp ráp — không có "ngưỡng chung".
+app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
+    AppDbContext db, ITenantContext t, string? vin, DateTime? dateFrom, DateTime? dateTo) =>
+{
+    var vinKey = string.IsNullOrWhiteSpace(vin) ? null : vin.Trim().ToUpperInvariant();
+
+    // Nền: giao dịch BÁN LẺ (DealerCodeBuyer rỗng, CustomerCodeBuyer có) + dòng HIỆN HÀNH.
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId
+        && (d.DealerCodeBuyer == null || d.DealerCodeBuyer == "")
+        && d.CustomerCodeBuyer != null && d.CustomerCodeBuyer != "").ToListAsync();
+    var dealIds = deals.Select(d => d.Id).ToList();
+    var lines = await db.DealerDealDetails
+        .Where(x => x.OrgId == t.OrgId && dealIds.Contains(x.DealId) && x.FlagCurrent == "1").ToListAsync();
+    var carIds = lines.Select(x => x.CarId).Distinct().ToList();
+    if (vinKey is not null) carIds = carIds.Where(c => c.Contains(vinKey)).ToList();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.AssemblyStatus }).ToListAsync();
+
+    // Thanh toán đã HOÀN THÀNH: `pmp.PaymentStatus in ('F')`.
+    var pays = await (from d in db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && d.CarId != null && carIds.Contains(d.CarId!))
+                      join p in db.PmtPayments.Where(p => p.OrgId == t.OrgId && p.PaymentStatus == "F")
+                           on d.PaymentNo equals p.PaymentNo
+                      select new { d.CarId, d.Amount, d.GuaranteeNo, p.PaymentEndDate }).ToListAsync();
+    if (dateFrom is not null) pays = pays.Where(x => x.PaymentEndDate >= dateFrom).ToList();
+    if (dateTo is not null) pays = pays.Where(x => x.PaymentEndDate <= dateTo).ToList();
+
+    var items = new List<object>();
+    int droppedNoCar = 0, droppedNoAssembly = 0, notReachedThreshold = 0;
+    foreach (var cid in carIds.Distinct())
+    {
+        var car = cars.FirstOrDefault(c => c.VIN == cid);
+        if (car is null) { droppedNoCar++; continue; }
+        // `Min(mcs.AssemblyStatus)` + `and mcs.AssemblyStatus in ('CBU','CKD')`
+        var asm = specs.Where(s => s.SpecCode == car.SpecCode && (s.AssemblyStatus == "CBU" || s.AssemblyStatus == "CKD"))
+                       .Select(s => s.AssemblyStatus).OrderBy(x => x, StringComparer.Ordinal).FirstOrDefault();
+        if (asm is null) { droppedNoAssembly++; continue; }
+
+        var mine = pays.Where(p => p.CarId == cid).ToList();
+        // temp1: cọc + thanh toán bảo lãnh · temp2: CHỈ tiền cọc (`GuaranteeNo is null`)
+        var totalDepositAndGrt = mine.Sum(p => p.Amount ?? 0m);
+        var totalDepositOnly = mine.Where(p => p.GuaranteeNo == null).Sum(p => p.Amount ?? 0m);
+        // `AmountAccum` = luỹ kế theo mốc `PaymentEndDate` (nguồn self-join `pmp.PaymentEndDate >= pmp_Accum…`)
+        var accumRows = mine.Where(p => p.PaymentEndDate != null)
+            .GroupBy(p => p.PaymentEndDate!.Value)
+            .Select(g => new { EndDate = g.Key, AmountAccum = mine.Where(x => x.PaymentEndDate <= g.Key).Sum(x => x.Amount ?? 0m) })
+            .OrderBy(x => x.EndDate).ToList();
+
+        var price = car.UnitPriceActual ?? 0m;
+        var need = asm == "CBU" ? 30.00m / 100m * price : 15.00m / 100m * price;
+        // Ngày đạt ngưỡng = mốc `PaymentEndDate` ĐẦU TIÊN có luỹ kế >= ngưỡng.
+        var reached = price > 0 ? accumRows.FirstOrDefault(x => x.AmountAccum >= need) : null;
+        if (reached is null) { notReachedThreshold++; continue; }
+
+        items.Add(new
+        {
+            carId = cid, vin = car.VIN, car.SpecCode, car.ModelCode,
+            assemblyStatus = asm, unitPriceActual = price,
+            thresholdPercent = asm == "CBU" ? 30 : 15, thresholdAmount = need,
+            amountTotalDepositAndGuarantee = totalDepositAndGrt,
+            amountTotalDepositOnly = totalDepositOnly,
+            amountAccumAtReach = reached.AmountAccum,
+            paymentEndDateCbu30Ckd15 = reached.EndDate    // alias nguồn: cmp1_PaymentEndDate_CBU30_CKD15
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        baseFilter = "Chỉ giao dịch BÁN LẺ (DealerCodeBuyer rỗng, CustomerCodeBuyer có) + dòng FlagCurrent='1'; thanh toán chỉ tính PaymentStatus='F'.",
+        thresholdRule = "CBU ≥ 30% × UnitPriceActual · CKD ≥ 15% × UnitPriceActual (hai ngưỡng khác nhau, không có ngưỡng chung).",
+        droppedNoCar, droppedNoAssembly, notReachedThreshold,
+        debt = "NỢ: nguồn còn loại theo `cdodtl.ConfirmStatus not in ('R','C')` đặt trong mệnh đề `on` của LEFT JOIN (không loại dòng cha) — MiniHTC chưa nối lệnh giao ở truy vấn này."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/paymentdiscountreqs/eligible-guarantees", async (
     AppDbContext db, ITenantContext t, string? dealerCode, DateTime? dateEndFrom, DateTime? dateEndTo) =>
 {
