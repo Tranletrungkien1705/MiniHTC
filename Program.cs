@@ -3024,6 +3024,125 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
 //    cdrtcgl.DRTCGListCode`; `MyCount` đếm **TRƯỚC** khi cắt trang.
 // 🔴 Bảy bộ lọc, ba hình dạng (`SalesService.cs:25086-25130`): LIKE `%…%` cho `DRTCGListCode`/`VIN`/
 //    `CarId`; `"in"` cho `DRTCGListStatus`; `"="` cho `DRTCGDtlStatus`; khoảng `>=`/`<=` cho `CreatedDate`.
+
+// ===== #B46 TÌM VIN CHO ĐỀ NGHỊ BẢO HIỂM — `Car_VIN_Get_ForInsranceReq_New20181119` =====
+// (`FrmSearchVinForInsuranceReq`; tên hàm nguồn viết sai chính tả "Insrance" — giữ nguyên khi tra cứu.)
+// Trace LIVE: `salesSv.SearchVinForInsReq` (`SalesService.cs:14482`) → WS `Car_VIN_Get_ForInsranceReq`
+//   (`WSHTC.asmx.cs:61908`) → `_biz.Car_VIN_Get_ForInsranceReq_New20181119` (`Biz.HTC.WH.cs:176665`,
+//   **VỎ BỌC**) → **`Car_VIN_Get_ForInsranceReqX_New20181119`** (`:176927`) — SQL thật.
+// Kết quả gồm **BỐN loại chứng từ vận chuyển**, mỗi loại một khối `select … into #tbl_…` gắn literal
+// `RefOrdType` (`TConst.Sto_TranspReqType`, `Const.Main.cs:623-629`): `CARTRANSPORT` (lệnh xuất xe) ·
+// `CARRETRIEVE` (thu hồi) · `STORAGEREARRANGE` (điều chuyển nội bộ) · `STORAGEREARRCB` (đóng thùng).
+// Mọi khối lọc `…Status not in ('R','C')` ở **cả dòng lẫn đầu** chứng từ.
+// 🔴 **BA LỖI CỦA CHÍNH HỆ NGUỒN — ghi nhận, không im lặng nhân bản**:
+//   1. **`@CreatedDateLimit` KHÔNG BAO GIỜ ĐƯỢC THAY**: bốn khối có `and <đầu>.CreatedDate >=
+//      '@CreatedDateLimit'` (`:177034`, `:177067`, `:177098`, `:177129`) nhưng **không có `Replace`
+//      nào** cho nó (chỉ `zzzzClauseWhere_strFilterWhereClause` được thay, `:177257`) và nó **không
+//      nằm trong** `alParamsCoupleSql` (chỉ `@nFilterRecordStart`, `@nFilterRecordEnd`, `@Today`,
+//      `@strBUPatternOfUser`). Vì bọc **nháy đơn**, SQL coi là **chuỗi literal** ⇒ hoặc lỗi convert
+//      datetime, hoặc (nếu cột lưu varchar) so chuỗi luôn FALSE ⇒ **bốn khối trả rỗng**.
+//      Đúng họ lỗi `[BAKE-PARAM-MIX]`. ⇒ Port **BỎ** điều kiện (không bịa mốc ngày); mở tham số
+//      `createdDateLimit` để áp mốc thật khi nghiệp vụ chốt.
+//   2. **`@strBUPatternOfUser` khai báo nhưng KHÔNG DÙNG** trong SQL (grep toàn hàm: đúng **1** hit là
+//      dòng khai báo) ⇒ màn này **không lọc phạm vi BU** chút nào — nặng hơn #B45 (ở đó ít ra có
+//      `left join` mang điều kiện). Port trả `outOfScopeCount` + cờ `enforceBuScope` để đo và chốt sau.
+//   3. **Lỗi gõ ở client** (`SalesService.cs:14541`): nhánh gộp "không chọn loại chứng từ" viết
+//      `RetrieveOrderNo like '%@<số>%'` — **thừa ký tự `@`**, ba nhánh kia đúng ⇒ tìm theo số chứng từ
+//      **không bao giờ ra LỆNH THU HỒI**. Port theo **ý định** (bỏ `@`), nêu ở `sourceBugs`.
+app.MapGet("/api/vins/for-insurance-req", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? specCode, string? modelCode, string? colorCode, string? carId,
+    string? refOrdType, string? refOrdNo, DateTime? createdDateLimit,
+    string? buPattern, string? enforceBuScope, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `#tbl_Car_VIN_Filter` — lọc trên `Car_VIN` (+ `left join Car_Car`, MiniHTC gộp một bảng).
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    var fVin = U(vin); var fCar = U(carId);
+    if (fVin is not null) cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(fVin)).ToList();
+    if (fCar is not null) cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(fCar)).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) { var set = specCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.SpecCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(modelCode)) { var set = modelCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ModelCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(colorCode)) { var set = colorCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ColorCode ?? "")).ToList(); }
+
+    var vinSet = cars.Select(c => c.VIN).ToHashSet();
+    var ordNo = U(refOrdNo);
+    bool MatchNo(string? no) => ordNo is null || (no ?? "").ToUpperInvariant().Contains(ordNo);
+    // Điều kiện `CreatedDate >= @CreatedDateLimit` KHÔNG áp trừ khi người gọi truyền mốc thật (lỗi 1).
+    bool AfterLimit(DateTime? created) => createdDateLimit is null || (created is not null && created >= createdDateLimit);
+
+    var rows = new List<InsReqVinRow>();
+    var want = U(refOrdType);
+
+    // 1) CARTRANSPORT — lệnh xuất xe.
+    if (want is null || want == "CARTRANSPORT")
+    {
+        var q = await (from d in db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.Vin) && x.ConfirmStatus != "R" && x.ConfirmStatus != "C")
+                       join h in db.DeliveryOrders.Where(x => x.OrgId == t.OrgId && x.Status != "R" && x.Status != "C") on d.DoId equals h.Id
+                       select new { d.Vin, RefOrdNo = h.DoNo, DtlStatus = d.ConfirmStatus, h.CreatedAt, d.StorageCode }).ToListAsync();
+        rows.AddRange(q.Where(x => MatchNo(x.RefOrdNo) && AfterLimit(x.CreatedAt))
+            .Select(x => new InsReqVinRow(x.Vin, "CARTRANSPORT", x.RefOrdNo, x.DtlStatus, x.CreatedAt, null, x.StorageCode)));
+    }
+    // 2) CARRETRIEVE — thu hồi xe.
+    if (want is null || want == "CARRETRIEVE")
+    {
+        var q = await db.CarRetrieves.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.Vin)
+                    && x.RetrieveDtlStatus != "R" && x.RetrieveDtlStatus != "C")
+            .Select(x => new { x.Vin, x.RetrieveOrderNo, x.RetrieveDtlStatus, x.DealerCode }).ToListAsync();
+        rows.AddRange(q.Where(x => MatchNo(x.RetrieveOrderNo))
+            .Select(x => new InsReqVinRow(x.Vin, "CARRETRIEVE", x.RetrieveOrderNo, x.RetrieveDtlStatus, null, x.DealerCode, null)));
+    }
+    // 3) STORAGEREARRANGE — điều chuyển nội bộ.
+    if (want is null || want == "STORAGEREARRANGE")
+    {
+        var q = await (from d in db.StorageRearrangeDetails.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN) && x.RearrangeDtlStatus != "R" && x.RearrangeDtlStatus != "C")
+                       join h in db.StorageRearranges.Where(x => x.OrgId == t.OrgId) on d.StorageRearrangeId equals h.Id
+                       select new { d.VIN, StorageRearrangeNo = h.SCNo, d.RearrangeDtlStatus }).ToListAsync();
+        rows.AddRange(q.Where(x => MatchNo(x.StorageRearrangeNo))
+            .Select(x => new InsReqVinRow(x.VIN, "STORAGEREARRANGE", x.StorageRearrangeNo, x.RearrangeDtlStatus, null, null, null)));
+    }
+    // 4) STORAGEREARRCB — điều chuyển đóng thùng.
+    if (want is null || want == "STORAGEREARRCB")
+    {
+        var q = await (from d in db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN) && x.RearCBDtlStatus != "R" && x.RearCBDtlStatus != "C")
+                       join h in db.StoRearCBs.Where(x => x.OrgId == t.OrgId) on d.StoRearCBId equals h.Id
+                       select new { d.VIN, h.StoRearCBNo, d.RearCBDtlStatus }).ToListAsync();
+        rows.AddRange(q.Where(x => MatchNo(x.StoRearCBNo))
+            .Select(x => new InsReqVinRow(x.VIN, "STORAGEREARRCB", x.StoRearCBNo, x.RearCBDtlStatus, null, null, null)));
+    }
+
+    // Phạm vi BU: nguồn KHÔNG dùng `@strBUPatternOfUser` (lỗi 2) — đo được, chỉ lọc khi bật cờ.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var carDealer = cars.ToDictionary(c => c.VIN, c => c.DealerCode);
+    bool InScope(string v)
+    {
+        if (pattern is null) return true;
+        var dc = carDealer.TryGetValue(v, out var x) ? x : null;
+        var dl = dealers.FirstOrDefault(z => z.DealerCode == dc);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = rows.Count(r => !InScope(r.Vin));
+    if (enforceBuScope == "1") rows = rows.Where(r => InScope(r.Vin)).ToList();
+
+    var myCount = rows.Count;
+    var items = rows.Skip(start).Take(count).ToList();
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        refOrdTypes = new[] { "CARTRANSPORT", "CARRETRIEVE", "STORAGEREARRANGE", "STORAGEREARRCB" },
+        outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        sourceBugs = new[]
+        {
+            "@CreatedDateLimit KHONG BAO GIO duoc thay o nguon (khong Replace, khong trong param list, lai boc nhay don) => 4 khoi chung tu hong/tra rong. Port BO dieu kien; truyen createdDateLimit de ap moc that.",
+            "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL => nguon khong loc pham vi BU. Port do bang outOfScopeCount, bat loc bang enforceBuScope=1.",
+            "Client SalesService.cs:14541 go thua '@': RetrieveOrderNo like '%@<so>%' => tim theo so chung tu khong bao gio ra LENH THU HOI. Port theo y dinh (bo '@')."
+        }
+    });
+}).RequireAuthorization();
 app.MapGet("/api/docreqs/search-tcg", async (
     AppDbContext db, ITenantContext t,
     string? drTcgListCode, string? drTcgListStatus, DateTime? createdFrom, DateTime? createdTo,
@@ -35531,6 +35650,7 @@ record SoApprove1LineDto(string? ModelCode, string? SpecCode, string? ColorCode,
 record SoRejectDto(string? Reason);
 // #B43 — DTO 1:1 voi So.FlagPmtDelayDone ma form gui (chi "0"/"1")
 record SoFlagDoneDto(string? SOCode, string? FlagPmtDelayDone);
+record InsReqVinRow(string Vin, string RefOrdType, string? RefOrdNo, string? DtlStatus, DateTime? CreatedAt, string? LocationFrom, string? LocationTo);
 record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);
 record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
