@@ -28,6 +28,21 @@ const prog = fs.readFileSync(path.join(ROOT, 'Program.cs'), 'utf8');
 // cột do hạ tầng đặt, không tính là "chết"
 const SYSTEM = new Set(['Id', 'OrgId', 'CreatedAt', 'UpdatedAt']);
 
+// ---- LOAI TRU CO CHU DICH ----
+// Cot da TRA NGUON va ket luan "khong co duong ghi" la DUNG. Ghi vao day de cac luot sau
+// khong phai dieu tra lai tu dau. Moi muc PHAI co ly do + so hieu luot da ket luan.
+const EXPECTED = {
+    // #312: nguon DAN XUAT hai cot nay bang cach cong dong nhap kho Status='3',
+    //   khong luu san. Da CO Y go duong ghi; cot chi con de doi chieu du lieu cu.
+    'OrderPartLine.TotalQuantityIn': '#312 dan xuat, khong luu',
+    'OrderPartLine.TotalQuantityInExchangeRate': '#312 dan xuat, khong luu',
+    // #346: moi cau GHI trong TERP.BizCarSv deu bi comment; he TST ghi thang vao CSDL.
+    'OrderPart.TSTID': '#346 he ngoai ghi, tang biz chi TRA',
+    'OrderPartLine.TSTID': '#346 he ngoai ghi, tang biz chi TRA',
+    // #346: nguon KHONG co cot nay — objValDiscount la TEN THAM SO, gan vao DiscountRate.
+    'OrderPart.ValDiscount': '#346 cot ma, nguon dung DiscountRate',
+};
+
 // ---- 1. gom entity → danh sách thuộc tính ----
 const entities = [];
 const reClass = /public sealed class ([A-Za-z0-9_]+)\s*\n?\s*\{/g;
@@ -88,7 +103,8 @@ for (const e of entities) {
     // entity không hề được khởi tạo trong Program.cs ⇒ bỏ qua (có thể chỉ đọc / seed)
     if (!new RegExp('new\\s+' + e.name + '\\b').test(prog)) continue;
     const w = writtenColumns(e.name);
-    const miss = e.props.filter(p => !SYSTEM.has(p) && !w.has(p) && !anyVarAssign.has(p));
+    const miss = e.props.filter(p => !SYSTEM.has(p) && !w.has(p) && !anyVarAssign.has(p)
+        && !EXPECTED[e.name + '.' + p]);
     if (miss.length) dead.push({ entity: e.name, total: e.props.length, miss });
 }
 
@@ -99,6 +115,7 @@ for (const d of dead) totalMiss += d.miss.length;
 console.log('=== CỘT CHẾT: có trong entity, KHÔNG đường nào ghi ===');
 console.log('entity có cột chết: ' + dead.length + ' — tổng cột chết: ' + totalMiss);
 console.log('(đã loại cột hệ thống ' + [...SYSTEM].join('/') + ' và mọi tên cột được gán qua biến ở bất kỳ đâu)');
+console.log('(đã loại ' + Object.keys(EXPECTED).length + ' cột LOẠI TRỪ CÓ CHỦ ĐÍCH — xem bảng EXPECTED đầu file)');
 console.log('');
 for (const d of dead)
     console.log(d.entity + '  (' + d.miss.length + '/' + d.total + '):  ' + d.miss.join(' '));

@@ -33242,6 +33242,15 @@ app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? 
 //  7-8. Hai guard sẵn có (nhà cung cấp, ít nhất 1 dòng).
 //
 // ⚠️ KHÔNG port guard `EstimatedDeliverDate >= hôm nay`: cả khối bị **COMMENT** ở nguồn (:390-403).
+// ===== 🔴 #346 HAI CỘT SWEEP BÁO "CHẾT" nhưng **KHÔNG PHẢI GAP** — kết luận sau khi tra nguồn =====
+// `OrderPart.TSTID` / `OrderPartLine.TSTID`: trong toàn `TERP.BizCarSv` chỉ xuất hiện ở **mệnh đề tra**
+//   (`and t.TSTID = @objTSTID`); **mọi câu GHI đều bị comment** (`A.02.OrderPart.cs:3334/3344`)
+//   ⇒ hệ TST ghi thẳng vào CSDL, không qua tầng biz này. Không tự bịa đường ghi (lệ #299).
+// `OrderPart.ValDiscount`: nguồn **KHÔNG có cột này**. `objValDiscount` chỉ là **TÊN THAM SỐ**, và
+//   nó được gán vào cột `DiscountRate` của bảng CHI TIẾT:
+//   `dt_OrderPart_Detail.Rows[0]["DiscountRate"] = objValDiscount;` (`:4913`)
+//   ⇒ `ValDiscount` là cột **ma** do port đặt theo tên tham số. Giữ nguyên (xoá cột là đổi lược đồ
+//     ngoài phạm vi lượt này) nhưng ghi rõ để không ai đi tìm đường ghi cho nó nữa.
 app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -33627,6 +33636,14 @@ app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, Or
         o.OrderPartStatus = "R"; lineStatus = "R";
         o.SupplierStatus = "7";   // SS_7: đơn lỗi, chờ kinh doanh điều chỉnh
     }
+    // ===== 🔴 #346 ĐÓNG DẤU `SupplierLUDTime` mỗi khi `SupplierStatus` đổi =====
+    // Nguồn `Ser_Order_Part_ApprTST` (`BizCarSv.A.02.OrderPart.cs:3403`) cập nhật CÙNG MỘT CỤM:
+    //   `t.SupplierStatus = f.SupplierStatus` · `t.DeliveryFormCode = f.DeliveryFormCode`
+    //   · `t.SupplierLUDTime = f.SupplierLUDTime`
+    // ⇒ Ba trường đi liền nhau; port cũ đổi `SupplierStatus` ở **ba** chỗ mà không hề đóng dấu mốc
+    //   ⇒ không truy được **khi nào** phía nhà cung cấp đổi trạng thái.
+    // (Ghi bằng SQL `update … set` nên máy quét theo `["X"] =` không thấy — dạng ghi thứ 4, lệ #314.)
+    o.SupplierLUDTime = DateTime.Now;
     o.LogLUDateTime = DateTime.Now; o.LogLUBy = who;
 
     // Đồng bộ trạng thái từng dòng (nguồn ghi OrderPartStatusDtl trong cùng thao tác).
