@@ -13674,6 +13674,12 @@ public sealed class ServiceCar
 /// <summary>Danh mục phụ tùng dịch vụ (master lõi) — port 1:1 FrmPart (TblSerMSTPart, TCMotor).</summary>
 public sealed class ServicePart
 {
+    /// <summary>🔴 #400 §12 CUSDEBT — tên cột nói 'công nợ khách' nhưng màn **Tồn kho tối ưu**
+    /// dùng nó làm **số lượng BO (hàng đặt bù) NHẬP TAY**: form khai
+    /// `private const string colBO = "CUSDEBT"; //Nhap truc tiep` — và khai **hai lần** cùng một cột
+    /// (`colBO` và `colCusDebt` đều = `"CUSDEBT"`).
+    /// ⇒ Đọc tên cột mà hiểu là công nợ là **sai nghĩa**. Xem `POST /api/serviceparts/update-bo`.</summary>
+    public decimal? CusDebt { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string PartCode { get; set; } = "";

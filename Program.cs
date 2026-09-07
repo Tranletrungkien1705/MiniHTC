@@ -13999,6 +13999,74 @@ app.MapPost("/api/reportheaders", async (ReportHeaderDto dto, AppDbContext db, I
     return Results.Ok(new { row.DealerCode, saved = true });
 }).RequireAuthorization();
 
+// ===== 🔴 #400 CẬP NHẬT SỐ LƯỢNG **BO** TỪ MÀN TỒN KHO TỐI ƯU (`FrmTonKhoToiUu`) =====
+// TRACE 4 tầng, **hai lần tên nói dối**:
+//   `FrmTonKhoToiUu.btnUpdateBO_Click` → `Inventory.ReportService.SerMstPartUpdateBO`
+//   → WS **`Ser_MST_PartUpdateCusDebt`** → biz cùng tên (`Inventory.Report.cs:7849`).
+//   ⇒ Hàm tên 'UpdateBO' gọi web method tên 'UpdateCusDebt'; và cột thật được ghi là `CUSDEBT`.
+// 🔴 **CỘT BỊ DÙNG LẠI**: form khai `private const string colBO = "CUSDEBT"; //Nhap truc tiep`,
+//   đồng thời khai `colCusDebt = "CUSDEBT"` — **cùng một cột, hai tên hằng, hai ý nghĩa**.
+//   Ở màn này `CUSDEBT` là **số lượng BO nhập tay**, KHÔNG phải công nợ khách.
+// 🔴 **BỐN GUARD, xét TỪNG DÒNG** của bảng gửi lên:
+//   1. `…_DuplicateKeyDetail` — trùng khoá trong chính bảng đầu vào
+//   2. `…_NotActive` — phụ tùng không tồn tại **hoặc không còn hiệu lực**
+//   3. `…_CusDebtNotFormat` — giá trị không phải số
+//   4. `…_CusDebtNotFormat01` — giá trị **âm**
+// ⚠️ Chỉ gửi lên **những dòng người dùng đã SỬA** (form lọc `Status == ITEM_VALUE_STT_EDIT`).
+// ⚠️ Ghi `Ser_Mst_Part` trên **Main + WH + Dealer**, và `alEffectiveColumn` **RỖNG** ⇒ theo lệ đã đo
+//   ở #374/#381, dạng này **ghi mọi cột của bảng client gửi**, không chỉ `CUSDEBT`.
+// ⚠️ Màn đọc báo cáo bằng `Ser_ReportTonKhoToiUu(strPartCode)` nhưng hàm đó gọi WS **`Ser_InvReportPart`**,
+//   bọc mã đại lý + mã phụ tùng trong `%…%` (LIKE hai đầu).
+app.MapPost("/api/serviceparts/update-bo", async (PartUpdateBoDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Items ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng dữ liệu rỗng." });
+
+    // Guard 1: trùng khoá NGAY TRONG bảng đầu vào.
+    var dupKey = rows.GroupBy(r => (r.PartCode ?? "").Trim().ToUpperInvariant())
+        .FirstOrDefault(g => g.Count() > 1);
+    if (dupKey is not null)
+        return Results.BadRequest(new { error = "Ser_MST_PartUpdateCusDebt_DuplicateKeyDetail",
+            message = "Trùng mã phụ tùng trong bảng gửi lên.", partCode = dupKey.Key });
+
+    var updated = new List<object>();
+    foreach (var r in rows)
+    {
+        var code = (r.PartCode ?? "").Trim().ToUpperInvariant();
+
+        // Guard 3: phải là SỐ.
+        if (r.CusDebt is null)
+            return Results.BadRequest(new { error = "Ser_MST_PartUpdateCusDebt_CusDebtNotFormat",
+                message = "Giá trị BO không phải số.", partCode = code });
+        // Guard 4: KHÔNG được âm.
+        if (r.CusDebt < 0m)
+            return Results.BadRequest(new { error = "Ser_MST_PartUpdateCusDebt_CusDebtNotFormat01",
+                message = "Giá trị BO không được âm.", partCode = code, value = r.CusDebt });
+
+        // Guard 2: phụ tùng phải tồn tại VÀ còn hiệu lực.
+        var p = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code
+            && x.FlagActive == "1");
+        if (p is null)
+            return Results.BadRequest(new { error = "Ser_MST_PartUpdateCusDebt_NotActive",
+                message = "Phụ tùng không tồn tại hoặc không còn hiệu lực.", partCode = code });
+
+        p.CusDebt = r.CusDebt;
+        updated.Add(new { partCode = code, boQty = r.CusDebt });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        count = updated.Count, updated,
+        columnMeaningNote = "Cột ghi là CUSDEBT nhưng ở màn Tồn kho tối ưu nó mang nghĩa SỐ LƯỢNG BO nhập tay, "
+            + "không phải công nợ khách — form khai colBO = \"CUSDEBT\" (//Nhap truc tiep).",
+        namingNote = "Chuỗi gọi có HAI lần lệch tên: SerMstPartUpdateBO → WS Ser_MST_PartUpdateCusDebt.",
+        editedRowsOnlyNote = "Form chỉ gửi những dòng người dùng ĐÃ SỬA (Status = ITEM_VALUE_STT_EDIT).",
+        wholeRowWriteNote = "Nguồn truyền alEffectiveColumn RỖNG ⇒ ghi MỌI cột của bảng client gửi "
+            + "(lệ đã đo ở #374/#381), không chỉ CUSDEBT. MiniHTC chỉ ghi đúng cột này.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -41661,6 +41729,9 @@ record ReportHeaderDto(string DealerCode, string? DealerName, string? CompanyNam
 //   KHONG co truong hoi vien Loyalty: nguon co nhan nhung khoi dung no da bi comment.
 //   LUU Y kieu: ProductYear = int?, CurrentKm = decimal (khong nullable tren entity),
 //   con DateBuyCar / InsStartDate / InsFinishedDate nguon LUU DANG CHUOI.
+// #400: cap nhat so luong BO tu man Ton kho toi uu. CusDebt = SO LUONG BO (ten cot noi doi).
+record PartUpdateBoItemDto(string? PartCode, decimal? CusDebt);
+record PartUpdateBoDto(List<PartUpdateBoItemDto>? Items);
 record ServiceCarUpdateDto(string? DealerCode, string? CusID, string? ModelID, string? PlateNo,
     string? FrameNo, string? EngineNo, int? ProductYear, string? ColorCode,
     DateTime? WarrantyRegistrationDate, string? DateBuyCar, decimal? CurrentKm,
