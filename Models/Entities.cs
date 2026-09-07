@@ -10324,6 +10324,10 @@ public sealed class CarVinMaster
     /// <summary>Số packing list (`Car_VIN.PackingListNo`) — guard `..._InvalidPackingListNo`:
     /// xe **chưa có packing list** thì KHÔNG được cập nhật vận đơn/ngày hết thế chấp.</summary>
     public string? PackingListNo { get; set; }
+    /// <summary>🔴 #B74 — `Car_VIN.WorkOrderNo`: nguồn dựng `#tbl_WO_HaveVIN` (VIN đã sản xuất) bằng
+    /// `group by cv.WorkOrderNo, cv.SpecCode, cv.ModelCode, cv.ColorCode` (`Biz.HTC.WH.cs:166864`).
+    /// Không có cột này thì không đối chiếu được VIN thực tế với lịch sản xuất theo WO.</summary>
+    public string? WorkOrderNo { get; set; }
     /// <summary>Ngày CO (`Car_VIN.CODate`).</summary>
     public DateTime? CODate { get; set; }
     /// <summary>Ngân hàng nhận BÀN GIAO hồ sơ xe (`Car_Vin.HandOverBankCode`) — lấy từ
@@ -11736,6 +11740,16 @@ public sealed class WoScheduleLine
     public int QtyOrder { get; set; }        // SL dat hang
     public int QtyProduct { get; set; }       // SL da san xuat
     public int QtyRemain { get; set; }        // SL con lai (= QtyOrder - QtyProduct)
+
+    // ===== #B74 parity `WO_ScheduleDetail` (`Biz.HTC.WH.cs:166911-166921`) =====
+    /// <summary>🔴 `WO_ScheduleDetail.CreatedDate` — nguồn join lịch SX **theo ĐÚNG ngày tạo**
+    /// (`inner join WO_ScheduleDetail wo on t.CreatedDate = wo.CreatedDate`), trong đó `t` là
+    /// `select Max(CreatedDate) from WO_Schedule` — **MỘT mốc TOÀN CỤC**, không phải "mới nhất theo WO".
+    /// Thiếu cột này thì không xác định được dòng nào thuộc bản lịch mới nhất.</summary>
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>`WO_ScheduleDetail.QtyRemainOrder` — SL **chưa có lịch SX**. Nguồn dùng để tính
+    /// `QtyPlan = QtyOrder - QtyProduct - QtyRemainOrder`; không suy ra được từ 3 cột cũ.</summary>
+    public decimal QtyRemainOrder { get; set; }
 }
 
 /// <summary>Giao dịch bán buôn xe ĐL→ĐL (Deal To Dealer) — port 1:1 FrmNewDealToDealer. Header.</summary>

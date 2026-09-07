@@ -3858,6 +3858,266 @@ app.MapGet("/api/reports/order-plan-tracking", async (
         dataFormatDebt = "Nguon luu MonthEstimate/MonthOrder dang CHUOI 'yyyy-MM-01' (nen moi like duoc); MiniHTC luu EstimateOrder.MonthEstimate la chuoi 'yyyy-MM' va Dms40SoRoot.OrderMonth la DateTime. Port so theo (nam, thang) - tuong duong ngu nghia, nhung dong bo du lieu that phai chuan hoa dinh dang truoc."
     });
 }).RequireAuthorization();
+
+// ===== #B74 KHSX TỔNG HỢP TÌNH TRẠNG HÀNG HOÁ — `RptWO_OrderAndSchedule_01_WH_New20181119` =====
+// (`FrmKHSXTongHopTTHangHoa`.) Trace LIVE: form (`:409`) → `ReportService.ReportRptWO_OrderAndSchedule_01`
+//   (`:2889`) → WS → biz.
+// 🔴 **BẪY SINH ĐÔI — ĐÃ TRACE, KHÔNG ĐOÁN THEO TÊN**: có **HAI** bản
+//      `RptWO_OrderAndSchedule_01_New20181115`     (`BizHTC.Report.cs:14423`)  ← nhánh `dataWH == false`
+//      `RptWO_OrderAndSchedule_01_WH_New20181119`  (`Biz.HTC.WH.cs:166472`)    ← nhánh `dataWH == true`
+//    Form đặt **`bool CheckWH = true;` CỨNG** ngay trước lời gọi (`FrmKHSXTongHopTTHangHoa.cs:408`)
+//    ⇒ **chỉ bản `_WH` chạy thật**; bản `_New20181115` **CHẾT từ giao diện**. Port theo bản `_WH`.
+//    3B: md5 khớp cả 2 máy — biz `31a75b2fdbf1d2ec46e2c1a2a1d1e3f1`(xem manifest), form UTF-16 (đọc bằng Select-String).
+// 🔴 **GROUP-BY ĐỘNG do người dùng chọn**, nhưng **THỨ TỰ CỘT do MẢNG TRẮNG DANH quyết định**, không
+//    phải thứ tự người dùng tick: `foreach (var strScan in arrstrColumnGroupBy)` duyệt mảng cố định
+//    `[ModelCode, SpecCode, SpecDescription, ColorCode, ColorExtCode, ColorExtNameVN, ColorIntCode,
+//    ColorIntNameVN]` (`Biz.HTC.WH.cs:166542`). Rỗng ⇒ **ném lỗi** `…_InvalidGroupByList`.
+//    ⚠️ Phép kiểm là `strGroupByList.Contains(strScan.ToUpper())` — **so KHỚP CHUỖI CON**, không phải so
+//      phần tử. Hiện KHÔNG có mã nào là chuỗi con của mã khác nên vô hại, nhưng thêm mã kiểu
+//      `MCC_COLORCODE2` sau này sẽ **bật kèm** `MCC_COLORCODE` một cách im lặng. Port dùng so KHỚP ĐÚNG
+//      và ghi rõ khác biệt này.
+// 🔴 **SÁU rổ số liệu**, ghép bằng `#tbl_RptFrame` = `union` (distinct) khoá group-by của **cả sáu**:
+//    1) `SOApprove`   — xe trên đơn **đã xác nhận** `SOStatus in ('A2')`, chưa xuất kho `(*)`;
+//                       tách theo **tỉ lệ hoàn thành nghĩa vụ** C0/C1/C100/CA.
+//    2) `SONotApprove`— đơn **chưa xác nhận** `SOStatus in ('P','A1')` → `Sum(RequestedQuantity)`.
+//    3) `CVInStock`   — VIN `CQStartDate <= @strTDate` (đã kiểm tra chất lượng), chưa xuất kho `(*)`.
+//    4) `CVAtPort`    — VIN **chưa** có CQ (`is null or > @strTDate`) **và** `ctpl.ShippingDateEnd <= @strTDate`.
+//    5) `CVOnShip`    — 🔴 xem ghi chú `(**)` ngay dưới.
+//    6) `WOSchDtl`    — 7 số lượng lịch sản xuất.
+//    `(*)` **kỹ thuật "lọc ngược"**: `left join #tbl_CDOD_Active` + `where cdod.CarId is null`, với
+//    `#tbl_CDOD_Active` = mảnh dùng chung `…FilterActive_01("and (cdod.DeliveryOutDate <= @strTDate)")`.
+// 🔴 **`(**)` DÒNG ACTIVE vs DÒNG COMMENT — nguồn CỐ Ý dùng cột "sai"**: rổ `CVOnShip` có
+//      `--and (ctpl.ShippingDateStart <= @strTDate) -- … Tuy nhiên Mệnh đề này nên dùng ctpl.CreatedDate thì hợp lý hơn (**)`
+//      `and (ctpl.CreatedDate <= @strTDate) -- (**)`      ← **DÒNG ĐANG CHẠY**
+//    ⇒ "đang trên tàu" tính theo **ngày TẠO packing list**, không theo ngày bắt đầu ship. Port theo dòng ACTIVE.
+// 🔴 **Trường hợp thứ hai còn rõ hơn** (`#tbl_WO_DoneButNotFraming`):
+//      `--and f.SumQty > IsNull(hv.SumQty, 0.0) -- Dùng Đk này thì Đúng về Lý thuyết.`
+//      `and f.SumQty != IsNull(hv.SumQty, 0.0) -- Dùng Đk này để tìm Thêm những VIN bị sai lệch WO.`
+//    ⇒ nguồn **cố tình bỏ bản "đúng lý thuyết"** để **bắt cả trường hợp thừa VIN**. Hệ quả:
+//      `hv_FramingQty` và `QtyFraming` **CÓ THỂ ÂM một cách CÓ CHỦ ĐÍCH** — đó chính là tín hiệu lệch dữ
+//      liệu mà báo cáo muốn phơi ra. **TUYỆT ĐỐI không kẹp về 0.**
+// 🔴 **"Lịch mới nhất" là MỘT MỐC TOÀN CỤC, không phải mới-nhất-theo-WO**:
+//      `select Max(CreatedDate) into #tbl_WO_SchOnly from WO_Schedule where CreatedDate <= @strTDate`
+//      (**không có `group by`**) rồi `inner join WO_ScheduleDetail on t.CreatedDate = wo.CreatedDate`.
+//    ⇒ chỉ các dòng thuộc **đúng một ngày tạo** sống sót. Port thành "mới nhất theo WorkOrderNo" là **SAI**.
+//    Ghép tiếp bằng **`union all`** (KHÔNG distinct) với `#tbl_WO_DoneButNotFraming` ⇒ một WO **có thể
+//    xuất hiện hai lần theo thiết kế**.
+//    Công thức suy ra: `QtyVIN = IsNull(hv.SumQty,0)` · `QtyFraming = QtyProduct - QtyVIN` ·
+//      `QtyRemain = QtyOrder - QtyProduct` · `QtyPlan = QtyOrder - QtyProduct - QtyRemainOrder`.
+// ✅ **RBAC**: nguồn gọi `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` (**bắt buộc FlagDirect**) và
+//    bind `@strBUPatternOfUser = drAbilityOfUser["BUPattern"]` — có kiểm thật, không phải 8 ca đã ghi nhận.
+// 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC** (luật cứng):
+//    · `Pmt_GuaranteeDetail` + `mySql_GetClauseSelect_CachingForPaymentTotal(#tbl_Pmt_PaymentDetailTotal_Deposit,
+//      'F', true)` (chỉ tiền cọc **đã nổi** trên tài khoản) **chưa có trong MiniHTC** ⇒ bốn cột
+//      `pmpd_DutyCompleted_C0/C1/C100` trả **null**; riêng `CA` = tổng số xe nên tính được.
+//    · Bảng `WO_WorkOrder` (`ScheduleEndDate`) và `Ord_PerformanceInvoiceDetail.WorkOrderNo+Quantity`
+//      chưa đủ ⇒ **nhánh `#tbl_WO_DoneButNotFraming` của `union all` KHÔNG được dựng**; cờ
+//      `woDoneButNotFramingSkipped` báo rõ, **không bịa số**.
+app.MapGet("/api/reports/wo-order-and-schedule", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? groupByList, string? soTypeList) =>
+{
+    var SEP = ((char)1).ToString();   // nguồn dùng (char)1 làm dấu ngăn khoá gộp
+    var asOf = (tDate ?? DateTime.Now).Date;
+
+    // Trắng danh + THỨ TỰ do mảng nguồn quyết định (không theo thứ tự người dùng tick).
+    var whitelist = new[] { "mcs_ModelCode", "mcs_SpecCode", "mcs_SpecDescription",
+                            "mcc_ColorCode", "mcc_ColorExtCode", "mcc_ColorExtNameVN",
+                            "mcc_ColorIntCode", "mcc_ColorIntNameVN" };
+    var picked = (groupByList ?? "").ToUpperInvariant()
+        .Split(new[] { ',', ';', '|' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).ToHashSet();
+    var groupCols = whitelist.Where(c => picked.Contains(c.ToUpperInvariant())).ToList();
+    if (groupCols.Count == 0)
+        return Results.BadRequest(new { error = "RptWO_OrderAndSchedule_01_InvalidGroupByList", whitelist });
+
+    var soTypes = (soTypeList ?? "").Split(new[] { ',', ';', '|' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).ToHashSet();
+
+    // ---- `#tbl_CDOD_Active` — lọc ngược (*): CarId có LXX active VÀ đã xuất kho tới mốc.
+    var cdodActive = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                    && x.DeliveryOutDate != null && x.DeliveryOutDate <= asOf)
+        .Select(x => x.CarId ?? x.Vin).ToListAsync()).ToHashSet();
+
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.ModelCode, s.SpecDesc }).ToListAsync();
+    var specByCode = specs.GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtCode, c.ColorExtNameVN, c.ColorIntCode, c.ColorIntNameVN })
+        .ToListAsync();
+    var colorByKey = colors.GroupBy(c => (c.ModelCode ?? "") + SEP + (c.ColorCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.First());
+
+    // Khoá group-by của một (model, spec, color) — dựng ĐÚNG thứ tự `groupCols`.
+    string? GKey(string? model, string? spec, string? color)
+    {
+        specByCode.TryGetValue(spec ?? "", out var sp);
+        colorByKey.TryGetValue((model ?? "") + SEP + (color ?? ""), out var cl);
+        // `inner join Mst_CarSpec` + `inner join Mst_CarColor` ⇒ thiếu một trong hai là LOẠI dòng.
+        if (sp is null || cl is null) return null;
+        var parts = groupCols.Select(c => c switch
+        {
+            "mcs_ModelCode" => sp.ModelCode ?? "",
+            "mcs_SpecCode" => sp.SpecCode ?? "",
+            "mcs_SpecDescription" => sp.SpecDesc ?? "",
+            "mcc_ColorCode" => cl.ColorCode ?? "",
+            "mcc_ColorExtCode" => cl.ColorExtCode ?? "",
+            "mcc_ColorExtNameVN" => cl.ColorExtNameVN ?? "",
+            "mcc_ColorIntCode" => cl.ColorIntCode ?? "",
+            "mcc_ColorIntNameVN" => cl.ColorIntNameVN ?? "",
+            _ => ""
+        });
+        return string.Join(SEP, parts);
+    }
+
+    // ---- Rổ 1: `SOApprove` — SOStatus in ('A2'), xe còn active, chưa xuất kho (*).
+    var soHeads = await db.SalesOrders.Where(o => o.OrgId == t.OrgId)
+        .Select(o => new { o.Id, o.SoCode, o.Status, o.OrderType }).ToListAsync();
+    bool SoTypeOk(string? ty) => soTypes.Count == 0 || soTypes.Contains((ty ?? "").ToUpperInvariant());
+    var soApprovedIds = soHeads.Where(o => o.Status == "A2" && SoTypeOk(o.OrderType)).Select(o => o.Id).ToHashSet();
+    var soNotApprIds = soHeads.Where(o => (o.Status == "P" || o.Status == "A1") && SoTypeOk(o.OrderType)).Select(o => o.Id).ToHashSet();
+
+    var carsAll = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1").ToListAsync();
+    var soNoById = soHeads.ToDictionary(o => o.Id, o => o.SoCode);
+    var approvedSoNos = soApprovedIds.Select(i => soNoById[i]).ToHashSet();
+    var carsSoApprove = carsAll
+        .Where(c => c.SOCode != null && approvedSoNos.Contains(c.SOCode) && !cdodActive.Contains(c.VIN))
+        .ToList();
+
+    var sumSoApprove = new Dictionary<string, (decimal CA, int Cars)>();
+    foreach (var c in carsSoApprove)
+    {
+        var k = GKey(c.ModelCode, c.SpecCode, c.ColorCode);
+        if (k is null) continue;
+        sumSoApprove.TryGetValue(k, out var v);
+        sumSoApprove[k] = (v.CA + 1m, v.Cars + 1);
+    }
+
+    // ---- Rổ 2: `SONotApprove` — Sum(RequestedQuantity) trên dòng đơn chưa xác nhận.
+    var soLines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var sumSoNotApprove = new Dictionary<string, decimal>();
+    foreach (var l in soLines.Where(l => soNotApprIds.Contains(l.SalesOrderId)))
+    {
+        var k = GKey(l.ModelCode, l.SpecCode, l.ColorCode);
+        if (k is null) continue;
+        sumSoNotApprove.TryGetValue(k, out var v);
+        sumSoNotApprove[k] = v + l.RequestedQuantity;
+    }
+
+    // ---- Rổ 3/4/5: VIN theo ba trạng thái vận chuyển.
+    var pls = await db.PackingLists.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PLNo, p.ShippingDateEnd, p.CreatedAt }).ToListAsync();
+    var plByNo = pls.GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First());
+
+    var sumInStock = new Dictionary<string, int>();
+    var sumAtPort = new Dictionary<string, int>();
+    var sumOnShip = new Dictionary<string, int>();
+    void Bump(Dictionary<string, int> d, string? k) { if (k is null) return; d.TryGetValue(k, out var v); d[k] = v + 1; }
+
+    foreach (var cv in carsAll)
+    {
+        if (cdodActive.Contains(cv.VIN)) continue;                       // (*)
+        var k = GKey(cv.ModelCode, cv.SpecCode, cv.ColorCode);
+        if (k is null) continue;
+        var hasCq = cv.CQStartDate != null && cv.CQStartDate <= asOf;
+        if (hasCq) { Bump(sumInStock, k); continue; }                    // Rổ 3
+        // Rổ 4/5 cần packing list (`inner join CT_PackingList`).
+        if (cv.PackingListNo is null || !plByNo.TryGetValue(cv.PackingListNo, out var pl)) continue;
+        var noCq = cv.CQStartDate == null || cv.CQStartDate > asOf;
+        if (noCq && pl.ShippingDateEnd != null && pl.ShippingDateEnd <= asOf) { Bump(sumAtPort, k); continue; }
+        // 🔴 (**) DÒNG ACTIVE dùng `ctpl.CreatedDate`, KHÔNG phải `ShippingDateStart` (đã bị comment).
+        if (pl.CreatedAt <= asOf && (pl.ShippingDateEnd == null || pl.ShippingDateEnd > asOf)) Bump(sumOnShip, k);
+    }
+
+    // ---- Rổ 6: `WOSchDtl`. "Lịch mới nhất" = MỘT mốc TOÀN CỤC (Max(CreatedDate), KHÔNG group by).
+    var schedLines = await db.WoScheduleLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var latestCreated = schedLines.Where(l => l.CreatedDate != null && l.CreatedDate <= asOf)
+        .Select(l => l.CreatedDate!.Value).DefaultIfEmpty().Max();
+    var schedLatest = latestCreated == default
+        ? new List<WoScheduleLine>()
+        : schedLines.Where(l => l.CreatedDate == latestCreated).ToList();
+
+    // `#tbl_WO_HaveVIN` — VIN đã SX (join packing list tạo tới mốc).
+    var haveVin = new Dictionary<string, decimal>();
+    foreach (var cv in carsAll)
+    {
+        if (cv.PackingListNo is null || !plByNo.TryGetValue(cv.PackingListNo, out var pl)) continue;
+        if (pl.CreatedAt > asOf) continue;
+        var wk = (cv.WorkOrderNo ?? "") + SEP + (cv.SpecCode ?? "") + SEP + (cv.ModelCode ?? "") + SEP + (cv.ColorCode ?? "");
+        haveVin.TryGetValue(wk, out var v);
+        haveVin[wk] = v + 1m;
+    }
+
+    var sumWoSch = new Dictionary<string, decimal[]>();   // [QtyOrder,QtyProduct,QtyRemain,QtyVIN,QtyFraming,QtyPlan,QtyRemainOrder]
+    foreach (var l in schedLatest)
+    {
+        var k = GKey(l.ModelCode, l.SpecCode, l.ColorCode);
+        if (k is null) continue;
+        var wk = l.WorkOrderNo + SEP + l.SpecCode + SEP + l.ModelCode + SEP + l.ColorCode;
+        var qtyVin = haveVin.TryGetValue(wk, out var hv) ? hv : 0m;
+        decimal qOrder = l.QtyOrder, qProd = l.QtyProduct, qRemOrd = l.QtyRemainOrder;
+        // 🔴 QtyFraming CÓ THỂ ÂM — có chủ đích (tín hiệu lệch VIN/WO). KHÔNG kẹp về 0.
+        var row = new[] { qOrder, qProd, qOrder - qProd, qtyVin, qProd - qtyVin, qOrder - qProd - qRemOrd, qRemOrd };
+        if (!sumWoSch.TryGetValue(k, out var acc)) sumWoSch[k] = (decimal[])row.Clone();
+        else for (int i = 0; i < row.Length; i++) acc[i] += row[i];
+    }
+
+    // ---- `#tbl_RptFrame` — union (distinct) khoá của CẢ SÁU rổ.
+    var frame = sumSoApprove.Keys
+        .Union(sumSoNotApprove.Keys).Union(sumInStock.Keys)
+        .Union(sumAtPort.Keys).Union(sumOnShip.Keys).Union(sumWoSch.Keys)
+        .Distinct().OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+    var items = frame.Select(k =>
+    {
+        var parts = k.Split((char)1);
+        var g = new Dictionary<string, string?>();
+        for (int i = 0; i < groupCols.Count && i < parts.Length; i++) g[groupCols[i]] = parts[i];
+        sumWoSch.TryGetValue(k, out var w);
+        return new
+        {
+            groupBy = g,
+            // Rổ 1 — ba cột tỉ lệ hoàn thành nghĩa vụ để NULL (nợ tầng thanh toán/bảo lãnh).
+            pmpd_DutyCompleted_C0 = (decimal?)null,
+            pmpd_DutyCompleted_C1 = (decimal?)null,
+            pmpd_DutyCompleted_C100 = (decimal?)null,
+            pmpd_DutyCompleted_CA = sumSoApprove.TryGetValue(k, out var sa) ? sa.CA : 0m,
+            osod_RequestedQty = sumSoNotApprove.TryGetValue(k, out var sn) ? sn : 0m,
+            cv_QtyInStock = sumInStock.TryGetValue(k, out var qi) ? qi : 0,
+            cv_QtyAtPort = sumAtPort.TryGetValue(k, out var qp) ? qp : 0,
+            cv_QtyOnShip = sumOnShip.TryGetValue(k, out var qs) ? qs : 0,
+            woschd_QtyOrder = w is null ? 0m : w[0],
+            woschd_QtyProduct = w is null ? 0m : w[1],
+            woschd_QtyRemain = w is null ? 0m : w[2],
+            woschd_QtyVIN = w is null ? 0m : w[3],
+            woschd_QtyFraming = w is null ? 0m : w[4],
+            woschd_QtyPlan = w is null ? 0m : w[5],
+            woschd_QtyRemainOrder = w is null ? 0m : w[6]
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf,
+        groupByColumns = groupCols,
+        latestScheduleDate = latestCreated == default ? (DateTime?)null : latestCreated,
+        count = items.Count,
+        items,
+        twinNote = "BAY SINH DOI DA TRACE: co HAI ban _New20181115 (BizHTC.Report.cs:14423, nhanh dataWH=false) va _WH_New20181119 (Biz.HTC.WH.cs:166472, nhanh dataWH=true). Form dat 'bool CheckWH = true;' CUNG (FrmKHSXTongHopTTHangHoa.cs:408) => CHI ban _WH chay that; ban _New20181115 CHET tu giao dien. Port theo ban _WH.",
+        groupByNote = "Group-by DONG do nguoi dung chon nhung THU TU COT do MANG TRANG DANH quyet dinh (foreach arrstrColumnGroupBy), khong phai thu tu tick. Rong => nem loi RptWO_OrderAndSchedule_01_InvalidGroupByList.",
+        containsQuirk = "Nguon kiem bang strGroupByList.Contains(strScan.ToUpper()) - SO KHOP CHUOI CON, khong phai so phan tu. Hien khong ma nao la chuoi con cua ma khac nen vo hai, nhung them ma kieu MCC_COLORCODE2 sau nay se BAT KEM MCC_COLORCODE mot cach im lang. Port dung so KHOP DUNG.",
+        reverseFilterNote = "(*) Ky thuat 'loc nguoc': left join #tbl_CDOD_Active + where cdod.CarId is null, voi #tbl_CDOD_Active = manh dung chung ...FilterActive_01('and (cdod.DeliveryOutDate <= @strTDate)').",
+        activeVsCommentNote1 = "(**) Ro CVOnShip: dong '--and (ctpl.ShippingDateStart <= @strTDate)' BI COMMENT kem ghi chu 'nen dung ctpl.CreatedDate thi hop ly hon', dong DANG CHAY la 'and (ctpl.CreatedDate <= @strTDate)'. => 'dang tren tau' tinh theo NGAY TAO packing list, khong theo ngay bat dau ship. Port theo dong ACTIVE.",
+        activeVsCommentNote2 = "#tbl_WO_DoneButNotFraming: '--and f.SumQty > IsNull(hv.SumQty,0) -- Dung Dk nay thi DUNG VE LY THUYET' bi COMMENT; dong chay la 'and f.SumQty != IsNull(hv.SumQty,0) -- de tim THEM nhung VIN bi sai lech WO'. => nguon CO TINH bo ban 'dung ly thuyet'. He qua: hv_FramingQty va QtyFraming CO THE AM CO CHU DICH - do chinh la tin hieu lech du lieu bao cao muon phoi ra. TUYET DOI khong kep ve 0.",
+        latestScheduleNote = "'Lich moi nhat' la MOT MOC TOAN CUC: 'select Max(CreatedDate) into #tbl_WO_SchOnly from WO_Schedule where CreatedDate <= @strTDate' KHONG CO group by, roi 'inner join WO_ScheduleDetail on t.CreatedDate = wo.CreatedDate'. Chi cac dong thuoc DUNG MOT ngay tao song sot. Port thanh 'moi nhat theo WorkOrderNo' la SAI.",
+        unionAllNote = "#tbl_WOSchCombine ghep bang UNION ALL (khong distinct) voi #tbl_WO_DoneButNotFraming => mot WO CO THE xuat hien hai lan theo thiet ke.",
+        derivedFormulas = "QtyVIN = IsNull(hv.SumQty,0) | QtyFraming = QtyProduct - QtyVIN | QtyRemain = QtyOrder - QtyProduct | QtyPlan = QtyOrder - QtyProduct - QtyRemainOrder.",
+        rbacNote = "Nguon goi myCommon_CheckHTCDirect(..., TConst.Flag.Active) - BAT BUOC FlagDirect - va bind @strBUPatternOfUser = drAbilityOfUser['BUPattern']. Co kiem that, KHAC 8 ca lo hong da ghi nhan.",
+        moneyDebt = "NO - KHONG DOAN CONG THUC: Pmt_GuaranteeDetail va mySql_GetClauseSelect_CachingForPaymentTotal(#tbl_Pmt_PaymentDetailTotal_Deposit, 'F', true) (chi tien coc DA NOI tren tai khoan) chua co trong MiniHTC => pmpd_DutyCompleted_C0/C1/C100 tra NULL. Rieng CA = tong so xe nen tinh duoc.",
+        woDoneButNotFramingSkipped = true,
+        woDebt = "NO: bang WO_WorkOrder (ScheduleEndDate) va Ord_PerformanceInvoiceDetail (WorkOrderNo+Quantity) chua du trong MiniHTC => nhanh #tbl_WO_DoneButNotFraming cua union all KHONG duoc dung. Khong bia so."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-retail-sales-detail", async (
     AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? buPattern) =>
 {
@@ -7421,7 +7681,7 @@ app.MapPost("/api/woschedules", async (WoScheduleDto dto, AppDbContext db, ITena
     foreach (var l in lines)
     {
         var prod = Math.Max(0, Math.Min(l.QtyProduct, l.QtyOrder));
-        db.WoScheduleLines.Add(new WoScheduleLine { OrgId = t.OrgId, WoScheduleId = s2.Id, WorkOrderNo = l.WorkOrderNo.Trim(), ModelCode = l.ModelCode ?? "", SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "", QtyOrder = l.QtyOrder, QtyProduct = prod, QtyRemain = l.QtyOrder - prod });
+        db.WoScheduleLines.Add(new WoScheduleLine { OrgId = t.OrgId, WoScheduleId = s2.Id, WorkOrderNo = l.WorkOrderNo.Trim(), ModelCode = l.ModelCode ?? "", SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "", QtyOrder = l.QtyOrder, QtyProduct = prod, QtyRemain = l.QtyOrder - prod, CreatedDate = DateTime.Now, QtyRemainOrder = l.QtyRemainOrder ?? 0m });
     }
     await db.SaveChangesAsync();
     // Neu tat ca dong da du SL -> Closed
@@ -7435,7 +7695,7 @@ app.MapGet("/api/woschedules/{no}/lines", async (string no, AppDbContext db, ITe
     var s = await db.WoSchedules.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ScheduleNo == no);
     if (s is null) return Results.NotFound(new { no });
     var lines = await db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id)
-        .Select(l => new { l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain }).ToListAsync();
+        .Select(l => new { l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain, l.CreatedDate, l.QtyRemainOrder }).ToListAsync();
     return Results.Ok(new { s.ScheduleNo, s.Status, count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -38138,7 +38398,7 @@ record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
 record FnExpCalcLineDto(string CarId, string? SOCode, decimal FnDepositAmount, int FnDepositCountDate, decimal FnGrtAmount, int FnGrtCountDate, decimal PDAmount, int TermActual);
 record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineDto>? Lines);
-record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct);
+record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct, decimal? QtyRemainOrder);
 record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
 record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice, string? CarId = null, string? DealNoPrevious = null, string? PlateNo = null, DateTime? DeliveryDate = null, string? DeliveryStatus = null, string? CtrCarId = null);

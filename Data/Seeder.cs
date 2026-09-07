@@ -2297,6 +2297,10 @@ public static class Seeder
                 // #B72 - Car_VIN.CQStartDate / CQExpectedDate (quyet dinh RefDate va viec phan 4 nhom giao hang)
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQStartDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQExpectedDate\" timestamp NULL",
+                // ===== #B74 `WO_ScheduleDetail` — hai cột lịch SX =====
+                "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"WorkOrderNo\" text NULL",   // #B74
+                "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyRemainOrder\" numeric NOT NULL DEFAULT 0",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
