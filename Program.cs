@@ -12464,6 +12464,104 @@ app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantC
 // ⚠️ Form có nhánh `else if (dtEmail == null || dtEmail.Rows.Count <= 0)` rồi **gọi ngay `dtEmail.Clear()`**
 //   ⇒ nếu thật sự `null` thì **ném NullReferenceException**. Nhánh viết ra để xử lý `null` lại chính là
 //   nhánh làm sập. Guard tự mâu thuẫn.
+// ===== 🔴 #436 CHỌN KHÁCH ĐỂ GỬI THƯ (`Ser_Email_CustomerCar_Get`) — phân trang đếm theo **CẶP KHÁCH–XE** =====
+// TRACE: `FrmEmail_CustomerList` (674 dòng) → `EmailSendEmailService.SerEmailCustomerCarGetPaging`
+//   (`:1083`) → WS `Ser_Email_CustomerCar_Get` (`WSCarSv.asmx.cs:22646`) → biz (`BizCarSv.SendMail.cs:4735`).
+//
+// 🔴 **PHÂN TRANG SAI ĐƠN VỊ**: `Row_Number() over (order by t.CusID desc)` đánh số trên **tập ĐÃ NỐI**
+//   `Ser_Customer` ⟕ `ser_car`. Một khách có 3 xe chiếm **3 dòng** ⇒ "trang 30 khách hàng" thực chất là
+//   **30 cặp khách–xe**, và một khách có thể **bị cắt ngang giữa hai trang**. Màn hình gọi là
+//   *danh sách khách hàng*, nhưng đơn vị đếm là **xe**.
+//   📌 MiniHTC trả cả `totalPairs` lẫn `distinctCustomers` để thấy ngay chênh lệch.
+//
+// 🔴 **BA BẢN SAO của cùng một khối `Replace`** (`if "1" / if "0" / else`), mỗi khối lặp lại **tám** dòng
+//   thay thế giống hệt, chỉ khác một chuỗi `@IsCusEmail`:
+//     `"1"` → `and t.Email is not null and t.email <> ''`   (khách CÓ email)
+//     `"0"` → `and (t.Email is null or t.email = '')`       (khách KHÔNG có email)
+//     else  → `and 1=1`                                    (tất cả)
+//   ⚠️ Thêm một placeholder mới mà quên một nhánh ⇒ chuỗi `zzzzClause…` **lọt nguyên vào SQL**.
+//     Cùng bệnh copy-paste với #414 (ở đó là hai nhánh, đây là ba).
+//
+// 📌 **KẾT QUẢ ÂM TÍNH đáng ghi**: `left join ser_car car on t.cusid = car.cusid **and car.IsActive = 1**`
+//   — điều kiện đặt trong **ON**, không phải WHERE ⇒ **LEFT join VẪN SỐNG**, khách chưa có xe vẫn hiện.
+//   Làm đúng, ngược với #414/#421/#423 (ba lần LEFT join chết vì điều kiện rơi xuống WHERE).
+// ⚠️ `IsActive = 1` so **SỐ**, trong khi nhiều bảng khác cùng hệ dùng chuỗi `'1'`.
+// ⚠️ Tên/biển số/số khung/số máy lọc bằng `like %x%` dựng ở **tầng service**, nhưng toán tử do biz cấp qua
+//   `BuildClauseConditionSingle` ⇒ **chạy đúng** (cùng lệ đã kiểm ở #425).
+app.MapGet("/api/emailcustomers/search", async (AppDbContext db, ITenantContext t,
+    string? cusId, string? cusName, string? plateNo, string? frameNo, string? engineNo,
+    string? hasEmail, string? dealer, int? page, int? pageSize) =>
+{
+    var size = pageSize is > 0 ? pageSize!.Value : 30;
+    var cur = page is > 0 ? page!.Value : 1;
+
+    var custs = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId
+            && (dealer == null || c.DealerCode == dealer)).ToListAsync();
+
+    bool Like(string? v, string? pat) => string.IsNullOrWhiteSpace(pat)
+        || (v ?? "").Contains(pat!.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    // @IsCusEmail: "1" = có email · "0" = không có email · còn lại = tất cả.
+    var mode = (hasEmail ?? "").Trim();
+    var baseCusts = custs
+        .Where(c => string.IsNullOrWhiteSpace(cusId) || c.CusCode == cusId!.Trim())
+        .Where(c => Like(c.CusName, cusName))
+        .Where(c => mode == "1" ? !string.IsNullOrWhiteSpace(c.Email)
+                  : mode == "0" ? string.IsNullOrWhiteSpace(c.Email)
+                  : true)
+        .ToList();
+
+    // LEFT JOIN (điều kiện xe nằm ở ON) ⇒ khách CHƯA có xe vẫn xuất hiện, một dòng xe rỗng.
+    var carsByCus = cars.Where(c => c.CusID != null).GroupBy(c => c.CusID!)
+        .ToDictionary(g => g.Key, g => g.ToList());
+
+    var pairs = new List<object>();
+    foreach (var c in baseCusts.OrderByDescending(c => c.CusCode))
+    {
+        var list = carsByCus.TryGetValue(c.CusCode, out var cl) ? cl : new List<ServiceCar>();
+        var matched = list.Where(car => Like(car.PlateNo, plateNo) && Like(car.FrameNo, frameNo)
+                                     && Like(car.EngineNo, engineNo)).ToList();
+        // Lọc biển số/số khung/số máy nằm trên bảng XE ⇒ khách không có xe khớp thì không ra dòng nào,
+        // TRỪ khi người dùng không nhập ba ô đó (khi đó khách chưa có xe vẫn hiện — đúng LEFT join).
+        var noCarFilter = string.IsNullOrWhiteSpace(plateNo) && string.IsNullOrWhiteSpace(frameNo)
+                       && string.IsNullOrWhiteSpace(engineNo);
+        if (matched.Count == 0 && noCarFilter)
+        {
+            pairs.Add(new { c.CusCode, c.CusName, c.Email, c.Address, c.Tel, c.Mobile, c.DOB,
+                plateNo = (string?)null, frameNo = (string?)null, engineNo = (string?)null,
+                modelCode = (string?)null, tradeMark = (string?)null });
+            continue;
+        }
+        foreach (var car in matched)
+            pairs.Add(new { c.CusCode, c.CusName, c.Email, c.Address, c.Tel, c.Mobile, c.DOB,
+                plateNo = car.PlateNo, frameNo = car.FrameNo, engineNo = car.EngineNo,
+                modelCode = car.ModelCode, tradeMark = car.TradeMark });
+    }
+
+    var totalPairs = pairs.Count;
+    var rows = pairs.Skip((cur - 1) * size).Take(size).ToList();
+    var distinctCustomers = pairs.Select(p => p.GetType().GetProperty("CusCode")!.GetValue(p) as string)
+        .Distinct().Count();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, totalPairs, distinctCustomers,
+        page = cur, pageSize = size,
+        pagingUnitNote = "Nguồn đánh số dòng bằng Row_Number() trên tập ĐÃ NỐI khách ⟕ xe ⇒ một trang "
+            + "'30 khách hàng' thực chất là 30 CẶP KHÁCH–XE, và một khách nhiều xe có thể bị CẮT NGANG "
+            + "giữa hai trang. So totalPairs với distinctCustomers để thấy chênh lệch.",
+        hasEmailMode = mode.Length == 0 ? "all" : mode == "1" ? "hasEmail" : mode == "0" ? "noEmail" : "all",
+        threeCopiesNote = "Nguồn có BA bản sao của cùng một khối Replace (if \"1\" / if \"0\" / else), mỗi "
+            + "khối lặp tám dòng giống hệt, chỉ khác chuỗi @IsCusEmail. Thêm placeholder mới mà quên một "
+            + "nhánh ⇒ chuỗi zzzzClause… lọt nguyên vào SQL. Cùng bệnh copy-paste với #414.",
+        leftJoinAliveNote = "KẾT QUẢ ÂM TÍNH: điều kiện car.IsActive = 1 đặt trong ON (không phải WHERE) "
+            + "⇒ LEFT join VẪN SỐNG, khách chưa có xe vẫn hiện. Làm đúng, ngược với #414/#421/#423.",
+        isActiveNumericNote = "IsActive so bằng SỐ 1, trong khi nhiều bảng khác cùng hệ dùng chuỗi '1'.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/emailbatches/search", async (AppDbContext db, ITenantContext t,
     string? batchNo, string? sendBy, string? typeEmail, string? dealer,
     DateTime? createdFrom, DateTime? createdTo, DateTime? sentFrom, DateTime? sentTo) =>
