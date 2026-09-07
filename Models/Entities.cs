@@ -6105,7 +6105,16 @@ public sealed class ServiceEngineer
     public string? GroupRCode { get; set; }
     public string? Note { get; set; }
     public string Status { get; set; } = "1";
-    public string? EngineerType { get; set; }      // 1=CVDV,2=KTV sửa chữa chung,3=KTV đồng sơn,4=Khác
+    /// <summary>🔴 #338 ENGINEERTYPE — vai trò KTV. Chú thích cũ ghi "1=CVDV, 2=…, 3=…, 4=Khác"
+    /// là **suy đoán chưa kiểm**: nguồn dùng **mã CHỮ**, đủ **bảy** giá trị —
+    /// `CVDV` (cố vấn dịch vụ) · `BDN` · `SCC` · `KTVD` (đồng) · `KTVS` (sơn) · `NVPT` (phụ tùng) · `KHAC`.
+    /// Báo cáo KPI lọc thẳng theo các mã chữ này ⇒ dùng mã số thì mọi chỉ tiêu nhân sự = 0.
+    /// Không chỗ nào trong MiniHTC rẽ nhánh theo giá trị cũ nên đổi chú thích là an toàn.</summary>
+    public string? EngineerType { get; set; }
+    /// <summary>🔴 #338 DEALERCODE — báo cáo KPI đếm KTV **theo từng đại lý**
+    /// (`inner join Ser_Engineer se on md.DealerCode = se.DealerCode`). Thiếu cột này thì mọi
+    /// đại lý sẽ dùng chung một con số KTV toàn hệ thống.</summary>
+    public string? DealerCode { get; set; }
     public DateTime? StartWorkDate { get; set; }
     public DateTime? FinishWorkDate { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;

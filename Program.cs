@@ -6171,6 +6171,34 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         .Select(p => new { p.RoId, p.PartCode, p.ExpenseType, p.FlagAccessory,
             p.Factor, p.NeedQty, p.UnitPrice, p.Vat }).ToListAsync();
 
+    // ===== 🔴 #338 DANH MỤC KTV và KHOANG — cùng MỘT vị từ hiệu lực theo ngày =====
+    // Nguồn (cho cả `Ser_Engineer` lẫn `Ser_Cavity`): `Isactive = '1'` **và** ba nhánh
+    //   `(Start is null and Finish is null)`
+    //   `or (Start <= @strDateTo and Finish is null)`
+    //   `or (Start <= @strDateTo and Finish >= @strDateTo)`
+    // 🔴 Ngay phía trên là **bản CŨ bị comment** dùng `@strDateFrom`, kèm chú thích
+    //   *"20221220. HuongTTT. Ms Đông confirm luật cũ là sai. Đúng là lấy những KTV có Ngày bắt đầu
+    //   trong tháng tìm kiếm"* ⇒ port **bản ACTIVE (mốc dateTo)**, không port dòng comment.
+    // ⚠️ Nhánh 3 đòi `Finish >= dateTo` ⇒ **KTV nghỉ giữa tháng bị loại HẲN** khỏi kỳ đó
+    //   (không tính theo tỉ lệ ngày công). Đó là luật của nguồn, giữ nguyên.
+    bool Effective(DateTime? start, DateTime? finish) =>
+        (start == null && finish == null)
+        || (start != null && start <= dateTo && finish == null)
+        || (start != null && start <= dateTo && finish != null && finish >= dateTo);
+
+    static DateTime? AsDate(string? s) => DateTime.TryParse(s, out var v) ? v : (DateTime?)null;
+    bool EffectiveStr(string? start, string? finish) => Effective(AsDate(start), AsDate(finish));
+
+    var engineers = (await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId && e.Status == "1")
+            .Select(e => new { e.DealerCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate }).ToListAsync())
+        .Where(e => Effective(e.StartWorkDate, e.FinishWorkDate)).ToList();
+
+    var cavities = (await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1")
+            .Select(c => new { c.DealerCode, c.CavityType, c.StartUseDate, c.FinishUseDate }).ToListAsync())
+        // Cavity luu ngay dang CHUOI (khac ServiceEngineer dung DateTime) => doi truoc khi so.
+        //   Chuoi rong / khong parse duoc coi nhu NULL, dung nhu isnull cua nguon.
+        .Where(c => EffectiveStr(c.StartUseDate, c.FinishUseDate)).ToList();
+
     var created = 0;
     foreach (var d in dealers)
     {
@@ -6219,6 +6247,31 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         //     Port theo **CODE** (lệ: nguồn sự thật là câu lệnh đang chạy, không phải chú thích).
         var workDayQty = roIds.Where(r => r.DealerCode == d && r.ActualDeliveryDate != null)
             .Select(r => r.ActualDeliveryDate!.Value.Date).Distinct().Count();
+
+        // ===== 🔴 #338 ĐẾM KTV / KHOANG theo đại lý, rồi ra giờ công hành chính và các tỉ lệ =====
+        int NE(string type) => engineers.Count(e => e.DealerCode == d && e.EngineerType == type);
+        int NC(string type) => cavities.Count(c => c.DealerCode == d && c.CavityType == type);
+
+        // A.I — số lượng nhân sự theo vai trò (đếm từ danh mục, KHÔNG do người dùng khai).
+        var advisoryNumber = NE("CVDV");     // cố vấn dịch vụ
+        var enginerNumber = NE("SCC");       // KTV sửa chữa chung
+
+        // A.II — số khoang theo loại. Mã loại khoang: BDN · SCC · KHAC · KD (đồng) · KS (sơn) · BS (buồng sơn).
+        var cavMaintain = NC("BDN"); var cavRO = NC("SCC"); var cavOther = NC("KHAC");
+        var cavCopper = NC("KD"); var cavBP = NC("KS"); var cabinetPaint = NC("BS");
+
+        // A.IV.2 — giờ công HÀNH CHÍNH = (số KTV 4 loại) × số ngày làm việc × 8.
+        // ⚠️ Nguồn có **HAI công thức cũ bị comment** dùng tập loại KTV khác hẳn
+        //   (KTVD/KTVS/NVPT/KHAC, và một bản đếm theo KHOANG) — chỉ port bản **đang chạy**:
+        //   `BDN + SCC + KTVD + KTVS`.
+        var ktvCount = NE("BDN") + NE("SCC") + NE("KTVD") + NE("KTVS");
+        var workHourQty = (decimal)ktvCount * workDayQty * 8m;
+
+        // Tỉ lệ — mẫu chung: `<tử> / <mẫu1> / <mẫu2>`, làm tròn 1 số lẻ,
+        //   guard `khi mẫu nào = 0 thì trả 0` (không chia).
+        decimal Ratio(decimal num, decimal den1, decimal den2) =>
+            den1 == 0m || den2 == 0m ? 0m
+            : Math.Round(num / den1 / den2, 1, MidpointRounding.AwayFromZero);
 
         // ===== 🔴 #337 DOANH THU PHỤ TÙNG theo nguồn tiền =====
         //   `SUM(isnull(Factor,0) * isnull(Quantity,0) * isnull(Price,0) * (1 + VAT*0.01))`
@@ -6269,6 +6322,20 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
             WorkHourSCDQty = whSCD, WorkHourSCSQty = whSCS,
             WorkHourFeeQty = whBDN + whSCC + whSCD + whSCS,
             WorkDayQty = workDayQty,
+
+            // #338 nhân sự / khoang / giờ công hành chính.
+            AdvisoryNumber = advisoryNumber, EnginerNumber = enginerNumber,
+            CavityMaintainNumber = cavMaintain, CavityRONumber = cavRO, CavityOtherNumber = cavOther,
+            CavityCopperNumber = cavCopper, CavityBPNumber = cavBP, CabinetPaintNumber = cabinetPaint,
+            WorkHourQty = workHourQty,
+
+            // #338 tỉ lệ khai thác — lượt xe / nguồn lực / ngày.
+            CarPerAdviserDay = Ratio(ro.Count, advisoryNumber, workDayQty),
+            CountBDDPerCavityMaintain = Ratio(N("BDD"), cavMaintain, workDayQty),
+            CountSCCPerCavityRO = Ratio(N("SCC"), cavRO, workDayQty),
+            CountSCDPerCavityCopper = Ratio(N("SCD"), cavCopper, workDayQty),
+            CountSCSPerCavityBP = Ratio(N("SCS"), cavBP, workDayQty),
+            CountSCSPerCabinetPaint = Ratio(N("SCS"), cabinetPaint, workDayQty),
             Status = "F",                       // nguồn đặt Finished ngay lúc tạo
             CreatedBy = dto.CreatedBy,
 
@@ -6315,7 +6382,13 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
             "ServiceAmount<Loại><NguồnTiền> (18 cặp)",                            // #336
             "WorkHour{BDN,SCC,SCD,SCS}Qty", "WorkHourFeeQty", "WorkDayQty",       // #336
             "PartAmount{RoRepair,RoWarranty,RoInsurance,Local,Shell}",            // #337
+            "AdvisoryNumber/EnginerNumber", "Cavity*Number/CabinetPaintNumber",   // #338
+            "WorkHourQty", "CarPerAdviserDay", "Count<Loại>Per<Khoang>",          // #338
         },
+        // 🔴 #338 `CavityParkingNumber`: nguồn có cột nhưng **câu tính đã bị COMMENT**
+        //   (`--, (select count(0) … CavityType='BS') CavityParkingNumber`) ⇒ **luôn rỗng trong MỌI
+        //   báo cáo**, giống họ `Count*Local_SCL` ở #335. Không tính, và nói rõ vì sao.
+        alwaysEmptyInSource = new[] { "CavityParkingNumber" },
         // 🔴 #337 Danh sách mã dầu nhớt CHƯA khai ⇒ `PartAmountShell` = 0 và bốn nhóm kia **không loại**
         //   dầu nhớt ra, nên bị cộng dư. Trả cờ để phân biệt "chưa cấu hình" với "không có số liệu".
         shellCodeConfigured = shellCodes.Count > 0,
@@ -6326,7 +6399,9 @@ app.MapPost("/api/reportkpis/auto", async (ReportKpiAutoDto dto, AppDbContext db
         // `PartAmountOut` CHƯA port: nguồn lấy từ **phiếu XUẤT KHO** (`Ser_Inv_StockOut` + chi tiết),
         //   không phải dòng phụ tùng của lệnh; lại lọc bằng `smpt.TypeName <> N'Phụ kiện'` —
         //   **so khớp theo TÊN loại phụ tùng**, không theo mã ⇒ đổi tên danh mục là hỏng bộ lọc.
-        pendingGroups = new[] { "WorkHourQty", "WorkHourActualQty", "WorkHourPerCarRO", "PartAmountOut", "PerCavity/PerAdviser ratios", "ProfitRate*" },
+        // Còn lại đều cần dữ liệu MiniHTC chưa theo dõi: `WorkHourActualQty` (phút sửa chữa thực tế,
+        //   trừ thời gian tạm dừng) — và `WorkHourPerCarRO` ăn theo nó; `PartAmountOut` (phiếu xuất kho).
+        pendingGroups = new[] { "WorkHourActualQty", "WorkHourPerCarRO", "PartAmountOut", "ProfitRate*" },
         unitPrices = new { upBDN, upSCC, upSCD, upSCS },
         // 🔴 Đơn giá = 0 ⇒ mọi giờ công của nhóm đó bằng 0 (guard của nguồn), KHÔNG phải lỗi tính.
         unitPriceMissing = new[] { upBDN, upSCC, upSCD, upSCS }.Count(v => v == 0m),
@@ -32074,8 +32149,9 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no }; db.ServiceEngineers.Add(e); }
     e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.Status = dto.Status ?? "1";
     e.EngineerType = dto.EngineerType; e.StartWorkDate = dto.StartWorkDate; e.FinishWorkDate = dto.FinishWorkDate; e.UpdatedAt = DateTime.Now;
+    e.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();   // #338 §12
     await db.SaveChangesAsync();
-    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate });
+    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate, e.DealerCode });
 }).RequireAuthorization();
 
 // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
@@ -38119,7 +38195,8 @@ record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = nu
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
-record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate);
+record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
+    string? DealerCode = null);   // #338 §12
 /// <summary>
 /// 1 khách hàng được chọn vào chiến dịch (lưới FrmCamp_CustomerList).
 /// Nguồn đặt Status="2" (Chưa liên hệ) cho mọi dòng mới thêm.
