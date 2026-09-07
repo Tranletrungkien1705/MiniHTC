@@ -47094,6 +47094,55 @@ app.MapGet("/api/reports/ro-revenue-avg-by-month", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #520 DANH MỤC MÀU BIỂN SỐ — VÀ BA BỘ LỌC **BỊ BỎ IM LẶNG** =====
+// Nguồn: `BizCarSv.Master.cs:5743 Mst_PlateColor_Get`. Hàm này **không WS nào gọi**; nó sống qua
+//   **kênh vào thứ năm** `TERP.HTCService.ClientService/Services/Mst_PlateColorService.cs:40` (#519).
+// Endpoint: `GET /api/platecolormsts`. **§12** thêm bảng + entity `PlateColorMst` + `DbSet` + Seeder.
+//
+// 🔴🔴 **BA THAM SỐ LỌC ĐỀU CHẾT** (luật #410, lần này truy được tới **giá trị thật**):
+//     `BuildClause("and", "t.PlateColorCode", strPlateColorCodeList, "@p", ref …)`
+//     `BuildClause("and", "t.PlateColorName", strPlateColorNameList, …)`
+//     `BuildClause("and", "t.FlagActive",     strFlagActiveList,     …)`
+//   `BuildClause` (`CommonUtils/DataUtils.cs`) chỉ sinh mệnh đề khi chuỗi **bắt đầu bằng toán tử**
+//   (`=` · `!=` · `>` · `<` · `>=` · `<=` · `LIKE` · `NOT LIKE` · `IS NULL` · `IS NOT NULL` · `IN` · `NOT IN`);
+//   **không có nhánh `else`** ⇒ chuỗi không toán tử để `nCase = 0` ⇒ **không nối gì cả**.
+//   Mà bên gọi (`Mst_PlateColorService`) truyền **thẳng giá trị người dùng nhập** (`PlateColorCode`,
+//   `platecolorname`, `flagactive`) — **không bọc toán tử**. ⇒ Cả ba điều kiện **biến mất**, hàm
+//   **luôn trả TOÀN BỘ danh mục**, kể cả bản ghi `FlagActive = '0'` (đã ngừng dùng).
+//   ⇒ Màn chọn màu biển số hiện **cả màu đã khai tử**, và ô tìm kiếm **không có tác dụng**.
+//   Port: lọc **thật** + trả cờ `sourceFiltersSilentlyDropped` để nêu đúng chỗ lệch.
+// ⚠️ `order by t.IndexColor` — sắp theo **cột thứ tự riêng**, không theo mã/tên; `IndexColor` NULL thì
+//   SQL Server xếp **lên đầu**. Port giữ đúng thứ tự đó (NULL trước) thay vì sắp theo mã.
+// ⚠️ Câu lấy `t.*` ⇒ hình dạng kết quả **bám theo lược đồ bảng**; entity phía client liệt kê bốn cột
+//   (`PlateColorCode` · `PlateColorName` · `ColorHexCode` · `FlagActive`) cộng `IndexColor` dùng để sắp.
+app.MapGet("/api/platecolormsts", async (AppDbContext db, ITenantContext t,
+    string? code, string? name, string? flagActive, bool? all) =>
+{
+    var qy = db.PlateColorMsts.Where(x => x.OrgId == t.OrgId);
+    // Nguồn ĐỊNH lọc ba tham số này nhưng cả ba bị BuildClause bỏ im lặng — ở đây lọc thật.
+    if (!string.IsNullOrWhiteSpace(code)) qy = qy.Where(x => x.PlateColorCode == code!.Trim());
+    if (!string.IsNullOrWhiteSpace(name)) qy = qy.Where(x => x.PlateColorName != null
+        && x.PlateColorName!.Contains(name!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+    else if (all != true) qy = qy.Where(x => x.FlagActive == "1");
+
+    var items = await qy
+        .OrderBy(x => x.IndexColor == null ? 0 : 1).ThenBy(x => x.IndexColor)   // NULL lên đầu, đúng SQL Server
+        .ThenBy(x => x.PlateColorCode)
+        .Select(x => new { x.Id, x.PlateColorCode, x.PlateColorName, x.ColorHexCode, x.IndexColor, x.FlagActive })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        tableName = "Mst_PlateColor",
+        sourceFiltersSilentlyDropped = new[] { "PlateColorCode", "PlateColorName", "FlagActive" },
+        sourceReturnsAllRowsIncludingInactive = true,
+        sourceOrdersByIndexColorOnly = true,
+        liveOnlyViaClientServiceChannel = "Mst_PlateColorService.cs:40 (#519)",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {

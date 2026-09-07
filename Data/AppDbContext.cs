@@ -255,6 +255,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ROWarrantyTypePhoto> ROWarrantyTypePhotos => Set<ROWarrantyTypePhoto>();
     public DbSet<WarrantyWorkMst> WarrantyWorkMsts => Set<WarrantyWorkMst>();
     public DbSet<CompartmentMst> CompartmentMsts => Set<CompartmentMst>();
+    public DbSet<PlateColorMst> PlateColorMsts => Set<PlateColorMst>();   // #520
     public DbSet<StaffMst> StaffMsts => Set<StaffMst>();
     public DbSet<VinModelOrginalMst> VinModelOrginalMsts => Set<VinModelOrginalMst>();
     public DbSet<ExtraWorkLimitationMst> ExtraWorkLimitationMsts => Set<ExtraWorkLimitationMst>();

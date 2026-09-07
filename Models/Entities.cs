@@ -4932,6 +4932,22 @@ public sealed class WarrantyWorkMst
 }
 
 /// <summary>Khoang/ngăn kho (Mst_Compartment) — port 1:1 FrmMst_Compartment (TCMotor DMSCarSv/Admin). Mã + tên khoang. Upsert-by-code + toggle.</summary>
+/// <summary>#520 Danh mục **màu biển số** (`Mst_PlateColor`) — port 1:1 `Mst_PlateColor_Get`
+/// (`BizCarSv.Master.cs:5743`), sống qua **kênh ClientService** (`Mst_PlateColorService.cs:40`), xem #519.</summary>
+public sealed class PlateColorMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PlateColorCode { get; set; } = "";
+    public string? PlateColorName { get; set; }
+    /// <summary>Mã màu dạng HEX để vẽ trên giao diện (`Mst_PlateColor.ColorHexCode`).</summary>
+    public string? ColorHexCode { get; set; }
+    /// <summary>Thứ tự hiển thị — nguồn `order by t.IndexColor` (**không** sắp theo mã/tên).</summary>
+    public int? IndexColor { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class CompartmentMst
 {
     public long Id { get; set; }
