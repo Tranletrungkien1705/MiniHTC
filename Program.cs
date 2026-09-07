@@ -44024,6 +44024,25 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         r.PointRankTotalInv = dto.PointRankTotalInv;         // điểm tích TIÊU DÙNG — KHÁC PointTotal
         r.PointConsumptionPrm = dto.PointConsumptionPrm;
         r.LogLUDateTime = DateTime.Now; r.LogLUBy = dto.LogLUBy;
+
+        // ===== 🔴 #464 HAI KHỐI JSON LOYALTY **KHÔNG BAO GIỜ TỚI MÁY CHỦ** =====
+        // Đối chiếu chữ ký ba tầng của cùng một lời gọi (đọc từng tầng, không suy):
+        //   · CLIENT `SerROService.SerROStockToPaidStatus` (`:1540`) dựng `objCrd_DealSerRO` +
+        //     `listCrd_DealSerRODtl`, `JsonConvert.SerializeObject` cả hai rồi truyền đi.
+        //   · PROXY `Web References/HTCCarSv/Reference.cs:34103` có **21 tham số**, gồm
+        //     `objCrdDealSerRO` và `objCrdDealSerRODtl`.
+        //   · **WebMethod THẬT** `WSCarSv.asmx.cs:11452` chỉ có **19 tham số** — **KHÔNG có hai cái đó**.
+        //     Bản WS từng nhận chúng (`:11400`) **đã bị comment TOÀN BỘ**, kể cả dòng `//[WebMethod]`.
+        //   · BIZ `SerROStatusUpdatePaid_New20230228` (`BizCarSv.Service.RO.cs:5736`) cũng **không** khai.
+        //   ⇒ Proxy gửi thừa hai phần tử; SOAP của ASP.NET **bỏ qua phần tử không khớp** ⇒ lời gọi vẫn
+        //     chạy, nhưng **bản ghi giao dịch Loyalty (đầu + dòng chi tiết) bị VỨT ĐI IM LẶNG**.
+        //   📌 Khác #305 ở chỗ: #305 là tham số ĐẾN NƠI rồi không ai dùng; ở đây tham số **không tới nơi**.
+        //     Cùng một triệu chứng ngoài mặt (dữ liệu không được ghi), nhưng chẩn đoán phải khác nhau —
+        //     muốn thấy được thì phải so **chữ ký proxy với chữ ký WebMethod**, không chỉ đọc biz.
+        // ⇒ MiniHTC **không tái hiện** chỗ mất dữ liệu này: nhận thẳng hai khối ở DTO và ghi lại nguyên văn
+        //   để nghiệp vụ quyết định. Sai lệch CỐ Ý, có cờ.
+        r.CrdDealSerROJson = dto.CrdDealSerROJson;
+        r.CrdDealSerRODtlJson = dto.CrdDealSerRODtlJson;
     }
 
     // ===== 🔴 #326 GIAO XE KÉO THEO **BA** VIỆC NỮA — port cũ chỉ đóng dấu mốc =====
@@ -45666,7 +45685,8 @@ record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null, decimal? To
     DateTime? StatusDate = null, decimal? AmountFromMC = null, decimal? PointTotal = null,
     decimal? AmountDiscountOther = null, string? MemberNo = null, string? CardNoInv = null,
     string? CardTypeInv = null, string? CardTypeExpectInv = null, decimal? PointEndInv = null,
-    decimal? PointRankTotalInv = null, decimal? PointConsumptionPrm = null, string? LogLUBy = null);
+    decimal? PointRankTotalInv = null, decimal? PointConsumptionPrm = null, string? LogLUBy = null,
+    string? CrdDealSerROJson = null, string? CrdDealSerRODtlJson = null);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);

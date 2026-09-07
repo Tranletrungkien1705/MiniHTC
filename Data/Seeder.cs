@@ -1256,6 +1256,9 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCares\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         // #277b parity Ser_CustomerCare_Get72h: 2 cot loc o dau lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"IsReRepair\" text",
+        // #464 hai khoi JSON Loyalty (proxy gui nhung WebMethod that khong nhan)
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CrdDealSerROJson\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CrdDealSerRODtlJson\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"ROType\" text",
         // #276 parity VIB_BankTransactionFile (ERP.DMS.HTC.VPBank.WS - CHI CO TREN MAY 150)
         "ALTER TABLE public.\"BankingTranses\" ADD COLUMN IF NOT EXISTS \"LoanType\" text",

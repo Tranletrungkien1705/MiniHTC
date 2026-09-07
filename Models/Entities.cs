@@ -2354,6 +2354,12 @@ public sealed class RepairOrder
     /// ⚠️ Cờ chỉ có ở nhánh LẤY MỘT LSC; nhánh TÌM KIẾM danh sách **không** lọc cờ này.
     /// </summary>
     public string? SyncVelocaFlag { get; set; }
+    // ===== #464 §12: hai khối JSON giao dịch Loyalty mà WebMethod thật KHÔNG nhận =====
+    /// <summary>`Crd_DealSerRO` dạng JSON — client dựng và gửi, nhưng WS live không khai tham số này.
+    /// MiniHTC nhận và LƯU để không mất dữ liệu (lệch nguồn CỐ Ý).</summary>
+    public string? CrdDealSerROJson { get; set; }
+    /// <summary>`Crd_DealSerRODtl` (danh sách dòng) dạng JSON — cùng lý do trên.</summary>
+    public string? CrdDealSerRODtlJson { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
