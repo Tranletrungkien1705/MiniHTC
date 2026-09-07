@@ -25133,21 +25133,92 @@ app.MapPost("/api/appointments/{no}/hccpush", async (string no, AppointmentHccPu
     return Results.Ok(new { a.AppNo, a.HCCPushStatus, a.HCCPushDateTime });
 }).RequireAuthorization();
 
+// ===== 🔴 #544 VÁ HAI BẢNG CON CỦA LỊCH HẸN THEO `Ser_App_GetX_New20220926` =====
+// Nguồn: hai macro `zzB_Select_Ser_AppServiceItems_zzE` / `zzB_Select_Ser_AppPartItems_zzE`
+//   (`BizCarSv.Tab.cs:4114` trong thân `Ser_App_GetX_New20220926`, xem #542).
+//
+// 🔴 **THIẾU HẲN `InventoryQuantity` — CỘT QUYẾT ĐỊNH CỦA MÀN HẸN**:
+//     `(isnull(sb.TotalInStock, 0) + isnull(sb.TotalInShipment, 0)) InventoryQuantity`
+//     `left join vwSer_inv_stockbalancebypart sb on rp.partid = sb.partid`
+//   ⇒ Người nhận hẹn nhìn ngay được **phụ tùng có sẵn hay không** trước khi hứa ngày trả xe.
+//   Bản port cũ **không trả gì** ⇒ mất hẳn cơ sở quyết định. Nay bù, dùng đúng **công thức của màn hẹn**
+//   (tồn + hàng đang về), **không** dùng công thức của màn đặt hàng (chỉ tồn) — hai công thức là **chủ đích**
+//   khác nhau, đã phân tích ở `/api/serviceparts/{code}/inventory`.
+//   ⚠️ MiniHTC **chưa mô hình hoá "hàng đang về"** (nợ #423) ⇒ trả `inShipment = null` + cờ, **không bịa 0**.
+// 🔴 **TÊN/ĐVT LẤY TỪ DANH MỤC, KHÔNG PHẢI TỪ DÒNG**: nguồn `left join Ser_Mst_Part mp on mp.PartID = rp.PartID`
+//   rồi lấy `mp.PartCode · mp.EngName · mp.VieName · mp.Unit`; dòng chi tiết chỉ giữ `Quantity`/`Note`.
+//   MiniHTC lưu **bản chụp** tên/ĐVT trên dòng ⇒ **hình dạng khác**: nếu danh mục đổi tên, nguồn hiện tên MỚI
+//   còn MiniHTC giữ tên CŨ. Trả **cả hai** (tên trên dòng + tên tra danh mục) + cờ `nameFromMasterInSource`.
+//   ⚪ LEFT ở đây **còn sống** (không điều kiện WHERE nào trên `mp`/`sb`) ⇒ phụ tùng đã xoá khỏi danh mục
+//     vẫn ra dòng, chỉ trống tên — kiểm tra âm tính.
+// ⚠️ `rp.Quantity` được trả **HAI LẦN**: `Quantity` và alias `Need` — hai cột **trùng giá trị**
+//   (họ `Qty`/`QtyRO` ở #507). Giữ cả hai để khớp hình dạng.
+// ⚠️ Dịch vụ: `left join Ser_Mst_Service ms on ms.SerID = rs.SerID` ⇒ `SerCode/SerName/StdManHour` **từ danh mục**,
+//   còn `rs.Note` và `rs.ItemID` từ dòng. ⚠️ Hai bảng con dùng `inner join` vào bảng chi tiết nên lịch hẹn
+//   **không có hạng mục** đơn giản là **không có dòng nào** ở bảng đó (không phải lỗi).
 app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no);
     if (a is null) return Results.NotFound(new { no });
-    var services = await db.AppointmentServiceItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no)
-        .Select(x => new { x.SerCode, x.SerName, x.StdManHour, x.Note }).ToListAsync();
-    var parts = await db.AppointmentPartItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no)
-        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Quantity, x.Note }).ToListAsync();
+
+    var svcRows = await db.AppointmentServiceItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no).ToListAsync();
+    var svcCodes = svcRows.Select(x => x.SerCode).Where(x => x != null).Select(x => x!).ToList();
+    var svcMaster = await db.ServiceItemMsts.Where(m => m.OrgId == t.OrgId && svcCodes.Contains(m.SerCode))
+        .Select(m => new { m.SerCode, m.SerName, m.StdManHour }).ToListAsync();
+    var services = svcRows.Select(x =>
+    {
+        var m = svcMaster.FirstOrDefault(v => v.SerCode == x.SerCode);
+        return new
+        {
+            x.Id, x.SerCode,
+            x.SerName,                                   // bản chụp trên dòng
+            serNameFromMaster = m?.SerName,              // nguồn lấy cột này
+            x.StdManHour,
+            stdManHourFromMaster = m?.StdManHour,
+            x.Note,
+        };
+    }).ToList();
+
+    var partRows = await db.AppointmentPartItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no).ToListAsync();
+    var partCodes = partRows.Select(x => x.PartCode).Where(x => x != null).Select(x => x!).ToList();
+    var partMaster = await db.ServiceParts.Where(m => m.OrgId == t.OrgId && partCodes.Contains(m.PartCode))
+        .Select(m => new { m.PartCode, m.PartName, m.Unit }).ToListAsync();
+    // Công thức của MÀN HẸN: tồn + hàng đang về. "Hàng đang về" chưa có nguồn đúng (#423) ⇒ null.
+    var stock = await db.PartStocks.Where(s => s.OrgId == t.OrgId && partCodes.Contains(s.PartCode))
+        .GroupBy(s => s.PartCode).Select(g => new { PartCode = g.Key, OnHand = g.Sum(x => x.OnHand) })
+        .ToListAsync();
+
+    var parts = partRows.Select(x =>
+    {
+        var m = partMaster.FirstOrDefault(v => v.PartCode == x.PartCode);
+        var st = stock.FirstOrDefault(v => v.PartCode == x.PartCode);
+        return new
+        {
+            x.Id, x.PartCode,
+            x.PartName, x.EngName, x.Unit,               // bản chụp trên dòng
+            partNameFromMaster = m?.PartName,            // nguồn lấy cột này (mp.VieName)
+            unitFromMaster = m?.Unit,
+            x.Quantity,
+            Need = x.Quantity,                           // alias TRÙNG giá trị, đúng nguồn
+            x.Note,
+            inStock = st?.OnHand ?? 0m,
+            inShipment = (decimal?)null,                 // #423: chưa có nguồn đúng, KHÔNG bịa 0
+            InventoryQuantity = (decimal?)null,          // = inStock + inShipment ⇒ chưa tính được
+        };
+    }).ToList();
+
     return Results.Ok(new
     {
         a.AppNo, a.PlateNo, a.CusName, a.CusRequest, a.AppFrom, a.AppTo, a.Status,
         services, parts,
         // Tổng giờ công định mức — cơ sở ước tính thời gian giữ khoang cho lịch hẹn.
-        totalStdManHour = services.Sum(s => s.StdManHour ?? 0)
+        totalStdManHour = services.Sum(s => s.StdManHour ?? 0),
+        inventoryFormulaOfThisScreen = "isnull(TotalInStock,0) + isnull(TotalInShipment,0)",
+        inShipmentNotModelled = "#423 — chua co nguon dung, tra null thay vi 0",
+        nameFromMasterInSource = "mp.VieName / mp.Unit / ms.SerName — MiniHTC luu ban chup tren dong",
+        quantityReturnedTwiceInSource = "Quantity va alias Need",
+        masterJoinsAreLeftAndAlive = true,
     });
 }).RequireAuthorization();
 
