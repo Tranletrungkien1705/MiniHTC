@@ -25610,6 +25610,31 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         cSharpGuardSweep = new { sameChannelPairs = 86, guardMarksIdentical = 76, differing = 10,
             dateClampOnlyInMainBranch = 5,
             missingThrowsInWhBranch = "Ser_ROWarrantyReportHTMV_Get (throw 4 vs 1)" },
+
+        // ===== 🔴🔴 #497 ĐỌC RA NGUYÊN NHÂN: KHÔNG PHẢI "THIẾU GUARD" MÀ LÀ **THIẾU CẢ TÁC DỤNG PHỤ** =====
+        // #496 mới thấy chữ ký `throw 4/1` ở `Ser_ROWarrantyReportHTMV_Get` và **cố ý chưa kết luận**.
+        //   Nay đọc từng khối: cả **ba** lệnh ném thiếu đều là `TError.ErrCarSv.**Sync_Warranty_To_HMC_Fail**`.
+        // 📊 Đếm trong thân hàm: chuỗi `Sync_Warranty_To_HMC` xuất hiện **8 lần ở bản chính · 0 lần ở bản kho**.
+        //   ⇒ Bản `_WH` **không hề gọi API đồng bộ sang HMC**, chứ không phải "gọi mà quên bắt lỗi".
+        // 🔴 Ý nghĩa thật, và nó nặng hơn cách đọc ban đầu:
+        //   · Bản chính là hàm **ĐỌC báo cáo NHƯNG CÓ TÁC DỤNG PHỤ** — nó **đẩy dữ liệu sang HMC** và
+        //     **ném lỗi** nếu HMC hỏng (`result == null` · `result.response == null` · ngoại lệ HTTP).
+        //     Tên hàm là `..._Get` nhưng **không phải chỉ đọc**.
+        //   · Bản kho là hàm **đọc thuần**.
+        //   ⇒ Cùng một "báo cáo", mở ở màn chính có thể **ghi ra hệ ngoài và báo lỗi**; mở ở màn kho thì không.
+        //     Người dùng không có cách nào biết mình đang ở nhánh nào.
+        // ⚠️ Cả hai bản đều LIVE và **cùng do `HTCWSCarSv` gọi** ⇒ đây là **hai WebMethod song song**,
+        //   không phải chuyện "kênh web vs kênh kho" như #495.
+        // ⚠️ Ngay dưới lệnh ném thứ nhất còn hai dòng **đã bị COMMENT**:
+        //   `//CMyDataSet.SetRemark(ref mdsFinal, "ERROR_SYNC_TO_HMC");` và `//…SetWarningParams(…)`
+        //   ⇒ trước đây lỗi HMC chỉ **ghi chú vào kết quả**; nay **ném thẳng**. Port dòng ACTIVE: ném.
+        // 📌 NỢ ĐÃ KHAI (không bịa): MiniHTC chưa có tầng gọi HMC ⇒ **chưa port tác dụng phụ này**.
+        //   Ghi thành cờ để lượt sau không tưởng nhầm là đã xong.
+        htmvGetSideEffect = new { mainPushesToHmc = true, whBranchIsReadOnly = true,
+            hmcMentionsMainVsWh = "8 vs 0", throwsAreAllSyncFail = 3,
+            bothLiveFromSameWs = "HTCWSCarSv",
+            olderBehaviourWasRemarkOnly = true,
+            notPortedYet = "MiniHTC chua co tang goi HMC — tac dung phu nay CHUA port" },
         whDiffToolLimits = new { mainChoiceDependsOnChannel = true, sqlOnlyDiffMissesCSharpGuards = true,
             caseChecked = "Ser_InvReportPartMinQuantity: SQL 9/9 giong het nhung guard kep ngay 2 vs 0" },
         whDifferingTriage = new { macroFreeComparable = 76, identical = 53, needReview = 23,
