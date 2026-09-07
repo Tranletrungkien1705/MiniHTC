@@ -24542,6 +24542,112 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 // ⚠️ Mốc `st.StockinDate <= '@ToDate'` ⇒ **mất trọn ngày cuối** (lệ #415). ⚠️ `@Top` vẫn ghép chuỗi
 //   từ ô nhập, không tham số hoá (lệ #415).
 // ⚠️ Chỉ xét **giá NHẬP** (`Ser_Inv_StockInDetail.price`), không dính gì tới giá bán.
+// ===== 🔴 #421 PHỤ TÙNG CHẠM TỒN TỐI THIỂU — hằng tên **"WareHouse"** thật ra là một **NGÀY**,
+//        và nó âm thầm kéo mốc báo cáo về **31-12-2017** =====
+// TRACE (thân WS trước, lệ #405): `FrmOrderPartStockSearch.DoPaging` / `FrmReportPartMinQuantity`
+//   → `InventoryReportService.Ser_InvReportPartMinQuantity` (`Inventory.ReportService.cs:724`)
+//   → WS `Ser_InvReportPartMinQuantity` (`WSCarSv.asmx.cs:24889`)
+//   → biz **`Ser_InvReportPartMinQuantity_New20181027`** (`Inventory.Report.cs:6395`).
+//   ⚠️ Bản **không hậu tố** ở `:6170` **KHÔNG phải bản LIVE** — WS gọi bản `_New20181027`.
+//
+// 🔴 **HẰNG NÓI DỐI + MỐC NGÀY BỊ KẸP**. Khối `#region // Refine and Check` của biz:
+//     `if (StringUtils.StringCompareIgnoreCase(strToDate, TConst.HTCConst.HTC_WareHouse) < 1)`
+//     `    strToDate = TConst.HTCConst.HTC_WareHouse;`
+//   Tên hằng đọc như một **mã kho**, nhưng giá trị thật là `"2017-12-31"` (`Const.Main.cs:138`) — **một NGÀY**.
+//   `StringCompareIgnoreCase` chỉ là `string.Compare(..., true)` ⇒ **SO CHUỖI**, và `< 1` nghĩa là **<=**.
+//   ⇒ Mọi mốc ngày **sắp chuỗi không lớn hơn `"2017-12-31"` đều bị KÉO về 31-12-2017**. Báo cáo không thể
+//     nhìn tồn kho trước mốc đó, và **không có gì báo rằng ngày đã bị đổi**.
+//
+// 🔴 **NGƯỜI GỌI TRUYỀN NGÀY SAI ĐỊNH DẠNG**: `FrmOrderPartStockSearch` gọi với `DateTime.Now.ToString()`
+//   — **định dạng theo văn hoá máy trạm**, không phải `yyyy-MM-dd`. Hai đường đều hỏng:
+//     · Máy dùng `dd/MM/yyyy` (vi-VN) ⇒ chuỗi bắt đầu bằng `"0"`/`"1"`/`"2"` ⇒ so chuỗi **nhỏ hơn** `"2017-…"`
+//       trong hầu hết trường hợp ⇒ **bị kẹp về 2017-12-31**: màn hình luôn xem tồn kho của **cuối 2017**.
+//     · Máy dùng `M/d/yyyy` (en-US) ⇒ có thể **không** bị kẹp, nhưng khi đó chuỗi `"9/7/2026 8:30:00 PM"`
+//       được nhét thẳng vào SQL làm mốc ngày ⇒ **ép kiểu sai hoặc lệch ngày**.
+//   ⇒ Cùng một màn, **hai máy cấu hình vùng khác nhau cho ra hai kết quả khác nhau**. Im lặng cả hai chiều.
+//   📌 MiniHTC nhận `toDate` kiểu ngày thật; trả `clampedToFloor` + `floorDate` khi mốc rơi vào vùng bị kẹp.
+//
+// 🔴 **PHÂN TRANG GIẢ** ở `FrmOrderPartStockSearch.DoPaging(int _currPage)`: hàm **bỏ qua hẳn tham số**
+//   `_currPage`, gọi báo cáo lấy **toàn bộ** rồi gán cả tập vào lưới. Lời gọi có phân trang thật
+//   (`MstPartGet2GetPaging(..., out myRowCount)`) **đã bị comment**, nên `myRowCount` **không bao giờ được gán**
+//   ⇒ nhãn `"Trang: x/y"` tính từ một biến rỗng, còn nút **Trang sau/Trang trước chỉ đổi con số trên nhãn**.
+//   Người dùng thấy giao diện phân trang đầy đủ mà **không có phân trang nào cả**.
+//
+// ⚠️ `left join ser_mst_part p` rồi `where p.IsActive='1' and p.DealerCode='@DealerCode'` ở WHERE
+//   ⇒ **LEFT join CHẾT** (lệ #414 — lần thứ tư trong cụm kho này).
+// ⚠️ Điều kiện `Minquantity >= SLC` bị **comment** trong câu gộp rồi đặt lại ở câu cuối
+//   (`select * from #tbl_Final where Minquantity >= SLC`) — port theo dòng ACTIVE.
+// ⚠️ `'1' as Factor` — cột hằng viết cứng, không phải dữ liệu.
+app.MapGet("/api/report/part-min-quantity", async (AppDbContext db, ITenantContext t,
+    DateTime? toDate, string? dealer) =>
+{
+    // Mốc sàn của nguồn: hằng TÊN LÀ "WareHouse" nhưng GIÁ TRỊ là ngày 2017-12-31.
+    var floor = new DateTime(2017, 12, 31);
+    var asked = (toDate ?? DateTime.Today).Date;
+    var clamped = asked <= floor;
+    var cut = clamped ? floor : asked;
+    var cutEnd = cut.AddDays(1).AddSeconds(-1);          // nguồn ghép " 23:59:59"
+
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1").ToListAsync();
+
+    // SLC = tồn tính tới mốc. Ưu tiên tính từ PartInstances (#416); không có dữ liệu thì dùng
+    // ServicePart.Quantity và BÁO CỜ — không lặng lẽ đổi nguồn số liệu.
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && (dealer == null || x.DealerCode == dealer)).ToListAsync();
+    var usedInstances = inst.Count > 0;
+    var onHand = new Dictionary<string, decimal>();
+    foreach (var x in inst)
+    {
+        var inAt = x.DateIn != null && x.DateIn <= cutEnd ? x.Quantity : 0m;
+        var outAt = x.DateOut != null && x.DateOut <= cutEnd ? x.Quantity : 0m;
+        onHand[x.PartCode] = (onHand.TryGetValue(x.PartCode, out var v) ? v : 0m) + inAt - outAt;
+    }
+
+    var rows = new List<object>();
+    foreach (var p in parts)
+    {
+        var slc = usedInstances ? (onHand.TryGetValue(p.PartCode, out var v) ? v : 0m) : p.Quantity;
+        // Câu cuối của nguồn: chỉ giữ phụ tùng có Minquantity >= SLC.
+        if (!(p.MinQuantity >= slc)) continue;
+        rows.Add(new
+        {
+            partCode = p.PartCode, partName = p.PartName, engName = p.EngName, unit = p.Unit,
+            slc, minQuantity = p.MinQuantity, price = p.Price, cost = p.Cost,
+            model = p.Model, note = p.Note, quantity = p.Quantity,
+            factor = "1",       // cột hằng viết cứng trong SQL nguồn
+        });
+    }
+    rows = rows.OrderBy(r => (string)r.GetType().GetProperty("partCode")!.GetValue(r)!).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, askedDate = asked, effectiveDate = cut,
+        clampedToFloor = clamped, floorDate = floor,
+        clampNote = clamped
+            ? "Mốc ngày yêu cầu đã bị KÉO về 2017-12-31: nguồn có khối Refine kẹp strToDate về hằng "
+              + "TConst.HTCConst.HTC_WareHouse — tên đọc như MÃ KHO nhưng giá trị thật là NGÀY '2017-12-31'. "
+              + "Nguồn không báo gì khi đổi ngày."
+            : "Mốc ngày lớn hơn sàn 2017-12-31 nên không bị kẹp.",
+        callerDateFormatNote = "FrmOrderPartStockSearch gọi với DateTime.Now.ToString() — định dạng theo "
+            + "VĂN HOÁ máy trạm. Máy dd/MM/yyyy thường bị kẹp về 2017-12-31 (màn hình luôn xem tồn cuối "
+            + "2017); máy M/d/yyyy có thể không bị kẹp nhưng lại nhét chuỗi có giờ vào mốc ngày SQL. "
+            + "Hai máy khác vùng ⇒ hai kết quả khác nhau, im lặng cả hai chiều.",
+        fakePagingNote = "DoPaging(int _currPage) của form BỎ QUA tham số, lấy TOÀN BỘ rồi gán vào lưới; "
+            + "lời gọi phân trang thật đã bị comment nên myRowCount không bao giờ được gán ⇒ nhãn Trang x/y "
+            + "tính từ biến rỗng và nút Trang sau/trước chỉ đổi con số trên nhãn. Giao diện phân trang đầy "
+            + "đủ mà không có phân trang nào.",
+        liveTwinNote = "WS gọi Ser_InvReportPartMinQuantity_New20181027 (Inventory.Report.cs:6395); bản "
+            + "KHÔNG hậu tố ở :6170 không phải bản LIVE.",
+        deadLeftJoinNote = "left join ser_mst_part rồi đưa p.IsActive và p.DealerCode vào WHERE ⇒ LEFT "
+            + "join chết (lệ #414, lần thứ tư trong cụm kho).",
+        onHandSource = usedInstances ? "PartInstances (nhập − xuất tới mốc)" : "ServicePart.Quantity (dự phòng)",
+        onHandSourceNote = usedInstances ? null
+            : "Chưa có dữ liệu PartInstances nên SLC lấy tạm từ ServicePart.Quantity — KHÔNG phải cách "
+              + "nguồn tính (nguồn dựng từ nhập/xuất theo mốc). Báo cờ thay vì lặng lẽ đổi nguồn số liệu.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/part-variation-price", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, int? top) =>
 {
