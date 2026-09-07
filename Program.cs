@@ -29607,6 +29607,84 @@ app.MapPost("/api/salesorders/{no}/cancel", async (string no, AppDbContext db, I
 //    `myCommon_CheckAccessDealerData(BUPattern, BUCode)`.
 // 🔴 Form chỉ gửi khi giá trị thuộc đúng **{"0","1"}** (`FrmMngOrderHtc.cs:611-617`) — không tự chế
 //    giá trị khác; và **lặp từng đơn**, lỗi một đơn thì `break` (dừng hẳn), không bỏ qua như huỷ đơn (#B38).
+
+// ===== #B44 KIỂM TRA TRƯỚC KHI TẠO GIAO DỊCH BÁN LẺ — `DealerSalesDealWarning_New20181119` =====
+// Trace LIVE: `FrmNewDealFromRetail` → `salesSv.InsertDealWarning(deal)` (`DealerService.cs:1109`)
+//   → WS `DealerSalesDealWarning` (`WSHTC.asmx.cs:25756`) → **`_biz.DealerSalesDealWarning_New20181119`**
+//   (`DataWH/Biz.HTC.WH.cs:91694`). Bản chết: `BizHTC.DealerSales.cs:4511` (`_New20181115`),
+//   `Delete.BizHTC.DealerSales.cs:3213`, `Biz.HTC.WH.Rel.20230823.cs:87757`.
+// 🔴 Đây là **BƯỚC RIÊNG, chạy TRƯỚC** `InsertDeal` — form gọi hàm này để **cảnh báo** rồi mới lưu.
+//    Port cũ chỉ có `DealerSalesDealCreate`, **thiếu hẳn bước cảnh báo** ⇒ người dùng mất hẳn lớp
+//    kiểm tra "xe không khớp hợp đồng đại lý" trước khi ghi.
+// 🔴 HAI mức, khác hẳn nhau — đừng gộp:
+//   · **LỖI CỨNG** `_InputDetailNotInDlrContract`: bộ **(ModelCode, SpecCode)** của xe **không có**
+//     trong hợp đồng đại lý (`:91963-91975`). Chú ý: **chỉ so Model+Spec, KHÔNG so màu**.
+//   · **CẢNH BÁO** `_InputDetailNotColorDlrContract`: hợp đồng **có** (Model, Spec) nhưng **màu khác**
+//     — điều kiện chính xác `arrColor.Count() > 0 && arrColorOther.Count() <= 0` (`:92022`), tức
+//     "tồn tại dòng cùng Model+Spec màu KHÁC, và KHÔNG có dòng đúng màu này". Gom **tất cả** dòng
+//     lệch màu rồi mới ném **một** lỗi liệt kê đủ (`:92073-92077`).
+// ⚠️ **DÒNG COMMENT, KHÔNG PORT**: guard `_InputDetailValidQtyColor` (so SỐ LƯỢNG theo màu) đã bị rem
+//    (`:92035-92042`) kèm chú thích nguồn *"20140324 case của anh Hương tạm thời rem lại"* — có ví dụ
+//    nghiệp vụ đi kèm. Port theo dòng ACTIVE ⇒ **không kiểm số lượng theo màu**.
+app.MapPost("/api/dealerdeals/warning", async (DealerDealDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // Các guard đầu giống hệt `DealerSalesDealCreate` (nguồn chạy lại toàn bộ) — kiểm phần cốt lõi.
+    if (string.IsNullOrWhiteSpace(dto.DlrContractNo))
+        return Results.BadRequest(new { error = "Thiếu số hợp đồng đại lý.", guard = "DealerSalesDealCreate_InvalidDlrContractNo" });
+    var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe.", guard = "DealerSalesDealCreate_TableDetailBeBlank" });
+    var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!", guard = "DealerSalesDealCreate_DuplicateKeyDetail" });
+
+    var ctrNo = dto.DlrContractNo!.Trim();
+    // `dtContractDtl` — các dòng của hợp đồng đại lý.
+    var ctrDtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId && x.DlrContractNo == ctrNo)
+        .Select(x => new { x.ModelCode, x.SpecCode, x.ColorCode }).ToListAsync();
+
+    var vins = cars.Select(c => c.CarId.Trim().ToUpperInvariant()).ToList();
+    var vinInfo = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode }).ToListAsync();
+
+    var colorWarnings = new List<object>();
+    foreach (var vin in vins)
+    {
+        var v = vinInfo.FirstOrDefault(x => x.VIN == vin);
+        if (v is null) return Results.BadRequest(new { error = $"Xe {vin} chưa khai báo trên hệ thống." });
+        var model = (v.ModelCode ?? "").Trim(); var spec = (v.SpecCode ?? "").Trim(); var color = (v.ColorCode ?? "").Trim();
+
+        // LỖI CỨNG — chỉ so (Model, Spec), KHÔNG so màu.
+        var sameModelSpec = ctrDtls.Where(x => (x.ModelCode ?? "").Trim() == model && (x.SpecCode ?? "").Trim() == spec).ToList();
+        if (sameModelSpec.Count == 0)
+            return Results.BadRequest(new
+            {
+                error = $"Xe {vin} (model {model}, spec {spec}) không nằm trong hợp đồng đại lý {ctrNo}.",
+                guard = "DealerSalesDealWarning_InputDetailNotInDlrContract"
+            });
+
+        // CẢNH BÁO — có cùng Model+Spec màu KHÁC, nhưng KHÔNG có dòng đúng màu này.
+        var exactColor = sameModelSpec.Count(x => (x.ColorCode ?? "").Trim() == color);
+        var otherColor = sameModelSpec.Count(x => (x.ColorCode ?? "").Trim() != color);
+        if (otherColor > 0 && exactColor <= 0)
+            colorWarnings.Add(new { vin, modelCode = model, specCode = spec, colorCode = color });
+    }
+
+    if (colorWarnings.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Có xe không đúng màu so với hợp đồng đại lý.",
+            guard = "DealerSalesDealWarning_InputDetailNotColorDlrContract",
+            isWarning = true,      // `CmUtils.CMyDataSet.SetWarning(ref mdsFinal, true)` của nguồn
+            items = colorWarnings,
+            note = "Nguồn gom TẤT CẢ dòng lệch màu rồi mới ném MỘT lỗi liệt kê đủ, không dừng ở dòng đầu."
+        });
+
+    return Results.Ok(new
+    {
+        ok = true, cars = vins.Count, dlrContractNo = ctrNo,
+        checkedRules = new[] { "InputDetailNotInDlrContract (Model+Spec, KHÔNG so màu)", "InputDetailNotColorDlrContract (cảnh báo lệch màu)" },
+        notPorted = "Guard _InputDetailValidQtyColor (so SỐ LƯỢNG theo màu) đã bị REM ở nguồn (:92035-92042, '20140324 case của anh Hương tạm thời rem lại') — không port."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/salesorders/flag-pmtdelay-done", async (List<SoFlagDoneDto> rows, AppDbContext db,
     ITenantContext t, string? flagDirect, string? buPattern) =>
 {
