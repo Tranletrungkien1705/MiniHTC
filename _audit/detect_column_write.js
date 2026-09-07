@@ -5,7 +5,25 @@
 const fs=require('fs'), path=require('path');
 function readText(p){const b=fs.readFileSync(p);if(b.length>1&&b[0]===0xFF&&b[1]===0xFE)return b.toString('utf16le');return b.toString('utf8');}
 
-const cols=fs.readFileSync(process.argv[2],'utf8').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+// 🔴 #385 TEN HANG C# KHAC TEN COT DB — do duoc 387/4743 (8.2%) hang trong cac class Tbl*
+//   cua DbDefine.cs. Vi du: hang `TblPMDetail.AmountAccum` tro toi cot that `PMPDAMOUNTTOTAL`;
+//   `TblReportCongno.InvoiceAmountTotal` -> `RIT_TOTAL`. Moi phep audit theo TEN COT deu MU voi
+//   nhung muc nay: do ten C# thi khong thay cho ghi nao, tuong la "dan xuat".
+//   => Nay tu tra _audit/dbdefine_name_map.txt: mot cot duoc coi la CO GHI neu ten C# HOAC ten
+//      cot DB tuong ung co cho ghi.
+const cols0=fs.readFileSync(process.argv[2],'utf8').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+const alias={};
+try{
+  for(const ln of fs.readFileSync('d:/idocNet/_labs/MiniHTC-A/_audit/dbdefine_name_map.txt','utf8').split(/\r?\n/)){
+    if(!ln||ln[0]==='#') continue;
+    const p=ln.split('\t'); if(p.length<3) continue;
+    (alias[p[1]]=alias[p[1]]||[]).push(p[2]);
+  }
+}catch(e){ console.log('(khong doc duoc dbdefine_name_map.txt — chay o che do chi TEN C#)'); }
+const extra=[];
+for(const c of cols0) for(const v of (alias[c]||[])) if(!cols0.includes(v)) extra.push(v);
+const cols=cols0.concat(extra);
+if(extra.length) console.log('(#385 them '+extra.length+' ten cot DB tuong ung: '+extra.join(', ')+')');
 const files=fs.readFileSync(process.argv[3],'utf8').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
 
 const res={}; for(const c of cols) res[c]={assign:0,add:0,sqlset:0,sqlins:0,read:0,where:[]};
@@ -55,4 +73,10 @@ for(const c of cols){
     +String(r.assign).padEnd(5)+String(r.add).padEnd(5)+String(r.sqlset).padEnd(7)
     +String(r.sqlins).padEnd(7)+String(r.read).padEnd(6)
     +(w>0?'CO GHI ('+r.where.join(' ')+')':'KHONG THAY GHI'));
+  // #385: neu ten C# khong thay ghi NHUNG ten cot DB tuong ung CO ghi => ket luan la CO GHI.
+  for(const v of (alias[c]||[])){
+    const rv=res[v]; if(!rv) continue;
+    const wv=rv.assign+rv.add+rv.sqlset+rv.sqlins;
+    if(w===0 && wv>0) console.log(''.padEnd(28)+'=> THUC TE CO GHI qua ten cot DB '+v+' ('+rv.where.join(' ')+') — KHONG phai dan xuat.');
+  }
 }

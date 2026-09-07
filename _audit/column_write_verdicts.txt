@@ -1,5 +1,7 @@
+(#385 them 1 ten cot DB tuong ung: PMPDAMOUNTTOTAL)
 cot                         GAN  ADD  SQLSET SQLINS  DOC   => KET LUAN
 AmountAccum                 0    0    0      0      866   KHONG THAY GHI
+                            => THUC TE CO GHI qua ten cot DB PMPDAMOUNTTOTAL (FrmMngPM.cs:619 FrmMngPM.cs:922) — KHONG phai dan xuat.
 AmountBeforeVat             0    0    0      0      0     KHONG THAY GHI
 AssemblyStatus              0    0    0      8      2141  CO GHI (BizHTC.VietinBank.cs:7421 BizHTC.VietinBank.cs:7464 BizHTC.VietinBank.cs:11047)
 CancelQuantityTotal         0    0    0      0      44    KHONG THAY GHI
@@ -50,3 +52,4 @@ ValGoodsNotTaxable          0    0    0      0      54    KHONG THAY GHI
 ValGoodsVAT10               0    0    0      0      54    KHONG THAY GHI
 ValGoodsVAT5                0    0    0      0      54    KHONG THAY GHI
 ViolateNumber               0    0    0      2      219   CO GHI (Biz.HTC.WH.cs:210677 RptSQLQuery.cs:15580)
+PMPDAMOUNTTOTAL             2    0    0      0      181   CO GHI (FrmMngPM.cs:619 FrmMngPM.cs:922)
