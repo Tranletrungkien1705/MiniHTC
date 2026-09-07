@@ -13653,6 +13653,13 @@ public sealed class ServicePart
     public string? PartTypeID { get; set; }          // PARTTYPEID (đã có PartGroupCode ` PARTGROUPID)
     public string? DealerCode { get; set; }          // DEALERCODE — phụ tùng theo đại lý
     public decimal? VAT { get; set; }
+    /// <summary>🔴 #380 § **CỘT DẪN XUẤT, KHÔNG PHẢI CỘT LƯU** — nguồn KHÔNG hề ghi cột này ở đâu;
+    /// mọi nơi đều TÍNH lúc đọc: `(isnull(sb.TotalInStock,0) + isnull(sb.TotalInShipment,0))`.
+    /// ⚠️ Nguồn có **HAI công thức khác nhau** cho cùng tên cột:
+    ///   · `Appointment.cs:1323/2299` và `Service.RO.cs:362` = **tồn kho + hàng đang về**
+    ///   · `PartOrder.cs:4415`        = **CHỈ tồn kho** (không cộng hàng đang về)
+    /// ⇒ Cùng một tên, hai nghĩa tuỳ màn. Giữ cột để tương thích nhưng **KHÔNG nhận từ client**
+    /// (xem endpoint tạo/sửa phụ tùng) — trước lượt này client gửi số nào cũng thành 'tồn kho'.</summary>
     public decimal? InventoryQuantity { get; set; }  // INVENTORYQUANTITY — KHÁC Quantity
 
     // --- 7 cột thuộc KHỐI PHỤ (nằm sau dòng trống, :684-692) ---

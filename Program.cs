@@ -13721,7 +13721,10 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
     // ⚠️ `InventoryQuantity` KHÁC `Quantity` (hai cột riêng trong cùng lớp hằng).
     var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1",
         PartID = dto.PartID, PartTypeID = dto.PartTypeID, DealerCode = dto.DealerCode,
-        VAT = dto.VAT, InventoryQuantity = dto.InventoryQuantity,
+        VAT = dto.VAT,
+        // 🔴 #380 KHÔNG nhận `InventoryQuantity` từ client nữa: nguồn KHÔNG lưu cột này, nó luôn được
+        //   TÍNH lúc đọc từ bảng tồn. Nhận từ DTO nghĩa là client tự khai tồn kho — build vẫn xanh,
+        //   §12 vẫn đủ dấu vết, nhưng NGỮ NGHĨA SAI (đúng sự cố #312).
         TotalPrice = dto.TotalPrice, BalanceLocationId = dto.BalanceLocationId, FreqUsed = dto.FreqUsed,
         PriceEffect = dto.PriceEffect, TSTPrice = dto.TSTPrice, TSTPriceBefore = dto.TSTPriceBefore,
         FlagInTST = dto.FlagInTST };
@@ -23821,6 +23824,50 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
 //   `Rows[0][0]` **không kiểm `Rows.Count`** ⇒ thiếu bản ghi tham số thì **NÉM LỖI CHỈ SỐ**, không phải
 //   trả rỗng; lỗi hiện ra rất xa nơi thực sự sai (thiếu cấu hình).
 // ⚠️ Câu `update` đặt `with (nolock)` **trên chính bảng bị GHI** (`Ord_SalesOrderDetail`).
+// ===== 🔴 #380 TỒN KHO PHỤ TÙNG LÀ SỐ **TÍNH**, KHÔNG PHẢI SỐ **LƯU** =====
+// 🆕 Tìm ra bằng sweep #313 `_audit/sweep_stored_vs_derived.js` chạy trên **CẢ HAI** cây nguồn
+//   (TCMotor CarSv + 2010.HTC BizHTC) — sweep tự cảnh báo phải quét mọi cây, vì cột của hệ không
+//   được truyền vào sẽ trông như 'dẫn xuất' một cách giả tạo.
+//
+// Kiểm chứng tay: trong toàn bộ file SỐNG của nguồn, `InventoryQuantity` **KHÔNG có một chỗ ghi nào**
+// (0 hit cho `[\"InventoryQuantity\"]` / `alColumnEffective`); nó luôn là **alias tính lúc đọc**.
+//
+// 🔴 **HAI CÔNG THỨC KHÁC NHAU cho cùng một tên cột**:
+//   · `Appointment.cs:1323` · `Appointment.cs:2299` · `Service.RO.cs:362`
+//       `(isnull(sb.TotalInStock,0) + isnull(sb.TotalInShipment,0))` = **tồn kho + hàng đang về**
+//   · `PartOrder.cs:4415`
+//       `(isnull(sb.TotalInStock,0))` = **CHỈ tồn kho**
+//   ⇒ Màn đặt hàng nhìn thấy con số **nhỏ hơn** màn hẹn/lệnh sửa chữa trên cùng một mã phụ tùng.
+//     Đây là chủ đích (đặt hàng không được tính hàng chưa về), nên **không hợp nhất hai công thức**.
+// ⚠️ MiniHTC chưa mô hình hoá 'hàng đang về' ⇒ trả `inShipment = null` và bật cờ, thay vì bịa số 0.
+app.MapGet("/api/serviceparts/{code}/inventory", async (string code, AppDbContext db, ITenantContext t,
+    string? formula) =>
+{
+    code = (code ?? "").Trim().ToUpperInvariant();
+    var part = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
+    if (part is null) return Results.NotFound(new { code });
+
+    var inStock = await db.PartStocks.Where(s => s.OrgId == t.OrgId && s.PartCode == code)
+        .SumAsync(s => (decimal?)s.OnHand) ?? 0m;
+
+    // "order" = công thức của PartOrder.cs (CHỈ tồn kho); mặc định = công thức của Appointment/Service.RO.
+    var orderShape = (formula ?? "").Trim().ToLowerInvariant() == "order";
+
+    return Results.Ok(new
+    {
+        code, inStock,
+        inShipment = (decimal?)null,
+        inventoryQuantity = inStock,   // + inShipment khi có mô hình hàng đang về
+        formula = orderShape ? "PartOrder: CHỈ tồn kho" : "Appointment/Service.RO: tồn kho + hàng đang về",
+        inShipmentNotModelled = !orderShape,
+        twoFormulaNote = "Nguồn dùng HAI công thức cho cùng tên cột: màn đặt hàng KHÔNG cộng hàng đang về, "
+            + "màn hẹn/lệnh sửa chữa CÓ cộng. Không hợp nhất — khác biệt là chủ đích.",
+        storedValueIgnored = part.InventoryQuantity,
+        storedValueNote = "Cột InventoryQuantity trên master là DI SẢN: nguồn không bao giờ ghi nó. "
+            + "Từ #380 endpoint tạo/sửa phụ tùng KHÔNG nhận giá trị này từ client nữa.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/calendar/workday-offset", async (AppDbContext db, ITenantContext t,
     DateTime? date, int? days, DateTime? from) =>
 {
