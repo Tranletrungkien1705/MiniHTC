@@ -14972,3 +14972,46 @@ public sealed class GpsMstProvince
     public string GPSProvinceCode { get; set; } = "";
     public string? GPSProvinceName { get; set; }
 }
+
+
+// ===== 🔴 #463 THẺ HỘI VIÊN LOYALTY (`Crd_Card`) — dùng ở tab hội viên của `FrmQuotation` =====
+/// <summary>Ảnh chụp thẻ hội viên lấy từ **API Loyalty** (`CrdCard/WA_OSCarSv_Crd_Card_Get`), không phải
+/// bảng của DMSCarSv. Nguồn trả 39 cột kiểu `object`; ở đây giữ các cột nghiệp vụ thật sự được màn dùng.</summary>
+public sealed class LoyaltyCard
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`CardNo` — số thẻ.</summary>
+    public string CardNo { get; set; } = "";
+    /// <summary>`MemberNo` — số hội viên (khoá lọc chính).</summary>
+    public string MemberNo { get; set; } = "";
+    public string? NetworkID { get; set; }
+    public string? RankPolicyCode { get; set; }
+    /// <summary>`CardTypeUse` / `CardTypeInit` — hạng đang dùng và hạng khởi tạo (taxonomy I/N/S/G/P).</summary>
+    public string? CardTypeUse { get; set; }
+    public string? CardTypeInit { get; set; }
+    public string? CardTypeUsePrev { get; set; }
+    public string? CardNoPrev { get; set; }
+    /// <summary>`CardStatus` — trạng thái THẺ. ⚠️ KHÁC `Crd_Member.MemberStatus` mà bộ lọc dùng.</summary>
+    public string? CardStatus { get; set; }
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    public DateTime? CardActiveDate { get; set; }
+    /// <summary>Ba cặp Total/Block/Avail — điểm, tiền, lượt ghé.</summary>
+    public decimal PointTotal { get; set; }
+    public decimal PointBlock { get; set; }
+    public decimal PointAvail { get; set; }
+    public decimal AmountTotal { get; set; }
+    public decimal AmountBlock { get; set; }
+    public decimal AmountAvail { get; set; }
+    public decimal QtyVisitTotal { get; set; }
+    public decimal QtyVisitBlock { get; set; }
+    public decimal QtyVisitAvail { get; set; }
+    public decimal PointBonus { get; set; }
+    public decimal PointCardRank { get; set; }
+    public decimal TotalAmountPeriod { get; set; }
+    public string? FlagExceptionally { get; set; }
+    public string? DLCodeExceptionally { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}

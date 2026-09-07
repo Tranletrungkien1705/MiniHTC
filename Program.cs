@@ -1949,6 +1949,97 @@ app.MapDelete("/api/gxdk/{historyId:long}", async (long historyId, AppDbContext 
 
 // ===== Voucher điểm hội viên áp vào LSC (port 1:1 FrmMember_Voucher — TCMotor DMSCarSv/Services) =====
 // Nguồn: LoyaltyService.WA_OSCarSv_Crd_MemberVoucher_Get(memberNo) + serROService.Ser_RO_UpdateMemberVoucher.
+// ===== 🔴 #463 TRA THẺ HỘI VIÊN — `LoyaltyService.Crd_Card_Get` (`LoyaltyService.cs:103`) =====
+// TRACE: `Views/Services/FrmQuotation.cs` → `loyaltyService.Crd_Card_Get(cardNo, memberNo, "*", "*")`.
+//   ⚠️ **KHÔNG đi qua WS/biz của DMSCarSv**: gọi thẳng REST sang hệ Loyalty
+//   `Loyalty_URL + "CrdCard/WA_OSCarSv_Crd_Card_Get"` ⇒ grep trong `TERP.BizCarSv` ra **0 dòng**;
+//   ai chỉ tra biz sẽ kết luận nhầm "màn này không có nguồn".
+//
+// 🔴 **ĐẠI LÝ `V3601` BỊ LOẠI ÂM THẦM**: `if (!SystemGlobal.strDealerCode.Equals("V3601"))` mới gọi API.
+//   Với đại lý đó, `objReturn` giữ nguyên đối tượng RỖNG ⇒ màn hiện **không thẻ, không khuyến mãi**,
+//   **không thông báo gì**. Nhân viên sẽ tưởng khách chưa là hội viên. Cờ `dealerExcludedSilently`.
+//   📌 Cùng mã `V3601` đã thấy ở danh sách chặn đăng nhập (#318/#455) — một đại lý bị vô hiệu nhiều nơi.
+// 🔴 **XIN CỘT LẺ = KHÔNG CÓ DỮ LIỆU**: bảng chỉ được nạp khi `strGetCrd_Card.Equals("*")` /
+//   `strGetPromotion.Equals("*")`. Truyền danh sách cột cụ thể thì nguồn vẫn `Tables.Add` một
+//   `DataTable` **rỗng** ⇒ đúng hình dạng, sai nội dung, không lỗi. Cờ `onlyStarReturnsRows`.
+// ⚠️ Bộ lọc (`Crd_Card_Get_BuidWhereClause` — nguồn viết THIẾU chữ "l": **Buid**, giữ nguyên khi tra cứu):
+//   `Crd_Member.MemberNo = @memberNo` · `Crd_Member.**MemberStatus** = "APPROVE"` · `Crd_Card.CardNo = @cardNo`.
+//   ⚠️ "APPROVE" là trạng thái **HỘI VIÊN**, KHÔNG phải trạng thái THẺ (`Crd_Card.CardStatus`) — hai cột
+//     khác nhau, rất dễ port nhầm sang lọc thẻ.
+// ⚠️ `Ft_RecordCount = "123456000"` — con số "vô hạn" gõ tay, không phải giới hạn nghiệp vụ.
+// ⚠️ Kết quả là **HAI bảng**: `Crd_Card` và `Crd_DealUsePromotionDtl`; bảng thứ hai luôn được thêm vào
+//   dataset kể cả khi rỗng ⇒ đếm số bảng không nói lên có dữ liệu hay không.
+app.MapGet("/api/loyalty/cards", async (AppDbContext db, ITenantContext t,
+    string? cardNo, string? memberNo, string? getCard, string? getPromotion, string? dealerCode) =>
+{
+    // Đại lý bị loại âm thầm ở nguồn — port giữ hành vi nhưng NÓI RA.
+    if (string.Equals(dealerCode?.Trim(), "V3601", StringComparison.OrdinalIgnoreCase))
+        return Results.Ok(new
+        {
+            count = 0, items = Array.Empty<object>(), promotions = Array.Empty<object>(),
+            dealerExcludedSilently = true,
+            note = "Nguồn KHÔNG gọi API Loyalty cho đại lý V3601 và trả dataset rỗng, không báo lỗi.",
+        });
+
+    var wantCard = (getCard ?? "*").Trim();
+    var wantPromotion = (getPromotion ?? "*").Trim();
+
+    var qy = db.LoyaltyCards.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(memberNo)) qy = qy.Where(x => x.MemberNo == memberNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(cardNo)) qy = qy.Where(x => x.CardNo == cardNo!.Trim().ToUpperInvariant());
+
+    var rows = wantCard == "*"
+        ? await qy.OrderBy(x => x.CardNo).Select(x => new
+          {
+              x.CardNo, x.MemberNo, x.NetworkID, x.RankPolicyCode,
+              x.CardTypeUse, x.CardTypeInit, x.CardTypeUsePrev, x.CardNoPrev, x.CardStatus,
+              x.EffDateStart, x.EffDateEnd, x.CardActiveDate,
+              x.PointTotal, x.PointBlock, x.PointAvail,
+              x.AmountTotal, x.AmountBlock, x.AmountAvail,
+              x.QtyVisitTotal, x.QtyVisitBlock, x.QtyVisitAvail,
+              x.PointBonus, x.PointCardRank, x.TotalAmountPeriod,
+              x.FlagExceptionally, x.DLCodeExceptionally, x.Remark,
+          }).ToListAsync()
+        : null;
+
+    return Results.Ok(new
+    {
+        count = rows?.Count ?? 0,
+        items = (object?)rows ?? Array.Empty<object>(),
+        promotions = Array.Empty<object>(),   // Crd_DealUsePromotionDtl — chưa có nguồn dữ liệu cục bộ
+        onlyStarReturnsRows = wantCard != "*" || wantPromotion != "*",
+        memberStatusFilter = "APPROVE",
+        memberStatusIsMemberNotCard = true,
+        recordCountMagicNumber = "123456000",
+        dealerExcludedSilently = false,
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/loyalty/cards", async (LoyaltyCardDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CardNo) || string.IsNullOrWhiteSpace(dto.MemberNo))
+        return Results.BadRequest(new { error = "Cần CardNo và MemberNo." });
+    var no = dto.CardNo.Trim().ToUpperInvariant();
+    var mem = dto.MemberNo.Trim().ToUpperInvariant();
+    var c = await db.LoyaltyCards.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CardNo == no);
+    if (c is null) { c = new LoyaltyCard { OrgId = t.OrgId, CardNo = no }; db.LoyaltyCards.Add(c); }
+    c.MemberNo = mem;
+    c.NetworkID = dto.NetworkID; c.RankPolicyCode = dto.RankPolicyCode;
+    c.CardTypeUse = dto.CardTypeUse; c.CardTypeInit = dto.CardTypeInit;
+    c.CardTypeUsePrev = dto.CardTypeUsePrev; c.CardNoPrev = dto.CardNoPrev;
+    c.CardStatus = dto.CardStatus;
+    c.EffDateStart = dto.EffDateStart; c.EffDateEnd = dto.EffDateEnd; c.CardActiveDate = dto.CardActiveDate;
+    c.PointTotal = dto.PointTotal; c.PointBlock = dto.PointBlock; c.PointAvail = dto.PointAvail;
+    c.AmountTotal = dto.AmountTotal; c.AmountBlock = dto.AmountBlock; c.AmountAvail = dto.AmountAvail;
+    c.QtyVisitTotal = dto.QtyVisitTotal; c.QtyVisitBlock = dto.QtyVisitBlock; c.QtyVisitAvail = dto.QtyVisitAvail;
+    c.PointBonus = dto.PointBonus; c.PointCardRank = dto.PointCardRank;
+    c.TotalAmountPeriod = dto.TotalAmountPeriod;
+    c.FlagExceptionally = dto.FlagExceptionally; c.DLCodeExceptionally = dto.DLCodeExceptionally;
+    c.Remark = dto.Remark;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CardNo, c.MemberNo, c.CardTypeUse, c.CardStatus, c.PointAvail });
+}).RequireAuthorization();
+
 app.MapGet("/api/vouchers", async (AppDbContext db, ITenantContext t, string? memberNo) =>
 {
     if (string.IsNullOrWhiteSpace(memberNo)) return Results.BadRequest(new { error = "Cần số hội viên (memberNo)." });
@@ -45422,6 +45513,14 @@ record DeliveryDateHistoryDto(
 
 // ----- Voucher điểm hội viên (FrmMember_Voucher) -----
 /// <summary>1 voucher của hội viên (khớp lưới Crd_MemberVoucher của form gốc).</summary>
+record LoyaltyCardDto(string? CardNo, string? MemberNo, string? NetworkID, string? RankPolicyCode,
+    string? CardTypeUse, string? CardTypeInit, string? CardTypeUsePrev, string? CardNoPrev,
+    string? CardStatus, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? CardActiveDate,
+    decimal PointTotal, decimal PointBlock, decimal PointAvail,
+    decimal AmountTotal, decimal AmountBlock, decimal AmountAvail,
+    decimal QtyVisitTotal, decimal QtyVisitBlock, decimal QtyVisitAvail,
+    decimal PointBonus, decimal PointCardRank, decimal TotalAmountPeriod,
+    string? FlagExceptionally, string? DLCodeExceptionally, string? Remark);   // #463 §12
 record MemberVoucherDto(
     string MemberNo,
     string VoucherNo,
