@@ -27826,8 +27826,31 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #461 TRẢ NỢ `by-vin`: bản LIVE là `_New20221114`, KHÔNG phải `_New20210618` =====
+// TRACE 4 TẦNG: `FrmQuotation` → `BltBulletin.Blt_BulletinGetByVin` (`:910`) →
+//   WS **`Blt_Bulletin_Get_byVin`** (trên `_commonCenterService`, KHÁC tên hàm ở client)
+//   → biz **`Blt_Bulletin_Get_byVin_New20221114`** (`BizCarSv.Bulletin.cs:3796`).
+//   Cụm có **4 bản**; WS chỉ gọi bản 2022-11-14 ⇒ ba bản kia chết.
+// 🔴 DIFF hai nhánh dài (luật #414) — 2022-11-14 so với 2021-06-18 thêm ĐÚNG hai thứ:
+//   (1) tham số lọc **`strDateExpiredConditionList`** → `BuildClause("and", "b.DateExpired", …)`;
+//   (2) cột **`bb.BulletinNoHMC`** vào HAI bảng kết quả. WHERE còn lại y hệt.
+//   ⇒ Port cũ thiếu **bộ lọc hạn hiệu lực**; bổ sung `expiredFrom`/`expiredTo` ở đây.
+//
+// 🔴 TẦNG SERVICE **THAY** tham số của người gọi: hàm nhận `strIsActive` nhưng khi gọi WS lại truyền
+//   `Constants.Flag.Active` (= "1") **đóng cứng** ⇒ tham số `strIsActive` của client **không bao giờ tới
+//   được biz**. Người gọi tưởng tra được thông báo đã ngừng, thực tế **luôn chỉ ra bản đang hiệu lực**.
+//   Giữ tham số `active` của MiniHTC (hữu dụng hơn) nhưng nêu cờ `sourceForcesActiveOnly`.
+// ⚪ KIỂM TRA ÂM TÍNH (đừng kết luận vội): service ghép chuỗi `Append("like"); Append("%x%")` ⇒ ra
+//   `"like%x%"` **KHÔNG có dấu cách**. Đọc `BuildClause` (`DataUtils.cs:1074`): nó `Trim().ToUpper()` rồi
+//   `StartsWith("LIKE")` ⇒ **vẫn nhận đúng toán tử**, điều kiện KHÔNG chết. (`strUserCreate` thì có dấu
+//   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
+// ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
+// ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
 app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
-    string? vins, string? dealers, string? status, string? active) =>
+    string? vins, string? dealers, string? status, string? active,
+    string? bulletinNo, string? remark, string? userCreate,
+    DateTime? createFrom, DateTime? createTo,
+    DateTime? expiredFrom, DateTime? expiredTo) =>
 {
     List<string> Split(string? s) => (s ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
         .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
@@ -27852,6 +27875,18 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     var nos = linkRows.Select(x => x.BulletinNo).Distinct().ToList();
     var bq = db.Bulletins.Where(b => b.OrgId == t.OrgId && nos.Contains(b.BulletinNo));
     if (!string.IsNullOrWhiteSpace(active)) bq = bq.Where(b => b.FlagActive == active!.Trim());
+    // #461: ba bộ lọc LIKE của tầng service (BulletinNo · Remark · UserCreate) + khoảng ngày tạo.
+    if (!string.IsNullOrWhiteSpace(bulletinNo))
+        bq = bq.Where(b => b.BulletinNo.Contains(bulletinNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(remark))
+        bq = bq.Where(b => b.Remark != null && b.Remark.Contains(remark!.Trim()));
+    if (!string.IsNullOrWhiteSpace(userCreate))
+        bq = bq.Where(b => b.UserCreate != null && b.UserCreate.Contains(userCreate!.Trim()));
+    if (createFrom.HasValue) bq = bq.Where(b => b.CreateDate >= createFrom);
+    if (createTo.HasValue) bq = bq.Where(b => b.CreateDate <= createTo);
+    // #461 CỘT MỚI CỦA BẢN 2022-11-14: lọc theo hạn hiệu lực `b.DateExpired`.
+    if (expiredFrom.HasValue) bq = bq.Where(b => b.DateExpired >= expiredFrom);
+    if (expiredTo.HasValue) bq = bq.Where(b => b.DateExpired <= expiredTo);
 
     var bulletins = await bq.Select(b => new
     {
@@ -27876,6 +27911,11 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
         bakeParamMixNote = "Nguồn trộn bake + param trên cùng token @strIsActive (Replace thay giá trị thô, "
             + "không bọc nháy). Port dùng tham số thật.",
         statusDefaultNote = "Status của dòng VIN trống ⇒ hiểu là 'P' (chờ xử lý), đúng nguồn.",
+        // ===== #461 =====
+        sourceForcesActiveOnly = true,
+        liveBizNote = "WS gọi Blt_Bulletin_Get_byVin_New20221114 (Bulletin.cs:3796); ba bản còn lại của "
+            + "cụm 4 bản là code chết. Bản 2022-11-14 thêm bộ lọc DateExpired và cột BulletinNoHMC.",
+        likeWithoutSpaceIsHarmless = true,
     });
 }).RequireAuthorization();
 
