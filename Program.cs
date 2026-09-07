@@ -13478,6 +13478,129 @@ app.MapPost("/api/servicecars/{frameNo}/membercar", async (
 //   nhưng thân hàm **không dùng tham số biển số**, và **cả 4 nơi gọi đều truyền rỗng** ⇒ nửa 'tìm theo
 //   biển số' chưa bao giờ chạy. Endpoint `/api/servicecustomers/search` hiện có **đúng nguồn**: không tìm
 //   theo biển số.
+// ===== 🔴 #424 CẬP NHẬT NGÀY ĐĂNG KÝ BẢO HÀNH HÀNG LOẠT — nhập dở dang **không quay lui được**,
+//        và một `break` đặt nhầm chỗ **cắt cụt vòng đồng bộ đại lý** =====
+// TRACE: `FrmHTCUpdateWarrantyRegistrationDate.btnSave_Click` → `SerCarHTCUpdateWarrantyDateService`
+//   → WS `SerCarHTCUpdateWarrantyDate` (`WSCarSv.asmx.cs:8014`) → biz (`BizCarSv.Car.cs:2125`).
+//
+// 🔴 **GHI TỪNG DÒNG, KIỂM TỪNG DÒNG, DỪNG GIỮA CHỪNG**: form lặp qua lưới, **kiểm tra bên TRONG vòng lặp**
+//   và `return` ngay khi gặp dòng hỏng — **sau khi đã gọi WS ghi cho mọi dòng phía trước**.
+//   ⇒ Nhập 100 dòng mà dòng thứ 50 sai: **49 dòng đầu ĐÃ ghi vào CSDL**, 51 dòng sau không.
+//     Hộp thoại chỉ nói dòng đó sai, **không nói gì về việc đã ghi một nửa**. Không có giao dịch bao ngoài.
+//   📌 MiniHTC **CỐ Ý LỆCH**: kiểm **TOÀN BỘ trước**, có lỗi thì **không ghi dòng nào**, và trả về danh
+//     sách lỗi theo từng dòng. Ghi nửa chừng một cách im lặng là thứ không nên tái hiện.
+//
+// 🔴 **GUARD NGÀY RỖNG LÀ CODE CHẾT**: form gọi `Convert.ToDateTime(row[...])` **TRƯỚC** khi kiểm
+//   `IsEmpty(strWarrantyRegistrationDate)` ⇒ ô ngày để trống **ném FormatException trước**, rơi vào
+//   `catch` chung và hiện hộp lỗi kỹ thuật. Câu *"Ngày bảo hành không được để trống"* **không bao giờ hiện**.
+//   ⚠️ `Convert.ToDateTime` còn phụ thuộc **văn hoá máy** (cùng lệ #421).
+// 🔴 **Kiểm trùng VIN quét lại cả bảng cho MỖI dòng** (`dt_Guarantee.Select(FrameNo = X)`) ⇒ O(n²), và
+//   vì nằm trong vòng lặp nên trùng chỉ bị phát hiện **khi chạm dòng đầu tiên của cặp** — lại là sau khi
+//   các dòng trước đã ghi.
+//
+// 🔴 **GUARD CỦA BIZ** (đọc `#region // Check`, trích nguyên): hai cái, cả hai đều ném lỗi:
+//   1. VIN phải tồn tại trong `ser_car` → `SerCarHTCUpdateWarrantyDate_SerCarNotFound`.
+//   2. `DateBuyCar` (ngày mua xe) **không được sau** ngày đăng ký bảo hành
+//      → `SerCarHTCUpdateWarrantyDate_InvalidWarrantyRegistrationDate`.
+//   ⚠️ Câu kiểm VIN **KHÔNG lọc DealerCode** dù tham số `strDealerCode` có được truyền và trim ⇒ cập nhật
+//     được VIN thuộc **đại lý khác**. Bất đối xứng đáng ngờ, ghi lại.
+//   ⚠️ `DateBuyCar` lưu dạng **CHUỖI** và so bằng `Convert.ToDateTime` ⇒ lại phụ thuộc văn hoá.
+//
+// 🔴 **BA NƠI GHI + RPC SANG TỪNG ĐẠI LÝ**: biz mở **ba** giao dịch (`_dbMain`, `_dbWH`, `_dbDealer`) rồi
+//   `SaveData("Ser_Car", …)` **ba lần**; sau đó còn duyệt danh sách đại lý, lấy `WSURLADDR` từ `Mst_Network`
+//   và gọi **web service của TỪNG đại lý** (`ws.SerCarHTCUpdateWarrantyDate_SaveDealer`).
+//   ⇒ Một thao tác trông như "sửa một ô ngày" thực chất là **ghi ba CSDL + N lời gọi liên hệ thống**.
+//   🔴 Trong vòng đó: `if (string.IsNullOrEmpty(strUrl)) **break**;` — **`break` chứ không phải `continue`**
+//     ⇒ gặp **một** đại lý chưa khai URL là **bỏ luôn TẤT CẢ đại lý còn lại** trong danh sách, im lặng.
+//     Đại lý đứng sau trong danh sách **không bao giờ được đồng bộ**, và không ai biết.
+//   ⚠️ Dòng `//if (strDealer.Equals("VS058"))` là bộ lọc gỡ lỗi **đã bị comment** — port dòng ACTIVE.
+//   📌 MiniHTC một CSDL, không có RPC ⇒ ghi cờ `dealerPushNotModelled` thay vì giả vờ đã đồng bộ.
+app.MapPost("/api/servicecars/warranty-registration-date", async (WarrantyRegDateImportDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Lưới dữ liệu trống" });
+
+    var now = DateTime.Now;
+    var errors = new List<object>();
+
+    // Trùng VIN trong chính tệp nhập (nguồn kiểm bằng cách quét lại cả bảng mỗi dòng).
+    var dupVins = rows.GroupBy(r => (r.FrameNo ?? "").Trim())
+        .Where(g => g.Key.Length > 0 && g.Count() > 1).Select(g => g.Key).ToHashSet();
+
+    var vins = rows.Select(r => (r.FrameNo ?? "").Trim()).Where(v => v.Length > 0).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync();
+    var carByVin = cars.GroupBy(c => c.FrameNo).ToDictionary(g => g.Key, g => g.First());
+
+    // --- KIỂM TOÀN BỘ TRƯỚC (cố ý lệch nguồn: nguồn kiểm-và-ghi xen kẽ).
+    for (var i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i]; var line = i + 1;
+        var vin = (r.FrameNo ?? "").Trim();
+        if (vin.Length == 0)
+        { errors.Add(new { line, error = "Số Vin không được để trống" }); continue; }
+        if (r.WarrantyRegistrationDate == null)
+        { errors.Add(new { line, vin, error = "Ngày bảo hành không được để trống" }); continue; }
+        if (r.WarrantyRegistrationDate.Value > now)
+        { errors.Add(new { line, vin, error = "Ngày bảo hành không được lớn hơn ngày hiện tại" }); continue; }
+        if (dupVins.Contains(vin))
+        { errors.Add(new { line, vin, error = "Số Vin không được trùng nhau" }); continue; }
+        if (!carByVin.TryGetValue(vin, out var car))
+        { errors.Add(new { line, vin, error = "SerCarHTCUpdateWarrantyDate_SerCarNotFound" }); continue; }
+        // Guard biz #2: ngày mua xe không được SAU ngày đăng ký bảo hành. DateBuyCar lưu dạng CHUỖI.
+        if (!string.IsNullOrWhiteSpace(car.DateBuyCar)
+            && DateTime.TryParse(car.DateBuyCar, out var buy)
+            && buy > r.WarrantyRegistrationDate.Value)
+            errors.Add(new
+            {
+                line, vin, error = "SerCarHTCUpdateWarrantyDate_InvalidWarrantyRegistrationDate",
+                dateBuyCar = car.DateBuyCar, warrantyRegistrationDate = r.WarrantyRegistrationDate,
+            });
+    }
+
+    if (errors.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Có dòng không hợp lệ — KHÔNG ghi dòng nào.", errorCount = errors.Count, errors,
+            divergenceNote = "CỐ Ý LỆCH NGUỒN: nguồn kiểm và ghi XEN KẼ trong cùng vòng lặp nên khi gặp "
+                + "dòng hỏng nó đã ghi xong mọi dòng phía trước và không quay lui được. MiniHTC kiểm toàn "
+                + "bộ trước, sai thì không ghi gì.",
+        });
+
+    // --- GHI (một CSDL; nguồn ghi Main + WH + Dealer rồi còn RPC sang từng đại lý).
+    var updated = 0;
+    foreach (var r in rows)
+    {
+        var car = carByVin[(r.FrameNo ?? "").Trim()];
+        car.WarrantyRegistrationDate = r.WarrantyRegistrationDate;
+        // ServiceCar khong co cot UpdatedAt
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updated,
+        allOrNothingNote = "Đã kiểm toàn bộ trước khi ghi. Nguồn thì ghi dần từng dòng và DỪNG giữa chừng "
+            + "khi gặp lỗi, để lại dữ liệu ghi một nửa mà không thông báo.",
+        deadGuardNote = "Trong nguồn, Convert.ToDateTime chạy TRƯỚC khi kiểm ngày rỗng ⇒ câu 'Ngày bảo "
+            + "hành không được để trống' là CODE CHẾT, ô trống chỉ ném FormatException.",
+        tripleWriteNotModelled = true,
+        tripleWriteNote = "Biz mở BA giao dịch (Main/WH/Dealer) và SaveData(\"Ser_Car\") ba lần. MiniHTC "
+            + "một CSDL ⇒ chỉ ghi một nơi.",
+        dealerPushNotModelled = true,
+        dealerPushNote = "Biz còn duyệt Mst_Network lấy WSURLADDR và gọi web service CỦA TỪNG ĐẠI LÝ "
+            + "(SerCarHTCUpdateWarrantyDate_SaveDealer). MiniHTC không có RPC ⇒ báo cờ, không giả vờ đã đồng bộ.",
+        dealerLoopBreakBugNote = "🔴 Trong vòng đó nguồn dùng `if (string.IsNullOrEmpty(strUrl)) break;` — "
+            + "BREAK chứ không phải CONTINUE ⇒ một đại lý chưa khai URL sẽ CẮT CỤT toàn bộ đại lý còn lại "
+            + "trong danh sách, im lặng. Các đại lý đứng sau không bao giờ được đồng bộ.",
+        crossDealerNote = "Câu kiểm VIN của biz KHÔNG lọc DealerCode dù có nhận tham số đó ⇒ cập nhật "
+            + "được VIN thuộc đại lý khác. Bất đối xứng đáng ngờ.",
+        excelHeaderNote = "Tệp nhập của nguồn đọc bằng ExcelImport.Query(file, \"Ser_Car\", \"A2\") "
+            + "⇒ HEADER Ở DÒNG 2 (lệ #402).",
+    });
+}).RequireAuthorization();
+
 app.MapPut("/api/servicecars/{vin}", async (string vin, ServiceCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
 {
     vin = (vin ?? "").Trim().ToUpperInvariant();
@@ -43644,6 +43767,9 @@ record OrderPartImportRowDto(string? PartCode, decimal? Quantity, decimal? Befor
 record OrderPartImportDto(List<OrderPartImportRowDto>? Rows);
 record PartUpdateBoItemDto(string? PartCode, decimal? CusDebt);
 record PartUpdateBoDto(List<PartUpdateBoItemDto>? Items);
+// #424 Một dòng của tệp nhập ngày đăng ký bảo hành (HEADER Ở DÒNG 2 của Excel nguồn).
+record WarrantyRegDateRowDto(string? FrameNo, DateTime? WarrantyRegistrationDate);
+record WarrantyRegDateImportDto(List<WarrantyRegDateRowDto>? Rows);
 record ServiceCarUpdateDto(string? DealerCode, string? CusID, string? ModelID, string? PlateNo,
     string? FrameNo, string? EngineNo, int? ProductYear, string? ColorCode,
     DateTime? WarrantyRegistrationDate, string? DateBuyCar, decimal? CurrentKm,
