@@ -14193,6 +14193,11 @@ public sealed class SharePart
 /// <summary>Thông báo kỹ thuật (bulletin) — số/nội dung/PT-DV liên quan/hết hạn/file — port 1:1 FrmBulletinHTCCreate (Tbl_Blt_Bulletin, TCMotor).</summary>
 public sealed class Bulletin
 {
+    /// <summary>🔴 #377 §12 FILEATTACHMENT — **nội dung/tên tệp đính kèm**, KHÁC
+    /// <see cref="FileNameAttachment"/> (chỉ là tên hiển thị). Nguồn trả cột này bằng một truy vấn
+    /// con **đóng cứng số thông báo `'TEST201911'`** ⇒ mọi dòng nhận tệp của **một bản ghi TEST**.
+    /// Xem `/api/bulletins/by-vin`.</summary>
+    public string? FileAttachment { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string BulletinNo { get; set; } = "";

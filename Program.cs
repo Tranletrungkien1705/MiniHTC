@@ -23681,7 +23681,7 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.BulletinNo, x.BulletinNoHMC, x.Remark, x.PartCode, x.PartName, x.SerCode, x.SerName, x.FileNameAttachment, x.FlagActive, x.CreateDate, x.UserCreate,
+        x.BulletinNo, x.BulletinNoHMC, x.Remark, x.PartCode, x.PartName, x.SerCode, x.SerName, x.FileNameAttachment, x.FileAttachment, x.FlagActive, x.CreateDate, x.UserCreate,   // #377 §12
         vins = db.BulletinVins.Count(v => v.OrgId == t.OrgId && v.BulletinNo == x.BulletinNo),
         dateExpired = x.DateExpired.HasValue ? x.DateExpired.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
@@ -23724,6 +23724,7 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
     row.SerCode = dto.SerCode; row.SerName = dto.SerName;
     row.DateExpired = dto.DateExpired;
     row.FileNameAttachment = dto.FileNameAttachment;
+    row.FileAttachment = dto.FileAttachment;   // #377 §12
     row.CreateDate = dto.CreateDate; row.UserCreate = dto.UserCreate;
     row.FlagActive = "1";
     await db.SaveChangesAsync();
@@ -23759,6 +23760,77 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
 }).RequireAuthorization();
 
 // Chi tiết một bản tin: dịch vụ/phụ tùng liên quan + danh sách VIN áp dụng kèm trạng thái từng xe.
+// ===== 🔴 #377 THÔNG BÁO KỸ THUẬT ÁP CHO MỘT XE (`Blt_Bulletin_Get_byVin_ForTab`, `Bulletin.cs:4145`) =====
+// Màn Tab tra thông báo kỹ thuật theo **VIN**: lọc trên bảng nối `Btl_Bulletin_VIN` rồi lấy thông báo.
+//
+// 🔴 **MÃ TEST LỌT LÊN BẢN CHẠY THẬT** — cột `FileAttachment` được lấy bằng:
+//   `(select top 1 t.FileAttachment from Btl_Bulletin t where t.BulletinNo = 'TEST201911')`
+//   Truy vấn con này **KHÔNG tương quan với dòng nào cả**: mọi thông báo trả về đều nhận tệp đính kèm
+//   của **một bản ghi TEST**. Nếu bản ghi đó không tồn tại thì cột luôn NULL.
+//   📌 Có mặt ở **cả ba cây nguồn** (laptop `.V2`, 150 `.Release`, và cả `V20` cũ) ⇒ tồn tại nhiều năm,
+//     không phải sơ suất mới. MiniHTC **không tái hiện**: trả đúng tệp của từng thông báo và bật cờ.
+// 🔴 **CỘT LẶP TRONG DANH SÁCH SELECT**: `bb.CreateDate` xuất hiện **HAI LẦN** trong cùng câu select
+//   (kèm `bb.UserCreate` / `bb.CreatedBy` là hai cột người tạo khác nhau) ⇒ ADO trả về `CreateDate` và
+//   `CreateDate1`. Ai map theo chỉ số cột sẽ lệch.
+// ⚠️ **TRỘN BAKE + PARAM trên CÙNG một token** (lệ `[BAKE-PARAM-MIX]`): `@strIsActive` vừa được
+//   `BuildClauseConditionSingle` đăng ký làm **tham số**, vừa bị `StringUtils.Replace` **thay thẳng bằng
+//   giá trị thô, KHÔNG bọc nháy**. Replace chạy trước nên tham số thành vô dụng, và giá trị được ghép
+//   trực tiếp vào SQL. Port dùng tham số thật.
+// ⚠️ `Status` của dòng VIN: `isnull(bv.Status, 'P')` ⇒ trống hiểu là **P** (chờ xử lý).
+// ⚠️ Bộ lọc VIN/đại lý/trạng thái đều là **DANH SÁCH ngăn cách `|`** (`BuildClauseConditionList`).
+app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
+    string? vins, string? dealers, string? status, string? active) =>
+{
+    List<string> Split(string? s) => (s ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var vinList = Split(vins);
+    var dealerList = Split(dealers);
+    var statusList = Split(status);
+
+    var linkQ = db.BulletinVins.Where(x => x.OrgId == t.OrgId);
+    if (vinList.Count > 0) linkQ = linkQ.Where(x => x.VinNo != null && vinList.Contains(x.VinNo));
+    if (dealerList.Count > 0) linkQ = linkQ.Where(x => x.DealerCode != null && dealerList.Contains(x.DealerCode));
+    var links = await linkQ.ToListAsync();
+
+    // Trống hiểu là "P" — đúng nguồn (isnull(bv.Status, 'P')). Lọc trạng thái áp SAU khi đã bù mặc định.
+    var linkRows = links.Select(x => new
+    {
+        x.BulletinNo, x.VinNo, x.DealerCode,
+        Status = string.IsNullOrWhiteSpace(x.Status) ? "P" : x.Status!,
+    }).ToList();
+    if (statusList.Count > 0) linkRows = linkRows.Where(x => statusList.Contains(x.Status.ToUpperInvariant())).ToList();
+
+    var nos = linkRows.Select(x => x.BulletinNo).Distinct().ToList();
+    var bq = db.Bulletins.Where(b => b.OrgId == t.OrgId && nos.Contains(b.BulletinNo));
+    if (!string.IsNullOrWhiteSpace(active)) bq = bq.Where(b => b.FlagActive == active!.Trim());
+
+    var bulletins = await bq.Select(b => new
+    {
+        b.BulletinNo, b.BulletinNoHMC, b.Remark, b.CreateDate, b.UserCreate,
+        b.FileNameAttachment,
+        // KHÔNG lấy theo số thông báo đóng cứng như nguồn — lấy đúng tệp của chính dòng này.
+        b.FileAttachment,
+        b.FlagActive, b.DateExpired,
+    }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = bulletins.Count, bulletins,
+        vinLinks = linkRows,
+        vinFilter = vinList, dealerFilter = dealerList, statusFilter = statusList,
+        hardcodedTestBulletinInSource = "TEST201911",
+        divergenceNote = "Nguồn lấy FileAttachment bằng truy vấn con đóng cứng BulletinNo = 'TEST201911' "
+            + "(không tương quan dòng nào) ⇒ mọi thông báo nhận tệp của một bản ghi TEST. MiniHTC trả đúng "
+            + "tệp của từng thông báo — CỐ Ý khác nguồn, cần nghiệp vụ xác nhận.",
+        duplicateColumnNote = "Nguồn select `bb.CreateDate` HAI LẦN ⇒ ADO trả CreateDate và CreateDate1; "
+            + "map theo chỉ số cột sẽ lệch.",
+        bakeParamMixNote = "Nguồn trộn bake + param trên cùng token @strIsActive (Replace thay giá trị thô, "
+            + "không bọc nháy). Port dùng tham số thật.",
+        statusDefaultNote = "Status của dòng VIN trống ⇒ hiểu là 'P' (chờ xử lý), đúng nguồn.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/bulletins/{no}/details", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -40968,7 +41040,7 @@ record InsContractDto(string? InContractNo, string? InContractCode, string InsNo
 record BulletinDtlDto(string? SerCode, string? SerName, string? PartCode, string? PartName);
 record BulletinVinDto(string? VinNo, string? DealerCode, string? Status);
 record BulletinVinStatusDto(string? Status);
-record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
+record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, string? FileAttachment = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
 // #267: `Lines` = bảng chi tiết `SP_SharePart_Detail` của nguồn. Các trường phẳng giữ lại cho tương thích
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
