@@ -26187,10 +26187,26 @@ app.MapGet("/api/emailconfigsendauto/vocab", (string? screen) =>
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #437 DANH SÁCH CẤU HÌNH GỬI TỰ ĐỘNG — **NẠP thì lọc đại lý, TÌM thì không** =====
+// Nguồn: `Views/SendEmail/FrmAutoSendConfigList.cs` (396 dòng) → `Email_ConfigSendAuto_Get`.
+// Hai lời gọi trong **cùng một form**, khác nhau đúng **tham số đầu tiên**:
+//   · Lúc NẠP lưới:  `db.Email_ConfigSendAuto_Get(**SystemGlobal.strDealerCode**, "", "", "", …)`
+//   · Lúc bấm TÌM:   `db.Email_ConfigSendAuto_Get(**""**, "", "", "", <ngày>, "", <chế độ gửi>, …)`
+// ⇒ Mở màn thấy **đúng cấu hình của đại lý mình**; bấm Tìm một cái là **thấy cấu hình của MỌI đại lý**.
+//   Không có thông báo nào; người dùng tưởng bộ lọc vừa nới ngày/chế độ, thực ra nó **nới cả phạm vi đại lý**.
+//   Đây là rò phạm vi ngay **trong một màn**, khác #433 (rò giữa đường ĐỌC và đường GHI).
+// 📌 MiniHTC **giữ tham số `dealer` cho mọi lần gọi** và trả cờ `dealerScopeLostOnSearchInSource` để
+//   người dùng biết số liệu WinForm có thể rộng hơn.
+//
+// ⚠️ Hàm nhận **mười hai** tham số, form truyền **rỗng mười cái**; bản gọi cũ (bảy tham số) còn nằm
+//   ngay trên dưới dạng comment ⇒ chữ ký đã đổi ít nhất một lần mà nơi gọi chỉ độn thêm `""`.
 app.MapGet("/api/emailconfigsendauto", async (AppDbContext db, ITenantContext t,
-    string? dealer, string? typeEmail, string? isActive) =>
+    string? dealer, string? typeEmail, string? isActive, string? sendMode, DateTime? autoDate) =>
 {
     var qy = db.EmailConfigSendAutos.Where(x => x.OrgId == t.OrgId);
+    // #437 hai bộ lọc mà màn TÌM của nguồn có nhưng bản port cũ thiếu.
+    if (!string.IsNullOrWhiteSpace(sendMode)) qy = qy.Where(x => x.SendMode == sendMode!.Trim());
+    if (autoDate.HasValue) qy = qy.Where(x => x.ConfigDate != null && x.ConfigDate!.Value.Date == autoDate.Value.Date);
     if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(typeEmail)) qy = qy.Where(x => x.TypeEmail == typeEmail);
     if (!string.IsNullOrWhiteSpace(isActive)) qy = qy.Where(x => x.IsActive == isActive);
@@ -26202,6 +26218,8 @@ app.MapGet("/api/emailconfigsendauto", async (AppDbContext db, ITenantContext t,
         x.SendMode,
         sendModeName = x.SendMode is not null && emailSendModeNames.TryGetValue(x.SendMode, out var sm) ? sm : null,
         x.IsActive, x.TypeEmail,
+        // #437 cờ cảnh báo rò phạm vi đại lý ở màn nguồn.
+        dealerScopeLostOnSearchInSource = true,
         typeEmailName = x.TypeEmail is not null && cfg.TryGetValue(x.TypeEmail, out var te) ? te : null,
         x.ConfigDate, x.AutoDate, x.AutoDay,
     }).ToList();
