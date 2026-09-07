@@ -12439,6 +12439,113 @@ app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantC
 }).RequireAuthorization();
 
 // #143: hàng chờ thật của worker — lô còn "P" VÀ đã tới giờ hẹn (nguồn dùng EffectDate để hẹn giờ).
+// ===== 🔴 #434 TRA ĐỢT GỬI THƯ (`Temp_Email_Get`) — tham số tên **"ngày TẠO"** nhưng lọc **"ngày GỬI"** =====
+// TRACE: `FrmEmail_Search` (`Views/SendEmail`, 375 dòng) → `EmailSendEmailService.Temp_Email_Get`
+//   (`EmailSendEmailService.cs:1487`) → WS (`WSCarSv.asmx.cs:22908`) → biz (`BizCarSv.SendMail.cs:5250`).
+//
+// 🔴 **TÊN THAM SỐ NÓI DỐI + LEFT JOIN CHẾT, cộng lại thành mất dữ liệu**:
+//   Tham số tên `strCreatedDateFrom`/`To`, cột hiển thị tên `NgayTao` (`eu.CreatedDate`) — nhưng mệnh đề
+//   dựng ra lại là `datediff(day, **e.SendDate**, convert(datetime, '@ToDate', 20)) >= 0`,
+//   tức lọc trên **NGÀY GỬI** của bảng `Email_SendEmail`, **không phải ngày tạo**.
+//   Mà `e` là bảng **LEFT JOIN** ⇒ đợt **chưa gửi lần nào** có `e.SendDate = NULL` ⇒ `datediff(NULL,…)`
+//   ra NULL ⇒ điều kiện **sai** ⇒ **đợt chưa gửi BIẾN MẤT** ngay khi người dùng chọn khoảng ngày.
+//   ⇒ Đúng cái người dùng cần tìm nhất (đợt chưa gửi xong) lại là cái bị lọc mất. Không cảnh báo gì.
+//   📌 MiniHTC tách rõ: `createdFrom`/`createdTo` lọc **ngày tạo**, `sentFrom`/`sentTo` lọc **ngày gửi**,
+//     và cờ `sourceFiltersSentDateNote` nói rõ nguồn làm khác.
+//
+// 🔴 **CỘT "SỐ LƯỢNG LỖI" LUÔN BẰNG 0**: SQL viết thẳng `,0 SoLuongLoi` — một hằng số, không phải dữ liệu.
+//   Màn hình có cột lỗi mà **mọi đợt đều 0**, kể cả đợt gửi hỏng. (Cùng họ `0.0 SOPrice` ở #420.)
+// ⚠️ `SoLuongChuaGui = (đếm AutoTemp) − (đếm SendEmail)` — hiệu hai truy vấn con. Nếu một địa chỉ được
+//   **gửi lại**, vế trừ lớn hơn ⇒ số "chưa gửi" thành **ÂM**. Nguồn không kẹp về 0.
+// ⚠️ Bảng mã loại thư nằm **CỨNG trong SQL** (`case eu.TypeEmail when '1' …`) **và** lặp lại y hệt trong
+//   form ⇒ hai bản sao của cùng một từ vựng, sửa một chỗ là lệch. (Đã có trong MiniHTC: `EmailTypeLabelAuto`.)
+//   ✅ Đối chiếu xong: 7 giá trị khớp hoàn toàn ⇒ **chốt luôn câu hỏi treo #363** về nghĩa mã `'2'` =
+//   **"Nhắc bảo dưỡng"**.
+// ⚠️ Form có nhánh `else if (dtEmail == null || dtEmail.Rows.Count <= 0)` rồi **gọi ngay `dtEmail.Clear()`**
+//   ⇒ nếu thật sự `null` thì **ném NullReferenceException**. Nhánh viết ra để xử lý `null` lại chính là
+//   nhánh làm sập. Guard tự mâu thuẫn.
+app.MapGet("/api/emailbatches/search", async (AppDbContext db, ITenantContext t,
+    string? batchNo, string? sendBy, string? typeEmail, string? dealer,
+    DateTime? createdFrom, DateTime? createdTo, DateTime? sentFrom, DateTime? sentTo) =>
+{
+    var qy = db.EmailBatches.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim());
+    if (!string.IsNullOrWhiteSpace(batchNo)) qy = qy.Where(x => x.BatchNo == batchNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(sendBy)) qy = qy.Where(x => x.SendBy == sendBy!.Trim());
+    if (createdFrom.HasValue) qy = qy.Where(x => x.CreatedAt >= createdFrom.Value.Date);
+    if (createdTo.HasValue) qy = qy.Where(x => x.CreatedAt <= createdTo.Value.Date.AddDays(1).AddSeconds(-1));
+    var batches = await qy.ToListAsync();
+
+    var nos = batches.Select(b => b.BatchNo).ToList();
+    var temps = await db.EmailSendAutoTemps.Where(x => x.OrgId == t.OrgId && x.BatchId != null
+        && nos.Contains(x.BatchId!)).Select(x => new { x.BatchId, x.TypeEmail }).ToListAsync();
+    var sends = await db.EmailSends.Where(x => x.OrgId == t.OrgId && x.BatchNo != null
+        && nos.Contains(x.BatchNo!)).Select(x => new { x.BatchNo, x.SendDate, x.Status }).ToListAsync();
+
+    // Nguồn nối TRONG với Email_SendEmailAutoTemp ⇒ đợt CHƯA có dòng nào trong bảng tạm bị loại.
+    var tempByBatch = temps.GroupBy(x => x.BatchId!).ToDictionary(g => g.Key, g => g.ToList());
+    var sendByBatch = sends.GroupBy(x => x.BatchNo!).ToDictionary(g => g.Key, g => g.ToList());
+    var droppedNoTemp = batches.Count(b => !tempByBatch.ContainsKey(b.BatchNo));
+
+    var rows = new List<object>();
+    var negativeUnsent = 0;
+    foreach (var b in batches)
+    {
+        if (!tempByBatch.TryGetValue(b.BatchNo, out var tp)) continue;   // nối TRONG của nguồn
+        var tEmail = tp.Select(x => x.TypeEmail).FirstOrDefault(x => x != null);
+        if (!string.IsNullOrWhiteSpace(typeEmail) && tEmail != typeEmail!.Trim()) continue;
+
+        var sd = sendByBatch.TryGetValue(b.BatchNo, out var s) ? s : new();
+        // Lọc theo NGÀY GỬI — tách riêng, đúng thứ nguồn THỰC SỰ làm.
+        if (sentFrom.HasValue && !sd.Any(x => x.SendDate >= sentFrom.Value.Date)) continue;
+        if (sentTo.HasValue && !sd.Any(x => x.SendDate <= sentTo.Value.Date.AddDays(1).AddSeconds(-1))) continue;
+
+        var soLuongKhachHang = tp.Count;
+        var soLuongDaGui = sd.Count;
+        var chuaGui = soLuongKhachHang - soLuongDaGui;
+        if (chuaGui < 0) negativeUnsent++;
+
+        rows.Add(new
+        {
+            b.BatchNo, b.DealerCode, b.SendBy, b.BatchStatus,
+            ngayTao = b.CreatedAt,
+            typeEmail = tEmail,
+            newTypeEmail = EmailTypeLabelAuto(tEmail),
+            soLuongKhachHang, soLuongDaGui,
+            // 🔴 Nguồn viết thẳng hằng 0 cho cột này.
+            soLuongLoi = 0,
+            soLuongChuaGui = chuaGui,
+            sendDate = sd.Select(x => x.SendDate).Where(x => x != null).OrderBy(x => x).FirstOrDefault(),
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        sourceFiltersSentDateNote = "NGUỒN: tham số tên strCreatedDateFrom/To và cột hiển thị NgayTao "
+            + "(eu.CreatedDate), NHƯNG mệnh đề dựng ra lọc trên e.SendDate (NGÀY GỬI). Mà e là bảng LEFT "
+            + "JOIN ⇒ đợt CHƯA GỬI có SendDate NULL ⇒ điều kiện sai ⇒ BIẾN MẤT ngay khi chọn khoảng ngày. "
+            + "MiniHTC tách rõ createdFrom/createdTo và sentFrom/sentTo.",
+        soLuongLoiAlwaysZeroNote = "Cột 'số lượng lỗi' trong nguồn là hằng số viết thẳng trong SQL (,0 "
+            + "SoLuongLoi) ⇒ mọi đợt đều 0, kể cả đợt gửi hỏng. Cùng họ 0.0 SOPrice ở #420.",
+        negativeUnsent,
+        negativeUnsentNote = negativeUnsent > 0
+            ? "Có đợt cho số 'chưa gửi' ÂM: nguồn tính bằng hiệu hai truy vấn con, nên khi một địa chỉ "
+              + "được GỬI LẠI thì vế trừ lớn hơn. Nguồn không kẹp về 0."
+            : null,
+        droppedNoTemp,
+        droppedNoTempNote = droppedNoTemp > 0
+            ? "Đợt chưa có dòng nào trong bảng tạm bị loại (nguồn nối TRONG với Email_SendEmailAutoTemp)."
+            : null,
+        vocabNote = "Bảng mã loại thư nằm CỨNG trong SQL và LẶP LẠI y hệt trong form ⇒ hai bản sao của "
+            + "cùng một từ vựng. Đã đối chiếu: 7 giá trị khớp hoàn toàn với EmailTypeLabelAuto ⇒ CHỐT #363: "
+            + "mã '2' = 'Nhắc bảo dưỡng'.",
+        formNullCrashNote = "Form có nhánh `else if (dtEmail == null || Rows.Count <= 0)` rồi gọi ngay "
+            + "dtEmail.Clear() ⇒ nếu thật sự null thì NÉM NullReferenceException. Nhánh viết để xử lý null "
+            + "lại chính là nhánh làm sập.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/emailbatches/pending", async (AppDbContext db, ITenantContext t, int? take) =>
 {
     var now = DateTime.Now;
