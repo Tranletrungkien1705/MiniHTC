@@ -12488,6 +12488,104 @@ app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantC
 // ⚠️ `IsActive = 1` so **SỐ**, trong khi nhiều bảng khác cùng hệ dùng chuỗi `'1'`.
 // ⚠️ Tên/biển số/số khung/số máy lọc bằng `like %x%` dựng ở **tầng service**, nhưng toán tử do biz cấp qua
 //   `BuildClauseConditionSingle` ⇒ **chạy đúng** (cùng lệ đã kiểm ở #425).
+// ===== 🔴 #439 BÁO CÁO CÔNG NỢ KHÁCH THEO KỲ (`Ser_InvReportCusDebitRpt`) — dư đầu / phát sinh / dư cuối =====
+// TRACE: `FrmEmail_ReportAutoSend` (389 dòng) → `ServiceReportService.Ser_InvReportCusDebitRpt`
+//   (`Service.ReportService.cs:313`) → WS → biz (`BizCarSv.Service.Report.cs:1923`).
+// ⚠️ **TÊN MÀN NÓI DỐI**: màn tên *"báo cáo gửi tự động qua email"* nhưng dữ liệu nó nạp là **công nợ
+//   khách hàng**. Chỉ đọc tên form thì không đoán ra bảng nào bị chạm.
+//
+// 📐 **BỐN CỘT TIỀN theo chuẩn sổ**: `TGD` (dư ĐẦU kỳ) · `PST` (phát sinh TĂNG = nợ trong kỳ)
+//   · `PSG` (phát sinh GIẢM = thu trong kỳ) · `TGC` = `TGD + PST − PSG` (dư CUỐI kỳ).
+//   Dư đầu dựng từ hai bảng tạm riêng (`#tbl_deb_01` nợ TRƯỚC kỳ, `#tbl_pm_01` thu TRƯỚC kỳ) rồi
+//   `full outer join` ⇒ khách chỉ có thu mà chưa từng nợ vẫn ra dư đầu **âm**.
+//
+// 🔴 **KHÁCH CHỈ CÓ THU TRONG KỲ BỊ LOẠI**: mệnh đề cuối là
+//   `where (deb.CusID is not null **or** dk.CusID is not null)` — chỉ giữ khách có **nợ trong kỳ** hoặc
+//   có **dư đầu**. Khách phát sinh **duy nhất một khoản THU** (không nợ, không dư đầu) **không xuất hiện**
+//   ⇒ tiền đã thu của họ **không nằm trong báo cáo nào**. → cờ `paymentOnlyExcluded`.
+//
+// 🔴 **SO CHUỖI 11 KÝ TỰ trên cột ngày**: `substring(deb.DebitDate,1,**11**) >= '@FromDate'` —
+//   `yyyy-MM-dd` chỉ **10** ký tự, ký tự thứ 11 là **dấu cách** trước giờ. Chạy được là nhờ SQL Server
+//   **bỏ qua khoảng trắng cuối** khi so varchar; đổi sang kiểu/đối chiếu khác là hỏng câm.
+//   ⇒ Cột ngày ở đây lưu dạng **CHUỖI** (mới `substring` được) — cùng họ `DateBuyCar` đã gặp.
+// ⚠️ `ser_cusdebit` đọc **cục bộ** nhưng `Ser_Payment` đọc từ **CSDL TRUNG TÂM** ⇒ hai vế của cùng một
+//   phép trừ nằm ở hai CSDL khác nhau.
+// ⚠️ `DebitType='1'` (nợ KHÁCH) và `PaymentType='1'` — hai bảng, hai cột, cùng quy ước số `1`.
+// ⚠️ `AND c.DealerCode = '@DealerCode'` nhúng thẳng vào chuỗi SQL (cùng bề mặt tiêm như #413/#414).
+app.MapGet("/api/report/customer-debit", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealer) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var debits = await db.CusDebits.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var payIds = debits.Select(d => d.Id).ToHashSet();
+    var pays = await db.CusDebitPayments
+        .Where(p => p.OrgId == t.OrgId && payIds.Contains(p.CusDebitId)).ToListAsync();
+    var debtById = debits.ToDictionary(d => d.Id);
+
+    // Trong kỳ / trước kỳ — bốn nhóm đúng bốn bảng tạm của nguồn.
+    decimal SumDeb(Func<CusDebit, bool> pred) => debits.Where(pred).Sum(d => d.DebitAmount);
+    var cusIds = debits.Select(d => d.CusId).Where(x => x != null).Select(x => x!).Distinct().ToList();
+
+    var rows = new List<object>();
+    var paymentOnlyExcluded = 0;
+    foreach (var cid in cusIds)
+    {
+        var mine = debits.Where(d => d.CusId == cid).ToList();
+        var mineIds = mine.Select(d => d.Id).ToHashSet();
+        var myPays = pays.Where(p => mineIds.Contains(p.CusDebitId)).ToList();
+
+        var debBefore = mine.Where(d => d.DebitDate != null && d.DebitDate!.Value.Date < f).Sum(d => d.DebitAmount);
+        var payBefore = myPays.Where(p => p.PayDate != null && p.PayDate!.Value.Date < f).Sum(p => p.PaymentAmount);
+        var debIn = mine.Where(d => d.DebitDate != null && d.DebitDate!.Value.Date >= f && d.DebitDate!.Value.Date <= to).Sum(d => d.DebitAmount);
+        var payIn = myPays.Where(p => p.PayDate != null && p.PayDate!.Value.Date >= f && p.PayDate!.Value.Date <= to).Sum(p => p.PaymentAmount);
+
+        var tgd = debBefore - payBefore;   // dư đầu kỳ
+        var hasOpening = debBefore != 0 || payBefore != 0;
+
+        // 🔴 Mệnh đề cuối của nguồn: chỉ giữ khách có NỢ TRONG KỲ hoặc có DƯ ĐẦU.
+        if (debIn == 0 && !hasOpening)
+        {
+            if (payIn != 0) paymentOnlyExcluded++;   // khách CHỈ có thu ⇒ nguồn loại
+            continue;
+        }
+
+        var name = mine.Select(d => d.CusName).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
+        rows.Add(new
+        {
+            cusId = cid, cusName = name,
+            tgd,                      // dư đầu
+            pst = debIn,              // phát sinh tăng
+            psg = payIn,              // phát sinh giảm
+            tgc = tgd + debIn - payIn // dư cuối
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, fromDate = f, toDate = to,
+        grandTGD = rows.Sum(r => (decimal)r.GetType().GetProperty("tgd")!.GetValue(r)!),
+        grandTGC = rows.Sum(r => (decimal)r.GetType().GetProperty("tgc")!.GetValue(r)!),
+        columnMeaningNote = "TGD = dư ĐẦU kỳ · PST = phát sinh TĂNG (nợ trong kỳ) · PSG = phát sinh GIẢM "
+            + "(thu trong kỳ) · TGC = TGD + PST − PSG (dư CUỐI kỳ).",
+        paymentOnlyExcluded,
+        paymentOnlyExcludedNote = paymentOnlyExcluded > 0
+            ? "Có khách CHỈ phát sinh THU trong kỳ (không nợ, không dư đầu). Nguồn lọc "
+              + "`where (deb.CusID is not null or dk.CusID is not null)` nên họ KHÔNG xuất hiện ⇒ tiền đã "
+              + "thu của họ không nằm trong báo cáo nào. Giữ 1:1, chỉ đếm ra."
+            : null,
+        substring11Note = "Nguồn so chuỗi substring(DebitDate,1,11) — yyyy-MM-dd chỉ 10 ký tự, ký tự thứ "
+            + "11 là DẤU CÁCH. Chạy được nhờ SQL Server bỏ qua khoảng trắng cuối khi so varchar; đổi kiểu "
+            + "hoặc đối chiếu là hỏng câm. Cột ngày ở đây lưu dạng CHUỖI (mới substring được).",
+        twoDatabaseNote = "ser_cusdebit đọc CỤC BỘ nhưng Ser_Payment đọc từ CSDL TRUNG TÂM ⇒ hai vế của "
+            + "cùng một phép trừ nằm ở hai CSDL khác nhau.",
+        screenNameNote = "Màn nguồn tên FrmEmail_ReportAutoSend (báo cáo gửi tự động qua email) nhưng dữ "
+            + "liệu nó nạp là CÔNG NỢ KHÁCH HÀNG — đọc tên form không đoán ra bảng nào bị chạm.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/emailcustomers/search", async (AppDbContext db, ITenantContext t,
     string? cusId, string? cusName, string? plateNo, string? frameNo, string? engineNo,
     string? hasEmail, string? dealer, int? page, int? pageSize) =>
