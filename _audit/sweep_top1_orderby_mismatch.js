@@ -61,6 +61,16 @@ for (const f of process.argv.slice(2)) {
         // tim 'order by' trong pham vi khoi (toi da 25 dong, dung khi gap ')' ket khoi con)
         let ordCol = null, depth = 0, closed = false;
         for (let k = i; k < Math.min(i + 25, lines.length); k++) {
+            // #371: DUNG lai o dau ket cau lenh `;`. Truoc day vong quet di xuyen qua ranh gioi
+            //   cau lenh, nen `select top 1 (select count(*)…) from #tbl` (K1, KHONG co order by)
+            //   bi ghep voi `order by sr.DealerCode` cua cau lenh K2 hoan toan khac ben duoi
+            //   => bao "LECH TRUC" oan (2 hit trong Service.Report.cs).
+            //   Ranh gioi cau lenh la `;`; gap no thi ngung tim, coi nhu KHONG co order by.
+            if (k > i && /;/.test(lines[k])) { closed = true; break; }
+            // #371b: K1 trong Service.Report.cs KHONG co dau `;` ket cau — cau lenh moi bat dau
+            //   don gian bang mot dong `select` khac. Nen ranh gioi THAT la: mot `select` dung dau
+            //   dong khi dang o NGOAI ngoac (depth <= 0). Gap no => cau lenh nay het, khong co order by.
+            if (k > i && depth <= 0 && lines[k].trimStart().toLowerCase().startsWith("select")) { closed = true; break; }
             // #310c: `order by` rat hay xuong dong — cot nam o DONG KE TIEP:
             //     order by
             //         f.StockInDate desc
