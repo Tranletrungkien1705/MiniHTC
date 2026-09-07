@@ -14919,6 +14919,24 @@ app.MapGet("/api/servicecars/search-paging", async (AppDbContext db, ITenantCont
         // ⚠️ Nó **có** truyền `TradeMarkCode` và `ModelId` — hai ô mà #425 đã chỉ ra là dùng `=` (khớp CHÍNH XÁC)
         //   trong khi mọi ô khác dùng `like`. Trên màn SMS hai ô này là hộp chọn nên khớp chính xác là hợp lý;
         //   chính ở màn nhập tay (#425) thì nó mới gây khó.
+        // ===== ✅ #443 QUÉT TRỌN CLIENT (áp luật #441: lỗi lặp lần hai ⇒ ĐỔI SANG QUÉT) =====
+        // Không chỉ màn SMS. Đếm trên toàn bộ `TERP.HTCServiceClient/Views`:
+        //   · **13** nơi gọi `SerCustomerCarGet(` / `SerCustomerCarGetPagingHTC(` (đã bỏ dòng comment);
+        //   · **0** nơi truyền bất cứ thứ gì vào tham số số điện thoại — không `txtPhone`/`txtMobile`/`txtTel`
+        //     nào xuất hiện gần bất kỳ lời gọi nào;
+        //   · **0** phép gán `…PhonePattern =` trong toàn bộ thư mục `Views`.
+        // ⇒ Tham số `strPhonePattern` (thêm **2013**, `issue 986`) được cài **đầy đủ ở tầng dưới**
+        //   (`t.Tel like @p **OR** t.Mobile like @p`, đã kiểm ở #425) nhưng **KHÔNG một màn nào trong client
+        //   dùng tới**. Một tính năng hoàn chỉnh, đã trả tiền để làm, **chưa từng được đưa lên giao diện** —
+        //   suốt hơn mười năm.
+        // ⚠️ `FrmQuotation` và `FrmQuotationApp` **có** ô điện thoại (12 hit trong `.Designer.cs`) nhưng là ô
+        //   **NHẬP** số điện thoại khách lên báo giá, không phải ô **TÌM** — đã kiểm để khỏi kết luận nhầm.
+        // 📌 MiniHTC **có** lọc điện thoại ở `/api/servicecars/search-paging` (tham số `phone`, Tel HOẶC
+        //   Mobile) ⇒ bản port **dùng được** tính năng mà bản gốc bỏ quên.
+        phoneFilterSweep = new { callSites = 13, callSitesWiringPhone = 0, phonePatternAssignments = 0 },
+        phoneFilterSweepNote = "Quét toàn bộ Views: 13 nơi gọi hàm tìm khách–xe, KHÔNG nơi nào truyền tham "
+            + "số số điện thoại, và 0 phép gán …PhonePattern. Tính năng thêm 2013 (issue 986) cài đầy đủ ở "
+            + "tầng biz nhưng chưa từng được nối lên giao diện. MiniHTC có dùng (tham số phone).",
         smsScreenPhoneNotWiredNote = "Màn FrmSMSCustomerSearch dùng CHUNG thân Ser_CustomerCar_GetX nhưng "
             + "truyền chuỗi rỗng vào tham số số điện thoại (chú thích //So dien thoai 20130103). Tham số này "
             + "được thêm 2013 cho issue 986 và CHẠY THẬT ở tầng dưới (Tel HOẶC Mobile, đã kiểm #425) — chỉ là "
