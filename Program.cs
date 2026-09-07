@@ -25811,8 +25811,20 @@ app.MapGet("/api/carcolorchanges", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/carcolorchanges", async (List<CarColorChangeDto> dto, AppDbContext db, ITenantContext t) =>
+// ===== #B25 PARITY `ChangeCarColor_Save` (Biz.HTC.WH.cs:189139) — port cũ KHÔNG đổi màu thật =====
+// Trace twin LIVE: `FrmChange_CarColor.cs:276` → `sv.ChangeCarColor_Save(tableDB)` (`SalesService.cs:34472`)
+//   → WS `ChangeCarColor_Save` (`WSHTC.asmx.cs:85394`) → `_biz.ChangeCarColor_Save` (`Biz.HTC.WH.cs:189139`).
+// 🔴 BUG: nguồn có **`Update Car_Car set t.ColorCode = f.ColorCodeNew`** (`:189484-189487`) — port cũ chỉ
+//    `Add` một dòng `CarColorChange` (lịch sử) mà **không đổi màu trên bản ghi xe** ⇒ màn "đổi màu" không
+//    đổi gì cả; lần đọc sau vẫn ra màu cũ.
+// 🔴 GUARD CỐT LÕI THIẾU: `if (dt_Car_Car.Rows[0]["VIN"] != DBNull.Value) throw ChangeCarColor_VINMapped`
+//    (`:189402-189413`) — **xe ĐÃ MAP VIN thì CẤM đổi màu**.
+// 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:189311`) là DÒNG ACTIVE.
+app.MapPost("/api/carcolorchanges", async (List<CarColorChangeDto> dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được đổi màu xe." });
+    // `..._Input_ChangeCarColorTblNotFound` / `..._Input_ChangeCarColorTblInvalid`
     var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
     if (rows.Any(c => string.IsNullOrWhiteSpace(c.ColorCodeNew))) return Results.BadRequest(new { error = "Chưa nhập màu mới." });
@@ -25820,10 +25832,55 @@ app.MapPost("/api/carcolorchanges", async (List<CarColorChangeDto> dto, AppDbCon
     if (same != null) return Results.BadRequest(new { error = $"Xe {same.CarId} nhập thông tin màu mới trùng với màu cũ!" });
     var dupe = rows.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+
+    var carIds = rows.Select(c => c.CarId.Trim().ToUpperInvariant()).ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync();
+
+    // Nguồn kiểm TỪNG DÒNG rồi mới ghi cả lô (một transaction) ⇒ validate hết trước.
     foreach (var c in rows)
-        db.CarColorChanges.Add(new CarColorChange { OrgId = t.OrgId, CarId = c.CarId.Trim().ToUpperInvariant(), DealerCode = c.DealerCode, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCodeOld = c.ColorCodeOld ?? "", ColorCodeNew = c.ColorCodeNew.Trim() });
+    {
+        var cid = c.CarId.Trim().ToUpperInvariant();
+        var car = cars.FirstOrDefault(x => x.VIN == cid);
+        // `myCar_CheckCar(..., Flag.Active exist, Flag.Active active)` → `ChangeCarColor_CarInactiveOrNotFound`
+        if (car is null || car.FlagActive == "0")
+            return Results.BadRequest(new { error = $"Xe {cid} không tồn tại hoặc đã ngưng hoạt động." });
+        // 🔴 `ChangeCarColor_VINMapped` — Car_Car.VIN khác NULL nghĩa là xe ĐÃ được map VIN ⇒ CẤM đổi màu.
+        //    MiniHTC dùng `CarVinMaster` (khoá VIN); tương đương: xe đã có VIN thật gắn vào.
+        if (!string.IsNullOrWhiteSpace(car.VIN) && car.VINFreeStatus == "0")
+            return Results.BadRequest(new { error = $"Xe {cid} đã được map VIN — không đổi màu được.", vinCurrent = car.VIN });
+        // `myCommon_CheckColor(..., Flag.Active exist, Flag.Active active)` cho **màu MỚI**.
+        var newColor = c.ColorCodeNew.Trim();
+        var col = colors.FirstOrDefault(x => x.ColorCode == newColor && (x.ModelCode == car.ModelCode || string.IsNullOrEmpty(car.ModelCode)));
+        if (col is null) return Results.BadRequest(new { error = $"Màu {newColor} không tồn tại cho dòng xe {car.ModelCode}." });
+        if (col.FlagActive == "0") return Results.BadRequest(new { error = $"Màu {newColor} đang ngưng hoạt động." });
+    }
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    foreach (var c in rows)
+    {
+        var cid = c.CarId.Trim().ToUpperInvariant();
+        var car = cars.First(x => x.VIN == cid);
+        // 🔴 ĐỔI MÀU THẬT — `Update Car_Car set ColorCode = ColorCodeNew` (bước port cũ thiếu).
+        var oldColor = car.ColorCode ?? c.ColorCodeOld ?? "";
+        car.ColorCode = c.ColorCodeNew.Trim();
+        car.LogLUDateTime = now; car.LogLUBy = who;
+        // `insert into Rpt_CarColorChangeHistory` — 11 cột, màu CŨ lấy từ bản ghi xe.
+        db.CarColorChanges.Add(new CarColorChange
+        {
+            OrgId = t.OrgId, CarId = cid, DealerCode = c.DealerCode ?? car.DealerCode,
+            ModelCode = c.ModelCode ?? car.ModelCode, SpecCode = c.SpecCode ?? car.SpecCode,
+            ColorCodeOld = oldColor, ColorCodeNew = c.ColorCodeNew.Trim(), ChangedAt = now
+        });
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { changed = rows.Count, message = "Lưu sửa màu thành công!" });
+    return Results.Ok(new
+    {
+        changed = rows.Count, message = "Lưu sửa màu thành công!",
+        carColorUpdated = true,
+        fixedNote = "Đã bổ sung bước ĐỔI MÀU THẬT trên bản ghi xe (Update Car_Car set ColorCode) — port cũ chỉ ghi lịch sử.",
+        orderRebalanceDebt = "NỢ: nguồn còn cân đối lại SỐ LƯỢNG dòng đơn hàng theo màu (Ord_SalesOrderDetail + DMS40_Ord_SalesOrderRootDetail, gom nhóm theo DealerCode/SORCode/SOCode/Model/Spec/Color, TotalCarA2 phụ thuộc SOType 'P'/'U') — chưa port."
+    });
 }).RequireAuthorization();
 
 // ===== Hợp đồng nguyên tắc (PrincipleContract — port 1:1 FrmPrincipleContractNew/Mng, 2010.HTC/Sales) =====
