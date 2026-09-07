@@ -28826,6 +28826,20 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     //    (Biz.HTC.WH.cs:93118 và 93290) ⇒ nhóm theo mốc này dựng lại được nguyên trạng từng phiên bản.
     var versionStamp = DateTime.Now;
     c.VersionDTimeCurr = versionStamp;
+
+    // ===== 🔴 #348 CỤM PHIÊN BẢN mới điền MỘT NỬA + hai cột chưa có đường ghi =====
+    // Nguồn `BizHTC.RetailContract.cs:1665-1678` (bản canonical `.Release.2025`, md5 giống hệt 2 máy):
+    //   `TransactorCode`   = `strTransactorCode` — **giá trị thật** ngay lúc tạo;
+    //   `FlagDealFinish`   = `TConst.Flag.Inactive` (**"0"**) — đóng cứng, bật ở bước khác;
+    //   `VersionDTimeOld`  = `DBNull.Value` — hợp đồng mới thì **chưa có phiên bản cũ**.
+    // ⚠️ `TransactorCode` **KHÁC** `SalesManCode`: cùng bảng nhưng hai vai trò khác nhau.
+    //   Đường `Biz.HTC.WH.cs:92391` lại gán `TransactorCode = strDealerCode` ⇒ **hai đường ghi hai
+    //   NGUỒN GIÁ TRỊ khác nhau** cho cùng một cột; port đường bán lẻ (nhận từ người dùng).
+    c.VersionCount = 1;
+    c.VersionUpdateBy = whoCtr;
+    c.VersionDTimeOld = null;              // hợp đồng mới: chưa có phiên bản cũ
+    c.TransactorCode = dto.TransactorCode; // người giao dịch, khác nhân viên bán
+    c.FlagDealFinish = "0";                // Flag.Inactive — bật khi CHỐT giao dịch, xem endpoint dưới
     foreach (var l in lines)
     {
         var amountVat = l.Price * l.Qty * l.VAT / 100m;
@@ -28887,6 +28901,58 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
 //    ("P"/"A"/"C") — hằng nằm ở file DMS40, không phải `Const.Main.cs`.
 // 🔴 Huỷ ở **MỨC TỪNG XE**: `…CancelCar.CtrCarId` trỏ về dòng xe của hợp đồng gốc (`Dlr_ContractCar`, #129),
 //    trong khi `…CancelDtl` chỉ gộp nhóm theo model.
+// ===== 🔴 #348 SỬA HỢP ĐỒNG ⇒ TĂNG PHIÊN BẢN (nơi `VersionDTimeOld` mới có nghĩa) =====
+// Nguồn `BizHTC.RetailContract.cs:4951` ghi **bốn** cột thành một cụm, trong CÙNG một lần lưu:
+//   `VersionDTimeOld  = strVersionDtimeOld`   ← chính là `VersionDTimeCurr` **trước khi sửa**
+//   `VersionDTimeCurr = dtimeTDate` (`"yyyy-MM-dd HH:mm:ss"` — **giữ GIÂY**)
+//   `VersionCount     = countVersion + 1`
+//   `VersionUpdateBy  = strPartnerUserCode`
+// ⇒ Nhờ cặp Old/Curr mà dựng lại được **chuỗi phiên bản**; thiếu `VersionDTimeOld` thì mỗi bản chỉ
+//   biết mốc của chính nó, **không nối được với bản trước**.
+app.MapPost("/api/dlrcontracts/{no}/amend", async (string no, DlrContractAmendDto dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { error = "Không có hợp đồng " + no });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var prev = c.VersionDTimeCurr;
+    c.VersionDTimeOld = prev;                 // mốc CŨ = mốc hiện hành TRƯỚC khi sửa
+    c.VersionDTimeCurr = DateTime.Now;        // giữ GIÂY, đúng nguồn
+    c.VersionCount = c.VersionCount + 1;
+    c.VersionUpdateBy = who;
+
+    // Các trường cho sửa — chỉ ghi khi client có truyền (rỗng = GIỮ NGUYÊN).
+    if (dto.BankCode is not null) c.BankCode = dto.BankCode;
+    if (dto.SalesType is not null) c.SalesType = dto.SalesType;
+    if (dto.SalesManCode is not null) c.SalesManCode = dto.SalesManCode;
+    if (dto.TransactorCode is not null) c.TransactorCode = dto.TransactorCode;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        no, c.VersionCount, versionDTimeOld = c.VersionDTimeOld, versionDTimeCurr = c.VersionDTimeCurr,
+        c.VersionUpdateBy,
+        firstAmend = prev is null,
+    });
+}).RequireAuthorization();
+
+// ===== 🔴 #348 CHỐT GIAO DỊCH — bật `FlagDealFinish` =====
+// Nguồn `BizHTC.DealerSales.cs:8161` bật bằng SQL `update dc set dc.FlagDealFinish = '1'`
+//   (dạng ghi thứ 4, lệ #314 — máy quét theo `["X"] =` không thấy).
+// ⚠️ Cờ này **TÁCH KHỎI** `Status`: hợp đồng có thể đã duyệt mà giao dịch **chưa** chốt.
+app.MapPost("/api/dlrcontracts/{no}/dealfinish", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { error = "Không có hợp đồng " + no });
+    c.FlagDealFinish = "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, c.FlagDealFinish, status = c.Status,
+        note = "FlagDealFinish tách khỏi Status — duyệt và chốt giao dịch là hai việc." });
+}).RequireAuthorization();
+
 app.MapGet("/api/dlrcontractcancels", async (AppDbContext db, ITenantContext t, string? contractCNo, string? dealerCode, string? status) =>
 {
     var qy = db.DlrContractCancels.Where(x => x.OrgId == t.OrgId);
@@ -38696,7 +38762,12 @@ record DlrCancelCarDto(string? DlrContractNo, string? SpecCode, string? ModelCod
 record DlrContractCancelSaveDto(string? ContractCNo, string? DealerCode, string? Remark, List<DlrCancelDtlDto>? Details, List<DlrCancelCarDto>? Cars);
 record DlrContractCancelMultiDto(List<string>? ContractCNos);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
-record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines);
+record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines,
+    // #348: nguoi giao dich — KHAC SalesManCode (nhan vien ban).
+    string? TransactorCode = null);
+// #348: sua hop dong => tang phien ban. Truong rong = GIU NGUYEN.
+record DlrContractAmendDto(string? BankCode = null, string? SalesType = null,
+    string? SalesManCode = null, string? TransactorCode = null);
 // Nguồn xác nhận/huỷ HĐ bán lẻ THEO LÔ (ApproveMulti/CancelMulti).
 record DlrContractBatchDto(List<string>? ContractNos);
 record DlrContractQtyRowDto(string? ModelCode, string? SpecCode, string? ColorCode, int UpdateQty);
