@@ -15340,6 +15340,107 @@ var stockOutOrderTransitions = new Dictionary<string, string[]>
     ["Rejected"] = Array.Empty<string>(),
 };
 
+// ===== 🔴 #373 QUYẾT ĐỊNH KHI TẠO LỆNH XUẤT BỔ SUNG cho một RO (`ProcessTypeAddStockOutOrder`) =====
+// Nguồn: `BizCarSv.Inventory.StockOut.cs:13884` (và bản nạp chồng `:14026` nhận `dbAction`).
+// Hai bước: (1) tìm lệnh xuất **CHƯA có phiếu** ⇒ dùng lại; (2) không có thì xét các lệnh **ĐÃ có phiếu**
+// để trả về mã tình huống cho tầng gọi.
+//
+// 🔴 **VÒNG `foreach` CHỈ CHẠY ĐƯỢC ĐÚNG MỘT VÒNG**: truy vấn bước (2) là `SELECT TOP 1 … so1.Status`
+//   **không có `order by`**, rồi code lại `foreach` trên bản sao để xét thứ tự ưu tiên trạng thái
+//   (Pending → Executing → Finished). Vì `TOP 1` nên bảng chỉ có MỘT dòng ⇒ **logic ưu tiên trong vòng
+//   lặp là CODE CHẾT**, và kết quả phụ thuộc **dòng nào SQL trả về tuỳ ý**.
+//   ⇒ RO có nhiều phiếu ở các trạng thái khác nhau thì mã trả về **không tất định**. Port giữ nguyên
+//     hành vi (lấy một dòng) nhưng **trả kèm toàn bộ trạng thái tìm được** để lộ chỗ nhập nhằng.
+// 🔴 **HAI HẰNG SỐ TRÙNG GIÁ TRỊ**: `SOOHasSORej = 5` (phiếu bị huỷ/xoá) và `SOOHasSOEXC = 5`
+//   (phiếu đang tiến hành) — **cùng bằng 5**, khác hẳn nghĩa. Tầng gọi nhận số 5 **không thể phân biệt**.
+//   Giữ đúng giá trị nguồn, nhưng trả thêm tên mã để không ai đoán nhầm.
+// ⚠️ Bước (1) **không có `top 1`** nhưng code vẫn đọc `Rows[0]` ⇒ cũng không tất định; sweep 'top 1'
+//   **không bắt được** loại này. Lọc `BackOrderIndex = 0` (bỏ lệnh hàng về sau).
+// ⚠️ Truy vấn con `NOT IN (select distinct sooso.StockOutOrderID …)` **không lọc theo RO nào** — quét
+//   toàn bảng nối; và theo ngữ nghĩa SQL, chỉ cần một `StockOutOrderID` NULL trong đó là `NOT IN`
+//   trả về **rỗng toàn bộ**. Port dùng phép trừ tập hợp nên miễn nhiễm; ghi lại để biết nguồn mong manh.
+// ⚠️ Phiếu `Status` 4 (điều chỉnh) và 5 (huỷ) bị loại khỏi bước (2).
+// 📌 TRACE TWIN: bốn hàm cùng họ, nhưng `ProcessCreateAdditionalStockOutOrderPartQuotexxx` +
+//   `ProcessTypeAddStockOutOrderPartQuotexxx` **không có caller nào** ⇒ cả nhánh `xxx` **ĐÃ CHẾT**;
+//   chỉ 3/4 chỗ `top 1` trong file là còn sống. Bản LIVE cho báo giá là `…PartQuote` (không `xxx`).
+// 📌 3B: vùng 13880-14060 md5 `c82b1afa` giống hệt laptop/150.
+app.MapGet("/api/stockoutorders/decide", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = (roNo ?? "").Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { roNo });
+
+    // Mã tình huống của nguồn (TConst.Ser_Inv_StockOut).
+    const int NoSOO = 1, SOONoSO = 2, SOOHasSO = 3, SOIsSO = 4, SOOHasSOEXC = 5;
+
+    var orders = await db.SerStockOutOrders
+        .Where(o => o.OrgId == t.OrgId && o.RONo == roNo && (o.BackOrderIndex == null || o.BackOrderIndex == "0"))
+        .Select(o => new { o.Id, o.OrderNo }).ToListAsync();
+
+    if (orders.Count == 0)
+        return Results.Ok(new { roNo, type = NoSOO, typeName = "NoSOO", note = "Chưa có lệnh xuất nào cho lệnh sửa chữa này." });
+
+    var orderIds = orders.Select(o => o.Id).ToList();
+    var linked = await db.SerStockOutOrderStockOuts
+        .Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.StockOutOrderId))
+        .Select(x => new { x.StockOutOrderId, x.StockOutId }).ToListAsync();
+    var linkedOrderIds = linked.Select(x => x.StockOutOrderId).Distinct().ToHashSet();
+
+    // --- Bước (1): lệnh xuất CHƯA có phiếu nào ⇒ dùng lại lệnh đó.
+    var without = orders.Where(o => !linkedOrderIds.Contains(o.Id)).ToList();
+    if (without.Count > 0)
+    {
+        var pick = without[0];   // nguồn đọc Rows[0] tuy KHÔNG có order by
+        return Results.Ok(new
+        {
+            roNo, type = SOONoSO, typeName = "SOONoSO",
+            stockOutOrderId = pick.Id, stockOutOrderNo = pick.OrderNo,
+            candidateCount = without.Count,
+            ambiguous = without.Count > 1,
+            ambiguousNote = without.Count > 1
+                ? "Có nhiều lệnh xuất chưa gắn phiếu; nguồn lấy Rows[0] mà KHÔNG có order by ⇒ không tất định."
+                : null,
+            note = "Có lệnh xuất nhưng chưa lập phiếu ⇒ dùng lại lệnh này.",
+        });
+    }
+
+    // --- Bước (2): mọi lệnh đều đã có phiếu ⇒ xét trạng thái phiếu (bỏ 4 điều chỉnh, 5 huỷ).
+    var slipIds = linked.Select(x => x.StockOutId).Distinct().ToList();
+    var slips = await db.PartStockOuts
+        .Where(s => s.OrgId == t.OrgId && slipIds.Contains(s.Id) && s.Status != "4" && s.Status != "5")
+        .Select(s => new { s.Id, s.StockOutNo, s.Status }).ToListAsync();
+
+    if (slips.Count == 0)
+        return Results.Ok(new { roNo, type = SOIsSO, typeName = "SOIsSO", note = "Không còn phiếu hợp lệ (đều điều chỉnh/huỷ) — nguồn rơi về nhánh mặc định." });
+
+    // ĐÚNG NGUỒN: chỉ MỘT dòng được xét (TOP 1 không order by) ⇒ vòng lặp ưu tiên là code chết.
+    var first = slips[0];
+    var type = first.Status switch
+    {
+        "1" => SOOHasSO,        // Mới tạo
+        "2" => SOOHasSOEXC,     // Tiến hành — TRÙNG giá trị 5 với SOOHasSORej
+        "3" => SOIsSO,          // Kết thúc
+        _ => SOIsSO,            // nguồn kết thúc vòng lặp bằng return SOIsSO
+    };
+    var typeName = type == SOOHasSO ? "SOOHasSO" : type == SOOHasSOEXC ? "SOOHasSOEXC" : "SOIsSO";
+
+    var distinctStatuses = slips.Select(s => s.Status).Distinct().ToList();
+    return Results.Ok(new
+    {
+        roNo, type, typeName,
+        stockOutId = first.Id, stockOutNo = first.StockOutNo, status = first.Status,
+        slipCount = slips.Count,
+        allStatuses = distinctStatuses,
+        // Nhiều phiếu khác trạng thái ⇒ mã trả về phụ thuộc dòng SQL trả tuỳ ý.
+        ambiguous = distinctStatuses.Count > 1,
+        ambiguousNote = distinctStatuses.Count > 1
+            ? "Nhiều phiếu ở các trạng thái khác nhau, nhưng nguồn dùng TOP 1 KHÔNG order by ⇒ mã trả về không tất định."
+            : null,
+        deadLoopNote = "Nguồn foreach xét ưu tiên Pending→Executing→Finished, nhưng TOP 1 nên chỉ có 1 dòng ⇒ vòng lặp là code chết.",
+        constantCollisionNote = "SOOHasSORej và SOOHasSOEXC ĐỀU bằng 5 trong nguồn — nhận số 5 không phân biệt được huỷ hay đang tiến hành.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/stockoutorders/statuses", () => Results.Ok(new
 {
     statuses = stockOutOrderStatusSourceCodes.Select(kv => new
