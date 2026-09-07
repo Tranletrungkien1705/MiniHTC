@@ -3526,6 +3526,107 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    · `Tt_Stock` = `DeliveryDate is null OR DeliveryDate > @strTDate` (**còn tồn** tại mốc)
 //    🔴 `Tt_Date` dùng **`=`** (bằng đúng ngày), không phải khoảng — port thành `>=`/`<=` sẽ sai.
 //    🔴 `Tt_Stock` gồm **cả** `is null` **lẫn** ngày bán ở **tương lai** so với mốc.
+
+// ===== #B67 XE CHẬM THANH TOÁN / BẢO LÃNH (thời gian thực) — `RptDelayguaranteePayment_RealTime_Get` =====
+// (`FrmPivotBCChamTTC_BaoLanh`.) Trace LIVE: `ReportService.cs:6834` → WS
+//   `RptDelayguaranteePayment_RealTime_Get` (`WSHTC.asmx.cs:90979`) → biz
+//   `DataWH/BizHTC.zTemp.cs:67554` (**VỎ BỌC**) → **`RptDelayguaranteePayment_RealTime_GetX`** (`:67437`);
+//   SQL ở `RptSQLQuery.cs:2982` — **`mySql_RptDelayguaranteePayment_RealTime_New20221014`**.
+//   ⚠️ Dòng gọi bản **cũ** `mySql_RptDelayguaranteePayment_RealTime()` **đã bị comment** ngay trên
+//      (`:67507`) kèm lý do *"20221014. HuongTTT: NC tầm nhìn cho báo cáo"* — port bản `_New20221014`.
+// 🔴 **Tập xe xét** (`:2988-3013`) — SÁU điều kiện:
+//   · `cc.FlagActive = '1'` ∧ `cc.FlagEarlyCancel = '0'`
+//   · `cdod.CarId is null` **(*)** — chưa có LXX active-đã-xuất (`#tbl_CDOD_Active`, mảnh dùng chung
+//     `…FilterActive_01("and (cdod.DeliveryOutDate <= @strTDate)")`)
+//   · `sdm.DlvMnNo is null` **(*)** — **chưa có biên bản giao** khớp điều kiện bên dưới
+//   · `md.FlagActive = '1'` — *"Thomptt: 20180522: Chỉ lấy đại lý trạng thái active"*
+//   🔴 **`and (vms.DeliveryOutDate is null)` BỊ COMMENT** (`:3012`) ⇒ **KHÁC #B65**: báo cáo back-order
+//     dùng **cả hai** vế lọc ngược, còn báo cáo này **bỏ vế `VIN_MyStatus`** và thay bằng
+//     `sdm.DlvMnNo is null`. Hai báo cáo cùng họ nhưng **cố ý khác tập** — không được đồng bộ hoá
+//     (luật `C0-quadringentesimusoctavus`).
+// 🔴 Điều kiện ghép biên bản giao (`sdm`): `TranspReqType = 'CARTRANSPORT'` **và**
+//    (`FDlvMnStatus in ('A')` ∧ `TDlvMnStatus in ('A')`) **hoặc** (`FDlvMnStatus in ('A')` ∧ `TDlvMnStatus in ('P')`)
+//    ⇒ rút gọn: `FDlvMnStatus = 'A'` ∧ `TDlvMnStatus ∈ ('A','P')`. Ghép theo `cdod_t.DeliveryOrderNo = sdm.RefOrdNo`.
+// ⚠️ NỢ CÓ NHÃN: `CachingForPaymentTotal` (`'A','F'`) và `CachingForPayment_Deposit` (`'A','F'`, cờ `true`)
+//    chưa port — cùng món nợ #B37/#B56/#B59/#B60/#B65; cột tiền trả `null`, **không suy số**.
+app.MapGet("/api/reports/delay-guarantee-payment", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, DateTime? tDate, string? buPattern) =>
+{
+    var asOf = (tDate ?? DateTime.Now).Date;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `inner join Mst_Dealer … BUCode like @strBUPatternOfUser` + `md.FlagActive = '1'`.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.FlagActive, d.Status }).ToListAsync();
+    var scopeList = dealers
+        .Where(d => (d.FlagActive ?? d.Status) == "1")
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        scopeList = scopeList.Where(d => d.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    // `#tbl_CDOD_Active` — mảnh dùng chung + điều kiện ngày `DeliveryOutDate <= @strTDate`.
+    var cdodActive = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                    && x.DeliveryOutDate != null && x.DeliveryOutDate <= asOf)
+        .Select(x => x.CarId ?? x.Vin).ToListAsync()).ToHashSet();
+
+    // Biên bản giao khớp: TranspReqType='CARTRANSPORT', FDlv='A', TDlv ∈ ('A','P'); ghép qua RefOrdNo.
+    var dlvRows = await (from c in db.TranspDlvConfirmCars.Where(x => x.OrgId == t.OrgId)
+                         join h in db.TranspDlvConfirms.Where(x => x.OrgId == t.OrgId
+                              && x.FDlvMnStatus == "A" && (x.TDlvMnStatus == "A" || x.TDlvMnStatus == "P"))
+                              on c.TranspDlvConfirmId equals h.Id
+                         select new { c.VIN, h.DlvMinutesNo, h.RefOrdNo }).ToListAsync();
+    // `cdod_t` — dòng LXX bất kỳ của xe, để lấy số lệnh đem so `sdm.RefOrdNo`.
+    var doByCar = await (from d in db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId)
+                         join h in db.DeliveryOrders.Where(x => x.OrgId == t.OrgId) on d.DoId equals h.Id
+                         select new { Key = d.CarId ?? d.Vin, h.DoNo }).ToListAsync();
+    var hasDlvMinutes = new HashSet<string>(
+        from dl in dlvRows
+        join dd in doByCar on dl.VIN equals dd.Key
+        where dl.RefOrdNo != null && dl.RefOrdNo == dd.DoNo
+        select dl.VIN);
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var beforeScope = cars.Count;
+    cars = cars.Where(c => c.DealerCode != null && scope.Contains(c.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - cars.Count;
+
+    var rows = cars.Where(c =>
+        (c.FlagActive ?? "1") == "1"
+        && (c.FlagEarlyCancel ?? "0") == "0"
+        && !cdodActive.Contains(c.VIN)        // (*) cdod.CarId is null
+        && !hasDlvMinutes.Contains(c.VIN)     // (*) sdm.DlvMnNo is null
+    ).ToList();
+
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+
+    var items = rows.Select(c => new
+    {
+        ccCarId = c.VIN, cvVIN = c.VIN, ccDealerCode = c.DealerCode,
+        mdDealerName = scopeList.FirstOrDefault(d => d.DealerCode == c.DealerCode)?.DealerName,
+        ccModelCode = c.ModelCode, ccSpecCode = c.SpecCode,
+        mcsSpecDescription = specs.FirstOrDefault(s => s.SpecCode == c.SpecCode)?.SpecDesc,
+        ccColorCode = c.ColorCode, ccUnitPriceActual = c.UnitPriceActual,
+        ccCreatedDate = c.CreatedDate,
+        daysSinceCreated = c.CreatedDate is null ? (int?)null : (int)(asOf - c.CreatedDate.Value.Date).TotalDays,
+        pmpdAmountTotal = (decimal?)null,      // NỢ: CachingForPaymentTotal ('A','F')
+        pmpdDepositAmount = (decimal?)null     // NỢ: CachingForPayment_Deposit ('A','F', co true)
+    }).OrderBy(x => x.ccDealerCode).ThenBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf, count = items.Count, items, droppedByDealerJoin,
+        byDealer = items.GroupBy(x => x.ccDealerCode ?? "?")
+            .Select(g => new { dealerCode = g.Key, qty = g.Count(), amount = g.Sum(x => x.ccUnitPriceActual ?? 0m) })
+            .OrderByDescending(x => x.qty).ToList(),
+        filterRule = "FlagActive='1' VA FlagEarlyCancel='0' VA cdod.CarId is null (*) VA sdm.DlvMnNo is null (*) VA md.FlagActive='1' ('Thomptt: 20180522: Chi lay dai ly trang thai active').",
+        differsFromBackOrder = "KHAC #B65: dong 'and (vms.DeliveryOutDate is null)' o day BI COMMENT (:3012) va duoc THAY bang 'sdm.DlvMnNo is null'. Hai bao cao cung ho nhung CO Y KHAC TAP - khong duoc dong bo hoa.",
+        dlvMinutesRule = "Bien ban giao khop: TranspReqType='CARTRANSPORT' VA (FDlv='A' AND TDlv='A') HOAC (FDlv='A' AND TDlv='P') => rut gon FDlv='A' va TDlv in ('A','P'); ghep qua cdod_t.DeliveryOrderNo = sdm.RefOrdNo.",
+        versionNote = "Ban cu mySql_RptDelayguaranteePayment_RealTime() DA BI COMMENT (:67507) kem ly do '20221014. HuongTTT: NC tam nhin cho bao cao' - port ban _New20221014.",
+        debt = "NO co nhan: CachingForPaymentTotal ('A','F') va CachingForPayment_Deposit ('A','F', co true) chua port - cot tien tra null, KHONG suy so."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-group-sales-status", async (
     AppDbContext db, ITenantContext t, DateTime? tDate, string? zoneCode, string? buPattern) =>
 {
