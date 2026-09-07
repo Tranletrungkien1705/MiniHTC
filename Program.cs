@@ -46403,6 +46403,95 @@ app.MapGet("/api/reports/ro-avg-per-day", async (AppDbContext db, ITenantContext
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #512 THỐNG KÊ LOẠI CÔNG VIỆC / ĐỐI TƯỢNG THANH TOÁN THEO ĐẠI LÝ (máy tính bảng) =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:1043 Rpt_Ser_RO_ExpTpAndROTpGroupByDealerX` (WS qua `…ForTab` :919).
+// Endpoint: `GET /api/reports/ro-type-expense-by-dealer`. Trả **hai** bảng như nguồn (2 `Tables`).
+//
+// 🔴🔴 **DANH SÁCH PIVOT ĐÓNG BĂNG — LOẠI MỚI BỊ NUỐT KHÔNG DẤU VẾT** (họ #413):
+//   `pivot (sum(QtyROType) for ROType in (BDD, PDI, SCC, SCD, SCS))` — **năm** mã, gõ cứng trong macro
+//   `zzB_tbl_Ser_RO_ROTypeGroupByDealer_zzE` (`TabReport.zSqlTemplate.cs:1115`).
+//   Nhưng chính chú thích entity của MiniHTC (`RoServiceItem.ROType`, ghi từ nguồn ở #280) liệt kê
+//   **sáu** mã: `BDD / SCC / SCD / SCS / PDI / **SPK**`. ⇒ Lệnh loại **SPK** được đếm ở bảng gộp nhưng
+//   **rơi khỏi PIVOT** ⇒ không có cột nào chứa nó, tổng các cột **nhỏ hơn** tổng thật, không ai báo lỗi.
+//   Tương tự `ExpenseType in (LOCAL, ROINSURANCE, ROREPAIR, ROWARRANTY)` — bốn mã gõ cứng.
+//   ⇒ Port **không đóng băng**: trả đủ mọi mã gặp trong dữ liệu, kèm `typesOutsidePivotList` để đo
+//     đúng phần nguồn đang nuốt.
+//
+// 🔴 **HÌNH DẠNG KẾT QUẢ: MỘT DÒNG = MỘT CẶP (LỆNH, LOẠI), KHÔNG PHẢI MỘT LỆNH** (§12, câu "một bản ghi
+//   là một chứng từ hay một dòng?"): `select distinct t.ROID, t.RONo, f.ROType` rồi `count(*)`.
+//   Một lệnh có hai loại công việc được đếm **hai lần**, ở hai cột khác nhau. Tổng các cột **≠** số lệnh.
+//   Trả kèm `roCount` (số lệnh riêng biệt) để so với `sum(Qty)` và thấy ngay chênh lệch.
+// ⚠️ `ExpenseType` lấy từ **cả hai** phía: hạng mục dịch vụ `union` hạng mục phụ tùng (`union` chứ không
+//   `union all` ⇒ khử trùng cặp (lệnh, loại) — kiểm tra âm tính, đúng ý đồ).
+// ⚠️ Hai macro gộp đều `inner join Ser_RO sr` nhưng `sr.DealerCode` bị **comment khỏi cả SELECT lẫn
+//   GROUP BY** ⇒ **join CHẾT** (họ #414: nối vào rồi không dùng cột nào). Không đổi số vì lệnh nào cũng
+//   có trong `Ser_RO`, nhưng là dấu vết của bản gộp-theo-đại-lý bị cắt dở.
+// 🔴 `string strReportType = TConst.ReportType.Month;` **gán cứng ngay đầu hàm**, rồi bên dưới vẫn có
+//   `if (string.IsNullOrEmpty(strReportType)) throw …_InvalidReportType` ⇒ **GUARD CHẾT**, không bao giờ
+//   chạm tới (họ #407). Tham số kiểu báo cáo **không tồn tại** ở màn này — luôn là THÁNG.
+app.MapGet("/api/reports/ro-type-expense-by-dealer", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_ExpTpAndROTpGroupByDealerX_InvalidDealerCode" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_ExpTpAndROTpGroupByDealerX_DateFromAfterDateTo" });
+
+    // Danh sách gõ cứng CỦA NGUỒN — chép nguyên văn để đo phần bị nuốt, KHÔNG dùng để lọc.
+    string[] pivotROType = { "BDD", "PDI", "SCC", "SCD", "SCS" };
+    string[] pivotExpenseType = { "LOCAL", "ROINSURANCE", "ROREPAIR", "ROWARRANTY" };
+
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var roIds = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to)
+        .Select(x => x.Id).ToListAsync();
+
+    // distinct (lệnh, loại) — đúng nguồn: một lệnh nhiều loại thì đếm nhiều lần.
+    var roTypePairs = (await db.RoServiceItems
+            .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ROType != null)
+            .Select(i => new { i.RoId, i.ROType }).ToListAsync())
+        .Distinct().ToList();
+
+    var expSvc = await db.RoServiceItems
+        .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ExpenseType != null)
+        .Select(i => new { i.RoId, i.ExpenseType }).ToListAsync();
+    var expPrt = await db.RoPartItems
+        .Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId) && i.ExpenseType != null)
+        .Select(i => new { i.RoId, i.ExpenseType }).ToListAsync();
+    var expPairs = expSvc.Concat(expPrt).Distinct().ToList();      // `union`, không phải `union all`
+
+    var roTypeRows = roTypePairs.GroupBy(x => x.ROType!)
+        .Select(g => new { ROType = g.Key, QtyROType = (decimal)g.Count(),
+            inSourcePivot = pivotROType.Contains(g.Key) })
+        .OrderBy(x => x.ROType).ToList();
+    var expRows = expPairs.GroupBy(x => x.ExpenseType!)
+        .Select(g => new { ExpenseType = g.Key, QtyExpenseType = (decimal)g.Count(),
+            inSourcePivot = pivotExpenseType.Contains(g.Key) })
+        .OrderBy(x => x.ExpenseType).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = "MONTH",      // nguồn gán cứng, không nhận tham số
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        roCount = roIds.Count,
+        roTypeRows, expenseTypeRows = expRows,
+        // Đo đúng phần nguồn nuốt vì danh sách pivot đóng băng.
+        sourcePivotROType = pivotROType, sourcePivotExpenseType = pivotExpenseType,
+        typesOutsidePivotList = roTypeRows.Where(x => !x.inSourcePivot).Select(x => x.ROType)
+            .Concat(expRows.Where(x => !x.inSourcePivot).Select(x => x.ExpenseType)).ToList(),
+        qtyDroppedByFrozenPivot = roTypeRows.Where(x => !x.inSourcePivot).Sum(x => x.QtyROType)
+            + expRows.Where(x => !x.inSourcePivot).Sum(x => x.QtyExpenseType),
+        rowIsRoTypePairNotRo = true,
+        expenseTypeFromServiceUnionPart = true,
+        deadJoinSerRoInSource = true,
+        deadGuardInvalidReportType = "strReportType gan cung = MONTH ngay dau ham",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
