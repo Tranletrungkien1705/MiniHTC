@@ -25462,18 +25462,90 @@ app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? 
 }).RequireAuthorization();
 
 // ===== Chia sẻ phụ tùng giữa đại lý (SharePart — port 1:1 FrmSharePart/ShareDealer, TCMotor) =====
-app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part, string? status) =>
+// ===== 🔴 #420 ĐỌC PHIẾU CHIA SẺ (`SpSharePartGet`) — **một tham số đại lý, HAI mệnh đề lọc** =====
+// TRACE: `FrmSharePartPublic` → `MstPartService.SpSharePartGet` (`MstPartService.cs:1299`)
+//   → WS `SpSharePartGet` (`WSCarSv.asmx.cs:20335`) → biz `SpSharePartGet` (`BizCarSv.PartOrder.cs:5554`).
+// (Bản ghi/tạo đã port ở #267; đây là bổ sung phía ĐỌC.)
+//
+// 🔴 **`strDealerCodeConditionList` được dùng LÀM HAI mệnh đề khác nghĩa nhau**:
+//     `BuildClause("and", "**ssp**.DealerCode", strDealerCodeConditionList, …)`  ← đại lý ĐĂNG phiếu
+//     `BuildClause("and", "**smp**.DealerCode", strDealerCodeConditionList, …)`  ← đại lý sở hữu bản ghi
+//                                                                                 DANH MỤC phụ tùng
+//   Cả hai cùng vào `WHERE` của truy vấn đầu ⇒ lọc "đại lý X" đòi **CẢ phiếu LẪN dòng danh mục phụ tùng**
+//   phải thuộc X. Nếu danh mục phụ tùng do đơn vị khác quản lý thì truy vấn trả **RỖNG** — và rỗng ở đây
+//   trông y hệt "đại lý này không chia sẻ gì". Một tham số, hai ý nghĩa, không ai khai báo.
+//
+// 🔴 **`0.0 SOPrice`** — cột giá bán trong phần chi tiết là **số 0 VIẾT CỨNG trong SQL**, không phải dữ liệu.
+//   Lưới hiển thị một cột "giá" mà **luôn bằng 0** ở mọi dòng, mọi đại lý, mọi thời điểm.
+// 🔴 `LEFT JOIN vwSer_inv_stockbalancebypart sb ON p.partid = sb.partid` — **THIẾU điều kiện đại lý**,
+//   trong khi MỌI phép nối khác trong cùng câu đều có. Nếu khung nhìn này không tự giới hạn theo đại lý
+//   thì `InStockQuantity` đang lấy tồn kho **không phân biệt đại lý**. Không đọc được định nghĩa khung
+//   nhìn từ cây nguồn ⇒ ghi là **BẤT ĐỐI XỨNG CẦN XÁC MINH**, không kết luận.
+//
+// ⚠️ Chi tiết lọc `WHERE sspd.QuantityShare > 0` ⇒ dòng chia sẻ **số lượng 0 không hiện**. Nhưng #267 đã
+//   xác định gửi 0 nghĩa là *"thôi chia sẻ"* ⇒ ghi 0 rồi thì **không đọc lại được**, chỉ biết qua việc nó biến mất.
+// ⚠️ Nối `Ser_Mst_Part` theo **cả `PartID` LẪN `DealerCode`** (`sspd.DealerCode = p.DealerCode`) ⇒ cùng cái
+//   bẫy chéo đại lý như trên. ⚠️ `INNER JOIN Mst_Dealer` hai lần ⇒ đại lý vắng danh mục là **mất phiếu** (lệ #410).
+// ⚠️ Tầng service dựng `like %x%` cho **mã** và **tên** phụ tùng (lệ #401); còn `SharePartID`/`PartID`
+//   truyền **trần** ⇒ `BuildClause` **bỏ im lặng** nếu người gọi không tự thêm toán tử (lệ #410).
+// ⚠️ Service có `if (strDealerCodeConditionList == "=") strDealerCodeConditionList = "";` — chuẩn hoá
+//   trường hợp mã đại lý rỗng; và ngay dưới là `strDealerCodeConditionList = strDealerCodeConditionList;`
+//   — **tự gán chính nó, một dòng CHẾT** nằm trong thân `if` không làm gì cả.
+// ⚠️ Tên tham số nguồn viết SAI CHÍNH TẢ `strPartIDCondit**o**nList` (thiếu `i`) và sai nhất quán qua **cả ba**
+//   tầng ⇒ grep theo tên đúng chính tả sẽ TRƯỢT. Giữ nguyên văn khi tra cứu.
+// 📌 Nguồn đọc trên **DB Main** (chú thích *"lấy trên main. vì là nghiệp vụ chia sẻ"*), không phải DB đại lý.
+app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part,
+    string? status, string? shareNo, string? partCode, string? partName, string? createdBy,
+    DateTime? createdDate, bool? includeZeroShare, string? dealerScope) =>
 {
     var query = db.ShareParts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode.Contains(part!.ToUpper()) || (x.PartName != null && x.PartName.Contains(part!)));
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    // #420 các bộ lọc của SpSharePartGet mà bản #267 chưa có:
+    if (!string.IsNullOrWhiteSpace(shareNo)) query = query.Where(x => x.ShareNo == shareNo);
+    // mã và tên phụ tùng: nguồn dựng `like %x%` ở TẦNG SERVICE ⇒ chứa, không phải bằng.
+    if (!string.IsNullOrWhiteSpace(partCode)) query = query.Where(x => x.PartCode.Contains(partCode!));
+    if (!string.IsNullOrWhiteSpace(partName)) query = query.Where(x => x.PartName != null && x.PartName.Contains(partName!));
+    if (!string.IsNullOrWhiteSpace(createdBy)) query = query.Where(x => x.CreatedBy == createdBy);
+    if (createdDate.HasValue) query = query.Where(x => x.CreatedAt.Date == createdDate.Value.Date);
+    // 🔴 Nguồn lọc QuantityShare > 0 ở phần chi tiết — mặc định giữ đúng vậy.
+    var keepZero = includeZeroShare ?? false;
+    if (!keepZero) query = query.Where(x => x.QuantityShare > 0);
+
     var items = await query.OrderByDescending(x => x.Id).Take(500)
         // #267 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
         .Select(x => new { x.ShareNo, x.DealerCode, x.PartCode, x.PartName, x.Unit, x.InStock, x.MinQuantity,
             x.QuantityShare, x.QuantityShareRequested, x.FlagLatest, x.Remark, x.Note, x.Status,
-            x.CreatedBy, x.LogLUBy, createdAt = x.CreatedAt.ToString("yyyy-MM-dd") }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+            x.CreatedBy, x.LogLUBy, createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
+            // #420 Cột SOPrice của nguồn là số 0 VIẾT CỨNG trong SQL — trả đúng vậy, kèm ghi chú.
+            soPrice = 0.0m }).ToListAsync();
+
+    var zeroShareHidden = keepZero ? 0
+        : await db.ShareParts.CountAsync(x => x.OrgId == t.OrgId && x.QuantityShare <= 0
+            && (string.IsNullOrWhiteSpace(dealer) || x.DealerCode == dealer));
+
+    return Results.Ok(new
+    {
+        count = items.Count,
+        dealerFilterAppliedTwiceNote = "Nguồn dùng CÙNG tham số đại lý cho HAI mệnh đề khác nghĩa: "
+            + "ssp.DealerCode (đại lý ĐĂNG phiếu) và smp.DealerCode (đại lý sở hữu bản ghi DANH MỤC phụ "
+            + "tùng). Lọc 'đại lý X' đòi CẢ HAI thuộc X ⇒ nếu danh mục do đơn vị khác quản lý thì trả "
+            + "RỖNG, trông y hệt 'đại lý này không chia sẻ gì'. MiniHTC chỉ lọc theo đại lý ĐĂNG.",
+        soPriceNote = "Cột SOPrice là 0.0 viết cứng trong SQL nguồn — lưới hiển thị một cột giá LUÔN "
+            + "bằng 0 ở mọi dòng. Không phải dữ liệu.",
+        stockBalanceJoinNote = "LEFT JOIN vwSer_inv_stockbalancebypart CHỈ nối theo partid, THIẾU điều "
+            + "kiện đại lý trong khi mọi join khác cùng câu đều có ⇒ InStockQuantity có thể không phân "
+            + "biệt đại lý. BẤT ĐỐI XỨNG CẦN XÁC MINH (không đọc được định nghĩa khung nhìn từ cây nguồn).",
+        zeroShareHidden,
+        zeroShareNote = "Nguồn lọc sspd.QuantityShare > 0 ⇒ dòng số lượng 0 KHÔNG hiện. Mà theo #267, "
+            + "gửi 0 nghĩa là 'thôi chia sẻ' ⇒ ghi 0 rồi thì không đọc lại được, chỉ biết qua việc nó "
+            + "biến mất. Truyền includeZeroShare=true để xem cả các dòng đó.",
+        misspelledParamNote = "Tham số nguồn viết sai chính tả strPartIDConditonList (thiếu i) và sai "
+            + "NHẤT QUÁN qua cả ba tầng ⇒ grep theo tên đúng chính tả sẽ TRƯỢT.",
+        dbNote = "Nguồn đọc trên DB Main (chú thích: lấy trên main, vì là nghiệp vụ chia sẻ).",
+        items,
+    });
 }).RequireAuthorization();
 
 // 🔴 #267 ĐĂNG CHIA SẺ PHỤ TÙNG — port 1:1 `SP_SharePartCreate` + `FrmSharePart.btnShare_Click`.
