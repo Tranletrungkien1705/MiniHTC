@@ -29455,15 +29455,82 @@ app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITe
 
 // 🔴 HUỶ đơn hàng — `OrderSOCancel_New20181119` (Biz.HTC.WH.cs:24674-24782): chỉ từ "P", sang "C".
 //    Nguồn phân biệt **Huỷ ("C")** với **Từ chối ("R")** là hai đường khác nhau; port cũ thiếu hẳn Huỷ.
-app.MapPost("/api/salesorders/{no}/cancel", async (string no, SoRejectDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #B38 AUDIT PARITY `OrderSOCancel_New20181119` (`FrmMngOrderDealer` → `sv.CancelSalesOrder`) =====
+// Trace: `SalesService.CancelSalesOrder(List<string> lstSoCode)` (`:318`) — **nhận DANH SÁCH mã đơn** và
+//   gọi WS `OrderSOCancel` **từng mã một trong vòng lặp**, trả `Hashtable<soCode, bool>`; mã nào lỗi thì
+//   để `false`, **không làm hỏng các mã còn lại**.
+// 🔴 GAP 1 — thiếu `myCommon_CheckDealer(…, TConst.Flag.Active)` (`:24747`): đại lý của đơn phải TỒN TẠI.
+// 🔴 GAP 2 — thiếu `myCommon_CheckAccessDealerData(BUPattern, Mst_Dealer.BUCode)` (`:24755`) — RBAC phạm vi.
+// 🔴 GAP 3 — `alColumnEffective` của nguồn có **ĐÚNG MỘT cột: `SOStatus`** (`:24765`). Port cũ còn ghi
+//    `RejectReason` + `RejectedAt` — **cột NGOÀI nguồn**, và tệ hơn: mượn cột của đường **TỪ CHỐI ("R")**
+//    cho hành động **HUỶ ("C")**, làm nhoè đúng hai đường mà nguồn cố tình tách. Đã bỏ.
+// ⚠️ **DÒNG COMMENT, KHÔNG PORT**: guard `OrderSOCancel_Expired` (không cho đại lý huỷ đơn Plan sau ngày
+//    15) nằm trong `if` **vẫn còn** nhưng **thân đã bị comment sạch** (`:24761-24772`), kèm chú thích
+//    nguồn *"20110525.HoangTV: Requested by DucLA: Ignore this check."* ⇒ port dòng ACTIVE = **không chặn**.
+app.MapPost("/api/salesorders/{no}/cancel", async (string no, AppDbContext db, ITenantContext t,
+    string? buPattern) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { no });
-    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ huỷ được đơn đang chờ duyệt (P)." });
-    o.Status = "C"; o.RejectReason = dto.Reason; o.RejectedAt = DateTime.Now;
+    // `myOrder_CheckSO(…, Flag.Active, Stage.Pending)`
+    if (o.Status != "P") return Results.BadRequest(new { error = "Chỉ huỷ được đơn đang chờ duyệt (P).", guard = "myOrder_CheckSO(SOStatus=P)" });
+    // GAP 1 — `myCommon_CheckDealer(…, Flag.Active)`
+    var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == o.DealerCode);
+    if (d is null) return Results.BadRequest(new { error = $"Đại lý {o.DealerCode} của đơn không tồn tại.", guard = "myCommon_CheckDealer" });
+    // GAP 2 — `myCommon_CheckAccessDealerData(BUPattern, BUCode)`
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    if (pattern is not null && !(d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        return Results.BadRequest(new { error = $"Ngoài phạm vi dữ liệu: BUCode {d.BUCode} không thuộc {buPattern}.", guard = "myCommon_CheckAccessDealerData" });
+
+    o.Status = "C";   // GAP 3 — alColumnEffective của nguồn CHỈ có SOStatus
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Huỷ" });
+    return Results.Ok(new
+    {
+        o.SoCode, status = o.Status, statusName = "Huỷ",
+        columnsWritten = new[] { "SOStatus" },
+        note = "Nguồn KHÔNG ghi lý do/người/thời điểm huỷ — huỷ ('C') và từ chối ('R') là hai đường tách biệt.",
+        expiredGuard = "OrderSOCancel_Expired ở nguồn đã bị COMMENT (Requested by DucLA: Ignore this check) — không port."
+    });
+}).RequireAuthorization();
+
+// #B38 — HUỶ HÀNG LOẠT, đúng khuôn `SalesService.CancelSalesOrder(List<string>)`:
+// 🔴 nguồn **KHÔNG dùng một transaction chung**: nó lặp từng mã, gọi WS riêng lẻ, và trả
+//    `Hashtable<soCode, bool>` — mã nào lỗi thì `false`, **các mã còn lại vẫn được huỷ**.
+//    Vì vậy endpoint này trả **kết quả TỪNG MÃ** thay vì fail cả lô ở mã hỏng đầu tiên.
+app.MapPost("/api/salesorders/cancel-multi", async (List<string> soCodes, AppDbContext db,
+    ITenantContext t, string? buPattern) =>
+{
+    var codes = (soCodes ?? new()).Where(s => !string.IsNullOrWhiteSpace(s))
+        .Select(s => s.Trim().ToUpperInvariant()).Distinct().ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa chọn đơn hàng nào để huỷ." });
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var orders = await db.SalesOrders.Where(x => x.OrgId == t.OrgId && codes.Contains(x.SoCode)).ToListAsync();
+    var dealerCodes = orders.Select(x => x.DealerCode).Distinct().ToList();
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodes.Contains(x.DealerCode))
+        .Select(x => new { x.DealerCode, x.BUCode }).ToListAsync();
+
+    var results = new List<object>(); int nOk = 0;
+    foreach (var code in codes)
+    {
+        var o = orders.FirstOrDefault(x => x.SoCode == code);
+        if (o is null) { results.Add(new { soCode = code, ok = false, reason = "Không tìm thấy đơn hàng." }); continue; }
+        if (o.Status != "P") { results.Add(new { soCode = code, ok = false, reason = $"Đơn đang ở '{o.Status}', chỉ huỷ được đơn 'P'." }); continue; }
+        var d = dealers.FirstOrDefault(x => x.DealerCode == o.DealerCode);
+        if (d is null) { results.Add(new { soCode = code, ok = false, reason = $"Đại lý {o.DealerCode} không tồn tại." }); continue; }
+        if (pattern is not null && !(d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        { results.Add(new { soCode = code, ok = false, reason = $"Ngoài phạm vi dữ liệu (BUCode {d.BUCode})." }); continue; }
+        o.Status = "C";
+        results.Add(new { soCode = code, ok = true, reason = (string?)null }); nOk++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        total = codes.Count, cancelled = nOk,
+        results,
+        perCodeRule = "Nguồn lặp từng mã, lỗi một mã KHÔNG chặn các mã còn lại (Hashtable<soCode,bool>)."
+    });
 }).RequireAuthorization();
 
 // Duyệt cấp 1 (FrmOrderApprove): chính sách bán + tháng dự kiến/SX/ngày giao + SL duyệt từng dòng; mọi dòng phải có năm SX
@@ -34140,7 +34207,7 @@ app.MapPost("/api/transplans/mapvin", async (MapVinDto dto, AppDbContext db, ITe
     var pairs = (dto.Pairs ?? new List<VinPairDto>())
         .Where(p => !string.IsNullOrWhiteSpace(p.FVIN) && !string.IsNullOrWhiteSpace(p.RVIN)).ToList();
     if (pairs.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 cặp FVIN/RVIN." });
-    var results = new List<object>();
+    var results = new List<object>(); int nOk = 0;
     int mapped = 0;
     foreach (var p in pairs)
     {
