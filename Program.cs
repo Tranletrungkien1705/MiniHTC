@@ -25142,6 +25142,14 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   — cả ba **đã được ghi đúng là CHẾT** ở #302/#320/#450 (WS gọi bản TRẦN: `_biz.SerStockInCreate(` …).
         // ✅ **TẬP ĐÓNG — 0 chỗ còn sai**: không có hàm chết nào đang được port dùng như luật sống.
         //   Ghi lại con số để lượt sau khỏi quét lại; quét lại chỉ khi cây nguồn đổi.
+        // ===== ✅ #465 QUÉT ĐẾM ĐƯỢC: chữ ký PROXY có khớp WebMethod không? =====
+        // Dựng sau khi #464 nghi ngờ sai lệch chữ ký. Công cụ `_audit/sweepproxy.js` đọc
+        //   `Web References/HTCCarSv/Reference.cs` (66287 dòng) và `WSCarSv.asmx.cs` (40396 dòng),
+        //   bỏ dòng comment, chỉ lấy WebMethod **không bị comment**, rồi so **TẬP TÊN** tham số.
+        // 📊 **728 hàm proxy · 732 WebMethod · 728 tên khớp hai bên · LỆCH = 0**.
+        //   ⇒ Không có hàm nào proxy và máy chủ lệch tham số. Giả thuyết của #464 **bị bác bỏ bằng số liệu**.
+        proxyVsWebMethodSweep = new { proxyMethods = 728, webMethods = 732, matchedByName = 728,
+            signatureMismatches = 0 },
         versionSuffixSweep = new { versionSuffixedFunctions = 264, reachable = 171, dead = 93,
             citedByMiniHtc = 36, citedAndDead = 3, citedDeadAlreadyFlagged = 3, openIssues = 0 },
         sourceTreeDelta = new { laptop = "V20.2023.Release.V2", may150 = "V20.2023.Release",
@@ -44025,22 +44033,25 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         r.PointConsumptionPrm = dto.PointConsumptionPrm;
         r.LogLUDateTime = DateTime.Now; r.LogLUBy = dto.LogLUBy;
 
-        // ===== 🔴 #464 HAI KHỐI JSON LOYALTY **KHÔNG BAO GIỜ TỚI MÁY CHỦ** =====
-        // Đối chiếu chữ ký ba tầng của cùng một lời gọi (đọc từng tầng, không suy):
-        //   · CLIENT `SerROService.SerROStockToPaidStatus` (`:1540`) dựng `objCrd_DealSerRO` +
-        //     `listCrd_DealSerRODtl`, `JsonConvert.SerializeObject` cả hai rồi truyền đi.
-        //   · PROXY `Web References/HTCCarSv/Reference.cs:34103` có **21 tham số**, gồm
-        //     `objCrdDealSerRO` và `objCrdDealSerRODtl`.
-        //   · **WebMethod THẬT** `WSCarSv.asmx.cs:11452` chỉ có **19 tham số** — **KHÔNG có hai cái đó**.
-        //     Bản WS từng nhận chúng (`:11400`) **đã bị comment TOÀN BỘ**, kể cả dòng `//[WebMethod]`.
-        //   · BIZ `SerROStatusUpdatePaid_New20230228` (`BizCarSv.Service.RO.cs:5736`) cũng **không** khai.
-        //   ⇒ Proxy gửi thừa hai phần tử; SOAP của ASP.NET **bỏ qua phần tử không khớp** ⇒ lời gọi vẫn
-        //     chạy, nhưng **bản ghi giao dịch Loyalty (đầu + dòng chi tiết) bị VỨT ĐI IM LẶNG**.
-        //   📌 Khác #305 ở chỗ: #305 là tham số ĐẾN NƠI rồi không ai dùng; ở đây tham số **không tới nơi**.
-        //     Cùng một triệu chứng ngoài mặt (dữ liệu không được ghi), nhưng chẩn đoán phải khác nhau —
-        //     muốn thấy được thì phải so **chữ ký proxy với chữ ký WebMethod**, không chỉ đọc biz.
-        // ⇒ MiniHTC **không tái hiện** chỗ mất dữ liệu này: nhận thẳng hai khối ở DTO và ghi lại nguyên văn
-        //   để nghiệp vụ quyết định. Sai lệch CỐ Ý, có cờ.
+        // ===== 🔴🔴 #465 RÚT KẾT LUẬN CỦA #464 — TÔI ĐO SAI, KHÔNG PHẢI NGUỒN SAI =====
+        // #464 tuyên bố hai khối JSON Loyalty "không bao giờ tới máy chủ". **SAI**.
+        // Vì sao sai: tôi liệt kê tham số của WebMethod bằng `grep -E "string str|object"`. Hai dòng cần tìm là
+        //   `, string objCrdDealSerRO` và `, string objCrdDealSerRODtl` — chúng **không khớp** `string str`
+        //   (tên biến bắt đầu bằng `obj`) và **cũng không** chứa từ `object` (chỉ có `obj`).
+        //   ⇒ Hai tham số **có thật** nhưng **vô hình với phép đo** ⇒ tôi đếm ra 19 thay vì 21.
+        // Đo lại bằng công cụ đếm ngoặc (`_audit/sweepproxy.js`, in kèm SỐ DÒNG đọc được — luật #453):
+        //   PROXY **21** · WEBMETHOD **21** · BIZ **23** (biz thêm 2 tham số hạ tầng) — **TÊN TRÙNG KHÍT**.
+        //   Và WS thực sự truyền tiếp: `_biz.SerROStatusUpdatePaid_New20230228(… , objCrdDealSerRO,`
+        //   `objCrdDealSerRODtl , …)` (`WSCarSv.asmx.cs:11483`).
+        // ⚪ Biz **DÙNG THẬT**, không phải tham số chết: `:6091/:6107` guard rỗng, `:6577` deserialize
+        //   `JsonConvert.DeserializeObject<List<Crd_DealSerRODtl>>` rồi dựng `Crd_DealSerROVoucher`.
+        //   ⇒ **Không có chỗ mất dữ liệu nào ở đây.** Ngược hẳn với #305 (tham số tới nơi rồi bị bỏ).
+        // 📌 Đây là lần **thứ sáu** cùng họ lỗi ĐO (#411 offset · #425 grep trúng chỗ gọi · #430 biên vùng
+        //   · #450 thiếu kiểu trả về · #453 quét không đệ quy · nay **mẫu grep bỏ sót tên biến**).
+        //   Luật cứng: **đếm tham số bằng công cụ đếm ngoặc, không bằng grep theo tiền tố tên biến.**
+        // ⇒ Hai cột dưới đây **GIỮ LẠI** vì vẫn hữu ích (lưu vết giao dịch Loyalty của bước thanh toán),
+        //   nhưng lý do "vì nguồn làm mất dữ liệu" **đã bị rút**.
+        // Nguồn cũng nhận đúng hai khối này (biz deserialize để dựng Crd_DealSerROVoucher).
         r.CrdDealSerROJson = dto.CrdDealSerROJson;
         r.CrdDealSerRODtlJson = dto.CrdDealSerRODtlJson;
     }
