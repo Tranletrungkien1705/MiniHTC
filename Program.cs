@@ -16338,6 +16338,115 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // ⚠️ `Table 4`: `ProductGrpCode` = `'OTHER'` khi `ModelID` null **hoặc bằng 0**; `WarrantyDate` lấy
 //   `WarrantyRegistrationDate` — chính cột đã vá ở #334, không có nó thì trường này luôn rỗng.
 // 📌 Quy tắc mã khách `SalesCusID` (#362) xuất hiện ở **bốn** bảng: 5 · 6 · 8 · 16/17.
+// ===== 🔴 #366 DANH MỤC gửi kèm lệnh sang Veloca (`Table 0/1/2/3`) =====
+// Nguồn gửi **danh mục ĐI KÈM từng lệnh** (không phải đồng bộ master toàn bộ): chỉ hiệu xe/model/khoang/KTV
+//   **liên quan tới lệnh đó**. ⇒ Veloca tự dựng danh mục từ dữ liệu đi kèm, nên **thiếu một dòng danh mục
+//   là hỏng bản ghi tham chiếu tới nó**.
+//
+// 🔴 `Table 1` (model) là **UNION BA NHÁNH**, không phải một truy vấn:
+//   (1) model của **XE**  (2) model của **LỆNH** — hai chỗ có thể KHÁC nhau nên phải lấy cả hai
+//   (3) một dòng **`'OTHER'` tự sinh**, chỉ khi `ModelID` của xe `null` hoặc `= 0`
+//   ⇒ Nhánh (3) tồn tại để khớp với `ProductGrpCode = 'OTHER'` mà `Table 4` gán cho xe không có model
+//     (#365). **Bỏ nhánh này ⇒ Veloca nhận xe trỏ tới nhóm sản phẩm KHÔNG TỒN TẠI.**
+// ⚠️ `ProductGrpCode` = `ProductGrpBUCode` (cùng `ModelID`) và `ProductGrpName` = `ProductGrpDesc`
+//   (cùng `ModelName`) — hai cặp "hai tên một giá trị" nữa. `ProductGrpBUPattern` = `ModelID + '%'`
+//   (mẫu LIKE, không phải mã).
+//
+// 🔴 `Table 2` (khoang): `CavityType` đổi sang **mã có cấu trúc của Veloca**:
+//   `BDN → CABTYPNO.A01.00001` · `SCC → …00002` · `KHAC → …00003`
+//   `KD → …00004` · `KS → …00005` · `BS → …00006`
+//   ⇒ Không gửi mã nội bộ; Veloca có danh mục loại khoang riêng đánh số sẵn.
+// ⚠️ `Table 3` (KTV): dùng `EngineerNo` (quyết định `20241204`, cùng #361) và **`Remark` cũng gán
+//   `EngineerNo`** — trùng giá trị với chính khoá, giữ 1:1.
+app.MapGet("/api/osveloca/ro/{roNo}/catalogs", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (r is null) return Results.NotFound(new { roNo });
+
+    var car = r.Vin == null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == r.Vin);
+
+    // Table 0 — hiệu xe của lệnh.
+    var brandCode = car?.TradeMark ?? r.TradeMarkCode;
+    var brands = brandCode == null ? new List<object>()
+        // ServiceTradeMark cua MiniHTC KHONG co DealerCode (nguon Table 0 co) => lay cua LENH.
+        : (await db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId && x.TradeMarkCode == brandCode)
+            .Select(x => new { brandCode = x.TradeMarkCode, dealerCode = r.DealerCode, brandName = x.TradeMarkName })
+            .ToListAsync()).Cast<object>().ToList();
+
+    // Table 1 — model: UNION ba nhánh (model của XE, model của LỆNH, và dòng OTHER tự sinh).
+    var modelCodes = new List<string>();
+    if (!string.IsNullOrWhiteSpace(car?.ModelCode)) modelCodes.Add(car!.ModelCode!);
+    if (!string.IsNullOrWhiteSpace(r.ModelID)) modelCodes.Add(r.ModelID!);
+    modelCodes = modelCodes.Distinct().ToList();
+
+    var models = (await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode))
+            .Select(m => new { m.ModelCode, m.ModelName, m.TradeMarkCode }).ToListAsync())
+        .Select(m => new
+        {
+            productGrpCode = m.ModelCode, productGrpBUCode = m.ModelCode,
+            productGrpBUPattern = m.ModelCode + "%",
+            dealerCode = r.DealerCode, brandCode = m.TradeMarkCode,
+            productGrpName = m.ModelName, productGrpDesc = m.ModelName,
+            synthetic = false,
+        }).ToList();
+
+    // Nhánh (3): xe KHÔNG có model ⇒ tự sinh dòng OTHER để khớp ProductGrpCode = "OTHER" ở Table 4.
+    var carHasNoModel = string.IsNullOrWhiteSpace(car?.ModelCode) || car!.ModelCode == "0";
+    if (carHasNoModel && car is not null)
+        models.Add(new
+        {
+            productGrpCode = "OTHER", productGrpBUCode = "OTHER",
+            productGrpBUPattern = "OTHER%",
+            dealerCode = car.DealerCode, brandCode = car.TradeMark,
+            productGrpName = "OTHER", productGrpDesc = "OTHER",
+            synthetic = true,
+        });
+
+    // Table 2 — khoang của các công đoạn trong lệnh; CavityType đổi sang mã có cấu trúc của Veloca.
+    static string? CabinTypeOf(string? ct) => ct switch
+    {
+        "BDN" => "CABTYPNO.A01.00001", "SCC" => "CABTYPNO.A01.00002",
+        "KHAC" => "CABTYPNO.A01.00003", "KD" => "CABTYPNO.A01.00004",
+        "KS" => "CABTYPNO.A01.00005", "BS" => "CABTYPNO.A01.00006",
+        _ => null,
+    };
+    var aw = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    var cavityIds = aw is null ? new List<string>()
+        : (await db.SerAssignmentWorkStages.Where(s => s.OrgId == t.OrgId && s.AssignmentWorkId == aw.Id)
+            .Select(s => s.CavityId).ToListAsync()).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cavities = (await db.Cavities.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => cavityIds.Contains(c.Id.ToString()))
+        .Select(c => new
+        {
+            repairCabinCode = c.CavityNo, c.DealerCode,
+            repairCabinName = c.CavityName, description = c.Note,
+            repairCabinTypeCode = CabinTypeOf(c.CavityType),
+            sourceCavityType = c.CavityType,
+        }).ToList();
+
+    // Table 3 — KTV được phân công trong lệnh. Gửi EngineerNo (không phải mã nội bộ).
+    var engNos = aw is null ? new List<string>()
+        : await db.SerAssignmentWorkEngineers.Where(e => e.OrgId == t.OrgId && e.AssignmentWorkId == aw.Id)
+            .Select(e => e.EngineerNo).Distinct().ToListAsync();
+    var engineers = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId && engNos.Contains(e.EngineerNo))
+        .Select(e => new { e.EngineerNo, e.DealerCode, remark = e.EngineerNo, e.EngineerName })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        roNo, brands, models, cavities, engineers,
+        syntheticOtherModel = carHasNoModel,
+        syntheticOtherNote = carHasNoModel
+            ? "Xe không có model ⇒ tự sinh dòng nhóm sản phẩm OTHER; bỏ dòng này thì xe trỏ tới nhóm KHÔNG TỒN TẠI."
+            : null,
+        unmappedCavityTypes = cavities.Where(c => c.repairCabinTypeCode is null)
+            .Select(c => c.sourceCavityType).Distinct().ToList(),
+        catalogScopeNote = "Danh mục gửi ĐI KÈM lệnh (chỉ phần liên quan), không phải đồng bộ master toàn bộ.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/masters", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
