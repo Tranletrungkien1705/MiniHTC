@@ -43625,6 +43625,36 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     //   ⇒ Xe có thể vào xưởng thẳng từ lúc **mới lập / đã in báo giá**, không bắt buộc qua "Lập lệnh".
     // Luồng thẳng `_roFlow` chỉ cho `HasRO → InGarage` ⇒ chặn nhầm hai lối vào có thật.
     var inGarageFrom = new[] { "Created", "PrintedQuote", "HasRO" };
+    // ===== 🔴 #459 `NotResponding` (NORE) — NHÁNH **KHÔNG CÓ GUARD NÀO** ở nguồn =====
+    // TRACE 4 TẦNG từ màn báo giá `Views/Services/FrmQuotation.cs`: nút gọi
+    //   `_serROService.SerROStockToNotRespondingStatus(...)` — nhưng tên client **KHÁC** tên WS:
+    //   tầng service (`SerROService.cs`) gọi WS `SerROToNotRespondingStatus` → biz cùng tên
+    //   (`Service01.cs:11367`), là **vỏ mỏng** gọi `SerROStatusUpdate(…, Ser_RO_Stage.NotResponding, "", "")`.
+    //   📌 Vì tên client có thêm chữ *Stock* nên grep theo tên nút **trượt hoàn toàn** — phải grep theo
+    //     tên hàm ở tầng WS/biz. Cùng bẫy với `SerROStockToPaidStatus` → WS `SerROToPaidStatus`.
+    //
+    // 🔴 Trong `switch (strNewStatus)` của `SerROStatusUpdate` **KHÔNG có `case` cho NotResponding**
+    //   (đã đọc trọn switch: chỉ có InGarage · CheckEnd · Repaired · Paid · Finished).
+    //   ⇒ Chuyển sang **NORE đi được từ BẤT KỲ trạng thái nào**, kể cả đã `Paid`/`Finished`, và
+    //     **không** ghi thêm cột mốc nào. Đây là lối thoát nằm ngoài chuỗi tuyến tính.
+    //   ⚠️ Chỉ còn một chặn duy nhất là `checkROForChangeStatus` chạy trước switch (lệnh phải tồn tại).
+    // ⚠️ Vỏ mỏng truyền `strStatusDate = ""` — **khác** bốn vỏ kia (đều truyền ngày từ client) ⇒ bước này
+    //   cố ý **không đóng dấu thời điểm**. Giữ nguyên: không tự sinh ngày.
+    // ⚠️ HẰNG ≠ SỰ THẬT: `Ser_RO_Stage.NotResponding = "NORE"` có chú thích **"Chưa dùng"**, nhưng màn
+    //   báo giá đang gọi nó và `Ser_RO_Stage4Search` xếp NORE vào nhóm *"Hủy, Hẹn lại"* ⇒ chú thích SAI.
+    if (target == "NotResponding")
+    {
+        r.Status = "NotResponding";
+        // RepairOrder khong co cot UpdatedAt (nguon cung khong ghi moc nao o nhanh nay).
+        await db.SaveChangesAsync();
+        return Results.Ok(new
+        {
+            r.RONo, status = r.Status,
+            noSourceGuard = true,          // nguồn không kiểm trạng thái cũ cho nhánh này
+            noStatusDateStamped = true,    // vỏ mỏng truyền statusDate = ""
+            constantCommentWrong = "Ser_RO_Stage.NotResponding chú thích \"Chưa dùng\" nhưng đang được dùng.",
+        });
+    }
     var okStep = target == "InGarage"
         ? inGarageFrom.Contains(r.Status)
         : tgtIdx == curIdx + 1;
