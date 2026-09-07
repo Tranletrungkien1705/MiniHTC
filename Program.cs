@@ -3049,6 +3049,91 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
 //   3. **Lỗi gõ ở client** (`SalesService.cs:14541`): nhánh gộp "không chọn loại chứng từ" viết
 //      `RetrieveOrderNo like '%@<số>%'` — **thừa ký tự `@`**, ba nhánh kia đúng ⇒ tìm theo số chứng từ
 //      **không bao giờ ra LỆNH THU HỒI**. Port theo **ý định** (bỏ `@`), nêu ở `sourceBugs`.
+
+// ===== #B47 TÌM VIN ĐỂ TẠO YCVT NỘI BỘ — `Car_VIN_Get_RearTransReq_New20181119` =====
+// (`FrmSearchVinRearTransReq`.) Trace LIVE: `salesSv.SearchVinForRearTransReq`
+//   (`SalesService.cs:15649`) → WS `Car_VIN_Get_RearTransReq` (`WSHTC.asmx.cs:61611`) →
+//   `_biz.Car_VIN_Get_RearTransReq_New20181119` (`Biz.HTC.WH.cs:175606`, **VỎ BỌC**) →
+//   **`Car_VIN_Get_RearTransReqX_New20181119`** (`:175868`) — SQL thật.
+// 🔴 **ĐIỀU KIỆN LÕI** (`:175997-176001`), chú thích nguyên văn của nguồn:
+//    *"20170425 Chỉ tạo YCVT Nội bộ cho Lệnh điều chuyển A2"* —
+//    `left join Sto_StorageRearrangeDetail ssrd on t.Vin = ssrd.VIN and ssrd.RearrangeDtlStatus in ('A2')`
+//    **cộng** `where … and ssrd.StorageRearrangeNo is not null`.
+//    ⚠️ `left join` + `is not null` ở `where` = **INNER JOIN thực chất**: xe **bắt buộc** phải có dòng
+//    lệnh điều chuyển đang ở **"A2"** mới ra kết quả. Đọc mỗi mệnh đề `on` mà bỏ `where` sẽ port sai
+//    thành "có thì lấy, không có vẫn ra".
+// 🔴 **`@strBUPatternOfUser` khai báo nhưng KHÔNG DÙNG** (grep toàn hàm: đúng **1** hit = dòng khai báo)
+//    — **ca thứ ba liên tiếp** cùng khuôn (#B45 `left join` vô hiệu, #B46 bỏ quên hẳn, nay lại bỏ quên).
+//    Port trả `outOfScopeCount` + cờ `enforceBuScope`; **không tự bịt**, cần nghiệp vụ chốt.
+// 🔴 `order by cv.VIN`; `MyCount` đếm trên `#tbl_Car_VIN_Final` (**sau** khi đã áp mọi điều kiện).
+app.MapGet("/api/vins/for-rear-trans-req", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? specCode, string? modelCode, string? colorCode,
+    string? storageRearrangeNo, string? buPattern, string? enforceBuScope,
+    int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    var fVin = U(vin);
+    if (fVin is not null) cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(fVin)).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) { var set = specCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.SpecCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(modelCode)) { var set = modelCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ModelCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(colorCode)) { var set = colorCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ColorCode ?? "")).ToList(); }
+
+    var vinSet = cars.Select(c => c.VIN).ToHashSet();
+    // ĐIỀU KIỆN LÕI: phải có dòng lệnh điều chuyển đang "A2" (left join + is not null = inner join).
+    var rear = await (from d in db.StorageRearrangeDetails.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN) && x.RearrangeDtlStatus == "A2")
+                      join h in db.StorageRearranges.Where(x => x.OrgId == t.OrgId) on d.StorageRearrangeId equals h.Id
+                      select new { d.VIN, StorageRearrangeNo = h.SCNo, d.RearrangeDtlStatus }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(storageRearrangeNo))
+    { var k = storageRearrangeNo.Trim().ToUpperInvariant(); rear = rear.Where(x => (x.StorageRearrangeNo ?? "").ToUpperInvariant().Contains(k)).ToList(); }
+    rear = rear.Where(x => !string.IsNullOrEmpty(x.StorageRearrangeNo)).ToList();   // `is not null`
+
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PLNo, p.LcNo, p.PortCode }).ToListAsync();
+
+    var joined = rear.Select(r =>
+    {
+        var cv = cars.First(c => c.VIN == r.VIN);
+        var pl = packingLists.FirstOrDefault(p => p.PLNo == cv.PackingListNo);
+        return new
+        {
+            cvVIN = cv.VIN, cvModelCode = cv.ModelCode, cvSpecCode = cv.SpecCode, cvColorCode = cv.ColorCode,
+            cvActualSpec = cv.ActualSpec, cvStorageCodeCurrent = cv.StorageCodeCurrent,
+            cvPackingListNo = cv.PackingListNo, ctplLCNo = pl?.LcNo, ctplPortCode = pl?.PortCode,
+            ccDealerCode = cv.DealerCode,
+            ssrdStorageRearrangeNo = r.StorageRearrangeNo, ssrdRearrangeDtlStatus = r.RearrangeDtlStatus
+        };
+    }).ToList();
+
+    // Phạm vi BU — nguồn KHÔNG dùng `@strBUPatternOfUser`: đo được, chỉ lọc khi bật cờ.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? dealerCode)
+    {
+        if (pattern is null) return true;
+        var dl = dealers.FirstOrDefault(z => z.DealerCode == dealerCode);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = joined.Count(x => !InScope(x.ccDealerCode));
+    if (enforceBuScope == "1") joined = joined.Where(x => InScope(x.ccDealerCode)).ToList();
+
+    // `order by cv.VIN`; `MyCount` đếm trên bảng CUỐI (sau mọi điều kiện).
+    joined = joined.OrderBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
+    var myCount = joined.Count;
+    var items = joined.Skip(start).Take(count).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        coreRule = "Chỉ tạo YCVT Nội bộ cho Lệnh điều chuyển A2 (chú thích nguồn 20170425): RearrangeDtlStatus in ('A2') + StorageRearrangeNo is not null.",
+        joinNote = "Nguồn viết left join nhưng where có 'is not null' ⇒ INNER JOIN thực chất — xe không có lệnh điều chuyển A2 thì KHÔNG ra.",
+        outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon (ca thu ba lien tiep: #B45, #B46, #B47) => man khong loc pham vi BU. CAN NGHIEP VU/BAO MAT CHOT."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/for-insurance-req", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? specCode, string? modelCode, string? colorCode, string? carId,
