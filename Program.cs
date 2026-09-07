@@ -14651,6 +14651,84 @@ app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, st
 //    xét khi thuộc {`CBU`,`CKD`}; đủ điều kiện khi
 //      CBU: `AmountAccum >= 30.00/100 * cc.UnitPriceActual` · CKD: `>= 15.00/100 * …`
 //    ⇒ hai ngưỡng KHÁC NHAU theo loại lắp ráp — không có "ngưỡng chung".
+
+// ===== #B29 TRA XE ĐỂ ĐẠI LÝ LẬP ĐỀ NGHỊ GIAO HỒ SƠ (port 1:1 `FrmNewDocReqDealer`, 2010.HTC/Sales) =====
+// Trace twin LIVE: `FrmNewDocReqDealer.cs:819` → `sv.GetCarForDealerCreateCDR(listVin)`
+//   (`SalesService.cs:5768`) → WS **`CarCarGet_ForCDRByDealerWH`** (`WSHTC.asmx.cs:80432`)
+//   → **`_biz.Car_Car_Get_WH_New20190722`** (`BizHTC.zTemp.cs:907`, **VỎ BỌC**)
+//   → **`Car_Car_GetX_New20190722`** (`:348`) — SQL thật.
+//   ⚠️ Tên WS (`…ForCDRByDealer…`) **KHÔNG** trùng tên biz (`Car_Car_Get_WH…`) — đây là hàm tra xe DÙNG CHUNG,
+//      màn CDR chỉ là một người gọi. Grep theo tên WS sẽ không ra biz; phải đọc thân WS.
+// 🔴 HÌNH DẠNG BỘ LỌC: client dựng **đúng MỘT** điều kiện — `VIN **in** (danh sách)`
+//   (`sbSql.AddWhereClause(Tbl_Vin + VIN, listvin, "in", "")`, `:5781`), mọi tham số khác truyền rỗng.
+//   ⇒ endpoint nhận **danh sách VIN**, không nhận LIKE.
+// 🔴 RBAC: `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//   — nối TRONG theo **`Car_Car.DealerCode`** (đại lý ĐANG GIỮ xe), khác các màn giao dịch dùng `DealerCodeBuyer`.
+// 🔴 Mọi join enrich còn lại đều là **LEFT** (spec/model/color/province/đơn hàng/Car_VIN/TKHQ/packing list)
+//   ⇒ thiếu master **không** làm mất dòng xe. Chỉ `Mst_Dealer` là inner.
+app.MapGet("/api/cars/for-dealer-create-cdr", async (
+    AppDbContext db, ITenantContext t, string? vins, string? buPattern) =>
+{
+    var vinList = string.IsNullOrWhiteSpace(vins)
+        ? new List<string>()
+        : vins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+              .Select(v => v.ToUpperInvariant()).Distinct().ToList();
+    if (vinList.Count == 0) return Results.BadRequest(new { error = "Cần danh sách VIN (tham số `vins`, ngăn bởi dấu phẩy)." });
+
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vinList.Contains(c.VIN)).ToListAsync();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
+    var provinces = await db.MstProvinces.Where(p => p.OrgId == t.OrgId).Select(p => new { p.ProvinceCode, p.ProvinceName }).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc, s.AssemblyStatus }).ToListAsync();
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtName, c.ColorExtNameVN }).ToListAsync();
+    var orders = await db.SalesOrders.Where(o => o.OrgId == t.OrgId).Select(o => new { o.SoCode, o.SPCode, o.DealerCode }).ToListAsync();
+    var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId).Select(k => new { k.DeclarationNo, k.OpenDate, k.TaxPaymentDate }).ToListAsync();
+
+    var items = new List<object>();
+    int droppedByDealerJoin = 0, notFoundVin = 0;
+    foreach (var v in vinList)
+    {
+        var car = cars.FirstOrDefault(c => c.VIN == v);
+        if (car is null) { notFoundVin++; continue; }
+        // `inner join Mst_Dealer` — đại lý không có trong danh mục, hoặc ngoài BUPattern ⇒ **mất dòng**.
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == car.DealerCode);
+        if (dl is null) { droppedByDealerJoin++; continue; }
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedByDealerJoin++; continue; }
+
+        // Toàn bộ phần dưới là LEFT JOIN — thiếu master không loại dòng.
+        var sp = specs.FirstOrDefault(s => s.SpecCode == car.SpecCode);
+        var mo = models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        var co = colors.FirstOrDefault(c => c.ModelCode == car.ModelCode && c.ColorCode == car.ColorCode);
+        var pv = provinces.FirstOrDefault(p => p.ProvinceCode == dl.ProvinceCode);
+        var so = car.SOCode is null ? null : orders.FirstOrDefault(o => o.SoCode == car.SOCode);
+        // `left join CT_TKHQ ctt on ctt.DeclarationNo = cv.DeclarationNo` — nối qua **Car_VIN**, không qua Car_Car.
+        var tk = car.DeclarationNo is null ? null : tkhqs.FirstOrDefault(k => k.DeclarationNo == car.DeclarationNo);
+
+        items.Add(new
+        {
+            carId = car.VIN, vin = car.VIN, car.SpecCode, specDescription = sp?.SpecDesc, assemblyStatus = sp?.AssemblyStatus,
+            car.ModelCode, modelName = mo?.ModelName, car.ColorCode, colorExtName = co?.ColorExtName, colorExtNameVN = co?.ColorExtNameVN,
+            dealerCode = dl.DealerCode, dealerName = dl.DealerName, provinceCode = dl.ProvinceCode, provinceName = pv?.ProvinceName,
+            soCode = car.SOCode, spCode = so?.SPCode,
+            car.EngineNo, car.ActualSpec, car.SerialNo, car.PackingListNo,
+            declarationNo = car.DeclarationNo, tkhqOpenDate = tk?.OpenDate, tkhqTaxPaymentDate = tk?.TaxPaymentDate,
+            car.BillNo, car.MortageStartDate, car.MortageEndDate, car.DocDeliveryReqDate, car.FlagDocReq
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        filterShape = "VIN IN (danh sách) — client chỉ dựng đúng một điều kiện `in`, không có LIKE.",
+        rbacJoinColumn = "Car_Car.DealerCode (đại lý ĐANG GIỮ xe) — khác các màn giao dịch dùng DealerCodeBuyer.",
+        joinNote = "Chỉ Mst_Dealer là INNER; spec/model/color/province/đơn hàng/Car_VIN/TKHQ/packing list đều LEFT ⇒ thiếu master không mất dòng xe.",
+        droppedByDealerJoin, notFoundVin,
+        debt = "NỢ: nguồn còn left join CT_DealerContractDetail và CT_PackingList — MiniHTC chưa nối 2 bảng này ở truy vấn này."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
     AppDbContext db, ITenantContext t, string? vin, DateTime? dateFrom, DateTime? dateTo) =>
 {

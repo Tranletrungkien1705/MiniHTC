@@ -10111,6 +10111,10 @@ public sealed class CarVinMaster
     /// and cv.ColorCode = mcc.ColorCode`.
     /// </summary>
     public string? ColorCode { get; set; }
+    /// <summary>#B29 Số tờ khai hải quan của xe (`Car_VIN.DeclarationNo`) — mốc nối sang `CT_TKHQ`
+    /// (`left join CT_TKHQ ctt on ctt.DeclarationNo = **cv**.DeclarationNo`, `BizHTC.zTemp.cs:465`);
+    /// nối qua **Car_VIN**, không qua `Car_Car`.</summary>
+    public string? DeclarationNo { get; set; }
     /// <summary>#B28 Đơn giá THỰC TẾ của xe (`Car_Car.UnitPriceActual`) — mẫu số của ngưỡng thanh toán
     /// tối thiểu: CBU **≥ 30%**, CKD **≥ 15%** (`Biz.HTC.WH.My.cs:1914-1915`).</summary>
     public decimal? UnitPriceActual { get; set; }
