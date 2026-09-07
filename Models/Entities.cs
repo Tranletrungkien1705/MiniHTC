@@ -2360,6 +2360,13 @@ public sealed class RoServiceItem
     /// <summary>Giờ công thực tế (ACTMANHOUR).</summary>
     public decimal? ActManHour { get; set; }
 
+    /// <summary>🔴 #342 INSURANCEPRICE — **giá hãng bảo hiểm đã duyệt** cho dòng này.
+    /// Quy tắc tính tiền công nợ bảo hiểm rẽ theo chính cột này:
+    ///   `when InsurancePrice > 0 then InsurancePrice` ⇒ dùng **NGUYÊN GIÁ THOẢ THUẬN**,
+    ///     KHÔNG nhân `Factor`, KHÔNG cộng VAT;
+    ///   `when isnull(InsurancePrice,0) <= 0 then <công thức thường>` ⇒ tính như dòng bình thường.
+    /// ⇒ Thiếu cột này thì mọi dòng rơi vào nhánh thường và số công nợ **luôn sai** khi có giá duyệt.</summary>
+    public decimal? InsurancePrice { get; set; }
     public decimal Amount { get; set; }                // tiền công
 
     /// <summary>
@@ -2420,6 +2427,14 @@ public sealed class RoPartItem
     /// Báo cáo KPI cộng doanh thu phụ tùng với `and sri.FlagAccessory = '0'` ⇒ **loại phụ kiện ra**;
     /// phụ kiện được cộng riêng ở nhóm khác. Từ vựng cờ "1"/"0".</summary>
     public string? FlagAccessory { get; set; }
+
+    /// <summary>🔴 #342 INSURANCEPRICE — **giá hãng bảo hiểm đã duyệt** cho dòng này.
+    /// Quy tắc tính tiền công nợ bảo hiểm rẽ theo chính cột này:
+    ///   `when InsurancePrice > 0 then InsurancePrice` ⇒ dùng **NGUYÊN GIÁ THOẢ THUẬN**,
+    ///     KHÔNG nhân `Factor`, KHÔNG cộng VAT;
+    ///   `when isnull(InsurancePrice,0) <= 0 then <công thức thường>` ⇒ tính như dòng bình thường.
+    /// ⇒ Thiếu cột này thì mọi dòng rơi vào nhánh thường và số công nợ **luôn sai** khi có giá duyệt.</summary>
+    public decimal? InsurancePrice { get; set; }
 
     /// <summary>#280 `ExpenseType` — đối tượng thanh toán của dòng phụ tùng, cùng bộ mã
     /// <see cref="RoServiceItem.ExpenseType"/>.</summary>
