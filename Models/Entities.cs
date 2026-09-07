@@ -13994,6 +13994,17 @@ public sealed class CusDebit
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string DebitNo { get; set; } = "";
+    // ===== #555 §12 MỘT BẢNG, BA LOẠI CÔNG NỢ =====
+    /// <summary>Loại công nợ — nguồn dùng **cùng bảng `Ser_CusDebit`** cho cả ba màn, phân biệt bằng
+    /// hằng literal: **"1"** khách hàng · **"2"** bảo hiểm · **"3"** nhà cung cấp.</summary>
+    public string DebitType { get; set; } = "1";
+    /// <summary>Số đơn bảo hiểm — khoá lọc của công nợ loại **"2"**.</summary>
+    public string? InsNo { get; set; }
+    /// <summary>Mã nhà cung cấp — khoá lọc của công nợ loại **"3"**.</summary>
+    public string? SupplierCode { get; set; }
+    /// <summary>Khoá phiếu nhập kho — công nợ loại "3" nối `Ser_Inv_StockIn` qua cột này
+    /// (loại "1"/"2" nối `Ser_RO` qua `ROID` — **hai khoá nối khác nhau trên cùng bảng**).</summary>
+    public string? StockInID { get; set; }
     public string? CusId { get; set; }
     public string? CusName { get; set; }
     public string? RONo { get; set; }
