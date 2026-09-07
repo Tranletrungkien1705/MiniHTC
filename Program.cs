@@ -38104,6 +38104,10 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
         && m.Name == "ByInputStock");
     var avgApplied = new List<object>();
     var skippedZeroStock = new List<string>();
+    // #391: nhánh thứ hai — mốc tính giá vốn = ByManual.
+    var pByManual = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param"
+        && m.Name == "ByManual");
+    var avgSeeded = new List<object>();
     if (pMcc && pByInput)
     {
         foreach (var l in lines)
@@ -38133,6 +38137,35 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
         }
     }
 
+    // --- 🔴 #391 NHÁNH THỨ HAI: mốc tính giá vốn = `ByManual` (`StockIn.cs:6036`).
+    //   Cùng nằm trong guard `MCC = Average` như nhánh `ByInputStock`, nhưng hành vi **khác hẳn**:
+    //     · **KHÔNG có phép bình quân gia quyền nào** — giá vốn = thẳng `Price × (1 + 0.01×VAT)`.
+    //     · 🔴 **CHỈ ghi khi CHƯA có bản ghi giá vốn nào** cho phụ tùng đó (`// Is New` của nguồn:
+    //       `if (dt_BM == null || dt_BM.Rows.Count == 0)`) ⇒ chỉ **KHỞI TẠO một lần**, các lần nhập
+    //       sau **không đụng tới** — đúng tên gọi 'ByManual': sau đó người dùng tự sửa tay.
+    //     · 🔴 Mốc thời gian đóng về **0 giờ của NGÀY nhập**: `strStockInDate + " 00:00:00"`, kèm chú
+    //       thích nguồn *"Does not consider exact stock in time"* ⇒ **cố ý bỏ giờ**. Hai phiếu nhập
+    //       cùng ngày sẽ có cùng mốc, không phân biệt được thứ tự.
+    if (pMcc && pByManual)
+    {
+        foreach (var l in lines)
+        {
+            var seedCost = Math.Round(l.Price * (1m + 0.01m * l.VAT), 2);
+            var exists = await db.PartCostSnapshots.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == l.PartCode);
+            if (exists) continue;   // đã có ⇒ KHÔNG tính lại, đúng nguồn
+
+            db.PartCostSnapshots.Add(new PartCostSnapshot
+            {
+                OrgId = t.OrgId, PartCode = l.PartCode, PartName = l.PartName,
+                AverageCost = seedCost, InQty = l.Quantity, InValue = seedCost * l.Quantity,
+                Method = "Average/ByManual (seed once)",
+                // Cố ý bỏ GIỜ, chỉ giữ NGÀY — đúng chú thích của nguồn.
+                CalculatedAt = h.StockInDate.Date,
+            });
+            avgSeeded.Add(new { l.PartCode, seedCostWithVat = seedCost });
+        }
+    }
+
     // 🔴 Luật nguồn 2025-01-24 (dongnt, StockIn.cs:4605-4609): khi Kết thúc thì **StockInDate lấy theo
     //    THỜI ĐIỂM DUYỆT**, không giữ ngày nhập lúc lập phiếu. Chỉ phiếu NHẬP có luật này, phiếu XUẤT không.
     h.Status = "3"; h.StockInDate = DateTime.Now; h.PostedAt = DateTime.Now;
@@ -38144,6 +38177,13 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
         avgCostEnabled = pMcc && pByInput,
         avgCostApplied = avgApplied,
         skippedZeroStock,
+        // #391 nhánh ByManual
+        avgCostSeedEnabled = pMcc && pByManual,
+        avgCostSeeded = avgSeeded,
+        avgCostByManualNote = "Nhánh ByManual: KHÔNG bình quân gia quyền, giá vốn = Price × (1+VAT%), và "
+            + "CHỈ ghi khi phụ tùng CHƯA có bản ghi giá vốn nào (khởi tạo một lần, sau đó sửa tay).",
+        avgCostByManualTimeNote = "Mốc thời gian đóng về 0h của NGÀY nhập — nguồn cố ý bỏ giờ "
+            + "(\"Does not consider exact stock in time\"), nên hai phiếu cùng ngày không phân biệt thứ tự.",
         avgCostNote = "Chỉ tính khi CẢ HAI tham số cùng bật: MCC = Average và mốc tính = ByInputStock. "
             + "Thiếu một trong hai thì nguồn KHÔNG tính gì cả, im lặng.",
         avgCostFormulaNote = "ave = (aveCũ × (tồnSauNhập − SLnhập) + giáNhậpGồmVAT × SLnhập) / tồnSauNhập; "
