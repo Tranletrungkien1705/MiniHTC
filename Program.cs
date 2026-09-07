@@ -24389,6 +24389,135 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 //   · `and t.DealerCOde = '@DealerCode'` — mã đại lý **nhúng thẳng vào chuỗi SQL** bằng `StringUtils.Replace`,
 //     không phải tham số. Vừa là bề mặt tiêm SQL, vừa là kiểu trộn nháy-với-tham-số đã từng làm
 //     guard chết câm ở hệ khác (xem lệ `[BAKE-PARAM-MIX]`).
+// ===== 🔴 #414 DANH SÁCH KHÁCH GỬI VỀ HTC — `Ser_Count_Customer_ToHTC` =====
+// TRACE: `FrmInsuranceReport` (`Views/Insurance`, 280 dòng) → `ServiceReportService.Ser_Count_Customer_ToHTC`
+//   (`Service.ReportService.cs:606`) → WS `Ser_Count_Customer_ToHTC` (`WSCarSv.asmx.cs:13715`)
+//   → biz `Ser_Count_Customer_ToHTC` (`BizCarSv.Customer.cs:16839`).
+//
+// 🔴 **TÊN HÀM NÓI DỐI**: `Count_Customer` nhưng nó **KHÔNG đếm gì cả** — trả về **danh sách chi tiết**
+//   từng xe/từng lệnh sửa. Đừng tìm cột số lượng, không có.
+//
+// 🔴 **HAI NHÁNH `if/else` GẦN NHƯ GIỐNG HỆT — và điều kiện rẽ nhánh KHÔNG dùng để lọc**:
+//   Biz kiểm `if (!IsEmpty(strTradeMarkCodeConditionList))` rồi viết **hai bản sao `30 dòng SQL**.
+//   Nhưng mệnh đề lọc `zzzzClauseWhereTradeMarkCodeConditionList` được nhét vào **CẢ HAI** nhánh y hệt,
+//   nên rẽ nhánh **chẳng thay đổi bộ lọc chút nào**. Khác biệt duy nhất giữa hai bản sao:
+//   nhánh CÓ hãng chọn thêm cột `tm.TradeMarkName`, nhánh KHÔNG thì **thiếu cột đó**.
+//   ⇒ **Hình dạng kết quả đổi theo việc người dùng có tick ô Hyundai hay không.** Lưới gắn cứng
+//     danh sách cột sẽ mất một cột ở một trong hai chế độ. Hai bản sao chỉ để thêm MỘT cột.
+//
+// 🔴 **BA LEFT JOIN NHƯNG THỰC CHẤT LÀ INNER** — chỗ nuốt dòng thật sự của báo cáo này:
+//   Nguồn nối `ser_car` ⟕ `ser_ro`, rồi nối tiếp khách/model/hãng **bằng `ro.DealerCode`**:
+//     `left join ser_Customer cus on car.cusid = cus.cusid **and ro.DealerCode = cus.DealerCode**`
+//     `left join ser_mst_Model mdl on car.ModelID = mdl.ModelID **and ro.DealerCode = mdl.DealerCode**`
+//     `join      ser_mst_TradeMark tm on car.TradeMarkCode = tm.TradeMarkCode **and ro.DealerCode = tm.DealerCode**`
+//   Xe **không có lệnh sửa nào** ⇒ `ro.DealerCode` là NULL ⇒ cả ba điều kiện trên đều sai ⇒ và vì
+//   `ser_mst_TradeMark` nối **TRONG** nên **cả dòng bị loại**. Cộng thêm `ro.ROID is not null` và
+//   `ro.Status in ('PAID','FNS')` nằm ở WHERE — hai điều kiện này **tự tay huỷ** tính chất LEFT.
+//   ⇒ Ba chữ `left join` ở đây là **trang trí**: kết quả y hệt như nối TRONG. Ai đọc lướt sẽ tưởng
+//     báo cáo có cả xe chưa từng vào xưởng.
+//   ⚠️ Ngay cả khi có RO, xe mang mã hãng **không có trong danh mục `ser_mst_TradeMark`** cũng **biến mất**.
+//
+// ⚠️ Bộ lọc hãng dựng ở **TẦNG SERVICE**: `"like %" + code + "%"` ⇒ **LIKE hai đầu**, không phải so bằng;
+//   và ô tick gửi xuống chuỗi `"hyundai"` (chữ thường, viết cứng trong form).
+// ⚠️ Mốc ngày: `datediff(day, convert(datetime,'@FromDate',20), ro.CheckInDate) >= 0` và chiều ngược lại
+//   ⇒ **bao gồm cả hai đầu, so theo NGÀY** (bỏ phần giờ). Kiểu 20 = `yyyy-mm-dd hh:mi:ss`.
+// ⚠️ `@DealerCode`, `@FromDate`, `@ToDate` đều **nhúng thẳng vào chuỗi SQL** bằng `StringUtils.Replace`,
+//   không phải tham số — cùng bề mặt tiêm SQL như #413.
+// ⚠️ `'LS-' + ro.RONO`: số lệnh có **tiền tố cứng** khi hiển thị. `isnull(cus.tel, cus.mobile)`: điện thoại
+//   ưu tiên số bàn, rơi về di động.
+// 📌 Tên cột MiniHTC lệch nguồn: `ServiceCar.TradeMark` (nguồn `TradeMarkCode`), `ModelCode` (nguồn `ModelID`),
+//   `ServiceCustomer.CusCode` (nguồn `CusID`) — ánh xạ theo Ý NGHĨA, ghi rõ ở đây để khỏi tưởng sai.
+app.MapGet("/api/report/customer-to-htc", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? tradeMark, string? dealer) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId
+            && (dealer == null || c.DealerCode == dealer)).ToListAsync();
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId).ToListAsync();
+    var customers = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId).ToListAsync();
+    var marks = await db.ServiceTradeMarks.Where(m => m.OrgId == t.OrgId).ToListAsync();
+
+    var cusBy = customers.GroupBy(c => c.CusCode).ToDictionary(g => g.Key, g => g.First());
+    var mdlBy = models.GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var markBy = marks.GroupBy(m => m.TradeMarkCode).ToDictionary(g => g.Key, g => g.First());
+
+    // Bộ lọc hãng: LIKE HAI ĐẦU, không so bằng (tầng service dựng "like %x%").
+    var tmLike = (tradeMark ?? "").Trim();
+    var rows = new List<object>();
+    int droppedNoRO = 0, droppedNoTradeMark = 0, droppedByStatus = 0;
+
+    foreach (var car in cars)
+    {
+        // LEFT JOIN ser_ro — nhưng WHERE bên dưới sẽ huỷ tính chất LEFT.
+        var carROs = ros.Where(r => r.CarID != null && r.CarID == car.CarID
+                                 && r.DealerCode == car.DealerCode).ToList();
+        if (carROs.Count == 0) { droppedNoRO++; continue; }   // ro.ROID is not null
+
+        foreach (var ro in carROs)
+        {
+            if (ro.Status != "PAID" && ro.Status != "FNS") { droppedByStatus++; continue; }
+            if (ro.CheckInDate == null) { droppedByStatus++; continue; }
+            var d = ro.CheckInDate.Value.Date;
+            if (d < f || d > to) continue;                     // datediff(day,…) >= 0 hai chiều
+
+            if (tmLike.Length > 0 &&
+                !(car.TradeMark ?? "").Contains(tmLike, StringComparison.OrdinalIgnoreCase)) continue;
+
+            // 🔴 Nối TRONG với danh mục hãng: không có trong danh mục ⇒ MẤT DÒNG.
+            if (car.TradeMark == null || !markBy.TryGetValue(car.TradeMark, out var mark))
+            { droppedNoTradeMark++; continue; }
+
+            cusBy.TryGetValue(car.CusID ?? "", out var cus);
+            mdlBy.TryGetValue(car.ModelCode ?? "", out var mdl);
+
+            rows.Add(new
+            {
+                CusName = cus?.CusName,
+                Address = cus?.Address,
+                Phone = cus?.Tel ?? cus?.Mobile,        // isnull(tel, mobile)
+                CarID = car.CarID,
+                PlateNo = car.PlateNo,
+                FrameNo = car.FrameNo,
+                // Cột này CHỈ có ở nhánh "có lọc hãng" của nguồn — xem shapeNote.
+                TradeMarkName = tmLike.Length > 0 ? mark.TradeMarkName : null,
+                TradeMarkNameModel = mark.TradeMarkName + " - " + (mdl?.ModelName ?? ""),
+                RONo = "LS-" + ro.RONo,                 // tiền tố cứng của nguồn
+                CheckInDate = ro.CheckInDate,
+                CusRequest = ro.CusRequest,
+                CusAddress = ro.CusAddress,
+            });
+        }
+    }
+    rows = rows.OrderBy(r => (string?)r.GetType().GetProperty("CusName")!.GetValue(r)).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, fromDate = f, toDate = to,
+        tradeMarkFilter = tmLike.Length > 0 ? "like %" + tmLike + "%" : null,
+        shapeNote = "Nguồn có HAI nhánh SQL gần như giống hệt; khác biệt DUY NHẤT là nhánh CÓ lọc hãng "
+            + "chọn thêm cột TradeMarkName. Điều kiện rẽ nhánh KHÔNG đổi bộ lọc (mệnh đề lọc nằm ở cả hai "
+            + "nhánh) ⇒ hình dạng kết quả đổi theo việc người dùng có tick ô hãng hay không.",
+        droppedNoRO, droppedByStatus, droppedNoTradeMark,
+        deadLeftJoinNote = "Ba `left join` của nguồn thực chất là INNER: các bảng danh mục nối theo "
+            + "ro.DealerCode (NULL khi xe chưa có lệnh sửa), ser_mst_TradeMark nối TRONG, và WHERE còn "
+            + "co ro.ROID is not null + ro.Status thuoc PAID/FNS. Xe chua tung vao xuong KHONG bao gio "
+            + "xuất hiện, dù đọc SQL thì tưởng có.",
+        droppedNoTradeMarkNote = droppedNoTradeMark > 0
+            ? "Xe mang mã hãng KHÔNG có trong danh mục ser_mst_TradeMark bị loại hẳn (nối TRONG)."
+            : null,
+        nameNote = "Hàm tên Ser_Count_Customer_ToHTC nhưng KHÔNG đếm gì — trả danh sách chi tiết.",
+        dateRangeNote = "Mốc ngày so theo NGÀY, bao gồm cả hai đầu (datediff(day,…) >= 0 hai chiều).",
+        bakedParamNote = "Nguồn nhúng thẳng @DealerCode/@FromDate/@ToDate vào chuỗi SQL "
+            + "(StringUtils.Replace), không dùng tham số — cùng bề mặt tiêm SQL như #413.",
+        columnNameMapNote = "MiniHTC: ServiceCar.TradeMark (nguồn TradeMarkCode), ModelCode (nguồn "
+            + "ModelID), ServiceCustomer.CusCode (nguồn CusID) — ánh xạ theo ý nghĩa.",
+        rows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/receivable-debit", async (AppDbContext db, ITenantContext t, DateTime? toDate,
     string? scope) =>
 {
