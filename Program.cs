@@ -3378,6 +3378,106 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    ⇒ Ở endpoint này phạm vi BU **lọc thật**, không cần cờ bật/tắt.
 // 🔴 Chuỗi làm giàu: `Sto_TranspReqDtl` join theo **CẶP** (`CarId`, `DeliveryOrderNo = RefOrdNo`) và chỉ
 //    lấy YCVT `TranspReqDtlStatus in ('A','F')` — join thiếu `RefOrdNo` sẽ dính YCVT của chứng từ khác.
+
+// ===== #B56 XE ĐÃ XUẤT KHO NHƯNG CHƯA HOÀN TẤT NGHĨA VỤ — `RptCarDeliveryOut_ButNotDutyComplete` =====
+// (`FrmCarDeliOutButNotDuty` / `…ByDealer` / `…BySpec` — **ba màn dùng CHUNG một hàm**.)
+// Trace LIVE: `ReportService.RptCarDeliOutButNoDutyCpl` (`:2941`) → WS
+//   `RptCarDeliveryOut_ButNotDutyComplete` (`WSHTC.asmx.cs:34433`) →
+//   **`_biz.RptCarDeliveryOut_ButNotDutyComplete_New20181115`** (`BizHTC.ReportCar.cs:639`).
+// 🔴 **Lọc xe** qua mảnh SQL dùng chung `mySql_Car_DeliveryOrderDetail_FilterActive_01`
+//    (`BizHTC.Common.cs:1864`) với tham số `"and (cdod.DeliveryOutDate <= @strTDate)"` (`:839`):
+//      `cdod.ConfirmStatus in ('A','F')` — *"Lệnh xuất xe chi tiết … Đã duyệt và Còn Active"*
+//      **và** `cdod.DeliveryOutDate <= @strTDate` — *"Đã DeliveryOut"*.
+//    ⚠️ Mảnh này **được nhiều báo cáo dùng chung** — sửa nó là chạm mọi báo cáo, port thành hàm riêng.
+// 🔴 **SÁU nhóm tuổi** theo `DateDiff(day, cdod.DeliveryOutDate, @strTDate)`, mỗi nhóm một cột cờ 1/0:
+//    `type1_15` · `type16_30` · `type31_60` · `type61_180` · `type181_360` · `type361`.
+//    🔴 Biên **khép hai đầu** (`1 <= d <= 15`, `16 <= d <= 30`, …) ⇒ **`d = 0` (xuất trong ngày) KHÔNG
+//    thuộc nhóm nào** — cả sáu cờ đều 0. Đây là hành vi thật của nguồn, port giữ nguyên và đếm riêng.
+// ✅ `@strBUPatternOfUser` **DÙNG THẬT** (`inner join Mst_Dealer`, `:722-723`) — như #B55, khác các ca lệch.
+// ⚠️ NỢ CÓ NHÃN: khối `zzzzClauseSelect_CachingForPayment_Deposit` (tiền cọc) chưa port — MiniHTC chưa
+//    có tầng thanh toán cọc đầy đủ; trả `null` kèm nhãn, **không bịa số**.
+app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern, string? groupBy) =>
+{
+    var asOf = (tDate ?? DateTime.Now).Date;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var scope = dealers
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    // `#tbl_CDOD_Active`: ConfirmStatus in ('A','F') AND DeliveryOutDate <= @strTDate.
+    var cdod = await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                    && x.DeliveryOutDate != null && x.DeliveryOutDate <= asOf)
+        .Select(x => new { Key = x.CarId ?? x.Vin, x.Vin, x.DeliveryOutDate, x.DoId })
+        .ToListAsync();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.VIN);
+
+    var rows = cdod
+        .Where(x => byVin.ContainsKey(x.Vin))
+        .Select(x => new { Cdod = x, Car = byVin[x.Vin] })
+        // `inner join Mst_Dealer … and BUCode like @strBUPatternOfUser` — LỌC THẬT.
+        .Where(z => z.Car.DealerCode != null && scope.Contains(z.Car.DealerCode))
+        .ToList();
+
+    static (int b1, int b2, int b3, int b4, int b5, int b6) Buckets(int d) => (
+        d >= 1 && d <= 15 ? 1 : 0,
+        d >= 16 && d <= 30 ? 1 : 0,
+        d >= 31 && d <= 60 ? 1 : 0,
+        d >= 61 && d <= 180 ? 1 : 0,
+        d >= 181 && d <= 360 ? 1 : 0,
+        d >= 361 ? 1 : 0);
+
+    var detail = rows.Select(z =>
+    {
+        var days = (int)(asOf - z.Cdod.DeliveryOutDate!.Value.Date).TotalDays;
+        var (b1, b2, b3, b4, b5, b6) = Buckets(days);
+        return new
+        {
+            ccCarId = z.Cdod.Key, cvVIN = z.Car.VIN, cvModelCode = z.Car.ModelCode,
+            cvSpecCode = z.Car.SpecCode, cvColorCode = z.Car.ColorCode, ccDealerCode = z.Car.DealerCode,
+            cdodDeliveryOutDate = z.Cdod.DeliveryOutDate, daysOut = days,
+            type1_15 = b1, type16_30 = b2, type31_60 = b3, type61_180 = b4, type181_360 = b5, type361 = b6,
+            uncategorized = (b1 + b2 + b3 + b4 + b5 + b6) == 0 ? 1 : 0,   // d = 0: nguồn không xếp nhóm
+            paymentDeposit = (decimal?)null    // NỢ: khối CachingForPayment_Deposit chưa port
+        };
+    }).ToList();
+
+    object Totals(IEnumerable<dynamic> src) => new
+    {
+        qty = src.Count(),
+        type1_15 = src.Sum(x => (int)x.type1_15), type16_30 = src.Sum(x => (int)x.type16_30),
+        type31_60 = src.Sum(x => (int)x.type31_60), type61_180 = src.Sum(x => (int)x.type61_180),
+        type181_360 = src.Sum(x => (int)x.type181_360), type361 = src.Sum(x => (int)x.type361),
+        uncategorized = src.Sum(x => (int)x.uncategorized)
+    };
+
+    // Ba màn dùng chung hàm này, khác nhau ở TRỤC GOM: theo đại lý / theo spec / không gom.
+    object? grouped = groupBy switch
+    {
+        "dealer" => detail.GroupBy(x => x.ccDealerCode)
+            .Select(g => new { dealerCode = g.Key, totals = Totals(g) }).OrderBy(x => x.dealerCode).ToList(),
+        "spec" => detail.GroupBy(x => x.cvSpecCode)
+            .Select(g => new { specCode = g.Key, totals = Totals(g) }).OrderBy(x => x.specCode).ToList(),
+        _ => null
+    };
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf, count = detail.Count, totals = Totals(detail),
+        groupBy = groupBy ?? "none", grouped,
+        detail,
+        filterRule = "mySql_Car_DeliveryOrderDetail_FilterActive_01: ConfirmStatus in ('A','F') VA DeliveryOutDate <= @strTDate. Manh SQL nay DUNG CHUNG cho nhieu bao cao.",
+        bucketRule = "6 nhom tuoi theo DateDiff(day, DeliveryOutDate, @strTDate): 1-15 / 16-30 / 31-60 / 61-180 / 181-360 / >=361. BIEN KHEP HAI DAU => d = 0 (xuat trong ngay) KHONG thuoc nhom nao (ca 6 co = 0) - hanh vi that cua nguon, da dem rieng o 'uncategorized'.",
+        threeScreensNote = "FrmCarDeliOutButNotDuty / ...ByDealer / ...BySpec dung CHUNG mot ham, chi khac truc gom - tham so groupBy = dealer|spec|none.",
+        rbacNote = "@strBUPatternOfUser DUNG THAT (inner join Mst_Dealer) - giong #B55.",
+        debt = "NO co nhan: khoi zzzzClauseSelect_CachingForPayment_Deposit (tien coc) chua port - tra null, KHONG bia so."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/car-on-way", async (
     AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern) =>
 {
