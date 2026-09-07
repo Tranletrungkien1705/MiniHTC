@@ -39448,14 +39448,65 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Kỹ thuật viên (Ser_Engineer — port 1:1 FrmEngineerCreate) =====
-app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? group, string? q) =>
+// ===== 🔴 #543 VÁ TRA CỨU KỸ THUẬT VIÊN THEO `SerEngineerGet_New20190625` =====
+// Nguồn: `BizCarSv.ZTemp.cs:28186 SerEngineerGet_New20190625` (kênh ClientService, #519).
+// Bản port cũ chỉ có hai bộ lọc (`group`, `q`); nguồn có **tám**, trong đó một cái là **luật nghiệp vụ**.
+//
+// 🔴 **BỘ LỌC "ĐANG LÀM / ĐÃ NGHỈ" LÀ MỘT BIỂU THỨC BA VẾ, KHÔNG PHẢI MỘT CỜ**:
+//   `strStatusConditionList == "1"` (*đang làm*) ⇒
+//     `and (( StartWorkDate is null or StartWorkDate = '' )`
+//     ` or ( StartWorkDate <= @strSysDate and (FinishWorkDate is null or FinishWorkDate = '') )`
+//     ` or ( StartWorkDate <= @strSysDate and FinishWorkDate >= @strSysDate ))`
+//   `== "2"` (*đã nghỉ **hoặc** chưa làm*) ⇒
+//     `and (( StartWorkDate > @strSysDate ) or ( FinishWorkDate is not null and FinishWorkDate <> '' and FinishWorkDate < @strSysDate ))`
+//   ⚠️ **Hai giá trị "1"/"2" là mã màn hình, không phải cột `Status` trong DB** — dễ nhầm với
+//     `ServiceEngineer.Status` vốn là thứ khác. Đặt tham số riêng `workingState` để khỏi lẫn.
+//   ⚠️ `StartWorkDate is null **or = ''**` ⇒ nguồn lưu ngày **dạng CHUỖI**; MiniHTC lưu `DateTime?`
+//     nên chỉ còn vế `null` — nêu cờ `sourceStoresWorkDatesAsString`.
+//   ⚠️ Nhóm "2" gộp **hai** trạng thái trái ngược (*chưa vào làm* và *đã nghỉ*) vào một mã.
+// 🔴 `ORDER BY g.GroupRNo` — sắp theo cột của bảng **LEFT JOIN** `Ser_GroupRepair` (cross-DB):
+//   kỹ thuật viên **chưa gán nhóm** có `GroupRNo = NULL` ⇒ SQL Server xếp **lên đầu danh sách**.
+//   Không mất dòng (LEFT còn sống — kiểm tra âm tính), nhưng thứ tự **không như người dùng đoán**.
+// ⚠️ Sáu bộ lọc còn lại đều qua `BuildClause` (bẫy #410): `EngineerID · GroupRID · DealerCode ·
+//   EngineerNo · EngineerName · IsActive · IsEngineer`. ⚠️ `with(nolock)` viết **thẳng** trên bảng chính.
+app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? group, string? q,
+    string? dealerCode, string? engineerNo, string? engineerName, string? engineerType,
+    string? workingState) =>
 {
     var query = db.ServiceEngineers.Where(e => e.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(group)) query = query.Where(e => e.GroupRCode == group);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(e => e.EngineerName.Contains(q) || e.EngineerNo.Contains(q.ToUpper()));
-    var items = await query.OrderBy(e => e.EngineerNo).Take(500)
-        .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType, e.StartWorkDate, e.FinishWorkDate }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // #543 các bộ lọc còn thiếu của nguồn.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(e => e.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(engineerNo)) query = query.Where(e => e.EngineerNo == engineerNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(engineerName)) query = query.Where(e => e.EngineerName.Contains(engineerName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(engineerType)) query = query.Where(e => e.EngineerType == engineerType!.Trim());
+
+    // #543 Luật "đang làm / đã nghỉ hoặc chưa làm" — ba vế / hai vế, so với NGÀY HỆ THỐNG.
+    var today = DateTime.Now.Date;
+    var st = (workingState ?? "").Trim();
+    if (st == "1")
+        query = query.Where(e => e.StartWorkDate == null
+            || (e.StartWorkDate <= today && e.FinishWorkDate == null)
+            || (e.StartWorkDate <= today && e.FinishWorkDate >= today));
+    else if (st == "2")
+        query = query.Where(e => e.StartWorkDate > today
+            || (e.FinishWorkDate != null && e.FinishWorkDate < today));
+
+    var items = await query.OrderBy(e => e.GroupRCode == null ? 0 : 1).ThenBy(e => e.GroupRCode)
+        .ThenBy(e => e.EngineerNo).Take(500)
+        .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType,
+            e.DealerCode, e.StartWorkDate, e.FinishWorkDate }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        workingState = st.Length == 0 ? null : st,
+        workingStateIsNotTheStatusColumn = "\"1\"/\"2\" la ma man hinh, khong phai ServiceEngineer.Status",
+        state2MergesTwoOppositeCases = "chua vao lam + da nghi",
+        sourceStoresWorkDatesAsString = "guard co ve = '' — MiniHTC dung DateTime? nen chi con null",
+        sourceOrdersByLeftJoinedColumn = "ORDER BY g.GroupRNo => nguoi chua gan nhom len dau",
+        sourceUsesRawNolock = true,
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantContext t) =>
