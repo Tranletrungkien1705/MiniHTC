@@ -3549,6 +3549,104 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    ⇒ rút gọn: `FDlvMnStatus = 'A'` ∧ `TDlvMnStatus ∈ ('A','P')`. Ghép theo `cdod_t.DeliveryOrderNo = sdm.RefOrdNo`.
 // ⚠️ NỢ CÓ NHÃN: `CachingForPaymentTotal` (`'A','F'`) và `CachingForPayment_Deposit` (`'A','F'`, cờ `true`)
 //    chưa port — cùng món nợ #B37/#B56/#B59/#B60/#B65; cột tiền trả `null`, **không suy số**.
+
+// ===== #B68 XUẤT KHO THEO ĐẠI LÝ (tháng N / N-1 / N-2 / năm) — `RptSales_Delivery_01_New20190308` =====
+// (`FrmFiveDealerStockPivot`.) Trace LIVE: `ReportService.Report5DealerStockDetail` (`:1921`) → WS
+//   `RptSales_Delivery_01` (`WSHTC.asmx.cs:29770`) → **`_biz.RptSales_Delivery_01_New20190308`**
+//   (`BizHTC.Report.cs:9912`).
+// 🔴 **Bốn mốc thời gian** cùng lúc: `@strTMonthN` (tháng hiện tại) · `@strTMonthN1` · `@strTMonthN2`
+//    (hai tháng liền trước) · `@strTYear` (đầu năm) — mỗi mốc một khối `#tbl_Car_Dlv_In…` riêng,
+//    tất cả đều so tới `@strTDate`. Port thiếu một mốc là mất hẳn một cột trên lưới pivot.
+// 🔴 **Xe được tính** (`#tbl_Car_Car_Filter`): `cc.CreatedDate <= @strTDate` **và**
+//    (`cc.CarCancelDate is null` **hoặc** `> @strTDate`) — cùng khuôn "xe tồn tại tại một mốc" của #B57.
+// 🔴 **Đã xuất kho**: `inner join Car_DeliveryOrderDetail … and cdod.ConfirmStatus in ('A','F')`
+//    (⚠️ **`('A','F')`**, KHÁC #B66 vốn siết về chỉ `'F'`) **và** `DeliveryOutDate` nằm trong mốc.
+//    ⇒ tiêu chí ở đây là **XUẤT KHO** (`DeliveryOutDate`), không phải **tiếp nhận** (`DeliveryEndDate`)
+//      như #B66/#B57 — hai trục ngày khác nhau, đừng dùng lẫn.
+// 🔴 Cây địa lý ba tầng của nguồn: `Mst_Dealer` → `Mst_Province` → `Mst_Area`, dựng qua `#tbl_Dealer`
+//    → `#tbl_AreaDealer` → `#tbl_Mst_Dealer`; ✅ `BUCode like @strBUPatternOfUser` **lọc thật**.
+app.MapGet("/api/reports/dealer-delivery-periods", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern, string? areaCode) =>
+{
+    var asOf = (tDate ?? DateTime.Now).Date;
+    var mN = new DateTime(asOf.Year, asOf.Month, 1);
+    var mN1 = mN.AddMonths(-1);
+    var mN2 = mN.AddMonths(-2);
+    var yFrom = new DateTime(asOf.Year, 1, 1);
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `#tbl_Dealer` / `#tbl_AreaDealer` / `#tbl_Mst_Dealer` — cây Dealer → Province → Area.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
+    var provinces = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
+        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync();
+    var areas = await db.Areas.Where(a => a.OrgId == t.OrgId)
+        .Select(a => new { a.AreaCode, a.AreaName }).ToListAsync();
+
+    var scopeList = dealers.Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d =>
+        {
+            var pv = provinces.FirstOrDefault(p => p.Code == d.ProvinceCode);
+            var ar = areas.FirstOrDefault(a => a.AreaCode == pv?.ParentCode);
+            return new { d.DealerCode, d.DealerName, d.BUCode, provinceCode = pv?.Code, provinceName = pv?.Name, areaCode = ar?.AreaCode, areaName = ar?.AreaName };
+        }).ToList();
+    if (!string.IsNullOrWhiteSpace(areaCode))
+        scopeList = scopeList.Where(d => d.areaCode == areaCode.Trim().ToUpperInvariant()).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    // Xe tồn tại tại mốc (cùng khuôn #B57).
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    cars = cars.Where(c => c.DealerCode != null && scope.Contains(c.DealerCode)
+                           && c.CreatedDate != null && c.CreatedDate <= asOf
+                           && (c.CarCancelDate == null || c.CarCancelDate > asOf)).ToList();
+    var carDealer = cars.ToDictionary(c => c.VIN, c => c.DealerCode!);
+
+    // Đã XUẤT KHO — `ConfirmStatus in ('A','F')` + `DeliveryOutDate` trong mốc.
+    var outed = await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                    && x.DeliveryOutDate != null)
+        .Select(x => new { Key = x.CarId ?? x.Vin, x.DeliveryOutDate })
+        .ToListAsync();
+    outed = outed.Where(x => carDealer.ContainsKey(x.Key)).ToList();
+
+    HashSet<string> InRange(DateTime from) => outed
+        .Where(x => x.DeliveryOutDate >= from && x.DeliveryOutDate <= asOf)
+        .Select(x => x.Key).ToHashSet();
+    var inN = InRange(mN); var inN1 = InRange(mN1); var inN2 = InRange(mN2); var inY = InRange(yFrom);
+    // Tháng N-1 / N-2 là **luỹ kế từ mốc đó tới @strTDate** (đúng như nguồn), không phải "riêng tháng đó".
+
+    var byDealer = scopeList.Select(d =>
+    {
+        var mine = cars.Where(c => c.DealerCode == d.DealerCode).Select(c => c.VIN).ToHashSet();
+        return new
+        {
+            d.DealerCode, d.DealerName, d.areaCode, d.areaName, d.provinceCode, d.provinceName,
+            qtyMonthN = mine.Count(v => inN.Contains(v)),
+            qtyMonthN1 = mine.Count(v => inN1.Contains(v)),
+            qtyMonthN2 = mine.Count(v => inN2.Contains(v)),
+            qtyYear = mine.Count(v => inY.Contains(v)),
+            qtyTotalCars = mine.Count
+        };
+    }).Where(x => x.qtyTotalCars > 0).OrderBy(x => x.areaCode).ThenBy(x => x.DealerCode).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf,
+        periods = new { monthN = mN, monthN1 = mN1, monthN2 = mN2, yearFrom = yFrom },
+        count = byDealer.Count, byDealer,
+        byArea = byDealer.GroupBy(x => x.areaCode ?? "?").Select(g => new
+        {
+            areaCode = g.Key, areaName = g.First().areaName,
+            qtyMonthN = g.Sum(x => x.qtyMonthN), qtyMonthN1 = g.Sum(x => x.qtyMonthN1),
+            qtyMonthN2 = g.Sum(x => x.qtyMonthN2), qtyYear = g.Sum(x => x.qtyYear)
+        }).OrderBy(x => x.areaCode).ToList(),
+        carSetRule = "Xe tinh vao bao cao: CreatedDate <= @strTDate VA (CarCancelDate is null HOAC > @strTDate) - cung khuon 'xe ton tai tai mot moc' cua #B57.",
+        deliveredRule = "Da xuat kho: ConfirmStatus in ('A','F') VA DeliveryOutDate trong moc. LUU Y: ('A','F') o day KHAC #B66 von siet ve chi 'F'; va truc ngay la DeliveryOutDate (XUAT KHO), khong phai DeliveryEndDate (TIEP NHAN) nhu #B66/#B57.",
+        periodNote = "Bon moc @strTMonthN / @strTMonthN1 / @strTMonthN2 / @strTYear deu so TOI @strTDate => thang N-1, N-2 la LUY KE tu moc do den ngay chot, khong phai 'rieng thang do'.",
+        geoNote = "Cay dia ly ba tang Mst_Dealer -> Mst_Province -> Mst_Area (nguon dung 3 bang tam #tbl_Dealer / #tbl_AreaDealer / #tbl_Mst_Dealer).",
+        rbacNote = "BUCode like @strBUPatternOfUser - LOC THAT."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/delay-guarantee-payment", async (
     AppDbContext db, ITenantContext t, string? dealerCode, DateTime? tDate, string? buPattern) =>
 {
