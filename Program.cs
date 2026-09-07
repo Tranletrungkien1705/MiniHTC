@@ -20371,6 +20371,7 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
         // #270 §12: cot bo sung co mat o CA GET lan POST
         x.DealerCode, x.CusID, x.Vin, x.HCCPushStatus, x.HCCPushDateTime,
+        x.HCCFinishStatus, x.HCCFinishDateTime,   // #351 §12: ve DONG phai nhin thay duoc nhu ve MO
         // #282 §12
         x.Creator, x.CusAddress, x.CusTel, x.InsNo, x.CavityID, x.Source,
         x.FirstContactDateTime, x.LastContactDateTime,
@@ -20713,6 +20714,28 @@ app.MapGet("/api/appointments/{no}/hcc-payload", async (string no, AppDbContext 
         carResolved = car is not null,
         pushStatus = a.HCCPushStatus,
     });
+}).RequireAuthorization();
+
+// ===== 🔴 #351 GHI KẾT QUẢ ĐẨY **LỆNH ĐÓNG** LỊCH HẸN SANG HCC =====
+// Cụm `HCC*` trên lịch hẹn là **cơ chế của riêng MiniHTC** (nguồn không có cột nào tên `HCC…` trên
+//   `Ser_App` — nguồn gọi thẳng web service). Vì tầng HTTP HCC vẫn là nợ, MiniHTC mô hình hoá bằng
+//   một HÀNG ĐỢI hai vế: **MỞ** khi tạo lịch (#270) và **ĐÓNG** khi xe tới tiếp nhận (#271).
+// 🔴 Vế MỞ có đủ bộ ba `HCCPushStatus` / `HCCPushDateTime` / `HCCPushNote` và endpoint ghi kết quả;
+//   vế ĐÓNG mới chỉ đặt `HCCFinishStatus = "P"` lúc tiếp nhận rồi **bỏ lửng** — không có đường ghi
+//   kết quả, `HCCFinishDateTime` nằm chết ⇒ **không biết lệnh đóng đã đẩy được hay chưa**.
+//   Đây là cụm bị port dở, cùng mô-típ #348 (cụm phiên bản hợp đồng).
+app.MapPost("/api/appointments/{no}/hccfinish", async (string no, AppointmentHccPushDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no.Trim());
+    if (a is null) return Results.NotFound(new { no });
+    var to = (dto.ToStatus ?? "").Trim().ToUpperInvariant();
+    if (to != "A" && to != "R") return Results.BadRequest(new { error = "ToStatus chỉ nhận A (thành công) hoặc R (lỗi)." });
+    // Chỉ lịch hẹn ĐÃ được tiếp nhận mới có lệnh đóng để đẩy (nơi đặt "P").
+    if (a.HCCFinishStatus is null)
+        return Results.BadRequest(new { error = "Lịch hẹn chưa tiếp nhận nên không có lệnh đóng để đẩy HCC." });
+    a.HCCFinishStatus = to; a.HCCFinishDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { a.AppNo, a.HCCFinishStatus, a.HCCFinishDateTime });
 }).RequireAuthorization();
 
 // #270 Ghi kết quả đẩy HCC (bộ đẩy gọi lại) — cùng lệ với `/api/warrantyclaims/{id}/hmcsync`.

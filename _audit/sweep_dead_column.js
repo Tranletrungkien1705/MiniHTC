@@ -57,6 +57,10 @@ const EXPECTED = {
 
 // ---- 1. gom entity → danh sách thuộc tính ----
 const entities = [];
+// #351: khoa `Entity.Cot` co GIA TRI KHOI TAO trong khai bao => coi nhu DA GHI.
+const hasDefault = new Set();
+// #351: khoi tao "tam thuong" — chi de tranh null, KHONG phai ghi du lieu nghiep vu.
+const TRIVIAL_DEFAULT = /^(""|string.Empty|0|0m|0L|null|false|new()|new [A-Za-z0-9_<>,? ]+())$/;
 const reClass = /public sealed class ([A-Za-z0-9_]+)\s*\n?\s*\{/g;
 let m;
 while ((m = reClass.exec(ent)) !== null) {
@@ -66,9 +70,18 @@ while ((m = reClass.exec(ent)) !== null) {
     const end = rest.indexOf('\n}');
     const body = end < 0 ? rest : rest.slice(0, end);
     const props = [];
-    const reProp = /public\s+[A-Za-z0-9_<>?.\[\]]+\s+([A-Za-z0-9_]+)\s*\{\s*get;\s*set;/g;
+    // 🔴 #351 THUOC TINH CO KHOI TAO (`... { get; set; } = <bieu thuc>;`) la DA DUOC GHI
+    //   ngay luc dung doi tuong — vd `CreatedDate { get; set; } = DateTime.Now;`.
+    //   Mau cu khong xet phan sau dau `}` nen bao NHAM ca mot lop cot moc thoi gian la "chet".
+    const reProp = /public\s+[A-Za-z0-9_<>?.\[\]]+\s+([A-Za-z0-9_]+)\s*\{\s*get;\s*set;\s*\}(?:\s*=\s*([^;]+);)?/g;
     let p;
-    while ((p = reProp.exec(body)) !== null) props.push(p[1]);
+    while ((p = reProp.exec(body)) !== null) {
+        props.push(p[1]);
+        // 🔴 #351 CHI khoi tao CO NGHIA moi tinh la "da ghi". `= ""` / `= 0` / `= null` /
+        //   `= new()` chi la gia tri mac dinh cho khoi null — cot VAN chua bao gio nhan du lieu that.
+        //   `= DateTime.Now`, `= Guid.NewGuid()`, `= "1"` moi la dong dau/co nghiep vu.
+        if (p[2] && !TRIVIAL_DEFAULT.test(p[2].trim())) hasDefault.add(name + '.' + p[1]);
+    }
     if (props.length) entities.push({ name, props: [...new Set(props)] });
 }
 
@@ -119,6 +132,7 @@ for (const e of entities) {
     if (!new RegExp('new\\s+' + e.name + '\\b').test(prog)) continue;
     const w = writtenColumns(e.name);
     const miss = e.props.filter(p => !SYSTEM.has(p) && !w.has(p) && !anyVarAssign.has(p)
+        && !hasDefault.has(e.name + '.' + p)          // #351: co gia tri khoi tao
         && !EXPECTED[e.name + '.' + p]);
     if (miss.length) dead.push({ entity: e.name, total: e.props.length, miss });
 }
@@ -131,6 +145,7 @@ console.log('=== CỘT CHẾT: có trong entity, KHÔNG đường nào ghi ===')
 console.log('entity có cột chết: ' + dead.length + ' — tổng cột chết: ' + totalMiss);
 console.log('(đã loại cột hệ thống ' + [...SYSTEM].join('/') + ' và mọi tên cột được gán qua biến ở bất kỳ đâu)');
 console.log('(đã loại ' + Object.keys(EXPECTED).length + ' cột LOẠI TRỪ CÓ CHỦ ĐÍCH — xem bảng EXPECTED đầu file)');
+console.log('(đã loại ' + hasDefault.size + ' cột có GIÁ TRỊ KHỞI TẠO trong khai báo — #351)');
 console.log('');
 for (const d of dead)
     console.log(d.entity + '  (' + d.miss.length + '/' + d.total + '):  ' + d.miss.join(' '));
