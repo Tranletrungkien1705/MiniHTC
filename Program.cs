@@ -25301,9 +25301,39 @@ app.MapPost("/api/stofmaintains/{no}/approve-eval", async (string no, StoFMainta
     if (!string.IsNullOrWhiteSpace(dto?.Remark)) m.Remark = dto!.Remark;
     // Giữ tương thích ngược với trục BỊA cũ để dữ liệu/khách hàng cũ không vỡ.
     m.Status = "Done"; m.DoneAt = now;
+
+    // ===== #B08 TRẢ NỢ #B07: side-effect `myVIN_MaintainPeriod_UpdX` của `_ApproveEval` =====
+    // Nguồn (`BizHTC.StorageFG.Frm.cs:1700-1731`) đọc mọi dòng `StoF_MaintainMain` của phiếu rồi gọi
+    // `myVIN_MaintainPeriod_UpdX(..., TConst.RefTypeMtn.Mtn, ...)`; hàm đó rẽ nhánh theo RefType, nhánh
+    // `Mtn` chạy `myVIN_MaintainPeriod_UpdMtnX` (`BizHTC.StorageFG.cs:1414`) ghi lịch sử bảo dưỡng theo VIN.
+    // 🔴 HẰNG ≠ GIÁ TRỊ: `TConst.RefTypeMtn.Mtn` = **"MAINTAINANCE"** — nguồn viết SAI CHÍNH TẢ đúng như vậy
+    //    (`Const.Main.StorageFG.1.cs:22`); ghi "Mtn" hoặc "MAINTENANCE" đều làm mọi truy vấn trượt câm.
+    var mainsEval = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id).ToListAsync();
+    var evalVins = mainsEval.Select(c => c.VIN).Distinct().ToList();
+    // `dblMtnTimes = <MtnTimes hiện tại của VIN> + 1` (BizHTC.StorageFG.cs:1479).
+    var lastTimes = await db.CarMaintenances
+        .Where(x => x.OrgId == t.OrgId && x.MtnType == "MAINTAINANCE" && evalVins.Contains(x.Vin))
+        .GroupBy(x => x.Vin).Select(g => new { Vin = g.Key, Max = g.Max(x => x.MtnTimes) }).ToListAsync();
+    foreach (var c in mainsEval)
+    {
+        var prevTimes = lastTimes.FirstOrDefault(x => x.Vin == c.VIN)?.Max ?? 0;
+        db.CarMaintenances.Add(new CarMaintenance
+        {
+            OrgId = t.OrgId, Vin = c.VIN,
+            StorageCode = c.StorageCodeCurrent, ModelCode = c.ModelCode,
+            MtnType = "MAINTAINANCE",          // GIÁ TRỊ của TConst.RefTypeMtn.Mtn, không phải tên hằng
+            RefNo = m.SfMtnNo,                 // nguồn: `t.SF_MtnNo RefNo` (Frm.cs:1706)
+            MtnTimes = prevTimes + 1,
+            MtnDate = now,                     // `MtnLastDate` = mốc duyệt đánh giá
+            // `MtnNextDate = MtnLastDate + TConst.StorageMtnVINFG.Default_QtyDateMtn` = **+15 ngày**
+            // (`Const.Main.StorageFG.1.cs:10`) — hằng THẬT của nguồn, không suy đoán chu kỳ.
+            MtnNextDate = now.AddDays(15),
+            UserCode = c.UserCodeMtn, Remark = c.Remark
+        });
+    }
     await db.SaveChangesAsync();
-    // ⚠️ NỢ: nguồn còn ghi thêm giao dịch `TConst.RefTypeMtn.Mtn` (:1715) — side-effect chưa port, ghi nợ #B07.
     return Results.Ok(new { m.SfMtnNo, m.MtnStatus, m.MtnEvalStatus, m.ApproveEvalDateTime, m.ApproveEvalBy,
+        maintainHistRows = mainsEval.Count,
         note = "Sau bước này các dòng có MtnStatusMain='A' mới đủ điều kiện vào bảo dưỡng gia hạn (/api/maintext)." });
 }).RequireAuthorization();
 
@@ -27258,6 +27288,133 @@ app.MapPost("/api/dealerdeals/edit-platenumber", async (EditDealPlateNoDto dto, 
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// ===== #B08 TÌM XE ĐỂ BÁN CHO ĐẠI LÝ (port 1:1 FrmSearchCarForDealer, 2010.HTC/SalesDealer) =====
+// Trace twin LIVE (đọc WS TRƯỚC): `btnQuery_Click` (:150) → `DealerService.SearchCarToSellToDealer`
+//   (`DealerService.cs:1600`) → WS `DealerSalesDealGet_Car` (`WSHTC.asmx.cs:25421`)
+//   → **`_biz.DealerSalesDealGet_Car_New20181115`** (`BizHTC.DealerSales.cs:3326`).
+// ✅ grep `ws.` / `WSNM` trọn thân hàm ⇒ KHÔNG gọi WS ngoài (luật C0-…tertius).
+// 🔴 HAI BIẾN THỂ CÙNG MỘT WS, khác **HÌNH DẠNG BỘ LỌC VIN** (luật C0-…quartus):
+//   · `SearchCarToSellToDealer`        → `GenLikeCondition(vin)`     = MỘT giá trị, LIKE
+//   · `SearchCarToSellToDealer_ListVIN`→ `GenContainsCondition(vin)` = DANH SÁCH VIN, IN
+//   ⇒ endpoint nhận `vin` (một, LIKE) **hoặc** `vins` (nhiều, khớp tuyệt đối).
+app.MapGet("/api/dealerdeals/cars-to-sell-to-dealer", async (
+    AppDbContext db, ITenantContext t,
+    string? carId, string? vin, string? vins, string? specCode, string? actualSpec, string? modelCode,
+    string? dealerCodeBuyer, string? inStock, string? buPattern) =>
+{
+    // 🔴 Ô "Spec" của form đi vào tham số **actualSpec**, KHÔNG phải specCode: form gọi
+    //    `SearchCarToSellToDealer(carId, vin, "", spec, modelCode, …)` (FrmSearchCarForDealer.cs:150)
+    //    trong khi chữ ký là `(cardId, vin, specCode, actualSpec, modelCode, …)`.
+    //    Giữ cả hai tham số để không mất khả năng lọc, nhưng ghi rõ cái nào là của form.
+    var vinList = string.IsNullOrWhiteSpace(vins)
+        ? new List<string>()
+        : vins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+              .Select(v => v.ToUpperInvariant()).Distinct().ToList();
+
+    // --- `#tbl_DLS_DealDetail_Filter` (BizHTC.DealerSales.cs:3437-3480) ---
+    // `inner join Mst_Dealer md on dlsd.DealerCodeBuyer = md.DealerCode and md.BUCode like @strBUPatternOfUser`
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId && d.DealerCodeBuyer != null).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCodeBuyer))
+    {
+        var k = dealerCodeBuyer.Trim().ToUpperInvariant();      // GenLikeCondition ⇒ LIKE '%…%'
+        deals = deals.Where(d => (d.DealerCodeBuyer ?? "").ToUpperInvariant().Contains(k)).ToList();
+    }
+    // `inner join Mst_Dealer` — đại lý mua không có trong danh mục ⇒ dòng bị LOẠI (không phải left join).
+    var dealIds = deals.Select(d => d.Id).ToList();
+    var details = await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && dealIds.Contains(x.DealId)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(carId))
+    {
+        var k = carId.Trim().ToUpperInvariant();                 // GenLikeCondition ⇒ LIKE '%…%'
+        details = details.Where(x => x.CarId.ToUpperInvariant().Contains(k)).ToList();
+    }
+    // 🔴 chkInStock ⇒ `strDLSDDFlagCurrentConditionList = GenEqualCondition(Flag.Yes)` = `FlagCurrent = '1'`
+    //    (Flag.Yes = Flag.Active = "1", `Const.Main.cs:51-55`). Tên ô tick nói "InStock", cột là FlagCurrent.
+    if (inStock == "1" || inStock == "true") details = details.Where(x => x.FlagCurrent == "1").ToList();
+
+    // `inner join Car_VIN cv on cc.VIN = cv.VIN` — MiniHTC không có `Car_Car`, `DealerDealDetail.CarId`
+    // chính là VIN (đã ghi ở entity: "CarId // VIN/CarID") ⇒ nối thẳng sang `CarVinMaster`.
+    var carIds = details.Select(x => x.CarId).Distinct().ToList();
+    var carsVin = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    // `inner join Car_DeliveryOrderDetail cdod on cc.CarId = cdod.CarId and cdod.ConfirmStatus = 'F'`
+    //   -- chú thích của nguồn: "Đại lý đã nhập Kho".
+    var doneVins = (await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.ConfirmStatus == "F" && carIds.Contains(c.Vin))
+        .Select(c => c.Vin).ToListAsync()).ToHashSet();
+
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+
+    // --- `#tblDlr_PDIRequest` + `#tblDlr_PDIRequestDtl` (:3486-3516) ---
+    // RANK() OVER(PARTITION BY VIN ORDER BY dpr.ApprovedDate, dpr.DlrPDIReqNo DESC) rồi lấy Rank = '1';
+    // guard: `dpr.DlrPDIReqStatus='A'` · `dc.DlrCtrStatus='A'` · `dcc.FlagCancel='0'` · `dcc.FlagDelivery='0'`.
+    var pdiReqs = await db.DlrPdiRequests.Where(r => r.OrgId == t.OrgId && r.Status == "A")
+        .Select(r => new { r.Id, r.DlrPdiReqNo, r.ApprovedDate }).ToListAsync();
+    var pdiReqIds = pdiReqs.Select(r => r.Id).ToList();
+    var pdiDtls = await db.DlrPdiRequestDetails
+        .Where(d => d.OrgId == t.OrgId && pdiReqIds.Contains(d.DlrPdiReqId) && d.VIN != null && carIds.Contains(d.VIN!))
+        .Select(d => new { d.DlrPdiReqId, d.VIN, d.CtrCarId, d.DlrContractNo }).ToListAsync();
+    var ctrCars = await db.DlrContractCars.Where(c => c.OrgId == t.OrgId && c.FlagCancel == "0" && c.FlagDelivery == "0")
+        .Select(c => new { c.CtrCarId }).ToListAsync();
+    var ctrCarIds = ctrCars.Select(c => c.CtrCarId).ToHashSet();
+    // `dc.DlrCtrStatus = 'A'` ⇒ MiniHTC `DlrContract.Status` (đã ghi chú: P mới tạo · A xác nhận · C huỷ · F hoàn thành)
+    var activeContracts = (await db.DlrContracts.Where(c => c.OrgId == t.OrgId && c.Status == "A")
+        .Select(c => c.DlrContractNo).ToListAsync()).ToHashSet();
+    var pdiBest = pdiDtls
+        .Where(d => d.CtrCarId != null && ctrCarIds.Contains(d.CtrCarId!)
+                    && d.DlrContractNo != null && activeContracts.Contains(d.DlrContractNo!))
+        .Select(d => new { d.VIN, d.CtrCarId, d.DlrContractNo, Req = pdiReqs.First(r => r.Id == d.DlrPdiReqId) })
+        .GroupBy(x => x.VIN!)
+        // Rank = 1 ⇒ ApprovedDate tăng dần, rồi DlrPDIReqNo GIẢM dần (đúng thứ tự ORDER BY của nguồn).
+        .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Req.ApprovedDate).ThenByDescending(x => x.Req.DlrPdiReqNo).First());
+
+    var items = new List<object>();
+    int skipNoDealer = 0, skipNoCar = 0, skipNotInStorage = 0;
+    foreach (var d in details)
+    {
+        var deal = deals.First(x => x.Id == d.DealId);
+        var dlBuyer = dealers.FirstOrDefault(x => x.DealerCode == deal.DealerCodeBuyer);
+        if (dlBuyer is null) { skipNoDealer++; continue; }
+        if (pattern is not null && !(dlBuyer.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { skipNoDealer++; continue; }
+        var cv = carsVin.FirstOrDefault(c => c.VIN == d.CarId);
+        if (cv is null) { skipNoCar++; continue; }                       // inner join Car_VIN
+        if (!doneVins.Contains(d.CarId)) { skipNotInStorage++; continue; } // inner join Car_DeliveryOrderDetail 'F'
+        // Bộ lọc trên Car_VIN — LIKE từng cột (BuildClause "and", "cv.<Cột>", GenLikeCondition(...)).
+        if (!string.IsNullOrWhiteSpace(vin) && !(cv.VIN ?? "").ToUpperInvariant().Contains(vin.Trim().ToUpperInvariant())) continue;
+        if (vinList.Count > 0 && !vinList.Contains(cv.VIN.ToUpperInvariant())) continue;   // biến thể _ListVIN: IN
+        if (!string.IsNullOrWhiteSpace(specCode) && !(cv.SpecCode ?? "").ToUpperInvariant().Contains(specCode.Trim().ToUpperInvariant())) continue;
+        if (!string.IsNullOrWhiteSpace(actualSpec) && !(cv.ActualSpec ?? "").ToUpperInvariant().Contains(actualSpec.Trim().ToUpperInvariant())) continue;
+        if (!string.IsNullOrWhiteSpace(modelCode) && !(cv.ModelCode ?? "").ToUpperInvariant().Contains(modelCode.Trim().ToUpperInvariant())) continue;
+
+        // `left join Dls_Deal dlsd_Previous on dlsdd.DealNoPrevious = dlsd_Previous.DealNo`
+        var prev = string.IsNullOrWhiteSpace(d.DealNoPrevious) ? null : deals.FirstOrDefault(x => x.DealNo == d.DealNoPrevious)
+                   ?? await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == d.DealNoPrevious);
+        // `left join Mst_CarSpec mcs on cv.ActualSpec = mcs.SpecCode` — join theo **ActualSpec**, không phải SpecCode.
+        var actualSpecDesc = specs.FirstOrDefault(s => s.SpecCode == cv.ActualSpec)?.SpecDesc;
+        pdiBest.TryGetValue(cv.VIN, out var pdi);
+        items.Add(new
+        {
+            dealNo = deal.DealNo, carId = d.CarId, d.PlateNo, d.DeliveryDate, d.DeliveryStatus,
+            d.ConfirmDate, d.ConfirmBy, d.FlagCurrent, d.DealNoPrevious, d.Price, d.PriceAFVAT,
+            dealerCode = deal.DealerCode, dealerCodeBuyer = deal.DealerCodeBuyer, dealerNameBuyer = dlBuyer.DealerName,
+            dlsdpDealerCode = prev?.DealerCode, dlsdpDealerCodeBuyer = prev?.DealerCodeBuyer,   // alias DLSDPDealerCode*
+            vin = cv.VIN, cvSpecCode = cv.SpecCode, cvModelCode = cv.ModelCode, cvColorCode = cv.ColorCode,
+            cv.EngineNo, cv.KeyNo, cv.TypeCB, cv.LoaiThung,
+            cvActualSpec = cv.ActualSpec, cvSerialNo = cv.SerialNo, cvActualSpecDescription = actualSpecDesc,
+            pdiCtrCarId = pdi?.CtrCarId, pdiDlrContractNo = pdi?.DlrContractNo
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        vinFilterShape = vinList.Count > 0 ? "IN (biến thể _ListVIN)" : "LIKE (biến thể một VIN)",
+        skipNoDealer, skipNoCar, skipNotInStorage,
+        note = items.Count == 0 ? "Không có kết quả nào phù hợp điều kiện tìm kiếm" : null   // Nonsense.MESS_NOTFOUND_RESULT
+    });
 }).RequireAuthorization();
 
 // Chuyển xe sang đại lý khác (FrmNewDealToDealer) — DealerDeal buyer là đại lý, SalesType F7
@@ -31392,7 +31549,7 @@ app.MapGet("/api/carmaintenances", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(m => m.MtnType == type);
     if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(m => m.StorageCode == storage);
     var items = await q.OrderByDescending(m => m.Id).Take(1000).Select(m => new
-    { m.Vin, m.StorageCode, m.ModelCode, m.MtnType, m.MtnTimes, m.MtnDate, m.MtnNextDate, m.UserCode, m.Remark }).ToListAsync();
+    { m.Vin, m.StorageCode, m.ModelCode, m.MtnType, m.RefNo, m.MtnTimes, m.MtnDate, m.MtnNextDate, m.UserCode, m.Remark }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -31400,16 +31557,27 @@ app.MapGet("/api/carmaintenances", async (AppDbContext db, ITenantContext t, str
 app.MapPost("/api/carmaintenances", async (CarMtnDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
+    // 🔴 #B08 TỪ VỰNG THẬT của cột `RefType` = **`TConst.RefTypeMtn`** (`Const.Main.StorageFG.1.cs:20-28`),
+    //    BẢY giá trị, hai trong đó nguồn viết SAI CHÍNH TẢ và phải giữ nguyên:
+    //      MAINTAINANCE · MANTAINNACEEXT · PACKINGLIST · DELIVERYORDER · RETRIEVE · REARRAGE · REARRAGECB
+    //    Port cũ chỉ nhận `MAINTAINANCE|EXT` — **"EXT" là mã BỊA**, không có trong hằng nguồn.
+    //    Giữ "EXT" làm ALIAS hợp lệ ở ĐẦU VÀO (dữ liệu cũ đã ghi) nhưng chuẩn hoá về GIÁ TRỊ THẬT khi ghi.
     var type = string.IsNullOrWhiteSpace(dto.MtnType) ? "MAINTAINANCE" : dto.MtnType.Trim().ToUpperInvariant();
-    if (type is not ("MAINTAINANCE" or "EXT")) return Results.BadRequest(new { error = "MtnType = MAINTAINANCE|EXT" });
+    if (type == "EXT") type = "MANTAINNACEEXT";
+    var mtnRefTypes = new[] { "MAINTAINANCE", "MANTAINNACEEXT", "PACKINGLIST", "DELIVERYORDER", "RETRIEVE", "REARRAGE", "REARRAGECB" };
+    if (!mtnRefTypes.Contains(type))
+        return Results.BadRequest(new { error = "MtnType phải thuộc TConst.RefTypeMtn: " + string.Join(" | ", mtnRefTypes) });
     var vin = dto.Vin.Trim().ToUpperInvariant();
     var lastTimes = await db.CarMaintenances.Where(m => m.OrgId == t.OrgId && m.Vin == vin && m.MtnType == type)
         .Select(m => (int?)m.MtnTimes).MaxAsync() ?? 0;
     var mtnDate = dto.MtnDate ?? DateTime.Now;
-    int cycle = dto.CycleDays is int c && c > 0 ? c : 90;
+    // 🔴 Chu kỳ mặc định của nguồn là **15 ngày** (`TConst.StorageMtnVINFG.Default_QtyDateMtn`,
+    //    `Const.Main.StorageFG.1.cs:10`), KHÔNG phải 90 — 90 là con số port cũ tự đặt.
+    int cycle = dto.CycleDays is int c && c > 0 ? c : 15;
     var m = new CarMaintenance
     {
         OrgId = t.OrgId, Vin = vin, StorageCode = dto.StorageCode, ModelCode = dto.ModelCode, MtnType = type,
+        RefNo = dto.RefNo,
         MtnTimes = lastTimes + 1, MtnDate = mtnDate, MtnNextDate = mtnDate.AddDays(cycle), UserCode = dto.UserCode, Remark = dto.Remark
     };
     db.CarMaintenances.Add(m); await db.SaveChangesAsync();
@@ -32508,7 +32676,7 @@ record DlWorkHistoryRowDto(string? SMCode, string? SMReason, string? SMDesc);
 record DlWorkHistoryDto(List<DlWorkHistoryRowDto>? Rows);
 record DlGrantDto(string SMHyundaiCode);
 record DlStatusDto(string SMStatus);
-record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark);
+record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark, string? RefNo = null);
 record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark, string? UserCodeMtnExt, string? SfMtnNo = null);
 record MaintExtActionDto(string? UserCodeMtnExt, string? SfMtnNo = null, DateTime? MtnExtStartDTime = null, DateTime? MtnExtEndDTime = null, string? MtnExtRemark = null);
 record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status);

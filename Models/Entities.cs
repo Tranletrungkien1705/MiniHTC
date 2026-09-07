@@ -2020,12 +2020,27 @@ public sealed class CarMaintenance
     public string Vin { get; set; } = "";
     public string? StorageCode { get; set; }
     public string? ModelCode { get; set; }
-    public string MtnType { get; set; } = "MAINTAINANCE";  // MAINTAINANCE (thường) / EXT (gia hạn)
+    /// <summary>Cột `RefType` của nguồn. Từ vựng THẬT = `TConst.RefTypeMtn` (7 giá trị):
+    /// MAINTAINANCE · MANTAINNACEEXT · PACKINGLIST · DELIVERYORDER · RETRIEVE · REARRAGE · REARRAGECB.
+    /// ⚠️ Hai giá trị đầu nguồn viết SAI CHÍNH TẢ — giữ nguyên. Mã "EXT" của port cũ là **BỊA**,
+    /// nay chỉ còn là alias đầu vào, ghi xuống DB luôn là "MANTAINNACEEXT".</summary>
+    public string MtnType { get; set; } = "MAINTAINANCE";
     public int MtnTimes { get; set; }                       // lần bảo dưỡng thứ n (theo VIN+loại)
     public DateTime MtnDate { get; set; } = DateTime.Now;   // ngày bảo dưỡng lần này
     public DateTime? MtnNextDate { get; set; }              // ngày bảo dưỡng kế
     public string? UserCode { get; set; }
     public string? Remark { get; set; }
+
+    /// <summary>
+    /// 🔴 #B08 (trả nợ #B07): Số chứng từ sinh ra lần bảo dưỡng này (`VIN_MaintainPeriodHist.RefNo`).
+    /// Nguồn `myVIN_MaintainPeriod_UpdMtnX` (`BizHTC.StorageFG.cs:1414`) lấy `t.SF_MtnNo` làm `RefNo`
+    /// (`BizHTC.StorageFG.Frm.cs:1706`). Không có cột này thì không truy được lần bảo dưỡng về phiếu nào.
+    /// ⚠️ <see cref="MtnType"/> chính là cột `RefType` của nguồn; giá trị "MAINTAINANCE" là
+    /// **GIÁ TRỊ** của `TConst.RefTypeMtn.Mtn` (`Const.Main.StorageFG.1.cs:22`) — nguồn viết sai chính tả
+    /// như vậy, port phải giữ nguyên, không "sửa" thành MAINTENANCE.
+    /// </summary>
+    public string? RefNo { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -6098,6 +6113,15 @@ public sealed class DealerDeal
     // FrmNewDealToDealer — chuyển xe sang đại lý khác: buyer là 1 đại lý, SalesType F7
     public string? DealerCodeBuyer { get; set; }
     public string? SalesManCode { get; set; }
+
+    /// <summary>
+    /// 🔴 #B08 `DLS_Deal.FlagInitDeal` — cờ "giao dịch KHỞI TẠO". Là một trong 7 bộ lọc của
+    /// `DealerSalesDealGet_Car_New20181115` (`zzzzClauseWhere_strDLSDFlagInitDealConditionList`,
+    /// `BizHTC.DealerSales.cs:3565`) và là điều kiện **`dd.FlagInitDeal = '0'`** trong hai báo cáo GPS
+    /// (chuỗi `Dls_DealDetail → DLS_Deal → Mst_Dealer`). Không có cột này thì không tách được giao dịch
+    /// khởi tạo khỏi giao dịch bán thật.
+    /// </summary>
+    public string FlagInitDeal { get; set; } = "0";
 }
 public sealed class DealerDealDetail
 {
@@ -6118,6 +6142,25 @@ public sealed class DealerDealDetail
     /// <summary>Ngày giao xe cho khách (`DLS_DealDetail.DeliveryDate`) — `CarDeliveryDate_Update`
     /// cập nhật cột này theo cặp khoá `DealNo` + `CarId`.</summary>
     public DateTime? DeliveryDate { get; set; }
+
+    // ===== #B08 parity `DealerSalesDealGet_Car_New20181115` — 5 cột là BỘ LỌC/ĐẦU RA của màn tìm xe =====
+    /// <summary>
+    /// 🔴 `DLS_DealDetail.FlagCurrent` — dòng giao dịch **HIỆN HÀNH** của xe ("1") hay dòng lịch sử ("0").
+    /// ⚠️ Ô tick trên form tên là **"chkInStock"** (còn trong kho) nhưng nó lọc **CỘT NÀY**:
+    /// `conditionInStock = isInStock ? GenEqualCondition(Flag.Yes) : ""` rồi truyền vào tham số
+    /// `strDLSDDFlagCurrentConditionList` (`DealerService.cs:1609/1632`). Tên UI ≠ cột — luật
+    /// `C0-trecentesimusseptuagesimusquartus`.
+    /// </summary>
+    public string FlagCurrent { get; set; } = "1";
+    /// <summary>Số giao dịch TRƯỚC của cùng chiếc xe (`DealNoPrevious`) — nguồn `left join Dls_Deal
+    /// dlsd_Previous on dlsdd.DealNoPrevious = dlsd_Previous.DealNo` để trả `DLSDPDealerCode` /
+    /// `DLSDPDealerCodeBuyer` (đại lý bán/mua ở giao dịch trước). Cột lưới "Đại lý trước" đọc giá trị này.</summary>
+    public string? DealNoPrevious { get; set; }
+    /// <summary>Trạng thái giao xe của DÒNG (`DeliveryStatus`) — một trong 7 bộ lọc của hàm tìm kiếm.</summary>
+    public string? DeliveryStatus { get; set; }
+    /// <summary>Ngày/người xác nhận dòng (`ConfirmDate`/`ConfirmBy`) — hai bộ lọc riêng của hàm tìm kiếm.</summary>
+    public DateTime? ConfirmDate { get; set; }
+    public string? ConfirmBy { get; set; }
 }
 
 /// <summary>
@@ -10011,6 +10054,25 @@ public sealed class CarVinMaster
     public string? SpecCode { get; set; }
     public string? DealerCode { get; set; }
 
+    // ===== #B08 parity `DealerSalesDealGet_Car_New20181115` (BizHTC.DealerSales.cs:3326) =====
+    // Lưới "tìm xe để bán cho đại lý" (`FrmSearchCarForDealer`) hiển thị 7 cột lấy thẳng từ `Car_VIN`.
+    /// <summary>
+    /// 🔴 QUY CÁCH THỰC TẾ của xe (`Car_VIN.ActualSpec`) — **KHÁC** <see cref="SpecCode"/> (quy cách đặt hàng).
+    /// Ô "Spec" trên form lọc **cột này**, không phải `SpecCode`: form gọi
+    /// `SearchCarToSellToDealer(carId, vin, "", spec, modelCode, …)` — tham số thứ 3 (`specCode`) truyền
+    /// **chuỗi rỗng**, giá trị combo đi vào tham số thứ 4 (`actualSpec`) (`FrmSearchCarForDealer.cs:150`).
+    /// Mô tả hiển thị lấy `Mst_CarSpec.SpecDescription` **join theo ActualSpec**, không theo SpecCode.
+    /// </summary>
+    public string? ActualSpec { get; set; }
+    public string? EngineNo { get; set; }
+    /// <summary>Số chìa khoá (`Car_VIN.KeyNo`).</summary>
+    public string? KeyNo { get; set; }
+    /// <summary>Loại đóng thùng (`Car_VIN.TypeCB`).</summary>
+    public string? TypeCB { get; set; }
+    /// <summary>Loại thùng (`Car_VIN.LoaiThung`) — cột riêng, khác <see cref="TypeCB"/>.</summary>
+    public string? LoaiThung { get; set; }
+    public string? SerialNo { get; set; }
+
     /// <summary>
     /// 🔴 #B04: Mã màu của xe (`Car_VIN.ColorCode`). Bộ ba định danh xe của nguồn là
     /// (`ModelCode`, `SpecCode`, `ColorCode`) — port cũ chỉ có hai, nên **mọi báo cáo join
@@ -10688,6 +10750,16 @@ public sealed class DlrPdiRequestDetail
     /// ⚠️ Khác hẳn `ROStatus` (trạng thái lệnh sửa chữa được đồng bộ về) — hai trục độc lập.
     /// </summary>
     public string DlrPDIReqDtlStatus { get; set; } = "P";
+
+    // ===== #B08 parity `DealerSalesDealGet_Car_New20181115` (BizHTC.DealerSales.cs:3486-3500) =====
+    // Khối `#tblDlr_PDIRequest` nối `cc.VIN = dprd.VIN` rồi lấy `dprd.CtrCarId`, `dprd.DlrContractNo`
+    // để trả `PDICtrCarId` / `PDIDlrContractNo` — ba cột này port cũ KHÔNG có nên khối đó không port được.
+    /// <summary>VIN của dòng yêu cầu PDI (`Dlr_PDIRequestDtl.VIN`).</summary>
+    public string? VIN { get; set; }
+    /// <summary>Xe trên hợp đồng đại lý mà dòng này gắn vào (`CtrCarId` → `Dlr_ContractCar`).</summary>
+    public string? CtrCarId { get; set; }
+    /// <summary>Số hợp đồng đại lý (`DlrContractNo` → `Dlr_Contract`).</summary>
+    public string? DlrContractNo { get; set; }
 }
 
 /// <summary>Giá xe thực tế theo VIN (UpdateCarPrice) — port 1:1 FrmUpdateCar (DMSales.Foton). Cập nhật đơn giá thực tế cho từng xe (batch).</summary>
