@@ -36025,6 +36025,119 @@ app.MapGet("/api/departments", async (AppDbContext db, ITenantContext t, string?
     });
 }).RequireAuthorization();
 
+// ===== #B99 TẠO HÀNG LOẠT NHÂN VIÊN BÁN HÀNG — `Mst_SalesMan_CreateMulti_New20260323` =====
+// Trace LIVE: WS `:5229` → **`_biz.Mst_SalesMan_CreateMulti_New20260323`** (`Biz.HTC.WH.cs:22380`)
+//   — bản **mới nhất (2026-03-23)** của cả cụm. 3B đo thật, **khớp cả 2 máy**:
+//   start=22380 md5 `b475dffcaea678b24cbea5f385c0fc72`.
+// ⚠️ **Caller-first cứu một lượt port hỏng**: `BizHTC.zzzzCode.cs` có `Mst_SalesMan_Create` (`:8020`),
+//    `_Update` (`:8484`), `_Get` (`:7667`) trông rất giống "cụm CRUD cần port" — nhưng **WS64 KHÔNG
+//    gọi cái nào**. Bản LIVE là `_CreateMulti_New20260323` / `_Update_New20230306` / `_UpdateMulti` /
+//    `_UpdateMultiByHTV_New20230306` / `_UpdateStatus` / `_Delete_New20181119`.
+//    ⇒ ba hàm ở `zzzzCode.cs` là **CHẾT**.
+// 🔴 **`FlagActive` KHÔNG do client quyết định — biz TỰ SUY TỪ `SMStatus`**: nguồn **xoá hẳn** cột
+//    `FlagActive` nếu client gửi lên (`Columns.Remove`) rồi `MyForceNewColumn` tạo lại, và gán
+//    (`:22868-22874`): `SMStatus == SMStatus.NGHIVIEC` (**"0"**) ⇒ `"0"`; **mọi giá trị khác** ⇒ `"1"`.
+//    ⇒ Nhận `flagActive` từ body là **mở quyền ghi ngoài nguồn**. Từ vựng `TConst.SMStatus`
+//    (`Const.Main.cs:1213-1219`): **"0"** nghỉ việc · **"1"** chính thức · **"2"** thử việc ·
+//    **"3"** cộng tác viên.
+// 🔴🔴 **GUARD CHẾ TÀI LIÊN ĐẠI LÝ — dò theo `SMHyundaiCode`, KHÔNG phải `SMCode`**:
+//      `select top 1 t.*, f.* from HR_SalesManViolate t left join Mst_SalesMan f on t.SMCode = f.SMCode`
+//      `where f.SMHyundaiCode = @strSMHyundaiCode order by t.ViolateNumber desc`
+//    ⇒ lấy **lần vi phạm mới nhất** của **con người đó** (mã Hyundai theo cá nhân); nếu
+//      `ViolateTypeId == TConst.ViolateTypeId.**TT**` (*tạm thời*) **và** `ViolateDateEnd >= hôm nay`
+//      ⇒ **CHẶN tạo mới**.
+//    ⚠️ Nghĩa nghiệp vụ: nhân viên đang bị **đình chỉ tạm thời** **không được tạo lại ở đại lý khác**
+//      — vì khoá dò là mã Hyundai của **cá nhân**. Port dò theo `SMCode` là **vô hiệu hoá cả guard**.
+// 🔴 Kiểm **từng dòng**, ném ngay ở dòng đầu tiên hỏng; danh sách rỗng ⇒ `…_TableBlank`.
+//    `Mst_SalesMan_CheckDB(…, TConst.Flag.**No**, …)` — nhân viên **phải CHƯA tồn tại**.
+app.MapPost("/api/salesmen/create-multi", async (
+    List<SalesManCreateMultiDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_SalesMan_CreateMulti_TableBlank" });
+
+    var today = DateTime.Now.Date;
+    var created = new List<object>();
+
+    foreach (var (r, i) in rows.Select((r, i) => (r, i)))
+    {
+        var smCode = (r.SMCode ?? "").Trim().ToUpperInvariant();
+        var smName = (r.SMName ?? "").Trim();
+        var dealerCode = (r.DealerCode ?? "").Trim().ToUpperInvariant();
+        var smStatus = (r.SMStatus ?? "").Trim();
+        var smHyundaiCode = (r.SMHyundaiCode ?? "").Trim();
+
+        if (smName.Length == 0)
+            return Results.BadRequest(new { error = "Mst_SalesMan_CreateMulti_InvalidSMName", check = new { Idx = i, SMCode = smCode } });
+        if (smStatus != "0" && smStatus != "1" && smStatus != "2" && smStatus != "3")
+            return Results.BadRequest(new { error = "Mst_SalesMan_CreateMulti_InvalidSMStatus", check = new { Idx = i, SMStatus = smStatus } });
+
+        // `Mst_SalesMan_CheckDB(…, Flag.No, …)` — phải CHƯA tồn tại.
+        if (await db.SalesMen.AnyAsync(x => x.OrgId == t.OrgId && x.SalesManCode == smCode))
+            return Results.BadRequest(new { error = "Mst_SalesMan_CreateMulti_SMCodeExist", check = new { Idx = i, SMCode = smCode } });
+
+        var dealer = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealerCode);
+        if (dealer is null)
+            return Results.BadRequest(new { error = "Common_InvalidDealerCode", check = new { Idx = i, DealerCode = dealerCode } });
+
+        // 🔴🔴 GUARD CHẾ TÀI: dò theo SMHyundaiCode (CÁ NHÂN), không phải SMCode (theo đại lý).
+        if (smHyundaiCode.Length > 0)
+        {
+            var peers = await db.SalesMen
+                .Where(x => x.OrgId == t.OrgId && x.SMHyundaiCode == smHyundaiCode)
+                .Select(x => x.SalesManCode).ToListAsync();
+            var latest = await db.SalesManViolates
+                .Where(v => v.OrgId == t.OrgId && peers.Contains(v.SalesManCode))
+                .OrderByDescending(v => v.ViolateNumber).FirstOrDefaultAsync();
+            if (latest is not null
+                && string.Equals(latest.ViolateTypeId, "TT", StringComparison.OrdinalIgnoreCase)
+                && latest.ViolateDateEnd is not null && latest.ViolateDateEnd.Value.Date >= today)
+                return Results.BadRequest(new
+                {
+                    error = "Mst_SalesMan_CreateMulti_SalesManViolate",
+                    check = new
+                    {
+                        Idx = i, SMCode = smCode, SMHyundaiCode = smHyundaiCode,
+                        latest.ViolateTypeId, latest.ViolateNumber, latest.ViolateDateEnd
+                    },
+                    violateNote = "Nhan vien dang bi DINH CHI TAM THOI (ViolateTypeId='TT' va ViolateDateEnd >= hom nay) => KHONG duoc tao lai. Khoa do la SMHyundaiCode (CA NHAN), khong phai SMCode (theo dai ly)."
+                });
+        }
+
+        // 🔴 FlagActive do BIZ suy ra từ SMStatus, KHÔNG nhận từ client.
+        var flagActive = smStatus == "0" ? "0" : "1";
+
+        db.SalesMen.Add(new SalesMan
+        {
+            OrgId = t.OrgId, SalesManCode = smCode, SalesManName = smName, DealerCode = dealerCode,
+            DepartmentCode = r.DepartmentCode, SalesType = r.SMType, Phone = r.SMPhoneNo, Email = r.SMEmail,
+            Gender = r.SMGender, DateOfBirth = r.SMDateOfBirth, Address = r.SMAddress,
+            ProvinceCode = r.ProvinceCode, QualificationCode = r.QualificationCode,
+            Specialized = r.SMSpecialized, YearExperience = r.SMYearExperence,
+            StartDate = r.SMStartDate, EndDate = r.SMEndDate,
+            Position = r.SMPosition, PositionCode = r.SMPostionCode,
+            CertificateCode = r.CertificateCode, SMHyundaiCode = smHyundaiCode,
+            IdentityCardNo = r.IdentityCardNo,
+            WebsiteLink = r.WebsiteLink, FacebookLink = r.FacebookLink, FanpageLink = r.FanpageLink,
+            GroupLink = r.GroupLink, ZaloLink = r.ZaloLink,
+            Status = flagActive
+        });
+        created.Add(new { smCode, dealerCode, smStatus, flagActive });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        createdCount = created.Count, created,
+        deadSiblingsNote = "CALLER-FIRST: BizHTC.zzzzCode.cs co Mst_SalesMan_Create (:8020), _Update (:8484), _Get (:7667) trong rat giong 'cum CRUD can port' - nhung WS64 KHONG GOI CAI NAO. Ban LIVE la _CreateMulti_New20260323 / _Update_New20230306 / _UpdateMulti / _UpdateMultiByHTV_New20230306 / _UpdateStatus / _Delete_New20181119. Ba ham o zzzzCode.cs la CHET.",
+        flagActiveNote = "FlagActive KHONG do client quyet dinh - biz TU SUY TU SMStatus: nguon XOA HAN cot FlagActive neu client gui len (Columns.Remove) roi MyForceNewColumn tao lai, gan theo luat: SMStatus == '0' (NGHIVIEC) => '0'; MOI gia tri khac => '1'. Nhan flagActive tu body la MO QUYEN GHI NGOAI NGUON.",
+        smStatusVocab = "TConst.SMStatus (Const.Main.cs:1213-1219): '0' nghi viec | '1' chinh thuc | '2' thu viec | '3' cong tac vien.",
+        violateGuardNote = "GUARD CHE TAI LIEN DAI LY: 'select top 1 ... from HR_SalesManViolate t left join Mst_SalesMan f on t.SMCode = f.SMCode where f.SMHyundaiCode = @strSMHyundaiCode order by t.ViolateNumber desc' => lay LAN VI PHAM MOI NHAT cua CON NGUOI DO (ma Hyundai theo ca nhan). Neu ViolateTypeId='TT' (tam thoi) VA ViolateDateEnd >= hom nay => CHAN tao moi. Y nghia: nhan vien dang bi dinh chi tam thoi KHONG duoc tao lai o DAI LY KHAC. Port do theo SMCode la VO HIEU HOA TOAN BO GUARD.",
+        violateTypeVocab = "TConst.ViolateTypeId (Const.Main.cs:1242-1246): 'TT' tam thoi | 'VV' vinh vien. Guard nay CHI chan 'TT' con han hieu luc.",
+        rowWiseNote = "Kiem TUNG DONG, nem ngay o dong dau tien hong; danh sach rong => _TableBlank. Mst_SalesMan_CheckDB(..., TConst.Flag.No, ...) - phai CHUA ton tai."
+    });
+}).RequireAuthorization();
+
 // Dấu ngăn của nguồn là `|`; chấp nhận thêm `,` để client hiện tại không vỡ (khác biệt CÓ Ý).
 static List<string> SplitConditionList(string? s) =>
     string.IsNullOrWhiteSpace(s)
@@ -40535,6 +40648,13 @@ record GrtClaimExtGenAutoDto(int NumberOfGuaranteeExt, string? Remark, string? F
 record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   // #B87 - chi kiem, khong ghi
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
+// #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record SalesManCreateMultiDto(string? SMCode, string? DealerCode, string? SMName, string? SMGender,
+    DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
+    string? QualificationCode, string? SMSpecialized, string? SMYearExperence, DateTime? SMStartDate,
+    DateTime? SMEndDate, string? DepartmentCode, string? SMPosition, string? SMType, string? CertificateCode,
+    string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink,
+    string? SMHyundaiCode, string? IdentityCardNo, string? SMPostionCode, string? SMStatus);
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
