@@ -998,6 +998,15 @@ public static class Seeder
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ROWTypeDtlCode\" text NULL",
         // #377 tep dinh kem cua thong bao ky thuat (khac FileNameAttachment)
         "ALTER TABLE public.\"Bulletins\" ADD COLUMN IF NOT EXISTS \"FileAttachment\" text NULL",
+        // #389 tam cot cua man SUA don dat phu tung (Ser_Part_OrderUpdate)
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"OrderNoUser\" text NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"ReceivePartDate\" timestamp NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"ConfirmNo\" text NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"CusCharges\" text NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"HTCConfirm\" text NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"PartialShipment\" text NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"TypeTransport\" text NULL",
         // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",

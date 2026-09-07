@@ -5738,6 +5738,27 @@ public sealed class ServiceCustomer
 /// đơn mua phụ tùng gửi nhà cung cấp. OrderPartStatus: Pending(Mới tạo)→Approved(Đã gửi NCC)→Finished(Hoàn thành).</summary>
 public sealed class OrderPart
 {
+    // ===== 🔴 #389 §12 TÁM CỘT của màn SỬA đơn đặt phụ tùng (`Ser_Part_OrderUpdate`) =====
+    //   Nguồn ghi 19 cột trong `alColumnEffective`; MiniHTC trước lượt này thiếu tám cột dưới đây,
+    //   nên màn sửa không thể port đủ. Xem `PUT /api/orderparts/{no}`.
+    /// <summary>Số đơn do NGƯỜI DÙNG tự đặt (`OrderNoUser`) — khác số hệ thống sinh.
+    /// 🔴 Thuộc nhóm **rỗng = XOÁ** (nguồn có nhánh `else → DBNull`).</summary>
+    public string? OrderNoUser { get; set; }
+    /// <summary>Ngày nhận hàng (`ReceivePartDate`). 🔴 **rỗng = XOÁ**.</summary>
+    public DateTime? ReceivePartDate { get; set; }
+    /// <summary>Ngày duyệt (`ApprovedDate`). 🔴 **rỗng = XOÁ**.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>Số xác nhận của HTC (`ConfirmNo`, issue 985 — có guard trùng riêng).
+    /// 🔴 **rỗng = XOÁ**.</summary>
+    public string? ConfirmNo { get; set; }
+    /// <summary>Phí khách chịu (`CusCharges`, issue 1017). 🔴 **rỗng = XOÁ**.</summary>
+    public string? CusCharges { get; set; }
+    /// <summary>Cờ HTC đã xác nhận (`HTCConfirm`). ⚠️ **rỗng = GIỮ** (không có nhánh else).</summary>
+    public string? HTCConfirm { get; set; }
+    /// <summary>Cho giao hàng từng phần (`PartialShipment`). ⚠️ **rỗng = GIỮ**.</summary>
+    public string? PartialShipment { get; set; }
+    /// <summary>Hình thức vận chuyển (`TypeTransport`). ⚠️ **rỗng = GIỮ**.</summary>
+    public string? TypeTransport { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string OrderPartNo { get; set; } = "";

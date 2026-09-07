@@ -35415,6 +35415,8 @@ app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? 
         o.EstimatedDeliverDate, o.VIN, o.Remark,
         o.RequestSuppierDate, o.ResponseSuppierDate, o.OrderSuppierNo,
         o.SupplierStatus, o.OrderPartType, o.TSTID, o.SupplierLUDTime,
+        // #389 §12: tam cot cua man SUA don dat phu tung
+        o.OrderNoUser, o.ReceivePartDate, o.ApprovedDate, o.ConfirmNo, o.CusCharges, o.HTCConfirm, o.PartialShipment, o.TypeTransport,
         o.TotalValOrderBeforeDc, o.TotalValOrderAfterDc, o.TotalValOrderAfterVAT, o.ValDiscount,
         o.CreateBy, o.ApprBy, o.FinishBy, o.LogLUDateTime, o.LogLUBy,
         lines = db.OrderPartLines.Count(l => l.OrgId == t.OrgId && l.OrderPartId == o.Id),
@@ -35608,6 +35610,94 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
     RecalcOrderPartTotals(o, newLines);
     await db.SaveChangesAsync();
     return Results.Ok(new { o.OrderPartNo, o.SupplierCode, lines = lines.Count, status = o.OrderPartStatus });
+}).RequireAuthorization();
+
+// ===== 🔴 #389 SỬA ĐƠN ĐẶT PHỤ TÙNG (`FrmOrderPartModify` → `Ser_Part_OrderUpdate`) =====
+// TRACE 4 tầng: `FrmOrderPartModify.cs` → `orderPartService.Ser_Part_OrderUpdate`
+//   → `WSCarSv.asmx.cs:23510` → `BizCarSv.PartOrder.cs:1155` (khối `UpdatePartOrder` `:1338`).
+//
+// 🔴 **RỖNG = XOÁ hay RỖNG = GIỮ, tuỳ TỪNG CỘT** — nguồn không nhất quán và đó là điều phải giữ:
+//   · **rỗng ⇒ XOÁ** (có nhánh `else → DBNull`), đúng SÁU cột:
+//       `OrderNoUser` · `ReceivePartDate` · `ApprovedDate` · `ConfirmNo` · `CusCharges` · `UserCreate`
+//   · **rỗng ⇒ GIỮ** (chỉ có `if`, không có `else`):
+//       `SupplierID` · `OrderNo` · `Status` · `SendDate` · `UserApproved` · `TypeOrder`
+//       · `HTCConfirm` · `PartialShipment` · `TypeTransport` · `VIN`
+//   ⇒ Gửi chuỗi rỗng cho `ConfirmNo` là **xoá số xác nhận**, nhưng gửi rỗng cho `Status` thì
+//     **không đổi gì**. Port đồng loạt một kiểu là sai một nửa số cột.
+// 🔴 **BA GUARD, MỘT BIẾN OUT**: `CheckExistOrderNoUser_Update` · `CheckExistConfirmNo` (issue 985)
+//   · `CheckExistOrderNo_Update` đều nhận `out dt_PartOrder` ⇒ mỗi hàm **ghi đè** DataTable của hàm
+//   trước, nên bản ghi đem đi lưu là của **guard CUỐI CÙNG**. Đổi thứ tự ba lời gọi là đổi dữ liệu ghi.
+// ⚠️ `alColumnEffective` có `CreateDate` nhưng **không có dòng nào gán** nó ⇒ mỗi lần sửa lại ghi đè
+//   `CreateDate` bằng giá trị vừa đọc lên (vô hại nếu bản đọc còn mới, nhưng là ghi thừa).
+// ⚠️ Ghi vào **Main + WH**, còn **Dealer chỉ khi `!bIsWSMain`** — lại một luồng ba CSDL (#388).
+app.MapPut("/api/orderparts/{no}", async (string no, OrderPartUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
+    if (o is null) return Results.NotFound(new { no });
+
+    // Guard trùng số người dùng tự đặt (bỏ qua chính đơn này).
+    if (!string.IsNullOrWhiteSpace(dto.OrderNoUser))
+    {
+        var dupUser = await db.OrderParts.AnyAsync(x => x.OrgId == t.OrgId && x.Id != o.Id
+            && x.OrderNoUser == dto.OrderNoUser!.Trim().ToUpperInvariant());
+        if (dupUser) return Results.BadRequest(new { error = "OrderNoUser đã tồn tại." });
+    }
+    // Guard trùng số xác nhận — issue 985, guard RIÊNG của nguồn.
+    if (!string.IsNullOrWhiteSpace(dto.ConfirmNo))
+    {
+        var dupCf = await db.OrderParts.AnyAsync(x => x.OrgId == t.OrgId && x.Id != o.Id
+            && x.ConfirmNo == dto.ConfirmNo!.Trim());
+        if (dupCf) return Results.BadRequest(new { error = "ConfirmNo đã tồn tại (issue 985)." });
+    }
+
+    var cleared = new List<string>();
+    var kept = new List<string>();
+
+    // --- Nhóm RỖNG = GIỮ: chỉ ghi khi có giá trị.
+    void Keep(string name, string? v, Action<string> set)
+    {
+        if (!string.IsNullOrWhiteSpace(v)) set(v!); else kept.Add(name);
+    }
+    Keep("SupplierID", dto.SupplierID, v => o.SupplierID = v);
+    Keep("OrderPartStatus", dto.Status, v => o.OrderPartStatus = v);
+    Keep("HTCConfirm", dto.HTCConfirm, v => o.HTCConfirm = v);
+    Keep("PartialShipment", dto.PartialShipment, v => o.PartialShipment = v);
+    Keep("TypeTransport", dto.TypeTransport, v => o.TypeTransport = v);
+    Keep("OrderPartType", dto.TypeOrder, v => o.OrderPartType = v);
+    Keep("VIN", dto.VIN, v => o.VIN = v);
+    Keep("ApprBy", dto.UserApproved, v => o.ApprBy = v);
+    if (dto.SendDate is not null) o.SentAt = dto.SendDate; else kept.Add("SentAt");
+
+    // --- Nhóm RỖNG = XOÁ: rỗng thì ghi NULL, đúng nhánh else của nguồn.
+    o.OrderNoUser = string.IsNullOrWhiteSpace(dto.OrderNoUser) ? null : dto.OrderNoUser!.Trim().ToUpperInvariant();
+    if (o.OrderNoUser is null) cleared.Add("OrderNoUser");
+    o.ReceivePartDate = dto.ReceivePartDate; if (dto.ReceivePartDate is null) cleared.Add("ReceivePartDate");
+    o.ApprovedDate = dto.ApprovedDate;       if (dto.ApprovedDate is null) cleared.Add("ApprovedDate");
+    o.ConfirmNo = string.IsNullOrWhiteSpace(dto.ConfirmNo) ? null : dto.ConfirmNo!.Trim();
+    if (o.ConfirmNo is null) cleared.Add("ConfirmNo");
+    o.CusCharges = string.IsNullOrWhiteSpace(dto.CusCharges) ? null : dto.CusCharges!.Trim();
+    if (o.CusCharges is null) cleared.Add("CusCharges");
+    o.CreateBy = string.IsNullOrWhiteSpace(dto.UserCreate) ? null : dto.UserCreate!.Trim();
+    if (o.CreateBy is null) cleared.Add("CreateBy");
+
+    o.LogLUDateTime = DateTime.Now;
+    o.LogLUBy = dto.LogLUBy;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        o.OrderPartNo, o.SupplierID, o.OrderNoUser, o.OrderPartStatus,
+        o.ReceivePartDate, o.ApprovedDate, o.ConfirmNo, o.CusCharges,
+        o.HTCConfirm, o.PartialShipment, o.TypeTransport, o.VIN, o.SentAt,
+        clearedByEmpty = cleared, keptByEmpty = kept,
+        emptySemanticsNote = "SÁU cột rỗng = XOÁ (OrderNoUser, ReceivePartDate, ApprovedDate, ConfirmNo, "
+            + "CusCharges, UserCreate); các cột còn lại rỗng = GIỮ. Đúng nguồn, không đồng nhất được.",
+        guardOrderNote = "Nguồn có BA guard cùng dùng `out dt_PartOrder` ⇒ bản ghi lưu là của guard CUỐI; "
+            + "đổi thứ tự ba lời gọi là đổi dữ liệu ghi.",
+        createDateNote = "alColumnEffective có CreateDate nhưng nguồn KHÔNG gán nó ⇒ ghi lại giá trị vừa đọc.",
+        dualWriteNote = "Nguồn ghi Main + WH, Dealer chỉ khi !bIsWSMain; MiniHTC một CSDL.",
+    });
 }).RequireAuthorization();
 
 app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -41022,6 +41112,12 @@ record OrderPartLineStatusDto(string? ToStatus);
 // #234: 8 trường mà `Ser_Order_Part_Save` gửi lên, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
 // #240: `OrderPartNo` (trống = tạo mới) + `FlagIsDelete` ("Y" = xoá) — nguồn dùng CHUNG một hàm
 //   `Ser_Order_Part_Save` cho cả tạo/sửa/xoá.
+// #389 §12: DTO man SUA don dat phu tung. LUU Y ngu nghia RONG khac nhau tung cot (xem endpoint).
+record OrderPartUpdateDto(string? SupplierID, string? OrderNoUser, string? Status,
+    DateTime? ReceivePartDate, DateTime? ApprovedDate, DateTime? SendDate,
+    string? UserCreate, string? UserApproved, string? TypeOrder,
+    string? HTCConfirm, string? PartialShipment, string? TypeTransport,
+    string? VIN, string? ConfirmNo, string? CusCharges, string? LogLUBy);
 record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLineDto>? Lines,
     string? OrderPartNo = null, string? FlagIsDelete = null,
     string? DealerCode = null, string? SupplierID = null, string? PartGroupID = null,
