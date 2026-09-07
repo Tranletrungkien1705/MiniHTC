@@ -2300,6 +2300,10 @@ public static class Seeder
                 // ===== #B74 `WO_ScheduleDetail` — hai cột lịch SX =====
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"WorkOrderNo\" text NULL",   // #B74
+                // ===== #B77 `Ord_SalesOrderDetail` — ba mốc suy ra =====
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"DepositDutyEndDate\" timestamp NULL",
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"GrtEndDate\" timestamp NULL",
+                "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"CarDueDate\" timestamp NULL",
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyRemainOrder\" numeric NOT NULL DEFAULT 0",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))

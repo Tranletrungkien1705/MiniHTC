@@ -6156,6 +6156,23 @@ public sealed class SalesOrderLine
     /// `DMS40_CT_DealerContract_SaveX` tra dòng SO **theo CarId** để lấy `ApprovedDate`, rồi dùng ngày đó
     /// làm **mốc hiệu lực** khi tìm điều khoản thanh toán của xe. Không có cột này thì không lập được hợp đồng đại lý.</summary>
     public string? CarId { get; set; }
+
+    // ===== #B77 parity `Ord_SalesOrder_Update_Calc` (`Biz.HTC.WH.My.cs:20631`) — BA MỐC SUY RA =====
+    /// <summary>🔴 `DepositDutyEndDate` — **ngày Đại lý cam kết thanh toán HẾT CỌC**. Nguồn KHÔNG cộng
+    /// ngày lịch: lấy **ngày làm việc thứ N** kể từ `f_WorkingDate_Get_01(ApprovedDate)`, với
+    /// N = tham số hệ thống `TConst.HTCParamCode.Calendar_DepositDuty_DayT`. Còn NULL sau khi điền
+    /// ⇒ nguồn **NÉM** `Ord_SalesOrder_Update_Calc_WorkingDayNotBeSet`.</summary>
+    public DateTime? DepositDutyEndDate { get; set; }
+    /// <summary>🔴 `GrtEndDate` — **ngày hết hạn phát hành bảo lãnh**. Cùng cơ chế ngày-làm-việc-thứ-N
+    /// nhưng tham số riêng `Calendar_GrtDuty_DayT` (chú thích nguồn ghi **7 ngày**). Còn NULL
+    /// ⇒ ném `…_WorkingDayNotBeSet_GrtDateEnd`.</summary>
+    public DateTime? GrtEndDate { get; set; }
+    /// <summary>🔴 `CarDueDate` — **ngày đến hạn trả xe cho Đại lý** = `DepositDutyEndDate` **+ ngày lịch**
+    /// (không phải ngày làm việc), số ngày theo `Mst_CarSpec`:
+    /// **45** nếu (`AssemblyStatus='CKD'` và `FlagAmbulance='0'`) · **60** nếu (`'CBU'` và `'0'`)
+    /// · **80** cho MỌI trường hợp còn lại — kể cả khi `left join Mst_CarSpec` KHÔNG khớp
+    /// (`AssemblyStatus` NULL) ⇒ spec sai/thiếu **im lặng nhận 80 ngày**, không báo lỗi.</summary>
+    public DateTime? CarDueDate { get; set; }
 }
 
 /// <summary>Giao dịch bán lẻ của đại lý (DealerDeal) — port 1:1 FrmNewDeal/FrmMngDeal (DMSales.Foton/SalesDealer). Đại lý bán xe cho khách: 3 vai trò KH (mua/lái/đứng tên), kiểu bán lẻ, cờ PDI.</summary>

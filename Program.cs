@@ -32680,6 +32680,164 @@ app.MapPost("/api/salesorders/{no}/reject", async (string no, SoRejectDto dto, A
     return Results.Ok(new { o.SoCode, status = o.Status });
 }).RequireAuthorization();
 
+// ===== #B77 TÍNH LẠI BA MỐC HẠN CỦA ĐƠN BÁN — `Ord_SalesOrder_Update_Calc` =====
+// Trace LIVE: WS `Ord_SalesOrder_Update_Calc` (`WSHTC.asmx.cs:95559`) →
+//   **`_biz.Ord_SalesOrder_Update_Calc`** (`DataWH/Biz.HTC.WH.My.cs:20631`) — **KHÔNG có hậu tố
+//   `_NewYYYYMMDD`**, hiếm gặp; hàm dùng chung `mySql_GetClauseSelect_Mst_Calendar_GetForDayT()`
+//   (`BizHTC.Common.cs:1682`).
+//   3B đo thật, **khớp cả 2 máy**: start=20631 md5 `95d1d482a1736df64afc3797748a2d73`.
+// 🔴 **"NGÀY THỨ T" LÀ NGÀY LÀM VIỆC THỨ T, KHÔNG PHẢI CỘNG T NGÀY LỊCH.** Cơ chế của nguồn:
+//      `select identity(bigint, 0, 1) MyIdxSeq, … into #tbl_Mst_Calendar_Filter from Mst_Calendar`
+//        `where CalendarType = 'WorkingDay' and StatusValue = 0 and Date >= @strMCALDate_From`
+//      rồi `left join … on t.MyIdxSeq + @nDayT = t1.MyIdxSeq`
+//    ⇒ đánh số **liên tiếp CÁC NGÀY LÀM VIỆC** đã lọc, rồi nhảy **T VỊ TRÍ** trong dãy đó.
+//    ⚠️ **`StatusValue = 0` NGHĨA LÀ NGÀY LÀM VIỆC** (0 = không nghỉ) — cả hai mệnh đề đều kèm chú
+//      thích *"Only WorkingDay"*. Hiểu ngược dấu là lệch toàn bộ mốc hạn.
+//    ⚠️ Cửa sổ lọc bắt đầu từ **`@strMCALDate_From` = `ApprovedDate`**, nên `MyIdxSeq = 0` chính là
+//      ngày làm việc **đầu tiên >= ngày duyệt**; không phải chỉ số toàn cục.
+// 🔴 **BA MỐC, HAI CƠ CHẾ KHÁC NHAU — đừng gộp**:
+//    1) `DepositDutyEndDate` (ngày ĐL cam kết thanh toán **hết cọc**) = ngày **làm việc** thứ
+//       `Calendar_DepositDuty_DayT` kể từ `f_WorkingDate_Get_01(ApprovedDate)`.
+//    2) `GrtEndDate` (ngày hết hạn **phát hành bảo lãnh**) = cùng cơ chế, tham số **riêng**
+//       `Calendar_GrtDuty_DayT` (chú thích nguồn: **7 ngày**).
+//    3) `CarDueDate` (ngày đến hạn **trả xe** cho ĐL) = `DepositDutyEndDate` **+ số NGÀY LỊCH**
+//       (`dateadd(dd, …)`), **không** phải ngày làm việc.
+// 🔴 **Bảng số ngày của `CarDueDate` và cái bẫy `else`**:
+//      `AssemblyStatus='CKD'` và `FlagAmbulance='0'` ⇒ **45**
+//      `AssemblyStatus='CBU'` và `FlagAmbulance='0'` ⇒ **60**
+//      **else** ⇒ **80**
+//    ⚠️ Nguồn `left join Mst_CarSpec` (theo **CẢ `SpecCode` VÀ `ModelCode`**). Dòng **không khớp spec**
+//      có `AssemblyStatus` NULL ⇒ rơi vào `else` và **im lặng nhận 80 ngày**, KHÔNG báo lỗi. Nghĩa là
+//      `else 80` gánh **hai** nhóm rất khác nhau: xe cứu thương (đúng ý đồ) và **spec sai/thiếu** (lỗi
+//      dữ liệu bị che). Port trả `noSpecMatchCount` để đo, **không tự đổi thành lỗi**.
+// 🔴 **HAI HẬU KIỂM CHẶN CỨNG**: sau khi điền, nguồn `select * … where DepositDutyEndDate is null`
+//    (và tương tự `GrtEndDate is null`); **còn bất kỳ dòng NULL nào ⇒ NÉM**
+//    `…_WorkingDayNotBeSet` / `…_WorkingDayNotBeSet_GrtDateEnd`, kèm 7 tham số chẩn đoán từ `Rows[0]`.
+//    ⇒ **Lịch làm việc chưa khai báo đủ xa là CẢ LỆNH HỎNG**, không phải "để trống rồi tính sau".
+//    Port giữ đúng: thiếu lịch ⇒ trả lỗi đó, **không** ghi mốc nào.
+// 🔴 Bước 1 luôn chạy trước: `update Ord_SalesOrderDetail set ApprovedDate = @strApprovedDate
+//    where SOCode = @strSOCode` — **mọi dòng** của đơn, không lọc thêm.
+// 🔴 Nguồn ghi **cả `_dbMain` và `_dbWH`** ở **cả bốn** bước (cùng khuôn #B75/#B76).
+// 📌 NỢ: hai tham số `Calendar_DepositDuty_DayT` / `Calendar_GrtDuty_DayT` nằm ở bảng tham số hệ thống
+//    (`myUtils_GetParamsRaw`) **chưa có trong MiniHTC**. **KHÔNG đoán**: nhận qua query
+//    `depositDutyDayT` / `grtDutyDayT`; thiếu ⇒ trả `Ord_SalesOrder_Update_Calc_ParamNotSet`.
+//    Riêng `grtDutyDayT` có chú thích nguồn ghi 7 nhưng **vẫn không mặc định** — chú thích không phải dữ liệu.
+app.MapPost("/api/salesorders/{no}/recalc-duedates", async (
+    string no, AppDbContext db, ITenantContext t,
+    DateTime? approvedDate, int? depositDutyDayT, int? grtDutyDayT) =>
+{
+    var soCode = (no ?? "").Trim().ToUpperInvariant();
+    if (soCode.Length < 1)
+        return Results.BadRequest(new { error = "Ord_SalesOrder_Update_Calc_SOCodeEmpty" });
+    if (approvedDate is null)
+        return Results.BadRequest(new { error = "Ord_SalesOrder_Update_Calc_ApprovedDateEmpty", check = new { SOCode = soCode } });
+    if (depositDutyDayT is null || grtDutyDayT is null)
+        return Results.BadRequest(new
+        {
+            error = "Ord_SalesOrder_Update_Calc_ParamNotSet",
+            missing = new[] { depositDutyDayT is null ? "Calendar_DepositDuty_DayT" : null,
+                              grtDutyDayT is null ? "Calendar_GrtDuty_DayT" : null }.Where(x => x != null),
+            note = "Hai tham so nay nam o bang tham so he thong (myUtils_GetParamsRaw) chua co trong MiniHTC. KHONG doan gia tri - phai truyen vao."
+        });
+
+    var so = await db.SalesOrders.FirstOrDefaultAsync(o => o.OrgId == t.OrgId && o.SoCode == soCode);
+    if (so is null)
+        return Results.BadRequest(new { error = "Ord_SalesOrder_Update_Calc_SOCodeNotFound", check = new { SOCode = soCode } });
+
+    var appr = approvedDate.Value.Date;
+    var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == so.Id).ToListAsync();
+
+    // ---- Bước 1: mọi dòng của đơn nhận ApprovedDate.
+    foreach (var l in lines) l.ApprovedDate = appr;
+
+    // ---- Dãy NGÀY LÀM VIỆC kể từ ApprovedDate (`StatusValue = 0` = ngày làm việc).
+    var workDays = await db.MstCalendars
+        .Where(c => c.OrgId == t.OrgId && c.CalendarType == "WorkingDay" && c.StatusValue == "0" && c.Date >= appr)
+        .OrderBy(c => c.Date).Select(c => c.Date).ToListAsync();
+    // `f_WorkingDate_Get_01(ApprovedDate)` — ngày làm việc đầu tiên >= ngày duyệt = phần tử MyIdxSeq 0.
+    DateTime? DayT(int n) => (n >= 0 && n < workDays.Count) ? workDays[n] : (DateTime?)null;
+
+    var depositEnd = DayT(depositDutyDayT.Value);
+    var grtEnd = DayT(grtDutyDayT.Value);
+
+    // ---- Hậu kiểm 1: còn dòng nào NULL ⇒ NÉM (không ghi gì).
+    if (depositEnd is null)
+    {
+        var r0 = lines.FirstOrDefault();
+        return Results.BadRequest(new
+        {
+            error = "Ord_SalesOrder_Update_Calc_WorkingDayNotBeSet",
+            check = new
+            {
+                RowCount = lines.Count, SOCode = soCode, r0?.SpecCode, r0?.ModelCode, r0?.ColorCode,
+                ApprovedDate = appr, DepositDutyEndDate = (DateTime?)null
+            },
+            calendarNote = $"Lich lam viec chi co {workDays.Count} ngay tu {appr:yyyy-MM-dd} tro di, can it nhat {depositDutyDayT + 1}. Nguon NEM loi nay chu KHONG de trong roi tinh sau."
+        });
+    }
+    if (grtEnd is null)
+    {
+        var r0 = lines.FirstOrDefault();
+        return Results.BadRequest(new
+        {
+            error = "Ord_SalesOrder_Update_Calc_WorkingDayNotBeSet_GrtDateEnd",
+            check = new
+            {
+                RowCount = lines.Count, SOCode = soCode, r0?.SpecCode, r0?.ModelCode, r0?.ColorCode,
+                ApprovedDate = appr, GrtEndDate = (DateTime?)null
+            },
+            calendarNote = $"Lich lam viec chi co {workDays.Count} ngay tu {appr:yyyy-MM-dd} tro di, can it nhat {grtDutyDayT + 1}."
+        });
+    }
+
+    foreach (var l in lines) { l.DepositDutyEndDate = depositEnd; l.GrtEndDate = grtEnd; }
+
+    // ---- Bước 4: CarDueDate = DepositDutyEndDate + số NGÀY LỊCH theo spec.
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.ModelCode, s.AssemblyStatus, s.FlagAmbulance }).ToListAsync();
+    var noSpecMatchCount = 0;
+    var byDays = new Dictionary<int, int>();
+    foreach (var l in lines)
+    {
+        // `left join Mst_CarSpec` theo CẢ SpecCode VÀ ModelCode.
+        var sp = specs.FirstOrDefault(s => s.SpecCode == (l.SpecCode ?? "") && (s.ModelCode ?? "") == l.ModelCode);
+        if (sp is null) noSpecMatchCount++;
+        var asm = sp?.AssemblyStatus;
+        var amb = sp?.FlagAmbulance;
+        // 🔴 `else 80` gánh CẢ xe cứu thương LẪN dòng không khớp spec (AssemblyStatus NULL).
+        var nDay = (asm == "CKD" && amb == "0") ? 45
+                 : (asm == "CBU" && amb == "0") ? 60
+                 : 80;
+        byDays.TryGetValue(nDay, out var c); byDays[nDay] = c + 1;
+        l.CarDueDate = depositEnd.Value.AddDays(nDay);      // `dateadd(dd, …)` — NGÀY LỊCH.
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        soCode, approvedDate = appr,
+        depositDutyDayT, grtDutyDayT,
+        depositDutyEndDate = depositEnd, grtEndDate = grtEnd,
+        lineCount = lines.Count,
+        noSpecMatchCount,
+        carDueDayBreakdown = byDays.OrderBy(x => x.Key).Select(x => new { nDay = x.Key, lines = x.Value }).ToList(),
+        items = lines.Select(l => new
+        {
+            l.SpecCode, l.ModelCode, l.ColorCode, l.ApprovedDate,
+            l.DepositDutyEndDate, l.GrtEndDate, l.CarDueDate
+        }).ToList(),
+        dayTNote = "'Ngay thu T' la NGAY LAM VIEC THU T, KHONG phai cong T ngay lich: nguon danh so lien tiep cac ngay da loc (CalendarType='WorkingDay' AND StatusValue=0, Date >= ApprovedDate) bang identity(bigint,0,1) MyIdxSeq roi self-join 't.MyIdxSeq + @nDayT = t1.MyIdxSeq' de nhay T VI TRI trong day do.",
+        statusValueNote = "StatusValue = 0 NGHIA LA NGAY LAM VIEC (0 = khong nghi) - ca hai menh de deu kem chu thich 'Only WorkingDay'. Hieu nguoc dau la lech toan bo moc han.",
+        threeDatesNote = "BA MOC, HAI CO CHE: DepositDutyEndDate va GrtEndDate dung NGAY LAM VIEC thu N (hai tham so RIENG); con CarDueDate = DepositDutyEndDate + so NGAY LICH (dateadd(dd,...)). Dung gop lam mot.",
+        carDueRuleNote = "So ngay cong vao CarDueDate: CKD+FlagAmbulance='0' => 45 | CBU+FlagAmbulance='0' => 60 | else => 80. CANH BAO: nguon left join Mst_CarSpec theo CA SpecCode VA ModelCode; dong KHONG KHOP SPEC co AssemblyStatus NULL nen roi vao 'else' va IM LANG nhan 80 ngay, KHONG bao loi. Vay 'else 80' ganh HAI nhom rat khac nhau: xe cuu thuong (dung y do) va SPEC SAI/THIEU (loi du lieu bi che). Da do bang noSpecMatchCount; KHONG tu doi thanh loi.",
+        postCheckNote = "HAI HAU KIEM CHAN CUNG: sau khi dien, nguon select lai cac dong con NULL; CON BAT KY DONG NAO ==> NEM WorkingDayNotBeSet / WorkingDayNotBeSet_GrtDateEnd kem 7 tham so chan doan tu Rows[0]. Lich lam viec chua khai bao du xa la CA LENH HONG, khong phai 'de trong roi tinh sau'.",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH o ca BON buoc - cung khuon #B75/#B76, khong phai 2-phase commit.",
+        noSuffixNote = "Ten biz KHONG co hau to _NewYYYYMMDD - hiem gap trong 2010.HTC; dung dung ten khi tra cuu.",
+        paramDebt = "NO: Calendar_DepositDuty_DayT / Calendar_GrtDuty_DayT nam o bang tham so he thong chua co trong MiniHTC. KHONG doan - nhan qua query. Chu thich nguon ghi GrtDuty = 7 ngay nhung VAN KHONG dat mac dinh: chu thich khong phai du lieu."
+    });
+}).RequireAuthorization();
+
 // ===== Duyệt tự động đơn hàng theo luật (D4OSORA — port 1:1 FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade) =====
 string[] _d4OsoraRules = { "Rule1", "Rule2", "Rule2A", "Rule3", "RuleCancel" };
 app.MapGet("/api/dms40/so-root-approvals", async (AppDbContext db, ITenantContext t) =>
