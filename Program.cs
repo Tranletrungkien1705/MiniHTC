@@ -16224,6 +16224,95 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // ⚠️ `Ser_CusDebit` của nguồn là **MỘT bảng** phân biệt bằng `DebitType` (**'1'** = nợ khách · **'2'** = nợ
 //   bảo hiểm — khớp hằng `TConst.SerDebitType.InsuranceDebit` tìm ở #342). MiniHTC tách thành **HAI**
 //   entity `CusDebit` và `InsDebit` ⇒ ở đây phải cộng từ hai nguồn mới ra đúng `TotalDebitAmount`.
+// ===== 🔴 #359 DÒNG CÔNG VIỆC CỦA BÁO GIÁ gửi Veloca (`Table 9` của `OSVeloca_Ser_RO_GetByROID`) =====
+// 🔴 ĐÍNH CHÍNH #356: ở **cấp DÒNG** Veloca nhận **ĐỦ SÁU** loại công việc, KHÔNG gộp:
+//   `BDD → BAODUONG` · `SCC → SUACHUA` · `SCD → SUACHUADONG` · `SCS → SUACHUASON`
+//   `PDI → PDI` · `SPK → PHUKIEN`
+//   Phép gộp 6→3 ở #356 **chỉ áp cho `Table 12` (loại công việc/lịch công đoạn)**. Hai cấp, hai hạt —
+//   nói "Veloca chỉ biết 3 nhóm" là **thiếu chính xác**; đúng là *lịch công đoạn* chỉ có 3 nhóm.
+//
+// Đối tượng chi trả: `ROWARRANTY → BAOHANH` · `ROINSURANCE → BAOHIEM` · `ROREPAIR → KHACHHANG`
+//   · `LOCAL → NOIBO`. Cả hai bảng mã đều **KHÔNG có nhánh `else`** ⇒ mã lạ ra NULL.
+//
+// 🔴 `Factor` MANG HAI NGHĨA tuỳ khoảng giá trị:
+//   `Factor ≤ 1`  ⇒ **hệ số CHIẾT KHẤU**: `UP = Price` (giá gốc), `DiscountRate = (1 − Factor)×100`
+//   `Factor > 1`  ⇒ **hệ số NHÂN GIÁ**:   `UP = Price × Factor`, `DiscountRate = 0`
+//   `Factor < 0`  ⇒ `DiscountRate = 0` (chặn âm)
+//   ⇒ Veloca nhận **giá GỐC + tỉ lệ chiết khấu**, không phải giá đã chiết khấu. Tiền thực vẫn là
+//     `Factor × Price` nên khớp công thức KPI (#336) — chỉ khác cách TRÌNH BÀY.
+//
+// ⚠️ CẶP COMMENT/ACTIVE: `ValInsAfterVATService` bản cũ (bị comment) tính
+//   `(Factor×Price)×(1+VAT) khi ExpenseType = ROINSURANCE`; bản **đang chạy** dùng
+//   `PartialInsuranceAmountAfterVAT + FullInsuranceAmountAfterVAT` — chính phép tách đã port ở #357.
+app.MapGet("/api/osveloca/ro/{roNo}/services", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { roNo });
+
+    var items = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == ro.Id).ToListAsync();
+
+    static string? RepairTypeOf(string? roType) => roType switch
+    {
+        "BDD" => "BAODUONG", "SCC" => "SUACHUA", "SCD" => "SUACHUADONG",
+        "SCS" => "SUACHUASON", "PDI" => "PDI", "SPK" => "PHUKIEN",
+        _ => null,   // nguồn không có else
+    };
+    static string? ObjectTypeOf(string? exp) => exp switch
+    {
+        "ROWARRANTY" => "BAOHANH", "ROINSURANCE" => "BAOHIEM",
+        "ROREPAIR" => "KHACHHANG", "LOCAL" => "NOIBO",
+        _ => null,
+    };
+    static string? VatCodeOf(decimal vat) => vat switch
+    {
+        0m => "VAT0", 5m => "VAT5", 8m => "VAT8", 10m => "VAT10", _ => null,
+    };
+    // Trạng thái lệnh quy sang từ vựng Veloca; trạng thái khác ⇒ NULL (nguồn không có else).
+    var roStatusService = ro.Status switch { "Paid" => "PAIDED", "Finished" => "FINISH", _ => (string?)null };
+
+    var lines = items.Select(i =>
+    {
+        var afterVat = i.Factor * i.Price * (1m + i.Vat * 0.01m);
+        var ip = i.InsurancePrice ?? 0m;
+        // #357: dòng bảo hiểm có giá duyệt ⇒ phần bảo hiểm = toàn dòng − giá duyệt; không có ⇒ toàn dòng.
+        var insAfterVat = i.ExpenseType != "ROINSURANCE" ? 0m
+            : ip > 0m ? afterVat - ip : afterVat;
+        return new
+        {
+            roNoSys = roNo,
+            idxPrdService = i.Id,
+            productCodeUserService = i.SerCode,
+            productNameService = i.SerName,
+            unitCode = "Lần",                    // nguồn đóng cứng N'Lần'
+            repairType = RepairTypeOf(i.ROType),
+            objectType = ObjectTypeOf(i.ExpenseType),
+            discountRate = i.Factor > 1m || i.Factor < 0m ? 0m : (1m - i.Factor) * 100m,
+            up = i.Factor > 1m ? i.Price * i.Factor : i.Price,
+            vat = i.Vat,
+            valBeforeVATService = i.Price * i.Factor,
+            valVATService = i.Price * i.Factor * i.Vat / 100m,
+            valAfterVATService = afterVat,
+            valDisAfterVATService = i.Factor >= 1m || i.Factor < 0m ? 0m
+                : Math.Round(i.Price * (1m + i.Vat / 100m) - (i.Price * i.Factor + i.Price * i.Factor * i.Vat / 100m), 2),
+            valInsAfterVATService = insAfterVat,
+            roStatusService,
+            servicesStatus = "REPAIRED",         // nguồn đóng cứng
+            vatRateCode = VatCodeOf(i.Vat),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        roNo, count = lines.Count, services = lines,
+        // Mã lạ cho ra NULL (nguồn không có `else`) — trả ra để thấy ngay, không im lặng.
+        unmappedRepairTypes = items.Select(i => i.ROType).Where(x => RepairTypeOf(x) is null).Distinct().ToList(),
+        unmappedObjectTypes = items.Select(i => i.ExpenseType).Where(x => ObjectTypeOf(x) is null).Distinct().ToList(),
+        unmappedVatRates = items.Select(i => i.Vat).Where(v => VatCodeOf(v) is null).Distinct().ToList(),
+        factorNote = "Factor ≤ 1 = hệ số CHIẾT KHẤU (UP = giá gốc); Factor > 1 = hệ số NHÂN GIÁ (UP = Price×Factor).",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/amounts", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
