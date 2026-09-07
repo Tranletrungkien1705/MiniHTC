@@ -23198,13 +23198,44 @@ app.MapPost("/api/transportinspayments", async (TransportInsPaymentDto dto, AppD
     decimal total = 0;
     foreach (var l in lines)
     {
+        // ===== 🔴 #344 HAI GUARD của nguồn — âm là NÉM LỖI, không phải kẹp về 0 =====
+        //   `if (Convert.ToDouble(strTransportCost) < 0) throw …_InvalidTransportCost`
+        //   `if (Convert.ToDouble(strDelayPenaty)  < 0) throw …_DelayPenaty`
+        if (l.TransportCost < 0m)
+            return Results.BadRequest(new { error = "Cước vận chuyển không được âm.", vin = l.Vin, l.TransportCost });
+        if (l.DelayPenaty < 0m)
+            return Results.BadRequest(new { error = "Tiền phạt chậm không được âm.", vin = l.Vin, l.DelayPenaty });
+
         var amount = l.TFValReal + l.InsuranceCost - l.TPValReal;
         total += amount;
         db.TransportInsPaymentLines.Add(new TransportInsPaymentLine
         {
             OrgId = t.OrgId, TransportInsPaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), CarId = l.CarId, DlvMnNo = l.DlvMnNo,
             TProvinceName = l.TProvinceName, ExpectedDlvEndDate = l.ExpectedDlvEndDate, DlvEndDate = l.DlvEndDate, TFValReal = l.TFValReal, TPValReal = l.TPValReal,
-            PriceCar = l.PriceCar, InsuranceCost = l.InsuranceCost, ValTransport = amount, Remark = l.Remark
+            PriceCar = l.PriceCar, InsuranceCost = l.InsuranceCost, ValTransport = amount, Remark = l.Remark,
+
+            // ===== 🔴 #344 SÁU CỘT nguồn ghi GIÁ TRỊ THẬT (trước nay không đường nào ghi) =====
+            // Tìm bằng `_audit/sweep_dead_column.js` (#343), đối chiếu `TERP.BizHTC/DMS40/0.34.Contract.cs`.
+            FProvinceRemark = l.FProvinceRemark, StandardRemark = l.StandardRemark,
+            InvEndDate = l.InvEndDate, TransportCost = l.TransportCost, DelayPenaty = l.DelayPenaty,
+            // Trạng thái dòng luôn **Pending** khi tạo: `drScan["TrasportInsDtlStatus"] = TConst.TrasportInsDtlStatus.Pending`.
+            //   Bộ mã đầy đủ: **P** (chờ) · **A1** (duyệt 1) · **A2** (duyệt 2) · **F** (xong) · **R** (từ chối)
+            //   ⇒ chứng từ này có **HAI cấp duyệt**, không phải một.
+            TrasportInsDtlStatus = "P",
+
+            // ===== 🔴 #344 SÁU CỘT nguồn ĐÓNG CỨNG null/0 Ở ĐƯỜNG TẠO =====
+            //   `FProvinceName = null` · `InvStartDate = null` · `DelayDate = null`
+            //   `InsurancePercent = 0` · `TranspReqType = null` · `InsuranceContractNo = null`
+            // ⇒ Sáu cột này **KHÔNG nhận dữ liệu người dùng lúc tạo** dù chúng có trong lược đồ;
+            //   chúng được điền ở màn/bước khác. Đặt đúng như nguồn thay vì mở cho client gửi lên —
+            //   mở ra là **tự chế luật** (lệ #299) và làm lệch dữ liệu so với WinForm.
+            FProvinceName = null, InvStartDate = null,
+            // ⚠️ Nguồn ghi `drScan["DelayDate"] = null` (cột SỐ ngày trễ ⇒ NULL trong CSDL), nhưng
+            //   `DelayDate` ở MiniHTC là `decimal` KHÔNG nullable nên chỉ biểu diễn được **0**.
+            //   Khác biệt về BIỂU DIỄN: "chưa xác định" và "trễ 0 ngày" bị gộp làm một. Ghi lại để ai
+            //   đối chiếu số ngày trễ với WinForm biết vì sao không phân biệt được hai trạng thái đó.
+            DelayDate = 0m,
+            InsurancePercent = 0m, TranspReqType = null, InsuranceContractNo = null
         });
     }
     h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
@@ -38324,7 +38355,12 @@ record ReqPaymentDiscountDto(string? DealerCode, DateTime? PGDateEndFrom, DateTi
 record ReqPaymentDiscountDecideDto(bool Approve);
 record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck);
 record PdiFeePaymentEditDto(List<PdiFeePaymentEditLineDto>? Lines);
-record TransportInsPaymentLineDto(string? Vin, string? CarId, string? DlvMnNo, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? DlvEndDate, decimal TFValReal, decimal TPValReal, decimal PriceCar, decimal InsuranceCost, string? Remark);
+// #344: nam truong nguon nhan tu nguoi dung o duong TAO. Sau truong con lai
+//   (FProvinceName / InvStartDate / DelayDate / InsurancePercent / TranspReqType /
+//   InsuranceContractNo) nguon DONG CUNG null/0 nen KHONG dua vao DTO.
+record TransportInsPaymentLineDto(string? Vin, string? CarId, string? DlvMnNo, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? DlvEndDate, decimal TFValReal, decimal TPValReal, decimal PriceCar, decimal InsuranceCost, string? Remark,
+    string? FProvinceRemark = null, string? StandardRemark = null, DateTime? InvEndDate = null,
+    decimal TransportCost = 0, decimal DelayPenaty = 0);
 record DlvInputFeeDto(string? FlagFeeOrPer, decimal? Value, string? TFRemark = null);
 record DlvUpdEndDateDto(DateTime? DlvEndDate);
 record DlvConfirmDto(DateTime? DlvEndDate, string? TPlateNo, string? TDriverId, string? TDriverName, string? TGPSDvStatus = null, string? TRemark = null, string? TStatusIaKm = null, string? TStatusIaRemark = null, string? GPSDvNo = null, string? GPSDvAddress = null, string? GPSDvResponse = null, List<DlvCorrectItemDto>? Items = null);
