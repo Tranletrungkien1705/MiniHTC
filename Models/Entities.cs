@@ -5856,6 +5856,12 @@ public sealed class CarDocRequest
     public DateTime? DoneAt { get; set; }
     public string? RejectReason { get; set; }     // FrmDRApproved — từ chối
     public DateTime? RejectedAt { get; set; }
+    /// <summary>Loại đề nghị (`Car_DocReqList.TypeCRR` — bí danh `cdrl` trong SQL nguồn), từ vựng
+    /// `TConst.CarDocReqType` (`Const.Main.cs:657-662`): NORMAL · SPECIAL · DEALER · DEALERTCG.
+    /// 🔴 Guard `CarDocReqDtlDelete_ExistAnotherSpecial` CHỈ chạy khi đề nghị là **NORMAL**
+    /// (`Biz.HTC.WH.cs:83709-83711`) ⇒ thiếu cột này thì guard chéo NORMAL↔SPECIAL không kiểm được.
+    /// Mặc định NORMAL — khớp luồng tạo đề nghị hiện có của port.</summary>
+    public string TypeCRR { get; set; } = "NORMAL";
 }
 public sealed class CarDocRequestCar
 {
@@ -7665,6 +7671,40 @@ public sealed class WoScheduleDetailDate
     public DateTime PlanDate { get; set; }
     /// <summary>Số lượng kế hoạch ngày đó; nguồn KHÔNG ghi dòng khi giá trị = 0.</summary>
     public decimal QtyPlan { get; set; }
+}
+
+/// <summary>
+/// DÒNG XE của hoá đơn HTC (`VAT_HTCInvoiceDetail` — 2010.HTC
+/// `HDDTIntergration/BizHTC.HDDTIntergration.cs:4088-4114`, ghi cả `_dbMain` lẫn `_dbWH`).
+/// 🔴 **Khác hẳn** `VatHtcInvoiceDeviceDetail` (bảng THIẾT BỊ kèm theo). Trước lượt #B31 MiniHTC
+/// chỉ có bảng thiết bị ⇒ mọi guard "xe đã có hoá đơn HTC" của nguồn không kiểm được.
+/// Khoá dòng = (`HTCInvoiceCode`, `VIN`). `HTCStatusDetail` khởi tạo `TConst.Stage.Pending` = "P";
+/// `TInvoicePrice` khởi tạo **0** (literal của nguồn).
+/// 🔴 Nguồn lưu **CẢ HAI** `SpecCode` và `ActualSpec` như hai cột riêng (4104-4105) — không gộp.
+/// </summary>
+public sealed class VatHtcInvoiceDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string HTCInvoiceCode { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public decimal? HTCUnitPrice { get; set; }
+    public decimal? HTCVAT { get; set; }
+    public string? BrandName { get; set; }
+    public string? CarType { get; set; }
+    public DateTime? CustomsClearanceDate { get; set; }
+    public string? InvoiceNoFactory { get; set; }
+    public string? InvoiceFactorySearch { get; set; }
+    public string? ProductionMonth { get; set; }
+    public string? SpecCode { get; set; }
+    public string? ActualSpec { get; set; }
+    public decimal TInvoicePrice { get; set; } = 0;
+    /// <summary>`TConst.Stage.Pending` = "P" lúc tạo.</summary>
+    public string HTCStatusDetail { get; set; } = "P";
+    public string? BankCode { get; set; }
+    public string? QICNo { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

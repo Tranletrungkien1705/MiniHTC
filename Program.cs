@@ -29727,7 +29727,7 @@ app.MapGet("/api/cardocrequests", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(r => r.DealerCode == dealer);
     var items = await query.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.RequestNo, r.DealerCode, r.ReceivedPerson, r.ReceivedAddress, r.Status, r.CreatedAt, r.DoneAt,
+        r.RequestNo, r.DealerCode, r.ReceivedPerson, r.ReceivedAddress, r.Status, r.TypeCRR, r.CreatedAt, r.DoneAt,
         cars = db.CarDocRequestCars.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -29742,12 +29742,16 @@ app.MapPost("/api/cardocrequests", async (CarDocRequestDto dto, AppDbContext db,
     var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
     var no = "DR" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "Draft" };
+    // #B31 — `TypeCRR` phải nằm trong TỪ VỰNG `TConst.CarDocReqType`; không tự chế giá trị mới.
+    var typeCRR = string.IsNullOrWhiteSpace(dto.TypeCRR) ? "NORMAL" : dto.TypeCRR.Trim().ToUpperInvariant();
+    if (typeCRR is not ("NORMAL" or "SPECIAL" or "DEALER" or "DEALERTCG"))
+        return Results.BadRequest(new { error = $"TypeCRR '{typeCRR}' không hợp lệ.", allowed = new[] { "NORMAL", "SPECIAL", "DEALER", "DEALERTCG" } });
+    var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "Draft", TypeCRR = typeCRR };
     db.CarDocRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RequestNo, r.ReceivedPerson, cars = cars.Count, status = r.Status });
+    return Results.Ok(new { r.RequestNo, r.ReceivedPerson, r.TypeCRR, cars = cars.Count, status = r.Status });
 }).RequireAuthorization();
 
 app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -29757,19 +29761,84 @@ app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, I
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && c.RequestId == r.Id)
         .Select(c => new { c.CarId, c.Remark, c.DeliveryStartDate }).ToListAsync();
-    return Results.Ok(new { r.RequestNo, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.RequestNo, r.Status, r.TypeCRR, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/cardocrequests/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
+// ===== #B31 XOÁ DÒNG XE KHỎI ĐỀ NGHỊ GIAO HỒ SƠ — `Car_DocReqDtlDelete_New20181119` =====
+// Trace twin LIVE: `SalesService.DeleteCDRDetail` (`:26022`) → WS (`WSHTC.asmx.cs:38579`) →
+//   **`_biz.Car_DocReqDtlDelete_New20181119`** (`Biz.HTC.WH.cs:83620`).
+//   ⚠️ **4 bản CHẾT** cùng họ trong `Delete.BizHTC.Report.cs` (`:118913`, `:119297`, `:119670`, `:120022`),
+//      và một biến thể `_ByDealer_New20181119` (`:84003`) dùng cho WS khác (`:38645`).
+// 🔴 GUARD 1 — chỉ xoá được dòng đang ở **`Stage.Cancel` ("C")**: `myCar_CheckCar_DocReqDtl(..., TConst.Stage.Cancel)`
+//    kèm chú thích nguyên văn của nguồn: *"chỉ xóa Đề nghị ở trạng thái C"*. ⇒ **phải HUỶ trước, rồi mới XOÁ**.
+// 🔴 GUARD 2 — ĐỀ NGHỊ phải thuộc **"P,A1,A2,F"** (`myCar_CheckCarDocReq`).
+// 🔴 GUARD 3 — **CHÉO Normal ↔ SPECIAL** (`..._ExistAnotherSpecial`): đề nghị loại `Normal` mà VIN đó còn nằm
+//    trong một đề nghị **SPECIAL khác còn sống** ⇒ chặn. (Cùng cơ chế đã port ở lệnh TỪ CHỐI #209.)
+// 🔴 GUARD 4 — **`..._ExistInvoice`**: VIN đã có **hoá đơn HTC** (`VHD_HTCInvoiceCode`) **hoặc** **hoá đơn TCG**
+//    (`VTD_TCGInvoiceCode`) khác rỗng ⇒ chặn xoá.
+// 🔴 GUARD 5/6 — `..._ExistRedeem` và `..._ExistRDInvoice`: đã có đề nghị giải chấp / hoá đơn giải chấp ⇒ chặn.
+// 🔴 SIDE-EFFECT DỌN RÁC: sau khi xoá dòng, nguồn **xoá luôn ĐỀ NGHỊ nếu không còn dòng nào**
+//    (`delete Car_DocReqList … left join Car_DocReqDtl … where cdrd.DRListCode is null` — "kỹ thuật lọc ngược",
+//    chú thích của nguồn). Port cũ không có bước này ⇒ để lại đề nghị RỖNG treo trong danh sách.
+app.MapDelete("/api/cardocrequests/{no}/cars/{carId}", async (string no, string carId,
+    AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
-    no = no.Trim().ToUpperInvariant();
+    // `myCommon_CheckHTCDirect(..., Flag.Active)` (`:83680`) — DÒNG ACTIVE.
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được xoá dòng đề nghị." });
+    no = no.Trim().ToUpperInvariant(); carId = carId.Trim().ToUpperInvariant();
     var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Draft") return Results.BadRequest(new { error = "Đề nghị đã hoàn tất." });
-    r.Status = "Done"; r.DoneAt = DateTime.Now;
+    var line = await db.CarDocRequestCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestId == r.Id && x.CarId == carId);
+    if (line is null) return Results.NotFound(new { no, carId });
+
+    // GUARD 1 — dòng phải đang "C" (đã huỷ).
+    if (line.DRDtlStatus != "C")
+        return Results.BadRequest(new { error = $"Chỉ xoá được dòng đang ở trạng thái huỷ 'C' (đang '{line.DRDtlStatus}') — phải HUỶ trước rồi mới xoá." });
+    // GUARD 2 — đề nghị phải thuộc P,A1,A2,F.
+    var listStatus = r.Status;
+    if (listStatus is not ("P" or "A1" or "A2" or "F" or "Draft" or "Done"))
+        return Results.BadRequest(new { error = $"Đề nghị phải thuộc 'P,A1,A2,F' (đang '{listStatus}').", note = "Từ vựng Draft/Done của port cũ là nợ đã ghi ở #209." });
+
+    // GUARD 3 — chéo Normal ↔ SPECIAL.
+    if (string.Equals(r.TypeCRR, "NORMAL", StringComparison.OrdinalIgnoreCase))
+    {
+        var aliveSpecial = await (
+            from c in db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && c.CarId == carId && c.DRDtlStatus != "R" && c.DRDtlStatus != "C")
+            join h in db.CarDocRequests.Where(h => h.OrgId == t.OrgId && h.Id != r.Id
+                                                   && h.TypeCRR != "NORMAL" && h.Status != "R" && h.Status != "C")
+                 on c.RequestId equals h.Id
+            select h.RequestNo).FirstOrDefaultAsync();
+        if (aliveSpecial is not null)
+            return Results.BadRequest(new { error = $"Xe {carId} còn nằm trong đề nghị SPECIAL {aliveSpecial} còn sống — huỷ đề nghị SPECIAL trước.", guard = "CarDocReqDtlDelete_ExistAnotherSpecial" });
+    }
+
+    // GUARD 4 — đã có hoá đơn HTC hoặc TCG.
+    var hasHtcInv = await db.VatHtcInvoiceDetails.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == carId);
+    var hasTcgInv = await db.VatTcgInvoiceDetails.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == carId);
+    if (hasHtcInv || hasTcgInv)
+        return Results.BadRequest(new { error = $"Xe {carId} đã có hoá đơn (HTC={hasHtcInv}, TCG={hasTcgInv}) — không xoá được dòng đề nghị.", guard = "CarDocReqDtlDelete_ExistInvoice" });
+
+    db.CarDocRequestCars.Remove(line);
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RequestNo, status = r.Status });
+
+    // SIDE-EFFECT: xoá luôn ĐỀ NGHỊ nếu không còn dòng nào ("kỹ thuật lọc ngược" của nguồn).
+    var remain = await db.CarDocRequestCars.CountAsync(x => x.OrgId == t.OrgId && x.RequestId == r.Id);
+    var headerDeleted = false;
+    if (remain == 0) { db.CarDocRequests.Remove(r); await db.SaveChangesAsync(); headerDeleted = true; }
+
+    return Results.Ok(new
+    {
+        deleted = new { no, carId }, remainingCars = remain, headerDeleted,
+        headerDeleteRule = "Nguồn xoá luôn Car_DocReqList khi không còn Car_DocReqDtl tương ứng (left join … where is null).",
+        guardsChecked = new[] { "DRDtlStatus='C'", "DRListStatus in (P,A1,A2,F)", "ExistAnotherSpecial", "ExistInvoice(HTC/TCG)" },
+        debt = "NỢ: 2 guard còn lại của nguồn chưa port — _ExistRedeem và _ExistRDInvoice (đề nghị/hoá đơn giải chấp)."
+    });
 }).RequireAuthorization();
+
+// ⚠️ #B31 ĐÃ GỠ `POST /api/cardocrequests/{no}/complete` — nút "hoàn tất" **TỰ CHẾ** (Draft→Done).
+//    Họ lệnh THẬT của nguồn ở mức DÒNG: `CarDocReqDtlApprove2` · `CarDocReqDtlCancel` · `CarDocReqDtlReject`
+//    · `Car_DocReqDtlDelete`; ở mức ĐỀ NGHỊ chỉ có `CarDocReqListCancel` / `CarDocReqListDelete`.
+//    **Không có lệnh nào "hoàn tất" cả đề nghị** (luật C0-trecentesimusseptuagesimussextus).
 
 // ===== 🔴 #209 TỪ CHỐI THEO DÒNG — `CarDocReqDtlReject_New20181119` (DataWH/Biz.HTC.WH.cs:83426) =====
 // BƯỚC 3B: căn theo **MỐC HÀM** (laptop 83426 / máy 150 83431 — file này lệch offset, xem luật #208):
@@ -34527,7 +34596,7 @@ record DocReqSupportDto(List<DocReqSupportRowDto>? Rows);
 record ForeignContractLineDto(string? RefNo, string LcTemp);
 record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
 record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);
-record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars);
+record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars, string? TypeCRR);
 record PackingListVinDto(string Vin, string? CrateType);
 record StorageTransactionDto(string? Vin, string? RefNo, string? RefType, string? StorageCode, string? StorageCodeTo, DateTime? DTimeFrom, DateTime? DTimeTo, string? Remark);
 record PackingListStorageDto(string? Vin, DateTime? StoreDate, string? StorageCodeCurrent);
