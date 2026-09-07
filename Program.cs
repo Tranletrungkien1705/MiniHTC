@@ -12348,6 +12348,8 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
         x.PlateColorCode,   // #332 §12
         x.SerialNo, x.BatteryNo, x.ProductionCode,                                    // #333 §12
         x.CusConfirmedWarrantyDate, x.WarrantyExpiresDate, x.WarrantyKM,              // #333 §12
+        warrantyRegistrationDate = x.WarrantyRegistrationDate.HasValue                // #334 §12
+            ? x.WarrantyRegistrationDate.Value.ToString("yyyy-MM-dd") : "",
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -12377,6 +12379,28 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
 // ⚠️ `VIN` **không phải cột ghi**: nguồn dùng `row["VIN"]` làm **cột ĐẦU VÀO** rồi gán
 //   `newRow["FrameNo"] = row["VIN"]`. Mẫu quét `\["X"\]\s*=` bắt nhầm cả `row["VIN"] ==` (so sánh)
 //   ⇒ đã siết thành `=[^=]`. Cùng loại lỗi đếm với #310/#314.
+//
+// ===== 🔴 #334 ĐƯỜNG **SỬA** XE — `ProcessUpdateCar*` (`BizCarSv.zzzzCode.cs`) =====
+// TRACE TWIN theo ĐƯỜNG GỌI (lệ #332), **hai** bản còn sống trong codebehind `WSCarSv.asmx.cs`:
+//   `Ser_Customer_Update01_New20220926` (:7515)  → `ProcessUpdateCar_New20220926`  ⇒ **24 cột**
+//   `OS_Ser_Customer_Update01`          (:36073) → `ProcessUpdateCar_New20210802`  ⇒ **21 cột**
+//   Hai bản CHẾT: `Ser_Customer_Update01` (chỉ gọi từ `WSCarSv.cs`, **không** phải codebehind) và
+//     `…_New20180619` (chỉ còn trong ảnh chụp cũ `.asmx.20210208/.20210412.cs`).
+//
+// 🔴 Ba cột kênh **OS (đối tác)** KHÔNG sửa được, kênh nội bộ thì có:
+//   `PlateColorCode` · `WarrantyExpiresDate` · `WarrantyKM`
+//   ⇒ đối tác gọi OS API không bao giờ đổi được màu biển và hạn bảo hành mở rộng. Cùng bảng `Ser_Car`.
+//   (Trùng mô-típ #332/#333: **một bảng, mỗi kênh một tập cột**.)
+//
+// ✅ ĐÃ KIỂM `alColumnEffective`: khác #331 (nơi danh sách để RỖNG = biến chết), hai bản này **có nạp**
+//   danh sách, nên tập cột lưu thật = giao của (cột được gán) ∩ (danh sách hiệu lực). Đã trích cả hai
+//   và chúng **trùng khít** tập cột gán (24 và 21) ⇒ không có cột nào bị âm thầm loại. Ghi lại vì nếu
+//   lệch thì mọi con số cột ở trên đều sai.
+//
+// 🔴 RỖNG = **XOÁ** ở đường sửa: nguồn viết `if (!IsEmpty(x)) { ghi } else { ghi DBNull }` cho
+//   `ProductYear` · `WarrantyRegistrationDate` · `PlateColorCode` … ⇒ gửi lên rỗng là **xoá giá trị cũ**,
+//   KHÁC nhóm "rỗng = giữ nguyên" của lịch hẹn (#323). Port gán thẳng `ex.X = dto.X` ⇒ cùng kết quả.
+// ⚠️ `WarrantyRegistrationDate` nguồn `Convert.ToDateTime(...).ToString("yyyy-MM-dd")` ⇒ **CẮT còn NGÀY**.
 //
 // Upsert theo số khung (VIN). Guard km không giảm (chỉ tăng hoặc giữ).
 app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITenantContext t) =>
@@ -12420,6 +12444,10 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
         ex.CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate;
         ex.WarrantyExpiresDate = dto.WarrantyExpiresDate;
         ex.WarrantyKM = dto.WarrantyKM;
+        // #334 §12: cả hai bản LIVE của đường sửa đều ghi `WarrantyRegistrationDate`, nhưng cổng upsert
+        //   này chưa hề gán nó (trước nay chỉ đặt được qua `POST /api/servicecars/warranty-reg-batch`).
+        //   Nguồn cắt còn NGÀY ⇒ `.Date`.
+        ex.WarrantyRegistrationDate = dto.WarrantyRegistrationDate?.Date;
         await db.SaveChangesAsync();
         return Results.Ok(new
         {
@@ -12438,7 +12466,8 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
         // #333 §12 — sáu cột của họ `ProcessSaveCar01`.
         SerialNo = dto.SerialNo, BatteryNo = dto.BatteryNo, ProductionCode = dto.ProductionCode,
         CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate,
-        WarrantyExpiresDate = dto.WarrantyExpiresDate, WarrantyKM = dto.WarrantyKM };
+        WarrantyExpiresDate = dto.WarrantyExpiresDate, WarrantyKM = dto.WarrantyKM,
+        WarrantyRegistrationDate = dto.WarrantyRegistrationDate?.Date };   // #334 §12, cắt còn NGÀY
     db.ServiceCars.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.FrameNo, updated = false });
 }).RequireAuthorization();
@@ -38289,6 +38318,8 @@ record ServicePartDto(string PartCode, string? PartName, string? EngName, string
 // #333: 6 truong cua ho ProcessSaveCar01 (AVN / ac quy / lo SX / bao hanh mo rong).
 record ServiceCarDto(string FrameNo, string? SerialNo, string? BatteryNo, string? ProductionCode,
     DateTime? CusConfirmedWarrantyDate, DateTime? WarrantyExpiresDate, decimal? WarrantyKM,
+    // #334: ngay DANG KY bao hanh — ca hai ban LIVE cua duong sua deu ghi cot nay.
+    DateTime? WarrantyRegistrationDate,
     string? PlateColorCode, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate
     string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
