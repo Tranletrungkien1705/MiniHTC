@@ -1,0 +1,52 @@
+cot                         GAN  ADD  SQLSET SQLINS  DOC   => KET LUAN
+AmountAccum                 0    0    0      0      866   KHONG THAY GHI
+AmountBeforeVat             0    0    0      0      0     KHONG THAY GHI
+AssemblyStatus              0    0    0      0      2149  KHONG THAY GHI
+CancelQuantityTotal         0    0    0      0      44    KHONG THAY GHI
+CostInCheck                 0    0    0      0      56    KHONG THAY GHI
+CostOutCheck                0    0    0      0      52    KHONG THAY GHI
+DeliveryRangeType           0    0    0      0      307   KHONG THAY GHI
+DisbursementDate            0    0    0      0      61    KHONG THAY GHI
+DiscountValue               0    0    0      0      533   KHONG THAY GHI
+ExchangeRate                0    0    0      1      145   CO GHI (BizCarSv.Service.cs:17471)
+FlagOrderNCC                0    0    0      0      8     KHONG THAY GHI
+FnDepositAmount             0    0    0      0      206   KHONG THAY GHI
+FnDepositCountDate          0    0    0      0      290   KHONG THAY GHI
+FnGrtAmount                 0    0    0      0      207   KHONG THAY GHI
+FnGrtCountDate              0    0    0      0      291   KHONG THAY GHI
+FnTotalAmount               0    0    0      0      184   KHONG THAY GHI
+InCostStorageDate           0    0    0      0      29    KHONG THAY GHI
+ListDealerHyundai           0    0    0      0      41    KHONG THAY GHI
+ObjectType                  0    0    0      0      1489  KHONG THAY GHI
+OutCostStorageDate          0    0    0      0      21    KHONG THAY GHI
+QtyBOChuaXuatKho            0    0    0      0      213   KHONG THAY GHI
+QtyBOKhongVINHienTai        0    0    0      0      169   KHONG THAY GHI
+QtyBOKhongVINQuaKhu         0    0    0      0      169   KHONG THAY GHI
+QtyBOKhongVINTuongLai       0    0    0      0      169   KHONG THAY GHI
+QtyBalance                  0    0    0      0      121   KHONG THAY GHI
+QtyBuyDealer                0    0    0      10     199   CO GHI (BizHTC.PlanDelivery.cs:2737 BizHTC.PlanDelivery.cs:3283 0.20.MapVIN.2024.cs:713)
+QtyCondition                0    0    0      0      87    KHONG THAY GHI
+QtyInStock                  0    0    0      18     252   CO GHI (BizHTC.PlanDelivery.cs:2736 BizHTC.PlanDelivery.cs:3282 BizHTC.zTemp.cs:18781)
+QtyOrdNotCarID              0    0    0      0      169   KHONG THAY GHI
+QtyPromotion                0    0    0      0      81    KHONG THAY GHI
+QtySMNoWorking              0    0    0      4      124   CO GHI (BizHTC.zzzzCode.cs:12975 BizHTC.zzzzCode.cs:12975 RptSQLQuery.cs:14442)
+QtySMWorking                0    0    0      4      124   CO GHI (BizHTC.zzzzCode.cs:12974 BizHTC.zzzzCode.cs:12974 RptSQLQuery.cs:14441)
+QtySalesOrderP              0    0    0      2      58    CO GHI (zTemp.0.30.Order.cs:10495 zTemp.0.30.Order.cs:10496)
+QtySellCustomer             0    0    0      8      161   CO GHI (BizHTC.zTemp.cs:18779 BizHTC.zTemp.cs:47856 BizHTC.zTemp.cs:18780)
+QtySellDealer               0    0    0      8      57    CO GHI (BizHTC.zTemp.cs:18780 BizHTC.zTemp.cs:47857 BizHTC.zTemp.cs:18781)
+QtyStockDealer              0    0    0      0      17    KHONG THAY GHI
+QtyUnKnown                  0    0    0      0      65    KHONG THAY GHI
+TotalAfterVAT               0    0    0      0      70    KHONG THAY GHI
+TotalAmountAfterVAT         0    0    0      0      50    KHONG THAY GHI
+TotalBeforeVAT              0    0    0      0      9     KHONG THAY GHI
+TotalBeforeVat              0    0    0      0      0     KHONG THAY GHI
+TotalQuantityInExchangeRate 0    0    0      0      45    KHONG THAY GHI
+TotalValInvoice             0    0    0      0      54    KHONG THAY GHI
+TotalValPmt                 0    0    0      0      56    KHONG THAY GHI
+TotalValVAT                 0    0    0      0      70    KHONG THAY GHI
+TotalValue                  0    0    0      0      184   KHONG THAY GHI
+ValGoodsNotChargeTax        0    0    0      0      54    KHONG THAY GHI
+ValGoodsNotTaxable          0    0    0      0      54    KHONG THAY GHI
+ValGoodsVAT10               0    0    0      0      54    KHONG THAY GHI
+ValGoodsVAT5                0    0    0      0      54    KHONG THAY GHI
+ViolateNumber               0    0    0      1      220   CO GHI (Biz.HTC.WH.cs:210677)

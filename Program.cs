@@ -4162,10 +4162,23 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
         VatHTCStatus = "P",
         OS_HDDT_RefNo = dto.OS_HDDT_RefNo,
         PaymentMethodCode = string.IsNullOrWhiteSpace(dto.PaymentMethodCode) ? "CK" : dto.PaymentMethodCode!.Trim().ToUpperInvariant(),
-        ValGoodsNotTaxable = dto.ValGoodsNotTaxable, ValGoodsNotChargeTax = dto.ValGoodsNotChargeTax,
-        ValGoodsVAT5 = dto.ValGoodsVAT5, ValVAT5 = dto.ValVAT5,
-        ValGoodsVAT10 = dto.ValGoodsVAT10, ValVAT10 = dto.ValVAT10,
-        TotalValInvoice = dto.TotalValInvoice, TotalValVAT = dto.TotalValVAT, TotalValPmt = dto.TotalValPmt,
+        // 🔴 #383 CHÍN CỘT TIỀN CỦA HOÁ ĐƠN VAT LÀ **DẪN XUẤT**, không nhận từ client nữa.
+        //   Bộ dò ghi (_audit/detect_column_write.js) cho kết quả: KHÔNG có chỗ ghi nào trong nguồn.
+        //   Nguồn TÍNH toàn bộ từ bảng chi tiết gom theo thuế suất
+        //   (`BizHTC.InvoiceHTC_TCG.cs`, `#tbl_VAT_TCGInvoiceDetail_GroupVATRate`):
+        //     `ValGoodsNotTaxable`   = tổng giá trị hàng có `VATRateCode IS NULL`   (KHÔNG chịu thuế)
+        //     `ValGoodsNotChargeTax` = tổng giá trị hàng có `VATRateCode = 'VAT0'`  (thuế suất 0%)
+        //     `ValGoodsVAT5`/`ValVAT5`   = giá trị / tiền thuế của nhóm `VAT5`
+        //     `ValGoodsVAT10`/`ValVAT10` = giá trị / tiền thuế của nhóm `VAT10`
+        //     `TotalValInvoice` = tổng giá trị trước thuế · `TotalValVAT` = tổng tiền thuế
+        //     `TotalValPmt` = `TotalValInvoice + TotalValVAT`
+        //   🔴 **KHÔNG chịu thuế** (`NULL`) và **thuế suất 0%** (`VAT0`) là HAI Ô KHÁC NHAU — gộp lại
+        //     là sai bản chất hoá đơn. Nguồn tách bằng hai truy vấn con riêng.
+        //   ⇒ Nhận từ client nghĩa là **client tự khai tiền thuế trên hoá đơn**. Tính lại bên dưới.
+        ValGoodsNotTaxable = 0m, ValGoodsNotChargeTax = 0m,
+        ValGoodsVAT5 = 0m, ValVAT5 = 0m,
+        ValGoodsVAT10 = 0m, ValVAT10 = 0m,
+        TotalValInvoice = 0m, TotalValVAT = 0m, TotalValPmt = 0m,
         CurrencyCode = string.IsNullOrWhiteSpace(dto.CurrencyCode) ? "VND" : dto.CurrencyCode!.Trim().ToUpperInvariant(),
         CurrencyRate = dto.CurrencyRate <= 0 ? 1 : dto.CurrencyRate
     };
@@ -4183,8 +4196,29 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
     //    **MỚI**, không phải `RefNo` — và còn đòi `HTCStatusDetail in ('F')` trong khi dòng vừa tạo đang là "P".
     //    ⇒ ở nguồn khối đó KHÔNG khớp dòng nào, không làm gì cả. Port giữ đúng hành vi thật, ghi nợ để
     //    người nghiệp vụ quyết có nên huỷ chi tiết hoá đơn gốc hay không.
+    // #383: tính CHÍN cột tiền từ các dòng vừa thêm, theo đúng cách gom của nguồn.
+    //   ⚠️ Nguồn gom theo thuế suất CỦA TỪNG DÒNG; MiniHTC chưa có cột thuế suất trên dòng
+    //   (`VatInvoiceCar` không có `VATRateCode`) nên dồn cả hoá đơn vào nhóm theo `VAT` của ĐẦU.
+    //   Trả cờ `perLineVatRateNotModelled` để không ai tưởng đã port đủ.
+    var goods = cars.Sum(c => c.HTCUnitPrice);
+    var rate = v2.VAT;
+    decimal tax = Math.Round(goods * rate / 100m, 0);
+    if (rate == 10m) { v2.ValGoodsVAT10 = goods; v2.ValVAT10 = tax; }
+    else if (rate == 5m) { v2.ValGoodsVAT5 = goods; v2.ValVAT5 = tax; }
+    else if (rate == 0m) { v2.ValGoodsNotChargeTax = goods; tax = 0m; }   // VAT0: CÓ chịu thuế, suất 0%
+    else { v2.ValGoodsNotTaxable = goods; tax = 0m; }                     // NULL: KHÔNG chịu thuế
+    v2.TotalValInvoice = goods;
+    v2.TotalValVAT = tax;
+    v2.TotalValPmt = goods + tax;
+
     await db.SaveChangesAsync();
     return Results.Ok(new { v2.HTCInvoiceCode, cars = cars.Count, sourceInvoiceCode = srcCode, refNo,
+        v2.TotalValInvoice, v2.TotalValVAT, v2.TotalValPmt,
+        amountsDerived = true,
+        amountsNote = "Chín cột tiền do MÁY CHỦ tính từ dòng chi tiết; nguồn không lưu chúng và không nhận từ client.",
+        notTaxableVsZeroRateNote = "KHÔNG chịu thuế (VATRateCode NULL) và thuế suất 0% (VAT0) là HAI ô khác nhau — nguồn tách riêng.",
+        perLineVatRateNotModelled = true,
+        perLineNote = "Nguồn gom theo thuế suất TỪNG DÒNG; MiniHTC chưa có cột thuế suất trên dòng nên dùng thuế suất của ĐẦU hoá đơn.",
                             cancelledRootInvoice = rootInv?.HTCInvoiceCode });
 }).RequireAuthorization();
 
