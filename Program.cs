@@ -48413,6 +48413,66 @@ app.MapPost("/api/warrantyworkmsts/delete", async (WarrantyWorkDeleteDto dto,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #537 DỊCH VỤ CÓ ĐỊNH MỨC CÔNG PHÁT SINH — VÀ MỘT **ALIAS SAI LÀM SQL NỔ** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:5750 Ser_MST_Service_WorkArising_Get`.
+// Endpoint: `GET /api/serviceitems/workarising`.
+// ⚠️ **GREP TRƯỚC**: master `Ser_MST_ROWorkArising` **đã port** với tên khác — entity `ExtraWorkMst`
+//   (`ExtraWorkCode` = `ROWArisCode`), endpoint ở `:30636` ⇒ **không viết lại**; lượt này chỉ bù
+//   phép nối *dịch vụ × định mức phát sinh* còn thiếu. (Đúng bài học #521: grep theo tên BẢNG, không theo tên hàm.)
+//
+// 🔴🔴 **BUG ALIAS Ở HÀM ANH EM `Ser_MST_ROWorkArising_Get` (`:5893`)** — phát hiện khi đọc chéo:
+//     `from … Ser_MST_ROWorkArising **smrowa**`   (chỉ có MỘT alias)
+//     `BuildClause("and", "**smroww**.FlagActive", strFlagActiveList, …)`
+//   Alias `smroww` là của bảng `Ser_MST_ROWarrantyWork` (hàm bên cạnh) — **dán nhầm**.
+//   ⇒ Truyền `FlagActive` khác rỗng thì SQL **không hợp lệ** (*"The multi-part identifier
+//     smroww.FlagActive could not be bound"*) ⇒ **lọc trạng thái NỔ NGAY**, không phải bỏ im lặng.
+//   ⇒ Khác hẳn họ #410 (bỏ im lặng): đây là **lỗi cứng**, nhưng chỉ lộ khi ai đó dùng bộ lọc ấy.
+//     Ghi vào hồ sơ để lượt sau không "sửa cho đúng" rồi tưởng nguồn vẫn chạy được.
+//
+// 🔴 `inner join [CommonCenter].[dbo].Ser_MST_ROWorkArising smrowa on t.SerCode = smrowa.ROWArisCode`
+//   — **nối TRONG sang danh mục** ⇒ dịch vụ **không có định mức phát sinh** bị **loại khỏi kết quả**
+//   (luật #410: nối sang danh mục = mất dòng lúc ĐỌC). Port đếm `droppedByArisingJoin`.
+// 🔴 Câu trả về là `select t.*, f.*` với `t` (bảng tạm) và `f` (`Ser_MST_Service`) **cùng có `SerID`**
+//   ⇒ kết quả có **cột trùng tên**; `DataSet` tự đổi thành `SerID1`. Hình dạng kết quả phụ thuộc
+//   thứ tự cột — port **liệt kê tường minh**, không bê `*`.
+// ⚠️ Bộ lọc trạng thái ở hàm này trỏ tới **`t.IsActive`** (không phải `FlagActive`) — lệch tên cột giữa
+//   hai hàm anh em; MiniHTC dùng `ServiceItemMst.FlagActive`. Chép hành vi, ghi rõ tên nguồn.
+app.MapGet("/api/serviceitems/workarising", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? serCode, string? serName, string? flagActive) =>
+{
+    var qy = db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(serCode)) qy = qy.Where(x => x.SerCode == serCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(serName)) qy = qy.Where(x => x.SerName != null && x.SerName!.Contains(serName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+
+    var svcs = await qy.ToListAsync();
+    var codes = svcs.Select(x => x.SerCode).ToList();
+    var arising = await db.ExtraWorkMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.ExtraWorkCode))
+        .ToListAsync();
+
+    // inner join của nguồn: dịch vụ không có định mức phát sinh thì BIẾN MẤT.
+    var joined = svcs.Join(arising, x => x.SerCode, y => y.ExtraWorkCode, (x, y) => new
+    {
+        x.Id, x.SerCode, x.SerName, x.Model, x.DealerCode, x.FlagActive,
+        x.Price, x.Cost, x.Vat, x.StdManHour, x.FlagWarranty,
+        y.MaxPrice,
+        SMROWA_VAT = y.Vat,          // alias nguyên văn của nguồn
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = joined.Count, items = joined,
+        serviceCount = svcs.Count,
+        droppedByArisingJoin = svcs.Count - joined.Count,
+        innerJoinDropsServicesWithoutArising = true,
+        siblingHasBrokenAlias = "Ser_MST_ROWorkArising_Get (:5893): BuildClause tren smroww.FlagActive ma SQL chi co alias smrowa => SQL loi khi loc trang thai",
+        sourceFlagColumnIsIsActiveHere = "t.IsActive (khong phai FlagActive)",
+        duplicateSerIdInSourceResult = "select t.*, f.* => hai cot SerID, DataSet doi thanh SerID1",
+        arisingMasterPortedAs = "ExtraWorkMst (:30636) — ExtraWorkCode = ROWArisCode",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
