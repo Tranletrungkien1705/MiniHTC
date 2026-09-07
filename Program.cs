@@ -16244,6 +16244,95 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 // ⚠️ CẶP COMMENT/ACTIVE: `ValInsAfterVATService` bản cũ (bị comment) tính
 //   `(Factor×Price)×(1+VAT) khi ExpenseType = ROINSURANCE`; bản **đang chạy** dùng
 //   `PartialInsuranceAmountAfterVAT + FullInsuranceAmountAfterVAT` — chính phép tách đã port ở #357.
+// ===== 🔴 #360 DÒNG PHỤ TÙNG của báo giá gửi Veloca (`Table 10`) =====
+// 🔴 `RepairType` của dòng PHỤ TÙNG **KHÔNG lấy từ chính dòng đó** mà từ **dòng DỊCH VỤ ĐẦU TIÊN**
+//   của lệnh — nguồn ghi rõ trong chú thích:
+//   `select top 1 (case … end) from Ser_ROServiceItems where t.ROID = srsi.ROID order by srsi.ItemID asc`
+//   `-- 20240521. HuongTTT: Lấy Loại sửa chữa đầu tiên của Dịch vụ`
+//   ⇒ Lệnh vừa có bảo dưỡng vừa có sửa chữa sơn thì **MỌI dòng phụ tùng** đều mang loại của dòng dịch vụ
+//     có `ItemID` nhỏ nhất. Đây là **đơn giản hoá có chủ đích của nguồn**, không phải lỗi — nhưng nếu bên
+//     Veloca thống kê phụ tùng theo loại sửa chữa thì số đó **không phản ánh phụ tùng thực dùng cho loại nào**.
+//   ✅ `top 1` này **CÓ `order by`** (khác 21 chỗ thiếu order by đã ghi ở sổ) ⇒ kết quả **xác định**.
+//
+// Khác dòng dịch vụ (#359): có thêm `Qty`, và **mọi công thức tiền đều nhân thêm `Quantity`**
+//   (`ValBeforeVATPart = Price × Factor × Quantity` …) — cùng lệ #337: phụ tùng có bốn thừa số.
+// `Factor` vẫn mang hai nghĩa như #359 (≤1 chiết khấu, >1 nhân giá).
+// ⚠️ Lại một CẶP COMMENT/ACTIVE: `ValInsAfterVATPart` bản cũ tính thẳng theo `ROINSURANCE`; bản đang
+//   chạy dùng `PartialInsuranceAmountAfterVAT + FullInsuranceAmountAfterVAT` (phép tách #357).
+app.MapGet("/api/osveloca/ro/{roNo}/parts", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { roNo });
+
+    static string? RepairTypeOf(string? roType) => roType switch
+    {
+        "BDD" => "BAODUONG", "SCC" => "SUACHUA", "SCD" => "SUACHUADONG",
+        "SCS" => "SUACHUASON", "PDI" => "PDI", "SPK" => "PHUKIEN", _ => null,
+    };
+    static string? ObjectTypeOf(string? exp) => exp switch
+    {
+        "ROWARRANTY" => "BAOHANH", "ROINSURANCE" => "BAOHIEM",
+        "ROREPAIR" => "KHACHHANG", "LOCAL" => "NOIBO", _ => null,
+    };
+    static string? VatCodeOf(decimal vat) => vat switch
+    { 0m => "VAT0", 5m => "VAT5", 8m => "VAT8", 10m => "VAT10", _ => null };
+
+    // Loại sửa chữa của MỌI dòng phụ tùng = loại của dòng DỊCH VỤ đầu tiên (ItemID nhỏ nhất).
+    var firstService = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == ro.Id)
+        .OrderBy(i => i.Id).Select(i => i.ROType).FirstOrDefaultAsync();
+    var repairTypeForAllParts = RepairTypeOf(firstService);
+
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == ro.Id).ToListAsync();
+    var roStatusPart = ro.Status switch { "Paid" => "PAIDED", "Finished" => "FINISH", _ => (string?)null };
+
+    var lines = parts.Select(p =>
+    {
+        var qty = p.NeedQty;
+        var afterVat = p.Factor * p.UnitPrice * qty * (1m + p.Vat * 0.01m);
+        var ip = p.InsurancePrice ?? 0m;
+        var insAfterVat = p.ExpenseType != "ROINSURANCE" ? 0m : ip > 0m ? afterVat - ip : afterVat;
+        return new
+        {
+            roNoSys = roNo,
+            idxPrdPart = p.Id,
+            productCodeUserPart = p.PartCode,
+            productNamePart = p.PartName,
+            unitCode = p.Unit,
+            repairType = repairTypeForAllParts,   // từ dòng dịch vụ ĐẦU TIÊN, không phải dòng này
+            objectType = ObjectTypeOf(p.ExpenseType),
+            discountRate = p.Factor > 1m || p.Factor < 0m ? 0m : (1m - p.Factor) * 100m,
+            up = p.Factor > 1m ? p.UnitPrice * p.Factor : p.UnitPrice,
+            vat = p.Vat,
+            qty,
+            valPart = p.Factor > 1m ? p.UnitPrice * p.Factor * qty : p.UnitPrice * qty,
+            valBeforeVATPart = p.UnitPrice * p.Factor * qty,
+            valVATPart = p.UnitPrice * p.Factor * qty * p.Vat / 100m,
+            valAfterVATPart = afterVat,
+            valDisAfterVATPart = p.Factor >= 1m || p.Factor < 0m ? 0m
+                : Math.Round(p.UnitPrice * qty * (1m + p.Vat / 100m)
+                    - (p.UnitPrice * p.Factor * qty + p.UnitPrice * p.Factor * qty * p.Vat / 100m), 2),
+            valInsAfterVATPart = insAfterVat,
+            roStatusPart,
+            vatRateCode = VatCodeOf(p.Vat),
+            remark = p.Note,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        roNo, count = lines.Count, parts = lines,
+        // 🔴 Mọi dòng phụ tùng dùng CHUNG một loại sửa chữa — của dòng dịch vụ đầu tiên.
+        repairTypeSource = "dòng DỊCH VỤ đầu tiên (ItemID nhỏ nhất)",
+        repairTypeForAllParts,
+        distinctServiceTypes = (await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == ro.Id)
+            .Select(i => i.ROType).Distinct().ToListAsync()),
+        repairTypeNote = "Nếu lệnh có NHIỀU loại dịch vụ, phụ tùng vẫn chỉ mang loại của dòng đầu — "
+            + "đừng dùng số này để thống kê phụ tùng theo loại sửa chữa.",
+        unmappedObjectTypes = parts.Select(p => p.ExpenseType).Where(x => ObjectTypeOf(x) is null).Distinct().ToList(),
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/services", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
