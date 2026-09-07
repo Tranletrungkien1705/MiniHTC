@@ -25439,7 +25439,32 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
                 "Ser_ReceptionF_Reception_New20210727", "UploadFile_ForTab", "Mst_Compartment_Get",
                 "Mst_PlateColor_Get", "Mst_Staff_Get", "RptCrdCardForServiceFortab" },
             writeFunctionsAmongRevived = 2,
-            citedByMiniHtc = 0,
+            // ===== ⚠️ #521 SỬA LẠI CON SỐ CỦA CHÍNH #519: `citedByMiniHtc = 0` LÀ **SAI** =====
+            // #519 grep **đúng tên đầy đủ** của bảy hàm trong `Program.cs` và được 0 ⇒ kết luận
+            //   "MiniHTC chưa từng trích dẫn". Grep **lỏng** (bỏ hậu tố ngày, tra theo tên BẢNG/MÀN) cho
+            //   kết quả khác hẳn — vì bản port **viết tắt** tên hàm hoặc gọi theo **tên màn WinForm**:
+            //     · `CarSv_Ser_CustomerCar_Create_New20220926` → **ĐÃ PORT** ở #332 (`:41256`), nơi viết
+            //       tắt là `…_New20220926` nên grep tên đầy đủ **trượt**. #332 còn trace đúng hai đường
+            //       LIVE và chỉ ra bản 2022 hơn bản 2019 đúng một cột `PlateColorCode`.
+            //     · `Mst_Staff_Get`   → màn `/api/staffmsts` (`:22823`) đã có (port theo `FrmMst_Staff`).
+            //     · `Mst_Compartment_Get` → `/api/compartmentmsts` (`:22791`) đã có.
+            //     · `Mst_PlateColor_Get`  → vừa port ở **#520**.
+            //   ⇒ **Bốn trong bảy** hàm "hồi sinh" thực ra **đã được phủ**; chỉ còn **ba**:
+            //     `UploadFile_ForTab` (nợ tầng lưu file, xem `:31943`) · `Ser_ReceptionF_Reception_New20210727`
+            //     (MiniHTC có `POST /api/receptions` nhưng **chưa đối chiếu** với bản này) ·
+            //     `RptCrdCardForServiceFortab` (**thân rỗng**, xem #517 — không có gì để port).
+            // 📌 Bài học lặp lại lần thứ hai trong cùng phiên (sau #509): **một con số grep chỉ đúng bằng
+            //   độ chính xác của mẫu tìm**. #519 tự dặn "grep toàn cây mới là bằng chứng" rồi lại grep
+            //   **tên đầy đủ** trong bản port — mà bản port có quyền viết tắt. Quy tắc bổ sung:
+            //   khi kiểm "MiniHTC đã port chưa", grep theo **TÊN BẢNG + TÊN MÀN + tên hàm ĐÃ CẮT hậu tố**,
+            //   đúng như BƯỚC 2 của quy trình vẫn yêu cầu.
+            citedByMiniHtc = 4,
+            citedButWithAbbreviatedNames = new[] { "CarSv_Ser_CustomerCar_Create_New20220926 (#332)",
+                "Mst_Staff_Get (/api/staffmsts)", "Mst_Compartment_Get (/api/compartmentmsts)",
+                "Mst_PlateColor_Get (#520)" },
+            stillUnported = new[] { "UploadFile_ForTab", "Ser_ReceptionF_Reception_New20210727",
+                "RptCrdCardForServiceFortab (than rong — khong co gi de port)" },
+            correctsOwnClaim = "#519 citedByMiniHtc=0 (grep ten day du bi truot)",
             supersedes = "#481 liveSetV3 (852/1364/353) — do thieu kenh ClientService" },
         liveSetV3 = new { compiledOnlyNames = 1009, archivedFilesExcluded = 3,
             wsEntryPoints = 852, reachable = 1364, unreachable = 353,
