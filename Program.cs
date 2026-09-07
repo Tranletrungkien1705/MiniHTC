@@ -35171,6 +35171,115 @@ app.MapPost("/api/grtclaimexts/gen-auto", async (
     });
 }).RequireAuthorization();
 
+// ===== #B87 KIỂM TRƯỚC KHI SỬA DANH MỤC SPEC — `Mst_CarSpecUpdateCheck_New20181115` =====
+// Trace LIVE: WS `Mst_CarSpecUpdateCheck` (`WSHTC.asmx.cs:34841`) →
+//   **`_biz.Mst_CarSpecUpdateCheck_New20181115`** (`BizHTC.Car.Profile.cs:507`) — **bản DUY NHẤT**
+//   trong file (file chỉ có đúng một hàm `public DataSet`).
+//   3B đo thật, **khớp cả 2 máy**: start=507 md5 `6a67e7a8456429012fc1507795a34145`.
+// ⚠️ **CHỈ KIỂM, KHÔNG GHI** — hàm không có `SaveData`/`update` nào; nó là **cổng chặn chạy TRƯỚC**
+//    lệnh sửa spec. Port là endpoint `.../check`, **không** đụng dữ liệu.
+// 🔴 **GUARD LÕI CÓ ĐIỀU KIỆN KÉP — rất dễ port thành một vế**:
+//      `if (FlagInvoiceFactory_MỚI != FlagInvoiceFactory_CŨ)`
+//         `if (đã có VIN dùng SpecCode này) → throw …_VINExist`
+//    ⇒ **chỉ chặn khi ĐỔI cờ `FlagInvoiceFactory`** *VÀ* spec **đã phát sinh VIN**.
+//    · Sửa các trường **khác** (tên, mô tả…) trên spec đã có VIN ⇒ **VẪN ĐƯỢC**.
+//    · Đổi cờ trên spec **chưa có VIN** ⇒ **VẪN ĐƯỢC**.
+//    Port thành "spec đã có VIN thì cấm sửa" là **chặt hơn nguồn** (`C0-…quinquagesimussextus`).
+// 🔴 Cách nguồn tìm "đã có VIN": `#tbl_Mst_CarSpec_Filter` (theo `SpecCode`) rồi
+//    **`INNER JOIN Car_VIN cv ON t.SpecCode = cv.SpecCode`** — dò theo **`Car_VIN.SpecCode`**,
+//    KHÔNG phải `ActualSpec`. Hai cột này khác nhau ở nhiều màn khác; đừng dùng lẫn.
+// 🔴 **Khoá trùng TRONG LÔ**: nguồn dựng `strKeyDetail = "|" + SpecCode + "|"` và ném
+//    `…_DuplicateKeyDetail` nếu lặp — kiểm **trùng trong chính danh sách gửi lên**, không phải trùng DB.
+// 🔴 Spec không tồn tại trong DB ⇒ `…_SpecCodeNotFound`.
+// ⚠️ **Lô RỖNG = THÀNH CÔNG, không làm gì**: toàn bộ thân nằm trong
+//    `if (Tables.Contains("Mst_CarSpec") && Rows.Count >= 1)`, và nhánh ném
+//    `…_TableDetailBeBlank` **đã bị comment** (`:562-566`). Cùng khuôn #B76, **khác** #B82/#B86.
+// ⚠️ **Lỗi NHÃN trong nguồn** (ghi nhận, không sửa): khi ném `…_VINExist`, tham số chẩn đoán vẫn
+//    đặt tên **`"SpecCodeNotFound"`** (`:645`) — nhãn sai do copy-paste, **giá trị thì đúng**.
+//    Port trả cả hai tên để đối chiếu được với log nguồn.
+app.MapPost("/api/carspecs/update-check", async (
+    List<CarSpecUpdateCheckDto> specs, AppDbContext db, ITenantContext t) =>
+{
+    // Lô rỗng ⇒ thành công, không làm gì (nhánh ném đã bị comment ở nguồn).
+    var rows = (specs ?? new()).Where(s => !string.IsNullOrWhiteSpace(s.SpecCode)).ToList();
+    if (rows.Count == 0)
+        return Results.Ok(new
+        {
+            checkedCount = 0, ok = true, emptyInputAccepted = true,
+            emptyInputNote = "Lo RONG = THANH CONG, khong lam gi: toan bo than nam trong 'if (Tables.Contains(\"Mst_CarSpec\") && Rows.Count >= 1)' va nhanh nem _TableDetailBeBlank DA BI COMMENT (:562-566). Cung khuon #B76, KHAC #B82/#B86."
+        });
+
+    var seen = new HashSet<string>(StringComparer.Ordinal);
+    var results = new List<object>();
+
+    foreach (var (s, i) in rows.Select((s, i) => (s, i)))
+    {
+        var specCode = (s.SpecCode ?? "").Trim();
+        // 🔴 Trùng khoá TRONG LÔ (không phải trùng DB).
+        var keyDetail = $"|{specCode}|";
+        if (!seen.Add(keyDetail))
+            return Results.BadRequest(new
+            {
+                error = "Mst_CarSpecUpdateCheck_DuplicateKeyDetail",
+                check = new { Mst_CarSpec_Idx = i, strKeyDetail = keyDetail }
+            });
+
+        var dbSpec = await db.CarSpecs
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == specCode);
+        if (dbSpec is null)
+            return Results.BadRequest(new
+            {
+                error = "Mst_CarSpecUpdateCheck_SpecCodeNotFound",
+                check = new { Mst_CarSpec_Idx = i, SpecCodeNotFound = specCode }
+            });
+
+        var flagNew = (s.FlagInvoiceFactory ?? "").Trim();
+        var flagOld = (dbSpec.FlagInvoiceFactory ?? "").Trim();
+
+        // 🔴 CHỈ dò VIN khi cờ THAY ĐỔI — điều kiện kép.
+        string? vinExist = null;
+        if (flagNew != flagOld)
+        {
+            // `INNER JOIN Car_VIN cv ON t.SpecCode = cv.SpecCode` — theo `SpecCode`, KHÔNG phải `ActualSpec`.
+            vinExist = await db.CarVinMasters
+                .Where(v => v.OrgId == t.OrgId && v.SpecCode == specCode)
+                .Select(v => v.VIN).FirstOrDefaultAsync();
+            if (vinExist is not null)
+                return Results.BadRequest(new
+                {
+                    error = "Mst_CarSpecUpdateCheck_VINExist",
+                    check = new
+                    {
+                        Mst_CarSpec_Idx = i,
+                        // ⚠️ Nguồn đặt nhãn SAI là "SpecCodeNotFound"; trả cả hai để đối chiếu log nguồn.
+                        SpecCodeNotFound = specCode,
+                        SpecCode = specCode,
+                        VINExist = vinExist
+                    },
+                    labelQuirk = "Nguon dat nhan tham so chan doan la 'SpecCodeNotFound' ngay trong nhanh nem _VINExist (:645) - NHAN SAI do copy-paste, GIA TRI thi dung. Port tra ca hai ten."
+                });
+        }
+
+        results.Add(new
+        {
+            idx = i, specCode,
+            flagInvoiceFactoryOld = flagOld, flagInvoiceFactoryNew = flagNew,
+            flagChanged = flagNew != flagOld,
+            vinChecked = flagNew != flagOld,
+            ok = true
+        });
+    }
+
+    return Results.Ok(new
+    {
+        checkedCount = results.Count, ok = true, items = results,
+        readOnlyNote = "CHI KIEM, KHONG GHI - ham nguon khong co SaveData/update nao; no la CONG CHAN chay TRUOC lenh sua spec.",
+        coreGuardNote = "GUARD LOI CO DIEU KIEN KEP: 'if (FlagInvoiceFactory MOI != CU) { if (da co VIN dung SpecCode nay) throw _VINExist }'. => CHI chan khi DOI co FlagInvoiceFactory VA spec DA phat sinh VIN. Sua truong KHAC tren spec da co VIN VAN DUOC; doi co tren spec CHUA co VIN cung VAN DUOC. Port thanh 'spec da co VIN thi cam sua' la CHAT HON NGUON.",
+        vinLookupNote = "Cach tim 'da co VIN': #tbl_Mst_CarSpec_Filter theo SpecCode roi INNER JOIN Car_VIN cv ON t.SpecCode = cv.SpecCode - do theo Car_VIN.SpecCode, KHONG phai ActualSpec. Hai cot nay khac nhau o nhieu man khac; dung dung lan.",
+        duplicateKeyNote = "Khoa trung TRONG LO: nguon dung strKeyDetail = '|' + SpecCode + '|' va nem _DuplicateKeyDetail neu lap - kiem trung trong CHINH DANH SACH GUI LEN, khong phai trung DB."
+    });
+}).RequireAuthorization();
+
 // Thân dùng chung — nguồn là HAI hàm gần như trùng khít, khác đúng giá trị trạng thái gán vào.
 async Task<IResult> DlrContractCancelSetStatusMulti(
     List<string> contractCNos, string newStatus, AppDbContext db, ITenantContext t,
@@ -39640,6 +39749,7 @@ record CarUpdateFlagsDto(string? CarCancelRemark, string? FlagMapVIN, string? Fl
 record DlrContractHeaderSaveDto(string? FlagIsDelete, DateTime? ContractDate, string? CustomerCode, string? TransactorCode, string? DealerCode, string? DealerCodeBuyer, string? DlrContractNoUser, string? SalesType, string? SMCode, string? BankCode);   // #B83
 record GrtClaimExtGenAutoCarDto(string? CarId, string? VIN, string? DealerCode, string? BankCode, string? GuaranteeNo);   // #B86
 record GrtClaimExtGenAutoDto(int NumberOfGuaranteeExt, string? Remark, string? FlagisHTC, List<GrtClaimExtGenAutoCarDto>? Cars);   // #B86
+record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   // #B87 - chi kiem, khong ghi
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
