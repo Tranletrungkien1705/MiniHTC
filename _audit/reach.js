@@ -50,7 +50,7 @@ function scan(dir){
   }
   return out;
 }
-const biz=scan(BIZ), ws=scan(WS);
+const biz=scan(BIZ);
 const bizNames=new Set();
 for(const f in biz) for(const m of biz[f].members) bizNames.add(m.name);
 
@@ -73,12 +73,7 @@ for(const f in biz){
     }
   }
 }
-const roots=new Set();
-for(const f in ws) for(const L of ws[f].lines){
-  if(/^\s*\/\//.test(L)) continue;
-  const m=L.match(/_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
-  if(m && bizNames.has(m[1])) roots.add(m[1]);
-}
+const roots=new Set(); for(const n of wsLiveNames(WS)) if(bizNames.has(n)) roots.add(n);
 const reach=new Set(roots); const q=[...roots];
 while(q.length){ const c=q.shift(); const s=graph.get(c); if(!s) continue; for(const n of s) if(!reach.has(n)){ reach.add(n); q.push(n); } }
 console.log('diemVaoWS='+roots.size+' hamBiz='+bizNames.size+' khaDat='+reach.size);

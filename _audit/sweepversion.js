@@ -37,7 +37,7 @@ const memberRe=/^\s*(?:public|private|protected|internal)\s+(?:static\s+)?[A-Za-
 const callRe=/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
 function scan(dir){const o={};for(const f of walk(dir,[])){const lines=fs.readFileSync(f,'utf8').split(/\r?\n/);
  const mem=[];lines.forEach((L,i)=>{const m=L.match(memberRe);if(m)mem.push({line:i,name:m[1]});});o[f]={lines,mem};}return o;}
-const biz=scan(BIZ),ws=scan(WS);
+const biz=scan(BIZ);
 const files=Object.keys(biz); console.log('so file biz doc duoc = '+files.length);
 const names=new Set(); for(const f of files) for(const m of biz[f].mem) names.add(m.name);
 const graph=new Map();
@@ -46,9 +46,7 @@ for(const f of files){const{lines,mem}=biz[f];let mi=-1,cur=null;
   const L=lines[i];if(/^\s*\/\//.test(L)||!cur||memberRe.test(L))continue;
   callRe.lastIndex=0;let m;while((m=callRe.exec(L))!==null){const n=m[1];if(n===cur||!names.has(n))continue;
    let s=graph.get(cur);if(!s){s=new Set();graph.set(cur,s);}s.add(n);}}}
-const roots=new Set();
-for(const f in ws)for(const L of ws[f].lines){if(/^\s*\/\//.test(L))continue;
- const m=L.match(/_biz\.([A-Za-z_][A-Za-z0-9_]*)\s*\(/);if(m&&names.has(m[1]))roots.add(m[1]);}
+const roots=new Set(); for(const n of wsLiveNames(WS)) if(names.has(n)) roots.add(n);
 const reach=new Set(roots),q=[...roots];
 while(q.length){const c=q.shift();const s=graph.get(c);if(!s)continue;for(const n of s)if(!reach.has(n)){reach.add(n);q.push(n);}}
 const prog=fs.readFileSync(PROG,'utf8');

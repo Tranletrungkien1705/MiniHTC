@@ -25285,6 +25285,18 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         // ⚠️ HỆ QUẢ LỚN HƠN: hai cây nguồn **KHÔNG bằng nhau** — máy 150 (`V20.2023.Release`) có thêm WebMethod
         //   `HCC_NoShow_CreateOS` mà laptop (`V20.2023.Release.V2`) không có ⇒ giả định "V2 ≡ Release" là **sai**.
         //   Từ nay mỗi lượt phải chấp nhận 150 có thể **mới hơn**, và ghi nợ đối chiếu toàn bộ delta hai cây.
+        // ===== ✅ #479 ĐO LẠI KHẢ ĐẠT + HỌ HẬU TỐ VỚI TẬP SỐNG ĐẦY ĐỦ (4 project WS, #478) =====
+        // 📊 Khả đạt: **896 điểm vào · 1717 hàm biz · 1413 khả đạt** ⇒ **304 hàm (17,7%) không khả đạt**,
+        //   thay vì 820/1278/439 (25,6%) mà #453 công bố. Nói cách khác: **135 hàm trước bị gán nhầm là chết**.
+        // 📊 Hàm mang hậu tố phiên bản: **264 · khả đạt 186 · chết 78** (trước: 171/93).
+        //   MiniHTC trích dẫn **45** hàm (trước đếm 36), trong đó **5 hàm chết** — và **cả 5 đều đã được ghi
+        //   đúng là CHẾT** từ trước (`SerStockIn/Out…_New20240115` · `Ser_InvReportBalanceRpt_New20180610` ·
+        //   `Ser_RO_GetWarranty_V2`) ⇒ **tập vẫn đóng, 0 chỗ sai**.
+        // 📌 Con số cũ ở dòng dưới giữ lại để đối chiếu, KHÔNG dùng nữa.
+        deadSuffixReachV2 = new { wsEntryPoints = 896, bizFunctions = 1717, reachable = 1413,
+            unreachable = 304, versionSuffixed = 264, versionReachable = 186, versionDead = 78,
+            citedByMiniHtc = 45, citedAndDead = 5, citedDeadAlreadyFlagged = 5,
+            supersedes = "#452/#453/#456 — do chi quet 1/4 project WS" },
         deadSuffixReach = new { wsEntryPoints = 820, bizFunctions = 1717, reachable = 1278,
             unreachable = 439, xxxReachable = 4, xxxDead = 56,
             supersedes = "#452 (782/1580/1217/363) — do quét không đệ quy" },
