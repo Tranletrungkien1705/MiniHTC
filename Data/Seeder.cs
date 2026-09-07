@@ -1170,6 +1170,11 @@ public static class Seeder
         "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"FlagAccessory\" text NULL",
         "ALTER TABLE public.\"DlrPdiRequests\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
         "ALTER TABLE public.\"DlrPdiRequestDetails\" ALTER COLUMN \"RONo\" DROP NOT NULL",
+        // #B19 Car_VIN cot cho man ho so xe (bill no + moc the chap + packing list + CO)
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MortageStartDate\" timestamp NULL",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"BillNo\" text NULL",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"PackingListNo\" text NULL",
+        "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CODate\" timestamp NULL",
         // #B08 tra no #B07: side-effect ghi lich su bao duong o buoc duyet danh gia
         "ALTER TABLE public.\"CarMaintenances\" ADD COLUMN IF NOT EXISTS \"RefNo\" text NULL",
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CarCancelType\" text",

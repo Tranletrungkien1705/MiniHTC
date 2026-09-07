@@ -10111,6 +10111,19 @@ public sealed class CarVinMaster
     //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====
     /// <summary>Ngày KẾT THÚC thế chấp (`Car_Vin.MortageEndDate`) — nguồn đặt = hôm nay khi duyệt.</summary>
     public DateTime? MortageEndDate { get; set; }
+
+    // ===== #B19 parity `Car_VIN_Upd_BillNoAndMgrEndDate_New20191217` (Biz.HTC.WH.cs:61800) =====
+    /// <summary>Ngày BẮT ĐẦU thế chấp (`Car_VIN.MortageStartDate`) — nguồn dùng để chặn
+    /// `MortageEndDate < MortageStartDate` (`..._InvalidMortageEnd02`) và chặn "có ngày kết thúc mà
+    /// KHÔNG có ngày bắt đầu" (`..._InvalidMortageEndNull`).</summary>
+    public DateTime? MortageStartDate { get; set; }
+    /// <summary>Số vận đơn (`Car_VIN.BillNo`) — 1 trong 3 cột ghi có điều kiện của màn hồ sơ xe.</summary>
+    public string? BillNo { get; set; }
+    /// <summary>Số packing list (`Car_VIN.PackingListNo`) — guard `..._InvalidPackingListNo`:
+    /// xe **chưa có packing list** thì KHÔNG được cập nhật vận đơn/ngày hết thế chấp.</summary>
+    public string? PackingListNo { get; set; }
+    /// <summary>Ngày CO (`Car_VIN.CODate`).</summary>
+    public DateTime? CODate { get; set; }
     /// <summary>Ngân hàng nhận BÀN GIAO hồ sơ xe (`Car_Vin.HandOverBankCode`) — lấy từ
     /// `Pmt_Guarantee.BankCodeMonitor` của bảo lãnh còn hiệu lực duy nhất.</summary>
     public string? HandOverBankCode { get; set; }

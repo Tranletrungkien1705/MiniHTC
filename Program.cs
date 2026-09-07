@@ -16896,6 +16896,71 @@ app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? 
 // ⚠️ NỢ CÓ NHÃN: nguồn ghi thẳng vào **`Car_VIN`**; MiniHTC tách riêng bảng `CabinInfo` (khoá VIN).
 //    Giữ nguyên lưu trữ hiện có để không đẻ thêm thực thể song trùng, nhưng đây là **lệch mô hình** —
 //    ghi rõ để lượt sau cân nhắc gộp về `CarVinMaster` (xem luật hợp nhất song trùng).
+
+// ===== #B19 CẬP NHẬT SỐ VẬN ĐƠN + NGÀY HẾT THẾ CHẤP (port 1:1 `FrmMngCarVinProfile`, 2010.HTC/Sales) =====
+// Trace twin LIVE: `FrmMngCarVinProfile.cs:1819` → `salesSv.CarVIN_UpdBillNoAndMgrEndDate`
+//   (`SalesService.cs:21305`) → WS `Car_VIN_Upd_BillNoAndMgrEndDate` (`WSHTC.asmx.cs:34694`)
+//   → **`_biz.Car_VIN_Upd_BillNoAndMgrEndDate_New20191217`** (`Biz.HTC.WH.cs:61800`).
+// ⚠️ **SÁU bản CHẾT** cùng tên trong `Delete.BizHTC.Report.cs` (`_New20161109`, `_New20180313`,
+//    `_New20181115`, bản không hậu tố…) — WS **không gọi bản nào**; chỉ `_New20191217` là LIVE.
+// 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:61865`) là DÒNG ACTIVE — chỉ HTC trực tiếp.
+// 🔴 **Ba cột ghi CÓ ĐIỀU KIỆN**, không phải ghi đè vô điều kiện (`:62230-62239`):
+//    `MortageEndDate` chỉ ghi khi khác DBNull · `BillNo` và `HandOverBankCode` chỉ ghi khi **khác rỗng và
+//    khác null** ⇒ gửi rỗng = **giữ nguyên giá trị cũ**, KHÔNG xoá. `LogLUDateTime`/`LogLUBy` luôn ghi.
+app.MapPost("/api/carvinmasters/{vin}/billno-mortage", async (
+    string vin, CarVinBillNoDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
+{
+    var v = vin.Trim().ToUpperInvariant();
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật hồ sơ xe." });
+
+    // `myCar_CheckVIN(..., TConst.Flag.Active)`
+    var car = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == v);
+    if (car is null) return Results.NotFound(new { vin = v });
+
+    var newEnd = dto.MortageEndDate;
+    // 🔴 `..._InvalidMortageEndDate01` — chú thích nguyên văn của nguồn (`:61881`):
+    //    *"Không được sửa ngày hiệu lực từ A về NULL"* ⇒ đang CÓ ngày mà gửi rỗng thì CHẶN.
+    if (car.MortageEndDate is not null && newEnd is null)
+        return Results.BadRequest(new { error = "Không được sửa ngày hiệu lực (hết thế chấp) từ có giá trị về rỗng.", vin = v, mortageEndDateOld = car.MortageEndDate });
+    // `..._InvalidPackingListNo` — xe chưa có packing list thì không cho cập nhật.
+    if (string.IsNullOrWhiteSpace(car.PackingListNo))
+        return Results.BadRequest(new { error = $"Xe {v} chưa có số packing list — không cập nhật được vận đơn/ngày hết thế chấp." });
+    // `..._InvalidMortageEnd02`: có cả hai mốc mà End < Start.
+    if (car.MortageStartDate is not null && newEnd is not null && newEnd < car.MortageStartDate)
+        return Results.BadRequest(new { error = "Ngày hết thế chấp không được nhỏ hơn ngày bắt đầu thế chấp.", mortageStartDate = car.MortageStartDate, mortageEndDate = newEnd });
+    // `..._InvalidMortageEndNull`: KHÔNG có ngày bắt đầu mà lại đặt ngày kết thúc.
+    if (car.MortageStartDate is null && newEnd is not null)
+        return Results.BadRequest(new { error = "Xe chưa có ngày bắt đầu thế chấp — không đặt được ngày hết thế chấp.", vin = v });
+
+    // `..._InvalidDRDtlStatus`: còn dòng đề nghị giao hồ sơ ở trạng thái **'P' hoặc 'A1'** ⇒ CHẶN.
+    var pendingDr = await db.DocReqCars
+        .Where(x => x.OrgId == t.OrgId && x.Vin == v && (x.DRDtlStatus == "P" || x.DRDtlStatus == "A1"))
+        .Select(x => new { x.DocReqId, x.DRDtlStatus }).FirstOrDefaultAsync();
+    if (pendingDr is not null)
+        return Results.BadRequest(new { error = $"Xe {v} còn đề nghị giao hồ sơ ở trạng thái {pendingDr.DRDtlStatus} (đề nghị id {pendingDr.DocReqId}) — không cập nhật được.", drDtlStatusChecked = "in (P, A1)" });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var written = new List<string>();
+    // Ba cột GHI CÓ ĐIỀU KIỆN — gửi rỗng/null = giữ nguyên.
+    if (newEnd is not null) { car.MortageEndDate = newEnd; written.Add("MortageEndDate"); }
+    if (!string.IsNullOrWhiteSpace(dto.BillNo)) { car.BillNo = dto.BillNo!.Trim(); written.Add("BillNo"); }
+    if (!string.IsNullOrWhiteSpace(dto.HandOverBankCode)) { car.HandOverBankCode = dto.HandOverBankCode!.Trim(); written.Add("HandOverBankCode"); }
+    car.LogLUDateTime = now; car.LogLUBy = who; written.Add("LogLUDateTime"); written.Add("LogLUBy");
+
+    // Side-effect 2/3: `Pmt_GuaranteeDetail.DateWarning` (`:62253-62256`) — chỉ khi có bảo lãnh khớp.
+    // ⚠️ NỢ: công thức `dtimeDateWarning` nguồn tính từ cấu hình bảo lãnh; MiniHTC chưa có tầng đó
+    //    ⇒ **KHÔNG suy công thức**, để nguyên và ghi nợ (luật "không đoán công thức rồi ghi DB").
+    // Side-effect 3/3: update `Car_DocReqDtl` khi có `MortageEndDate` — cũng ghi nợ, chưa port.
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        vin = v, columnsWritten = written,
+        car.BillNo, car.MortageEndDate, car.HandOverBankCode, car.MortageStartDate, car.PackingListNo,
+        conditionalWriteNote = "BillNo/HandOverBankCode chỉ ghi khi KHÁC RỖNG; MortageEndDate chỉ ghi khi khác null — gửi rỗng là GIỮ NGUYÊN.",
+        pendingDebt = "NỢ: 2 side-effect còn lại của nguồn chưa port — Pmt_GuaranteeDetail.DateWarning (công thức từ cấu hình bảo lãnh) và update Car_DocReqDtl khi có MortageEndDate."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/cabininfos/update-multi", async (
     List<CabinInfoDto> rows, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
@@ -34217,6 +34282,8 @@ record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCAppr
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
+/// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
+record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B17: một dòng của bảng `#input_Car_Car` — sửa hàng loạt quy cách theo CarId.</summary>
 record CarSpecBatchDto(string? CarId, string? SpecCode);
 /// <summary>#B11: sửa biển số dòng xe (`DealerSalesDealDetailUpdate_NormalInfo` — nguồn chỉ nhận PlateNo).</summary>
