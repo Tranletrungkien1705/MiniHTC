@@ -13340,13 +13340,45 @@ app.MapGet("/api/report/service-kpi", async (AppDbContext db, ITenantContext t, 
     });
 }).RequireAuthorization();
 
-// ===== Tần suất dịch vụ theo xe (report tái-dùng RepairOrder — port 1:1 FrmRpt_Vehicle_Service_Frequency, TCMotor) =====
+// ===== Tần suất dịch vụ theo xe (port 1:1 `FrmRpt_Vehicle_Service_Frequency`, TCMotor) =====
 // Mỗi VIN: số lượt vào xưởng + khoảng cách TB (ngày) giữa các lượt liên tiếp (chỉ xe >=2 lượt mới có tần suất).
-app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantContext t, int? minVisits) =>
+//
+// ===== 🔴 #376 ĐỐI CHIẾU BẢN GỐC ↔ BẢN `_WH` (hai hàm song sinh, KHÁC NHAU HƠN LÀ ĐỔI CSDL) =====
+// Nguồn có cặp `Rpt_Vehicle_Service_Frequency` (`:6845`) / `…_WH` (`:7080`), và cặp
+// `Rpt_Correct_Repair_Rate` (`:6440`) / `…_WH` (`:6643`). Diff từng dòng cho thấy **ba** khác biệt thật:
+//
+// 🔴 1. **BA CSDL, không phải hai**: `Rpt_Vehicle_Service_Frequency` chạy trên `_dbDealer` (**DB đại lý**),
+//    `Rpt_Correct_Repair_Rate` chạy trên `_dbMain`, còn cả hai bản `_WH` chạy trên `_dbWH`.
+//    ⇒ Đừng giả định 'bản thường = Main'; phải đọc đúng đối tượng `_db*` mà hàm gọi.
+// 🔴 2. **BỘ LỌC KHÁC NHAU giữa hai bản**: ở `Rpt_Correct_Repair_Rate` dòng
+//    `and (sr.ReceptionFNo is not null or sr.ReceptionFNo != '')` bị **COMMENT** trong bản thường
+//    nhưng **ĐANG CHẠY** trong bản `_WH` ⇒ hai báo cáo cùng tên trả **tập dòng khác nhau**.
+//    ⚠️ Bản thân điều kiện đó **viết sai phép logic**: dùng `or` nên chuỗi RỖNG vẫn lọt
+//      (`'' is not null` = TRUE). Muốn loại cả NULL lẫn rỗng phải là `and`. Giữ 1:1: chỉ loại NULL.
+// 🔴 3. **CHỖ GIỮ DANH MỤC MODEL KHÁC NHAU**: bản thường `left join [@strDBName_CommonCenter].[dbo].Ser_MST_Model`,
+//    bản `_WH` `left join Ser_MST_Model` (bảng cục bộ).
+//    ⚠️ Và placeholder `@strDBName_CommonCenter` được **gán bằng `_strConfig_DBName_Main`** — tên nói
+//      'CommonCenter' nhưng giá trị là **DB Main**. Lại một cái tên nói dối (cùng lệ #375).
+//
+// MiniHTC dùng một CSDL nên không tái hiện được ba-CSDL; `scope` chỉ tái hiện **khác biệt BỘ LỌC**
+// và trả kèm ghi chú để không ai tưởng port thiếu.
+app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantContext t, int? minVisits,
+    string? scope, string? dealers, DateTime? from, DateTime? to) =>
 {
     var minV = minVisits is > 0 ? minVisits.Value : 2;
-    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Vin != null && x.Vin != "" && x.CheckInDate.HasValue)
-        .Select(x => new { x.Vin, x.CusName, x.CheckInDate }).ToListAsync();
+    var wh = (scope ?? "main").Trim().ToLowerInvariant() == "wh";
+
+    var codes = (dealers ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Vin != null && x.Vin != "" && x.CheckInDate.HasValue);
+    if (codes.Count > 0) qy = qy.Where(x => x.DealerCode != null && codes.Contains(x.DealerCode));
+    if (from is not null) qy = qy.Where(x => x.CheckInDate >= from);
+    if (to is not null) qy = qy.Where(x => x.CheckInDate <= to);
+    // Chỉ bản _WH bật bộ lọc này; và đúng nguồn thì nó CHỈ loại NULL (phép `or` làm rỗng vẫn lọt).
+    if (wh) qy = qy.Where(x => x.ReceptionFNo != null);
+
+    var ros = await qy.Select(x => new { x.Vin, x.CusName, x.CheckInDate }).ToListAsync();
     var rows = ros.GroupBy(x => x.Vin!).Select(g =>
     {
         var dates = g.Select(x => x.CheckInDate!.Value.Date).OrderBy(d => d).ToList();
@@ -13360,7 +13392,23 @@ app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantConte
         return new { vin = g.Key, cusName = g.Select(x => x.CusName).FirstOrDefault(x => x != null),
             visits = dates.Count, firstVisit = dates.First().ToString("yyyy-MM-dd"), lastVisit = dates.Last().ToString("yyyy-MM-dd"), avgGapDays = avgGap };
     }).Where(r => r.visits >= minV).OrderByDescending(r => r.visits).ThenBy(r => r.avgGapDays).ToList();
-    return Results.Ok(new { minVisits = minV, count = rows.Count, avgVisits = rows.Count > 0 ? Math.Round(rows.Average(r => (double)r.visits), 1) : 0, rows });
+    return Results.Ok(new
+    {
+        minVisits = minV, count = rows.Count,
+        avgVisits = rows.Count > 0 ? Math.Round(rows.Average(r => (double)r.visits), 1) : 0,
+        rows,
+        scope = wh ? "wh" : "main",
+        dealerFilter = codes,
+        receptionFilterApplied = wh,
+        filterDivergenceNote = "Bộ lọc `ReceptionFNo` bị COMMENT ở bản thường nhưng ĐANG CHẠY ở bản _WH "
+            + "⇒ hai báo cáo cùng tên trả tập dòng khác nhau.",
+        brokenConditionNote = "Nguồn viết `(x is not null or x <> '')` — dùng `or` nên chuỗi RỖNG vẫn lọt; "
+            + "chỉ NULL bị loại. Giữ nguyên 1:1, không tự sửa thành `and`.",
+        threeDatabasesNote = "Nguồn: bản này chạy trên DB ĐẠI LÝ, Rpt_Correct_Repair_Rate chạy trên Main, "
+            + "cả hai bản _WH chạy trên WH. MiniHTC một CSDL nên không tái hiện được.",
+        commonCenterNameLieNote = "Placeholder @strDBName_CommonCenter được gán bằng _strConfig_DBName_Main "
+            + "— tên nói CommonCenter nhưng giá trị là DB Main.",
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #311 KHẢ NĂNG CUNG ỨNG PHỤ TÙNG — viết lại theo nguồn `Rpt_AbilitySupplyParts` =====
