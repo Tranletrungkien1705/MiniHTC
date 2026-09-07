@@ -16179,6 +16179,93 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #356 LỊCH CÔNG ĐOẠN CỦA LỆNH GỬI SANG VELOCA — `OSVeloca_Ser_RO_GetByROID` =====
+// (`BizCarSv.ZTemp.cs:15373`). Hệ **Veloca CHỈ có trên máy 150** (đúng cảnh báo 3B).
+// Toàn bộ dữ liệu **DẪN XUẤT**, không có bảng lưu riêng: loại công việc lấy từ dòng dịch vụ của lệnh,
+//   lịch công đoạn lấy từ **phân công công việc** (`Ser_AssignmentWork`).
+//
+// 🔴 GỘP 6 LOẠI THÀNH 3 khi báo sang Veloca (`case` trên `srsi.ROType`):
+//   `BDD → SCC` · `PDI → SCC` · `SPK → SCC` · `SCC → SCC` · `SCD → SCD` · `SCS → SCS`
+//   ⇒ Veloca chỉ biết **BA** nhóm; bốn loại công việc khác nhau bên trong đều hiện ra là **SCC**.
+//     Đừng dùng số liệu Veloca để đối chiếu KPI theo loại (#335 đếm đủ 6 loại) — hai bên khác hạt.
+// ⚠️ `case` **KHÔNG có `else`** ⇒ mã `ROType` lạ cho ra `GroupRepairType = NULL`, không phải bỏ dòng.
+//
+// ⚠️ MỐC THỜI GIAN đổi sang UTC bằng `DateAdd(hh, -7, …)` rồi `CONVERT(varchar, …, 20)`
+//   ⇒ **trừ cứng 7 giờ** (VN = UTC+7) và định dạng `yyyy-MM-dd HH:mm:ss`. Không dùng múi giờ hệ thống:
+//     máy chạy ở múi khác vẫn phải ra đúng con số này.
+//
+// 🔴 `top 1` KHÔNG `order by` ở nhánh "thay thế": dòng công đoạn có `GroupRepairType` **không nằm trong**
+//   bảng loại công việc của lệnh sẽ được thay bằng **một loại BẤT KỲ** trong tập còn lại của cùng lệnh
+//   (`select top 1 g.GroupRepairType … where g.RONoSys = t.RONoSys`).
+//   ⇒ Port chọn **xác định** (thứ tự bảng chữ cái) + trả cờ `replacedType` để chỗ nào lệch còn truy được.
+app.MapGet("/api/osveloca/ro/{roNo}/schedule", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { roNo });
+
+    // (1) Loại công việc của LỆNH — gộp 6 → 3 đúng bảng `case` của nguồn.
+    static string? GroupOf(string? roType) => roType switch
+    {
+        "BDD" or "PDI" or "SPK" or "SCC" => "SCC",
+        "SCD" => "SCD",
+        "SCS" => "SCS",
+        _ => null,   // nguồn KHÔNG có nhánh else ⇒ mã lạ ra NULL
+    };
+    var roTypes = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == ro.Id)
+        .Select(i => i.ROType).ToListAsync();
+    var headerTypes = roTypes.Select(GroupOf).Where(g => g != null).Distinct().OrderBy(g => g).ToList();
+    var unmappedRoTypes = roTypes.Where(x => GroupOf(x) is null).Distinct().OrderBy(x => x).ToList();
+
+    // (2) Lịch công đoạn — từ phân công công việc của lệnh.
+    var aw = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    var stages = aw is null ? new List<SerAssignmentWorkStage>()
+        : await db.SerAssignmentWorkStages.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == aw.Id).ToListAsync();
+
+    var cavityNos = (await db.Cavities.Where(c => c.OrgId == t.OrgId)
+            .Select(c => new { c.Id, c.CavityNo }).ToListAsync())
+        .ToDictionary(c => c.Id.ToString(), c => c.CavityNo);
+
+    // Trừ cứng 7 giờ, KHÔNG theo múi giờ máy chạy.
+    static string? Utc(DateTime? v) => v is null ? null
+        : v.Value.AddHours(-7).ToString("yyyy-MM-dd HH:mm:ss");
+
+    var replaced = 0;
+    var rows = stages.OrderBy(x => x.StageCode).Select(x =>
+    {
+        var g = x.StageCode;
+        var inHeader = headerTypes.Contains(g);
+        if (!inHeader && headerTypes.Count > 0) { g = headerTypes[0]; replaced++; }   // chọn XÁC ĐỊNH
+        return new
+        {
+            roNoSys = roNo,
+            groupRepairType = g,
+            idxPrdSvType = "0",          // nguồn đóng cứng '0'
+            repairCabinCode = x.CavityId != null && cavityNos.TryGetValue(x.CavityId, out var no) ? no : null,
+            planStartDTimeUTC = Utc(x.PlanStart),
+            planEndDTimeUTC = Utc(x.PlanFinish),
+            actualStartDTimeUTC = Utc(x.ActualStart),
+            actualEndDTimeUTC = Utc(x.ActualFinish),
+            replacedType = !inHeader,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        roNo, serviceTypes = headerTypes, schedule = rows,
+        // 🔴 Bốn loại (BDD/PDI/SPK/SCC) đều ra "SCC" ⇒ hạt của Veloca THÔ hơn KPI nội bộ.
+        typeCollapseNote = "BDD/PDI/SPK/SCC đều báo là SCC; Veloca chỉ biết 3 nhóm.",
+        // `case` không có `else` ⇒ mã ROType lạ cho ra NULL, không bị loại.
+        unmappedRoTypes,
+        // Nguồn thay loại bằng `top 1` không `order by`; web chọn xác định.
+        replacedCount = replaced,
+        replacedNote = replaced > 0
+            ? "Có công đoạn không khớp loại công việc của lệnh; nguồn thay bằng loại BẤT KỲ (top 1 không order by), web chọn theo thứ tự chữ cái."
+            : null,
+        timeNote = "Mốc trừ CỨNG 7 giờ theo nguồn (DateAdd(hh,-7,…)), không theo múi giờ máy chạy.",
+    });
+}).RequireAuthorization();
+
 // ===== Master kỳ khảo sát JD Power (JDPowerTerm — port 1:1 FrmJDPowerTermCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
