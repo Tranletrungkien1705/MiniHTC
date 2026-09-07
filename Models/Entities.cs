@@ -10269,6 +10269,15 @@ public sealed class CarVinMaster
     /// <summary>#175 — Kho HIỆN TẠI của xe (`Car_VIN.StorageCodeCurrent`). Bước tự sinh lệnh giao lấy
     /// kho của dòng chi tiết TỪ CỘT NÀY, không phải kho khai báo trên phiếu.</summary>
     public string? StorageCodeCurrent { get; set; }
+
+    /// <summary>🔴 #B37 — `Car_Car.CreatedDate` / `Car_Car.CreatedBy`. Hai cột này **thiếu hẳn** ở port
+    /// mà lại là **bộ lọc DUY NHẤT** màn `FrmDealerMngCar` truyền vào `RptCarCarGetSummary01`
+    /// (`DealerService.cs:640`: `Util.GenDateRangeCondition(dealStartDate, dealEndDate)` gắn vào
+    /// `strCCCreatedDateConditionList`) ⇒ không có cột thì cả màn không lọc nổi theo khoảng ngày.
+    /// Nguồn có đủ 21 bộ lọc `BuildClause` trên `cc.*`.</summary>
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>`Car_Car.CreatedBy` — xem chú thích của [CreatedDate].</summary>
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>

@@ -2255,6 +2255,9 @@ public static class Seeder
                 "ALTER TABLE public.\"Pis\" ADD COLUMN IF NOT EXISTS \"FlagAutoPL\" text NOT NULL DEFAULT '1'",
                 "ALTER TABLE public.\"PiLines\" ADD COLUMN IF NOT EXISTS \"LCTemp\" text NULL",
                 "ALTER TABLE public.\"PiLines\" ADD COLUMN IF NOT EXISTS \"ContractNo\" text NULL",
+                // #B37 — Car_Car.CreatedDate / CreatedBy: bo loc DUY NHAT cua FrmDealerMngCar
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

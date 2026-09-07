@@ -15834,7 +15834,7 @@ app.MapDelete("/api/spsupportretails/{vin}/{spsrCode}", async (string vin, strin
 }).RequireAuthorization();
 
 // Import master VIN tối giản (nguồn Car_Vin+Car_Car, cùng nguồn MiniVehicle) — phục vụ guard tồn tại VIN cho SPSupportRetail.
-app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để import." });
     var vins = rows.Where(r => !string.IsNullOrWhiteSpace(r.Vin)).Select(r => r.Vin!.Trim().ToUpperInvariant()).ToHashSet();
@@ -15844,7 +15844,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode });
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -34463,6 +34463,125 @@ static string? ValidateVoucherLine(MemberVoucher voucher, decimal pointUsed, Dat
     return null;
 }
 
+
+// ===== #B37 BẢNG TỔNG HỢP XE CỦA ĐẠI LÝ — `RptCarCarGetSummary01_New20181115` (`FrmDealerMngCar`) =====
+// Trace LIVE: `FrmDealerMngCar` → `sv.SearchDealerSales` (`DealerService.cs:613`) → WS
+//   `RptCarCarGetSummary01` (`WSHTC.asmx.cs:27738`) → **`_biz.RptCarCarGetSummary01_New20181115`**
+//   (`BizHTC.Report.cs:299`); SQL nằm ở `TERP.BizHTC.SQLQuery/RptSQLQuery.cs:48481`
+//   (`mySql_RptCarCarGetSummary01_New20181115`).
+//   ⚠️ `BizHTC.Report - Copy.cs:350` có bản trùng tên — **file đó KHÔNG nằm trong `TERP.BizHTC.csproj`**
+//      (đã kiểm: grep csproj = 0), nên là bản chết; bản LIVE là `BizHTC.Report.cs`.
+// 🔴 **PHẠM VI THEO ABILITY LÀ INNER JOIN, KHÔNG PHẢI BỘ LỌC RỜI**: SQL nguồn ghi rõ
+//    `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//    kèm chú thích *"Must inner join to filter AbilityOfUser"* ⇒ xe của đại lý **không tra được trong
+//    `Mst_Dealer`** cũng bị LOẠI, không chỉ xe ngoài phạm vi BU.
+// 🔴 **PHÂN TRANG hai bước**: `#tbl_Car_Car_Filter_Temp` đánh `Row_Number() over (order by cc.CarId DESC)`
+//    trên **`select distinct cc.CarId`**, `MyCount` đếm trên bảng ĐÃ LỌC (trước khi cắt trang), rồi
+//    `#tbl_Car_Car_Filter` cắt `MyRowIdx between @MyRowIdx_Start and @MyRowIdx_End`.
+//    `@MyRowIdx_Start = recordStart + 1` — nguồn chú thích *"C# based from 0 but SqlIdx based from 1"*.
+// 🔴 **21 bộ lọc đều là `BuildClause(...)` dạng danh-sách-điều-kiện** trên `cc.*`; màn `FrmDealerMngCar`
+//    chỉ truyền **một** bộ: `CreatedDate` dạng khoảng (`Util.GenDateRangeCondition`), 20 bộ còn lại rỗng.
+//    Port giữ đủ 21 tham số để dùng lại cho các màn khác của cùng WS.
+// ⚠️ NỢ CÓ NHÃN — các khối làm giàu chưa port, **không bịa số**:
+//   · `#tbl_Pmt_GuaranteeDetail` (`Pmt_GuaranteeDetail` + `Pmt_Guarantee`, lọc
+//     `GuaranteeDetailStatus in ('P','A','F')` và `GuaranteeStatus in ('A','F')`) cùng các cột dẫn xuất
+//     `PMGDFlagWarning`, `PMGDPercentGP`;
+//   · khối thanh toán `zzzzClauseSelect_PaymentDetailWithDiscount_01` và các cột dẫn xuất
+//     `PMPDAmount_SumForNoneGuarantee`, `PMPDPaymentTotalPercent`, `PMPDPercentGG`,
+//     `PMPDGuaranteeRemain`, `PMPDRemain`;
+//   · `Mst_Calendar_GetForDayT` (tham số `HTC_DiscountPolicy_MaxDeclare_WorkingDays`) — MiniHTC chưa có
+//     tầng lịch làm việc (cùng nợ đã ghi ở #B33).
+//   Các cột này trả **null** kèm nhãn trong `debt`, KHÔNG suy công thức rồi ghi ra số.
+app.MapGet("/api/reports/dealer-cars-summary", async (
+    AppDbContext db, ITenantContext t,
+    string? carId, string? specCode, string? modelCode, string? colorCode, string? dealerCode,
+    string? workOrderNoTemp, string? paymentStatus, string? deliveryStatus, string? flagAllowChangeVIN,
+    string? flagActive, DateTime? createdFrom, DateTime? createdTo, string? createdBy, string? vin,
+    string? sellStatus, string? carCancelType, string? buPattern, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `inner join Mst_Dealer … and (md.BUCode like @strBUPatternOfUser)` — phạm vi là INNER JOIN.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var scope = dealers
+        .Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var beforeScope = cars.Count;
+    cars = cars.Where(c => c.DealerCode != null && scope.Contains(c.DealerCode)).ToList();
+    var droppedByDealerJoin = beforeScope - cars.Count;
+
+    // 21 bộ lọc `BuildClause` trên `cc.*` — mỗi cái chỉ áp khi có giá trị.
+    static bool Like(string? v, string? k) => k is null || (v ?? "").ToUpperInvariant().Contains(k);
+    string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    var fCar = U(carId); var fSpec = U(specCode); var fModel = U(modelCode); var fColor = U(colorCode);
+    // 🔴 `cc.WorkOrderNoTemp` chưa có cột trong `CarVinMaster` ⇒ **KHÔNG lọc im lặng**: nhận tham số mà
+    //    bỏ qua chính là "mất dữ liệu lúc ĐỌC" — trả lỗi rõ ràng để người gọi biết bộ lọc chưa dùng được.
+    if (!string.IsNullOrWhiteSpace(workOrderNoTemp))
+        return Results.BadRequest(new { error = "Bộ lọc WorkOrderNoTemp chưa dùng được: CarVinMaster chưa có cột Car_Car.WorkOrderNoTemp.", debt = "NỢ có nhãn — thêm cột rồi mới bật bộ lọc." });
+    var fDealer = U(dealerCode); var fPay = U(paymentStatus);
+    var fDlv = U(deliveryStatus); var fChg = U(flagAllowChangeVIN); var fAct = U(flagActive);
+    var fBy = U(createdBy); var fVin = U(vin); var fSell = U(sellStatus); var fCancel = U(carCancelType);
+
+    cars = cars.Where(c =>
+        Like(c.VIN, fCar) && Like(c.SpecCode, fSpec) && Like(c.ModelCode, fModel) && Like(c.ColorCode, fColor)
+        && Like(c.DealerCode, fDealer) && Like(c.PaymentStatus, fPay)
+        && Like(c.DeliveryStatus, fDlv) && Like(c.FlagAllowChangeVIN, fChg) && Like(c.FlagActive, fAct)
+        && Like(c.CreatedBy, fBy) && Like(c.VIN, fVin) && Like(c.SellStatus, fSell)
+        && Like(c.CarCancelType, fCancel)).ToList();
+    if (createdFrom is not null) cars = cars.Where(c => c.CreatedDate >= createdFrom).ToList();
+    if (createdTo is not null) cars = cars.Where(c => c.CreatedDate <= createdTo).ToList();
+
+    // `Row_Number() over (order by cc.CarId DESC)` trên `select distinct cc.CarId`; `MyCount` đếm TRƯỚC khi cắt trang.
+    var orderedIds = cars.Select(c => c.VIN).Distinct().OrderByDescending(x => x, StringComparer.Ordinal).ToList();
+    var myCount = orderedIds.Count;
+    var pageIds = orderedIds.Skip(start).Take(count).ToHashSet();
+    cars = cars.Where(c => pageIds.Contains(c.VIN)).ToList();
+
+    // Các bảng làm giàu MiniHTC ĐÃ CÓ (SO · packing list · LC · tờ khai).
+    var soCodes = cars.Where(c => c.SOCode != null).Select(c => c.SOCode!).Distinct().ToList();
+    var sos = await db.SalesOrders.Where(o => o.OrgId == t.OrgId && soCodes.Contains(o.SoCode))
+        .Select(o => new { o.SoCode, o.OrderType, o.DealerCode, o.Status, o.ProductionMonth, o.ExpectedMonth }).ToListAsync();
+    var plNos = cars.Where(c => c.PackingListNo != null).Select(c => c.PackingListNo!).Distinct().ToList();
+    var pls = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo)).ToListAsync();
+    var declNos = cars.Where(c => c.DeclarationNo != null).Select(c => c.DeclarationNo!).Distinct().ToList();
+    var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId && declNos.Contains(k.DeclarationNo)).ToListAsync();
+
+    var items = cars.Select(c =>
+    {
+        var so = sos.FirstOrDefault(o => o.SoCode == c.SOCode);
+        var pl = pls.FirstOrDefault(p => p.PLNo == c.PackingListNo);
+        var kq = tkhqs.FirstOrDefault(k => k.DeclarationNo == c.DeclarationNo);
+        return new
+        {
+            ccCarId = c.VIN, c.SpecCode, c.ModelCode, c.ColorCode, c.DealerCode,
+            c.PaymentStatus, c.DeliveryStatus, c.SellStatus, c.FlagActive, c.FlagAllowChangeVIN,
+            c.UnitPriceActual, c.CreatedDate, c.CreatedBy, c.CarCancelType, c.CarCancelDate,
+            cvVIN = c.VIN, cvPackingListNo = c.PackingListNo, 
+            cvEngineNo = c.EngineNo, cvKeyNo = c.KeyNo, cvCODate = c.CODate,
+            osoSOCode = so?.SoCode, osoSOType = so?.OrderType, osoDealerCode = so?.DealerCode,
+            osoSOStatus = so?.Status, osoProductionMonth = so?.ProductionMonth, osoExpectedMonth = so?.ExpectedMonth,
+            ctplPackingListNo = pl?.PLNo, ctplLCNo = pl?.LcNo, ctplPortCode = pl?.PortCode,
+            ctdDeclarationNo = kq?.DeclarationNo, ctdOpenDate = kq?.OpenDate,
+            // Chưa port — trả null có nhãn, KHÔNG suy công thức:
+            pmgdGuaranteeValue = (decimal?)null, pmgdFlagWarning = (string?)null, pmgdPercentGP = (decimal?)null,
+            pmpdAmountSum = (decimal?)null, pmpdPaymentTotalPercent = (decimal?)null, pmpdRemain = (decimal?)null
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        droppedByDealerJoin,
+        scopeRule = "inner join Mst_Dealer … and md.BUCode like @strBUPatternOfUser — xe của đại lý không có trong Mst_Dealer cũng bị LOẠI",
+        pagingRule = "Row_Number() over (order by cc.CarId DESC) trên distinct CarId; MyCount đếm TRƯỚC khi cắt trang; @MyRowIdx_Start = recordStart + 1",
+        debt = "NỢ có nhãn (trả null, không bịa số): khối Pmt_GuaranteeDetail+Pmt_Guarantee (lọc GuaranteeDetailStatus in P,A,F và GuaranteeStatus in A,F) với PMGDFlagWarning/PMGDPercentGP; khối PaymentDetailWithDiscount_01 với PMPDAmount_SumForNoneGuarantee/PaymentTotalPercent/PercentGG/GuaranteeRemain/Remain; Mst_Calendar_GetForDayT (HTC_DiscountPolicy_MaxDeclare_WorkingDays)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
