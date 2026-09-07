@@ -16198,6 +16198,89 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 //   bảng loại công việc của lệnh sẽ được thay bằng **một loại BẤT KỲ** trong tập còn lại của cùng lệnh
 //   (`select top 1 g.GroupRepairType … where g.RONoSys = t.RONoSys`).
 //   ⇒ Port chọn **xác định** (thứ tự bảng chữ cái) + trả cờ `replacedType` để chỗ nào lệch còn truy được.
+// ===== 🔴 #357 TIỀN THEO NGUỒN CHI TRẢ + CÔNG NỢ của lệnh (lát thứ hai của `OSVeloca_Ser_RO_GetByROID`) =====
+// Nguồn tách tiền từng dòng theo `ExpenseType` rồi cộng lại:
+//   `ROREPAIR`                      → `RepairAmountAfterVAT`        = `Factor×Price×Qty×(1+VAT%)`
+//   `ROINSURANCE` + `InsurancePrice > 0` → `PartialRepairAmountAfterVAT`   = **`InsurancePrice`**
+//                                     và `PartialInsuranceAmountAfterVAT` = **toàn dòng − InsurancePrice**
+//   `ROINSURANCE` + `InsurancePrice` rỗng/0 → `FullInsuranceAmountAfterVAT` = toàn dòng
+//   `ROWARRANTY` → `WarrantyAmountAfterVAT` · `LOCAL` → `LocalAmountAfterVAT`
+// Tổng: `RepairAmountAfterVAT = Σ(Repair + PartialRepair)` · `InsuranceAmountAfterVAT = Σ(PartialIns + FullIns)`
+//
+// 🔴 MÂU THUẪN CẦN NGƯỜI NGHIỆP VỤ CHỐT — cùng cột `InsurancePrice`, hai báo cáo hiểu NGƯỢC NHAU:
+//   • Ở ĐÂY: `InsurancePrice` được cộng vào **phía SỬA CHỮA** (`PartialRepair`), phần còn lại mới là bảo hiểm.
+//   • Ở #342 (`ProcessGetInsuranceDebit`): `when InsurancePrice > 0 then InsurancePrice` chính là
+//     **số tiền BẢO HIỂM** dùng để ghi công nợ hãng bảo hiểm.
+//   ⇒ Một bên coi nó là phần KHÁCH chịu, một bên coi là phần BẢO HIỂM chịu. Tôi **KHÔNG tự chọn bên nào**:
+//     port đúng công thức của TỪNG báo cáo và trả cờ `insurancePriceConventionConflict` để người có
+//     nghiệp vụ đối chiếu. Tự "thống nhất" hai bên là đổi số tiền trên chứng từ thật.
+//
+// 🔴 CÔNG THỨC CŨ BỊ COMMENT kèm ghi chú của chính tác giả:
+//   `//, (ServiceAmountAfterVAT + PartAmountAfterVAT - TotalDebitAmount) TotalValCusPmt -- 20231209. HuongTTT: Sai`
+//   Bản ĐANG CHẠY: `(RepairAmountAfterVAT - TotalCusDebitAmount) TotalValCusPmt`
+//   ⇒ Khác hai chỗ: dùng **RepairAmountAfterVAT** (không phải tổng dịch vụ+phụ tùng) và trừ **CHỈ nợ
+//     KHÁCH** (không phải tổng nợ). Port bản active (lệ "port dòng đang chạy, không port dòng comment").
+//
+// ⚠️ `Ser_CusDebit` của nguồn là **MỘT bảng** phân biệt bằng `DebitType` (**'1'** = nợ khách · **'2'** = nợ
+//   bảo hiểm — khớp hằng `TConst.SerDebitType.InsuranceDebit` tìm ở #342). MiniHTC tách thành **HAI**
+//   entity `CusDebit` và `InsDebit` ⇒ ở đây phải cộng từ hai nguồn mới ra đúng `TotalDebitAmount`.
+app.MapGet("/api/osveloca/ro/{roNo}/amounts", async (string roNo, AppDbContext db, ITenantContext t) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (ro is null) return Results.NotFound(new { roNo });
+
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == ro.Id)
+        .Select(p => new { p.ExpenseType, p.Factor, p.NeedQty, p.UnitPrice, p.Vat, p.InsurancePrice }).ToListAsync();
+
+    decimal Full(decimal factor, decimal qty, decimal price, decimal vat) => factor * qty * price * (1m + vat * 0.01m);
+
+    decimal repair = 0m, partialRepair = 0m, partialIns = 0m, fullIns = 0m, warranty = 0m, local = 0m;
+    foreach (var p in parts)
+    {
+        var full = Full(p.Factor, p.NeedQty, p.UnitPrice, p.Vat);
+        var ip = p.InsurancePrice ?? 0m;
+        switch (p.ExpenseType)
+        {
+            case "ROREPAIR": repair += full; break;
+            case "ROINSURANCE":
+                if (ip > 0m) { partialRepair += ip; partialIns += full - ip; }
+                else fullIns += full;
+                break;
+            case "ROWARRANTY": warranty += full; break;
+            case "LOCAL": local += full; break;
+        }
+    }
+    var repairAfterVat = repair + partialRepair;
+    var insuranceAfterVat = partialIns + fullIns;
+
+    // Nguồn: MỘT bảng `Ser_CusDebit` với `DebitType` 1/2. MiniHTC tách hai entity ⇒ cộng lại.
+    var cusDebit = await db.CusDebits.Where(d => d.OrgId == t.OrgId && d.RONo == roNo)
+        .SumAsync(d => (decimal?)d.DebitAmount) ?? 0m;
+    var insDebit = await db.InsDebits.Where(d => d.OrgId == t.OrgId && d.RONo == roNo)
+        .SumAsync(d => (decimal?)d.DebitAmount) ?? 0m;
+
+    return Results.Ok(new
+    {
+        roNo,
+        repairAmountAfterVAT = repairAfterVat,
+        insuranceAmountAfterVAT = insuranceAfterVat,
+        warrantyAmountAfterVAT = warranty,
+        localAmountAfterVAT = local,
+        totalValDebit = cusDebit + insDebit,          // TotalDebitAmount (cả hai loại)
+        totalCusDebitAmount = cusDebit,               // DebitType = '1'
+        totalInsDebitAmount = insDebit,               // DebitType = '2'
+        // Bản ĐANG CHẠY của nguồn (bản cũ bị comment kèm ghi chú "Sai" — xem chú thích ở trên).
+        totalValCusPmt = repairAfterVat - cusDebit,
+        // 🔴 Cùng cột `InsurancePrice`, báo cáo này và #342 hiểu NGƯỢC nhau — cần người nghiệp vụ chốt.
+        insurancePriceConventionConflict = partialRepair > 0m,
+        insurancePriceNote = partialRepair > 0m
+            ? "Ở đây InsurancePrice được tính vào phía SỬA CHỮA; ở #342 nó là số tiền BẢO HIỂM để ghi công nợ. "
+              + "Hai quy ước ngược nhau — chưa tự thống nhất, chờ xác nhận nghiệp vụ."
+            : null,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/osveloca/ro/{roNo}/schedule", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
