@@ -42756,7 +42756,26 @@ app.MapGet("/api/stockouts/veloca-by-rono", async (string rono, AppDbContext db,
 // #286: nhãn theo MÀN — `screen` nhận `rosearch` (mặc định) · `tabhome` · `stockout`.
 // #306: trả kèm **nhánh `else` của từng màn** — ba màn ba kết cục (chuỗi "Không xác định" / "" / null).
 // ===== 🔴 #318 ĐĂNG NHẬP APP: ĐẠI LÝ "ĐÃ TRIỂN KHAI WEB THÌ DỪNG" =====
-// Nguồn: `CommonSignIn2026NC` (`BizCarSv.Common.cs:1545`) — hàm **CHỈ CÓ TRÊN MÁY 150**
+// 🔴🔴 #455 ĐÍNH CHÍNH GỐC NGUỒN CỦA #318 — **PORT NHẦM TỪ HÀM CHẾT**
+//   #318 đọc `CommonSignIn2026NC` (`:1545`). Kiểm lại bằng khả đạt (`_audit/reach.js`) và grep:
+//   `CommonSignIn2026NC` **không có bất kỳ nơi gọi nào** (chỉ có dòng định nghĩa) ⇒ **CHẾT**.
+//   Hàm **LIVE** là `CommonSignIn` (`BizCarSv.Common.cs:1099`), được `WSCarSv.asmx.cs:419` gọi.
+//   Đây là lỗi cùng họ với #448: bản có HẬU TỐ NGÀY trông "mới hơn" nên bị nhầm là bản đang chạy.
+//   📌 Luật: chọn bản theo **nơi gọi**, không theo hậu tố ngày/“NC”/“New…”.
+//
+// 🔴 HAI SAI LỆCH THỰC TẾ do đọc nhầm hàm (đã sửa ngay dưới):
+//   (1) Bản LIVE có **4 đại lý nhóm (A) mà #318 thiếu hẳn**: `VC046` · `VS086.1` · `VN029` · `VS089`.
+//       Thiếu ⇒ người dùng của 4 đại lý này **vẫn đăng nhập được** trong khi nguồn đã chặn.
+//   (2) `VS086.1` và `VN029` bị #318 xếp vào nhóm (B) *chặn trọn* — nhưng ở bản LIVE hai dòng đó
+//       **ĐANG BỊ COMMENT** trong nhóm (B). Port dòng comment = **chặn oan** cả tài khoản ngoại lệ
+//       (`SYSADMIN`/`sysadmin`) mà nguồn cố ý chừa. Đã bỏ khỏi nhóm (B), đưa về nhóm (A).
+//   ⚠️ `VS089` có **ba** ngoại lệ, trong đó `HAU.DTP` có **dấu chấm** trong mã người dùng.
+//
+// ⚪ #455 KIỂM TRA ÂM TÍNH: nhánh xác thực qua HCC/iNOS mà #318 mô tả ("hai đường xác thực")
+//   **chỉ tồn tại ở hàm CHẾT**. Ở `CommonSignIn` LIVE cả khối `// Call Inos` **nằm trong comment**
+//   ⇒ bản đang chạy **luôn so mật khẩu local**, không hề gọi HCC. Mô tả cũ giữ lại bên dưới nhưng
+//   phải đọc là "của bản 2026NC chưa dùng", không phải luật đang chạy.
+// Nguồn (ĐÃ SỬA): `CommonSignIn` (`BizCarSv.Common.cs:1099`, LIVE) — đối chiếu thêm `CommonSignIn2026NC` (CHẾT)
 //   (bản laptop `V20.2023.Release.V2` không có; file lệch **+666 dòng**). Tìm ra bằng cách so `wc -l`
 //   toàn bộ `TERP.BizCarSv` hai máy: **6/55 file lệch**, 150 luôn lớn hơn.
 //
@@ -42786,17 +42805,25 @@ var appLoginBlockedWithException = new Dictionary<string, string[]>
     ["VC079"] = new[] { "SYSADMIN" },
     // ⚠️ nguồn liệt kê CẢ HAI dạng chữ vì so sánh phân biệt hoa/thường ở nhánh này
     ["VS065"] = new[] { "SYSADMIN", "sysadmin" },
+    // ===== #455 BỐN ĐẠI LÝ CHỈ CÓ Ở HÀM LIVE `CommonSignIn` (#318 đọc nhầm hàm chết nên thiếu) =====
+    ["VC046"] = new[] { "SYSADMIN", "sysadmin" },
+    ["VS086.1"] = new[] { "SYSADMIN", "sysadmin" },
+    ["VN029"] = new[] { "SYSADMIN", "sysadmin" },
+    // ⚠️ ba ngoại lệ; `HAU.DTP` có DẤU CHẤM trong mã người dùng — đừng cắt theo dấu chấm.
+    ["VS089"] = new[] { "SYSADMIN", "sysadmin", "HAU.DTP" },
 };
 
 var appLoginBlockedAll = new HashSet<string>
 {
-    "VN054", "VN071", "VN040", "VN029", "VN059", "VN042", "VN098", "VN041",
+    "VN054", "VN071", "VN040", "VN059", "VN042", "VN098", "VN041",
     "VN090", "VN049", "VN012", "VN089", "VN056", "VN018", "VN064", "VN026",
+    // #455: `VN029` đã BỎ khỏi đây — dòng của nó trong nhóm (B) của hàm LIVE đang bị COMMENT.
     "VN010", "VN017", "VN065.1", "VN022", "VN021", "VN025", "VC048", "VC021",
     "VC060.1", "VC006", "VC096", "VC081", "VC076", "VC074", "VC046", "VC020",
     "VN055.1", "VC004", "VS067", "VS094", "VS071", "VS058", "VS093", "VS080",
     "VS069", "VS088", "VS066", "VS036", "VS068.1", "VS070", "VS092", "VS090",
-    "VS089", "VS039", "VS086.1", "VS098", "VS008", "VS057", "VS034", "VS064",
+    // #455: `VS089` và `VS086.1` đã BỎ khỏi đây — hai dòng đó trong nhóm (B) LIVE đang bị COMMENT.
+    "VS039", "VS098", "VS008", "VS057", "VS034", "VS064",
     "VC037", "V3601",
 };
 
