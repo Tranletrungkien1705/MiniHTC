@@ -3267,6 +3267,90 @@ app.MapGet("/api/vins/for-htc-invoice", async (
         debt = "NO co nhan: ~10 left join lam giau cua nguon (CT_TKHQ, CT_PackingList, CT_LC, Car_DocReq*, Car_DeliveryOrder*, #tblmaxDlv Sto_DlvMinutes) chua port."
     });
 }).RequireAuthorization();
+
+// ===== #B50 TÌM VIN ĐỂ TẠO YCVT ĐÓNG THÙNG — `Car_VIN_Get_RearCBTransReqDT_New20181119` =====
+// (`FrmSearchVinRearCBTransReqDT`.) Trace LIVE: `salesSv.SearchVinForRearCBTransReqDT`
+//   (`SalesService.cs:15804`) → WS `Car_VIN_Get_RearCBTransReqDT` (`WSHTC.asmx.cs:61760`) →
+//   `_biz.Car_VIN_Get_RearCBTransReqDT_New20181119` (`Biz.HTC.WH.cs:176141`, **VỎ BỌC**) →
+//   **`Car_VIN_Get_RearCBTransReqDTX_New20181119`** (`:176403`) — SQL thật.
+// 🔴 **ĐIỀU KIỆN LÕI** (`:176473-176474`): `and ssrd.StoRearCBNo is not null`
+//    **và** `and ssrd.RearCBDtlStatus in ('A')`.
+//    ⚠️ **KHÁC #B47 một chữ**: bên điều chuyển nội bộ (`Sto_StorageRearrangeDetail`) đòi **`'A2'`**,
+//    bên đóng thùng (`Sto_RearangeCBDetail`) đòi **`'A'`**. Hai luồng anh em **cố ý khác trạng thái
+//    tiền đề** — đừng "đồng bộ hoá cho gọn" (luật `C0-quadringentesimusoctavus`).
+//    Và như #B47: `left join` + `is not null` ở `where` = **INNER JOIN thực chất**.
+// 🔴 `@strBUPatternOfUser` **khai báo nhưng KHÔNG DÙNG** — **ca thứ NĂM** liên tiếp
+//    (#B45/#B46/#B47/#B48/#B50). Trả `outOfScopeCount` + cờ `enforceBuScope`; không tự bịt.
+app.MapGet("/api/vins/for-rearcb-trans-req", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? specCode, string? modelCode, string? colorCode,
+    string? stoRearCBNo, string? buPattern, string? enforceBuScope,
+    int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    var fVin = U(vin);
+    if (fVin is not null) cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(fVin)).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) { var set = specCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.SpecCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(modelCode)) { var set = modelCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ModelCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(colorCode)) { var set = colorCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ColorCode ?? "")).ToList(); }
+
+    var vinSet = cars.Select(c => c.VIN).ToHashSet();
+    // ĐIỀU KIỆN LÕI: phải có dòng lệnh đóng thùng đang **"A"** (không phải "A2" như luồng nội bộ).
+    var rear = await (from d in db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN) && x.RearCBDtlStatus == "A")
+                      join h in db.StoRearCBs.Where(x => x.OrgId == t.OrgId) on d.StoRearCBId equals h.Id
+                      select new { d.VIN, h.StoRearCBNo, d.RearCBDtlStatus }).ToListAsync();
+    rear = rear.Where(x => !string.IsNullOrEmpty(x.StoRearCBNo)).ToList();          // `is not null`
+    if (!string.IsNullOrWhiteSpace(stoRearCBNo))
+    { var k = stoRearCBNo.Trim().ToUpperInvariant(); rear = rear.Where(x => (x.StoRearCBNo ?? "").ToUpperInvariant().Contains(k)).ToList(); }
+
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PLNo, p.LcNo, p.PortCode }).ToListAsync();
+    var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId).Select(k => new { k.DeclarationNo, k.OpenDate }).ToListAsync();
+
+    var joined = rear.Select(r =>
+    {
+        var cv = cars.First(c => c.VIN == r.VIN);
+        var pl = packingLists.FirstOrDefault(p => p.PLNo == cv.PackingListNo);
+        var kq = tkhqs.FirstOrDefault(k => k.DeclarationNo == cv.DeclarationNo);
+        return new
+        {
+            cvVIN = cv.VIN, cvModelCode = cv.ModelCode, cvSpecCode = cv.SpecCode, cvColorCode = cv.ColorCode,
+            cvActualSpec = cv.ActualSpec, cvEngineNo = cv.EngineNo, cvStorageCodeCurrent = cv.StorageCodeCurrent,
+            cvPackingListNo = cv.PackingListNo, ctplLCNo = pl?.LcNo, ctplPortCode = pl?.PortCode,
+            cttDeclarationNo = kq?.DeclarationNo, cttOpenDate = kq?.OpenDate,
+            ccDealerCode = cv.DealerCode, cvTypeCB = cv.TypeCB, cvLoaiThung = cv.LoaiThung,
+            ssrdStoRearCBNo = r.StoRearCBNo, ssrdRearCBDtlStatus = r.RearCBDtlStatus
+        };
+    }).ToList();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? dc)
+    {
+        if (pattern is null) return true;
+        var dl = dealers.FirstOrDefault(z => z.DealerCode == dc);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = joined.Count(x => !InScope(x.ccDealerCode));
+    if (enforceBuScope == "1") joined = joined.Where(x => InScope(x.ccDealerCode)).ToList();
+
+    joined = joined.OrderBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
+    var myCount = joined.Count;
+    var items = joined.Skip(start).Take(count).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        coreRule = "StoRearCBNo is not null VÀ RearCBDtlStatus in ('A').",
+        siblingDiff = "KHÁC #B47 (YCVT nội bộ) vốn đòi RearrangeDtlStatus in ('A2') — hai luồng anh em CỐ Ý khác trạng thái tiền đề, không được đồng bộ hoá.",
+        joinNote = "Nguồn viết left join nhưng where có 'is not null' ⇒ INNER JOIN thực chất.",
+        outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon - ca thu NAM lien tiep (#B45/#B46/#B47/#B48/#B50)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/for-rear-trans-req", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? specCode, string? modelCode, string? colorCode,
