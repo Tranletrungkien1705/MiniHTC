@@ -35889,6 +35889,81 @@ app.MapGet("/api/syspartners", async (AppDbContext db, ITenantContext t, string?
     });
 }).RequireAuthorization();
 
+// ===== #B97 THÔNG TIN NGƯỜI DÙNG ĐANG ĐĂNG NHẬP — `SysGetUser_ForCurrentUser_New20181115` =====
+// Trace LIVE: WS → `_biz.SysGetUser_ForCurrentUser_New20181115` (`BizHTC.System.cs:202`).
+//   3B đo thật, **khớp cả 2 máy**: start=202 md5 `d8dfab486c1899d56f9e59cbf9c5a077`.
+// 🔴🔴 **MẬT KHẨU KHÔNG BAO GIỜ TRẢ VỀ THẬT — luôn là hằng che**:
+//    `mySql_GetClauseColumnForSysUserInfo` (`BizHTC.System.cs`) sinh cột
+//    **`N'{TConst.HTCConst.PasswordTemplate}' UserPassword`** = **`"********"`** (`Const.Main.cs:321`)
+//    ⇒ **hằng chuỗi trong SELECT**, KHÔNG đọc cột mật khẩu. Đây là **guard bảo mật của nguồn**;
+//    port **tuyệt đối không** trả `UserPasswordHash`.
+// 🔴 **`and t.PartnerCode not in (@strPartnerCode)` với `@strPartnerCode = TConst.Sys_Partner.Web`
+//    = `"WEBHTC"`** (`Const.Main.cs:1250`) — **rất phản trực giác, đọc kỹ ba điểm**:
+//      · tên tham số là `@strPartnerCode` nhưng dùng để **LOẠI TRỪ** (`not in`), không phải để lọc-theo;
+//      · giá trị **KHÔNG** phải partner của phiên đăng nhập mà là **hằng `"WEBHTC"`**;
+//      · ⇒ nếu chính người dùng hiện tại thuộc partner **`WEBHTC`** thì hàm trả **RỖNG** —
+//        "thông tin người dùng hiện tại" **không có**. Đó là hành vi THẬT, không phải lỗi.
+//    Port giữ nguyên và trả cờ `excludedByWebPartner` để phân biệt "không tìm thấy" với "bị loại".
+// 🔴 **`left join Mst_Dealer md … , md.*`** — trả **TOÀN BỘ** cột đại lý kèm theo, và là `left join`
+//    thật: người dùng **không gắn đại lý** vẫn ra dòng, phần `md.*` để trống.
+// 🔴 Các cột người dùng được **đổi bí danh có tiền tố `SU`** (`SUDealerCode`, `SUBankCode`,
+//    `SUFlagActive`, `SUTransporterCode`, `SUInsCompanyCode`) — **cố ý** để không đè cột cùng tên
+//    của `md.*` khi ghép hai bảng. Port giữ đúng bí danh (cùng khuôn tiền tố `mcc_` ở #B93).
+// ⚠️ `@strBUPatternOfUser` được bind nhưng **không dùng** — RBAC biến thể 2, ca thứ 14. Ở đây tác hại
+//    bằng 0 vì mệnh đề `t.UserCode = @strPartnerUserCode` đã khoá về **đúng một** người dùng.
+app.MapGet("/api/sysusers/current", async (
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal principal, string? userCode) =>
+{
+    var code = string.IsNullOrWhiteSpace(userCode)
+        ? (principal.Identity?.Name ?? principal.FindFirst("email")?.Value ?? "")
+        : userCode.Trim();
+    if (code.Length == 0)
+        return Results.BadRequest(new { error = "SysGetUser_ForCurrentUser_InvalidUserCode" });
+
+    var u = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
+    if (u is null)
+        return Results.NotFound(new { error = "Sys_User_NotExist", check = new { UserCode = code } });
+
+    // 🔴 `and t.PartnerCode not in ('WEBHTC')` — LOẠI, không phải lọc-theo.
+    const string PartnerWeb = "WEBHTC";                      // `TConst.Sys_Partner.Web`
+    if (string.Equals(u.PartnerCode ?? "", PartnerWeb, StringComparison.OrdinalIgnoreCase))
+        return Results.Ok(new
+        {
+            count = 0, items = Array.Empty<object>(),
+            excludedByWebPartner = true,
+            excludeNote = "Nguon co 'and t.PartnerCode not in (@strPartnerCode)' voi @strPartnerCode = TConst.Sys_Partner.Web = 'WEBHTC' => nguoi dung thuoc partner WEBHTC bi LOAI, ham tra RONG. Hanh vi THAT, khong phai loi."
+        });
+
+    // `left join Mst_Dealer` — LEFT thật: không gắn đại lý vẫn ra dòng.
+    var md = u.DealerCode is null ? null
+        : await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == u.DealerCode);
+
+    return Results.Ok(new
+    {
+        count = 1,
+        items = new[] { new {
+            tUserCode = u.UserCode,
+            tUserName = u.UserName,
+            // 🔴🔴 HẰNG CHE — KHÔNG BAO GIỜ trả mật khẩu thật.
+            UserPassword = "********",
+            SUDealerCode = u.DealerCode, SUBankCode = u.BankCode,
+            tFlagSysAdmin = u.FlagSysAdmin, tFlagSysViewer = u.FlagSysViewer,
+            SUFlagActive = u.FlagActive,
+            SUTransporterCode = u.TransporterCode, SUInsCompanyCode = u.InsCompanyCode,
+            // `md.*` — toàn bộ cột đại lý; null khi không gắn đại lý.
+            mdDealerCode = md?.DealerCode, mdDealerName = md?.DealerName,
+            mdBUCode = md?.BUCode, mdProvinceCode = md?.ProvinceCode,
+            mdFlagActive = md?.FlagActive, mdFlagTCG = md?.FlagTCG
+        } },
+        excludedByWebPartner = false,
+        passwordMaskNote = "MAT KHAU KHONG BAO GIO TRA VE THAT: mySql_GetClauseColumnForSysUserInfo sinh cot N'{PasswordTemplate}' UserPassword = '********' (Const.Main.cs:321) - HANG CHUOI trong SELECT, KHONG doc cot mat khau. Day la GUARD BAO MAT cua nguon; port TUYET DOI khong tra UserPasswordHash.",
+        excludeRuleNote = "'and t.PartnerCode not in (@strPartnerCode)' voi @strPartnerCode = 'WEBHTC': ten tham so la @strPartnerCode nhung dung de LOAI TRU (not in), va gia tri KHONG phai partner cua phien dang nhap ma la HANG. Da tra co excludedByWebPartner de phan biet 'khong tim thay' voi 'bi loai'.",
+        joinNote = "left join Mst_Dealer md ... , md.* - tra TOAN BO cot dai ly kem theo, va la LEFT THAT: nguoi dung khong gan dai ly VAN ra dong, phan md.* de trong.",
+        aliasPrefixNote = "Cac cot nguoi dung doi bi danh co TIEN TO 'SU' (SUDealerCode, SUBankCode, SUFlagActive, SUTransporterCode, SUInsCompanyCode) - CO Y de khong de cot cung ten cua md.* khi ghep hai bang (cung khuon tien to 'mcc_' o #B93).",
+        rbacHole = "RBAC bien the 2 (khai ma khong dung), ca thu 14: @strBUPatternOfUser bind nhung khong dung. Tac hai = 0 vi menh de t.UserCode = @strPartnerUserCode da khoa ve DUNG MOT nguoi dung."
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/sysobjecttypes", async (AppDbContext db, ITenantContext t, string? objectTypeList) =>
 {
     var codes = SplitConditionList(objectTypeList);
