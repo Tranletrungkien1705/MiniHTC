@@ -48671,6 +48671,69 @@ app.MapPost("/api/roworkarisingquotamsts/delete", async (List<RoWorkArisingQuota
     return Results.Ok(new { requested = rows.Count, deleted, deletesMainAndWhOnly = true });
 }).RequireAuthorization();
 
+// ===== 🔴 #540 XOÁ MÃ LỖI KHIẾU NẠI/CHẨN ĐOÁN — **GUARD THAM CHIẾU MÀ BẢN PORT CŨ THIẾU HẲN** =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:8229 Ser_MST_ROComplaintDiagnosticError_Delete`.
+// Endpoint: `POST /api/complainterrorcodes/delete` (vá, master đã port ở `:22652`).
+//
+// ⚠️ **GREP TRƯỚC + so DANH SÁCH CỘT** (bài học #538): bảng nguồn `Ser_MST_ROComplaintDiagnosticError`
+//   có 6 cột `ErrorCode · ErrorName · ErrorDesc · ErrorTypeCode · Remark · FlagActive` — **trùng khớp**
+//   entity `ComplaintErrorCode` đã port (dư 2 cột `WarrantyDate`/`WarrantyKm` từ màn WinForm khác)
+//   ⇒ **cùng một master**, không tạo bảng mới. MiniHTC có `GET`/`POST`/`toggle` nhưng **KHÔNG có xoá**.
+//
+// 🔴🔴 **GUARD THAM CHIẾU TRƯỚC KHI XOÁ** (nguồn có, bản port chưa có):
+//     `select t.* from Ser_ROWarrantyReport t where (1=1) and t.ErrorCodePN = @ErrorCode or t.ErrorCodeCD = @ErrorCode`
+//   `Rows.Count > 0` ⇒ ném `Ser_MST_ROComplaintDiagnosticErrorSave_ROCDEIDNotExistInList`
+//   (⚠️ **tên hằng nói "Save" và "NotExistInList" trong hàm XOÁ vì mã ĐANG ĐƯỢC DÙNG** — nội dung
+//    thông báo ngược hẳn tình huống; chép nguyên văn, đây là họ lỗi tên hằng của #536).
+//   ⇒ Mã lỗi **đang được đề nghị bảo hành nào tham chiếu** thì **không cho xoá**. Bản port cũ thiếu hẳn
+//     phép kiểm này (mà cũng chưa có đường xoá) ⇒ nay bù cả hai.
+// ⚪ **KIỂM TRA ÂM TÍNH — `OR` KHÔNG NGOẶC NHƯNG VẪN ĐÚNG**: mệnh đề là
+//   `(1=1 AND PN = @x) OR (CD = @x)` theo thứ tự ưu tiên. Vì vế trái có `1=1` nên rút gọn thành
+//   `PN = @x OR CD = @x` — **đúng ý đồ, do MAY**. Nếu sau này ai chèn thêm một điều kiện `and …` vào
+//   trước `or` thì `OR` sẽ **nuốt** điều kiện đó. Port viết có ngoặc + nêu cờ `sourceOrLacksParentheses`.
+// ⚠️ Trước guard tham chiếu còn `CheckExistROComplaintDiagnosticError` (mã phải có thật) và guard mã rỗng.
+// ⚠️ Câu xoá vẫn là `BuildClauseConditionList` + `ExecNonQuery` **không tham số hoá** (họ #536/#538),
+//   và chỉ xoá ở `_dbMain` + `_dbWH`.
+app.MapPost("/api/complainterrorcodes/delete", async (List<string> errorCodes,
+    AppDbContext db, ITenantContext t) =>
+{
+    var codes = (errorCodes ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Cần danh sách ErrorCode." });
+
+    // CheckExistROComplaintDiagnosticError: mã phải có thật.
+    var rows = await db.ComplaintErrorCodes.Where(x => x.OrgId == t.OrgId && codes.Contains(x.ErrorCode))
+        .ToListAsync();
+    var missing = codes.Where(c => rows.All(r => r.ErrorCode != c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "CheckExistROComplaintDiagnosticError: mã không tồn tại.", missing });
+
+    // Guard tham chiếu — nguồn viết OR không ngoặc; ở đây viết CÓ ngoặc (cùng kết quả, an toàn về sau).
+    var used = await db.ServiceWarrantyClaims
+        .Where(x => x.OrgId == t.OrgId
+            && ((x.ErrorCodePN != null && codes.Contains(x.ErrorCodePN))
+                || (x.ErrorCodeCD != null && codes.Contains(x.ErrorCodeCD))))
+        .Select(x => new { x.ClaimNo, x.ErrorCodePN, x.ErrorCodeCD }).Take(50).ToListAsync();
+    if (used.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Ser_MST_ROComplaintDiagnosticErrorSave_ROCDEIDNotExistInList",
+            checkConditionRaiseError = "ErrorCode already exists in table Ser_ROWarrantyReport ",
+            usedBy = used,
+            errorConstantNameContradictsSituation = true,
+        });
+
+    db.ComplaintErrorCodes.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        requested = codes.Count, deleted = rows.Count,
+        referenceGuardAdded = "Ser_ROWarrantyReport.ErrorCodePN / ErrorCodeCD",
+        sourceOrLacksParentheses = "(1=1 and PN=@x) or (CD=@x) — dung do 1=1, se hong neu them dieu kien",
+        sourceDeleteIsNotParameterised = true,
+        deletesMainAndWhOnly = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
