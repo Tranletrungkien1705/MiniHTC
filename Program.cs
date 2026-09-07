@@ -5046,6 +5046,102 @@ app.MapDelete("/api/wholesaledeals/{no}", async (string no, AppDbContext db, ITe
 //    `SearchCarToPDI` (#B10) vốn join theo `dlsd.DealerCodeBuyer`. Cùng một bảng, ba màn, hai cột RBAC.
 // 🔴 `flagInitDeal = "0"` được client **HARDCODE** (`DealerService.cs:2384-2388`, `if` luôn đúng vì biến gán
 //    cứng ngay trên) ⇒ biến thể SBHOnline **luôn** loại giao dịch khởi tạo.
+
+// ===== #B13 TRA XE TRÊN HỢP ĐỒNG ĐẠI LÝ CHƯA VÀO GIAO DỊCH (port 1:1 `Dlr_ContractCar_Get`) =====
+// Dùng bởi `FrmNewDeal` (:236, :967) khi chọn xe từ hợp đồng để lập giao dịch bán.
+// Trace twin LIVE: `Dlr_PDIRequestService.Dlr_ContractCar_Get` (:391) → WS `Dlr_ContractCar_Get`
+//   (`WSHTC.asmx.cs:37955`) → `_biz.Dlr_ContractCar_Get` → **`Dlr_ContractCar_GetX`**
+//   (`BizHTC.Contract.cs:8776`) — SQL thật ở hàm X, hàm ngoài chỉ là vỏ bọc.
+// 🔴 GUARD FIX CỨNG TRONG SQL, nằm NGOÀI mọi bộ lọc của client: `and dcc.FlagDelivery = '0'`
+//    kèm chú thích nguồn *"Tìm ra những CarId hợp đồng chưa có trong giao dịch nào"* (`:8858`).
+//    ⇒ dù client gửi `FlagDelivery` gì thì SQL **vẫn luôn** thêm `= '0'`. Không port guard này ⇒ màn lập
+//    giao dịch sẽ chào cả những xe ĐÃ giao.
+// 🔴 Tám bộ lọc của client (`Dlr_PDIRequestService.cs:391-438`) **đều là `"="` tuyệt đối**, không có LIKE nào.
+//    `FrmNewDeal` gọi với `FlagCancel = Flag.Inactive("0")`, `FlagDelivery = Flag.Inactive("0")`,
+//    `DlrCtrStatus = Stage.Approved("A")`.
+app.MapGet("/api/dlrcontractcars/available", async (
+    AppDbContext db, ITenantContext t,
+    string? dlrContractNo, string? ctrCarId, string? modelCode, string? specCode, string? colorCode,
+    string? flagCancel, string? flagDelivery, string? dlrCtrStatus, string? buPattern,
+    int? recordStart, int? recordCount) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var cars = await db.DlrContractCars.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    // Tám bộ lọc "=" của client.
+    if (!string.IsNullOrWhiteSpace(dlrContractNo)) cars = cars.Where(c => c.DlrContractNo == dlrContractNo.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(ctrCarId)) cars = cars.Where(c => c.CtrCarId == ctrCarId.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(modelCode)) cars = cars.Where(c => c.ModelCode == modelCode.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) cars = cars.Where(c => c.SpecCode == specCode.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(colorCode)) cars = cars.Where(c => c.ColorCode == colorCode.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(flagCancel)) cars = cars.Where(c => c.FlagCancel == flagCancel.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(flagDelivery)) cars = cars.Where(c => c.FlagDelivery == flagDelivery.Trim()).ToList();
+    // 🔴 Guard fix cứng của SQL — LUÔN áp, không phụ thuộc tham số trên.
+    var beforeHardGuard = cars.Count;
+    cars = cars.Where(c => c.FlagDelivery == "0").ToList();
+    var droppedByDeliveredGuard = beforeHardGuard - cars.Count;
+
+    // `inner join Dlr_ContractDtl dcd` theo BỐN cột (DlrContractNo + Spec + Model + Color) — dòng xe không
+    // khớp một dòng chi tiết hợp đồng nào sẽ bị LOẠI.
+    var dtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    // `inner join Dlr_Contract dc` + `inner join Mst_Dealer md on dc.DealerCode = md.DealerCode and BUCode like …`
+    var contracts = await db.DlrContracts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+
+    int droppedNoContractDtl = 0, droppedNoContract = 0, droppedByDealerJoin = 0, droppedCtrStatus = 0;
+    var kept = new List<(DlrContractCar car, DlrContract ctr)>();
+    foreach (var c in cars)
+    {
+        var dtl = dtls.FirstOrDefault(x => x.DlrContractNo == c.DlrContractNo && x.SpecCode == c.SpecCode
+                                           && x.ModelCode == c.ModelCode && x.ColorCode == c.ColorCode);
+        if (dtl is null) { droppedNoContractDtl++; continue; }
+        var dc = contracts.FirstOrDefault(x => x.DlrContractNo == c.DlrContractNo);
+        if (dc is null) { droppedNoContract++; continue; }
+        var dl = dealers.FirstOrDefault(x => x.DealerCode == dc.DealerCode);
+        if (dl is null) { droppedByDealerJoin++; continue; }
+        if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedByDealerJoin++; continue; }
+        // Bộ lọc `dc.DlrCtrStatus` do client gửi (`FrmNewDeal` gửi Stage.Approved = "A").
+        if (!string.IsNullOrWhiteSpace(dlrCtrStatus) && dc.Status != dlrCtrStatus.Trim()) { droppedCtrStatus++; continue; }
+        kept.Add((c, dc));
+    }
+
+    // `order by dcc.DlrContractNo asc, dcc.SpecCode asc` rồi đánh `MyIdxSeq` và cắt theo khoảng.
+    var ordered = kept.OrderBy(x => x.car.DlrContractNo, StringComparer.Ordinal)
+                      .ThenBy(x => x.car.SpecCode ?? "", StringComparer.Ordinal).ToList();
+    var myCount = ordered.Count;                                  // khối `select Count(0) MyCount`
+    var page = ordered.Skip(start).Take(count).ToList();
+
+    // `left join DLS_DealerCustomer ddc on dc.**TransactorCode** = ddc.CustomerCode`
+    // ⚠️ Dòng dùng `dc.CustomerCode` nằm NGAY TRÊN nhưng **đã bị COMMENT** (`:8855-8856`) — port dòng ACTIVE.
+    var custCodes = page.Select(x => x.ctr.TransactorCode).Where(x => x != null).Distinct().ToList();
+    var custs = await db.DealerCustomers.Where(c => c.OrgId == t.OrgId && custCodes.Contains(c.CustomerCode))
+        .Select(c => new { c.CustomerCode, c.FullName, c.Address, c.PhoneNo, c.ProvinceCode, c.DistrictCode }).ToListAsync();
+
+    var items = page.Select((x, i) => new
+    {
+        myIdxSeq = start + i,
+        x.car.DlrContractNo, x.car.CtrCarId, x.car.ModelCode, x.car.SpecCode, x.car.ColorCode,
+        x.car.DlvExpectedDate, x.car.FlagCancel, x.car.FlagDelivery, x.car.LogLUDateTime, x.car.LogLUBy,
+        dlrCtrStatus = x.ctr.Status, x.ctr.TransactorCode,
+        ddc_CustomerCode = custs.FirstOrDefault(c => c.CustomerCode == x.ctr.TransactorCode)?.CustomerCode,
+        ddc_FullName = custs.FirstOrDefault(c => c.CustomerCode == x.ctr.TransactorCode)?.FullName,
+        ddc_Address = custs.FirstOrDefault(c => c.CustomerCode == x.ctr.TransactorCode)?.Address,
+        ddc_PhoneNo = custs.FirstOrDefault(c => c.CustomerCode == x.ctr.TransactorCode)?.PhoneNo,
+        ddc_ProvinceCode = custs.FirstOrDefault(c => c.CustomerCode == x.ctr.TransactorCode)?.ProvinceCode,
+        ddc_DistrictCode = custs.FirstOrDefault(c => c.CustomerCode == x.ctr.TransactorCode)?.DistrictCode
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        hardGuard = "SQL nguồn LUÔN thêm `dcc.FlagDelivery = '0'` (xe hợp đồng chưa vào giao dịch nào), ngoài mọi bộ lọc client",
+        customerJoinColumn = "dc.TransactorCode = ddc.CustomerCode (dòng dùng dc.CustomerCode đã bị COMMENT ở nguồn)",
+        filterShapes = "cả 8 bộ lọc đều là '=' tuyệt đối, không có LIKE",
+        droppedByDeliveredGuard, droppedNoContractDtl, droppedNoContract, droppedByDealerJoin, droppedCtrStatus
+    });
+}).RequireAuthorization();
 app.MapGet("/api/deals/search", async (
     AppDbContext db, ITenantContext t,
     string? dealNo, string? carId, string? vin, string? flagInitDeal, string? buPattern,
