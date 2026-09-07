@@ -3418,6 +3418,108 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // 🔴 Xe **tồn tại tại một mốc**: `cc.CreatedDate <= @mốc` ∧ (`CarCancelDate is null` ∨ `> @mốc`)
 //    — dùng cho cả đầu kỳ (`@From`) lẫn cuối kỳ (`@To`).
 // ✅ `@strBUPatternOfUser` **DÙNG THẬT** (`:11117` + `inner join #tbl_Mst_Dealer`) — như #B55/#B56.
+
+// ===== #B59 PIVOT ĐỀ NGHỊ GIẤY TỜ — `RptStatistic_HTC_CarDocReq_New20181115` (`FrmPivotCarDocReq`) =====
+// Trace LIVE: `ReportService.ReportPivotCarDocReq` (`:3367`) → WS `RptStatistic_HTC_CarDocReq`
+//   (`WSHTC.asmx.cs:30771`) → **`_biz.RptStatistic_HTC_CarDocReq_New20181115`** (`BizHTC.Report.cs:15833`).
+//   ⚠️ Bản trùng tên `BizHTC.Report - Copy.cs:15617` — file **ngoài `TERP.BizHTC.csproj`**.
+// 🔴 **Bộ lọc lõi** (`:15916-15926`): `Car_DocReqDtl` ⟵ **inner** `Car_DocReqList` ⟵ **inner** `Car_VIN`
+//    ⟵ **inner** `Car_Car`, **left** `Pmt_GuaranteeDetail` (`GuaranteeDetailStatus not in ('R','C')`).
+//    `WHERE`: **`(cv.MortageEndDate IS NULL  OR  pgd.DateStart IS NULL)`**
+//             **AND** `cdrd.DRDtlStatus = 'A'` **AND** `cdrl.DRListStatus = 'A'`.
+//    🔴 Vế đầu là **`OR`**, không phải `AND` — và chú thích *"Chưa có ngày giao hồ sơ"* chỉ gắn cho
+//    **vế trái**. Port thành `AND` sẽ siết dữ liệu sai hẳn.
+//    🔴 Cả **DÒNG** và **ĐẦU** đề nghị đều phải ở **'A'** — hai trục trạng thái riêng, phải kiểm cả hai.
+// 🔴 **Hai cột dẫn xuất**:
+//    · `DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate)` — mốc là **duyệt cấp 2 của ĐẦU đề nghị**
+//      (`cdrl`), KHÔNG phải của dòng. Cột này port cũ **thiếu hẳn** — đã thêm §12.
+//    · `DutyCompletedPercent = (IsNull(pmpd_Deposit.AmountTotal,0.0) + IsNull(pmgd.GuaranteeValue,0.0))
+//      / cc.UnitPriceActual * 100.0`
+//      🔴 **KHÔNG có bảo vệ chia 0**: xe `UnitPriceActual = 0`/null làm phép chia hỏng ở nguồn.
+//      Port trả `null` cho các dòng đó (**không bịa 0%**) và đếm riêng ở `divideByZeroRows`.
+// ⚠️ NỢ CÓ NHÃN: `Pmt_GuaranteeDetail` và khối `CachingForPaymentTotal`/`CachingForPayment_Deposit`
+//    (tiền cọc) MiniHTC **chưa có** — hai vế tử số trả `null`, `DutyCompletedPercent` cũng `null`.
+//    Đây là cùng món nợ đã ghi ở #B37/#B56, **không suy số**.
+app.MapGet("/api/reports/car-doc-req-pivot", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern) =>
+{
+    var asOf = (tDate ?? DateTime.Now).Date;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    var scope = dealers.Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    // Cả DÒNG và ĐẦU đề nghị đều phải 'A'.
+    var heads = await db.CarDocRequests.Where(r => r.OrgId == t.OrgId && r.Status == "A").ToListAsync();
+    var headIds = heads.Select(h => h.Id).ToList();
+    var lines = await db.CarDocRequestCars
+        .Where(c => c.OrgId == t.OrgId && headIds.Contains(c.RequestId) && c.DRDtlStatus == "A").ToListAsync();
+
+    // `inner join Car_VIN` / `inner join Car_Car` ⇒ VIN chưa khai bị LOẠI.
+    var vins = lines.Select(l => l.CarId).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+    var known = cars.ToDictionary(c => c.VIN);
+    var droppedNoCarVin = lines.Count(l => !known.ContainsKey(l.CarId));
+    lines = lines.Where(l => known.ContainsKey(l.CarId)).ToList();
+
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtCode, c.ColorExtNameVN, c.ColorIntCode, c.ColorIntNameVN }).ToListAsync();
+
+    int divideByZeroRows = 0, droppedByDealerJoin = 0;
+    var items = new List<object>();
+    foreach (var l in lines)
+    {
+        var cv = known[l.CarId];
+        if (cv.DealerCode == null || !scope.Contains(cv.DealerCode)) { droppedByDealerJoin++; continue; }
+        // 🔴 Vế `OR` của nguồn — KHÔNG phải AND. (Vế `pgd.DateStart is null` luôn đúng ở MiniHTC vì
+        //    chưa có tầng `Pmt_GuaranteeDetail` ⇒ điều kiện này hiện **không loại dòng nào**; ghi nợ.)
+        var mortageEndIsNull = cv.MortageEndDate is null;
+        var guaranteeStartIsNull = true;                       // NỢ: chưa có Pmt_GuaranteeDetail
+        if (!(mortageEndIsNull || guaranteeStartIsNull)) continue;
+
+        var h = heads.First(z => z.Id == l.RequestId);
+        var mo = models.FirstOrDefault(m => m.ModelCode == cv.ModelCode);
+        var sp = specs.FirstOrDefault(s => s.SpecCode == cv.SpecCode);
+        var co = colors.FirstOrDefault(c => c.ModelCode == cv.ModelCode && c.ColorCode == cv.ColorCode);
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == cv.DealerCode);
+
+        int? dutyDays = h.ApprovedDate2 is null ? null : (int)(asOf - h.ApprovedDate2.Value.Date).TotalDays;
+        // Chia 0: nguồn không bảo vệ ⇒ port trả null và ĐẾM RIÊNG, không bịa 0%.
+        decimal? dutyPct = null;
+        if ((cv.UnitPriceActual ?? 0m) == 0m) divideByZeroRows++;
+
+        items.Add(new
+        {
+            drListCode = h.RequestNo, drListStatus = h.Status, drDtlStatus = l.DRDtlStatus,
+            cdrlApprovedDate2 = h.ApprovedDate2, dutyDays,
+            cvVIN = cv.VIN, ccCarId = cv.VIN, cvModelCode = cv.ModelCode, mcmModelName = mo?.ModelName,
+            mcsSpecCode = cv.SpecCode, mcsSpecDescription = sp?.SpecDesc,
+            cvColorCode = cv.ColorCode, cvColorExtCode = co?.ColorExtCode, cvColorExtNameVN = co?.ColorExtNameVN,
+            cvColorIntCode = co?.ColorIntCode, cvColorIntNameVN = co?.ColorIntNameVN,
+            ccDealerCode = cv.DealerCode, ccDealerName = dl?.DealerName,
+            cvMortageEndDate = cv.MortageEndDate, cvCODate = cv.CODate,
+            ccUnitPriceActual = cv.UnitPriceActual,
+            dutyCompletedPercent = dutyPct,          // NỢ: cần tầng cọc + bảo lãnh
+            pmpdDepositAmount = (decimal?)null,      // NỢ
+            pmgdGuaranteeValue = (decimal?)null      // NỢ
+        });
+    }
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf, count = items.Count, items,
+        droppedNoCarVin, droppedByDealerJoin, divideByZeroRows,
+        filterRule = "(cv.MortageEndDate IS NULL  OR  pgd.DateStart IS NULL) AND cdrd.DRDtlStatus='A' AND cdrl.DRListStatus='A' — ve dau la OR, KHONG phai AND; chu thich 'Chua co ngay giao ho so' chi gan cho ve TRAI.",
+        twoStatusAxesNote = "Ca DONG (DRDtlStatus) lan DAU (DRListStatus) deu phai 'A' - hai truc rieng, phai kiem ca hai.",
+        dutyDaysRule = "DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate) - moc la duyet cap 2 cua DAU de nghi, KHONG phai cua dong.",
+        divideByZeroNote = "DutyCompletedPercent cua nguon chia cho cc.UnitPriceActual KHONG co bao ve chia 0 - port tra null va dem rieng o divideByZeroRows, KHONG bia 0%.",
+        debt = "NO co nhan: Pmt_GuaranteeDetail va khoi CachingForPaymentTotal/CachingForPayment_Deposit (tien coc) chua co o MiniHTC => dutyCompletedPercent / pmpdDepositAmount / pmgdGuaranteeValue tra null. Ve loc 'pgd.DateStart IS NULL' hien khong loai dong nao. Cung mon no da ghi o #B37/#B56."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/business-status-period", async (
     AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate,
     string? buPattern, string? groupBy) =>

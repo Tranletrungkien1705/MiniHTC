@@ -2285,6 +2285,8 @@ public static class Seeder
                 // #B54 - Car_VIN.MortageBankCode / DocumentsStatus (dieu kien cua ca 4 khoi bao cao the chap)
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MortageBankCode\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DocumentsStatus\" text NULL",
+                // #B59 - Car_DocReqList.ApprovedDate2 (DAU de nghi) cho DutyDays cua bao cao pivot DNGT
+                "ALTER TABLE public.\"CarDocRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate2\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

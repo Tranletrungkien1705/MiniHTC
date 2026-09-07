@@ -5880,6 +5880,12 @@ public sealed class CarDocRequest
     public DateTime? DoneAt { get; set; }
     public string? RejectReason { get; set; }     // FrmDRApproved — từ chối
     public DateTime? RejectedAt { get; set; }
+    /// <summary>🔴 #B59 — `Car_DocReqList.ApprovedDate2`: ngày duyệt **cấp 2 của ĐẦU đề nghị**.
+    /// Báo cáo pivot ĐNGT tính `DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate)`
+    /// (`BizHTC.Report.cs:15952`) ⇒ thiếu cột thì **không tính được số ngày quá hạn nghĩa vụ**.
+    /// ⚠️ Đây là cột trên **ĐẦU** (`cdrl`), KHÁC `ApprovedDate2` trên **DÒNG** (`CarDocRequestCar`,
+    /// dùng ở luồng duyệt TCG #B40) — trùng tên khác bảng, đừng dùng lẫn.</summary>
+    public DateTime? ApprovedDate2 { get; set; }
     /// <summary>Loại đề nghị (`Car_DocReqList.TypeCRR` — bí danh `cdrl` trong SQL nguồn), từ vựng
     /// `TConst.CarDocReqType` (`Const.Main.cs:657-662`): NORMAL · SPECIAL · DEALER · DEALERTCG.
     /// 🔴 Guard `CarDocReqDtlDelete_ExistAnotherSpecial` CHỈ chạy khi đề nghị là **NORMAL**
