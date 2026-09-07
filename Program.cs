@@ -25195,6 +25195,29 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   bỏ dòng comment, chỉ lấy WebMethod **không bị comment**, rồi so **TẬP TÊN** tham số.
         // 📊 **728 hàm proxy · 732 WebMethod · 728 tên khớp hai bên · LỆCH = 0**.
         //   ⇒ Không có hàm nào proxy và máy chủ lệch tham số. Giả thuyết của #464 **bị bác bỏ bằng số liệu**.
+        // ===== 🔴 #467 QUÉT CẢ HỌ `_WH`: "bản kho chỉ khác CSDL" là **SAI Ở 1/3 SỐ CA** =====
+        // Lý do quét: #462 kết luận `Ser_CustomerCare_GetNew_WH` chỉ khác **cơ sở dữ liệu**, rồi lượt này
+        //   `Ser_InvReportInsuranceDebitRpt_WH` **cũng thế** (29/29 dòng SQL trùng khít) ⇒ gặp lần thứ hai
+        //   thì **quét cả cây** thay vì tổng quát hoá từ hai ca (luật #441).
+        // Công cụ `_audit/sweepwh.js` (in kèm số file đọc — luật #453): cắt thân từng hàm, giữ **chỉ dòng SQL**,
+        //   chuẩn hoá (bỏ tiền tố chéo-DB · bỏ hậu tố `_WH` · `with(nolock)`→`--//[mylock]` · bỏ chú thích
+        //   đuôi `--…` · `(1=1)`→`1=1` · gom khoảng trắng · hạ chữ thường) rồi so hai chuỗi.
+        // 📊 **91 hàm `_WH`, cả 91 đều có bản gốc cùng tên. GIỐNG HỆT: 64. KHÁC: 27.**
+        //   ⇒ Giả định "bản kho chỉ đổi CSDL" **đúng khoảng 2/3**, KHÔNG phải luật chung.
+        //     Mỗi lần port một nhánh `_WH` vẫn phải DIFF, không được suy từ ca trước.
+        // ⚠️ **27 là CẬN TRÊN, không phải số đã xác nhận**: trong đó **10 cặp có SỐ DÒNG SQL BẰNG NHAU**
+        //   và hai ca đã soi tay (`Ser_CustomerCare_GetNew_WH` 95/96 · `Ser_InvReportInsuranceDebitRpt_WH`)
+        //   hoá ra **chỉ khác chú thích/khoảng trắng** ⇒ bộ chuẩn hoá còn sót. Nói "27 hàm khác luật" là
+        //   **over-claim**; nói đúng là "27 cặp CẦN SOI, 17 trong số đó lệch cả số dòng nên khả năng cao là thật".
+        // 🔴 Nhóm lệch NHIỀU nhất (số dòng SQL gốc→_WH) — đây là nợ port có tên:
+        //   `SerStockOutSearch_WH` 46→**80** · `Ser_ROWarrantyReport_Get_WH` 75→**50** ·
+        //   `Ser_CustomerCar_Get_WH` 105→**92** · `Ser_Part_OrderGet_StatusList_WH` 91→**81** ·
+        //   `Ser_InvReportCusDebitRpt_WH` 43→**36** · `Ser_InvReportPartTopVariationPrice_WH` 19→**12** ·
+        //   `Ser_CampaignMarketing_Get_WH` 55→**63** · `SerROInvoiceBill_WH` 43→**52**.
+        //   ⇒ Bản kho **THÊM hoặc BỚT hẳn khối SQL**, không chỉ đổi tên CSDL.
+        whTwinSweep = new { whFunctions = 91, pairedWithBase = 91, sqlIdentical = 64,
+            candidatesDiffering = 27, sameLineCountLikelyCosmetic = 10, differingLineCount = 17,
+            note = "27 la CAN TREN can soi, khong phai so da xac nhan khac luat." },
         proxyVsWebMethodSweep = new { proxyMethods = 728, webMethods = 732, matchedByName = 728,
             signatureMismatches = 0 },
         versionSuffixSweep = new { versionSuffixedFunctions = 264, reachable = 171, dead = 93,
@@ -40801,6 +40824,8 @@ app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t
         note = "Twin của FrmCustomerCare là Ser_CustomerCare_GetNew (không phải bản iCIC 72h).",
         // #462: nhánh _WH khác nguồn dữ liệu, KHÔNG khác luật.
         fullHistory = fullHistory == true,
+        // ⚠️ #467 THU HẸP PHẠM VI CÂU NÀY: đúng cho **hàm này**, KHÔNG phải luật chung cho mọi `_WH`
+        //   (quét 91 cặp: 64 giống hệt, 27 cần soi ⇒ `1/3 có thể khác luật).
         whVariantIsSameLogic = true,
         whVariantNote = "Ser_CustomerCare_GetNew_WH khác bản Main ĐÚNG BA thứ: chạy trên _dbWH, dùng "
             + "--//[mylock] thay with(nolock), và bỏ tiền tố chéo-DB cho Ser_CustomerCareDOB/ser_mst_model. "
