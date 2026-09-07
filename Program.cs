@@ -16885,6 +16885,79 @@ app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+
+// ===== #B18 CẬP NHẬT HÀNG LOẠT THÔNG TIN THÙNG/CABIN (port 1:1 `FrmUpdate_Cabin`, 2010.HTC/Sales) =====
+// Trace twin LIVE: `FrmUpdate_Cabin.cs:260` → `_sv.CarVIN_UpdateMultiCabin(table)` → WS
+//   `CarVIN_UpdateMultiCabin` (`WSHTC.asmx.cs:15062`) → **`_biz.CarVIN_UpdateMultiCabin`**
+//   (`Biz.HTC.WH.My.cs:505`). Input là **BẢNG** `#input_Car_VIN`, update join `t.VIN = f.VIN`.
+// 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:561-565`) là **DÒNG ACTIVE** — chỉ HTC trực tiếp.
+// 🔴 `alColumnEffective` đúng **7 cột**: CabinCertificateNo · CabinCONo · CabinInvoiceNo · CabinInvoiceDate
+//    · CabinCertificateDate · LogLUDateTime · LogLUBy (`MyBuildDBDT_Common` :709-717 + clause :747-753).
+// ⚠️ NỢ CÓ NHÃN: nguồn ghi thẳng vào **`Car_VIN`**; MiniHTC tách riêng bảng `CabinInfo` (khoá VIN).
+//    Giữ nguyên lưu trữ hiện có để không đẻ thêm thực thể song trùng, nhưng đây là **lệch mô hình** —
+//    ghi rõ để lượt sau cân nhắc gộp về `CarVinMaster` (xem luật hợp nhất song trùng).
+app.MapPost("/api/cabininfos/update-multi", async (
+    List<CabinInfoDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
+{
+    // `..._CarVINTableBlank`
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật thùng đang rỗng." });
+    var list = rows.Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật thùng đang rỗng." });
+    // `myCommon_CheckHTCDirect(Flag.Active)` — dòng ACTIVE.
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật thùng hàng loạt." });
+
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var vins = list.Select(r => r.Vin!.Trim().ToUpperInvariant()).ToList();
+    var dupVin = list.GroupBy(r => r.Vin!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
+    if (dupVin != null) return Results.BadRequest(new { error = $"VIN {dupVin.Key} bị trùng trong bảng!" });
+
+    var carVins = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+    var certs = await db.CabinCertificates.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var infos = await db.CabinInfos.Where(c => c.OrgId == t.OrgId && vins.Contains(c.Vin)).ToListAsync();
+
+    // Nguồn kiểm TỪNG DÒNG trong cùng transaction rồi mới ghi cả lô ⇒ validate hết trước.
+    foreach (var r in list)
+    {
+        var v = r.Vin!.Trim().ToUpperInvariant();
+        // `myCar_CheckVIN(..., TConst.Flag.Active)` — VIN phải tồn tại.
+        if (!carVins.Any(c => c.VIN == v)) return Results.BadRequest(new { error = $"VIN {v} chưa khai báo trên hệ thống." });
+        // 🔴 `Mst_CabinCertificate_CheckDB(..., Flag.Active exist, Flag.Active active)` — **CHỈ kiểm khi
+        //    `CabinCertificateNo != null`** (`Biz.HTC.WH.My.cs:628-639`). Gửi null nghĩa là "không đổi".
+        if (r.CabinCertificateNo is not null)
+        {
+            var cert = certs.FirstOrDefault(c => c.CabinCertificateNo == r.CabinCertificateNo!.Trim());
+            if (cert is null) return Results.BadRequest(new { error = $"Số chứng nhận thùng {r.CabinCertificateNo} không tồn tại." });
+            if (cert.FlagActive == "0") return Results.BadRequest(new { error = $"Số chứng nhận thùng {r.CabinCertificateNo} đang ngưng hoạt động." });
+        }
+    }
+
+    int updated = 0, keptFromDb = 0;
+    foreach (var r in list)
+    {
+        var v = r.Vin!.Trim().ToUpperInvariant();
+        var c = infos.FirstOrDefault(x => x.Vin == v);
+        if (c is null) { c = new CabinInfo { OrgId = t.OrgId, Vin = v }; db.CabinInfos.Add(c); }
+        // 🔴 `if (strCabinCertificateNo == null) strCabinCertificateNo = dt_Car_VIN_Check.Rows[0]["CabinCertificateNo"]`
+        //    (`:640-644`) — null ⇒ **GIỮ giá trị đang có trong DB**, KHÔNG xoá về null.
+        if (r.CabinCertificateNo is null) keptFromDb++;
+        else c.CabinCertificateNo = r.CabinCertificateNo.Trim();
+        c.CabinCertificateDate = r.CabinCertificateDate ?? c.CabinCertificateDate;
+        c.CabinCONo = r.CabinCONo ?? c.CabinCONo;
+        c.CabinInvoiceNo = r.CabinInvoiceNo ?? c.CabinInvoiceNo;
+        c.CabinInvoiceDate = r.CabinInvoiceDate ?? c.CabinInvoiceDate;
+        c.UpdatedAt = now;                      // ↔ LogLUDateTime của nguồn
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated, keptCertificateFromDb = keptFromDb,
+        columnsWritten = new[] { "CabinCertificateNo", "CabinCONo", "CabinInvoiceNo", "CabinInvoiceDate", "CabinCertificateDate", "LogLUDateTime", "LogLUBy" },
+        rbacNote = "myCommon_CheckHTCDirect(Flag.Active) là DÒNG ACTIVE ở nguồn — nhận qua cờ flagDirect (nợ tầng ability).",
+        storageNote = "NỢ mô hình: nguồn ghi thẳng Car_VIN; MiniHTC lưu ở bảng tách CabinInfo (khoá VIN)."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/cabininfos", async (CabinInfoDto dto, AppDbContext db, ITenantContext t) =>
 {
     var vin = (dto.Vin ?? "").Trim().ToUpperInvariant();
