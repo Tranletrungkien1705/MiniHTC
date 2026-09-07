@@ -3396,6 +3396,136 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 // ✅ `@strBUPatternOfUser` **DÙNG THẬT** (`inner join Mst_Dealer`, `:722-723`) — như #B55, khác các ca lệch.
 // ⚠️ NỢ CÓ NHÃN: khối `zzzzClauseSelect_CachingForPayment_Deposit` (tiền cọc) chưa port — MiniHTC chưa
 //    có tầng thanh toán cọc đầy đủ; trả `null` kèm nhãn, **không bịa số**.
+
+// ===== #B57 TÌNH HÌNH KINH DOANH THEO KỲ — `RptSales_Period_01_New20181115` =====
+// (`FrmBusinessStatusByDealer` + `FrmBusinessStatusByModel` — **hai màn dùng chung một hàm**.)
+// Trace LIVE: `ReportService.ReportBusinessStatusByDealer` (`:434`) / `…ByModel` (`:474`) → WS
+//   `RptSales_Period_01` (`WSHTC.asmx.cs:29855`) → **`_biz.RptSales_Period_01_New20181115`**
+//   (`BizHTC.Report.cs:11024`). Bản trùng tên `BizHTC.Report - Copy.cs:10975` — **ngoài csproj**.
+// 🔴 **"ĐÃ BÁN" CHỈ TÍNH BÁN LẺ TỚI NGƯỜI TIÊU DÙNG** (`:11162-11164`), chú thích nguyên văn
+//    *"Bán tới Khách Cuối là Người tiêu dùng"*: `Dls_DealDetail.DeliveryStatus in ('A','F')`
+//    **và** `Dls_Deal.DealerCodeBuyer is null` ⇒ giao dịch **bán buôn ĐL→ĐL bị LOẠI**.
+//    Bỏ vế `DealerCodeBuyer is null` sẽ thổi phồng doanh số.
+// 🔴 **HAI kỹ thuật "LỌC NGƯỢC"** (chú thích `(*)` của nguồn), port bằng `left join` + `is null`:
+//    · **Tồn kho đại lý**: xe **đã được đại lý tiếp nhận** (`DeliveryEndDate is not null and <= @From`
+//      **và** `ConfirmStatus in ('F')` — *"Xe còn Active Chưa bị Thu hồi"*) **trừ đi** xe đã bán lẻ.
+//      ⚠️ Ở đây `ConfirmStatus` siết về **chỉ `'F'`**, hẹp hơn `('A','F')` dùng ở khối join phía trên.
+//    · **Back-order**: xe **chưa có LXX hoặc chưa xuất kho** — `left join #tbl_CDOD_Active_From` rồi
+//      `cdod.CarId is null`, cộng `(vms.DeliveryOutDate is null or <= @From)`.
+// 🔴 Xe **HUỶ trong kỳ**: `cc.FlagActive = '0'` **và** `CarCancelDate ∈ [@From, @To]`.
+// 🔴 **Đơn hàng trong kỳ**: `Ord_SalesOrder.CreatedDate ∈ [@From,@To]` **và** `SOStatus in ('A2')`
+//    — *"Chỉ lấy Đơn hàng đã Duyệt A2"*.
+// 🔴 Xe **tồn tại tại một mốc**: `cc.CreatedDate <= @mốc` ∧ (`CarCancelDate is null` ∨ `> @mốc`)
+//    — dùng cho cả đầu kỳ (`@From`) lẫn cuối kỳ (`@To`).
+// ✅ `@strBUPatternOfUser` **DÙNG THẬT** (`:11117` + `inner join #tbl_Mst_Dealer`) — như #B55/#B56.
+app.MapGet("/api/reports/business-status-period", async (
+    AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate,
+    string? buPattern, string? groupBy) =>
+{
+    if (fromDate is null || toDate is null)
+        return Results.BadRequest(new { error = "Cần khoảng thời gian (fromDate, toDate)." });
+    var dFrom = fromDate.Value; var dTo = toDate.Value;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    // `#tbl_Mst_Dealer` — lọc `BUCode like @strBUPatternOfUser` (LỌC THẬT).
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.FlagActive }).ToListAsync();
+    var scopeList = dealers.Where(d => pattern is null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)).ToList();
+    var scope = scopeList.Select(d => d.DealerCode).ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    cars = cars.Where(c => c.DealerCode != null && scope.Contains(c.DealerCode)).ToList();
+
+    // Xe tồn tại tại một mốc.
+    List<CarVinMaster> ExistAt(DateTime at) => cars
+        .Where(c => c.CreatedDate != null && c.CreatedDate <= at
+                    && (c.CarCancelDate == null || c.CarCancelDate > at)).ToList();
+    var fromCars = ExistAt(dFrom);
+    var toCars = ExistAt(dTo);
+
+    // "Đã bán tận tay khách cuối" — CHỈ bán lẻ (`DealerCodeBuyer is null`).
+    var soldLines = await (from f in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId
+                                && (x.DeliveryStatus == "A" || x.DeliveryStatus == "F"))
+                           join d in db.DealerDeals.Where(x => x.OrgId == t.OrgId
+                                && (x.DealerCodeBuyer == null || x.DealerCodeBuyer == ""))
+                                on f.DealId equals d.Id
+                           select new { f.CarId, d.DealDate, d.DealerCode }).ToListAsync();
+    HashSet<string> SoldBy(DateTime at) => soldLines.Where(x => x.DealDate <= at).Select(x => x.CarId).ToHashSet();
+
+    // Lệnh xuất xe.
+    var cdod = await db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { Key = x.CarId ?? x.Vin, x.Vin, x.ConfirmStatus, x.DeliveryOutDate, x.DeliveryEndDate })
+        .ToListAsync();
+
+    // Tồn kho ĐẠI LÝ tại mốc: đã tiếp nhận (`DeliveryEndDate <= @mốc` + `ConfirmStatus = 'F'`) TRỪ đã bán lẻ.
+    List<string> DealerInStock(List<CarVinMaster> pool, DateTime at)
+    {
+        var sold = SoldBy(at);
+        var received = cdod.Where(x => x.ConfirmStatus == "F"
+                                       && x.DeliveryEndDate != null && x.DeliveryEndDate <= at)
+                           .Select(x => x.Key).ToHashSet();
+        return pool.Where(c => received.Contains(c.VIN) && !sold.Contains(c.VIN)).Select(c => c.VIN).ToList();
+    }
+    // Back-order tại mốc: CHƯA có LXX active-đã-xuất tính tới mốc (lọc ngược).
+    List<string> BackOrder(List<CarVinMaster> pool, DateTime at)
+    {
+        var outed = cdod.Where(x => (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                                    && x.DeliveryOutDate != null && x.DeliveryOutDate <= at)
+                        .Select(x => x.Key).ToHashSet();
+        return pool.Where(c => !outed.Contains(c.VIN)).Select(c => c.VIN).ToList();
+    }
+
+    // Xe HUỶ trong kỳ: FlagActive='0' và CarCancelDate ∈ [dFrom, dTo].
+    var cancelled = cars.Where(c => c.FlagActive == "0"
+                                    && c.CarCancelDate >= dFrom && c.CarCancelDate <= dTo).ToList();
+
+    // Đơn hàng trong kỳ: CreatedDate ∈ [from,to] và SOStatus in ('A2').
+    var orders = await (from o in db.SalesOrders.Where(x => x.OrgId == t.OrgId
+                            && x.CreatedAt >= dFrom && x.CreatedAt <= dTo && x.Status == "A2")
+                        join l in db.SalesOrderLines.Where(x => x.OrgId == t.OrgId) on o.Id equals l.SalesOrderId
+                        select new { o.DealerCode, l.ModelCode, l.SpecCode, l.ColorCode, l.RequestedQuantity }).ToListAsync();
+    orders = orders.Where(o => scope.Contains(o.DealerCode)).ToList();
+
+    var soldInPeriod = soldLines.Where(x => x.DealDate >= dFrom && x.DealDate <= dTo).ToList();
+
+    var perDealer = scopeList.Select(d => new
+    {
+        dealerCode = d.DealerCode, dealerName = d.DealerName, buCode = d.BUCode,
+        inStockFrom = DealerInStock(fromCars, dFrom).Count(v => cars.First(c => c.VIN == v).DealerCode == d.DealerCode),
+        inStockTo = DealerInStock(toCars, dTo).Count(v => cars.First(c => c.VIN == v).DealerCode == d.DealerCode),
+        backOrderFrom = BackOrder(fromCars, dFrom).Count(v => cars.First(c => c.VIN == v).DealerCode == d.DealerCode),
+        backOrderTo = BackOrder(toCars, dTo).Count(v => cars.First(c => c.VIN == v).DealerCode == d.DealerCode),
+        soldInPeriod = soldInPeriod.Count(x => x.DealerCode == d.DealerCode),
+        cancelledInPeriod = cancelled.Count(c => c.DealerCode == d.DealerCode),
+        orderedQty = orders.Where(o => o.DealerCode == d.DealerCode).Sum(o => o.RequestedQuantity)
+    }).Where(x => x.inStockFrom + x.inStockTo + x.backOrderFrom + x.backOrderTo
+                  + x.soldInPeriod + x.cancelledInPeriod + x.orderedQty > 0).ToList();
+
+    object? perModel = groupBy == "model"
+        ? cars.GroupBy(c => c.ModelCode ?? "").Select(g => new
+        {
+            modelCode = g.Key,
+            inStockTo = DealerInStock(toCars.Where(c => (c.ModelCode ?? "") == g.Key).ToList(), dTo).Count,
+            backOrderTo = BackOrder(toCars.Where(c => (c.ModelCode ?? "") == g.Key).ToList(), dTo).Count,
+            soldInPeriod = soldInPeriod.Count(x => cars.Any(c => c.VIN == x.CarId && (c.ModelCode ?? "") == g.Key)),
+            orderedQty = orders.Where(o => (o.ModelCode ?? "") == g.Key).Sum(o => o.RequestedQuantity)
+        }).OrderBy(x => x.modelCode).ToList()
+        : null;
+
+    return Results.Ok(new
+    {
+        fromDate = dFrom, toDate = dTo, groupBy = groupBy ?? "dealer",
+        perDealer, perModel,
+        soldRule = "DA BAN chi tinh BAN LE TOI NGUOI TIEU DUNG: Dls_DealDetail.DeliveryStatus in ('A','F') VA Dls_Deal.DealerCodeBuyer is null (chu thich nguon: 'Ban toi Khach Cuoi la Nguoi tieu dung') => giao dich ban buon DL->DL BI LOAI.",
+        inStockRule = "Ton kho dai ly = da tiep nhan (DeliveryEndDate <= moc VA ConfirmStatus = 'F' - sieu ve CHI 'F', hep hon ('A','F') dung o cho khac) TRU di xe da ban le (ky thuat LOC NGUOC).",
+        backOrderRule = "Back-order = LOC NGUOC: xe CHUA co LXX active-da-xuat tinh toi moc.",
+        cancelRule = "Xe huy trong ky: FlagActive = '0' VA CarCancelDate trong [dFrom, dTo].",
+        orderRule = "Don hang trong ky: CreatedDate trong [from,to] VA SOStatus in ('A2') - 'Chi lay Don hang da Duyet A2'.",
+        existAtRule = "Xe ton tai tai mot moc: CreatedDate <= moc VA (CarCancelDate is null HOAC > moc).",
+        twoScreensNote = "FrmBusinessStatusByDealer va FrmBusinessStatusByModel dung CHUNG mot ham - tham so groupBy = dealer|model.",
+        rbacNote = "@strBUPatternOfUser DUNG THAT (inner join #tbl_Mst_Dealer) - giong #B55/#B56."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
     AppDbContext db, ITenantContext t, DateTime? tDate, string? buPattern, string? groupBy) =>
 {
