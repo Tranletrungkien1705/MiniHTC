@@ -35910,20 +35910,80 @@ app.MapGet("/api/orderparts/statuses", () => Results.Ok(new
     note = "Mã NCC nhảy 1/2/4/7 — KHÔNG liên tục; đừng suy ra 3/5/6.",
 })).RequireAuthorization();
 
+// ===== 🔴 #401 TÌM ĐƠN ĐẶT PHỤ TÙNG — 17 THAM SỐ, TOÁN TỬ KHÁC NHAU TỪNG Ô =====
+// Nguồn: `FrmOrderPartSearch` → `zz.Service_WH.Ser_Part_OrderGet_StatusList_WH` (17 tham số).
+// Trước lượt này endpoint chỉ có **5** bộ lọc ⇒ mười hai ô tìm kiếm của màn **không dùng được**.
+//
+// 🔴 **TOÁN TỬ KHÔNG ĐỒNG NHẤT** — tầng service dựng chuỗi điều kiện, mỗi ô một kiểu:
+//   · `"=" + giá trị`  (khớp CHÍNH XÁC): `SupplierID` · `UserCreateCode` · `CreateDate`
+//     · `TypeOrder` · `PartialShipment` · `TypeTransport`
+//   · `"like %…%"` (CHỨA): `OrderNo` · `OrderNoUser` · `OrderConfirmNo`
+//   · `Status`: truyền **NGUYÊN**, vì bản thân nó đã là **DANH SÁCH** trạng thái (tên hàm `StatusList`).
+//   ⚠️ `ReceivePartDate` dựng bằng `"" + giá trị` — **KHÔNG có toán tử** như các ô anh em.
+// 🔴 **DANH SÁCH MÃ PHỤ TÙNG**: nối bằng `String.Join("%|%", lstPartCode)` rồi bọc `"%" + … + "%"`
+//   ⇒ mỗi mã là một phép **CHỨA**, các mã **OR** với nhau (`|` là dấu phân tách của
+//   `BuildClauseConditionList`) — **KHÔNG phải khớp chính xác** như trực giác.
 app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? status, string? supplier,
-    string? dealerCode, string? supplierStatus, string? orderPartType) =>
+    string? dealerCode, string? supplierStatus, string? orderPartType,
+    string? orderNo, string? orderNoUser, string? orderConfirmNo,
+    string? userCreateCode, DateTime? createDate, DateTime? receivePartDate,
+    string? partialShipment, string? typeTransport, string? partCodes,
+    DateTime? fromSendDate, DateTime? toSendDate) =>
 {
     var q = db.OrderParts.Where(o => o.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status))
     {
-        // chấp nhận cả tên dài của port cũ lẫn mã 1 ký tự của nguồn
-        var code = orderPartLegacyStatusMap.TryGetValue(status.Trim(), out var mapped) ? mapped : status.Trim();
-        q = q.Where(o => o.OrderPartStatus == code);
+        // Nguồn nhận DANH SÁCH trạng thái (ngăn cách `|`), không phải một mã.
+        var codes = status.Split('|', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => orderPartLegacyStatusMap.TryGetValue(x.Trim(), out var mp) ? mp : x.Trim())
+            .ToList();
+        q = q.Where(o => o.OrderPartStatus != null && codes.Contains(o.OrderPartStatus));
     }
     if (!string.IsNullOrWhiteSpace(supplier)) q = q.Where(o => o.SupplierCode == supplier);
     if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(o => o.DealerCode == dealerCode!.Trim());
     if (!string.IsNullOrWhiteSpace(supplierStatus)) q = q.Where(o => o.SupplierStatus == supplierStatus!.Trim());
     if (!string.IsNullOrWhiteSpace(orderPartType)) q = q.Where(o => o.OrderPartType == orderPartType!.Trim().ToUpperInvariant());
+
+    // --- #401 Nhóm CHỨA (`like %…%`).
+    if (!string.IsNullOrWhiteSpace(orderNo))
+        q = q.Where(o => o.OrderPartNo.Contains(orderNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(orderNoUser))
+        q = q.Where(o => o.OrderNoUser != null && o.OrderNoUser.Contains(orderNoUser!.Trim()));
+    if (!string.IsNullOrWhiteSpace(orderConfirmNo))
+        q = q.Where(o => o.ConfirmNo != null && o.ConfirmNo.Contains(orderConfirmNo!.Trim()));
+
+    // --- #401 Nhóm KHỚP CHÍNH XÁC (`=`).
+    if (!string.IsNullOrWhiteSpace(userCreateCode))
+        q = q.Where(o => o.CreateBy == userCreateCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(partialShipment))
+        q = q.Where(o => o.PartialShipment == partialShipment!.Trim());
+    if (!string.IsNullOrWhiteSpace(typeTransport))
+        q = q.Where(o => o.TypeTransport == typeTransport!.Trim());
+    if (createDate is not null)
+    {
+        var d0 = createDate.Value.Date; var d1 = d0.AddDays(1);
+        q = q.Where(o => o.CreatedAt >= d0 && o.CreatedAt < d1);
+    }
+    // ⚠️ Nguồn dựng ô này KHÔNG kèm toán tử (`"" + giá trị`), khác các ô anh em — giữ nguyên là so bằng NGÀY.
+    if (receivePartDate is not null)
+    {
+        var r0 = receivePartDate.Value.Date; var r1 = r0.AddDays(1);
+        q = q.Where(o => o.ReceivePartDate >= r0 && o.ReceivePartDate < r1);
+    }
+    if (fromSendDate is not null) q = q.Where(o => o.SentAt >= fromSendDate);
+    if (toSendDate is not null) q = q.Where(o => o.SentAt <= toSendDate);
+
+    // --- #401 DANH SÁCH mã phụ tùng: mỗi mã là CHỨA, các mã OR với nhau.
+    var partList = (partCodes ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+    if (partList.Count > 0)
+    {
+        // OrderPartLine noi cha bang OrderPartId (khoa so), khong phai OrderPartNo.
+        var ids = await db.OrderPartLines
+            .Where(l => l.OrgId == t.OrgId && partList.Any(pc => l.PartCode.Contains(pc)))
+            .Select(l => l.OrderPartId).Distinct().ToListAsync();
+        q = q.Where(o => ids.Contains(o.Id));
+    }
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.OrderPartNo, o.SupplierCode, o.WarehouseCode, o.OrderPartStatus, o.CreatedAt, o.SentAt, o.FinishedAt,
