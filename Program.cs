@@ -12699,6 +12699,20 @@ app.MapGet("/api/report/customer-debit", async (AppDbContext db, ITenantContext 
         // 📌 Giá trị của lượt quét: biến "một hiện tượng gặp hai lần" thành **một tập đã đếm đủ**,
         //   nên từ nay không phải nghi ngờ còn báo cáo thứ ba nào nữa.
         legacySnapshotSweepComplete = true,
+        // ===== ✅ #477 QUÉT LẠI HỌ BẢNG ĐÓNG BĂNG THEO NGÀY — #440 mới tra MỘT CÁI TÊN =====
+        // #440 grep đúng chuỗi `BaoCoCongNoKhachHang_20170101` rồi tuyên bố tập đóng. Nhưng đó là tra
+        //   **một cái tên**, không phải quét **một họ**. Quét theo MẪU `[A-Za-z_]+_20d{6}` trên cả cây biz,
+        //   loại tên hàm (`_New20…`) để chỉ còn tên BẢNG, thấy **ba** bảng đóng băng chứ không phải một:
+        //     · `BaoCoCongNoKhachHang_20170101`      (2 chỗ) — đã xử lý ở #440.
+        //     · `BaoCaoHangTonKho_PT_VT_20170101`    (2 chỗ) — **MỚI**.
+        //     · `tbl_Ser_Inv_StockBalance_20170101`  (1 chỗ) — nằm trong dòng **đã comment** (`--drop table`).
+        // ⚪ KẾT QUẢ ÂM TÍNH cho hai cái mới: cả hai chỗ dùng `BaoCaoHangTonKho_PT_VT_20170101` đều nằm trong
+        //   `Ser_InvReportBalanceRpt_New20180610` và `…_SumLocation_New20180601` — WS **chỉ gọi bản**
+        //   `_New20221011` (và `_WH_New20221011`) ⇒ hai hàm 2018 kia **CHẾT** ⇒ **không có nợ port**.
+        //   Bản 2022 đã thay bảng đóng băng bằng tính toán trực tiếp từ `Ser_Inv_PartInstance` (xem #472/#473).
+        // 📌 Bài học: "tập đóng" chỉ hợp lệ khi quét theo **MẪU của cả họ**, không phải theo một tên cụ thể.
+        frozenTableSweep = new { frozenTablesFound = 3, alreadyHandled = 1, newFound = 2,
+            newOnesAllInDeadFunctions = true, portDebt = 0 },
         legacySnapshotSweepNote = "Đã grep toàn cây TERP.BizCarSv: BaoCoCongNoKhachHang_20170101 xuất "
             + "hiện ĐÚNG 2 lần, cả hai ở bản Main (Ser_InvReportCusDebitRpt #440 và "
             + "Ser_ReportReceivableDebitRpt #413), 0 lần trong WH.cs dù cả hai đều CÓ twin _WH. "
