@@ -15821,6 +15821,70 @@ app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q
 }).RequireAuthorization();
 
 // Tạo công nợ (theo RO/khách). DebitAmount > 0.
+// ===== 🔴 #557 XOÁ CÔNG NỢ — **GUARD ĐỌC MỘT DB, THAO TÁC BA DB** =====
+// Nguồn: `BizCarSv.Debit.cs:850 SerCusDebitDelete`. Endpoint: `POST /api/cusdebits/{id}/delete`.
+//
+// 🔴🔴 **GUARD KIỂM TRÊN `_dbDealer` NHƯNG XOÁ Ở CẢ BA DB**:
+//     `this.CheckExistCusDebit(**_dbDealer**, …)`
+//     rồi `_dbMain.ExecQuery(delete …)` · `_dbWH.ExecQuery(…)` · `_dbDealer.ExecQuery(…)` (nếu cần).
+//   ⇒ Nếu DB **đại lý** chưa có bản ghi (mà Main/WH thì có — chuyện thường gặp khi ba DB lệch nhau),
+//     hàm **báo "không tồn tại"** và **không xoá được gì**, dù dữ liệu vẫn nằm ở Main.
+//   ⇒ Ngược lại, nếu chỉ Dealer có thì guard qua và ba lệnh xoá vẫn chạy (hai lệnh đầu xoá 0 dòng).
+//   **Guard và thao tác không cùng phạm vi** — lớp lỗi mới, khác họ #530 (guard sai toán tử).
+// 🔴 **KHÔNG kiểm phiếu thu trước khi xoá**: công nợ đã có `Ser_Payment` vẫn bị xoá ⇒ **phiếu thu mồ côi**
+//   (cùng lớp #541/#549). Port **đếm và chặn** (lệch cố ý, có cờ) vì tiền đã thu là dữ liệu kế toán.
+// ⚪ **Đối chứng lành thứ hai về tham số hoá** (sau #549): câu xoá dùng `@CusDebitID` + `@DealerCode`,
+//   `ExecQuery` có truyền tham số ⇒ **không** bake (khác #536/#538/#540).
+// ⚠️ Điều kiện xoá là **CẶP** `(CusDebitID, DealerCode)` — không phải riêng khoá chính ⇒ gọi đúng ID mà
+//   sai `DealerCode` thì **xoá 0 dòng và KHÔNG báo lỗi** (nguồn không kiểm số dòng ảnh hưởng).
+app.MapPost("/api/cusdebits/{id:long}/delete", async (long id, AppDbContext db, ITenantContext t,
+    string? dealerCode, bool? force) =>
+{
+    // CheckExistCusDebit — nguồn đọc trên _dbDealer; MiniHTC một DB nên không tái hiện được sự lệch.
+    var r = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (r is null) return Results.NotFound(new { error = "CheckExistCusDebit: không tìm thấy công nợ.", id });
+
+    // Nguồn xoá theo CẶP (ID, DealerCode) — sai DealerCode là xoá 0 dòng, im lặng.
+    var dealerMismatch = !string.IsNullOrWhiteSpace(dealerCode) && r.DealerCode != dealerCode!.Trim();
+    if (dealerMismatch)
+        return Results.BadRequest(new
+        {
+            error = "DealerCode không khớp — nguồn sẽ xoá 0 dòng mà KHÔNG báo lỗi.",
+            requested = dealerCode, actual = r.DealerCode,
+            sourceDeletesZeroRowsSilently = true,
+        });
+
+    // LỆCH CỐ Ý: nguồn KHÔNG kiểm phiếu thu ⇒ mồ côi. Ở đây chặn, trừ khi force = true.
+    var payCount = await db.CusDebitPayments.CountAsync(x => x.OrgId == t.OrgId && x.CusDebitId == id);
+    if (payCount > 0 && force != true)
+        return Results.BadRequest(new
+        {
+            error = "Công nợ đã có phiếu thu — xoá sẽ làm phiếu thu mồ côi.",
+            paymentCount = payCount,
+            sourceHasNoPaymentGuard = true,
+            hint = "Gọi lại với force=true nếu thực sự muốn xoá đúng như nguồn.",
+        });
+
+    var removedPayments = 0;
+    if (payCount > 0 && force == true)
+    {
+        // Nguồn KHÔNG xoá phiếu thu; ở đây cũng KHÔNG xoá — chỉ nêu rõ chúng thành mồ côi.
+        removedPayments = 0;
+    }
+    db.CusDebits.Remove(r);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deletedId = id, r.DebitNo, r.DebitType, r.DealerCode,
+        orphanedPayments = payCount, removedPayments,
+        guardReadsDealerDbButDeletesThree = "CheckExistCusDebit(_dbDealer) roi xoa _dbMain + _dbWH + _dbDealer",
+        sourceHasNoPaymentGuard = true,
+        sourceDeleteIsParameterised = "@CusDebitID + @DealerCode",
+        deleteKeyIsPair = "(CusDebitID, DealerCode)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #556 TẠO / SỬA CÔNG NỢ — **CREATE BẮT BUỘC BA TRƯỜNG, UPDATE CHO XOÁ TRẮNG CHÚNG** =====
 // Nguồn: `BizCarSv.Debit.cs:432 SerCusDebitCreate` · `:645 SerCusDebitUpdate`.
 // Endpoint: `POST /api/cusdebits` (vá guard) + `POST /api/cusdebits/{id}/update` (mới).
@@ -15857,7 +15921,7 @@ app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantCo
     var no = "CD" + DateTime.Now.ToString("yyMMddHHmmss");
     var r = new CusDebit
     {
-        OrgId = t.OrgId, DebitNo = no, DebitType = type,
+        OrgId = t.OrgId, DebitNo = no, DebitType = type, DealerCode = dto.DealerCode!.Trim(),   // #557 §12
         CusId = dto.CusId, CusName = dto.CusName, RONo = dto.RONo,
         // Rỗng ⇒ BỎ QUA (đúng khuôn `if (!IsEmpty)` của nhánh TẠO).
         InsNo = string.IsNullOrWhiteSpace(dto.InsNo) ? null : dto.InsNo,
@@ -15869,7 +15933,7 @@ app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantCo
     db.CusDebits.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        r.DebitNo, r.DebitType,
+        r.DebitNo, r.DebitType, r.DealerCode,
         requiredFields = new[] { "DealerCode", "DebitAmount", "DebitDate" },
         emptyMeansSkipOnCreate = true,
     });
@@ -15891,6 +15955,7 @@ app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
         });
 
     // Rỗng ⇒ DBNull (đúng khuôn nhánh SỬA — ngược nhánh TẠO).
+    r.DealerCode = dto.DealerCode!.Trim();   // #557 §12 — nguồn ghi thẳng, không guard rỗng ở câu gán
     r.CusId = string.IsNullOrWhiteSpace(dto.CusId) ? null : dto.CusId;
     r.CusName = string.IsNullOrWhiteSpace(dto.CusName) ? null : dto.CusName;
     r.RONo = string.IsNullOrWhiteSpace(dto.RONo) ? null : dto.RONo;
@@ -15907,7 +15972,7 @@ app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
 
     return Results.Ok(new
     {
-        r.Id, r.DebitNo, r.DebitType, r.DebitAmount, r.DebitDate, r.Status,
+        r.Id, r.DebitNo, r.DebitType, r.DealerCode, r.DebitAmount, r.DebitDate, r.Status,
         emptyMeansClearOnUpdate = true,
         contrastWithCreate = "nhanh TAO: rong = BO QUA; nhanh SUA: rong = XOA",
         sourceUpdateSkipsFieldEmptyGuard = "nguon chi co CheckExistCusDebit(ID)",
