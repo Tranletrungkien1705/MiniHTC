@@ -37603,7 +37603,13 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
         DriverName = dto.DriverName, DrivingLicense = dto.DrivingLicense,
         DriverID = dto.DriverID, TruckNo = dto.TruckNo, StockOutNo = dto.StockOutNo,
         // mắt xích về đơn đặt phụ tùng (cụm TST)
-        OrderPartId = dto.OrderPartId, OrderPartNo = dto.OrderPartNo, FlagOrderNCC = dto.FlagOrderNCC,
+        OrderPartId = dto.OrderPartId, OrderPartNo = dto.OrderPartNo,
+        // 🔴 #386 `FlagOrderNCC` là **CỜ DẪN XUẤT**, không nhận từ client.
+        //   Nguồn (`BizCarSv.Inventory.StockIn.cs:3540`): `case when sop.OrderPartNo is null then 0 else 1 end`
+        //   ⇒ nó CHỈ trả lời 'phiếu nhập này có gắn với đơn đặt NCC hay không', suy thẳng từ
+        //     `OrderPartNo`. Nhận từ DTO cho phép tạo phiếu **không có đơn đặt mà cờ vẫn bằng 1**
+        //     (hoặc ngược lại), khiến các báo cáo lọc theo cờ này đếm sai.
+        FlagOrderNCC = string.IsNullOrWhiteSpace(dto.OrderPartNo) ? "0" : "1",
         DealerCode = dto.DealerCode, SupplierID = dto.SupplierID,
         TSTRequestNo = dto.TSTRequestNo, BillNo = dto.BillNo,
     };
