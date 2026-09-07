@@ -45507,6 +45507,127 @@ app.MapGet("/api/reports/slow-moving-parts", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #498 THẺ KHO PHỤ TÙNG — `Ser_InvReportCardStockRpt_New20230623` (`Inventory.Report.cs:5002`) =====
+// Trả một trong ba nợ `scope=main|wh` mà #496 khoanh vùng (họ **năm** báo cáo kẹp mốc ngày).
+//
+// 🔴 **KẸP MỐC ĐẦU KỲ** (đúng họ #422/#496, nay là ca thứ ba được port):
+//   `if (StringCompareIgnoreCase(strFromDate, TConst.HTCConst.HTC_WareHouse) < 1) strFromDate = …`
+//   với `HTC_WareHouse = "2017-12-31"` ⇒ xin mốc **≤ 31-12-2017** thì bản chính **âm thầm kéo về 2017-12-31**;
+//   bản `_WH` **không kẹp** (đếm `HTC_WareHouse`: **2 ở bản chính · 0 ở bản kho**). Giữ `scope=main|wh`.
+// ⚠️ **TỒN ĐẦU KỲ lấy tại mốc `FromDate − 1 ngày`**: `strDateDK = Convert.ToDateTime(strFromDate).AddDays(-1)`,
+//   rồi ba macro `zzB_…_zzE` dựng `#tbl_sd`/`#tbl_sdo`/`#tbl_Open` với khoảng **["1900-01-01", strDateDK]**.
+//   ⇒ Cận dưới của tồn đầu là **hằng 1900-01-01**, không phải tham số. (Macro ⇒ `diffwh.js` không đọc được,
+//     xem cảnh báo #475.)
+//
+// 🔴🔴 **`@PartID` BAKE KHÔNG CÓ NHÁY — nặng hơn ca #487**:
+//   Nguồn viết `AND spi.PartID=@PartID` (4 chỗ) và `AND p.PartID=@PartID`, rồi thay bằng `Replace(…, "@PartID",
+//   strPartID)`. Nếu `CheckPartNotFound` không trả dòng nào thì `strPartID` ở lại **chuỗi rỗng** ⇒ SQL thành
+//   `AND spi.PartID=` ⇒ **LỖI CÚ PHÁP**, không phải "0 dòng im lặng" như `PartID=''` ở #487.
+//   ⇒ Cùng một khuôn lỗi, **hai hậu quả khác nhau chỉ vì có/không có nháy**. Port chặn 404 trước khi chạy.
+// 🔴 **LEFT JOIN CHẾT** (giống #487): `left join Ser_Inv_StockInDetail sid` rồi `join Ser_Inv_StockIn si`
+//   `on si.StockInID = **sid**.StockInID` ⇒ bản ghi không khớp dòng chi tiết phiếu nhập **bị loại im lặng**.
+// ⚠️ Ba nhánh nối bằng `union all` (nhập · xuất · xuất) ⇒ **không khử trùng** (khác `union` ở #488).
+// ⚠️ Nguồn **KHÔNG có ORDER BY** ở câu cuối ⇒ thứ tự thẻ kho không xác định; port sắp theo ngày + số chứng từ
+//   và trả cờ `sourceHasNoOrderBy`.
+// ⚠️ Mốc `spi.DateIn <= "@ToDate"` không kèm giờ ⇒ **mất trọn ngày cuối** (#415); port dùng 23:59:59 + đếm.
+app.MapGet("/api/reports/part-stock-card", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, DateTime? fromDate, DateTime? toDate, string? scope) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
+    if (string.IsNullOrWhiteSpace(partCode)) return Results.BadRequest(new { error = "Cần partCode." });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var dealer = dealerCode!.Trim();
+    var code = partCode!.Trim().ToUpperInvariant();
+
+    var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code);
+    if (part is null)
+        return Results.NotFound(new
+        {
+            partCode = code,
+            error = "Ser_InvReportCardStockRpt: không tìm thấy phụ tùng.",
+            sourceWouldEmitSyntaxError = true,
+            note = "Nguồn bake @PartID KHÔNG có nháy ⇒ PartID rỗng làm câu SQL sai cú pháp (khác #487).",
+        });
+
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    var floor = new DateTime(2017, 12, 31);
+    var askedFrom = fromDate.Value.Date;
+    var clamped = !isWh && askedFrom <= floor;
+    var from = clamped ? floor : askedFrom;
+    var toRawMidnight = toDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+    var dateDK = from.AddDays(-1);          // mốc TỒN ĐẦU của nguồn
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.PartID == part.PartID && x.Status != "4" && x.Status != "5").ToListAsync();
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var lineByKey = lines.Where(l => l.PartCode != null)
+        .GroupBy(l => l.StockInId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    decimal Vat(PartInstance x) =>
+        lineByKey.TryGetValue(x.StockInId + "|" + (x.PartCode ?? ""), out var l) ? l.VAT : 0m;
+    bool HasDetail(PartInstance x) => lineByKey.ContainsKey(x.StockInId + "|" + (x.PartCode ?? ""));
+
+    // TỒN ĐẦU: [1900-01-01, dateDK] — cận dưới là HẰNG của nguồn.
+    var openIn = inst.Where(x => x.DateIn != null && x.DateIn.Value.Date <= dateDK).ToList();
+    var openOut = inst.Where(x => x.DateOut != null && x.DateOut.Value.Date <= dateDK).ToList();
+    var sld = openIn.Sum(x => x.Quantity) - openOut.Sum(x => x.Quantity);
+    var tgd = openIn.Sum(x => (x.SIPrice ?? 0m) * x.Quantity + (x.SIPrice ?? 0m) * x.Quantity * 0.01m * Vat(x))
+            - openOut.Sum(x => (x.SOPrice ?? 0m) * x.Quantity);
+
+    // Dòng NHẬP trong kỳ (LEFT bị ép INNER ⇒ đếm phần bị loại).
+    var inRows = inst.Where(x => x.DateIn != null && x.DateIn >= from && x.DateIn <= to).ToList();
+    var lostByRawEndDate = inRows.Count(x => x.DateIn > toRawMidnight);
+    var inKept = inRows.Where(HasDetail).ToList();
+    var droppedByStockInDetailJoin = inRows.Count - inKept.Count;
+    var rows = inKept
+        .GroupBy(x => new { x.StockInId, x.StockInNo, x.LocationID, x.SIPrice, x.DateIn })
+        .Select(g => new
+        {
+            PartID = part.PartID, RefID = g.Key.StockInId, RefNo = g.Key.StockInNo,
+            RefDate = g.Key.DateIn, Remark = "Nhập kho", g.Key.LocationID,
+            SLN = g.Sum(x => x.Quantity), SLX = 0m,
+            TGN = g.Sum(x => (g.Key.SIPrice ?? 0m) * x.Quantity
+                             + (g.Key.SIPrice ?? 0m) * x.Quantity * 0.01m * Vat(x)),
+            TGX = 0m, Price = g.Key.SIPrice ?? 0m,
+            RoNo = "", PlateNo = "",
+        }).ToList<object>();
+
+    // Dòng XUẤT trong kỳ (nguồn có hai nhánh union all cho xuất).
+    var outRows = inst.Where(x => x.DateOut != null && x.DateOut >= from && x.DateOut <= to).ToList();
+    rows.AddRange(outRows
+        .GroupBy(x => new { x.StockOutId, x.StockOutNo, x.LocationID, x.SOPrice, x.DateOut })
+        .Select(g => new
+        {
+            PartID = part.PartID, RefID = g.Key.StockOutId, RefNo = g.Key.StockOutNo,
+            RefDate = g.Key.DateOut, Remark = "Xuất kho", g.Key.LocationID,
+            SLN = 0m, SLX = g.Sum(x => x.Quantity),
+            TGN = 0m, TGX = g.Sum(x => (g.Key.SOPrice ?? 0m) * x.Quantity),
+            Price = g.Key.SOPrice ?? 0m, RoNo = "", PlateNo = "",
+        }).ToList<object>());
+
+    var ordered = rows.OrderBy(r => (DateTime?)r.GetType().GetProperty("RefDate")!.GetValue(r))
+        .ThenBy(r => (string?)r.GetType().GetProperty("RefNo")!.GetValue(r)).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, partCode = code, scope = isWh ? "wh" : "main",
+        askedFrom = askedFrom.ToString("yyyy-MM-dd"),
+        effectiveFrom = from.ToString("yyyy-MM-dd"),
+        clampedToFloor = clamped, floorDate = "2017-12-31",
+        openingAsOf = dateDK.ToString("yyyy-MM-dd"),
+        openingLowerBoundIsConstant = "1900-01-01",
+        SLD = sld, TGD = tgd,
+        count = ordered.Count, items = ordered,
+        part = new { part.PartID, part.PartCode, VieName = part.PartName, part.Unit },
+        droppedByStockInDetailJoin, lostByRawEndDate,
+        leftJoinDeadInSource = true,
+        unionAllNoDedup = true,
+        sourceHasNoOrderBy = true,
+        partIdBakedWithoutQuotes = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
