@@ -5995,6 +5995,11 @@ public sealed class PackingList
     public DateTime? ShippingDateEnd { get; set; }
     /// <summary>"F" ngay khi tạo (nhánh đặt "P" theo PLType đã bị comment ở nguồn).</summary>
     public string PLStatus { get; set; } = "F";
+    // ===== #B81 parity `CT_PackingList` — dấu vết sửa (`BizHTC.Contract.cs:474-476`) =====
+    /// <summary>`CT_PackingList.LogLUDateTime` / `LogLUBy` — nguồn ghi **cùng lúc** với `PLStatus = 'F'`
+    /// ở bước duyệt hợp đồng. Port cũ thiếu hẳn ⇒ không truy được ai duyệt, lúc nào.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 /// <summary>
@@ -9453,6 +9458,11 @@ public sealed class HtmvPdiDtl
     /// `HTMV_PDICancel_New20181115` guard `"P"` rồi gán **"C"** (BizHTC.HTMV.cs:2558+).
     /// </summary>
     public string PDIDtlStatus { get; set; } = "P";
+    // ===== #B81 parity `HTMV_PDIDtl` — dấu vết sửa =====
+    /// <summary>`HTMV_PDIDtl.LogLUDateTime` / `LogLUBy` — nguồn ghi khi cascade `PDIStorageStatus = 'F'`
+    /// lúc duyệt packing list hợp đồng (`BizHTC.Contract.cs:480-483`).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     /// <summary>
     /// 🔴 Trạng thái KHO PDI của dòng (`PDIStorageStatus`, `TConst.PDIStorageStatus`
     /// — `Const.Main.cs:131-139`: N/P/C/A/A1/A2/F). Trục **thứ hai trên cùng một dòng**, độc lập với

@@ -2310,6 +2310,11 @@ public static class Seeder
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagCarDeliveryOrder\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagTestCar\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MappedVin\" text NULL",   // #B80 = Car_Car.VIN (VIN da ghep)
+                // ===== #B81 dấu vết sửa cho CT_PackingList + HTMV_PDIDtl =====
+                "ALTER TABLE public.\"PackingLists\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PackingLists\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"CarDueDate\" timestamp NULL",
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyRemainOrder\" numeric NOT NULL DEFAULT 0",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }

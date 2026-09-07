@@ -33048,7 +33048,7 @@ app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(port)) query = query.Where(p => p.PortCode == port);
     var items = await query.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.ShippingDateStart, p.ShippingDateEndExpected, p.ShippingDateEnd, p.PLStatus, p.CreatedAt,
+        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.ShippingDateStart, p.ShippingDateEndExpected, p.ShippingDateEnd, p.PLStatus, p.CreatedAt, p.LogLUDateTime, p.LogLUBy,   // #B81 §12
         vins = db.PackingListVins.Count(v => v.OrgId == t.OrgId && v.PLId == p.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -34644,6 +34644,78 @@ app.MapPost("/api/cars/{carId}/update-flags", async (
         stdFlagNote = "StandardizeFlag ap cho CA BON co; KHONG ap cho CarCancelRemark.",
         twoDbNote = "Nguon SaveData('Car_Car', ...) HAI LAN - _dbMain roi _dbWH (cung khuon #B75/#B76/#B77).",
         vinIdentityNote = "Nguon phan biet Car_Car.CarId (khoa xe) voi Car_Car.VIN (VIN da ghep). MiniHTC gop lam mot bang CarVinMaster khoa theo VIN, nen 'da ghep VIN' doc qua cot rieng - xem MappedVin."
+    });
+}).RequireAuthorization();
+
+// ===== #B81 DUYỆT PACKING LIST HỢP ĐỒNG — `ContractPackingListApproved_New20181115` =====
+// Trace LIVE: `SalesService.cs:14250` → WS `ContractPackingListApproved` (`WSHTC.asmx.cs:8470`) →
+//   **`_biz.ContractPackingListApproved_New20181115`** (`BizHTC.Contract.cs:396`) — **bản DUY NHẤT**,
+//   không có sinh đôi (đã grep toàn `TERP.BizHTC/`, trừ file rác).
+//   3B đo thật, **khớp cả 2 máy**: start=396 md5 `8363086db4bd9adb5e40d376510aee5c`.
+// 🔴 **HAI BẢNG BỊ ĐỔI TRẠNG THÁI, KHÔNG PHẢI MỘT** — cùng một batch SQL:
+//    1) `CT_PackingList.PLStatus = 'F'` (+ `LogLUDateTime` / `LogLUBy`) theo `PackingListNo`.
+//    2) **`HTMV_PDIDtl.PDIStorageStatus = 'F'`** (+ `LogLU*`) cho **MỌI VIN thuộc packing list đó**,
+//       nối qua `HTMV_PDIDtl.VIN = Car_VIN.VIN` rồi `Car_VIN.PackingListNo = CT_PackingList.PackingListNo`.
+//    ⚠️ Bước 2 là **tác dụng phụ sang phân hệ PDI** — port thiếu thì kho PDI **đứng nguyên trạng thái
+//      cũ** trong khi packing list đã duyệt xong, không ai thấy sai cho tới lúc đối soát kho.
+//    ⚠️ Đường nối đi qua **`Car_VIN.PackingListNo`**, KHÔNG phải qua khoá ngoại của `HTMV_PDIDtl`.
+//      Dòng PDI của VIN **không còn trỏ đúng packing list** sẽ **không** được cập nhật.
+// 🔴 **`bCheckDataClosed = true`** trong `myContract_CheckPackingList(…)` — **kỳ dữ liệu ĐÃ CHỐT thì
+//    TỪ CHỐI**. Đây là lời gọi hiếm hoi truyền `true` (các nơi khác trong phiên B đều `false`/không có).
+// 🔴 **KHÔNG có điều kiện trạng thái trước đó**: nguồn `update … set PLStatus = 'F'` **không** kiểm
+//    `PLStatus` hiện tại ⇒ duyệt lại một packing list đã duyệt là **hợp lệ và không đổi gì** (idempotent).
+//    Đừng tự thêm guard "chỉ duyệt khi đang chờ" — sẽ chặt hơn nguồn (`C0-…quinquagesimussextus`).
+// 🔴 **CHỈ GHI `_dbMain`** — hàm này **KHÔNG** ghi `_dbWH`, khác hẳn #B75/#B76/#B77/#B80 vốn ghi cả hai.
+//    Ghi nhận nguyên trạng, không "cho đồng bộ".
+// ✅ RBAC: `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` — bắt buộc FlagDirect.
+// 📌 Từ vựng: `'F'` = `TConst.Stage.Finished` — **thuộc từ vựng nguồn**, không phải trạng thái tự chế.
+app.MapPost("/api/packinglists/{no}/approve-contract", async (
+    string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var plNo = (no ?? "").Trim();
+    var pl = await db.PackingLists.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PLNo == plNo);
+    if (pl is null)
+        return Results.NotFound(new { error = "Contract_InvalidPackingListNo", check = new { PackingListNo = plNo } });
+
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    // (1) `CT_PackingList.PLStatus = 'F'` — KHÔNG kiểm trạng thái trước đó.
+    var plStatusBefore = pl.PLStatus;
+    pl.PLStatus = "F";
+    pl.LogLUDateTime = now;
+    pl.LogLUBy = by;
+
+    // (2) Tác dụng phụ sang PDI: đường nối đi qua `Car_VIN.PackingListNo`.
+    var vinsOfPl = (await db.CarVinMasters
+        .Where(c => c.OrgId == t.OrgId && c.PackingListNo == plNo)
+        .Select(c => c.VIN).ToListAsync()).ToHashSet();
+    var pdiRows = await db.HtmvPdiDtls
+        .Where(d => d.OrgId == t.OrgId && vinsOfPl.Contains(d.VIN)).ToListAsync();
+    foreach (var d in pdiRows)
+    {
+        d.PDIStorageStatus = "F";
+        d.LogLUDateTime = now;
+        d.LogLUBy = by;
+    }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        packingListNo = plNo,
+        plStatusBefore, plStatus = pl.PLStatus,
+        vinCount = vinsOfPl.Count,
+        pdiDtlUpdated = pdiRows.Count,
+        logLUDateTime = now, logLUBy = by,
+        cascadeNote = "HAI BANG bi doi trang thai, KHONG PHAI MOT: (1) CT_PackingList.PLStatus='F'; (2) HTMV_PDIDtl.PDIStorageStatus='F' cho MOI VIN thuoc packing list do. Port thieu buoc 2 thi kho PDI DUNG NGUYEN trang thai cu trong khi packing list da duyet xong - khong ai thay sai cho toi luc doi soat kho.",
+        joinPathNote = "Duong noi di qua Car_VIN.PackingListNo (HTMV_PDIDtl.VIN = Car_VIN.VIN roi Car_VIN.PackingListNo = CT_PackingList.PackingListNo), KHONG phai qua khoa ngoai cua HTMV_PDIDtl. Dong PDI cua VIN khong con tro dung packing list se KHONG duoc cap nhat.",
+        dataClosedNote = "Nguon goi myContract_CheckPackingList(..., bCheckDataClosed = TRUE) - ky du lieu DA CHOT thi TU CHOI. Day la loi goi hiem hoi truyen true. MiniHTC chua co tang 'ky du lieu da chot' => xem dataClosedDebt.",
+        dataClosedDebt = "NO: MiniHTC chua co tang khoa ky du lieu (Data Closed) nen guard nay KHONG kiem duoc. Khong bia - chi ghi nhan.",
+        idempotentNote = "KHONG co dieu kien trang thai truoc do: nguon 'update ... set PLStatus = F' khong kiem PLStatus hien tai => duyet lai mot packing list da duyet la HOP LE va khong doi gi. Dung tu them guard 'chi duyet khi dang cho' - se chat hon nguon.",
+        singleDbNote = "Ham nay CHI ghi _dbMain, KHONG ghi _dbWH - khac han #B75/#B76/#B77/#B80 von ghi ca hai. Ghi nhan nguyen trang, khong 'cho dong bo'.",
+        vocabNote = "'F' = TConst.Stage.Finished - THUOC tu vung nguon, khong phai trang thai tu che.",
+        rbacNote = "myCommon_CheckHTCDirect(..., TConst.Flag.Active) - bat buoc FlagDirect."
     });
 }).RequireAuthorization();
 
