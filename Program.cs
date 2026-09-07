@@ -25353,6 +25353,16 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //     nhánh kho" của #468 **bị rút** — nó dựa trên các cặp ghép sai.
         // 📌 Bài học đo (lần thứ BẢY của họ lỗi này): khi hai phía đều có biến thể phiên bản thì phải
         //   chọn bản sống **CHO CẢ HAI PHÍA**, và **bỏ qua** cặp thiếu bản sống thay vì lấy đại.
+        // ===== ⚠️ #475 CẢNH BÁO ĐỌC SỐ: `sqlIdentical`/`differing` dưới đây đếm **SQL VIẾT THẲNG** =====
+        // Cây nguồn sinh SQL bằng macro `zzB_…_zzE` + `StringUtils.Replace` (**78 chỗ** ở `Inventory.Report.cs`,
+        //   **71 chỗ** ở `WH.cs`). Hàm dùng macro chỉ để lại **một dòng giữ chỗ** ⇒ phép đếm coi như "thiếu".
+        // Quét riêng dấu hiệu tồn-đầu-kỳ (`_audit/sweepopen.js`, dựa trên chữ viết thẳng): 88 cặp so được —
+        //   **cả hai có 1 · CHỈ `_WH` có 2 · chỉ MAIN có 0 · cả hai không 85**. Hai ca "chỉ `_WH`" chính là
+        //   `Ser_InvReportBalanceRpt` và `…_SumLocation` — và đọc tay thì bản chính **CÓ** khối đó qua macro.
+        //   ⇒ Chỉ số này **KHÔNG kết luận được** "bản kho làm thêm"; nó chỉ nói "viết thẳng hay không".
+        openingBalanceSweep = new { comparablePairs = 88, bothInline = 1, whInlineOnly = 2,
+            mainInlineOnly = 0, neitherInline = 85,
+            caveat = "Dem chu SQL VIET THANG; ban chinh dung macro zzB_..._zzE nen khoi bi coi la thieu." },
         whTwinSweep = new { basesWithWhVariant = 93, comparableBothLive = 88, skippedNoLiveSide = 5,
             sqlIdentical = 62, differing = 26, differingLineCount = 12,
             supersedes = "#467 (64/27) va #468 (44/47) — ca hai deu ghep voi ban CHET o mot phia",
@@ -44204,10 +44214,20 @@ app.MapGet("/api/reports/total-stockout", async (AppDbContext db, ITenantContext
 }).RequireAuthorization();
 
 // ===== 🔴 #472 BÁO CÁO TỒN KHO (bản KHO) — `Ser_InvReportBalanceRpt_WH_New20221011` =====
-// Chọn từ 12 ca lệch THẬT của #471. Đặc điểm: `chi o main = 0` ⇒ bản kho là **TẬP CHA** của bản chính
-//   (19 dòng SQL của bản chính nằm trọn trong 41 dòng của bản kho) — bản kho **làm THÊM**, không phải làm khác.
-// Phần THÊM: ba bảng tạm `#tbl_sd` (nhập luỹ kế) · `#tbl_sdo` (xuất luỹ kế) · `#tbl_Open` (tồn đầu),
-//   dựng từ `Ser_Inv_PartInstance` + `Ser_Inv_StockInDetail`.
+// 🔴🔴 #475 RÚT KẾT LUẬN "BẢN KHO LÀM THÊM" CỦA #472/#473 — **TÔI SO NHẦM VĂN BẢN VỚI NGỮ NGHĨA**.
+//   #472/#473 nói bản kho là "TẬP CHA", làm thêm `#tbl_sd`/`#tbl_sdo`/`#tbl_Open`. **SAI.**
+//   Bản chính **CŨNG dựng đúng ba bảng đó**, nhưng bằng **MACRO thay chuỗi lúc chạy**:
+//     `StringUtils.Replace(sql, "zzB_tbl_ser_inv_partInstance_StockIn_zzE",`
+//       `SqlTemplate_ser_inv_partInstance_New20191112.zzB_…_StockIn_zzE(strDealerCode, strPartCodeList,`
+//       `strFromDate, strToDateNext, "#tbl_sd"), …)` — trong thân hàm chỉ thấy **một dòng giữ chỗ**.
+//   ⇒ Công cụ `diffwh.js` chỉ đọc **chữ SQL viết thẳng** nên khối macro **vô hình với phép đo**;
+//     bản kho viết inline thì đếm ra nhiều dòng hơn. Khác biệt là **inline vs macro**, KHÔNG phải
+//     "bản kho làm thêm nghiệp vụ". Cây nguồn dùng macro dày đặc: **78 chỗ** ở `Inventory.Report.cs`,
+//     **71 chỗ** ở `WH.cs` ⇒ mọi con số "lệch dòng SQL" ở #468/#471 **đều phải đọc kèm cảnh báo này**.
+//   📌 Bài học (họ lỗi ĐO, lần thứ TÁM): **đếm dòng SQL không đo được SQL sinh bởi macro**. Trước khi
+//     nói "thiếu khối", phải grep `zzB_`/`_zzE` trong CẢ HAI thân hàm và khai triển macro rồi mới so.
+// ⚪ Phần logic bên dưới **vẫn đúng và vẫn giữ**: nó port đúng nội dung ba bảng tạm đó (nhập luỹ kế,
+//   xuất luỹ kế, tồn đầu) — chỉ có câu "bản kho làm thêm" là bị rút.
 //
 // 🔴 **PHƯƠNG PHÁP GIÁ VỐN LÀ THAM SỐ CỦA ĐẠI LÝ, VÀ NHÁNH CÒN LẠI ĐÃ CHẾT**:
 //   `case when (select ParamValue from Mst_Param where DealerCode=@ and ParamCode="MCC" and ParamType="MCC")`
@@ -44294,7 +44314,9 @@ app.MapGet("/api/reports/inventory-balance", async (AppDbContext db, ITenantCont
 }).RequireAuthorization();
 
 // ===== 🔴 #473 TỒN KHO THEO VỊ TRÍ — `Ser_InvReportBalanceRpt_SumLocation` (Main) vs `…_WH` =====
-// Cặp thứ hai trong nhóm "bản kho là TẬP CHA" của #471 (23 → 45 dòng SQL, `chi o main = 0`).
+// ⚠️ #475 ĐÍNH CHÍNH: câu "bản kho là TẬP CHA" **đã bị rút** — bản chính dựng cùng ba bảng tạm qua
+//   **macro `zzB_…_zzE`**, chỉ là không viết thẳng nên phép đếm dòng không thấy. Xem ghi chú ở #472/#475.
+// Cặp thứ hai của họ báo cáo tồn kho (đếm được 23 → 45 dòng SQL **viết thẳng**).
 // Phần bản kho làm THÊM **giống hệt #472**: `#tbl_sd` / `#tbl_sdo` / `#tbl_Open` dựng từ
 //   `Ser_Inv_PartInstance` + `Ser_Inv_StockInDetail`, giá vốn rẽ theo `Mst_Param(MCC)` và `Else "0"`.
 //   ⇒ Cùng một cặp anh em ⇒ **cùng một luật**, không phải trùng hợp. Dùng lại đúng cách tính của #472.
