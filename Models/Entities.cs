@@ -2704,6 +2704,21 @@ public sealed class PartStockOut
 /// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>
 public sealed class PartStockOutLine
 {
+    // 🔴 #368 §12 — năm cột dưới đây là ĐẦU VÀO của báo cáo tổng hợp phiếu xuất
+    //   (`#tbl_InvF_InventoryOutCover_*`). Thiếu chúng thì báo cáo chỉ ra được SỐ LƯỢNG,
+    //   mọi cột tiền đều bằng 0 mà không báo lỗi.
+    /// <summary>Đơn giá xuất trên dòng phiếu (`Ser_Inv_StockOutDetail.Price`).</summary>
+    public decimal? Price { get; set; }
+    /// <summary>Thuế suất % của dòng phiếu (`Ser_Inv_StockOutDetail.VAT`).</summary>
+    public decimal? Vat { get; set; }
+    /// <summary>Đơn vị tính — nguồn lấy từ MASTER phụ tùng qua `left join`, không nằm trên dòng phiếu.</summary>
+    public string? UnitCode { get; set; }
+    /// <summary>🔴 Hệ số của dòng LỆNH SỬA CHỮA tương ứng, nếu dòng xuất này gắn với một RO.
+    /// Có giá trị ⇒ đơn giá xuất tính theo `RoFactor × RoPrice` (giá tính cho KHÁCH),
+    /// **không** theo <see cref="Price"/> (giá kho). Xem endpoint `/api/stockouts/cover`.</summary>
+    public decimal? RoFactor { get; set; }
+    /// <summary>Đơn giá của dòng lệnh sửa chữa tương ứng (xem <see cref="RoFactor"/>).</summary>
+    public decimal? RoPrice { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long StockOutId { get; set; }

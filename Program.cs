@@ -36315,7 +36315,7 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
         await db.SaveChangesAsync();
     }
     foreach (var l in lines)
-        db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity });
+        db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, UnitCode = l.UnitCode, RoFactor = l.RoFactor, RoPrice = l.RoPrice });   // #368 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
 }).RequireAuthorization();
@@ -36442,13 +36442,112 @@ app.MapPost("/api/stockouts/{id:long}/veloca-synced", async (long id, AppDbConte
     return Results.Ok(new { h.Id, h.StockOutNo, h.FlagSyncVeloca, h.SyncVelocaDTime });
 }).RequireAuthorization();
 
+// ===== 🔴 #368 BÁO CÁO TỔNG HỢP PHIẾU XUẤT (`#tbl_InvF_InventoryOutCover_*`, 3 tầng bảng tạm) =====
+// Nguồn: `BizCarSv.Inventory.StockOut.cs` — `_Filter` (tính từng dòng) → `_GrpBy` (gộp) → `_Return`.
+//
+// 🔴 MỘT DÒNG XUẤT ĐƯỢC ĐỊNH GIÁ THEO **HAI CÁCH**, tuỳ nó có gắn với lệnh sửa chữa hay không:
+//   `case when sisodro.PartID is not null then (sisodro.Factor * sisodro.Price) else sisod.Price end`
+//   ⇒ Dòng gắn RO lấy **giá tính cho KHÁCH** (hệ số × đơn giá của dòng RO); dòng không gắn lấy
+//     **giá trên phiếu kho**. Port thiếu nhánh RO ⇒ toàn bộ phần xuất cho sửa chữa bị định giá SAI.
+// 🔴 `ValVAT` **trộn nguồn**: lượng và giá lấy từ dòng RO, nhưng **thuế suất vẫn lấy `sisod.VAT` của
+//   dòng PHIẾU KHO** ở CẢ HAI nhánh. Đây là chủ ý của nguồn, không phải sót — giữ nguyên.
+// 🔴 Gộp theo `(IF_InvOutNo, ProductCodeRoot)` chỉ `Sum` ba cột lượng/tiền; còn `VAT`, `UPOut`,
+//   `UnitCode` được lấy bằng **BA `top 1` ĐỘC LẬP, KHÔNG `order by`** trên cùng khoá.
+//   ⇒ Nếu một mã hàng trong cùng phiếu có nhiều dòng khác giá (điển hình: một dòng gắn RO, một dòng
+//     không), thì **`UPOut × Qty` KHÔNG bằng `ValOutAfterDesc`** — và ba ô đó còn có thể đến từ ba
+//     dòng KHÁC NHAU. Không tự "sửa cho đúng": trả kèm cờ để người đọc biết con số nào không tất định.
+// ⚠️ `ValOutAfterDesc` nghĩa là "sau chiết khấu" nhưng **không có số hạng chiết khấu nào** trong công
+//   thức, và `UPOutDesc` = `UPInv` = `0` đóng cứng ⇒ tên cột của một tính năng KHÔNG tồn tại ở đây.
+// ⚠️ `ProductCodeRoot` lấy `smp.PartCode` qua **`left join`** master phụ tùng: mã không có trong master
+//   ⇒ `NULL`, và mọi dòng như vậy **dồn chung MỘT nhóm NULL**.
+// 📌 Đối chiếu 2 máy: file md5 `8e73ba77` giống hệt laptop/150; thư mục `V20` (chỉ có ở laptop)
+//   **không hề có** báo cáo này ⇒ tính năng thêm về sau, không phải bản bị cắt.
+app.MapGet("/api/stockouts/cover", async (AppDbContext db, ITenantContext t, string? nos, DateTime? from, DateTime? to) =>
+{
+    var hq = db.PartStockOuts.Where(s => s.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(nos))
+    {
+        var list = nos.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => x.Trim().ToUpperInvariant()).ToList();
+        hq = hq.Where(s => list.Contains(s.StockOutNo));
+    }
+    if (from is not null) hq = hq.Where(s => s.StockOutDate >= from);
+    if (to is not null) hq = hq.Where(s => s.StockOutDate <= to);
+
+    var heads = await hq.Select(s => new { s.Id, s.StockOutNo }).ToListAsync();
+    var ids = heads.Select(h => h.Id).ToList();
+    var noOf = heads.ToDictionary(h => h.Id, h => h.StockOutNo);
+
+    var raw = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.StockOutId)).ToListAsync();
+
+    // --- Tầng _Filter: tính từng dòng, hai cách định giá.
+    var filt = raw.Select(l =>
+    {
+        var roLinked = l.RoPrice is not null;                     // tương ứng sisodro.PartID is not null
+        var up = roLinked ? (l.RoFactor ?? 0m) * (l.RoPrice ?? 0m) : (l.Price ?? 0m);
+        var val = l.Quantity * up;
+        var vat = l.Vat ?? 0m;                                    // LUÔN lấy VAT của dòng phiếu kho
+        return new
+        {
+            ifInvOutNo = noOf[l.StockOutId],
+            productCodeRoot = l.PartCode,
+            qty = l.Quantity, vat, upOut = up,
+            valOutAfterDesc = val, valVAT = val * vat / 100m,
+            unitCode = l.UnitCode, roLinked,
+        };
+    }).ToList();
+
+    // --- Tầng _GrpBy + _Return: gộp rồi lấy VAT/UPOut/UnitCode theo "top 1" (không order by).
+    var rows = filt.GroupBy(x => new { x.ifInvOutNo, x.productCodeRoot }).Select(g =>
+    {
+        var first = g.First();                                    // đúng nghĩa "top 1 không order by"
+        var qtySum = g.Sum(x => x.qty);
+        var valSum = g.Sum(x => x.valOutAfterDesc);
+        var vatSum = g.Sum(x => x.valVAT);
+        // Cờ: ba ô "top 1" chỉ tất định khi cả nhóm cùng một giá trị.
+        var upAmbiguous = g.Select(x => x.upOut).Distinct().Count() > 1;
+        var vatAmbiguous = g.Select(x => x.vat).Distinct().Count() > 1;
+        var unitAmbiguous = g.Select(x => x.unitCode).Distinct().Count() > 1;
+        return new
+        {
+            g.Key.ifInvOutNo, g.Key.productCodeRoot,
+            qty = qtySum,
+            vat = first.vat,
+            upOut = first.upOut,
+            upOutDesc = 0m,                                       // nguồn đóng cứng 0
+            valOutAfterDesc = valSum,
+            valVAT = vatSum,
+            valOutAfterVAT = valSum + vatSum,
+            unitCode = first.unitCode,
+            upInv = 0m,                                           // nguồn đóng cứng 0
+            lineCount = g.Count(),
+            // Giá trộn hai nguồn trong CÙNG một nhóm ⇒ upOut không đại diện cho cả nhóm.
+            mixedPriceSource = g.Select(x => x.roLinked).Distinct().Count() > 1,
+            ambiguousTop1 = upAmbiguous || vatAmbiguous || unitAmbiguous,
+            unitPriceTimesQty = first.upOut * qtySum,
+        };
+    }).OrderBy(x => x.ifInvOutNo).ThenBy(x => x.productCodeRoot).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        // Số nhóm mà upOut × Qty KHÔNG khớp tổng tiền — hệ quả trực tiếp của "top 1" trên nhóm nhiều giá.
+        inconsistentUnitPriceRows = rows.Count(x => x.unitPriceTimesQty != x.valOutAfterDesc),
+        nullProductCodeRootRows = rows.Count(x => x.productCodeRoot == null),
+        top1Note = "VAT / UPOut / UnitCode lấy bằng ba `top 1` ĐỘC LẬP không `order by` — có thể đến từ ba dòng khác nhau.",
+        valVatNote = "ValVAT trộn nguồn: lượng-giá theo dòng RO nhưng thuế suất luôn theo dòng phiếu kho (đúng nguồn).",
+        afterDescNote = "Tên `ValOutAfterDesc` nói \"sau chiết khấu\" nhưng công thức KHÔNG có số hạng chiết khấu; UPOutDesc/UPInv đóng cứng 0.",
+        nullGroupNote = "ProductCodeRoot lấy qua left join master phụ tùng — mã lạ thành NULL và dồn chung một nhóm.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.Vat, l.UnitCode, l.RoFactor, l.RoPrice }).ToListAsync();   // #368 §12
     return Results.Ok(new { h.StockOutNo, h.WarehouseCode, h.Status, count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -39740,7 +39839,10 @@ record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCo
     string? StockOutNo = null,
     string? OrderPartId = null, string? OrderPartNo = null, string? FlagOrderNCC = null,
     string? DealerCode = null, string? SupplierID = null, string? TSTRequestNo = null, string? BillNo = null);
-record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
+// #368 §12: 5 truong dau vao bao cao tong hop (gia kho / VAT / don vi / gia theo lenh sua chua).
+record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity,
+    decimal? Price = null, decimal? Vat = null, string? UnitCode = null,
+    decimal? RoFactor = null, decimal? RoPrice = null);
 // #264: 7 trường bổ sung (người lập/khách/đại lý + khối vận chuyển).
 //  Khối ĐIỀU CHỈNH (`Adjustment*`/`OldStockOut*`) KHÔNG nhận từ client: nó do luồng tạo phiếu điều chỉnh
 //  sinh ra — chưa port, đã ghi nợ.

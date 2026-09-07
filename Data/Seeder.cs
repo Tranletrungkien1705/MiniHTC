@@ -985,6 +985,12 @@ public static class Seeder
         // #367 ma khuyen mai tren tung dong RO — thieu thi bang Table 20 gui Veloca luon rong
         "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"CamID\" text NULL",
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"CamID\" text NULL",
+        // #368 dau vao bao cao tong hop phieu xuat — thieu thi moi cot tien bang 0
+        "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"Price\" numeric NULL",
+        "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"Vat\" numeric NULL",
+        "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"UnitCode\" text NULL",
+        "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"RoFactor\" numeric NULL",
+        "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"RoPrice\" numeric NULL",
         // #341 hai moc con thieu cua chuoi trang thai lenh sua chua
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CheckEndDate\" timestamp NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"TotalActHours\" numeric NULL",
