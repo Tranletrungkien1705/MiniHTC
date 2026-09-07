@@ -352,6 +352,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CampaignMarketing> CampaignMarketings => Set<CampaignMarketing>();
     public DbSet<CampaignMarketingPart> CampaignMarketingParts => Set<CampaignMarketingPart>();
     public DbSet<CampaignMarketingFullVin> CampaignMarketingFullVins => Set<CampaignMarketingFullVin>();   // #482
+    public DbSet<CampaignMarketingVin> CampaignMarketingVins => Set<CampaignMarketingVin>();               // #483
+    public DbSet<CampaignMarketingPlateNo> CampaignMarketingPlateNos => Set<CampaignMarketingPlateNo>();   // #483
+    public DbSet<CampaignMarketingDealer> CampaignMarketingDealers => Set<CampaignMarketingDealer>();      // #483
     public DbSet<PartBackorder> PartBackorders => Set<PartBackorder>();
     public DbSet<AvnPayment> AvnPayments => Set<AvnPayment>();
     public DbSet<AvnPaymentLine> AvnPaymentLines => Set<AvnPaymentLine>();

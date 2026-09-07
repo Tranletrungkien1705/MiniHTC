@@ -28951,7 +28951,67 @@ app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, IT
         fullVins,
         fullVinOnlyInWhBranch = true,
         fullVinAlwaysIncludedInWh = true,
-        childTablesNotModelled = new[] { "CamMarketingVIN", "CamMarketingPlateNo", "CamMarketingDealer" },
+        // #483: ba bảng con còn lại đã mô hình hoá ⇒ trả luôn, không còn nợ.
+        vins = await db.CampaignMarketingVins.Where(v => v.OrgId == t.OrgId && v.CamNo == c.CamNo)
+            .OrderBy(v => v.VIN).Select(v => new { v.VIN, v.CamMarketingVinStatus }).ToListAsync(),
+        plateNos = await db.CampaignMarketingPlateNos.Where(v => v.OrgId == t.OrgId && v.CamNo == c.CamNo)
+            .OrderBy(v => v.StartPlateNo).Select(v => new { v.StartPlateNo, v.CamMarketingPlateNoStatus }).ToListAsync(),
+        dealers = await db.CampaignMarketingDealers.Where(v => v.OrgId == t.OrgId && v.CamNo == c.CamNo)
+            .OrderBy(v => v.DealerCode).Select(v => new { v.DealerCode, v.CamMarketingDealerStatus }).ToListAsync(),
+        childTablesNotModelled = Array.Empty<string>(),
+        plateNoIsListNotRange = true,
+        childRowsHaveNoAuditColumns = true,
+        dualWriteInSource = true,
+    });
+}).RequireAuthorization();
+
+// #483 §12: ghi ba bảng con còn lại. Cùng lệ "XOÁ SẠCH rồi ghi lại" của #393.
+// ⚠️ Trạng thái khởi tạo = "P" (hằng CamMarketingStatus.Pending) — bảng mã chỉ có P/A, không có mã từ chối.
+app.MapPost("/api/campaignmarketings/{no}/scope", async (string no, CampaignScopeDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    static List<string> Norm(List<string>? xs) => (xs ?? new List<string>())
+        .Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    var vins = Norm(dto.Vins); var plates = Norm(dto.StartPlateNos); var dealers = Norm(dto.DealerCodes);
+    if (vins.Count == 0 && plates.Count == 0 && dealers.Count == 0)
+        return Results.BadRequest(new { error = "Cần ít nhất một trong: Vins, StartPlateNos, DealerCodes." });
+
+    var status = string.IsNullOrWhiteSpace(dto.Status) ? "P" : dto.Status!.Trim().ToUpperInvariant();
+    if (status != "P" && status != "A")
+        return Results.BadRequest(new { error = "Trạng thái chỉ nhận P (chờ duyệt) hoặc A (đã duyệt)." });
+
+    var removed = 0;
+    if (vins.Count > 0)
+    {
+        var old = await db.CampaignMarketingVins.Where(v => v.OrgId == t.OrgId && v.CamNo == no).ToListAsync();
+        removed += old.Count; db.CampaignMarketingVins.RemoveRange(old);
+        foreach (var v in vins) db.CampaignMarketingVins.Add(new CampaignMarketingVin
+            { OrgId = t.OrgId, CamNo = no, VIN = v, CamMarketingVinStatus = status });
+    }
+    if (plates.Count > 0)
+    {
+        var old = await db.CampaignMarketingPlateNos.Where(v => v.OrgId == t.OrgId && v.CamNo == no).ToListAsync();
+        removed += old.Count; db.CampaignMarketingPlateNos.RemoveRange(old);
+        foreach (var v in plates) db.CampaignMarketingPlateNos.Add(new CampaignMarketingPlateNo
+            { OrgId = t.OrgId, CamNo = no, StartPlateNo = v, CamMarketingPlateNoStatus = status });
+    }
+    if (dealers.Count > 0)
+    {
+        var old = await db.CampaignMarketingDealers.Where(v => v.OrgId == t.OrgId && v.CamNo == no).ToListAsync();
+        removed += old.Count; db.CampaignMarketingDealers.RemoveRange(old);
+        foreach (var v in dealers) db.CampaignMarketingDealers.Add(new CampaignMarketingDealer
+            { OrgId = t.OrgId, CamNo = no, DealerCode = v, CamMarketingDealerStatus = status });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        camNo = no, status,
+        vinCount = vins.Count, plateNoCount = plates.Count, dealerCount = dealers.Count,
+        replacedRows = removed,
+        replaceNotMergeSemantics = true,   // đúng lệ #393: gửi thiếu là MẤT phần còn lại
     });
 }).RequireAuthorization();
 
@@ -46463,6 +46523,8 @@ record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 // #392: dau vao duyet chien dich marketing. Remark = null khi rong (dung nguon).
 record CampaignApproveDto(string? ApprBy, string? Remark);
 record CampaignFullVinDto(List<string>? VinNos, string? Status);   // #482 §12
+record CampaignScopeDto(List<string>? Vins, List<string>? StartPlateNos, List<string>? DealerCodes,
+    string? Status);   // #483 §12
 record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
 record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note, string? DealerCode = null);
 record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);

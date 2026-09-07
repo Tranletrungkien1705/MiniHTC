@@ -15060,3 +15060,51 @@ public sealed class CampaignMarketingFullVin
     public int MyIdxSeq { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+
+// ===== 🔴 #483 BA BẢNG CON CÒN LẠI CỦA CHIẾN DỊCH MARKETING (trả nốt nợ #392/#393) =====
+// Nguồn ghi cả năm bảng con trong CÙNG một hàm `Ser_CampaignMarketing_Create/Update`
+//   (`CampaignMarketing/BizCarSv.CampaignMarketing.cs:5205-5310`), mỗi bảng một `#region // SaveDB …`.
+// ⚠️ Cả ba đều đặt trạng thái khởi tạo = `TConst.CamMarketingStatus.Pending`; mở hằng
+//   (`TERP.Constants/CampaignMarketing/Const.Main.BE.cs:23`) thì **giá trị thật là "P"**, và bảng mã
+//   **chỉ có HAI** giá trị: `Pending = "P"` · `Approve = "A"` — **không có mã từ chối**.
+// ⚠️ Hai cột nhật ký `LogLUDTime`/`LogLUBy` ở cả ba khối **đều bị COMMENT** ⇒ port dòng ACTIVE:
+//   ba bảng con này **không lưu vết người sửa**. Đây là hành vi thật của nguồn, không phải thiếu sót port.
+// 🔴 Nguồn ghi **SONG SONG hai CSDL**: `_dbMain.SaveData(...)` rồi `_dbWH.SaveData(...)` cùng một
+//   `DataTable` ⇒ ghi kép Main + Kho. MiniHTC một CSDL ⇒ ghi một lần, nêu cờ `dualWriteInSource`.
+/// <summary>`Ser_CampaignMarketingVIN` — danh sách VIN được chỉ định thủ công cho chiến dịch.
+/// Khác `CampaignMarketingFullVin` (#482): bảng kia là danh sách ĐẦY ĐỦ do hệ sinh ra.</summary>
+public sealed class CampaignMarketingVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    /// <summary>Nguồn đặt tên cột là `VIN` (không phải `VinNo` như bảng FullVIN) — giữ đúng phân biệt.</summary>
+    public string VIN { get; set; } = "";
+    public string? CamMarketingVinStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>`Ser_CampaignMarketingPlateNo` — chỉ định theo BIỂN SỐ.
+/// ⚠️ Nguồn chỉ ghi **`StartPlateNo`**; grep toàn cụm **không có `EndPlateNo`** ⇒ đây là DANH SÁCH biển số,
+/// KHÔNG phải KHOẢNG biển số, dù tên cột có chữ "Start" gợi ý ngược lại.</summary>
+public sealed class CampaignMarketingPlateNo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string StartPlateNo { get; set; } = "";
+    public string? CamMarketingPlateNoStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>`Ser_CampaignMarketingDealer` — phạm vi đại lý áp dụng chiến dịch.</summary>
+public sealed class CampaignMarketingDealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? CamMarketingDealerStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
