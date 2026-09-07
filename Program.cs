@@ -16723,6 +16723,57 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
     });
 }).RequireAuthorization();
 
+// ===== #549 XOÁ GÓI DỊCH VỤ — VÀ MỘT **ĐỐI CHỨNG LÀNH** VỀ THAM SỐ HOÁ =====
+// Nguồn: `BizCarSv.ServicePackage.cs:1165 SerServicePackageDelete`.
+// Endpoint: `POST /api/servicepackages/{id}/delete` (trước nay MiniHTC chỉ có `toggle`).
+//
+// ⚪ **ĐỐI CHỨNG LÀNH — CÂU `DELETE` **CÓ** THAM SỐ HOÁ**:
+//     `delete from Ser_ServicePackage where ServicePackageID = @ServicePackageID`
+//     `_dbMain.ExecQuery(strSqlDelete, "@ServicePackageID", strServicePackageID)`
+//   ⇒ **Ngược hẳn** #536 / #538 / #540 (dựng mệnh đề bằng `BuildClauseConditionList` rồi `ExecNonQuery`
+//     **không tham số**). Cùng một repo, cùng một loại thao tác, **hai kiểu viết** — nên "nguồn hay bake"
+//     **không phải quy luật**; phải đọc từng hàm. Ghi lại để lượt sau khỏi vơ đũa cả nắm.
+// 🔴 **XOÁ CON TRƯỚC, CHA SAU**: `ProcessServicePackageServiceItemDelete` →
+//   `ProcessServicePackagePartItemDelete` → mới `delete Ser_ServicePackage` ⇒ đúng thứ tự khoá ngoại.
+//   Port giữ nguyên thứ tự đó.
+// 🔴 **KHÔNG có guard tham chiếu**: nguồn **không** kiểm gói có đang được lệnh sửa chữa / lịch hẹn nào dùng —
+//   khác #540 (mã lỗi có guard) và giống #541 (loại gia hạn không có). ⇒ Xoá gói đang dùng thì dữ liệu
+//   tham chiếu **thành mồ côi**. Port **giữ đúng nguồn** (không tự thêm) nhưng **đếm và trả** số tham chiếu
+//   tìm thấy, để người gọi tự quyết — nêu cờ `sourceHasNoReferenceGuard`.
+// ⚠️ `Convert.ToInt32(strServicePackageID)` **không guard rỗng** (họ #526/#528/#535).
+// ⚠️ Xoá ở **ba** DB (`_dbMain` · `_dbWH` · `_dbDealer` nếu `bNeedTransaction_Dealer`) — nợ kiến trúc đã ghi.
+app.MapPost("/api/servicepackages/{id:long}/delete", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    // CheckExistServicePackage(ID)
+    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { error = "CheckExistServicePackage: không tìm thấy gói.", id });
+
+    // Nguồn KHÔNG kiểm tham chiếu; ở đây chỉ ĐẾM và báo lại, không tự chặn (giữ đúng hành vi nguồn).
+    var svcCount = await db.ServicePackageServices.CountAsync(x => x.OrgId == t.OrgId && x.ServicePackageId == id);
+    var partCount = await db.ServicePackageParts.CountAsync(x => x.OrgId == t.OrgId && x.ServicePackageId == id);
+
+    // Xoá CON trước, CHA sau — đúng thứ tự của nguồn.
+    db.ServicePackageServices.RemoveRange(
+        db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id));
+    db.ServicePackageParts.RemoveRange(
+        db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id));
+    await db.SaveChangesAsync();
+    db.ServicePackages.Remove(h);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deletedId = id, packageNo = h.PackageNo,
+        deletedServiceLines = svcCount, deletedPartLines = partCount,
+        deleteOrderChildThenParent = true,
+        sourceDeleteIsParameterised = "delete ... where ServicePackageID = @ServicePackageID",
+        contrastWithBakedDeletes = "#536 / #538 / #540 dung BuildClauseConditionList + ExecNonQuery khong tham so",
+        sourceHasNoReferenceGuard = true,
+        sourceConvertToInt32HasNoEmptyGuard = true,
+        deletesThreeDatabases = "Main + WH + Dealer",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #548 SỬA GÓI DỊCH VỤ — `SerServicePackageUpdate`, VÀ MỘT LỜI GỌI GUARD **LẶP THỪA** =====
 // Nguồn: `BizCarSv.ServicePackage.cs:546 SerServicePackageUpdate`. Endpoint: `POST /api/servicepackages/{id}/update`.
 // **§12**: thêm 7 cột `DealerCode · TakingTime · Description · Creator · CreatedDate · IsPublicFlag · IsUserBasePrice`.
