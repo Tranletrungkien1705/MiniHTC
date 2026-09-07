@@ -44884,6 +44884,151 @@ app.MapGet("/api/reports/part-cost-history", async (AppDbContext db, ITenantCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #488 CHÊNH LỆCH GIÁ SO VỚI DANH MỤC — `Ser_ReportRoVarianceCost` (`Service.Report.cs:5267`) =====
+// ⚪ Cặp `_WH` (`WH.cs:6790`) khác **đúng một dòng**, và đó chỉ là dấu `--//[mylock]` ⇒ tương đương.
+//   Đóng thêm một ca của #484 (**còn 14**).
+//
+// 🔴 **BỘ LỌC "TẤT CẢ ĐẠI LÝ" LÀ CODE CHẾT** (bẫy bake-param):
+//   Nguồn viết `and ('@DealerCode' is null or Ro.DealerCode = '@DealerCode')` — nhưng `@DealerCode` được
+//   **thay bằng StringUtils.Replace**, nên sau khi thay chuỗi là `('VN030' is null or …)`.
+//   Một **hằng chuỗi** thì **không bao giờ NULL** ⇒ vế đầu **luôn FALSE**; truyền rỗng cũng chỉ thành
+//   `('' is null or Ro.DealerCode = '')` ⇒ vẫn FALSE rồi lọc `DealerCode = ''` ⇒ **0 dòng**.
+//   ⇒ Ý định "bỏ trống = xem mọi đại lý" **không bao giờ chạy được**. (Dòng `--and Ro.DealerCode = …` ngay
+//     phía trên đã bị comment, cho thấy đây là lần sửa dở dang.) Port **bắt buộc** `dealerCode` + nêu cờ.
+// 🔴 **LEFT JOIN CHẾT** ở CẢ HAI nhánh: `left join ser_Car car …` rồi WHERE có `car.DealerCode = '@DealerCode'`
+//   ⇒ lệnh không có xe khớp **bị loại**. Đếm `droppedByCarJoin`.
+// 🔴 **`union` (không phải `union all`)** ⇒ hai dòng **giống hệt nhau** trong cùng một nhánh bị **gộp làm một**.
+//   Hai dòng dịch vụ trùng khít trên một lệnh sẽ chỉ còn một ⇒ **dòng bị nuốt**. Cờ `unionDedupesRows`.
+// 🔴 **CÔNG THỨC LỆCH GIỮA HAI NHÁNH**: nhánh dịch vụ so `Price*Factor*(1+VAT)` với **`ser.Price*(1+VAT)`**
+//   — giá chuẩn **KHÔNG nhân Factor**; nhánh phụ tùng thì cả hai vế đều nhân `Quantity`.
+//   ⇒ Với dịch vụ có `Factor != 1`, "chênh lệch" gồm cả phần hệ số, không chỉ phần lệch đơn giá. Cờ
+//     `serviceVarianceIgnoresFactorOnStandard` — giữ đúng nguồn, không tự "sửa cho cân".
+// ⚠️ **HAI cửa sổ ngày cùng lúc**: cả `ActualDeliveryDate` **và** `CheckInDate` đều phải nằm trong [From,To];
+//   mốc `<=` không kèm giờ ⇒ **mất trọn ngày cuối** (#415). Port dùng 23:59:59 + đếm `lostByRawEndDate`.
+// ⚠️ Nhánh dịch vụ đặt `'' as Quantity` (**chuỗi rỗng**, không phải 0) rồi câu ngoài lại
+//   `case when Quantity = '0' … when Quantity != '0' then Quantity end` ⇒ dịch vụ luôn rơi vào vế thứ hai
+//   và `SoLuong` nhận **chuỗi rỗng**. Giữ nguyên (đúng nguồn), trả `soLuong` kiểu chuỗi.
+// ⚪ `left join Sys_User su` (danh mục người dùng) — WHERE **không** đụng tới ⇒ **LEFT còn sống**. Kiểm âm tính.
+// ⚠️ `round(...,0)` chỉ áp ở hai cột trình bày (`TriGia01`, `ChenhLech`), không áp vào cột gốc.
+app.MapGet("/api/reports/ro-variance-cost", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate, string? plateNo, string? roNo) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new
+        {
+            error = "Cần dealerCode.",
+            allDealersBranchIsDeadInSource = true,
+            note = "Nguồn có vế ('@DealerCode' is null or …) nhưng giá trị được BAKE nên vế đó luôn FALSE.",
+        });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var toRawMidnight = toDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
+            && r.Status == "FNS"
+            && r.ActualDeliveryDate >= from && r.ActualDeliveryDate <= to
+            && r.CheckInDate >= from && r.CheckInDate <= to).ToListAsync();
+    var lostByRawEndDate = ros.Count(r => r.ActualDeliveryDate > toRawMidnight || r.CheckInDate > toRawMidnight);
+
+    if (!string.IsNullOrWhiteSpace(plateNo))
+        ros = ros.Where(r => r.LicensePlate != null && r.LicensePlate.Contains(plateNo!.Trim())).ToList();
+    if (!string.IsNullOrWhiteSpace(roNo))
+        ros = ros.Where(r => r.RONo.Contains(roNo!.Trim())).ToList();
+
+    // LEFT bị ép thành INNER: xe phải tồn tại VÀ thuộc đúng đại lý.
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && c.DealerCode == dealer)
+        .Select(c => new { c.CarID, c.CusID, c.PlateNo, c.TradeMark, c.ModelCode }).ToListAsync();
+    var carByKey = cars.Where(c => c.CarID != null && c.CusID != null)
+        .GroupBy(c => c.CarID + "|" + c.CusID).ToDictionary(g => g.Key, g => g.First());
+    var before = ros.Count;
+    ros = ros.Where(r => r.CarID != null && r.CusID != null
+                         && carByKey.ContainsKey(r.CarID + "|" + r.CusID)).ToList();
+    var droppedByCarJoin = before - ros.Count;
+
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ModelCode, x.ModelName }).ToListAsync();
+    var modelName = models.GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var stdSer = await db.ServiceMstServices.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var serById = stdSer.GroupBy(x => x.SerID).ToDictionary(g => g.Key, g => g.First());
+    var stdPart = await db.ServiceParts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var partByCode = stdPart.Where(x => x.PartCode != null)
+        .GroupBy(x => x.PartCode!).ToDictionary(g => g.Key, g => g.First());
+
+    var roIds = ros.Select(r => r.Id).ToList();
+    var svc = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    var prt = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    var roById = ros.ToDictionary(r => r.Id);
+
+    var rows = new List<object>();
+    foreach (var x in svc)
+    {
+        if (!roById.TryGetValue(x.RoId, out var r)) continue;
+        var car = carByKey[r.CarID + "|" + r.CusID];
+        var std = x.SerCode != null && serById.ContainsKey(x.SerCode) ? serById[x.SerCode] : null;
+        var sellPrice = x.Price; var factor = x.Factor; var vat = x.Vat;
+        var triGia = sellPrice * factor + sellPrice * factor * vat * 0.01m;
+        // ⚠️ giá chuẩn KHÔNG nhân Factor — đúng nguồn.
+        var chuan = std is null ? 0m : std.Price + std.Price * std.Vat * 0.01m;
+        rows.Add(new
+        {
+            r.RONo, DisplayRoNo = "BG-" + r.RONo, r.CheckInDate, r.ActualDeliveryDate,
+            r.CusID, r.CarID, car.PlateNo, TradeMarkCode = car.TradeMark,
+            ModelName = car.ModelCode != null && modelName.ContainsKey(car.ModelCode) ? modelName[car.ModelCode] : null,
+            IDPartSer = x.SerCode, PaSeCode = x.SerCode, PaSeName = x.SerName,
+            GiaBan = sellPrice, Quantity = "", VatBan = vat, x.Factor,
+            GiaChuan = std?.Price ?? 0m, VATChuan = std?.Vat ?? 0m,
+            TriGia = triGia, varianceCost = triGia - chuan, SPIndex = "1",
+            r.Creator,
+            TriGia01 = Math.Round(triGia, 0), ChenhLech = Math.Round(triGia - chuan, 0),
+            SoLuong = "",
+        });
+    }
+    foreach (var x in prt)
+    {
+        if (!roById.TryGetValue(x.RoId, out var r)) continue;
+        var car = carByKey[r.CarID + "|" + r.CusID];
+        var std = x.PartCode != null && partByCode.ContainsKey(x.PartCode) ? partByCode[x.PartCode] : null;
+        var qty = x.NeedQty; var sellPrice = x.UnitPrice; var factor = x.Factor; var vat = x.Vat;
+        var triGia = sellPrice * qty * factor + sellPrice * qty * factor * vat * 0.01m;
+        var chuan = std is null ? 0m : std.Price * qty + std.Price * qty * (std.VAT ?? 0m) * 0.01m;
+        rows.Add(new
+        {
+            r.RONo, DisplayRoNo = "BG-" + r.RONo, r.CheckInDate, r.ActualDeliveryDate,
+            r.CusID, r.CarID, car.PlateNo, TradeMarkCode = car.TradeMark,
+            ModelName = car.ModelCode != null && modelName.ContainsKey(car.ModelCode) ? modelName[car.ModelCode] : null,
+            IDPartSer = x.PartCode, PaSeCode = x.PartCode, PaSeName = x.PartName,
+            GiaBan = sellPrice, Quantity = qty.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            VatBan = vat, x.Factor,
+            GiaChuan = std?.Price ?? 0m, VATChuan = std?.VAT ?? 0m,   // VAT cua ServicePart la decimal?
+            TriGia = triGia, varianceCost = triGia - chuan, SPIndex = "2",
+            r.Creator,
+            TriGia01 = Math.Round(triGia, 0), ChenhLech = Math.Round(triGia - chuan, 0),
+            SoLuong = qty == 0 ? null : qty.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        });
+    }
+
+    // `union` (không phải `union all`) ⇒ khử trùng dòng giống hệt. Đếm phần bị gộp.
+    var before2 = rows.Count;
+    var deduped = rows.Select(r => new { key = System.Text.Json.JsonSerializer.Serialize(r), r })
+        .GroupBy(x => x.key).Select(g => g.First().r).ToList();
+    var collapsedByUnion = before2 - deduped.Count;
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer,
+        from = from.ToString("yyyy-MM-dd HH:mm:ss"), to = to.ToString("yyyy-MM-dd HH:mm:ss"),
+        count = deduped.Count, items = deduped,
+        droppedByCarJoin, collapsedByUnion, lostByRawEndDate,
+        allDealersBranchIsDeadInSource = true,
+        unionDedupesRows = true,
+        serviceVarianceIgnoresFactorOnStandard = true,
+        bothDateWindowsApplied = true,
+        whTwinEquivalent = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {

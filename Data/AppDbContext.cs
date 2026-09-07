@@ -146,6 +146,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MemberVoucher> MemberVouchers => Set<MemberVoucher>();
     public DbSet<LoyaltyCard> LoyaltyCards => Set<LoyaltyCard>();   // #463
     public DbSet<MstParam> MstParams => Set<MstParam>();            // #472
+    public DbSet<ServiceMstService> ServiceMstServices => Set<ServiceMstService>();   // #488
     public DbSet<RoVoucherUse> RoVoucherUses => Set<RoVoucherUse>();
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();
     public DbSet<InsuranceFee> InsuranceFees => Set<InsuranceFee>();

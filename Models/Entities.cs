@@ -15108,3 +15108,26 @@ public sealed class CampaignMarketingDealer
     public string? CamMarketingDealerStatus { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+
+// ===== 🔴 #488 DANH MỤC DỊCH VỤ CHUẨN (`Ser_MST_Service`) — trước nay CHƯA mô hình hoá =====
+/// <summary>Báo cáo chênh lệch giá (`Ser_ReportRoVarianceCost`) so **giá bán trên lệnh** với **giá chuẩn**
+/// của danh mục. Phía phụ tùng đã có `ServicePart.Price/VAT`; phía **dịch vụ** thì thiếu hẳn bảng chuẩn
+/// ⇒ không có bảng này thì báo cáo **không tồn tại được** (đúng loại "cột/bảng THIẾU HẲN" mà §12 không bắt).</summary>
+public sealed class ServiceMstService
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`SerID` — khoá nối từ dòng dịch vụ của lệnh (`Ser_ROServiceItems.SerID`).</summary>
+    public string SerID { get; set; } = "";
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+    /// <summary>`Price` — **giá CHUẨN** (giá danh mục), đối chiếu với giá bán trên lệnh.</summary>
+    public decimal Price { get; set; }
+    /// <summary>`Vat` — %VAT chuẩn.</summary>
+    public decimal Vat { get; set; }
+    public decimal? StdManHour { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
