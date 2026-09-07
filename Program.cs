@@ -36489,9 +36489,38 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
     if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}." });
     r.Status = target;
-    // Nguồn FrmServiceHistory sắp xếp "order by ro.finisheddate desc" → phải đóng dấu mốc khi RO hoàn tất,
-    // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
-    if (target == "Finished") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
+    // ===== 🔴 #340 SỬA NGỮ NGHĨA HAI MỐC — #326 đóng dấu `FinishedDate` SAI BƯỚC =====
+    // TRACE TWIN: **HAI** WebMethod cùng sống trong codebehind `WSCarSv.asmx.cs`, khác hẳn việc chúng làm:
+    //   `SerROToFinishedStatus` (:11358) → `_biz.SerROToFinishedStatus` (`Service01.cs:11394`) — bản TRẦN,
+    //     chỉ là vỏ mỏng gọi `SerROStatusUpdate(…, Finished, "", "")` ⇒ **KHÔNG** kèm việc phụ nào.
+    //   `SerROToFinishedStatusAndUpdateCusCare` (:11603) → `…_New20190621` (`ZTemp.cs:11622`) — bản ĐẦY ĐỦ,
+    //     kèm 3 việc phụ đã port ở #326/#327.
+    //   ⇒ Cùng một nghiệp vụ "giao xe" có **hai cổng vào với hệ quả khác nhau**; chọn cổng nào là do client.
+    //
+    // 🔴 `Ser_RO.FinishedDate` **KHÔNG** được ghi ở bước giao xe — **cả hai** bản LIVE đều không đụng tới nó.
+    //   Nó được ghi ở `case Ser_RO_Stage.**Repaired**` (`Service01.cs:9648`):
+    //     `dtRO.Rows[0]["FinishedDate"] = Convert.ToDateTime(strStatusDate).ToString("yyyy-MM-dd HH:mm");`
+    //   ⇒ **`FinishedDate` = lúc SỬA XONG, KHÔNG phải lúc GIAO XE.** Tên cột gây hiểu nhầm;
+    //     mốc giao xe là `ActualDeliveryDate`. #326 gán `FinishedDate` tại bước Finished ⇒ **SAI**,
+    //     làm "lịch sử dịch vụ" (`order by ro.finisheddate desc`) sắp xếp theo nhầm sự kiện.
+    //   ⚠️ Các dòng `["FinishedDate"] =` trong `_New20190621` thuộc bảng **`Ser_CustomerCare72h`**,
+    //     KHÔNG phải `Ser_RO` — trùng tên cột giữa hai bảng, rất dễ đọc nhầm thành "có ghi".
+    //
+    // ⚠️ Nguồn lưu cả hai mốc dạng `"yyyy-MM-dd HH:mm"` ⇒ **CẮT GIÂY** (cùng lệ #328/#331).
+    if (target == "Repaired")
+    {
+        // Bước SỬA XONG mới là chỗ đóng dấu `FinishedDate` (kèm `TotalActHours` — chưa port, xem nợ).
+        var fin = dto.StatusDate ?? DateTime.Now;
+        r.FinishedDate = new DateTime(fin.Year, fin.Month, fin.Day, fin.Hour, fin.Minute, 0);
+    }
+    if (target == "Finished")
+    {
+        // 🔴 GHI ĐÈ VÔ ĐIỀU KIỆN, không phải `??=`: bản trần gán thẳng `DateTime.Now`, còn bản đầy đủ
+        //   gán từ tham số client và **rỗng ⇒ DBNull** (`else … = DBNull.Value`) — cả hai đều KHÔNG
+        //   giữ giá trị cũ. Port cũ dùng `??=` nên lần giao xe sau không cập nhật được mốc.
+        var del = dto.StatusDate ?? DateTime.Now;
+        r.ActualDeliveryDate = new DateTime(del.Year, del.Month, del.Day, del.Hour, del.Minute, 0);
+    }
 
     // ===== 🔴 #328 BƯỚC THANH TOÁN ghi **13 cột**, port cũ chỉ đổi `Status` =====
     // Nguồn `SerROStatusUpdatePaid_New20230228` (`Service.RO.cs:5736`) — TRACE TWIN: WS `:11483` gọi bản này;
@@ -36613,6 +36642,9 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     return Results.Ok(new
     {
         r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate,
+        // #340: nói rõ mốc nào thuộc bước nào để chỗ đối chiếu không hiểu nhầm theo tên cột.
+        finishedDateMeaning = "Lúc SỬA XONG (bước Repaired) — KHÔNG phải lúc giao xe.",
+        actualDeliveryDateMeaning = "Lúc GIAO XE (bước Finished).",
         // #326: các việc kéo theo, trả về để đối chiếu với WinForm.
         carUpdated, careNoCreated,
         // #328 §12: dữ liệu bước THANH TOÁN có mặt ở CẢ POST lẫn kết quả.
