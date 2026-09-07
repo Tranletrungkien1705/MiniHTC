@@ -48252,6 +48252,92 @@ app.MapPost("/api/serassignmentworks/{roNo}/actual", async (string roNo, Assignm
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #535 ĐỔ CÔNG VIỆC BẢO HÀNH XUỐNG DANH MỤC DỊCH VỤ CỦA ĐẠI LÝ =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs:3598 Ser_MST_ROWarrantyWork_Save_Dealer`.
+// Endpoint: `POST /api/warrantyworkmsts/push-to-service`. §12: hai cột `StdManHour`/`FlagWarranty`
+//   của `ServiceItemMst` **đã có sẵn** — kiểm trước khi thêm, không thêm trùng.
+// ⚠️ **GREP TRƯỚC**: master `Ser_MST_ROWarrantyWork` **đã port** (`/api/warrantyworkmsts`, `:23196`)
+//   ⇒ không viết lại phần Get/Save; lượt này chỉ bù **nhánh đổ xuống đại lý** còn thiếu.
+//
+// 📐 **DIFF hai hàm anh em `_Save` (CmCenter) ↔ `_Save_Dealer`** — khác nhau ngay ở **HỢP ĐỒNG API**:
+//   · `_Save` đọc `ds.Tables["**Ser_MST_ROWarrantyWork**"]`
+//   · `_Save_Dealer` đọc `ds.Tables["**dt_Ser_MST_ROWarrantyWork_ROWID**"]`
+//   Cùng một nghiệp vụ, **hai tên bảng đầu vào khác hẳn**, và **cả hai đều không có `Tables.Contains`**
+//   (khác #524/#525 vốn kiểm rồi ném lỗi có tên) ⇒ gửi sai tên bảng là **NullReferenceException**.
+// 🔴 `and t.ROWWorkCode = '@strROWWorkCode'` — **bake giá trị vào chuỗi SQL** (họ `[BAKE-PARAM-MIX]`),
+//   lấy thẳng từ `Rows[i]["ROWWorkCode"].ToString()` do client gửi ⇒ bề mặt tiêm SQL ở tầng biz.
+// 🔴 `dt_Ser_MST_ROWarrantyWork_Get.Rows[0][...]` dùng **ngay** mà **không kiểm `Rows.Count`**
+//   ⇒ mã công việc **không có trong danh mục** thì nổ `IndexOutOfRange` giữa vòng lặp, các dòng trước đó
+//   đã ghi (chưa commit) ⇒ lỗi kỹ thuật thay vì "mã không tồn tại". Port kiểm và trả **tên mã hỏng**.
+// 🔴 **Ánh xạ cột chéo tên** (nguồn → đích), mỗi cột đều theo khuôn *rỗng ⇒ `DBNull`* (tức **gửi rỗng XOÁ**,
+//   ngược hẳn #528 nơi rỗng = giữ nguyên — **hai quy ước trong cùng một file**):
+//     `ROWWorkName → SerName` · `Remark → **Note**` · `RatePrice → **Cost**` · `RateHour → **StdManHour**`
+//     · `Model → Model` · `Price → Price` · `VAT → VAT`.
+//   ⚠️ Đọc kỹ: **giá bán** đi vào `Price` còn **đơn giá theo tỷ lệ** đi vào `Cost` — dễ port ngược.
+// ⚠️ `dtrSer["FlagWarranty"] = TConst.Flag.Active` (**"1"**) gán cứng cho mọi dòng.
+// ⚠️ Hai nhánh: dịch vụ **đã có** (`SerCode = ROWWorkCode`) ⇒ **cập nhật 10 cột**; **chưa có** ⇒ **thêm mới**.
+//   Khoá đối chiếu là `SerCode = ROWWorkCode` — hai danh mục dùng **chung một không gian mã**.
+app.MapPost("/api/warrantyworkmsts/push-to-service", async (WarrantyWorkPushDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    const string kFlagActive = "1";   // TConst.Flag.Active
+    var codes = (dto.ROWWorkCodes ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
+    if (codes.Count == 0)
+        return Results.BadRequest(new { error = "Cần danh sách ROWWorkCode (nguồn đọc bảng dt_Ser_MST_ROWarrantyWork_ROWID)." });
+
+    var masters = await db.WarrantyWorkMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.ROWWorkCode))
+        .ToListAsync();
+    // Nguồn KHÔNG kiểm Rows.Count ⇒ nổ IndexOutOfRange; ở đây báo đúng mã hỏng.
+    var missing = codes.Where(c => masters.All(m => m.ROWWorkCode != c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Mã công việc bảo hành không có trong danh mục.",
+            missing, sourceWouldThrowIndexOutOfRange = true,
+        });
+
+    var created = 0; var updated = 0;
+    foreach (var code in codes)
+    {
+        var m = masters.First(x => x.ROWWorkCode == code);
+        var svc = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
+        if (svc is null)
+        {
+            svc = new ServiceItemMst { OrgId = t.OrgId, SerCode = code };
+            db.ServiceItemMsts.Add(svc);
+            created++;
+        }
+        else updated++;
+
+        // Ánh xạ chéo tên, rỗng ⇒ null (đúng khuôn DBNull của nguồn).
+        svc.Model = string.IsNullOrWhiteSpace(m.ModelCode) ? null : m.ModelCode;
+        svc.SerName = string.IsNullOrWhiteSpace(m.ROWWorkName) ? null : m.ROWWorkName;
+        svc.Price = m.Price;                 // Price → Price
+        svc.Cost = m.RatePrice;              // RatePrice → Cost (KHÔNG phải Price)
+        svc.Vat = m.VAT;
+        svc.Note = string.IsNullOrWhiteSpace(m.Remark) ? null : m.Remark;   // Remark → Note
+        svc.StdManHour = m.RateHour;               // RateHour → StdManHour
+        svc.FlagWarranty = kFlagActive;            // gán cứng
+
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        count = codes.Count, created, updated,
+        inputTableNameInSource = "dt_Ser_MST_ROWarrantyWork_ROWID",
+        siblingUsesDifferentTableName = "Ser_MST_ROWarrantyWork (ham _Save cua CmCenter)",
+        noTablesContainsGuardInSource = true,
+        codeBakedIntoSql = "and t.ROWWorkCode = '@strROWWorkCode'",
+        columnMapping = new[] { "ROWWorkName->SerName", "Remark->Note", "RatePrice->Cost",
+            "RateHour->StdManHour", "Model->Model", "Price->Price", "VAT->VAT" },
+        emptyMeansClearHere = "nguoc voi #528 (rong = giu nguyen) — hai quy uoc trong cung mot file",
+        flagWarrantyHardcoded = kFlagActive,
+        sharedCodeSpace = "SerCode = ROWWorkCode",
+        sourceWritesThreeDatabases = "Main + WH + Dealer",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -50068,6 +50154,8 @@ record StockReqLineDto(string PartCode, string? PartName, string? Location, deci
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
 // #271: `AppNo` = lịch hẹn được thực hiện. Có thì mới đóng lịch hẹn bên HCC; rỗng = khách vãng lai.
 // #522 §12: DTO nhận thêm các cột nghiệp vụ của `Ser_ReceptionF_ReceptionX_New20210727`.
+record WarrantyWorkPushDto(List<string>? ROWWorkCodes);   // #535
+
 record AssignmentActualDto(string? WorkType = null,
     DateTime? SCCActualStartDTime = null, DateTime? SCCActualFinishDTime = null,
     DateTime? SCDActualStartDTime = null, DateTime? SCDActualFinishDTime = null,
