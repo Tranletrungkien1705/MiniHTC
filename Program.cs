@@ -24217,16 +24217,101 @@ app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDt
     return Results.Ok(new { a.Id, a.Status, sourceCode = appointmentStatusSourceCodes[s] });
 }).RequireAuthorization();
 
-// Bảng trạng thái khoang/bay theo ngày: mỗi khoang trong danh mục + lịch hẹn CÒN HIỆU LỰC của khoang đó
-// (Booked/Confirmed/Arrived — tức mọi trạng thái chưa huỷ).
-app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantContext t, DateTime? date) =>
+// ===== 🔴 #431 BẢNG KHOANG THEO NGÀY — bổ sung bốn luật hiển thị của `FrmShowCavityStatus` =====
+// Nguồn: `Views/Appointment/FrmShowCavityStatus.cs` (262 dòng) — vẽ biểu đồ Gantt từ
+//   `Ser_AppROGet(…)` + `Ser_CavityGet("","","","","","1","")` (tham số thứ 6 = **chỉ khoang đang dùng**).
+// Bản port trước chỉ liệt kê lịch hẹn theo khoang; bốn luật sau **nằm ở phần VẼ**, dễ bị bỏ khi port API:
+//
+// 🔴 1. **KHUNG GIỜ CỐ ĐỊNH 06:00 → 19:00** của ngày đang xem:
+//      `ganttChart.FromDate = new DateTime(y, m, d, **6**, 0, 0)` · `ToDate = … **19**, 0, 0`
+//    ⇒ Lịch hẹn **ngoài khung này vẫn tồn tại nhưng KHÔNG hiện trên biểu đồ**. Người điều phối nhìn
+//      bảng thấy khoang trống, thực tế đã có hẹn lúc 5h30 hoặc 20h. Đây là **ẩn dữ liệu khi VẼ**,
+//      không phải bộ lọc dữ liệu — nên không ai thấy nó trong câu truy vấn.
+// 🔴 2. **MÀU THEO LOẠI HẸN** (`AppTypeCode`) — chính là thứ làm bảng này có ích:
+//      `BDDK` → cam nhạt (248,203,173) · `SCC` → xám (201,201,201) · `SCDS` → xanh (0,176,240)
+//      · `SCK` → vàng (255,255,0) · **còn lại** → xanh lá.
+// 🔴 3. **`AppStatus == "2"` (đã xác nhận) ⇒ ĐÁNH DẤU SAO** trên thanh. Bản port cũ dùng tiêu chí
+//    khác hẳn (`Status != "Cancelled"`) ⇒ mất phân biệt "đã xác nhận" với "mới đặt".
+//    (Mã trạng thái là **CHỮ SỐ 1..4** — xem ghi chú #285 ngay phía trên.)
+// 🔴 4. Dòng có `AppDateTimeFrom` hoặc `AppDateTime` **rỗng** bị `continue` — **bỏ qua LẶNG LẼ**,
+//    không đếm, không cảnh báo. Nay trả `skippedNoTime`.
+//
+// 📌 **KẾT QUẢ ÂM TÍNH đáng ghi**: form này parse ngày bằng
+//   `DateTime.ParseExact(x, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)` — **đúng cách**,
+//   ngược hẳn với `DateTime.Now.ToString()` phụ thuộc văn hoá ở #421. Cùng một cây nguồn, hai lối làm.
+// ⚠️ Lịch hẹn **chưa gán khoang** (`CavityID` rỗng) không bao giờ lên bảng — cả nguồn lẫn bản port.
+app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantContext t,
+    DateTime? date, int? fromHour, int? toHour) =>
 {
     var d0 = (date ?? DateTime.Today).Date; var d1 = d0.AddDays(1);
-    var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1").OrderBy(c => c.CavityName).Select(c => c.CavityName).ToListAsync();
-    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null && x.Status != "Cancelled" && x.AppFrom >= d0 && x.AppFrom < d1)
-        .OrderBy(x => x.AppFrom).Select(x => new { x.CavityName, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.Status, appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm") }).ToListAsync();
-    var board = cavities.Select(cv => new { cavityName = cv, appointments = apps.Where(a => a.CavityName == cv).ToList() }).ToList();
-    return Results.Ok(new { date = d0.ToString("yyyy-MM-dd"), totalCavity = cavities.Count, totalApp = apps.Count, board });
+    // Khung giờ vẽ của nguồn: 6h → 19h. Cho phép nới bằng tham số, mặc định giữ đúng nguồn.
+    var h0 = fromHour ?? 6; var h1 = toHour ?? 19;
+    var winFrom = d0.AddHours(h0); var winTo = d0.AddHours(h1);
+
+    var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1")
+        .OrderBy(c => c.CavityName).Select(c => new { c.CavityName, c.CavityNo }).ToListAsync();   // Cavity dung CavityNo
+
+    var raw = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null
+            && x.Status != "Cancelled" && x.AppFrom >= d0 && x.AppFrom < d1)
+        .OrderBy(x => x.AppFrom).ToListAsync();
+
+    // Nguồn: dòng thiếu giờ bắt đầu/kết thúc bị `continue` — bỏ qua lặng lẽ. Nay ĐẾM ra.
+    var skippedNoTime = raw.Count(x => x.AppFrom == default || x.AppTo == default);
+    var valid = raw.Where(x => x.AppFrom != default && x.AppTo != default).ToList();
+
+    static string ColorOf(string? code) => code switch
+    {
+        "BDDK" => "#F8CBAD",   // 248,203,173
+        "SCC" => "#C9C9C9",    // 201,201,201
+        "SCDS" => "#00B0F0",   // 0,176,240
+        "SCK" => "#FFFF00",    // 255,255,0
+        _ => "#008000",        // Color.Green
+    };
+
+    var shaped = valid.Select(x => new
+    {
+        x.CavityName, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.Status,
+        appTypeCode = x.AppTypeCode,
+        color = ColorOf(x.AppTypeCode),
+        // AppStatus "2" = ĐÃ XÁC NHẬN ⇒ nguồn vẽ dấu sao trên thanh.
+        markStar = x.Status == "2" || string.Equals(x.Status, "Confirmed", StringComparison.OrdinalIgnoreCase),
+        appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm"),
+        // Nằm ngoài khung vẽ 6h-19h ⇒ nguồn KHÔNG hiển thị.
+        outsideChartWindow = x.AppFrom < winFrom || x.AppTo > winTo,
+    }).ToList();
+
+    var outsideCount = shaped.Count(a => a.outsideChartWindow);
+    var board = cavities.Select(cv => new
+    {
+        cavityName = cv.CavityName, cavityNo = cv.CavityNo,
+        appointments = shaped.Where(a => a.CavityName == cv.CavityName).ToList(),
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        date = d0.ToString("yyyy-MM-dd"),
+        chartWindow = new { from = winFrom.ToString("HH:mm"), to = winTo.ToString("HH:mm") },
+        totalCavity = cavities.Count, totalApp = shaped.Count,
+        outsideChartWindowCount = outsideCount,
+        outsideChartWindowNote = outsideCount > 0
+            ? "Có lịch hẹn nằm NGOÀI khung vẽ 06:00-19:00 của nguồn ⇒ trên WinForm chúng KHÔNG hiện, "
+              + "khoang trông như đang trống. Đây là ẩn dữ liệu lúc VẼ, không phải bộ lọc truy vấn."
+            : null,
+        skippedNoTime,
+        skippedNoTimeNote = skippedNoTime > 0
+            ? "Nguồn `continue` bỏ qua dòng thiếu giờ bắt đầu/kết thúc — lặng lẽ, không đếm, không cảnh báo."
+            : null,
+        colorLegend = new
+        {
+            BDDK = "#F8CBAD", SCC = "#C9C9C9", SCDS = "#00B0F0", SCK = "#FFFF00", other = "#008000",
+        },
+        markStarNote = "Nguồn đánh dấu SAO khi AppStatus = \"2\" (đã xác nhận). Bản port trước chỉ lọc "
+            + "Status != Cancelled ⇒ mất phân biệt 'đã xác nhận' với 'mới đặt'.",
+        parseExactNote = "KẾT QUẢ ÂM TÍNH: form này parse ngày bằng ParseExact(..., InvariantCulture) — "
+            + "ĐÚNG cách, ngược hẳn DateTime.Now.ToString() phụ thuộc văn hoá ở #421. Cùng cây nguồn, hai lối làm.",
+        unassignedNote = "Lịch hẹn CHƯA gán khoang không bao giờ lên bảng — cả nguồn lẫn bản port.",
+        board,
+    });
 }).RequireAuthorization();
 
 // ===== Công nợ bảo hiểm + thu tiền (InsDebit — port 1:1 FrmInsDebitSearch/FrmInsPaymentCreate, TCMotor) =====
