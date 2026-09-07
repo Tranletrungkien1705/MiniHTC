@@ -3066,6 +3066,118 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
 //    — **ca thứ ba liên tiếp** cùng khuôn (#B45 `left join` vô hiệu, #B46 bỏ quên hẳn, nay lại bỏ quên).
 //    Port trả `outOfScopeCount` + cờ `enforceBuScope`; **không tự bịt**, cần nghiệp vụ chốt.
 // 🔴 `order by cv.VIN`; `MyCount` đếm trên `#tbl_Car_VIN_Final` (**sau** khi đã áp mọi điều kiện).
+
+// ===== #B48 TÌM VIN ĐỂ LẬP HOÁ ĐƠN HTC — `Car_VIN_Get_Plus_WH_New20190816` =====
+// (`FrmSearchVinForHTCInvoice`.) Trace LIVE: `salesSv.SearchVinForInvoice` (`SalesService.cs:15117`)
+//   → WS `Car_VIN_Get_Plus_WH` (`WSHTC.asmx.cs:61530`) → `_biz.Car_VIN_Get_Plus_WH_New20190816`
+//   (`HDDTIntergration/BizHTC.HDDTIntergration.cs:11426`, **VỎ BỌC**) →
+//   **`Car_VIN_Get_PlusX_New20190816`** (`:10630`) — SQL thật.
+//   ⚠️ Bản chết cùng họ: `DataWH/Delete.Biz.HTC.WH.My.cs:3748` (`Car_VIN_Get_PlusX_New20181119`).
+//   📌 Đây đúng là **twin ĐÚNG** đã chốt trong sổ (`Car_VIN_Get_Plus_WH`, trace từ form) — **không**
+//      phải `CarCarGet_ForTCGInvoiceSpecial`/`Car_VIN_GetForTCGInvoice` (bẫy map theo tên đã gặp).
+// 🔴 HAI mệnh đề đặc thù, bật/tắt theo cờ (`:10778-10788`):
+//   · `strFlagAdj` ⇒ **xe CẦN hoá đơn ĐIỀU CHỈNH**:
+//     `vtcgid_root.HTCStatusDetail in ('F')` **và** `(cc.UnitPriceActual − IsNull(cc.TInvoicePrice,0.0)) != 0`
+//     **và** `(cc.FlagInvoiceAdj is null or cc.FlagInvoiceAdj = '1')`.
+//     🔴 Vế cuối chấp nhận **NULL**; port theo phản xạ `== "1"` sẽ **loại nhầm toàn bộ xe chưa đặt cờ**.
+//     🔴 `vtcgid_root` chỉ tính hoá đơn gốc: `SourceInvoiceCode in ('INVOICEREPLACE','INVOICEROOT')`
+//        và `VatHTCStatus not in ('R','C')`, dòng `HTCStatusDetail not in ('R','C')`.
+//   · `strFlagInvoiceAdj_P` (khi **không** lấy nhóm chờ) ⇒ `and vtcgi_p.HTCInvoiceCode is null`:
+//     **loại** xe đã có hoá đơn ĐIỀU CHỈNH đang chờ — `vtcgid_p.HTCStatusDetail in ('P')` +
+//     `vtcgi_p.SourceInvoiceCode in ('INVOICEADJ')` + `VatHTCStatus in ('P')`.
+// 🔴 `@strBUPatternOfUser` **khai báo nhưng KHÔNG DÙNG** — **ca thứ TƯ** liên tiếp (#B45/#B46/#B47/#B48).
+//    Trả `outOfScopeCount` + cờ `enforceBuScope`; không tự bịt.
+// ⚠️ NỢ CÓ NHÃN: nguồn còn ~10 `left join` làm giàu (TKHQ, packing list, LC, ĐNGT, lệnh giao, biên bản
+//    giao `#tblmaxDlv`…). Endpoint này trả **khối lõi + trạng thái hoá đơn**; các cột làm giàu chưa port.
+app.MapGet("/api/vins/for-htc-invoice", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? specCode, string? modelCode, string? colorCode, string? dealerCode,
+    string? flagAdj, string? getFlagInvoiceAdjPending,
+    string? buPattern, string? enforceBuScope, int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
+    var fVin = U(vin);
+    if (fVin is not null) cars = cars.Where(c => c.VIN.ToUpperInvariant().Contains(fVin)).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) { var set = specCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.SpecCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(modelCode)) { var set = modelCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ModelCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(colorCode)) { var set = colorCode.Split(',').Select(s => s.Trim()).ToHashSet(); cars = cars.Where(c => set.Contains(c.ColorCode ?? "")).ToList(); }
+    if (!string.IsNullOrWhiteSpace(dealerCode)) cars = cars.Where(c => c.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+
+    var vinSet = cars.Select(c => c.VIN).ToHashSet();
+    var invDtls = await db.VatHtcInvoiceDetails.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN)).ToListAsync();
+    var invCodes = invDtls.Select(x => x.HTCInvoiceCode).Distinct().ToList();
+    var invHeads = await db.VatHtcInvoices.Where(h => h.OrgId == t.OrgId && invCodes.Contains(h.HTCInvoiceCode)).ToListAsync();
+
+    // `vtcgid_root` + `vtcgi_Root`: hoá đơn GỐC/THAY THẾ còn sống.
+    var rootByVin = (from d in invDtls.Where(d => d.HTCStatusDetail != "R" && d.HTCStatusDetail != "C")
+                     join h in invHeads.Where(h => (h.SourceInvoiceCode == "INVOICEREPLACE" || h.SourceInvoiceCode == "INVOICEROOT")
+                                                   && h.VatHTCStatus != "R" && h.VatHTCStatus != "C")
+                          on d.HTCInvoiceCode equals h.HTCInvoiceCode
+                     select new { d.VIN, d.HTCStatusDetail, h.HTCInvoiceCode, h.SourceInvoiceCode, h.VatHTCStatus })
+                    .GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.ToList());
+
+    // `vtcgid_p` + `vtcgi_p`: hoá đơn ĐIỀU CHỈNH đang CHỜ.
+    var adjPendingVins = (from d in invDtls.Where(d => d.HTCStatusDetail == "P")
+                          join h in invHeads.Where(h => h.SourceInvoiceCode == "INVOICEADJ" && h.VatHTCStatus == "P")
+                               on d.HTCInvoiceCode equals h.HTCInvoiceCode
+                          select d.VIN).ToHashSet();
+
+    var rows = cars.AsEnumerable();
+
+    // `zzzzClauseWhere_strFlagAdj` — chỉ áp khi bật cờ.
+    if (flagAdj == "1")
+        rows = rows.Where(c =>
+            rootByVin.TryGetValue(c.VIN, out var rs) && rs.Any(r => r.HTCStatusDetail == "F")
+            && ((c.UnitPriceActual ?? 0m) - (c.TInvoicePrice ?? 0m)) != 0m
+            && (c.FlagInvoiceAdj is null || c.FlagInvoiceAdj == "1"));   // 🔴 NULL cũng hợp lệ
+
+    // `zzzzClauseWhere_strFlagInvoiceAdj_P` — khi KHÔNG lấy nhóm chờ thì LOẠI xe đã có HĐ điều chỉnh chờ.
+    if (getFlagInvoiceAdjPending != "1")
+        rows = rows.Where(c => !adjPendingVins.Contains(c.VIN));
+
+    var list = rows.ToList();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    bool InScope(string? dc)
+    {
+        if (pattern is null) return true;
+        var dl = dealers.FirstOrDefault(z => z.DealerCode == dc);
+        return dl is not null && (dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern);
+    }
+    var outOfScopeCount = list.Count(c => !InScope(c.DealerCode));
+    if (enforceBuScope == "1") list = list.Where(c => InScope(c.DealerCode)).ToList();
+
+    list = list.OrderBy(c => c.VIN, StringComparer.Ordinal).ToList();
+    var myCount = list.Count;
+    var items = list.Skip(start).Take(count).Select(c => new
+    {
+        cvVIN = c.VIN, cvModelCode = c.ModelCode, cvSpecCode = c.SpecCode, cvColorCode = c.ColorCode,
+        cvActualSpec = c.ActualSpec, cvEngineNo = c.EngineNo, cvStorageCodeCurrent = c.StorageCodeCurrent,
+        ccDealerCode = c.DealerCode, ccUnitPriceActual = c.UnitPriceActual,
+        ccTInvoicePrice = c.TInvoicePrice, ccFlagInvoiceAdj = c.FlagInvoiceAdj,
+        priceDiff = (c.UnitPriceActual ?? 0m) - (c.TInvoicePrice ?? 0m),
+        rootInvoices = rootByVin.TryGetValue(c.VIN, out var rs)
+            ? rs.Select(r => new { r.HTCInvoiceCode, r.SourceInvoiceCode, r.VatHTCStatus, r.HTCStatusDetail }).ToList()
+            : null,
+        hasPendingAdjInvoice = adjPendingVins.Contains(c.VIN)
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        flagAdjApplied = flagAdj == "1", pendingAdjIncluded = getFlagInvoiceAdjPending == "1",
+        flagAdjRule = "vtcgid_root.HTCStatusDetail='F' VÀ (UnitPriceActual − IsNull(TInvoicePrice,0)) != 0 VÀ (FlagInvoiceAdj IS NULL OR ='1') — vế cuối chấp nhận NULL.",
+        pendingAdjRule = "Khi không lấy nhóm chờ: LOẠI xe có hoá đơn ĐIỀU CHỈNH đang chờ (SourceInvoiceCode=INVOICEADJ, VatHTCStatus='P', dòng HTCStatusDetail='P').",
+        outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
+        rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon - ca thu TU lien tiep (#B45/#B46/#B47/#B48).",
+        debt = "NO co nhan: ~10 left join lam giau cua nguon (CT_TKHQ, CT_PackingList, CT_LC, Car_DocReq*, Car_DeliveryOrder*, #tblmaxDlv Sto_DlvMinutes) chua port."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/vins/for-rear-trans-req", async (
     AppDbContext db, ITenantContext t,
     string? vin, string? specCode, string? modelCode, string? colorCode,

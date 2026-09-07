@@ -60,6 +60,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<StSettingRptPlanRetail> StSettingRptPlanRetails => Set<StSettingRptPlanRetail>();
     public DbSet<VatHtcInvoiceDeviceDetail> VatHtcInvoiceDeviceDetails => Set<VatHtcInvoiceDeviceDetail>();
     public DbSet<VatHtcInvoiceDetail> VatHtcInvoiceDetails => Set<VatHtcInvoiceDetail>();
+    public DbSet<VatHtcInvoice> VatHtcInvoices => Set<VatHtcInvoice>();
     public DbSet<DlsDealAttachFile> DlsDealAttachFiles => Set<DlsDealAttachFile>();
     public DbSet<PmtGuaranteeAttachFile> PmtGuaranteeAttachFiles => Set<PmtGuaranteeAttachFile>();
             public DbSet<MstCarColor> MstCarColors => Set<MstCarColor>();

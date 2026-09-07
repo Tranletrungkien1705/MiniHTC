@@ -7710,6 +7710,44 @@ public sealed class WoScheduleDetailDate
 }
 
 /// <summary>
+/// 🔴 #B48 — **ĐẦU hoá đơn HTC** (`VAT_HTCInvoice` — writer `BizHTC.HDDTIntergration.cs:4055-4076`).
+/// #B31 mới thêm bảng **DÒNG** (`VatHtcInvoiceDetail`); **đầu hoá đơn vẫn thiếu**, nên mọi điều kiện
+/// của nguồn dựa trên `SourceInvoiceCode` / `VatHTCStatus` đều **không kiểm được** — cụ thể là hai
+/// mệnh đề đặc thù của `Car_VIN_Get_PlusX_New20190816` (xem endpoint `/api/vins/for-htc-invoice`).
+/// Từ vựng: `VatHTCStatus` khởi tạo `TConst.Stage.Pending` = "P"; `SourceInvoiceCode` thuộc
+/// `TConst.SourceInvoiceCode`: "INVOICEROOT" · "INVOICEREPLACE" · "INVOICEADJ".
+/// `FlagSyncVeloca` nguồn gán **`Flag.Inactive` = "0"** lúc tạo (chú thích 20240315).
+/// </summary>
+public sealed class VatHtcInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string HTCInvoiceCode { get; set; } = "";
+    public string? InvoiceIDType { get; set; }
+    public string? InvoiceAdjType { get; set; }
+    /// <summary>"INVOICEROOT" · "INVOICEREPLACE" · "INVOICEADJ".</summary>
+    public string? SourceInvoiceCode { get; set; }
+    /// <summary>`TConst.Stage.Pending` = "P" lúc tạo.</summary>
+    public string VatHTCStatus { get; set; } = "P";
+    public string? HTCInvoiceNo { get; set; }
+    public DateTime? HTCInvoiceDate { get; set; }
+    public string? VAT { get; set; }
+    public string? BankCode { get; set; }
+    public string? DealerCode { get; set; }
+    public string? RefNo { get; set; }
+    public string? FlagView { get; set; }
+    public string? FlagImport { get; set; }
+    public string? FlagisHTC { get; set; }
+    public string? TInvoiceCode { get; set; }
+    /// <summary>Nguồn gán "0" lúc tạo (cờ đồng bộ sang VelocaBH).</summary>
+    public string FlagSyncVeloca { get; set; } = "0";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// DÒNG XE của hoá đơn HTC (`VAT_HTCInvoiceDetail` — 2010.HTC
 /// `HDDTIntergration/BizHTC.HDDTIntergration.cs:4088-4114`, ghi cả `_dbMain` lẫn `_dbWH`).
 /// 🔴 **Khác hẳn** `VatHtcInvoiceDeviceDetail` (bảng THIẾT BỊ kèm theo). Trước lượt #B31 MiniHTC
@@ -10307,6 +10345,17 @@ public sealed class CarVinMaster
     public DateTime? CreatedDate { get; set; }
     /// <summary>`Car_Car.CreatedBy` — xem chú thích của [CreatedDate].</summary>
     public string? CreatedBy { get; set; }
+
+    /// <summary>🔴 #B48 — `Car_Car.TInvoicePrice`: giá **đã xuất hoá đơn** của xe. Điều kiện "cần hoá
+    /// đơn ĐIỀU CHỈNH" của `Car_VIN_Get_PlusX_New20190816` so **`cc.UnitPriceActual −
+    /// IsNull(cc.TInvoicePrice, 0.0) != 0`** (`BizHTC.HDDTIntergration.cs:10782`). 🔴 Đây là cột trên
+    /// **`Car_Car`**, KHÁC hẳn `TInvoicePrice` trên bảng DÒNG hoá đơn (`VatHtcInvoiceDetail` /
+    /// `VatTcgInvoiceDetail`) — trùng tên nhưng khác bảng, đừng dùng lẫn.</summary>
+    public decimal? TInvoicePrice { get; set; }
+    /// <summary>🔴 #B48 — `Car_Car.FlagInvoiceAdj`. Cùng điều kiện trên còn đòi
+    /// **`(cc.FlagInvoiceAdj is null or cc.FlagInvoiceAdj = '1')`** ⇒ **NULL cũng được chấp nhận**,
+    /// không phải chỉ "1". Port theo phản xạ `== "1"` sẽ loại nhầm toàn bộ xe chưa từng đặt cờ.</summary>
+    public string? FlagInvoiceAdj { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
