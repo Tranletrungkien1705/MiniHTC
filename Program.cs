@@ -46304,6 +46304,105 @@ app.MapGet("/api/reports/ro-warranty-htmv", async (AppDbContext db, ITenantConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #511 SỐ LỆNH TRUNG BÌNH MỖI NGÀY (máy tính bảng) — KHOÁ NỐI CHỈ ĐÚNG CHO **THÁNG** =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:544 Rpt_Ser_RO_AvgQtyROInDayX` (WS qua `…ForTab` :808).
+// Endpoint: `GET /api/reports/ro-avg-per-day`.
+//
+// 🔴 **KHOÁ NỐI SAI HÌNH DẠNG VỚI HAI TRONG BA KIỂU BÁO CÁO** (luật #410 — lọc/nối sai CỘT):
+//   Câu tổng hợp nối `#input_tbl_ReportType t` với hai bảng đếm bằng `t.MixCode = f.FinishMonth`,
+//   trong khi `FinishMonth = convert(char(7), sr.ActualDeliveryDate, 126) + '-01'` ⇒ **luôn là `yyyy-MM-01`**.
+//   Còn `MixCode` do hàm dựng rổ sinh ra (`TabReport.zSqlTemplate.cs`) thì:
+//     · `Month` → `StandardizeMonth` = `yyyy-MM-01`  ✅ **khớp**
+//     · `DAY`   → `StandardizeDate`  = `yyyy-MM-dd`  🔴 **chỉ khớp đúng ngày mồng 1**
+//     · `Hour`  → **số nguyên 0..23**                🔴 **không bao giờ khớp**
+//   ⇒ Chọn NGÀY thì mọi ngày ≠ 01 ra `QtyRO = 0, QtyDay = 0, AvgQtyRO = 0`; chọn GIỜ thì **cả 24 dòng đều 0**.
+//     Vẫn **đủ dòng, đủ nhãn, không lỗi** — nhìn như "kỳ đó không có lệnh nào".
+//     Đây là **ca "0 im lặng" thứ tư** của cụm máy tính bảng (sau #472 giá vốn, #504 màn kho, #506 thiếu YEAR).
+//   ⚪ Kiểm tra âm tính: `left join` + `IsNull(...,0.0)` là **cố ý** (giữ đủ rổ) — chính vì thế mà lỗi khoá nối
+//     bị **che hoàn toàn**: nếu là `inner join` thì báo cáo rỗng và người dùng đã phát hiện từ lâu.
+// 📌 Port: MiniHTC nối theo **khoảng thời gian của rổ** (đúng nghiệp vụ) và trả thêm `sourceWouldZero` —
+//   số rổ mà nguồn sẽ cho 0 vì khoá nối lệch — để đo được mức sai lệch, không im lặng theo nguồn.
+//
+// ⚠️ `QtyDay` đếm **số NGÀY riêng biệt có giao xe** (`select distinct … convert(char(10), ActualDeliveryDate)`
+//   rồi `count(*) group by FinishMonth`) — **không** phải số ngày của tháng. Tháng chỉ giao xe 3 ngày thì
+//   mẫu số là 3, không phải 30 ⇒ "trung bình mỗi ngày" thực chất là **trung bình mỗi NGÀY CÓ VIỆC**.
+// ⚠️ `Round(QtyRO*1.00/QtyDay, 0)` — làm tròn về **số nguyên** ngay trong SQL: 1,4 → 1 và 1,5 → 2
+//   (SQL `ROUND` là half-away-from-zero, khác `Convert.ToInt32` của #408). Port dùng `MidpointRounding.
+//   AwayFromZero` cho khớp, và trả thêm `avgRaw` chưa làm tròn để không mất thông tin.
+// ⚠️ `case when QtyDay = 0 then 0` — guard chia 0 **có thật**, khác #507 (ở đó mẫu số để trần).
+app.MapGet("/api/reports/ro-avg-per-day", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? reportType, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_AvgQtyROInDay_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(reportType))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_AvgQtyROInDay_InvalidReportType" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_AvgQtyROInDay_DateFromAfterDTimeTo" });
+
+    var dealer = dealerCode!.Trim();
+    var kind = reportType!.Trim().ToUpperInvariant();
+    if (kind != "HOUR" && kind != "DAY" && kind != "MONTH")
+        return Results.BadRequest(new { error = "reportType chỉ nhận HOUR, DAY hoặc MONTH (nguồn không có nhánh YEAR — #506)." });
+
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+    var buckets = new List<(string MixCode, string MixName, DateTime Start, DateTime End)>();
+    if (kind == "HOUR")
+        for (var h = 0; h < 24; h++)
+        {
+            var st = from.AddHours(h);
+            buckets.Add((h.ToString(), h.ToString("00"), st, st.AddHours(1).AddSeconds(-1)));   // MixCode = SỐ, đúng nguồn
+        }
+    else if (kind == "DAY")
+        for (var d = from; d <= toDate.Value.Date; d = d.AddDays(1))
+            buckets.Add((d.ToString("yyyy-MM-dd"), d.ToString("yyyy-MM-dd"), d, d.AddDays(1).AddSeconds(-1)));
+    else
+    {
+        var m = new DateTime(from.Year, from.Month, 1);
+        var mEnd = new DateTime(toDate.Value.Year, toDate.Value.Month, 1);
+        for (; m <= mEnd; m = m.AddMonths(1))
+            buckets.Add((m.ToString("yyyy-MM-01"), m.ToString("yyyy-MM-01"), m, m.AddMonths(1).AddSeconds(-1)));
+    }
+
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to)
+        .Select(x => new { x.Id, x.ActualDeliveryDate }).ToListAsync();
+
+    var items = buckets.Select(b =>
+    {
+        var inB = ros.Where(r => r.ActualDeliveryDate >= b.Start && r.ActualDeliveryDate <= b.End).ToList();
+        decimal qtyRO = inB.Count;
+        // QtyDay = số NGÀY riêng biệt có giao xe trong rổ (không phải số ngày của rổ).
+        decimal qtyDay = inB.Select(r => r.ActualDeliveryDate!.Value.Date).Distinct().Count();
+        var raw = qtyDay == 0 ? 0m : qtyRO / qtyDay;
+        return new
+        {
+            DealerCode = dealer, b.MixCode, ReportType = kind, b.MixName,
+            DateTimeStart = b.Start, DateTimeEnd = b.End,
+            QtyRO = qtyRO, Qty = qtyRO, QtyDay = qtyDay,
+            AvgQtyRO = qtyDay == 0 ? 0m : Math.Round(raw, 0, MidpointRounding.AwayFromZero),
+            avgRaw = Math.Round(raw, 4),
+        };
+    }).ToList();
+
+    // Nguồn nối `MixCode = FinishMonth` (luôn `yyyy-MM-01`) ⇒ rổ nào có MixCode khác dạng đó là ra 0.
+    var sourceWouldZero = buckets.Count(b => !b.MixCode.EndsWith("-01") || b.MixCode.Length != 10);
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = kind,
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        count = items.Count, roCount = ros.Count, items,
+        sourceJoinsOnMonthKeyOnly = "t.MixCode = f.FinishMonth (FinishMonth luon yyyy-MM-01)",
+        sourceWouldZero,
+        qtyDayIsDistinctWorkingDays = true,
+        avgRoundedToIntegerInSource = true,
+        divideByZeroGuardExists = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
