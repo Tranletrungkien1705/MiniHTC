@@ -2950,6 +2950,12 @@ public sealed class ServicePackageService
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string SerCode { get; set; } = "";
+    /// <summary>#547 §12 ĐỐI TƯỢNG THANH TOÁN của dòng công (`TConst.Ser_ROType`:
+    /// `ROREPAIR · ROINSURANCE · ROWARRANTY · LOCAL · GENERAL`). Nguồn **bắt buộc**, rỗng là ném lỗi.</summary>
+    public string? ExpenseType { get; set; }
+    /// <summary>#547 §12 LOẠI CÔNG VIỆC (`TConst.Ser_ROType_**New**`: `BDD · SCC · SCD · SCS · PDI · SPK`).
+    /// ⚠️ Hai lớp hằng tên gần giống nhau nhưng **khác hẳn nghĩa** — xem chú thích endpoint.</summary>
+    public string? ROType { get; set; }
     public string? SerName { get; set; }
     public decimal Price { get; set; }
     public decimal Factor { get; set; } = 1;

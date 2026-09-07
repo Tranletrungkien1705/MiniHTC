@@ -16622,12 +16622,59 @@ app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, str
 }).RequireAuthorization();
 
 // Tạo/cập nhật gói theo PackageNo: thay toàn bộ dòng CV + PT, tính tổng (Price×Factor mỗi dòng).
+// ===== 🔴 #547 VÁ GUARD TẠO GÓI DỊCH VỤ THEO `SerServicePackageCreate` =====
+// Nguồn: `BizCarSv.ServicePackage.cs:179 SerServicePackageCreate` (đọc nguyên văn `#region //Check`
+//   và `#region // Check Input Detail` — luật #403). Bản port cũ thiếu **bốn** phép kiểm.
+//
+// 🔴 **1) BẢNG DỊCH VỤ KHÔNG ĐƯỢC RỖNG**: `if (dt_Ser_ServicePackageServiceItems_Input.Rows.Count == 0)`
+//   ⇒ ném `SerServicePackageCreate_ServiceTableNotBlank`. Bản port cũ cho phép *"công **HOẶC** phụ tùng"*
+//   ⇒ tạo được gói **chỉ có phụ tùng**, thứ nguồn **cấm**. Nay chặn đúng nguồn.
+// 🔴 **2) MỖI DÒNG CÔNG PHẢI CÓ ĐỦ BA TRƯỜNG**, mỗi trường một mã lỗi riêng:
+//   `SerID` rỗng → `…_ServiceNotInList` · `ExpenseType` rỗng → `…_Invalid_ExpenseType`
+//   · `ROType` rỗng → `…_Invalid_ROType`. **§12**: hai cột `ExpenseType`/`ROType` trước nay **không có**
+//   trên `ServicePackageService` ⇒ thêm entity + Seeder + DTO + GET/POST.
+// 🔴 **3) GUARD CHÉO GIỮA HAI CỘT** (đây mới là luật nghiệp vụ thật):
+//   `if (ROType == Ser_ROType_New.BDD)` thì `ExpenseType` **chỉ được** `Ser_ROType.RORepair` hoặc
+//   `Ser_ROType.ROLocal`, ngược lại ném `…_Invalid_ExpenseType`.
+//   ⚠️ **HẰNG ≠ GIÁ TRỊ, và hai lớp hằng tên gần giống nhau nhưng KHÁC HẲN NGHĨA** (mở `Const.Main.cs:308`):
+//     `Ser_ROType` = **đối tượng thanh toán** (`RORepair="ROREPAIR" · ROInsurance="ROINSURANCE"`
+//     `· ROWarranty="ROWARRANTY" · ROLocal="**LOCAL**" · ROGeneral="GENERAL"` — chú ý `ROLocal` có giá trị
+//     `"LOCAL"` **không có tiền tố RO**);
+//     `Ser_ROType_**New**` = **loại công việc** (`BDD · SCC · SCD · SCS · PDI · SPK`).
+//     ⇒ Đọc lướt sẽ tưởng cùng một bảng mã. Chép **giá trị**, không chép tên lớp.
+// 🔴 **4) `CheckExistServicePackageNo`**: nguồn **CHẶN trùng mã** khi tạo mới; bản port cũ **upsert theo mã**
+//   ⇒ gọi lại cùng mã là **ghi đè im lặng** gói cũ. Nay tách: trùng mã ⇒ báo lỗi, muốn sửa thì gọi
+//   `/api/servicepackages/{id}/detail` + đường sửa riêng (bản `Update` của nguồn có `ServicePackageID`).
 app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t) =>
 {
+    // Giá trị hằng — chép từ Const.Main.cs, KHÔNG chép tên lớp.
+    const string kROTypeBDD = "BDD";                 // Ser_ROType_New.BDD (loại công việc)
+    string[] kExpenseAllowedForBDD = { "ROREPAIR", "LOCAL" };   // Ser_ROType.RORepair / .ROLocal
+
     var no = (dto.PackageNo ?? "").Trim();
     if (no == "") return Results.BadRequest(new { error = "Thiếu mã gói dịch vụ." });
     var svcs = dto.Services ?? new(); var parts = dto.Parts ?? new();
-    if (svcs.Count == 0 && parts.Count == 0) return Results.BadRequest(new { error = "Gói phải có ít nhất 1 dòng công hoặc phụ tùng." });
+    // #547-1: nguồn BẮT BUỘC có dòng dịch vụ (không chấp nhận gói chỉ có phụ tùng).
+    if (svcs.Count == 0)
+        return Results.BadRequest(new { error = "SerServicePackageCreate_ServiceTableNotBlank" });
+    // #547-2/3: ba trường bắt buộc + guard chéo BDD.
+    foreach (var s in svcs)
+    {
+        if (string.IsNullOrWhiteSpace(s.SerCode))
+            return Results.BadRequest(new { error = "SerServicePackageCreate_ServiceNotInList" });
+        if (string.IsNullOrWhiteSpace(s.ExpenseType))
+            return Results.BadRequest(new { error = "SerServicePackageCreate_Invalid_ExpenseType", s.SerCode });
+        if (string.IsNullOrWhiteSpace(s.ROType))
+            return Results.BadRequest(new { error = "SerServicePackageCreate_Invalid_ROType", s.SerCode });
+        if (string.Equals(s.ROType!.Trim(), kROTypeBDD, StringComparison.OrdinalIgnoreCase)
+            && !kExpenseAllowedForBDD.Contains(s.ExpenseType!.Trim().ToUpperInvariant()))
+            return Results.BadRequest(new
+            {
+                error = "SerServicePackageCreate_Invalid_ExpenseType",
+                ROType = s.ROType, ExpenseType = s.ExpenseType,
+                allowedForBDD = kExpenseAllowedForBDD,
+            });
+    }
     decimal svcTotal = 0, partTotal = 0;
     var svcRows = new List<ServicePackageService>();
     foreach (var s in svcs)
@@ -16635,7 +16682,8 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         if (string.IsNullOrWhiteSpace(s.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã." });
         var f = s.Factor <= 0 ? 1 : s.Factor; var amt = Math.Round(s.Price * f, 2);
         svcTotal += amt;
-        svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName, Price = s.Price, Factor = f, Amount = amt });
+        svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName,
+            ExpenseType = s.ExpenseType, ROType = s.ROType, Price = s.Price, Factor = f, Amount = amt });
     }
     var partRows = new List<ServicePackagePart>();
     var seenP = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -16648,7 +16696,15 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt });
     }
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PackageNo == no);
-    if (h is null) { h = new ServicePackage { OrgId = t.OrgId, PackageNo = no }; db.ServicePackages.Add(h); }
+    // #547-4: CheckExistServicePackageNo — nguồn CHẶN trùng mã khi TẠO (không upsert im lặng).
+    if (h is not null)
+        return Results.BadRequest(new
+        {
+            error = "CheckExistServicePackageNo: mã gói đã tồn tại.",
+            packageNo = no, existingId = h.Id,
+            sourceBlocksDuplicateOnCreate = true,
+        });
+    h = new ServicePackage { OrgId = t.OrgId, PackageNo = no }; db.ServicePackages.Add(h);
     h.PackageName = dto.PackageName; h.ServiceTotal = svcTotal; h.PartTotal = partTotal; h.GrandTotal = svcTotal + partTotal; h.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
@@ -16656,7 +16712,15 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
     foreach (var s in svcRows) { s.ServicePackageId = h.Id; db.ServicePackageServices.Add(s); }
     foreach (var p in partRows) { p.ServicePackageId = h.Id; db.ServicePackageParts.Add(p); }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.PackageNo, h.ServiceTotal, h.PartTotal, h.GrandTotal });
+    return Results.Ok(new
+    {
+        h.Id, h.PackageNo, h.ServiceTotal, h.PartTotal, h.GrandTotal,
+        guardsAddedFromSource = new[] { "ServiceTableNotBlank", "ServiceNotInList",
+            "Invalid_ExpenseType", "Invalid_ROType", "BDD => ExpenseType in (ROREPAIR, LOCAL)",
+            "CheckExistServicePackageNo" },
+        twoConstantClassesLookAlike = "Ser_ROType (doi tuong thanh toan) vs Ser_ROType_New (loai cong viec)",
+        roLocalValueHasNoRoPrefix = "Ser_ROType.ROLocal = \"LOCAL\"",
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #546 VÁ CHI TIẾT GÓI DỊCH VỤ THEO `SerServicePackageGetSearchCreateRO` =====
@@ -16688,7 +16752,8 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
-        .Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount }).ToListAsync();
+        .Select(x => new { x.SerCode, x.SerName, x.ExpenseType, x.ROType, x.Price, x.Factor, x.Amount })   // #547 §12
+        .ToListAsync();
     var partRows = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id)
         .ToListAsync();
     var codes = partRows.Select(x => x.PartCode).ToList();
@@ -51756,7 +51821,8 @@ record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
-record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
+record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor,
+    string? ExpenseType = null, string? ROType = null);   // #547 §12
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
