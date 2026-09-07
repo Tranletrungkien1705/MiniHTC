@@ -25278,10 +25278,32 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         // ⚪ Hai ca đi NGƯỢC (bản chính gần như rỗng SQL, `_WH` mới là bản đầy đủ):
         //   `Rpt_DMSSer_Chart_ThongKeBaoHanh` 2→**59** · `Rpt_DMSSer_Warranty_MainPart` 2→**25**
         //   ⇒ bản chính là **vỏ bọc**, phải đọc tiếp mới thấy SQL (đúng cảnh báo "biz có thể chỉ là VỎ BỌC").
-        whTwinSweep = new { whFunctions = 91, pairedWithLiveMain = 91, sqlIdentical = 44,
-            differing = 47, differingLineCount = 37, sameLineCount = 10,
-            supersedes = "#467 (64 giong/27 khac) — do ghep _WH voi TEN TRAN (thuong la ban chet)",
-            note = "Ban _WH tut hau so voi ban chinh _New2023*; man tra theo kho dung bo luat CU." },
+        // ===== 🔴🔴 #471 ĐO LẦN THỨ BA — #468 MỚI SỬA MỘT NỬA =====
+        // #468 đã biết "bản chính có thể mang hậu tố ngày", nên chọn MAIN theo tập hàm được WS gọi.
+        //   Nhưng **phía `_WH` cũng có hậu tố ngày** — cây nguồn có **51 hàm `X_WH_New########`** —
+        //   và `X_WH` trần thường **cũng là bản chết**. #468 vẫn so bản chính SỐNG với bản kho CHẾT.
+        // Ca lộ ra: `SerWarrantyAcceptRpt`. #468 báo 90→73; nhưng WS gọi `SerWarrantyAcceptRpt_WH_New20230417`,
+        //   còn `SerWarrantyAcceptRpt_WH` trần **không WebMethod nào gọi**. So đúng cặp SỐNG–SỐNG thì
+        //   hai bên **GIỐNG NHAU** (một lượt trước đã đọc tay và ghi "45 dòng lệch, không dòng nào lệch nghiệp vụ").
+        // Công cụ `_audit/sweepwh3.js`: chọn **cả hai phía** theo tập WS-gọi; phía nào không có bản sống thì
+        //   **bỏ qua, không đoán**.
+        // 📊 **93 base có biến thể `_WH` · 88 so được (cả hai phía đều sống) · 5 bỏ qua**
+        //     **· GIỐNG HỆT 62 · KHÁC 26 (chỉ 12 lệch số dòng)**.
+        //   ⇒ Nợ "nhánh kho tụt hậu" **NHỎ HƠN NHIỀU** so với #468 công bố (45 khác/37 lệch).
+        //     Phần lớn "khác biệt" của #467 và #468 là **giả, do ghép với bản chết**.
+        // 🔴 12 ca lệch THẬT, và hình dạng **ngược** với kết luận vội của #468: nhóm lệch mạnh nhất là
+        //   bản kho **LỚN HƠN** bản chính — `Ser_InvReportBalanceRpt` 19→**41** ·
+        //   `Ser_InvReportBalanceRpt_SumLocation` 23→**45** · `Ser_InventoryReport_InOutBalance` 67→**89** ·
+        //   `Ser_CampaignMarketing_Get` 55→**63**. Nhóm bản chính lớn hơn: `Ser_CustomerCar_Get` 105→92 ·
+        //   `Ser_Part_OrderGet_StatusList` 91→81 · `Ser_App_GetStatusList01` 46→37 · `Ser_InvReportCusDebitRpt` 43→36.
+        //   ⇒ **Không có một chiều "tụt hậu" chung**; phải soi từng cặp. Câu "đợt sửa 2023 không chép sang
+        //     nhánh kho" của #468 **bị rút** — nó dựa trên các cặp ghép sai.
+        // 📌 Bài học đo (lần thứ BẢY của họ lỗi này): khi hai phía đều có biến thể phiên bản thì phải
+        //   chọn bản sống **CHO CẢ HAI PHÍA**, và **bỏ qua** cặp thiếu bản sống thay vì lấy đại.
+        whTwinSweep = new { basesWithWhVariant = 93, comparableBothLive = 88, skippedNoLiveSide = 5,
+            sqlIdentical = 62, differing = 26, differingLineCount = 12,
+            supersedes = "#467 (64/27) va #468 (44/47) — ca hai deu ghep voi ban CHET o mot phia",
+            note = "Khong co chieu tut-hau chung: 4 ca ban KHO lon hon, 4 ca ban CHINH lon hon." },
         proxyVsWebMethodSweep = new { proxyMethods = 728, webMethods = 732, matchedByName = 728,
             signatureMismatches = 0 },
         versionSuffixSweep = new { versionSuffixedFunctions = 264, reachable = 171, dead = 93,
