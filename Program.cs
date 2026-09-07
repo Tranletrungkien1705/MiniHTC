@@ -34760,6 +34760,157 @@ app.MapPost("/api/dlrcontractcancels/cancel-multi", async (
     await DlrContractCancelSetStatusMulti(contractCNos, "C", db, t, user, buPattern, enforceBuScope))
     .RequireAuthorization();
 
+// ===== #B83 LƯU / XOÁ ĐẦU HỢP ĐỒNG ĐẠI LÝ — `Dlr_ContractDetail_Save_New20230306` =====
+// Trace LIVE: WS `Dlr_ContractDetail_Save` (`WSHTC.asmx.cs:37150`) →
+//   **`_biz.Dlr_ContractDetail_Save_New20230306`** (`BizHTC.Contract.cs:9003`).
+//   🔴 Sinh đôi: cùng file còn `…_New20190617` — WS **chỉ gọi bản 2023** ⇒ bản 2019 **CHẾT**.
+//   3B đo thật, **khớp cả 2 máy**: start=9003 md5 `e27972c7b2659c4b627314345a81cdb7`.
+// ⚠️ **KHÔNG phải cùng nghiệp vụ với `POST /api/dlrcontracts` đã có** (#130 — tạo hợp đồng từ
+//    `DealerSalesDealCreate_SellToDealer_New20230306`). Hàm này là **UPSERT + XOÁ theo `DlrContractNo`**
+//    kèm **đếm phiên bản**, WS riêng ⇒ route riêng.
+// 🔴 **XOÁ CÁI KHÔNG TỒN TẠI = THÀNH CÔNG**, không phải lỗi: nguồn `if (Rows.Count < 1) { if (bIsDelete)
+//    goto MyCodeLabel_Done; }` (`:9118-9121`) — nhảy thẳng tới nhánh **Thành công**. Port trả 200.
+// 🔴 **BỘ ĐẾM PHIÊN BẢN — bốn cột đi cùng nhau**:
+//    · **Thêm mới**: `VersionDTimeOld = null` · `VersionDTimeCurr = now` · **`VersionCount = 1`**
+//    · **Sửa**:      `VersionDTimeOld` = **`VersionDTimeCurr` CŨ trong DB** · `VersionDTimeCurr = now`
+//                    · `VersionCount` = **giá trị cũ + 1** · `VersionUpdateBy` = người sửa.
+//    ⇒ `VersionCount` **đếm từ 1**, không phải 0; và `VersionDTimeOld` là **mốc của lần trước**,
+//      không phải "ngày tạo". Port bỏ qua một trong bốn cột là mất khả năng dựng lại lịch sử.
+// 🔴 **`CreatedDate`/`CreatedBy` LẤY LẠI TỪ BẢN GHI CŨ khi sửa** (`:9150-9151`), chỉ rơi về
+//    `now`/người-đang-thao-tác khi **rỗng** (`:9160-9161`). Port gán thẳng `DateTime.Now` là **xoá
+//    dấu vết tạo** của hợp đồng cũ.
+// 🔴 **`FlagDealFinish` bị ĐẶT LẠI `Flag.Inactive` ("0") ở MỌI lần lưu** — kể cả khi SỬA
+//    (`:9330`). Nghĩa: **sửa một hợp đồng đã chốt giao dịch sẽ mở chốt lại**. Hành vi THẬT,
+//    không phải thiếu sót; ghi rõ ở `flagDealFinishResetNote`.
+//    Cùng khối: `FlagActive` luôn gán `Active` ("1").
+// 🔴 **`BankCode` rỗng ⇒ ĐỔI THÀNH `null`** trước khi ghi (`:9272-9275`) — chuỗi rỗng và NULL là hai
+//    giá trị KHÁC nhau ở tầng dưới; port giữ `""` sẽ làm lệch mọi `is null` sau này.
+// 🔴 **GUARD chéo đại lý — HAI trục RBAC KHÁC NHAU, đừng gộp**:
+//    · `myCommon_CheckUpdateDealerData(drAbilityOfUser["**DealerCode**"], …)` — chú thích nguồn:
+//      *"Đại lý không được sửa/xóa chéo nhau"*. Trục này theo **MÃ ĐẠI LÝ của người dùng**,
+//      **KHÔNG** phải `BUPattern` như #B78/#B82.
+//    · `Dlr_ContractDetail_Save_CustomerBelongToAnotherDealer` — khách hàng (`DLS_DealerCustomer`)
+//      phải thuộc **đúng đại lý** đang lưu; người giao dịch (`DLS_DealerTransactor`) phải tồn tại.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`** (hai lần `MyBuildDBDT_Common`, và chỉ dựng khi **không** xoá).
+app.MapPost("/api/dlrcontracts/{no}/save-header", async (
+    string no, DlrContractHeaderSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? dealerCodeOfUser) =>
+{
+    var ctrNo = (no ?? "").Trim();
+    var isDelete = (dto.FlagIsDelete ?? "").Trim().ToUpperInvariant() is "Y" or "1";
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    var cur = await db.DlrContracts.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DlrContractNo == ctrNo);
+
+    // 🔴 Xoá cái KHÔNG tồn tại = THÀNH CÔNG (goto MyCodeLabel_Done).
+    if (cur is null && isDelete)
+        return Results.Ok(new
+        {
+            dlrContractNo = ctrNo, deleted = 0,
+            deleteMissingNote = "Xoa cai KHONG ton tai = THANH CONG, khong phai loi: nguon 'if (Rows.Count < 1) { if (bIsDelete) goto MyCodeLabel_Done; }' nhay thang toi nhanh Thanh cong."
+        });
+
+    var dealerCode = (dto.DealerCode ?? cur?.DealerCode ?? "").Trim().ToUpperInvariant();
+
+    // Đã tồn tại ⇒ kiểm chéo đại lý theo MÃ ĐẠI LÝ của người dùng (KHÔNG phải BUPattern).
+    if (cur is not null)
+    {
+        var dl = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == cur.DealerCode);
+        if (dl is null || dl.FlagActive != "1")
+            return Results.BadRequest(new { error = "Common_InvalidDealerCode", check = new { cur.DealerCode } });
+        var userDealer = (dealerCodeOfUser ?? "").Trim().ToUpperInvariant();
+        if (userDealer.Length > 0 && !string.Equals(userDealer, cur.DealerCode, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new
+            {
+                error = "Common_UpdateDealerDataDenied",
+                check = new { DealerOfUser = userDealer, DealerNeedToUpdate = cur.DealerCode },
+                note = "myCommon_CheckUpdateDealerData(drAbilityOfUser['DealerCode'], ...) - 'Dai ly khong duoc sua/xoa cheo nhau'. Truc nay theo MA DAI LY cua nguoi dung, KHONG phai BUPattern."
+            });
+    }
+
+    if (isDelete)
+    {
+        var dtlsDel = await db.DlrContractDetails.Where(d => d.OrgId == t.OrgId && d.DlrContractNo == ctrNo).ToListAsync();
+        db.DlrContractDetails.RemoveRange(dtlsDel);
+        db.DlrContracts.Remove(cur!);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { dlrContractNo = ctrNo, deleted = 1, deletedLines = dtlsDel.Count });
+    }
+
+    // ---- Kiểm khách hàng / người giao dịch thuộc đúng đại lý.
+    var custCode = (dto.CustomerCode ?? "").Trim().ToUpperInvariant();
+    if (custCode.Length > 0)
+    {
+        var link = await db.DealerCustomers
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CustomerCode == custCode);
+        if (link is null)
+            return Results.BadRequest(new { error = "Common_InvalidCustomerCode", check = new { CustomerCode = custCode } });
+        if (!string.Equals(link.DealerCode ?? "", dealerCode, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new
+            {
+                error = "Dlr_ContractDetail_Save_CustomerBelongToAnotherDealer",
+                check = new { strCustomerCode = custCode, DealerCodeNotMatch = link.DealerCode }
+            });
+    }
+
+    // ---- Bộ đếm phiên bản: BỐN cột đi cùng nhau.
+    DateTime? versionOld; DateTime versionCurr = now; int versionCount; string versionBy = by;
+    DateTime createdAt; string? createdBy;
+    if (cur is null)
+    {
+        versionOld = null; versionCount = 1;            // 🔴 đếm từ 1, không phải 0
+        createdAt = now; createdBy = by;
+        cur = new DlrContract { OrgId = t.OrgId, DlrContractNo = ctrNo };
+        db.DlrContracts.Add(cur);
+    }
+    else
+    {
+        versionOld = cur.VersionDTimeCurr;              // 🔴 mốc của LẦN TRƯỚC, không phải ngày tạo
+        versionCount = cur.VersionCount + 1;
+        // 🔴 Giữ dấu vết TẠO của bản ghi cũ; chỉ rơi về now/by khi RỖNG.
+        createdAt = cur.CreatedAt == default ? now : cur.CreatedAt;
+        createdBy = string.IsNullOrWhiteSpace(cur.CreatedBy) ? by : cur.CreatedBy;
+    }
+
+    cur.ContractDate = dto.ContractDate ?? cur.ContractDate;
+    cur.CustomerCode = custCode;
+    cur.TransactorCode = string.IsNullOrWhiteSpace(dto.TransactorCode) ? null : dto.TransactorCode.Trim();
+    cur.DealerCode = dealerCode;
+    cur.DealerCodeBuyer = string.IsNullOrWhiteSpace(dto.DealerCodeBuyer) ? null : dto.DealerCodeBuyer.Trim().ToUpperInvariant();
+    cur.DlrContractNoUser = (dto.DlrContractNoUser ?? "").Trim();
+    cur.SalesType = (dto.SalesType ?? "").Trim();
+    cur.SalesManCode = (dto.SMCode ?? "").Trim();       // nguồn: `SMCode`
+    // 🔴 BankCode rỗng ⇒ NULL (chuỗi rỗng và NULL là hai giá trị KHÁC nhau ở tầng dưới).
+    cur.BankCode = string.IsNullOrEmpty((dto.BankCode ?? "").Trim()) ? null : dto.BankCode!.Trim();
+    cur.CreatedAt = createdAt; cur.CreatedBy = createdBy;
+    cur.VersionDTimeOld = versionOld; cur.VersionDTimeCurr = versionCurr;
+    cur.VersionCount = versionCount; cur.VersionUpdateBy = versionBy;
+    // 🔴 ĐẶT LẠI ở MỌI lần lưu — kể cả khi SỬA.
+    cur.FlagDealFinish = "0";
+    cur.FlagActive = "1";
+    cur.LogLUDateTime = now; cur.LogLUBy = by;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        dlrContractNo = ctrNo,
+        mode = versionCount == 1 ? "Insert" : "Update",
+        cur.VersionDTimeOld, cur.VersionDTimeCurr, cur.VersionCount, cur.VersionUpdateBy,
+        cur.CreatedAt, cur.CreatedBy, cur.FlagDealFinish, cur.FlagActive, cur.BankCode,
+        twinNote = "Sinh doi: cung file con Dlr_ContractDetail_Save_New20190617; WS (WSHTC.asmx.cs:37216) CHI goi ban _New20230306 => ban 2019 CHET.",
+        notSameAsCreateNote = "KHONG cung nghiep vu voi POST /api/dlrcontracts da co (#130 - tao hop dong tu DealerSalesDealCreate_SellToDealer_New20230306). Ham nay la UPSERT + XOA theo DlrContractNo kem dem phien ban, WS rieng => route rieng.",
+        deleteMissingNote = "Xoa cai KHONG ton tai = THANH CONG (goto MyCodeLabel_Done), khong phai loi.",
+        versionRuleNote = "BON cot phien ban di cung nhau. Them moi: VersionDTimeOld=null, VersionDTimeCurr=now, VersionCount=1 (DEM TU 1, khong phai 0). Sua: VersionDTimeOld = VersionDTimeCurr CU TRONG DB (moc cua LAN TRUOC, khong phai ngay tao), VersionDTimeCurr=now, VersionCount = gia tri cu + 1, VersionUpdateBy = nguoi sua. Bo qua mot trong bon cot la mat kha nang dung lai lich su.",
+        createdTraceNote = "CreatedDate/CreatedBy LAY LAI TU BAN GHI CU khi sua, chi roi ve now/nguoi-dang-thao-tac khi RONG. Port gan thang DateTime.Now la XOA DAU VET TAO cua hop dong cu.",
+        flagDealFinishResetNote = "FlagDealFinish bi DAT LAI Flag.Inactive ('0') o MOI lan luu - KE CA khi SUA => sua mot hop dong da chot giao dich se MO CHOT LAI. Hanh vi THAT, khong phai thieu sot.",
+        bankCodeNullNote = "BankCode rong => DOI THANH null truoc khi ghi. Chuoi rong va NULL la hai gia tri KHAC nhau o tang duoi; giu '' se lam lech moi 'is null' sau nay.",
+        rbacAxisNote = "HAI TRUC RBAC KHAC NHAU, dung gop: (1) myCommon_CheckUpdateDealerData(drAbilityOfUser['DealerCode'], ...) - 'Dai ly khong duoc sua/xoa cheo nhau', theo MA DAI LY cua nguoi dung, KHONG phai BUPattern nhu #B78/#B82; (2) khach hang (DLS_DealerCustomer) phai thuoc DUNG dai ly dang luu, nguoi giao dich (DLS_DealerTransactor) phai ton tai.",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH (hai lan MyBuildDBDT_Common, va CHI dung khi KHONG xoa)."
+    });
+}).RequireAuthorization();
+
 // Thân dùng chung — nguồn là HAI hàm gần như trùng khít, khác đúng giá trị trạng thái gán vào.
 async Task<IResult> DlrContractCancelSetStatusMulti(
     List<string> contractCNos, string newStatus, AppDbContext db, ITenantContext t,
@@ -39226,6 +39377,7 @@ record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? Or
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp, string? FlagDelete, string? FlagAutoPL);
 record UncContentDto(string? DealerCode, string? PaymentType, string? PaymentNo, string? GuaranteeType, List<string>? CarIds);   // #B79 - dau vao la BANG Input_CarId cua nguon
 record CarUpdateFlagsDto(string? CarCancelRemark, string? FlagMapVIN, string? FlagEarlyCancel, string? FlagCarDeliveryOrder, string? FlagTestCar);   // #B80
+record DlrContractHeaderSaveDto(string? FlagIsDelete, DateTime? ContractDate, string? CustomerCode, string? TransactorCode, string? DealerCode, string? DealerCodeBuyer, string? DlrContractNoUser, string? SalesType, string? SMCode, string? BankCode);   // #B83
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
