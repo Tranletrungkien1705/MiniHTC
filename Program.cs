@@ -6857,12 +6857,53 @@ app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
     if (string.IsNullOrWhiteSpace(dealer))
         return Results.BadRequest(new { error = "Thiếu mã đại lý." });
 
-    var engineers = await db.ServiceEngineers
+    // ===== 🔴 #412 ĐÍNH CHÍNH #405: nhân sự phải đếm **TẠI THỜI ĐIỂM CỦA KỲ**, không phải hiện tại =====
+    // Đọc lại thân `RptKPIGetReal_New20160602` (`ZTemp.cs:2438`) cho phần tôi bỏ sót ở #405:
+    //   `or ((substring(e.StartWorkDate,1,7) <= '@RptMonth' and e.FinishWorkDate is null))`
+    //   `or ((substring(e.StartWorkDate,1,7) <= '@RptMonth' and substring(e.FinishWorkDate,1,7) >= '@RptMonth'))`
+    //   và y hệt cho khoang với `StartUseDate`/`FinishUseDate`.
+    // ⇒ Đây là **ảnh chụp NHÂN SỰ CỦA THÁNG ĐÓ**: người vào sau kỳ **không** được tính, người đã nghỉ
+    //   trước kỳ **không** được tính, người còn làm (`FinishWorkDate is null`) thì tính.
+    // 🔴 Bản #405 đếm **toàn bộ nhân sự hiện tại** ⇒ mở lại báo cáo KPI của một kỳ CŨ sẽ ra **số của hôm
+    //   nay**, không phải số của kỳ đó. Báo cáo quá khứ **tự đổi giá trị theo thời gian** — sai câm.
+    // ⚠️ Nguồn so bằng `substring(...,1,7)` ⇒ **so CHUỖI `yyyy-MM`**, giữ nguyên cách so đó.
+    // ⚠️ Nguồn đệm số 0 cho tháng một chữ số bằng `TConst.Flag.Inactive` — một hằng tên là **"Inactive"**
+    //   dùng làm **ký tự số 0**. Tên hằng nói một đằng, công dụng một nẻo.
+    // ⚠️ `strRptYear.Substring(2, 2)` ⇒ năm dưới 4 ký tự là **ném lỗi**; và mã kỳ ghép lại (`"2609"`)
+    //   được dùng để lọc `t.rono like '%-@RptYearMonth%'` — tức **lọc kỳ bằng cách bóc chuỗi SỐ RO**,
+    //   không phải bằng cột ngày. Đổi quy tắc đánh số RO là hỏng toàn bộ báo cáo này.
+    var mm = (month ?? "").Trim();
+    if (mm.Length == 1) mm = "0" + mm;              // đúng nguồn: đệm 0 cho tháng một chữ số
+    var yy = (year ?? "").Trim();
+    var periodKey = yy.Length == 4 && mm.Length == 2 ? yy + "-" + mm : null;   // "yyyy-MM"
+    var yearTooShort = yy.Length > 0 && yy.Length < 4;
+    var roYearMonth = yy.Length >= 4 && mm.Length == 2 ? yy.Substring(2, 2) + mm : null;
+
+    // Cửa sổ hiệu lực: bắt đầu <= kỳ, VÀ (chưa kết thúc HOẶC kết thúc >= kỳ). So CHUỖI yyyy-MM.
+    bool InPeriod(string? start, string? finish)
+    {
+        if (periodKey == null) return true;                       // không đủ kỳ ⇒ không lọc (đúng nguồn)
+        var s = (start ?? "");
+        if (s.Length < 7 || string.CompareOrdinal(s.Substring(0, 7), periodKey) > 0) return false;
+        var f = (finish ?? "");
+        if (f.Length < 7) return true;                            // FinishDate is null ⇒ còn hiệu lực
+        return string.CompareOrdinal(f.Substring(0, 7), periodKey) >= 0;
+    }
+
+    var engineersAll = await db.ServiceEngineers
         .Where(e => e.OrgId == t.OrgId && e.DealerCode == dealer)
-        .Select(e => new { e.EngineerType }).ToListAsync();
-    var cavities = await db.Cavities
+        .Select(e => new { e.EngineerType, e.StartWorkDate, e.FinishWorkDate }).ToListAsync();
+    var cavitiesAll = await db.Cavities
         .Where(c => c.OrgId == t.OrgId && c.DealerCode == dealer)
-        .Select(c => new { c.CavityType }).ToListAsync();
+        .Select(c => new { c.CavityType, c.StartUseDate, c.FinishUseDate }).ToListAsync();
+
+    var engineers = engineersAll.Where(e => InPeriod(
+            e.StartWorkDate?.ToString("yyyy-MM"), e.FinishWorkDate?.ToString("yyyy-MM")))
+        .Select(e => new { e.EngineerType }).ToList();
+    var cavities = cavitiesAll.Where(c => InPeriod(c.StartUseDate, c.FinishUseDate))
+        .Select(c => new { c.CavityType }).ToList();
+    var engineersExcludedByPeriod = engineersAll.Count - engineers.Count;
+    var cavitiesExcludedByPeriod = cavitiesAll.Count - cavities.Count;
 
     int NE(params string[] codes) => engineers.Count(e => e.EngineerType != null && codes.Contains(e.EngineerType));
     int NC(params string[] codes) => cavities.Count(c => c.CavityType != null && codes.Contains(c.CavityType));
@@ -6884,6 +6925,23 @@ app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
             .Select(g => new { code = g.Key, count = g.Count() }).OrderByDescending(x => x.count),
         cavityTypeDistribution = cavities.GroupBy(c => c.CavityType ?? "(null)")
             .Select(g => new { code = g.Key, count = g.Count() }).OrderByDescending(x => x.count),
+        // #412 các cờ về CỬA SỔ HIỆU LỰC theo kỳ
+        periodKey, engineersExcludedByPeriod, cavitiesExcludedByPeriod,
+        periodScopeNote = periodKey == null
+            ? "KHÔNG đủ (năm 4 chữ số + tháng) ⇒ không lọc theo kỳ, đếm toàn bộ — giống nguồn khi thiếu tham số."
+            : "Chỉ đếm nhân sự/khoang CÓ HIỆU LỰC trong kỳ " + periodKey + " (bắt đầu <= kỳ, và chưa kết "
+              + "thúc hoặc kết thúc >= kỳ). Bản #405 đếm toàn bộ hiện tại ⇒ báo cáo kỳ cũ tự đổi số theo "
+              + "thời gian; nay đã sửa.",
+        yearTooShort,
+        yearTooShortNote = yearTooShort
+            ? "Năm dưới 4 ký tự: nguồn gọi strRptYear.Substring(2,2) ⇒ NÉM LỖI. MiniHTC không ném, chỉ báo cờ."
+            : null,
+        roYearMonth,
+        roNumberFilterNote = "Nguồn còn lọc kỳ bằng t.rono like '%-<yyMM>%' — BÓC CHUỖI SỐ RO chứ không "
+            + "dùng cột ngày. Đổi quy tắc đánh số RO là hỏng toàn bộ báo cáo này. MiniHTC chưa mô hình hoá "
+            + "quy tắc đánh số RO nên KHÔNG áp bộ lọc đó — ghi rõ thay vì giả vờ đủ.",
+        padConstantNote = "Nguồn đệm 0 cho tháng một chữ số bằng hằng TConst.Flag.Inactive — hằng tên "
+            + "'Inactive' dùng làm KÝ TỰ SỐ 0.",
         encodingConflict = true,
         encodingNote = "Cùng cột IsEngineer/CavityType: bản LIVE (2016) so với SỐ 1..4, các hàm 2022 so với "
             + "CHUỖI (CVDV/KTVD/KTVS/BDN/SCC/KHAC/NVPT). Đo được 20 chỗ dùng số, 45 chỗ dùng chuỗi.",
