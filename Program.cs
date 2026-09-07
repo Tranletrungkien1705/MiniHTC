@@ -26981,6 +26981,18 @@ app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? 
                             && cus.FlagActive == "1"
                       select new { car, cus }).ToListAsync();
 
+    // ===== 🔴 #454 TRẢ NỢ #269: hai cột **SAI HÌNH DẠNG** mà §12 không bắt được =====
+    // (a) `ModelName` trước đây để cứng `null`. Nguồn có `left join Ser_MST_Model smm on car.ModelID =`
+    //     `smm.ModelID` rồi trả `smm.ModelName` ⇒ đây là **cột thiếu hẳn**, không phải cột rỗng.
+    //     ⚠️ Lệch khoá **cố ý**: nguồn nối bằng `ModelID`, MiniHTC không có cột đó nên nối bằng `ModelCode`.
+    //     Vẫn là LEFT (xe chưa gán model vẫn phải ra) — nối INNER sẽ **nuốt dòng** ở tầng ĐỌC.
+    // (b) `Km` trả số thập phân, trong khi nguồn `CONVERT(nvarchar(50), t.Km)` và model JSON
+    //     `UtilHCC.HCC_NoShow.Km` là **string**. Toàn bộ 19 cột của bản tin HCC đều là chuỗi —
+    //     gửi số sẽ lệch kiểu ở phía nhận. Đưa về chuỗi cho đúng hợp đồng.
+    var modelNames = await db.ServiceModels.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ModelCode, x.ModelName }).ToListAsync();
+    var modelByCode = modelNames.Where(x => x.ModelCode != null)
+        .GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
     var byCode = dealerList.ToDictionary(d => d.DealerCode);
     var items = rows.Select(r => new
     {
@@ -26992,10 +27004,12 @@ app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? 
         CustomerAddress = r.cus.Address, CustomerEmail = r.cus.Email, CustomerPhone = r.cus.Mobile,
         ContactName = r.cus.ContName, ContactAddress = r.cus.ContAddress,
         ContactEmail = r.cus.ContEmail, ContactPhone = r.cus.ContMobile,
-        PlateNo = r.car.PlateNo, ModelCode = r.car.ModelCode, ModelName = (string?)null,
+        PlateNo = r.car.PlateNo, ModelCode = r.car.ModelCode,
+        ModelName = r.car.ModelCode != null && modelByCode.ContainsKey(r.car.ModelCode)
+            ? modelByCode[r.car.ModelCode] : null,
         VIN = r.car.FrameNo,
         DeliveryDTimeUTC = r.car.CurrentServiceDate.HasValue ? r.car.CurrentServiceDate.Value.ToString("yyyy-MM-dd HH:mm:ss") : null,
-        Km = r.car.CurrentKm,
+        Km = r.car.CurrentKm.ToString(System.Globalization.CultureInfo.InvariantCulture),
     }).ToList();
 
     return Results.Ok(new
@@ -27004,6 +27018,26 @@ app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? 
         from = fromDate.ToString("yyyy-MM-dd HH:mm:ss"),
         to = toDate.ToString("yyyy-MM-dd HH:mm:ss"),
         count = items.Count, items,
+
+        // ===== 🔴 #454 BA PHÁT HIỆN VỀ NGUỒN (đọc trên máy 150, laptop không có) =====
+        // 🔴 (1) **HÀM BAO TRẢ VỀ RỖNG MÃI MÃI**: `HCC_NoShow_CreateOS` khai `DataSet dsGetData = null;`,
+        //     gọi `HCC_NoShow_CreateOSX(...)` — hàm này `private **void**`, **không** nhận `ref dsGetData` —
+        //     rồi `MoveDataTable(ref mdsFinal, ref dsGetData)` với `dsGetData` vẫn là `null`.
+        //     ⇒ WebMethod luôn trả **rỗng**; việc đẩy sang HCC chỉ là *tác dụng phụ*. Người gọi không có
+        //     cách nào biết đã đẩy bao nhiêu bản ghi. Port **không bắt chước**: trả `count` + `items` thật,
+        //     và gắn cờ dưới đây để chỗ lệch là **cố ý, có tên**.
+        // 🔴 (2) **KIỂM TRA KẾT QUẢ HCC BỊ COMMENT**: cả khối `if (!StringEqual(objCMyMsgResult._strErrCode,`
+        //     `TConst.Flag.No)) throw …` nằm trong `//` ⇒ HCC báo lỗi thì hệ vẫn **commit và coi là thành công**.
+        //     (Theo LƯU Ý "port dòng ACTIVE, không port dòng COMMENT": bản chạy = KHÔNG kiểm.)
+        // ⚪ (3) KIỂM TRA ÂM TÍNH — **không phải lỗi**: `strOrgID`/`strNetworkID` gán trong vòng lặp chi tiết
+        //     rồi dùng **sau** vòng lặp (chỉ còn giá trị dòng CUỐI). Vô hại vì vòng ngoài đã cố định một đại lý
+        //     nên mọi dòng cùng `OrgHCCID`. Ghi lại để lượt sau khỏi điều tra lại chỗ này.
+        //     Nhưng hệ quả thật: 0 dòng ⇒ `strOrgID` ở lại `null` ⇒ **bỏ qua toàn bộ lời gọi HCC im lặng**.
+        // ⚪ (4) `left join Mst_Dealer` ở câu thứ hai đi kèm `where md.OrgHCCID is not null` ⇒ **LEFT chết**,
+        //     thực chất là INNER. Port dùng danh sách đại lý đã lọc sẵn nên tương đương.
+        sourceReturnsEmptyAlways = true,
+        sourceSkipsHccErrorCheck = true,
+        modelNameJoinedByCodeNotId = true,
     });
 }).RequireAuthorization();
 
