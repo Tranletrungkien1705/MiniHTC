@@ -46028,6 +46028,117 @@ app.MapGet("/api/reports/reception-qty-by-period", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #507 DOANH THU LỆNH SỬA CHỮA THEO KỲ — NỬA CÒN LẠI CỦA CỤM #504/#506 =====
+// Nguồn: `Tab/BizCarSv.Tab.Report.cs:1489 Rpt_Ser_RO_RevenueByReportTypeX` — nhánh `else` của
+//   `Rpt_Ser_ReceptionF_SumQtyRecepForTab` (DAY/MONTH/YEAR), trong khi HOUR đi nhánh #506.
+//
+// 🔴 **CỜ `strRevenue` KHÔNG ĐỔI SỐ LIỆU — CHỈ ĐỔI TÊN BẢNG**:
+//     `if (StringEqualIgnoreCase(strRevenue, TConst.Flag.Active)) Tables[0].TableName = "Rpt_Ser_RO_RevenueByReportType";`
+//     `else Tables[0].TableName = "Rpt_Ser_ReceptionF_SumQtyRecep";`
+//   Câu SQL **giống hệt nhau** ở cả hai nhánh ⇒ gọi với `Revenue = "0"` vẫn nhận **đủ cột tiền**
+//   (`ServiceAmount`, `PartAmount`, `RevenueAvg`), chỉ mang nhãn bảng "số phiếu tiếp nhận".
+//   ⇒ Đây **không** là bộ lọc quyền/dữ liệu như tên gọi gợi ý; port trả cờ `revenueFlagOnlyRenamesTable`.
+//   ⚠️ Và `Rpt_Ser_ReceptionF_SumQtyRecepForTab` luôn truyền `TConst.Flag.No` ⇒ ở màn máy tính bảng,
+//     nhánh DAY/MONTH **luôn** đội tên "SumQtyRecep" dù dữ liệu là doanh thu đầy đủ.
+//
+// 🔴 `Round((IsNull(f.ServiceAmount,0.0) + IsNull(f.PartAmount,0.0)) / f.QtyRO, 2) RevenueAvg` —
+//   `IsNull` **chỉ bọc tử số**, **mẫu số `f.QtyRO` để trần**. Câu cuối là `left join` từ bảng rổ, nên
+//   rổ **không có lệnh nào** ⇒ `QtyRO = NULL` ⇒ phép chia ra **NULL**, không phải 0, và **không lỗi**.
+//   ⇒ Cùng một dòng vừa có `Qty = 0` (đã `IsNull`) vừa có `RevenueAvg = NULL` — hai quy ước rỗng
+//     lẫn trong MỘT dòng kết quả. Port giữ đúng: `RevenueAvg = null` cho rổ rỗng, kèm cờ.
+//
+// ⚠️ Mốc thời gian của báo cáo này là `sr.ActualDeliveryDate` (**giao xe thực tế**), KHÔNG phải
+//   `CreatedDateTime` như #506 ⇒ **hai nửa cùng một màn đếm theo hai mốc khác nhau**: đổi kiểu báo cáo
+//   từ GIỜ sang NGÀY là đổi luôn ý nghĩa trục thời gian. Cờ `timeAxisDiffersFromHourBranch`.
+//   Lệnh **chưa giao** (`ActualDeliveryDate = NULL`) rơi khỏi mọi rổ — đúng nguồn, không phải lỗi.
+// ⚠️ Vẫn `inner join #input_tbl_ReportType f on (1=1)` (tích Descartes trá hình) và vẫn **thiếu nhánh
+//   YEAR** y như #506 ⇒ dùng chung guard, chặn thẳng YEAR.
+// ⚠️ `count(*) Qty` và `count(*) QtyRO` là **hai cột trùng hệt nhau** trong `#tbl_Return` — không phải
+//   "số lệnh" vs "số xe"; giữ nguyên để khớp hình dạng kết quả.
+app.MapGet("/api/reports/ro-revenue-by-period", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? reportType, DateTime? fromDate, DateTime? toDate, string? revenue) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenueByReportType_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(reportType))
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenueByReportType_InvalidReportType" });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    if (fromDate.Value.Date > toDate.Value.Date)
+        return Results.BadRequest(new { error = "Rpt_Ser_RO_RevenueByReportType_DateFromAfterDTimeTo" });
+
+    var dealer = dealerCode!.Trim();
+    var kind = reportType!.Trim().ToUpperInvariant();
+    if (kind == "YEAR")
+        return Results.BadRequest(new { error = "reportType = YEAR không được nguồn dựng rổ.",
+            yearBranchMissingInSource = true });
+    if (kind != "HOUR" && kind != "DAY" && kind != "MONTH")
+        return Results.BadRequest(new { error = "reportType chỉ nhận HOUR, DAY hoặc MONTH." });
+
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+    var buckets = new List<(string MixCode, string MixName, DateTime Start, DateTime End)>();
+    if (kind == "HOUR")
+        for (var h = 0; h < 24; h++)
+        {
+            var st = from.AddHours(h);
+            buckets.Add((h.ToString("00"), h.ToString("00") + " giờ", st, st.AddHours(1).AddSeconds(-1)));
+        }
+    else if (kind == "DAY")
+        for (var d = from; d <= toDate.Value.Date; d = d.AddDays(1))
+            buckets.Add((d.ToString("yyyy-MM-dd"), d.ToString("dd/MM/yyyy"), d, d.AddDays(1).AddSeconds(-1)));
+    else
+    {
+        var m = new DateTime(from.Year, from.Month, 1);
+        var mEnd = new DateTime(toDate.Value.Year, toDate.Value.Month, 1);
+        for (; m <= mEnd; m = m.AddMonths(1))
+            buckets.Add((m.ToString("yyyy-MM"), m.ToString("MM/yyyy"), m, m.AddMonths(1).AddSeconds(-1)));
+    }
+
+    // Lọc theo NGÀY GIAO XE THỰC TẾ — khác mốc của nhánh GIỜ (#506).
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to)
+        .Select(x => new { x.Id, x.ActualDeliveryDate }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var svc = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .GroupBy(i => i.RoId)
+        .Select(g => new { RoId = g.Key, Amt = g.Sum(i => i.Factor * i.Price * (1m + i.Vat * 0.01m)) })
+        .ToDictionaryAsync(x => x.RoId, x => x.Amt);
+    var prt = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .GroupBy(i => i.RoId)
+        .Select(g => new { RoId = g.Key, Amt = g.Sum(i => i.Factor * i.NeedQty * i.UnitPrice * (1m + i.Vat * 0.01m)) })
+        .ToDictionaryAsync(x => x.RoId, x => x.Amt);
+
+    var items = buckets.Select(b =>
+    {
+        var inBucket = ros.Where(r => r.ActualDeliveryDate >= b.Start && r.ActualDeliveryDate <= b.End).ToList();
+        decimal? qtyRO = inBucket.Count == 0 ? null : inBucket.Count;   // rổ rỗng ⇒ NULL (mẫu số để trần)
+        var sAmt = inBucket.Sum(r => svc.TryGetValue(r.Id, out var v) ? v : 0m);
+        var pAmt = inBucket.Sum(r => prt.TryGetValue(r.Id, out var v) ? v : 0m);
+        return new
+        {
+            b.MixCode, DealerCode = dealer, ReportType = kind, b.MixName,
+            DateTimeStart = b.Start, DateTimeEnd = b.End,
+            Qty = (decimal)inBucket.Count, ServiceAmount = sAmt, PartAmount = pAmt,
+            RevenueAvg = qtyRO is null ? (decimal?)null : Math.Round((sAmt + pAmt) / qtyRO.Value, 2),
+        };
+    }).ToList();
+
+    var isRevenue = string.Equals((revenue ?? "").Trim(), "1", StringComparison.OrdinalIgnoreCase);
+    return Results.Ok(new
+    {
+        dealerCode = dealer, reportType = kind,
+        from = from.ToString("yyyy-MM-dd"), to = toDate.Value.Date.ToString("yyyy-MM-dd"),
+        tableName = isRevenue ? "Rpt_Ser_RO_RevenueByReportType" : "Rpt_Ser_ReceptionF_SumQtyRecep",
+        count = items.Count, roCount = ros.Count, items,
+        revenueFlagOnlyRenamesTable = true,
+        revenueAvgNullOnEmptyBucket = items.Count(x => x.RevenueAvg is null),
+        timeAxisDiffersFromHourBranch = "ActualDeliveryDate (giao xe) vs CreatedDateTime (#506)",
+        undeliveredRosExcluded = true,
+        yearBranchMissingInSource = true,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
