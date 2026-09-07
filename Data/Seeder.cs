@@ -2287,6 +2287,11 @@ public static class Seeder
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DocumentsStatus\" text NULL",
                 // #B59 - Car_DocReqList.ApprovedDate2 (DAU de nghi) cho DutyDays cua bao cao pivot DNGT
                 "ALTER TABLE public.\"CarDocRequests\" ADD COLUMN IF NOT EXISTS \"ApprovedDate2\" timestamp NULL",
+                // #B63 - hop nhat song trung CBReq/StoCBReq: 3 cot chuyen sang tu CBReqDetail
+                "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"StorageCodeFrom\" text NULL",
+                "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"StorageCodeTo\" text NULL",
+                "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"TypeCB\" text NULL",
+                "ALTER TABLE public.\"StoCBReqDtls\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

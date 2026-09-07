@@ -3514,6 +3514,17 @@ public sealed class StoCBReqDtl
     public string? ModelCode { get; set; }
     public string? SpecCode { get; set; }
     public string? EngineNo { get; set; }
+    /// <summary>Ghi chú dòng — chuyển sang khi hợp nhất song trùng #B63.</summary>
+    public string? Remark { get; set; }
+    /// <summary>🔴 #B63 — ba cột chuyển sang từ thực thể song trùng `CBReqDetail` khi hợp nhất
+    /// (`Sto_CBReqDetail`): kho đi / kho đến / loại thùng. Trước lượt này luồng **TẠO** ghi vào
+    /// `StoCBReq`+`StoCBReqDtl` còn luồng **DUYỆT** đọc `CBReq`+`CBReqDetail` ⇒ yêu cầu tạo ra
+    /// **không duyệt được**. Nay cả hai luồng dùng chung bộ `StoCBReq*`.</summary>
+    public string? StorageCodeFrom { get; set; }
+    /// <summary>Kho đến — xem chú thích của [StorageCodeFrom].</summary>
+    public string? StorageCodeTo { get; set; }
+    /// <summary>Loại thùng — xem chú thích của [StorageCodeFrom].</summary>
+    public string? TypeCB { get; set; }
 }
 
 /// <summary>Bảo hành xe tồn kho — port 1:1 FrmMngInv_CarWarranty (Inv_CarWarranty, TCMotor). Theo dõi mốc bảo hành theo VIN + gửi KH xác nhận bảo hành (CustomerConfirmDate).</summary>

@@ -10797,11 +10797,11 @@ app.MapGet("/api/report/storagerearrange", async (AppDbContext db, ITenantContex
 // ===== Báo cáo chuyển kho xe (port 1:1 báo cáo CBReq) — tái dùng CBReq + CBReqDetail =====
 app.MapGet("/api/report/cbreq", async (AppDbContext db, ITenantContext t, string? storageFrom, string? storageTo, string? typeCB, string? status) =>
 {
-    var q = db.CBReqs.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var q = db.StoCBReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.CBReqStatus == status);
     var reqs = await q.ToListAsync();
     var ids = reqs.Select(r => r.Id).ToHashSet();
-    var lq = db.CBReqDetails.Where(l => l.OrgId == t.OrgId && ids.Contains(l.CBReqId));
+    var lq = db.StoCBReqDtls.Where(l => l.OrgId == t.OrgId && ids.Contains(l.StoCBReqId));
     if (!string.IsNullOrWhiteSpace(storageFrom)) lq = lq.Where(l => l.StorageCodeFrom == storageFrom);
     if (!string.IsNullOrWhiteSpace(storageTo)) lq = lq.Where(l => l.StorageCodeTo == storageTo);
     if (!string.IsNullOrWhiteSpace(typeCB)) lq = lq.Where(l => l.TypeCB == typeCB);
@@ -10809,15 +10809,15 @@ app.MapGet("/api/report/cbreq", async (AppDbContext db, ITenantContext t, string
     var byRoute = lines.GroupBy(l => new { From = string.IsNullOrEmpty(l.StorageCodeFrom) ? "(chưa rõ)" : l.StorageCodeFrom, To = string.IsNullOrEmpty(l.StorageCodeTo) ? "(chưa rõ)" : l.StorageCodeTo })
         .Select(g => new { route = g.Key.From + " → " + g.Key.To, cars = g.Count() }).OrderByDescending(x => x.cars).ToList();
     var byType = lines.GroupBy(l => string.IsNullOrEmpty(l.TypeCB) ? "(chưa rõ)" : l.TypeCB).Select(g => new { typeCB = g.Key, cars = g.Count() }).OrderByDescending(x => x.cars).ToList();
-    var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
+    var byStatus = reqs.GroupBy(r => r.CBReqStatus).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
     // cars per req
-    var carByReq = lines.GroupBy(l => l.CBReqId).ToDictionary(g => g.Key, g => g.Count());
+    var carByReq = lines.GroupBy(l => l.StoCBReqId).ToDictionary(g => g.Key, g => g.Count());
     var detail = reqs.Where(r => carByReq.ContainsKey(r.Id) || string.IsNullOrEmpty(storageFrom + storageTo + typeCB))
         .OrderByDescending(r => r.Id).Take(500).Select(r => new
         {
-            r.CBReqNo, r.Status, cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0, createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
+            r.CBReqNo, r.CBReqStatus, cars = carByReq.TryGetValue(r.Id, out var c) ? c : 0, createdAt = r.CreatedDate.ToString("yyyy-MM-dd")
         }).ToList();
-    return Results.Ok(new { total = reqs.Count, totalCars = lines.Count, confirmed = reqs.Count(r => r.Status == "Confirmed"), byRoute, byType, byStatus, detail });
+    return Results.Ok(new { total = reqs.Count, totalCars = lines.Count, confirmed = reqs.Count(r => r.CBReqStatus == "A"), byRoute, byType, byStatus, detail });
 }).RequireAuthorization();
 
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
@@ -27315,14 +27315,23 @@ app.MapDelete("/api/grtclaims/{no}", async (string no, AppDbContext db, ITenantC
 }).RequireAuthorization();
 
 // ===== Yêu cầu đóng thùng (CBReq — port 1:1 FrmNewCBReq, 2010.HTC/Sales/Purchase) =====
+// ===== #B63 HOP NHAT SONG TRUNG `CBReq`/`StoCBReq` (ca thu 7) =====
+// `CBReq`+`CBReqDetail` va `StoCBReq`+`StoCBReqDtl` cung anh xa `Sto_CBReq`/`Sto_CBReqDetail`,
+// cung khoa nghiep vu `CBReqNo`. Truoc luot nay: luong TAO dung `/api/stocbreqs` ghi vao
+// `StoCBReq*`, con luong DUYET `/api/cbreqs/{no}/{action}` (#179) doc `CBReq*`
+// => YEU CAU TAO RA KHONG DUYET DUOC, va nguoc lai. Bao cao/tim kiem (#B53) cung chia hai nua.
+// Nay MOI SITE tro chung ve `StoCBReq*` (chon vi ten khop bang nguon `Sto_CBReq` va co du cot
+// `CreatedDate`/`CBReqStatus`/`ApprovedBy`/`CreatedBy`). Da chuyen 4 cot cua `CBReqDetail` sang
+// `StoCBReqDtl`: StorageCodeFrom / StorageCodeTo / TypeCB / Remark (du 4 noi §12).
+// `CBReq`/`CBReqDetail` giu lai nhung KHONG con duoc ghi (tien le WholesaleDeal #B09, CtmVisit #B62).
 app.MapGet("/api/cbreqs", async (AppDbContext db, ITenantContext t, string? status) =>
 {
-    var q = db.CBReqs.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    var q = db.StoCBReqs.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.CBReqStatus == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.CBReqNo, r.Status, r.CreatedAt, r.ConfirmedAt,
-        cars = db.CBReqDetails.Count(c => c.OrgId == t.OrgId && c.CBReqId == r.Id)
+        r.CBReqNo, r.CBReqStatus, r.CreatedDate, r.ApprovedAt,
+        cars = db.StoCBReqDtls.Count(c => c.OrgId == t.OrgId && c.StoCBReqId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -27335,10 +27344,10 @@ app.MapPost("/api/cbreqs", async (CBReqDto dto, AppDbContext db, ITenantContext 
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "CB" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new CBReq { OrgId = t.OrgId, CBReqNo = no, Status = "P" };  // #179: TConst.Stage, khong phai "Draft"
-    db.CBReqs.Add(r); await db.SaveChangesAsync();
+    var r = new StoCBReq { OrgId = t.OrgId, CBReqNo = no, CBReqStatus = "P", CreatedDate = DateTime.Now };  // #179: TConst.Stage, khong phai "Draft"
+    db.StoCBReqs.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.CBReqDetails.Add(new CBReqDetail { OrgId = t.OrgId, CBReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), TypeCB = c.TypeCB, Remark = c.Remark });
+        db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), TypeCB = c.TypeCB, Remark = c.Remark });
     await db.SaveChangesAsync();
     return Results.Ok(new { r.CBReqNo, cars = cars.Count });
 }).RequireAuthorization();
@@ -27346,11 +27355,11 @@ app.MapPost("/api/cbreqs", async (CBReqDto dto, AppDbContext db, ITenantContext 
 app.MapGet("/api/cbreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var r = await db.CBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
+    var r = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    var cars = await db.CBReqDetails.Where(c => c.OrgId == t.OrgId && c.CBReqId == r.Id)
+    var cars = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == r.Id)
         .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.TypeCB, c.Remark }).ToListAsync();
-    return Results.Ok(new { r.CBReqNo, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.CBReqNo, r.CBReqStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -27372,13 +27381,13 @@ app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqA
     // Guard vào: nguồn `CheckDB(..., TConst.Stage.Pending)` — cả hai ngả đều vào từ "P".
     if (action is not ("approve" or "unapprove")) return Results.BadRequest(new { error = "action = approve|unapprove" });
     no = no.Trim().ToUpperInvariant();
-    var r = await db.CBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
+    var r = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "P")
-        return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ duyệt/bỏ duyệt khi còn chờ duyệt (P)." });
+    if (r.CBReqStatus != "P")
+        return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.CBReqStatus}' — chỉ duyệt/bỏ duyệt khi còn chờ duyệt (P)." });
 
     var bApprove = action == "approve";
-    var lines = await db.CBReqDetails.Where(x => x.OrgId == t.OrgId && x.CBReqId == r.Id).ToListAsync();
+    var lines = await db.StoCBReqDtls.Where(x => x.OrgId == t.OrgId && x.StoCBReqId == r.Id).ToListAsync();
 
     if (!bApprove)
     {
@@ -27394,12 +27403,12 @@ app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqA
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
     // `bApprove ? Stage.Approved : Stage.Rejected`
-    r.Status = bApprove ? "A" : "R";
+    r.CBReqStatus = bApprove ? "A" : "R";
     r.Remark = dto?.Remark;                 // nguồn ghi Remark ở CẢ HAI ngả
-    r.ConfirmedAt = bApprove ? now : null;
-    foreach (var l in lines) l.CBReqDtlStatus = r.Status;
+    r.ApprovedAt = bApprove ? now : null;
+    foreach (var l in lines) l.CBReqDtlStatus = r.CBReqStatus;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.CBReqNo, status = r.Status, r.Remark, unapprove = !bApprove, linesUpdated = lines.Count });
+    return Results.Ok(new { r.CBReqNo, status = r.CBReqStatus, r.Remark, unapprove = !bApprove, linesUpdated = lines.Count });
 }).RequireAuthorization();
 
 // ===== Sắp xếp/chuyển kho (StorageRearrange/SC — port 1:1 FrmNewSC, 2010.HTC/Sales/Purchase) =====
