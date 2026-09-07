@@ -45628,6 +45628,99 @@ app.MapGet("/api/reports/part-stock-card", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #499 NHẬP–XUẤT–TỒN PHỤ TÙNG — `Ser_InventoryReport_InOutBalance_New20191112` =====
+// (`Inventory.Report.cs:713`) — trả nợ `scope` thứ hai trong ba nợ #496 khoanh vùng.
+//
+// ⚪🔴 **KIỂM TRA ÂM TÍNH QUAN TRỌNG — SUÝT VÁ NHẦM (#415)**:
+//   SQL viết `AND spi.DateIn < "@ToDate"` — dấu **<** (nhỏ hơn hẳn), nhìn qua tưởng **mất trọn ngày cuối**.
+//   Nhưng truy đến giá trị thật: `Replace(…, "@ToDate", **strToDateNext**)` với
+//   `strToDateNext = Convert.ToDateTime(strToDate).AddDays(1)` ⇒ điều kiện là `< ToDate + 1 ngày`
+//   ⇒ **BAO TRỌN ngày cuối**. Đây là cách viết ĐÚNG, ngược với đa số báo cáo khác trong cùng cây nguồn.
+//   📌 Bài học lặp lại: **toán tử không nói lên gì nếu chưa truy tới giá trị được thay vào**.
+// ⚠️ `@ToDateTime` (= ngày kế tiếp 00:00:00) **chỉ xuất hiện trong dòng đã COMMENT** (`GetAverageCost`)
+//   ⇒ biến sống nhưng **không có tác dụng**; port không dùng.
+//
+// 🔴 **KẸP MỐC ĐẦU KỲ** (họ #496, ca thứ ba được port): `HTC_WareHouse = "2017-12-31"` chỉ có ở bản chính
+//   (đếm 2 vs 0) ⇒ giữ `scope=main|wh`.
+// 🔴 **GIÁ VỐN RẼ THEO THAM SỐ ĐẠI LÝ** — giống hệt #472/#473: `Mst_Param(MCC/MCC) = "FIFO"` thì tính theo
+//   giá nhập, **`Else "0"`**, và nhánh `GetAverageCost` **đã bị comment** ở **cả ba** khối ⇒ đại lý không
+//   đặt FIFO thì **cột tiền = 0 im lặng**, số lượng vẫn đúng.
+// ⚠️ Tồn ĐẦU KỲ dựng qua macro với khoảng **["1900-01-01", strFromDate]** ⇒ mốc đầu là **chính FromDate**
+//   (khác #498 lấy `FromDate − 1`). Hai báo cáo cùng họ nhưng **mốc đầu kỳ lệch nhau một ngày**.
+app.MapGet("/api/reports/part-in-out-balance", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate, string? scope) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var dealer = dealerCode!.Trim();
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    var floor = new DateTime(2017, 12, 31);
+    var askedFrom = fromDate.Value.Date;
+    var clamped = !isWh && askedFrom <= floor;
+    var from = clamped ? floor : askedFrom;
+    var toNext = toDate.Value.Date.AddDays(1);      // nguồn: < ToDate+1 ⇒ BAO TRỌN ngày cuối
+
+    var mcc = await db.MstParams.Where(p => p.OrgId == t.OrgId && p.DealerCode == dealer
+            && p.ParamCode == "MCC" && p.ParamType == "MCC")
+        .Select(p => p.ParamValue).FirstOrDefaultAsync();
+    var isFifo = string.Equals(mcc, "FIFO", StringComparison.OrdinalIgnoreCase);
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.Status != "4" && x.Status != "5").ToListAsync();
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var lineByKey = lines.Where(l => l.PartCode != null)
+        .GroupBy(l => l.StockInId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    decimal Val(PartInstance x, decimal? price)
+    {
+        if (!isFifo) return 0m;                     // nhánh Else "0" của nguồn
+        var p = price ?? 0m;
+        var vat = lineByKey.TryGetValue(x.StockInId + "|" + (x.PartCode ?? ""), out var l) ? l.VAT : 0m;
+        return p * x.Quantity + p * x.Quantity * 0.01m * vat;
+    }
+
+    // ĐẦU KỲ: ["1900-01-01", from] — đúng khoảng macro của nguồn.
+    var openIn = inst.Where(x => x.DateIn != null && x.DateIn.Value.Date <= from).ToList();
+    var openOut = inst.Where(x => x.DateOut != null && x.DateOut.Value.Date <= from).ToList();
+    // TRONG KỲ: [from, toNext)
+    var inRows = inst.Where(x => x.DateIn != null && x.DateIn >= from && x.DateIn < toNext).ToList();
+    var outRows = inst.Where(x => x.DateOut != null && x.DateOut >= from && x.DateOut < toNext).ToList();
+
+    string Key(PartInstance x) => (x.PartID ?? "") + "|" + (x.LocationID ?? "");
+    var keys = openIn.Concat(openOut).Concat(inRows).Concat(outRows).Select(Key).Distinct().ToList();
+    var items = keys.Select(k =>
+    {
+        var pid = k.Split((char)124)[0]; var loc = k.Split((char)124)[1];
+        decimal SumQ(List<PartInstance> src) => src.Where(x => Key(x) == k).Sum(x => x.Quantity);
+        decimal SumV(List<PartInstance> src, bool useIn) =>
+            src.Where(x => Key(x) == k).Sum(x => Val(x, useIn ? x.SIPrice : x.SOPrice));
+        var sld = SumQ(openIn) - SumQ(openOut);
+        var tgd = SumV(openIn, true) - SumV(openOut, false);
+        var sln = SumQ(inRows); var tgn = SumV(inRows, true);
+        var slx = SumQ(outRows); var tgx = SumV(outRows, false);
+        return new
+        {
+            PartID = pid, LocationID = loc,
+            SLD = sld, TGD = tgd, SLN = sln, TGN = tgn, SLX = slx, TGX = tgx,
+            SLC = sld + sln - slx, TGC = tgd + tgn - tgx,
+        };
+    }).OrderBy(x => x.PartID).ThenBy(x => x.LocationID).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, scope = isWh ? "wh" : "main",
+        askedFrom = askedFrom.ToString("yyyy-MM-dd"),
+        effectiveFrom = from.ToString("yyyy-MM-dd"),
+        clampedToFloor = clamped, floorDate = "2017-12-31",
+        toExclusiveBound = toNext.ToString("yyyy-MM-dd"),
+        lastDayIncluded = true,                    // vì nguồn thay @ToDate = ToDate+1
+        openingAsOf = from.ToString("yyyy-MM-dd"),
+        openingLowerBoundIsConstant = "1900-01-01",
+        costMethod = mcc, isFifo, costMethodNotFifoGivesZero = !isFifo,
+        averageCostBranchCommentedOut = true,
+        count = items.Count, items,
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
