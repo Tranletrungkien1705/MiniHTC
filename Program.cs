@@ -14592,14 +14592,50 @@ app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, ttcDone = items.Count(x => x.TTCStatus == "1"), cptcDone = items.Count(x => x.CPTCStatus == "1"), items });
 }).RequireAuthorization();
 
-app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+// ===== #B22 PARITY `CarCarUpdate_Status_New20181119` (Biz.HTC.WH.cs:59707) =====
+// Trace twin LIVE: `FrmUpdateCar_Status.cs:319` → `salesSv.CarCarUpdate_Status(**TConst.CarCarTypeStatus.CPTC**, ds)`
+//   → WS `CarCarUpdate_Status` (`WSHTC.asmx.cs:13690`) → `_biz.CarCarUpdate_Status_New20181119`.
+//   ⚠️ 2 bản CHẾT cùng tên trong `Delete.BizHTC.Report.cs` (`_New20181115` + bản không hậu tố).
+// 🔴 THAM SỐ `strTypeStatus` QUYẾT ĐỊNH GHI CỘT NÀO — `TConst.CarCarTypeStatus` chỉ có **"TTC"** và
+//    **"CPTC"** (`Const.Main.cs:906-910`). `alColumnEffective` chỉ `Add` **ĐÚNG MỘT** cột tương ứng
+//    (`:59926-59932`), rồi `LogLUDateTime`/`LogLUBy`.
+//    ⇒ Port cũ **ghi CẢ HAI cột mỗi lần** ⇒ gọi để sửa CPTC sẽ **ghi đè TTCStatus về "0"** — mất dữ liệu
+//    im lặng. Đã sửa: chỉ ghi cột thuộc `typeStatus`.
+// 🔴 Port cũ dùng `r.TTCStatus == "1" ? "1" : "0"` ⇒ **nuốt giá trị sai** thành "0"; nguồn NÉM LỖI
+//    `..._InvalidTypeTTCStatus` / `..._InvalidTypeCPTCStatus` khi giá trị không phải "1" hoặc "0".
+app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
+    // `myCommon_CheckHTCDirect(..., Flag.Active)` (`:59765`) — DÒNG ACTIVE.
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật trạng thái xe." });
+    var typeStatus = (dto.TypeStatus ?? "CPTC").Trim().ToUpperInvariant();
+    if (typeStatus is not ("TTC" or "CPTC"))
+        return Results.BadRequest(new { error = "TypeStatus phải thuộc TConst.CarCarTypeStatus: TTC | CPTC" });
+
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.CarId)).ToList();
+    // `..._TableDetailBeBlank`
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
     var dup = rows.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
+
+    // Guard từng dòng — nguồn kiểm hết rồi mới ghi (cùng transaction).
+    foreach (var r in rows)
+    {
+        var val = typeStatus == "TTC" ? r.TTCStatus : r.CPTCStatus;
+        // `..._InvalidTTCStatus` / `..._InvalidCPTCStatus`: cột tương ứng phải CÓ MẶT trong bảng input.
+        if (val is null)
+            return Results.BadRequest(new { error = $"Xe {r.CarId}: thiếu cột {typeStatus}Status trong bảng gửi lên.", typeStatus });
+        // `..._InvalidTypeTTCStatus` / `..._InvalidTypeCPTCStatus`: giá trị phải là "1" hoặc "0".
+        if (val != "1" && val != "0")
+            return Results.BadRequest(new { error = $"Xe {r.CarId}: {typeStatus}Status phải là '1' hoặc '0' (nhận '{val}').", typeStatus });
+    }
+
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
+    // `myCar_CheckCar` từng dòng — xe phải tồn tại.
+    var knownCars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && ids.Contains(c.VIN)).Select(c => c.VIN).ToListAsync()).ToHashSet();
+    var missing = ids.FirstOrDefault(x => !knownCars.Contains(x));
+    if (missing is not null) return Results.BadRequest(new { error = $"Xe {missing} chưa khai báo trên hệ thống." });
+
     var existing = await db.CarStatusUpdates.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
     var byId = existing.ToDictionary(x => x.CarId, x => x);
     int added = 0, updated = 0; var now = DateTime.Now;
@@ -14607,10 +14643,18 @@ app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDb
     {
         var cid = r.CarId!.Trim();
         if (!byId.TryGetValue(cid, out var row)) { row = new CarStatusUpdate { OrgId = t.OrgId, CarId = cid }; db.CarStatusUpdates.Add(row); added++; } else updated++;
-        row.TTCStatus = r.TTCStatus == "1" ? "1" : "0"; row.CPTCStatus = r.CPTCStatus == "1" ? "1" : "0"; row.UpdatedBy = by; row.UpdatedAt = now;
+        // 🔴 CHỈ ghi cột thuộc `typeStatus` — cột kia GIỮ NGUYÊN, đúng `alColumnEffective` của nguồn.
+        if (typeStatus == "TTC") row.TTCStatus = r.TTCStatus!;
+        else row.CPTCStatus = r.CPTCStatus!;
+        row.UpdatedBy = by; row.UpdatedAt = now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { added, updated });
+    return Results.Ok(new
+    {
+        added, updated, typeStatus,
+        columnsWritten = new[] { typeStatus + "Status", "LogLUDateTime", "LogLUBy" },
+        note = "Nguồn chỉ ghi ĐÚNG MỘT trong hai cột theo strTypeStatus — cột còn lại giữ nguyên."
+    });
 }).RequireAuthorization();
 
 // ===== Huỷ / phục hồi xe hàng loạt (CarActiveStatus — port 1:1 FrmCapNhatTTHuyXe, 2010.HTC Views/Sales) =====
@@ -34375,7 +34419,8 @@ record SerPartTypeDto(string? TypeName, string? FlagActive);
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);
-record CarStatusImportDto(List<CarStatusRowDto>? Rows);
+/// <summary>#B22: `strTypeStatus` của nguồn quyết định GHI CỘT NÀO — TConst.CarCarTypeStatus: TTC | CPTC.</summary>
+record CarStatusImportDto(List<CarStatusRowDto>? Rows, string? TypeStatus = null);
 record CarStatusRowDto(string? CarId, string? TTCStatus, string? CPTCStatus);
 /// <summary>Lô mã xe để huỷ / phục hồi hàng loạt (tương ứng lưới của FrmCapNhatTTHuyXe).</summary>
 record CarIdBatchDto(List<string>? CarIds);
