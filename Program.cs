@@ -46930,6 +46930,60 @@ app.MapGet("/api/reports/appointments-by-period-status", async (AppDbContext db,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #517 TRA THẺ DỊCH VỤ CHO MÁY TÍNH BẢNG — **HÀM LIVE CÓ THÂN RỖNG** =====
+// Nguồn LIVE (đọc thân WS trước, đúng luật): `HTCWSCarSvTab/WSCarSvTab.asmx.cs:6648` gọi
+//   `_biz.RptCrdCardForService_New20200822(` — **không** phải bản trần `RptCrdCardForService` (:3313).
+// Endpoint: `GET /api/reports/loyalty-card-for-service`.
+//
+// 🔴🔴 **TOÀN BỘ PHẦN LẤY DỮ LIỆU BỊ COMMENT — HÀM CHỈ TRẢ VỀ MỘT BẢNG RỖNG**:
+//   lọc bỏ mọi dòng bắt đầu bằng `//` trong thân hàm (`Tab.Report.cs:3471..3655`), phần **ĐANG CHẠY**
+//   chỉ còn: `DataSet dsGetData = new DataSet();` · `DataTable dt_Return = new DataTable();` ·
+//   `dsGetData.Tables.Add(dt_Return);` · `MoveDataTable` · `CommitSafety` · `return mdsFinal`.
+//   Khối `#region // Update PlateNo Loyalty` — nơi gọi API Loyalty
+//   (`postWebApi_RptCrdCardForService_ClientTabAndDesktop_FixBugChangeServer`, ném lỗi
+//   `RptCrdCardForService_FromLoyalty_CardNotFound` / `…_FromLoyalty`) — **bị comment sạch**.
+//   ⇒ Máy tính bảng gọi WebMethod này **luôn nhận bảng RỖNG**, không lỗi, không cảnh báo:
+//     tính năng **đã chết mà vẫn còn cổng vào**.
+//   ⚠️ **Bản trần :3313 cũng vậy** (đếm dòng active: cũng chỉ `new DataTable()` rồi `Tables.Add`)
+//     ⇒ không phải "bản mới cắt mất", mà **cả hai bản đều rỗng** — nợ thật của hệ nguồn.
+// 📌 Đây là **kiểm tra dương tính cho luật "port dòng ACTIVE, không port dòng COMMENT"**: nếu đọc lướt
+//   khối comment mà tưởng là code, sẽ port nguyên một tầng gọi API Loyalty **không hề tồn tại lúc chạy**.
+//
+// 📌 **Lệch CỐ Ý**: MiniHTC **đã có** bảng thẻ (`LoyaltyCard`, #463) nên endpoint này **trả dữ liệu thật**
+//   thay vì tái hiện bảng rỗng — kèm cờ `sourceReturnsEmptyTable` để không ai tưởng là port 1:1.
+// ⚠️ Tên hằng lỗi của nguồn dùng **tên hàm trần** (`TError.ErrCarSv.RptCrdCardForService`) trong khi hàm
+//   là bản `_New20200822` — chép nguyên văn, không "sửa cho đúng".
+app.MapGet("/api/reports/loyalty-card-for-service", async (AppDbContext db, ITenantContext t,
+    string? cardNo, string? memberNo) =>
+{
+    if (string.IsNullOrWhiteSpace(cardNo) && string.IsNullOrWhiteSpace(memberNo))
+        return Results.BadRequest(new { error = "Cần cardNo hoặc memberNo." });
+
+    var qy = db.LoyaltyCards.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(cardNo)) qy = qy.Where(x => x.CardNo == cardNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(memberNo)) qy = qy.Where(x => x.MemberNo == memberNo!.Trim());
+
+    var items = await qy.OrderByDescending(x => x.Id).Take(200)
+        .Select(x => new
+        {
+            x.Id, x.CardNo, x.MemberNo, x.NetworkID, x.RankPolicyCode,
+            x.CardTypeUse, x.CardTypeInit, x.CardTypeUsePrev, x.CardNoPrev,
+            x.CardStatus, x.EffDateStart, x.EffDateEnd, x.CardActiveDate,
+        }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        cardNo, memberNo, count = items.Count, items,
+        // Nguồn KHÔNG trả dữ liệu: thân hàm LIVE chỉ tạo bảng rỗng.
+        sourceReturnsEmptyTable = true,
+        sourceLiveFunction = "RptCrdCardForService_New20200822 (Tab.Report.cs:3471)",
+        sourceLoyaltyCallCommentedOut = true,
+        bareVariantAlsoEmpty = "RptCrdCardForService (:3313)",
+        errorConstantUsesBareName = "TError.ErrCarSv.RptCrdCardForService",
+        deliberateDivergence = "MiniHTC tra du lieu that tu bang LoyaltyCard (#463)",
+    });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
