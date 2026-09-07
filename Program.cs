@@ -23804,7 +23804,7 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
 //   3. Cả hai cột **cắt còn 255 ký tự** sau khi dọn.
 //   4. Bỏ hẳn hai cột `ROWID` và `ROWNo`, rồi `SetOrdinal` ép **thứ tự cột cố định**.
 // ⚠️ `BulletinNoHMC` có trong lưới nhưng dòng `SetOrdinal` của nó **đã bị comment** ⇒ **không** ra file (luật B).
-// 📌 MiniHTC chưa mô hình hoá `HTCROWNo` và `WARRANTYSTATUSTEXT` ⇒ trả `null` và báo `columnsNotModelled`,
+// 📌 (#502b CẬP NHẬT) `WARRANTYSTATUSTEXT` đã trả; nay chỉ còn `HTCROWNo` ⇒ trả `null` và báo `columnsNotModelled`,
 //   thay vì bịa giá trị cho đủ cột.
 // ===== 🔴 #407 CÙNG BÁO CÁO, **HAI HÌNH DẠNG KẾT QUẢ KHÁC HẲN NHAU** =====
 // TRACE (đọc thân WS TRƯỚC, lệ #405): form `FrmWarrantyReportAcceptRpt.PrintDtl` →
@@ -24195,7 +24195,18 @@ app.MapGet("/api/report/warranty-accept/export", async (AppDbContext db, ITenant
             SERVICEPRICE = servicePrice,
             PARTPRICE = partPrice,
             TOTALAMOUNT = totalAmount,
-            WARRANTYSTATUSTEXT = (string?)null,      // chưa mô hình hoá trong MiniHTC
+            // ===== #502 TRẢ NỬA NỢ: nhãn trạng thái bảo hành ĐÃ có bảng mã (6 mã, không ELSE) =====
+            // Bảng mã lấy đúng CASE của nguồn (SENT/PEND/CONF/ACCE/REJ/REVERT) — đã dùng ở #460/#466.
+            WARRANTYSTATUSTEXT = c.Status switch
+            {
+                "SENT" => "Chờ xem xét",
+                "PEND" => "Chưa gửi",
+                "CONF" => "Chờ duyệt",
+                "ACCE" => "Chấp thuận B.H",
+                "REJ" => "Không duyệt",
+                "REVERT" => "HTC Hoàn trả",
+                _ => (string?)null,   // nguồn KHÔNG có ELSE ⇒ mã lạ ra null
+            },
             CusRequest = Clean(c.CusRequest, false),
             StartDate = c.StartDate,
             FinishedDate = c.FinishedDate,
@@ -24212,7 +24223,17 @@ app.MapGet("/api/report/warranty-accept/export", async (AppDbContext db, ITenant
             + "roundedTotalSum có thể LỆCH exactTotalSum. Đây là chủ đích của nguồn (khớp TotalAmount.Summary).",
         textCleanNote = "CusRequest bỏ - ' và xuống dòng; CarStatus bỏ - ' VÀ TOÀN BỘ khoảng trắng; "
             + "cả hai cắt còn 255 ký tự — đúng nguồn.",
-        columnsNotModelled = new[] { "HTCROWNo", "WARRANTYSTATUSTEXT" },
+        // #502: WARRANTYSTATUSTEXT đã trả (dùng bảng mã 6 giá trị của nguồn).
+        //   HTCROWNo vẫn nợ: nguồn lấy từ hàm vô hướng SQL 
+        //   — không tái tạo được nếu chưa biết thân hàm đó, nên KHÔNG bịa.
+        // #502b NỬA NỢ ĐÃ TRẢ: `WARRANTYSTATUSTEXT` nay dựng từ bảng mã 6 giá trị của nguồn
+        //   (`SENT`/`PEND`/`CONF`/`ACCE`/`REJ`/`REVERT`, **không có ELSE**) — cùng bảng đã dùng ở #460/#466.
+        //   Nợ này trôi lâu chỉ vì ghi chú cũ gộp **hai** cột vào một cờ; tách ra thì một nửa **trả được ngay**.
+        //   📌 Lệ: cờ nợ nên đặt **cho từng cột**, đừng gộp — gộp thì phần trả được cũng bị chôn theo.
+        // 🔴 `HTCROWNo` **VẪN NỢ**: nguồn lấy từ hàm vô hướng SQL `dbo.ROWarrantyGetHTCWRID(ROWID)`;
+        //   chưa đọc được thân hàm đó nên **không bịa** cách sinh mã.
+        columnsNotModelled = new[] { "HTCROWNo" },
+        warrantyStatusTextPaid = true,
         droppedByCommentNote = "BulletinNoHMC có trên lưới nhưng dòng SetOrdinal của nó đã bị COMMENT "
             + "trong nguồn ⇒ KHÔNG ra file (port dòng active, luật B).",
         allDealerNote = "Nút kết xuất gọi SerWarrantyAcceptRptAllDealer = CÙNG WS với nút xem báo cáo, "
