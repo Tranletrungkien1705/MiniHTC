@@ -33836,23 +33836,175 @@ app.MapGet("/api/pis/{no}/lines", async (string no, AppDbContext db, ITenantCont
 
 // #B35 GO endpoint BIA: POST /api/pis/{no}/confirm (Draft->Confirmed).
 // Bang nguon Ord_PerformanceInvoice KHONG co cot trang thai; khong co lenh "xac nhan PI" o nguon.
+// ===== #B76 LƯU NHIỀU DÒNG PI — `OrderPIDetailSaveMulti_New20181119` =====
+// Trace LIVE: WS → **`_biz.OrderPIDetailSaveMulti_New20181119`** (`Biz.HTC.WH.cs:29847`).
+//   3B đo thật, **khớp cả 2 máy**: start=29847 md5 `dcb41693c28d5ca9bac96a52c9bbde91`.
+// 🔴 **PORT CŨ SAI HẲN MÔ HÌNH**: bản cũ **xoá sạch rồi chèn lại** toàn bộ dòng. Nguồn là
+//    **upsert TỪNG DÒNG** theo cờ `FlagDelete` của chính dòng đó — ba nhánh Xoá / Sửa / Thêm.
+//    Hệ quả của bản cũ: `ContractNo` (chỉ nguồn mới biết cách gán) **bị thổi bay** mỗi lần lưu.
+// 🔴 **KHI SỬA, NGUỒN CHỈ GHI ĐÚNG MỘT CỘT**: `alColumnEffective` của nhánh Update chỉ có
+//    **`"Quantity"`** (`:30049`). `WorkOrderNo`/`ContractNo` được **ĐỌC NGƯỢC ra từ dòng đang có**
+//    (`:30047-30048`), **không** lấy từ đầu vào. ⇒ Sửa `PortCode`/`PlantCode`/`WorkOrderNo` qua màn
+//    này **không có tác dụng** — đó là hành vi THẬT. Port ghi đúng một cột `Quantity`.
+// 🔴 **Kiểm tra bất đối xứng theo cờ xoá**:
+//      `LCTemp` rỗng ⇒ ném `OrderPIDetailSave_InvalidLCTemp` — **kiểm LUÔN LUÔN**, kể cả khi xoá.
+//      `WorkOrderNo.Length < TConst.HTCConst.MinLengthCode` (**= 5**) và `Quantity < 0`
+//        ⇒ chỉ kiểm **khi KHÔNG xoá** (`if (!bFlagDelete)`).
+//    ⚠️ Điều kiện là `Quantity < 0`, **không phải `<= 0`** ⇒ **dòng số lượng 0 là HỢP LỆ**.
+//      (Port cũ chặn `Quantity <= 0` — chặt hơn nguồn, sai.)
+// 🔴 **Nhánh Xoá**: chặn nếu `Rows[0]["ContractNo"] != DBNull.Value` ⇒
+//    `OrderPIDetailSave_CannotDelRefToContract`. Lưu ý phép so là **`!= DBNull.Value`** nên
+//    **chuỗi RỖNG vẫn xoá được** — không phải `string.IsNullOrWhiteSpace`.
+// 🔴 **Nhánh Thêm — `ContractNo` KHÔNG lấy từ đầu vào mà KẾ THỪA từ dòng anh em cùng `(RefNo, LCTemp)`**:
+//      `select top 1 t.ContractNo from Ord_PerformanceInvoiceDetail where RefNo=@RefNo and LCTemp=@LCTemp`
+//    ⇒ `ContractNo` thực chất là thuộc tính của **nhóm LC tạm**, không phải của dòng.
+//    ⚠️ `top 1` **KHÔNG có `order by`** ⇒ nếu nhóm có nhiều `ContractNo` khác nhau thì kết quả
+//      **không tất định**. Port lấy dòng đầu và ghi rõ khác biệt này.
+//    Dòng mới luôn khởi tạo `ContractNo = DBNull` trước, rồi mới kế thừa nếu tìm thấy.
+// 🔴 **Nhánh Thêm còn hai kiểm chéo danh mục**: `Mst_CarSpec.ModelCode` phải **trùng** `ModelCode` đầu vào
+//    (`OrderPIDetailSave_InvalidModelCode`) và `myCommon_CheckMatchingModelAndColor(Model, Color)`.
+// 🔴 **Đầu PI (`FlagAutoPL`) chỉ ghi KHI GIÁ TRỊ THAY ĐỔI** (`if (!…Equals(strFlagAutoPL))`, `:30140`)
+//    — ghi có canh, không phải ghi vô điều kiện.
+// 🔴 **BỐN hậu kiểm sau khi lưu** (`:30154-30176`), chạy **sau** `SaveData`, trong cùng transaction:
+//      `WO_WorkOrder_DelSmart_New20181119` ← **cùng guard PHẠM VI TOÀN CỤC của #B75**: một VIN mồ côi
+//        WO **ở bất kỳ đâu** trong hệ thống cũng làm **hỏng cả lệnh LƯU này**, không riêng lệnh xoá.
+//      `OrderPICheck_01` · `OrderPICheck_QtyPLOverPIByWorkOrder("RefNo", …)`
+//      · `OrderPICheck_QtyPLOverPIByContractOversea("RefNo", …)`.
+// 🔴 Nguồn ghi **cả `_dbMain` và `_dbWH`** (`SaveData` hai lần), không phải 2-phase commit (như #B75).
+// ⚠️ Kiểm "bảng chi tiết rỗng" (`OrderPIDetailSaveMulti_TableDetailBeBlank`) **ĐÃ BỊ COMMENT**
+//    (`:29920-29928`) ⇒ nguồn **CHẤP NHẬN danh sách rỗng** (không làm gì). Port cũ bắt buộc ≥1 dòng —
+//    chặt hơn nguồn. Port theo dòng ACTIVE: rỗng ⇒ trả về không lỗi.
+// ✅ RBAC: `myCommon_CheckHTCDirect(…, TConst.Flag.Active)`; `myOrder_CheckPI(…, Flag.Active, …)`.
+// 📌 NỢ: `WO_WorkOrder_AddSmart_New20181119` (tự tạo WO khi thêm dòng) và ba hàm `OrderPICheck_*`
+//    cần bảng `WO_WorkOrder` / `CT_PackingList` ở mức chưa có ⇒ **không dựng**, cờ
+//    `postChecksSkipped` liệt kê đúng tên bốn hậu kiểm. Không bịa.
 app.MapPost("/api/pis/{no}/detail", async (string no, List<PiLineDto> lines, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
+    // `myOrder_CheckPI(…, Flag.Active, …)` — PI phải tồn tại. (Nguồn KHÔNG gác theo trạng thái:
+    //  bảng `Ord_PerformanceInvoice` không có cột trạng thái nào — xem #B35.)
     var p = await db.Pis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PiNo == no);
-    if (p is null) return Results.NotFound(new { no });
-    if (p.Status != "Draft") return Results.BadRequest(new { error = "Chỉ sửa chi tiết PI Nháp." });
-    var rows = (lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng chi tiết (spec)." });
-    if (rows.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0." });
-    var old = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).ToListAsync();
-    db.PiLines.RemoveRange(old);
-    foreach (var l in rows)
-        // #B35 — mang theo `LCTemp`: nó là THÀNH PHẦN KHOÁ dòng, thay chi tiết mà đánh rơi
-        //   thì dòng ghi lại không còn tra được theo khoá 5 phần của nguồn.
-        db.PiLines.Add(new PiLine { OrgId = t.OrgId, PiId = p.Id, LCTemp = (l.LCTemp ?? "").Trim(), SpecCode = l.SpecCode.Trim(), ModelCode = l.ModelCode, ColorCode = l.ColorCode, PortCode = l.PortCode, PlantCode = l.PlantCode, WorkOrderNo = l.WorkOrderNo, Quantity = l.Quantity, UnitPrice = l.UnitPrice });
+    if (p is null) return Results.NotFound(new { no, error = "OrderPIDetailSaveMulti_PINotExist" });
+
+    var rows = lines ?? new();
+    // Kiểm "bảng rỗng" đã BỊ COMMENT ở nguồn ⇒ chấp nhận danh sách rỗng.
+    if (rows.Count == 0)
+        return Results.Ok(new { p.PiNo, inserted = 0, updated = 0, deleted = 0, emptyInputAccepted = true });
+
+    var existing = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.ModelCode }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorCode }).ToListAsync();
+
+    int nIns = 0, nUpd = 0, nDel = 0;
+    var inheritedContract = new List<object>();
+
+    foreach (var d in rows)
+    {
+        var flagDelete = (d.FlagDelete ?? "").Trim() == "1";
+        var lcTemp = (d.LCTemp ?? "").Trim();
+        // `LCTemp` kiểm LUÔN LUÔN — kể cả khi xoá.
+        if (lcTemp.Length < 1)
+            return Results.BadRequest(new { error = "OrderPIDetailSave_InvalidLCTemp", check = new { LCTemp = lcTemp } });
+
+        var specCode = (d.SpecCode ?? "").Trim();
+        var modelCode = (d.ModelCode ?? "").Trim();
+        var colorCode = (d.ColorCode ?? "").Trim();
+        var workOrderNo = (d.WorkOrderNo ?? "").Trim();
+
+        if (!flagDelete)
+        {
+            // `TConst.HTCConst.MinLengthCode` = 5.
+            if (workOrderNo.Length < 5)
+                return Results.BadRequest(new { error = "OrderPIDetailSave_InvalidWorkOrderNo", check = new { WorkOrderNo = workOrderNo } });
+            // 🔴 `< 0`, KHÔNG phải `<= 0` — dòng số lượng 0 là HỢP LỆ.
+            if (d.Quantity < 0)
+                return Results.BadRequest(new { error = "OrderPIDetailSave_InvalidQuantity", check = new { d.Quantity } });
+        }
+
+        // `myOrder_CheckPIDetail` — khoá dòng 5 phần: RefNo|LCTemp|SpecCode|ModelCode|ColorCode.
+        var cur = existing.FirstOrDefault(l =>
+            (l.LCTemp ?? "") == lcTemp && l.SpecCode == specCode
+            && (l.ModelCode ?? "") == modelCode && (l.ColorCode ?? "") == colorCode);
+
+        if (flagDelete)
+        {
+            if (cur is null) continue;
+            // 🔴 `!= DBNull.Value` — chuỗi RỖNG vẫn xoá được.
+            if (cur.ContractNo is not null)
+                return Results.BadRequest(new
+                {
+                    error = "OrderPIDetailSave_CannotDelRefToContract",
+                    check = new { cur.ContractNo, cur.LCTemp, cur.SpecCode, cur.ModelCode, cur.ColorCode }
+                });
+            db.PiLines.Remove(cur); existing.Remove(cur); nDel++;
+            continue;
+        }
+
+        if (cur is not null)
+        {
+            // 🔴 alColumnEffective = { "Quantity" } — CHỈ ghi số lượng. Các cột khác giữ nguyên.
+            cur.Quantity = d.Quantity; nUpd++;
+            continue;
+        }
+
+        // ---- Nhánh Thêm: hai kiểm chéo danh mục.
+        var sp = specs.FirstOrDefault(s => s.SpecCode == specCode);
+        if (sp is null)
+            return Results.BadRequest(new { error = "Common_InvalidSpecCode", check = new { SpecCode = specCode } });
+        if (!string.Equals(sp.ModelCode ?? "", modelCode, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new
+            {
+                error = "OrderPIDetailSave_InvalidModelCode",
+                check = new { SpecCode = specCode, ModelCodeOfSpec = sp.ModelCode, ModelCodeInput = modelCode }
+            });
+        if (!colors.Any(c => c.ModelCode == modelCode && c.ColorCode == colorCode))
+            return Results.BadRequest(new
+            {
+                error = "Common_InvalidMatchingModelAndColor",
+                check = new { ModelCode = modelCode, ColorCode = colorCode }
+            });
+
+        // 🔴 `ContractNo` KHÔNG lấy từ đầu vào: khởi tạo NULL rồi KẾ THỪA từ dòng anh em cùng (RefNo, LCTemp).
+        string? contractNo = null;
+        var sibling = existing.FirstOrDefault(l => (l.LCTemp ?? "") == lcTemp && l.ContractNo != null);
+        if (sibling is not null) { contractNo = sibling.ContractNo; inheritedContract.Add(new { lcTemp, contractNo }); }
+
+        var row = new PiLine
+        {
+            OrgId = t.OrgId, PiId = p.Id, LCTemp = lcTemp, SpecCode = specCode,
+            ModelCode = modelCode, ColorCode = colorCode,
+            PortCode = d.PortCode, PlantCode = d.PlantCode, WorkOrderNo = workOrderNo,
+            Quantity = d.Quantity, UnitPrice = d.UnitPrice, ContractNo = contractNo
+        };
+        db.PiLines.Add(row); existing.Add(row); nIns++;
+    }
+
+    // Đầu PI: `FlagAutoPL` chỉ ghi KHI THAY ĐỔI.
+    var flagAutoPlChanged = false;
+    var flagAutoPlIn = (rows.FirstOrDefault()?.FlagAutoPL ?? "").Trim();
+    if (flagAutoPlIn.Length > 0 && p.FlagAutoPL != flagAutoPlIn) { p.FlagAutoPL = flagAutoPlIn; flagAutoPlChanged = true; }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PiNo, lines = rows.Count, replaced = old.Count });
+
+    return Results.Ok(new
+    {
+        p.PiNo, p.RefNo,
+        inserted = nIns, updated = nUpd, deleted = nDel,
+        flagAutoPlChanged,
+        inheritedContract,
+        modelNote = "Nguon la UPSERT TUNG DONG theo co FlagDelete cua chinh dong do (Xoa/Sua/Them), KHONG phai xoa-sach-chen-lai nhu port cu. Port cu lam ContractNo bi thoi bay moi lan luu.",
+        updateOnlyQuantityNote = "alColumnEffective cua nhanh Update CHI CO 'Quantity'. WorkOrderNo/ContractNo duoc DOC NGUOC ra tu dong dang co, KHONG lay tu dau vao => sua PortCode/PlantCode/WorkOrderNo qua man nay KHONG CO TAC DUNG. Day la hanh vi THAT cua nguon.",
+        validationAsymmetryNote = "LCTemp rong => InvalidLCTemp, kiem LUON LUON ke ca khi xoa. WorkOrderNo (min 5 = TConst.HTCConst.MinLengthCode) va Quantity chi kiem KHI KHONG XOA. Dieu kien la 'Quantity < 0' KHONG phai '<= 0' => dong so luong 0 la HOP LE (port cu chan <= 0, chat hon nguon).",
+        deleteGuardNote = "Chan xoa neu Rows[0]['ContractNo'] != DBNull.Value => CannotDelRefToContract. Phep so la '!= DBNull.Value' nen CHUOI RONG VAN XOA DUOC, khong phai IsNullOrWhiteSpace.",
+        contractInheritNote = "Nhanh Them: ContractNo KHONG lay tu dau vao ma KE THUA tu dong anh em cung (RefNo, LCTemp) qua 'select top 1 t.ContractNo ... where RefNo=@RefNo and LCTemp=@LCTemp'. => ContractNo la thuoc tinh cua NHOM LC TAM, khong phai cua dong. CANH BAO: 'top 1' KHONG CO order by => neu nhom co nhieu ContractNo khac nhau thi ket qua KHONG TAT DINH.",
+        emptyInputNote = "Kiem 'bang chi tiet rong' (OrderPIDetailSaveMulti_TableDetailBeBlank) DA BI COMMENT (:29920-29928) => nguon CHAP NHAN danh sach rong. Port cu bat buoc >=1 dong - chat hon nguon.",
+        twoDbNote = "Nguon goi SaveData HAI LAN (_dbMain va _dbWH), khong phai 2-phase commit - cung khuon #B75.",
+        postChecksSkipped = new[] { "WO_WorkOrder_DelSmart_New20181119", "OrderPICheck_01", "OrderPICheck_QtyPLOverPIByWorkOrder", "OrderPICheck_QtyPLOverPIByContractOversea" },
+        postChecksDebt = "NO: bon hau kiem chay SAU SaveData trong cung transaction. Dac biet WO_WorkOrder_DelSmart mang GUARD PHAM VI TOAN CUC cua #B75 - mot VIN mo coi WO o BAT KY DAU cung lam HONG CA LENH LUU nay, khong rieng lenh xoa. Chua dung duoc vi thieu bang WO_WorkOrder / CT_PackingList o muc can. Khong bia.",
+        rbacNote = "myCommon_CheckHTCDirect(..., TConst.Flag.Active) + myOrder_CheckPI(..., Flag.Active)."
+    });
 }).RequireAuthorization();
 
 // ===== #B75 XOÁ PI (Performance Invoice) — `OrderPIDelete_New20181119` =====
@@ -38322,7 +38474,7 @@ record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount
     string? CardTypeExpect = null);    // txtCardTypeExpect — hạng thẻ dự kiến sau tích
 record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null);
 record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
-record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp);
+record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp, string? FlagDelete, string? FlagAutoPL);
 record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, DateTime? ExpectedMonth, List<PiLineDto>? Lines);
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
