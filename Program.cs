@@ -23917,14 +23917,19 @@ app.MapPost("/api/dealerinvthresholds/{dealer}/{model}/toggle", async (string de
 //     (Báo cáo **công nợ** `RptDebitReport02_New20260514` thuộc nhóm này — đã kiểm, KHÔNG dính bug.)
 //   · **PARAM runtime** — `(@strZoneCode = '' or mdz.ZoneCode = @strZoneCode)`, **không nháy**: **29** site.
 //     Với `@strZoneCode = NULL`: `NULL = ''` → UNKNOWN và `ZoneCode = NULL` → UNKNOWN ⇒ **loại sạch dòng**.
-// ✅ **Ba hàm `_New20260514` dùng dạng PARAM đã TỰ VÁ** đúng cách, cùng một dòng coalesce:
+// ✅ **ĐÃ ĐẾM TOÀN BỘ (#B61 đính chính #B58)** — `TERP.BizHTC/` (bỏ `Backup/`):
+//    **37** site bind `"@strZoneCode", strZoneCode` · **35** site có dòng coalesce
 //    `strZoneCode = TUtils.CUtils.IsNullOrEmpty(strZoneCode) ? "" : TUtils.CUtils.StandardizeParam(strZoneCode);`
-//    — `RptStatistic_HTCStock03_New20260514` (`BizHTC.Report.cs:5432`),
-//      `RptSales_CtmCare_01_New20260514` (`:11670`), `RptStatistic_DealerStock_21_New20260514` (`:23222`).
-//    (Cần vì `StandardizeParam` **trả `null`** khi rỗng — `TERP.Utils/Utils.cs:351-355`.)
-// 🔴 **SITE BỊ BỎ SÓT**: `Rpt_DlrContractGet_WH_New20190619` (`BizHTC.Contract.cs:10653`, bind ở `:10956`)
-//    **KHÔNG có dòng coalesce** ⇒ nếu client gửi zone rỗng/null thì báo cáo **ra RỖNG**. Bản `_WH` cũ
-//    (2019) **không được vá theo đợt 20260514**. 📌 Báo cho phía nghiệp vụ; **không sửa source legacy**.
+//    (cần vì `StandardizeParam` **trả `null`** khi rỗng — `TERP.Utils/Utils.cs:351-355`).
+//    **Hai site còn lại KHÔNG phải bug**, đã kiểm từng cái:
+//      · `RptDebitReport02_New20260514` (`BizHTC.Report.cs:1829`) — bind qua **`Replace` (bake)**, khớp
+//        dạng `N'@strZoneCode'` trong SQL ⇒ null thành rỗng ⇒ an toàn.
+//      · `Mst_DealerZone_Update` (`BizHTC.MasterData.cs:5566`) — `@strZoneCode` dùng trong
+//        `t.ZoneCode <> @strZoneCode` (kiểm trùng khi SỬA master), **không phải** filter tuỳ chọn.
+//    ⇒ **KHÔNG có site nào bị bỏ sót** ở 2010.HTC. Bản ghi trước của #B58 nói
+//      `Rpt_DlrContractGet_WH_New20190619` "thiếu coalesce" là **SAI**: nó **CÓ** dòng coalesce
+//      (`BizHTC.Contract.cs:10940`, bind ở `:10956`) — lần quét trước dùng cửa sổ `awk NR<s+120`
+//      nên không tới được offset 288 của hàm. Xem luật `C0-…vicesimusnonus`.
 // ✅ **MiniHTC KHÔNG mắc bẫy này**: mọi bộ lọc tuỳ chọn ở đây dùng `if (!string.IsNullOrWhiteSpace(x))`
 //    rồi mới thêm điều kiện — null/rỗng ⇒ **bỏ qua bộ lọc**, đúng ý định. Giữ nguyên khuôn này.
 // ⚠️ NỢ CÓ NHÃN: các báo cáo vừa port ở #B54–#B57 **chưa có** bộ lọc zone dù nguồn có — cần bổ sung khi
