@@ -53008,6 +53008,118 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #649 `Ser_Count_Customer_OnlyHTC_WH` (`WH.cs:18586-18753`) — LỌC TRÊN BIỂU THỨC GHÉP CHUỖI =====
+// 3B: laptop `:18586` md5 `bd751e7c` **KHỚP** máy 150 `:18586`. Hàm **thứ ba** của cụm (#647 · #648 · #649) —
+//   trọn cụm `Ser_Count_Customer*_WH` nay đã port đủ ba.
+//
+// 🔴🔴🔴 **BỘ LỌC ÁP LÊN MỘT *BIỂU THỨC GHÉP CHUỖI*, KHÔNG PHẢI MỘT CỘT**:
+//     `SqlUtils.BuildClause("and", "**tm.TradeMarkName +' - '+ mdl.modelName**", strModelConditionList, …)`
+//   Ba hệ quả cùng lúc:
+//     ① **Không sargable**: mỗi dòng phải ghép chuỗi rồi mới so ⇒ index trên `ModelID`/`TradeMarkCode` vô dụng.
+//     ② **GIẾT `left join mdl`** — dạng ẩn của #414 (câu hỏi thứ ba): `mdl` đến từ `left join`, model NULL ⇒
+//        cả biểu thức ghép **NULL** ⇒ điều kiện là **UNKNOWN** ⇒ **dòng bị loại**. Xe thiếu model **biến mất**
+//        ngay khi người dùng lọc theo model. Lỗi này **không lộ ra** khi chỉ soi tên cột trong `WHERE`.
+//     ③ Người dùng phải nhập **đúng chuỗi ghép** `"Hãng - Model"`, **kể cả hai dấu cách** quanh gạch nối.
+//   📌 **Đếm**: dạng `BuildClause` trên biểu thức ghép `+' - '+` chỉ có **2** site toàn tầng biz
+//     (`BizCarSv.WH.cs` 1 · `BizCarSv.Customer.cs` 1) ⇒ **ngoại lệ hiếm**, không phải quy ước.
+//
+// 🔴🔴 **HIỂN THỊ ĐÃ CHUẨN HOÁ NHƯNG BỘ LỌC THÌ CHƯA — NGƯỜI DÙNG GÕ LẠI ĐÚNG THỨ MÌNH THẤY VẪN KHÔNG RA**:
+//     hiển thị: `Replace(car.plateno, ' ', '') as Plateno` · `Replace(isnull(cus.tel,cus.mobile),' ','') as phone`
+//     bộ lọc  : `BuildClause("and", "**car.PlateNo**", strPlateNoConditionList, …)` — trên **cột GỐC**
+//   ⇒ Lưới hiện `30A12345` (đã bỏ dấu cách) nhưng DB lưu `30A 12345`; gõ đúng chuỗi vừa thấy vào ô tìm ⇒
+//     **0 dòng**. Chuẩn hoá ở tầng hiển thị mà không chuẩn hoá ở tầng lọc là lỗi **tái lập được**.
+//
+// 🔴 **BA HÀM ANH EM, BA CÁCH LỌC ĐẠI LÝ KHÁC NHAU** (nối tiếp #648 về khoá đọc):
+//     `_ToHTC_WH` (#647): `and car.dealercode = '@DealerCode'`   — **bake**, so bằng
+//     `_WH`       (#648): `and car.dealercode = '@DealerCode'`   — **bake**, so bằng
+//     `_OnlyHTC_WH` (đây): `BuildClauseConditionSingle("and","car.DealerCode","**like**","@strDealerCodeList",…)`
+//   ⚪ **Điểm TỐT của bản này**: đại lý được **tham số hoá thật** (`@strDealerCodeList`) ⇒ **không** có bề mặt
+//     tiêm SQL ở tham số đó, khác hai bản kia. Nhưng dùng `like` mà **không tự thêm `%`** ⇒ ngữ nghĩa phụ thuộc
+//     hoàn toàn vào việc client có gửi `%` hay không: không có `%` thì thành so bằng, có thì thành tiền tố.
+//   ⇒ Cùng một khái niệm "lọc theo đại lý", ba hàm cùng cụm cho **ba hành vi khác nhau**.
+// 🔴 `strSqlGetData = ""; strSqlGetData = StringUtils.Replace(@"…")` — gán rỗng rồi **gán đè ngay**: tàn dư của
+//   cấu trúc `if/else` như #647, nay chỉ còn một nhánh.
+// 🔴 Cột riêng của bản này: `ro.FinishedDate` (hai bản kia không có) ⇒ **hình dạng kết quả** khác nhau giữa ba
+//   hàm cùng cụm — §12 không bắt được.
+// 🔴 Kế thừa nguyên vẹn từ #647/#648 (không nhắc lại chi tiết): ba `join` lấy khoá `ro.DealerCode` (an toàn chỉ
+//   nhờ `ro.ROID is not null`) · `datediff` **bọc cột** ⇒ không sargable · `@FromDate`/`@ToDate` **bake** ·
+//   `with(nolock)` (5 lần, giống `_WH`, khác `_ToHTC`) · `ro.Status in ('PAID','FNS')`.
+// ⚪ Câu **có** `order by cus.cusname`.
+app.MapGet("/api/report/customers-only-htc", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? vin, string? plateNo, string? model, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "PAID" || x.Status == "FNS"));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode!.Contains(dealerCode!.Trim()));
+    var ros = (await qy.Select(x => new { x.RONo, x.CheckInDate, x.ActualDeliveryDate, x.CusID, x.Vin, x.CusRequest })
+            .ToListAsync())
+        .Where(r => r.CheckInDate.HasValue && r.CheckInDate.Value.Date >= from && r.CheckInDate.Value.Date <= to)
+        .ToList();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode, c.TradeMark }).ToListAsync();
+    var cus = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CusCode, c.CusName, c.Address, c.Tel, c.Mobile }).ToListAsync();
+
+    static string NoSpace(string? v) => (v ?? "").Replace(" ", "");
+
+    var rows = ros.Select(r =>
+    {
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        var cu = r.CusID == null ? null : cus.FirstOrDefault(c => c.CusCode == r.CusID);
+        var modelJoined = car?.TradeMark + " - " + car?.ModelCode;
+        return new
+        {
+            cusName = cu?.CusName, cusId = cu?.CusCode, address = cu?.Address,
+            // Nguồn: Replace(isnull(tel,mobile),' ','') — bỏ dấu cách Ở TẦNG HIỂN THỊ.
+            phone = NoSpace(cu?.Tel ?? cu?.Mobile),
+            carId = r.Vin,
+            plateNo = NoSpace(car?.PlateNo),
+            plateNoRaw = car?.PlateNo,          // cột GỐC mà bộ lọc của nguồn so vào
+            frameNo = car?.FrameNo,
+            tradeMarkName = car?.TradeMark,
+            tradeMarkNameModel = modelJoined,
+            roNo = "LS-" + r.RONo,
+            r.CheckInDate, r.CusRequest,
+            finishedDate = r.ActualDeliveryDate,   // cột RIÊNG của bản _OnlyHTC
+            modelIsNull = car?.ModelCode == null,
+        };
+    })
+    // Nguồn lọc VIN/biển số trên cột GỐC, lọc model trên BIỂU THỨC GHÉP.
+    .Where(x => string.IsNullOrWhiteSpace(vin) || x.frameNo == vin!.Trim())
+    .Where(x => string.IsNullOrWhiteSpace(plateNo) || x.plateNoRaw == plateNo!.Trim())
+    .Where(x => string.IsNullOrWhiteSpace(model) || x.tradeMarkNameModel == model!.Trim())
+    .OrderBy(x => x.cusName).ToList();
+
+    var droppedByModelFilterIfUsed = string.IsNullOrWhiteSpace(model) ? 0 : ros.Count(r =>
+    {
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        return car?.ModelCode == null;
+    });
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows,
+        // ===== #649 =====
+        filterOnConcatenatedExpression = "nguon: BuildClause(and, tm.TradeMarkName + ' - ' + mdl.modelName, strModelConditionList, …) — bo loc ap len mot BIEU THUC GHEP CHUOI chu khong phai mot cot",
+        concatFilterIsNotSargable = "moi dong phai ghep chuoi roi moi so => index tren ModelID/TradeMarkCode vo dung",
+        concatFilterKillsLeftJoinSilently = "mdl den tu left join; model NULL => ca bieu thuc ghep NULL => dieu kien UNKNOWN => DONG BI LOAI. Xe thieu model BIEN MAT ngay khi nguoi dung loc theo model — dang AN cua #414 cau hoi 3, khong lo ra khi chi soi ten cot trong WHERE",
+        droppedByModelFilterIfUsed,
+        userMustTypeExactJoinedString = "nguoi dung phai nhap dung chuoi ghep Hang - Model, KE CA hai dau cach quanh gach noi",
+        concatFilterCountedInBiz = "dang BuildClause tren bieu thuc ghep + ' - ' + chi co 2 site toan tang biz (BizCarSv.WH.cs 1, BizCarSv.Customer.cs 1) => ngoai le hiem, khong phai quy uoc",
+        displayNormalisedButFilterIsNot = "hien thi Replace(car.plateno, ' ', '') as Plateno va Replace(isnull(tel,mobile),' ','') as phone, nhung bo loc BuildClause(and, car.PlateNo, …) so tren COT GOC => luoi hien 30A12345 trong khi DB luu 30A 12345; go dung chuoi vua thay vao o tim => 0 DONG",
+        portReturnsBothPlateForms = "port tra plateNo (da bo dau cach, dung nhu hien thi cua nguon) VA plateNoRaw (cot goc ma bo loc so vao) de thay ro cho lech",
+        threeSiblingsThreeDealerFilters = "_ToHTC_WH va _WH deu bake and car.dealercode = @DealerCode (so bang); _OnlyHTC_WH dung BuildClauseConditionSingle(and, car.DealerCode, like, @strDealerCodeList) => cung mot khai niem loc theo dai ly, ba ham cung cum cho BA hanh vi khac nhau",
+        onlyHtcParameterisesDealerCode = "DIEM TOT cua ban nay: dai ly duoc THAM SO HOA that (@strDealerCodeList) nen KHONG co be mat tiem SQL o tham so do, khac hai ban kia; nhung dung like ma KHONG tu them % => khong co % thi thanh so bang, co thi thanh tien to",
+        emptyThenOverwritten = "strSqlGetData = \"\"; roi gan de ngay — tan du cua cau truc if/else nhu #647, nay chi con mot nhanh",
+        finishedDateOnlyInThisVariant = "cot ro.FinishedDate chi co o ban nay => hinh dang ket qua khac nhau giua ba ham cung cum (§12 khong bat duoc)",
+        inheritsSiblingDefects = "ba join lay khoa ro.DealerCode (an toan chi nho ro.ROID is not null), datediff boc cot nen khong sargable, @FromDate/@ToDate bake, with(nolock) 5 lan (giong _WH, khac _ToHTC), ro.Status in (PAID, FNS)",
+        clusterNowFullyPorted = "tron cum Ser_Count_Customer*_WH da port du ba: #647 _ToHTC, #648 _WH, #649 _OnlyHTC",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #648 "ĐẾM KHÁCH" `Ser_Count_Customer_WH` (`WH.cs:8593-8790`) — CỘT ĐẾM SAI NGHĨA =====
 // 3B: laptop `:8593` md5 `0c6a45c0` **KHỚP** máy 150 `:8593`. Anh em với #647 (`_ToHTC`) và `_OnlyHTC` (`:18586`).
 //
