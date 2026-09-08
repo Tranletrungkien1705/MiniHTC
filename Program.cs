@@ -46079,6 +46079,169 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #706 VELOCA: CHI TIẾT MỘT LỆNH SỬA CHỮA CHƯA HOÀN TẤT =====
+// `OSVeloca_Ser_RO_Incomplete_GetByROID` (laptop `ZTemp.cs:17504-18804` md5 `915f8fdf` /
+// máy 150 `:17505-18806` md5 `7a1ff20c`). WS `WSCarSv.asmx.cs:12410`.
+// → `GET /api/osveloca/repairorders/{roId}/incomplete-detail`. Anh em chi tiết của #705.
+//
+// **DIFF HAI HÀM ANH EM TRƯỚC** (luật #414) — chuẩn hoá rồi `diff`: 348 dòng vs **1250** dòng. Bản `ByROID`
+// **không phải** bản `Get` thu hẹp: nó trả **`21 bảng** (master hiệu xe/model/khoang/kỹ thuật viên/xe/khách/
+// phụ tùng/bảo hiểm/chiến dịch …) chứ không chỉ một danh sách.
+//
+// 🔴🔴🔴 **BẢN CHI TIẾT TỪ CHỐI CHÍNH LỆNH VỪA ĐƯỢC ĐÁNH DẤU**:
+//     `and (t.SyncVelocaFlag is null or t.SyncVelocaFlag = '0')`
+//     `-- 20240401. HuongTTT: Chỉ cho get thông tin những RO chưa đồng bộ`
+//   Ghép ba màn lại thành **một vòng đời**: #705 liệt kê → #706 lấy chi tiết → #704 đánh cờ `= '1'`.
+//   Sau bước #704, gọi lại #706 với **cùng `ROID`** ⇒ **trả RỖNG, không lỗi**. Đúng ý (chống lấy hai lần),
+//   nhưng bên gọi **không phân biệt được** "không tồn tại" với "đã lấy rồi" ⇒ port trả cờ tách bạch hai ca.
+// 🔴🔴🔴 **QUY ĐỔI UTC BẰNG HẰNG SỐ 7 GIỜ**: `CONVERT(varchar, DateAdd(hh, **-7**, sr.CreatedDate), 20)` —
+//   lặp lại **chín** lần cho chín mốc. Không dùng múi giờ hệ thống; đổi múi giờ máy chủ là **sai toàn bộ**.
+//   🔴 **VÀ MỘT CỘT MANG TÊN `…UTC` MÀ KHÔNG ĐỔI MÚI GIỜ**: `, sr.ReminderMaintanceDate **ReminderMaintanceDateUTC**`
+//     — **thiếu** `DateAdd(hh, -7, …)`. Là cột **duy nhất** trong nhóm bị bỏ sót ⇒ Veloca nhận ngày nhắc bảo
+//     dưỡng **lệch 7 giờ** so với mọi mốc khác. **Bug thật, không phải quy ước.**
+// 🔴🔴🔴 **BỐN CỘT TRẠNG THÁI LÀ HẰNG CHUỖI, KHÔNG LẤY TỪ DỮ LIỆU**: `'PENDING' ROStatus` ·
+//   `'NONE' RepairStatus` · `'PENDING' ROStatusService` · `'PENDING' ROStatusPart` ⇒ **mọi** lệnh gửi sang
+//   Veloca đều mang cùng một trạng thái. Cột `Status` thật của `Ser_RO` **không** được gửi.
+// 🔴🔴 **CHỐT LẠI CÂU HỎI BỎ NGỎ Ở #705 — BÍ DANH ĐIỂM CHÉO NHAU LÀ CÓ CHỦ Ý**: hàm này lặp lại **đúng cùng
+//   một cặp** `sr.PointTotal **PointRankTotal**` và `sr.PointRankTotalInv **PointTotal**`. Hai hàm độc lập,
+//   cùng một hoán vị ⇒ đây là **quy ước đặt tên phía Veloca**, không phải lỗi gõ. #705 để ngỏ, nay **đóng lại**.
+// 🔴🔴 **`ValVourcher` — HẰNG `0` VÀ SAI CHÍNH TẢ**: `, 0 ValVourcher` (đúng phải là `Voucher`). Giữ **nguyên
+//   văn** theo luật HẰNG ≠ GIÁ TRỊ; sửa chính tả là làm hỏng khớp dữ liệu phía nhận.
+// 🔴🔴 **HAI TỔNG LỆCH NHAU ĐÚNG BẰNG `AmountDiscountOther`**: dòng cũ trừ `AmountDiscountOther` **đã bị comment**,
+//   dòng active `TotalValAfterVATRO` **không trừ** (`-- 20240124`), trong khi `TotalValEnd` **vẫn trừ**.
+//   ⇒ `TotalValAfterVATRO - TotalValEnd = AmountDiscountOther + AmountFromMC`. Port giữ đúng cả hai công thức.
+// 🔴 **CHÍNH TÁC GIẢ ĐÁNH DẤU CÔNG THỨC CŨ LÀ SAI**: `-- 20231209. HuongTTT: Sai` trên dòng `TotalValCusPmt` cũ;
+//   dòng active dùng `RepairAmountAfterVAT - TotalCusDebitAmount`. Port dòng **ACTIVE**.
+// 🔴 **`CustomerCode` ƯU TIÊN MÃ KHÁCH BÊN SALES**: `case when sc.SalesCusID <> '' then sc.SalesCusID else
+//   CONVERT(varchar, sr.CusID) end` (`-- 20240401`) ⇒ **một khách có hai mã**, Veloca lấy mã Sales nếu có.
+// 🔴 **`ReminderMaintanceKm = ''`** — lại so cột SỐ với chuỗi rỗng (đúng họ đã ghi ở #705).
+// 🔴 **`'HTV' BHInvoiceCTMCode`** — đơn vị bảo hành **gõ cứng** (`-- 20240220`).
+// ⚪ **ÂM TÍNH — BƯỚC 3B: thay đổi 20260323 ĐƯỢC ÁP CHO CẢ HAI ANH EM**: máy 150 bỏ `'PAID'` khỏi `not in` ở
+//   **cả** `Incomplete_Get` (#705) **lẫn** hàm này ⇒ **không** có cảnh "danh sách trả lệnh PAID nhưng chi tiết
+//   từ chối". Laptop cũ ở **cả hai**. Port theo **bản 150**.
+// 📌 Mini **chưa mô hình hoá** `19 bảng master mà nguồn trả kèm (khoang sửa chữa, chiến dịch, hợp đồng bảo hiểm,
+//   `Map_CustomerAndCar`, `Ser_ROPrdServiceType` …) ⇒ port **bảng RO chi tiết (Table 8)** và ghi nợ phần còn lại.
+app.MapGet("/api/osveloca/repairorders/{roId}/incomplete-detail", async (string roId, AppDbContext db, ITenantContext t) =>
+{
+    var id = (roId ?? "").Trim();      // nguồn: StandardizeParam(strROID) — bản #705 KHÔNG chuẩn hoá tham số nào
+    string[] excludedStatus = { "CRE", "REJ", "NORE", "FNS" };            // bản 150 (20260323), đã bỏ PAID
+    string[] excludedStatusOldLaptop = { "CRE", "REJ", "NORE", "PAID", "FNS" };
+
+    var anyRo = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == id);
+    if (anyRo is null)
+        return Results.Ok(new { found = false, reason = "RO_NOT_FOUND", roId = id, count = 0 });
+    // Nguồn trả RỖNG cho cả ba ca dưới đây; port TÁCH BẠCH để bên gọi phân biệt được.
+    if (excludedStatus.Contains(anyRo.Status))
+        return Results.Ok(new { found = false, reason = "STATUS_EXCLUDED", roId = id, anyRo.Status, count = 0 });
+    if (!(anyRo.SyncVelocaFlag is null || anyRo.SyncVelocaFlag == "0"))
+        return Results.Ok(new { found = false, reason = "ALREADY_SYNCED", roId = id, anyRo.SyncVelocaFlag, anyRo.SyncVelocaDTime, count = 0 });
+
+    var cus = await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == anyRo.CusID);
+    var car = await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CarID == anyRo.CarID);
+    var ins = car == null ? null : await db.ServiceInsurances.FirstOrDefaultAsync(i => i.OrgId == t.OrgId && i.InsNo == car.InsNo);
+
+    var svc = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && i.RoId == anyRo.Id).ToListAsync();
+    var prt = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && i.RoId == anyRo.Id).ToListAsync();
+    decimal SvcAmt(RoServiceItem i) => i.Factor * i.Price;
+    decimal PrtAmt(RoPartItem i) => i.Factor * i.UnitPrice * i.NeedQty;
+
+    var totalAmountSvc = svc.Sum(SvcAmt);
+    var totalVatSvc = svc.Sum(i => SvcAmt(i) * i.Vat * 0.01m);
+    var totalAfterSvc = svc.Sum(i => SvcAmt(i) * (1 + i.Vat * 0.01m));
+    var totalAmountPrt = prt.Sum(PrtAmt);
+    var totalVatPrt = prt.Sum(i => PrtAmt(i) * i.Vat * 0.01m);
+    var totalAfterPrt = prt.Sum(i => PrtAmt(i) * (1 + i.Vat * 0.01m));
+
+    decimal ByType(params string[] types) =>
+        svc.Where(i => i.ExpenseType != null && types.Contains(i.ExpenseType)).Sum(i => SvcAmt(i) * (1 + i.Vat * 0.01m))
+      + prt.Where(i => i.ExpenseType != null && types.Contains(i.ExpenseType)).Sum(i => PrtAmt(i) * (1 + i.Vat * 0.01m));
+    var repairAfterVat = ByType("ROREPAIR");
+    var insAfterVat = ByType("ROINSURANCE");
+    var discountOther = anyRo.AmountDiscountOther ?? 0m;
+    var fromCard = anyRo.AmountFromMC ?? 0m;
+    var deductible = anyRo.InsuranceDeductible ?? 0m;
+
+    // Nguồn quy đổi UTC bằng HẰNG -7 giờ. Giữ 1:1 và trả kèm mốc GỐC để đối chiếu.
+    string? Utc(DateTime? d) => d?.AddHours(-7).ToString("yyyy-MM-dd HH:mm:ss");
+
+    var ro = new
+    {
+        RONoSys = anyRo.RONo, anyRo.RONo, anyRo.DealerCode,
+        // 20240401: ưu tiên mã khách bên Sales, không có thì dùng mã khách CarSv.
+        CustomerCode = string.IsNullOrWhiteSpace(cus?.SalesCusID) ? anyRo.CusID : cus!.SalesCusID,
+        CustomerName = anyRo.CusName, CustomerNameEN = anyRo.CusName,
+        CustomerAddress = anyRo.CusAddress, CustomerMobilePhone = anyRo.CusMobile, CustomerPhoneNo = anyRo.CusTel,
+        CustomerEmail = cus?.Email, CustomerContactName = cus?.ContName,
+        CustomerContactPhone = cus?.ContMobile, CustomerContactEmail = cus?.ContEmail,
+        PlateNoSys = anyRo.CarID, PlateNo = anyRo.LicensePlate, VIN = anyRo.Vin,
+        anyRo.ColorCode, BrandCode = anyRo.TradeMarkCode, anyRo.EngineNo,
+        InsCode = car?.InsNo, InsName = ins?.InsVieName, InsNameEN = ins?.InsEngName,
+        PlanedDeliveryDTimeUTC = Utc(anyRo.PlanedDeliveryDate),
+        ActualDeliveryDTimeUTC = Utc(anyRo.ActualDeliveryDate),
+        anyRo.Km,
+        // 🔴 nguồn KHÔNG trừ 7 giờ ở cột này dù tên là …UTC. Giữ 1:1.
+        ReminderMaintanceDateUTC = anyRo.ReminderMaintanceDate,
+        ReminderMaintanceKm = anyRo.ReminderMaintanceKm ?? 0,
+        anyRo.WorkDoneSoon, anyRo.TermsOfRepair,
+        TotalValBeforeVATService = totalAmountSvc, TotalValVATService = totalVatSvc,
+        TotalValAfterVATService = totalAfterSvc,
+        TotalValBeforeVATPart = totalAmountPrt, TotalValVATPart = totalVatPrt,
+        TotalValAfterVATPart = totalAfterPrt,
+        TotalValBeforeVATRO = totalAmountSvc + totalAmountPrt,
+        TotalValVATRO = totalVatSvc + totalVatPrt,
+        // 20240124: bản ACTIVE KHÔNG trừ AmountDiscountOther…
+        TotalValAfterVATRO = totalAfterSvc + totalAfterPrt,
+        ValVourcher = 0,          // nguồn hằng 0, và SAI CHÍNH TẢ — giữ nguyên văn
+        ValPmtFromCard = fromCard,
+        // …nhưng TotalValEnd thì VẪN trừ ⇒ hai tổng lệch đúng bằng (giảm trừ khác + tiền thẻ).
+        TotalValEnd = totalAfterSvc + totalAfterPrt - discountOther - fromCard,
+        TotalValPmt = totalAfterSvc + totalAfterPrt,
+        TotalValCusROAfterVAT = repairAfterVat + deductible - discountOther - fromCard,
+        TotalValInsROAfterVAT = insAfterVat - deductible,
+        TotalValWarrantyROAfterVAT = ByType("ROWARRANTY"), TotalValLocalROAfterVAT = ByType("LOCAL"),
+        CreateDTimeUTC = Utc(anyRo.CreatedAt), CreateBy = anyRo.Creator,
+        ROStatus = "PENDING", RepairStatus = "NONE",      // hằng chuỗi của nguồn
+        FlagRetry = anyRo.IsReRepair, FlagWashCar = anyRo.CarWashRequested?.ToString(),
+        FlagGetOldPart = anyRo.UseSHPart?.ToString(),
+        CusPmtDateUTC = Utc(anyRo.PaidCreatedDate), PaidDTimeUTC = Utc(anyRo.PaidCreatedDate),
+        FinishDTimeUTC = Utc(anyRo.FinishedDate), RepairedDTimeUTC = Utc(anyRo.FinishedDate),
+        CheckInDTimeUTC = Utc(anyRo.CheckInDate),
+        RequestCustomer = anyRo.CusRequest, ValFeeInsurance = deductible,
+        anyRo.MemberNo, PointUse = fromCard,
+        // BÍ DANH CHÉO — giống hệt #705 ⇒ có chủ ý.
+        PointRankTotal = anyRo.PointTotal, PointTotal = anyRo.PointRankTotalInv,
+        src_PointTotal = anyRo.PointTotal, src_PointRankTotalInv = anyRo.PointRankTotalInv,
+        CardTypeUse = anyRo.CardTypeInv, ProductGrpCode = anyRo.ModelID,
+        AmountDiscountOther = discountOther,
+        BHInvoiceCTMCode = "HTV",     // gõ cứng (20240220)
+        // Mốc GỐC (chưa trừ 7 giờ) để bên nhận đối chiếu quy đổi.
+        src_localTimes = new { anyRo.CreatedAt, anyRo.CheckInDate, anyRo.FinishedDate, anyRo.PaidCreatedDate,
+                               anyRo.PlanedDeliveryDate, anyRo.ActualDeliveryDate },
+    };
+
+    return Results.Ok(new
+    {
+        found = true, count = 1, ro,
+        serviceItemCount = svc.Count, partItemCount = prt.Count,
+        excludedStatusUsed = excludedStatus, excludedStatusOldLaptop,
+        // ===== #706 =====
+        detailRefusesTheRoItJustHandedOut = "BAN CHI TIET TU CHOI CHINH LENH VUA DUOC DANH DAU: and (t.SyncVelocaFlag is null or t.SyncVelocaFlag = 0) -- 20240401. HuongTTT: Chi cho get thong tin nhung RO chua dong bo. Ghep ba man thanh MOT VONG DOI: #705 liet ke -> #706 lay chi tiet -> #704 danh co = 1. Sau buoc #704, goi lai #706 voi CUNG ROID => TRA RONG, KHONG LOI. Dung y (chong lay hai lan) nhung ben goi KHONG PHAN BIET DUOC khong ton tai voi da lay roi => port tra co reason tach bach ba ca: RO_NOT_FOUND / STATUS_EXCLUDED / ALREADY_SYNCED",
+        utcConversionByHardcodedMinusSevenHours = "QUY DOI UTC BANG HANG SO 7 GIO: CONVERT(varchar, DateAdd(hh, -7, sr.CreatedDate), 20) lap lai CHIN lan cho chin moc. Khong dung mui gio he thong; doi mui gio may chu la SAI TOAN BO",
+        oneColumnNamedUtcIsNotConverted = "VA MOT COT MANG TEN …UTC MA KHONG DOI MUI GIO: , sr.ReminderMaintanceDate ReminderMaintanceDateUTC — THIEU DateAdd(hh, -7, …). La cot DUY NHAT trong nhom bi bo sot => Veloca nhan ngay nhac bao duong LECH 7 GIO so voi moi moc khac. BUG THAT, khong phai quy uoc",
+        fourStatusColumnsAreStringLiterals = "BON COT TRANG THAI LA HANG CHUOI, KHONG LAY TU DU LIEU: PENDING ROStatus, NONE RepairStatus, PENDING ROStatusService, PENDING ROStatusPart => MOI lenh gui sang Veloca deu mang cung mot trang thai. Cot Status that cua Ser_RO KHONG duoc gui",
+        pointAliasSwapIsIntentionalConfirmed = "CHOT LAI CAU HOI BO NGO O #705 — BI DANH DIEM CHEO NHAU LA CO CHU Y: ham nay lap lai DUNG CUNG MOT CAP sr.PointTotal PointRankTotal va sr.PointRankTotalInv PointTotal. Hai ham DOC LAP, cung mot hoan vi => day la QUY UOC DAT TEN PHIA VELOCA, khong phai loi go. #705 de ngo, nay DONG LAI",
+        valVourcherIsZeroConstantAndMisspelt = "ValVourcher — HANG 0 VA SAI CHINH TA: , 0 ValVourcher (dung phai la Voucher). Giu NGUYEN VAN theo luat HANG KHAC GIA TRI; sua chinh ta la lam hong khop du lieu phia nhan",
+        twoTotalsDifferByDiscountOther = "HAI TONG LECH NHAU DUNG BANG AmountDiscountOther: dong cu tru AmountDiscountOther DA BI COMMENT, dong active TotalValAfterVATRO KHONG tru (-- 20240124), trong khi TotalValEnd VAN tru => TotalValAfterVATRO - TotalValEnd = AmountDiscountOther + AmountFromMC. Port giu dung ca hai cong thuc",
+        authorMarkedOldFormulaWrong = "CHINH TAC GIA DANH DAU CONG THUC CU LA SAI: -- 20231209. HuongTTT: Sai tren dong TotalValCusPmt cu; dong active dung RepairAmountAfterVAT - TotalCusDebitAmount. Port dong ACTIVE",
+        customerCodePrefersSalesId = "CustomerCode UU TIEN MA KHACH BEN SALES: case when sc.SalesCusID <> '' then sc.SalesCusID else CONVERT(varchar, sr.CusID) end (-- 20240401) => MOT KHACH CO HAI MA, Veloca lay ma Sales neu co",
+        reminderKmComparedToEmptyString = "ReminderMaintanceKm = '' — lai so cot SO voi chuoi rong (dung ho da ghi o #705)",
+        bhInvoiceCtmCodeHardcoded = "HTV BHInvoiceCTMCode — don vi bao hanh GO CUNG (-- 20240220)",
+        negative20260323AppliedToBothSiblings = "AM TINH — BUOC 3B: thay doi 20260323 DUOC AP CHO CA HAI ANH EM. May 150 bo PAID khoi not in o CA Incomplete_Get (#705) LAN ham nay => KHONG co canh danh sach tra lenh PAID nhung chi tiet tu choi. Laptop cu o CA HAI. Port theo ban 150. md5: laptop 915f8fdf (17504-18804) vs 150 7a1ff20c (17505-18806)",
+        standardizeParamOnlyInThisSibling = "BAT DOI XUNG: ham nay goi TUtils.CUtils.StandardizeParam(strROID) con #705 KHONG chuan hoa BAT KY tham so nao trong bay tham so cua no",
+        miniModelGap = "Mini CHUA MO HINH HOA `19 bang master ma nguon tra kem (khoang sua chua Ser_Cavity, chien dich Ser_Campaign, hop dong bao hiem, Map_CustomerAndCar, Ser_ROPrdServiceType, Ser_Mst_TradeMark/Model/Part, Ser_Engineer …) => port bang RO CHI TIET (Table 8) va ghi NO phan con lai",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #705 VELOCA: DANH SÁCH LỆNH SỬA CHỮA CHƯA HOÀN TẤT =====
 // `OSVeloca_Ser_RO_Incomplete_Get` (`BizCarSv.ZTemp.cs:17137-17503`, md5 `9074239a` — **KHỚP máy 150, cùng
 // offset**). WS `WSCarSv.asmx.cs:12315` → `GET /api/osveloca/repairorders/incomplete`.
