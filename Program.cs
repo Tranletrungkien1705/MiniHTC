@@ -31777,6 +31777,204 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   trong cùng `select`**; đọc lướt dễ tưởng hai mốc khác nhau.
 // 🔴 Trả **BA bảng**: `Rpt_HR_SalesMan_ForMonth` · `…ForQuy` · `…ForYear` (ba `select … group by` **không**
 //   có `into`; chỉ các bảng `_Draft` mới `into`).
+
+// ===== #B287/#B288/#B289 NGÀY DỰ KIẾN LẬP LỆNH XUẤT XE —
+//       `Rpt_CarDeliveryOrderExpect_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`)
+//       + builder `RptSQLQuery.mySql_Rpt_CarDeliveryOrderExpect_WH()` =====
+// **3B khớp cả 2 máy** — cửa theo TÊN (lệch 5 dòng), builder **trùng vị trí**:
+//   cửa laptop `153445,153599` ≡ 150 `153450,153604` ⇒ **`5ba09a62bf284105927d1137383c4d47`**
+//   builder `RptSQLQuery.cs 32790,33300` (cả hai máy) ⇒ **`e3537531b898cfa7a9ffd81f3b0a8d5c`**
+// 🔴🔴🔴 **BUG THẬT #1 — CẢ BỐN THAM SỐ LỌC NGÀY BỊ COMMENT Ở `where` CUỐI**:
+//     `where(1=1)`
+//     `  --and t.MaxDateDF >= '@…DFFrom' and t.MaxDateDF <= '@…DFTo'`
+//     `  --and t.MaxDatePM >= '@…PMFrom' and t.MaxDatePM <= '@…PMTo'`
+//     `  --and cdo.DeliveryOrderStatus = 'A2'`
+//   ⇒ Bốn tham số của hàm **chỉ xuất hiện trong DÒNG COMMENT** ⇒ **hoàn toàn VÔ TÁC DỤNG**;
+//     báo cáo **trả TOÀN BỘ xe**, không giới hạn kỳ. Điều kiện `DeliveryOrderStatus = 'A2'` cũng bị bỏ
+//     ở `where` (chỉ còn trong `on` của `left join Car_DeliveryOrder` nên **không lọc dòng**).
+//   📌 **KHÔNG tự vá**: port nhận tham số nhưng **không lọc**, trả cờ `sourceDateFiltersCommented`
+//     + `filterEcho` để người vận hành thấy ngay giá trị họ chọn **không được áp dụng**.
+// 🔴🔴🔴 **BUG THẬT #2 — "MAX ba ngày" viết bằng `case` KHÔNG XỬ LÝ BẰNG NHAU và NULL, `else` lấy N1**:
+//     `case when (N1 > N2 and N1 > N3) then N1  when (N2 > N1 and N2 > N3) then N2`
+//     `     when (N3 > N1 and N3 > N2) then N3  **else N1** end as MaxDate…`
+//   ⇒ (a) hai ngày **bằng nhau** mà lớn nhất ⇒ không nhánh nào đúng ⇒ **rơi `else` ⇒ lấy N1**;
+//     (b) **chỉ cần MỘT trong ba ngày NULL** thì mọi so sánh thành UNKNOWN ⇒ **rơi `else` ⇒ lấy N1**
+//     **kể cả khi N1 là ngày NHỎ NHẤT** ⇒ **ngày dự kiến giao xe SAI**.
+//   ⚠️ Đây là hiện thực đúng của luật `C0-sescentesimusquartus`, nhưng hệ quả nặng hơn (sai NGÀY, không
+//     chỉ sai nhãn). Port giữ đúng và trả `maxDateFellBackToN1` liệt kê các dòng rơi vào `else`.
+// 🔴🔴 **BUG THẬT #3 — `left join … on (1=1)` = TÍCH DESCARTES lịch × xe, rồi `identity` KHÔNG `order by`**:
+//     `from Mst_Calendar mcal left join #tbl_…_Draft t **on (1=1)**`
+//     `where … mcal.CalendarType='WORKINGDAY' and mcal.StatusValue=0 and mcal.Date >= t.ApprovedDate2`
+//     `select **identity(bigint,0,1) MyIdxSeq**, … into #tbl_Mst_Calendar_ApprovedDate2`
+//   ⇒ (a) **bùng nổ dòng** (mỗi xe × mọi ngày làm việc từ mốc trở đi);
+//     (b) bước sau nhảy `t.MyIdxSeq **+ 10** = t1.MyIdxSeq` để lấy "ngày làm việc thứ 10" — **chỉ đúng nếu
+//     identity được cấp theo thứ tự `(CarId, Date)`**, mà `select … into` **không có `order by`**
+//     ⇒ **thứ tự identity KHÔNG XÁC ĐỊNH** (cùng lớp #B254(c), #B266) ⇒ **có thể nhảy sang xe khác/ngày khác**.
+//     Điều kiện `and t.CarId = t1.CarId` chặn được lẫn xe, **nhưng không chặn được lệch thứ tự ngày**.
+// 🔴 **BỐN HẰNG SỐ NGÀY LÀM VIỆC viết cứng trong SQL**: bản **Default** `N1 = +10`, `N3 = +4`;
+//   bản **PM** `N1 = +5`, `N3 = +4`. `N2` **không cộng ngày** — lấy thẳng `cv.CQExpectedDate`.
+//   ⇒ `MaxDate = max(N1, N2, N3)` với N1 = ngày duyệt SO cấp 2 + k ngày làm việc, N3 = ngày ĐN giao hồ sơ
+//     + 4 ngày làm việc, N2 = ngày dự kiến KTCL.
+// 🔴 **UDF của DB `dbo.f_WorkingDate_Get_01(...)`** dùng để quy ngày về ngày làm việc — MiniHTC **không có**
+//   ⇒ NỢ, port dùng chính `Mst_Calendar` để dò ngày làm việc gần nhất.
+// ⚠️ **Chú thích KHÔNG khớp code**: `---- #tbl_Car_Car_Filter: Lấy các VIN **chưa có lệnh xuất xe** và đã
+//   được map VIN` nhưng điều kiện thực tế chỉ là `t.FlagAllowChangeVIN = '1' and t.VIN is not null`
+//   — **không hề kiểm lệnh xuất xe**.
+// ⚠️ **CỘT TRÙNG TÊN trong cùng `select`**: `cdod.DeliveryEndDate CDODDeliveryEndDate` viết **hai lần liền
+//   nhau**, và bộ `CDODStorageCode/DeliveryStartDate/DeliveryOutDate/DeliveryEndDate` **lặp lại lần nữa**
+//   ở dưới ⇒ `DataTable` sinh cột `…1`, `…2` (cùng khuôn #B257).
+// 🔴 `DutyCompletedDate` = **`max(pmg.DateOpen, pmpd_Deposit.PaymentEndDateMax)`** viết dài bằng 5 nhánh
+//   `case`, và **trả `null` khi (cọc `'F'` + bảo lãnh) < `UnitPriceActual`**.
+// 🔴 **BỐN tầng caching thanh toán khác nhau** trong cùng câu: `Temp` (`'A','F'`) · `A_Deposit`
+//   (`'A','F'` + `GuaranteeNo is null`) · `Deposit` (**`'F'`** + `GuaranteeNo is null`) ·
+//   `Deposit_TTBL_and_TTC` ⇒ **không dùng chung một hàm "tính tiền cọc"** (đúng cảnh báo ở #B125).
+// ⚠️ `Thread.Sleep(4000)` trên đường thành công — **KHÔNG port**.
+app.MapGet("/api/reports/car-delivery-order-expect", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? expectDateDFFrom, DateTime? expectDateDFTo,
+    DateTime? expectDatePMFrom, DateTime? expectDatePMTo) =>
+{
+    // 🔴 Bốn tham số này ở nguồn nằm trong DÒNG COMMENT ⇒ KHÔNG lọc. Giữ đúng, chỉ echo lại.
+    var filterEcho = new
+    {
+        expectDateDFFrom = expectDateDFFrom ?? new DateTime(1900, 1, 1),
+        expectDateDFTo = expectDateDFTo ?? new DateTime(2100, 1, 1),
+        expectDatePMFrom = expectDatePMFrom ?? new DateTime(1900, 1, 1),
+        expectDatePMTo = expectDatePMTo ?? new DateTime(2100, 1, 1)
+    };
+
+    // #tbl_Car_Car_Filter — điều kiện THỰC TẾ (chú thích nói khác).
+    var cars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.VIN != "" && v.FlagAllowChangeVIN == "1")
+        .ToListAsync();
+
+    // Lịch ngày làm việc: CalendarType = 'WORKINGDAY' và StatusValue = 0.
+    var workingDays = (await db.MstCalendars
+            .Where(c => c.OrgId == t.OrgId && c.CalendarType == "WORKINGDAY" && c.StatusValue == "0")
+            .ToListAsync())
+        .Select(c => c.Date.Date).Distinct().OrderBy(d => d).ToList();
+
+    // Nhảy k NGÀY LÀM VIỆC kể từ mốc (port tất định — nguồn dựa vào identity KHÔNG order by).
+    DateTime? AddWorkingDays(DateTime? anchor, int k)
+    {
+        if (anchor is null) return null;
+        var idx = workingDays.FindIndex(d => d >= anchor.Value.Date);
+        if (idx < 0) return null;
+        var target = idx + k;
+        return target < workingDays.Count ? workingDays[target] : (DateTime?)null;
+    }
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    // Bốn tầng caching thanh toán — KHÔNG dùng chung (đúng cảnh báo #B125).
+    var carIds = cars.Where(c => c.CarId != null).Select(c => c.CarId!).Distinct().ToList();
+    var payTotal = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, false);
+    var payADeposit = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
+    var payDeposit = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "F" }, true);
+
+    var grtLines = (await db.BankGuaranteeDtls
+            .Where(g => g.OrgId == t.OrgId
+                        && (g.GuaranteeDetailStatus == "A" || g.GuaranteeDetailStatus == "F"))
+            .ToListAsync())
+        .GroupBy(g => g.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var grtHeads = (await db.BankGuarantees.Where(g => g.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(g => g.Id);
+
+    var rows = new List<object>();
+    var maxDateFellBackToN1 = new List<object>();
+    foreach (var cv in cars)
+    {
+        // N1 = ngày duyệt SO cấp 2 + k ngày làm việc; N2 = CQExpectedDate; N3 = ngày ĐN giao hồ sơ + 4.
+        // 📌 NỢ: `Ord_SalesOrder.ApprovedDate2` chưa nối được trong MiniHTC ⇒ N1 để null.
+        DateTime? approvedDate2 = null;
+        DateTime? docDeliveryReqDate = null;             // 📌 NỢ: Car_VIN.DocDeliveryReqDate chưa có
+
+        var n1DF = AddWorkingDays(approvedDate2, 10);
+        var n2 = cv.CQExpectedDate;
+        var n3DF = AddWorkingDays(docDeliveryReqDate, 4);
+        var n1PM = AddWorkingDays(approvedDate2, 5);
+        var n3PM = AddWorkingDays(docDeliveryReqDate, 4);
+
+        // 🔴 "MAX" của nguồn: ba nhánh so SÁNH THẬT SỰ LỚN HƠN, còn lại `else` ⇒ N1.
+        DateTime? PseudoMax(DateTime? a, DateTime? b, DateTime? c, out bool fellBack)
+        {
+            fellBack = false;
+            if (a.HasValue && b.HasValue && c.HasValue)
+            {
+                if (a > b && a > c) return a;
+                if (b > a && b > c) return b;
+                if (c > a && c > b) return c;
+            }
+            fellBack = true;                              // bằng nhau HOẶC có NULL ⇒ else ⇒ N1
+            return a;
+        }
+
+        var maxDF = PseudoMax(n1DF, n2, n3DF, out var fbDF);
+        var maxPM = PseudoMax(n1PM, n2, n3PM, out var fbPM);
+        if (fbDF || fbPM)
+            maxDateFellBackToN1.Add(new { cv.VIN, cv.CarId, N1DF = n1DF, N2 = n2, N3DF = n3DF, fellBackDF = fbDF, fellBackPM = fbPM });
+
+        var cid = cv.CarId ?? "";
+        var total = (cid.Length > 0 && payTotal.TryGetValue(cid, out var pt)) ? pt.AmountTotal : 0m;
+        var aDep = (cid.Length > 0 && payADeposit.TryGetValue(cid, out var pa)) ? pa.AmountTotal : 0m;
+        var dep = (cid.Length > 0 && payDeposit.TryGetValue(cid, out var pd)) ? pd : (0m, (DateTime?)null);
+        var grtValue = grtLines.TryGetValue(cv.VIN, out var gl) ? gl.GrtValue : 0m;
+        DateTime? dateOpen = (grtLines.TryGetValue(cv.VIN, out var gl2)
+            && grtHeads.TryGetValue(gl2.GuaranteeId, out var gh)) ? gh.DateOpen : null;
+
+        var unitPrice = cv.UnitPriceActual ?? 0m;
+        // 🔴 DutyCompletedDate = max(DateOpen, PaymentEndDateMax), null nếu chưa đủ giá trị xe.
+        DateTime? dutyCompletedDate;
+        if (dep.Item1 + grtValue < unitPrice) dutyCompletedDate = null;
+        else if (dateOpen is null) dutyCompletedDate = dep.Item2;
+        else if (dep.Item2 is null) dutyCompletedDate = dateOpen;
+        else dutyCompletedDate = dateOpen < dep.Item2 ? dep.Item2 : dateOpen;
+
+        dealers.TryGetValue(cv.DealerCode ?? "", out var dlr);
+        rows.Add(new
+        {
+            cv.CarId, cv.VIN, cv.DealerCode,
+            MDDEALERCODE = cv.DealerCode, MDDEALERNAME = dlr?.DealerName,
+            SpecCode = cv.ActualSpec, cv.ModelCode, cv.ColorCode,
+            SpecDescription = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+            ApprovedDate2 = approvedDate2, cv.CQExpectedDate, DocDeliveryReqDate = docDeliveryReqDate,
+            N1DateDayTDF = n1DF, N2DateDayTDF = n2, N3DateDayTDF = n3DF,
+            N1DateDayTPM = n1PM, N2DateDayTPM = n2, N3DateDayTPM = n3PM,
+            CDOEXPECTEDDATEDF = maxDF, CDOEXPECTEDDATEPM = maxPM,
+            PMPDAmountTotal = total,
+            PMPDAmountTotal_Deposit = aDep,
+            PMPDAmountTotal_Guarantee = total - aDep,
+            DutyCompletedAmount = dep.Item1 + grtValue,
+            DutyCompletedAmount_AF = aDep + grtValue,
+            DutyCompletedDate = dutyCompletedDate,
+            UnitPriceActual = unitPrice,
+            MyTotal = 1
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_CarDeliveryOrderExpect = rows,
+        filterEcho,
+        sourceDateFiltersCommented = true,
+        maxDateFellBackToN1,
+        commentedFiltersNote = "BUG THAT #1 - CA BON THAM SO LOC NGAY BI COMMENT O 'where' CUOI: '--and t.MaxDateDF >= @...DFFrom and t.MaxDateDF <= @...DFTo', '--and t.MaxDatePM >= ... ', '--and cdo.DeliveryOrderStatus = A2'. Bon tham so cua ham CHI xuat hien trong DONG COMMENT => HOAN TOAN VO TAC DUNG; bao cao TRA TOAN BO XE, khong gioi han ky. Dieu kien DeliveryOrderStatus='A2' cung bi bo o where (chi con trong 'on' cua left join nen KHONG loc dong). KHONG TU VA - xem filterEcho.",
+        pseudoMaxBugNote = "BUG THAT #2 - 'MAX ba ngay' viet bang case KHONG XU LY BANG NHAU va NULL, else lay N1: 'case when (N1>N2 and N1>N3) then N1 when (N2>N1 and N2>N3) then N2 when (N3>N1 and N3>N2) then N3 else N1 end'. (a) hai ngay BANG NHAU ma lon nhat => khong nhanh nao dung => roi else => lay N1; (b) CHI CAN MOT trong ba ngay NULL thi moi so sanh thanh UNKNOWN => roi else => LAY N1 KE CA KHI N1 NHO NHAT => NGAY DU KIEN GIAO XE SAI. Hien thuc dung cua luat C0-sescentesimusquartus nhung he qua nang hon (sai NGAY). Xem maxDateFellBackToN1.",
+        cartesianIdentityNote = "BUG THAT #3 - 'left join ... on (1=1)' = TICH DESCARTES lich x xe, roi identity KHONG order by: 'from Mst_Calendar mcal left join #tbl_..._Draft t on (1=1) where ... mcal.Date >= t.ApprovedDate2' roi 'select identity(bigint,0,1) MyIdxSeq ... into'. (a) BUNG NO DONG (moi xe x moi ngay lam viec tu moc tro di); (b) buoc sau nhay 't.MyIdxSeq + 10 = t1.MyIdxSeq' de lay 'ngay lam viec thu 10' - CHI DUNG NEU identity duoc cap theo thu tu (CarId, Date), ma select...into KHONG CO order by => THU TU IDENTITY KHONG XAC DINH (cung lop #B254(c), #B266). Dieu kien 'and t.CarId = t1.CarId' chan duoc lan xe nhung KHONG chan duoc lech thu tu ngay. Port dung Mst_Calendar de nhay ngay lam viec MOT CACH TAT DINH.",
+        workingDayConstantsNote = "BON HANG SO NGAY LAM VIEC viet cung trong SQL: ban Default N1 = +10, N3 = +4; ban PM N1 = +5, N3 = +4. N2 KHONG cong ngay - lay thang cv.CQExpectedDate. MaxDate = max(N1, N2, N3).",
+        udfNote = "UDF cua DB 'dbo.f_WorkingDate_Get_01(...)' dung de quy ngay ve ngay lam viec - MiniHTC KHONG CO => port dung chinh Mst_Calendar (CalendarType='WORKINGDAY', StatusValue=0) de do ngay lam viec.",
+        commentMismatchNote = "CHU THICH KHONG KHOP CODE: '#tbl_Car_Car_Filter: Lay cac VIN CHUA CO LENH XUAT XE va da duoc map VIN' nhung dieu kien thuc te chi la 't.FlagAllowChangeVIN = 1 and t.VIN is not null' - KHONG he kiem lenh xuat xe.",
+        duplicateColumnNote = "COT TRUNG TEN trong cung select: 'cdod.DeliveryEndDate CDODDeliveryEndDate' viet HAI LAN LIEN NHAU, va bo CDODStorageCode/DeliveryStartDate/DeliveryOutDate/DeliveryEndDate LAP LAI LAN NUA o duoi => DataTable sinh cot ...1, ...2 (cung khuon #B257).",
+        dutyCompletedDateNote = "DutyCompletedDate = max(pmg.DateOpen, pmpd_Deposit.PaymentEndDateMax) viet dai bang 5 nhanh case, va TRA NULL khi (coc 'F' + bao lanh) < UnitPriceActual.",
+        fourCachingLayersNote = "BON tang caching thanh toan khac nhau trong cung cau: Temp ('A','F'); A_Deposit ('A','F' + GuaranteeNo is null); Deposit ('F' + GuaranteeNo is null); Deposit_TTBL_and_TTC => KHONG dung chung mot ham 'tinh tien coc' (dung canh bao #B125).",
+        sleepNote = "Thread.Sleep(4000) tren duong thanh cong - KHONG PORT.",
+        debtNote = "NO: Ord_SalesOrder.ApprovedDate2 va Car_VIN.DocDeliveryReqDate chua noi duoc trong MiniHTC => N1/N3 tra NULL (va do do MaxDate roi ve N1 = NULL). Khong bia ngay. Cac cot CT_PackingList / Car_InvoiceListDetail / Car_DeliveryOrderDetail cung chua noi."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/hrsalesman-summary", async (
     AppDbContext db, ITenantContext t, string? dealerCode, string? smType,
     DateTime? hrMonthFrom, DateTime? hrMonthTo) =>
