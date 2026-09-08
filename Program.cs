@@ -9859,6 +9859,196 @@ app.MapPost("/api/dms40/auto-estimate-delivery-plan/rebuild-storage-cache", asyn
     });
 }).RequireAuthorization();
 
+// ===== #B136/#B137/#B138 TỶ LỆ PHÂN BỔ XE THEO KHO — `Auto_MapVIN_StorageRate_Get` / `_GetWH` / `_Save`
+//       (`DMS40/zTemp.0.20.MapVIN.cs`, csproj dòng 127 `<Compile Include>` ⇒ **file SỐNG**) =====
+// Trace LIVE: WS64 `:18997` (Get) · `:19079` (GetWH) · `:18918` (Save).
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `76743,76994 / b4a7f772c3d68e61d78ed59acec4da0c`  (Get)
+//   `76995,77248 / f11a83309f11e7817ed29cd4d5ba7d08`  (GetWH)
+//   `77249,77700 / 4bf852995dcb07d885d83a4b24b01526`  (Save)
+// 🔴 **KHOÁ NGHIỆP VỤ LÀ BỘ BỐN**: `(StorageCode, ModelCode, SpecCode, ColorExtCode)` — mọi `inner
+//   join`, `delete` và `order by` đều theo đủ bốn cột. Bỏ sót một cột là **gộp nhầm dòng**.
+// 🔴 **BA MIỀN, KHÔNG PHẢI MỘT TỶ LỆ**: `MBVal` (Bắc) · `MTVal` (Trung) · `MNVal` (Nam) — mỗi bộ bốn
+//   có **ba** giá trị độc lập; guard nguồn: **mỗi giá trị `< 0` ⇒ `…_Save_InvalidValue`**
+//   (⚠️ **cùng MỘT mã lỗi cho cả ba cột** ⇒ thông báo không chỉ ra cột nào sai — giữ nguyên).
+//   ⚠️ Nguồn **không** kiểm tổng ba miền bằng 100 hay bất kỳ trần nào — **không tự thêm**.
+// 🔴 **PHÂN TRANG kiểu `identity(bigint,0,1) MyIdxSeq`**: đánh số vào bảng tạm *Draft* rồi cắt trang
+//   bằng `MyIdxSeq between @start and @end`. **`MyCount` được đếm trên bảng Draft — TRƯỚC khi cắt
+//   trang** ⇒ tổng số dòng là của **toàn bộ kết quả lọc**, không phải của trang. Trả ở bảng
+//   **`MySummaryTable`**. ⚠️ `MyIdxSeq` bắt đầu từ **0**.
+// 🔴 **`#tblMst_CarColor` được `select distinct` TRƯỚC khi join** — nguồn cố ý gom màu về duy nhất
+//   theo `(ModelCode, ColorExtCode)`; join thẳng `Mst_CarColor` sẽ **nở dòng** vì bảng đó còn tách
+//   theo màu nội thất.
+// 🔴 Ba `left join` làm giàu: `Mst_CarModel` (ModelCode) · `Mst_CarSpec` (**ModelCode + SpecCode**) ·
+//   `#tblMst_CarColor` (**ModelCode + ColorExtCode**) — tiền tố bí danh `mcm_` / `mcs_` / `mcc_`.
+// 🔴 **`_Save` = XOÁ THEO BỘ BỐN RỒI CHÈN LẠI** (không `update`): `delete t from Auto_MapVIN_StorageRate t
+//   inner join #input… f on <đủ 4 cột>` rồi `if (!bIsDelete) insert into …`.
+//   ⇒ **`FlagIsDelete = "1"` (`TConst.Flag.Yes`) ⇒ CHỈ XOÁ**, không chèn lại. Một endpoint, hai việc.
+//   Ghi **cả `_dbMain` và `_dbWH`**.
+// 🔴 Guard tồn tại trước khi ghi, **mỗi thứ một mã lỗi**: `…_InvalidStorageCode` · `…_InvalidModelCode`
+//   · `…_InvalidSpecCode` · `…_InvalidColorExtCode`; bảng đầu vào thiếu ⇒ `…TblNotFound`.
+// 🔴 **`_GetWH` khác `_Get` đúng một điểm: đọc trên DB Warehouse** (khuôn #B129) ⇒ MiniHTC một CSDL
+//   ⇒ trả cùng số liệu, cờ `sameDbAsMain`.
+// 📌 §12: thực thể `AutoMapVinStorageRate` + Seeder + DbSet + DTO + có ở **cả POST và GET**.
+static async Task<IResult> AutoMapVinStorageRateGetAsync(
+    AppDbContext db, ITenantContext t, string? storageCode, string? modelCode, string? specCode,
+    string? colorExtCode, int? recordStart, int? recordCount, bool isWh)
+{
+    var q = db.AutoMapVinStorageRates.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(storageCode)) q = q.Where(r => r.StorageCode == storageCode.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(r => r.ModelCode == modelCode.Trim());
+    if (!string.IsNullOrWhiteSpace(specCode)) q = q.Where(r => r.SpecCode == specCode.Trim());
+    if (!string.IsNullOrWhiteSpace(colorExtCode)) q = q.Where(r => r.ColorExtCode == colorExtCode.Trim());
+
+    var all = await q
+        .OrderBy(r => r.StorageCode).ThenBy(r => r.ModelCode)
+        .ThenBy(r => r.SpecCode).ThenBy(r => r.ColorExtCode)
+        .ToListAsync();
+
+    // 🔴 MyCount đếm TRƯỚC khi cắt trang.
+    var myCount = all.Count;
+
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId)
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.ModelCode, s.SpecCode, s.SpecDesc }).ToListAsync())
+        .GroupBy(s => (s.ModelCode ?? "") + "|#|" + s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+    // 🔴 distinct TRƯỚC khi join — tránh nở dòng vì màu nội thất.
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorExtCode, c.ColorExtName, c.ColorExtNameVN }).ToListAsync())
+        .GroupBy(c => (c.ModelCode ?? "") + "|#|" + (c.ColorExtCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.First());
+
+    var items = page.Select((r, i) => new
+    {
+        MyIdxSeq = start + i,                       // 🔴 đánh số bắt đầu từ 0
+        r.StorageCode, r.ModelCode, r.SpecCode, r.ColorExtCode,
+        r.MBVal, r.MTVal, r.MNVal, r.LogLUDateTime, r.LogLUBy,
+        mcm_ModelCode = r.ModelCode,
+        mcm_ModelName = models.TryGetValue(r.ModelCode, out var mn) ? mn : null,
+        mcs_SpecCode = r.SpecCode,
+        mcs_SpecDescription = specs.TryGetValue(r.ModelCode + "|#|" + r.SpecCode, out var sd) ? sd : null,
+        mcc_ColorExtCode = r.ColorExtCode,
+        mcc_ColorExtName = colors.TryGetValue(r.ModelCode + "|#|" + r.ColorExtCode, out var cc) ? cc.ColorExtName : null,
+        mcc_ColorExtNameVN = colors.TryGetValue(r.ModelCode + "|#|" + r.ColorExtCode, out var cc2) ? cc2.ColorExtNameVN : null
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Auto_MapVIN_StorageRate = items,
+        recordStart = start, recordCount = count,
+        sameDbAsMain = isWh,
+        keyNote = "KHOA NGHIEP VU LA BO BON (StorageCode, ModelCode, SpecCode, ColorExtCode) - moi inner join, delete va order by deu theo du bon cot. Bo sot mot cot la GOP NHAM DONG.",
+        threeRegionNote = "BA MIEN, KHONG PHAI MOT TY LE: MBVal (Bac) / MTVal (Trung) / MNVal (Nam) - moi bo bon co BA gia tri doc lap. Nguon KHONG kiem tong ba mien bang 100 hay bat ky tran nao - KHONG tu them.",
+        pagingNote = "PHAN TRANG kieu identity(bigint,0,1) MyIdxSeq: danh so vao bang tam Draft roi cat trang bang MyIdxSeq between @start and @end. MyCount duoc dem TREN BANG DRAFT - TRUOC khi cat trang => tong so dong la cua TOAN BO ket qua loc, khong phai cua trang. Tra o bang MySummaryTable. MyIdxSeq bat dau tu 0.",
+        colorDistinctNote = "#tblMst_CarColor duoc select distinct TRUOC khi join - nguon co y gom mau ve duy nhat theo (ModelCode, ColorExtCode); join thang Mst_CarColor se NO DONG vi bang do con tach theo mau noi that.",
+        joinNote = "Ba left join lam giau: Mst_CarModel (ModelCode) / Mst_CarSpec (ModelCode + SpecCode) / #tblMst_CarColor (ModelCode + ColorExtCode) - tien to bi danh mcm_ / mcs_ / mcc_.",
+        whNote = "_GetWH khac _Get dung MOT diem: doc tren DB Warehouse (khuon #B129) => MiniHTC mot CSDL nen tra cung so lieu."
+    });
+}
+
+app.MapGet("/api/dms40/mapvin-storage-rates", async (
+    AppDbContext db, ITenantContext t, string? storageCode, string? modelCode, string? specCode,
+    string? colorExtCode, int? recordStart, int? recordCount) =>
+    await AutoMapVinStorageRateGetAsync(db, t, storageCode, modelCode, specCode, colorExtCode,
+                                        recordStart, recordCount, false)).RequireAuthorization();
+
+app.MapGet("/api/dms40/mapvin-storage-rates-wh", async (
+    AppDbContext db, ITenantContext t, string? storageCode, string? modelCode, string? specCode,
+    string? colorExtCode, int? recordStart, int? recordCount) =>
+    await AutoMapVinStorageRateGetAsync(db, t, storageCode, modelCode, specCode, colorExtCode,
+                                        recordStart, recordCount, true)).RequireAuthorization();
+
+app.MapPost("/api/dms40/mapvin-storage-rates/save", async (
+    AutoMapVinStorageRateSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null)
+        return Results.BadRequest(new { error = "Auto_MapVIN_StorageRate_Save_Input_Auto_MapVIN_StorageRateTblNotFound" });
+
+    // 🔴 FlagIsDelete = "1" (TConst.Flag.Yes) ⇒ CHỈ XOÁ, không chèn lại.
+    var isDelete = (dto.FlagIsDelete ?? "0").Trim() == "1";
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var storages = (await db.Storages.Where(s => s.OrgId == t.OrgId).Select(s => s.StorageCode).ToListAsync()).ToHashSet();
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => m.ModelCode).ToListAsync()).ToHashSet();
+    var specKeys = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.ModelCode, s.SpecCode }).ToListAsync())
+        .Select(s => (s.ModelCode ?? "") + "|#|" + s.SpecCode).ToHashSet();
+    var colorKeys = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorExtCode }).ToListAsync())
+        .Select(c => (c.ModelCode ?? "") + "|#|" + (c.ColorExtCode ?? "")).ToHashSet();
+
+    // 🔴 Guard tồn tại + guard giá trị — mỗi thứ một mã lỗi, kiểm TRƯỚC khi ghi bất kỳ dòng nào.
+    foreach (var r in dto.Rows)
+    {
+        var sc = (r.StorageCode ?? "").Trim();
+        var mc = (r.ModelCode ?? "").Trim();
+        var sp = (r.SpecCode ?? "").Trim();
+        var ce = (r.ColorExtCode ?? "").Trim();
+        if (!storages.Contains(sc))
+            return Results.BadRequest(new { error = "Auto_MapVIN_StorageRate_Save_InvalidStorageCode", check = new { StorageCode = sc } });
+        if (!models.Contains(mc))
+            return Results.BadRequest(new { error = "Auto_MapVIN_StorageRate_Save_InvalidModelCode", check = new { ModelCode = mc } });
+        if (!specKeys.Contains(mc + "|#|" + sp))
+            return Results.BadRequest(new { error = "Auto_MapVIN_StorageRate_Save_InvalidSpecCode", check = new { ModelCode = mc, SpecCode = sp } });
+        if (!colorKeys.Contains(mc + "|#|" + ce))
+            return Results.BadRequest(new { error = "Auto_MapVIN_StorageRate_Save_InvalidColorExtCode", check = new { ModelCode = mc, ColorExtCode = ce } });
+        // 🔴 Cả ba cột dùng CHUNG một mã lỗi — giữ nguyên như nguồn.
+        if ((r.MBVal ?? 0m) < 0 || (r.MTVal ?? 0m) < 0 || (r.MNVal ?? 0m) < 0)
+            return Results.BadRequest(new
+            {
+                error = "Auto_MapVIN_StorageRate_Save_InvalidValue",
+                check = new { r.MBVal, r.MTVal, r.MNVal },
+                note = "Nguon dung CUNG MOT ma loi cho ca ba cot MBVal/MTVal/MNVal - thong bao khong chi ra cot nao sai. Giu nguyen."
+            });
+    }
+
+    // 🔴 XOÁ THEO BỘ BỐN rồi (nếu không phải chế độ xoá) CHÈN LẠI.
+    var keys = dto.Rows.Select(r => ((r.StorageCode ?? "").Trim(), (r.ModelCode ?? "").Trim(),
+                                     (r.SpecCode ?? "").Trim(), (r.ColorExtCode ?? "").Trim())).ToHashSet();
+    var existing = await db.AutoMapVinStorageRates.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var toDelete = existing.Where(x => keys.Contains((x.StorageCode, x.ModelCode, x.SpecCode, x.ColorExtCode))).ToList();
+    db.AutoMapVinStorageRates.RemoveRange(toDelete);
+
+    var inserted = 0;
+    if (!isDelete)
+    {
+        foreach (var r in dto.Rows)
+        {
+            db.AutoMapVinStorageRates.Add(new AutoMapVinStorageRate
+            {
+                OrgId = t.OrgId,
+                StorageCode = (r.StorageCode ?? "").Trim(),
+                ModelCode = (r.ModelCode ?? "").Trim(),
+                SpecCode = (r.SpecCode ?? "").Trim(),
+                ColorExtCode = (r.ColorExtCode ?? "").Trim(),
+                MBVal = r.MBVal, MTVal = r.MTVal, MNVal = r.MNVal,
+                LogLUDateTime = now, LogLUBy = by
+            });
+            inserted++;
+        }
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        flagIsDelete = isDelete ? "1" : "0",
+        deleted = toDelete.Count,
+        inserted,
+        deleteInsertNote = "_Save = XOA THEO BO BON ROI CHEN LAI (khong update): 'delete t from Auto_MapVIN_StorageRate t inner join #input... f on <du 4 cot>' roi 'if (!bIsDelete) insert into ...'. => FlagIsDelete = '1' (TConst.Flag.Yes) => CHI XOA, khong chen lai. Mot endpoint, HAI viec.",
+        guardNote = "Guard ton tai truoc khi ghi, MOI THU MOT MA LOI: _InvalidStorageCode / _InvalidModelCode / _InvalidSpecCode / _InvalidColorExtCode; bang dau vao thieu => _Input_Auto_MapVIN_StorageRateTblNotFound. Guard gia tri: moi cot < 0 => _Save_InvalidValue (CUNG MOT ma loi cho ca ba cot).",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH (ExecQuery hai lan cho ca cau delete lan cau insert)."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -43411,6 +43601,8 @@ record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? R
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
 record TcgInvoiceHddtDeleteDto(string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B117
 record HtcInvoiceHddtDeleteDto(string? FlagisHTC, string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B118
+record AutoMapVinStorageRateRowDto(string? StorageCode, string? ModelCode, string? SpecCode, string? ColorExtCode, decimal? MBVal, decimal? MTVal, decimal? MNVal);   // #B138
+record AutoMapVinStorageRateSaveDto(string? FlagIsDelete, List<AutoMapVinStorageRateRowDto>? Rows);   // #B138
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110

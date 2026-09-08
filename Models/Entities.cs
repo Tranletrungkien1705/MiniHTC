@@ -9334,6 +9334,25 @@ public sealed class AutoEstDlvPlanStorage
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B136–#B138 — `Auto_MapVIN_StorageRate`: tỷ lệ phân bổ xe theo **kho × model × spec ×
+/// màu ngoại thất**, tách theo **ba miền**: `MBVal` (Bắc) · `MTVal` (Trung) · `MNVal` (Nam).
+/// Khoá nghiệp vụ là **bộ BỐN** (StorageCode, ModelCode, SpecCode, ColorExtCode) — nguồn `delete`
+/// theo đúng bộ bốn này rồi `insert` lại.</summary>
+public sealed class AutoMapVinStorageRate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StorageCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorExtCode { get; set; } = "";
+    public decimal? MBVal { get; set; }
+    public decimal? MTVal { get; set; }
+    public decimal? MNVal { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
