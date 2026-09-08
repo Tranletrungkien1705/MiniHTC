@@ -33450,6 +33450,60 @@ app.MapPost("/api/cardrivertests/htc-update", async (
     });
 }).RequireAuthorization();
 
+
+
+// ===== #B183 NGÂN HÀNG CỦA ĐẠI LÝ — `Mst_DealerBankGet_New20181119` (`:184080`) — ĐỐI CHIẾU PARITY =====
+// **3B khớp cả 2 máy** (căn theo tên, lệch **+5**): `184080,184268 / d325bbb7fde5c0dbea499261c4c615c5`.
+// 📌 Màn **đã port** (`/api/dealerbanks`, entity `DealerBank` đủ cột). Lượt này đọc nguồn để đối chiếu:
+// 🔴 Nguồn `select mdb.* from Mst_DealerBank mdb **inner join Mst_Bank mb on mb.BankCode = mdb.BankCode**`
+//   ⇒ **`inner join`**: dòng có `BankCode` **không tồn tại** trong `Mst_Bank` sẽ **biến mất khỏi kết quả**
+//     — không phải `left join`. Bản port cũ đọc thẳng bảng ⇒ **hiện cả dòng mồ côi**.
+//   ⇒ Bổ sung endpoint đối chiếu để thấy **chênh lệch số dòng** giữa hai cách.
+// 🔴 Nguồn trả **một bảng** tên `Mst_DealerBank`, có tiền tố bí danh **`mdb.`** cho cột và join thêm
+//   `Mst_CarSpec` ở khối cột phụ.
+app.MapGet("/api/dealerbanks/htc-paged", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? bankCode,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.DealerBanks.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
+    if (!string.IsNullOrWhiteSpace(bankCode)) q = q.Where(x => x.BankCode == bankCode.Trim());
+    var all = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.BankCode).ToListAsync();
+
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId)
+        .Select(b => new { b.BankCode, b.BankName }).ToListAsync())
+        .GroupBy(b => b.BankCode).ToDictionary(g => g.Key, g => g.First().BankName);
+
+    // 🔴 INNER JOIN như nguồn: dòng có BankCode không tồn tại trong Mst_Bank BỊ LOẠI.
+    var joined = all.Where(x => banks.ContainsKey(x.BankCode)).ToList();
+    var orphans = all.Where(x => !banks.ContainsKey(x.BankCode))
+        .Select(x => new { x.DealerCode, x.BankCode }).ToList();
+
+    var myCount = joined.Count;
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = joined.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_DealerBank = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            mdb_DealerCode = x.DealerCode, mdb_BankCode = x.BankCode,
+            mdb_BankBranchCode = x.BankBranchCode, mdb_BankBranchName = x.BankBranchName,
+            mdb_CreditContractNo = x.CreditContractNo, mdb_CreditContractDate = x.CreditContractDate,
+            mdb_CreditAmount = x.CreditAmount, mdb_FlagBankGrt = x.FlagBankGrt,
+            mdb_FlagBankPmt = x.FlagBankPmt, mdb_FlagActive = x.FlagActive, mdb_Remark = x.Remark,
+            mb_BankName = banks[x.BankCode]
+        }),
+        rowsBeforeJoin = all.Count,
+        orphanRows = orphans,
+        innerJoinNote = "Nguon dung INNER JOIN Mst_Bank on mb.BankCode = mdb.BankCode => dong co BankCode KHONG TON TAI trong Mst_Bank se BIEN MAT khoi ket qua - khong phai left join. Ban port cu (/api/dealerbanks) doc thang bang => HIEN CA DONG MO COI. Endpoint nay tra rowsBeforeJoin va orphanRows de thay chenh lech.",
+        aliasNote = "Nguon tra MOT bang ten 'Mst_DealerBank', cot mang tien to bi danh 'mdb.'."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -35185,8 +35239,19 @@ app.MapPost("/api/calendars/resetyear", async (CalendarResetYearDto dto, AppDbCo
 {
     var type = (dto.CalendarType ?? "").Trim();
     if (type.Length < 1) return Results.BadRequest(new { error = "Loại lịch rỗng." });
-    if (dto.Year is null || dto.Year < 1900 || dto.Year > 2100)
-        return Results.BadRequest(new { error = "Năm không hợp lệ (1900..2100)." });
+    // 🔴 #B181 VÁ GUARD NĂM theo nguồn `Mst_Calendar_ResetYear_New20181119` (`Biz.HTC.WH.cs:15618`,
+    //   3B `15618,15826 / 69bc4e2d13fecc91426cec8957aade05`, khớp cả 2 máy):
+    //   nguồn chặn `nYear < DateTime.Now.Year || nYear >= Năm(DateMax)` ⇒ **KHÔNG cho dựng lại năm
+    //   QUÁ KHỨ** (kể cả năm ngoái), nhưng **cho năm hiện tại**. Guard cũ `1900..2100` **lỏng hơn
+    //   nguồn**: cho phép xoá sạch và sinh lại lịch của **các năm đã qua** — mọi ngày lễ/ngày làm bù
+    //   đã đánh dấu trong năm cũ **mất trắng**, mà báo cáo quá khứ vẫn đọc bảng này.
+    if (dto.Year is null || dto.Year < DateTime.Now.Year || dto.Year >= 9999)
+        return Results.BadRequest(new
+        {
+            error = "Mst_Calendar_ResetYear_InvalidYear",
+            check = new { Year = dto.Year, NowYear = DateTime.Now.Year, DateMaxYear = 9999 },
+            note = "Nguon chan nYear < DateTime.Now.Year || nYear >= Nam(DateMax). Guard cu 1900..2100 LONG HON NGUON - cho xoa sach lich nam qua khu."
+        });
     var year = dto.Year.Value;
 
     // Bảng tra theo thứ trong tuần — đúng vai trò `htDayOfWeek` của nguồn.
@@ -35218,6 +35283,7 @@ app.MapPost("/api/calendars/resetyear", async (CalendarResetYearDto dto, AppDbCo
 app.MapPost("/api/calendars/updatestatus", async (CalendarUpdateDto dto, AppDbContext db, ITenantContext t) =>
 {
     var type = (dto.CalendarType ?? "").Trim();
+    if (type.Length < 1) return Results.BadRequest(new { error = "Loại lịch rỗng." });
     if (dto.Date is null) return Results.BadRequest(new { error = "Chưa chọn ngày." });
     var row = await db.MstCalendars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CalendarType == type && x.Date == dto.Date);
     if (row is null) return Results.NotFound(new { error = $"Không có ngày {dto.Date:yyyy-MM-dd} trong lịch {type}." });
