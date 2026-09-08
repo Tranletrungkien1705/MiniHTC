@@ -10803,6 +10803,23 @@ public sealed class PrincipleContract
     public string Representative { get; set; } = "";
     public string JobTitle { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // §12 #B341/#B342/#B343 — cột quy trình ký của `Rpt_PrincipleContract` (zTemp.0.34.Contract.cs).
+    // 🔴 Từ vựng NGUỒN (TERP.Constants/Const.Main.DMS40.cs): DlrSignStatus/HTCSignStatus/HTVSignStatus
+    //    đều là N,P,C,A,A1,A2,F,R,D,M — KHÔNG tự đẻ trạng thái mới.
+    // 🔴 Default LẤY TỪ NGUỒN, không tự chế: `Rpt_PrincipleContractCreate` ghi
+    //    `dtrNew["DealerSignStatus"] = StandardizeParam(TConst.Stage.Pending)` (zTemp.0.34.Contract.cs:3116)
+    //    và `TConst.Stage.Pending = "P"` (Const.Main.cs:116).
+    public string? DealerSignStatus { get; set; } = "P";  // "P" -> "A1" (DlrApprove1) -> "A2" (DlrApprove2)
+    public DateTime? DealerSignDTime { get; set; }
+    public string? DealerSignBy { get; set; }
+    public string? NPPSignStatus { get; set; } = "P";     // nguồn: dtrNew["NPPSignStatus"] = StandardizeParam(TConst.Stage.Pending) (:3115). "P" -> "A" (NPPApprove)
+    public DateTime? NPPSignDTime { get; set; }
+    public string? NPPSignBy { get; set; }
+    public string? FlagActive { get; set; } = "1";    // TConst.Flag.Active
+    public DateTime? CreateDTime { get; set; }
+    public string? FilePath { get; set; }             // file HĐ đã ký (DlrApprove2)
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master chính sách bán hàng (SPL_SalesPolicyMst) — port 1:1 FrmMstPolicy_New/Mng (2010.HTC/Sales). Chính sách hỗ trợ bán, dùng bởi duyệt SO. Header + dòng đại lý/năm SX/tiền hỗ trợ.</summary>

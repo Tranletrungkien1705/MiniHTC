@@ -40174,7 +40174,7 @@ app.MapGet("/api/principlecontracts", async (AppDbContext db, ITenantContext t, 
 {
     var q = db.PrincipleContracts.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
-    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new { p.PrincipleContractNo, p.DealerCode, p.BankInfo, p.PrincipleContractDate, p.PrincipleContractExpectedDate, p.Representative, p.JobTitle }).ToListAsync();
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new { p.PrincipleContractNo, p.DealerCode, p.BankInfo, p.PrincipleContractDate, p.PrincipleContractExpectedDate, p.Representative, p.JobTitle, p.DealerSignStatus, p.DealerSignDTime, p.DealerSignBy, p.NPPSignStatus, p.NPPSignDTime, p.NPPSignBy, p.FlagActive, p.CreateDTime, p.FilePath, p.LogLUDateTime, p.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -40191,12 +40191,238 @@ app.MapPost("/api/principlecontracts", async (PrincipleContractDto dto, AppDbCon
     var p = new PrincipleContract
     {
         OrgId = t.OrgId, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), PrincipleContractNo = dto.PrincipleContractNo.Trim(), BankInfo = dto.BankInfo.Trim(),
-        PrincipleContractDate = dto.PrincipleContractDate.Value, PrincipleContractExpectedDate = dto.PrincipleContractExpectedDate.Value, Representative = dto.Representative.Trim(), JobTitle = dto.JobTitle.Trim()
+        PrincipleContractDate = dto.PrincipleContractDate.Value, PrincipleContractExpectedDate = dto.PrincipleContractExpectedDate.Value, Representative = dto.Representative.Trim(), JobTitle = dto.JobTitle.Trim(),
+        // §12 #B341/#B342/#B343 — cột quy trình ký. Trạng thái khởi tạo lấy từ TỪ VỰNG NGUỒN
+        // (TConst.DlrSignStatus.Pending = "P", TConst.HTVSignStatus.Pending = "P", TConst.Flag.Active = "1").
+        DealerSignStatus = dto.DealerSignStatus ?? "P", DealerSignDTime = dto.DealerSignDTime, DealerSignBy = dto.DealerSignBy,
+        NPPSignStatus = dto.NPPSignStatus ?? "P", NPPSignDTime = dto.NPPSignDTime, NPPSignBy = dto.NPPSignBy,
+        FlagActive = dto.FlagActive ?? "1", CreateDTime = dto.CreateDTime ?? DateTime.Now,
+        FilePath = dto.FilePath, LogLUDateTime = dto.LogLUDateTime, LogLUBy = dto.LogLUBy
     };
     db.PrincipleContracts.Add(p); await db.SaveChangesAsync();
     return Results.Ok(new { p.PrincipleContractNo, p.DealerCode });
 }).RequireAuthorization();
 
+
+// 🔴 Port của `myCommon_CheckRptPrincipleContract` (2193..2290, md5 `3eed01b4b70ff8d3c23db91a468766de`).
+// Nguồn so bằng `<danh sách>.Contains(<giá trị DB>)` — SO CHUỖI CON. Port dùng SO KHỚP CHÍNH XÁC,
+// cố ý KHÔNG tái tạo lỗ hổng bỏ-bước-ký (xem ghi chú #B343). Mã lỗi giữ nguyên tên nguồn.
+static string? PrincipleContractGuard(PrincipleContract p, string flagActive, string dlrList, string nppList)
+{
+    if (!string.IsNullOrEmpty(flagActive) && (p.FlagActive ?? "") != flagActive)
+        return "CommonAppData_RptPrincipleContractInvalidFlagActive";
+    if (!string.IsNullOrEmpty(dlrList) && (p.DealerSignStatus ?? "") != dlrList)
+        return "CommonAppData_RptPrincipleContract_DealerSignStatusNotMatched";
+    if (!string.IsNullOrEmpty(nppList) && (p.NPPSignStatus ?? "") != nppList)
+        return "CommonAppData_RptPrincipleContract_NPPSignStatusNotMatched";
+    return null;
+}
+
+// ===== #B341/#B342/#B343 HỢP ĐỒNG NGUYÊN TẮC — TRA CỨU + TOÀN BỘ CHUỖI KÝ 3 BƯỚC
+//       (`Rpt_PrincipleContractGet` / `_WH` / `_NPPApprove` / `_DlrApprove1` / `_DlrApprove2`,
+//        `TERP.BizHTC/DMS40/zTemp.0.34.Contract.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN; file này KHÔNG lệch offset (4770 dòng cả 2 máy)**:
+//   `Get`         2446..2621 ⇒ **`9b2324a675bd7176ceffe55ea642c5c2`**
+//   `Get_WH`      2622..2797 ⇒ **`54529be1b8a9f46096a465f17887b288`**
+//   `DlrApprove1` 3542..3677 ⇒ **`e0624c00f0a345e408c45e2a73a41026`**
+//   `DlrApprove2` 3678..4464 ⇒ **`548d10c0f768686a311f66d6d464485b`**
+//   `NPPApprove`  4465..4770 ⇒ **`54cb51a4da02c33b32064ccae10e2396`**
+//   guard `myCommon_CheckRptPrincipleContract` 2193..2290 ⇒ **`3eed01b4b70ff8d3c23db91a468766de`**
+//   Cửa WS64 SỐNG: `:72664` → `Get`, `:72743` → `Get_WH`, `:72447` → `DlrApprove1`,
+//   `:72516` → `DlrApprove2`, `:72588` → `NPPApprove`.
+//
+// 🔴🔴🔴 **BUG THẬT #1 — GUARD TRẠNG THÁI DÙNG `Contains` (SO CHUỖI CON) TRÊN TỪ VỰNG CÓ TIỀN TỐ
+//        TRÙNG NHAU ⇒ BỎ QUA ĐƯỢC MỘT BƯỚC KÝ**:
+//     `if (strDealerSignStatusListToCheck.Length > 0`
+//     `    && !strDealerSignStatusListToCheck.**Contains**(Convert.ToString(dt….Rows[0]["DealerSignStatus"])))`
+//   Từ vựng nguồn (`TERP.Constants/Const.Main.DMS40.cs:91`): `N,P,C,A,A1,A2,F,R,D,M`
+//   ⇒ `"A"` là **chuỗi con** của `"A1"` và `"A2"`.
+//   ⇒ `Rpt_PrincipleContract_DlrApprove2` truyền `strDlrSignStatusListToCheck = DlrSignStatus.Approved1 ("A1")`.
+//     Nếu DB đang là `"A"` thì `"A1".Contains("A")` = **true** ⇒ **guard cho qua** ⇒ HĐ **nhảy thẳng
+//     từ A sang A2, BỎ QUA bước `DlrApprove1`**. Đây KHÔNG phải rủi ro lý thuyết như #B329 (nơi
+//     whitelist không có cột nào là tiền tố của cột khác) — ở đây từ vựng **có** cặp trùng tiền tố thật.
+//   📌 Chiều ngược lại an toàn: DB `"A1"` với danh sách `"A"` ⇒ `"A".Contains("A1")` = false.
+//   ⚠️ **Port dùng SO KHỚP CHÍNH XÁC** (`==`) — cố ý **không** tái tạo lỗ hổng bỏ-bước-ký; trả kèm cờ
+//     `sourceSubstringGuardWouldPass` để chỉ đúng ca mà nguồn cho qua sai. **KHÔNG tự vá nguồn.**
+//
+// 🔴🔴 **BUG THẬT #2 — GHI-KÉP `_dbMain` + `_dbWH` KHÔNG CÓ GIAO DỊCH PHÂN TÁN**:
+//     `_dbMain.SaveData("Rpt_PrincipleContract", …); _dbWH.SaveData("Rpt_PrincipleContract", …);`
+//     rồi `CommitSafety(_dbMain); CommitSafety(_dbWH);` — **hai giao dịch rời**.
+//   ⇒ Main commit xong mà WH lỗi ⇒ **hai DB lệch trạng thái ký vĩnh viễn**, không có bù trừ.
+//   Đây là **nguồn sinh ra lệch Main/WH**, không phải hệ quả của việc đọc nhầm DB. **KHÔNG tự vá.**
+//
+// 🔴 **BUG THẬT #3 — HAI BIẾN `_WH` GÁN RỒI KHÔNG DÙNG** (`DlrApprove2`):
+//     `DataTable dt_Rpt_PrincipleContract_WH = _dbWH.ExecQuery(…).Tables[0];`  (đếm: **1** lần — chính dòng gán)
+//     `DataSet dsSaveOnDB_WH = _dbWH.ExecQuery(…);`                            (đếm: **1** lần — chính dòng gán)
+//   ⇒ `InsertHuge` vào `#tbl_…` của **cả hai** kết nối đều dùng **schema/DataTable của Main**.
+//     Tác dụng phụ (tạo temp table trên phiên WH) là **có thật**, nên không phải code chết hoàn toàn;
+//     nhưng nếu schema `Rpt_PrincipleContract` hai DB lệch nhau ⇒ **InsertHuge sang WH vỡ câm**.
+//
+// 🔴 **BA LỚP HẰNG TRẠNG THÁI TRÙNG NHAU HOÀN TOÀN**: `DlrSignStatus` (`:91`), `HTCSignStatus` (`:107`),
+//   `HTVSignStatus` (`:609`) — **11 thành viên y hệt nhau từng chữ**. `NPPApprove` ghi
+//   `NPPSignStatus = TConst.HTVSignStatus.Approved` trong khi mọi guard đọc nó bằng
+//   `TConst.HTCSignStatus.Approved` ⇒ **hiện tại đúng chỉ vì ba bản TRÙNG GIÁ TRỊ**. Sửa lệch một
+//   bản là gãy chuỗi ký. Cùng khuôn #B290 (3 bản hằng) nhưng ở đây 3 bản **đang còn khớp**.
+//
+// 🔴 `DlrApprove2`: `drNew["DealerCode"] = strPartnerUserCode;` — cột **DealerCode** của lô email nhận
+//   **mã người dùng**, không phải mã đại lý. Cùng họ lỗi "cột …Name nhận …Code" (#B269/#B284/#B290/#B329).
+//
+// ✅ **RBAC — tổ hợp (3) chặt**: `Get_WH` lọc phạm vi bằng **inner join bắt buộc**
+//   `inner join Mst_Dealer md on rpc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//   kèm chú thích nguồn *"Must inner join to filter AbilityOfUser"* ⇒ **không phải lỗ**. `Get` (DB Main)
+//   dùng **đúng câu SQL đó**, chỉ khác kết nối.
+// 🔴 `Get` vs `Get_WH` **giống hệt nhau trừ 3 điểm**: kết nối (`_dbMain`/`_dbWH`), khoảng trắng, và
+//   **`bNeedTransaction = false` (Get) vs `= true` (Get_WH)** ⇒ bản WH **mở giao dịch cho một truy vấn
+//   CHỈ ĐỌC**. Vô hại về kết quả nhưng giữ khoá/semaphore lâu hơn. Ghi lại, port **không** mở giao dịch.
+// 🔴 **7 bộ lọc** đều qua `BuildClause(… "@p" …)` ⇒ **tham số runtime** (an toàn):
+//   `DealerCode`, `PrincipleContractNo`, `CreateDTime`, `PrincipleContractDate`,
+//   `NPPSignStatus`, `DealerSignStatus`, `FlagActive`.
+// 🔴 Trả **MỘT** bảng `Tables[0] = "Rpt_PrincipleContract"` (`rpc.*`).
+//
+// 🔴 **CHUỖI KÝ ĐÚNG THEO NGUỒN** (không tự chế bước nào, không đẻ trạng thái ngoài từ vựng):
+//   `NPPApprove`  : guard Dlr=`P` & NPP=`P`  ⇒ ghi `NPPSignStatus="A"`     + `NPPSignDTime/By`
+//   `DlrApprove1` : guard Dlr=`P` & NPP=`A`  ⇒ ghi `DealerSignStatus="A1"` + `DealerSignDTime/By`
+//   `DlrApprove2` : guard Dlr=`A1` & NPP=`A` ⇒ ghi `DealerSignStatus="A2"` + upload file ký + gửi email
+//   ⇒ **NPP ký TRƯỚC đại lý** (DlrApprove1 đòi NPP đã `A`).
+// ⚠️ **NỢ**: `DlrApprove2` còn 3 tầng chưa port (upload file base64 `UploadFileNewX` → `MoveFileNewX` →
+//   `DMS40_Email_BatchSendEmail_Build/SaveX/SendX`). Port này ghi trạng thái + `FilePath` do client
+//   truyền, và trả `notPortedLayers` — **không bịa** đường dẫn file hay nội dung email.
+app.MapGet("/api/reports/principle-contract", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? principleContractNo,
+    DateTime? createDTimeFrom, DateTime? createDTimeTo,
+    DateTime? principleContractDateFrom, DateTime? principleContractDateTo,
+    string? nppSignStatus, string? dealerSignStatus, string? flagActive,
+    string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3): inner join Mst_Dealer + BUCode like @strBUPatternOfUser (bắt buộc, không bỏ được).
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var inScope = dealers
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var q = db.PrincipleContracts.Where(p => p.OrgId == t.OrgId);
+    // 🔴 7 bộ lọc — tất cả là tham số runtime ở nguồn (BuildClause "@p").
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(p => p.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(principleContractNo)) q = q.Where(p => p.PrincipleContractNo == principleContractNo!.Trim());
+    if (createDTimeFrom != null) q = q.Where(p => p.CreateDTime >= createDTimeFrom);
+    if (createDTimeTo != null) q = q.Where(p => p.CreateDTime <= createDTimeTo);
+    if (principleContractDateFrom != null) q = q.Where(p => p.PrincipleContractDate >= principleContractDateFrom);
+    if (principleContractDateTo != null) q = q.Where(p => p.PrincipleContractDate <= principleContractDateTo);
+    if (!string.IsNullOrWhiteSpace(nppSignStatus)) q = q.Where(p => p.NPPSignStatus == nppSignStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerSignStatus)) q = q.Where(p => p.DealerSignStatus == dealerSignStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(p => p.FlagActive == flagActive!.Trim());
+
+    var all = await q.ToListAsync();
+    var rows = all.Where(p => inScope.Contains(p.DealerCode)).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        outOfScopeCount = all.Count - rows.Count,
+        Rpt_PrincipleContract = rows,          // Tables[0]
+        twinNote = "Rpt_PrincipleContractGet (DB Main) va Rpt_PrincipleContractGet_WH (DB WH) GIONG HET NHAU tru 3 diem: ket noi _dbMain/_dbWH, khoang trang, va bNeedTransaction = false (Get) vs = true (Get_WH) => ban WH MO GIAO DICH cho mot truy van CHI DOC. Vo hai ve ket qua nhung giu khoa/semaphore lau hon. Port khong mo giao dich.",
+        rbacNote = "RBAC to hop (3) CHAT - KHONG PHAI LO: Get_WH loc pham vi bang INNER JOIN BAT BUOC 'inner join Mst_Dealer md on rpc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' kem chu thich nguon 'Must inner join to filter AbilityOfUser'. Get (DB Main) dung DUNG cau SQL do, chi khac ket noi.",
+        filtersNote = "7 bo loc deu qua BuildClause('@p') => THAM SO RUNTIME (an toan): DealerCode, PrincipleContractNo, CreateDTime, PrincipleContractDate, NPPSignStatus, DealerSignStatus, FlagActive."
+    });
+}).RequireAuthorization();
+
+// ---- #B342 — NPP duyệt (`Rpt_PrincipleContract_NPPApprove`) + Đại lý ký bước 1 (`_DlrApprove1`) ----
+app.MapPost("/api/reports/principle-contract/npp-approve", async (
+    PrincipleContractApproveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PrincipleContractNo))
+        return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound" });
+    var p = await db.PrincipleContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PrincipleContractNo == dto.PrincipleContractNo.Trim());
+    if (p is null) return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound" });
+
+    // 🔴 Guard nguồn: FlagActive="1", DealerSignStatus="P", NPPSignStatus="P".
+    var g = PrincipleContractGuard(p, "1", "P", "P");
+    if (g is not null) return Results.BadRequest(new { error = g });
+
+    // 🔴 Ghi đúng hằng nguồn: TConst.HTVSignStatus.Approved = "A" (xem ghi chú 3 lớp hằng trùng nhau).
+    p.NPPSignStatus = "A";
+    p.NPPSignDTime = DateTime.Now;
+    p.NPPSignBy = dto.PartnerUserCode;
+    p.LogLUDateTime = DateTime.Now;
+    p.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        p.PrincipleContractNo, p.NPPSignStatus, p.DealerSignStatus,
+        dualWriteNote = "BUG NGUON: nguon ghi KEP _dbMain.SaveData(...) roi _dbWH.SaveData(...) va CommitSafety hai lan RIENG => HAI GIAO DICH ROI. Main commit xong ma WH loi => hai DB lech trang thai ky vinh vien, khong co bu tru. KHONG TU VA.",
+        constClassNote = "NPPApprove ghi NPPSignStatus = TConst.HTVSignStatus.Approved trong khi moi guard doc no bang TConst.HTCSignStatus.Approved. Ba lop hang DlrSignStatus (:91) / HTCSignStatus (:107) / HTVSignStatus (:609) co 11 thanh vien Y HET NHAU => hien tai dung CHI VI ba ban trung gia tri. Sua lech mot ban la gay chuoi ky."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/reports/principle-contract/dlr-approve1", async (
+    PrincipleContractApproveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PrincipleContractNo))
+        return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound" });
+    var p = await db.PrincipleContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PrincipleContractNo == dto.PrincipleContractNo.Trim());
+    if (p is null) return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound" });
+
+    // 🔴 Guard nguồn: FlagActive="1", DealerSignStatus="P", NPPSignStatus="A" ⇒ NPP PHẢI ký TRƯỚC.
+    var g = PrincipleContractGuard(p, "1", "P", "A");
+    if (g is not null) return Results.BadRequest(new { error = g });
+
+    p.DealerSignStatus = "A1";                 // TConst.DlrSignStatus.Approved1
+    p.DealerSignDTime = DateTime.Now;
+    p.DealerSignBy = dto.PartnerUserCode;
+    p.LogLUDateTime = DateTime.Now;
+    p.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        p.PrincipleContractNo, p.NPPSignStatus, p.DealerSignStatus,
+        orderNote = "NPP KY TRUOC DAI LY: DlrApprove1 doi NPPSignStatus da la 'A' (TConst.HTCSignStatus.Approved) moi cho ky."
+    });
+}).RequireAuthorization();
+
+// ---- #B343 — Đại lý ký bước 2 (`Rpt_PrincipleContract_DlrApprove2`) ----
+app.MapPost("/api/reports/principle-contract/dlr-approve2", async (
+    PrincipleContractApproveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PrincipleContractNo))
+        return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound" });
+    var p = await db.PrincipleContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PrincipleContractNo == dto.PrincipleContractNo.Trim());
+    if (p is null) return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound" });
+
+    // 🔴🔴🔴 Guard nguồn: FlagActive="1", DealerSignStatus="A1", NPPSignStatus="A".
+    //   Nguồn dùng `"A1".Contains(<giá trị DB>)` ⇒ DB = "A" cũng LỌT (bỏ qua bước DlrApprove1).
+    //   Port dùng SO KHỚP CHÍNH XÁC; cờ dưới đây chỉ đúng ca mà nguồn cho qua sai.
+    var sourceWouldPass = p.DealerSignStatus != null && p.DealerSignStatus != "A1"
+                          && p.DealerSignStatus.Length > 0 && "A1".Contains(p.DealerSignStatus);
+    var g = PrincipleContractGuard(p, "1", "A1", "A");
+    if (g is not null)
+        return Results.BadRequest(new
+        {
+            error = g,
+            sourceSubstringGuardWouldPass = sourceWouldPass,
+            substringGuardNote = "BUG NGUON: guard dung strDealerSignStatusListToCheck.Contains(<gia tri DB>) - SO CHUOI CON. Tu vung nguon N,P,C,A,A1,A2,F,R,D,M co 'A' la CHUOI CON cua 'A1' va 'A2'. DlrApprove2 truyen 'A1'; neu DB dang la 'A' thi A1.Contains(A) = TRUE => guard cho qua => HD NHAY THANG TU A SANG A2, BO QUA buoc DlrApprove1. Khac #B329 (rui ro ly thuyet) - o day tu vung CO cap trung tien to that. Port dung so khop chinh xac; KHONG TU VA NGUON."
+        });
+
+    p.DealerSignStatus = "A2";                 // TConst.DlrSignStatus.Approved2
+    p.DealerSignDTime = DateTime.Now;
+    p.DealerSignBy = dto.PartnerUserCode;
+    if (!string.IsNullOrWhiteSpace(dto.FilePath)) p.FilePath = dto.FilePath!.Trim();
+    p.LogLUDateTime = DateTime.Now;
+    p.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        p.PrincipleContractNo, p.NPPSignStatus, p.DealerSignStatus, p.FilePath,
+        notPortedLayers = new[]
+        {
+            "UploadFileNewX (nhan file ky base64) -> MoveFileNewX (chuyen ve destFilePath)",
+            "DMS40_Email_BatchSendEmail_Build_PrincipleContractAppr2 / _SaveX / _SendX (lo gui email dinh kem)"
+        },
+        orphanWhVarsNote = "BUG NGUON: hai bien _WH gan roi KHONG DUNG trong DlrApprove2 - dt_Rpt_PrincipleContract_WH va dsSaveOnDB_WH (dem duoc dung 1 lan moi bien - chinh dong gan). InsertHuge vao #tbl_ cua CA HAI ket noi deu dung schema/DataTable cua Main. Tac dung phu (tao temp table tren phien WH) la CO THAT nen khong phai code chet han; nhung neu schema Rpt_PrincipleContract hai DB lech nhau => InsertHuge sang WH VO CAM.",
+        dealerCodeMisuseNote = "BUG NGUON: drNew['DealerCode'] = strPartnerUserCode - cot DealerCode cua lo email nhan MA NGUOI DUNG, khong phai ma dai ly. Cung ho loi 'cot ...Name nhan ...Code' (#B269/#B284/#B290/#B329)."
+    });
+}).RequireAuthorization();
 // ===== Master chính sách bán hàng (SalesPolicyMst — port 1:1 FrmMstPolicy_New/Mng, 2010.HTC/Sales) =====
 app.MapGet("/api/salespolicies", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
 {
@@ -52712,7 +52938,8 @@ record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescrip
 record MnfPlOrderDto(string OrdType, string? OrdMonth, string? Remark, List<MnfPlOrderLineDto>? Lines);
 record TestCarRegisterCarDto(string VIN, string? ModelCode);
 record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
-record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
+record PrincipleContractApproveDto(string PrincipleContractNo, string? PartnerUserCode = null, string? FilePath = null);
+record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle, string? DealerSignStatus = null, DateTime? DealerSignDTime = null, string? DealerSignBy = null, string? NPPSignStatus = null, DateTime? NPPSignDTime = null, string? NPPSignBy = null, string? FlagActive = null, DateTime? CreateDTime = null, string? FilePath = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
 record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email);

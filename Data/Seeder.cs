@@ -2429,6 +2429,18 @@ public static class Seeder
                 "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"CarDueDate\" timestamp NULL",
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyRemainOrder\" numeric NOT NULL DEFAULT 0",
+                // §12 #B341/#B342/#B343 — quy trình ký HĐ nguyên tắc (Rpt_PrincipleContract).
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"DealerSignStatus\" text NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"DealerSignDTime\" timestamp NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"DealerSignBy\" text NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"NPPSignStatus\" text NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"NPPSignDTime\" timestamp NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"NPPSignBy\" text NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NULL DEFAULT '1'",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"CreateDTime\" timestamp NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"FilePath\" text NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
