@@ -40252,6 +40252,142 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B389 TỒN KHO ĐẠI LÝ ĐỂ BÁN — `RptStatistic_DealerStock_ForSale_WH_New20260514`
+//       (`DataWH/BizHTC.zTemp.cs:44061` → SQL `mySql_RptStatistic_DealerStock_ForSale()`) =====
+// **3B khớp cả 2 máy**: `44061,44247` ⇒ **`6a9d932ff9a4d4631f043e1bc8cd3b45`** (file KHÔNG lệch offset).
+//
+// ✅ **Tham số hoá hoàn toàn**: `@strBUPatternOfUser`, `@strTDate_From/To`, `@strZoneCode` **bind thật**;
+//   `md.DealerCode` qua `BuildClause("@p")`. **Không nướng giá trị nào.**
+// ✅ **RBAC tổ hợp (3)**: cổng `//myCommon_CheckHTCDirect(` **bị comment** nhưng `@strBUPatternOfUser`
+//   **được bind** ⇒ có lọc dòng ⇒ **không phải lỗ** (đã grep đủ sáu trục).
+// 🔴 `@strZoneCode` ⇒ port truyền **chuỗi rỗng**, không NULL (bẫy đã ghi, xem #B387).
+// 🔴 Trả **MỘT** bảng `Tables[0] = strFunctionName`. `Thread.Sleep(4000)` — không port.
+// ⚠️ **NỢ**: `Dls_Deal*` + `Mst_DealerZone` ghép đủ chưa có ⇒ trả khung + cờ.
+app.MapGet("/api/reports/dealerstock-forsale", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? tDateFrom, DateTime? tDateTo, string? dealerCode, string? zoneCode, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        RptStatistic_DealerStock_ForSale = Array.Empty<object>(),   // Tables[0]
+        zoneCodeEcho = zoneCode ?? "",       // 🔴 chuỗi RỖNG, không NULL
+        filtersEcho = new { tDateFrom, tDateTo },
+        parameterisedNote = "THAM SO HOA HOAN TOAN: @strBUPatternOfUser, @strTDate_From/To, @strZoneCode BIND THAT; md.DealerCode qua BuildClause('@p'). KHONG nuong gia tri nao.",
+        rbacNote = "RBAC to hop (3): cong '//myCommon_CheckHTCDirect(' BI COMMENT nhung @strBUPatternOfUser DUOC BIND => co loc dong => KHONG phai lo (da grep du sau truc).",
+        debtNote = "NO - KHONG DOAN: Dls_Deal* + Mst_DealerZone ghep du chua co => tra khung + co. Thread.Sleep(4000) - khong port."
+    });
+}).RequireAuthorization();
+
+// ===== #B390 DỮ LIỆU MASTER TỔNG HỢP — `Rpt_MasterData_WH_New20260514`
+//       (vỏ `DataWH/Biz.HTC.WH.cs:172876` → `Rpt_MasterDataX_New20260514` (`:172604`)
+//        → SQL `mySql_Rpt_MasterData()`) =====
+// **3B khớp cả 2 máy (2 md5)**: vỏ laptop `172876,173015` ≡ 150 `172881,173020`
+//   ⇒ **`c49ed26c98ebe6289536c79920353837`**; `…X` laptop `172604,172677` ≡ 150 `172609,172682`
+//   ⇒ **`a71591c110b2e6ac37cf3e5896dc6f4a`**.
+//
+// 🔴🔴🔴 **LỖ RBAC — tổ hợp (2), SẠCH SẼ NHẤT TỪ TRƯỚC TỚI NAY**: grep **cả sáu trục** trong **cả vỏ lẫn
+//   `…X`** ⇒ **0 hit tuyệt đối** — **không cổng, không `@strBUPatternOfUser` (kể cả dòng bind bị comment),
+//   không `MBBankBUPattern`, không che cột, không `ViewAbility_Get`, không `BankBUPattern`**.
+//   ⇒ Khác các ca trước (thường còn **dấu vết** một dòng bị comment); ở đây **chưa từng có** lớp phạm vi nào.
+//   Đã kiểm thêm (luật `C0-…quadragesimusnonus`) xem có bản **dựng lại bằng chuỗi** ⇒ **không có**.
+//   ⇒ Hàm trả **dữ liệu master tổng hợp** không giới hạn phạm vi. **KHÔNG tự bịt.**
+//
+// 🔴🔴 **`[BAKE-PARAM-MIX]` — CA THỨ CHÍN, mức (A), NĂM tham số, KHÔNG một param runtime nào**:
+//   `@strDealerCode`, `@strAreaCode`, `@strRptMonthFrom`, `@strRptMonthTo`, `@strZoneCode`
+//   đều đi qua `Replace` chuỗi thô (`alParamsCoupleSql` **rỗng**) ⇒ giống khuôn #B365/#B374.
+//
+// 🔴 **MỘT CÁCH GÕ GÂY HIỂU NHẦM — nhưng KHÔNG phải bug**: `, "@strZoneCode", **@strZoneCode**`.
+//   Ký tự `@` thứ hai là **verbatim identifier của C#** (`@x` ≡ `x`), dùng khi tên trùng từ khoá.
+//   ✅ Biến ở đây tên `strZoneCode` nên `@strZoneCode` **chính là biến đó** ⇒ **hợp lệ, chạy đúng**.
+//   ⚠️ Nhưng đọc lướt rất dễ tưởng đang truyền **chuỗi `"@strZoneCode"`** ⇒ ghi lại như **rủi ro đọc
+//     nhầm**, không phải lỗi. (Tự chặn một báo nhầm nữa.)
+// 🔴 `#region // Call Func **Rpt_MasterDataX**:` — lần này nhãn **ĐÚNG**; đây chính là hàm mà nhãn ở
+//   #B366 đã gọi **nhầm** sang. ⇒ Xác nhận `Rpt_MasterDataX` là **một báo cáo có thật, khác hẳn**
+//   `Rpt_ProfileGuaranteeEffectX` ⇒ củng cố kết luận #B366 rằng nhãn ở đó sai.
+// 🔴 Trả **MỘT** bảng `Tables[0] = "Rpt_MasterData"` (con trỏ `nIdxTable`).
+// ⚠️ **NỢ**: bảng master tổng hợp chưa có ⇒ trả khung + cờ.
+app.MapGet("/api/reports/masterdata-wh", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? areaCode, string? rptMonthFrom, string? rptMonthTo, string? zoneCode) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        Rpt_MasterData = Array.Empty<object>(),   // Tables[0]
+        zoneCodeEcho = zoneCode ?? "",
+        filtersEcho = new { dealerCode, areaCode, rptMonthFrom, rptMonthTo },
+        rbacHoleCleanestNote = "LO RBAC to hop (2), SACH SE NHAT TU TRUOC TOI NAY: grep CA SAU TRUC trong CA VO LAN ...X => 0 HIT TUYET DOI - khong cong, khong @strBUPatternOfUser (KE CA dong bind bi comment), khong MBBankBUPattern, khong che cot, khong ViewAbility_Get, khong BankBUPattern. Khac cac ca truoc (thuong con DAU VET mot dong bi comment); o day CHUA TUNG CO lop pham vi nao. Da kiem them (luat C0-...quadragesimusnonus) xem co ban DUNG LAI BANG CHUOI => KHONG CO. Ham tra DU LIEU MASTER TONG HOP khong gioi han pham vi. KHONG TU BIT.",
+        bakeParamMixCase9Note = "[BAKE-PARAM-MIX] CA THU CHIN, muc (A), NAM tham so, KHONG mot param runtime nao: @strDealerCode, @strAreaCode, @strRptMonthFrom, @strRptMonthTo, @strZoneCode deu di qua Replace chuoi tho (alParamsCoupleSql RONG) => giong khuon #B365/#B374.",
+        verbatimIdentifierNote = "MOT CACH GO GAY HIEU NHAM - NHUNG KHONG PHAI BUG: ', \"@strZoneCode\", @strZoneCode'. Ky tu @ thu hai la VERBATIM IDENTIFIER cua C# (@x === x), dung khi ten trung tu khoa. Bien o day ten strZoneCode nen @strZoneCode CHINH LA bien do => HOP LE, CHAY DUNG. Nhung doc luot rat de tuong dang truyen CHUOI '@strZoneCode' => ghi lai nhu RUI RO DOC NHAM, khong phai loi.",
+        regionLabelCorrectHereNote = "'#region // Call Func Rpt_MasterDataX:' - LAN NAY NHAN DUNG; day chinh la ham ma nhan o #B366 da goi NHAM sang. => Xac nhan Rpt_MasterDataX la MOT BAO CAO CO THAT, KHAC HAN Rpt_ProfileGuaranteeEffectX => cung co ket luan #B366 rang nhan o do SAI.",
+        debtNote = "NO - KHONG DOAN: bang master tong hop chua co trong MiniHTC => tra khung + co."
+    });
+}).RequireAuthorization();
+
+// ===== #B391 DỰ KIẾN DÒNG TIỀN THANH TOÁN — `Rpt_DuKienDongTienTT_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs:149046` → SQL `RptSQLQuery.cs:10370`
+//        `mySql_Rpt_DuKienDongTienTT_**New20181115**()`) =====
+// **3B khớp cả 2 máy (2 md5)**: hàm laptop `149046,149210` ≡ 150 `149051,149215`
+//   ⇒ **`d97777cf020972156e6cd0773e607c37`**; SQL `10370,10599` ⇒ **`7860861d7eb46bef8881e8a07b70cc71`**.
+//
+// ✅✅ **TÔI SUÝT BÁO MỘT LỖI CÚ PHÁP KHÔNG TỒN TẠI — VÀ LUẬT CỦA CHÍNH MÌNH ĐÃ CHẶN LẠI**:
+//   SQL có `and pgd.DateEnd **> =** @strTDate_From` — **dấu cách GIỮA `>` và `=`**. Thoạt trông là
+//   **lỗi cú pháp T-SQL** ⇒ hàm chết. Theo luật `C0-…quinquagesimusprimus` (*trước khi gọi một cấu trúc
+//   là "cú pháp không hợp lệ", phải tìm chỗ khác trong repo dùng đúng cấu trúc đó mà vẫn sống*), tôi
+//   grep toàn bộ: **`> =` xuất hiện 42 LẦN** trong các hàm dựng SQL đang chạy.
+//   ⇒ 42 báo cáo không thể cùng chết ⇒ **T-SQL CHẤP NHẬN khoảng trắng giữa hai ký tự của toán tử ghép**
+//     ⇒ **KHÔNG phải lỗi**, chỉ là **cách gõ không nhất quán**.
+//   📌 Đây là **lần thứ hai** cùng một khuôn sai lầm suýt lặp lại (lần đầu: alias `#tbl_…` ở #B352).
+//     Ghi rõ để lần sau **luôn đếm số lần xuất hiện trước khi gọi là lỗi cú pháp**.
+//
+// ✅ **Tham số hoá hoàn toàn**: đếm `'@str` trong SQL = **0** ⇒ **không một tham số nướng nào**;
+//   `@strTDate_From`, `@strTDate_To`, `@strToDay` **bind thật**.
+// ✅ **RBAC tổ hợp (1)**: `myCommon_CheckHTCDirect(…)` **ACTIVE** ⇒ **có cổng** ⇒ **không phải lỗ**
+//   (hàm này **không** bind `@strBUPatternOfUser` — chỉ có cổng, không có lọc dòng).
+// 🔴 **Mốc phiên bản lệch giữa vỏ và SQL**: hàm `…_WH_New**20181119**` gọi
+//   `mySql_Rpt_DuKienDongTienTT_**New20181115**()` ⇒ lệch **4 ngày**; áp `C0-…quadragesimusseptimus`
+//   (mốc thật nằm ở **hàm dựng SQL**).
+// 🔴 **Thứ tự bảng NGƯỢC với thường lệ**: `Tables[0] = strFunctionName + "**Detail**"`,
+//   `Tables[1] = strFunctionName` ⇒ **CHI TIẾT đứng TRƯỚC TỔNG HỢP** (các báo cáo khác thường ngược lại).
+//   ⇒ Client đọc nhầm chỉ số là **đảo hai bảng**. Ghi rõ trong hợp đồng API.
+// 🔴 **Ba nhánh `or` cho ngày thanh toán — ĐÚNG Ý**:
+//     `and (pmp.PaymentEndDate <= @strToDay **or** pmp.PaymentEndDate **is null** **or** pmp.PaymentEndDate **= ''**)`
+//   NULL/rỗng = **chưa có ngày thu tiền** ⇒ khoản đó **vẫn phải dự kiến** ⇒ cho lọt là đúng
+//   (luật `C0-…quadragesimusquartus`). 🔴 Lưu ý cột này **so với chuỗi rỗng** ⇒ là **kiểu chuỗi**, không
+//   phải `datetime` ⇒ khớp cảnh báo đã ghi trong bộ nhớ về `StdDate` vs `StdDTime` (phải đo kiểu lưu thật).
+// 🔴 Điều kiện nền: `pg.GuaranteeStatus not in ('R','C')`, `pg.BankCode not in ('DEALER','TCGBANK')`,
+//   `pg.BankCodeMonitor is not null and <> ''` ⇒ **chỉ bảo lãnh do NGÂN HÀNG THẬT giám sát**.
+// ⚠️ **NỢ**: `Pmt_Guarantee*`/`Pmt_Payment` chưa đủ ⇒ trả khung hai bảng + cờ.
+app.MapGet("/api/reports/dukien-dongtien-tt", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        // 🔴 THỨ TỰ NGUỒN: chi tiết TRƯỚC, tổng hợp SAU.
+        Rpt_DuKienDongTienTTDetail = Array.Empty<object>(),   // Tables[0]
+        Rpt_DuKienDongTienTT = Array.Empty<object>(),         // Tables[1]
+        filtersEcho = new { tDateFrom, tDateTo },
+        avoidedSyntaxFalseAlarmNote = "SUYT BAO MOT LOI CU PHAP KHONG TON TAI - LUAT CUA CHINH MINH DA CHAN LAI: SQL co 'and pgd.DateEnd > = @strTDate_From' - DAU CACH GIUA '>' VA '='. Thoat trong la LOI CU PHAP T-SQL => ham chet. Theo luat C0-...quinquagesimusprimus (truoc khi goi mot cau truc la 'cu phap khong hop le', phai tim cho khac trong repo dung dung cau truc do ma van song), da grep toan bo: '> =' XUAT HIEN 42 LAN trong cac ham dung SQL dang chay. 42 bao cao khong the cung chet => T-SQL CHAP NHAN khoang trang giua hai ky tu cua toan tu ghep => KHONG PHAI LOI, chi la cach go khong nhat quan. Day la LAN THU HAI cung mot khuon sai lam suyt lap lai (lan dau: alias #tbl_... o #B352) => LUON DEM SO LAN XUAT HIEN TRUOC KHI GOI LA LOI CU PHAP.",
+        parameterisedNote = "THAM SO HOA HOAN TOAN: dem \"'@str\" trong SQL = 0 => KHONG mot tham so nuong nao; @strTDate_From, @strTDate_To, @strToDay BIND THAT.",
+        rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE => CO CONG => KHONG phai lo. Ham nay KHONG bind @strBUPatternOfUser - chi co cong, khong co loc dong.",
+        versionMarkerMismatchNote = "MOC PHIEN BAN LECH GIUA VO VA SQL: ham '..._WH_New20181119' goi 'mySql_Rpt_DuKienDongTienTT_New20181115()' => lech 4 NGAY; ap C0-...quadragesimusseptimus (moc that nam o HAM DUNG SQL).",
+        tableOrderReversedNote = "THU TU BANG NGUOC VOI THUONG LE: Tables[0] = strFunctionName + 'Detail', Tables[1] = strFunctionName => CHI TIET DUNG TRUOC TONG HOP (cac bao cao khac thuong nguoc lai). Client doc nham chi so la DAO HAI BANG. Ghi ro trong hop dong API.",
+        orIsNullIntentionalNote = "BA NHANH 'or' CHO NGAY THANH TOAN - DUNG Y: 'and (pmp.PaymentEndDate <= @strToDay or pmp.PaymentEndDate is null or pmp.PaymentEndDate = '')'. NULL/rong = CHUA CO NGAY THU TIEN => khoan do VAN PHAI DU KIEN => cho lot la dung (luat C0-...quadragesimusquartus). LUU Y cot nay SO VOI CHUOI RONG => la KIEU CHUOI, khong phai datetime => khop canh bao da ghi trong bo nho ve StdDate vs StdDTime (phai do kieu luu that).",
+        baseConditionsNote = "Dieu kien nen: pg.GuaranteeStatus not in ('R','C'); pg.BankCode not in ('DEALER','TCGBANK'); pg.BankCodeMonitor is not null and <> '' => CHI BAO LANH DO NGAN HANG THAT GIAM SAT.",
+        debtNote = "NO - KHONG DOAN: Pmt_Guarantee* / Pmt_Payment chua du => tra khung hai bang + co. Thread.Sleep(4000) - khong port."
+    });
+}).RequireAuthorization();
 // ===== #B386 XE HTC XUẤT KHO 01 — `RptStatistic_HTCStockOut01_WH_New20260514`
 //       (`DataWH/BizHTC.zTemp.cs:29660` → SQL `RptSQLQuery.cs:51313`) =====
 // **3B khớp cả 2 máy (2 md5); cả hai file KHÔNG lệch offset**:
