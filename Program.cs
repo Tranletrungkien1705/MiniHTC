@@ -40242,6 +40242,269 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B362 GIAO XE SAI ĐỊA ĐIỂM ĐẠI LÝ ĐĂNG KÝ — `Rpt_CarDeliveryNotAddressDealerRegis_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — offset lệch 5 dòng**: laptop `150195,150463` ≡ 150 `150200,150468`
+//   ⇒ **`87684dfe6841a08e05af8c1966e45472`**.
+//
+// 🔴🔴🔴 **BUG THẬT — `or … is null` NUỐT ĐIỀU KIỆN "PHẢI CÓ TOẠ ĐỘ"** (áp đúng luật `C0-…tricesimussecundus`
+//        vừa ghi ở #B346, lần này **trên cùng một bảng**, không cần `left join`):
+//     `and (gpsdmna.MapLongitude != '' **or gpsdmna.MapLongitude is null**)`
+//     `and (gpsdmna.MapLatitude  != '' **or gpsdmna.MapLatitude  is null**)`
+//   Báo cáo tìm xe **giao sai địa điểm** ⇒ **phải có toạ độ GPS ghi nhận** mới kết luận được "sai".
+//   Nhưng vế `or … is null` cho **dòng KHÔNG có toạ độ** lọt qua ⇒ điều kiện `!= ''` **chỉ còn loại đúng
+//   chuỗi rỗng-không-NULL**. ⇒ **Báo cáo kèm cả xe không có toạ độ nào** — những dòng **không thể kết
+//   luận sai địa điểm**. Port đo và trả `rowsWithoutCoordinates`. **KHÔNG tự vá.**
+//   📌 Đối chiếu ngay trong cùng câu: `and (gpsdmna.PointRegisCode = '' or gpsdmna.PointRegisCode is null)`
+//     dùng **`=`** (đúng ý: *chưa* đăng ký vị trí), còn hai dòng toạ độ dùng **`!=`** ⇒ **hai ngữ nghĩa
+//     ngược nhau đứng cạnh nhau**, càng dễ đọc nhầm là cùng khuôn.
+//
+// 🔴🔴 **CÂU DEBUG LÀ ĐẦU VÀO CỦA BƯỚC SAU — MỨC (d), CHƯA TỪNG GẶP**:
+//     `select null, t.* from #tbl_Sto_DlvMinutes_Filter t --//[mylock]`   ← **không comment, cột `null`
+//       KHÔNG có alias** (khác #B350/#B355 nơi có `null tbl_X`)
+//     `dsGetData.Tables[nIdxTable++].TableName = "Sto_DlvMinutes";`
+//     `MyBuildDBDT_Common(_dbWH, "#input_Veloca_Sto_DlvMinutes", …, **dsGetData.Tables[0]**);`
+//   ⇒ Bảng của câu "debug" **được nạp thẳng làm bảng tạm đầu vào cho truy vấn thứ hai**.
+//   ⇒ Bổ sung **mức (d)** cho luật `C0-…tricesimusseptimus`: ngoài (a) vô danh chiếm `Tables[0]`,
+//     (b) được comment, (c) được đặt tên và công bố — còn (d) **được dùng làm nguồn dữ liệu cho bước
+//     tiếp theo**. Ở mức (d), xoá câu đó là **vỡ hàm**, không phải dọn rác.
+//
+// 🔴 **HAI DÒNG `Replace` CHẾT**: `strSqlGetData = CmUtils.StringUtils.Replace(strSqlGetData);` và
+//   `strSqlGetRpt = CmUtils.StringUtils.Replace(strSqlGetRpt);` — gọi với **đúng một tham số**, **không
+//   có cặp thay thế nào** ⇒ trả lại nguyên chuỗi ⇒ **hai dòng không làm gì**. Vô hại nhưng là dấu vết
+//   của việc xoá bớt placeholder mà quên xoá lời gọi.
+//
+// ✅ **RBAC tổ hợp (3)**: `inner join Mst_Dealer md on sdn.DealerCode = md.DealerCode and
+//   (md.BUCode like @strBUPatternOfUser)` kèm chú thích *"Must inner join to filter AbilityOfUser"*.
+//   Cổng `myCommon_CheckHTCDirect` **bị comment cả khối**; đã grep thêm (luật `…quadragesimussecundus`)
+//   `myHTC_RemoveInfo_` / `MBBankBUPattern` / `ViewAbility_Get` ⇒ **không có** ⇒ **không phải lỗ** vì
+//   **lọc dòng còn nguyên**.
+// 🔴 Ba điều kiện nền của bảng lọc: `sdn.DlvMnNo is not null and <> ''`,
+//   `sdn.DlvEndGPSDateTime is not null and <> ' '` (**so với MỘT DẤU CÁCH**, không phải `''`),
+//   và kho GPS cố định `ssbgps.StorageCode = 'STOGPS'`.
+// 🔴 Truy vấn thứ hai loại `sdm.TranspReqType not in ('STORAGEREARRANGE')` (bỏ xe chuyển kho nội bộ)
+//   và đòi `gpsdmna.GPSStatus = '0'`.
+// ⚠️ **NỢ**: `GPS_DlvMinutesAddress`, `Sto_StoBalanceGPS`, `Sto_DlvMinutes` chưa đủ trong MiniHTC
+//   ⇒ endpoint trả khung + cờ; **không bịa** toạ độ/địa chỉ.
+app.MapGet("/api/reports/car-delivery-not-address-dealer-regis", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? vin, DateTime? dlvEndFrom, DateTime? dlvEndTo, string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3) — lọc dòng còn nguyên dù cổng bị comment.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    // 🔴 Nguồn dữ liệu địa chỉ GPS của biên bản giao nhận — trong MiniHTC dùng GpsTransaction (gần nhất).
+    // ⚠️ NỢ: MiniHTC chưa có `GPS_DlvMinutesAddress`/`Sto_DlvMinutes`; dùng `GpsTransactions` làm nguồn
+    //   VIN+địa chỉ GPS gần nhất. Entity này KHÔNG có `DealerCode` ⇒ bộ lọc đại lý/phạm vi CHƯA áp
+    //   được ở tầng dữ liệu — trả `dealerScopeNotApplicable` để không ai tưởng đã lọc.
+    var gps = await db.GpsTransactions.Where(g => g.OrgId == t.OrgId).ToListAsync();
+
+    var rows = gps
+
+        .Where(g => string.IsNullOrWhiteSpace(vin)
+                 || string.Equals(g.Vin, vin!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .Select(g => new
+        {
+            VIN = g.Vin,
+            DealerCode = (string?)null,
+            DealerName = (string?)null,
+            g.GPSAddress,
+            // ⚠️ NỢ — KHÔNG ĐOÁN: các cột chỉ có ở GPS_DlvMinutesAddress / Sto_DlvMinutes.
+            DlvMnNo = (string?)null, GPSDvNo = (string?)null,
+            DlvEndGPSDateTime = (DateTime?)null,
+            DealerPointRegisCode = (string?)null,
+            MapLongitude = (string?)null, MapLatitude = (string?)null,
+            ModelCode = (string?)null, ModelName = (string?)null,
+            ColorCode = (string?)null, ColorExtName = (string?)null, ColorExtNameVN = (string?)null,
+            SpecCode = (string?)null, SpecDescription = (string?)null
+        })
+        .ToList();
+
+    // 🔴🔴🔴 Đo đúng hệ quả của bug: bao nhiêu dòng KHÔNG có toạ độ mà vẫn lọt vào báo cáo.
+    var rowsWithoutCoordinates = rows.Count(r => string.IsNullOrEmpty(r.MapLongitude)
+                                              || string.IsNullOrEmpty(r.MapLatitude));
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        rowsWithoutCoordinates,
+        dealerScopeNotApplicable = true,
+        dealerFilterEcho = dealerCode,
+        dlvEndFromEcho = dlvEndFrom, dlvEndToEcho = dlvEndTo,
+        dealersInScope = dealers.Count,
+        Sto_DlvMinutes = rows,          // Tables[0] của bước 1 (chính là câu "debug", xem mức (d))
+        orIsNullSwallowsNote = "BUG NGUON: 'or ... is null' NUOT DIEU KIEN 'PHAI CO TOA DO'. Cau thu hai co 'and (gpsdmna.MapLongitude != '' or gpsdmna.MapLongitude is null)' va 'and (gpsdmna.MapLatitude != '' or gpsdmna.MapLatitude is null)'. Bao cao tim xe GIAO SAI DIA DIEM => PHAI CO TOA DO GPS ghi nhan moi ket luan duoc 'sai'. Nhung ve 'or ... is null' cho dong KHONG CO TOA DO lot qua => dieu kien '!= \"\"' chi con loai dung chuoi rong-khong-NULL => BAO CAO KEM CA XE KHONG CO TOA DO NAO, nhung dong KHONG THE ket luan sai dia diem. Ap dung luat C0-...tricesimussecundus (#B346), lan nay TREN CUNG MOT BANG, khong can left join. Doi chieu ngay trong cung cau: 'and (gpsdmna.PointRegisCode = '' or gpsdmna.PointRegisCode is null)' dung '=' (dung y: CHUA dang ky vi tri), con hai dong toa do dung '!=' => HAI NGU NGHIA NGUOC NHAU DUNG CANH NHAU. Xem rowsWithoutCoordinates. KHONG TU VA.",
+        debugAsInputLevelDNote = "CAU DEBUG LA DAU VAO CUA BUOC SAU - MUC (d), CHUA TUNG GAP: 'select null, t.* from #tbl_Sto_DlvMinutes_Filter t' KHONG comment va cot null KHONG CO ALIAS (khac #B350/#B355 co 'null tbl_X'); C# dat Tables[0].TableName = 'Sto_DlvMinutes' roi MyBuildDBDT_Common(_dbWH, '#input_Veloca_Sto_DlvMinutes', ..., dsGetData.Tables[0]) => bang cua cau 'debug' DUOC NAP THANG LAM BANG TAM DAU VAO CHO TRUY VAN THU HAI. Bo sung MUC (d) cho luat C0-...tricesimusseptimus: ngoai (a) vo danh chiem Tables[0], (b) duoc comment, (c) duoc dat ten va cong bo - con (d) DUOC DUNG LAM NGUON DU LIEU CHO BUOC TIEP THEO. O muc (d), XOA cau do la VO HAM, khong phai don rac.",
+        deadReplaceNote = "HAI DONG Replace CHET: 'strSqlGetData = CmUtils.StringUtils.Replace(strSqlGetData);' va 'strSqlGetRpt = CmUtils.StringUtils.Replace(strSqlGetRpt);' - goi voi DUNG MOT THAM SO, KHONG co cap thay the nao => tra lai nguyen chuoi => hai dong KHONG LAM GI. Vo hai nhung la dau vet cua viec xoa bot placeholder ma quen xoa loi goi.",
+        rbacNote = "RBAC to hop (3): 'inner join Mst_Dealer md on sdn.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' kem chu thich 'Must inner join to filter AbilityOfUser'. Cong myCommon_CheckHTCDirect BI COMMENT CA KHOI; da grep them (luat C0-...quadragesimussecundus) myHTC_RemoveInfo_ / MBBankBUPattern / ViewAbility_Get => KHONG CO => KHONG phai lo vi LOC DONG CON NGUYEN.",
+        baseConditionsNote = "Ba dieu kien nen cua bang loc: sdn.DlvMnNo is not null and <> ''; sdn.DlvEndGPSDateTime is not null and <> ' ' (SO VOI MOT DAU CACH, khong phai ''); kho GPS co dinh ssbgps.StorageCode = 'STOGPS'. Truy van thu hai loai sdm.TranspReqType not in ('STORAGEREARRANGE') (bo xe chuyen kho noi bo) va doi gpsdmna.GPSStatus = '0'.",
+        debtNote = "NO: GPS_DlvMinutesAddress, Sto_StoBalanceGPS, Sto_DlvMinutes chua du trong MiniHTC => endpoint tra khung + co; KHONG bia toa do/dia chi."
+    });
+}).RequireAuthorization();
+
+// ===== #B363 ĐỔI TỈNH KHI GIAO XE — `Rpt_CarChangeProvinceWhenDelivery_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy**: laptop `150464,150688` ≡ 150 `150469,150693`
+//   ⇒ **`a2febbe92d644de60ee3d5b9496fa5b5`**.
+//
+// 🔴🔴🔴 **BIẾN THỂ MỚI CỦA "LEFT JOIN BỊ HOÁ INNER" — DO MỘT `inner join` KHÁC Ở DƯỚI, KHÔNG PHẢI `where`**:
+//     `left join Mst_Dealer md on dd.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//     …
+//     `inner join Mst_Province mp on **md.ProvinceCode** = mp.ProvinceCode`   ← **phụ thuộc `md`**
+//     `and mpgpsdms.ProvinceCode != **md.ProvinceCode**`                       ← cũng phụ thuộc `md`
+//   Đại lý **ngoài phạm vi** ⇒ `md` NULL ⇒ `md.ProvinceCode` NULL ⇒ `inner join Mst_Province` **loại
+//   dòng**, và phép so sánh `!= NULL` cũng cho *unknown* ⇒ **loại lần nữa**.
+//   ⇒ **Kết quả: phạm vi VẪN có hiệu lực** — nhưng **không phải nhờ bộ lọc, mà nhờ một join khác không
+//     liên quan**. 📌 Cực kỳ mong manh: đổi `Mst_Province` sang `left join` (một tối ưu vô hại về ngữ
+//     nghĩa) là **rò phạm vi ngay lập tức**, không cảnh báo. Khác 6 ca trước (#B254/#B263/#B293/#B299/
+//     #B305/#B308) nơi điều kiện bị đặt nhầm ở `where`. **KHÔNG tự vá** — nhưng đây là **nợ kiến trúc**.
+// 🔴 Bốn điều kiện nghiệp vụ: `sdm.VIN = ssbagps.VIN`, `mpgpsdms.ProvinceCode != md.ProvinceCode`
+//   (tỉnh GPS **khác** tỉnh đại lý ⇒ chính là "đổi tỉnh"), `rptccp.ChangeDateTime >= sdm.DlvEndGPSDateTime`
+//   (đổi tỉnh **sau** thời điểm giao), và `sdm.DlvEndGPSDateTime is not null and <> ''`.
+// 🔴 **Ba dòng bị comment — port dòng ACTIVE**: `--and ssbagps.MapStatus in ('1')`,
+//   `--and dd.FlagInitDeal != '0'`, và cột `--, (IsNull(ddd.DeliveryDate, @strToday) + ' ' + '23:59:59') DeliveryDate`
+//   cùng `--into #tbl_Veloca_Car_VIN` ⇒ câu **không** còn ghi vào bảng tạm, trả thẳng kết quả.
+//   ⚠️ Riêng `dd.FlagInitDeal = '0'` **vẫn sống** trong `on` của `left join DLS_Deal` ⇒ chỉ ghép giao
+//     dịch **không phải khởi tạo**; dòng comment `!= '0'` là **ngược lại** ⇒ đừng port nhầm.
+// 🔴 Chuỗi tra tỉnh GPS ↔ tỉnh DMS đi qua **bảng ánh xạ riêng** `Map_ProvinceGPS_DMS`
+//   (`rptccp.GPSProvinceCode → mpgpsdms.GPSProvinceCode`), rồi `GPS_Mst_Province`.
+// ⚠️ **NỢ**: `Rpt_CarChangeProvince` đã có trong MiniHTC (`RptCarChangeProvinces`), nhưng
+//   `Map_ProvinceGPS_DMS`, `GPS_Mst_Province`, `Sto_StoBalanceGPS` chưa đủ ⇒ trả khung + cờ.
+app.MapGet("/api/reports/car-change-province-when-delivery-wh", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? vin, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+
+    // ✅ Bảng ánh xạ `Map_ProvinceGPS_DMS` ĐÃ CÓ trong MiniHTC ⇒ tra được tỉnh DMS từ tỉnh GPS.
+    var mapProv = (await db.MapProvinceGpsDmses.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.GPSProvinceCode).ToDictionary(g => g.Key, g => g.First().ProvinceCode);
+    var chg = await db.RptCarChangeProvinces.Where(r => r.OrgId == t.OrgId).ToListAsync();
+
+    var rows = chg
+        .Where(r => string.IsNullOrWhiteSpace(vin)
+                 || string.Equals(r.VIN, vin!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .Select(r => new
+        {
+            r.VIN,
+            // ⚠️ NỢ — KHÔNG ĐOÁN: chuỗi Sto_DlvMinutes / GPS_Mst_Province / Sto_StoBalanceGPS chưa đủ
+            //   (riêng Map_ProvinceGPS_DMS ĐÃ CÓ nên tra được tỉnh DMS — xem DmsProvinceCode).
+            // 🔴 `DealerProvinceCode` để NULL ⇒ điều kiện "tỉnh GPS KHÁC tỉnh đại lý" CHƯA áp được;
+            //   trả cờ provinceCompareNotApplicable để không ai tưởng đã so.
+            DlvMnNo = (string?)null, GPSDvNo = (string?)null,
+            DealerCode = (string?)null, DealerName = (string?)null,
+            DealerProvinceCode = (string?)null,
+            r.GPSProvinceCode,
+            // ✅ Tỉnh DMS tương ứng, tra qua Map_ProvinceGPS_DMS (bảng ánh xạ ĐÃ CÓ).
+            DmsProvinceCode = r.GPSProvinceCode != null && mapProv.TryGetValue(r.GPSProvinceCode, out var pv) ? pv : null,
+            DlvEndGPSDateTime = (DateTime?)null,
+            r.ChangeDateTime,
+            r.MapLongitude, r.MapLatitude,
+            ModelCode = (string?)null, ModelName = (string?)null,
+            SpecCode = (string?)null, SpecDescription = (string?)null,
+            ColorCode = (string?)null, ColorExtName = (string?)null, ColorExtNameVN = (string?)null,
+            r.GPSAddress
+        })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_CarChangeProvinceWhenDelivery = rows,    // Tables[0]
+        provinceCompareNotApplicable = true,
+        twinWithNonWhNote = "CAP SINH DOI VOI BAN NON-WH DA PORT O #B05 (/api/reports/car-change-province-when-delivery): ban do la Rpt_CarChangeProvinceWhenDelivery_New20181115 (BizHTC.ZTempGPS.cs:8982, chay tren _dbMain); ban NAY la ..._WH_New20181119 (Biz.HTC.WH.cs:150464, chay tren _dbWH). WinForm re giua hai ban theo co checkWH. Route tach ra '-wh' de KHONG dam nhau (ASP0022 da bat duoc trung route - dung la ly do co thuoc do nay). Phat hien 'left join bi hoa inner boi mot inner join khac o duoi' la CUA BAN WH nay.",
+        dealerScopeEcho = new { dealerCode, dealersInScope = dealers.Count, provincesLoaded = provinces.Count },
+        leftJoinForcedInnerByOtherJoinNote = "BIEN THE MOI CUA 'LEFT JOIN BI HOA INNER' - DO MOT inner join KHAC O DUOI, KHONG PHAI where: 'left join Mst_Dealer md on dd.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' roi ben duoi 'inner join Mst_Province mp on md.ProvinceCode = mp.ProvinceCode' (PHU THUOC md) va 'and mpgpsdms.ProvinceCode != md.ProvinceCode' (cung phu thuoc md). Dai ly NGOAI PHAM VI => md NULL => md.ProvinceCode NULL => inner join Mst_Province LOAI DONG, va phep so sanh != NULL cho unknown => loai lan nua. KET QUA: PHAM VI VAN CO HIEU LUC - nhung KHONG PHAI NHO BO LOC, ma nho MOT JOIN KHAC KHONG LIEN QUAN. Cuc ky mong manh: doi Mst_Province sang left join (mot toi uu vo hai ve ngu nghia) la RO PHAM VI NGAY LAP TUC, khong canh bao. Khac 6 ca truoc (#B254/#B263/#B293/#B299/#B305/#B308) noi dieu kien bi dat nham o where. KHONG TU VA - day la NO KIEN TRUC.",
+        businessConditionsNote = "Bon dieu kien nghiep vu: sdm.VIN = ssbagps.VIN; mpgpsdms.ProvinceCode != md.ProvinceCode (tinh GPS KHAC tinh dai ly = 'doi tinh'); rptccp.ChangeDateTime >= sdm.DlvEndGPSDateTime (doi tinh SAU thoi diem giao); sdm.DlvEndGPSDateTime is not null and <> ''.",
+        commentedLinesNote = "BA DONG BI COMMENT - PORT DONG ACTIVE: '--and ssbagps.MapStatus in (1)', '--and dd.FlagInitDeal != 0', va cot '--, (IsNull(ddd.DeliveryDate, @strToday) + \" \" + \"23:59:59\") DeliveryDate' cung '--into #tbl_Veloca_Car_VIN' => cau KHONG con ghi vao bang tam, tra thang ket qua. RIENG dd.FlagInitDeal = '0' VAN SONG trong 'on' cua left join DLS_Deal => chi ghep giao dich KHONG PHAI KHOI TAO; dong comment '!= 0' la NGUOC LAI => dung port nham.",
+        mappingTableNote = "Chuoi tra tinh GPS <-> tinh DMS di qua BANG ANH XA RIENG Map_ProvinceGPS_DMS (rptccp.GPSProvinceCode -> mpgpsdms.GPSProvinceCode), roi GPS_Mst_Province.",
+        debtNote = "NO: Rpt_CarChangeProvince DA CO trong MiniHTC (RptCarChangeProvinces), nhung Map_ProvinceGPS_DMS, GPS_Mst_Province, Sto_StoBalanceGPS chua du => tra khung + co. KHONG doan."
+    });
+}).RequireAuthorization();
+
+// ===== #B364 BÁO CÁO XE THIẾU BIÊN BẢN BÀN GIAO — `Rpt_BaoCaoXeThieuBBBG_WH_New20190228`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy**: laptop `173991,174507` ≡ 150 `173996,174512`
+//   ⇒ **`a3e01bf24123adc99f8b6597bdc19f6b`**.
+//
+// ✅🔴 **`or … is null` Ở ĐÂY LÀ CÓ CHỦ ĐÍCH — ĐỐI CHỨNG QUAN TRỌNG CHO LUẬT `C0-…tricesimussecundus`**:
+//     `and (PAYMENT_DEPOSIT_PERCENT < 60 **or PAYMENT_DEPOSIT_PERCENT is null**)`  ← **xuất hiện HAI lần**
+//   `PAYMENT_DEPOSIT_PERCENT` đến từ `left join #tbl_Pmt_PaymentDetailTotal_A_Deposit_Percent`
+//   ⇒ NULL nghĩa là **xe chưa có khoản cọc nào**, tức **0%** ⇒ **đúng là < 60%** ⇒ **cho lọt là ĐÚNG Ý**.
+//   ⇒ Luật của tôi yêu cầu hỏi *"vế `is null` có luôn đúng với nhóm không khớp join không?"* — ở đây câu
+//     trả lời là **"có, và đó chính là điều nghiệp vụ muốn"**. 📌 Ghi lại để **không báo nhầm** ca này
+//     là bug: cùng một cú pháp, **#B362 là bug, #B364 là đúng** — phân biệt bằng **ý nghĩa nghiệp vụ của
+//     giá trị NULL**, không bằng hình dạng câu lệnh.
+//
+// 🔴 **Ngưỡng cọc 60% là hằng chép tay** (`< 60`), lặp **hai lần** trong cùng hàm ⇒ sửa chính sách phải
+//   sửa cả hai chỗ. Cùng họ "hằng nghiệp vụ rải rác" (#B290 ba bản hằng).
+// 🔴 **`---and sdm.DealerCode not in ('VS056')`** — **loại trừ ĐÍCH DANH một đại lý**, hiện **bị comment**
+//   (ba gạch). ⇒ Từng có ngoại lệ hard-code cho một đại lý cụ thể trong báo cáo. Ghi lại; **không bật lại**.
+// 🔴 **Đếm theo NGÀY LÀM VIỆC, không phải ngày lịch**: `inner join Mst_Calendar mcal` với
+//   `mcal.CalendarType = 'WorkingDay'` **và** `mcal.StatusValue = 0`, khoảng
+//   `mcal.Date >= t.XNBBBGDK` … `<= @strDateReportTo`. ⇒ Số ngày trễ **phụ thuộc bảng lịch**; thiếu
+//   dòng lịch ⇒ **đếm thiếu ngày**, không báo lỗi.
+// 🔴 Tầng tiền cọc: `pmp.PaymentStatus in ('A','F')` **và** `pmpd.GuaranteeNo is null`
+//   ⇒ **chỉ tiền cọc KHÔNG thuộc bảo lãnh** (khác các báo cáo khác gộp cả bảo lãnh).
+// ✅ **RBAC tổ hợp (3)**: `inner join Mst_Dealer md on sdm.DealerCode = md.DealerCode and
+//   (md.BUCode like @strBUPatternOfUser)`. Đã grep đủ **năm trục** ⇒ không có trục nào khác ⇒ không phải lỗ.
+// ✅ Số bảng động xử bằng **con trỏ `nIdx`** (`tblDetail` chỉ khi có cờ, rồi `Rpt_BaoCaoXeThieuBBBG`).
+// ⚠️ **NỢ**: `Mst_Calendar`, `Sto_DlvMinutes`, tầng `Pmt_PaymentDetail` cọc chưa đủ ⇒ cột số ngày trễ và
+//   `%` cọc để **NULL**; **không đoán**.
+app.MapGet("/api/reports/xe-thieu-bbbg", async (
+    AppDbContext db, ITenantContext t,
+    string? isGetDetail, DateTime? dateReportTo, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId).ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode)).ToList();
+
+    var detail = cvs.Select(v => new
+    {
+        v.CarId, v.VIN, v.DealerCode,
+        DealerName = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var d) ? d.DealerName : null,
+        v.ModelCode, v.SpecCode, v.ColorCode,
+        // ⚠️ NỢ — KHÔNG ĐOÁN: cần Mst_Calendar (ngày làm việc) + tầng cọc.
+        XNBBBGDK = (DateTime?)null,
+        WorkingDaysLate = (int?)null,
+        PAYMENT_DEPOSIT_PERCENT = (decimal?)null,
+        Total = 1.0m
+    })
+    // 🔴 Giữ nguyên hình dạng nguồn: NULL % cọc VẪN LỌT (đúng ý — xe chưa nộp cọc = 0% < 60%).
+    .Where(x => x.PAYMENT_DEPOSIT_PERCENT == null || x.PAYMENT_DEPOSIT_PERCENT < 60m)
+    .ToList();
+
+    var summary = detail.GroupBy(x => new { x.DealerCode, x.DealerName })
+        .Select(g => new { g.Key.DealerCode, g.Key.DealerName, Qty = g.Count() })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        dateReportTo,
+        tblDetail = isGetDetail == "1" ? detail : null,
+        Rpt_BaoCaoXeThieuBBBG = summary,
+        orIsNullIntentionalNote = "'or ... is null' O DAY LA CO CHU DICH - DOI CHUNG QUAN TRONG CHO LUAT C0-...tricesimussecundus: 'and (PAYMENT_DEPOSIT_PERCENT < 60 or PAYMENT_DEPOSIT_PERCENT is null)' xuat hien HAI LAN. PAYMENT_DEPOSIT_PERCENT den tu left join #tbl_Pmt_PaymentDetailTotal_A_Deposit_Percent => NULL nghia la XE CHUA CO KHOAN COC NAO, tuc 0% => DUNG LA < 60% => CHO LOT LA DUNG Y. Luat yeu cau hoi 've is null co luon dung voi nhom khong khop join khong?' - o day cau tra loi la 'CO, va do chinh la dieu nghiep vu muon'. GHI LAI de KHONG BAO NHAM: cung mot cu phap, #B362 la BUG, #B364 la DUNG - phan biet bang Y NGHIA NGHIEP VU CUA GIA TRI NULL, khong bang hinh dang cau lenh.",
+        thresholdConstNote = "Nguong coc 60% la HANG CHEP TAY ('< 60'), lap HAI LAN trong cung ham => sua chinh sach phai sua ca hai cho. Cung ho 'hang nghiep vu rai rac' (#B290 ba ban hang).",
+        hardcodedDealerExclusionNote = "'---and sdm.DealerCode not in (VS056)' - LOAI TRU DICH DANH MOT DAI LY, hien BI COMMENT (ba gach). Tung co ngoai le hard-code cho mot dai ly cu the trong bao cao. Ghi lai; KHONG bat lai.",
+        workingDayNote = "DEM THEO NGAY LAM VIEC, KHONG PHAI NGAY LICH: 'inner join Mst_Calendar mcal' voi mcal.CalendarType = 'WorkingDay' VA mcal.StatusValue = 0, khoang mcal.Date >= t.XNBBBGDK ... <= @strDateReportTo. So ngay tre PHU THUOC BANG LICH; thieu dong lich => DEM THIEU NGAY, khong bao loi.",
+        depositTierNote = "Tang tien coc: pmp.PaymentStatus in ('A','F') VA pmpd.GuaranteeNo is null => CHI TIEN COC KHONG THUOC BAO LANH (khac cac bao cao khac gop ca bao lanh).",
+        rbacNote = "RBAC to hop (3): 'inner join Mst_Dealer md on sdm.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)'. Da grep du NAM TRUC (luat C0-...quadragesimussecundus) => khong co truc nao khac => khong phai lo. So bang dong xu bang con tro nIdx.",
+        debtNote = "NO - KHONG DOAN: Mst_Calendar, Sto_DlvMinutes, tang Pmt_PaymentDetail coc chua du => cot so ngay tre va % coc de NULL."
+    });
+}).RequireAuthorization();
 // ===== #B359/#B360 PHÂN BỔ XE THEO VÙNG — CẶP "ĐỌC SỐ ĐÃ CHỐT" vs "TÍNH LẠI REALTIME"
 //       (`Rpt_CarAllocationByArea_Get_WH` / `…_Get_RealTime_WH`, `TERP.BizHTC/BizHTC.Report.cs`) =====
 // **3B khớp cả 2 máy — `BizHTC.Report.cs` KHÔNG lệch offset (39863 dòng cả 2 máy), 4 md5**:
