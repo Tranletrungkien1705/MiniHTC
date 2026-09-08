@@ -10878,6 +10878,11 @@ public sealed class CarVinMaster
     /// Mô tả hiển thị lấy `Mst_CarSpec.SpecDescription` **join theo ActualSpec**, không theo SpecCode.
     /// </summary>
     public string? ActualSpec { get; set; }
+    /// <summary>🔴 #B332 — Spec GỐC của xe (`Car_Car.RootSpec`). Đây là **nguồn spec THỨ BA** của hệ,
+    /// bên cạnh `Car_Car.SpecCode` (#B314) và `Car_VIN.ActualSpec` (#B305/#B308/#B311):
+    /// `RptHMCReport_WH_New20210111` nối `Mst_CarSpec` theo **`cc.RootSpec`** để lấy `AssemblyStatus`.
+    /// ⚠️ Trùng tên với `CarSpec.RootSpec` (spec gốc của **master spec**) — **hai bảng khác nhau**.</summary>
+    public string? RootSpec { get; set; }
     public string? EngineNo { get; set; }
     /// <summary>Số chìa khoá (`Car_VIN.KeyNo`).</summary>
     public string? KeyNo { get; set; }

@@ -22339,7 +22339,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -32298,6 +32298,97 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   nạp nhưng SQL **không dùng** (1 hit) ⇒ có cổng ⇒ không phải lỗ.
 // 🔴 `@strHTCDealerCode` / `@strHTCDealerName` nạp nhưng SQL không dùng ⇒ **hai tham số mồ côi**
 //   (và lại lặp lỗi `"…Name"` **nhận** `HTCDealerCode` — lần thứ **tư**, sau #B269/#B284/#B290).
+
+// ===== #B332/#B333/#B334 BÁO CÁO GỬI HÃNG HMC — `RptHMCReport_WH_New20210111`
+//       (+ twin `RptHMCReport_V2_WH`, `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   V1 laptop `158286,158489` ≡ 150 `158291,158494` ⇒ **`3d14dc6d4961496724e3137ab9880441`**
+//   V2 laptop `158490,158628` ≡ 150 `158495,158633` ⇒ **`d833cb15ec22124fadf347e41654d622`**
+// 🔴🔴🔴 **HAI TWIN CÙNG TÊN BÁO CÁO NHƯNG **KIẾN TRÚC NGƯỢC NHAU** — cả hai đều SỐNG**
+//   (WS64 `:73870` → V1, `:73947` → V2):
+//   · **V1** `RptHMCReport_WH_New20210111`: **ĐỌC THẲNG bảng `HMC_Report`** (dữ liệu **đã chốt**, đã ghi
+//     sẵn khi phát sinh nghiệp vụ) với **10 bộ lọc động**, rồi bổ sung `AssemblyStatus`.
+//   · **V2** `RptHMCReport_V2_WH`: **TÍNH LẠI TỪ ĐẦU** qua `Car_DeliveryOrder` → `Dls_DealDetail` →
+//     `Dls_Deal` (đúng khuôn `#tbl_F1`/`#tbl_Info1` của `RptMaster_BanLe` #B296).
+//   ⇒ **Cùng một tên báo cáo, một bên đọc số ĐÃ CHỐT, một bên TÍNH LẠI** ⇒ **hai bản có thể ra số khác
+//     nhau** khi dữ liệu gốc thay đổi sau lúc chốt. 📌 Ghi lại; **không** tự hợp nhất.
+// 🔴🔴 **`cc.RootSpec` — NGUỒN SPEC THỨ BA của hệ**:
+//     `left join Mst_CarSpec mcs on **cc.RootSpec** = mcs.SpecCode`
+//   ⇒ Sau `cc.SpecCode` (#B314) và `cv.ActualSpec` (#B305/#B308/#B311), đây là **cột spec thứ ba** dùng
+//     để tra `Mst_CarSpec`. Lấy nhầm cột ⇒ **sai `AssemblyStatus`** (CBU/CKD) ⇒ sai phân loại gửi hãng.
+// 🔴 **10 bộ lọc động** trên `HMC_Report` qua `BuildClause(… "@p" …)` — **tham số runtime**, an toàn:
+//   `AutoId`, `DealerCode`, `DealNo`, `CarId`, `VIN`, `DeliveryType`, `SalesType`, `PerformDate`,
+//   `CreatedDate`, `CreatedBy`.
+// 🔴🔴 **LỖ RBAC — CA 31**: `myCommon_CheckHTCDirect` = **0 hit** (**không tồn tại**) và dòng nạp
+//   `@strBUPatternOfUser` **bị comment cả dòng** (`//alParamsCoupleSql.AddRange(…)`)
+//   ⇒ tổ hợp **(2) không cổng + không lọc** = **lỗ thật**. Nặng vì hàm trả **`hmcrpt.*`** — toàn bộ bản
+//     ghi gửi hãng của **mọi đại lý**. **KHÔNG tự vá.**
+// 🔴 `order by mcs.AssemblyStatus asc` đặt ở **câu TRẢ KẾT QUẢ** (không phải `select … into`)
+//   ⇒ **có hiệu lực thật** — khác #B245/#B299 nơi `order by` nằm trong `select … into` (vô nghĩa).
+//   ⇒ Thứ tự trả về là **CBU trước CKD** (theo alphabet), và **dòng thiếu spec (NULL) đứng ĐẦU**.
+// 🔴 Trả **MỘT** bảng `Tables[0] = "HMC_Report"` (`hmcrpt.*` + `AssemblyStatus`).
+app.MapGet("/api/reports/hmc-report", async (
+    AppDbContext db, ITenantContext t,
+    long? autoId, string? dealerCode, string? dealNo, string? carId, string? vin,
+    string? deliveryType, string? salesType,
+    DateTime? performDateFrom, DateTime? performDateTo,
+    DateTime? createdDateFrom, DateTime? createdDateTo, string? createdBy) =>
+{
+    // 🔴 10 bộ lọc động — tất cả là tham số runtime (an toàn).
+    var q = db.HmcReports.Where(h => h.OrgId == t.OrgId);
+    if (autoId != null) q = q.Where(h => h.AutoID == autoId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(h => h.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(h => h.DealNo == dealNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(h => h.CarId == carId!.Trim());
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(h => h.VIN == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(deliveryType)) q = q.Where(h => h.DeliveryType == deliveryType!.Trim());
+    if (!string.IsNullOrWhiteSpace(salesType)) q = q.Where(h => h.SalesType == salesType!.Trim());
+    if (performDateFrom != null) q = q.Where(h => h.PerformDate >= performDateFrom);
+    if (performDateTo != null) q = q.Where(h => h.PerformDate <= performDateTo);
+    if (createdDateFrom != null) q = q.Where(h => h.CreatedDate >= createdDateFrom);
+    if (createdDateTo != null) q = q.Where(h => h.CreatedDate <= createdDateTo);
+    if (!string.IsNullOrWhiteSpace(createdBy)) q = q.Where(h => h.CreatedBy == createdBy!.Trim());
+    var reports = await q.ToListAsync();
+
+    // 🔴 AssemblyStatus tra qua `cc.RootSpec` — NGUỒN SPEC THỨ BA (không phải SpecCode/ActualSpec).
+    var carIds = reports.Where(h => h.CarId != null).Select(h => h.CarId!).Distinct().ToList();
+    var cvs = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && v.CarId != null && carIds.Contains(v.CarId)).ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = reports.Select(h =>
+    {
+        string? asm = null;
+        if (h.CarId != null && cvs.TryGetValue(h.CarId, out var cv)
+            && cv.RootSpec != null && specs.TryGetValue(cv.RootSpec, out var sp))
+            asm = sp.AssemblyStatus;
+        return new
+        {
+            h.AutoID, h.DealerCode, h.DealNo, h.CarId, h.VIN,
+            h.DeliveryType, h.SalesType, h.PerformDate, h.CreatedDate, h.CreatedBy,
+            h.PerformContents,
+            AssemblyStatus = asm,
+            RootSpec = (h.CarId != null && cvs.TryGetValue(h.CarId, out var cv2)) ? cv2.RootSpec : null
+        };
+    })
+    // 🔴 `order by mcs.AssemblyStatus asc` ở câu TRẢ KẾT QUẢ ⇒ CÓ HIỆU LỰC (NULL đứng đầu).
+    .OrderBy(x => x.AssemblyStatus, StringComparer.Ordinal)
+    .ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        HMC_Report = rows,                 // Tables[0]
+        twoArchitecturesNote = "HAI TWIN CUNG TEN BAO CAO NHUNG KIEN TRUC NGUOC NHAU - CA HAI DEU SONG (WS64 :73870 -> V1, :73947 -> V2): V1 RptHMCReport_WH_New20210111 DOC THANG bang HMC_Report (du lieu DA CHOT, ghi san khi phat sinh nghiep vu) voi 10 bo loc dong roi bo sung AssemblyStatus; V2 RptHMCReport_V2_WH TINH LAI TU DAU qua Car_DeliveryOrder -> Dls_DealDetail -> Dls_Deal (dung khuon #tbl_F1/#tbl_Info1 cua RptMaster_BanLe #B296). => CUNG MOT TEN BAO CAO, mot ben doc so DA CHOT, mot ben TINH LAI => HAI BAN CO THE RA SO KHAC NHAU khi du lieu goc thay doi sau luc chot. Ghi lai; KHONG tu hop nhat.",
+        thirdSpecSourceNote = "cc.RootSpec - NGUON SPEC THU BA cua he: 'left join Mst_CarSpec mcs on cc.RootSpec = mcs.SpecCode'. Sau cc.SpecCode (#B314) va cv.ActualSpec (#B305/#B308/#B311), day la COT SPEC THU BA dung de tra Mst_CarSpec. Lay nham cot => SAI AssemblyStatus (CBU/CKD) => sai phan loai gui hang.",
+        rbacHoleCase31Note = "LO RBAC - CA 31: myCommon_CheckHTCDirect = 0 HIT (KHONG TON TAI) va dong nap @strBUPatternOfUser BI COMMENT CA DONG => to hop (2) khong cong + khong loc = LO THAT. Nang vi ham tra 'hmcrpt.*' - toan bo ban ghi gui hang cua MOI DAI LY. KHONG TU VA.",
+        tenFiltersNote = "10 bo loc dong tren HMC_Report qua BuildClause('@p') - THAM SO RUNTIME, an toan: AutoId, DealerCode, DealNo, CarId, VIN, DeliveryType, SalesType, PerformDate, CreatedDate, CreatedBy.",
+        orderByEffectiveNote = "'order by mcs.AssemblyStatus asc' dat o CAU TRA KET QUA (khong phai 'select ... into') => CO HIEU LUC THAT - khac #B245/#B299 noi order by nam trong 'select ... into' (vo nghia). Thu tu tra ve la CBU truoc CKD (alphabet), va DONG THIEU SPEC (NULL) DUNG DAU.",
+        newColumnNote = "§12 cot moi Car_Car.RootSpec tren CarVinMaster du 4 cho: entity + Seeder ALTER + DTO CarVinMasterImportDto + POST /api/carvinmasters/import va GET nay."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/htc-stockout02", async (
     AppDbContext db, ITenantContext t,
     string? groupByList, DateTime? deliveryOutDateFrom, DateTime? deliveryOutDateTo) =>
@@ -52026,7 +52117,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null);   // #B248, #B323
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null);   // #B248, #B323, #B332
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
