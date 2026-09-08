@@ -15793,6 +15793,108 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
 //   toàn hệ) còn `Ser_Customer`/`Ser_CusDebit` ở **DB hiện hành** — cùng lớp phát hiện với #541.
 // ⚪ Hai `left join` ở câu công nợ (`Ser_RO`, `ser_car`) **còn sống**: không điều kiện WHERE nào trên chúng
 //   ⇒ công nợ **không gắn lệnh sửa chữa** vẫn ra dòng, chỉ trống `RONo`/`PlateNo` (kiểm tra âm tính).
+// ===== 🔴🔴 #561 API TVO: KHÁCH ĐÃ LÀM DỊCH VỤ (MỜI KHẢO SÁT) — **BỐN LỖI SQL Ở NGUỒN** =====
+// Nguồn: `BizCarSv.TVO.cs:159-425 HTCMobileTVO_GetCustomersUsedService` (một hàm, không sinh đôi).
+// Chuỗi ba bảng tạm `_Draft_01` → `_Draft` (đánh `identity`) → `_Filter` (cắt trang), rồi câu trả về.
+// Tiêu chí nghiệp vụ (chép từ chú thích nguồn): làm dịch vụ tại đại lý + có báo giá · loại việc BDD/SCC/SCD/SCS
+//   · đối tượng thanh toán là khách · phát sinh phí > 0 · trạng thái báo giá `FNS` (đã giao xe).
+//
+// 🔴🔴 **LỖI 1 — `left join` VIẾT SAI ĐIỀU KIỆN, THÀNH TÍCH ĐỀ-CÁC**:
+//     `left join TVO_Ser_RO_RollbackStatus tvo_ro on **t.ROID = ro.ROID**`
+//   Điều kiện **không hề nhắc alias `tvo_ro`** — nó so hai bảng **khác** (và luôn đúng, vì `ro` đã nối theo
+//   `t.ROID`) ⇒ mỗi dòng kết quả **nhân với TOÀN BỘ số dòng** của `TVO_Ser_RO_RollbackStatus`.
+//   Câu trả về **không có `distinct`** ⇒ **nở dòng thật**. Mà không cột nào của `tvo_ro` được chọn
+//   ⇒ phép nối vừa **thừa** vừa **phá kết quả**. Chính là câu hỏi thứ ba của luật #414.
+// 🔴 **LỖI 2 — `left join` bị điều kiện `where` biến thành `inner`**: `rosi` (`Ser_ROServiceItems`) nối
+//   `left` nhưng `where` có `and rosi.ROType in (...)` **và** `and rosi.ExpenseType in (...)` ⇒ RO nào
+//   **chỉ có phụ tùng** (không có dòng công) **rơi hết**, dù khối `or` phía trên có nhánh tính riêng `ropi`.
+//   ⚠️ Chú thích *"-- Đối tượng thanh toán: Khách hàng"* đặt **trên** dòng `rosi.ExpenseType` nhưng thực ra
+//     nằm **giữa** hai điều kiện khác — chú thích và điều kiện **lệch nhau**.
+// 🔴 **LỖI 3 — `Convert(nvarchar, …, N)` CẮT CỤT CHUỖI Ở 30 KÝ TỰ**: trong SQL Server, tham số thứ ba của
+//   `CONVERT` là **style**, **không phải độ dài**; `nvarchar` **không ghi độ dài** ⇒ mặc định **30**.
+//   ⇒ `Convert(nvarchar, ro.CusAddress, **200**) CustomerAddress` **vẫn chỉ trả 30 ký tự** — con số 200
+//     trông như "cho rộng hơn" nhưng **không có tác dụng gì**. Tên khách, địa chỉ dài **bị cắt câm**.
+//   ⚠️ Riêng `Left(Convert(nvarchar, ro.ActualDeliveryDate, 120), 19)` thì **đúng**: với ngày, 120 **là**
+//     mã style thật (`yyyy-mm-dd hh:mi:ss`) — cùng một cách viết, chỗ đúng chỗ sai.
+// 🔴 **LỖI 4 — `<= @strToDate` mất ngày cuối** (#415): `ro.LogLUDateTime <= @strToDate`; nếu client gửi
+//   `00:00:00` thì **cả ngày cuối biến mất**. Port dùng **< ngày-kế-tiếp** và nêu cờ.
+// ⚠️ Phân trang: `nFilterRecordEnd = 0 + Convert.ToInt64(strCount) - 1` ⇒ `strCount` **rỗng thì ném lỗi**,
+//   `"0"` thì `end = -1` ⇒ **rỗng**; và luôn bắt đầu từ **0**, **không có tham số trang**.
+// ⚪ Kiểm tra âm tính: `union all` với `TVO_Ser_RO_RollbackStatus` (đơn hàng bị thu hồi trạng thái) là **cố ý**
+//   — `AutoId = 0` ⇒ `IsDeleted='0'`; khác 0 ⇒ `IsDeleted='1'` + `DeletionTime`. Đây là cơ chế báo **xoá**
+//   cho phía TVO, **không** phải rác. MiniHTC chưa có bảng thu hồi ⇒ mọi dòng `isDeleted="0"`, nêu cờ.
+app.MapGet("/api/tvo/customers-used-service", async (AppDbContext db, ITenantContext t,
+    string? fromDate, string? toDate, int? count) =>
+{
+    if (!DateTime.TryParse(fromDate, out var f) || !DateTime.TryParse(toDate, out var to))
+        return Results.BadRequest(new { error = "fromDate/toDate không hợp lệ." });
+    var n = count ?? 0;
+    if (n <= 0)
+        return Results.BadRequest(new { error = "count phải > 0 (nguồn: count=0 ⇒ end=-1 ⇒ rỗng câm)." });
+    var toEx = to.Date == to ? to.AddDays(1) : to;   // #415 — nguồn dùng <=, mất ngày cuối
+
+    var ROTYPES = new[] { "BDD", "SCC", "SCD", "SCS" };
+    var EXPENSES = new[] { "ROREPAIR", "ROINSURANCE" };
+
+    // Bước 1: RO đủ điều kiện. Nguồn lọc rosi.ROType + rosi.ExpenseType trong WHERE trên bảng left join
+    //   ⇒ hoá inner. Port GIỮ đúng phạm vi đó (RO phải có dòng công hợp lệ) nhưng ĐẾM số RO bị loại.
+    var baseQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && r.Status == "FNS" && (r.IsReRepair == null || r.IsReRepair == "0")
+        && r.LogLUDateTime != null && r.LogLUDateTime >= f && r.LogLUDateTime < toEx);
+
+    var withSer = await (from r in baseQ
+                         join si in db.RoServiceItems.Where(x => x.OrgId == t.OrgId) on r.Id equals si.RoId
+                         where si.ROType != null && ROTYPES.Contains(si.ROType)
+                               && si.ExpenseType != null && EXPENSES.Contains(si.ExpenseType)
+                               && (si.Price * si.Factor) * (si.Vat / 100m + 1m) - (si.InsurancePrice ?? 0m) > 0m
+                         select r.Id).Distinct().ToListAsync();
+
+    // Số RO chỉ có phụ tùng (đủ phí) mà nguồn LÀM RƠI vì left join hoá inner.
+    var partOnly = await (from r in baseQ
+                          join pi in db.RoPartItems.Where(x => x.OrgId == t.OrgId) on r.Id equals pi.RoId
+                          where (pi.UnitPrice * pi.NeedQty * pi.Factor) * (pi.Vat / 100m + 1m) - (pi.InsurancePrice ?? 0m) > 0m
+                                && !withSer.Contains(r.Id)
+                          select r.Id).Distinct().CountAsync();
+
+    var rows = await (from r in db.RepairOrders.Where(x => x.OrgId == t.OrgId && withSer.Contains(x.Id))
+                      join c in db.ServiceCustomers.Where(x => x.OrgId == t.OrgId)
+                          on r.CusID equals c.CusCode into gc
+                      from c in gc.DefaultIfEmpty()
+                      join car in db.CustomerCars.Where(x => x.OrgId == t.OrgId)
+                          on r.LicensePlate equals car.PlateNo into gcar
+                      from car in gcar.DefaultIfEmpty()
+                      orderby r.LogLUDateTime
+                      select new
+                      {
+                          cusId = r.CusID, roId = r.Id, r.RONo,
+                          customerCode = c == null ? null : c.CusCode,
+                          customerName = c == null ? r.CusName : c.CusName,
+                          customerMobile = c == null ? r.CusMobile : c.Mobile,
+                          r.ActualDeliveryDate,
+                          customerAddress = r.CusAddress,          // KHÔNG cắt 30 ký tự như nguồn
+                          r.CarID, plateNo = r.LicensePlate,
+                          vin = car == null ? r.Vin : car.FrameNo,
+                          modelCode = car == null ? null : car.ModelCode,
+                          r.DealerCode,
+                          deletionTime = (DateTime?)null, isDeleted = "0",
+                          createDateTime = r.CheckInDate, r.LogLUDateTime,
+                      }).Skip(0).Take(n).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        criteria = new { status = "FNS", roTypes = ROTYPES, expenseTypes = EXPENSES, feeGreaterThanZero = true },
+        sourceCartesianJoinOnRollbackTable = "left join TVO_Ser_RO_RollbackStatus tvo_ro ON t.ROID = ro.ROID — dieu kien KHONG nhac tvo_ro => no dong, va khong cot nao cua no duoc chon",
+        sourceLeftJoinTurnedInnerByWhere = "rosi.ROType/ExpenseType nam trong WHERE tren bang left join",
+        droppedByThatBug_partOnlyRoCount = partOnly,
+        sourceTruncatesStringsAt30 = "Convert(nvarchar, x, N): N la STYLE khong phai do dai; nvarchar khong ghi do dai => mac dinh 30 ky tu",
+        sourceCusAddressDeclared200ButGets30 = true,
+        dateUpperBoundFixed = "nguon <= @strToDate (mat ngay cuoi); port dung < ngay ke tiep",
+        pagingAlwaysFromZero = "nguon: nFilterRecordStart = 0 co dinh, khong co tham so trang",
+        rollbackRowsNotModelled = "TVO_Ser_RO_RollbackStatus chua co trong MiniHTC => moi dong isDeleted=0",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #560 BẢN `_WH` CỦA CHI TIẾT CÔNG NỢ — **BA NGUỒN DỮ LIỆU TUỲ HÀM** =====
 // Nguồn: `BizCarSv.Debit.cs:1155 SerCusDebitDetailGet_WH` — sinh đôi của `:997` (đã port #554).
 // 📐 **DIFF hai bản** (luật #414) — khác đúng **hai** chỗ, và cả hai đều về **NGUỒN DỮ LIỆU**:
