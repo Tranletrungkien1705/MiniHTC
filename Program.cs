@@ -52950,6 +52950,82 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #631 FILE ĐÍNH KÈM LỆNH SỬA CHỮA `Ser_ROAttachFile_GetX` (`Tab.cs:1468`) =====
+// 3B: laptop `:1468` md5 `637d10dc` **KHỚP** máy 150 `:1468`.
+// TRACE: WS Tab `WSCarSvTab.asmx.cs:3287` → vỏ bọc `Ser_ROAttachFile_Get` (`Tab.cs:304`) → thân thật
+//   `…_GetX` (`:1468`), chạy trên `_dbMain`.
+// ⚠️ **KHÁC BẢNG VỚI #622**: `Ser_ROAttach**File**` (khoá hợp `ROID` + `ROFileType`, lưu **đường dẫn + tên**
+//   **file**) ≠ `Ser_ROAttach**ment**` (#622 — ảnh, có cột blob `Image`). Tên gần giống, dễ gộp nhầm.
+//
+// 🔴🔴🔴 **`SELECT DISTINCT` TRÊN CẶP KHOÁ LÀM *SỐ TỔNG* SAI, TRONG KHI *DANH SÁCH* THÌ ĐÚNG**:
+//     bảng lọc: `select **distinct** identity(bigint,0,1) MyIdxSeq, serroat.ROID, serroat.ROFileType into …`
+//     bảng tổng: `select **Count(0)** MyCount from #tbl_Ser_ROAttachFile_Filter_Draft`
+//     bảng kết quả: nối **ngược lại** `on t.ROID = serroat.ROID and t.ROFileType = serroat.ROFileType`
+//   ⇒ Một lệnh có **nhiều file cùng loại** (rất bình thường: nhiều ảnh "trước khi sửa") bị `distinct` gộp
+//     thành **một** dòng ⇒ `MyCount` đếm **số CẶP (lệnh, loại file)**, **không phải số FILE**; nhưng câu kết
+//     quả nối ngược lại nên **nở đúng** ra đủ file. ⇒ **Tổng < số dòng trả về** — ngược chiều với lỗi lệch
+//     tổng ở #628/#629/#630 (ở đó tổng **lớn hơn** danh sách). Cùng một hệ, **hai kiểu lệch ngược nhau**.
+//   🔴 Kéo theo: `t.MyIdxSeq` được đánh **theo cặp** nên **nhiều file dùng chung một số thứ tự** ⇒ nếu phân
+//     trang được bật lại, một nhóm file sẽ **bị cắt đôi giữa hai trang** hoặc lặp.
+// ⚪ **PHÂN TRANG Ở ĐÂY THUỘC MỨC "TẮT" CHỨ KHÔNG PHẢI "KHÔNG THỂ BẬT"**: khác ba hàm `*_HomeX` (#628–#630),
+//   bảng tạm này **CÓ** `identity(bigint, 0, 1) MyIdxSeq` ⇒ bỏ comment là chạy được (mức của #626).
+//   ⇒ Xác nhận phải phân biệt **hai mức** khi ghi "phân trang bị comment".
+// 🔴 **CHÚ THÍCH TIÊU ĐỀ LẠC MÔ-ĐUN — CA THỨ BA**: khối tạo `#tblSer_ROAttachFile_Filter` lại mang tiêu đề
+//   `---- #tbl_**Dls_CustomerCare**_Filter:` — **đúng cùng chuỗi** đã gặp ở #627, và #630 thì lạc sang
+//   `#tbl_Ser_ReceptionF_Filter`. ⇒ Ba ca ⇒ trong cụm `Tab.cs` **chỉ tin câu `into`**, tuyệt đối không tin
+//   tiêu đề chú thích.
+// 🔴 **TÊN BẢNG TẠM TỰ MÂU THUẪN (ca thứ ba)**: tạo `into **#tblSer**_ROAttachFile_Filter` nhưng dòng dọn ghi
+//   `--drop table **#tbl_**Ser_ROAttachFile_Filter;` ⇒ hai tên khác nhau; đang comment nên vô hại.
+// 🔴 **CỜ BẬT KHỐI CHI TIẾT KHÔNG THEO QUY ƯỚC CHUNG**: `bGet_Ser_ROAttachFile = (str != null && str.Length > 0)`
+//   — **bất kỳ chuỗi khác rỗng** cũng bật, trong khi các hàm anh em so bằng `TConst.Flag.Yes`/`Active`.
+//   ⇒ Truyền `"0"` hay `"N"` vào đây vẫn **BẬT** khối chi tiết.
+// 🔴 **NHÃN CHẨN ĐOÁN SAI** (họ #627): mảng log ghi khoá `"strRt_Cols_Ser_ROAttachFile"` nhưng giá trị đưa vào
+//   là biến `strIsGet_Ser_ROAttachFile` ⇒ đọc log tưởng đang truyền danh sách CỘT, thực ra là **cờ bật/tắt**.
+// 🔴 `order by serroat.ROID, serroat.ROFileType **desc**` nằm trên `SELECT … INTO` ⇒ chỉ ảnh hưởng cách đánh
+//   số `identity`, **không** quyết định thứ tự trả về (#415); câu kết quả **không có `ORDER BY`**.
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` **không guard rỗng** ⇒ FormatException (họ #626/#627).
+// ⚪ Âm tính (đối chứng #627): hằng cột của bảng này (`DbDefine.cs:343`) **viết đúng chính tả** —
+//   `ROID` · `ROFILETYPE` · `ROFILEPATH` · `ROFILENAME` ⇒ lỗi `RECEPTIOND*` ở #627 là **cục bộ**, không phải
+//   bệnh chung của file hằng.
+app.MapGet("/api/roattachfiles", async (AppDbContext db, ITenantContext t,
+    string? roNo, string? roFileType, int? recordStart, int? recordCount, bool? isGetDetail) =>
+{
+    var qy = db.RoAttachFiles.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(roFileType)) qy = qy.Where(x => x.ROFileType == roFileType!.Trim());
+
+    var all = await qy.OrderBy(x => x.RONo).ThenByDescending(x => x.ROFileType).ThenBy(x => x.Id).ToListAsync();
+
+    // Nguồn: Count(0) chạy trên bảng DISTINCT(ROID, ROFileType) ⇒ đếm CẶP, không đếm FILE.
+    var distinctPairs = all.Select(x => new { x.RONo, x.ROFileType }).Distinct().Count();
+
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = (isGetDetail == false) ? new List<object>() : all.Skip(skip).Take(take)
+        .Select(x => (object)new { x.Id, x.RONo, x.ROFileType, x.ROFilePath, x.ROFileName, x.LogLUDateTime, x.LogLUBy })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctPairs,   // đúng bằng con số nguồn trả ở bảng Summary
+        fileCount = all.Count,             // số FILE thật
+        count = items.Count, items,
+        // ===== #631 =====
+        summaryCountsPairsNotFiles = "bang loc la select DISTINCT (ROID, ROFileType) va bang tong la Count(0) tren chinh no => MyCount dem so CAP (lenh, loai file) chu KHONG phai so FILE; cau ket qua noi nguoc lai theo ca hai cot nen no dung ra du file => TONG < SO DONG TRA VE",
+        oppositeDirectionToHomeScreens = "nguoc chieu voi #628/#629/#630 (o do tong LON HON danh sach); cung mot he co HAI kieu lech nguoc nhau",
+        myIdxSeqSharedByMultipleFiles = "MyIdxSeq duoc danh THEO CAP nen nhieu file dung chung mot so thu tu => neu bat lai phan trang, mot nhom file se bi cat doi giua hai trang hoac lap",
+        pagingIsDisabledButRevivable = "khac ba ham *_HomeX (#628-#630), bang tam nay CO identity(bigint,0,1) MyIdxSeq => bo comment la chay duoc (muc cua #626) — xac nhan phai phan biet HAI MUC khi ghi phan trang bi comment",
+        strayTitleCommentThirdCase = "khoi tao #tblSer_ROAttachFile_Filter mang tieu de ---- #tbl_Dls_CustomerCare_Filter: — DUNG CUNG CHUOI da gap o #627, con #630 lac sang #tbl_Ser_ReceptionF_Filter => ba ca, trong cum Tab.cs CHI TIN cau into",
+        tempTableNameSelfContradictoryThirdCase = "tao into #tblSer_ROAttachFile_Filter nhung dong don ghi --drop table #tbl_Ser_ROAttachFile_Filter",
+        detailFlagNotFollowingConvention = "bGet_Ser_ROAttachFile = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat, trong khi cac ham anh em so bang TConst.Flag.Yes/Active => truyen 0 hay N vao day van BAT khoi chi tiet",
+        diagnosticLabelIsWrong = "mang log ghi khoa strRt_Cols_Ser_ROAttachFile nhung gia tri dua vao la bien strIsGet_Ser_ROAttachFile => doc log tuong dang truyen danh sach COT, thuc ra la co bat/tat (ho #627)",
+        orderByOnSelectIntoOnly = "order by serroat.ROID, serroat.ROFileType desc nam tren SELECT … INTO nen chi anh huong cach danh so identity, khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        columnConstantsSpelledCorrectlyHere = "AM TINH doi chung #627: hang cot cua bang nay (DbDefine.cs:343) viet DUNG chinh ta — ROID/ROFILETYPE/ROFILEPATH/ROFILENAME => loi RECEPTIOND* o #627 la CUC BO, khong phai benh chung cua file hang",
+        differentTableFromIssue622 = "Ser_ROAttachFile (khoa hop ROID + ROFileType, luu duong dan + ten file) KHAC Ser_ROAttachment (#622 — anh, co cot blob Image); ten gan giong, de gop nham",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #630 MÀN HOME MÁY TÍNH BẢNG — LỆNH SỬA CHỮA `Ser_RO_HomeX` (`Tab.cs:1225`) =====
 // 3B: laptop `:1225` md5 `19fd2b73` **KHỚP** máy 150 `:1225`. Hoàn tất **bộ ba** Home (#628 · #629 · #630).
 // #284/#286 mới port **bảng nhãn trạng thái** của hàm này; bản thân truy vấn Home (nhóm + chi tiết) thì chưa.

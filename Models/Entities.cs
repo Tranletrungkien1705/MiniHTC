@@ -15091,6 +15091,23 @@ public sealed class SerFilePathVideo
 /// `RECEPTIONDAUDNAME`. Trong khi bảng **giao dịch** `TblSer_ReceptionFDtl` lại dùng `RECEPTIONFAUDTYPE`
 /// (chữ **F**) cho **cùng một cột logic**. Đếm trong chính `DbDefine.cs`: `RECEPTIOND*` = **4**,
 /// `RECEPTIONFAUDTYPE` = **1**. ⇒ Hai master sai chính tả, bảng chi tiết viết đúng. **CẤM "sửa cho đúng".**</summary>
+/// <summary>#631 File đính kèm của LỆNH SỬA CHỮA theo **loại file** (`Ser_ROAttachFile`).
+/// ⚠️ **KHÁC** `Ser_ROAttachment` (#622 — ảnh, khoá theo lệnh + tên ảnh). Bảng này khoá hợp
+/// (`ROID`, `ROFileType`) và lưu **đường dẫn + tên file**, không lưu blob.
+/// Cột nguồn (`DbDefine.cs:343`): `ROID` · `ROFILETYPE` · `ROFILEPATH` · `ROFILENAME` ·
+/// `LOGLUDATETIME` · `LOGLUBY` — lần này **không** có hằng sai chính tả (đối chứng với #627).</summary>
+public sealed class RoAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public string ROFileType { get; set; } = "";
+    public string? ROFilePath { get; set; }
+    public string? ROFileName { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class ReceptionFAudTypeMst
 {
     public long Id { get; set; }

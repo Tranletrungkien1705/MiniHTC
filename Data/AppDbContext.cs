@@ -124,6 +124,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ReceptionAttachFile> ReceptionAttachFiles => Set<ReceptionAttachFile>();   // #525
     public DbSet<ReceptionFAuditMst> ReceptionFAuditMsts => Set<ReceptionFAuditMst>();   // #526
     public DbSet<ReceptionFAudTypeMst> ReceptionFAudTypeMsts => Set<ReceptionFAudTypeMst>();   // #627
+    public DbSet<RoAttachFile> RoAttachFiles => Set<RoAttachFile>();   // #631
     public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #532
     public DbSet<PartExtraMst> PartExtraMsts => Set<PartExtraMst>();   // #538
     public DbSet<RoWorkArisingQuotaMst> RoWorkArisingQuotaMsts => Set<RoWorkArisingQuotaMst>();   // #539
