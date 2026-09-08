@@ -27616,6 +27616,173 @@ app.MapDelete("/api/pdifeepayments/{no}", async (string no, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Thanh toán phí vận tải + bảo hiểm theo tháng (TransportInsPayment — port 1:1 FrmQuanLyThanhToanVanTaiBaoHiem/FrmTaoThanhToanVanTaiBaoHiem, 2010.HTC Sales/Purchase) =====
+
+// ===== #B239/#B240/#B241 DANH SÁCH XE ĐỦ ĐIỀU KIỆN LẬP PHIẾU BẢO HIỂM VẬN CHUYỂN —
+//       `Pmt_TransportIns_GetAll` → `…_GetAllX` (`DMS40/0.34.Contract.cs`) — **đóng nợ ghi ở #B226/#B229**
+// **3B khớp cả 2 máy** (vị trí **trùng**, tổng file `32940` dòng cả hai bên):
+//   cửa `18178,18304 / ed075831b8444f593973efacb97aa689` · thân `18305,18602 / 1904ca955c057d79d95333f7ee92faba`
+//   ⚠️ `md5_3b.sh` khớp **TIỀN TỐ** ⇒ hỏi `Pmt_TransportIns_GetAll` nó cảnh báo trùng với `…GetAllX`;
+//     phải đo **khoảng dòng tường minh** (luật `C0-…vicesimusseptimus`).
+// 🔴🔴🔴 **LỖ RBAC — CA THỨ 24, BIẾN THỂ MỚI: THAM SỐ ĐƯỢC BIND NHƯNG KHÔNG BAO GIỜ DÙNG**.
+//   `myCommon_GetAbilityOfUser` **có gọi**, `"@strBUPatternOfUser", drAbilityOfUser["BUPattern"]` **có nạp**
+//   vào `alParamsCoupleSql` — nhưng **grep toàn thân hàm (18305→18602) chỉ ra ĐÚNG MỘT hit**: chính dòng
+//   nạp đó. **Không câu SQL nào tham chiếu `@strBUPatternOfUser`.**
+//   ⇒ **Khác 23 ca trước**: những ca kia **comment** dòng lọc (`--and (md.BUCode like @strBUPatternOfUser)`)
+//     nên còn để lại dấu vết. Ca này **không có dấu vết nào** — chỉ là tham số mồ côi ⇒ đọc lướt sẽ thấy
+//     "có RBAC" (có gọi `GetAbilityOfUser`, có bind param) mà **thực chất mọi user thấy TOÀN BỘ xe**.
+//   📌 **KHÔNG tự vá** — chờ quyết định nghiệp vụ; port trả cờ `rbacParamBoundButUnused`.
+// 🔴🔴 **BỘ LỌC "CHƯA LẬP PHIẾU" LÀ LỌC-NGƯỢC HAI TẦNG, LOẠI 'R'/'C' NGAY TRONG `on`**:
+//     `left join Pmt_TransportInsDetail ptidtl on … and ptidtl.TrasportInsDtlStatus **not in ('R','C')**`
+//     `left join Pmt_TransportIns pti on … and pti.TrasportInsStatus **not in ('R','C')**`
+//     `where … and ptidtl.VIN is null and pti.TransportInsNo is null`
+//   ⇒ Vì điều kiện trạng thái nằm **trong `on`** (không phải `where`), xe đã có dòng bảo hiểm nhưng phiếu
+//     **bị TỪ CHỐI ('R') hoặc HUỶ ('C')** thì `left join` không bắt được ⇒ **xe QUAY LẠI danh sách chờ**.
+//     Đặt hai điều kiện đó ở `where` sẽ **loại sạch** những xe này ⇒ **không lập lại được phiếu sau khi huỷ**.
+//     Cùng khuôn "điều kiện trong `on` chứ không phải `where`" đã gặp ở #B233.
+// 🔴 **Chỉ BA loại lệnh vận chuyển**: `TranspReqType in ('STORAGEREARRANGE','CARTRANSPORT','STORAGEREARRCB')`
+//   **và `DlvEndDate is not null`** (xe **đã đến nơi**) — điều kiện này lặp ở **cả hai** tầng (`#tbl_Car_VIN_Draft`
+//   và `#tblSto_DlvMinutes_Draft`).
+// 🔴 **`TStorageCode` là CASE, không phải cột**: `CARTRANSPORT` ⇒ **`sdm.DealerCode`**; còn lại ⇒ `sdm.TStorageCode`.
+//   ⇒ Với lệnh giao xe cho đại lý, "nơi đến" là **mã ĐẠI LÝ**, không phải mã kho.
+// 🔴 **`inner join Mst_TranspFee` khớp ĐỦ TÁM cột** (`TransporterCode`, `ProvinceCodeFrom/To`,
+//   `DistrictCodeFrom/To`, `ModelCode`, **`TFVCode`**) ⇒ **thiếu một dòng định mức là XE BIẾN MẤT**
+//   khỏi danh sách (inner, không phải left). Đây là nguyên nhân "xe đã đến mà không thấy để lập phiếu".
+// 🔴 **HAI CỘT SPEC KHÁC NHAU trong cùng câu**: `Mst_CarSpec` join theo **`cv.SpecCode`**, nhưng
+//   `Mst_CarPrice` (giá kế hoạch) khớp theo **`cv.ActualSpec`**. Dùng nhầm một cột ⇒ **sai giá xe**.
+//   Giá kế hoạch: `top 1` `Mst_CarPrice` theo `ModelCode + ActualSpec + ColorCode + SOType='P'` và
+//   `EffectiveDate <= DlvStartDate`, **`order by EffectiveDate desc`**.
+// 🔴 **`UnitPrice_Car` — port DÒNG ACTIVE, không port DÒNG COMMENT**: ngay trên nhánh đang chạy còn hai
+//   dòng cũ `--when t.TranspReqType = 'CARTRANSPORT' then cc.UnitPriceActual / --else t.PlanUnitPrice`.
+//   Dòng **active** thêm điều kiện **`cc.CarId is not null`** và bọc `Isnull(…, 0.0)`:
+//     `when cc.CarId is not null and TranspReqType='CARTRANSPORT' then Isnull(cc.UnitPriceActual,0)`
+//     `else Isnull(t.PlanUnitPrice, 0)`
+//   ⇒ Xe `CARTRANSPORT` **chưa có `Car_Car`** rơi về **giá kế hoạch**, không phải 0.
+// ⚠️ **BUG CÂM TRONG NGUỒN (đã bị vô hiệu hoá)**: `case when t.InsurancePercent **= null** then 0.0 …` —
+//   trong SQL `= null` **KHÔNG BAO GIỜ đúng** ⇒ nhánh `0.0` là **code chết**. Thực tế vô hại vì tầng trên
+//   đã `Isnull(t.InsPercent,0) InsurancePercent`. Ghi lại, **không tự sửa**.
+// 🔴 **`Val_Transport = UnitPrice_Car × InsurancePercent + TFValReal − TPValReal`** ⇒ **tiền phạt trễ bị TRỪ**
+//   khỏi tổng phí (không phải cộng). `Val_Insurance = UnitPrice_Car × InsurancePercent`.
+// 🔴 `InsPercent` / `InsContractNo`: hai subquery `top 1 Mst_InsuranceFee` cùng điều kiện
+//   `DlvStartDate >= EffStartDate` `order by EffStartDate desc` — **theo NGÀY XUẤT KHO**, không phải hôm nay.
+// 🔴 Phân trang khuôn `identity(bigint,0,1) MyIdxSeq`; **`MyCount` đếm TRƯỚC khi cắt trang**.
+app.MapGet("/api/transportinspayments/candidates", async (
+    AppDbContext db, ITenantContext t, int? recordStart, int? recordCount,
+    string? vin, string? transpReqType, string? transporterCode) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    // 🔴 Tầng 1 — chỉ BA loại lệnh + xe ĐÃ ĐẾN (DlvEndDate is not null).
+    var reqTypes = new[] { "STORAGEREARRANGE", "CARTRANSPORT", "STORAGEREARRCB" };
+    var hq = db.TranspDlvConfirms.Where(h => h.OrgId == t.OrgId
+        && h.TranspReqType != null && reqTypes.Contains(h.TranspReqType));
+    if (!string.IsNullOrWhiteSpace(transpReqType)) hq = hq.Where(h => h.TranspReqType == transpReqType);
+    if (!string.IsNullOrWhiteSpace(transporterCode)) hq = hq.Where(h => h.TransporterCode == transporterCode);
+    var heads = await hq.ToListAsync();
+    var headById = heads.ToDictionary(h => h.Id);
+
+    var carsQ = db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId
+        && c.DlvEndDate != null && headById.Keys.Contains(c.TranspDlvConfirmId));
+    if (!string.IsNullOrWhiteSpace(vin)) carsQ = carsQ.Where(c => c.VIN.Contains(vin!.Trim().ToUpper()));
+    var cars = await carsQ.ToListAsync();
+
+    // 🔴🔴 Lọc-ngược HAI TẦNG: dòng/phiếu ở 'R'/'C' KHÔNG chặn ⇒ xe quay lại danh sách chờ.
+    var liveHeadIds = await db.TransportInsPayments
+        .Where(p => p.OrgId == t.OrgId && p.Status != "R" && p.Status != "C")
+        .Select(p => p.Id).ToListAsync();
+    var takenVins = await db.TransportInsPaymentLines
+        .Where(l => l.OrgId == t.OrgId && l.TrasportInsDtlStatus != "R" && l.TrasportInsDtlStatus != "C"
+                    && liveHeadIds.Contains(l.TransportInsPaymentId))
+        .Select(l => l.Vin).ToListAsync();
+    var taken = takenVins.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var free = cars.Where(c => !taken.Contains(c.VIN)).OrderBy(c => c.VIN).ToList();
+    var myCount = free.Count;                                   // 🔴 đếm TRƯỚC khi cắt trang
+    var page = free.Skip(start).Take(count).ToList();
+
+    var vins = page.Select(c => c.VIN).ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var prices = await db.CarPrices.Where(p => p.OrgId == t.OrgId && p.SoType == "P").ToListAsync();
+    var insFees = await db.InsuranceFees.Where(f => f.OrgId == t.OrgId).ToListAsync();
+    var fees = await db.TranspFees.Where(f => f.OrgId == t.OrgId).ToListAsync();
+
+    var rows = new List<object>();
+    var droppedNoTranspFee = new List<string>();
+    foreach (var c in page)
+    {
+        var h = headById[c.TranspDlvConfirmId];
+        cvs.TryGetValue(c.VIN, out var cv);
+
+        // 🔴 inner join Mst_TranspFee ĐỦ 8 CỘT — thiếu định mức ⇒ XE BIẾN MẤT khỏi danh sách.
+        var mtf = fees.FirstOrDefault(f => f.TransporterCode == h.TransporterCode
+            && f.ProvinceCodeFrom == (c.FProvinceCode ?? "") && f.ProvinceCodeTo == (c.TProvinceCode ?? "")
+            && (f.DistrictCodeFrom ?? "") == (c.FDistrictCode ?? "") && (f.DistrictCodeTo ?? "") == (c.TDistrictCode ?? "")
+            && f.ModelCode == (cv?.ModelCode ?? "") && (f.TFVCode ?? "") == (h.TFVCode ?? ""));
+        if (mtf is null) { droppedNoTranspFee.Add(c.VIN); continue; }
+
+        var expectedDays = mtf.ExpectedDays;
+        DateTime? expectedEnd = c.DlvStartDate?.AddDays(expectedDays);
+        var delayDate = (expectedEnd != null && c.DlvEndDate != null)
+            ? (int)(c.DlvEndDate.Value.Date - expectedEnd.Value.Date).TotalDays : 0;
+
+        // 🔴 Giá KẾ HOẠCH khớp theo **ActualSpec** (không phải SpecCode).
+        var plan = prices.Where(p => p.ModelCode == (cv?.ModelCode ?? "")
+                && (p.SpecCode ?? "") == (cv?.ActualSpec ?? "")
+                && (p.ColorCode ?? "") == (cv?.ColorCode ?? "")
+                && (c.DlvStartDate == null || p.EffectiveDate <= c.DlvStartDate))
+            .OrderByDescending(p => p.EffectiveDate).FirstOrDefault();
+        var planUnitPrice = plan?.Price;
+
+        // 🔴 DÒNG ACTIVE: có CarId + CARTRANSPORT ⇒ giá thực tế; ngược lại ⇒ giá kế hoạch (Isnull → 0).
+        var unitPriceCar = (cv?.UnitPriceActual != null && h.TranspReqType == "CARTRANSPORT")
+            ? (cv!.UnitPriceActual ?? 0m) : (planUnitPrice ?? 0m);
+
+        var fee = insFees.Where(f => c.DlvStartDate == null || (f.EffStartDate != null && c.DlvStartDate >= f.EffStartDate))
+            .OrderByDescending(f => f.EffStartDate).FirstOrDefault();
+        var insPercent = fee?.Percent ?? 0m;                    // Isnull(InsPercent, 0)
+        var valInsurance = unitPriceCar * insPercent;
+        // 🔴 phạt trễ bị TRỪ khỏi tổng phí.
+        var valTransport = unitPriceCar * insPercent + h.TFValReal - h.TPValReal;
+
+        rows.Add(new
+        {
+            c.VIN, cv?.ModelCode, ModelName = (string?)null,
+            SpecCode = cv?.SpecCode, SpecDescription = (string?)null,
+            h.TranspReqType, DlvMnNo = h.DlvMinutesNo,
+            c.DlvStartDate, c.DlvEndDate,
+            FStorageCode = h.FStorageCode,
+            // 🔴 TStorageCode là CASE: CARTRANSPORT ⇒ DealerCode.
+            TStorageCode = h.TranspReqType == "CARTRANSPORT" ? h.DealerCode : h.TStorageCode,
+            c.FProvinceCode, c.TProvinceCode,
+            ExpectedDays = expectedDays, ExpectedDlvEndDate = expectedEnd, DelayDate = delayDate,
+            h.TFValReal, h.TPValReal,
+            PlanUnitPrice = planUnitPrice, UnitPrice_Car = unitPriceCar,
+            InsurancePercent = insPercent, InsuranceContractNo = fee?.ContractNo,
+            Val_Insurance = valInsurance, Val_Transport = valTransport
+        });
+    }
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new { MyCount = myCount },             // 🔴 đếm TRƯỚC khi cắt trang
+        recordStart = start, recordCount = count,
+        Pmt_TransportInsDetail = rows,
+        droppedNoTranspFee,
+        rbacParamBoundButUnused = true,
+        rbacNote = "LO RBAC - CA THU 24, BIEN THE MOI: THAM SO DUOC BIND NHUNG KHONG BAO GIO DUNG. myCommon_GetAbilityOfUser CO goi, '@strBUPatternOfUser' CO nap vao alParamsCoupleSql - nhung grep toan than ham (18305->18602) chi ra DUNG MOT hit la chinh dong nap do; KHONG cau SQL nao tham chieu. KHAC 23 ca truoc (comment dong loc, con de lai dau vet): ca nay KHONG CO DAU VET NAO, chi la tham so mo coi => doc luot se thay 'co RBAC' ma thuc chat MOI USER THAY TOAN BO XE. KHONG TU VA - cho quyet dinh nghiep vu.",
+        cancelReturnsNote = "BO LOC 'CHUA LAP PHIEU' LA LOC-NGUOC HAI TANG, LOAI 'R'/'C' NGAY TRONG 'on': left join Pmt_TransportInsDetail ... and ptidtl.TrasportInsDtlStatus not in ('R','C'); left join Pmt_TransportIns ... and pti.TrasportInsStatus not in ('R','C'); where ... and ptidtl.VIN is null and pti.TransportInsNo is null. Vi dieu kien trang thai nam TRONG 'on' (khong phai 'where'), xe da co dong bao hiem nhung phieu BI TU CHOI ('R') hoac HUY ('C') thi left join khong bat duoc => XE QUAY LAI DANH SACH CHO. Dat hai dieu kien do o 'where' se LOAI SACH nhung xe nay => khong lap lai duoc phieu sau khi huy. Cung khuon voi #B233.",
+        reqTypeNote = "Chi BA loai lenh: TranspReqType in ('STORAGEREARRANGE','CARTRANSPORT','STORAGEREARRCB') VA DlvEndDate is not null (xe DA DEN NOI) - dieu kien lap o CA HAI tang (#tbl_Car_VIN_Draft va #tblSto_DlvMinutes_Draft).",
+        tStorageCaseNote = "TStorageCode la CASE, khong phai cot: CARTRANSPORT => sdm.DealerCode; con lai => sdm.TStorageCode. Voi lenh giao xe cho dai ly, 'noi den' la MA DAI LY, khong phai ma kho.",
+        transpFeeInnerJoinNote = "inner join Mst_TranspFee khop DU TAM cot (TransporterCode, ProvinceCodeFrom/To, DistrictCodeFrom/To, ModelCode, TFVCode) => THIEU MOT DONG DINH MUC LA XE BIEN MAT khoi danh sach (inner, khong phai left). Day la nguyen nhan 'xe da den ma khong thay de lap phieu' - xem danh sach droppedNoTranspFee.",
+        twoSpecColumnNote = "HAI COT SPEC KHAC NHAU trong cung cau: Mst_CarSpec join theo cv.SpecCode, nhung Mst_CarPrice (gia ke hoach) khop theo cv.ActualSpec. Dung nham mot cot => SAI GIA XE. Gia ke hoach: top 1 Mst_CarPrice theo ModelCode + ActualSpec + ColorCode + SOType='P' va EffectiveDate <= DlvStartDate, order by EffectiveDate desc.",
+        activeLineNote = "UnitPrice_Car - PORT DONG ACTIVE, KHONG PORT DONG COMMENT: ngay tren nhanh dang chay con hai dong cu '--when TranspReqType=CARTRANSPORT then cc.UnitPriceActual / --else t.PlanUnitPrice'. Dong ACTIVE them dieu kien 'cc.CarId is not null' va boc Isnull(...,0.0) => xe CARTRANSPORT chua co Car_Car roi ve GIA KE HOACH, khong phai 0.",
+        deadBranchNote = "BUG CAM TRONG NGUON (da bi vo hieu hoa): 'case when t.InsurancePercent = null then 0.0 ...' - trong SQL '= null' KHONG BAO GIO DUNG => nhanh 0.0 la CODE CHET. Thuc te vo hai vi tang tren da Isnull(t.InsPercent,0) InsurancePercent. Ghi lai, KHONG tu sua.",
+        formulaNote = "Val_Transport = UnitPrice_Car x InsurancePercent + TFValReal - TPValReal => TIEN PHAT TRE BI TRU khoi tong phi (khong phai cong). Val_Insurance = UnitPrice_Car x InsurancePercent. InsPercent/InsContractNo: hai subquery top 1 Mst_InsuranceFee cung dieu kien DlvStartDate >= EffStartDate order by EffStartDate desc - THEO NGAY XUAT KHO, khong phai hom nay.",
+        pagingNote = "Phan trang khuon identity(bigint,0,1) MyIdxSeq; MyCount DEM TRUOC khi cat trang.",
+        queueClosedNote = "Dong no ghi o #B226/#B229: cua GetAll da port. Cum Pmt_TransportIns nay da du GetAll + UpdateMulti."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/transportinspayments", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
     var qry = db.TransportInsPayments.Where(x => x.OrgId == t.OrgId);
