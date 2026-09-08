@@ -22171,6 +22171,160 @@ app.MapDelete("/api/spsupportretails/{vin}/{spsrCode}", async (string vin, strin
     return Results.Ok(new { deleted = vin });
 }).RequireAuthorization();
 
+
+// ===== #B248/#B249/#B250 XE ĐỦ ĐIỀU KIỆN TẠO LỆNH XUẤT XE DMS40 —
+//       `Rpt_Statistic_DMS40CarDeliveryOrder_New20190125` → `…X_New20190125`
+//       (`DMS40/zTemp.Report.cs`, csproj dòng 130 `<Compile Include>` ⇒ **file SỐNG**) =====
+// **3B khớp cả 2 máy** (vị trí **trùng**, file `15713` dòng cả hai bên):
+//   cửa `6667,6783 / b66a35ca5aadfd89072f00294939302a` · thân `X 6172,6422 / 6679459d54f054f626b28bf7ea9a2c1b`
+// 🔴🔴 **HAI CỬA WS SỐNG CÙNG CHẠM MỘT THÂN — nhưng qua HAI ĐƯỜNG KHÁC NHAU**:
+//   · WS64 `Rpt_Statistic_DMS40CarDeliveryOrder`    → `_biz.…_New20190125`      (zTemp.Report.cs:6667)
+//   · WS64 `Rpt_Statistic_DMS40CarDeliveryOrder_WH` → `_biz.…_WH_New20181119`   (Biz.HTC.WH.cs:171627)
+//     **nhưng cửa `_WH` (dòng 171687) lại gọi `…X_New20190125`** — tức **thân MỚI**, không phải thân
+//     cùng ngày với tên cửa. ⇒ **Hai cửa hội tụ về CÙNG một thân.**
+//   · `Rpt_Statistic_DMS40CarDeliveryOrder_New20181119` (Biz.HTC.WH.cs:171756) — **không cửa WS nào gọi
+//     ⇒ CHẾT**; nó là nơi duy nhất còn gọi thân cũ `…X_New20181119` (171114). ⇒ Grep ra thân cũ mà port
+//     là **port nhánh chết**.
+// 🔴🔴🔴 **BUG LOGIC THẬT — BỘ LỌC "DỞ DANG" BỊ ĐẢO NGƯỢC (phủ định hai lần)**:
+//     `#tbl_Car_Car_Filter_LDC` = xe **KHÔNG** dở dang:
+//        `from #tbl_Car_Car_Filter t left join #tblJoinCheck_DoDang f on … where **f.CarId is null**`
+//     rồi RULE1 lại lọc:
+//        `left join #tbl_Car_Car_Filter_LDC g on t.CarId = g.CarId where **g.CarId is null**`
+//     ⇒ giữ lại xe **KHÔNG nằm trong tập "không dở dang"** = **giữ đúng những xe ĐANG DỞ DANG**.
+//   ⚠️ Trong khi chú thích ngay phía trên ghi rõ ý định ngược lại:
+//     *"Xe không có Lệnh điều chuyển nội bộ dở dang … **[Loại đi những xe chưa kết thúc luồng cũ]**"*.
+//   📌 **KHÔNG tự vá** — port giữ đúng nguồn, trả cờ `doDangFilterInverted` để người vận hành thấy.
+// 🔴 **`DutyCompletePercent_AF` — công thức đọc TRỌN, không đoán**
+//   (`DMS40/zSqlTemplate.0.30.Order.cs:1746`):
+//     `DutyCompletedAmount_AF = IsNull(<tiền cọc 'A','F'>, 0) + IsNull(pmgd.GuaranteeValue, 0)`
+//     `DutyCompletePercent_AF = DutyCompletedAmount_AF * 100 * 1.0 / **IsNull(cc.UnitPriceActual, 0.0)**`
+//   ⚠️ **MẪU SỐ CÓ THỂ = 0** (`IsNull(…, 0.0)`): xe chưa có đơn giá thực tế ⇒ **chia cho 0 ⇒ gãy CẢ báo
+//     cáo**, không phải chỉ sai một dòng. Port **bỏ qua xe `UnitPriceActual` null/0** và liệt kê ở
+//     `droppedNoUnitPrice` thay vì để nổ.
+//   🔴 Ngưỡng đạt: **`DutyCompletePercent_AF >= 100`**.
+// 🔴🔴 **CÙNG BẢNG `Pmt_GuaranteeDetail`, HAI BỘ TRẠNG THÁI KHÁC NHAU trong CÙNG một rule**:
+//   · lọc nền (điều kiện hạn bảo lãnh) dùng **`in ('P','A')`**;
+//   · tính tiền `DutyCompletedAmount_AF` dùng **`in ('A','F')`**.
+//   ⇒ Bảo lãnh `'P'` **kéo dài được điều kiện hạn** nhưng **không cộng tiền**; bảo lãnh `'F'` thì
+//     **cộng tiền** nhưng **không tính vào điều kiện hạn**. Không phải nhầm — hai vai trò khác nhau.
+// 🔴 **Bảy điều kiện nền của RULE1** (đọc từng dòng):
+//   `md.FlagActive='1'` (đại lý còn hiệu lực) · `cc.VIN is not null` (đã map VIN) · `cc.FlagActive='1'`
+//   (chưa huỷ xe) · `cv.StoreDate is not null` (**VIN trong kho HTC**) · `cv.CQStartDate is not null`
+//   (có ngày KTCL) · `cv.TaxPaymentDate is not null` (có ngày nộp thuế) ·
+//   `cdod.DeliveryOrderNo is null` với `cdod` đã lọc `ConfirmStatus in ('P','A','F')`
+//   ⇒ **chưa có lệnh xuất xe, HOẶC lệnh đang ở R/C** (bị loại khỏi phép nối nên coi như chưa có).
+// 🔴 Điều kiện hạn bảo lãnh: `pgd.DateExpired is null **or** pgd.DateExpired >= @strToday`
+//   — chú thích nguồn: *"Xe không có bảo lãnh thì bỏ luật này"* ⇒ `null` là **ĐẠT**, không phải trượt.
+// 🔴 Tham số lọc `@strDealerCode` / `@strVIN` theo khuôn `('@strX' = N'' or cột = '@strX')` ⇒ **nướng
+//   thẳng vào literal** (`StringUtils.Replace`), **không** phải tham số runtime ⇒ lại là bề mặt injection;
+//   port tham số hoá.
+// 🔴 `sdm_DlvStartDate` = `select top 1 sdm.DlvStartDate … **KHÔNG có `order by`**` ⇒ **không tất định**
+//   khi xe có nhiều biên bản; điều kiện cặp trạng thái là `(F='P' và T='P') hoặc (F='A' và T='P')`
+//   ⇒ rút gọn đúng nghĩa: **`T='P'` và `F in ('P','A')`** — tức **chưa xác nhận ở nơi ĐẾN**.
+// 📌 **NỢ**: RULE2 (`…_New20190125_Rule2`, chạy sau khi đọc `#tbl_MasterCondition` từ DB) và tập hợp
+//   `#tbl_Car_Car_Filter = RULE1 **union** RULE2` chưa port ⇒ endpoint chỉ dựng **RULE1**, trả cờ
+//   `rule2NotPorted`. Không bịa điều kiện của RULE2.
+app.MapGet("/api/reports/dms40-car-delivery-order", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? vin) =>
+{
+    var today = DateTime.Today;
+    var dlrFilter = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var vinFilter = (vin ?? "").Trim().ToUpperInvariant();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1").ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 BẢY điều kiện nền của RULE1 — đọc từng dòng, không rút gọn.
+    var carsQ = db.CarVinMasters.Where(c => c.OrgId == t.OrgId
+        && c.VIN != ""                              // đã map VIN
+        && c.FlagActive == "1"                      // chưa huỷ xe
+        && c.StoreDate != null                      // VIN trong kho HTC
+        && c.CQStartDate != null                    // có ngày KTCL
+        && c.TaxPaymentDate != null);               // có ngày nộp thuế
+    if (dlrFilter.Length > 0) carsQ = carsQ.Where(c => c.DealerCode == dlrFilter);
+    if (vinFilter.Length > 0) carsQ = carsQ.Where(c => c.VIN == vinFilter);
+    var cars = (await carsQ.ToListAsync())
+        .Where(c => c.DealerCode != null && dealers.ContainsKey(c.DealerCode))   // đại lý còn hiệu lực
+        .ToList();
+
+    // `cdod.ConfirmStatus in ('P','A','F')` rồi `DeliveryOrderNo is null`
+    // ⇒ xe đã có lệnh xuất ở P/A/F thì LOẠI; lệnh ở R/C coi như chưa có.
+    var doCarLive = await (from dc in db.DeliveryOrderCars
+                           join d in db.DeliveryOrders on dc.DoId equals d.Id
+                           where dc.OrgId == t.OrgId
+                                 && (dc.ConfirmStatus == "P" || dc.ConfirmStatus == "A" || dc.ConfirmStatus == "F")
+                           select dc.Vin).ToListAsync();
+    var hasLiveDO = doCarLive.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    cars = cars.Where(c => !hasLiveDO.Contains(c.VIN)).ToList();
+
+    // 🔴 Bảo lãnh: hai bộ trạng thái KHÁC NHAU cho hai vai trò.
+    var grtLines = await db.BankGuaranteeDtls.Where(g => g.OrgId == t.OrgId).ToListAsync();
+    var grtByVinPA = grtLines.Where(g => g.GuaranteeDetailStatus == "P" || g.GuaranteeDetailStatus == "A")
+        .GroupBy(g => g.VIN).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    var grtByVinAF = grtLines.Where(g => g.GuaranteeDetailStatus == "A" || g.GuaranteeDetailStatus == "F")
+        .GroupBy(g => g.VIN).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue), StringComparer.OrdinalIgnoreCase);
+
+    // `DateExpired is null OR DateExpired >= @strToday` — không có bảo lãnh ⇒ ĐẠT.
+    cars = cars.Where(c =>
+    {
+        if (!grtByVinPA.TryGetValue(c.VIN, out var lines) || lines.Count == 0) return true;
+        return lines.Any(g => g.DateExpired == null || g.DateExpired >= today);
+    }).ToList();
+
+    // 🔴 Tiền cọc 'A','F' (GuaranteeNo is null) — dùng đúng tầng caching đã port ở #B125.
+    var carIds = cars.Where(c => !string.IsNullOrEmpty(c.CarId)).Select(c => c.CarId!).Distinct().ToList();
+    var depositAF = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
+    var payTotal = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, false);
+
+    var rows = new List<object>();
+    var droppedNoUnitPrice = new List<string>();
+    var droppedPercentBelow100 = new List<object>();
+    foreach (var c in cars)
+    {
+        var cid = c.CarId ?? "";
+        var deposit = (cid.Length > 0 && depositAF.TryGetValue(cid, out var dv)) ? dv.AmountTotal : 0m;
+        var grtValue = grtByVinAF.TryGetValue(c.VIN, out var gv) ? gv : 0m;
+        var dutyAmount = deposit + grtValue;
+
+        // ⚠️ Mẫu số IsNull(UnitPriceActual, 0.0) ⇒ nguồn CHIA CHO 0. Port bỏ qua thay vì để nổ.
+        var unitPrice = c.UnitPriceActual ?? 0m;
+        if (unitPrice == 0m) { droppedNoUnitPrice.Add(c.VIN); continue; }
+
+        var pct = dutyAmount * 100m / unitPrice;
+        if (pct < 100m) { droppedPercentBelow100.Add(new { c.VIN, dutyAmount, unitPrice, pct }); continue; }
+
+        rows.Add(new
+        {
+            c.CarId, c.VIN, c.DealerCode,
+            DealerName = dealers.TryGetValue(c.DealerCode ?? "", out var dd) ? dd.DealerName : null,
+            c.ModelCode, c.SpecCode, c.ColorCode,
+            c.CQStartDate, c.TaxPaymentDate, c.StoreDate,
+            DutyCompletedAmount_AF = dutyAmount,
+            DutyCompletePercent_AF = Math.Round(pct, 4),
+            PMPDAmountTotal = (cid.Length > 0 && payTotal.TryGetValue(cid, out var pv)) ? pv.AmountTotal : 0m,
+            UnitPriceActual = unitPrice
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        items = rows,
+        droppedNoUnitPrice, droppedPercentBelow100,
+        doDangFilterInverted = true,
+        rule2NotPorted = true,
+        twoDoorsOneBodyNote = "HAI CUA WS SONG CUNG CHAM MOT THAN nhung qua HAI DUONG KHAC NHAU: WS64 Rpt_Statistic_DMS40CarDeliveryOrder -> _biz..._New20190125 (zTemp.Report.cs:6667); WS64 ..._WH -> _biz..._WH_New20181119 (Biz.HTC.WH.cs:171627) NHUNG cua _WH (dong 171687) lai goi ...X_New20190125 - tuc THAN MOI, khong phai than cung ngay voi ten cua. Ban ..._New20181119 (Biz.HTC.WH.cs:171756) KHONG cua WS nao goi => CHET; no la noi duy nhat con goi than cu ...X_New20181119 (171114). Grep ra than cu ma port la PORT NHANH CHET.",
+        invertedFilterNote = "BUG LOGIC THAT - BO LOC 'DO DANG' BI DAO NGUOC (phu dinh hai lan): #tbl_Car_Car_Filter_LDC = xe KHONG do dang (left join #tblJoinCheck_DoDang ... where f.CarId is null); roi RULE1 loc 'left join #tbl_Car_Car_Filter_LDC g ... where g.CarId is null' => giu lai xe KHONG nam trong tap 'khong do dang' = GIU DUNG NHUNG XE DANG DO DANG. Chu thich ngay tren ghi y dinh NGUOC LAI: 'Xe khong co Lenh dieu chuyen noi bo do dang ... [Loai di nhung xe chua ket thuc luong cu]'. KHONG TU VA.",
+        dutyFormulaNote = "DutyCompletePercent_AF - cong thuc doc TRON (DMS40/zSqlTemplate.0.30.Order.cs:1746): DutyCompletedAmount_AF = IsNull(<tien coc 'A','F'>,0) + IsNull(pmgd.GuaranteeValue,0); DutyCompletePercent_AF = DutyCompletedAmount_AF * 100 * 1.0 / IsNull(cc.UnitPriceActual, 0.0). MAU SO CO THE = 0 => xe chua co don gia thuc te lam CHIA CHO 0 va GAY CA BAO CAO, khong phai chi sai mot dong. Port bo qua xe UnitPriceActual null/0 (droppedNoUnitPrice) thay vi de no. Nguong dat: >= 100.",
+        guaranteeTwoStatusSetsNote = "CUNG BANG Pmt_GuaranteeDetail, HAI BO TRANG THAI KHAC NHAU trong CUNG mot rule: loc nen (dieu kien han bao lanh) dung in ('P','A'); tinh tien DutyCompletedAmount_AF dung in ('A','F'). Bao lanh 'P' KEO DAI DUOC DIEU KIEN HAN nhung KHONG CONG TIEN; bao lanh 'F' thi CONG TIEN nhung KHONG tinh vao dieu kien han. Khong phai nham - hai vai tro khac nhau.",
+        baseConditionsNote = "BAY dieu kien nen cua RULE1: md.FlagActive='1'; cc.VIN is not null (da map VIN); cc.FlagActive='1' (chua huy xe); cv.StoreDate is not null (VIN trong kho HTC); cv.CQStartDate is not null; cv.TaxPaymentDate is not null; cdod.DeliveryOrderNo is null voi cdod da loc ConfirmStatus in ('P','A','F') => CHUA CO LENH XUAT XE, HOAC lenh dang o R/C.",
+        expiryRuleNote = "Dieu kien han bao lanh: 'pgd.DateExpired is null OR pgd.DateExpired >= @strToday' - chu thich nguon: 'Xe khong co bao lanh thi bo luat nay' => null la DAT, khong phai truot.",
+        bakedParamNote = "Tham so loc @strDealerCode / @strVIN theo khuon ('@strX' = N'' or cot = '@strX') => NUONG THANG VAO LITERAL bang StringUtils.Replace, KHONG phai tham so runtime => be mat SQL injection. Port tham so hoa.",
+        nonDeterministicTopNote = "sdm_DlvStartDate = 'select top 1 sdm.DlvStartDate ... KHONG co order by' => KHONG TAT DINH khi xe co nhieu bien ban. Dieu kien cap trang thai '(F=P va T=P) hoac (F=A va T=P)' rut gon dung nghia: T='P' va F in ('P','A') - tuc CHUA XAC NHAN O NOI DEN.",
+        debtNote = "NO: RULE2 (..._New20190125_Rule2, chay sau khi doc #tbl_MasterCondition tu DB) va tap hop #tbl_Car_Car_Filter = RULE1 union RULE2 chua port => endpoint chi dung RULE1. Khong bia dieu kien cua RULE2.",
+        newColumnsNote = "§12 - ba cot moi tren CarVinMaster (CarId, StoreDate, TaxPaymentDate) da them du 4 cho: entity + Seeder ALTER ... IF NOT EXISTS + DTO CarVinMasterImportDto + POST /api/carvinmasters/import va GET nay."
+    });
+}).RequireAuthorization();
 // Import master VIN tối giản (nguồn Car_Vin+Car_Car, cùng nguồn MiniVehicle) — phục vụ guard tồn tại VIN cho SPSupportRetail.
 app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -22182,7 +22336,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -48195,7 +48349,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null);   // #B248
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>

@@ -11019,6 +11019,16 @@ public sealed class CarVinMaster
     /// `CQStartDate` -> `CQExpectedDate` -> `DateMax` (`RptSQLQuery.cs:52142-52148`) roi phan 4 nhom
     /// giao hang. Thieu hai cot nay thi TOAN BO viec phan nhom cua bao cao khong lam duoc.</summary>
     public DateTime? CQStartDate { get; set; }
+    /// <summary>🔴 #B248 — `Car_Car.CarId`: **khoá xe** của nguồn, khác `VIN` (VIN chỉ có sau khi map).
+    /// Mọi tầng tiền (`Pmt_PaymentDetail`, `Pmt_GuaranteeDetail`, `Car_DeliveryOrderDetail`) nối theo
+    /// **`CarId`**, không phải VIN ⇒ thiếu cột này thì không dựng được báo cáo lệnh xuất xe DMS40.</summary>
+    public string? CarId { get; set; }
+    /// <summary>🔴 #B248 — `Car_VIN.StoreDate`: ngày VIN vào kho HTC. Điều kiện nền của báo cáo
+    /// `Rpt_Statistic_DMS40CarDeliveryOrder`: `cv.StoreDate is not null` (**VIN đang trong kho HTC**).</summary>
+    public DateTime? StoreDate { get; set; }
+    /// <summary>🔴 #B248 — `Car_VIN.TaxPaymentDate`: ngày nộp thuế. Cùng với [CQStartDate] tạo cặp điều
+    /// kiện `is not null` bắt buộc trước khi xe được phép tạo lệnh xuất xe.</summary>
+    public DateTime? TaxPaymentDate { get; set; }
     /// <summary>`Car_VIN.CQExpectedDate` — xem chú thích của [CQStartDate].</summary>
     public DateTime? CQExpectedDate { get; set; }
     /// <summary>🔴 #B54 — `Car_VIN.MortageBankCode`: ngân hàng đang nhận thế chấp xe. Là điều kiện
