@@ -15100,6 +15100,36 @@ public sealed class SerFilePathVideo
 /// khoá `ReceptionAttachFileNo`. ⚠️ **KHÁC** <see cref="ReceptionAttachFile"/> (file thật của TỪNG phiếu).
 /// Cột nguồn (`DbDefine.cs`): `ReceptionAttachFileNo` · `FilePath` · `FileName` · `CreatedDateTime` ·
 /// `CreatedBy` · `FlagActive` · `LogLUDateTime` · `LogLUBy`.</summary>
+/// <summary>#633 Master **LOẠI khiếu nại** đơn phụ tùng (`Mst_OrderComplainType`), khoá
+/// `OrderComplainType`. Nguồn chỉ có hàm ĐỌC (`Mst_OrderComplainType_Get`) — **không có** Create/Update
+/// trong tầng biz ⇒ danh mục được nuôi thẳng trong DB.</summary>
+public sealed class MstOrderComplainType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderComplainType { get; set; } = "";
+    public string? OrderComplainTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#633 Master **LOẠI ẢNH** của khiếu nại (`Mst_OrderComplainImageType`), khoá
+/// `OrderComplainImageType`. 🔴 Cột tên **KHÔNG** đối xứng với bảng anh em: nguồn lọc bằng
+/// `mocit.OrderComplainImage**Name**` (bỏ chữ "Type"), không phải `OrderComplainImageTypeName`.
+/// Giữ **nguyên văn**.</summary>
+public sealed class MstOrderComplainImageType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderComplainImageType { get; set; } = "";
+    /// <summary>Cột nguồn: **`OrderComplainImageName`** — bỏ chữ "Type", khác bảng anh em.</summary>
+    public string? OrderComplainImageName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class ReceptionAttachFileMst
 {
     public long Id { get; set; }

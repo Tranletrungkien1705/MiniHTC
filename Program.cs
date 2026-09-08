@@ -52950,6 +52950,109 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #633 HAI MASTER KHIẾU NẠI ĐƠN PHỤ TÙNG (`BizCarSv.Master.cs`) =====
+// 3B **cả hai khớp 2 máy, cùng số dòng**: `Mst_OrderComplainType_GetX` `:12284` md5 `0a7998ed` ·
+//   `Mst_OrderComplainImageType_GetX` `:12619` md5 `4aa98b49`.
+// TRACE: `WSCarSv.asmx.cs:39535` / `:39579` → hai vỏ bọc `…_Get` → thân thật `…_GetX`, chạy trên `_dbMain`.
+// MiniHTC **đã có** nghiệp vụ khiếu nại (`/api/ordercomplains`, `/attachments`) nhưng **chưa có hai danh mục**
+//   này ⇒ lượt này bù cả cặp (§12 đủ bốn chỗ, phần POST xem cờ bên dưới).
+//
+// 🔴 **DIFF HAI HÀM: GẦN NHƯ SAO CHÉP, KHÁC BIỆT THẬT NẰM Ở *TÊN CỘT*** (đúng cảnh báo #414 — khác biệt ở
+//   DANH SÁCH CỘT chứ không ở WHERE). Sau khi chuẩn hoá tên bảng/alias để so, **toàn bộ** khác biệt là:
+//     bản Type      : lọc `moct.OrderComplain**TypeName**`   (tham số `strOrderComplainTypeNameList`)
+//     bản ImageType : lọc `mocit.OrderComplainImage**Name**` (tham số `strOrderComplainImageNameList`)
+//   ⇒ Bảng ảnh có khoá là `OrderComplainImageType` nhưng cột tên lại là `OrderComplainImage**Name**` —
+//     **bỏ chữ "Type"**, không đối xứng với bảng anh em. Đặt tên entity theo **nguyên văn**; "sửa cho cân đối"
+//     thành `OrderComplainImageTypeName` là **sai cột**.
+// 🔴 **KHÔNG CÓ HÀM GHI**: quét `BizCarSv.Master.cs` không thấy `Mst_OrderComplainType_Create/_Update` hay
+//   bản tương ứng của bảng ảnh ⇒ hai danh mục này **chỉ đọc qua API**, được nuôi thẳng trong DB.
+//   ⇒ Port vẫn mở POST (để seed/nạp dữ liệu thật) nhưng **ghi rõ** đây là **phần port thêm**, nguồn không có.
+// ⚪ **`SELECT DISTINCT` an toàn ở cả hai** — `distinct` trên **đúng khoá chính** một cột ⇒ `Count(0)` = số bản
+//   ghi thật (tiêu chí đã chốt ở #632; đối lập với #631).
+// 🔴 Cùng bệnh khuôn `*_GetX` đã đếm: hai dòng phân trang **bị comment** (**có** `identity()` ⇒ mức "tắt") ·
+//   cờ khối chi tiết là `(str != null && str.Length > 0)` nên `"0"`/`"N"` vẫn **BẬT** · `Convert.ToInt64`
+//   **không guard rỗng** · `order by` nằm trên `SELECT … INTO` nên câu **kết quả không có `ORDER BY`**.
+// ⚪ Ở cặp này **không** thấy tiêu đề chú thích lạc mô-đun (khác 7 ca trong `Tab.cs`) ⇒ khuôn `Dls_CustomerCare`
+//   chỉ dính ở `Tab.cs`, **không** lan sang `Master.cs`. Ghi lại để giới hạn đúng phạm vi kết luận #632.
+app.MapGet("/api/mstordercomplaintypes", async (AppDbContext db, ITenantContext t,
+    string? type, string? name, string? flagActive, int? recordStart, int? recordCount) =>
+{
+    var qy = db.MstOrderComplainTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(type)) qy = qy.Where(x => x.OrderComplainType == type!.Trim());
+    if (!string.IsNullOrWhiteSpace(name)) qy = qy.Where(x => x.OrderComplainTypeName!.Contains(name!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = await qy.OrderBy(x => x.OrderComplainType).Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.OrderComplainType, x.OrderComplainTypeName, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        myCountAsSource = total, count = items.Count, items,
+        // ===== #633 =====
+        siblingDiffIsInColumnNames = "DIFF voi Mst_OrderComplainImageType_GetX: sau khi chuan hoa ten bang/alias, TOAN BO khac biet la ten cot loc — ban nay moct.OrderComplainTypeName, ban kia mocit.OrderComplainImageName (bo chu Type) — dung canh bao #414",
+        noWriteFunctionInSource = "quet BizCarSv.Master.cs khong thay Mst_OrderComplainType_Create/_Update => danh muc CHI DOC qua API, duoc nuoi thang trong DB; POST cua port la PHAN THEM",
+        distinctIsSafeHere = "distinct tren dung khoa chinh mot cot => Count(0) = so ban ghi that (tieu chi chot o #632, doi lap #631)",
+        sameTemplateDefects = "hai dong phan trang bi comment (CO identity() => muc tat); co khoi chi tiet (str != null && str.Length > 0) nen 0 hay N van BAT; Convert.ToInt64 khong guard rong; order by nam tren SELECT INTO nen cau ket qua khong co ORDER BY",
+        strayTemplateCommentNotPresentHere = "AM TINH: cap nay KHONG co tieu de chu thich lac mo-dun (khac 7 ca trong Tab.cs) => khuon Dls_CustomerCare chi dinh o Tab.cs, khong lan sang Master.cs — gioi han dung pham vi ket luan #632",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstordercomplaintypes", async (MstOrderComplainTypeDto dto, AppDbContext db,
+    ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.OrderComplainType ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai khieu nai." });
+    var by = user.Identity?.Name ?? "system";
+    var row = await db.MstOrderComplainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainType == code);
+    if (row is null) { row = new MstOrderComplainType { OrgId = t.OrgId, OrderComplainType = code }; db.MstOrderComplainTypes.Add(row); }
+    row.OrderComplainTypeName = dto.OrderComplainTypeName;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.OrderComplainType, row.OrderComplainTypeName, row.FlagActive,
+                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstordercomplainimagetypes", async (AppDbContext db, ITenantContext t,
+    string? type, string? name, string? flagActive, int? recordStart, int? recordCount) =>
+{
+    var qy = db.MstOrderComplainImageTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(type)) qy = qy.Where(x => x.OrderComplainImageType == type!.Trim());
+    // 🔴 Cột tên của bảng này là OrderComplainImageName (KHÔNG có chữ "Type") — giữ nguyên văn.
+    if (!string.IsNullOrWhiteSpace(name)) qy = qy.Where(x => x.OrderComplainImageName!.Contains(name!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = await qy.OrderBy(x => x.OrderComplainImageType).Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.OrderComplainImageType, x.OrderComplainImageName, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        myCountAsSource = total, count = items.Count, items,
+        nameColumnDropsTheWordType = "cot ten cua bang nay la OrderComplainImageName, KHONG phai OrderComplainImageTypeName — sua cho can doi la SAI COT",
+        linkedToAttachmentImageType = "OrderComplainAttachment.ImageType cua MiniHTC tra ve day (truoc do chi la chuoi tu do, chua co master)",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstordercomplainimagetypes", async (MstOrderComplainImageTypeDto dto, AppDbContext db,
+    ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.OrderComplainImageType ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai anh khieu nai." });
+    var by = user.Identity?.Name ?? "system";
+    var row = await db.MstOrderComplainImageTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainImageType == code);
+    if (row is null) { row = new MstOrderComplainImageType { OrgId = t.OrgId, OrderComplainImageType = code }; db.MstOrderComplainImageTypes.Add(row); }
+    row.OrderComplainImageName = dto.OrderComplainImageName;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.OrderComplainImageType, row.OrderComplainImageName, row.FlagActive,
+                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #632 MASTER FILE ĐÍNH KÈM PHIẾU TIẾP NHẬN `Ser_Mst_ReceptionAttachFile` (`Tab.cs:14419`) =====
 // 3B: laptop `:14419` md5 `b7e207ea` **KHỚP** máy 150 `:14437` (lệch **+18**, căn theo TÊN).
 // ⚠️ **KHÁC BẢNG** với `ReceptionAttachFile` mà MiniHTC đã có (`/api/receptions/{no}/attachfiles`): bảng kia
@@ -57496,6 +57599,8 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
+record MstOrderComplainImageTypeDto(string? OrderComplainImageType, string? OrderComplainImageName, string? FlagActive);   // #633
 record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo, string? FilePath, string? FileName);   // #632
 record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudTypeName, string? FlagActive, string? Remark);   // #627
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);

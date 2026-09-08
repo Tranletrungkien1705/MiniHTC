@@ -126,6 +126,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ReceptionFAudTypeMst> ReceptionFAudTypeMsts => Set<ReceptionFAudTypeMst>();   // #627
     public DbSet<RoAttachFile> RoAttachFiles => Set<RoAttachFile>();   // #631
     public DbSet<ReceptionAttachFileMst> ReceptionAttachFileMsts => Set<ReceptionAttachFileMst>();   // #632
+    public DbSet<MstOrderComplainType> MstOrderComplainTypes => Set<MstOrderComplainType>();   // #633
+    public DbSet<MstOrderComplainImageType> MstOrderComplainImageTypes => Set<MstOrderComplainImageType>();   // #633
     public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #532
     public DbSet<PartExtraMst> PartExtraMsts => Set<PartExtraMst>();   // #538
     public DbSet<RoWorkArisingQuotaMst> RoWorkArisingQuotaMsts => Set<RoWorkArisingQuotaMst>();   // #539
