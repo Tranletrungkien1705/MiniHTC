@@ -10065,6 +10065,11 @@ public sealed class StoragePdiVin
     /// báo cáo đó không thể tồn tại.
     /// </summary>
     public DateTime? FinishDTime { get; set; }
+    /// <summary>🔴 #B251 — Trạng thái KHO PDI của VIN (`PDI_VIN.PDIStorageStatus`).
+    /// Báo cáo `Rpt_Statistic_MnfPlOrder` chỉ đếm VIN ở **`'F'`** (đã hoàn tất nhập kho PDI) —
+    /// thiếu cột này thì không tính được `QtyVINPL`. ⚠️ Trùng TÊN với
+    /// <see cref="HtmvPdiDtl.PDIStorageStatus"/> nhưng là **bảng khác** (`PDI_VIN` vs `HTMV_PDIDtl`).</summary>
+    public string? PDIStorageStatus { get; set; }
 
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

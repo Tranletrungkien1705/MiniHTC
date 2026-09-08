@@ -2277,6 +2277,7 @@ public static class Seeder
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagInvoiceAdj\" text NULL",
                 // #B49 — 4 cot PDI_VIN ma FrmSearchVinForPL loc truc tiep
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrderNoMMSDelivery\" text NULL",
+                "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"PDIStorageStatus\" text NULL",   // #B251
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdCategoryTypeMMS\" text NULL",
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdMonthMMSDelivery\" text NULL",
                 "ALTER TABLE public.\"StoragePdiVins\" ADD COLUMN IF NOT EXISTS \"OrdCategoryTypeMMSDelivery\" text NULL",

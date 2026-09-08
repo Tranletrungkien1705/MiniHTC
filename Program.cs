@@ -32774,6 +32774,140 @@ app.MapPost("/api/htmvpdis/{no}/{action}-cars", async (string no, string action,
 }).RequireAuthorization();
 
 // ===== Xe nhập kho PDI (StoragePdiVin — port 1:1 FrmStoragePDI, 2010.HTC/Sales/HTMV) =====
+
+// ===== #B251/#B252/#B253 THỐNG KÊ ĐƠN HÀNG KẾ HOẠCH SẢN XUẤT (đối chiếu NHÀ MÁY ↔ PDI) —
+//       `Rpt_Statistic_MnfPlOrder_WH_New20181119` → `…X_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   cửa `171884,172031` ≡ 150 `171889,172036` ⇒ `7a8952ecfab8d4cdfdf213afca81cb0f`
+//   thân `172179,172438` ≡ 150 `172184,172443` ⇒ `c16c5d0b870788a2402af9aabe33798c`
+// 🔴🔴 **HAI CỬA SỐNG, HAI THÂN KHÁC NHAU** — **ngược với #B248** (hai cửa hội tụ một thân):
+//   · WS64 `Rpt_Statistic_MnfPlOrder`    → `_New20181115` (zTemp.Report.cs:7040) → **`…X`** (6785, `_dbMain`)
+//   · WS64 `Rpt_Statistic_MnfPlOrder_WH` → `_WH_New20181119` (171884)          → **`…X_New20181119`** (172179, `_dbWH`)
+//   · `_New20181119` (172032) — **không cửa WS nào gọi ⇒ CHẾT**.
+//   ⇒ Cùng một họ báo cáo mà **kiến trúc twin khác nhau giữa hai màn**; không suy từ ca trước.
+// ✅ **Phản ví dụ LÀNH MẠNH cho luật `C0-…octogesimusquartus`**: ở đây `_dbAction` **ĐƯỢC DÙNG THẬT**
+//   (`MyBuildDBDT_Common(_dbAction, …)` và `_dbAction.ExecQuery(…)`) ⇒ cửa `_WH` **thực sự chạy DB
+//   Warehouse**. Khác hẳn #B245 nơi `_dbAction` bị bỏ qua. **Phải kiểm từng hàm, không suy chung.**
+// 🔴🔴🔴 **BÁO CÁO NÀY GỌI WEB SERVICE NGOÀI (hệ NHÀ MÁY / MMS)** — không phải báo cáo thuần SQL:
+//     `WSNM.MMS_Rpt_Statistic_MnfPlOrder(…)` → `Array2DataSet` → **nạp vào bảng tạm**
+//     `#input_Rpt_MMS_Rpt_Statistic_MnfPlOrder` bằng `MyBuildDBDT_Common` (14 cột) → rồi mới join DB HTC.
+//   ⇒ **Số liệu kế hoạch KHÔNG nằm trong DB HTC**; MiniHTC không có nguồn này ⇒ endpoint **nhận
+//     chính bảng đó làm ĐẦU VÀO** (đúng khuôn nguồn), **không bịa dữ liệu nhà máy**.
+//   🔴 `QtyOrdMonthN0` / `QtyApprMonthN0` khai kiểu **`"float"`**, 12 cột còn lại `Default_DBColType`.
+// 🔴🔴🔴 **BUG THẬT — GUARD KIỂM NHẦM DATASET, LỖI WS NGOÀI BỊ NUỐT CÂM**:
+//     `DataSet **mdsNM** = …Array2DataSet(WSNM.MMS_Rpt_Statistic_MnfPlOrder(…));`
+//     `if (CmUtils.CMyDataSet.HasError(**mdsFinal**)) { … throw CmSys_WebServicesOutSide; }`
+//   ⇒ Kiểm `mdsFinal` (DataSet KẾT QUẢ của chính biz, vừa tạo rỗng) thay vì `mdsNM` (kết quả WS)
+//     ⇒ **lỗi do nhà máy trả về KHÔNG BAO GIỜ được phát hiện**; ngay dòng sau
+//     `mdsNM.Tables["MMS_Rpt_Statistic_MnfPlOrder"]` sẽ **null** và nổ `NullReferenceException`
+//     ở chỗ **không liên quan** ⇒ mã lỗi `CmSys_WebServicesOutSide` **không bao giờ xuất hiện trong log**.
+//   ⚠️ Cùng họ với #B227 (`dblTransportCost` thay cho `dblDelayPenaty`). 📌 **KHÔNG tự vá**;
+//     port kiểm **đúng bảng đầu vào** và trả cờ `sourceChecksWrongDataset`.
+// 🔴 **`substring(pv.FinishDTime, 0, 5) ProductYear` — start = 0**: T-SQL cho phép, nhưng ký tự ở vị trí
+//   0 không tồn tại nên **thực nhận 4 ký tự** (`1..4`) = **đúng 4 số năm**. Sửa thành `substring(…,1,5)`
+//   cho "gọn" sẽ ra **5 ký tự ⇒ SAI**. Port lấy `4` ký tự đầu, ghi rõ lý do.
+// 🔴 **Cờ `strOrderStatusQtyReturn` ánh xạ NGƯỢC trực giác**: `Yes` ⇒ **`QtyRemain = 0`** (đã giao đủ);
+//   `No` ⇒ **`QtyRemain > 0`** (còn thiếu). Rỗng/null ⇒ **không lọc** (`"---- Nothing"`).
+// 🔴 `QtyRemain = QtyApprMonthN0 − IsNull(QtyVINPL, 0.0)` — **kế hoạch ĐÃ DUYỆT trừ số VIN thực đã PDI**
+//   (không phải trừ `QtyOrdMonthN0` là số ĐẶT).
+// 🔴 `QtyVINPL` đếm VIN từ `PDI_VIN` với **hai điều kiện cứng**: `OrdCategoryTypeMMSDelivery in ('MTO')`
+//   và **`PDIStorageStatus in ('F')`**; khoá nối là **BỘ BỐN** `OrderNoMMSDelivery + ModelCode + SpecCode
+//   + ColorCode` (nối thiếu một cột là sai số lượng).
+// 🔴 **Trả về HAI BẢNG** (client khai `DataTable[]`): (1) tổng hợp theo đơn hàng; (2) **danh sách VIN**
+//   kèm `EngineNo` · `ProductYear` · `StorageCodeCurrent` (từ `Car_VIN`) · `FinishDTime`.
+// 🔴 Cửa `_WH` kết thúc bằng **`CommitSafety`** (cả `_dbMain` lẫn `_dbWH`), **không** `RollbackSafety`
+//   như đa số `_Get` — vì thân có **ghi bảng tạm** qua `MyBuildDBDT_Common`.
+app.MapPost("/api/reports/mnfpl-order-statistic", async (
+    MnfPlOrderStatisticDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Nguồn lấy bảng này từ WS nhà máy; MiniHTC nhận trực tiếp làm đầu vào — KHÔNG bịa số.
+    var mms = dto.MmsRows ?? new();
+    if (mms.Count == 0)
+        return Results.BadRequest(new
+        {
+            error = "Rpt_Statistic_MnfPlOrder_MmsInputBlank",
+            hint = "Nguon lay bang nay tu WS nha may (WSNM.MMS_Rpt_Statistic_MnfPlOrder) roi nap vao #input_Rpt_MMS_Rpt_Statistic_MnfPlOrder. MiniHTC chua noi WS nha may nen phai truyen vao."
+        });
+
+    // 🔴 QtyVINPL: PDI_VIN lọc OrdCategoryTypeMMSDelivery='MTO' và PDIStorageStatus='F'.
+    var pdi = await db.StoragePdiVins
+        .Where(p => p.OrgId == t.OrgId
+                    && p.OrdCategoryTypeMMSDelivery == "MTO"
+                    && p.PDIStorageStatus == "F")
+        .ToListAsync();
+
+    // 🔴 Khoá nối là BỘ BỐN — thiếu một cột là sai số lượng.
+    static string K(string? o, string? m, string? s, string? c)
+        => $"{(o ?? "").Trim()}|#|{(m ?? "").Trim()}|#|{(s ?? "").Trim()}|#|{(c ?? "").Trim()}";
+
+    var mmsKeys = mms.Select(r => K(r.OrderNo, r.ModelCode, r.SpecCode, r.ColorCode)).ToHashSet();
+    var pdiFiltered = pdi
+        .Where(p => mmsKeys.Contains(K(p.OrderNoMMSDelivery, p.ModelCode, p.SpecCode, p.ColorCode)))
+        .ToList();
+    var qtyByKey = pdiFiltered
+        .GroupBy(p => K(p.OrderNoMMSDelivery, p.ModelCode, p.SpecCode, p.ColorCode))
+        .ToDictionary(g => g.Key, g => (decimal)g.Count());
+
+    // Return 1 — tổng hợp theo đơn hàng.
+    var table1 = new List<object>();
+    foreach (var r in mms)
+    {
+        var key = K(r.OrderNo, r.ModelCode, r.SpecCode, r.ColorCode);
+        var qtyVinPl = qtyByKey.TryGetValue(key, out var q) ? q : 0m;
+        // 🔴 Trừ QtyApprMonthN0 (ĐÃ DUYỆT), không phải QtyOrdMonthN0 (ĐẶT).
+        var qtyRemain = (r.QtyApprMonthN0 ?? 0m) - qtyVinPl;
+
+        // 🔴 Cờ ánh xạ NGƯỢC trực giác: Yes ⇒ QtyRemain = 0; No ⇒ QtyRemain > 0; rỗng ⇒ không lọc.
+        if (!string.IsNullOrWhiteSpace(dto.OrderStatusQtyReturn))
+        {
+            var yes = string.Equals(dto.OrderStatusQtyReturn!.Trim(), "Y", StringComparison.OrdinalIgnoreCase);
+            if (yes && qtyRemain != 0m) continue;
+            if (!yes && qtyRemain <= 0m) continue;
+        }
+
+        table1.Add(new
+        {
+            r.OrderNo, r.ModelCode, r.ColorCode, r.SpecCode,
+            r.QtyOrdMonthN0, r.QtyApprMonthN0,
+            r.CreateDTime, r.ApprDTime, r.OrdMonth, r.ApprMonth,
+            r.ModelName, r.SpecDescription, r.ColorName, r.OCNCode,
+            QtyVINPL = qtyVinPl, QtyRemain = qtyRemain
+        });
+    }
+
+    // Return 2 — danh sách VIN (nguồn nối thêm `Car_VIN` lấy `StorageCodeCurrent`).
+    var vins = pdiFiltered.Select(p => p.VIN).ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var table2 = pdiFiltered.Select(p => new
+    {
+        p.VIN, p.EngineNo,
+        // 🔴 substring(FinishDTime, 0, 5) ⇒ THỰC NHẬN 4 ký tự = 4 số năm. Không đổi thành 5.
+        ProductYear = p.FinishDTime?.ToString("yyyy"),
+        StorageCodeCurrent = cvs.TryGetValue(p.VIN, out var cv) ? cv.StorageCodeCurrent : null,
+        p.FinishDTime
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        Rpt_Statistic_MnfPlOrder = table1,
+        PDI_VIN = table2,
+        mmsRowCount = mms.Count,
+        sourceChecksWrongDataset = true,
+        twoDoorsTwoBodiesNote = "HAI CUA SONG, HAI THAN KHAC NHAU - NGUOC VOI #B248 (hai cua hoi tu mot than): WS64 Rpt_Statistic_MnfPlOrder -> _New20181115 (zTemp.Report.cs:7040) -> ...X (6785, _dbMain); WS64 ..._WH -> _WH_New20181119 (171884) -> ...X_New20181119 (172179, _dbWH). Ban _New20181119 (172032) khong cua WS nao goi => CHET. Cung mot ho bao cao ma KIEN TRUC TWIN KHAC NHAU giua hai man; khong suy tu ca truoc.",
+        dbActionUsedNote = "PHAN VI DU LANH MANH cho luat C0-...octogesimusquartus: o day _dbAction DUOC DUNG THAT (MyBuildDBDT_Common(_dbAction, ...) va _dbAction.ExecQuery(...)) => cua _WH THUC SU chay DB Warehouse. Khac han #B245 noi _dbAction bi bo qua. PHAI KIEM TUNG HAM, khong suy chung.",
+        externalWsNote = "BAO CAO NAY GOI WEB SERVICE NGOAI (he NHA MAY / MMS) - khong phai bao cao thuan SQL: WSNM.MMS_Rpt_Statistic_MnfPlOrder(...) -> Array2DataSet -> nap vao bang tam #input_Rpt_MMS_Rpt_Statistic_MnfPlOrder bang MyBuildDBDT_Common (14 cot) -> roi moi join DB HTC. So lieu ke hoach KHONG nam trong DB HTC; MiniHTC nhan chinh bang do lam DAU VAO, KHONG BIA du lieu nha may. QtyOrdMonthN0/QtyApprMonthN0 khai kieu 'float', 12 cot con lai Default_DBColType.",
+        wrongDatasetGuardNote = "BUG THAT - GUARD KIEM NHAM DATASET, LOI WS NGOAI BI NUOT CAM: 'DataSet mdsNM = ...Array2DataSet(WSNM.MMS_...);' roi 'if (CmUtils.CMyDataSet.HasError(mdsFinal)) { ... throw CmSys_WebServicesOutSide; }' - kiem mdsFinal (DataSet KET QUA cua chinh biz, vua tao rong) thay vi mdsNM (ket qua WS) => LOI DO NHA MAY TRA VE KHONG BAO GIO DUOC PHAT HIEN; ngay dong sau mdsNM.Tables[...] se NULL va no NullReferenceException o cho KHONG LIEN QUAN => ma loi CmSys_WebServicesOutSide KHONG BAO GIO xuat hien trong log. Cung ho voi #B227. KHONG TU VA.",
+        substringZeroNote = "'substring(pv.FinishDTime, 0, 5) ProductYear' - start = 0: T-SQL cho phep, nhung ky tu o vi tri 0 khong ton tai nen THUC NHAN 4 KY TU (1..4) = dung 4 so nam. Sua thanh substring(...,1,5) cho 'gon' se ra 5 KY TU => SAI. Port lay 4 ky tu dau.",
+        flagMappingNote = "Co strOrderStatusQtyReturn anh xa NGUOC truc giac: Yes => QtyRemain = 0 (da giao du); No => QtyRemain > 0 (con thieu). Rong/null => KHONG LOC ('---- Nothing').",
+        qtyRemainNote = "QtyRemain = QtyApprMonthN0 - IsNull(QtyVINPL, 0.0) - ke hoach DA DUYET tru so VIN thuc da PDI (khong phai tru QtyOrdMonthN0 la so DAT).",
+        qtyVinPlNote = "QtyVINPL dem VIN tu PDI_VIN voi HAI dieu kien cung: OrdCategoryTypeMMSDelivery in ('MTO') va PDIStorageStatus in ('F'); khoa noi la BO BON OrderNoMMSDelivery + ModelCode + SpecCode + ColorCode (noi thieu mot cot la sai so luong).",
+        twoTablesNote = "Tra ve HAI BANG (client khai DataTable[]): (1) tong hop theo don hang; (2) danh sach VIN kem EngineNo, ProductYear, StorageCodeCurrent (tu Car_VIN), FinishDTime.",
+        commitNote = "Cua _WH ket thuc bang CommitSafety (ca _dbMain lan _dbWH), KHONG RollbackSafety nhu da so _Get - vi than co GHI BANG TAM qua MyBuildDBDT_Common.",
+        newColumnNote = "§12 cot moi PDI_VIN.PDIStorageStatus tren StoragePdiVin du 4 cho: entity + Seeder ALTER ... IF NOT EXISTS + DTO StoragePdiVinDto + POST /api/storagepdivins va GET /api/storagepdivins."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/storagepdivins", async (AppDbContext db, ITenantContext t, string? vin, string? model, string? active) =>
 {
     var q = db.StoragePdiVins.Where(c => c.OrgId == t.OrgId);
@@ -32781,7 +32915,7 @@ app.MapGet("/api/storagepdivins", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(c => c.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(c => c.FlagActive == active);
     var items = await q.OrderByDescending(c => c.Id).Take(500)
-        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.FinishDTime, c.UpdatedAt }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.FinishDTime, c.PDIStorageStatus, c.OrderNoMMSDelivery, c.OrdCategoryTypeMMSDelivery, c.UpdatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32796,8 +32930,8 @@ app.MapPost("/api/storagepdivins", async (List<StoragePdiVinDto> dto, AppDbConte
     {
         var vin = c.VIN.Trim().ToUpperInvariant();
         var ex = await db.StoragePdiVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark, FinishDTime = c.FinishDTime }); inserted++; }
-        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.FinishDTime = c.FinishDTime ?? ex.FinishDTime; ex.UpdatedAt = DateTime.Now; updated++; }
+        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark, FinishDTime = c.FinishDTime, PDIStorageStatus = c.PDIStorageStatus }); inserted++; }
+        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.FinishDTime = c.FinishDTime ?? ex.FinishDTime; ex.PDIStorageStatus = c.PDIStorageStatus ?? ex.PDIStorageStatus; ex.UpdatedAt = DateTime.Now; updated++; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
@@ -48622,7 +48756,9 @@ record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode
 record Dms40SoRootDto(string? SORCode, string? SOType, string? DealerCode, string? SPCode, DateTime? OrderMonth, List<Dms40SoRootLineDto>? Lines);
 record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal Approved1Quantity, DateTime? Approved1Date = null);
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
-record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime);
+record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime, string? PDIStorageStatus = null);   // #B251
+record MnfPlOrderStatisticDto(List<MnfPlMmsRowDto>? MmsRows, string? OrderStatusQtyReturn);   // #B251-B253
+record MnfPlMmsRowDto(string? OrderNo, string? ModelCode, string? ColorCode, string? SpecCode, decimal? QtyOrdMonthN0, decimal? QtyApprMonthN0, string? CreateDTime, string? ApprDTime, string? OrdMonth, string? ApprMonth, string? ModelName, string? SpecDescription, string? ColorName, string? OCNCode);   // #B251-B253 - 14 cot dung khuon MyBuildDBDT_Common
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
 record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
 record DealerContractCarDto(string CarId, decimal UnitPrice);
