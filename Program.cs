@@ -34350,6 +34350,85 @@ app.MapGet("/api/jobs/payment-finish/preview", async (
     });
 }).RequireAuthorization();
 
+// ===== #B218/#B219/#B220 JOB CHỤP ẢNH TỒN KHO ĐẦU THÁNG — `Job_RptStatistic_Stock`
+//       (`BizHTC.Report.cs:28000`) =====
+// **3B khớp cả 2 máy** (vị trí **trùng**): `28000,28163 / 1c37d6fcc8d73e1953ac2fb9b713791f`.
+// 🔴🔴 **MỐC THỜI GIAN LÀ NGÀY 01 CỦA THÁNG HIỆN TẠI, KHÔNG PHẢI HÔM NAY**:
+//     `string strTDate = DateTime.Now.ToString(**"yyyy-MM-01"**);`
+//   và chú thích nguồn: *"dự kiến chạy **00h ngày mùng 1** hàng tháng"*.
+//   ⇒ `RptDate` = `@strTDate` = **ngày 01**; chạy lại giữa tháng vẫn ghi `RptDate` của **ngày 01**.
+// 🔴🔴 **KHÔNG XOÁ DỮ LIỆU CŨ TRƯỚC KHI `insert`** — chỉ có `insert into Rpt_Statistic_Stock_His … select …`.
+//   ⇒ Chạy **hai lần trong cùng một tháng** là **nhân đôi bản ghi** của mốc đó; báo cáo tồn theo
+//     tháng sẽ **đếm gấp đôi**. Đây là **rủi ro vận hành thật**, không phải lỗi cú pháp.
+//   📌 Port **giữ đúng hành vi** (không tự thêm `delete`), nhưng trả `existingRowsAtRptDate` để người
+//     chạy thấy trước là mốc đó **đã có dữ liệu**.
+// 🔴 **LỌC NGƯỢC HAI LỚP** (nguồn tự chú thích `(*) Sử dụng kỹ thuật Lọc Ngược`):
+//   · `left join #tbl_CDOD_Active` rồi `where cdod.CarId is null` — **chưa có lệnh xuất kho hiệu lực**
+//     (`#tbl_CDOD_Active` = `ConfirmStatus in ('A','F')` **và** `DeliveryOutDate < @strTDate`);
+//   · `left join VIN_MyStatus` rồi `where vms.DeliveryOutDate is null` — **chưa xuất kho theo VIN**.
+//   ⇒ Port bằng `inner join` là **đảo ngược** ý nghĩa.
+// 🔴🔴 **MẸO `IsNull(…, DateMax)` ĐỂ LOẠI BẢN GHI CHƯA CÓ NGÀY**:
+//     `and (IsNull(cv.CQStartDate, **'@strTDateMax'**) < '@strTDate')`
+//   ⇒ Xe **chưa đăng ký kiểm tra chất lượng** (`CQStartDate` NULL) được thay bằng **DateMax**, nên
+//     `DateMax < TDate` = **false** ⇒ **bị loại**. Xe có ngày đăng ký **ở tương lai** cũng bị loại.
+//   ⇒ Port viết `CQStartDate != null && CQStartDate < TDate` cho **cùng kết quả**; nhưng nếu port
+//     bỏ `IsNull` mà giữ nguyên `<` thì **NULL cho UNKNOWN** ⇒ cũng loại — **trùng kết quả tình cờ**.
+//     Ghi rõ để người sau không tưởng hai cách tương đương về mọi mặt.
+// 🔴 **`LogLUBy` là TÊN HÀM**: `"Job_RptStatistic_Stock"` — khác #B215 dùng hằng tài khoản job
+//   (`"HTC.JobAppPayment"`). ⇒ **Hai job, hai quy ước ghi vết**; không đồng nhất.
+// 🔴 Kết thúc bằng `drop table` cả hai bảng tạm (dọn tay, không dựa vào phiên).
+app.MapPost("/api/jobs/statistic-stock/run", async (
+    AppDbContext db, ITenantContext t, string? asOfMonth) =>
+{
+    // 🔴 Mốc = NGÀY 01 của tháng (mặc định tháng hiện tại).
+    var baseDate = string.IsNullOrWhiteSpace(asOfMonth) ? DateTime.Now : DateTime.Parse(asOfMonth + "-01");
+    var tDate = new DateTime(baseDate.Year, baseDate.Month, 1);
+
+    // 📌 Cảnh báo chạy lại: nguồn KHÔNG xoá dữ liệu cũ.
+    var existing = await db.RptStatisticStockHiss
+        .CountAsync(r => r.OrgId == t.OrgId && r.RptDate == tDate);
+
+    // 🔴 Lớp 1 — xe ĐÃ có lệnh xuất kho hiệu lực trước mốc (sẽ bị LOẠI ở bước sau).
+    var deliveredVins = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId
+                    && (x.ConfirmStatus == "A" || x.ConfirmStatus == "F")
+                    && x.DeliveryOutDate != null && x.DeliveryOutDate < tDate)
+        .Select(x => x.Vin).ToListAsync()).ToHashSet();
+
+    // 🔴 Lớp 2 + mẹo IsNull(CQStartDate, DateMax) < tDate.
+    var cars = await db.CarVinMasters
+        .Where(c => c.OrgId == t.OrgId
+                    && c.CQStartDate != null && c.CQStartDate < tDate)
+        .Select(c => new { c.VIN })
+        .ToListAsync();
+
+    var kept = cars.Where(c => !deliveredVins.Contains(c.VIN)).ToList();
+
+    var now = DateTime.Now;
+    foreach (var c in kept)
+        db.RptStatisticStockHiss.Add(new RptStatisticStockHis
+        {
+            OrgId = t.OrgId, RptDate = tDate, VIN = c.VIN, CarId = c.VIN,
+            LogLUDateTime = now,
+            LogLUBy = "Job_RptStatistic_Stock"      // 🔴 TÊN HÀM, không phải tài khoản job
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        rptDate = tDate,
+        inserted = kept.Count,
+        existingRowsAtRptDate = existing,
+        rerunWillDuplicate = existing > 0,
+        monthStartNote = "MOC THOI GIAN LA NGAY 01 CUA THANG HIEN TAI, KHONG PHAI HOM NAY: 'string strTDate = DateTime.Now.ToString(\"yyyy-MM-01\");' + chu thich nguon 'du kien chay 00h ngay mung 1 hang thang'. RptDate = @strTDate = ngay 01; chay lai giua thang van ghi RptDate cua NGAY 01.",
+        noDeleteNote = "KHONG XOA DU LIEU CU TRUOC KHI INSERT - chi co 'insert into Rpt_Statistic_Stock_His ... select ...'. Chay HAI LAN trong cung mot thang la NHAN DOI BAN GHI cua moc do; bao cao ton theo thang se DEM GAP DOI. Port GIU DUNG HANH VI (khong tu them delete) nhung tra existingRowsAtRptDate + rerunWillDuplicate de nguoi chay thay truoc.",
+        reverseFilterNote = "LOC NGUOC HAI LOP (nguon tu chu thich '(*) Su dung ky thuat Loc Nguoc'): left join #tbl_CDOD_Active roi 'where cdod.CarId is null' (chua co lenh xuat kho hieu luc: ConfirmStatus in ('A','F') VA DeliveryOutDate < @strTDate); left join VIN_MyStatus roi 'where vms.DeliveryOutDate is null'. Port bang inner join la DAO NGUOC y nghia.",
+        isNullTrickNote = "MEO IsNull(cv.CQStartDate, '@strTDateMax') < '@strTDate': xe CHUA dang ky kiem tra chat luong (CQStartDate NULL) duoc thay bang DateMax nen 'DateMax < TDate' = FALSE => BI LOAI; xe co ngay dang ky O TUONG LAI cung bi loai. Port viet 'CQStartDate != null && CQStartDate < TDate' cho CUNG KET QUA. Neu bo IsNull ma giu nguyen '<' thi NULL cho UNKNOWN => cung loai - TRUNG KET QUA TINH CO, khong phai tuong duong ve moi mat.",
+        logLuByNote = "LogLUBy la TEN HAM: 'Job_RptStatistic_Stock' - KHAC #B215 dung hang tai khoan job ('HTC.JobAppPayment'). HAI JOB, HAI QUY UOC GHI VET; khong dong nhat.",
+        dropTableNote = "Ket thuc bang 'drop table' ca hai bang tam (don tay, khong dua vao phien)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>

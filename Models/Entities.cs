@@ -9600,6 +9600,21 @@ public sealed class FileImportExcelTemp
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B218 — `Rpt_Statistic_Stock_His`: **ảnh chụp tồn kho đầu tháng**. Job
+/// `Job_RptStatistic_Stock` chạy **00h ngày mùng 1** (chú thích nguồn), `RptDate` = **ngày 01 của
+/// tháng hiện tại**. ⚠️ Nguồn **KHÔNG xoá dữ liệu cũ** trước khi `insert` ⇒ chạy hai lần cùng
+/// tháng là **nhân đôi bản ghi**.</summary>
+public sealed class RptStatisticStockHis
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public DateTime RptDate { get; set; }
+    public string VIN { get; set; } = "";
+    public string? CarId { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
