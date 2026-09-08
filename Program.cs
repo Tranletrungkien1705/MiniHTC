@@ -31473,6 +31473,124 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   (`cv` trước, `cc` sau); chỉ lấy một bên là **mất dòng có dữ liệu ở bên kia**.
 // ⚠️ **Mã thừa trong nguồn**: `and cc_t.VIN = cc_t.VIN` (tautology) · `dd_t.FlagInitDeal = '0'` lặp
 //   **hai lần** (một ở `on`, một ở `where`) · `Replace(strSqlGetData)` **không cặp thay thế** (no-op).
+
+// ===== #B263/#B264/#B265 THIẾT BỊ GPS ĐÃ THÁO NHƯNG CHƯA NHẬP KHO —
+//       `Rpt_GPSDvUnMapButNotInSto_ForGPS_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `156521,156745` ≡ 150 `156526,156750` ⇒ **`4c920fcee4caebea7bf53920b77c1ca4`**.
+// 🔴 **Ba điều kiện nền** đúng như tên báo cáo: `MapStatus = '0'` (đã tháo khỏi VIN) ·
+//   `UnMapDateTime is not null` (có mốc tháo) · **`InStatus = '0'`** (**chưa nhập kho**).
+// 🔴🔴🔴 **BUG THẬT — SUBQUERY SẮP XẾP THEO CỘT LUÔN NULL**:
+//     `select top 1 sstgps.AutoId from Sto_StoTransactionGPS sstgps`
+//     `where … and sstgps.RefType = **'GPSMAPVIN'** …`
+//     `order by sstgps.**UnMapDateTime** desc`
+//   ⇒ Lọc **dòng MAP** nhưng sắp xếp theo **`UnMapDateTime`** — cột này ở dòng MAP **luôn NULL**
+//     ⇒ `order by` **vô nghĩa**, `top 1` trả **dòng bất kỳ** trong nhóm. Lẽ ra phải `order by
+//     CreateDateTime desc` (hoặc `MapDateTime desc`).
+//   ⚠️ Hệ quả nặng: `sstgps_AutoId` **chính là khoá** của `inner join Sto_StoTransactionGPS` ở câu Return
+//     ⇒ dòng nhật ký được nối vào **không tất định**. 📌 **KHÔNG tự vá**; port dùng
+//     `CreateDateTime desc` cho **tất định** và trả cờ `sourceOrdersByNullColumn` để ghi rõ khác biệt.
+// 🔴🔴 **RBAC — BIẾN THỂ THỨ NĂM: lọc bị COMMENT ở bảng tạm nhưng ACTIVE ở câu cuối** —
+//   **NGƯỢC HẲN #B260** (active ở bảng tạm, comment ở câu cuối):
+//   · `#tbl_Sto_StoBalanceGPS`: cả `inner join Car_Car` lẫn
+//     `inner join Mst_Dealer … and (md.BUCode like @strBUPatternOfUser)` **bị comment**;
+//   · câu **Return**: `inner join Mst_Dealer md on **dd.DealerCode** = md.DealerCode
+//     and (md.BUCode like @strBUPatternOfUser)` — **ACTIVE**.
+//   ⇒ Kết quả **vẫn kín**, nhưng **ĐỔI NGHĨA PHẠM VI**: bản bị comment lọc theo **`cc.DealerCode`**
+//     (đại lý **đang giữ xe**), bản active lọc theo **`dd.DealerCode`** (đại lý của **GIAO DỊCH BÁN**).
+//     Hai mã này khác nhau khi xe đã bán ngang ⇒ **cùng một user thấy tập thiết bị khác nhau**.
+// 🔴 `inner join Mst_Dealer` đứng **sau** `left join DLS_Deal dd` và nối vào `dd.DealerCode`
+//   ⇒ `left join` **biến thành `inner`** (luật `C0-…octogesimusnonus`)
+//   ⇒ **thiết bị tháo trên xe CHƯA CÓ giao dịch bán bị LOẠI HẲN** — mà đó chính là loại thiết bị
+//     **dễ thất lạc nhất**. Cùng nghịch lý với #B257 (báo cáo rà soát lại giấu dữ liệu xấu).
+// 🔴 **`inner join Sto_StoBalanceGPS ssbgps on t.GPSDvNo = ssbgps.GPSDvNo` — KHÔNG nối `StorageCode`**,
+//   dù bảng tạm có sẵn cột đó và subquery phía trên lại dùng **cả hai** ⇒ thiết bị có nhiều dòng tồn ở
+//   nhiều kho sẽ **nhân dòng**. Port nối **đủ cặp** và ghi rõ khác biệt ở `joinKeyNarrowedNote`.
+// ⚠️ Mã thừa: dòng chú thích `--- Báo cáo thiết bị đã tháo nhưng chưa nhập kho:` **lặp hai lần**;
+//   `Replace(strSqlGetData)` **không cặp thay thế** (no-op) — lần thứ ba gặp trong họ báo cáo GPS.
+// ⚠️ MiniHTC: `Sto_StoBalanceGPS` được port thành **`GpsInstall`** (bản đầy đủ, có `MapStatus`/`InStatus`/
+//   `UnMappedAt`/`UnMapBy`/`VinUnMap`), **không phải** `GpsBalance` (bản rút gọn cũ).
+app.MapGet("/api/reports/gps-unmapped-not-in-storage", async (
+    AppDbContext db, ITenantContext t, string? gpsDvNo, DateTime? unMapFrom, DateTime? unMapTo) =>
+{
+    // 🔴 Ba điều kiện nền.
+    var q = db.GpsInstalls.Where(g => g.OrgId == t.OrgId
+        && g.MapStatus == "0"
+        && g.UnMappedAt != null
+        && g.InStatus == "0");
+    if (!string.IsNullOrWhiteSpace(gpsDvNo)) q = q.Where(g => g.GpsNo == gpsDvNo!.Trim());
+    if (unMapFrom != null) q = q.Where(g => g.UnMappedAt >= unMapFrom);
+    if (unMapTo != null) q = q.Where(g => g.UnMappedAt <= unMapTo);
+    var balances = await q.ToListAsync();
+
+    var devices = balances.Select(b => b.GpsNo).Distinct().ToList();
+    // #tbl_Summary — dòng nhật ký MAP gần nhất theo (StorageCode, GPSDvNo).
+    var mapTx = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && x.RefType == "GPSMAPVIN" && devices.Contains(x.GpsDvNo))
+        .ToListAsync();
+    var lastMapTx = mapTx
+        .GroupBy(x => ((x.StorageCode ?? "").Trim(), x.GpsDvNo))
+        // 🔴 Nguồn `order by UnMapDateTime desc` trên dòng MAP (luôn NULL) ⇒ không tất định.
+        //    Port sắp theo `CreateDateTime desc` cho TẤT ĐỊNH, ghi cờ sourceOrdersByNullColumn.
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.CreateDateTime).First());
+
+    var vinUnMaps = balances.Where(b => b.VinUnMap != null).Select(b => b.VinUnMap!).Distinct().ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vinUnMaps.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var carIds = cvs.Values.Where(v => v.CarId != null).Select(v => v.CarId!).ToList();
+    var dtls = await db.DealerDealDetails
+        .Where(d => d.OrgId == t.OrgId && carIds.Contains(d.CarId) && d.FlagCurrent == "1").ToListAsync();
+    var dealIds = dtls.Select(d => d.DealId).Distinct().ToList();
+    var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id)
+            && d.FlagInitDeal == "0").ToListAsync())
+        .ToDictionary(d => d.Id);
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = new List<object>();
+    var droppedNoDeal = new List<object>();
+    foreach (var b in balances)
+    {
+        // 🔴 inner join Car_Car on ssbgps.VINUnMap = cc.VIN
+        if (b.VinUnMap is null || !cvs.TryGetValue(b.VinUnMap, out var cv) || cv.CarId is null)
+        { droppedNoDeal.Add(new { b.GpsNo, b.StorageCode, b.VinUnMap, reason = "NoCarCar" }); continue; }
+
+        var cur = dtls.FirstOrDefault(d => d.CarId == cv.CarId);
+        var deal = (cur != null && deals.TryGetValue(cur.DealId, out var dv)) ? dv : null;
+        // 🔴 inner join Mst_Dealer SAU left join DLS_Deal ⇒ left thành inner ⇒ xe chưa bán BỊ LOẠI.
+        if (deal is null || !dealers.TryGetValue(deal.DealerCode, out var dlr))
+        { droppedNoDeal.Add(new { b.GpsNo, b.StorageCode, b.VinUnMap, reason = "NoDealOrDealer" }); continue; }
+
+        lastMapTx.TryGetValue(((b.StorageCode ?? "").Trim(), b.GpsNo), out var tx);
+
+        rows.Add(new
+        {
+            GPSDvNo = b.GpsNo,
+            b.StorageCode,
+            UnMapDateTime = b.UnMappedAt,
+            b.UnMapBy,
+            VIN = b.VinUnMap,
+            md_DealerCode = deal.DealerCode,
+            md_DealerName = dlr.DealerName,
+            sstgps_AutoId = tx?.Id
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_GPSDvUnMapButNotInSto = rows,
+        droppedNoDeal,
+        sourceOrdersByNullColumn = true,
+        baseConditionsNote = "Ba dieu kien nen dung nhu ten bao cao: MapStatus='0' (da thao khoi VIN); UnMapDateTime is not null (co moc thao); InStatus='0' (CHUA NHAP KHO).",
+        nullOrderBugNote = "BUG THAT - SUBQUERY SAP XEP THEO COT LUON NULL: 'select top 1 sstgps.AutoId from Sto_StoTransactionGPS where ... and sstgps.RefType = GPSMAPVIN ... order by sstgps.UnMapDateTime desc'. Loc DONG MAP nhung sap xep theo UnMapDateTime - cot nay o dong MAP LUON NULL => order by VO NGHIA, top 1 tra DONG BAT KY. Le ra phai order by CreateDateTime desc. He qua nang: sstgps_AutoId CHINH LA KHOA cua inner join Sto_StoTransactionGPS o cau Return => dong nhat ky duoc noi vao KHONG TAT DINH. KHONG TU VA; port dung CreateDateTime desc cho tat dinh va ghi co nay.",
+        rbacVariant5Note = "RBAC - BIEN THE THU NAM: loc bi COMMENT o bang tam nhung ACTIVE o cau cuoi - NGUOC HAN #B260. #tbl_Sto_StoBalanceGPS: ca 'inner join Car_Car' lan 'inner join Mst_Dealer ... and (md.BUCode like @strBUPatternOfUser)' BI COMMENT; cau Return: 'inner join Mst_Dealer md on dd.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' ACTIVE. Ket qua VAN KIN nhung DOI NGHIA PHAM VI: ban bi comment loc theo cc.DealerCode (dai ly DANG GIU XE), ban active loc theo dd.DealerCode (dai ly cua GIAO DICH BAN). Hai ma nay khac nhau khi xe da ban ngang => CUNG MOT USER THAY TAP THIET BI KHAC NHAU.",
+        leftBecomesInnerNote = "inner join Mst_Dealer dung SAU left join DLS_Deal dd va noi vao dd.DealerCode => left join BIEN THANH inner (luat C0-...octogesimusnonus) => THIET BI THAO TREN XE CHUA CO GIAO DICH BAN BI LOAI HAN - ma do chinh la loai thiet bi DE THAT LAC NHAT. Cung nghich ly voi #B257. Xem droppedNoDeal.",
+        joinKeyNarrowedNote = "'inner join Sto_StoBalanceGPS ssbgps on t.GPSDvNo = ssbgps.GPSDvNo' - KHONG noi StorageCode, du bang tam co san cot do va subquery phia tren lai dung CA HAI => thiet bi co nhieu dong ton o nhieu kho se NHAN DONG. Port noi DU CAP (StorageCode + GPSDvNo).",
+        deadCodeNote = "Ma thua: dong chu thich '--- Bao cao thiet bi da thao nhung chua nhap kho:' LAP HAI LAN; 'Replace(strSqlGetData)' khong cap thay the (no-op) - lan thu ba gap trong ho bao cao GPS.",
+        entityNote = "MiniHTC: Sto_StoBalanceGPS duoc port thanh GpsInstall (ban day du, co MapStatus/InStatus/UnMappedAt/UnMapBy/VinUnMap), KHONG phai GpsBalance (ban rut gon cu)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/warning-deal-retail-gps", async (
     AppDbContext db, ITenantContext t,
     DateTime? unMapFrom, DateTime? unMapTo, string? vin) =>
