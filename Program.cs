@@ -40247,6 +40247,211 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B374 BÁO CÁO MAP VIN — `Rpt_MapVIN_WH_New20181119`
+//       (vỏ `DataWH/Biz.HTC.WH.cs:169651` → `Rpt_MapVINX_New20181119` (`:169791`)
+//        → SQL `RptSQLQuery.cs:49203` `mySql_Rpt_MapVINX_New20181119()`) =====
+// **3B khớp cả 2 máy (3 md5)**: vỏ laptop `169651,169790` ≡ 150 `169656,169795`
+//   ⇒ **`21402c28f9582017055da0a1aac13b44`**; `…X` laptop `169791,169889` ≡ 150 `169796,169894`
+//   ⇒ **`ddfefbd88bae3d748cfea0bec06f0158`**; SQL `49203,49304` ⇒ **`3dacbde1c25805beae80fc7eeda79f43`**.
+//
+// 🔴🔴🔴 **`[BAKE-PARAM-MIX]` — CA THỨ NĂM, mức (A) NƯỚNG THÔ, SÁU tham số**:
+//     `and (N'@strMapVINDateFrom' = '' or cc.MapVINDate >= '@strMapVINDateFrom')`
+//     `and (N'@strDealerCode' = '' or cc.DealerCode = '@strDealerCode')`
+//     `and (N'@strSOCode' = '' or cc.SOCode = '@strSOCode')`
+//     `and (N'@strMapVINStorage' = '' or cc.MapVINStorage = '@strMapVINStorage')`
+//     `and (N'@strMapVINType' = '' or cc.MapVINType = '@strMapVINType')`  (+ `…DateTo`)
+//   ⇒ **Y HỆT khuôn #B365**, kể cả cách viết `N'@x' = ''`. `strDealerCode` và `strSOCode` là **chuỗi mã
+//     tự do**, không qua bộ chuẩn hoá nào ⇒ **mức (A)**, không phải (B).
+//   📌 Hai ca #B365 và #B374 ở **hai file khác nhau** nhưng **cùng một khuôn chữ** ⇒ đây là **mẫu chép**,
+//     không phải sự cố lẻ. Khi đề xuất sửa, phải sửa **theo mẫu**, không sửa từng chỗ.
+//
+// 🔴🔴 **LỖ RBAC — tổ hợp (2)**: grep **cả sáu trục** trong `…X` ⇒ chỉ **1 hit duy nhất** là dòng
+//   `//alParamsCoupleSql.AddRange(… drAbilityOfUser["**MBBankBUPattern**"] …)` **đã bị comment**;
+//   `//myCache_Mst_Distributor_ViewAbility_Get(drAbilityOfUser);` **cũng bị comment**;
+//   `CheckHTCDirect` / `strBUPatternOfUser` / `myHTC_RemoveInfo_` / `BankBUPattern` = **0 hit**.
+//   ⇒ **Không cổng, không lọc, không che cột** — và theo luật `C0-…quadragesimusnonus` đã **kiểm thêm**
+//     xem có bản **dựng lại bằng chuỗi** không ⇒ **không có** ⇒ **lỗ thật**.
+// 🔴 Tầng tiền: `CachingForPaymentTotal(…, "'F'", true)` ⇒ **chỉ tiền cọc đã nổi tài khoản**.
+// 🔴 `Thread.Sleep(4000)` trên đường thành công — **không port**. Vỏ `CommitSafety` **hai lần**
+//   ⇒ ghi nợ "không nguyên tử" (`C0-…tricesimusprimus`), tác hại thấp vì chỉ đọc.
+// ⚠️ **NỢ**: `Car_Car.MapVINStorage` / `MapVINType` chưa có trong MiniHTC ⇒ **hai bộ lọc đó chưa áp
+//   được**; trả cờ `mapVinStorageTypeFilterNotApplicable`. **Không đoán.**
+app.MapGet("/api/reports/mapvin", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? mapVinDateFrom, DateTime? mapVinDateTo,
+    string? dealerCode, string? soCode, string? mapVinStorage, string? mapVinType) =>
+{
+    // 🔴 Nguồn nướng cả sáu bộ lọc; port dùng tham số hoá hoàn toàn (EF).
+    var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId);
+    if (mapVinDateFrom != null) q = q.Where(v => v.MapVINDate >= mapVinDateFrom);   // §12 #B360 đã thêm cột
+    if (mapVinDateTo != null) q = q.Where(v => v.MapVINDate <= mapVinDateTo);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(v => v.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var rows = await q.ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_MapVIN = rows.Select(v => new
+        {
+            v.CarId, v.VIN, v.DealerCode, v.ModelCode, v.SpecCode, v.ColorCode,
+            v.MapVINDate, v.MapVINRanking,
+            // ⚠️ NỢ — KHÔNG ĐOÁN: Car_Car.MapVINStorage / MapVINType chưa có.
+            MapVINStorage = (string?)null,
+            MapVINType = (string?)null,
+            SOCode = (string?)null,
+            DepositAmountTotal = (decimal?)null      // ⚠️ NỢ: tầng caching cọc 'F'
+        }).ToList(),
+        mapVinStorageTypeFilterNotApplicable = true,
+        soCodeFilterEcho = soCode,
+        mapVinStorageEcho = mapVinStorage,
+        mapVinTypeEcho = mapVinType,
+        bakeParamMixCase5Note = "[BAKE-PARAM-MIX] CA THU NAM, muc (A) NUONG THO, SAU tham so: \"and (N'@strMapVINDateFrom' = '' or cc.MapVINDate >= '@strMapVINDateFrom')\", \"and (N'@strDealerCode' = '' or cc.DealerCode = '@strDealerCode')\", \"and (N'@strSOCode' = '' or cc.SOCode = '@strSOCode')\", \"and (N'@strMapVINStorage' = '' or cc.MapVINStorage = '@strMapVINStorage')\", \"and (N'@strMapVINType' = '' or cc.MapVINType = '@strMapVINType')\" (+ ...DateTo). Y HET khuon #B365 ke ca cach viet N'@x' = ''. strDealerCode va strSOCode la CHUOI MA TU DO, khong qua bo chuan hoa nao => MUC (A), khong phai (B). Hai ca #B365 va #B374 o HAI FILE KHAC NHAU nhung CUNG MOT KHUON CHU => day la MAU CHEP, khong phai su co le. Khi de xuat sua, phai sua THEO MAU, khong sua tung cho.",
+        rbacHoleNote = "LO RBAC to hop (2): grep CA SAU TRUC trong ...X => chi 1 HIT DUY NHAT la dong '//alParamsCoupleSql.AddRange(... drAbilityOfUser[\"MBBankBUPattern\"] ...)' DA BI COMMENT; '//myCache_Mst_Distributor_ViewAbility_Get(drAbilityOfUser);' CUNG BI COMMENT; CheckHTCDirect / strBUPatternOfUser / myHTC_RemoveInfo_ / BankBUPattern = 0 HIT. Khong cong, khong loc, khong che cot - va theo luat C0-...quadragesimusnonus DA KIEM THEM xem co ban DUNG LAI BANG CHUOI khong => KHONG CO => LO THAT.",
+        miscNote = "Tang tien: CachingForPaymentTotal(..., \"'F'\", true) => CHI tien coc da noi tai khoan. Thread.Sleep(4000) tren duong thanh cong - KHONG port. Vo CommitSafety HAI LAN => ghi no 'khong nguyen tu' (C0-...tricesimusprimus), tac hai thap vi chi doc.",
+        debtNote = "NO - KHONG DOAN: Car_Car.MapVINStorage / MapVINType chua co trong MiniHTC => HAI BO LOC DO CHUA AP DUOC (xem mapVinStorageTypeFilterNotApplicable); Car_Car.SOCode va tang caching coc chua du => de NULL."
+    });
+}).RequireAuthorization();
+
+// ===== #B375 BÁO CÁO ĐỀ NGHỊ GIAO HỒ SƠ XE — `Rpt_ReportCarDocReq_WH_new20181119`
+//       (`DataWH/Biz.HTC.WH.cs:174508`) =====
+// **3B khớp cả 2 máy**: laptop `174508,174719` ≡ 150 `174513,174724`
+//   ⇒ **`7f308d19d35e67ed3fa49955ea71c873`**.
+//
+// ✅✅ **ĐỐI CHỨNG THAM SỐ HOÁ — NẰM NGAY CÙNG FILE VỚI #B374 (nướng thô)**:
+//     `AND cv.MortageEndDate >= **@MortageEndDateFrom**`      ← **param runtime, KHÔNG nháy**
+//     `AND cv.MortageEndDate <= **@MortageEndDateTo**`
+//   được bind thật: `alParamsCoupleSql.AddRange(new object[] { "@MortageEndDateFrom", … });`
+//   cộng hai bộ lọc còn lại qua `BuildClause(… "@p" …)` (`cv.VIN`, `cv.StatusMortageEnd`)
+//   ⇒ **hàm này tham số hoá HOÀN TOÀN**. Cùng file `Biz.HTC.WH.cs` với #B374 (nướng 6 tham số)
+//   ⇒ **hai cách viết cùng tồn tại trong MỘT file** — bằng chứng mạnh nhất rằng việc nướng là **lựa
+//     chọn của người viết**, không phải giới hạn của framework.
+// ✅ **GUARD ĐẦU VÀO ĐÚNG**: `if (From > To) throw Rpt_ReportCarDocReq_InvalidInput_CVMortageEndDate`;
+//   và khi để trống thì mặc định `DateMin`/`DateMax` ⇒ **cho phép tìm trắng** (khác #B371 bắt buộc khoá).
+// 🔴🔴🔴 **LỖ RBAC — tổ hợp (2)**: `@strBUPatternOfUser` **được bind** nhưng **đếm đúng 1 lần** trong cả
+//   hàm — chính là dòng bind ⇒ **SQL không dùng**; và grep **năm trục còn lại** ⇒ **0 hit**.
+//   ⇒ Trả **toàn bộ** hồ sơ xe + **số bảo lãnh / ngân hàng bảo lãnh** của mọi đại lý. **KHÔNG tự bịt.**
+// 🔴 **Toàn bộ chuỗi bổ sung là `LEFT JOIN`** (`Car_Car` → `Car_DocReqDtl` → `Car_DocReqList` →
+//   `Pmt_GuaranteeDetail` → `Pmt_Guarantee` → `Mst_Bank` → `Mst_CarSpec`) ⇒ **giữ nguyên dòng** kể cả khi
+//   thiếu hồ sơ/bảo lãnh — **ngược hẳn #B371** (nơi hai `inner join` làm mất dòng im lặng).
+//   Hai điều kiện lọc trạng thái đặt **trong `ON`** (`cdrd.DRDtlStatus NOT IN ('R','C')`,
+//   `pgd.GuaranteeDetailStatus NOT IN ('R','C')`) ⇒ **đúng chỗ**, không biến `left` thành `inner`.
+// 🔴 `DROP TABLE #tbl_Car_VIN_Filter;` **được viết đầy đủ, không comment** (khác #B350/#B359).
+// 🔴 `Thread.Sleep(4000)` — không port.
+// ⚠️ **NỢ**: `Car_VIN.StatusMortageEnd`, `Pmt_Guarantee*`, `Mst_Bank.BankName` chưa đủ ⇒ cột bảo lãnh
+//   để **NULL**; đề nghị giao hồ sơ lấy từ `CarDocRequest`/`CarDocRequestCar` đã port.
+app.MapGet("/api/reports/report-cardocreq", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? mortageEndDateFrom, DateTime? mortageEndDateTo, string? vin, string? statusMortageEnd) =>
+{
+    // ✅ Guard đầu vào của nguồn: From > To ⇒ ném lỗi (mã lỗi giữ đúng tên nguồn).
+    var from = mortageEndDateFrom ?? new DateTime(1900, 1, 1);
+    var to = mortageEndDateTo ?? new DateTime(2100, 1, 1);
+    if (from > to)
+        return Results.BadRequest(new { error = "Rpt_ReportCarDocReq_InvalidInput_CVMortageEndDate" });
+
+    var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId
+        && v.MortageEndDate != null && v.MortageEndDate >= from && v.MortageEndDate <= to);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(v => v.VIN == vin!.Trim().ToUpperInvariant());
+    var cars = await q.ToListAsync();
+
+    // 🔴 Toàn bộ chuỗi bổ sung là LEFT JOIN ⇒ giữ dòng kể cả khi thiếu hồ sơ/bảo lãnh.
+    var carIds = cars.Where(v => v.CarId != null).Select(v => v.CarId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var reqCars = (await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => carIds.Contains(c.CarId)).ToList();
+    var reqs = (await db.CarDocRequests.Where(r => r.OrgId == t.OrgId).ToListAsync())
+        .Where(r => r.Status != "R" && r.Status != "C")           // NOT IN ('R','C') — đặt trong ON ở nguồn
+        .ToDictionary(r => r.Id);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    var byCar = reqCars.GroupBy(c => c.CarId).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+    var rows = cars.Select(v =>
+    {
+        var rc = v.CarId != null && byCar.TryGetValue(v.CarId, out var lst)
+            ? lst.FirstOrDefault(x => reqs.ContainsKey(x.RequestId)) : null;
+        var head = rc != null && reqs.TryGetValue(rc.RequestId, out var h) ? h : null;
+        return new
+        {
+            v.VIN, v.CarId, v.DealerCode, v.ModelCode, v.SpecCode, v.ColorCode,
+            v.MortageEndDate, v.MortageStartDate,
+            StatusMortageEnd = (string?)null,                     // ⚠️ NỢ
+            CDRLDRListCode = head?.RequestNo,
+            CDRLCreatedDate = head?.CreatedAt,
+            CDRDDRDtlStatus = head?.Status,
+            // ⚠️ NỢ — KHÔNG ĐOÁN: Pmt_GuaranteeDetail / Pmt_Guarantee / Mst_Bank chưa đủ.
+            PGDDateStart = (DateTime?)null, PGDGuaranteeNo = (string?)null,
+            PGBankCode = (string?)null, MBBankName = (string?)null,
+            MCSSpecDescription = v.SpecCode != null && specs.TryGetValue(v.SpecCode, out var sp) ? sp.SpecDesc : null
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_ReportCarDocReq = rows,      // Tables[0]
+        parameterisedCounterExampleNote = "DOI CHUNG THAM SO HOA - NAM NGAY CUNG FILE VOI #B374 (nuong tho): 'AND cv.MortageEndDate >= @MortageEndDateFrom' / '<= @MortageEndDateTo' la PARAM RUNTIME, KHONG NHAY, duoc bind that qua alParamsCoupleSql.AddRange; cong hai bo loc con lai qua BuildClause('@p') cho cv.VIN va cv.StatusMortageEnd => HAM NAY THAM SO HOA HOAN TOAN. Cung file Biz.HTC.WH.cs voi #B374 (nuong 6 tham so) => HAI CACH VIET CUNG TON TAI TRONG MOT FILE - bang chung manh nhat rang viec nuong la LUA CHON CUA NGUOI VIET, khong phai gioi han cua framework.",
+        inputGuardNote = "GUARD DAU VAO DUNG: 'if (From > To) throw Rpt_ReportCarDocReq_InvalidInput_CVMortageEndDate'; va khi de trong thi mac dinh DateMin/DateMax => CHO PHEP TIM TRANG (khac #B371 bat buoc khoa tra cuu).",
+        rbacHoleNote = "LO RBAC to hop (2): @strBUPatternOfUser DUOC BIND nhung DEM DUNG 1 LAN trong ca ham - chinh la dong bind => SQL KHONG DUNG; va grep NAM TRUC CON LAI => 0 HIT. Tra TOAN BO ho so xe + SO BAO LANH / NGAN HANG BAO LANH cua moi dai ly. KHONG TU BIT.",
+        leftJoinChainNote = "TOAN BO chuoi bo sung la LEFT JOIN (Car_Car -> Car_DocReqDtl -> Car_DocReqList -> Pmt_GuaranteeDetail -> Pmt_Guarantee -> Mst_Bank -> Mst_CarSpec) => GIU NGUYEN DONG ke ca khi thieu ho so/bao lanh - NGUOC HAN #B371 (noi hai inner join lam mat dong im lang). Hai dieu kien loc trang thai dat TRONG ON (cdrd.DRDtlStatus NOT IN (R,C), pgd.GuaranteeDetailStatus NOT IN (R,C)) => DUNG CHO, khong bien left thanh inner. 'DROP TABLE #tbl_Car_VIN_Filter;' duoc viet DAY DU, khong comment (khac #B350/#B359). Thread.Sleep(4000) - khong port.",
+        debtNote = "NO - KHONG DOAN: Car_VIN.StatusMortageEnd, Pmt_Guarantee*, Mst_Bank.BankName chua du => cot bao lanh de NULL; de nghi giao ho so lay tu CarDocRequest/CarDocRequestCar da port."
+    });
+}).RequireAuthorization();
+
+// ===== #B376 TỔNG HỢP KẾ HOẠCH KINH DOANH — `Rpt_BusinessPlan_Summary_WH`
+//       (vỏ `DataWH/BizHTC.zTemp.cs:51050` → `Rpt_BusinessPlan_SummaryX` (`:51177`)) =====
+// **3B khớp cả 2 máy (2 md5); `BizHTC.zTemp.cs` KHÔNG lệch offset**:
+//   vỏ `51050,51176` ⇒ **`670f3b5315a58641b5faecb2764499db`**;
+//   `…X` `51177,51662` (486 dòng) ⇒ **`aa39472d7aa69c2819dfc0094ee9a5d6`**.
+//
+// 🔴🔴🔴 **CA "TRỘN" ĐIỂN HÌNH NHẤT CỦA `[BAKE-PARAM-MIX]` — NƯỚNG VÀ CHẠY NẰM CẠNH NHAU, CÙNG MỘT CÂU**:
+//     `inner join Mst_Dealer md on bpl.DealerCode = md.DealerCode and (md.BUCode like **@strBUPatternOfUser**)`
+//       ← **param runtime**, không nháy, được bind thật
+//     `and ('' = '**@strDealerCode**' or bpl.DealerCode = '**@strDealerCode**')`
+//     `and ('' = '@strBusinessPlanStatus' or bpl.BusinessPlanStatus = '@strBusinessPlanStatus')`
+//     `and ('' = '@strYearPlan' or bpl.YearPlan = '@strYearPlan')`
+//     `and ('' = '@strTimesPlan' or bpl.TimesPlan = '@strTimesPlan')`
+//     `and ('' = '@strVersion' or bpl.Version = '@strVersion')`
+//       ← **năm cái này NƯỚNG, nằm trong nháy**
+//   ⇒ **Cùng một câu `where`**: một điều kiện dùng param thật, năm điều kiện nướng.
+//     Đây là **minh hoạ hoàn hảo** cho chính cái tên gate `[BAKE-PARAM-MIX]`. Mức **(A) thô**.
+//   📌 Thứ tự vế đảo so với #B365/#B374 (`'' = '@x'` thay vì `N'@x' = ''`) ⇒ **cùng ngữ nghĩa, khác cách
+//     gõ** ⇒ khi grep tìm khuôn này phải bắt **cả hai chiều**.
+// ✅ **RBAC tổ hợp (3) — KHÔNG phải lỗ**: bộ lọc phạm vi `md.BUCode like @strBUPatternOfUser` **đang
+//   sống** trong `inner join Mst_Dealer` ⇒ có lọc dòng thật (dù không có cổng).
+// 🔴 **Nhãn `#region` sai — CA THỨ SÁU về nhãn**: `#region // **BPL_BusinessPlan_GetX**:` trong khi thực
+//   gọi `Rpt_BusinessPlan_SummaryX`. Cùng khuôn #B366 (`Rpt_MasterDataX`). ⇒ Củng cố
+//   `C0-…quadragesimusoctavus`: nhãn trong repo này **không dùng làm bằng chứng trace** được.
+// 🔴 `Tables[0].TableName = "**BPL_BusinessPlanDtl**"` — tên bảng trả về là **Dtl** (chi tiết) dù hàm tên
+//   `…_Summary` ⇒ **tên hàm và tên bảng nói ngược nhau**; hợp đồng API theo **tên bảng**, không theo tên hàm.
+// ⚠️ **NỢ**: `BPL_BusinessPlan` / `BPL_BusinessPlanDtl` chưa có trong MiniHTC ⇒ trả khung + cờ; **không bịa**.
+app.MapGet("/api/reports/businessplan-summary", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? businessPlanStatus, string? version,
+    string? yearPlan, string? timesPlan, string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3): bộ lọc BUPattern ĐANG SỐNG ở nguồn (param runtime trong inner join).
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        BPL_BusinessPlanDtl = Array.Empty<object>(),     // 🔴 tên bảng nguồn là "Dtl" dù hàm tên Summary
+        filtersEcho = new { dealerCode, businessPlanStatus, version, yearPlan, timesPlan },
+        bakeParamMixTextbookNote = "CA 'TRON' DIEN HINH NHAT CUA [BAKE-PARAM-MIX] - NUONG VA CHAY NAM CANH NHAU, CUNG MOT CAU: 'inner join Mst_Dealer md on bpl.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' la PARAM RUNTIME (khong nhay, duoc bind that); trong khi ngay duoi, nam dieu kien 'and ('' = '@strDealerCode' or bpl.DealerCode = '@strDealerCode')', '@strBusinessPlanStatus', '@strYearPlan', '@strTimesPlan', '@strVersion' deu NUONG, NAM TRONG NHAY. CUNG MOT CAU WHERE: mot dieu kien dung param that, nam dieu kien nuong. Minh hoa hoan hao cho chinh ten gate [BAKE-PARAM-MIX]. Muc (A) tho. THU TU VE DAO so voi #B365/#B374 (''' = '@x''' thay vi 'N'@x' = '''') => CUNG NGU NGHIA, KHAC CACH GO => khi grep tim khuon nay phai bat CA HAI CHIEU.",
+        rbacNote = "RBAC to hop (3) - KHONG phai lo: bo loc pham vi 'md.BUCode like @strBUPatternOfUser' DANG SONG trong inner join Mst_Dealer => co loc dong that (du khong co cong).",
+        regionLabelWrongSixthNote = "NHAN #region SAI - CA THU SAU ve nhan: '#region // BPL_BusinessPlan_GetX:' trong khi thuc goi 'Rpt_BusinessPlan_SummaryX'. Cung khuon #B366 (Rpt_MasterDataX). Cung co C0-...quadragesimusoctavus: nhan trong repo nay KHONG dung lam bang chung trace duoc.",
+        tableNameVsFunctionNote = "Tables[0].TableName = 'BPL_BusinessPlanDtl' - ten bang tra ve la Dtl (CHI TIET) du ham ten ..._Summary => TEN HAM VA TEN BANG NOI NGUOC NHAU; hop dong API theo TEN BANG, khong theo ten ham.",
+        debtNote = "NO - KHONG DOAN: BPL_BusinessPlan / BPL_BusinessPlanDtl chua co trong MiniHTC => tra khung + co."
+    });
+}).RequireAuthorization();
 // ===== #B371 THÔNG TIN BẢO HÀNH XE (DMS Service) — `Rpt_DMSSer_Car_Warranty_Information_WH`
 //       (`TERP.BizHTC/BizHTC.Report.Special.cs:1817`) =====
 // **3B khớp cả 2 máy — `BizHTC.Report.Special.cs` KHÔNG lệch offset (3010 dòng cả 2 máy)**:
