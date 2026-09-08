@@ -521,6 +521,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerZone> DealerZones => Set<DealerZone>();
     public DbSet<MstZone> MstZones => Set<MstZone>();   // #B89 danh muc VUNG (Mst_Zone)
     public DbSet<AtedpRun> AtedpRuns => Set<AtedpRun>();   // #B134 luot chay job lap ke hoach giao xe
+    public DbSet<TcgCarPrice> TcgCarPrices => Set<TcgCarPrice>();   // #B190 bang gia xe TCG theo thoi gian
     public DbSet<AutoMapVinStorageRate> AutoMapVinStorageRates => Set<AutoMapVinStorageRate>();   // #B136-B138 ty le phan bo theo kho
     public DbSet<AutoMapVinDistSumRate> AutoMapVinDistSumRates => Set<AutoMapVinDistSumRate>();   // #B139-B141 ty le phan bo TONG
     public DbSet<ConfigMapVinInput> ConfigMapVinInputs => Set<ConfigMapVinInput>();   // #B142-B144 cau hinh dau vao map VIN

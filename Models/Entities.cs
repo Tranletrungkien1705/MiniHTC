@@ -9566,6 +9566,23 @@ public sealed class DealerSalesGroupType
     public string? SGroupTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
 }
+
+/// <summary>🔴 #B190 — `Mst_TCGCarPrice`: **bảng giá xe TCG theo thời gian**, khoá bộ ba
+/// `(SOType, SpecCode, EffectiveDate)`. Truy vấn chỉ lấy **bản hiệu lực mới nhất tính đến hôm nay**
+/// cho mỗi cặp `(SOType, SpecCode)`.</summary>
+public sealed class TcgCarPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SOType { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public DateTime EffectiveDate { get; set; }
+    public decimal? Price { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

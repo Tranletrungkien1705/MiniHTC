@@ -2672,11 +2672,31 @@ app.MapPost("/api/transpfees/versions/delete-batch", async (TranspFeeVerDeleteDt
 {
     var codes = (dto.TFVCodes ?? new()).Where(c => !string.IsNullOrWhiteSpace(c)).ToList();
     if (codes.Count == 0) return Results.BadRequest(new { error = "Hãy chọn Phiên bản CPVT" });
+    // 🔴 #B191 VÁ HAI GUARD của `Mst_TranspFeeVerDel_New20181119` (`Biz.HTC.WH.cs:100952`,
+    //   3B `100952,101242`, căn theo tên khớp cả 2 máy). Bản port trước **xoá thẳng, không guard**:
+    //   (1) `…_Del_DlvExist`   — phiên bản **đã được dùng** trong biên bản giao xe
+    //       (`INNER JOIN Sto_DlvMinutes sdm`) ⇒ **KHÔNG cho xoá** (giữ toàn vẹn chứng từ đã phát sinh);
+    //   (2) `…_Del_FlagActive` — phiên bản **đang hiệu lực** (`mtfv.FlagActive = '1'`) ⇒ **KHÔNG cho xoá**.
+    //   Chỉ khi qua cả hai, nguồn mới `delete Mst_TranspFeeHist` rồi `delete Mst_TranspFeeVer`
+    //   (**chỉ khi không còn `Mst_TranspFee` tương ứng** — chú thích nguồn ghi rõ).
+    var vers = await db.TranspFeeVers
+        .Where(v => v.OrgId == t.OrgId && codes.Contains(v.TFVCode)).ToListAsync();
+    var activeVers = vers.Where(v => v.FlagActive == "1").Select(v => v.TFVCode).ToList();
+    if (activeVers.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Mst_TranspFeeVer_Del_FlagActive",
+            check = new { TFVCode = activeVers },
+            note = "Phien ban DANG HIEU LUC (FlagActive = '1') KHONG duoc xoa."
+        });
+    // 📌 NỢ: `Sto_DlvMinutes` của MiniHTC chưa có cột nối `TFVCode` ⇒ **chưa kiểm được** guard
+    //   `_DlvExist`. Trả cờ để người dùng biết guard này **chưa được thực thi**, không im lặng bỏ qua.
+    var dlvGuardNotChecked = true;
     var rows = db.TranspFees.Where(f => f.OrgId == t.OrgId && f.TFVCode != null && codes.Contains(f.TFVCode));
     var deletedRows = await rows.CountAsync();
     db.TranspFees.RemoveRange(rows);
     await db.SaveChangesAsync();
-    return Results.Ok(new { deletedVersions = codes.Count, deletedRows });
+    return Results.Ok(new { deletedVersions = codes.Count, deletedRows, dlvGuardNotChecked, guardNote = "Nguon co HAI guard truoc khi xoa: (1) _Del_DlvExist - phien ban DA DUOC DUNG trong bien ban giao xe (INNER JOIN Sto_DlvMinutes) thi KHONG cho xoa; (2) _Del_FlagActive - phien ban DANG HIEU LUC thi KHONG cho xoa. Ban port truoc XOA THANG, KHONG GUARD. Da va guard (2); guard (1) chua kiem duoc vi Sto_DlvMinutes cua MiniHTC thieu cot noi TFVCode - co dlvGuardNotChecked bao ro." });
 }).RequireAuthorization();
 
 // ===== #B90 LỊCH SỬ PHIÊN BẢN CHI PHÍ VẬN CHUYỂN — `Mst_TranspFeeVerGet_Hist_New20181115` =====
@@ -33501,6 +33521,78 @@ app.MapGet("/api/dealerbanks/htc-paged", async (
         orphanRows = orphans,
         innerJoinNote = "Nguon dung INNER JOIN Mst_Bank on mb.BankCode = mdb.BankCode => dong co BankCode KHONG TON TAI trong Mst_Bank se BIEN MAT khoi ket qua - khong phai left join. Ban port cu (/api/dealerbanks) doc thang bang => HIEN CA DONG MO COI. Endpoint nay tra rowsBeforeJoin va orphanRows de thay chenh lech.",
         aliasNote = "Nguon tra MOT bang ten 'Mst_DealerBank', cot mang tien to bi danh 'mdb.'."
+    });
+}).RequireAuthorization();
+
+// ===== #B190 BẢNG GIÁ XE TCG — `Mst_TCGCarPriceGet_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `184629,184837 / 9b962aa7dc897d49c8696f3795cf1447`.
+// 🔴 WS64 **chỉ có cửa `_Get`** (`grep -o "_biz.Mst_TCGCarPrice[A-Za-z_]*"`) ⇒ ghi qua **cửa chung**
+//   `CommonSaveMasterData` — bảng **có** trong danh sách trắng (#B165, tên `Mst_TCGCarSalePrice`).
+// 🔴🔴 **CHỈ LẤY BẢN GIÁ HIỆU LỰC MỚI NHẤT TÍNH ĐẾN HÔM NAY** — không phải toàn bộ lịch sử:
+//     `inner join ( select SOType, SpecCode, **Max(EffectiveDate) EffectiveDate**
+//                   from Mst_TCGCarPrice where **EffectiveDate <= @strDateNow**
+//                   group by SOType, SpecCode ) mcpMax`
+//     `on mcp.SOType = mcpMax.SOType and mcp.SpecCode = mcpMax.SpecCode and mcp.EffectiveDate = mcpMax.EffectiveDate`
+//   ⇒ Mỗi cặp `(SOType, SpecCode)` trả **đúng MỘT dòng**: bản mới nhất **đã có hiệu lực**.
+//     · Bản có `EffectiveDate` **tương lai** ⇒ **bị loại** (chưa tới ngày);
+//     · Bản cũ hơn ⇒ **bị loại** (đã bị bản mới thay).
+//   ⇒ Port kiểu "lấy tất cả rồi để client tự chọn" là **đổi bản chất màn**: người dùng sẽ thấy **giá
+//     tương lai** lẫn **giá đã hết hiệu lực**.
+// 🔴 **`inner join Mst_SalesOrderType msot on mcp.SOType = msot.SOType`** ⇒ dòng có `SOType` **không
+//   có trong danh mục loại đơn bán** (#B168) **biến mất khỏi kết quả** — cùng bẫy với #B183.
+//   Port trả `orphanRows` để thấy chênh lệch.
+// 🔴 `left join Mst_CarSpec` ở bước lọc (chỉ để lọc theo cột spec), **không** làm giàu ở bước cuối;
+//   bước cuối chỉ thêm **`msot.SOTypeName MSOTSOTypeName`**.
+// 🔴 Khoá bộ ba `(SOType, SpecCode, EffectiveDate)` — cùng mô hình bảng giá theo thời gian với
+//   `Mst_InsuranceType` (#B175).
+// 📌 §12: thực thể `TcgCarPrice` + Seeder + DbSet + trả trong response.
+app.MapGet("/api/masters/tcg-car-prices", async (
+    AppDbContext db, ITenantContext t, string? soType, string? specCode, DateTime? asOfDate) =>
+{
+    // `@strDateNow` — mặc định là HÔM NAY; cho truyền để đối soát giá tại một mốc.
+    var asOf = (asOfDate ?? DateTime.Now).Date;
+
+    var all = await db.TcgCarPrices
+        .Where(p => p.OrgId == t.OrgId && p.EffectiveDate <= asOf)
+        .ToListAsync();
+
+    // 🔴 Max(EffectiveDate) theo cặp (SOType, SpecCode) — đúng subquery của nguồn.
+    var latest = all
+        .GroupBy(p => new { p.SOType, p.SpecCode })
+        .Select(g => g.OrderByDescending(x => x.EffectiveDate).First())
+        .ToList();
+
+    if (!string.IsNullOrWhiteSpace(soType)) latest = latest.Where(p => p.SOType == soType.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(specCode)) latest = latest.Where(p => p.SpecCode == specCode.Trim()).ToList();
+
+    var soTypeNames = (await db.SalesOrderTypeMsts.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.SOType, x.SOTypeName }).ToListAsync())
+        .GroupBy(x => x.SOType).ToDictionary(g => g.Key, g => g.First().SOTypeName);
+
+    // 🔴 INNER JOIN Mst_SalesOrderType: SOType không có trong danh mục ⇒ dòng BỊ LOẠI.
+    var joined = latest.Where(p => soTypeNames.ContainsKey(p.SOType)).ToList();
+    var orphans = latest.Where(p => !soTypeNames.ContainsKey(p.SOType))
+        .Select(p => new { p.SOType, p.SpecCode, p.EffectiveDate }).ToList();
+
+    return Results.Ok(new
+    {
+        asOfDate = asOf,
+        count = joined.Count,
+        Mst_TCGCarPrice = joined
+            .OrderBy(p => p.SOType).ThenBy(p => p.SpecCode)
+            .Select(p => new
+            {
+                p.SOType, p.SpecCode, p.EffectiveDate, p.Price, p.FlagActive, p.Remark,
+                p.LogLUDateTime, p.LogLUBy,
+                MSOTSOTypeName = soTypeNames[p.SOType]
+            }),
+        rowsBeforeJoin = latest.Count,
+        orphanRows = orphans,
+        latestOnlyNote = "CHI LAY BAN GIA HIEU LUC MOI NHAT TINH DEN HOM NAY - khong phai toan bo lich su: 'inner join (select SOType, SpecCode, Max(EffectiveDate) from Mst_TCGCarPrice where EffectiveDate <= @strDateNow group by SOType, SpecCode) mcpMax on ...'. Moi cap (SOType, SpecCode) tra DUNG MOT DONG: ban moi nhat DA CO HIEU LUC. Ban co EffectiveDate TUONG LAI bi loai (chua toi ngay); ban cu hon bi loai (da bi ban moi thay). Port kieu 'lay tat ca roi de client tu chon' la DOI BAN CHAT MAN - nguoi dung se thay ca gia tuong lai lan gia da het hieu luc.",
+        innerJoinNote = "inner join Mst_SalesOrderType on mcp.SOType = msot.SOType => dong co SOType KHONG CO trong danh muc loai don ban (#B168) BIEN MAT khoi ket qua - cung bay voi #B183. Tra orphanRows de thay chenh lech.",
+        joinShapeNote = "left join Mst_CarSpec chi o BUOC LOC (de loc theo cot spec), KHONG lam giau o buoc cuoi; buoc cuoi chi them msot.SOTypeName MSOTSOTypeName.",
+        keyNote = "Khoa bo ba (SOType, SpecCode, EffectiveDate) - cung mo hinh bang gia theo thoi gian voi Mst_InsuranceType (#B175).",
+        writeDoorNote = "WS64 CHI CO cua _Get; ghi qua CUA CHUNG CommonSaveMasterData - bang co trong danh sach trang (#B165, ten Mst_TCGCarSalePrice)."
     });
 }).RequireAuthorization();
 
