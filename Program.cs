@@ -54108,6 +54108,100 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #682 BẢNG TRẠNG THÁI XƯỞNG THỜI GIAN THỰC `Ser_RO_GetStatusList_ForStatusRealTime_WH_New20230220` =====
+// (`BizCarSv.zzzzCode.cs:7747-8121`, md5 `92f12b34` **KHỚP** máy 150. WS `WSCarSv.asmx.cs:32177` gọi thẳng.
+//  Bản trần `…_ForStatusRealTime_WH` (`WH.cs:5678-5971`, md5 `9d73071c`) **CHẾT** — ca thứ **ba** liên tiếp
+//  hàm LIVE nằm trong `zzzzCode.cs` (sau #676, #679).)
+//
+// 🔴🔴🔴 **BẢNG CHÂN TRỊ BA Ô TICK THIẾU ĐÚNG MỘT TỔ HỢP — VÀ ĐÓ LÀ TỔ HỢP NGUY HIỂM NHẤT**:
+//   Nguồn có **7 nhánh `if`** cho ba cờ (Đang sửa chữa · Chờ giao xe · Tạm dừng): `1-0-0` · `0-1-0` · `0-0-1` ·
+//   `1-1-0` · `1-0-1` · `0-1-1` · `1-1-1`. **KHÔNG có nhánh `0-0-0`** ⇒ `zzzzClauseWhereStausAndFlagPause`
+//   giữ nguyên **chuỗi rỗng** ⇒ **không lọc trạng thái gì cả** ⇒ **bỏ tick cả ba ô thì màn hiện MỌI lệnh**,
+//   kể cả `REJ` (lệnh huỷ) và `FNS` (đã giao xe) — trong khi đúng nghiệp vụ phải là **không hiện gì**.
+// 🔴🔴🔴 **`FlagPause` MANG NGHĨA NGƯỢC VỚI TÊN — VÀ ĐÓ LÀ CHỦ ĐÍCH, KHÔNG PHẢI GÕ NHẦM**:
+//     nhánh "Đang sửa chữa" ⇒ `ro.[Status] IN (N'INGA') AND ro.FlagPause = **'1'**`
+//     nhánh "Tạm dừng"      ⇒ `ro.[Status] IN (N'INGA') AND ro.FlagPause = **'0'**`
+//   📌 **Kiểm chéo cả 7 nhánh** để phân biệt "gõ nhầm" với "quy ước": nhánh `1-0-1` (đang sửa **+** tạm dừng) là
+//     `And (ro.[Status] IN (N'INGA'))` — **bỏ hẳn điều kiện `FlagPause`**, đúng bằng **hợp** của hai nhánh con;
+//     nhánh `1-1-0`, `0-1-1`, `1-1-1` cũng khớp phép hợp. ⇒ **7/7 nhánh nhất quán** ⇒ trong hệ này
+//     `FlagPause = '1'` nghĩa là **ĐANG CHẠY**, `= '0'` nghĩa là **ĐANG TẠM DỪNG**.
+//   ⇒ Đúng luật "HẰNG ≠ GIÁ TRỊ": **chép nguyên văn**, "sửa cho đúng tên cờ" là **đảo ngược cả màn hình**.
+// 🔴🔴🔴 **PHÂN TRANG CHẠY NGƯỢC CHIỀU HIỂN THỊ**:
+//     `SELECT TOP 500 ro.*, Row_Number() over (order by ro.PlanedDeliveryDate **asc**) MyRowIdx INTO #tbl_Ro`
+//     `… ORDER BY ro.PlanedDeliveryDate **desc**`   (rồi K2 và K3 cũng `order by … desc`)
+//   ⇒ Số thứ tự trang đánh theo **tăng dần**, lưới hiển thị **giảm dần** ⇒ "trang 2" **không nối tiếp** trang 1;
+//     người dùng lật trang sẽ thấy dữ liệu **nhảy từ đầu kia của danh sách**.
+//   ⚪ Khác #626: phân trang ở đây **CÓ chạy thật** (`ro.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End`).
+//   🔴 Và `TOP 500` vẫn dính #415 y như #679: `ORDER BY` nằm trên `SELECT … INTO` nên **không có hiệu lực**
+//     ⇒ 500 dòng **bất kỳ** rồi mới đánh số/phân trang trong đó.
+// 🔴🔴 **`Count(0) MyCount` ĐẾM SAU KHI ĐÃ CẮT `TOP 500`**: câu K11 đếm trên `#tbl_Ro` ⇒ **tổng số tối đa là 500**,
+//   không phải tổng thật. Lưới hiện "500" dù xưởng có 3000 lệnh khớp điều kiện.
+// 🔴🔴 **MỘT THAM SỐ NGÀY RÀNG VÀO HAI CỘT KHÁC KIỂU**: `strCheckInDate` được dùng **hai lần** —
+//   `BuildClause("and", "ro.CheckInDate", strCheckInDate, …)` (K1, cột **datetime**) **và**
+//   `BuildClause("and", "tpro.tmpCheckInDate", strCheckInDate, …)` (K3, cột **chuỗi** `yyyy-MM-dd`).
+//   ⇒ Điều kiện bị áp **hai lần**; nếu định dạng tham số hợp với một bên thì bên kia **lọc sai hoặc chết**.
+// 🔴 **Lặp lại nguyên hai lỗi của #679**: (a) `car.FrameNo` / `car.PlateNo` cắm vào K1 mà K1 chỉ có
+//   `FROM ser_ro ro` ⇒ **alias `car` không tồn tại**; (b) `Replace("BG-","")` bỏ sót tiền tố `LS-`.
+// ⚪ **DƯƠNG TÍNH** — bản sống bỏ `ro.*`, liệt kê cột tường minh + `isnull(ro.X, car.X)` (chủ trương #670/#676).
+app.MapGet("/api/repairorders/status-realtime-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? frameNo, string? plateNo, string? roNo,
+    bool? dangSuaChua, bool? choGiaoXe, bool? tamDung,
+    int? recordStart, int? recordCount) =>
+{
+    var f1 = dangSuaChua == true; var f2 = choGiaoXe == true; var f3 = tamDung == true;
+
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) qr = qr.Where(x => x.Vin != null && x.Vin.Contains(frameNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(plateNo)) qr = qr.Where(x => x.LicensePlate.Contains(plateNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(roNo))
+    {
+        var stripped = roNo!.Trim().Replace("BG-", "").Replace("LS-", "");
+        qr = qr.Where(x => x.RONo == stripped);
+    }
+
+    // Bảng chân trị 7 nhánh của nguồn, chép NGUYÊN VĂN (FlagPause 1 = đang chạy, 0 = tạm dừng).
+    var waiting = new[] { "CEND", "RPRD", "PAID" };
+    if (f1 && !f2 && !f3) qr = qr.Where(x => x.Status == "INGA" && x.FlagPause == "1");
+    else if (!f1 && f2 && !f3) qr = qr.Where(x => waiting.Contains(x.Status));
+    else if (!f1 && !f2 && f3) qr = qr.Where(x => x.Status == "INGA" && x.FlagPause == "0");
+    else if (f1 && f2 && !f3) qr = qr.Where(x => (x.Status == "INGA" && x.FlagPause == "1") || waiting.Contains(x.Status));
+    else if (f1 && !f2 && f3) qr = qr.Where(x => x.Status == "INGA");
+    else if (!f1 && f2 && f3) qr = qr.Where(x => waiting.Contains(x.Status) || (x.Status == "INGA" && x.FlagPause == "0"));
+    else if (f1 && f2 && f3) qr = qr.Where(x => x.Status == "INGA" || waiting.Contains(x.Status));
+    // else: tổ hợp 0-0-0 — nguồn KHÔNG có nhánh nên không lọc gì. Port giữ 1:1 và nêu cờ.
+
+    // #415: nguồn cắt TOP 500 TRƯỚC khi sắp (ORDER BY trên SELECT … INTO vô nghĩa). Port sắp trước rồi cắt.
+    var capped = await qr.OrderByDescending(x => x.PlanedDeliveryDate).Take(500)
+        .Select(x => new { x.RONo, x.DealerCode, x.Status, x.FlagPause, x.PlanedDeliveryDate,
+                           x.CheckInDate, x.CusName, plateNo = x.LicensePlate, frameNo = x.Vin }).ToListAsync();
+    var totalUncapped = await qr.CountAsync();
+
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
+    // Nguồn đánh số ASC rồi hiển thị DESC ⇒ trang không liền mạch. Port đánh số CÙNG CHIỀU hiển thị.
+    var rows = capped.Skip(skip).Take(take).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        myCountAsSourceWouldReport = capped.Count,   // nguồn đếm SAU khi cắt TOP 500
+        totalUncapped,
+        // ===== #682 =====
+        liveVersionAgainInZzzzCode = "ban tran …_ForStatusRealTime_WH (WH.cs:5678-5971, md5 9d73071c) CHET; ban LIVE nam trong BizCarSv.zzzzCode.cs:7747-8121 (md5 92f12b34, KHOP may 150) — ca thu BA lien tiep ham LIVE nam trong zzzzCode.cs (sau #676, #679)",
+        allThreeUncheckedShowsEverything = "BANG CHAN TRI BA O TICK THIEU DUNG MOT TO HOP — VA DO LA TO HOP NGUY HIEM NHAT: nguon co 7 nhanh if cho ba co (1-0-0, 0-1-0, 0-0-1, 1-1-0, 1-0-1, 0-1-1, 1-1-1). KHONG co nhanh 0-0-0 => zzzzClauseWhereStausAndFlagPause giu nguyen CHUOI RONG => khong loc trang thai gi ca => bo tick ca ba o thi man hien MOI lenh, ke ca REJ (lenh huy) va FNS (da giao xe), trong khi dung nghiep vu phai la KHONG HIEN GI",
+        noFilterBecauseAllUnchecked = !f1 && !f2 && !f3,
+        flagPauseMeansOppositeOfItsName = "FlagPause MANG NGHIA NGUOC VOI TEN — VA DO LA CHU DICH: nhanh Dang sua chua => ro.Status IN (INGA) AND ro.FlagPause = 1; nhanh Tam dung => ro.Status IN (INGA) AND ro.FlagPause = 0. Kiem cheo ca 7 nhanh: nhanh 1-0-1 (dang sua + tam dung) la And (ro.Status IN (INGA)) — BO HAN dieu kien FlagPause, dung bang HOP cua hai nhanh con; cac nhanh 1-1-0, 0-1-1, 1-1-1 cung khop phep hop => 7/7 NHAT QUAN => trong he nay FlagPause = 1 nghia la DANG CHAY, = 0 nghia la DANG TAM DUNG. Chep NGUYEN VAN, sua cho dung ten co la DAO NGUOC CA MAN HINH",
+        pagingRunsOppositeToDisplayOrder = "PHAN TRANG CHAY NGUOC CHIEU HIEN THI: SELECT TOP 500 ro.*, Row_Number() over (order by ro.PlanedDeliveryDate ASC) MyRowIdx INTO #tbl_Ro … ORDER BY ro.PlanedDeliveryDate DESC, roi K2 va K3 cung order by … desc => so thu tu trang danh theo TANG DAN, luoi hien thi GIAM DAN => trang 2 KHONG noi tiep trang 1, nguoi dung lat trang thay du lieu nhay tu dau kia cua danh sach. Port danh so CUNG CHIEU hien thi",
+        top500BeforeOrderBy = "TOP 500 van dinh #415 y nhu #679: ORDER BY nam tren SELECT … INTO nen KHONG co hieu luc => 500 dong BAT KY roi moi danh so/phan trang trong do",
+        pagingActuallyRunsHere = "AM TINH: khac #626, phan trang o day CO chay that (ro.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End)",
+        myCountIsCappedAt500 = "Count(0) MyCount DEM SAU KHI DA CAT TOP 500: cau K11 dem tren #tbl_Ro => tong so toi da la 500, khong phai tong that; luoi hien 500 du xuong co 3000 lenh khop dieu kien. Port tra ca totalUncapped",
+        oneDateParamBoundToTwoColumnsOfDifferentTypes = "MOT THAM SO NGAY RANG VAO HAI COT KHAC KIEU: strCheckInDate duoc dung HAI LAN — BuildClause(and, ro.CheckInDate, strCheckInDate, …) o K1 (cot datetime) VA BuildClause(and, tpro.tmpCheckInDate, strCheckInDate, …) o K3 (cot CHUOI yyyy-MM-dd) => dieu kien bi ap HAI LAN; neu dinh dang tham so hop voi mot ben thi ben kia loc sai hoac chet",
+        repeatsTwoBugsFrom679 = "lap lai nguyen hai loi cua #679: (a) car.FrameNo / car.PlateNo cam vao K1 ma K1 chi co FROM ser_ro ro => ALIAS car KHONG TON TAI; (b) Replace(BG-, \"\") bo sot tien to LS-",
+        positiveLiveVersionDropsSelectStar = "DUONG TINH: ban song bo ro.*, liet ke cot tuong minh + isnull(ro.X, car.X) — chu truong anh-chup-tren-lenh #670/#676",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #680 THÔNG TIN BẢO HÀNH XE (LẤY TỪ DMS.SALES) `Rpt_DMSSer_Car_Warranty_Information_WH` =====
 // (`BizCarSv.Report.Special.Warranty.cs:3801-3944`, md5 `43760db3` **KHỚP** máy 150.
 //  WS `WSCarSv.asmx.cs:28493` gọi thẳng — không hậu tố, không vỏ bọc.)
