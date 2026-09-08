@@ -11134,6 +11134,71 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     autoTempNote = "Bảng Email_SendEmailAutoTemp dùng SỐ (có mã -1) và CÓ nhánh else ⇒ mã lạ/NULL hiện \"Lỗi\".",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #594 TRA CỨU EMAIL (`Email_SendEmail_Get`, `SendMail.cs:623`) — **API TRẢ MẬT KHẨU SMTP** =====
+// Toàn bộ câu truy vấn (trích nguyên văn phần `select`):
+//     `select t.*, c.SMTP, c.Port, c.mailServerAddress, c.mailServerUser, **c.mailServerPassword**`
+//     `from Email_SendEmail t with(nolock) join Email_Config c with(nolock) on t.DealerCode = c.DealerCode`
+//
+// 🔴🔴 **MẬT KHẨU MÁY CHỦ THƯ NẰM TRONG KẾT QUẢ CỦA MỘT HÀM TRA CỨU CÓ WEBMETHOD.**
+//   Ở #587 tôi đã ghi `mailServerPassword` bị chọn ra trong `Email_SendEmailCreate` — nhưng hàm đó là **job
+//   nội bộ**, kết quả không đi ra ngoài. Hàm này thì **khác hẳn**: nó là cửa **tra cứu**, ai gọi được
+//   WebMethod là **nhận thẳng mật khẩu SMTP của đại lý** trong `DataSet` trả về.
+//   ⇒ Đây là mức nghiêm trọng cao nhất trong cụm email: không phải "sai số liệu" mà là **lộ thông tin xác thực**.
+//   📌 Port **KHÔNG** trả cột này; muốn xem cấu hình thư thì có endpoint riêng (`EmailServerConfigs`, #433).
+// 🔴 **BA `BuildClause` KHÔNG TOÁN TỬ** (#410) — cả ba bộ lọc đều có thể **chết im lặng**:
+//     `BuildClause("and", "t.DealerCode", strDealerCode, "@p", …)`
+//     `BuildClause("and", "t.IdSendEmail", strIdSendMail, "@p", …)`
+//     `BuildClause("and", "t.Status", strStatus, "@p", …)`
+//   ⇒ Client gửi giá trị trần ⇒ câu còn `where (1=1)` ⇒ **trả TOÀN BỘ email của mọi đại lý** — **kèm mật
+//     khẩu SMTP của từng đại lý** ở mỗi dòng. Hai lỗi cộng lại thành một lỗ rò dữ liệu diện rộng.
+// 🔴 **`join` LÀ INNER** (viết tắt `join`, không `left join`) sang `Email_Config` theo `DealerCode`
+//   ⇒ đại lý **chưa cấu hình SMTP** thì **mọi email của họ không tra được** — màn hiện *"không có dữ liệu"*
+//   trong khi bản ghi vẫn nằm trong bảng. Cùng cái join đã làm thư **không đi** ở #587; ở đây nó làm thư
+//   **không thấy**.
+// 🔴 **KHÔNG `ORDER BY`, KHÔNG PHÂN TRANG, `select t.*`** ⇒ trả về **tất cả** với thứ tự tuỳ engine,
+//   hợp đồng cột không xác định. ⚠️ `with(nolock)` trên **cả hai** bảng ⇒ đọc bẩn.
+app.MapGet("/api/emails/search", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, long? id, string? status, int? take) =>
+{
+    var qy = db.EmailSends.Where(x => x.OrgId == t.OrgId);
+    var applied = new List<string>();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) { qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant()); applied.Add("dealerCode"); }
+    if (id.HasValue) { qy = qy.Where(x => x.Id == id!.Value); applied.Add("id"); }
+    if (!string.IsNullOrWhiteSpace(status)) { qy = qy.Where(x => x.Status == status!.Trim()); applied.Add("status"); }
+
+    // Nguồn KHÔNG có ORDER BY và KHÔNG phân trang ⇒ port sắp xếp và cắt, nêu cờ.
+    var n = take is > 0 ? Math.Min(take!.Value, 500) : 200;
+    var rows = await qy.OrderByDescending(x => x.Id).Take(n)
+        .Select(x => new
+        {
+            x.Id, x.BatchNo, toAddress = x.Email, x.FromAddress, x.Subject,
+            x.Status, emailType = x.EmailType, x.DealerCode, x.CusId, x.IsAuto,
+            x.SendDate, x.UserName, x.Note, x.InvalidEmail,
+        })
+        .ToListAsync();
+
+    // INNER JOIN Email_Config của nguồn ⇒ đếm số đại lý chưa cấu hình SMTP (email của họ sẽ KHÔNG tra được).
+    var dealerCodes = rows.Select(x => x.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var configured = await db.EmailServerConfigs.Where(c => c.OrgId == t.OrgId && dealerCodes.Contains(c.DealerCode!))
+        .Select(c => c.DealerCode!).Distinct().ToListAsync();
+    var hiddenBySourceJoin = rows.Count(x => x.DealerCode != null && !configured.Contains(x.DealerCode));
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows, filtersApplied = applied, take = n,
+        smtpPasswordReturnedBySource = "cau select cua nguon co c.mailServerPassword — ham TRA CUU co WebMethod tra thang mat khau SMTP cua dai ly trong DataSet",
+        portOmitsSmtpPassword = "port KHONG tra cot nay; cau hinh thu xem o endpoint rieng (#433)",
+        escalationOver587 = "o #587 cot nay bi chon trong mot JOB noi bo; o day la cua tra cuu ra ngoai — nghiem trong hon han",
+        threeFiltersWithoutOperator = new[] { "t.DealerCode", "t.IdSendEmail", "t.Status" },
+        emptyFilterWouldReturnEverythingWithPasswords = "BuildClause bo im lang => where (1=1) => tra TOAN BO email moi dai ly kem mat khau SMTP tung dong",
+        innerJoinHidesUnconfiguredDealers = "join Email_Config (INNER) on DealerCode => dai ly chua cau hinh SMTP thi email cua ho KHONG TRA DUOC, man hien khong-co-du-lieu",
+        hiddenBySourceJoin,
+        sameJoinBlockedSendingIn587 = "cung cai join do lam thu KHONG DI o #587; o day lam thu KHONG THAY",
+        noOrderByNoPagingSelectStar = "nguon: select t.* khong ORDER BY, khong phan trang",
+        nolockOnBothTables = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #593 SỬA EMAIL (`Email_SendEmail_Update`, `SendMail.cs:189`) — **XOÁ TRẮNG ĐỊA CHỈ NGƯỜI NHẬN** =====
 // Cặp #404 cuối của `SendMail.cs`. Nhưng đây **không phải cặp create/update thật**: "create" (#592) là **job**
 //   quét hàng đợi, không nhận tham số; "update" thì nhận **14 tham số nghiệp vụ**. Hai cửa **không đối xứng**,
