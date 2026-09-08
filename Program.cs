@@ -46079,6 +46079,78 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #711 HUỶ MẪU EMAIL `Email_TempEmail_Cancel` =====
+// `BizCarSv.SendMail.cs:3687-3827`, md5 `ab4fe8b7` — **KHỚP máy 150, cùng offset**.
+// → `POST /api/email/templates/{tempIDEmail}/cancel`. Nợ đã ghi ở #290 (`Program.cs:51329`), nay trả.
+// **DIFF với hàm huỷ anh em `Email_ConfigSendAuto_Cancel`** (:2004, md5 `22cb2d70`) — luật #414.
+//
+// 🔴🔴🔴 **MÃ LỖI MẶC ĐỊNH CHỈ SANG MỘT HÀM HOÀN TOÀN KHÁC**:
+//     `string strErrorCodeDefault = TError.ErrCarSv.**Ser_Customer_Update**;`
+//   trong hàm tên `Email_TempEmail_Cancel`. ⇒ **Mọi lỗi không phân loại của thao tác huỷ mẫu email được trả về
+//     client dưới mã lỗi "cập nhật khách hàng"**. Cùng cơ chế copy-paste với #709, nhưng **nặng hơn hẳn**:
+//     #709 chỉ sai **nhãn trong log**, ở đây sai **mã lỗi trả ra API** ⇒ phía gọi bắt lỗi theo mã sẽ xử lý nhầm.
+//   📌 Đối chiếu: hàm anh em dùng đúng `TError.ErrCarSv.Email_ConfigSendAuto_Cancel`.
+// 🔴🔴🔴 **`"top 1 *"` KHÔNG CÓ `ORDER BY`** (#415 + #411): `GetTableContents(_dbMain, "Email_TempEmail",
+//   **"top 1 *"**, "", "TempIDEmail", "=", strTempIDEmail)` rồi `Rows[0]["IsActive"] = "0"`.
+//   ⇒ `TempIDEmail` mà **không duy nhất** thì huỷ **một mẫu bất kỳ** trong nhóm — và vì `IsActive` là **huỷ mềm**,
+//     không ai thấy mẫu sai đã bị tắt.
+// 🔴🔴🔴 **`Rows[0]` KHÔNG KIỂM `Rows.Count`** ⇒ `TempIDEmail` không tồn tại ⇒ **IndexOutOfRangeException**
+//   giữa transaction (họ #701/#709). `#region // Check` **không tồn tại** — đã liệt kê trọn region để trích:
+//   `Temp:` · `Init:` · `Update:` · `Catch of try:` · `Finally of try:`; `CMyException.Raise` **0 lần**.
+// 🔴🔴🔴 **HUỶ XUYÊN ĐẠI LÝ — KHÔNG CÓ THAM SỐ ĐẠI LÝ NÀO**: chuỗi `DealerCode` xuất hiện **0 lần** trong toàn
+//   hàm, trong khi hàm anh em `Email_ConfigSendAuto_Cancel` **có** `strDealerCode` và lọc theo nó.
+//   ⇒ Nếu `TempIDEmail` trùng giữa các đại lý, huỷ mẫu của đại lý này **có thể tắt mẫu của đại lý khác**.
+//   📌 Ăn khớp với #438, nơi đã ghi `EmailTemplate` **thiếu hẳn** `DealerCode` mà nguồn dùng để lọc.
+// 🔴🔴 **TRANSACTION CSDL ĐẠI LÝ: MỞ, KHÔNG GHI, KHÔNG COMMIT** — `_dbDealer.BeginTransaction()` chạy, nhưng lối
+//   ra thành công chỉ `CommitSafety(_dbMain)` + `CommitSafety(_dbWH)`; `_dbDealer` **chỉ gặp `RollbackSafety`**.
+//   ⇒ Cùng họ #710 nhưng **không có chú thích thừa nhận** ⇒ ở #710 là nợ **có ý thức**, ở đây là **im lặng**.
+// 🔴 **GHI SANG CSDL THỨ HAI BẰNG THỦ THUẬT TRẠNG THÁI DÒNG**: `AcceptChanges()` rồi
+//   `SetDataRowStateOfAllRows(ref dt, DataRowState.Modified)` rồi `_dbWH.SaveData(...)` — ép DataTable "quên"
+//   đã lưu để lưu lại lần hai sang kho. Hoạt động, nhưng **hai CSDL không nằm trong cùng một transaction**.
+// 📌 **HAI HỌ HÀM EMAIL DÙNG HAI THẾ HỆ KHUÔN**: `Email_ConfigSendAuto_*` dùng cờ đơn `bNeedTransaction` (và
+//   `= false`), còn `Email_TempEmail_*`/`Email_Config_*` dùng bộ ba `_Main/_WH/_Dealer`. #710 và #711 **độc lập**
+//   xác nhận cùng một ranh giới ⇒ không phải ngẫu nhiên từng hàm mà là **hai thế hệ mã**.
+// §12 ánh xạ: nguồn đặt cột là `**IsActive**` (giá trị `"0"`), Mini đặt là `FlagActive` — ghi rõ, **không** đổi
+//   tên bên nào. §12 GAP đã vá: `EmailTemplate` **thiếu `TempIDEmail`** — chính là khoá hàm này tra.
+app.MapPost("/api/email/templates/{tempIDEmail}/cancel", async (string tempIDEmail, AppDbContext db, ITenantContext t) =>
+{
+    var key = (tempIDEmail ?? "").Trim();
+    // 🔴 Nguồn KHÔNG lọc theo đại lý. Giữ 1:1 và ĐẾM số bản ghi khớp để lộ rủi ro xuyên đại lý.
+    var matches = await db.EmailTemplates.Where(x => x.OrgId == t.OrgId && x.TempIDEmail == key)
+        .OrderBy(x => x.Id).ToListAsync();
+
+    if (matches.Count == 0)
+        return Results.BadRequest(new
+        {
+            error = "TEMPIDEMAIL_NOT_FOUND", tempIDEmail = key,
+            sourceWouldThrowIndexOutOfRange = "Rows[0] KHONG KIEM Rows.Count => TempIDEmail khong ton tai => IndexOutOfRangeException giua transaction (ho #701/#709)",
+        });
+
+    // Nguồn `top 1 *` KHÔNG ORDER BY ⇒ dòng bất kỳ. Port sắp xác định rồi mới lấy dòng đầu.
+    var row = matches[0];
+    row.FlagActive = "0";       // nguồn: cột tên `IsActive`, gán chuỗi "0" (huỷ mềm)
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.TempIDEmail, row.DealerCode, row.TempName, row.FlagActive,
+        matchedRows = matches.Count,
+        sourceHasNoOrderBy = true,
+        ambiguousBecauseKeyNotUnique = matches.Count > 1,
+        dealersAffectedIfKeyReused = matches.Select(x => x.DealerCode).Distinct().ToList(),
+        // ===== #711 =====
+        defaultErrorCodePointsAtACompletelyDifferentFunction = "MA LOI MAC DINH CHI SANG MOT HAM HOAN TOAN KHAC: string strErrorCodeDefault = TError.ErrCarSv.Ser_Customer_Update; trong ham ten Email_TempEmail_Cancel => MOI LOI KHONG PHAN LOAI cua thao tac huy mau email duoc TRA VE CLIENT duoi ma loi cap nhat khach hang. Cung co che copy-paste voi #709 nhung NANG HON HAN: #709 chi sai NHAN TRONG LOG, o day sai MA LOI TRA RA API => phia goi bat loi theo ma se xu ly nham. Doi chieu: ham anh em dung dung TError.ErrCarSv.Email_ConfigSendAuto_Cancel",
+        top1WithoutOrderBy = "top 1 * KHONG CO ORDER BY (#415 + #411): GetTableContents(_dbMain, Email_TempEmail, top 1 *, '', TempIDEmail, =, strTempIDEmail) roi Rows[0][IsActive] = 0 => TempIDEmail ma KHONG DUY NHAT thi huy MOT MAU BAT KY trong nhom — va vi IsActive la HUY MEM, khong ai thay mau sai da bi tat",
+        noCheckRegionAtAll = "#region // Check KHONG TON TAI — da liet ke tron region de trich: Temp:, Init:, Update:, Catch of try:, Finally of try:; CMyException.Raise 0 LAN",
+        cancelsAcrossDealersNoDealerParam = "HUY XUYEN DAI LY — KHONG CO THAM SO DAI LY NAO: chuoi DealerCode xuat hien 0 LAN trong toan ham, trong khi ham anh em Email_ConfigSendAuto_Cancel CO strDealerCode va loc theo no => neu TempIDEmail trung giua cac dai ly, huy mau cua dai ly nay CO THE TAT MAU CUA DAI LY KHAC. An khop voi #438 noi da ghi EmailTemplate THIEU HAN DealerCode ma nguon dung de loc",
+        dealerTransactionOpenedNeverWrittenNeverCommitted = "TRANSACTION CSDL DAI LY: MO, KHONG GHI, KHONG COMMIT — _dbDealer.BeginTransaction() chay, nhung loi ra thanh cong chi CommitSafety(_dbMain) + CommitSafety(_dbWH); _dbDealer CHI GAP RollbackSafety. Cung ho #710 nhung KHONG CO CHU THICH THUA NHAN => o #710 la no CO Y THUC, o day la IM LANG",
+        secondDbWrittenByRowStateTrick = "GHI SANG CSDL THU HAI BANG THU THUAT TRANG THAI DONG: AcceptChanges() roi SetDataRowStateOfAllRows(ref dt, DataRowState.Modified) roi _dbWH.SaveData(...) — ep DataTable quen da luu de luu lai lan hai sang kho. Hoat dong, nhung HAI CSDL KHONG NAM TRONG CUNG MOT TRANSACTION",
+        twoGenerationsOfTemplate = "HAI HO HAM EMAIL DUNG HAI THE HE KHUON: Email_ConfigSendAuto_* dung co don bNeedTransaction (va = false), con Email_TempEmail_*/Email_Config_* dung bo ba _Main/_WH/_Dealer. #710 va #711 DOC LAP xac nhan cung mot ranh gioi => khong phai ngau nhien tung ham ma la HAI THE HE MA",
+        columnNameMapping = "§12 anh xa: nguon dat cot la IsActive (gia tri 0), Mini dat la FlagActive — ghi ro, KHONG doi ten ben nao",
+        gapTempIdEmailWasMissing = "§12 GAP da va: EmailTemplate THIEU TempIDEmail — chinh la khoa ham nay tra",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #710 XOÁ CẤU HÌNH MÁY CHỦ THƯ `Email_Config_Delete` =====
 // `BizCarSv.SendMail.cs:2563-2689`, md5 `d18efe1d` — **KHỚP máy 150, cùng offset**.
 // → `DELETE /api/email/serverconfigs/{idConfig}`. Bảng `Email_Config` đã bị **ĐỌC** ở #433/#594; **xoá thì chưa port**.

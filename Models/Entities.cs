@@ -13666,6 +13666,12 @@ public sealed class SmsSend
 /// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>
 public sealed class EmailTemplate
 {
+    /// <summary>🔴 #711 `Email_TempEmail.TempIDEmail` — **khoá** mà `Email_TempEmail_Cancel` tra
+    /// (`GetTableContents(…, "top 1 *", "", "TempIDEmail", "=", …)`), và là một bộ lọc của `Email_TempEmail_Get`.
+    /// ⚠️ Nguồn tra bằng `top 1` **không `ORDER BY`** và **không** lọc theo đại lý ⇒ khoá này không được bảo đảm
+    /// duy nhất trong nguồn.</summary>
+    public string? TempIDEmail { get; set; }
+
     // ===== 🔴 #438 §12 DEALERCODE — cột nguồn LỌC bằng mà bản port THIẾU HẲN =====
     //   `Email_TempEmail_Get` nhận `strDealerCode`, biz dựng `BuildClause("and", "tmp.**DealerCode**", …)`,
     //   và **cả hai** lời gọi của `FrmEmail_TempEmailList` đều truyền `SystemGlobal.strDealerCode`.
