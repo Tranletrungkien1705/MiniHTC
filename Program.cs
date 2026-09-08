@@ -9636,6 +9636,65 @@ app.MapGet("/api/reports/payment-01-wh", async (
     });
 }).RequireAuthorization();
 
+// ===== #B130–#B133 BỐN CỬA CÒN LẠI CỦA HỌ `RptPayment_01` — HOÀN TẤT MA TRẬN 8 CỬA =====
+// Trace LIVE + 3B đo thật theo **dải dòng tường minh** (luật `C0-…vicesimusseptimus`), **khớp cả 2 máy**:
+//   · `RptPayment_01_TCKT_Mst_New20260514`  `26569,26859 / 2f65b77aed0093262eb12df4763e9a46`
+//   · `RptPayment_01_WH_New20260514_Mst`    `21286,21531 / 2a2734db9041efd4850b45de29976c18`
+//   · `RptPayment_01_TCKT_WH_New20260514`   `28116,28411 / a011d304092849754ccd2d5355b110f0`
+//   · `RptPayment_01_TCKT_WH_Mst_New20260514` `22561,22857 / b3fa3b3786581ab46ee0c4d5f0926322`
+// 🔴🔴 **MA TRẬN ĐẦY ĐỦ — quy luật hiện ra khi có đủ 8 cửa** (đo từng cửa, không suy từ tên):
+//      cửa                    | DB    | template                       | Deposit | Sleep(4s)
+//      RptPayment_01          | Main  | mySql_…_New20260514            | **'F'**      | không
+//      …_Mst                  | Main  | mySql_…_Mst                    | **'A','F'**  | không
+//      …_TCKT                 | Main  | mySql_…_TCKT_New20260514       | **'F'**      | không
+//      …_TCKT_Mst             | Main  | mySql_…_TCKT_Mst_New20260514   | **'A','F'**  | không
+//      …_WH                   | **WH**| mySql_…_New20260514            | **'F'**      | **CÓ**
+//      …_WH_Mst               | **WH**| mySql_…_Mst                    | **'A','F'**  | **CÓ**
+//      …_TCKT_WH              | **WH**| mySql_…_TCKT_New20260514       | **'F'**      | **CÓ**
+//      …_TCKT_WH_Mst          | **WH**| mySql_…_TCKT_Mst_New20260514   | **'A','F'**  | **CÓ**
+//   ⇒ **`2 × 2 × 2` hoàn toàn đều**: `{Main, WH} × {chi tiết, Mst} × {thường, TCKT}`.
+// 🔴 **TỰ SỬA KẾT LUẬN Ở #B126/#B127**: ở đó tôi viết *"thay đổi 2021 CHỈ áp vào bản master, KHÔNG lan
+//   sang bản chi tiết"* — nghe như **sơ suất bỏ sót**. Có đủ 8 cửa mới thấy: bộ lọc `'A','F'` được áp
+//   **ĐỦ CẢ BỐN cửa `_Mst`** và `'F'` **đủ cả bốn cửa chi tiết** ⇒ đây là **quy tắc CÓ CHỦ ĐÍCH**
+//   ("bảng tổng hợp tính cả cọc đã duyệt, bảng chi tiết chỉ tính cọc đã hoàn tất"), **không phải quên
+//   đồng bộ**. Chênh lệch tổng-master vs cộng-dồn-chi-tiết vẫn **có thật**, nhưng là **thiết kế**.
+//   📌 Bài học: **đừng kết luận "quên đồng bộ" khi mới đối chiếu HAI cửa** — phải phủ hết họ hàm.
+// 🔴 `Thread.Sleep(4000)` xuất hiện **đúng ở 4/4 cửa WH và 0/4 cửa Main** ⇒ khớp chú thích
+//   *"Sleep **WH**"*; xác nhận nó gắn với **đường đọc kho**, không rải ngẫu nhiên (xem #B129).
+// ✅ RBAC: **cả 8 cửa** đều `myCommon_GetAbilityOfUser` (đếm riêng = 1) ⇒ họ báo cáo này lành mạnh.
+app.MapGet("/api/reports/payment-01-matrix", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
+    string? zoneCode, string? enforceBuScope, string? buPattern,
+    string? tckt, string? wh, string? mst) =>
+{
+    var isMst = mst == "1";
+    var isTckt = tckt == "1";
+    var isWh = wh == "1";
+
+    var res = await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode,
+                                      enforceBuScope, buPattern, isMst);
+
+    var door = (isTckt ? "TCKT_" : "") + (isWh ? "WH_" : "") + (isMst ? "Mst" : "Detail");
+    return Results.Ok(new
+    {
+        door,
+        sourceFunction = "RptPayment_01" + (isTckt ? "_TCKT" : "") + (isWh ? "_WH" : "")
+                         + (isMst ? "_Mst" : "") + "_New20260514",
+        database = isWh ? "WH" : "Main",
+        sqlTemplate = isTckt ? (isMst ? "mySql_RptPayment_01_TCKT_Mst_New20260514" : "mySql_RptPayment_01_TCKT_New20260514")
+                             : (isMst ? "mySql_RptPayment_01_Mst" : "mySql_RptPayment_01_New20260514"),
+        depositStatusFilter = isMst ? new[] { "A", "F" } : new[] { "F" },
+        totalStatusFilter = new[] { "F" },
+        sourceHasDebugSleep4s = isWh,
+        sameDbAsMain = isWh,
+        baseResult = res,
+        matrixNote = "MA TRAN DAY DU 8 CUA (do tung cua, khong suy tu ten): {Main, WH} x {chi tiet, Mst} x {thuong, TCKT} - hoan toan deu 2x2x2. Deposit filter: Mst => 'A','F'; chi tiet => 'F'. Total filter: 'F' o CA TAM. Thread.Sleep(4000): CO o 4/4 cua WH, KHONG o 4/4 cua Main.",
+        selfCorrection = "TU SUA KET LUAN O #B126/#B127: o do toi viet 'thay doi 2021 CHI ap vao ban master, KHONG lan sang ban chi tiet' - nghe nhu SO SUAT BO SOT. Co du 8 cua moi thay: bo loc 'A','F' duoc ap DU CA BON cua _Mst va 'F' du ca bon cua chi tiet => day la QUY TAC CO CHU DICH ('bang tong hop tinh ca coc da duyet, bang chi tiet chi tinh coc da hoan tat'), KHONG phai quen dong bo. Chenh lech tong-master vs cong-don-chi-tiet VAN CO THAT nhung la THIET KE. Bai hoc: dung ket luan 'quen dong bo' khi moi doi chieu HAI cua - phai phu het ho ham.",
+        sleepScopeNote = "Thread.Sleep(4000) xuat hien DUNG o 4/4 cua WH va 0/4 cua Main => khop chu thich 'Sleep WH'; xac nhan no gan voi DUONG DOC KHO, khong rai ngau nhien (xem #B129).",
+        rbacNote = "CA 8 CUA deu co myCommon_GetAbilityOfUser (dem rieng tung mau = 1) => ho bao cao nay LANH MANH ve RBAC - doi lap voi 22 ca lo da thong ke."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
