@@ -29688,6 +29688,89 @@ app.MapPost("/api/emailconfigsendauto", async (EmailConfigSendAutoDto dto, AppDb
     return Results.Ok(new { row.Id, row.SendMode, row.TypeEmail, row.IsActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #589 SỬA CẤU HÌNH GỬI TỰ ĐỘNG (`Email_ConfigSendAuto_Update`, `SendMail.cs:1369`) =====
+// Đối chiếu cặp create/update (luật #404) với `Email_ConfigSendAuto_Create` (`:1124`). Hai hàm dùng **chung
+//   một danh sách 11 trường**, và DIFF cho ra **ba** khác biệt — cả ba đều là lỗi.
+//
+// 🔴🔴 **NGƯỢC CHIỀU MỌI CA TRƯỚC: LẦN NÀY NHÁNH SỬA MỚI LÀ NHÁNH THIẾU GUARD RỖNG.**
+//   · Create: `if (string.IsNullOrEmpty(strStartDate)) row["StartDate"] = **DBNull.Value**; else row["StartDate"] = strStartDate;`
+//     (tương tự cho `EndDate`) — có nhánh `else` đàng hoàng.
+//   · Update: `row["StartDate"] = strStartDate;` · `row["EndDate"] = strEndDate;` — **gán thẳng, không guard**.
+//   ⇒ Sửa cấu hình mà bỏ trống ngày ⇒ **chuỗi rỗng đi vào cột `datetime`**: hoặc ném lỗi kiểu, hoặc rơi về
+//     `1900-01-01` tuỳ provider — chứ **không** thành NULL như khi tạo mới.
+//   📌 Ở #570/#573/#575 thì nhánh SỬA là bên xoá trắng còn nhánh TẠO bỏ qua; ở đây **đảo ngược**. Không có
+//     quy ước chung nào cả — **phải đọc từng cặp**, không suy từ cặp đã đọc.
+// 🔴 **UPDATE KHÔNG KIỂM `Rows.Count` TRƯỚC KHI ĐỌC `Rows[0]`**:
+//     `GetTableContents(_dbMain, "Email_ConfigSendAuto", "top 1 *", "", "ConfigAutoID", "=", strConfigAutoID)`
+//     rồi **ngay** `Rows[0]["DealerCode"] = …` ⇒ id không tồn tại là **`IndexOutOfRangeException` thô**.
+//   ⇒ **Cùng lỗi, cùng file** với `EmailSendEmailUpdateStatus` (#588) ⇒ đây là **khuôn của cả `SendMail.cs`**,
+//     không phải sơ suất lẻ. (Đối chiếu: `CheckExistPayment` bên `Debit.cs` **có** kiểm.)
+// 🔴 **`#region // Check:` CỦA CREATE HOÀN TOÀN RỖNG** (trích theo #403) — và **UPDATE thì không có khối đó**.
+//   ⇒ `DealerCode` và `AutoTime` được gán **vô điều kiện ở cả hai nhánh**: cấu hình có thể lưu với **giờ chạy
+//     rỗng**, và job hẹn giờ sẽ **không bao giờ khớp** — im lặng, không lỗi.
+// 🔴 **UPDATE KHÔNG RÀNG BUỘC ĐẠI LÝ**: câu tra chỉ có `"ConfigAutoID", "=", …` ⇒ đại lý A sửa được cấu hình
+//   gửi thư của đại lý B (lặp lại #588 — cùng file, cùng kiểu).
+// ⚠️ **HAI CƠ CHẾ GHI TRONG MỘT CẶP**: Create dùng `GetSchema` + `Rows.Add(NewRow())` + `SaveData(table, dt)`
+//   **không** truyền danh sách cột ⇒ ghi **mọi** cột; Update truyền `alEffectiveColumn` (11 cột). Cùng bảng,
+//   hai hợp đồng ghi khác nhau (đã gặp ở #575 với `Ser_CusDebit`).
+// ⚠️ `"top 1 *"` + `orderBy` rỗng — **lần thứ ba** gặp khuôn này (#571, #588); tra theo khoá nên vô hại.
+app.MapPost("/api/emailconfigsendauto/{id:long}/update", async (long id, EmailConfigSendAutoDto dto,
+    AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var qy = db.EmailConfigSendAutos.Where(x => x.OrgId == t.OrgId && x.Id == id);
+    // GUARD nguồn KHÔNG có: ràng buộc đại lý.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var row = await qy.FirstOrDefaultAsync();
+    // GUARD nguồn KHÔNG có: kiểm tồn tại (nguồn đọc thẳng Rows[0]).
+    if (row is null)
+        return Results.NotFound(new
+        {
+            id,
+            sourceWouldThrowIndexOutOfRange = "GetTableContents roi doc thang Rows[0], khong kiem Rows.Count — giong #588 cung file",
+        });
+
+    var mode = (dto.SendMode ?? "").Trim();
+    if (mode.Length > 0 && !emailSendModeNames.ContainsKey(mode))
+        return Results.BadRequest(new { error = "SendMode phải là 1 (một lần) | 2 (hàng ngày) | 3 (hàng tuần)." });
+    var type = (dto.TypeEmail ?? "").Trim();
+    if (type.Length > 0 && !emailTypeNamesByScreen["history"].ContainsKey(type))
+        return Results.BadRequest(new { error = "TypeEmail phải nằm trong 0..7 (0 = chưa phân loại)." });
+    // GUARD nguồn KHÔNG có: giờ chạy rỗng ⇒ job không bao giờ khớp.
+    if (string.IsNullOrWhiteSpace(dto.AutoTime))
+        return Results.BadRequest(new
+        {
+            error = "AutoTime bat buoc — nguon gan vo dieu kien nen luu duoc gio chay RONG va job khong bao gio khop.",
+            sourceAssignsAutoTimeUnconditionally = true,
+        });
+
+    row.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant() ?? row.DealerCode;
+    row.AutoTime = dto.AutoTime;
+    // ĐÚNG NGUỒN Ở CHỖ CÓ NGHĨA, KHÁC Ở CHỖ HỎNG: nguồn gán thẳng chuỗi rỗng vào cột datetime.
+    row.StartDate = dto.StartDate;
+    row.EndDate = dto.EndDate;
+    row.Description = string.IsNullOrWhiteSpace(dto.Description) ? null : dto.Description;
+    row.SendMode = mode.Length == 0 ? null : mode;
+    row.IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? null : dto.IsActive!.Trim();
+    row.TypeEmail = type.Length == 0 ? null : type;
+    row.ConfigDate = dto.ConfigDate;
+    row.AutoDate = dto.AutoDate;
+    row.AutoDay = dto.AutoDay;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.DealerCode, row.AutoTime, row.StartDate, row.EndDate,
+        row.SendMode, row.TypeEmail, row.IsActive, row.ConfigDate, row.AutoDate, row.AutoDay,
+        emptyDateHandlingInvertedVsCreate = "Create co else DBNull cho StartDate/EndDate; Update gan THANG => chuoi rong vao cot datetime",
+        noConventionAcrossPairs = "o #570/#573/#575 nhanh SUA la ben xoa trang; o day nguoc lai — phai doc tung cap",
+        guardsAddedByPort = new[] { "kiem ton tai", "rang buoc DealerCode", "AutoTime khac rong" },
+        sourceUpdateHasNoCheckRegion = "Create co #region Check nhung RONG; Update khong co khoi do",
+        sourceNoDealerScopeOnUpdate = "cau tra chi co ConfigAutoID = ... nen dai ly A sua duoc cau hinh cua dai ly B",
+        twoWriteContractsInOnePair = "Create: GetSchema + SaveData KHONG truyen danh sach cot (ghi moi cot); Update: truyen alEffectiveColumn 11 cot",
+        topOneWithoutOrderByThirdTime = "khuon TOP-khong-ORDER-BY lan thu ba (#571, #588)",
+    });
+}).RequireAuthorization();
+
 // Nguồn có `Email_ConfigSendAuto_Cancel` RIÊNG, tách khỏi `_Delete` ⇒ huỷ = **tắt cờ**, không xoá bản ghi.
 app.MapPost("/api/emailconfigsendauto/{id:long}/cancel", async (long id, AppDbContext db, ITenantContext t) =>
 {
