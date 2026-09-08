@@ -25742,6 +25742,110 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #565 SỔ BẢO HÀNH ONLINE (`SoBaoHanhOnline_GetSerRoService`) — SINH ĐÔI CỦA #564 =====
+// Nguồn: `BizCarSv.TVO.cs:3038`. **DIFF trước, đọc riêng sau** (luật #414) — và diff cho thấy hai hàm
+//   dùng **chung một khung**, khác nhau ở **tham số, danh sách trạng thái, và danh sách cột**.
+//
+// 🔴🔴 **HAI BỘ LỌC "TUỲ CHỌN" THỰC RA LÀ BẮT BUỘC — GUARD VIẾT `is null` CHO THAM SỐ CHUỖI**:
+//     `and (@strPlateNo **is null** or car.PlateNo = @strPlateNo)`
+//     `and (@strFrameNo **is null** or car.FrameNo = @strFrameNo)`
+//   Tầng WS/EzDAL truyền **chuỗi rỗng** khi client bỏ trống, **không** truyền NULL ⇒ `'' is null` là **false**
+//   ⇒ rơi xuống vế `car.PlateNo = ''` ⇒ **không xe nào khớp** ⇒ API trả **rỗng câm**, không lỗi.
+//   ⇒ Cùng họ với #407 (`isnull(x,…)` trên giá trị đã bị gán `''`): **guard chết vì sai kiểu rỗng**.
+//   📌 Port coi **rỗng = không lọc** (ý định rõ ràng của tác giả) và trả cờ `optionalFiltersAreEffectivelyRequired`.
+// 🔴 **DANH SÁCH TRẠNG THÁI KHÁC HẲN BẢN #564 — VÀ Ở ĐÂY `PAID` CÓ MẶT**:
+//     bản này: `and ro.Status in ('RPRD', 'PAID', 'FNS')` (đặt ngay ở `_Draft_01`)
+//     bản #564: `in ('CRE','PRT','HRO','INGA','RPRD','CEND','FNS')` — **thiếu `PAID`** (nhánh bị comment).
+//   ⇒ Cùng một hệ, cùng một tác giả: API sổ bảo hành **thấy** xe đã thanh toán, API trạng thái xe **không**.
+//     Chứng minh việc thiếu `PAID` ở #564 là **sót**, không phải quy ước chung.
+// 🔴 **BỎ HẲN ĐIỀU KIỆN LOẠI BÁO GIÁ PDI**: bản #564 có `isnull(ro.DlrPDIReqNo,'') = ''`, bản này **không**
+//   ⇒ sổ bảo hành online **có tính cả lệnh PDI**. Khác biệt nghiệp vụ thật, không phải sao chép lỗi.
+// ⚪ **Âm tính đáng ghi**: bản này **KHÔNG** có `left join TVO_Ser_RO_RollbackStatus tvo_ro` — tức **không**
+//   dính lỗi tích Đề-các của #561/#564. Cùng một khung, chỗ có chỗ không: lỗi kia là **chép tay**, không phải
+//   khuôn mẫu chung. Nhưng nhánh `union all` với bảng thu hồi **vẫn còn**, trong khi hai cột `DeletionTime` và
+//   `DeletionStatus` **đều bị comment** ⇒ 🔴 dòng "đã thu hồi" **lẫn vào như dòng thường**, client **không có
+//   cách nào phân biệt**. #564 thì loại chúng đi; bản này thì **trộn lẫn**. Hai cách hỏng, hai chiều ngược nhau.
+// 🔴 `Convert(nvarchar, md.DealerName, **50**) DealerName` — lại là bẫy **style ≠ độ dài** (#561): viết 50
+//   nhưng **vẫn cắt 30**. Tên đại lý dài hơn 30 ký tự bị cụt.
+// ⚠️ Câu cuối **bỏ** điều kiện trạng thái (đã lọc ở `_Draft_01`) — hợp lý; nhưng **không câu nào drop bảng tạm**
+//   (bản #564 có ba lệnh `drop table`). ⚠️ Hai câu `select` phụ (phụ tùng, dịch vụ) **thiếu dấu `;`** kết câu.
+// 📌 Kết quả gồm **BA bảng**: đầu xe/lệnh, rồi **phụ tùng theo ROID**, rồi **dịch vụ theo ROID** —
+//   cả hai đều `inner join` sang danh mục (`Ser_MST_Part`, `Ser_MST_Service`) ⇒ mã không có trong danh mục thì
+//   **dòng biến mất** (#410). Port đếm `droppedByCatalogJoin` cho từng nhóm.
+app.MapGet("/api/warranty-online/ro-service", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? count, string? plateNo, string? frameNo) =>
+{
+    var f = (fromDate ?? DateTime.Today).Date;
+    var toRaw = (toDate ?? DateTime.Today);
+    var toEx = toRaw.Date == toRaw ? toRaw.AddDays(1) : toRaw;   // #415
+    var take = count is > 0 ? count!.Value : 50;
+    var STATUSES = new[] { "RPRD", "PAID", "FNS" };
+
+    var q0 = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && STATUSES.Contains(r.Status)
+        && r.LogLUDateTime != null && r.LogLUDateTime >= f && r.LogLUDateTime < toEx);
+    // Rỗng = KHÔNG lọc (nguồn viết `is null` nên rỗng lại thành lọc bằng rỗng ⇒ trả rỗng câm).
+    if (!string.IsNullOrWhiteSpace(plateNo)) q0 = q0.Where(x => x.LicensePlate == plateNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) q0 = q0.Where(x => x.Vin == frameNo!.Trim());
+
+    var rows = await q0.OrderBy(x => x.LogLUDateTime).Take(take).ToListAsync();
+    var roIds = rows.Select(r => r.Id).ToList();
+    var vins = rows.Select(r => r.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var dealerCodes = rows.Select(r => r.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync();
+    var modelCodes = cars.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId && dealerCodes.Contains(d.DealerCode)).ToListAsync();
+
+    var partRows = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIds.Contains(p.RoId)).ToListAsync();
+    var serRows = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    var serCodes = serRows.Select(x => x.SerCode).Distinct().ToList();
+    var serMst = await db.ServiceItemMsts.Where(m => m.OrgId == t.OrgId && serCodes.Contains(m.SerCode)).ToListAsync();
+
+    // inner join sang danh muc => ma la thi DONG BIEN MAT (#410). Danh muc PHU TUNG chua co bang
+    //   rieng trong MiniHTC (khong bia): lay ten tu chinh dong RO va bao nợ qua co partCatalogNotModelled.
+    var droppedServicesByCatalogJoin = serRows.Count(x => !serMst.Any(m => m.SerCode == x.SerCode));
+
+    var items = rows.Select(r =>
+    {
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        var d = r.DealerCode == null ? null : dealers.FirstOrDefault(z => z.DealerCode == r.DealerCode);
+        return new
+        {
+            roId = r.Id, plateNo = r.LicensePlate, vin = r.Vin,
+            modelName = mdl?.ModelName,
+            checkInDateTime = r.CheckInDate, actualDeliveryDateTime = r.ActualDeliveryDate,
+            r.Km, dealerName = d?.DealerName,        // KHÔNG cắt 30 như nguồn
+            parts = partRows.Where(p => p.RoId == r.Id)
+                .Select(p => new { p.PartCode, vieName = p.PartName })
+                .ToList(),
+            services = serRows.Where(x => x.RoId == r.Id)
+                .Where(x => serMst.Any(m => m.SerCode == x.SerCode))
+                .Select(x => new { x.SerCode, serName = serMst.First(m => m.SerCode == x.SerCode).SerName })
+                .ToList(),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        optionalFiltersAreEffectivelyRequired = "nguon: (@strPlateNo is null or ...) — WS truyen chuoi RONG chu khong NULL => rong se loc bang rong => tra RONG CAM",
+        plateNoApplied = !string.IsNullOrWhiteSpace(plateNo),
+        frameNoApplied = !string.IsNullOrWhiteSpace(frameNo),
+        statusListDiffersFrom564 = "ban nay RPRD/PAID/FNS (CO PAID); #564 thieu PAID => viec thieu o #564 la SOT, khong phai quy uoc",
+        pdiNotExcludedHere = "ban nay BO dieu kien isnull(ro.DlrPDIReqNo, rong)=rong => so bao hanh tinh ca lenh PDI",
+        noCartesianJoinHere = "ban nay KHONG co left join tvo_ro => loi tich de-cac o #561/#564 la CHEP TAY",
+        rollbackRowsIndistinguishable = "union all van con nhung hai cot DeletionTime/DeletionStatus deu bi comment => dong da thu hoi lan vao nhu dong thuong",
+        dealerNameTruncated = "Convert(nvarchar, md.DealerName, 50) — 50 la STYLE, van cat 30",
+        partCatalogNotModelled = "MiniHTC chua co bang danh muc phu tung => khong do duoc so dong nguon lam roi qua inner join Ser_MST_Part",
+        droppedServicesByCatalogJoin,
+        tempTablesNeverDropped = "ban nay khong co lenh drop table nao (ban #564 co ba)",
+        dateUpperBoundFixed = "nguon <= @strToDate; port dung < ngay ke tiep",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #564 API TVO TRẠNG THÁI XE ĐANG SỬA (`HTCMobileTVO_GetSerRoService`) =====
 // Nguồn: `BizCarSv.TVO.cs:2650-2870`; WS LIVE `WSCarSvTab.asmx.cs:4963` gọi **bản trần** (không hậu tố).
 // Chú thích nguồn: *"trả về tất cả thông tin bao gồm trạng thái dịch vụ của các xe đang sửa chữa và lịch sử"*.
