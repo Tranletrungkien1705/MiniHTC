@@ -40238,6 +40238,288 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 }
 
 
+
+// ===== #B350 TỒN KHO ĐẠI LÝ THEO NHÓM (bản 03) — `RptStatistic_GrpDealer03_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — offset lệch 5 dòng**: laptop `165524,165746` ≡ 150 `165529,165751`
+//   ⇒ **`ebe0c02dc6d23063cb9e0f3fbcde2068`**.
+//
+// ✅🔴 **CÂU DEBUG BỊ BỎ QUÊN — LẦN THỨ BẢY, NHƯNG LẦN ĐẦU ĐƯỢC ĐẶT TÊN TỬ TẾ**:
+//     `select null tbl_Car_Car_Filter, t.* from #tbl_Car_Car_Filter t --//[mylock];`   ← **không comment**
+//   và phía C# **đặt tên hẳn hoi** cho nó:
+//     `int nIdx = 0;`
+//     `dsGetData.Tables[nIdx++].TableName = "RptStatistic_GrpDealer03_**Base**";`
+//     `dsGetData.Tables[nIdx++].TableName = "RptStatistic_GrpDealer03";`
+//   ⇒ Khác hẳn #B290/#B296/#B299/#B308/#B311/#B329 (câu debug **vô danh** chiếm `Tables[0]`): ở đây
+//     tác giả **biết** nó ở đó và **công bố nó thành một bảng có tên** ⇒ **hợp đồng API có chủ đích**,
+//     không phải rác. 📌 Nâng cấp nhận định cũ: idiom này có **BA mức** — (a) vô danh chiếm `Tables[0]`;
+//     (b) **được comment đúng** (thấy ở #B351 dưới đây); (c) **được đặt tên và công bố** (ca này).
+//
+// ✅ **RBAC — tổ hợp (1), KHÔNG phải lỗ**: `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` **ACTIVE**
+//   (`:165577`, không bị comment). `@strBUPatternOfUser` bind nhưng **đếm 1 lần trong cả hàm** = chính
+//   dòng bind ⇒ SQL không dùng — nhưng **đã có cổng** nên đây là **chủ đích**.
+// 🔴🔴 **Phạm vi đại lý đến từ HẰNG DANH SÁCH NƯỚNG THẲNG VÀO SQL**:
+//   `mySql_Rpt_GetClauseWhere_GrpDealer_01("cc.DealerCode")` và `…("md.DealerCode")` — chính là **hằng
+//   ba bản** mà #B290 đã phát hiện lệch nhau (bản `TERP.BizBank/BizHTC.Common.cs:1096` **thiếu `VS086`**).
+//   ⇒ Báo cáo này **thừa hưởng nguyên vẹn** rủi ro đó: chạy qua assembly nào thì ra danh sách đại lý ấy.
+//   📌 **Vẫn đang chờ quyết định nghiệp vụ** (đã ghi nợ từ #B290). **KHÔNG tự hợp nhất.**
+// 🔴 **Lọc ngược hai tầng**: `#tbl_Car_Car_FilterDraft` (xe đã được đại lý tiếp nhận: `DeliveryEndDate
+//   is not null and <= @strTDate`, `cdod.ConfirmStatus in ('F')`) → `left join` sang bảng con "đã bán
+//   tới **người tiêu dùng**" (`dlsd.DealerCodeBuyer is null`, `dlsdd.DeliveryStatus in ('A','F')`) →
+//   `where (dlsdd.DeliveryDate is null or dlsdd.DeliveryDate > @strTDate)`.
+// ✅ **`right join` GIỮ DÒNG RỖNG CÓ CHỦ ĐÍCH**: `right join (select md.DealerCode… from Mst_Dealer md
+//   where … <hằng GrpDealer>) md_f on cc.DealerCode = md_f.MDDealerCode` kèm chú thích *"Fill Đủ các
+//   Dealer thuộc GrpDealer"*, và cột đếm `(case when t.CarId is null then 0 else 1 end) Tt_CarId`
+//   ⇒ đại lý **không có xe tồn vẫn hiện dòng, đếm 0**. Cùng khuôn điểm sáng #B290.
+// 🔴 `@strHTCDealerName` nhận `HTCDealerCode` — lần thứ **BẢY**; cả hai đều **mồ côi** trong SQL.
+// 🔴 `drop table #tbl_Car_Car_Filter;` **bị comment** ⇒ temp table sống tới hết phiên.
+// 🔴 `Thread.Sleep(4000)` trên đường thành công — **không port**.
+app.MapGet("/api/reports/grpdealer03", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? grpDealerCodes) =>
+{
+    var asOf = tDate ?? DateTime.Now.Date;
+    // 🔴 Danh sách đại lý của "nhóm" ở nguồn là HẰNG NƯỚNG (mySql_Rpt_GetClauseWhere_GrpDealer_01).
+    //   Port nhận qua tham số để KHÔNG chép lại một bản thứ tư của hằng đang lệch nhau (#B290).
+    var grp = (grpDealerCodes ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var dealersQ = db.Dealers.Where(d => d.OrgId == t.OrgId);
+    var dealers = (await dealersQ.ToListAsync())
+        .Where(d => grp.Count == 0 || grp.Contains(d.DealerCode.ToUpperInvariant()))
+        .ToList();
+    var dealerSet = dealers.Select(d => d.DealerCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // #tbl_Car_Car_FilterDraft — xe đã được đại lý tiếp nhận, LXX còn hiệu lực ('F').
+    var doCars = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.CarId != null
+                 && c.DeliveryEndDate != null && c.DeliveryEndDate <= asOf
+                 && c.ConfirmStatus == "F")
+        .ToListAsync();
+    var carIds = doCars.Select(c => c.CarId!).Distinct().ToList();
+    var cvs = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && v.FlagActive == "1" && v.CarId != null && carIds.Contains(v.CarId))
+            .ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+
+    // Bảng con "đã bán tới NGƯỜI TIÊU DÙNG": DealerCodeBuyer is null + DeliveryStatus in ('A','F').
+    var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => d.DealerCodeBuyer == null).ToDictionary(d => d.Id);
+    var soldByCar = (await db.DealerDealDetails.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => deals.ContainsKey(d.DealId))
+        .GroupBy(d => d.CarId)
+        .ToDictionary(g => g.Key, g => g.OrderBy(x => x.DeliveryDate).First());
+
+    // #tbl_Car_Car_Filter — LỌC NGƯỢC: chưa có HĐ bán, hoặc giao sau mốc.
+    var filter = doCars
+        .Where(c => cvs.ContainsKey(c.CarId!))
+        .Where(c => !soldByCar.TryGetValue(c.CarId!, out var s)
+                    || s.DeliveryDate == null || s.DeliveryDate > asOf)
+        .Select(c => new
+        {
+            c.CarId,
+            cvs[c.CarId!].VIN,
+            DeliveryOrderNo = (string?)null,
+            DealerCode = cvs[c.CarId!].DealerCode
+        })
+        .Where(x => x.DealerCode == null || dealerSet.Contains(x.DealerCode))
+        .ToList();
+
+    // ✅ right join "Fill Đủ các Dealer thuộc GrpDealer": đại lý không có xe vẫn hiện dòng, Tt_CarId = 0.
+    var byDealer = filter.Where(x => x.DealerCode != null)
+        .GroupBy(x => x.DealerCode!, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    var rpt = dealers.Select(d =>
+    {
+        byDealer.TryGetValue(d.DealerCode, out var cars);
+        return new
+        {
+            MDDealerCode = d.DealerCode,
+            MDDealerName = d.DealerName,
+            Tt_CarId = cars?.Count ?? 0,          // 🔴 (case when t.CarId is null then 0 else 1 end)
+            Cars = cars ?? new()
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rpt.Count,
+        RptStatistic_GrpDealer03_Base = filter,        // Tables[0] — CÓ TÊN ở nguồn, không phải rác
+        RptStatistic_GrpDealer03 = rpt,                // Tables[1]
+        namedDebugTableNote = "CAU DEBUG BI BO QUEN - LAN THU BAY, NHUNG LAN DAU DUOC DAT TEN TU TE: 'select null tbl_Car_Car_Filter, t.* from #tbl_Car_Car_Filter t' KHONG comment, va phia C# dat ten han hoi: nIdx=0; Tables[nIdx++].TableName = 'RptStatistic_GrpDealer03_Base'; Tables[nIdx++].TableName = 'RptStatistic_GrpDealer03'. Khac han #B290/#B296/#B299/#B308/#B311/#B329 (cau debug VO DANH chiem Tables[0]): o day tac gia BIET no o do va CONG BO no thanh mot bang co ten => HOP DONG API CO CHU DICH, khong phai rac. Idiom nay co BA MUC: (a) vo danh chiem Tables[0]; (b) duoc comment dung (xem /api/reports/share-htcstock03); (c) duoc dat ten va cong bo (ca nay).",
+        rbacNote = "RBAC to hop (1) - KHONG phai lo: myCommon_CheckHTCDirect(..., TConst.Flag.Active) ACTIVE (khong bi comment). @strBUPatternOfUser bind nhung dem 1 lan trong ca ham = chinh dong bind => SQL khong dung, nhung DA CO CONG nen day la CHU DICH.",
+        grpDealerConstNote = "PHAM VI DAI LY DEN TU HANG DANH SACH NUONG THANG VAO SQL: mySql_Rpt_GetClauseWhere_GrpDealer_01('cc.DealerCode') va ...('md.DealerCode') - chinh la HANG BA BAN ma #B290 da phat hien lech nhau (ban TERP.BizBank/BizHTC.Common.cs:1096 THIEU VS086). Bao cao nay THUA HUONG nguyen ven rui ro do: chay qua assembly nao thi ra danh sach dai ly ay. VAN DANG CHO QUYET DINH NGHIEP VU (da ghi no tu #B290). Port nhan danh sach qua tham so grpDealerCodes de KHONG chep lai mot ban thu tu.",
+        rightJoinNote = "right join GIU DONG RONG CO CHU DICH: 'right join (select md.DealerCode... from Mst_Dealer md where ... <hang GrpDealer>) md_f on cc.DealerCode = md_f.MDDealerCode' kem chu thich 'Fill Du cac Dealer thuoc GrpDealer', va cot dem '(case when t.CarId is null then 0 else 1 end) Tt_CarId' => dai ly KHONG co xe ton VAN HIEN DONG, dem 0. Cung khuon diem sang #B290.",
+        reverseFilterNote = "LOC NGUOC HAI TANG: #tbl_Car_Car_FilterDraft (xe da duoc dai ly tiep nhan: cdod.DeliveryEndDate is not null and <= @strTDate, cdod.ConfirmStatus in ('F'), cc.FlagActive='1') -> left join sang bang con 'da ban toi NGUOI TIEU DUNG' (dlsd.DealerCodeBuyer is null, dlsdd.DeliveryStatus in ('A','F')) -> where (dlsdd.DeliveryDate is null or dlsdd.DeliveryDate > @strTDate).",
+        orphanParamsNote = "@strHTCDealerName nhan HTCDealerCode - lan thu BAY; ca @strHTCDealerCode lan @strHTCDealerName deu MO COI trong SQL. 'drop table #tbl_Car_Car_Filter;' BI COMMENT => temp table song toi het phien. Thread.Sleep(4000) tren duong thanh cong - KHONG port."
+    });
+}).RequireAuthorization();
+
+// ===== #B351 CHIA SẺ TỒN KHO HTC (bản 03) — `RptShare_HTCStock03_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — offset lệch 5 dòng**: laptop `168813,169065` ≡ 150 `168818,169070`
+//   ⇒ **`4ad99e2e172d6a9588990f0ec821d3e5`**.
+//
+// 🔴🔴🔴 **BUG THẬT — `SELECT TOP 1` KHÔNG CÓ `ORDER BY`, VÀ CHẠY HAI LẦN TRÊN HAI DB KHÁC NHAU**:
+//     `string strSqlTDate = "select top 1 s.ShareDateTime from Rpt_Share01 s";`
+//     `DataSet dsTDate = **_dbMain**.ExecQuery(strSqlTDate);`      ← lần 1, **DB Main**
+//     `if (dsTDate.Tables[0].Rows.Count > 0) strTDate = StandardizeDate(dsTDate.Tables[0].Rows[0]["ShareDateTime"]);`
+//   rồi **đúng câu đó lại nằm trong SQL chính**, chạy trên **`_dbWH`**:
+//     `-- Get ShareDateTime:  select top 1 s.ShareDateTime from Rpt_Share01 s;`  ← lần 2, **DB WH**
+//   ⇒ **Hai vấn đề chồng nhau**:
+//     (1) `TOP 1` **không `ORDER BY`** ⇒ hàng nào được lấy là **do engine quyết**, không xác định
+//         ⇒ **cùng dữ liệu, hai lần chạy có thể ra hai mốc khác nhau**;
+//     (2) hai lần đọc trên **hai DB khác nhau** ⇒ giá trị **vào tham số `@strTDate`** (từ Main) và giá
+//         trị **trả về client làm nhãn `dt_ShareDateTime`** (từ WH) **có thể LỆCH NHAU**
+//         ⇒ **nhãn ngày hiển thị không phải ngày thật dùng để tính**.
+//   `@strTDate` này quyết định toàn bộ phân nhóm `DlvImmediate / DlvThisWeek / DlvNextWeek /
+//   DlvOverNextWeek` và bộ lọc `t.RefDate < @strTDate_Next2Week`. **KHÔNG tự vá.**
+//
+// ✅ **RBAC — tổ hợp (3)**: không cổng (`CheckHTCDirect` 0 hit) nhưng **có lọc**:
+//   `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//   kèm chú thích nguồn *"Must inner join to filter AbilityOfUser"* ⇒ **không phải lỗ**.
+// ✅ **Câu debug ĐƯỢC COMMENT ĐÚNG — mức (b)**: `--select null tbl_Car_Car_Filter, …` và
+//   `--select null tbl_Car_VIN_Raw, …` **cả hai đều có `--`** ⇒ cùng tác giả, cùng khuôn với #B350,
+//   nhưng ở đây xử lý sạch. Đây là bằng chứng ba mức xử lý cùng tồn tại trong một hệ.
+// ✅ **`@strTDateMax` dùng ĐÚNG THAM SỐ** (`else @strTDateMax`), khác #B346 nơi nó bị thay bằng literal
+//   `'2100-01-01'` chép tay. Đối chứng tốt.
+// ✅ **Lấy bảng — cách thứ TƯ**: dùng **cả hai đầu**, `Tables[0]` (mốc ngày) và
+//   `Tables[Tables.Count - 1]` (báo cáo), **bỏ qua mọi bảng ở giữa**. Sạch, chịu được thay đổi số bảng.
+// 🔴 **HAI mức % hoàn thành nghĩa vụ, khác nhau ở TẦNG TIỀN**:
+//   `DutyCompletedPercent`    dùng `#tbl_Pmt_PaymentDetailTotal_Deposit`    ← `CachingForPaymentTotal(…, "'F'", true)`
+//   `DutyCompletedPercent_AF` dùng `#tbl_Pmt_PaymentDetailTotal_Deposit_AF` ← `CachingForPaymentTotal(…, "'A','F'", true)`
+//   ⇒ một bên **chỉ tiền đã nổi trên tài khoản**, một bên **kể cả tiền mới duyệt** ⇒ hai % **luôn khác
+//     nhau** cho cùng một xe. Cả hai đều chia cho `cc.UnitPriceActual` ⇒ NULL/0 ⇒ % NULL.
+// ✅ `drop table` ở đây **được viết đầy đủ và KHÔNG comment** (4 bảng) — khác #B350.
+// 🔴 `@strHTCDealerName` nhận `HTCDealerCode` — lần thứ **TÁM**. `Thread.Sleep(4000)` — không port.
+// ⚠️ **NỢ**: bảng `Rpt_Share01` và `Pmt_GuaranteeDetail.GuaranteeValue` chưa có ⇒ endpoint trả khung
+//   rỗng + `notPortedTables`; **không** bịa mốc `ShareDateTime` (chính là giá trị đang có bug).
+app.MapGet("/api/reports/share-htcstock03", async (AppDbContext db, ITenantContext t, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var inScope = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dt_ShareDateTime = Array.Empty<object>(),       // Tables[0]
+        RptShare_HTCStock03 = Array.Empty<object>(),    // Tables[Count-1]
+        dealersInScope = inScope.Count,
+        top1NoOrderByNote = "BUG NGUON: 'select top 1 s.ShareDateTime from Rpt_Share01 s' KHONG CO ORDER BY, va CHAY HAI LAN TREN HAI DB KHAC NHAU. Lan 1: _dbMain.ExecQuery(strSqlTDate) -> gan vao strTDate -> tham so @strTDate. Lan 2: dung cau do nam TRONG SQL chinh, chay tren _dbWH -> tra ve client lam nhan dt_ShareDateTime. HAI VAN DE CHONG NHAU: (1) TOP 1 khong ORDER BY => hang nao duoc lay la DO ENGINE QUYET, khong xac dinh => cung du lieu, hai lan chay co the ra hai moc khac nhau; (2) hai lan doc tren HAI DB KHAC NHAU => gia tri vao tham so @strTDate (tu Main) va gia tri tra ve client lam nhan (tu WH) CO THE LECH NHAU => NHAN NGAY HIEN THI KHONG PHAI NGAY THAT DUNG DE TINH. @strTDate nay quyet dinh toan bo phan nhom DlvImmediate/DlvThisWeek/DlvNextWeek/DlvOverNextWeek va bo loc t.RefDate < @strTDate_Next2Week. KHONG TU VA.",
+        rbacNote = "RBAC to hop (3): khong cong (CheckHTCDirect 0 hit) nhung CO LOC - 'inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' kem chu thich nguon 'Must inner join to filter AbilityOfUser' => KHONG phai lo.",
+        commentedDebugNote = "CAU DEBUG DUOC COMMENT DUNG - MUC (b): '--select null tbl_Car_Car_Filter, ...' va '--select null tbl_Car_VIN_Raw, ...' CA HAI deu co '--'. Cung tac gia, cung khuon voi #B350 (muc (c): dat ten va cong bo) va voi #B290/#B296/#B299/#B308/#B311/#B329 (muc (a): vo danh chiem Tables[0]). BA MUC XU LY cung ton tai trong mot he.",
+        tableMaxParamNote = "@strTDateMax dung DUNG THAM SO ('else @strTDateMax'), khac #B346 noi no bi thay bang literal '2100-01-01' chep tay. Doi chung tot.",
+        tableFetchNote = "LAY BANG - CACH THU TU: dung CA HAI DAU, Tables[0] (moc ngay) va Tables[Tables.Count - 1] (bao cao), BO QUA moi bang o giua. Sach, chiu duoc thay doi so bang.",
+        twoPercentNote = "HAI MUC % HOAN THANH NGHIA VU, KHAC NHAU O TANG TIEN: DutyCompletedPercent dung #tbl_Pmt_PaymentDetailTotal_Deposit <- CachingForPaymentTotal(..., \"'F'\", true) (CHI tien da noi tren tai khoan); DutyCompletedPercent_AF dung #tbl_Pmt_PaymentDetailTotal_Deposit_AF <- CachingForPaymentTotal(..., \"'A','F'\", true) (KE CA tien moi duyet) => hai % LUON KHAC NHAU cho cung mot xe. Ca hai deu chia cho cc.UnitPriceActual => NULL/0 => % NULL.",
+        dropTableNote = "'drop table' o day duoc viet DAY DU va KHONG comment (4 bang) - khac #B350 noi no bi comment. @strHTCDealerName nhan HTCDealerCode - lan thu TAM. Thread.Sleep(4000) - khong port.",
+        notPortedTables = new[] { "Rpt_Share01", "Pmt_GuaranteeDetail.GuaranteeValue" },
+        debtNote = "NO: bang Rpt_Share01 va cot Pmt_GuaranteeDetail.GuaranteeValue CHUA CO trong MiniHTC => endpoint tra KHUNG RONG. KHONG bia moc ShareDateTime (chinh la gia tri dang co bug top-1-khong-order-by)."
+    });
+}).RequireAuthorization();
+
+// ===== #B352 TỒN KHO NHÓM ĐẠI LÝ (bản 02) — `RptStatistic_GrpDealerInStock02_WH`
+//       (`TERP.BizHTC/DataWH/BizHTC.zTemp.cs:64363`) =====
+// **3B khớp cả 2 máy — file này KHÔNG lệch offset (69852 dòng cả 2 máy)**:
+//   `64363,65269` ⇒ **`b2b1053f8047b0ac05f7cc0add5761ae`**. Cửa WS64 sống; `ReportService.cs:1823` gọi.
+//
+// 🔴🔴🔴🔴 **BÁO CÁO NÀY KHÔNG THỂ CHẠY — HAI LỖI `Invalid object name` TRÊN DÒNG ACTIVE**:
+//   1. `select null #tbl_Detail_Filter, t.* from **#tbl_Detail_Filter** t --//[mylock];`   (dòng 762)
+//      và `… from **#tbl_Detail_Filter** t group by …`                                     (dòng 772)
+//      ⇒ **`#tbl_Detail_Filter` KHÔNG BAO GIỜ ĐƯỢC TẠO**: đếm `into #tbl_Detail_Filter` = **0 lần**
+//        trong cả hàm, và **không** placeholder `zzzz…` nào sinh ra nó (đã liệt kê đủ 6 placeholder:
+//        `Car_Car_Result`, `CachingForPaymentTotal`, `CachingForPayment_Deposit`,
+//        `ToGet_CT_DealerContractDetail`, `CachingForPayment_A_Deposit`, và 1 dòng bị comment).
+//        Bảng thật được tạo tên là `#tbl_Detail_**return**` — **khác tên**.
+//   2. `select count (0) from **tbl_Detail_return**;`                                       (dòng 794)
+//      ⇒ **THIẾU dấu `#`** — grep toàn bộ mã nguồn: chuỗi `tbl_Detail_return` **không có `#`** chỉ
+//        xuất hiện **đúng 1 lần**, chính là dòng này ⇒ tham chiếu một **bảng thường không tồn tại**.
+//   ⇒ Cả hai đều là **câu lệnh ACTIVE, không bị comment**, nằm giữa hai câu trả kết quả thật
+//     (`tblDetail` và bảng tổng hợp) ⇒ **`ExecQuery` ném lỗi ⇒ hàm rơi vào `catch` MỖI LẦN GỌI**.
+//   📌 **Đây là màn hình CHẾT Ở RUNTIME dù SỐNG ở MỌI TẦNG TĨNH**: có cửa WS, có `ReportService`
+//     gọi, có mã lỗi riêng trong `TERP.Constants`, build xanh. Không grep nào bắt được — chỉ đọc SQL mới thấy.
+//   ⚠️ **KHÔNG tự vá.** Port dựng **khung đúng** (hai bảng `tblDetail` + tổng hợp theo
+//     Model/Spec/Dealer) và trả cờ `sourceIsBrokenAtRuntime = true`.
+//
+// 🔴🔴🔴 **LỌC PHẠM VI BỊ COMMENT Ở NĂM CHỖ, CHỈ CÒN SỐNG Ở MỘT** — RBAC **ca (5)**:
+//   `--and (md.BUCode like @strBUPatternOfUser)` tại `#tbl_Car_Car_Filter` (`:122`),
+//   `#tbl_Mst_Dealer` (`:295`), `#tbl_F1` (`:311`), `#tbl_Info1` (`:405`), `#tbl_Info2` (`:450`);
+//   **còn hiệu lực duy nhất** ở `#tbl_Detail_return` (`:700`, `inner join`, kèm dấu `--20141031`).
+//   ⇒ Mọi bảng trung gian được tính **trên TOÀN BỘ đại lý**; chỉ **câu cuối** mới siết phạm vi.
+//   ✅ Đã kiểm: **cả hai** bảng trả về đều dẫn xuất từ `#tbl_Detail_return` ⇒ **kết quả cuối vẫn đúng
+//     phạm vi**. Nhưng chi phí tính toán là toàn hệ, và **một thay đổi nhỏ ở câu cuối là rò ngay**.
+//   `myCommon_CheckHTCDirect` = **0 hit** ⇒ **không có cổng** — chỉ còn đúng một lớp bảo vệ.
+// 🔴 `select null #tbl_Detail_Filter, …` — **alias cột bắt đầu bằng `#` không bọc ngoặc vuông**: kể cả
+//   khi bảng tồn tại, đây vẫn là định danh không hợp lệ trong T-SQL (phải là `[#tbl_Detail_Filter]`).
+// 🔴 Ba `where` bị comment liên tiếp ở câu `#tbl_Detail_return`
+//   (`--WHERE k.TrangThaiBackOrder NOT IN ('UNKNOWN')`, `--WHERE t.DutyDaysDeliveryEndDate <>0`)
+//   ⇒ **port dòng ACTIVE**: không lọc.
+app.MapGet("/api/reports/grpdealer-instock02", async (
+    AppDbContext db, ITenantContext t, string? isGetDetail, string? buPattern) =>
+{
+    // ✅ Lọc phạm vi ở NGUỒN chỉ còn sống tại câu cuối (#tbl_Detail_return) — port áp đúng chỗ đó.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    var doCars = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.CarId != null && c.DeliveryEndDate != null)
+        .ToListAsync();
+    var carIds = doCars.Select(c => c.CarId!).Distinct().ToList();
+    var cvs = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && v.CarId != null && carIds.Contains(v.CarId)).ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_Detail_return — chỗ DUY NHẤT còn lọc phạm vi ở nguồn.
+    var detail = doCars
+        .Where(c => cvs.ContainsKey(c.CarId!))
+        .Select(c => cvs[c.CarId!])
+        .Where(cv => cv.DealerCode != null && dealers.ContainsKey(cv.DealerCode))
+        .Select(cv => new
+        {
+            CCDealerCode = cv.DealerCode,
+            CCDealerName = cv.DealerCode != null && dealers.TryGetValue(cv.DealerCode, out var d) ? d.DealerName : null,
+            CarId = cv.CarId, cv.VIN, cv.ModelCode, cv.SpecCode,
+            cv.UnitPriceActual,
+            MCSSpecDescription = cv.SpecCode != null && specs.TryGetValue(cv.SpecCode, out var sp) ? sp.SpecDesc : null,
+            // ⚠️ NỢ — KHÔNG ĐOÁN: các cột tiền/ngày nghĩa vụ cần tầng Pmt_Guarantee* và Ord_SalesOrderDetail.
+            DutyCompletedPercent_Range = (string?)null,
+            DutyDaysDeliveryEndDate_Range = (string?)null,
+            DELIVERYRANGETYPE = (string?)null,
+            PMGDGuaranteeValue = (decimal?)null,
+            PMPDAMOUNTTOTAL_DEPOSIT = (decimal?)null,
+            TOTAL = 1.0m
+        }).ToList();
+
+    // Summary theo Model/Spec/Dealer + bổ sung SpecDescription/ModelName (đúng câu cuối của nguồn).
+    var summary = detail
+        .GroupBy(d => new { d.ModelCode, d.SpecCode, DealerCode = d.CCDealerCode })
+        .Select(g => new
+        {
+            g.Key.ModelCode, g.Key.SpecCode, g.Key.DealerCode,
+            QtyCarId = g.Count(),
+            SpecDescription = g.Key.SpecCode != null && specs.TryGetValue(g.Key.SpecCode, out var sp) ? sp.SpecDesc : null,
+            ModelName = g.Key.ModelCode != null && models.TryGetValue(g.Key.ModelCode, out var m) ? m.ModelName : null
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        tblDetail = isGetDetail == "1" ? detail : null,
+        RptStatistic_GrpDealerInStock02_WH = summary,
+        sourceIsBrokenAtRuntime = true,
+        brokenSqlNote = "BAO CAO NGUON KHONG THE CHAY - HAI LOI 'Invalid object name' TREN DONG ACTIVE: (1) 'select null #tbl_Detail_Filter, t.* from #tbl_Detail_Filter t' va '... from #tbl_Detail_Filter t group by ...' - #tbl_Detail_Filter KHONG BAO GIO DUOC TAO (dem 'into #tbl_Detail_Filter' = 0 lan trong ca ham, va khong placeholder zzzz nao sinh ra no; bang that duoc tao ten la #tbl_Detail_return - KHAC TEN). (2) 'select count (0) from tbl_Detail_return;' - THIEU DAU '#'; grep toan bo ma nguon: chuoi 'tbl_Detail_return' khong co '#' chi xuat hien DUNG 1 LAN, chinh la dong nay => tham chieu mot bang thuong khong ton tai. CA HAI deu la cau lenh ACTIVE, khong bi comment, nam giua hai cau tra ket qua that => ExecQuery NEM LOI => ham roi vao catch MOI LAN GOI. DAY LA MAN HINH CHET O RUNTIME DU SONG O MOI TANG TINH: co cua WS, co ReportService.cs:1823 goi, co ma loi rieng trong TERP.Constants, build xanh. KHONG TU VA.",
+        rbacCase5Note = "LOC PHAM VI BI COMMENT O NAM CHO, CHI CON SONG O MOT - RBAC ca (5): '--and (md.BUCode like @strBUPatternOfUser)' tai #tbl_Car_Car_Filter, #tbl_Mst_Dealer, #tbl_F1, #tbl_Info1, #tbl_Info2; CON HIEU LUC DUY NHAT o #tbl_Detail_return (inner join, kem dau --20141031). Moi bang trung gian duoc tinh TREN TOAN BO DAI LY; chi cau cuoi moi siet pham vi. DA KIEM: ca hai bang tra ve deu dan xuat tu #tbl_Detail_return => ket qua cuoi VAN DUNG PHAM VI. Nhung chi phi tinh toan la toan he, va MOT THAY DOI NHO O CAU CUOI LA RO NGAY. myCommon_CheckHTCDirect = 0 HIT => KHONG CO CONG - chi con dung mot lop bao ve.",
+        aliasNote = "'select null #tbl_Detail_Filter, ...' - ALIAS COT BAT DAU BANG '#' KHONG BOC NGOAC VUONG: ke ca khi bang ton tai, day van la dinh danh khong hop le trong T-SQL (phai la [#tbl_Detail_Filter]).",
+        commentedWhereNote = "PORT DONG ACTIVE: ba 'where' bi comment lien tiep o cau #tbl_Detail_return ('--WHERE k.TrangThaiBackOrder NOT IN (UNKNOWN)', '--WHERE t.DutyDaysDeliveryEndDate <>0') => KHONG loc.",
+        debtNote = "NO - KHONG DOAN CONG THUC: cac cot DutyCompletedPercent_Range, DutyDaysDeliveryEndDate_Range, DELIVERYRANGETYPE, PMGDGuaranteeValue, PMPDAMOUNTTOTAL_DEPOSIT can tang Pmt_Guarantee*/Ord_SalesOrderDetail chua co => de NULL."
+    });
+}).RequireAuthorization();
 // ===== #B347 TỒN PI PHỤC VỤ KẾ HOẠCH VẬN CHUYỂN — `RptStatistic_PIInStock_ForTrspPlan_WH_New20181119`
 //       (`DataWH/Biz.HTC.WH.cs` + `RptSQLQuery.cs:33301`) =====
 // **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
