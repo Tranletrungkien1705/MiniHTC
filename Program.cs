@@ -19882,20 +19882,55 @@ app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
 // ⚠️ Toàn solution DMSCarSv **KHÔNG có nơi GHI** bảng này và **không màn client nào gọi**
 //    (chỉ lộ ra ở gateway `WSCarSv.asmx.cs:40231`) ⇒ dữ liệu do hệ NGOÀI nạp; đây là API phục vụ hệ ngoài.
 //    Vì thế port **CHỈ đường đọc** — không bịa POST.
+// ===== 🔴🔴 #599 ĐỌC LẠI `TST_Mst_Part_Temp_Get` (`Bravo.cs:223`) — **GUARD VIẾT ĐÚNG, CƠ CHẾ TRUYỀN SAI** =====
+// (Vòng parity: endpoint đã có từ #247. Dưới đây là những gì đọc trọn câu SQL lộ ra.)
+//
+// ⚪ **GUARD "RỖNG THÌ BỎ LỌC" VIẾT ĐÚNG CÁCH** — trích nguyên văn:
+//     `and ('@strTSTPartCode' = N'' or t.TSTPartCode = '@strTSTPartCode')`
+//     `and ('@strTSTVieName' = N'' or t.TSTVieName = '@strTSTVieName')`
+//   So **chuỗi rỗng** (`= N''`), **không** dùng `is null` ⇒ **không** dính bẫy #565 (nơi `is null` làm bộ lọc
+//   "tuỳ chọn" hoá bắt buộc và trả rỗng câm). Trong cùng hệ, đây là **cách viết đúng**.
+// 🔴🔴 **NHƯNG GIÁ TRỊ BỊ BAKE VÀO CHUỖI** (`StringUtils.Replace(sql, "@strTSTPartCode", …)`), nên chính cái
+//   guard đúng đó lại **mở đường chèn SQL**: `strTSTVieName` là **tên tiếng Việt của phụ tùng** — chuỗi hoàn
+//   toàn có thể chứa **dấu nháy đơn** (ví dụ tên có `'`), và khi đó câu lệnh **vỡ hoặc bị chèn**.
+//   ⇒ Bài học: **guard đúng + truyền sai = vẫn hỏng**. Đánh giá một bộ lọc phải xem **cả hai**: hình dạng
+//     điều kiện (#407/#565) **và** cách giá trị đi vào câu (#410/BAKE).
+// 🔴 `alParamsCoupleSql.AddRange(new object[] { });` — thêm **mảng rỗng** rồi vẫn truyền vào `ExecQuery`.
+//   Lần thứ **tư** gặp dấu vết này (#576, #587, #595) ⇒ khuôn chép tay của cả hệ: tạo chỗ cho tham số rồi
+//   **không dùng tham số nào**.
+// 🔴 **`#region // Check` CHỈ CÒN HAI DÒNG COMMENT** (trích theo #403):
+//     `//int nResultRecordStart = Convert.ToInt32(strResultRecordStart);`
+//     `//int nResultRecordCount = Convert.ToInt32(strResultRecordCount);`
+//   ⇒ Phân trang **từng được viết rồi bị bỏ**: hai tham số vẫn nằm trong chữ ký hàm nhưng **không còn tác
+//     dụng gì**. Người gọi truyền số trang vẫn nhận **toàn bộ** bảng. (Cùng họ #563: tham số còn trong chữ ký,
+//     phần dùng thì bị comment.)
+// 🔴 **Không `ORDER BY`, không `TOP`, `select t.*`** ⇒ trả **toàn bộ** bảng tạm, thứ tự tuỳ engine.
+// ⚠️ Khớp **CHÍNH XÁC** bằng `=`, không `like` ⇒ tra theo tên phải gõ **đúng tuyệt đối** cả dấu tiếng Việt.
 app.MapGet("/api/tstparts/temp", async (AppDbContext db, ITenantContext t,
-    string? tstPartCode, string? tstVieName) =>
+    string? tstPartCode, string? tstVieName, int? take) =>
 {
     var qy = db.TstPartTemps.Where(x => x.OrgId == t.OrgId);
     // khớp CHÍNH XÁC (nguồn dùng "=" chứ không phải like)
     if (!string.IsNullOrWhiteSpace(tstPartCode)) qy = qy.Where(x => x.TSTPartCode == tstPartCode!.Trim());
     if (!string.IsNullOrWhiteSpace(tstVieName)) qy = qy.Where(x => x.TSTVieName == tstVieName!.Trim());
 
-    var items = await qy.OrderBy(x => x.TSTPartCode).Take(1000)
+    // #599: nguồn KHÔNG phân trang (hai dòng tính trang bị comment) — port cắt và nêu cờ.
+    var n = take is > 0 ? Math.Min(take!.Value, 1000) : 1000;
+    var total = await qy.CountAsync();
+    var items = await qy.OrderBy(x => x.TSTPartCode).Take(n)
         .Select(x => new { x.Id, x.TSTPartCode, x.TSTVieName }).ToListAsync();
     return Results.Ok(new
     {
-        count = items.Count, items,
+        count = items.Count, total, items,
         note = "Bảng TẠM: DMSCarSv chỉ ĐỌC, dữ liệu do hệ ngoài nạp. Hai cột là bộ đã xác nhận (nguồn select *).",
+        // ===== #599 =====
+        emptyGuardWrittenCorrectly = "and (quote@x = N-rong or t.Col = quote@x) — so chuoi RONG, khong dung is null nen KHONG dinh bay #565",
+        butValuesAreBakedIntoSql = "StringUtils.Replace nen chinh guard dung do lai mo duong chen SQL: strTSTVieName la TEN TIENG VIET, co the chua dau nhay don",
+        lessonGuardShapePlusTransport = "danh gia mot bo loc phai xem CA HAI: hinh dang dieu kien (#407/#565) VA cach gia tri di vao cau (#410/BAKE)",
+        emptyParamArrayFourthTime = "alParamsCoupleSql.AddRange(new object[] { }) roi van truyen vao ExecQuery — lan thu tu (#576, #587, #595)",
+        pagingWasWrittenThenCommentedOut = "#region Check chi con hai dong comment tinh trang; hai tham so van nam trong chu ky ham nhung khong con tac dung (ho #563)",
+        noOrderByNoTopSelectStar = true,
+        exactMatchNotLike = "khop CHINH XAC bang dau bang, khong like => phai go dung tuyet doi ca dau tieng Viet",
     });
 }).RequireAuthorization();
 
