@@ -36336,6 +36336,120 @@ app.MapGet("/api/icic/drivetests", async (
     });
 }).RequireAuthorization();
 
+// ===== #B106 TRA KHẢO SÁT THEO VIN — KÊNH BẢO HIỂM `ICIC` — `DLSVINSurveyGet_ICIC_New20181115` =====
+// Trace LIVE: WS → `_biz.DLSVINSurveyGet_ICIC_New20181115` (`BizHTC.DealerSales.cs:5330`).
+//   3B đo thật, **khớp cả 2 máy**: start=5330 md5 `c99db90ad301711ea155f09d21c03a0d`.
+// 🔴 **RBAC — BIẾN THỂ 1 (`left join` MANG ĐIỀU KIỆN), 5 CHỖ TRONG CÙNG HÀM**; **sửa tiếp** bảng quét
+//    #B104 (tôi ghi là biến thể 4 vì thấy bind hằng `"HTC%"`, nhưng bước 3 cho kết quả khác):
+//      `**left** join Mst_Dealer md --//[mylock] -- **Must inner join** to filter AbilityOfUser`
+//      `    on cc.DealerCode = md.DealerCode`
+//      `    and (md.BUCode like @strBUPatternOfUser)`
+//    ⇒ điều kiện BU nằm trong `on` của **`left join`** ⇒ **chỉ BỎ GHÉP**, **KHÔNG loại dòng**.
+//      Chú thích ngay trên **nói rõ phải `inner join`** — đây là ca giống hệt **#B45**.
+//    Cộng thêm: giá trị bind là **hằng `"HTC%"`** ⇒ **hai lỗi chồng nhau** (sai giá trị **và** sai
+//      loại join). Dù có đổi thành `inner join` thì vẫn lọc theo hằng, không theo quyền thật.
+// 🔴 **ĐIỀU KIỆN "CHƯA CÓ GIAO DỊCH" VIẾT SAI PHẠM VI** (`:5552`):
+//      `and ( (DealNo is not null … and ddFlagInitDeal = '0' and ddDealerCodeBuyer is null)`
+//      `      or ( (select count(*) from #tbl_Car_VIN dd) = 1 )  -- Chưa có giao dịch  )`
+//    Ý đồ: VIN **chưa có giao dịch** thì vẫn trả về. Nhưng vế `or` **đếm TOÀN BẢNG TẠM**, không đếm
+//    theo VIN ⇒ **chỉ đúng khi tra ĐÚNG MỘT VIN**; tra nhiều VIN thì vế này **không bao giờ đúng**
+//    và xe chưa có giao dịch **bị loại**. Port giữ nguyên ngữ nghĩa, trả `singleVinFallbackApplied`.
+// 🔴 Hai điều kiện `-- and (dd.FlagInitDeal='0')` / `-- and (dd.DealerCodeBuyer is null)` **bị comment**
+//    ở khối `#tbl_Car_VIN` nhưng lại **xuất hiện lại** trong `where` của câu select sau ⇒ **không mất**,
+//    chỉ **dời chỗ**. Đọc thiếu một trong hai chỗ là kết luận sai về bộ lọc.
+// 🔴 Kết quả ghép bằng **`union all`** (không distinct) giữa nhánh "có giao dịch" và nhánh khác.
+app.MapGet("/api/icic/vinsurveys", async (
+    AppDbContext db, ITenantContext t,
+    string? carId, string? vin, string? dealNo, string? dealerCode,
+    string? enforceBuScope, string? buPatternOfUser) =>
+{
+    const string Hardcoded = "HTC%";
+    var realPattern = (buPatternOfUser ?? "").Trim();
+    var applied = (enforceBuScope == "1" && realPattern.Length > 0) ? realPattern : Hardcoded;
+    var prefix = applied.TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode, d.DealerName }).ToListAsync();
+    var inScope = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(prefix))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin)) cars = cars.Where(c => c.VIN == vin.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(carId)) cars = cars.Where(c => c.VIN == carId.Trim().ToUpperInvariant()).ToList();
+
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var dealById = deals.ToDictionary(d => d.Id);
+    var lines = await db.DealerDealDetails.Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var lineByCar = lines.GroupBy(l => l.CarId).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 `left join Mst_Dealer` mang điều kiện BU ⇒ CHỈ BỎ GHÉP, KHÔNG loại dòng.
+    //    Đếm được số dòng "đáng lẽ bị loại nếu đúng là inner join".
+    var outOfScopeCount = 0;
+    var rows = cars.Select(c =>
+    {
+        lineByCar.TryGetValue(c.VIN, out var ln);
+        DealerDeal? dd = null;
+        if (ln is not null) dealById.TryGetValue(ln.DealId, out dd);
+        var dlrOk = c.DealerCode != null && inScope.Contains(c.DealerCode);
+        if (!dlrOk) outOfScopeCount++;
+        return new
+        {
+            Car = c, Line = ln, Deal = dd,
+            // md.* chỉ có khi ghép được — đúng ngữ nghĩa left join.
+            DealerName = dlrOk ? dealers.FirstOrDefault(d => d.DealerCode == c.DealerCode)?.DealerName : null
+        };
+    }).ToList();
+
+    if (!string.IsNullOrWhiteSpace(dealNo))
+        rows = rows.Where(x => x.Deal?.DealNo == dealNo.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        rows = rows.Where(x => x.Car.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+
+    // 🔴 Vế `or (count(*) = 1)` — chỉ đúng khi bảng tạm có ĐÚNG MỘT dòng.
+    var singleVinFallbackApplied = rows.Count == 1;
+    var filtered = rows.Where(x =>
+        (x.Deal is not null && x.Deal.FlagInitDeal == "0"
+            && string.IsNullOrEmpty(x.Deal.DealerCodeBuyer))
+        || singleVinFallbackApplied).ToList();
+
+    var surveys = (await db.DlsVinSurveys.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.VIN).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId)
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    var items = filtered.Select(x =>
+    {
+        surveys.TryGetValue(x.Car.VIN, out var sv);
+        return new
+        {
+            cvVIN = x.Car.VIN, ccCarId = x.Car.VIN,
+            cvModelCode = x.Car.ModelCode,
+            mcmModelName = models.TryGetValue(x.Car.ModelCode ?? "", out var mn) ? mn : null,
+            cvSpecCode = x.Car.SpecCode, cvColorCode = x.Car.ColorCode,
+            ccDealerCode = x.Car.DealerCode, mdDealerName = x.DealerName,
+            ddDealNo = x.Deal?.DealNo, ddFlagInitDeal = x.Deal?.FlagInitDeal,
+            ddDealerCodeBuyer = x.Deal?.DealerCodeBuyer,
+            dddDeliveryDate = x.Line?.DeliveryDate,
+            dvContactDate = sv?.ContactDate, dvSurveyGmail = sv?.SurveyGmail, dvNote = sv?.Note,
+            dvSurvey1 = sv?.Survey1, dvSurvey2 = sv?.Survey2, dvSurvey3 = sv?.Survey3,
+            dvSurvey4 = sv?.Survey4, dvSurvey5 = sv?.Survey5, dvSurvey6 = sv?.Survey6
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        buPatternApplied = applied, buPatternHardcoded = Hardcoded,
+        outOfScopeCount, singleVinFallbackApplied,
+        rbacCorrection = "SUA TIEP bang quet #B104: ham nay la BIEN THE 1 (left join MANG DIEU KIEN), khong phai bien the 4. Nguon viet 'LEFT join Mst_Dealer md ... on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' - 5 CHO trong cung ham - kem chu thich noi ro 'Must INNER join to filter AbilityOfUser'. Dieu kien BU nam trong 'on' cua LEFT JOIN => CHI BO GHEP, KHONG LOAI DONG. Ca giong het #B45.",
+        rbacDoubleFaultNote = "HAI LOI CHONG NHAU: (1) sai LOAI JOIN (left thay vi inner) => khong loc gi; (2) sai GIA TRI BIND (hang 'HTC%' thay vi drAbilityOfUser['BUPattern']). Du co doi thanh inner join thi VAN loc theo hang, khong theo quyen that. => vi tri trong thang uu tien nam giua bien the 1 va bien the 4.",
+        singleVinQuirk = "Dieu kien 'CHUA CO GIAO DICH' viet SAI PHAM VI (:5552): 'or ( (select count(*) from #tbl_Car_VIN dd) = 1 )'. Y do la VIN chua co giao dich thi van tra ve, nhung ve or DEM TOAN BANG TAM chu khong dem theo VIN => CHI DUNG khi tra DUNG MOT VIN; tra nhieu VIN thi ve nay KHONG BAO GIO dung va xe chua co giao dich BI LOAI. Da tra co singleVinFallbackApplied.",
+        movedConditionNote = "Hai dieu kien '-- and (dd.FlagInitDeal=0)' / '-- and (dd.DealerCodeBuyer is null)' BI COMMENT o khoi #tbl_Car_VIN nhung XUAT HIEN LAI trong where cua cau select sau => KHONG MAT, chi DOI CHO. Doc thieu mot trong hai cho la ket luan sai ve bo loc.",
+        unionAllNote = "Ket qua ghep bang union all (khong distinct) giua nhanh 'co giao dich' va nhanh khac."
+    });
+}).RequireAuthorization();
+
 // ===== #B104 KÊNH NGOÀI `OS_` GHI NGÀY XÁC NHẬN BẢO HÀNH — `OS_DLS_DealDetailUpdate` =====
 // Trace LIVE: WS → **`_biz.OS_DLS_DealDetailUpdate`** (`Biz.HTC.WH.cs:94818`).
 //   3B đo thật, **khớp cả 2 máy** (`start` lệch 94818/94823 — bình thường): md5
