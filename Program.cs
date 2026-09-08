@@ -46036,6 +46036,81 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #698 TAB: CUỘC HẸN THEO NGÀY & TRẠNG THÁI `Rpt_Ser_App_GroupByDateAndStatusForTab` =====
+// Vỏ bọc `Tab/BizCarSv.Tab.Report.cs:3196-3311` (md5 `b6252dbc`) → thân thật
+// `Rpt_Ser_App_GroupByDateAndStatus**X**` (`:2932-3194`, md5 `c5fdaaef`) — **cả hai KHỚP** máy 150.
+// WS `WSCarSvTab.asmx.cs:5870`.
+//
+// 🔴🔴🔴 **PIVOT THEO **NHÃN** CHỨ KHÔNG THEO MÃ — VÀ NHÃN SINH TỪ `case` KHÔNG CÓ `else`**:
+//     `case sa.AppStatus when '1' then N'MOITAO' when '2' then N'XACNHAN' when '3' then N'TIEPNHAN'`
+//     `when '4' then N'HUY' end as AppStatusName`   ← **không `else`**
+//     `pivot (sum(Qty) for **AppStatusName** in (MOITAO, XACNHAN, TIEPNHAN, HUY)) as Qty`
+//   ⇒ Mã trạng thái **ngoài 1..4** ⇒ `AppStatusName` **NULL** ⇒ `PIVOT` **bỏ qua** dòng NULL ⇒ **cuộc hẹn có mã
+//     lạ BIẾN MẤT khỏi tổng**, không lỗi, không cảnh báo. Đây là hệ quả **cụ thể** của "case không `else`"
+//     (họ #656/#663/#667) — lần đầu thấy nó nối thẳng vào một `PIVOT`.
+//   🔴 Và pivot theo **nhãn** nghĩa là **đổi nhãn = vỡ báo cáo** (phải sửa cả danh sách `in (...)` lẫn `case`).
+// 🔴🔴 **NHÃN CỦA CÙNG BỘ MÃ KHÁC NHAU GIỮA HAI MÀN**: ở đây `1/2/3/4` → `MOITAO/XACNHAN/TIEPNHAN/HUY`
+//   (**viết HOA, không dấu**); ở #684 (`Ser_App_GetX_New20190624`) cùng bộ mã → `Mới tạo/Xác nhận/Tiếp nhận/Hủy`
+//   (**có dấu**) — và ở đó khối `case` **bị comment trọn**. ⇒ Khẳng định lại luật #286: **nhãn là THEO MÀN**,
+//     không có bảng nhãn toàn cục.
+// 🔴🔴 **`inner join #input_tbl_ReportType f on (1=1)` — tích Descartes trá hình** (họ #659): mỗi cuộc hẹn nhân
+//   với **mọi** dòng kỳ báo cáo, rồi mới lọc `t.AppDate >= f.DateTimeStart and <= f.DateTimeEnd`.
+//   ⚠️ Hệ quả **phụ thuộc dữ liệu**: các kỳ **không chồng nhau** ⇒ mỗi cuộc hẹn khớp đúng một kỳ ⇒ đúng ý;
+//     các kỳ **chồng nhau** ⇒ cuộc hẹn **được đếm nhiều lần**. Không kết luận, trả cờ.
+// 🔴🔴 **`StringUtils.Replace(strSqlGetData);` — GỌI VỚI ĐÚNG MỘT ĐỐI SỐ** ⇒ **không thay gì cả**, một lệnh rỗng
+//   nằm lại trong mã (họ "Replace vô nghĩa" #669/#685).
+// 🔴🔴 **KHỐI DỌN BẢNG TẠM VỪA BỊ COMMENT VỪA SAI TÊN BẢNG**: dưới nhãn `---- Clear For Debug:` có bốn dòng
+//   `--drop table` — trong đó `#tbl_Ser_ReceptionF_Filter` là bảng **của màn khác** (chép nhầm), còn ba bảng thật
+//   `#tbl_Ser_App_Filter` · `#tbl_Ser_App_App` · `#tbl_Return_Pvt` **không có trong danh sách**.
+//   ⇒ Bỏ comment cũng **dọn sai bảng**. (Họ #681/#693 — "Clear for debug" rồi ở lại vĩnh viễn.)
+// ⚪ **ÂM TÍNH — mốc ngày dùng `convert(char(10), …, 126)`** (ISO `yyyy-mm-dd`) ⇒ so **chuỗi** vẫn đúng thứ tự và
+//   **không** dính bẫy mất-ngày-cuối (#415) — quy ước ② trong bốn quy ước đã liệt kê ở #673.
+app.MapGet("/api/tab/report/appointments-by-date-status", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var qa = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
+    if (fromDate is not null) qa = qa.Where(x => x.AppFrom >= fromDate!.Value.Date);
+    if (toDate is not null) qa = qa.Where(x => x.AppFrom < toDate!.Value.Date.AddDays(1));
+    var apps = await qa.Select(x => new { x.AppNo, x.AppFrom, x.Status }).ToListAsync();
+
+    // Nguồn: case 1/2/3/4 -> MOITAO/XACNHAN/TIEPNHAN/HUY, KHÔNG có else ⇒ mã lạ ra NULL.
+    static string? AppStatusName(string? st) => st switch
+    {
+        "1" => "MOITAO", "2" => "XACNHAN", "3" => "TIEPNHAN", "4" => "HUY", _ => null,
+    };
+
+    var labelled = apps.Select(x => new { x.AppNo, x.AppFrom, x.Status, name = AppStatusName(x.Status) }).ToList();
+    // Nguồn PIVOT theo NHÃN ⇒ dòng có nhãn NULL bị PIVOT bỏ qua. Port ĐẾM RIÊNG phần bị bỏ.
+    var droppedByNullLabel = labelled.Count(x => x.name is null);
+
+    var pivot = new
+    {
+        MOITAO = labelled.Count(x => x.name == "MOITAO"),
+        XACNHAN = labelled.Count(x => x.name == "XACNHAN"),
+        TIEPNHAN = labelled.Count(x => x.name == "TIEPNHAN"),
+        HUY = labelled.Count(x => x.name == "HUY"),
+    };
+
+    return Results.Ok(new
+    {
+        dealerCode, fromDate, toDate,
+        total = labelled.Count,
+        pivot,
+        pivotSum = pivot.MOITAO + pivot.XACNHAN + pivot.TIEPNHAN + pivot.HUY,
+        droppedByNullLabel,
+        unknownStatusCodes = labelled.Where(x => x.name is null).Select(x => x.Status).Distinct().ToList(),
+        // ===== #698 =====
+        pivotOnLabelSoUnknownStatusVanishes = "PIVOT THEO NHAN CHU KHONG THEO MA — VA NHAN SINH TU case KHONG CO else: case sa.AppStatus when 1 then N MOITAO when 2 then N XACNHAN when 3 then N TIEPNHAN when 4 then N HUY end as AppStatusName (KHONG else); pivot (sum(Qty) for AppStatusName in (MOITAO, XACNHAN, TIEPNHAN, HUY)) as Qty => ma trang thai ngoai 1..4 => AppStatusName NULL => PIVOT BO QUA dong NULL => cuoc hen co ma la BIEN MAT khoi tong, khong loi khong canh bao. He qua CU THE cua case-khong-else (ho #656/#663/#667), lan dau thay no noi thang vao mot PIVOT",
+        pivotByLabelMeansRenamingBreaksReport = "pivot theo NHAN nghia la DOI NHAN = VO BAO CAO (phai sua ca danh sach in (...) lan case)",
+        sameCodesDifferentLabelsPerScreen = "NHAN CUA CUNG BO MA KHAC NHAU GIUA HAI MAN: o day 1/2/3/4 -> MOITAO/XACNHAN/TIEPNHAN/HUY (VIET HOA, KHONG DAU); o #684 (Ser_App_GetX_New20190624) cung bo ma -> Moi tao/Xac nhan/Tiep nhan/Huy (CO DAU) va o do khoi case BI COMMENT TRON => khang dinh lai luat #286: nhan la THEO MAN, khong co bang nhan toan cuc",
+        cartesianJoinOnOneEqualsOne = "inner join #input_tbl_ReportType f on (1=1) — tich Descartes tra hinh (ho #659): moi cuoc hen nhan voi MOI dong ky bao cao roi moi loc t.AppDate >= f.DateTimeStart and <= f.DateTimeEnd. He qua PHU THUOC DU LIEU: cac ky KHONG chong nhau => moi cuoc hen khop dung mot ky => dung y; cac ky CHONG NHAU => cuoc hen duoc dem NHIEU LAN. Khong ket luan, tra co",
+        replaceCalledWithOneArgument = "StringUtils.Replace(strSqlGetData); — GOI VOI DUNG MOT DOI SO => KHONG thay gi ca, mot lenh RONG nam lai trong ma (ho Replace-vo-nghia #669/#685)",
+        dropBlockCommentedAndWrongTables = "KHOI DON BANG TAM VUA BI COMMENT VUA SAI TEN BANG: duoi nhan ---- Clear For Debug: co bon dong --drop table, trong do #tbl_Ser_ReceptionF_Filter la bang CUA MAN KHAC (chep nham), con ba bang that #tbl_Ser_App_Filter, #tbl_Ser_App_App, #tbl_Return_Pvt KHONG co trong danh sach => bo comment cung DON SAI BANG (ho #681/#693)",
+        negativeIsoDateComparisonIsSafe = "AM TINH: moc ngay dung convert(char(10), …, 126) (ISO yyyy-mm-dd) => so CHUOI van dung thu tu va KHONG dinh bay mat-ngay-cuoi (#415) — quy uoc 2 trong bon quy uoc da liet ke o #673",
+        miniModelGap = "Mini chua co bang ky bao cao #input_tbl_ReportType (MixCode/ReportType/DateTimeStart/End) => port gop theo mot khoang ngay duy nhat; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #696 JOB TỰ ĐỘNG GỬI BCBH SANG HMC `Ser_ROWarrantyReport_SendHMC_Auto` =====
 // (`BizCarSv.WarrantyReport.cs` — **file này LỆCH GIỮA HAI MÁY**, canonical = **150** theo #42/#46.)
 // laptop `:22912-23124` md5 `7647e931` · **máy 150 `:23433-23646` md5 `a459118a`** ⇒ **KHÁC NHAU**.
