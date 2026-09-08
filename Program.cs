@@ -8790,6 +8790,55 @@ app.MapGet("/api/tcginvoices/gen-invoice-no", async (
     });
 }).RequireAuthorization();
 
+// ===== #B116 SINH SỐ HOÁ ĐƠN HTC — `VAT_HTCInvoice_GenHTCInvoiceNo_New20181115` =====
+// Trace LIVE: WS → `_biz.VAT_HTCInvoice_GenHTCInvoiceNo_New20181115`
+//   (`BizHTC.InvoiceHTC_TCG.cs:6308`). 3B đo thật, **khớp cả 2 máy**: start=6308 md5
+//   `5531b6f801c3515ed024a370cf182417`.
+// 🔴 **SONG SINH TỪNG DÒNG với #B115** (`VAT_TCGInvoice_GenTCGInvoiceNo`): cùng khuôn
+//    `max(<cột>) + 1` trong phạm vi **cặp `(InvoiceIDCode, InvoiceIDType)`**, cùng chuỗi
+//    `if/else if` đệm 0 về **7 ký tự**, cùng giá trị khởi đầu **`"0000000"`** (bảy số 0),
+//    cùng **KHÔNG ghi DB / KHÔNG khoá** ⇒ **số có thể trùng**.
+//    Khác nhau **chỉ ở**: bảng (`VAT_HTCInvoice`), cột (`HTCInvoiceNo`), tên bảng trả về
+//    (**`Tbl_HTCInvoiceNo`**). ⇒ Mọi luật của #B115 áp dụng nguyên
+//    (`C0-…quartusdecimus`, `C0-…quintusdecimus`).
+// ⚠️ **HAI DÃY SỐ ĐỘC LẬP**: hoá đơn **TCG** và hoá đơn **HTC** đếm riêng trên **hai bảng khác nhau**
+//    ⇒ **cùng một cặp `(InvoiceIDCode, InvoiceIDType)` có thể cho ra số giống nhau ở hai loại**.
+//    Đó là **đúng ý nguồn** (hai loại chứng từ khác nhau), không phải trùng lặp cần sửa.
+// 📌 §12: `VatHtcInvoice.InvoiceIDCode` — nửa kia của phạm vi dãy số (song sinh với #B115).
+app.MapGet("/api/htcinvoices/gen-invoice-no", async (
+    AppDbContext db, ITenantContext t, string? invoiceIDCode, string? invoiceIDType) =>
+{
+    var idCode = (invoiceIDCode ?? "").Trim();
+    var idType = (invoiceIDType ?? "").Trim();
+
+    var maxNo = await db.VatHtcInvoices
+        .Where(v => v.OrgId == t.OrgId
+                    && (v.InvoiceIDCode ?? "") == idCode
+                    && (v.InvoiceIDType ?? "") == idType
+                    && v.HTCInvoiceNo != null)
+        .MaxAsync(v => v.HTCInvoiceNo);
+
+    string next;
+    if (!string.IsNullOrWhiteSpace(maxNo) && long.TryParse(maxNo, out var n))
+    {
+        next = (n + 1).ToString();
+        if (next.Length < 7) next = next.PadLeft(7, '0');
+    }
+    else next = "0000000";      // bảy số 0 — KHÔNG phải "0000001"
+
+    return Results.Ok(new
+    {
+        Tbl_HTCInvoiceNo = new[] { new { HTCInvoiceNo = next } },
+        invoiceIDCode = idCode, invoiceIDType = idType,
+        maxHTCInvoiceNo = maxNo,
+        twinNote = "SONG SINH TUNG DONG voi #B115 (VAT_TCGInvoice_GenTCGInvoiceNo): cung khuon max(<cot>)+1 trong pham vi cap (InvoiceIDCode, InvoiceIDType), cung chuoi if/else if dem 0 ve 7 ky tu, cung gia tri khoi dau '0000000', cung KHONG ghi DB / KHONG khoa. Khac nhau CHI o: bang (VAT_HTCInvoice), cot (HTCInvoiceNo), ten bang tra ve (Tbl_HTCInvoiceNo).",
+        twoSequencesNote = "HAI DAY SO DOC LAP: hoa don TCG va hoa don HTC dem rieng tren HAI BANG KHAC NHAU => cung mot cap (InvoiceIDCode, InvoiceIDType) CO THE cho ra so giong nhau o hai loai. Day la DUNG Y NGUON (hai loai chung tu khac nhau), khong phai trung lap can sua.",
+        noReservationNote = "KHONG GHI DB, KHONG KHOA - SINH SO CO THE TRUNG khi hai nguoi bam cung luc. So tra ve KHONG duoc 'giu cho'; chong trung phai do buoc LUU HOA DON dam nhiem. Xem luat C0-...quartusdecimus.",
+        stringMaxNote = "max() chay tren cot CHUOI - dung duoc CHI NHO dem co dinh 7 ky tu; vuot 7 chu so thi max chuoi CHON SAI ('9999999' > '10000000'). Nguong tran: 10 trieu hoa don moi mau. Xem luat C0-...quintusdecimus.",
+        firstNumberNote = "So dau tien la '0000000' (BAY so 0), KHONG phai '0000001'."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5

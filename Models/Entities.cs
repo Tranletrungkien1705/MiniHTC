@@ -7837,6 +7837,10 @@ public sealed class VatHtcInvoice
     public Guid OrgId { get; set; }
     public string HTCInvoiceCode { get; set; } = "";
     public string? InvoiceIDType { get; set; }
+    /// <summary>🔴 #B116 — `VAT_HTCInvoice.InvoiceIDCode` (**mã mẫu hoá đơn**) — cùng
+    /// <see cref="InvoiceIDType"/> tạo **PHẠM VI dãy số**: `VAT_HTCInvoice_GenHTCInvoiceNo` lấy
+    /// `max(HTCInvoiceNo)` theo **CẶP** hai cột này. Song sinh với `VatTcgInvoice.InvoiceIDCode` (#B115).</summary>
+    public string? InvoiceIDCode { get; set; }
     public string? InvoiceAdjType { get; set; }
     /// <summary>"INVOICEROOT" · "INVOICEREPLACE" · "INVOICEADJ".</summary>
     public string? SourceInvoiceCode { get; set; }
