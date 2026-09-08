@@ -9370,6 +9370,40 @@ public sealed class AutoMapVinDistSumRate
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B142–#B144 — `Config_MapVINCarCarInput`: cấu hình đầu vào map VIN theo **model**,
+/// có **HIỆU LỰC THEO NGÀY** (`EffDateStart` / `EffDateEnd`). Một model có **nhiều bản** nối tiếp
+/// nhau thành **dây chuyền hiệu lực**; bản cuối luôn `EffDateEnd = DateMax`.</summary>
+public sealed class ConfigMapVinInput
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CfgATMVIpCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public DateTime EffDateStart { get; set; }
+    public DateTime EffDateEnd { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>🔴 #B142–#B144 — dòng của [[ConfigMapVinInput]]: mỗi dòng là một **khoảng phần trăm cọc**
+/// (`ValPmtDepositPercentFrom`..`To`, nguồn chặn ngoài **0..100**) kèm cờ **có bảo lãnh hay không**
+/// (`FlagIsExistGuarantee`, chỉ `'1'`/`'0'`). `DCPType` là **chuỗi tự do** — nguồn không có lớp hằng.</summary>
+public sealed class ConfigMapVinInputDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CfgATMVIpCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? DCPType { get; set; }
+    public decimal? ValPmtDepositPercentFrom { get; set; }
+    public decimal? ValPmtDepositPercentTo { get; set; }
+    public string FlagIsExistGuarantee { get; set; } = "0";
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

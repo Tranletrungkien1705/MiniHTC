@@ -10198,6 +10198,235 @@ app.MapPost("/api/dms40/mapvin-distsum-rates/save", async (
     });
 }).RequireAuthorization();
 
+// ===== #B142/#B143/#B144 CẤU HÌNH ĐẦU VÀO MAP VIN — `Config_MapVINCarCarInput_Get` / `_Add` / `_Update`
+//       (`DMS40/zTemp.0.20.MapVIN.cs`) =====
+// Trace LIVE: WS64 `:18701` (Get) · `:18777` (Add) · `:18847` (Update). Mỗi cửa public là **vỏ mỏng**
+//   (~120 dòng) gọi thân thật `…GetX` / `…AddX` / `…UpdateX`.
+// **3B đo trên THÂN THẬT, dải dòng tường minh, khớp cả 2 máy**:
+//   `74379,74577 / 7ce36ab9eabcc5df20cc8d6649511ac7`  (`GetX`)
+//   `74709,75300 / 4eb769d81458a4a8428e37568df9a44f`  (`AddX`)
+//   `75421,76300 / 0b28c0a1036c0373a3037aa7777e8703`  (`UpdateX`)
+//   ⚠️ Lần đầu tôi lấy dải "tới hàm `public` kế tiếp" ⇒ **trùm luôn vài hàm `private` không liên quan**
+//     (`Auto_MapVIN_StorageRate_CheckDB`…). Biên đúng phải chặn ở **thành viên KẾ TIẾP bất kể
+//     `public` hay `private`**. (Bổ sung cho luật `C0-…vicesimusseptimus`.)
+// 🔴🔴 **HIỆU LỰC THEO NGÀY — `EffDateStart` PHẢI TỪ NGÀY MAI TRỞ ĐI**:
+//   `if (strEffDateStart.CompareTo(dtimeSys.AddDays(1).ToString("yyyy-MM-dd")) < 0) throw
+//    …_Add_InvalidEffDateStartAfterSysDate;`
+//   ⇒ **không cho hiệu lực từ HÔM NAY hay quá khứ** — chỉ từ **ngày mai**. Bỏ trống ⇒ `…_InvalidEffDateStart`.
+// 🔴 **Chống trùng mốc**: đã tồn tại bản cùng `ModelCode` **và** cùng `EffDateStart` ⇒
+//   `…_Add_MoreThanOneCfgATMVIpCodeActive` (chú thích nguồn: *"ModelCode already exist this EffDateStart."*).
+// 🔴🔴 **DỰNG LẠI TOÀN BỘ DÂY CHUYỀN HIỆU LỰC sau mỗi lần ghi** — không chỉ đóng bản liền trước:
+//   nguồn đọc **tất cả** bản của model, sắp theo `EffDateStart`, rồi
+//     · với **mỗi cặp liền kề**: `EffDateEnd(bản trước) = EffDateStart(bản sau) **− 1 ngày**`;
+//     · **bản cuối cùng**: `EffDateEnd = TConst.DateTimeSpecial.DateMax`;
+//     · sau đó `update … set FlagActive = @flag where ModelCode = @m and **EffDateEnd < ngày hệ thống**`
+//       ⇒ **tự đóng cờ các bản đã hết hạn**.
+//   ⇒ Port kiểu "chỉ sửa bản vừa thêm" sẽ để lại **khoảng chồng lấn** giữa các bản.
+// 🔴 Guard giá trị dòng: `ValPmtDepositPercentFrom` và `…To` phải trong **[0, 100]**
+//   (`…_InvalidValue` — **chung một mã cho cả hai cột**); `FlagIsExistGuarantee` **chỉ `'1'`/`'0'`**.
+//   ⚠️ Nguồn **KHÔNG** kiểm `From <= To`, cũng **không** kiểm các khoảng chồng nhau — **không tự thêm**.
+// 🔴 `DCPType` **không có lớp hằng** trong `TERP.Constants` ⇒ là **chuỗi tự do**; không dựng từ vựng giả.
+// 🔴 Bản mới luôn được tạo với `EffDateEnd = DateMax` và `FlagActive = TConst.Flag.Active` ("1").
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`** (mọi câu update dây chuyền đều chạy hai lần).
+// 📌 §12: `ConfigMapVinInput` + `ConfigMapVinInputDtl` + Seeder + DbSet + DTO + có ở **cả POST và GET**.
+
+// 🔴 Dựng lại dây chuyền hiệu lực cho MỘT model — dùng chung cho cả _Add và _Update.
+static async Task RebuildEffChainAsync(AppDbContext db, Guid orgId, string modelCode, DateTime sysDate)
+{
+    var chain = await db.ConfigMapVinInputs
+        .Where(c => c.OrgId == orgId && c.ModelCode == modelCode)
+        .OrderBy(c => c.EffDateStart).ToListAsync();
+    for (var i = 0; i + 1 < chain.Count; i++)
+        chain[i].EffDateEnd = chain[i + 1].EffDateStart.AddDays(-1);      // bản trước = bản sau − 1 ngày
+    if (chain.Count > 0)
+        chain[^1].EffDateEnd = new DateTime(9999, 12, 31);                 // bản cuối = DateMax
+    foreach (var c in chain)
+        if (c.EffDateEnd < sysDate) c.FlagActive = "0";                    // đã hết hạn ⇒ đóng cờ
+}
+
+app.MapGet("/api/dms40/mapvin-config-inputs", async (
+    AppDbContext db, ITenantContext t, string? modelCode, string? cfgATMVIpCode, string? flagActive) =>
+{
+    var q = db.ConfigMapVinInputs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(c => c.ModelCode == modelCode.Trim());
+    if (!string.IsNullOrWhiteSpace(cfgATMVIpCode)) q = q.Where(c => c.CfgATMVIpCode == cfgATMVIpCode.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(c => c.FlagActive == flagActive.Trim());
+
+    var heads = await q.OrderBy(c => c.ModelCode).ThenBy(c => c.EffDateStart).ToListAsync();
+    var codes = heads.Select(h => h.CfgATMVIpCode).ToList();
+    var dtls = await db.ConfigMapVinInputDtls
+        .Where(d => d.OrgId == t.OrgId && codes.Contains(d.CfgATMVIpCode)).ToListAsync();
+
+    return Results.Ok(new
+    {
+        Config_MapVINCarCarInput = heads,
+        Config_MapVINCarCarInputDtl = dtls,
+        count = heads.Count,
+        effChainNote = "Mot model co NHIEU BAN noi tiep thanh DAY CHUYEN HIEU LUC: EffDateEnd cua ban truoc = EffDateStart cua ban sau TRU 1 NGAY; ban cuoi luon EffDateEnd = DateMax.",
+        vocabNote = "DCPType KHONG co lop hang trong TERP.Constants => la CHUOI TU DO; khong dung tu vung gia. FlagIsExistGuarantee chi '1'/'0'."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/dms40/mapvin-config-inputs", async (
+    ConfigMapVinInputAddDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var cfg = (dto.CfgATMVIpCode ?? "").Trim();
+    var model = (dto.ModelCode ?? "").Trim();
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var sys = DateTime.Now.Date;
+
+    // 🔴 EffDateStart bắt buộc.
+    if (dto.EffDateStart is null)
+        return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Add_InvalidEffDateStart" });
+    var effStart = dto.EffDateStart.Value.Date;
+
+    // 🔴🔴 PHẢI TỪ NGÀY MAI TRỞ ĐI — hôm nay cũng bị chặn.
+    if (effStart < sys.AddDays(1))
+        return Results.BadRequest(new
+        {
+            error = "Config_MapVINCarCarInput_Add_InvalidEffDateStartAfterSysDate",
+            check = new { EffDateStart = effStart, MinAllowed = sys.AddDays(1) },
+            note = "Nguon so sanh voi dtimeSys.AddDays(1) => KHONG cho hieu luc tu HOM NAY hay qua khu."
+        });
+
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Add_Input_MapVINCarCarInputDtlNotFound" });
+
+    // 🔴 Chống trùng mốc: cùng ModelCode + cùng EffDateStart.
+    var dup = await db.ConfigMapVinInputs
+        .AnyAsync(c => c.OrgId == t.OrgId && c.ModelCode == model && c.EffDateStart == effStart);
+    if (dup)
+        return Results.BadRequest(new
+        {
+            error = "Config_MapVINCarCarInput_Add_MoreThanOneCfgATMVIpCodeActive",
+            check = new { ModelCode = model, EffDateStart = effStart },
+            note = "Chu thich nguon: 'ModelCode already exist this EffDateStart.'"
+        });
+
+    foreach (var r in dto.Rows)
+    {
+        // 🔴 [0, 100] — CHUNG một mã lỗi cho cả hai cột. Nguồn KHONG kiem From <= To.
+        if ((r.ValPmtDepositPercentFrom ?? 0m) < 0 || (r.ValPmtDepositPercentFrom ?? 0m) > 100
+            || (r.ValPmtDepositPercentTo ?? 0m) < 0 || (r.ValPmtDepositPercentTo ?? 0m) > 100)
+            return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Add_InvalidValue", check = new { r.ValPmtDepositPercentFrom, r.ValPmtDepositPercentTo } });
+        var g = (r.FlagIsExistGuarantee ?? "").Trim();
+        if (!(g == "1" || g == "0"))
+            return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Add_InvalidValue", check = new { FlagIsExistGuarantee = g } });
+    }
+
+    var now = DateTime.Now;
+    db.ConfigMapVinInputs.Add(new ConfigMapVinInput
+    {
+        OrgId = t.OrgId, CfgATMVIpCode = cfg, ModelCode = model,
+        EffDateStart = effStart,
+        EffDateEnd = new DateTime(9999, 12, 31),      // 🔴 bản mới luôn DateMax
+        FlagActive = "1",                             // TConst.Flag.Active
+        LogLUDateTime = now, LogLUBy = by
+    });
+    foreach (var r in dto.Rows)
+        db.ConfigMapVinInputDtls.Add(new ConfigMapVinInputDtl
+        {
+            OrgId = t.OrgId, CfgATMVIpCode = cfg, ModelCode = model,
+            DCPType = r.DCPType,
+            ValPmtDepositPercentFrom = r.ValPmtDepositPercentFrom,
+            ValPmtDepositPercentTo = r.ValPmtDepositPercentTo,
+            FlagIsExistGuarantee = (r.FlagIsExistGuarantee ?? "0").Trim(),
+            FlagActive = "1", LogLUDateTime = now, LogLUBy = by
+        });
+    await db.SaveChangesAsync();
+
+    // 🔴🔴 DỰNG LẠI TOÀN BỘ dây chuyền hiệu lực của model.
+    await RebuildEffChainAsync(db, t.OrgId, model, sys);
+    await db.SaveChangesAsync();
+
+    var chain = await db.ConfigMapVinInputs
+        .Where(c => c.OrgId == t.OrgId && c.ModelCode == model)
+        .OrderBy(c => c.EffDateStart).ToListAsync();
+
+    return Results.Ok(new
+    {
+        cfgATMVIpCode = cfg, modelCode = model, effDateStart = effStart,
+        dtlInserted = dto.Rows.Count,
+        effChain = chain.Select(c => new { c.CfgATMVIpCode, c.EffDateStart, c.EffDateEnd, c.FlagActive }),
+        effDateRuleNote = "EffDateStart PHAI TU NGAY MAI TRO DI: nguon so sanh voi dtimeSys.AddDays(1) => khong cho hieu luc tu HOM NAY hay qua khu. Bo trong => _InvalidEffDateStart.",
+        dupRuleNote = "Chong trung moc: da ton tai ban cung ModelCode VA cung EffDateStart => _Add_MoreThanOneCfgATMVIpCodeActive (chu thich nguon: 'ModelCode already exist this EffDateStart.').",
+        chainRebuildNote = "DUNG LAI TOAN BO DAY CHUYEN HIEU LUC sau moi lan ghi - khong chi dong ban lien truoc: doc TAT CA ban cua model, sap theo EffDateStart, roi (a) moi cap lien ke: EffDateEnd(ban truoc) = EffDateStart(ban sau) TRU 1 NGAY; (b) ban cuoi: EffDateEnd = DateMax; (c) update FlagActive cho nhung ban co EffDateEnd < ngay he thong. Port kieu 'chi sua ban vua them' se de lai KHOANG CHONG LAN.",
+        valueGuardNote = "ValPmtDepositPercentFrom va ...To phai trong [0, 100] (_InvalidValue - CHUNG mot ma cho ca hai cot); FlagIsExistGuarantee chi '1'/'0'. Nguon KHONG kiem From <= To, cung KHONG kiem cac khoang chong nhau - khong tu them.",
+        twoDbNote = "Nguon ghi CA _dbMain va _dbWH (moi cau update day chuyen deu chay hai lan)."
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/dms40/mapvin-config-inputs/{cfgCode}", async (
+    string cfgCode, ConfigMapVinInputUpdateDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var cfg = (cfgCode ?? "").Trim();
+    if (cfg.Length == 0)
+        return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Update_Input_MapVINCarCarInputInvalid" });
+
+    var head = await db.ConfigMapVinInputs.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CfgATMVIpCode == cfg);
+    if (head is null)
+        return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Update_Input_MapVINCarCarInputNotFound", check = new { CfgATMVIpCode = cfg } });
+
+    if (dto.Rows is not null)
+        foreach (var r in dto.Rows)
+        {
+            if ((r.ValPmtDepositPercentFrom ?? 0m) < 0 || (r.ValPmtDepositPercentFrom ?? 0m) > 100
+                || (r.ValPmtDepositPercentTo ?? 0m) < 0 || (r.ValPmtDepositPercentTo ?? 0m) > 100)
+                return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Update_InvalidValue", check = new { r.ValPmtDepositPercentFrom, r.ValPmtDepositPercentTo } });
+            var g = (r.FlagIsExistGuarantee ?? "").Trim();
+            if (!(g == "1" || g == "0"))
+                return Results.BadRequest(new { error = "Config_MapVINCarCarInput_Update_InvalidValue", check = new { FlagIsExistGuarantee = g } });
+        }
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var sys = now.Date;
+
+    // Thay dòng: xoá theo (CfgATMVIpCode) rồi chèn lại — cùng khuôn "xoá rồi chèn" của họ MapVIN.
+    var oldDtls = await db.ConfigMapVinInputDtls
+        .Where(d => d.OrgId == t.OrgId && d.CfgATMVIpCode == cfg).ToListAsync();
+    var replaced = 0;
+    if (dto.Rows is not null)
+    {
+        db.ConfigMapVinInputDtls.RemoveRange(oldDtls);
+        foreach (var r in dto.Rows)
+        {
+            db.ConfigMapVinInputDtls.Add(new ConfigMapVinInputDtl
+            {
+                OrgId = t.OrgId, CfgATMVIpCode = cfg, ModelCode = head.ModelCode,
+                DCPType = r.DCPType,
+                ValPmtDepositPercentFrom = r.ValPmtDepositPercentFrom,
+                ValPmtDepositPercentTo = r.ValPmtDepositPercentTo,
+                FlagIsExistGuarantee = (r.FlagIsExistGuarantee ?? "0").Trim(),
+                FlagActive = "1", LogLUDateTime = now, LogLUBy = by
+            });
+            replaced++;
+        }
+    }
+    head.LogLUDateTime = now; head.LogLUBy = by;
+    await db.SaveChangesAsync();
+
+    // 🔴 Dựng lại dây chuyền hiệu lực (nguồn chạy cùng khối này ở cả _Add lẫn _Update).
+    await RebuildEffChainAsync(db, t.OrgId, head.ModelCode, sys);
+    await db.SaveChangesAsync();
+
+    var chain = await db.ConfigMapVinInputs
+        .Where(c => c.OrgId == t.OrgId && c.ModelCode == head.ModelCode)
+        .OrderBy(c => c.EffDateStart).ToListAsync();
+
+    return Results.Ok(new
+    {
+        cfgATMVIpCode = cfg, modelCode = head.ModelCode,
+        dtlDeleted = dto.Rows is null ? 0 : oldDtls.Count,
+        dtlInserted = replaced,
+        effChain = chain.Select(c => new { c.CfgATMVIpCode, c.EffDateStart, c.EffDateEnd, c.FlagActive }),
+        errorCodesNote = "Cua _Update chi co BA ma loi: _Input_MapVINCarCarInputInvalid / _Input_MapVINCarCarInputNotFound / _InvalidValue - KHONG co guard EffDateStart nhu cua _Add (cua _Update khong nhan EffDateStart).",
+        chainRebuildNote = "Dung lai day chuyen hieu luc chay o CA _Add lan _Update."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -43754,6 +43983,9 @@ record AutoMapVinStorageRateRowDto(string? StorageCode, string? ModelCode, strin
 record AutoMapVinStorageRateSaveDto(string? FlagIsDelete, List<AutoMapVinStorageRateRowDto>? Rows);   // #B138
 record AutoMapVinDistSumRateRowDto(string? ModelCode, string? SpecCode, string? ColorExtCode, decimal? MBVal, decimal? MTVal, decimal? MNVal);   // #B141
 record AutoMapVinDistSumRateSaveDto(string? FlagIsDelete, List<AutoMapVinDistSumRateRowDto>? Rows);   // #B141
+record ConfigMapVinInputRowDto(string? DCPType, decimal? ValPmtDepositPercentFrom, decimal? ValPmtDepositPercentTo, string? FlagIsExistGuarantee);   // #B142-B144
+record ConfigMapVinInputAddDto(string? CfgATMVIpCode, string? ModelCode, DateTime? EffDateStart, List<ConfigMapVinInputRowDto>? Rows);   // #B143
+record ConfigMapVinInputUpdateDto(List<ConfigMapVinInputRowDto>? Rows);   // #B144
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110

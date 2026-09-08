@@ -523,6 +523,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AtedpRun> AtedpRuns => Set<AtedpRun>();   // #B134 luot chay job lap ke hoach giao xe
     public DbSet<AutoMapVinStorageRate> AutoMapVinStorageRates => Set<AutoMapVinStorageRate>();   // #B136-B138 ty le phan bo theo kho
     public DbSet<AutoMapVinDistSumRate> AutoMapVinDistSumRates => Set<AutoMapVinDistSumRate>();   // #B139-B141 ty le phan bo TONG
+    public DbSet<ConfigMapVinInput> ConfigMapVinInputs => Set<ConfigMapVinInput>();   // #B142-B144 cau hinh dau vao map VIN
+    public DbSet<ConfigMapVinInputDtl> ConfigMapVinInputDtls => Set<ConfigMapVinInputDtl>();   // #B142-B144
     public DbSet<AutoEstDlvPlanStorage> AutoEstDlvPlanStorages => Set<AutoEstDlvPlanStorage>();   // #B135 cache dai ly x kho x model
     public DbSet<TranspFeeVer> TranspFeeVers => Set<TranspFeeVer>();       // #B90 dau phien ban CPVT
     public DbSet<TranspFeeHist> TranspFeeHists => Set<TranspFeeHist>();   // #B90 anh chup dong phi theo phien ban
