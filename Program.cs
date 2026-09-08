@@ -51051,6 +51051,71 @@ app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 // ⚪ **ÂM TÍNH — lệnh xoá của `Save` THAM SỐ HOÁ ĐÚNG** (`ExecQuery(sql, "@DealerCode", …, "@ParamType", …)`).
 // ⚪ **ÂM TÍNH — `Mst_Param_Update` dùng `alColumnEffective`** (chỉ ghi đúng các cột liệt kê) ⇒ không đè cột lạ;
 //   khác `Create` gọi `SaveData` **không** truyền danh sách cột.
+// ===== 🔴🔴🔴 #692 TỒN KHO THEO PHỤ TÙNG / THEO ĐỊNH MỨC BOM =====
+// `Rpt_InventoryBalance_GroupByPart` (`ZTemp.cs:1204-1342`, md5 `87eb4421`) và
+// `Rpt_InventoryBalance_StationInvQtyMin` (`:1344-1532`, md5 `b8e5c12a`) — **cả hai KHỚP** máy 150.
+// WS `WSCarSv.asmx.cs:33544` / `:33572`. DIFF hai hàm trước (luật #414) — khác biệt ở **nguồn dòng**, không ở WHERE.
+//
+// 🔴🔴🔴 **BỘ LỌC ĐẠI LÝ LUÔN ĐÚNG VÌ HAI VẾ LÀ CÙNG MỘT TOKEN** (`GroupByPart`):
+//     `and (N'@strDealerCode' **= '@strDealerCode'** or smp.DealerCode = N'@strDealerCode')`
+//   Cả hai vế đều là token `@strDealerCode`, và `Replace` thay **mọi** lần xuất hiện bằng **cùng một giá trị**
+//   ⇒ sau khi thay thành `N'VC048' = 'VC048'` ⇒ **luôn TRUE** ⇒ **vế thứ hai không bao giờ được xét**
+//   ⇒ **bộ lọc đại lý bị vô hiệu hoàn toàn**: báo cáo tồn kho theo mã phụ tùng trả về **mọi đại lý**.
+//   ⚠️ **Đối chiếu ngay hàm anh em**: `StationInvQtyMin` viết `and (N'@strDealerCode' **= ''** or t.DealerCode =`
+//     `N'@strDealerCode')` — **đúng cách**: rỗng ⇒ `N'' = ''` TRUE ⇒ mọi đại lý; có giá trị ⇒ lọc thật.
+//   ⇒ Hai hàm cạnh nhau, **một đúng một sai**, khác nhau **đúng hai ký tự** (`''` vs `'@strDealerCode'`).
+//   📌 Khác #488 (ở đó vế đầu là `'@DealerCode' is null` ⇒ **luôn FALSE** ⇒ lọc quá chặt); ở đây **luôn TRUE**
+//     ⇒ lọc quá lỏng. Cùng một khuôn "(mặc định = tất cả)" nhưng **hỏng theo hai hướng ngược nhau**.
+// 🔴🔴🔴 **NỐI BẢNG VỚI CHÍNH NÓ ⇒ BỘ LỌC BOM BỊ VÔ HIỆU** (`StationInvQtyMin`):
+//     `from [@strDBName_CommonCenter].[dbo].Mst_BOM mb`
+//     `inner join #tbl_Mst_BOM_Filter t on **t.BOMCode = t.BOMCode**`   ← lẽ ra `mb.BOMCode = t.BOMCode`
+//   Điều kiện nối là `t.BOMCode = t.BOMCode` ⇒ **luôn TRUE** (trừ NULL) ⇒ `mb` **không bị ràng buộc gì**
+//   ⇒ lấy **MỌI `Mst_BOM`**, rồi `inner join Mst_BOMDtl on mb.BOMCode = mbdt.BOMCode` ⇒ **toàn bộ định mức của
+//     mọi BOM**. Bảng `#tbl_Mst_BOM_Filter` được dựng công phu (lọc `mb.BOMCode = '@strBOMCode'`) rồi **vứt đi**.
+//   ⇒ Màn "tồn tối thiểu theo định mức BOM" **không lọc theo BOM đã chọn**.
+// 🔴🔴 **MÃ ĐẠI LÝ THẬT BỊ BỎ QUÊN TRONG MÃ NGUỒN**: `--and (N'VC048' = '' or t.DealerCode = N'VC048')`
+//   — dòng test hardcode `VC048` **bị comment** ngay trên dòng đang chạy. Port dòng ACTIVE; ghi lại như mùi.
+// 🔴 **Tham số BỊ BAKE hết** (`@strPartCode`, `@strDealerCode`, `@strBOMCode`) qua `StringUtils.Replace`
+//   ⇒ bề mặt tiêm SQL; `alParamsCoupleSql` **rỗng** ⇒ không dính `[BAKE-PARAM-MIX]`.
+// 🔴 `GroupByPart` **bắt buộc** `and smp.PartCode = '@strPartCode'` (không có nhánh rỗng) ⇒ luôn đúng **một** mã.
+// 🔴 `and t.TotalInStockQuantity != 0.0` ⇒ phụ tùng **tồn bằng 0 bị loại** khỏi báo cáo tồn kho.
+// ⚪ **ÂM TÍNH — `Replace("@strDBName_CommonCenter", _strConfig_DBName_Main)` chạy TRƯỚC khi chèn template**,
+//   nhưng template `zzB_tbl_Inv_StockBalance_QtyInStock_zzE` **không chứa** token đó (đếm = **0** trong
+//   `BizCarSv.zSqlTemplate.Inv.cs`) và nhận sẵn tiền tố qua đối số ⇒ **không** sót token. Kiểm rồi mới ghi.
+app.MapGet("/api/report/inventory-balance-by-part", async (AppDbContext db, ITenantContext t,
+    string? partCode, string? dealerCode) =>
+{
+    // Nguồn BẮT BUỘC một mã phụ tùng (không có nhánh rỗng) ⇒ port giữ đúng ràng buộc đó.
+    if (string.IsNullOrWhiteSpace(partCode))
+        return Results.BadRequest(new { error = "Can partCode — nguon viet and smp.PartCode = @strPartCode, khong co nhanh rong." });
+    var code = partCode!.Trim().ToUpperInvariant();
+
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
+        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Quantity, x.Cost, x.FlagActive }).ToListAsync();
+
+    // Nguồn LOẠI dòng tồn = 0 (and t.TotalInStockQuantity != 0.0).
+    var rows = parts.Where(x => x.Quantity != 0m).ToList();
+
+    return Results.Ok(new
+    {
+        partCode = code,
+        dealerFilterRequested = dealerCode,
+        count = rows.Count, rows,
+        zeroStockRowsDropped = parts.Count - rows.Count,
+        // ===== #692 =====
+        dealerFilterAlwaysTrueBecauseBothSidesAreTheSameToken = "BO LOC DAI LY LUON DUNG VI HAI VE LA CUNG MOT TOKEN: and (N@strDealerCode = @strDealerCode or smp.DealerCode = N@strDealerCode). Ca hai ve deu la token @strDealerCode va Replace thay MOI lan xuat hien bang CUNG MOT gia tri => sau khi thay thanh N VC048 = VC048 => LUON TRUE => ve thu hai khong bao gio duoc xet => BO LOC DAI LY BI VO HIEU HOAN TOAN: bao cao ton kho theo ma phu tung tra ve MOI DAI LY",
+        siblingWritesItCorrectly = "DOI CHIEU NGAY HAM ANH EM: Rpt_InventoryBalance_StationInvQtyMin viet and (N@strDealerCode = '' or t.DealerCode = N@strDealerCode) — DUNG CACH: rong => N'' = '' TRUE => moi dai ly; co gia tri => loc that. Hai ham canh nhau, MOT DUNG MOT SAI, khac nhau DUNG HAI KY TU",
+        oppositeFailureModeToIssue488 = "Khac #488: o do ve dau la @DealerCode is null => LUON FALSE => loc qua chat; o day LUON TRUE => loc qua long. Cung mot khuon (mac dinh = tat ca) nhung HONG THEO HAI HUONG NGUOC NHAU",
+        selfJoinDisablesBomFilter = "NOI BANG VOI CHINH NO => BO LOC BOM BI VO HIEU (StationInvQtyMin): from Mst_BOM mb inner join #tbl_Mst_BOM_Filter t on t.BOMCode = t.BOMCode — le ra mb.BOMCode = t.BOMCode. Dieu kien noi la t.BOMCode = t.BOMCode => LUON TRUE (tru NULL) => mb khong bi rang buoc gi => lay MOI Mst_BOM, roi inner join Mst_BOMDtl on mb.BOMCode = mbdt.BOMCode => TOAN BO dinh muc cua moi BOM. Bang #tbl_Mst_BOM_Filter duoc dung cong phu (loc mb.BOMCode = @strBOMCode) roi VUT DI => man ton toi thieu theo dinh muc BOM KHONG loc theo BOM da chon",
+        hardcodedDealerLeftInSource = "MA DAI LY THAT BI BO QUEN TRONG MA NGUON: --and (N VC048 = '' or t.DealerCode = N VC048) — dong test hardcode VC048 BI COMMENT ngay tren dong dang chay; port dong ACTIVE, ghi lai nhu mui",
+        allParamsAreBaked = "tham so BI BAKE het (@strPartCode, @strDealerCode, @strBOMCode) qua StringUtils.Replace => be mat tiem SQL; alParamsCoupleSql RONG => khong dinh [BAKE-PARAM-MIX]",
+        partCodeIsMandatory = "GroupByPart BAT BUOC and smp.PartCode = @strPartCode (khong co nhanh rong) => luon dung MOT ma",
+        zeroStockExcluded = "and t.TotalInStockQuantity != 0.0 => phu tung ton bang 0 BI LOAI khoi bao cao ton kho",
+        negativeTemplateHasNoLeftoverToken = "AM TINH: Replace(@strDBName_CommonCenter, _strConfig_DBName_Main) chay TRUOC khi chen template, nhung template zzB_tbl_Inv_StockBalance_QtyInStock_zzE KHONG chua token do (dem = 0 trong BizCarSv.zSqlTemplate.Inv.cs) va nhan san tien to qua doi so => KHONG sot token. Kiem roi moi ghi",
+        miniModelGap = "Mini chua co cot DealerCode tren ServicePart va chua mo hinh hoa Mst_BOMDtl theo PartCode => nhanh StationInvQtyMin chua port duoc day du; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #691 DANH MỤC ĐẦU VIN → MODEL `Mst_VINModelOrginal_*` (`BizCarSv.Master.cs:9113-9866`) =====
 // md5: `Get` `3235b1dc` · `Create` `bf247fb3` · `Update` `5289191d` · `Delete` `429708dc` · `Import` `62e8c2df`
 // — **cả năm KHỚP** máy 150. WS `WSCarSv.asmx.cs:28717…28844`. **Trả nợ #651** (bảng này đã bị ĐỌC ở nhiều báo
