@@ -50967,12 +50967,41 @@ app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 // #284: bản DMSCarSv của CÙNG màn này (`Ser_RO_GetStatusList02_New20230220`) có thêm bộ lọc
 //   `strActualDeliveryDate` (ngày GIAO XE thực tế) và trả kèm `plateNoList` — bản iCIC không có.
 //   Gộp vào đây thay vì dựng endpoint thứ hai: **cùng một màn, hai hệ gọi**.
+// ===== 🔴🔴 #688 ĐỌC CẶP VỎ BỌC `Ser_RO_GetStatusList02_GetClaim(_WH)_New20190710` (`ZTemp.cs:2418` / `:2549`) =====
+// md5 `96baf919` (Main) · `21801fd8` (kho) — **cả hai KHỚP** máy 150, cùng offset.
+// WS `WSCarSv.asmx.cs:10196` / `:10246` gọi thẳng hai vỏ bọc này.
+// ⚪ **HAI BẢN SINH ĐÔI KHÁC NHAU ĐÚNG Ở CSDL ĐÍCH**: diff chuẩn hoá khoảng trắng (122↔122 dòng) chỉ ra
+//   tên hàm · `strFunctionName` · `strErrorCodeDefault` · và `_dbMain` ↔ `_dbWH`. **Không** khác nghiệp vụ.
+// 📌 Bản Main còn kèm **lý do nghiệp vụ viết ngay tại chỗ**: `#region // Init: // chia sẻ lịch sử sửa chữa nên`
+//   `sẽ để request trên Main` ⇒ giải thích vì sao bản "đại lý" lại chạy trên `_dbMain` chứ không `_dbDealer`.
+//   Ghi lại vì đây là một trong số ít chỗ nguồn **tự nói ra** lý do chọn CSDL.
+//
+// 🔴🔴 **HẬU TỐ PHIÊN BẢN CỦA VỎ BỌC LỆCH 4 NĂM SO VỚI THÂN**: vỏ bọc tên `…_GetClaim_WH_**New20190710**`
+//   nhưng bên trong gọi `Ser_RO_GetStatusList02_GetClaimX_**New20230220**(…)`.
+//   ⇒ Đọc tên vỏ bọc mà suy "đây là bản 2019" là **sai 4 năm**. Cùng họ với #683/#684/#687 (tên nói dối),
+//     nhưng đây là **hậu tố NGÀY** — thứ mà cả tôi lẫn người bảo trì đều dùng để đoán bản nào mới.
+// 🔴🔴 **MÃ LỖI LÀ CHUỖI THÔ, KHÔNG PHẢI HẰNG — VÀ 9/12 MÃ NHƯ VẬY KHÔNG CÓ TRONG DANH MỤC LỖI**:
+//     `string strErrorCodeDefault = "Ser_RO_GetStatusList02_GetClaim_WH";`  (chuỗi thô, không `TError.ErrCarSv.…`)
+//   📌 Đếm trong `TERP.BizCarSv`: `strErrorCodeDefault = "` (chuỗi thô) = **15** site · `= TError…` = **1055** site.
+//   📌 Lấy **12 mã** phân biệt của 15 site đó rồi tra `TERP.Constants/Error.CarSv.cs`: **9 mã có 0 hit**
+//     (`CarService_GetNetworkID` · `GetFileFromPathForTab` · `GetServerFilePath` ·
+//      `HTCMobileTVO_GetCustomersUsedService` · `HTCMobileTVO_GetSerRoService` · `HTCMobileTVO_GetServiceReminders` ·
+//      `Ser_RO_GetStatusList02_GetClaim` · `Ser_RO_GetStatusList02_GetClaim_WH` · `SoBaoHanhOnline_GetSerRoService`);
+//     chỉ **3 mã** có mặt (`DeleteFile`, `iCIC_DmsClaimReportByTypeAndDate`, `iCIC_ListClaimByPlateNo`).
+//   ⇒ Khi hàm lỗi, client nhận một mã **không tra được ra thông điệp**. Và 9 mã đó tụ ở đúng các kênh **mới/ngoại
+//     vi**: `HTCMobileTVO` (app di động), `SoBaoHanhOnline` (sổ bảo hành online), helper file, `CarService`
+//     ⇒ nợ này **không rải đều**, nó nằm ở phần được thêm sau.
 app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantContext t,
     string? callerDealerCode, string? dealers, string? status, string? plateNo, string? frameNo,
     string? cusName, DateTime? checkInDate, DateTime? actualDeliveryDate) =>
 {
+    // ===== #688 =====
+    const string twinsDifferOnlyInTargetDatabase = "HAI BAN SINH DOI KHAC NHAU DUNG O CSDL DICH: diff chuan hoa khoang trang (122 vs 122 dong) chi ra ten ham, strFunctionName, strErrorCodeDefault va _dbMain vs _dbWH. KHONG khac nghiep vu. Ban Main con kem ly do nghiep vu viet ngay tai cho: #region // Init: // chia se lich su sua chua nen se de request tren Main => giai thich vi sao ban dai ly lai chay tren _dbMain chu khong _dbDealer";
+    const string wrapperVersionSuffixIsFourYearsStale = "HAU TO PHIEN BAN CUA VO BOC LECH 4 NAM SO VOI THAN: vo boc ten …_GetClaim_WH_New20190710 nhung ben trong goi Ser_RO_GetStatusList02_GetClaimX_New20230220(…) => doc ten vo boc ma suy day la ban 2019 la SAI 4 NAM. Cung ho voi #683/#684/#687 (ten noi doi) nhung day la HAU TO NGAY — thu ma ca toi lan nguoi bao tri deu dung de doan ban nao moi";
+    const string nineErrorCodesMissingFromCatalogue = "MA LOI LA CHUOI THO KHONG PHAI HANG — VA 9/12 MA NHU VAY KHONG CO TRONG DANH MUC LOI: strErrorCodeDefault = \"Ser_RO_GetStatusList02_GetClaim_WH\" (chuoi tho, khong TError.ErrCarSv.…). Dem trong TERP.BizCarSv: strErrorCodeDefault = \" (chuoi tho) = 15 site, = TError… = 1055 site. Lay 12 ma phan biet cua 15 site do roi tra TERP.Constants/Error.CarSv.cs: 9 MA CO 0 HIT (CarService_GetNetworkID, GetFileFromPathForTab, GetServerFilePath, HTCMobileTVO_GetCustomersUsedService, HTCMobileTVO_GetSerRoService, HTCMobileTVO_GetServiceReminders, Ser_RO_GetStatusList02_GetClaim, Ser_RO_GetStatusList02_GetClaim_WH, SoBaoHanhOnline_GetSerRoService); chi 3 ma co mat (DeleteFile, iCIC_DmsClaimReportByTypeAndDate, iCIC_ListClaimByPlateNo) => khi ham loi, client nhan mot ma KHONG TRA DUOC RA THONG DIEP. Va 9 ma do tu o dung cac kenh MOI/NGOAI VI (HTCMobileTVO app di dong, SoBaoHanhOnline, helper file, CarService) => no nay KHONG RAI DEU, no nam o phan duoc them sau";
     var caller = (callerDealerCode ?? "").Trim().ToUpperInvariant();
 
+    _ = (twinsDifferOnlyInTargetDatabase, wrapperVersionSuffixIsFourYearsStale, nineErrorCodesMissingFromCatalogue);
     var qy = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
     var dealerList = (dealers ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries)
         .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
