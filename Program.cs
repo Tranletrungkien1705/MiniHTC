@@ -8839,6 +8839,93 @@ app.MapGet("/api/htcinvoices/gen-invoice-no", async (
     });
 }).RequireAuthorization();
 
+// ===== #B117 HUỶ HOÁ ĐƠN TCG TRÊN HDDT — `VAT_TCGInvoice_Invoice_Invoice_Deleted` =====
+// Trace LIVE: WS → `_biz.VAT_TCGInvoice_Invoice_Invoice_Deleted` (`BizHTC.InvoiceHTC_TCG.cs:1399`)
+//   — **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=1399 md5
+//   `b596e1c087541e50d9c29f3ed30508b2`.
+// 🔴 **"Deleted" KHÔNG PHẢI XOÁ — mà là ĐỔI TRẠNG THÁI sang `'C'`** (`:1831`, `:1857`):
+//      `update VAT_TCGInvoice       set VatTCGStatus   = 'C' -- Rejected …`
+//      `update VAT_TCGInvoiceDetail set TCGStatusDetail = 'C' -- Rejected …`
+//    ⇒ **không có `delete`** ở đâu cả; dữ liệu vẫn còn, chỉ chuyển sang **huỷ**.
+//    ⚠️ Chú thích nguồn ghi **`-- Rejected`** cho giá trị `'C'` — **lệch từ vựng** (`TConst.Stage`:
+//      `'C'` = *Cancelled*, `'R'` = *Rejected*). Giữ **giá trị** `'C'`, **bỏ qua** nhãn sai.
+//    ⇒ Port thành `db.Remove(...)` là **mất dữ liệu** và làm hỏng mọi báo cáo đọc hoá đơn đã huỷ.
+// 🔴 **BỐN kiểm đầu vào BẮT BUỘC**, mỗi cái một mã lỗi riêng:
+//    `TCGInvoiceCode` (`…_strTCGInvoiceCodeInvalid`) · `DeleteDTime` (`…_strDeleteDTimeInvalid`) ·
+//    `DeleteReason` (`…_strDeleteReasonInvalid`) · `Email` (`…_strEmailInvalid`).
+//    Sau đó hoá đơn phải **tồn tại** (`…_strTCGInvoiceCodeNotFound`).
+// 🔴 **DÒ HOÁ ĐƠN ĐIỀU CHỈNH CỦA HOÁ ĐƠN GỐC** trước khi huỷ:
+//      `from VAT_TCGInvoice t inner join #tbl_VAT_TCGInvoiceInput f **on t.RefNo = f.TCGInvoiceCode**`
+//      `where t.SourceInvoiceCode = **'INVOICEADJ'** and t.VatTCGStatus **not in ('C')**`
+//    ⇒ tìm hoá đơn **điều chỉnh** (`RefNo` trỏ về hoá đơn đang huỷ) **chưa bị huỷ**.
+//    ⚠️ **Khối "Thu hồi hoá đơn điều chỉnh" NGAY SAU ĐÓ BỊ COMMENT TOÀN BỘ** (`:1726-1800`) ⇒ nguồn
+//      **dò ra nhưng KHÔNG làm gì** với danh sách đó. Port giữ đúng: **trả ra để cảnh báo**
+//      (`invoiceAdjNotRecalled`), **không tự thu hồi**.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`**, cả hai bảng (đầu + dòng).
+// 📌 **NỢ — hiệu ứng RA NGOÀI**: `OSDMS_TVAN_OS_Invoice_Invoice_DeletedX` (gọi sang **hệ thống hoá
+//    đơn điện tử TVAN**) và `OSDMS_TVAN_Invoice_Invoice_GetX` chưa có trong MiniHTC ⇒ endpoint
+//    **chỉ đổi trạng thái trong DB**, cờ `tvanNotCalled = true`. Theo luật `C0-…quingentesimusseptimus`:
+//    hiệu ứng ra ngoài **không tự bắn**. `AttachedDelFile*`/`Email` nhận vào nhưng **chưa gửi đi đâu**.
+app.MapPost("/api/tcginvoices/{code}/hddt-delete", async (
+    string code, TcgInvoiceHddtDeleteDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var invCode = (code ?? "").Trim();
+    if (invCode.Length == 0)
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_Invoice_Invoice_Deleted_Input_strTCGInvoiceCodeInvalid" });
+    if (dto.DeleteDTime is null)
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_Invoice_Invoice_Deleted_Input_strDeleteDTimeInvalid" });
+    if (string.IsNullOrWhiteSpace(dto.DeleteReason))
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_Invoice_Invoice_Deleted_Input_strDeleteReasonInvalid" });
+    if (string.IsNullOrWhiteSpace(dto.Email))
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_Invoice_Invoice_Deleted_Input_strEmailInvalid" });
+
+    var inv = await db.VatTcgInvoices.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.TCGInvoiceCode == invCode);
+    if (inv is null)
+        return Results.BadRequest(new
+        {
+            error = "VAT_TCGInvoice_Invoice_Invoice_Deleted_Input_strTCGInvoiceCodeNotFound",
+            check = new { TCGInvoiceCode = invCode }
+        });
+
+    // 🔴 Dò hoá đơn ĐIỀU CHỈNH trỏ về hoá đơn này và CHƯA bị huỷ.
+    var adjs = await db.VatTcgInvoices
+        .Where(v => v.OrgId == t.OrgId && v.RefNo == invCode
+                    && v.SourceInvoiceCode == "INVOICEADJ" && v.VatTCGStatus != "C")
+        .Select(v => new { v.TCGInvoiceCode, v.SourceInvoiceCode, v.VatTCGStatus })
+        .ToListAsync();
+
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    // 🔴 "Deleted" = ĐỔI TRẠNG THÁI sang 'C', KHÔNG xoá dòng.
+    var statusBefore = inv.VatTCGStatus;
+    inv.VatTCGStatus = "C";
+    inv.LogLUDateTime = now; inv.LogLUBy = by;
+
+    var dtls = await db.VatTcgInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && d.TCGInvoiceCode == invCode).ToListAsync();
+    foreach (var d in dtls) { d.TCGStatusDetail = "C"; d.LogLUDateTime = now; d.LogLUBy = by; }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        tcgInvoiceCode = invCode,
+        statusBefore, vatTCGStatus = inv.VatTCGStatus,
+        detailsUpdated = dtls.Count,
+        deleteReason = dto.DeleteReason, deleteDTime = dto.DeleteDTime, email = dto.Email,
+        invoiceAdjNotRecalled = adjs,
+        tvanNotCalled = true,
+        notDeleteNote = "'Deleted' KHONG PHAI XOA - ma la DOI TRANG THAI sang 'C': update VAT_TCGInvoice set VatTCGStatus='C' va update VAT_TCGInvoiceDetail set TCGStatusDetail='C'. KHONG co 'delete' o dau ca; du lieu van con. Port thanh db.Remove(...) la MAT DU LIEU va lam hong moi bao cao doc hoa don da huy.",
+        vocabMismatchNote = "Chu thich nguon ghi '-- Rejected' cho gia tri 'C' - LECH TU VUNG (TConst.Stage: 'C' = Cancelled, 'R' = Rejected). Giu GIA TRI 'C', BO QUA nhan sai.",
+        fourChecksNote = "BON kiem dau vao BAT BUOC, moi cai mot ma loi rieng: TCGInvoiceCode / DeleteDTime / DeleteReason / Email. Sau do hoa don phai TON TAI (_strTCGInvoiceCodeNotFound).",
+        invoiceAdjNote = "DO HOA DON DIEU CHINH cua hoa don goc truoc khi huy: 'inner join #tbl_VAT_TCGInvoiceInput f ON t.RefNo = f.TCGInvoiceCode where t.SourceInvoiceCode = INVOICEADJ and t.VatTCGStatus not in (C)'. NHUNG khoi 'Thu hoi hoa don dieu chinh' NGAY SAU DO BI COMMENT TOAN BO (:1726-1800) => nguon DO RA NHUNG KHONG LAM GI. Port giu dung: tra ra de canh bao (invoiceAdjNotRecalled), KHONG tu thu hoi.",
+        tvanDebt = "NO - HIEU UNG RA NGOAI: OSDMS_TVAN_OS_Invoice_Invoice_DeletedX (goi sang he thong hoa don dien tu TVAN) va OSDMS_TVAN_Invoice_Invoice_GetX chua co trong MiniHTC => endpoint CHI doi trang thai trong DB. Theo luat C0-...quingentesimusseptimus: hieu ung ra ngoai KHONG TU BAN. AttachedDelFile*/Email nhan vao nhung CHUA gui di dau.",
+        twoDbNote = "Nguon ExecNonQuery tren CA _dbMain va _dbWH, cho CA HAI bang (dau + dong)."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -42389,6 +42476,7 @@ record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   //
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record TcgInvoiceHddtDeleteDto(string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B117
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
 record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109
