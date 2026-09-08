@@ -30702,6 +30702,68 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #576 TRA BẢN TIN KỸ THUẬT THEO MÃ (`Blt_Bulletin_Get_OnlyByBulletinID`) — **TÊN HÀM NÓI DỐI** =====
+// Nguồn: `BizCarSv.Bulletin.cs:4014`; WS LIVE `WSCarSv.asmx.cs:26409` gọi thẳng bản này (không hậu tố).
+//
+// 🔴🔴 **TÊN NÓI "ONLY BY BulletinID" NHƯNG CÂU LỆNH BẮT BUỘC PHẢI CÓ VIN**:
+//     `select distinct b.BulletinID into #tbl_Btl_Bulletin`
+//     `from Btl_Bulletin b **inner join Btl_Bulletin_VIN bv on b.bulletinid = bv.BulletinId**`
+//     `WHERE (1=1) and b.BulletinID = '@strBulletinID'`
+//   ⇒ Bản tin **chưa gắn VIN nào** thì tra **đúng mã** vẫn ra **rỗng**. Tên hàm hứa "chỉ theo mã bản tin",
+//     thực tế là *"theo mã **và** phải đã có ít nhất một xe"*. Bản tin vừa tạo, hoặc bản tin thông báo chung
+//     không gắn xe cụ thể, **không tồn tại** dưới con mắt của API này.
+//   📌 Port tra **thẳng theo mã** và trả thêm `vinCount` + cờ `sourceRequiresAtLeastOneVin` để chỗ gọi biết
+//     nguồn sẽ **giấu** bản ghi nào.
+// 🔴 **BAKE THAM SỐ**: `b.BulletinID = '@strBulletinID'` rồi `StringUtils.Replace(sql, "@strBulletinID", …)`.
+//   `alParamsCoupleSql` được tạo ra **rỗng** và vẫn truyền vào `ExecQuery` ⇒ không phải [BAKE-PARAM-MIX]
+//   (không trộn hai cơ chế) mà là **bake thuần** — một dấu nháy trong mã bản tin là **chèn SQL**.
+// 🔴 **`#region // Check` CHỈ CÓ MỘT DÒNG** (trích theo #403):
+//     `strBulletinID = TUtils.CUtils.StandardizeParam(strBulletinID);`
+//   `StandardizeParam` = `Convert.ToString(x).Trim().**ToUpper()**` ⇒ (a) **không** chặn rỗng — mã rỗng cho
+//     `b.BulletinID = ''` nên may mắn ra rỗng chứ không trả hết; (b) mã bị **viết hoa**, nên với collation
+//     phân biệt hoa–thường thì bản tin có mã chữ thường **không bao giờ tra được**.
+// ⚠️ Câu SQL đi **vòng thừa**: gom `BulletinID` vào bảng tạm rồi `inner join` **lại chính** `Btl_Bulletin`
+//   để lấy `bb.*` — kết quả y hệt việc chọn thẳng, chỉ thêm một lần quét. `select bb.*` ⇒ hợp đồng mở.
+// ⚠️ `-- drop table #tbl_Btl_Bulletin` **bị comment** ⇒ bảng tạm không được dọn (giống #565).
+app.MapGet("/api/bulletins/by-id/{bulletinNo}", async (string bulletinNo, AppDbContext db, ITenantContext t,
+    bool? requireVin) =>
+{
+    var id = bulletinNo.Trim().ToUpperInvariant();   // nguồn: StandardizeParam = Trim + ToUpper
+    if (id.Length == 0)
+        return Results.BadRequest(new { error = "bulletinNo rỗng — nguồn không chặn, chỉ may mà ra rỗng." });
+
+    var b = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == id);
+    if (b is null) return Results.NotFound(new { bulletinNo = id });
+
+    var vins = await db.BulletinVins.Where(x => x.OrgId == t.OrgId && x.BulletinNo == id)
+        .OrderBy(x => x.VinNo)
+        .Select(x => new { x.VinNo, x.DealerCode, x.Status })
+        .ToListAsync();
+
+    // Nguồn INNER JOIN sang bảng VIN ⇒ không VIN thì không thấy. Port cho chọn, mặc định KHÔNG bắt buộc.
+    var hiddenBySource = vins.Count == 0;
+    if (requireVin == true && hiddenBySource)
+        return Results.NotFound(new
+        {
+            bulletinNo = id,
+            reason = "Ban tin chua gan VIN nao — dung khuon inner join cua nguon.",
+        });
+
+    return Results.Ok(new
+    {
+        b.Id, b.BulletinNo, b.BulletinNoHMC, b.Remark, b.PartCode, b.PartName,
+        b.SerCode, b.SerName, b.DateExpired, b.FileNameAttachment, b.FlagActive,
+        b.CreateDate, b.UserCreate,
+        vinCount = vins.Count, vins,
+        sourceRequiresAtLeastOneVin = "inner join Btl_Bulletin_VIN — ten ham noi Only By BulletinID nhung ban tin chua gan VIN thi tra RONG",
+        hiddenBySource,
+        parameterBakedNotParameterised = "b.BulletinID = '@strBulletinID' + StringUtils.Replace; alParamsCoupleSql tao ra RONG",
+        checkRegionHasOnlyStandardizeParam = "Trim + ToUpper: khong chan rong, va ma chu thuong khong tra duoc neu collation phan biet hoa thuong",
+        redundantTempTableRoundTrip = "gom BulletinID vao bang tam roi inner join lai chinh Btl_Bulletin",
+        tempTableDropCommentedOut = "-- drop table #tbl_Btl_Bulletin",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/bulletins/{no}/details", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
