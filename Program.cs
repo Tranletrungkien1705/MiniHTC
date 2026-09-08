@@ -53918,6 +53918,126 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #670 DOANH THU DỊCH VỤ `Ser_InvReportRevenueRpt_WH_New20230417` (`WH.cs:11910-12133`) =====
+// 3B: laptop `:11910` md5 `20258ad0` **KHỚP** máy 150 `:11910`.
+// 🔴 **BẢN LIVE LÀ BẢN CÓ HẬU TỐ** — `WSCarSv.asmx.cs:31010` gọi thẳng `…_WH_**New20230417**`; hàm trần
+//   `Ser_InvReportRevenueRpt_WH` (`:11685`, md5 `59b60bbd`) **CHẾT**. DIFF hai bản (luật #414) cho ra:
+//
+// ⚪🔴 **THAY ĐỔI 2023-04-17 CHÍNH LÀ MỘT BẢN VÁ "MẤT DÒNG" — nhà ĐÃ tự nhận ra lớp lỗi tôi đang đếm**:
+//   Bản chết dựng `#ccus` bằng `from ser_customer cus join ser_ro ro on cus.CusID = ro.CusID and`
+//   `ro.DealerCode = cus.DealerCode join ser_car car on ro.CarID = car.CarID **and ro.CusID = car.CusID**`
+//   ⇒ lệnh sửa chữa của **xe đã sang tên** hoặc khách bị xoá khỏi danh mục **biến mất khỏi báo cáo DOANH THU**.
+//   Bản sống bỏ **cả hai** `join`, đọc thẳng `from Ser_RO ro` (`ro.*`). ⇒ Cùng lớp lỗi với #661 (`inner join
+//   Ser_Customer` làm rơi phiếu xuất nội bộ) và #669 (`and tt.CusID=car.CusID` làm rơi xe sang tên) — và ở đây
+//   **họ đã sửa**. Ghi lại làm mốc: lớp lỗi này là **có thật và được thừa nhận**, không phải suy diễn của tôi.
+// 🔴🔴 **ĐỔI CẢ Ý NGHĨA BỘ LỌC ĐẠI LÝ**: bản chết lọc `cus.DealerCode = '@DealerCode'` (đại lý của **KHÁCH**),
+//   bản sống lọc `ro.DealerCode` (đại lý của **LỆNH**). Khách của đại lý A sửa xe ở đại lý B ⇒ hai bản cho hai
+//   kết quả khác nhau. Đây là **thay đổi nghiệp vụ**, không phải dọn dẹp.
+// 🔴🔴 **NGUỒN SỐ ĐIỆN THOẠI ĐỔI TỪ DANH MỤC SANG ẢNH CHỤP**: bản chết lấy `isnull(cus.Tel, cus.Mobile)`,
+//   bản sống lấy `ISNULL(cc.**CusTel**, cc.**CusMobile**)` — hai cột **sao chép trên chính lệnh sửa chữa**.
+//   ⇒ Hết mất dòng, nhưng số liên hệ là **ảnh chụp lúc lập lệnh**, không cập nhật khi khách đổi số.
+//
+// 🔴🔴🔴 **`isnull(Factor, 0)` — MỘT CỘT, HAI GIÁ TRỊ MẶC ĐỊNH NGƯỢC NGHĨA NHAU**:
+//   ở đây mọi công thức tiền đều viết `ISNULL(rop.Factor, 0) * Quantity * Price` ⇒ dòng có `Factor` **NULL**
+//   đóng góp **0 đồng**; còn ở #667 (`Ser_Inv_QuotePartItems`) nguồn viết `isnull(sst.Factor,**1**)` ⇒ đóng góp
+//   **đủ tiền**. 📌 Đếm toàn `TERP.BizCarSv`: `isnull(<alias>.Factor, 0)` = **285** lần ·
+//   `isnull(<alias>.Factor, 1)` = **13** lần ⇒ mặc định **0** là quy ước áp đảo (96%).
+//   ⇒ Một `Factor` NULL **âm thầm xoá trắng dòng tiền** ở hầu hết báo cáo. Port trả cờ đếm dòng `Factor = 0`.
+// 🔴🔴 **`#tbl_debit` LÀ MỘT DÒNG MỖI CÔNG NỢ, NHƯNG ĐƯỢC NỐI THEO `ROID`** ⇒ một lệnh có **hai** phiếu công nợ
+//   thì `left join #tbl_debit db on cc.DealerCode=db.DealerCode and cc.ROID=db.ROID` **nhân đôi dòng lệnh**
+//   ⇒ `Amount`/`SumAmount` **cộng trùng**. Bảng đó gom theo `CusDebitID` (không `group by ROID`).
+//   ⇒ Đúng loại "KẾT QUẢ SAI HÌNH DẠNG": một bản ghi là **một lệnh** hay **một phiếu công nợ**?
+// ⚪ **DƯƠNG TÍNH — `full outer join` Ở ĐÂY LÀM ĐÚNG, khác hẳn #650/#665**: hai vế (phụ tùng / công) nối bằng
+//   `full outer join … on rop.ROID = rsi.ROID` và khoá lấy từ **CẢ HAI** vế: `ISNULL(rop.ROID, rsi.ROID) ROID`.
+//   Ở #665 cùng cấu trúc nhưng `SELECT d1.InsNo` lấy **một vế** ⇒ vế kia rơi. **Cùng nhà, cùng cấu trúc, một chỗ
+//   đúng một chỗ sai** — nên đừng gắn cờ theo hình dạng, phải xem khoá lấy từ đâu.
+// ⚪ **ÂM TÍNH — mốc ngày ở đây KHÔNG mất ngày cuối** (khác #666/#668): nguồn so
+//   `CONVERT(nvarchar(**10**), ro.PaidCreatedDate, 120) <= '@ToDate'` — cắt còn **10 ký tự** = `yyyy-MM-dd`
+//   ⇒ so **theo ngày**, phần giờ đã bị cắt ⇒ **không** dính luật #415. Ghi ⚪ để khỏi báo nhầm.
+// ⚪ **ÂM TÍNH — `order by cc.RONo` CÓ nghĩa** (nằm trên câu `SELECT` cuối trả dữ liệu).
+// 🔴 `'BG-' + cc.RONo RONo` — tiền tố nướng vào dữ liệu. 📌 Ở #669 cùng cột `RONo` lại nướng `'LS-'`
+//   ⇒ **hai màn, hai tiền tố khác nhau trên cùng một cột** — client không thể ghép số liệu hai màn.
+// 🔴 `cd.DebitType='1'` = **công nợ KHÁCH HÀNG** (hằng `TConst.SerDebitType.CusDebit`, đã tra ở #650).
+// 🔴 Ngày và mã đại lý **bake**; `RevenueCash = SumAmount − DebitAmountLeft` nên mọi lỗi nhân dòng ở trên
+//   truyền thẳng vào **doanh thu tiền mặt**.
+app.MapGet("/api/report/service-revenue-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    // Nguồn (bản 2023-04-17): CHỈ đọc Ser_RO, KHÔNG join khách/xe — đó chính là bản vá mất dòng.
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.Status == "Finished" || x.Status == "Paid");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (from is not null) qr = qr.Where(x => x.PaidCreatedDate >= from);
+    // #415 ⚪ nguồn cắt CONVERT(nvarchar(10),…,120) nên so theo NGÀY — port so tới hết ngày cuối, đúng nguồn.
+    if (to is not null) qr = qr.Where(x => x.PaidCreatedDate < to!.Value.AddDays(1));
+    var ros = await qr.Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CheckInDate,
+                                        x.PaidCreatedDate, x.ActualDeliveryDate, x.DealerCode }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Factor, x.NeedQty, x.UnitPrice, x.Vat, x.ExpenseType }).ToListAsync();
+    var svcs = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Factor, x.Price, x.Vat, x.ExpenseType }).ToListAsync();
+
+    var roNos = ros.Select(x => x.RONo).ToList();
+    var debits = await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.DebitType == "1"
+            && x.RONo != null && roNos.Contains(x.RONo!))
+        .Select(x => new { x.RONo, x.DealerCode, x.DebitAmount, x.PaidAmount }).ToListAsync();
+
+    var partsByRo = parts.GroupBy(x => x.RoId).ToDictionary(g => g.Key, g => g.ToList());
+    var svcsByRo = svcs.GroupBy(x => x.RoId).ToDictionary(g => g.Key, g => g.ToList());
+    // Nguồn nối #tbl_debit theo ROID nhưng bảng đó gom theo CusDebitID ⇒ NHÂN DÒNG. Port GỘP theo lệnh và đếm.
+    var debitByRo = debits.GroupBy(x => x.RONo!).ToDictionary(g => g.Key,
+        g => new { left = g.Sum(x => x.DebitAmount - x.PaidAmount), rows = g.Count() });
+
+    var rows = ros.Select(r =>
+    {
+        var p = partsByRo.TryGetValue(r.Id, out var pl) ? pl : new();
+        var v = svcsByRo.TryGetValue(r.Id, out var vl) ? vl : new();
+        // Nguồn: ISNULL(Factor, 0) — Factor NULL/0 làm dòng đóng góp 0 đồng. Giữ 1:1.
+        var amount = p.Sum(x => x.Factor * x.NeedQty * x.UnitPrice) + v.Sum(x => x.Factor * x.Price);
+        var vat = p.Sum(x => x.Factor * x.NeedQty * x.UnitPrice * x.Vat * 0.01m)
+                + v.Sum(x => x.Factor * x.Price * x.Vat * 0.01m);
+        var ins = p.Where(x => x.ExpenseType == "ROINSURANCE").Sum(x => x.Factor * x.NeedQty * x.UnitPrice * (1 + x.Vat * 0.01m))
+                + v.Where(x => x.ExpenseType == "ROINSURANCE").Sum(x => x.Factor * x.Price * (1 + x.Vat * 0.01m));
+        var dbt = debitByRo.TryGetValue(r.RONo, out var d) ? d : null;
+        return new
+        {
+            roNo = "BG-" + r.RONo, plateNo = r.LicensePlate, r.CusName, r.CheckInDate, r.PaidCreatedDate, r.ActualDeliveryDate,
+            amount, amountVat = vat, sumAmount = amount + vat,
+            debitAmount = dbt?.left ?? 0m,
+            revenueCash = amount + vat - (dbt?.left ?? 0m),
+            insAmount = ins,
+            debitRowsForThisRo = dbt?.rows ?? 0,
+            zeroFactorLines = p.Count(x => x.Factor == 0) + v.Count(x => x.Factor == 0),
+        };
+    }).OrderBy(x => x.roNo).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows,
+        totalRevenueCash = rows.Sum(x => x.revenueCash),
+        // ===== #670 =====
+        liveVersionIsTheSuffixedOne = "WSCarSv.asmx.cs:31010 goi thang …_WH_New20230417; ham tran Ser_InvReportRevenueRpt_WH (:11685, md5 59b60bbd) CHET",
+        the20230417ChangeIsARowLossFix = "THAY DOI 2023-04-17 CHINH LA MOT BAN VA MAT DONG — nha DA tu nhan ra lop loi nay. Ban chet dung #ccus bang from ser_customer cus join ser_ro ro on cus.CusID = ro.CusID and ro.DealerCode = cus.DealerCode join ser_car car on ro.CarID = car.CarID AND ro.CusID = car.CusID => lenh sua chua cua xe DA SANG TEN hoac khach bi xoa khoi danh muc BIEN MAT khoi bao cao DOANH THU. Ban song bo CA HAI join, doc thang from Ser_RO ro. Cung lop loi voi #661 va #669 — va o day HO DA SUA => lop loi nay la CO THAT va DUOC THUA NHAN",
+        dealerFilterSemanticsChanged = "ban chet loc cus.DealerCode (dai ly cua KHACH), ban song loc ro.DealerCode (dai ly cua LENH) => khach cua dai ly A sua xe o dai ly B thi hai ban cho hai ket qua khac nhau; thay doi NGHIEP VU khong phai don dep",
+        phoneSourceChangedToSnapshot = "ban chet lay isnull(cus.Tel, cus.Mobile), ban song lay ISNULL(cc.CusTel, cc.CusMobile) — hai cot SAO CHEP tren chinh lenh sua chua => het mat dong nhung so lien he la ANH CHUP luc lap lenh, khong cap nhat khi khach doi so",
+        factorNullDefaultIsZeroHere = "MOT COT HAI GIA TRI MAC DINH NGUOC NGHIA: o day moi cong thuc tien viet ISNULL(rop.Factor, 0) * Quantity * Price => dong co Factor NULL dong gop 0 dong; con o #667 (Ser_Inv_QuotePartItems) nguon viet isnull(sst.Factor,1) => dong gop DU tien. Dem toan TERP.BizCarSv: isnull(alias.Factor, 0) = 285 lan, isnull(alias.Factor, 1) = 13 lan => mac dinh 0 la quy uoc ap dao 96% => mot Factor NULL AM THAM XOA TRANG dong tien o hau het bao cao",
+        zeroFactorLinesTotal = rows.Sum(x => x.zeroFactorLines),
+        debitJoinedByRoIdButGroupedByDebitId = "#tbl_debit la MOT DONG MOI CONG NO nhung duoc noi theo ROID: left join #tbl_debit db on cc.DealerCode=db.DealerCode and cc.ROID=db.ROID => mot lenh co HAI phieu cong no thi NHAN DOI dong lenh => Amount/SumAmount cong trung. Bang do gom theo CusDebitID, khong group by ROID => KET QUA SAI HINH DANG: mot ban ghi la MOT LENH hay MOT PHIEU CONG NO? Port GOP theo lenh va tra debitRowsForThisRo",
+        rosWithMultipleDebitRows = rows.Count(x => x.debitRowsForThisRo > 1),
+        positiveFullOuterJoinDoneRight = "DUONG TINH: full outer join o day LAM DUNG, khac han #650/#665 — hai ve (phu tung/cong) noi bang full outer join … on rop.ROID = rsi.ROID va khoa lay tu CA HAI ve: ISNULL(rop.ROID, rsi.ROID) ROID. O #665 cung cau truc nhung SELECT d1.InsNo lay MOT ve => ve kia roi. Cung nha cung cau truc mot cho dung mot cho sai => dung gan co theo hinh dang, phai xem KHOA LAY TU DAU",
+        negativeNoEndDateLoss = "AM TINH: moc ngay o day KHONG mat ngay cuoi (khac #666/#668) — nguon so CONVERT(nvarchar(10), ro.PaidCreatedDate, 120) <= @ToDate, cat con 10 ky tu = yyyy-MM-dd => so THEO NGAY, phan gio da bi cat => khong dinh luat #415",
+        negativeOrderByIsMeaningful = "AM TINH: order by cc.RONo nam tren cau SELECT cuoi tra du lieu",
+        roNoPrefixDiffersBetweenScreens = "'BG-' + cc.RONo o day, nhung #669 cung cot RONo lai nuong 'LS-' => HAI MAN HAI TIEN TO KHAC NHAU tren cung mot cot; client khong the ghep so lieu hai man",
+        debitTypeConstant = "cd.DebitType=1 = cong no KHACH HANG (TConst.SerDebitType.CusDebit, da tra o #650)",
+        revenueCashInheritsEveryRowMultiplication = "RevenueCash = SumAmount - DebitAmountLeft nen moi loi nhan dong o tren truyen thang vao doanh thu tien mat",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #669 CHĂM SÓC 24h TOÀN HỆ `Ser_CustomerCare_GetNew_All_WH` (`WH.cs:26952-27175`) =====
 // 3B: laptop `:26952` md5 `6d936943` **KHỚP** máy 150 `:26952`. WS `WSCarSv.asmx.cs:29661` gọi thẳng.
 //
