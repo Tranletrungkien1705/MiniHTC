@@ -46036,6 +46036,98 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #695 CHI TIẾT ĐƠN ĐẶT PT GỬI HMC — họ `Rpt_DMSSer_PartsOrderDetail_*` =====
+// (`BizCarSv.Report.Special.Warranty.cs`) md5: `_PartGetX` `7dd4570e` · `_SendHMC` `221f3995` ·
+// `_SendHMC_Auto` `e452137b` — **cả ba KHỚP** máy 150.
+//
+// 🔴🔴🔴 **"BẢN _Auto BỎ TRỐNG BỘ LỌC NGÀY" LÀ KHUÔN MẪU, KHÔNG PHẢI LỖI LẺ** — nay đếm được:
+//   📌 Có **ba** cặp `_SendHMC` / `_SendHMC_Auto` trong hệ: `Rpt_DMSSer_**DealerNetPrice**_*` (#694) ·
+//     `Rpt_DMSSer_**PartsOrderDetail**_*` (hàm này) · `**Ser_ROWarrantyReport**_*`.
+//   📌 Chuỗi `"" // strReportDateConditionList` xuất hiện **2** lần, **cả hai** trong file này ⇒ **2/3 cặp**
+//     bỏ lọc ngày ở bản tự động; cặp `Ser_ROWarrantyReport` **không** dùng cách đó (phải kiểm riêng).
+//   ⇒ Phát biểu đúng: **hai** luồng gửi HMC tự động gửi **toàn bộ lịch sử**, không phải "mọi luồng".
+// 🔴🔴🔴 **BA CÔNG THỨC TIỀN CHỒNG LÊN NHAU, HAI BỊ COMMENT — VÀ CẢ BA KHÁC NHAU** (luật "port dòng ACTIVE"):
+//     `--, isnull(f.Price, 0) * isnull(f.VAT, 0) PriceVAT`              ← Price **×** VAT (không phải `1+VAT`)
+//     `--, cast(isnull(ROUND(f.UPAfterDc / 100, 0), 0) as int) * (1 + isnull(f.VAT, 0)) PriceVAT`
+//     `, cast(ROUND(isnull(f.UPAfterDc, 0) * 0.01 , 0) as int) PriceVAT`   ← **ĐANG CHẠY**
+//   🔴 **Cột tên `PriceVAT` nhưng công thức ĐANG CHẠY KHÔNG có VAT** — vế `* (1 + VAT)` chỉ có ở dòng **đã bị
+//     comment**. Tên cột nói dối; ai đọc tên rồi suy nghiệp vụ sẽ sai.
+//   ⚪ **DƯƠNG TÍNH nhỏ**: dòng đang chạy dùng `* 0.01` thay cho `/ 100` ⇒ **tránh được bẫy chia nguyên** mà dòng
+//     bị comment mắc phải (họ `VAT/100` ở #673 và `/100` ở #694). Cùng một tác giả, hai cách viết, một an toàn hơn.
+// 🔴🔴 **HAI CỘT GIÁ KHÁC NHAU TRONG CÙNG MỘT `SELECT`**: `PriceVAT` tính từ `f.**UPAfterDc**` (đơn giá **sau**
+//   chiết khấu) còn `Amount` tính từ `isnull(f.**Price**, 0) * (1 + isnull(f.VAT, 0))` ⇒ **`Amount` CÓ VAT,
+//   `PriceVAT` KHÔNG có VAT** — ngược hoàn toàn với tên hai cột.
+// 🔴🔴 **BỐN HẰNG NGHIỆP VỤ CỨNG TRONG `WHERE`**, không tham số nào bật/tắt được:
+//     `and t.OrderPartType = 'TST'` · `and t.DeliveryFormCode = '2'` · `and t.SupplierStatus in ('2','4')`
+//     `and **f.QtyAppr = f.QtyOrd**`
+//   🔴 Vế cuối là **bộ lọc nghiệp vụ nặng nhất**: chỉ gửi HMC những dòng được duyệt **ĐÚNG BẰNG** số đặt
+//     ⇒ đơn **duyệt thiếu** (`QtyAppr < QtyOrd`) **không bao giờ** được gửi, và không có cảnh báo nào.
+//   📌 Hằng đã tra: `TConst.OrderPartType` = `"TST"`/`"OTHER"`; `TConst.SupplierStatus` (`Const.Main.cs:544`)
+//     `"1"` chờ duyệt · `"2"` đã duyệt chờ hoàn ⇒ `in ('2','4')` là **hai** trạng thái phía NCC.
+// ⚪ **DƯƠNG TÍNH — anti-join CÓ CHỦ ĐÍCH**: `left join Rpt_PartsOrderDetail_Part rpodp on … + and
+//   rpodp.OrderPartNo is null -- Chưa tùng gửi HMC` ⇒ chỉ lấy đơn **chưa từng gửi**; nguồn **có chú thích rõ**
+//   (gõ sai "tùng"/"từng", vô hại). Khác #659 nơi `IS NULL` **mở toang** bộ lọc.
+app.MapGet("/api/report/parts-order-detail-to-hmc", async (AppDbContext db, ITenantContext t,
+    DateTime? reportDateFrom, DateTime? reportDateTo, bool auto = false) =>
+{
+    // Như #694: bản _Auto của nguồn truyền chuỗi rỗng cho bộ lọc ngày ⇒ không lọc.
+    var from = auto ? (DateTime?)null : reportDateFrom;
+    var to = auto ? (DateTime?)null : reportDateTo;
+
+    var qo = db.OrderParts.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.OrderPartType == "TST")
+        .Where(x => x.DeliveryFormCode == "2")
+        .Where(x => x.SupplierStatus == "2" || x.SupplierStatus == "4");
+    if (from is not null) qo = qo.Where(x => x.ApprovedDate >= from!.Value.Date);
+    if (to is not null) qo = qo.Where(x => x.ApprovedDate < to!.Value.Date.AddDays(1));
+
+    var orders = await qo.Select(x => new { x.Id, x.OrderPartNo, x.OrderSuppierNo, x.DealerCode,
+                                           x.ApprovedDate, x.OrderPartType }).ToListAsync();
+    var ids = orders.Select(x => x.Id).ToList();
+    var orderById = orders.ToDictionary(x => x.Id);
+
+    var lines = await db.OrderPartLines.Where(x => x.OrgId == t.OrgId && ids.Contains(x.OrderPartId))
+        .Select(x => new { x.OrderPartId, x.PartCode, x.PartName, x.Unit, x.PartID,
+                           x.OrderQty, x.QtyAppr, x.Price, x.UPAfterDc, x.VAT }).ToListAsync();
+
+    // Nguồn: and f.QtyAppr = f.QtyOrd — CHỈ dòng duyệt ĐÚNG BẰNG số đặt mới được gửi.
+    var eligible = lines.Where(x => x.QtyAppr != null && x.QtyAppr == x.OrderQty).ToList();
+    var droppedByPartialApproval = lines.Count - eligible.Count;
+
+    var rows = eligible.Select(x =>
+    {
+        var o = orderById[x.OrderPartId];
+        return new
+        {
+            orderPartNo = o.OrderSuppierNo,          // nguồn đặt tên: OrderSuppierNo AS OrderPartNo
+            x.PartID, x.PartCode, x.PartName, x.Unit, o.DealerCode,
+            approvedDate = o.ApprovedDate, o.OrderPartType,
+            quantity = x.QtyAppr,
+            // Dòng ĐANG CHẠY của nguồn: cast(ROUND(isnull(UPAfterDc,0) * 0.01, 0) as int) — KHÔNG nhân (1+VAT).
+            priceVat = (int)Math.Round((x.UPAfterDc ?? 0m) * 0.01m, 0, MidpointRounding.AwayFromZero),
+            // Cột Amount của nguồn dùng CỘT GIÁ KHÁC (Price) và CÓ nhân (1+VAT).
+            amount = x.Price * (1 + (x.VAT ?? 0m)),
+        };
+    }).OrderBy(x => x.orderPartNo).ThenBy(x => x.PartCode).ToList();
+
+    return Results.Ok(new
+    {
+        auto, fromDate = from, toDate = to, count = rows.Count, rows,
+        droppedByPartialApproval,
+        // ===== #695 =====
+        autoVariantPatternCounted = "BAN _Auto BO TRONG BO LOC NGAY LA KHUON MAU KHONG PHAI LOI LE: co BA cap _SendHMC/_SendHMC_Auto trong he (Rpt_DMSSer_DealerNetPrice_* #694, Rpt_DMSSer_PartsOrderDetail_* ham nay, Ser_ROWarrantyReport_*). Chuoi \"\" // strReportDateConditionList xuat hien 2 lan, ca hai trong file nay => 2/3 cap bo loc ngay o ban tu dong; cap Ser_ROWarrantyReport KHONG dung cach do (phai kiem rieng). Phat bieu dung: HAI luong gui HMC tu dong gui toan bo lich su, khong phai moi luong",
+        threeMoneyFormulasStackedTwoCommented = "BA CONG THUC TIEN CHONG LEN NHAU, HAI BI COMMENT — VA CA BA KHAC NHAU: (1) --, isnull(f.Price,0) * isnull(f.VAT,0) PriceVAT (Price NHAN VAT, khong phai 1+VAT); (2) --, cast(isnull(ROUND(f.UPAfterDc / 100, 0), 0) as int) * (1 + isnull(f.VAT,0)) PriceVAT; (3) DANG CHAY: , cast(ROUND(isnull(f.UPAfterDc,0) * 0.01, 0) as int) PriceVAT",
+        columnNamedPriceVatHasNoVatInTheActiveFormula = "COT TEN PriceVAT NHUNG CONG THUC DANG CHAY KHONG CO VAT — ve * (1 + VAT) chi co o dong DA BI COMMENT. Ten cot noi doi; ai doc ten roi suy nghiep vu se sai",
+        positiveActiveLineAvoidsIntegerDivision = "DUONG TINH nho: dong dang chay dung * 0.01 thay cho / 100 => TRANH duoc bay chia nguyen ma dong bi comment mac phai (ho VAT/100 o #673 va /100 o #694). Cung mot tac gia, hai cach viet, mot an toan hon",
+        twoDifferentPriceColumnsInOneSelect = "HAI COT GIA KHAC NHAU TRONG CUNG MOT SELECT: PriceVAT tinh tu f.UPAfterDc (don gia SAU chiet khau) con Amount tinh tu isnull(f.Price,0) * (1 + isnull(f.VAT,0)) => Amount CO VAT, PriceVAT KHONG co VAT — nguoc hoan toan voi ten hai cot",
+        fourHardcodedBusinessFilters = "BON HANG NGHIEP VU CUNG TRONG WHERE, khong tham so nao bat/tat duoc: and t.OrderPartType = TST; and t.DeliveryFormCode = 2; and t.SupplierStatus in (2,4); and f.QtyAppr = f.QtyOrd",
+        partialApprovalNeverSentToHmc = "Ve cuoi la bo loc nghiep vu NANG NHAT: chi gui HMC nhung dong duoc duyet DUNG BANG so dat => don DUYET THIEU (QtyAppr < QtyOrd) KHONG BAO GIO duoc gui, va khong co canh bao nao. Port dem droppedByPartialApproval",
+        constantsResolved = "TConst.OrderPartType = TST/OTHER; TConst.SupplierStatus (Const.Main.cs:544) 1 cho duyet, 2 da duyet cho hoan => in (2,4) la HAI trang thai phia NCC",
+        positiveAntiJoinIsIntentional = "DUONG TINH: left join Rpt_PartsOrderDetail_Part rpodp on … + and rpodp.OrderPartNo is null -- Chua tung gui HMC => chi lay don CHUA TUNG GUI; nguon CO CHU THICH RO (go sai tung/tung, vo hai). Khac #659 noi IS NULL MO TOANG bo loc",
+        miniModelGap = "Mini chua mo hinh hoa Rpt_PartsOrderDetail_Part (bang da gui HMC) => port chua loc duoc chua-tung-gui; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #694 GIÁ NET ĐẠI LÝ GỬI HMC — họ `Rpt_DMSSer_DealerNetPrice_*` (4 hàm + 2 hàm X) =====
 // (`BizCarSv.Report.Special.Warranty.cs`) md5: `_LastGet` `c1cad121` · `_PartGet` `88f11903` ·
 // `_SendHMC` `7c685999` · `_SendHMC_Auto` `b12f7ae9` · `_LastGetX` `d793579c` · `_PartGetX` `1c59d669`
