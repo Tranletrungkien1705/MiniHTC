@@ -19882,6 +19882,64 @@ app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
 // ⚠️ Toàn solution DMSCarSv **KHÔNG có nơi GHI** bảng này và **không màn client nào gọi**
 //    (chỉ lộ ra ở gateway `WSCarSv.asmx.cs:40231`) ⇒ dữ liệu do hệ NGOÀI nạp; đây là API phục vụ hệ ngoài.
 //    Vì thế port **CHỈ đường đọc** — không bịa POST.
+// ===== 🔴🔴 #600 QUÉT ĐẾM: GUARD TỒN TẠI DÙNG `&&` THAY VÌ `||` — **15 CHỖ, 6 FILE** =====
+// Phát hiện khi đọc `BizCarSv.PartOrder.cs` (cụm `CheckExistOrderNo*` / `CheckExistPartOrder*`).
+// Mẫu lỗi, trích nguyên văn:
+//     `if (dtSer_Part_PartOrder == null **&&** dtSer_Part_PartOrder.Rows.Count == 0)`
+//     `{ throw CMyException.Raise("không tồn tại đơn hàng này", null, alParamsCoupleError.ToArray()); }`
+//
+// 🔴🔴 **GUARD NÀY KHÔNG BAO GIỜ LÀM ĐÚNG VIỆC CỦA NÓ** — hai nhánh, cả hai đều sai:
+//   · `dt == null` ⇒ vế trái **true** ⇒ C# chạy tiếp vế phải `dt.Rows` ⇒ **`NullReferenceException` thô**
+//     (không phải thông báo *"không tồn tại đơn hàng này"*).
+//   · `dt != null` ⇒ vế trái **false** ⇒ toán tử `&&` **bỏ qua** vế phải ⇒ **không kiểm số dòng** ⇒ bảng
+//     **rỗng** vẫn đi tiếp, và nơi gọi đọc `Rows[0]` sẽ ném lỗi ở **chỗ khác**, xa nguyên nhân.
+//   ⇒ Nói cách khác: mã lỗi nghiệp vụ trong thân `if` là **mã chết** — không đường nào tới được nó.
+//     Đúng phải là `||` (như `CheckExistPayment` #571 và 191 chỗ khác trong cùng hệ).
+//
+// 📊 **ĐẾM THẬT (grep toàn `TERP.BizCarSv`)**:
+//     `== null **&&** … Rows.Count == 0`  → **15** chỗ   ← guard chết
+//     `== null **||** … Rows.Count == 0`  → **191** chỗ  ← đúng
+//   Sáu file dính: `BizCarSv.AssignmentOfWork.cs` · `BizCarSv.Inventory.StockOut.cs` ·
+//   `BizCarSv.PartOrder.cs` · `BizCarSv.Service01.cs` · `BizCarSv.ZTemp.cs` · `BizCarSv.zzzzCode.cs`.
+//   ⇒ Tỉ lệ 15/206 ≈ **7%** ⇒ không phải quy ước, mà là **lỗi gõ lặp lại** khi chép hàm guard.
+//
+// 🔴 **MÃ LỖI LÀ MỘT CÂU TIẾNG VIỆT**: `CMyException.Raise(**"không tồn tại đơn hàng này"**, …)` — tham số
+//   thứ nhất của `Raise` là **mã lỗi** (mọi chỗ khác truyền `TError.ErrCarSv.Xxx`), ở đây lại truyền **câu**
+//   **thông báo**. ⇒ Mã lỗi này **không tra được** trong bảng mã, không dịch được sang ngôn ngữ khác, và
+//   không thể phân biệt với thông điệp tự do. (Kể cả khi guard chạy — mà nó không chạy.)
+// ⚠️ Cụm này còn có **cặp hàm `xxx`**: `CheckExistOrderNo_Update**xxx**` (dùng `_dbMain` cứng) và
+//   `CheckExistOrderNo_Update` (nhận `dbAction` làm tham số). DIFF cho thấy **thân giống hệt**, chỉ khác
+//   **đối tượng DAL**. Đếm nơi gọi: chỉ `CheckExistPartOrderxxx` còn **một** chỗ gọi (`PartOrder.cs:3556`),
+//   các bản `xxx` khác **không ai gọi** ⇒ mã chết nhưng **vẫn mang cùng lỗi `&&`** — sửa bản sống mà quên
+//   bản chết thì lần sau ai chép lại là lỗi quay về.
+// 📌 MiniHTC: endpoint dưới **liệt kê** kết quả quét để chỗ đối chiếu có con số, và mô tả đúng hai nhánh hỏng.
+app.MapGet("/api/audit/null-guard-scan", () =>
+{
+    var files = new[]
+    {
+        "BizCarSv.AssignmentOfWork.cs", "BizCarSv.Inventory.StockOut.cs", "BizCarSv.PartOrder.cs",
+        "BizCarSv.Service01.cs", "BizCarSv.ZTemp.cs", "BizCarSv.zzzzCode.cs",
+    };
+    return Results.Ok(new
+    {
+        pattern = "if (dt == null && dt.Rows.Count == 0) throw ...",
+        brokenCount = 15,
+        correctCount = 191,
+        ratio = "15/206 ` 7%",
+        filesAffected = files,
+        whyItNeverWorks = new[]
+        {
+            "dt == null  => ve trai true => chay tiep dt.Rows => NullReferenceException tho",
+            "dt != null  => ve trai false => && bo qua ve phai => KHONG kiem so dong => bang rong di tiep",
+        },
+        deadErrorCodeInside = "than if khong bao gio toi duoc; ma loi nghiep vu trong do la ma CHET",
+        correctFormIsOr = "phai la || nhu CheckExistPayment (#571) va 191 cho khac trong cung he",
+        errorCodeIsAVietnameseSentence = "CMyException.Raise(khong-ton-tai-don-hang-nay, ...) — tham so thu nhat la MA LOI, moi cho khac truyen TError.ErrCarSv.Xxx",
+        deadTwinsCarrySameBug = "cap ham xxx (_dbMain cung) va ban thuong (nhan dbAction) than giong het; ban xxx phan lon KHONG ai goi nhung VAN mang loi && — sua ban song ma quen ban chet thi lan sau chep lai la loi quay ve",
+        onlyLiveXxxCaller = "CheckExistPartOrderxxx — PartOrder.cs:3556",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #599 ĐỌC LẠI `TST_Mst_Part_Temp_Get` (`Bravo.cs:223`) — **GUARD VIẾT ĐÚNG, CƠ CHẾ TRUYỀN SAI** =====
 // (Vòng parity: endpoint đã có từ #247. Dưới đây là những gì đọc trọn câu SQL lộ ra.)
 //
