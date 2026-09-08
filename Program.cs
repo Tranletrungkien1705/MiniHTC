@@ -19748,16 +19748,92 @@ static bool HasSpecialChar(string? s) =>
 //    Nguồn vẫn kiểm riêng để **báo đúng lý do**; port giữ đủ 4 theo thứ tự, KHÔNG gộp.
 // ⚠️ Ngưỡng **45** là của riêng màn này (cụm Services) — không suy từ 24/192/254 của cụm TST.
 // ⚠️ `open.Filter` của nguồn chỉ nhận **jpg · jpeg · gif · bmp** (:307) ⇒ port kiểm phần mở rộng.
+// ===== 🔴🔴 #622 BA BẢN ĐỌC ẢNH ĐÍNH KÈM LSC — MỘT BỘ LỌC HỎNG = XẢ TOÀN BỘ BLOB =====
+// 3B: cả **ba** hàm md5 **KHỚP 2 máy** — `SerROAttachmentGet_WH` (`BizCarSv.WH.cs:600`) `c0ba57f8` ·
+//   `SerROAttachmentGet` (`Service01.cs:12134`) `3dfbcda7` · `SerROAttachmentGetFull` (`:17196`) `5e9291a1`.
+// 🔴 **BA BẢN, BA DB, CÙNG MỘT BẢNG** (mở rộng họ #614): bản đại lý đọc `_dbDealer`, bản `_WH` đọc `_dbWH`,
+//   bản `GetFull` đọc `_dbMain`. Câu SQL của bản đại lý và bản `_WH` **giống nhau từng ký tự** — khác biệt
+//   **duy nhất** là DB. ⇒ Cùng một màn, ba nguồn dữ liệu.
+//
+// 🔴🔴🔴 **BỘ LỌC DUY NHẤT LÀ `BuildClause` ⇒ RƠI IM LẶNG ⇒ TRẢ **MỌI** ẢNH TRONG DB** (#410):
+//     `SELECT **ra.***, ro.DealerCode FROM Ser_ROAttachment ra LEFT JOIN Ser_RO ro ON ra.ROID = ro.ROID`
+//     `WHERE (1=1) zzzzClauseWhere_strROIDConditionList`
+//   với `BuildClause("and", "ra.ROID", strROIDConditionList, "@p", …)` — client gửi giá trị **không có toán**
+//   **tử** ở đầu thì mệnh đề bị **bỏ im lặng** ⇒ còn `where (1=1)`.
+//   ⚠️ Ở các màn khác, hậu quả là "trả nhiều dòng hơn". Ở đây `ra.*` bao gồm **cột ảnh nhị phân `Image`** ⇒
+//     một lời gọi lỡ tay **kéo toàn bộ kho ảnh** của DB về: vừa là **mìn bộ nhớ/băng thông**, vừa là **rò rỉ**
+//     **chéo đại lý** — `DealerCode` chỉ là **cột TRẢ VỀ**, không hề là **cột LỌC**.
+//   📌 Port **không** ép `roNo` bắt buộc (giữ hình dạng bộ lọc 1:1) nhưng có `Take(500)` chặn cứng và
+//     **không bao giờ trả blob** — chỉ trả `imagePath`; cờ `portRequiresRoNo=false` ghi đúng thực trạng đó.
+// 🔴 `#region //Check` **RỖNG** ở **cả ba** bản (trích theo #403) ⇒ không có guard nào trước khi chạy SQL.
+// 🔴 **Không `ORDER BY`** ở cả ba bản.
+// ⚪ Âm tính (#414, ba câu hỏi): `LEFT JOIN Ser_RO ro ON ra.ROID = ro.ROID` — cột nối lấy từ chính hai bảng,
+//   không có bảng nào nối TRONG sau nó, và `WHERE` **không** có điều kiện nào trên `ro` ⇒ **LEFT còn sống**:
+//   ảnh của lệnh đã bị xoá vẫn ra, `DealerCode` để trống. Ghi lại để lượt sau khỏi soi lại.
 app.MapGet("/api/roattachments", async (AppDbContext db, ITenantContext t, string? roNo) =>
 {
     var qy = db.RoAttachments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim().ToUpperInvariant());
-    var items = await qy.OrderBy(x => x.Id).Take(500)
-        .Select(x => new { x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt,
-                           // form hiển thị số LSC kèm tiền tố "LS-" (:203) — chỉ là ĐỊNH DẠNG hiển thị
-                           roNoDisplay = "LS-" + x.RONo })
+    var rows = await qy.OrderBy(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt })
         .ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // #622: nguồn trả thêm ro.DealerCode qua LEFT JOIN Ser_RO (LEFT còn sống ⇒ có thể NULL).
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId)
+        .Select(r => new { r.RONo, r.DealerCode }).ToListAsync();
+    var items = rows.Select(x => new
+    {
+        x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt,
+        // form hiển thị số LSC kèm tiền tố "LS-" (:203) — chỉ là ĐỊNH DẠNG hiển thị
+        roNoDisplay = "LS-" + x.RONo,
+        dealerCode = ros.FirstOrDefault(r => r.RONo == x.RONo)?.DealerCode,
+    }).ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #622 =====
+        orphanAttachments = items.Count(x => x.dealerCode is null),
+        onlyFilterIsBuildClauseOnRoid = "nguon co DUNG MOT bo loc: BuildClause(and, ra.ROID, …) — client gui gia tri KHONG co toan tu o dau thi menh de bi bo IM LANG => con where (1=1)",
+        droppedFilterMeansAllBlobs = "ra.* bao gom cot anh nhi phan Image => mot loi goi lo tay keo TOAN BO kho anh cua DB ve: min bo nho/bang thong VA ro ri cheo dai ly, vi DealerCode chi la cot TRA VE chu khong phai cot LOC",
+        threeVariantsThreeDbs = "ban dai ly doc _dbDealer, ban _WH doc _dbWH, ban GetFull doc _dbMain — cau SQL cua hai ban dau GIONG NHAU TUNG KY TU, khac biet duy nhat la DB (ho #614)",
+        checkRegionEmptyInAllThree = true,
+        leftJoinStillAliveHere = "LEFT JOIN Ser_RO khong bi giet: cot noi lay tu chinh hai bang, khong bang nao noi TRONG sau no, WHERE khong co dieu kien nao tren ro => anh cua lenh da bi xoa van ra voi DealerCode rong (am tinh #414)",
+        noOrderByInSource = true,
+        portRequiresRoNo = false,
+    });
+}).RequireAuthorization();
+
+// ===== 🔴🔴 #622b `SerROAttachmentGetFull` — KHÔNG PHẢI MÀN, MÀ LÀ **MẺ CHUYỂN ẢNH SANG FILE** =====
+//   `SELECT **TOP 100 *** FROM Ser_ROAttachment t WHERE (1=1) and (t.ImagePath **is null** and t.Image **is not null**)`
+//   kèm chú thích của nguồn ngay sau chuỗi: `// ImagePath is null: update ImagePath.`
+//   ⇒ Đây là **hàm bảo trì**: tìm các bản ghi còn giữ ảnh **trong DB** mà **chưa có đường dẫn file**, để một
+//     tiến trình khác ghi file rồi cập nhật `ImagePath`. Nó được phơi ra như **một WebMethod bình thường**,
+//     không có gì phân biệt với các hàm nghiệp vụ ⇒ dễ bị gọi nhầm.
+// 🔴 **`TOP 100` KHÔNG `ORDER BY`** (#415) ⇒ mỗi mẻ lấy **100 bản ghi bất kỳ**. Vì mỗi vòng có sửa `ImagePath`
+//   nên tập chưa xử lý **co lại**, không kẹt vô hạn — nhưng **không có thứ tự tiến triển**, và nếu một bản ghi
+//   liên tục lỗi thì nó cứ được bốc lại ngẫu nhiên.
+// 🔴 **THAM SỐ CHẾT HOÀN TOÀN**: `strROIDConditionList` bị comment ở **cả bốn** chỗ — chữ ký hàm, dòng
+//   `BuildClause`, khối `Replace`, **và** lời gọi ở WS ⇒ hàm **không lọc được theo lệnh**.
+// 🔴 Bảng **không có** `--//[mylock]` (bare `FROM Ser_ROAttachment t`) trong khi các hàm anh em đều có; và hàm
+//   **chỉ đọc** nhưng `bNeedTransaction = true` rồi `CommitSafety(_dbMain)` ở nhánh thành công.
+// 📌 MiniHTC **chưa mô hình hoá cột ảnh nhị phân** ⇒ port lọc theo `ImagePath` rỗng và ghi nợ, KHÔNG bịa.
+app.MapGet("/api/roattachments/pending-path-migration", async (AppDbContext db, ITenantContext t, int? top) =>
+{
+    var n = top is > 0 and <= 1000 ? top!.Value : 100;   // nguồn cứng TOP 100
+    var rows = await db.RoAttachments.Where(x => x.OrgId == t.OrgId && x.ImagePath == null)
+        .OrderBy(x => x.Id).Take(n)                       // nguồn KHÔNG sắp — port sắp tường minh
+        .Select(x => new { x.Id, x.RONo, x.ImageName, x.CreatedAt }).ToListAsync();
+    var remaining = await db.RoAttachments.CountAsync(x => x.OrgId == t.OrgId && x.ImagePath == null);
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows, remaining,
+        // ===== #622b =====
+        sourceIsMaintenanceNotScreen = "SerROAttachmentGetFull tim ban ghi con giu anh TRONG DB ma CHUA co duong dan file, de tien trinh khac ghi file roi cap nhat ImagePath; chu thich nguon: // ImagePath is null: update ImagePath.",
+        exposedAsOrdinaryWebMethod = "ham bao tri nay duoc phoi ra nhu mot WebMethod binh thuong, khong co gi phan biet voi ham nghiep vu => de bi goi nham",
+        sourceHasNoOrderBy = "TOP 100 khong ORDER BY => moi me lay 100 ban ghi BAT KY; tap chua xu ly co co lai sau moi vong nen khong ket vo han, nhung khong co thu tu tien trien va ban ghi loi cu bi boc lai ngau nhien",
+        deadParameterInFourPlaces = "strROIDConditionList bi comment o CA BON cho: chu ky ham, dong BuildClause, khoi Replace, va loi goi o WS => ham khong loc duoc theo lenh",
+        missingMylockAndCommitsWhileReadOnly = "bang khong co --//[mylock] trong khi cac ham anh em deu co; ham chi doc nhung bNeedTransaction = true roi CommitSafety(_dbMain) o nhanh thanh cong",
+        imageBlobColumnNotModelled = "MiniHTC chua mo hinh hoa cot anh nhi phan Image => port loc theo ImagePath rong, KHONG kiem duoc dieu kien Image is not null — ghi NO, khong bia",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/roattachments", async (RoAttachmentDto dto, AppDbContext db, ITenantContext t) =>
