@@ -15090,7 +15090,48 @@ app.MapGet("/api/report/campaign-marketing", async (AppDbContext db, ITenantCont
 }).RequireAuthorization();
 
 // ===== Báo cáo bảo hành gửi DMS (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmRpt_DMSSer_Rpt_DMSClaim, TCMotor) =====
-// Các ĐN đã gửi lên DMS (Sent trở đi) + phân loại theo trạng thái duyệt + tỉ lệ chấp thuận.
+//
+// ===== 🔴🔴🔴 #683 ĐỌC NGUỒN THẬT `Rpt_DMSSer_Rpt_DMSClaim_WH` — BÁO CÁO NÀY GHÉP **HAI HỆ NGOÀI** =====
+// (`Report.Special.Warranty.cs:4160-4374`, md5 `2f9c41fc` **KHỚP** máy 150. Bản Main `:3946-4158`, md5 `3b728df1`.
+//  WS `WSCarSv.asmx.cs:33762` gọi thẳng.)
+// 🔴 Hàm **không có SQL**; nó ghép **hai nguồn ngoài**:
+//   ① `ws.Rpt_DMSSer_Rpt_DMSClaim_WH(...)` → hệ **DMS.Sales** (bảng chính),
+//   ② `postWebApi_DMSClaimByClaimType(...)` → REST **iCIC/HCC** (bảng `DMSClaimByClaimType`, khiếu nại theo loại).
+//   ⇒ Port hiện tại của MiniHTC tự tính từ `ServiceWarrantyClaims` — **không phải** dữ liệu của hai hệ đó.
+//     Giữ nguyên phần đang chạy, **ghi rõ đây là XẤP XỈ** và nêu các cạm bẫy của nguồn.
+//
+// 🔴🔴🔴 **BẢNG ĐẦU CỦA BẢN KHO ĐẶT TÊN CÓ `_WH`, NHƯNG KHÔNG CLIENT NÀO ĐỌC TÊN ĐÓ**:
+//   `dsGetData.Tables[0].TableName = **strFunctionName**` ⇒ bản kho đặt `"Rpt_DMSSer_Rpt_DMSClaim_WH"`.
+//   📌 Grep toàn cây: **0** chỗ đọc `Tables["Rpt_DMSSer_Rpt_DMSClaim_WH"]`; client duy nhất
+//   (`Service.ReportService.cs:1317`) đọc `Tables["**Rpt_DMSSer_Rpt_DMSClaim**"]` (không `_WH`)
+//   ⇒ ai dùng lại đoạn đọc đó cho bản kho sẽ nhận **`null`** rồi `NullReferenceException`.
+//   ⚠️ Đối chiếu #680: ở đó **ngược lại** — bản kho dùng **hằng chuỗi** không `_WH`, bản Main dùng biến.
+//     Hai file, **hai quy ước ngược nhau**, cùng một đội.
+// 🔴🔴🔴 **BÓC TOÁN TỬ BẰNG CẮT CỨNG 3 KÝ TỰ** (guard theo **VỊ TRÍ KÝ TỰ**, họ #411 nhưng trên chuỗi):
+//     `dealerCode = strDealerCodeConditionList.Substring(3, strDealerCodeConditionList.Length - 3);`
+//   📌 Truy tới **giá trị thật** (luật #410): client ghép `"in " + Util.StretchListStringNew(lstDealerCode)`
+//     (`Service.ReportService.cs:1308`), và `StretchListStringNew` (`Common/Util.cs:160`) nối bằng **dấu phẩy**
+//     ⇒ chuỗi là `"in VN030,VN031"` ⇒ `Substring(3)` cho `VN030,VN031`. **Đúng cho đúng một cách ghép này.**
+//     Đổi toán tử sang `"="` (1 ký tự) hay `"like "` (5) ⇒ mã đại lý **lệch ký tự**, không lỗi, không cảnh báo.
+//   📌 Và trường `dealercode` (tên **số ít**) của HCC nhận **danh sách phân tách bằng dấu phẩy** — chỉ chạy nếu
+//     phía HCC tự tách. Không kiểm chứng được từ nguồn ⇒ ghi là **rủi ro cần đo**, không kết luận.
+// 🔴🔴 **HAI HÀM GHÉP DANH SÁCH DÙNG HAI DẤU PHÂN TÁCH KHÁC NHAU**: 📌 đếm — `StretchListString` (nối bằng
+//   **`|`**, đúng dấu mà `BuildClauseConditionList(…, "|")` tách) = **43** site; `StretchListString**New**`
+//   (nối bằng **`,`**) = **3** site. Cùng loại tham số `…ConditionList` nhưng **hai bộ phân tách**.
+// 🔴🔴 **BẢNG HCC RỖNG THÌ KHÔNG CÓ CỘT NÀO**: `DataTable dtDB_DmsClaim_HCC = new DataTable("DMSClaimByClaimType")`
+//   chỉ được nạp schema khi `lst_DmsClaim_Return.Count > 0` ⇒ HCC trả 0 dòng thì client nhận bảng **không cột**,
+//   khác hẳn "có cột, 0 dòng" ⇒ lưới có thể vỡ thay vì hiện rỗng.
+// 🔴🔴 **CẢ HAI `throw` CỦA NHÁNH HCC LẠI BỊ NUỐT** bởi `catch (Exception ex)` bao ngoài (chỉ ghi lỗi rồi chảy
+//   tiếp xuống `// Return Good:`) — **cùng cấu trúc với #680**, nay là **site thứ hai**.
+//   📌 Đếm trong `TERP.BizCarSv`: `CProcessException.Process(...)` **không** kèm `return` = **272** site;
+//     kèm `return` = **1044** ⇒ dạng "ghi lỗi rồi đi tiếp" là **thiểu số lớn (`21%)**.
+//     ⚠️ **Không** kết luận cả 272 đều sai — một số nằm trong vòng lặp là chủ đích; cần phân loại theo vai trò.
+// ⚪ **ÂM TÍNH — mã lỗi `…_FromDMSSale` KHÔNG có biến thể `_WH` là CHỦ ĐÍCH**: `TERP.Constants/Error.CarSv.cs`
+//   `:1794-1797` chỉ khai `Rpt_DMSSer_Rpt_DMSClaim` · `…_WH` · `…_FromDMSSale` · `…_FromiCIC`
+//   ⇒ hai bản sinh đôi **buộc phải** dùng chung mã `_FromDMSSale`. Không phải sơ suất.
+// 🔴 `Timeout = 123456000` (`34 giờ) trên WS client — nằm trong loạt site đã đếm trước đây.
+// 🔴 Bản Main còn một dòng **URL test bị comment** kèm **IP:cổng cứng** (`14.238.1.12:11208`, trỏ `…Sales.WH.WS`
+//   dù nằm trong hàm Main). Port **dòng ACTIVE**, chỉ ghi lại như mùi cấu hình.
 app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
 {
     var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status != "Pending"); // đã gửi DMS
@@ -15102,7 +15143,19 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
     var decided = claims.Count(c => c.Status == "Accepted" || c.Status == "Rejected");
     var acceptRate = decided > 0 ? Math.Round((decimal)accepted / decided * 100, 1) : 0m;
     var rows = claims.OrderByDescending(c => c.Amount).Select(c => new { c.ClaimNo, c.DealerCode, c.Vin, c.PlateNo, c.WarrantyType, c.Amount, c.Status }).ToList();
-    return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows });
+    return Results.Ok(new { count = claims.Count, totalAmount = claims.Sum(c => c.Amount), accepted, acceptRate, byStatus, rows,
+        // ===== #683 =====
+        sourceMergesTwoExternalSystems = "ham nguon KHONG co SQL; no ghep HAI nguon ngoai: (1) ws.Rpt_DMSSer_Rpt_DMSClaim_WH(...) -> he DMS.Sales (bang chinh), (2) postWebApi_DMSClaimByClaimType(...) -> REST iCIC/HCC (bang DMSClaimByClaimType, khieu nai theo loai). Port hien tai cua MiniHTC tu tinh tu ServiceWarrantyClaims — KHONG phai du lieu cua hai he do => day la XAP XI",
+        firstTableNamedWithWhSuffixButNoClientReadsIt = "BANG DAU CUA BAN KHO DAT TEN CO _WH NHUNG KHONG CLIENT NAO DOC TEN DO: dsGetData.Tables[0].TableName = strFunctionName => ban kho dat Rpt_DMSSer_Rpt_DMSClaim_WH. Grep toan cay: 0 cho doc Tables[Rpt_DMSSer_Rpt_DMSClaim_WH]; client duy nhat (Service.ReportService.cs:1317) doc Tables[Rpt_DMSSer_Rpt_DMSClaim] khong _WH => ai dung lai doan doc do cho ban kho se nhan null roi NullReferenceException. Doi chieu #680: o do NGUOC LAI — ban kho dung HANG CHUOI khong _WH, ban Main dung bien => hai file hai quy uoc nguoc nhau",
+        operatorStrippedByFixedSubstring3 = "BOC TOAN TU BANG CAT CUNG 3 KY TU (guard theo VI TRI KY TU, ho #411 nhung tren chuoi): dealerCode = strDealerCodeConditionList.Substring(3, Length - 3). Truy toi GIA TRI THAT (#410): client ghep \"in \" + Util.StretchListStringNew(lstDealerCode) (Service.ReportService.cs:1308), va StretchListStringNew (Common/Util.cs:160) noi bang DAU PHAY => chuoi la in VN030,VN031 => Substring(3) cho VN030,VN031. DUNG cho dung mot cach ghep nay; doi toan tu sang = (1 ky tu) hay like (5) thi ma dai ly LECH KY TU, khong loi khong canh bao",
+        hccDealerCodeFieldReceivesCommaList = "truong dealercode (ten SO IT) cua HCC nhan DANH SACH phan tach bang dau phay — chi chay neu phia HCC tu tach; khong kiem chung duoc tu nguon => ghi la RUI RO CAN DO, khong ket luan",
+        twoJoinHelpersUseDifferentSeparators = "HAI HAM GHEP DANH SACH DUNG HAI DAU PHAN TACH: dem — StretchListString (noi bang |, dung dau ma BuildClauseConditionList(…, |) tach) = 43 site; StretchListStringNew (noi bang ,) = 3 site. Cung loai tham so …ConditionList nhung HAI BO PHAN TACH",
+        emptyHccTableHasNoColumns = "BANG HCC RONG THI KHONG CO COT NAO: DataTable dtDB_DmsClaim_HCC = new DataTable(DMSClaimByClaimType) chi duoc nap schema khi lst_DmsClaim_Return.Count > 0 => HCC tra 0 dong thi client nhan bang KHONG COT, khac han co-cot-0-dong => luoi co the vo thay vi hien rong",
+        bothHccThrowsAreSwallowedAgain = "CA HAI throw CUA NHANH HCC LAI BI NUOT boi catch (Exception ex) bao ngoai (chi ghi loi roi chay tiep xuong // Return Good:) — cung cau truc voi #680, nay la SITE THU HAI. Dem trong TERP.BizCarSv: CProcessException.Process(...) KHONG kem return = 272 site; kem return = 1044 => dang ghi-loi-roi-di-tiep la THIEU SO LON (`21%). KHONG ket luan ca 272 deu sai — mot so nam trong vong lap la chu dich, can phan loai theo vai tro",
+        negativeSharedErrorCodeIsIntentional = "AM TINH: ma loi …_FromDMSSale KHONG co bien the _WH la CHU DICH — TERP.Constants/Error.CarSv.cs:1794-1797 chi khai Rpt_DMSSer_Rpt_DMSClaim, …_WH, …_FromDMSSale, …_FromiCIC => hai ban sinh doi BUOC PHAI dung chung ma _FromDMSSale, khong phai so suat",
+        timeoutIs34Hours = "Timeout = 123456000 (`34 gio) tren WS client — nam trong loat site da dem truoc day",
+        commentedTestUrlWithHardcodedIp = "ban Main con mot dong URL test BI COMMENT kem IP:cong cung (14.238.1.12:11208, tro …Sales.WH.WS du nam trong ham Main); port dong ACTIVE, chi ghi lai nhu mui cau hinh",
+    });
 }).RequireAuthorization();
 
 // ===== Báo cáo bảo hành theo phụ tùng chính (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmReportWarranty_MainPart, TCMotor/Warranty) =====
