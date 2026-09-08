@@ -35109,14 +35109,60 @@ app.MapDelete("/api/customergroups/{no}/members/{cusId}", async (string no, stri
 }).RequireAuthorization();
 
 // ===== Model chuẩn dịch vụ (CarModelStd — port 1:1 FrmMstCarModelStd, TCMotor DMSCarSv/Admin) =====
-app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string? modelCode, string? modelName, string? active) =>
+//
+// ===== 🔴🔴 #678 PARITY BẢN KHO `Mst_CarModelStd_Get_WH` (`Tab/BizCarSv.Tab.cs:3233-3388`) =====
+// 3B: vỏ bọc md5 `22eb1eba` · thân thật md5 `b16c90be` — **cả hai KHỚP** máy 150.
+// 🔴 **VỎ BỌC, KHÔNG PHẢI SQL**: `Mst_CarModelStd_Get_WH` chỉ gọi `Mst_CarModelStd_GetX(… , _dbWH , …)`
+//   (`Tab/BizCarSv.Tab.cs:2965-3105`) — đúng cảnh báo "biz có thể chỉ là VỎ BỌC, đọc tới khi THẤY SQL".
+//   Bản Main `Mst_CarModelStd_Get` (`:3106`) gọi **cùng** hàm `…GetX`, chỉ khác đối số DB ⇒ hai bản **cùng SQL**.
+//
+// 🔴🔴🔴 **PHÂN TRANG BỊ COMMENT** — bảng lọc thứ hai chép **toàn bộ** bảng thứ nhất:
+//     `select t.* into #tblMst_CarModelStd_Filter from #tbl_Mst_CarModelStd_Filter_Draft t where(1=1)`
+//     `  --and (t.MyIdxSeq >= @nFilterRecordStart)`
+//     `  --and (t.MyIdxSeq <= @nFilterRecordEnd)`
+//   ⇒ `strFt_RecordStart`/`strFt_RecordCount` **không có tác dụng**; màn trả **cả danh mục**. Cùng họ #626
+//     (đã đếm 12/40 site bị comment) — đây là một site nữa, và lần này ở thư mục `Tab/`.
+//   ⚪ Hai tham số `@nFilterRecordStart`/`@nFilterRecordEnd` **vẫn được nạp** vào `alParamsCoupleSql` ⇒ **tham số
+//     mồ côi**, nhưng chúng được `AddRange` **đầu tiên** nên không xê dịch tên `@p…` phía sau (họ ⚪ #669).
+// 🔴🔴🔴 **`identity(bigint, 0, 1)` KÈM `ORDER BY` TRÊN `SELECT … INTO` — MÌN KÉP** (luật #415):
+//     `select distinct identity(bigint, 0, 1) MyIdxSeq, smmai.ModelCode into #tbl_… order by smmai.ModelCode`
+//   `ORDER BY` trên `SELECT … INTO` **không bảo đảm thứ tự đánh số** ⇒ `MyIdxSeq` gán **bất định**.
+//   Hiện **vô hại** vì phân trang đang bị comment; **bật lại phân trang là trang trả dòng ngẫu nhiên ngay**.
+//   ⇒ Ghi rõ: đây là ca **bug chỉ lộ khi bật tính năng**, không phải bug đang chạy.
+// 🔴 **Đánh số bắt đầu từ `0`** (`identity(bigint, **0**, 1)`), trong khi các màn dùng `Row_Number()` (#662/#671)
+//   bắt đầu từ **1** và C# cộng `+1`. Ai bật lại phân trang mà bê công thức `+1` từ chỗ khác sẽ **lệch một dòng**.
+// 🔴 **Cả hai `drop table` đều bị comment** (`---- Clear for debug:`) ⇒ hai bảng tạm không dọn (họ #664/#672).
+// 🔴 `select t.MyIdxSeq, **smmai.***` ⇒ đổi schema `Mst_CarModelStd` là đổi hợp đồng cột (nhẹ hơn #677 vì một `*`).
+// ⚪ **ÂM TÍNH — vỏ bọc `_WH` commit ĐỦ HAI DB**: `CommitSafety(_dbMain)` **và** `CommitSafety(_dbWH)`, rollback
+//   cũng đủ hai ⇒ không phải ca "ghi ba DB thiếu transaction" đang theo dõi.
+// ⇒ Port: thêm phân trang **thật** (nguồn có ý định nhưng đã tắt) + `total` để client biết còn bao nhiêu.
+app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string? modelCode, string? modelName,
+    string? active, int? recordStart, int? recordCount) =>
 {
     var qry = db.CarModelStds.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(modelCode)) qry = qry.Where(x => x.ModelCode.Contains(modelCode!));
     if (!string.IsNullOrWhiteSpace(modelName)) qry = qry.Where(x => x.ModelName!.Contains(modelName!));
     if (!string.IsNullOrWhiteSpace(active)) qry = qry.Where(x => x.FlagActive == active);
-    var items = await qry.OrderBy(x => x.ModelCode).Take(500).Select(x => new { x.ModelCode, x.ModelName, x.FlagActive }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // Nguồn có câu `select Count(0) MyCount` riêng cho tổng số — port giữ đúng ý đó.
+    var total = await qry.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
+    var items = await qry.OrderBy(x => x.ModelCode).Skip(skip).Take(take)
+        .Select(x => new { x.ModelCode, x.ModelName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items,
+        // ===== #678 =====
+        sourceIsAWrapperNotSql = "Mst_CarModelStd_Get_WH chi la VO BOC goi Mst_CarModelStd_GetX(…, _dbWH, …) (Tab/BizCarSv.Tab.cs:2965-3105); ban Main Mst_CarModelStd_Get (:3106) goi CUNG ham GetX chi khac doi so DB => hai ban CUNG SQL. 3B: vo boc md5 22eb1eba, than that md5 b16c90be, ca hai KHOP may 150",
+        pagingIsCommentedOutInSource = "PHAN TRANG BI COMMENT: select t.* into #tblMst_CarModelStd_Filter from #tbl_Mst_CarModelStd_Filter_Draft t where(1=1) --and (t.MyIdxSeq >= @nFilterRecordStart) --and (t.MyIdxSeq <= @nFilterRecordEnd) => strFt_RecordStart/strFt_RecordCount KHONG co tac dung, man tra CA DANH MUC. Cung ho #626 (da dem 12/40 site bi comment) — day la mot site nua, lan nay o thu muc Tab/",
+        orphanPagingParamsHarmless = "AM TINH: hai tham so @nFilterRecordStart/@nFilterRecordEnd VAN duoc nap vao alParamsCoupleSql => tham so mo coi, nhung chung duoc AddRange DAU TIEN nen khong xe dich ten @p… phia sau (ho #669)",
+        identityNumberingOnSelectIntoWithOrderBy = "identity(bigint, 0, 1) KEM ORDER BY TREN SELECT … INTO — MIN KEP (#415): select distinct identity(bigint, 0, 1) MyIdxSeq, smmai.ModelCode into #tbl_… order by smmai.ModelCode. ORDER BY tren SELECT … INTO KHONG bao dam thu tu danh so => MyIdxSeq gan BAT DINH. Hien VO HAI vi phan trang dang bi comment; BAT LAI PHAN TRANG LA TRANG TRA DONG NGAU NHIEN NGAY => bug CHI LO KHI BAT TINH NANG, khong phai bug dang chay",
+        identityStartsAtZeroNotOne = "danh so bat dau tu 0 (identity(bigint, 0, 1)) trong khi cac man dung Row_Number() (#662/#671) bat dau tu 1 va C# cong +1 => ai bat lai phan trang ma be cong thuc +1 tu cho khac se LECH MOT DONG",
+        bothDropTablesCommented = "ca hai drop table deu bi comment (---- Clear for debug:) => hai bang tam khong don (ho #664/#672)",
+        selectStarInInnerQuery = "select t.MyIdxSeq, smmai.* => doi schema Mst_CarModelStd la doi hop dong cot (nhe hon #677 vi chi mot *)",
+        negativeWrapperCommitsBothDbs = "AM TINH: vo boc _WH commit DU HAI DB (CommitSafety(_dbMain) VA CommitSafety(_dbWH)), rollback cung du hai => khong phai ca ghi-ba-DB-thieu-transaction dang theo doi",
+        pagingAddedByPort = "nguon co Y DINH phan trang nhung da tat; port them phan trang THAT + total (nguon co cau select Count(0) MyCount rieng cho tong so)",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
