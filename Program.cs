@@ -25742,6 +25742,94 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #567 PHIẾU THU IN GIẤY (`SerPaymentPaperRpt`) — **NGÀY TRÊN PHIẾU LÀ NGÀY IN** =====
+// Nguồn: `BizCarSv.Debit.cs:3472`. Trả **hai bảng**: `Ser_Payment` (nội dung phiếu) và `Sys_User` (người ký).
+//
+// 🔴🔴 **`convert(varchar, GETDATE(), 103) AS PayDate`** — cột ngày của **chứng từ in ra** lấy từ
+//   **`GETDATE()`**, tức **ngày IN**, chứ không phải ngày thu tiền (`p1.PayDate` có sẵn trong bảng nhưng
+//   **không được chọn**). ⇒ In lại một phiếu thu của ba tháng trước thì tờ giấy ghi **ngày hôm nay**;
+//   hai lần in cùng một phiếu cho **hai chứng từ khác ngày**. Đây là **chứng từ kế toán**, không phải màn tra cứu.
+//   📌 Port trả **cả hai**: `payDate` (ngày thu thật) và `printedDate` (ngày in), kèm cờ `sourcePrintsTodayAsPayDate`.
+// 🔴 **BA BỘ LỌC DÙNG `BuildClause` KHÔNG TOÁN TỬ** (#410) — và đây là báo cáo **in giấy**:
+//     `BuildClause("and", "p.PaymentID", strPaymentIDConditionList, "@p", ref …)`
+//     `BuildClause("and", "u.DealerCode", strDealerCodeConditionList, "@p", ref …)`
+//     `BuildClause("and", "u.UserCode", strUserNameConditionList, "@p", ref …)`
+//   Client gửi giá trị **trần** (không mở đầu bằng `=` / `in` / `like`) ⇒ `BuildClause` **bỏ im lặng** ⇒
+//   câu còn `WHERE 1=1` ⇒ **in TOÀN BỘ phiếu thu của mọi đại lý** và **toàn bộ danh sách người dùng**.
+//   Với một biểu mẫu in ra giấy thì đó là **rò rỉ dữ liệu**, không chỉ là kết quả sai.
+// 🔴 **`#region // Check` HOÀN TOÀN RỖNG** — trích nguyên văn (luật #403): giữa `#region // Check` và
+//   `#endregion` **không có một dòng lệnh nào**. Không kiểm tham số rỗng, không kiểm quyền, không kiểm đại lý.
+//   Cộng với gạch đầu dòng trên: **một lời gọi thiếu toán tử là in sạch dữ liệu toàn hệ**.
+// 🔴 **HAI BẢNG TRẢ VỀ KHÔNG NỐI VỚI NHAU**: `Ser_Payment` và `Sys_User` là **hai câu `SELECT` độc lập**;
+//   phiếu thu **không** nối sang người dùng. Client tự ghép người ký theo mã — nghĩa là **thứ tự / bộ lọc
+//   của bảng thứ hai không liên quan gì đến phiếu đang in**, và nếu bộ lọc user chết thì client nhận cả bảng.
+// 🔴 **BA NGUỒN DỮ LIỆU TRONG MỘT CÂU** (giống #560): đọc bằng `_dbDealer`, nhưng `ser_payment` và `sys_user`
+//   lấy từ `[@strDBName_CommonCenter]` (**cross-DB**), còn `Ser_Customer` / `Ser_Insurance` /
+//   `Ser_Mst_Supplier` lấy **tại chỗ trên DB đại lý**. Phiếu ở trung tâm, tên khách ở đại lý.
+// ⚠️ Ba `LEFT JOIN` đều kèm `with(nolock)` ⇒ **đọc bẩn** khi dựng **chứng từ in**: tên/địa chỉ có thể là
+//   bản ghi **chưa commit** của giao dịch khác.
+// ⚪ Âm tính: ba `LEFT JOIN` song song (khách / bảo hiểm / nhà cung cấp) là **đúng thiết kế** — mỗi phiếu chỉ
+//   khớp một nhánh theo `PaymentType`; đây **không** phải join thừa.
+// 📌 MiniHTC tách ba bảng phiếu thu (`CusDebitPayments` / `InsDebitPayments` / `SupplierDebitPayments`, #558)
+//   nên đọc theo `paymentType`; nguồn dùng chung một bảng `Ser_Payment`.
+app.MapGet("/api/payments/paper-report", async (AppDbContext db, ITenantContext t,
+    string? paymentType, string? paymentNo, string? dealerCode, string? userCode) =>
+{
+    var pt = (paymentType ?? "1").Trim();
+    if (pt is not ("1" or "2" or "3"))
+        return Results.BadRequest(new { error = "paymentType chỉ nhận 1 (KH), 2 (BH), 3 (NCC)." });
+    // Nguồn KHÔNG chặn tham số rỗng (#region Check rỗng) ⇒ in sạch. Port bắt buộc phải có số phiếu.
+    if (string.IsNullOrWhiteSpace(paymentNo))
+        return Results.BadRequest(new { error = "paymentNo bắt buộc — nguồn không chặn nên in toàn bộ phiếu thu." });
+    var no = paymentNo!.Trim();
+
+    object? row = null;
+    if (pt == "1")
+    {
+        row = await db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
+            .Select(x => new { x.Id, x.PaymentNo, x.PayPersonName, x.PaymentAmount, payDate = x.PayDate,
+                x.Note, x.DealerCode, partyKind = "customer" }).FirstOrDefaultAsync();
+    }
+    else if (pt == "2")
+    {
+        row = await db.InsDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
+            .Select(x => new { x.Id, x.PaymentNo, payPersonName = (string?)null, x.PaymentAmount, payDate = x.PayDate,
+                x.Note, dealerCode = (string?)null, partyKind = "insurance" }).FirstOrDefaultAsync();
+    }
+    else
+    {
+        row = await db.SupplierDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
+            .Select(x => new { x.Id, x.PaymentNo, payPersonName = (string?)null, x.PaymentAmount, payDate = x.PayDate,
+                x.Note, dealerCode = (string?)null, partyKind = "supplier" }).FirstOrDefaultAsync();
+    }
+    if (row is null) return Results.NotFound(new { error = "Không thấy phiếu thu." });
+
+    // Bảng thứ hai của nguồn: danh sách người dùng, KHÔNG nối với phiếu.
+    var uq = db.SysUsers.Where(u => u.OrgId == t.OrgId);
+    var userFilterApplied = false;
+    if (!string.IsNullOrWhiteSpace(dealerCode)) { uq = uq.Where(u => u.DealerCode == dealerCode!.Trim()); userFilterApplied = true; }
+    if (!string.IsNullOrWhiteSpace(userCode)) { uq = uq.Where(u => u.UserCode == userCode!.Trim()); userFilterApplied = true; }
+    var users = userFilterApplied
+        ? await uq.OrderBy(u => u.UserCode).Select(u => new { u.UserCode, u.UserName }).ToListAsync()
+        : new List<dynamic>().Select(x => new { UserCode = "", UserName = (string?)null }).ToList();
+
+    return Results.Ok(new
+    {
+        payment = row, users, paymentType = pt,
+        printedDate = DateTime.Now,
+        sourcePrintsTodayAsPayDate = "convert(varchar, GETDATE(), 103) AS PayDate — chung tu in ra mang NGAY IN, khong phai ngay thu",
+        payDateIsRealValueHere = "port tra payDate that + printedDate rieng",
+        threeFiltersWithoutOperator = new[] { "p.PaymentID", "u.DealerCode", "u.UserCode" },
+        emptyFilterWouldPrintEverything = "BuildClause bo im lang => WHERE 1=1 => in TOAN BO phieu thu moi dai ly va toan bo danh sach nguoi dung",
+        checkRegionIsEmptyInSource = "#region // Check khong co mot dong lenh nao",
+        userTableNotJoinedToPayment = "hai cau SELECT doc lap; client tu ghep nguoi ky",
+        userListOmittedWhenNoFilter = !userFilterApplied,
+        threeDataSourcesInOneQuery = "doc bang _dbDealer; ser_payment + sys_user lay tu CommonCenter; Ser_Customer/Ser_Insurance/Ser_Mst_Supplier lay tai cho",
+        dirtyReadOnPrintedDocument = "ba LEFT JOIN deu with(nolock)",
+        miniHtcUsesThreePaymentTables = "CusDebitPayments / InsDebitPayments / SupplierDebitPayments (#558); nguon dung chung Ser_Payment",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #566 DANH MỤC MẠNG LƯỚI (`CarService_GetNetworkID`) — LỌC SAI CỘT SO VỚI TÊN THAM SỐ =====
 // Nguồn: `BizCarSv.TVO.cs:2914`. **BA cửa WS cùng gọi một biz**, khác nhau ở cách xác thực:
 //   `WSCarSv.asmx.cs:36620` (`CarService_GetNetworkID`, xác thực FOS user/password),
