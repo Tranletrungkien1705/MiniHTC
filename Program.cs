@@ -32266,6 +32266,138 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   `TinhNhan_HuyenNhan`, ở **cả hai** nhánh) ⇒ **một vế NULL là CẢ CHUỖI NULL** — lần thứ **tư** trong hệ.
 // 🔴 Nhánh TT lọc thêm `sdm.FDlvMnStatus not in ('R','C')` **và** `sdm.TDlvMnStatus not in ('R','C')`
 //   (`--20141030`) — **hai** trục trạng thái, cả hai đều phải khác R/C. Cột hằng **`1.0 TOTAL`** cho pivot.
+
+// ===== #B329/#B330/#B331 XE HTC XUẤT KHO — PIVOT THEO NGÀY TRONG THÁNG (Day01…Day31) —
+//       `RptStatistic_HTCStockOut02_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `158787,159060` ≡ 150 `158792,159065` ⇒ **`f91e808e7237615f6ddf29389e1f12e7`**.
+// ✅🔴 **`GROUP BY` ĐỘNG DO NGƯỜI DÙNG CHỌN — nhưng CÓ WHITELIST (cách làm ĐÚNG)**:
+//     `string[] arrstrColumnGroupBy = { "DealerCode", "CCModelCode", "CCSpecCode", "CCColorCode",`
+//     `                                 "CVModelCode", "CVSpecCode", "CVColorCode" };`
+//     `foreach (…) if (strGroupByList.Contains(strScan.ToUpper())) zzzzClauseColumn_GroupBy += …`
+//   ⇒ Cột gộp **chỉ lấy từ danh sách trắng 7 cột**, không ghép trực tiếp chuỗi người dùng
+//     ⇒ **KHÔNG có bề mặt injection** dù đây là `group by` động. **Điểm sáng** — đối lập #B284/#B290.
+//   ✅ Rỗng ⇒ ném **`RptStatistic_HTCStockOut02_InvalidGroupByList`** (guard thật, không im lặng).
+//   ⚠️ Nhưng dùng `strGroupByList.**Contains**(…)` là **so chuỗi con**, không phải so phần tử danh sách —
+//     an toàn ở đây chỉ vì **không cột nào là chuỗi con của cột khác**; thêm một cột mới trùng tiền tố là
+//     sẽ chọn nhầm. Ghi lại như **rủi ro tiềm ẩn**.
+// 🔴🔴🔴 **PIVOT 31 CỘT NGÀY DÙNG `Day(<ngày>)` — KHÔNG CÓ THÁNG/NĂM ⇒ CỘNG DỒN CÂM GIỮA CÁC THÁNG**:
+//     `Day(cdod.DeliveryOutDate) DeliveryDay` rồi 31 cột
+//     `(case when t.DeliveryDay = NN then 1 else 0 end) DayNN`.
+//   ⇒ Nếu bộ lọc `strCDODDeliveryOutDateConditionList` **không giới hạn đúng MỘT tháng**, thì ngày 05 của
+//     **tháng 3** và ngày 05 của **tháng 4** cùng rơi vào cột `Day05` ⇒ **số bị cộng dồn, không có dấu
+//     hiệu nào**. Bộ lọc ngày là **tuỳ chọn** (`BuildClause`), nên rủi ro này là **thực**.
+//   📌 **KHÔNG tự vá**; port trả `monthsInScope` — nếu > 1 thì cảnh báo `pivotMergesMultipleMonths`.
+// ⚠️ **HAI câu debug bị bỏ quên, KHÔNG comment** (`tbl_Car_Car_Filter` và `tbl_Car_Car_Raw`)
+//   ⇒ chiếm `Tables[0]` và `Tables[1]` — **hợp đồng API**, lần thứ **SÁU**
+//     (sau #B290, #B296, #B299, #B308, #B311). Đây là lần đầu **hai câu trong CÙNG một hàm** đều sống.
+// 🔴 **BA điều kiện nền**: `cc.FlagActive = '1'` · `cdod.DeliveryOutDate is not null` (*"xe đã xuất kho"*)
+//   · `cdod.ConfirmStatus in ('A','F')` (*"lệnh xuất xe được phê duyệt trở lên và còn active"*).
+//   Bộ lọc ngày đi qua `BuildClause(… "@p" …)` ⇒ **tham số runtime** (an toàn).
+// ✅ RBAC **tổ hợp (1)**: `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**; `@strBUPatternOfUser`
+//   nạp nhưng SQL **không dùng** (1 hit) ⇒ có cổng ⇒ không phải lỗ.
+// 🔴 `@strHTCDealerCode` / `@strHTCDealerName` nạp nhưng SQL không dùng ⇒ **hai tham số mồ côi**
+//   (và lại lặp lỗi `"…Name"` **nhận** `HTCDealerCode` — lần thứ **tư**, sau #B269/#B284/#B290).
+app.MapGet("/api/reports/htc-stockout02", async (
+    AppDbContext db, ITenantContext t,
+    string? groupByList, DateTime? deliveryOutDateFrom, DateTime? deliveryOutDateTo) =>
+{
+    // ✅ Whitelist 7 cột — chỉ nhận cột nằm trong danh sách, đúng cách nguồn làm.
+    var allowed = new[] { "DealerCode", "CCModelCode", "CCSpecCode", "CCColorCode",
+                          "CVModelCode", "CVSpecCode", "CVColorCode" };
+    var raw = (groupByList ?? "").ToUpperInvariant();
+    var groupBy = allowed.Where(c => raw.Contains(c.ToUpperInvariant())).ToList();
+    if (groupBy.Count == 0)
+        return Results.BadRequest(new
+        {
+            error = "RptStatistic_HTCStockOut02_InvalidGroupByList",
+            allowedColumns = allowed
+        });
+
+    // 🔴 BA điều kiện nền + bộ lọc ngày tuỳ chọn (tham số runtime).
+    var doCarsQ = db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.CarId != null
+        && c.DeliveryOutDate != null
+        && (c.ConfirmStatus == "A" || c.ConfirmStatus == "F"));
+    if (deliveryOutDateFrom != null) doCarsQ = doCarsQ.Where(c => c.DeliveryOutDate >= deliveryOutDateFrom);
+    if (deliveryOutDateTo != null) doCarsQ = doCarsQ.Where(c => c.DeliveryOutDate <= deliveryOutDateTo);
+    var doCars = await doCarsQ.ToListAsync();
+
+    var doHeads = (await db.DeliveryOrders.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.Id);
+    var carIds = doCars.Select(c => c.CarId!).Distinct().ToList();
+    var cvs = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && v.FlagActive == "1" && v.CarId != null && carIds.Contains(v.CarId))
+            .ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_Car_Car_Filter — Tables[0] (câu debug bị bỏ quên).
+    var filterTable = new List<object>();
+    // #tbl_Car_Car_Raw — Tables[1] (câu debug bị bỏ quên).
+    var rawTable = new List<object>();
+    var keys = new List<(Dictionary<string, string?> Key, int Day)>();
+    var monthsInScope = new HashSet<string>();
+
+    foreach (var c in doCars)
+    {
+        if (!cvs.TryGetValue(c.CarId!, out var cv)) continue;
+        var day = c.DeliveryOutDate!.Value.Day;
+        monthsInScope.Add(c.DeliveryOutDate.Value.ToString("yyyy-MM"));
+
+        filterTable.Add(new
+        {
+            tbl_Car_Car_Filter = (string?)null,      // ⚠️ cột rác của câu debug
+            CarId = c.CarId, cv.VIN, DeliveryDay = day
+        });
+
+        var dealerCode = doHeads.TryGetValue(c.DoId, out var h) ? h.DealerCode : null;
+        var key = new Dictionary<string, string?>
+        {
+            ["DealerCode"] = dealerCode,
+            ["CCModelCode"] = cv.ModelCode, ["CCSpecCode"] = cv.SpecCode, ["CCColorCode"] = cv.ColorCode,
+            ["CVModelCode"] = cv.ModelCode, ["CVSpecCode"] = cv.ActualSpec, ["CVColorCode"] = cv.ColorCode
+        };
+        rawTable.Add(new
+        {
+            tbl_Car_Car_Raw = (string?)null,         // ⚠️ cột rác của câu debug
+            CarId = c.CarId, cv.VIN, DeliveryDay = day,
+            DealerCode = dealerCode,
+            CCModelCode = cv.ModelCode, CCSpecCode = cv.SpecCode, CCColorCode = cv.ColorCode,
+            CVModelCode = cv.ModelCode, CVSpecCode = cv.ActualSpec, CVColorCode = cv.ColorCode
+        });
+        keys.Add((key, day));
+    }
+
+    // Gộp theo tập cột người dùng chọn + 31 cột ngày.
+    var rows = keys
+        .GroupBy(x => string.Join("|#|", groupBy.Select(c => x.Key[c] ?? "")))
+        .Select(g =>
+        {
+            var parts = g.Key.Split("|#|");
+            var d = new Dictionary<string, object?>();
+            for (var i = 0; i < groupBy.Count; i++) d[groupBy[i]] = parts.Length > i ? parts[i] : null;
+            for (var day = 1; day <= 31; day++)
+                d[$"Day{day:00}"] = g.Count(x => x.Day == day);
+            d["Total"] = g.Count();
+            return d;
+        })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        groupByApplied = groupBy,
+        count = rows.Count,
+        tbl_Car_Car_Filter = filterTable,     // Tables[0] — câu debug bị bỏ quên
+        tbl_Car_Car_Raw = rawTable,           // Tables[1] — câu debug bị bỏ quên
+        RptStatistic_HTCStockOut02 = rows,    // Tables[2]
+        monthsInScope = monthsInScope.OrderBy(x => x).ToList(),
+        pivotMergesMultipleMonths = monthsInScope.Count > 1,
+        whitelistGroupByNote = "GROUP BY DONG DO NGUOI DUNG CHON - nhung CO WHITELIST (cach lam DUNG): arrstrColumnGroupBy = { DealerCode, CCModelCode, CCSpecCode, CCColorCode, CVModelCode, CVSpecCode, CVColorCode }; chi cot nam trong danh sach trang moi duoc noi vao zzzzClauseColumn_GroupBy => KHONG CO BE MAT INJECTION du la group by dong. DIEM SANG - doi lap #B284/#B290. Rong => nem RptStatistic_HTCStockOut02_InvalidGroupByList (guard that). NHUNG dung strGroupByList.Contains(...) la SO CHUOI CON, khong phai so phan tu danh sach - an toan o day CHI VI khong cot nao la chuoi con cua cot khac; them mot cot moi trung tien to la se CHON NHAM. Rui ro tiem an.",
+        dayPivotNote = "PIVOT 31 COT NGAY DUNG Day(<ngay>) - KHONG CO THANG/NAM => CONG DON CAM GIUA CAC THANG: 'Day(cdod.DeliveryOutDate) DeliveryDay' roi 31 cot '(case when DeliveryDay = NN then 1 else 0 end) DayNN'. Neu bo loc ngay KHONG gioi han dung MOT THANG thi ngay 05 cua thang 3 va ngay 05 cua thang 4 cung roi vao cot Day05 => SO BI CONG DON, KHONG CO DAU HIEU NAO. Bo loc ngay la TUY CHON (BuildClause) nen rui ro nay la THUC. KHONG TU VA - xem monthsInScope va co pivotMergesMultipleMonths.",
+        twoForgottenDebugNote = "HAI cau debug bi bo quen, KHONG comment (tbl_Car_Car_Filter va tbl_Car_Car_Raw) => chiem Tables[0] va Tables[1] - HOP DONG API, lan thu SAU (sau #B290, #B296, #B299, #B308, #B311). Day la lan dau HAI CAU TRONG CUNG MOT HAM deu song.",
+        baseConditionsNote = "BA dieu kien nen: cc.FlagActive = '1'; cdod.DeliveryOutDate is not null ('xe da xuat kho'); cdod.ConfirmStatus in ('A','F'). Bo loc ngay di qua BuildClause('@p') => THAM SO RUNTIME (an toan).",
+        rbacNote = "RBAC - to hop (1): myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung (1 hit) => co cong => khong phai lo. @strHTCDealerCode/@strHTCDealerName nap nhung SQL khong dung => HAI THAM SO MO COI, va lai lap loi '...Name' NHAN HTCDealerCode - lan thu TU (sau #B269/#B284/#B290)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/pivot-transplan", async (
     AppDbContext db, ITenantContext t, string? transporterStatus) =>
 {
