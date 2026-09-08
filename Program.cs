@@ -34289,6 +34289,67 @@ app.MapGet("/api/jobs/mail-nhacno/preview", async (
     });
 }).RequireAuthorization();
 
+// ===== #B215/#B216/#B217 JOB TỰ ĐỘNG HOÀN TẤT THANH TOÁN — `Job_Auto_PaymentFinish`
+//       (`TCFIntergration/BizHTC.TCFIntergration.cs:8165`, **hàm cuối file**, 8165–8857) =====
+// **3B khớp cả 2 máy** (vị trí **trùng**, file cùng 8857 dòng): `8165,8857 / 618a40c5a377ea3ee675e6c132697478`.
+// 🔴🔴 **HAI KIỂU PLACEHOLDER TRONG CÙNG MỘT CÂU SQL** — đây là điểm dễ port hỏng nhất:
+//     `string strPaymentStatus = **"'P'"**;`            ← **biến đã mang sẵn dấu nháy**
+//     `… and t.PaymentStatus in (**@strPaymentStatus**)` ← template **KHÔNG** bọc nháy
+//     `… and t.CreatedDate >= **'@strTodayMinus5'**`     ← template **CÓ** bọc nháy, biến **không** có
+//   Cả ba đi qua **`CmUtils.StringUtils.Replace`** (**NƯỚNG chuỗi**, *không* phải bind tham số).
+//   ⇒ Kết quả đúng: `in ('P')` và `>= '2026-09-03 00:00:00'`.
+//   ⚠️ Port mà **thêm nháy cho cả hai** ⇒ `in (''P'')` — **hỏng cú pháp**; port mà **bỏ nháy cả hai**
+//     ⇒ `in (P)` — cũng hỏng. **Phải đọc từng chỗ xem nháy nằm ở BIẾN hay ở TEMPLATE.**
+// 🔴 **Quét 5 NGÀY GẦN NHẤT**: `strTodayMinus5 = dtimesys.AddDays(-5).ToString("yyyy-MM-dd 00:00:00")`
+//   ⇒ `CreatedDate >= hôm nay-5 00:00:00` **và** `<= hôm nay`. Phiếu cũ hơn 5 ngày **job không đụng tới**.
+// 🔴 **Chỉ xử lý phiếu trạng thái `'P'`** (`Stage.Pending`), và trước khi hoàn tất còn **kiểm lại**
+//   `if (Convert.ToString(dtr["PaymentStatus"]).Equals(Stage.Pending))` ⇒ **kiểm hai lần** (một lần ở
+//   SQL lọc, một lần trong vòng lặp) — phòng dữ liệu đổi giữa chừng.
+// 🔴🔴 **NGƯỜI THỰC HIỆN LÀ TÀI KHOẢN JOB**, không phải người dùng:
+//     `PartnerUserCodeForJob.JobAppPayment` = **`"HTC.JobAppPayment"`** (`Const.Main.cs:1210`)
+//   ⇒ Vết duyệt trong DB mang tên tài khoản máy; port dùng người đăng nhập là **sai vết kiểm toán**.
+// 🔴 Hàm duyệt được gọi là **`PaymentPaymentApproveX_20210601`** với `strFlagUnapprove = Flag.Inactive`
+//   (**"0" = ĐANG DUYỆT**, đúng khuôn đảo nghĩa đã gặp ở #B108) và **`strRemarkReason = ""`**.
+//   Bảy tham số TCF đi kèm: `TCF_AccountingRecordNo` · `TCF_PaymentEndDate` · `TCF_RemarkTranfer` ·
+//   `TCF_AutoId` · `TCF_BSInputNo` · `FlagMapDMS_TCG`.
+// ⚠️ **MÃ LỖI MẶC ĐỊNH SAI**: `strErrorCodeDefault = TError.ErrHTC.**Rpt_MasterData_CreateAuto**`
+//   — mã của **hàm khác** (dấu vết copy-paste). Mọi lỗi không bắt được của job này sẽ **hiện dưới tên
+//   một chức năng không liên quan**. Ghi lại, **không tự sửa**.
+// 📌 **NỢ — HIỆU ỨNG RA NGOÀI**: job gọi TCF (`OS_DMS_TCF_WA_Bank_BankStatementDtl_GetX`, xem #B123)
+//   và **gửi mail**; MiniHTC **không** làm cả hai. Endpoint chỉ **liệt kê phiếu đủ điều kiện**.
+app.MapGet("/api/jobs/payment-finish/preview", async (
+    AppDbContext db, ITenantContext t, int? daysBack) =>
+{
+    var today = DateTime.Now.Date;
+    var from = today.AddDays(-(daysBack ?? 5));   // 🔴 mặc định 5 ngày, đúng nguồn
+
+    // 🔴 Chỉ phiếu 'P' (Stage.Pending) trong khoảng ngày tạo.
+    var rows = await db.PmtPayments
+        .Where(p => p.OrgId == t.OrgId && p.PaymentStatus == "P"
+                    && p.CreatedDate >= from && p.CreatedDate <= today.AddDays(1).AddTicks(-1))
+        .Select(p => new
+        {
+            p.PaymentNo, p.DealerCode, p.PaymentStatus, p.CreatedDate,
+            p.AccountingRecordNo, p.PaymentEndDate, p.BankAccountReceive, p.TotalAmount
+        })
+        .OrderBy(p => p.PaymentNo).ToListAsync();
+
+    return Results.Ok(new
+    {
+        runDate = today, dateFrom = from, count = rows.Count, items = rows,
+        jobUserCode = "HTC.JobAppPayment",
+        tcfNotCalled = true,
+        mailNotSent = true,
+        twoPlaceholderNote = "HAI KIEU PLACEHOLDER TRONG CUNG MOT CAU SQL: 'string strPaymentStatus = \"'P'\";' - BIEN DA MANG SAN DAU NHAY, template KHONG boc nhay ('in (@strPaymentStatus)'); con '@strTodayMinus5' thi TEMPLATE CO boc nhay ('>= @strTodayMinus5' voi nhay) va bien KHONG co. Ca ba di qua CmUtils.StringUtils.Replace (NUONG CHUOI, khong phai bind tham so). Port ma THEM NHAY CHO CA HAI => in (''P'') hong cu phap; BO NHAY CA HAI => in (P) cung hong. PHAI DOC TUNG CHO xem nhay nam o BIEN hay o TEMPLATE.",
+        fiveDayNote = "Quet 5 NGAY GAN NHAT: strTodayMinus5 = dtimesys.AddDays(-5).ToString('yyyy-MM-dd 00:00:00'); CreatedDate >= hom nay-5 VA <= hom nay. Phieu cu hon 5 ngay JOB KHONG DUNG TOI.",
+        doubleCheckNote = "Chi xu ly phieu 'P' (Stage.Pending), va truoc khi hoan tat con KIEM LAI 'if (Convert.ToString(dtr[\"PaymentStatus\"]).Equals(Stage.Pending))' => KIEM HAI LAN (SQL loc + vong lap) phong du lieu doi giua chung.",
+        jobUserNote = "NGUOI THUC HIEN LA TAI KHOAN JOB, khong phai nguoi dung: PartnerUserCodeForJob.JobAppPayment = 'HTC.JobAppPayment' (Const.Main.cs:1210). Vet duyet trong DB mang ten TAI KHOAN MAY; port dung nguoi dang nhap la SAI VET KIEM TOAN.",
+        approveFnNote = "Ham duyet duoc goi la PaymentPaymentApproveX_20210601 voi strFlagUnapprove = Flag.Inactive ('0' = DANG DUYET - khuon dao nghia da gap o #B108) va strRemarkReason = ''. Bay tham so TCF di kem: TCF_AccountingRecordNo, TCF_PaymentEndDate, TCF_RemarkTranfer, TCF_AutoId, TCF_BSInputNo, FlagMapDMS_TCG.",
+        wrongErrorCodeNote = "MA LOI MAC DINH SAI: strErrorCodeDefault = TError.ErrHTC.Rpt_MasterData_CreateAuto - ma cua HAM KHAC (dau vet copy-paste). Moi loi khong bat duoc cua job nay se HIEN DUOI TEN MOT CHUC NANG KHONG LIEN QUAN. Ghi lai, KHONG tu sua.",
+        outwardEffectNote = "NO - HIEU UNG RA NGOAI: job goi TCF (OS_DMS_TCF_WA_Bank_BankStatementDtl_GetX, xem #B123) va GUI MAIL; MiniHTC KHONG lam ca hai. Endpoint chi liet ke phieu du dieu kien."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
