@@ -28052,6 +28052,142 @@ app.MapPost("/api/payments/update-interest-loan", async (
     });
 }).RequireAuthorization();
 
+// ===== #B236/#B237/#B238 CHỈ TIÊU DOANH SỐ KỲ VỌNG — `Rpt_SalesExpectedTarget_Get` / `_Calc` / `_Save`
+//       (`DMS40/0.20.MapVIN.cs`, csproj dòng 123 `<Compile Include>` ⇒ **file SỐNG**) =====
+// **3B khớp cả 2 máy** (vị trí **trùng**):
+//   `_Get  44150,44281 / 5ee7c25b32e1b6e67cdd59da96f9993b`
+//   `_Calc 44408,44524 / d976f8891f09ca235abfd286910f2f02`
+//   `_SaveX 44525,45694 / 0def863bef044778466e5699f441ef4c` (**1170 dòng**)
+// 🔴🔴 **BA BẢNG, BA CẤP** — khoá chung `RptSaleExpTgNo`:
+//   · `Rpt_SalesExpectedTarget` — **đầu**, theo **năm** (`YearRpt`) + `TotalSaleAmount`;
+//   · `…Dtl`  — dòng theo **`AreaRootCode`** (khu vực **GỐC**, xem luật `C0-…vicesimustertius`);
+//   · `…Spec` — chi tiết tới **đại lý × tỉnh** (`DealerCode` + `ProvinceCode`), thêm `FirstDeal`.
+//   ⇒ Sáu chỉ tiêu (`TrungBinhTyTrongSoCaNuoc`, `DungLuongTTTheoMucTieu`, `MaxTLSLXeTongXeTaiTinh`,
+//     `TBTLSLXeTongXeTaiTinh`, `TLKhaiThacSanLuongInit`, …) **lặp ở CẢ HAI cấp** dòng —
+//     `Dtl` có thêm `TLKhaiThacSanLuongActual` + `CTKVDLTheoDMS`, `Spec` thì **không**.
+//     ⇒ Cùng tên cột, **hai cấp tổng hợp khác nhau**; lấy nhầm cấp là **sai đơn vị so sánh**.
+// 🔴 **`_SaveX` XOÁ BA BẢNG rồi CHÈN LẠI BA BẢNG** (`delete t` ×3 → `insert into` ×3) ⇒ lưu là
+//   **thay toàn bộ bộ ba** theo `RptSaleExpTgNo`, không phải cập nhật từng dòng.
+//   ⚠️ Khác #B218/#B221 (**không** xoá ⇒ nhân đôi): cụm này **có** xoá ⇒ **an toàn khi chạy lại**.
+// 🔴 `TotalSaleAmount` khai kiểu **`"float"`** trong `MyBuildDBDT_Common` (không phải kiểu mặc định)
+//   ⇒ số thực, không phải nguyên.
+// 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC**: `_Calc` (117 dòng) tính sáu chỉ tiêu từ dữ liệu bán hàng/dân số
+//   theo tỉnh chưa có trong MiniHTC ⇒ endpoint `calc` **chỉ dựng khung** (đầu + dòng theo khu vực gốc
+//   + dòng theo đại lý), **mọi chỉ tiêu để `null`**, cờ `figuresNotComputed`.
+app.MapGet("/api/reports/sales-expected-target/{no}", async (
+    string no, AppDbContext db, ITenantContext t) =>
+{
+    var rptNo = (no ?? "").Trim();
+    var head = await db.SalesExpectedTargets.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RptSaleExpTgNo == rptNo);
+    if (head is null) return Results.NotFound(new { error = "Rpt_SalesExpectedTarget_NotFound", check = new { RptSaleExpTgNo = rptNo } });
+
+    var dtl = await db.SalesExpectedTargetDtls
+        .Where(x => x.OrgId == t.OrgId && x.RptSaleExpTgNo == rptNo)
+        .OrderBy(x => x.AreaRootCode).ToListAsync();
+    var spec = await db.SalesExpectedTargetSpecs
+        .Where(x => x.OrgId == t.OrgId && x.RptSaleExpTgNo == rptNo)
+        .OrderBy(x => x.DealerCode).ToListAsync();
+
+    return Results.Ok(new
+    {
+        Rpt_SalesExpectedTarget = head,
+        Rpt_SalesExpectedTargetDtl = dtl,
+        Rpt_SalesExpectedTargetSpec = spec,
+        threeLevelNote = "BA BANG, BA CAP - khoa chung RptSaleExpTgNo: dau (theo NAM + TotalSaleAmount); Dtl (theo AreaRootCode - khu vuc GOC, luat C0-...vicesimustertius); Spec (chi tiet toi DAI LY x TINH, them FirstDeal). Sau chi tieu LAP O CA HAI CAP dong - Dtl co them TLKhaiThacSanLuongActual + CTKVDLTheoDMS, Spec thi KHONG. Cung ten cot, HAI CAP TONG HOP KHAC NHAU; lay nham cap la SAI DON VI SO SANH."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/reports/sales-expected-target/save", async (
+    SalesExpTargetSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rptNo = (dto.RptSaleExpTgNo ?? "").Trim();
+    if (rptNo.Length == 0)
+        return Results.BadRequest(new { error = "Rpt_SalesExpectedTarget_Save_InvalidRptSaleExpTgNo" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // 🔴 XOÁ BA BẢNG rồi CHÈN LẠI — thay toàn bộ bộ ba theo RptSaleExpTgNo.
+    var oldHead = await db.SalesExpectedTargets.Where(x => x.OrgId == t.OrgId && x.RptSaleExpTgNo == rptNo).ToListAsync();
+    var oldDtl = await db.SalesExpectedTargetDtls.Where(x => x.OrgId == t.OrgId && x.RptSaleExpTgNo == rptNo).ToListAsync();
+    var oldSpec = await db.SalesExpectedTargetSpecs.Where(x => x.OrgId == t.OrgId && x.RptSaleExpTgNo == rptNo).ToListAsync();
+    db.SalesExpectedTargets.RemoveRange(oldHead);
+    db.SalesExpectedTargetDtls.RemoveRange(oldDtl);
+    db.SalesExpectedTargetSpecs.RemoveRange(oldSpec);
+
+    db.SalesExpectedTargets.Add(new SalesExpectedTarget
+    {
+        OrgId = t.OrgId, RptSaleExpTgNo = rptNo, YearRpt = dto.YearRpt ?? DateTime.Now.Year,
+        TotalSaleAmount = dto.TotalSaleAmount,      // 🔴 khai kiểu "float" ở nguồn
+        CreateDTime = now, CreateBy = by, LogLUDateTime = now, LogLUBy = by
+    });
+
+    var dtlCount = 0;
+    foreach (var d in dto.Dtl ?? new())
+    {
+        db.SalesExpectedTargetDtls.Add(new SalesExpectedTargetDtl
+        {
+            OrgId = t.OrgId, RptSaleExpTgNo = rptNo,
+            AreaRootCode = (d.AreaRootCode ?? "").Trim(),
+            TrungBinhTyTrongSoCaNuoc = d.TrungBinhTyTrongSoCaNuoc,
+            DungLuongTTTheoMucTieu = d.DungLuongTTTheoMucTieu,
+            MaxTLSLXeTongXeTaiTinh = d.MaxTLSLXeTongXeTaiTinh,
+            TBTLSLXeTongXeTaiTinh = d.TBTLSLXeTongXeTaiTinh,
+            TLKhaiThacSanLuongInit = d.TLKhaiThacSanLuongInit,
+            TLKhaiThacSanLuongActual = d.TLKhaiThacSanLuongActual,
+            CTKVDLTheoDMS = d.CTKVDLTheoDMS
+        });
+        dtlCount++;
+    }
+
+    var specCount = 0;
+    foreach (var s in dto.Spec ?? new())
+    {
+        db.SalesExpectedTargetSpecs.Add(new SalesExpectedTargetSpec
+        {
+            OrgId = t.OrgId, RptSaleExpTgNo = rptNo,
+            DealerCode = (s.DealerCode ?? "").Trim(),
+            ProvinceCode = s.ProvinceCode, AreaRootCode = s.AreaRootCode, FirstDeal = s.FirstDeal,
+            TrungBinhTyTrongSoCaNuoc = s.TrungBinhTyTrongSoCaNuoc,
+            DungLuongTTTheoMucTieu = s.DungLuongTTTheoMucTieu,
+            MaxTLSLXeTongXeTaiTinh = s.MaxTLSLXeTongXeTaiTinh,
+            TBTLSLXeTongXeTaiTinh = s.TBTLSLXeTongXeTaiTinh,
+            TLKhaiThacSanLuongInit = s.TLKhaiThacSanLuongInit
+        });
+        specCount++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        rptSaleExpTgNo = rptNo,
+        deleted = new { head = oldHead.Count, dtl = oldDtl.Count, spec = oldSpec.Count },
+        inserted = new { head = 1, dtl = dtlCount, spec = specCount },
+        replaceAllNote = "_SaveX XOA BA BANG roi CHEN LAI BA BANG (delete t x3 -> insert into x3) => luu la THAY TOAN BO BO BA theo RptSaleExpTgNo, khong phai cap nhat tung dong. KHAC #B218/#B221 (khong xoa => nhan doi): cum nay CO xoa => AN TOAN KHI CHAY LAI.",
+        floatTypeNote = "TotalSaleAmount khai kieu 'float' trong MyBuildDBDT_Common (khong phai kieu mac dinh) => so thuc, khong phai nguyen."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/reports/sales-expected-target/calc", async (
+    AppDbContext db, ITenantContext t, string? rptSaleExpTgNo, int? yearRpt) =>
+{
+    var rptNo = (rptSaleExpTgNo ?? "").Trim();
+    var areas = await db.Areas.Where(a => a.OrgId == t.OrgId && (a.AreaRootCode ?? "") != "")
+        .Select(a => a.AreaRootCode!).Distinct().OrderBy(a => a).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1")
+        .Select(d => new { d.DealerCode, d.ProvinceCode }).OrderBy(d => d.DealerCode).ToListAsync();
+
+    return Results.Ok(new
+    {
+        rptSaleExpTgNo = rptNo, yearRpt = yearRpt ?? DateTime.Now.Year,
+        AreaRootCodes = areas, Dealers = dealers,
+        figuresNotComputed = true,
+        debtNote = "NO - KHONG DOAN CONG THUC: _Calc (117 dong) tinh sau chi tieu tu du lieu ban hang/dan so theo tinh chua co trong MiniHTC => endpoint nay CHI DUNG KHUNG (khu vuc goc + dai ly), MOI CHI TIEU DE NULL. Khong bia so.",
+        nextStepNote = "Dung ket qua khung nay lam dau vao cho POST /api/reports/sales-expected-target/save sau khi nghiep vu dien so."
+    });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -46828,6 +46964,15 @@ record PmtUpdateFinancialRowDto(string? PaymentNo, string? AccountingRecordNo); 
 record PmtUpdateFinancialDto(List<PmtUpdateFinancialRowDto>? Rows);   // #B232
 record PmtUpdateInterestRowDto(string? PaymentNo, decimal? InterestRate, decimal? LoanPeriod);   // #B235
 record PmtUpdateInterestDto(List<PmtUpdateInterestRowDto>? Rows);   // #B235
+// #B236-B238 — lưu bộ ba Rpt_SalesExpectedTarget / …Dtl / …Spec (SaveX xoá 3 bảng rồi chèn lại 3 bảng).
+record SalesExpTargetSaveDto(string? RptSaleExpTgNo, int? YearRpt, decimal? TotalSaleAmount,
+    List<SalesExpTargetDtlDto>? Dtl, List<SalesExpTargetSpecDto>? Spec);
+record SalesExpTargetDtlDto(string? AreaRootCode, decimal? TrungBinhTyTrongSoCaNuoc,
+    decimal? DungLuongTTTheoMucTieu, decimal? MaxTLSLXeTongXeTaiTinh, decimal? TBTLSLXeTongXeTaiTinh,
+    decimal? TLKhaiThacSanLuongInit, decimal? TLKhaiThacSanLuongActual, string? CTKVDLTheoDMS);
+record SalesExpTargetSpecDto(string? DealerCode, string? ProvinceCode, string? AreaRootCode,
+    DateTime? FirstDeal, decimal? TrungBinhTyTrongSoCaNuoc, decimal? DungLuongTTTheoMucTieu,
+    decimal? MaxTLSLXeTongXeTaiTinh, decimal? TBTLSLXeTongXeTaiTinh, decimal? TLKhaiThacSanLuongInit);
 record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType);   // #B206
 record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);

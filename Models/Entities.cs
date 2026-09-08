@@ -9638,6 +9638,55 @@ public sealed class RptCarAllocationByArea
     public decimal? SLMapVIN { get; set; }
     public decimal? SLTonKhoHT { get; set; }
 }
+
+/// <summary>🔴 #B236–#B238 — `Rpt_SalesExpectedTarget`: **đầu** báo cáo chỉ tiêu doanh số kỳ vọng,
+/// khoá `RptSaleExpTgNo`, theo **năm** (`YearRpt`).</summary>
+public sealed class SalesExpectedTarget
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RptSaleExpTgNo { get; set; } = "";
+    public int YearRpt { get; set; }
+    public decimal? TotalSaleAmount { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>🔴 #B236–#B238 — `Rpt_SalesExpectedTargetDtl`: dòng theo **khu vực GỐC** (`AreaRootCode`).</summary>
+public sealed class SalesExpectedTargetDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RptSaleExpTgNo { get; set; } = "";
+    public string AreaRootCode { get; set; } = "";
+    public decimal? TrungBinhTyTrongSoCaNuoc { get; set; }
+    public decimal? DungLuongTTTheoMucTieu { get; set; }
+    public decimal? MaxTLSLXeTongXeTaiTinh { get; set; }
+    public decimal? TBTLSLXeTongXeTaiTinh { get; set; }
+    public decimal? TLKhaiThacSanLuongInit { get; set; }
+    public decimal? TLKhaiThacSanLuongActual { get; set; }
+    public string? CTKVDLTheoDMS { get; set; }
+}
+
+/// <summary>🔴 #B236–#B238 — `Rpt_SalesExpectedTargetSpec`: dòng chi tiết tới **đại lý × tỉnh**,
+/// có thêm `FirstDeal`. Dùng chung 6 chỉ tiêu với [[SalesExpectedTargetDtl]].</summary>
+public sealed class SalesExpectedTargetSpec
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RptSaleExpTgNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? ProvinceCode { get; set; }
+    public string? AreaRootCode { get; set; }
+    public DateTime? FirstDeal { get; set; }
+    public decimal? TrungBinhTyTrongSoCaNuoc { get; set; }
+    public decimal? DungLuongTTTheoMucTieu { get; set; }
+    public decimal? MaxTLSLXeTongXeTaiTinh { get; set; }
+    public decimal? TBTLSLXeTongXeTaiTinh { get; set; }
+    public decimal? TLKhaiThacSanLuongInit { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

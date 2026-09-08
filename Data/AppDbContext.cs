@@ -523,6 +523,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AtedpRun> AtedpRuns => Set<AtedpRun>();   // #B134 luot chay job lap ke hoach giao xe
     public DbSet<TcgCarPrice> TcgCarPrices => Set<TcgCarPrice>();   // #B190 bang gia xe TCG theo thoi gian
     public DbSet<RptStatisticStockHis> RptStatisticStockHiss => Set<RptStatisticStockHis>();   // #B218
+    public DbSet<SalesExpectedTarget> SalesExpectedTargets => Set<SalesExpectedTarget>();   // #B236-B238
+    public DbSet<SalesExpectedTargetDtl> SalesExpectedTargetDtls => Set<SalesExpectedTargetDtl>();   // #B236-B238
+    public DbSet<SalesExpectedTargetSpec> SalesExpectedTargetSpecs => Set<SalesExpectedTargetSpec>();   // #B236-B238
     public DbSet<RptCarAllocationByArea> RptCarAllocationByAreas => Set<RptCarAllocationByArea>();   // #B221
     public DbSet<FileImportExcelTemp> FileImportExcelTemps => Set<FileImportExcelTemp>();   // #B195
     public DbSet<AutoMapVinStorageRate> AutoMapVinStorageRates => Set<AutoMapVinStorageRate>();   // #B136-B138 ty le phan bo theo kho
