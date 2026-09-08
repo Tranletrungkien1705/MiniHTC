@@ -53950,6 +53950,136 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #672 THỐNG KÊ DỊCH VỤ `Ser_RO_Statistic_Service_WH` + `…_ByGroup_WH` (`WH.cs:12310` / `:12134`) =====
+// 3B: laptop `:12310` md5 `dbb34ddc` · `:12134` md5 `c5dd6e24` — **cả hai KHỚP** máy 150.
+// WS `WSCarSv.asmx.cs:30940` / `:30975` gọi thẳng (không hậu tố). DIFF hai bản **sau khi chuẩn hoá khoảng trắng**
+// (phương pháp vừa rút ra ở #671) ⇒ khác biệt gọn đúng **5 điểm**, thay vì hàng trăm dòng nhiễu.
+//
+// 🔴🔴🔴 **CHÍNH LÀ LỚP MẤT DÒNG MÀ HỌ ĐÃ VÁ Ở BÁO CÁO DOANH THU (#670) — NHƯNG KHÔNG VÁ Ở ĐÂY**:
+//     `from Ser_RO ro inner join Ser_Customer cus on ro.CusID = cus.CusID and ro.DealerCode = cus.DealerCode`
+//     `join Ser_Car car on ro.CarID = car.CarID **and ro.CusID = car.CusID** and ro.DealerCode = car.DealerCode`
+//   Đây **y hệt** khối `#ccus` của `Ser_InvReportRevenueRpt_WH` bản **đã chết**; bản sống 2023-04-17 đã bỏ cả hai
+//   `join` (xem #670). Ở màn thống kê dịch vụ thì **vẫn còn nguyên** ⇒ lệnh của **xe đã sang tên** hoặc khách
+//   thiếu bản ghi danh mục **biến mất khỏi thống kê**. ⇒ Bản vá **được áp cho một báo cáo, không áp cho anh em**.
+// 🔴🔴 **`BuildClauseConditionList` KHÔNG nhận `ref alParamsCoupleSql`** ⇒ **nướng thẳng giá trị** vào SQL:
+//     `BuildClauseConditionList("and", "ro.DealerCode", strDealerCodeList, "|")` ·
+//     `BuildClauseConditionList("and", "ro.Status", strStatusList, "|")` ⇒ bề mặt **tiêm SQL** ở cả hai bản.
+// 🔴🔴 **BẢN CƠ SỞ KHÔNG DỌN BẢNG TẠM, BẢN THEO TỔ THÌ CÓ** — đếm `drop table`: bản `_WH` = **0**,
+//   bản `_ByGroup_WH` = **1** (`drop table #tbl_Ser_RO;`). Cùng họ lệch với #664 (5 tạo / 4 dọn).
+// 🔴🔴 **BẢN THEO TỔ MẤT `ORDER BY`**: bản cơ sở kết thúc bằng `order by ro.RONO`; bản `_ByGroup` thay đoạn đó
+//   bằng ba `left join` (kỹ thuật viên → tổ) và **không còn `order by`** ⇒ thứ tự bất định (#415).
+// 🔴🔴 **`select distinct` CHE ĐI VIỆC NHÂN DÒNG, KHÔNG SỬA NÓ**: bản theo tổ nối
+//   `left join Ser_ROServiceItemsEngineer se on si.Roid = se.roid and si.itemid = se.ItemId` →
+//   `left join ser_engineer e` → `left join Ser_groupRepair r` rồi thêm `distinct`.
+//   ⚠️ Một dòng công do **hai kỹ thuật viên thuộc hai tổ khác nhau** làm ⇒ `GroupRName` khác nhau ⇒ `distinct`
+//     **không khử được** ⇒ dòng công đó **đếm ở CẢ HAI tổ** ⇒ tổng theo tổ **lớn hơn** tổng thực.
+// 🔴 **HAI NGUỒN SỰ THẬT CHO TÊN TRẠNG THÁI**: `--, dbo.ROStatus_GetStatusNameByCode(ro.Status) StatusName` bị
+//   comment, thay bằng một khối `case` nội tuyến. Sửa hàm SQL kia thì báo cáo này **không đi theo**.
+//   (Port dòng ACTIVE = khối `case`, chép **nguyên văn** các mã.)
+// ⚪ **DƯƠNG TÍNH — khối `case` này CÓ `else`**: `else N'Không xác định'` ⇒ mã lạ **không** thành NULL,
+//   khác hẳn #656/#663/#667. Ghi ⚪ để cân bằng: nhà **có** viết `else` khi họ nhớ.
+// ⚪ **ÂM TÍNH — mốc ngày ở đây KHÔNG mất ngày cuối**: nguồn so bằng
+//   `datediff(day, ro.CheckInDate, convert(datetime, '@ToDate', 20)) >= 0` — `datediff(day, …)` **cắt phần giờ**
+//   ⇒ không dính #415. ⚠️ Nhưng đặt hàm lên **cột** làm điều kiện **không dùng được index** (quét bảng).
+// 🔴 `'LS-' + ro.RONO` — tiền tố nướng vào dữ liệu, **giống #669** và **khác #670** (`'BG-'`) ⇒ ba màn, hai
+//   tiền tố, cùng một cột `RONo`.
+app.MapGet("/api/report/ro-service-statistic-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? statusList, bool byGroup = false) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(statusList))
+    {
+        // Nguồn tách danh sách bằng dấu "|" (BuildClauseConditionList) — giữ đúng ký tự phân tách.
+        var codes = statusList!.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToList();
+        qr = qr.Where(x => codes.Contains(x.Status));
+    }
+    // datediff(day, …) ⇒ so THEO NGÀY, không mất ngày cuối.
+    if (from is not null) qr = qr.Where(x => x.CheckInDate >= from);
+    if (to is not null) qr = qr.Where(x => x.CheckInDate < to!.Value.AddDays(1));
+    var ros = await qr.Select(x => new { x.Id, x.RONo, x.CheckInDate, x.Status, x.LicensePlate }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var items = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.Id, x.RoId, x.SerCode, x.SerName, x.Factor, x.Price, x.Vat }).ToListAsync();
+
+    // Nguồn chép nguyên văn (port dòng ACTIVE = khối case nội tuyến, KHÔNG dùng hàm SQL đã bị comment).
+    static string StatusName(string? st) => st switch
+    {
+        "CRE" or "PRT" or "HRO" => "Chờ sửa",
+        "INGA" => "Đang sửa",
+        "RPRD" => "Sửa xong",
+        "CEND" => "Kiểm tra cuối cùng",
+        "PAID" => "Thanh toán xong",
+        "FNS" => "Đã giao xe",
+        "REJ" => "Lệnh hủy",
+        "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+        _ => "Không xác định",
+    };
+
+    var roById = ros.ToDictionary(x => x.Id);
+    var rows = items.Select(i =>
+    {
+        var ro = roById[i.RoId];
+        return new
+        {
+            roNo = "LS-" + ro.RONo, ro.CheckInDate, plateNo = ro.LicensePlate,
+            status = ro.Status, statusName = StatusName(ro.Status),
+            i.SerCode, i.SerName, i.Factor, i.Price, i.Vat,
+            amount = i.Factor * i.Price + i.Factor * i.Price * i.Vat * 0.01m,
+            itemId = i.Id,
+        };
+    }).OrderBy(x => x.roNo).ToList();
+
+    object? byGroupRows = null;
+    int itemsCountedInMoreThanOneGroup = 0;
+    if (byGroup)
+    {
+        var itemIds = rows.Select(x => x.itemId).ToList();
+        var engs = await db.RoServiceItemEngineers
+            .Where(x => x.OrgId == t.OrgId && itemIds.Contains(x.RoServiceItemId))
+            .Select(x => new { x.RoServiceItemId, x.EngineerNo }).ToListAsync();
+        // Nguon noi ky thuat vien -> to qua ser_engineer.GroupRID -> Ser_groupRepair; Mini noi qua GroupRCode.
+        var engNos = engs.Select(x => x.EngineerNo).Distinct().ToList();
+        var engMap = await db.ServiceEngineers.Where(x => x.OrgId == t.OrgId && engNos.Contains(x.EngineerNo))
+            .Select(x => new { x.EngineerNo, x.GroupRCode }).ToListAsync();
+        var grpCodes = engMap.Where(x => x.GroupRCode != null).Select(x => x.GroupRCode!).Distinct().ToList();
+        var grpName = (await db.GroupRepairs.Where(x => x.OrgId == t.OrgId && grpCodes.Contains(x.GroupRCode))
+            .Select(x => new { x.GroupRCode, x.GroupRName }).ToListAsync())
+            .ToDictionary(x => x.GroupRCode, x => x.GroupRName);
+        var grpByEng = engMap.ToDictionary(x => x.EngineerNo,
+            x => x.GroupRCode != null && grpName.TryGetValue(x.GroupRCode, out var gn) ? gn : null);
+        var groupsPerItem = engs.GroupBy(x => x.RoServiceItemId)
+            .ToDictionary(g => g.Key, g => g.Select(x => grpByEng.TryGetValue(x.EngineerNo, out var gn) ? (gn ?? "") : "").Distinct().ToList());
+        itemsCountedInMoreThanOneGroup = groupsPerItem.Count(kv => kv.Value.Count > 1);
+        byGroupRows = rows.SelectMany(r =>
+                groupsPerItem.TryGetValue(r.itemId, out var gs) && gs.Count > 0
+                    ? gs.Select(g => new { groupRName = g, r.roNo, r.SerCode, r.SerName, r.amount })
+                    : new[] { new { groupRName = (string?)null, r.roNo, r.SerCode, r.SerName, r.amount } }!)
+            .OrderBy(x => x.groupRName).ThenBy(x => x.roNo).ToList();
+    }
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows, byGroupRows,
+        totalAmount = rows.Sum(x => x.amount),
+        // ===== #672 =====
+        sameRowLossTheyFixedInTheRevenueReport = "CHINH LA LOP MAT DONG MA HO DA VA O BAO CAO DOANH THU (#670) NHUNG KHONG VA O DAY: from Ser_RO ro inner join Ser_Customer cus on ro.CusID = cus.CusID and ro.DealerCode = cus.DealerCode, join Ser_Car car on ro.CarID = car.CarID AND ro.CusID = car.CusID and ro.DealerCode = car.DealerCode — y het khoi #ccus cua Ser_InvReportRevenueRpt_WH ban DA CHET; ban song 2023-04-17 da bo ca hai join. O man thong ke dich vu thi VAN CON NGUYEN => lenh cua xe DA SANG TEN hoac khach thieu ban ghi danh muc BIEN MAT khoi thong ke => ban va duoc ap cho MOT bao cao, khong ap cho anh em",
+        conditionListBakesValues = "BuildClauseConditionList KHONG nhan ref alParamsCoupleSql => NUONG THANG gia tri vao SQL: BuildClauseConditionList(and, ro.DealerCode, strDealerCodeList, |) va (and, ro.Status, strStatusList, |) => be mat TIEM SQL o ca hai ban",
+        baseVersionNeverDropsTempTable = "dem drop table: ban _WH = 0, ban _ByGroup_WH = 1 (drop table #tbl_Ser_RO) => ban co so KHONG don bang tam; cung ho lech voi #664 (5 tao / 4 don)",
+        byGroupVersionLostOrderBy = "ban co so ket thuc bang order by ro.RONO; ban _ByGroup thay doan do bang ba left join (ky thuat vien -> to) va KHONG CON order by => thu tu bat dinh (#415)",
+        distinctHidesRowMultiplication = "select distinct CHE DI viec nhan dong chu khong sua no: ban theo to noi left join Ser_ROServiceItemsEngineer se on si.Roid = se.roid and si.itemid = se.ItemId -> left join ser_engineer e -> left join Ser_groupRepair r roi them distinct. Mot dong cong do HAI ky thuat vien thuoc HAI TO khac nhau lam => GroupRName khac nhau => distinct KHONG khu duoc => dong cong do dem o CA HAI to => tong theo to LON HON tong thuc",
+        itemsCountedInMoreThanOneGroup,
+        twoSourcesOfTruthForStatusName = "--, dbo.ROStatus_GetStatusNameByCode(ro.Status) StatusName bi comment, thay bang mot khoi case noi tuyen => sua ham SQL kia thi bao cao nay KHONG di theo; port dong ACTIVE = khoi case, chep NGUYEN VAN cac ma",
+        positiveCaseHasElse = "DUONG TINH: khoi case nay CO else (else N'Khong xac dinh') => ma la KHONG thanh NULL, khac han #656/#663/#667 => nha CO viet else khi ho nho",
+        negativeNoEndDateLoss = "AM TINH: moc ngay o day KHONG mat ngay cuoi — nguon so datediff(day, ro.CheckInDate, convert(datetime, @ToDate, 20)) >= 0, datediff(day, …) CAT phan gio => khong dinh #415. CANH BAO: dat ham len COT lam dieu kien KHONG dung duoc index (quet bang)",
+        roNoPrefixFamily = "'LS-' + ro.RONO — giong #669 va khac #670 (BG-) => ba man, hai tien to, cung mot cot RONo",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #670 DOANH THU DỊCH VỤ `Ser_InvReportRevenueRpt_WH_New20230417` (`WH.cs:11910-12133`) =====
 // 3B: laptop `:11910` md5 `20258ad0` **KHỚP** máy 150 `:11910`.
 // 🔴 **BẢN LIVE LÀ BẢN CÓ HẬU TỐ** — `WSCarSv.asmx.cs:31010` gọi thẳng `…_WH_**New20230417**`; hàm trần
