@@ -19882,6 +19882,92 @@ app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
 // ⚠️ Toàn solution DMSCarSv **KHÔNG có nơi GHI** bảng này và **không màn client nào gọi**
 //    (chỉ lộ ra ở gateway `WSCarSv.asmx.cs:40231`) ⇒ dữ liệu do hệ NGOÀI nạp; đây là API phục vụ hệ ngoài.
 //    Vì thế port **CHỈ đường đọc** — không bịa POST.
+// ===== 🔴🔴 #601 CẤP SỐ ĐƠN HÀNG PHỤ TÙNG (`SerOrderPartGetMaxOrderNo`, `PartOrder.cs:326`) =====
+// Đây là hàm **sinh số chứng từ** — sai ở đây nghĩa là **trùng số đơn hàng**, không phải lệch báo cáo.
+// Toàn bộ câu:
+//     `select max(po.OrderNo) as MaxOrderNo, convert(varchar, getdate(), 12) as currentDate`
+//     `from Ser_Part_Order po **with(nolock)** where (1=1)`
+//     `zzzzClauseWhere_strOrderNoLengthConditionList` · `zzzzClauseWhere_strDealerCodeConditionList`
+//
+// 🔴🔴 **`max()` TRÊN CỘT CHUỖI — THỨ TỰ CHỮ, KHÔNG PHẢI SỐ**: `OrderNo` là `varchar`, nên với dữ liệu
+//   `PO9` và `PO10` thì `max` trả **`PO9`** (vì `'9' > '1'`). Cách nguồn **vá** chuyện này là lọc
+//   `LEN(po.OrderNo)` để chỉ gom **các số cùng độ dài** — khi đó so chuỗi trùng với so số.
+//   ⇒ **Bộ lọc `LEN` KHÔNG phải tuỳ chọn, nó là điều kiện đúng đắn của thuật toán.**
+// 🔴🔴 **NHƯNG NÓ ĐI QUA `BuildClause` — CÓ THỂ CHẾT IM LẶNG** (#410):
+//     `BuildClause("and", "LEN(po.OrderNo)", strOrderPartNoLengthList, "@p", ref …)`
+//   Client gửi `"8"` (không toán tử) thay vì `"=8"` ⇒ mệnh đề **biến mất** ⇒ `max` gom **mọi độ dài** ⇒
+//   trả số dài nhất theo thứ tự chữ ⇒ **số kế tiếp sinh ra bị trùng hoặc nhảy bậc**. Một bộ lọc "kỹ thuật"
+//   mà hỏng thì hậu quả là **chứng từ trùng số**.
+// 🔴🔴 **ĐUA TRANH KHI CẤP SỐ**: câu này đọc `with(nolock)`, **không** khoá, **không** nằm trong chuỗi
+//   "lấy số → ghi" nguyên tử. Hai người bấm tạo đơn cùng lúc ⇒ đọc **cùng một** `max` ⇒ **cùng một số**.
+//   Đây là điểm nguy hiểm nhất: `nolock` thường chỉ làm lệch báo cáo, nhưng ở **hàm cấp số** nó tạo trùng khoá.
+// 🔴 **MÃ LỖI MẶC ĐỊNH LÀ CỦA HÀM KHÁC**:
+//     `string strErrorCodeDefault = TError.ErrCarSv.**SerStockInGetMaxStockInNo**;`
+//   trong hàm tên `SerOrderPart**GetMaxOrderNo**` ⇒ lỗi khi cấp số **đơn hàng phụ tùng** báo mã của **nhập**
+//   **kho**. Dấu vết chép hàm quên sửa (cùng họ `nTidSeq` thừa ở #574/#577/#579).
+// 🔴 **`#region // Check` HOÀN TOÀN RỖNG** (trích theo #403) ⇒ không kiểm `strDealerCodeConditionList` rỗng;
+//   rỗng + `BuildClause` bỏ im lặng ⇒ `max` chạy trên **toàn hệ**, không riêng đại lý.
+// ⚠️ `convert(varchar, getdate(), 12)` — style **12** là `yymmdd` (**hai** chữ số năm), lấy giờ **máy DB**;
+//   giá trị này dùng để ghép vào số chứng từ, nên đầu số phụ thuộc **múi giờ/đồng hồ của DB**.
+// 📌 Port: sinh số **an toàn** — lọc theo đại lý + độ dài **bắt buộc**, so theo **phần số**, và nêu cờ.
+app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, int? orderNoLength, string? prefix) =>
+{
+    // Nguồn KHÔNG chặn rỗng; port bắt buộc vì thiếu chúng là cấp số sai.
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new
+        {
+            error = "dealerCode bat buoc — nguon de rong thi BuildClause bo im lang va max chay tren TOAN HE.",
+            sourceCheckRegionIsEmpty = true,
+        });
+    if (orderNoLength is not > 0)
+        return Results.BadRequest(new
+        {
+            error = "orderNoLength bat buoc — day KHONG phai tuy chon ma la dieu kien dung dan cua thuat toan (max tren varchar so theo THU TU CHU).",
+            sourceFilterMayDieSilently = "BuildClause(and, LEN(po.OrderNo), ...) — client gui 8 thay vi =8 la menh de bien mat",
+        });
+
+    var dc = dealerCode!.Trim().ToUpperInvariant();
+    var len = orderNoLength!.Value;
+
+    var candidates = await db.SupplierPartOrders
+        .Where(x => x.OrgId == t.OrgId && x.DealerCode == dc && x.OrderNo.Length == len)
+        .Select(x => x.OrderNo)
+        .ToListAsync();
+
+    // Nguồn: max() trên chuỗi. Port so theo PHẦN SỐ để không dính "PO9 > PO10".
+    var maxByString = candidates.OrderByDescending(x => x, StringComparer.Ordinal).FirstOrDefault();
+    string? maxByNumber = null;
+    long maxNum = -1;
+    foreach (var c in candidates)
+    {
+        var digits = new string(c.Where(char.IsDigit).ToArray());
+        if (digits.Length > 0 && long.TryParse(digits, out var v) && v > maxNum) { maxNum = v; maxByNumber = c; }
+    }
+    var differs = maxByString is not null && maxByNumber is not null && maxByString != maxByNumber;
+
+    var pfx = (prefix ?? "").Trim();
+    var next = maxNum >= 0 ? (maxNum + 1).ToString() : "1";
+    var padded = pfx.Length > 0 && len > pfx.Length ? pfx + next.PadLeft(len - pfx.Length, (char)48) : next;
+
+    return Results.Ok(new
+    {
+        dealerCode = dc, orderNoLength = len, count = candidates.Count,
+        maxByString, maxByNumber, nextOrderNo = padded,
+        currentDate = DateTime.Now.ToString("yyMMdd"),   // nguồn: convert(varchar, getdate(), 12)
+        stringMaxDiffersFromNumericMax = differs,
+        maxOnVarcharIsLexicographic = "OrderNo la varchar nen max tra PO9 chu khong phai PO10; nguon va bang cach loc LEN(OrderNo) de gom cung do dai",
+        lenFilterIsNotOptional = "LEN(po.OrderNo) la dieu kien DUNG DAN cua thuat toan, khong phai bo loc tuy chon",
+        lenFilterGoesThroughBuildClause = "co the CHET IM LANG neu client gui gia tri khong co toan tu (#410) => max gom moi do dai => so ke tiep TRUNG hoac nhay bac",
+        raceConditionOnNumberIssue = "cau doc with(nolock), khong khoa, khong nam trong chuoi lay-so-roi-ghi nguyen tu => hai nguoi bam cung luc nhan CUNG MOT so",
+        nolockIsWorseHere = "nolock thuong chi lam lech bao cao; o ham CAP SO no tao TRUNG KHOA",
+        errorCodeBelongsToAnotherFunction = "strErrorCodeDefault = TError.ErrCarSv.SerStockInGetMaxStockInNo trong ham SerOrderPartGetMaxOrderNo",
+        checkRegionIsEmptyInSource = true,
+        currentDateStyle12IsTwoDigitYear = "convert(varchar, getdate(), 12) = yymmdd, gio may DB",
+        portRequiresBothFilters = new[] { "dealerCode", "orderNoLength" },
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #600 QUÉT ĐẾM: GUARD TỒN TẠI DÙNG `&&` THAY VÌ `||` — **15 CHỖ, 6 FILE** =====
 // Phát hiện khi đọc `BizCarSv.PartOrder.cs` (cụm `CheckExistOrderNo*` / `CheckExistPartOrder*`).
 // Mẫu lỗi, trích nguyên văn:
