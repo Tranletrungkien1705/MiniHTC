@@ -16188,6 +16188,83 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #573 CẬP NHẬT NỢ BẢO HIỂM THEO LỆNH SỬA (`UpdateInsDebit`, `Debit.cs:2609`) =====
+// Hàm tính lại **số nợ bảo hiểm** của một lệnh sửa chữa (`ROID`) từ phần tiền do bảo hiểm chi trả.
+//
+// 🔴🔴 **ĐỌC TỪ DB ĐẠI LÝ, GHI ĐÈ LÊN CẢ BA DB**:
+//     `this.CheckExistInsDebit(**_dbDealer**, ref …, strROID, out dtCusDebit);`   ← đọc bản ghi ở **đại lý**
+//     `_dbMain.SaveData("Ser_CusDebit", dtCusDebit, alColumnEffective…);`
+//     `_dbWH.SaveData(…)` · `_dbDealer.SaveData(…)`
+//   ⇒ Bản ghi lấy từ **một** DB rồi ghi lên **ba**. Nếu Main/WH đang giữ giá trị khác (đã lệch từ trước),
+//     lần chạy này **ghi đè bằng dữ liệu của đại lý** — kể cả những cột hàm **không** định sửa (xem gạch dưới).
+//   ⇒ Ngược lại, nếu DB đại lý **không có** dòng đó (mà Main có), guard ném *"không tồn tại"* ⇒ **không sửa
+//     được** dù dữ liệu ở trung tâm vẫn còn. Cùng họ #571 (ba DB) nhưng chiều **ghi**.
+// 🔴 **`_dbDealer.SaveData` GỌI VÔ ĐIỀU KIỆN, TRONG KHI GIAO DỊCH ĐẠI LÝ CHỈ MỞ CÓ ĐIỀU KIỆN**:
+//     `if (bIsWSMain) bNeedTransaction_Dealer = false;` … `if (bNeedTransaction_Dealer) _dbDealer.BeginTransaction();`
+//     nhưng `_dbDealer.SaveData(...)` và `CommitSafety(_dbDealer)` **không** bọc điều kiện nào.
+//   ⇒ Khi chạy ở WS Main, dữ liệu **vẫn ghi xuống đại lý nhưng NGOÀI giao dịch** ⇒ Main lỗi sau đó thì
+//     Main/WH quay lui, **đại lý thì không** ⇒ lệch vĩnh viễn. Đối xứng ngược với #571: ở đó **quên ghi**
+//     đại lý, ở đây **ghi mà không bảo vệ**.
+// 🔴 **"RỖNG THÌ KHÔNG GÁN" NHƯNG CỘT VẪN NẰM TRONG DANH SÁCH GHI** — chính là kênh ghi đè chéo ở trên:
+//     `if (!IsEmpty(strCusID)) dtCusDebit.Rows[0]["CusID"] = strCusID;`   (tương tự `InsNo`, `DebitAmount`)
+//     `alColumnEffective.Add("InsNo"); Add("CusID"); Add("DebitAmount"); …`   ← **thêm vô điều kiện**
+//   ⇒ Không gán mới **không có nghĩa là không ghi**: cột vẫn được ghi bằng **giá trị đọc từ DB đại lý**.
+//     Đây là biến thể thứ ba của "rỗng nghĩa là gì" (so với #570: tạo = bỏ qua, sửa = xoá trắng).
+// 🔴 **GUARD MÂU THUẪN NỬA VỜI** giữa hai bảng kết quả của `ProcessGetInsuranceDebit`:
+//   · có `AmountInsurance` mà **không** có `Insurance` ⇒ **ném** `SerROInsuranceNotFound`.
+//   · có `Insurance` mà **không** có `AmountInsurance` ⇒ **im lặng bỏ qua**: `strDebitAmount` rỗng ⇒ số nợ
+//     **không** được cập nhật, nhưng `LogLUDateTime`/`LogLUBy` **vẫn** được ghi ⇒ bản ghi mang dấu vết
+//     *"vừa sửa"* mà **không có gì đổi**. Người đối soát sau này tin nhầm là đã tính lại.
+// ⚠️ `strTDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")` — giờ của **máy ứng dụng**, không phải giờ DB;
+//   ba DB có thể nằm ba máy, nên mốc sửa đổi ghi vào cả ba là mốc của **một** máy.
+// 📌 MiniHTC một DB ⇒ endpoint dưới tính lại số nợ bảo hiểm từ dòng dịch vụ/phụ tùng có phần bảo hiểm chi trả,
+//   và **không** ghi mốc sửa khi không có gì đổi (nêu cờ để thấy chỗ lệch với nguồn).
+app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbContext db, ITenantContext t,
+    string? cusId) =>
+{
+    var no = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { roNo = no });
+
+    var d = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (d is null) return Results.NotFound(new { error = "Chưa có công nợ bảo hiểm cho lệnh sửa này." });
+
+    // ProcessGetInsuranceDebit: phần tiền bảo hiểm chi trả trên dòng dịch vụ + phụ tùng.
+    var serIns = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .SumAsync(x => (decimal?)x.InsurancePrice) ?? 0m;
+    var partIns = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .SumAsync(x => (decimal?)x.InsurancePrice) ?? 0m;
+    var amount = serIns + partIns;
+    var insNo = ro.InsNo;
+
+    // Nguồn: có tiền mà KHÔNG có hãng bảo hiểm ⇒ ném lỗi.
+    if (amount > 0m && string.IsNullOrWhiteSpace(insNo))
+        return Results.BadRequest(new { error = "Lệnh sửa có tiền bảo hiểm nhưng chưa gắn hãng bảo hiểm (SerROInsuranceNotFound)." });
+
+    // Nguồn: có hãng mà KHÔNG có tiền ⇒ im lặng, vẫn đóng dấu đã sửa. Port KHÔNG đóng dấu, nêu cờ.
+    var nothingToUpdate = amount <= 0m;
+    var changed = false;
+    // Nguồn gán thêm CusID vào bản ghi nợ; MiniHTC tách bảng nên InsDebit KHÔNG có cột khách — ghi nợ, không bịa.
+    if (!string.IsNullOrWhiteSpace(insNo) && d.InsNo != insNo) { d.InsNo = insNo!; changed = true; }
+    if (!nothingToUpdate && d.DebitAmount != amount) { d.DebitAmount = amount; changed = true; }
+    if (changed) { d.Status = d.PaidAmount >= d.DebitAmount ? "Paid" : "Open"; await db.SaveChangesAsync(); }
+
+    return Results.Ok(new
+    {
+        d.DebitNo, d.InsNo, d.InsName, roNo = no,
+        debitAmount = d.DebitAmount, paidAmount = d.PaidAmount,
+        balance = d.DebitAmount - d.PaidAmount, d.Status,
+        insuranceFromServiceItems = serIns, insuranceFromPartItems = partIns,
+        changed, nothingToUpdate,
+        readsDealerDbWritesAllThreeInSource = "CheckExistInsDebit(_dbDealer) roi SaveData len _dbMain + _dbWH + _dbDealer => ban ghi cua dai ly ghi de len trung tam",
+        dealerWriteOutsideTransactionInSource = "_dbDealer.SaveData va CommitSafety(_dbDealer) goi VO DIEU KIEN trong khi BeginTransaction chi chay khi bNeedTransaction_Dealer",
+        emptyMeansKeepButStillWritten = "khong gan moi KHONG co nghia khong ghi: InsNo/CusID/DebitAmount luon nam trong alColumnEffective",
+        halfGuard = "co AmountInsurance ma khong co Insurance thi NEM LOI; co Insurance ma khong co AmountInsurance thi IM LANG va van ghi LogLUDateTime",
+        portSkipsStampWhenNothingChanged = true,
+        appServerClockNotDbClock = "strTDate = DateTime.Now cua may ung dung, ghi cho ca ba DB",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #572 TRA PHIẾU THU THEO KỲ (`SerPaymentGet`, `Debit.cs:3628`) =====
 //
 // 🔴🔴 **HAI BỘ LỌC LOẠI PHIẾU CHỒNG NHAU VÀ LOẠI TRỪ NHAU**:
