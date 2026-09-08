@@ -9226,6 +9226,164 @@ app.MapPost("/api/tcf/bank-statement-dtl/build-query", async (
     });
 }).RequireAuthorization();
 
+// ===== #B124 BÁO CÁO XE TỒN TẠI ĐẠI LÝ — `Rpt_SummaryCarAtDealer_Add` / `…_AddX` =====
+// Trace LIVE: `BizHTC.Report.cs:36946` (cửa) → **`Rpt_SummaryCarAtDealer_AddX`** (`:37062`, thân thật)
+//   → SQL `RptSQLQuery.mySql_Rpt_SummaryCarAtDealer_Add()` (`:24934`, **~1060 dòng**).
+//   3B đo thật, **khớp cả 2 máy**: `37062/7d3e9fa00e5d7ad33ba21894d4836398`.
+// 🔴🔴 **RBAC — CA THỨ 22, kiểu "lời giải thích còn, bộ lọc mất"**:
+//    Trong SQL còn nguyên chú thích **`-- Must inner join to filter AbilityOfUser`** ngay trên
+//    `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode` — nhưng điều kiện thật
+//    **`--and (md.BUCode like @strBUPatternOfUser)` ĐÃ BỊ COMMENT**; và trong C#
+//    `//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);` **cũng bị comment**.
+//    ⇒ `inner join` còn đó nhưng **không lọc quyền gì nữa**; nó chỉ còn tác dụng loại đại lý không tồn tại.
+//    ⚠️ Thay vào đó **phạm vi bị CẮM CỨNG `"HTC%"`** ở hai chỗ dựng CarID
+//      (`zzB_tbl_Dlr_Contract_GenCarId_zzE(…, "HTC%", …)` và `…SalesOrderRoot…(…, "HTC%", …)`).
+//    📌 **KHÔNG tự vá** — chỉ mở cờ đo `enforceBuScope`.
+// 🔴 **LỌC NGƯỢC (nguồn tự chú thích `(*) Sử dụng kỹ thuật Lọc Ngược`)**: `left join` bảng
+//    `#tbl_CDOD_Active` rồi **`where cdod.CarId is null`** ⇒ **giữ xe CHƯA có lệnh xuất kho đang hiệu
+//    lực**. `#tbl_CDOD_Active` = `mySql_Car_DeliveryOrderDetail_FilterActive_01(` **`and (cdod.DeliveryOutDate <= @strTDate)`** `)`
+//    ⇒ "đã xuất kho **tính đến ngày báo cáo**". Port bằng `inner join` là **đảo ngược báo cáo**.
+// 🔴 **BỐN điều kiện giữ xe** (ngoài lọc ngược): `cc.FlagActive = '1'` · `cc.FlagEarlyCancel = '0'`
+//    · `sdm.DlvMnNo is null` (chưa có biên bản giao xe hợp lệ) · `md.FlagActive = '1'`
+//    (chú thích nguồn *"Thomptt: 20180522: Chỉ lấy đại lý trạng thái active"*).
+//    ⚠️ `--and (vms.DeliveryOutDate is null)` **bị comment** ⇒ `VIN_MyStatus` join vào nhưng **không lọc**.
+// 🔴 **Biên bản giao xe (`Sto_DlvMinutes`) chỉ tính khi khớp CẢ BỐN**: `sdm.VIN = cc.VIN` **và**
+//    `cdod_t.DeliveryOrderNo = sdm.RefOrdNo` **và** `sdm.TranspReqType = 'CARTRANSPORT'` **và**
+//    cặp trạng thái `(F='A' và T='A')` **hoặc** `(F='A' và T='P')` — **không có** cặp `(P, *)`.
+// 🔴 **Ngày mặc định khi bỏ trống**: `TDate_From` ⇒ `DateTimeSpecial.DateMin`,
+//    `TDate_To` ⇒ `DateTimeSpecial.DateMax` ⇒ **cho phép tìm trắng** (khác các hàm có guard).
+//    Rồi ghép cứng `From + " 00:00:00"`, `To + " 23:59:59"`.
+// 🔴 **Mốc tuần tính từ CHỦ NHẬT đầu tuần hiện tại**, không phải từ hôm nay:
+//    `dtimeTDate_BeginThisWeek = TDate - GetDayOfWeek(TDate, DayOfWeek.Sunday)`, rồi `+7` và `+14`.
+// 🔴 **Ba bảng ra**, bảng thứ ba **có điều kiện**: `Rpt_SummaryCarAtDealer` ·
+//    `…_GroupBySpec` · và **chỉ khi `strIsGetDetail = TConst.Flag.Active`** thì mới có `…_Detail`.
+// 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC** (để `null`, có cờ):
+//    · ba mảnh caching thanh toán (`…_Temp` `'A','F'` · `…_Deposit` `'A','F'` · `…_A_Deposit` `'A','F'`)
+//      ⇒ `DutyCompletedPercent = (Deposit + GuaranteeValue) / UnitPriceActual * 100` **để null**;
+//    · `DateDiff(day, cc.DepositDutyEndDate, @strTDate) DutyDays` cần cột nguồn chưa có;
+//    · `VIN_MyStatus`, `Sto_DlvMinutes` (thiếu `FDlvMnStatus`/`TDlvMnStatus`/`RefOrdNo`/`TranspReqType`),
+//      `Car_DeliveryOrderDetail`, hai bảng CarID sinh động ⇒ các cột tương ứng **để null**.
+//    ⚠️ Nguồn còn **trộn tham số nướng và tham số chạy**: `@strReportMonth` bị `Replace` thành
+//      `DateTime.Now.AddMonths(-1).ToString("yyyy-MM-01")` trong khi `@strTDate` là **param runtime**
+//      ⇒ đúng cảnh báo `[BAKE-PARAM-MIX]` đã ghi nhớ; ghi lại, **không sửa**.
+// 🔴 **Lọc KHU VỰC đi qua HAI CHẶNG, không phải một cột trên đại lý**:
+//    `Mst_Dealer.ProvinceCode → Mst_Province.AreaCode → Mst_Area.AreaRootCode → Mst_Area.AreaCode`
+//    (`inner join Mst_Area marea on marea.AreaCode = mpv.AreaCode` rồi
+//     `inner join Mst_Area marea1 on marea.AreaRootCode = marea1.AreaCode`)
+//    ⇒ `strAreaCode` so với **KHU VỰC GỐC** (`marea1`), **không phải** khu vực trực tiếp của tỉnh.
+//    So sánh theo khuôn `('strAreaCode' = '' or marea1.AreaCode = 'strAreaCode')` ⇒ **rỗng = bỏ lọc**.
+//    ⚠️ Ở đây chú thích `--and (md.BUCode like @strBUPatternOfUser)  -- filter AbilityOfUser` **lặp lại
+//      lần thứ ba** trong cùng câu SQL — cùng một bộ lọc quyền bị tắt ở **ba** chỗ.
+app.MapGet("/api/reports/summary-car-at-dealer", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? areaCode, string? tDateFrom, string? tDateTo,
+    string? isGetDetail, string? enforceBuScope, string? buPattern) =>
+{
+    // 🔴 Bỏ trống ⇒ DateMin / DateMax (cho phép tìm trắng — đúng nguồn).
+    var from = string.IsNullOrWhiteSpace(tDateFrom) ? new DateTime(1900, 1, 1) : DateTime.Parse(tDateFrom).Date;
+    var to = string.IsNullOrWhiteSpace(tDateTo) ? new DateTime(9999, 12, 31) : DateTime.Parse(tDateTo).Date;
+    var tDate = DateTime.Now.Date;
+
+    // 🔴 Mốc tuần tính từ CHỦ NHẬT đầu tuần hiện tại.
+    var beginThisWeek = tDate.AddDays(-(int)tDate.DayOfWeek);
+    var next1Week = beginThisWeek.AddDays(7);
+    var next2Week = beginThisWeek.AddDays(14);
+
+    var dealers = await db.Dealers
+        .Where(d => d.OrgId == t.OrgId && d.FlagActive == "1")   // md.FlagActive = '1'
+        .Select(d => new { d.DealerCode, d.DealerName, d.ProvinceCode, d.BUCode }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        dealers = dealers.Where(d => d.DealerCode == dealerCode.Trim()).ToList();
+    // 🔴 KHU VỰC đi qua HAI CHẶNG, KHÔNG phải cột trên đại lý:
+    //   `Mst_Dealer.ProvinceCode → Mst_Province.AreaCode → Mst_Area.AreaRootCode → Mst_Area.AreaCode`
+    //   ⇒ tham số `strAreaCode` so với **KHU VỰC GỐC** (`marea1`), không phải khu vực trực tiếp của tỉnh.
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.ProvinceCode, p.AreaCode }).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First().AreaCode ?? "");
+    var areaRootOf = (await db.Areas.Where(a => a.OrgId == t.OrgId)
+        .Select(a => new { a.AreaCode, a.AreaRootCode }).ToListAsync())
+        .GroupBy(a => a.AreaCode).ToDictionary(g => g.Key, g => g.First().AreaRootCode ?? "");
+    string RootAreaOfDealer(string? provinceCode)
+    {
+        var ac = provinces.TryGetValue(provinceCode ?? "", out var a) ? a : "";
+        return areaRootOf.TryGetValue(ac, out var r) ? r : "";
+    }
+    if (!string.IsNullOrWhiteSpace(areaCode))
+        dealers = dealers.Where(d => RootAreaOfDealer(d.ProvinceCode) == areaCode.Trim()).ToList();
+
+    // 📌 Cờ ĐO, mặc định TẮT: nguồn KHÔNG lọc quyền (điều kiện BUCode bị comment).
+    var scoped = enforceBuScope == "1";
+    var pattern = (buPattern ?? "HTC").Trim();
+    if (scoped) dealers = dealers.Where(d => (d.BUCode ?? "").StartsWith(pattern)).ToList();
+
+    var dealerCodes = dealers.Select(d => d.DealerCode).ToList();
+
+    // 🔴 BỐN điều kiện giữ xe + LỌC NGƯỢC lệnh xuất kho.
+    var cars = await db.CarVinMasters
+        .Where(c => c.OrgId == t.OrgId
+                    && c.FlagActive == "1"
+                    && (c.FlagEarlyCancel ?? "0") == "0"
+                    && c.DealerCode != null && dealerCodes.Contains(c.DealerCode))
+        .ToListAsync();
+
+    // LỌC NGƯỢC: xe ĐÃ xuất kho tính đến @strTDate thì LOẠI.
+    var deliveredVins = (await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.DeliveryOutDate != null && x.DeliveryOutDate <= tDate)
+        .Select(x => x.Vin).ToListAsync()).ToHashSet();
+    cars = cars.Where(c => !deliveredVins.Contains(c.VIN)).ToList();
+
+    var dealerMap = dealers.ToDictionary(d => d.DealerCode, d => d);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+
+    var rows = cars.Select(c => new
+    {
+        CarId = c.VIN, c.VIN, c.SpecCode, c.ModelCode, c.ColorCode,
+        CCDealerCode = c.DealerCode,
+        CCDealerName = dealerMap.TryGetValue(c.DealerCode ?? "", out var d) ? d.DealerName : null,
+        MCSSpecDescription = specs.TryGetValue(c.SpecCode ?? "", out var sd) ? sd : null,
+        c.SOCode, c.PackingListNo, c.StorageCodeCurrent,
+        // 📌 NỢ — không đoán công thức:
+        DutyDays = (int?)null,
+        DutyCompletedPercent = (decimal?)null,
+        PMPDAmountTotal_Deposit = (decimal?)null,
+        OSODApprovedDate = (DateTime?)null,
+        SDMDlvStartDate = (DateTime?)null,
+        SDMDlvEndDate = (DateTime?)null,
+        DLSDDealerCodeSource = (string?)null
+    }).ToList();
+
+    var groupBySpec = rows.GroupBy(r => r.SpecCode ?? "")
+        .Select(g => new { SpecCode = g.Key, Qty = g.Count() })
+        .OrderBy(x => x.SpecCode).ToList();
+
+    var wantDetail = isGetDetail == "1";
+
+    return Results.Ok(new
+    {
+        tDateFrom = from, tDateTo = to, tDate,
+        beginThisWeek, next1Week, next2Week,
+        dealerCount = dealers.Count, count = rows.Count,
+        Rpt_SummaryCarAtDealer = rows,
+        Rpt_SummaryCarAtDealer_GroupBySpec = groupBySpec,
+        Rpt_SummaryCarAtDealer_Detail = wantDetail ? rows : null,
+        isGetDetail = wantDetail,
+        enforceBuScope = scoped, buPattern = pattern,
+        paymentCachingSkipped = true,
+        areaChainNote = "Loc KHU VUC di qua HAI CHANG, khong phai mot cot tren dai ly: Mst_Dealer.ProvinceCode -> Mst_Province.AreaCode -> Mst_Area.AreaRootCode -> Mst_Area.AreaCode ('inner join Mst_Area marea on marea.AreaCode = mpv.AreaCode' roi 'inner join Mst_Area marea1 on marea.AreaRootCode = marea1.AreaCode') => strAreaCode so voi KHU VUC GOC (marea1), KHONG phai khu vuc truc tiep cua tinh. Khuon so sanh ('strAreaCode' = '' or marea1.AreaCode = 'strAreaCode') => RONG = BO LOC. Chu thich '--and (md.BUCode like @strBUPatternOfUser) -- filter AbilityOfUser' LAP LAI LAN THU BA trong cung cau SQL - mot bo loc quyen bi tat o BA cho.",
+        rbacHole = "CA THU 22, kieu 'LOI GIAI THICH CON, BO LOC MAT': trong SQL con nguyen chu thich '-- Must inner join to filter AbilityOfUser' ngay tren 'inner join Mst_Dealer md on cc.DealerCode = md.DealerCode', nhung dieu kien that '--and (md.BUCode like @strBUPatternOfUser)' DA BI COMMENT; va trong C# '//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(...)' cung bi comment. => inner join con do nhung KHONG LOC QUYEN gi nua. Thay vao do pham vi bi CAM CUNG 'HTC%' o hai cho dung CarID. KHONG tu va - chi mo co do enforceBuScope.",
+        reverseFilterNote = "LOC NGUOC (nguon tu chu thich '(*) Su dung ky thuat Loc Nguoc'): left join #tbl_CDOD_Active roi 'where cdod.CarId is null' => GIU xe CHUA co lenh xuat kho dang hieu luc. #tbl_CDOD_Active = mySql_Car_DeliveryOrderDetail_FilterActive_01('and (cdod.DeliveryOutDate <= @strTDate)') => 'da xuat kho TINH DEN NGAY BAO CAO'. Port bang inner join la DAO NGUOC BAO CAO.",
+        fourConditionsNote = "BON dieu kien giu xe (ngoai loc nguoc): cc.FlagActive='1'; cc.FlagEarlyCancel='0'; sdm.DlvMnNo is null (chua co bien ban giao xe hop le); md.FlagActive='1' (chu thich nguon 'Thomptt: 20180522: Chi lay dai ly trang thai active'). Rieng '--and (vms.DeliveryOutDate is null)' BI COMMENT => VIN_MyStatus join vao nhung KHONG loc.",
+        dlvMinutesJoinNote = "Bien ban giao xe (Sto_DlvMinutes) CHI tinh khi khop CA BON: sdm.VIN = cc.VIN VA cdod_t.DeliveryOrderNo = sdm.RefOrdNo VA sdm.TranspReqType = 'CARTRANSPORT' VA cap trang thai (F='A' va T='A') HOAC (F='A' va T='P') - KHONG co cap (P, *).",
+        dateDefaultNote = "Ngay mac dinh khi bo trong: TDate_From => TConst.DateTimeSpecial.DateMin, TDate_To => DateMax => CHO PHEP TIM TRANG (khac cac ham co guard). Roi ghep cung From + ' 00:00:00', To + ' 23:59:59'.",
+        weekNote = "Moc tuan tinh tu CHU NHAT DAU TUAN HIEN TAI, khong phai tu hom nay: BeginThisWeek = TDate - GetDayOfWeek(TDate, DayOfWeek.Sunday), roi +7 va +14.",
+        threeTablesNote = "BA bang ra, bang thu ba CO DIEU KIEN: Rpt_SummaryCarAtDealer; ..._GroupBySpec; va CHI KHI strIsGetDetail = TConst.Flag.Active moi co ..._Detail.",
+        debtNote = "NO - KHONG DOAN CONG THUC (de null): ba manh caching thanh toan => DutyCompletedPercent = (Deposit + GuaranteeValue) / UnitPriceActual * 100 de NULL; DateDiff(day, cc.DepositDutyEndDate, @strTDate) DutyDays can cot nguon chua co; VIN_MyStatus, Sto_DlvMinutes (thieu FDlvMnStatus/TDlvMnStatus/RefOrdNo/TranspReqType), Car_DeliveryOrderDetail, hai bang CarID sinh dong => cac cot tuong ung de null.",
+        bakeParamMixNote = "Nguon TRON tham so NUONG va tham so CHAY: '@strReportMonth' bi Replace thanh DateTime.Now.AddMonths(-1).ToString('yyyy-MM-01') trong khi '@strTDate' la param runtime => dung canh bao [BAKE-PARAM-MIX] da ghi nho. Ghi lai, KHONG sua."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
