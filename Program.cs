@@ -34521,10 +34521,64 @@ app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, 
 {
     var qry = db.CampaignMarketings.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.CamNo.Contains(q!) || x.CamName.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    // #626: nguồn sắp theo CamMarketingNo asc ngay trong câu dựng identity() ⇒ phân trang ổn định;
+    //       nhưng hai điều kiện cắt trang thì BỊ COMMENT ⇒ trả hết. Port cắt thật và nói rõ.
+    var total = await qry.CountAsync();
+    var items = await qry.OrderBy(x => x.CamNo).Take(500).Select(x => new
     { x.CamNo, x.CamName, x.CamDesc, x.EffDateStart, x.EffDateEnd, x.ConditionDealer, parts = db.CampaignMarketingParts.Count(p => p.OrgId == t.OrgId && p.CampaignId == x.Id) }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, total, items,
+        // ===== #626 =====
+        pagingCommentedOutInSource = "hai dieu kien --(t.MyIdxSeq >= @nFilterRecordStart) va --and (t.MyIdxSeq <= @nFilterRecordEnd) BI COMMENT, trong khi chu ky VAN co strResultRecordStart/strResultRecordCount, khoi Check VAN tinh nFilterRecordStart/End va ca hai VAN duoc bind => client tin la dang phan trang, may chu tra TOAN BO ket qua moi lan goi",
+        pagingDisabledCountedAcrossBizLayer = "dong MyIdxSeq >= @nFilterRecordStart xuat hien 40 lan: 28 ACTIVE, 12 BI COMMENT (30%) — Tab.cs 7, Master.cs 4, WH.cs 1; may 150 dem lai 12 => KHOP. Khong phai tai nan mot lan ma la mot THOI QUEN",
+        pagingDisabledFunctions = new[] { "Mst_DeliveryForm_GetX", "Mst_DeliveryLocation_GetX", "Mst_OrderComplainType_Get", "Mst_OrderComplainImageType_Get", "Ser_RO_HomeX", "Ser_ROAttachFile_GetX", "Ser_App_HomeX", "Ser_ReceptionF_HomeX", "Ser_Mst_ReceptionAttachFile_GetX", "Ser_Mst_ReceptionFAudType_GetX", "Ser_Mst_ReceptionFAudit_GetX", "Ser_CampaignMarketing_Get_WH" },
+        worstCasesAreTabletHomeScreens = "bon ham Mst_* la danh muc nho nen con tam chap nhan, nhung Ser_RO_HomeX / Ser_App_HomeX / Ser_ReceptionF_HomeX la man du lieu lon chay tren MAY TINH BANG — tat phan trang o do la keo tron bang ve thiet bi",
+        selfCorrectionOnCounting = "lan grep dau chi khop MOT dang thut dau dong va suyt ghi chi dung 1 ca la ngoai le; noi mau grep ra moi thay 12 — dem bang mot dang chuoi duy nhat la cach rat de tu lua minh (noi tiep #600)",
+        recordStartHasNoGuard = "Convert.ToInt64(strResultRecordStart) khong co guard trong #region // Check (khoi do chi co // Refine: hai dong Convert.ToInt64 va myCommon_GetAbilityOfUserInCamMarketing) => client gui rong la FormatException ngay, khong phai tra 0 dong",
+        threeBoundParamsUnused = "@nFilterRecordStart, @nFilterRecordEnd va @Today deu duoc bind nhung KHONG xuat hien trong phan SQL con hoat dong",
+        identityIsStableHere = "AM TINH: cau Filter_Draft CO order by scm.CamMarketingNo asc ngay trong chinh no nen identity() on dinh — khac #542/#533 noi identity() gan tren select distinct khong sap",
+        viewAbilityInnerJoinCutsBeforeCount = "inner join #tbl_Ser_CampaignMarketing_ViewAbility => chien dich ngoai quyen xem roi ngay o buoc loc, va bang Summary cung dem SAU khi da roi => tong so hien thi la tong DA BI CAT THEO QUYEN",
+    });
 }).RequireAuthorization();
+
+// ===== 🔴🔴🔴 #626 PARITY `Ser_CampaignMarketing_Get_WH` — **PHÂN TRANG BỊ COMMENT, KHÔNG PHẢI CA LẺ** =====
+// 3B: `BizCarSv.WH.cs:30949` md5 `67e4f828` **KHỚP 2 máy**. Đây là **lượt parity** cho endpoint #482 đã có.
+//
+// 🔴🔴🔴 **HAI ĐIỀU KIỆN PHÂN TRANG BỊ COMMENT — HÀM VẪN NHẬN THAM SỐ PHÂN TRANG**:
+//     `select t.* into #tbl_Ser_CampaignMarketing_Filter from #tbl_…_Filter_Draft t where(1=1)`
+//     `    **--**(t.MyIdxSeq >= @nFilterRecordStart)`
+//     `    **--and** (t.MyIdxSeq <= @nFilterRecordEnd)`
+//   Trong khi đó chữ ký **vẫn có** `strResultRecordStart`/`strResultRecordCount`, khối `Check` **vẫn tính**
+//   `nFilterRecordStart`/`nFilterRecordEnd`, và hai tham số đó **vẫn được bind** vào `alParamsCoupleSql`.
+//   ⇒ Client tin là mình đang phân trang; máy chủ trả **TOÀN BỘ** kết quả **mỗi lần gọi**. Không lỗi, không
+//     cảnh báo — chỉ là bảng `Summary` (`select Count(0) MyCount`) và số dòng thật **luôn bằng nhau**.
+//
+// 🔴 **ĐẾM THẬT TOÀN TẦNG BIZ (đừng suy từ một ca)**: dòng `MyIdxSeq >= @nFilterRecordStart` xuất hiện **40**
+//   lần; **28 ACTIVE**, **12 BỊ COMMENT** (30%), tập trung ở ba file — `BizCarSv.Tab.cs` **7** ·
+//   `BizCarSv.Master.cs` **4** · `BizCarSv.WH.cs` **1**. Máy 150 đếm lại: **12** ⇒ **khớp**.
+//   Mười hai hàm đó: `Mst_DeliveryForm_GetX` · `Mst_DeliveryLocation_GetX` · `Mst_OrderComplainType_Get` ·
+//   `Mst_OrderComplainImageType_Get` · `Ser_RO_HomeX` · `Ser_ROAttachFile_GetX` · `Ser_App_HomeX` ·
+//   `Ser_ReceptionF_HomeX` · `Ser_Mst_ReceptionAttachFile_GetX` · `Ser_Mst_ReceptionFAudType_GetX` ·
+//   `Ser_Mst_ReceptionFAudit_GetX` · `Ser_CampaignMarketing_Get_WH`.
+//   ⇒ **Không phải tai nạn một lần mà là một thói quen**: tắt phân trang tại chỗ rồi để nguyên chữ ký.
+//   ⚠️ Với bốn hàm `Mst_*` (danh mục nhỏ) thì còn tạm chấp nhận; nhưng **ba màn HOME của bản máy tính bảng**
+//     (`Ser_RO_HomeX`, `Ser_App_HomeX`, `Ser_ReceptionF_HomeX`) là màn **dữ liệu lớn, chạy trên thiết bị
+//     di động** — tắt phân trang ở đó là kéo trọn bảng về máy tính bảng.
+//   📌 **Tự sửa số liệu của chính mình**: lần grep đầu tôi chỉ khớp **một** dạng thụt đầu dòng và suýt ghi
+//     "chỉ đúng 1 ca, là ngoại lệ". Nới mẫu grep ra mới thấy **12**. Đếm bằng một dạng chuỗi duy nhất là
+//     cách rất dễ tự lừa mình (nối tiếp #600).
+// 🔴 `Convert.ToInt64(strResultRecordStart)` **không có guard** trong `#region // Check:` (trích được: khối
+//   này chỉ có `// Refine:` hai dòng `Convert.ToInt64` và `myCommon_GetAbilityOfUserInCamMarketing`) ⇒
+//   client gửi rỗng là **FormatException** ngay, không phải trả 0 dòng.
+// 🔴 `@Today` được bind vào `alParamsCoupleSql` cùng hai tham số phân trang — cả ba **không xuất hiện** trong
+//   phần SQL còn hoạt động ⇒ **ba tham số bind thừa**.
+// ⚪ Âm tính: câu `Filter_Draft` **CÓ** `order by scm.CamMarketingNo asc` ngay trong chính nó, nên `identity()`
+//   ở đây **ổn định** — khác #542/#533 nơi `identity()` gán trên `select distinct` không sắp. Ghi lại để
+//   lượt sau không báo nhầm.
+// 🔴 `inner join #tbl_Ser_CampaignMarketing_ViewAbility` ⇒ chiến dịch nằm ngoài quyền xem **rơi ngay ở bước**
+//   **lọc**, và bảng `Summary` cũng đếm sau khi đã rơi ⇒ tổng số hiển thị là tổng **đã bị cắt theo quyền**
+//   (đúng ý, nhưng cần biết khi đối soát với báo cáo chạy bằng tài khoản khác).
 
 // ===== 🔴 #482 NHÁNH KHO TRẢ THÊM MỘT BẢNG KẾT QUẢ — `Ser_CampaignMarketingFullVIN` =====
 // DIFF `Ser_CampaignMarketing_Get` (Main, 55 dòng SQL) vs `…_Get_WH` (63) — **chi o main = 0**, và
