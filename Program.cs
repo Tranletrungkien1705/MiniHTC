@@ -16188,6 +16188,86 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #571 XOÁ PHIẾU THU (`SerPaymentDelete`, `Debit.cs:3261`) — **BA DB, MỘT DÒNG GÕ NHẦM** =====
+//
+// 🔴🔴 **NHÁNH XOÁ Ở DB ĐẠI LÝ GỌI NHẦM ĐỐI TƯỢNG DAL** — trích nguyên văn:
+//     `// Delete in Data Dealer`
+//     `if (bNeedTransaction_Dealer)`
+//     `{`
+//     `    **_dbWH**.ExecQuery(strSqlDelete, "@PaymentID", strPaymentID, "@DealerCode", strDealerCode);`
+//     `}`
+//   Chú thích nói *"Delete in Data Dealer"* nhưng lệnh chạy trên **`_dbWH`** — cùng đối tượng vừa dùng ở
+//   dòng trên. ⇒ **DB đại lý KHÔNG BAO GIỜ bị xoá**; kho bị xoá **hai lần** (vô hại vì `delete` luỹ đẳng).
+//   Tệ hơn: giao dịch `_dbDealer` vẫn được **mở** và **commit** — commit một giao dịch **rỗng**, nên mọi dấu
+//   hiệu bên ngoài đều báo "đã xoá đủ ba nơi". Phiếu thu **ở lại DB đại lý vĩnh viễn**.
+//   📌 Đây là dạng lỗi mà build, test khói, và cả log đều **không** thấy — chỉ lộ khi đối soát số dư giữa
+//     ba DB. Cùng họ với #560 (mỗi hàm đọc một DB) nhưng nặng hơn: ở đây là **ghi**.
+// 🔴 **CHI TIẾT VÀ ĐẦU PHIẾU XOÁ TRÊN PHẠM VI KHÁC NHAU**: `ProcessDeletePaymentDetail` chỉ chạy
+//   `_dbMain.ExecQuery(delete from Ser_PaymentDetail …)` — **một DB**; còn đầu phiếu xoá ở **Main + WH**.
+//   ⇒ Ở kho, **đầu phiếu biến mất nhưng dòng chi tiết ở lại** ⇒ chi tiết **mồ côi**, không đường nào lần ra.
+// 🔴 **GUARD ĐỌC MỘT PHẠM VI, LỆNH GHI PHẠM VI KHÁC**: `CheckExistPayment` tra `Ser_Payment` **chỉ theo**
+//   `PaymentID`, **không** kiểm `DealerCode`; còn câu xoá lại có `and DealerCode = @DealerCode`.
+//   ⇒ Người dùng đại lý A truyền số phiếu của đại lý B: **guard đi qua** (phiếu có tồn tại), câu xoá khớp
+//     **0 dòng**, và hàm **không kiểm số dòng ảnh hưởng** ⇒ trả về **thành công** trong khi **không xoá gì**.
+//     Một cửa "xoá" báo OK mà không làm gì là mìn cho mọi quy trình đối soát phía sau.
+// ⚠️ `CheckExistPayment` dùng `GetTableContents(…, "top 1 *", strClauseOrderBy = **""**, …)` — `TOP` **không**
+//   `ORDER BY` (#415). Ở đây tra theo **khoá chính** nên chỉ có một dòng ⇒ **âm tính**, nhưng cùng hàm dùng
+//   lại cho tra theo cột không duy nhất thì sẽ lấy **dòng bất kỳ**.
+// ⚠️ `Convert.ToInt32(strPaymentID)` ở lời gọi `ProcessDeletePaymentDetail` — chuỗi không phải số ⇒
+//   **`FormatException` thô**, không phải mã lỗi nghiệp vụ (cùng họ với guard số tiền ở #570).
+// ⚠️ **Một biến hai vai**: `bNeedTransaction_Dealer` vừa là cờ *"có mở giao dịch không"* vừa là cờ nghiệp vụ
+//   *"hệ này có DB đại lý không"* (`if (bIsWSMain) bNeedTransaction_Dealer = false;`). Đổi ý nghĩa một vai là
+//   hỏng vai kia.
+// 📌 MiniHTC một DB ⇒ xoá đủ **đầu phiếu + chi tiết + cập nhật lại số đã thu**, và trả cờ mô tả những gì
+//   nguồn **không** làm được, để chỗ đối soát nhìn thấy.
+app.MapPost("/api/cusdebits/payments/{paymentNo}/delete", async (string paymentNo, AppDbContext db,
+    ITenantContext t, string? dealerCode) =>
+{
+    var no = paymentNo.Trim().ToUpperInvariant();
+    // Nguồn: CheckExistPayment tra CHỈ theo PaymentID (không có DealerCode).
+    var p = await db.CusDebitPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { paymentNo = no });
+
+    // Nguồn: câu xoá LẠI có "and DealerCode = @DealerCode" ⇒ lệch phạm vi với guard.
+    var scopeMismatch = !string.IsNullOrWhiteSpace(dealerCode)
+        && !string.Equals(p.DealerCode ?? "", dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase);
+    if (scopeMismatch)
+        return Results.BadRequest(new
+        {
+            error = "Phiếu thu không thuộc đại lý này.",
+            sourceWouldReturnSuccessWithoutDeleting = "nguon: guard tra theo PaymentID, cau xoa loc them DealerCode, khong kiem so dong anh huong",
+        });
+
+    var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == p.CusDebitId);
+    db.CusDebitPayments.Remove(p);
+    await db.SaveChangesAsync();
+
+    decimal remainPaid = 0m;
+    if (h is not null)
+    {
+        remainPaid = await db.CusDebitPayments
+            .Where(x => x.OrgId == t.OrgId && x.CusDebitId == h.Id)
+            .SumAsync(x => (decimal?)x.PaymentAmount) ?? 0m;
+        h.PaidAmount = remainPaid;
+        h.Status = remainPaid >= h.DebitAmount ? "Paid" : "Open";
+        await db.SaveChangesAsync();
+    }
+
+    return Results.Ok(new
+    {
+        deleted = no, debitNo = h?.DebitNo, paidAmount = remainPaid,
+        balance = h is null ? (decimal?)null : h.DebitAmount - remainPaid, status = h?.Status,
+        dealerDeleteUsesWrongDalInSource = "// Delete in Data Dealer nhung lenh chay tren _dbWH => DB dai ly KHONG BAO GIO bi xoa, kho bi xoa hai lan, giao dich _dbDealer commit RONG",
+        detailDeletedOnMainOnlyInSource = "ProcessDeletePaymentDetail chi chay _dbMain trong khi dau phieu xoa ca Main+WH => chi tiet MO COI o kho",
+        guardScopeNarrowerThanDeleteScope = "CheckExistPayment chi theo PaymentID; cau xoa them DealerCode",
+        sourceDoesNotCheckAffectedRows = true,
+        topWithoutOrderByInGuard = "GetTableContents(top 1 *, orderBy rong) — o day tra theo khoa chinh nen vo hai",
+        parseIntThrowsRawException = "Convert.ToInt32(strPaymentID) truoc khi goi ProcessDeletePaymentDetail",
+        oneFlagTwoRoles = "bNeedTransaction_Dealer vua la co giao dich vua la co nghiep vu \"he nay co DB dai ly khong\"",
+        miniHtcSingleDbSoAllThreeWritesCollapse = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #570 SỬA PHIẾU THU (`SerPaymentUpdate`, `Debit.cs:3089`) — **"RỖNG" ĐỔI NGHĨA GIỮA TẠO VÀ SỬA** =====
 // Đối chiếu cặp create/update (luật #404) — hai hàm **lệch nhau ở cả guard lẫn ý nghĩa của chuỗi rỗng**:
 //
