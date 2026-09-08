@@ -28361,6 +28361,134 @@ app.MapPost("/api/dealerinvthresholds/{dealer}/{model}/toggle", async (string de
     return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== #B148/#B149/#B150 ĐỐI CHIẾU PARITY + VÁ CỤM NGƯỠNG TỒN ĐẠI LÝ =====
+//       nguồn `Mst_DealerInventoryThreshold_GetX` / `_Update` / `_Delete` (`DMS40/0.01.Master.cs`)
+// Trace LIVE: WS64 `:97481` (Get) · `:97622` (Update) · `:97695` (Delete) · `:97551` (CreateMulti).
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `12674,12833 / 7496ac4ee9c1118a035b7157a7183992`  (`GetX` — thân thật, dùng chung cho `_Get` và `_GetWH`)
+//   `12834,13003 / b87aecb2843bfa5d03deb7356f8c993c`  (`_Update`)
+//   `13004,13143 / 9fec5d8d166100e3885d46c3c1660043`  (`_Delete`)
+// 📌 Màn này **đã port từ trước** (`/api/dealerinvthresholds` …). Lượt này **đọc nguồn rồi đối chiếu**
+//   và tìm ra **BỐN gap thật** — vá ba, ghi nợ một:
+// 🔴 **GAP 1 — `_Update` của nguồn là CẬP NHẬT TỪNG PHẦN, port cũ ghi đè cả cụm**:
+//     nguồn dựng `alColumnEffective` theo cờ `strFt_Cols_Upd.Contains("…DealerCode"/"…ModelCode"/
+//     "…Qty"/"…FlagActive")` ⇒ **chỉ cột được yêu cầu mới bị ghi**.
+//     Port cũ (`POST /api/dealerinvthresholds`) là upsert đặt luôn `FlagActive = "1"` ⇒ **sửa số lượng
+//     cũng BẬT LẠI bản đã tắt** — hành vi nguồn không có. ⇒ thêm `PUT` cập nhật từng phần (#B149).
+// 🔴 **GAP 2 — thiếu hẳn đường XOÁ**: nguồn `_Delete` **xoá THẬT** (`dt.Rows[0].Delete()` rồi
+//     `SaveData`), không phải đổi cờ. Port cũ chỉ có `/toggle`. ⇒ thêm `DELETE` (#B150).
+//     ⚠️ Đối chiếu **#B117**: hàm tên `…_Deleted` bên hoá đơn **KHÔNG xoá** mà đổi trạng thái.
+//       ⇒ **Tên không quyết định hành vi** — phải đọc thân (luật `C0-…sextusdecimus`).
+// 🔴 **GAP 3 — thiếu cột vết sửa**: nguồn thêm `LogLUDateTime` + `LogLUBy` vào `alColumnEffective`
+//     **vô điều kiện** ở cả `_Update` lẫn `_Delete`. ⇒ §12 bổ sung hai cột (entity + Seeder + response).
+//     ⚠️ **Lỗi định dạng CÓ THẬT trong nguồn**: `DateTime.Now.ToString(**"yyyyMMddHH:mm:ss"**)` —
+//       **thiếu dấu phân cách ngày và khoảng trắng** ⇒ chuỗi kiểu `2026090814:23:11`.
+//       Cùng file có **77** chỗ dùng đúng `"yyyy-MM-dd HH:mm:ss"`, chỉ **1** chỗ này sai;
+//       `Biz.HTC.WH.cs` có thêm **10** chỗ cùng lỗi. **KHÔNG port lỗi này** — MiniHTC ghi
+//       `DateTime` thật; ghi nhận để nghiệp vụ sửa nguồn.
+// 🔴 **GAP 4 (ghi nợ, chưa vá)** — `_Get` của nguồn có **phân trang `MyIdxSeq` + bảng `MySummaryTable`
+//     với `MyCount` đếm TRƯỚC khi cắt trang**; port cũ `Take(500)` cứng và **không trả tổng số**
+//     ⇒ giao diện không biết còn bao nhiêu dòng. Vá ngay ở #B148 bằng `recordStart/recordCount`.
+// ✅ Guard nguồn giữ nguyên: `_Update`/`_Delete` gọi `Mst_DealerInventoryThreshold_CheckDB(…,
+//    TConst.Flag.Active)` ⇒ **chỉ thao tác được trên bản đang hiệu lực**.
+// ✅ Nguồn ghi **cả `_dbMain` và `_dbWH`** (`SaveData` hai lần) — MiniHTC một CSDL.
+app.MapGet("/api/dealerinvthresholds/paged", async (
+    AppDbContext db, ITenantContext t, string? dealer, string? model, string? active,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.DealerInventoryThresholds.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer.Trim());
+    if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model.Trim());
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active.Trim());
+
+    // 🔴 Nguồn sắp `order by mmi.DealerCode, mmi.ModelCode` (tăng dần) — KHÔNG phải theo Id giảm dần.
+    var all = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).ToListAsync();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_DealerInventoryThreshold = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.DealerCode, x.ModelCode, x.Qty, x.FlagActive, x.LogLUDateTime, x.LogLUBy
+        }),
+        recordStart = start, recordCount = count,
+        gap4Note = "GAP 4 (da va o day): _Get cua nguon co phan trang MyIdxSeq + bang MySummaryTable voi MyCount DEM TRUOC KHI CAT TRANG; port cu Take(500) cung va KHONG tra tong so => giao dien khong biet con bao nhieu dong.",
+        orderNote = "Nguon sap 'order by mmi.DealerCode, mmi.ModelCode' (TANG DAN) - port cu sap theo Id GIAM DAN."
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/dealerinvthresholds/{dealer}/{model}", async (
+    string dealer, string model, DealerInvThresholdUpdDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dl = (dealer ?? "").Trim().ToUpperInvariant();
+    var md = (model ?? "").Trim().ToUpperInvariant();
+    var x = await db.DealerInventoryThresholds
+        .FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.ModelCode == md);
+    if (x is null) return Results.NotFound(new { dealer = dl, model = md });
+
+    // ✅ Guard nguồn: CheckDB(..., TConst.Flag.Active) ⇒ chỉ sửa được bản ĐANG HIỆU LỰC.
+    if (x.FlagActive != "1")
+        return Results.BadRequest(new
+        {
+            error = "Mst_DealerInventoryThreshold_Update",
+            check = new { x.DealerCode, x.ModelCode, x.FlagActive },
+            note = "Nguon goi Mst_DealerInventoryThreshold_CheckDB(..., TConst.Flag.Active) => CHI thao tac duoc tren ban dang hieu luc."
+        });
+
+    // 🔴 CẬP NHẬT TỪNG PHẦN — chỉ cột được gửi mới ghi (đúng `alColumnEffective` của nguồn).
+    var written = new List<string>();
+    if (dto.Qty is not null) { x.Qty = dto.Qty.Value; written.Add("Qty"); }
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) { x.FlagActive = dto.FlagActive.Trim(); written.Add("FlagActive"); }
+    // LogLU* luôn ghi (vô điều kiện, đúng nguồn).
+    x.LogLUDateTime = DateTime.Now; written.Add("LogLUDateTime");
+    x.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; written.Add("LogLUBy");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        x.DealerCode, x.ModelCode, x.Qty, x.FlagActive, x.LogLUDateTime, x.LogLUBy,
+        columnsWritten = written,
+        partialUpdateNote = "CAP NHAT TUNG PHAN: nguon dung alColumnEffective theo co strFt_Cols_Upd.Contains('...DealerCode'/'...ModelCode'/'...Qty'/'...FlagActive') => CHI cot duoc yeu cau moi bi ghi. Port cu (POST /api/dealerinvthresholds) la upsert dat luon FlagActive = '1' => SUA SO LUONG CUNG BAT LAI ban da tat - hanh vi nguon KHONG CO.",
+        logLuNote = "Nguon them LogLUDateTime + LogLUBy vao alColumnEffective VO DIEU KIEN. LOI DINH DANG CO THAT trong nguon: DateTime.Now.ToString('yyyyMMddHH:mm:ss') - THIEU dau phan cach ngay va khoang trang => chuoi kieu '2026090814:23:11'. Cung file co 77 cho dung dung 'yyyy-MM-dd HH:mm:ss', chi 1 cho nay sai; Biz.HTC.WH.cs co them 10 cho cung loi. KHONG port loi nay.",
+        twoDbNote = "Nguon SaveData HAI LAN (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/dealerinvthresholds/{dealer}/{model}", async (
+    string dealer, string model, AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealer ?? "").Trim().ToUpperInvariant();
+    var md = (model ?? "").Trim().ToUpperInvariant();
+    var x = await db.DealerInventoryThresholds
+        .FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.ModelCode == md);
+    if (x is null) return Results.NotFound(new { dealer = dl, model = md });
+
+    if (x.FlagActive != "1")
+        return Results.BadRequest(new
+        {
+            error = "Mst_DealerInventoryThreshold_Delete",
+            check = new { x.DealerCode, x.ModelCode, x.FlagActive },
+            note = "Nguon goi CheckDB(..., TConst.Flag.Active) truoc khi xoa."
+        });
+
+    // 🔴 XOÁ THẬT — nguồn `dt.Rows[0].Delete()` rồi SaveData, KHÔNG phải đổi cờ.
+    db.DealerInventoryThresholds.Remove(x);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = true, dealerCode = dl, modelCode = md,
+        hardDeleteNote = "XOA THAT: nguon chay dt_Mst_DealerInventoryThreshold.Rows[0].Delete() roi SaveData - KHONG phai doi co. Doi chieu #B117: ham ten '..._Deleted' ben hoa don thi KHONG xoa ma doi trang thai => TEN KHONG QUYET DINH HANH VI, phai doc than (luat C0-...sextusdecimus).",
+        twoDbNote = "Nguon SaveData HAI LAN (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -44157,6 +44285,7 @@ record ConfigMapVinInputRowDto(string? DCPType, decimal? ValPmtDepositPercentFro
 record ConfigMapVinInputAddDto(string? CfgATMVIpCode, string? ModelCode, DateTime? EffDateStart, List<ConfigMapVinInputRowDto>? Rows);   // #B143
 record ConfigMapVinInputUpdateDto(List<ConfigMapVinInputRowDto>? Rows);   // #B144
 record AutoMapVinBoSaveDto(string? ATMVNo, string? ATMVType);   // #B145
+record DealerInvThresholdUpdDto(int? Qty, string? FlagActive);   // #B149
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110

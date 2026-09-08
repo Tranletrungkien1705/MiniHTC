@@ -9264,6 +9264,10 @@ public sealed class DealerInventoryThreshold
     public string ModelCode { get; set; } = "";
     public int Qty { get; set; }
     public string FlagActive { get; set; } = "1";
+    /// <summary>🔴 #B148 — nguồn `Mst_DealerInventoryThreshold_Update`/`_Delete` **luôn** ghi hai cột
+    /// này (`alColumnEffective` thêm chúng vô điều kiện). Bản port cũ thiếu ⇒ mất vết sửa.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
