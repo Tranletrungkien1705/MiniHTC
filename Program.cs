@@ -28184,7 +28184,7 @@ app.MapPost("/api/invoiceids", async (InvoiceIDDto dto, AppDbContext db, ITenant
     var code = dto.InvoiceIDCode.Trim();
     if (await db.InvoiceIDs.AnyAsync(i => i.OrgId == t.OrgId && i.InvoiceIDType == dto.InvoiceIDType && i.InvoiceIDCode == code))
         return Results.BadRequest(new { error = $"Số hiệu {code} loại {dto.InvoiceIDType} đã tồn tại!" });
-    var i2 = new InvoiceID { OrgId = t.OrgId, InvoiceIDCode = code, InvoiceIDType = dto.InvoiceIDType, EffectiveDate = dto.EffectiveDate.Value, FlagActive = "1" };
+    var i2 = new InvoiceID { OrgId = t.OrgId, InvoiceIDCode = code, InvoiceIDType = dto.InvoiceIDType, EffectiveDate = dto.EffectiveDate.Value, FlagActive = "1", CreatedDate = DateTime.Now, CreatedBy = "system", LogLUDateTime = DateTime.Now, LogLUBy = "system" };   // #B188 nguon ghi du 4 cot vet sua
     db.InvoiceIDs.Add(i2); await db.SaveChangesAsync();
     return Results.Ok(new { i2.InvoiceIDCode, i2.InvoiceIDType, message = "Đã thêm mới thành công" });
 }).RequireAuthorization();

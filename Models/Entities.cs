@@ -9190,6 +9190,12 @@ public sealed class InvoiceID
     public string InvoiceIDType { get; set; } = "";   // HTC / HTCLD / TCG
     public DateTime EffectiveDate { get; set; }
     public string FlagActive { get; set; } = "1";
+    /// <summary>🔴 #B188 — bốn cột **vết sửa** mà nguồn 2010.HTC `Mst_InvoiceIDCreate_New20181119`
+    /// ghi (`CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`) nhưng bản port trước thiếu.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
