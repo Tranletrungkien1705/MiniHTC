@@ -10881,6 +10881,10 @@ public sealed class CarVinMaster
     public string? EngineNo { get; set; }
     /// <summary>Số chìa khoá (`Car_VIN.KeyNo`).</summary>
     public string? KeyNo { get; set; }
+    /// <summary>🔴 #B323 — Tháng sản xuất của xe (`Car_VIN.ProductionMonth`, chuỗi `yyyy-MM`).
+    /// Là **một trong 15 bộ lọc `Car_VIN`** của `RptCarCarGetStatistic`, và là cột gộp kỳ của
+    /// `Rpt_Statistic_MnfPlOrder` (#B251). ⚠️ Trùng tên với `Ord_POCommand.ProductionMonth` — **bảng khác**.</summary>
+    public string? ProductionMonth { get; set; }
     /// <summary>Loại đóng thùng (`Car_VIN.TypeCB`).</summary>
     public string? TypeCB { get; set; }
     /// <summary>Loại thùng (`Car_VIN.LoaiThung`) — cột riêng, khác <see cref="TypeCB"/>.</summary>
