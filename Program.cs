@@ -40250,6 +40250,134 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B383 CÔNG NỢ BẢO LÃNH 01 — `RptGuarantee_Debit_01_WH_New20260514`
+//       (`DataWH/Biz.HTC.WH.cs:169066` → SQL `RptSQLQuery.cs:52303` `mySql_RptGuarantee_Debit_01()`) =====
+// **3B khớp cả 2 máy (2 md5)**: hàm laptop `169066,169273` ≡ 150 `169071,169278`
+//   ⇒ **`bcc0a12a9da00d6304459f06fd305ffc`**; SQL `52303,52468` ⇒ **`c735962936035ac4d39ecb8c42b68035`**.
+//
+// ✅✅ **THAM SỐ HOÁ HOÀN TOÀN — ĐỐI CHỨNG MẠNH, KHÔNG CÓ MỘT THAM SỐ NƯỚNG NÀO**:
+//   Toàn bộ giá trị đi qua **bind thật** (`alParamsCoupleSql.AddRange`): `@strBUPatternOfUser`,
+//   `@strSpecial_PMGDStartDate_To`, `@strSpecial_PMPPaymentDateEnd_To`, `@strMCALDate_From`,
+//   `@nDayT`, `@strZoneCode`; cộng **năm** bộ lọc qua `BuildClause(… "@p" …)`
+//   (`pmg.GuaranteeNo`, `pmg.DealerCode`, `pmg.DateOpen`, `pmg.DateEnd`, `pmg.GuaranteeStatus`).
+//   ⇒ Chỉ hai `Replace` còn lại là **ghép MẢNH SQL dựng sẵn** (`zzB_Select_Mst_Calendar_GetForDayT_zzE`,
+//     `zzzzClause_DiscountOfCar_01_Sum`), **không phải giá trị người dùng** ⇒ an toàn.
+//   📌 Cùng file `Biz.HTC.WH.cs` với #B374 (nướng 6 tham số) ⇒ củng cố luật `C0-…quinquagesimusquartus`.
+//
+// ✅ **TÔI SUÝT BÁO NHẦM `@DaysPerYear` — đã tự chặn**: dòng
+//   `//, "@DaysPerYear", TConst.HTCParamCode.GUARANTEE_DaysPerYear` **bị comment**.
+//   Nếu SQL còn tham chiếu `@DaysPerYear` thì **thiếu tham số ⇒ lỗi runtime**.
+//   ✅ **Đã grep SQL (`52303,52468`) ⇒ `@DaysPerYear` = 0 hit** ⇒ **hai phía comment đồng bộ**
+//     ⇒ **KHÔNG phải bug**. (Đúng khuôn #B382, và là lần thứ hai luật `C0-…quinquagesimusoctavus`
+//     chặn được một báo nhầm.)
+//
+// 🔴🔴 **LỖ RBAC — tổ hợp (2)**: `@strBUPatternOfUser` **được bind** nhưng **đếm đúng 1 lần** trong cả
+//   hàm (chính dòng bind) ⇒ **SQL không dùng**; grep **năm trục còn lại** ⇒ **0 hit**; đã kiểm thêm
+//   (luật `C0-…quadragesimusnonus`) xem có **bản dựng lại bằng chuỗi** ⇒ **không có**.
+//   ⚠️ Có `BuildClause` trên `pmg.DealerCode` nhưng đó là **bộ lọc do người dùng chọn**, **không phải
+//     phạm vi theo quyền** ⇒ vẫn là **lỗ**. Báo cáo trả **công nợ bảo lãnh** của mọi đại lý.
+// ✅ **KIỂU LẤY BẢNG THỨ SÁU**: `Tables[0].TableName = "RptGuarantee_Debit_01";` (cố định) rồi
+//   `int nIdxTable = **1**;` và `Tables[nIdxTable++].TableName = "tblDetail"` **chỉ khi có cờ**
+//   ⇒ **bảng đầu cố định + con trỏ bắt đầu từ 1 cho phần tuỳ chọn**. Bổ sung cho `C0-…tricesimusseptimus`.
+// 🔴 `@strZoneCode` được bind ⇒ áp luật đã ghi (`zonecode NULL vs rỗng` ⇒ báo cáo **ra 0 câm**):
+//   port truyền **chuỗi rỗng**, không NULL.
+// 🔴 `@nDayT` = `TConst.HTCConst.HTC_DiscountPolicy_MaxDeclare_WorkingDays` ⇒ **số ngày làm việc tối đa
+//   được khai** là **hằng biên dịch**, không đọc từ master ⇒ đổi chính sách phải **build lại**.
+// 🔴 `Thread.Sleep(4000)` trên đường thành công — **không port**.
+// ⚠️ **NỢ**: `Pmt_Guarantee*`, `Mst_Calendar`, tầng chiết khấu `DiscountOfCar_01_Sum` chưa đủ
+//   ⇒ trả khung + cờ; **không bịa số công nợ**.
+app.MapGet("/api/reports/guarantee-debit01", async (
+    AppDbContext db, ITenantContext t,
+    string? guaranteeNo, string? dealerCode, DateTime? dateOpenFrom, DateTime? dateOpenTo,
+    DateTime? dateEndFrom, DateTime? dateEndTo, string? guaranteeStatus,
+    string? zoneCode, string? isGetDetail) =>
+{
+    var wantDetail = isGetDetail == "1";
+    return Results.Ok(new
+    {
+        count = 0,
+        RptGuarantee_Debit_01 = Array.Empty<object>(),          // Tables[0] — cố định
+        tblDetail = wantDetail ? Array.Empty<object>() : null,  // Tables[1] — chỉ khi có cờ
+        // 🔴 zoneCode: chuỗi RỖNG thay vì NULL (luật đã ghi: NULL làm filter loại sạch dòng).
+        zoneCodeEcho = zoneCode ?? "",
+        filtersEcho = new { guaranteeNo, dealerCode, dateOpenFrom, dateOpenTo, dateEndFrom, dateEndTo, guaranteeStatus },
+        fullyParameterisedNote = "THAM SO HOA HOAN TOAN - DOI CHUNG MANH, KHONG CO MOT THAM SO NUONG NAO: toan bo gia tri di qua BIND THAT (alParamsCoupleSql.AddRange): @strBUPatternOfUser, @strSpecial_PMGDStartDate_To, @strSpecial_PMPPaymentDateEnd_To, @strMCALDate_From, @nDayT, @strZoneCode; cong NAM bo loc qua BuildClause('@p') tren pmg.GuaranteeNo / DealerCode / DateOpen / DateEnd / GuaranteeStatus. Hai Replace con lai chi GHEP MANH SQL DUNG SAN (zzB_Select_Mst_Calendar_GetForDayT_zzE, zzzzClause_DiscountOfCar_01_Sum), KHONG phai gia tri nguoi dung => an toan. Cung file Biz.HTC.WH.cs voi #B374 (nuong 6 tham so) => cung co luat C0-...quinquagesimusquartus.",
+        avoidedFalseAlarmNote = "SUYT BAO NHAM @DaysPerYear - DA TU CHAN: dong '//, \"@DaysPerYear\", TConst.HTCParamCode.GUARANTEE_DaysPerYear' BI COMMENT; neu SQL con tham chieu @DaysPerYear thi THIEU THAM SO => loi runtime. DA GREP SQL (52303,52468) => @DaysPerYear = 0 HIT => HAI PHIA COMMENT DONG BO => KHONG PHAI BUG. Dung khuon #B382, va la lan thu hai luat C0-...quinquagesimusoctavus chan duoc mot bao nham.",
+        rbacHoleNote = "LO RBAC to hop (2): @strBUPatternOfUser DUOC BIND nhung DEM DUNG 1 LAN trong ca ham (chinh dong bind) => SQL KHONG DUNG; grep NAM TRUC CON LAI => 0 HIT; da kiem them (luat C0-...quadragesimusnonus) xem co BAN DUNG LAI BANG CHUOI => KHONG CO. Co BuildClause tren pmg.DealerCode nhung do la BO LOC DO NGUOI DUNG CHON, KHONG phai pham vi theo quyen => VAN LA LO. Bao cao tra CONG NO BAO LANH cua moi dai ly.",
+        tableShapeSixthNote = "KIEU LAY BANG THU SAU: 'Tables[0].TableName = RptGuarantee_Debit_01' (CO DINH) roi 'int nIdxTable = 1;' va 'Tables[nIdxTable++].TableName = tblDetail' CHI KHI CO CO => BANG DAU CO DINH + CON TRO BAT DAU TU 1 cho phan tuy chon. Bo sung cho C0-...tricesimusseptimus.",
+        compileTimeConstNote = "@nDayT = TConst.HTCConst.HTC_DiscountPolicy_MaxDeclare_WorkingDays => SO NGAY LAM VIEC TOI DA DUOC KHAI la HANG BIEN DICH, khong doc tu master => doi chinh sach phai BUILD LAI. Thread.Sleep(4000) tren duong thanh cong - KHONG port.",
+        debtNote = "NO - KHONG DOAN: Pmt_Guarantee*, Mst_Calendar, tang chiet khau DiscountOfCar_01_Sum chua du => tra khung + co; KHONG bia so cong no."
+    });
+}).RequireAuthorization();
+
+// ===== #B384/#B385 TỒN KHO HTC — CẶP BẢN 01 / BẢN 02
+//       (`RptStatistic_HTCStock01_WH_New20220321` / `RptStatistic_HTCStock02_WH_New20230509`,
+//        `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — offset lệch 5 dòng**:
+//   HTCStock01 laptop `163328,163659` ≡ 150 `163333,163664` ⇒ **`5c68fd0208463aa1063471903955e2b4`**
+//   HTCStock02 laptop `164009,164530` ≡ 150 `164014,164535` ⇒ **`b52ae52f8e280e940d61daff668c700a`**
+//
+// ✅🔴 **HAI BẢN LẤY BẢNG KẾT QUẢ THEO HAI CHIỀU NGƯỢC NHAU — VÀ CẢ HAI ĐỀU ĐÚNG**:
+//     HTCStock01: `Tables[Count - **1**]` = báo cáo · `Tables[Count - **2**]` = chi tiết   ← **đếm từ CUỐI**
+//     HTCStock02: `//Tables[Count - 1]` **bị comment**, thay bằng `Tables[**0**]` và `Tables[**1**]`  ← **đếm từ ĐẦU**
+//   ⇒ Bản 02 **cố ý đổi** từ "đếm từ cuối" sang "đếm từ đầu". Theo luật `C0-…tricesimusseptimus`,
+//     `Tables[0]` cứng là kiểu **đáng nghi** — nên tôi **đã đếm lại câu trả kết quả trong SQL**:
+//     chỉ có **HAI** câu `select` không `into` và không bị comment
+//     (`select t.* from #tbl_Final t` rồi một `select` nữa) ⇒ `Tables[0]`/`Tables[1]` **ĐÚNG**.
+//   ⇒ **KHÔNG phải bug.** (Lần thứ ba trong hai lượt mà việc đếm lại chặn được một báo nhầm.)
+//
+// 🔴🔴 **`select null tbl_X` KHÔNG PHẢI LÚC NÀO CŨNG LÀ CÂU DEBUG — biến thể thứ TƯ**:
+//   Trong HTCStock02 có `select null tbl_Final_Filter, …` **không comment**, thoạt nhìn đúng khuôn
+//   "câu debug bị bỏ quên". **Nhưng đọc tiếp thì câu đó kết thúc bằng `into #tbl_Final_Filter`**
+//   ⇒ nó là **câu `select … into` bình thường**, và `null tbl_Final_Filter` chỉ là **CỘT ĐẦU đánh dấu**,
+//     **không sinh ra bảng kết quả nào**.
+//   ⇒ Bổ sung **mức (e)** cho `C0-…tricesimusseptimus`: `select null tbl_X` **nằm trong câu có `into`**
+//     ⇒ **cột đánh dấu**, không phải result set. **Phải đọc tới `into` trước khi đếm bảng.**
+//
+// ✅ **RBAC tổ hợp (1) ở CẢ HAI**: `myCommon_CheckHTCDirect(…)` **ACTIVE** (không comment)
+//   ⇒ **có cổng** ⇒ **không phải lỗ** (dù `@strBUPatternOfUser` bind).
+// 🔴 **LOẠI `Thread.Sleep` THỨ HAI trong hệ**: ngoài `Sleep(4000)` cuối hàm (đã biết, 83 điểm),
+//   HTCStock02 còn `System.Threading.Thread.Sleep(**10**)` **bên trong vòng lặp gọi service**
+//   (chú thích nguồn: `// Pause:`) ⇒ **giãn nhịp giữa các lần gọi**, không phải sleep cuối hàm.
+//   **Không port** cả hai, nhưng ghi rõ là **hai loại khác nhau**.
+// 🔴 HTCStock02 trả **HAI** bảng có tên **lệch tiền tố**: `RptStatistic_HTCStock02` và
+//   `**RptMater**_TonKhoHTC` (thiếu chữ `s` — đúng phải là `RptMaster`) ⇒ **hợp đồng API mang lỗi chính tả**;
+//   port giữ **đúng tên nguồn**, không sửa.
+// ⚠️ **NỢ**: chuỗi `#tbl_HTMV_PDI*`, `#tbl_Final*` và master tồn kho HTC chưa đủ ⇒ trả khung + cờ.
+app.MapGet("/api/reports/htcstock01", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? isGetDetail) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        tDate,
+        RptStatistic_HTCStock01 = Array.Empty<object>(),         // Tables[Count-1] ở nguồn
+        RptStatistic_HTCStock01Detail = Array.Empty<object>(),   // Tables[Count-2] ở nguồn
+        tableFetchDirectionNote = "HAI BAN LAY BANG KET QUA THEO HAI CHIEU NGUOC NHAU - VA CA HAI DEU DUNG: HTCStock01 dung Tables[Count-1] (bao cao) va Tables[Count-2] (chi tiet) - DEM TU CUOI; HTCStock02 co '//Tables[Count-1]' BI COMMENT, thay bang Tables[0] va Tables[1] - DEM TU DAU. Ban 02 CO Y DOI tu 'dem tu cuoi' sang 'dem tu dau'. Theo luat C0-...tricesimusseptimus, Tables[0] cung la kieu DANG NGHI - nen DA DEM LAI cau tra ket qua trong SQL: chi co HAI cau select khong into va khong bi comment => Tables[0]/Tables[1] DUNG => KHONG PHAI BUG.",
+        rbacNote = "RBAC to hop (1) o CA HAI: myCommon_CheckHTCDirect(...) ACTIVE (khong comment) => CO CONG => KHONG phai lo (du @strBUPatternOfUser bind).",
+        debtNote = "NO - KHONG DOAN: chuoi #tbl_Car_VIN_Filter/#tbl_Car_VIN_Raw/#tbl_Car_VIN_PrePc chua du => tra khung + co. Thread.Sleep(4000) - KHONG port."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/htcstock02", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate, string? isGetDetail) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        tDate,
+        RptStatistic_HTCStock02 = Array.Empty<object>(),   // Tables[0]
+        // 🔴 Tên bảng nguồn thiếu chữ `s`: "RptMater_TonKhoHTC" (đúng phải là RptMaster) — giữ ĐÚNG nguồn.
+        RptMater_TonKhoHTC = Array.Empty<object>(),        // Tables[1]
+        selectNullIntoNote = "'select null tbl_X' KHONG PHAI LUC NAO CUNG LA CAU DEBUG - BIEN THE THU TU: trong HTCStock02 co 'select null tbl_Final_Filter, ...' KHONG comment, thoat nhin dung khuon 'cau debug bi bo quen'. NHUNG doc tiep thi cau do KET THUC BANG 'into #tbl_Final_Filter' => no la CAU 'select ... into' BINH THUONG, va 'null tbl_Final_Filter' chi la COT DAU DANH DAU, KHONG sinh ra bang ket qua nao. Bo sung MUC (e) cho C0-...tricesimusseptimus: 'select null tbl_X' NAM TRONG CAU CO 'into' => COT DANH DAU, khong phai result set. PHAI DOC TOI 'into' TRUOC KHI DEM BANG.",
+        secondSleepKindNote = "LOAI Thread.Sleep THU HAI TRONG HE: ngoai Sleep(4000) cuoi ham (da biet, 83 diem), HTCStock02 con 'System.Threading.Thread.Sleep(10)' BEN TRONG VONG LAP GOI SERVICE (chu thich nguon '// Pause:') => GIAN NHIP GIUA CAC LAN GOI, khong phai sleep cuoi ham. KHONG port ca hai, nhung ghi ro la HAI LOAI KHAC NHAU.",
+        tableNameTypoNote = "Ten bang tra ve THIEU CHU 's': 'RptMater_TonKhoHTC' (dung phai la RptMaster) => HOP DONG API MANG LOI CHINH TA; port giu DUNG TEN NGUON, khong sua.",
+        tableFetchDirectionNote = "Xem ghi chu day du o /api/reports/htcstock01 (tableFetchDirectionNote): ban NAY doi sang Tables[0]/Tables[1] va DA DEM LAI SQL => DUNG, khong phai bug.",
+        rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE => CO CONG => khong phai lo.",
+        debtNote = "NO - KHONG DOAN: chuoi #tbl_HTMV_PDI*, #tbl_Final* va master ton kho HTC chua du => tra khung + co."
+    });
+}).RequireAuthorization();
 // ===== #B380/#B381 NHÂN SỰ BÁN HÀNG — CẶP SINH ĐÔI "THEO VÙNG" / "THEO ĐẠI LÝ"
 //       (`Rpt_HRSalesMan_TypeArea_WH_New20230306` / `…_TypeDealer_WH_New20230306`,
 //        `DataWH/Biz.HTC.WH.cs`) =====
