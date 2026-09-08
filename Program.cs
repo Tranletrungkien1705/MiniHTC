@@ -30713,6 +30713,33 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #584 HAI HÀM **TRÙNG TÊN** `PushDataROToHyundaiMe` — QUÁ TẢI KHÁC ĐÚNG MỘT THAM SỐ =====
+// DIFF hai vùng `:17-157` và `:158-288` (luật #414) cho ra **đúng ba** khác biệt:
+//     `private void PushDataROToHyundaiMe(string strROID, string strStatus, string strCavityID)`   ← 3 tham số
+//     `private void PushDataROToHyundaiMe(string strROID, string strCavityID)`                     ← **2** tham số
+//   · bản 3 tham số có `and ro.Status in (@strStatus)` và dòng thay `, "@strStatus", strStatus`;
+//   · bản 2 tham số **không có** hai dòng đó — tức **KHÔNG lọc trạng thái**, đẩy **bất kể lệnh đang ở đâu**.
+//   Ngoài ra **giống nhau từng ký tự**.
+// 🔴🔴 ⇒ **Số đối số ở nơi gọi quyết định có lọc trạng thái hay không, và trình biên dịch chọn im lặng.**
+//   Đây là dạng "sinh đôi" khó thấy nhất từ trước tới nay: **cùng tên, cùng file** — grep theo tên hàm cho
+//   ra **một** kết quả tưởng là một hàm. Chỉ khi DIFF hai vùng mới lộ.
+//   Đếm nơi gọi thật: **hai** chỗ gọi bản 2 tham số (`AssignmentOfWork.cs:889` và `:1495`), còn lại (`:1491`,
+//   `Service.RO.cs:5127`, `Service01.cs:8267/9759/11230`, `ZTemp.cs:12254/13956/14955`) gọi bản 3 tham số.
+//   ⇒ Cùng một nghiệp vụ "giao việc", hai nhánh code đẩy sang hãng theo **hai luật khác nhau**.
+//
+// 🔴🔴 **HẰNG ≠ GIÁ TRỊ — HAI LỚP HẰNG CÙNG TÊN THÀNH VIÊN, MỘT LỚP CHỨA HAI MÃ TRONG MỘT CHUỖI**:
+//     `Constants.**Ser_RO_Stage**.Repaired      = "RPRD"`        (`Const.Main.cs:182`)
+//     `Constants.**Ser_RO_Stage4Search**.Repaired = "**RPRD,PAID**"` (`Const.Main.cs:192`)
+//   Nơi gọi viết `string.Format("'{0}'", Constants.Ser_RO_Stage.Repaired)` ⇒ `'RPRD'` — **đúng**.
+//   ⚠️ Nhưng nếu ai đó "sửa cho đúng nghiệp vụ" thành lớp `Ser_RO_Stage4Search` thì chuỗi thành `'RPRD,PAID'`
+//     — **một literal chứa dấu phẩy nằm TRONG một cặp nháy** ⇒ `in ('RPRD,PAID')` **không khớp gì cả**,
+//     không phải hai giá trị. Kết hợp đúng hai bẫy đã ghi: **bake chuỗi** (#583) + **hằng ≠ giá trị**.
+//   📌 Giá trị đầy đủ của `Ser_RO_Stage` (chép nguyên): `CRE` Lập báo giá · `PRT` In báo giá · `W4P` Đợi phụ
+//     tùng · `HPA` Đã có phụ tùng · `HRO` Lập lệnh sửa chữa · `REJ` Hủy · `INGA` Vào sửa chữa · `CEND` Kiểm
+//     tra cuối cùng · `RPRD` Sửa xong · `PAID` Đã thanh toán · `FNS` Đã hoàn thành · `NORE` Chưa dùng.
+//     Và `Ser_RO_Stage4Search` gom nhóm: `CRE,PRT,HRO` Chờ sửa · `INGA` Đang sửa · `RPRD,PAID` Sửa xong ·
+//     `FNS` Đã giao xe · `W4P,HPA,NORE` **Hủy, Hẹn lại** ← nhóm này đúng bằng ba nhánh **bị comment** ở #564.
+//
 // ===== 🔴🔴 #583 GÓI DỮ LIỆU ĐẨY SANG HYUNDAI ME (`PushDataROToHyundaiMe`, `PushToHyundaiMe.cs:17`) =====
 // Đây là **hàng đẩy ra ngoài hệ** (API của hãng), không phải màn tra cứu ⇒ mọi lỗi ở đây đi thẳng sang đối tác.
 // Luồng: `BizCarSv.AssignmentOfWork.cs` gọi `PushDataROToHyundaiMe(strROID, strStatus, strCavityID)` →
@@ -30813,6 +30840,14 @@ app.MapGet("/api/hyundaime/ro-payload/{roNo}", async (string roNo, AppDbContext 
         deletionFieldsAreEmptyStringsNotNull = true,
         cavityFetchedBySeparateQueryThenBaked = "left join Ser_Cavity bi comment; truy van rieng lay CavityNo roi dan vao chuoi lam cot Slot",
         multipleDataSourcesInOneQuery = "doc bang _dbDealer nhung Ser_MST_Model va Sys_User lay tu [CommonCenter]",
+        // ===== #584 =====
+        twoOverloadsSameName = "PushDataROToHyundaiMe co ban 3 tham so (LOC trang thai) va ban 2 tham so (KHONG loc) — cung ten cung file, trinh bien dich chon im lang theo so doi so",
+        callersOfTwoArgOverload = new[] { "AssignmentOfWork.cs:889", "AssignmentOfWork.cs:1495" },
+        statusFilterAppliedHere = wanted.Count > 0,
+        constantValuesSerRoStage = "CRE/PRT/W4P/HPA/HRO/REJ/INGA/CEND/RPRD/PAID/FNS/NORE",
+        twoConstantClassesSameMemberName = "Ser_RO_Stage.Repaired = RPRD nhung Ser_RO_Stage4Search.Repaired = RPRD,PAID",
+        bakedInClauseWouldBreakWithGroupedConstant = "neu dung hang nhom thi in (RPRD,PAID) trong MOT cap nhay => literal co dau phay, khong khop gi ca",
+        cancelGroupMatchesCommentedBranches = "Ser_RO_Stage4Search.Cancel = W4P,HPA,NORE dung bang ba nhanh bi comment o #564",
     });
 }).RequireAuthorization();
 
