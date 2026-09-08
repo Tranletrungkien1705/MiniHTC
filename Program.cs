@@ -30713,6 +30713,109 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #583 GÓI DỮ LIỆU ĐẨY SANG HYUNDAI ME (`PushDataROToHyundaiMe`, `PushToHyundaiMe.cs:17`) =====
+// Đây là **hàng đẩy ra ngoài hệ** (API của hãng), không phải màn tra cứu ⇒ mọi lỗi ở đây đi thẳng sang đối tác.
+// Luồng: `BizCarSv.AssignmentOfWork.cs` gọi `PushDataROToHyundaiMe(strROID, strStatus, strCavityID)` →
+//   dựng `DataTable` → `qworker` (hàng đợi nền) → `HyundaiMeService.WA_OSHyundaiMe_PushRO`.
+//
+// 🔴🔴 **CỘT `LogLUDateTime` ĐƯỢC CHỌN HAI LẦN, GIỐNG HỆT NHAU**:
+//     `, Convert(nvarchar, ro.LogLUDateTime, 120) LogLUDateTime`
+//     `, Convert(nvarchar, ro.LogLUDateTime, 120) LogLUDateTime`   ← **lặp nguyên văn dòng trên**
+//   ⇒ ADO.NET tự đổi tên cột thứ hai thành `LogLUDateTime1`, và gói đẩy sang hãng mang **một cột thừa**.
+//   Cùng họ #564 (hai cột trùng tên `RONo`) nhưng ở đó hai cột **khác giá trị**; ở đây là **bản sao y**.
+// 🔴🔴 **TOÀN BỘ THAM SỐ BỊ BAKE, KHÔNG CÓ THAM SỐ RUNTIME NÀO**:
+//     `and ro.ROID = '@strROID'` · `and t.CavityID = '@strCavityID'` · `'@strCavityNo' Slot`
+//     `and ro.Status in (**@strStatus**)`   ← **KHÔNG bọc nháy**
+//   ⇒ Vế `in (…)` buộc **nơi gọi phải tự tạo chuỗi đã có nháy** (`'CRE','PRT'`). Một hợp đồng **ngầm** giữa
+//     hai file: đổi cách nơi gọi ghép chuỗi là câu SQL **hỏng hoặc lọc sai**, không có gì cảnh báo.
+//     Và mọi giá trị đều **dán thẳng** ⇒ bề mặt chèn SQL trên đường **đẩy ra ngoài**.
+// 🔴 **BẢNG MÃ TRẠNG THÁI KHÁC VỚI #564 — CÙNG NGHIỆP VỤ, KHÁC NHÃN**:
+//     ở đây **CÓ** `when ro.Status in ('REJ') then N'Lệnh hủy'`;
+//     ở `HTCMobileTVO_GetSerRoService` (#564) nhánh `REJ` **không có**, và cả hai đều **thiếu `PAID`**
+//     (cùng một dòng comment *"Issue 981"*).
+//   ⇒ Ba nơi cùng dịch một mã trạng thái ra **ba tập nhãn khác nhau**: app TVO, gói đẩy Hyundai Me, và màn nội
+//     bộ. Khách nhìn app hãng và nhân viên nhìn màn nội bộ có thể đọc **hai chữ khác nhau cho cùng một xe**.
+// 🔴 **HAI `inner join` KHÔNG NỐI ĐẠI LÝ**: `Ser_Customer` (chỉ `CusID`) và `Ser_Car` (`carID` + `CusID`).
+//   Lệnh nào không khớp được khách/xe ⇒ `DataTable` **rỗng** ⇒ khối đẩy bị bỏ qua ⇒ **không đẩy, không lỗi,
+//   không log** (khối ghi log chỉ chạy **bên trong** nhánh có dòng).
+// 🔴 `Convert(nvarchar, …, 30)` khắp nơi ⇒ **cắt 30 ký tự** (bẫy style ≠ độ dài, #561) — kể cả `CusRequest`
+//   (yêu cầu của khách) và `CustomerName`. Dữ liệu **cụt** được gửi sang hệ của hãng.
+// ⚠️ `'' DeletionTime` / `'' DeletionStatus` — hằng **chuỗi rỗng**, không phải NULL ⇒ phía nhận không phân
+//   biệt được *"chưa có"* với *"rỗng"*.
+// ⚠️ `left join Ser_Cavity` **bị comment**; thay vào đó một truy vấn **riêng** lấy `CavityNo` rồi **bake** vào
+//   chuỗi làm cột `Slot` ⇒ hai lần round-trip DB cho một cột, và giá trị đi qua đường chuỗi.
+// ⚠️ Đọc bằng `_dbDealer` nhưng `Ser_MST_Model` và `Sys_User` lấy từ `[CommonCenter]` — lại là **đa nguồn**
+//   trong một câu (đã ghi ở #560/#567).
+// 📌 MiniHTC không gọi API hãng; endpoint dưới **dựng đúng gói dữ liệu** để đối chiếu, và nêu mọi cờ trên.
+app.MapGet("/api/hyundaime/ro-payload/{roNo}", async (string roNo, AppDbContext db, ITenantContext t,
+    string? statusList, string? cavityNo) =>
+{
+    var no = roNo.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { roNo = no });
+
+    // Nguồn: and ro.Status in (@strStatus) — chuỗi do NƠI GỌI tự ghép, đã mang sẵn dấu nháy.
+    var wanted = (statusList ?? "").Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().Trim((char)39)).Where(x => x.Length > 0).ToList();
+    var statusMatched = wanted.Count == 0 || wanted.Contains(ro.Status);
+    if (!statusMatched)
+        return Results.Ok(new
+        {
+            pushed = false, roNo = no, status = ro.Status,
+            reason = "Trang thai khong nam trong danh sach => nguon tra DataTable rong va BO QUA im lang.",
+            sourceSkipsSilently = "khoi ghi log nam BEN TRONG nhanh co dong nen khong day cung khong log",
+        });
+
+    var car = ro.Vin == null ? null : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == ro.Vin);
+    var cus = ro.CusID == null ? null : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == ro.CusID);
+    var mdl = car?.ModelCode == null ? null : await db.ServiceModels.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.ModelCode == car.ModelCode);
+
+    // inner join Ser_Customer / Ser_Car ở nguồn ⇒ thiếu một trong hai là KHÔNG đẩy.
+    var droppedByInnerJoins = cus is null || car is null;
+
+    string StatusName(string st) => st switch
+    {
+        "CRE" or "PRT" or "HRO" => "Chờ sửa",
+        "INGA" => "Đang sửa",
+        "RPRD" => "Sửa xong",
+        "CEND" => "Kiểm tra cuối cùng",
+        "FNS" => "Đã giao xe",
+        "REJ" => "Lệnh hủy",          // nhánh NÀY có ở gói Hyundai Me, KHÔNG có ở #564
+        _ => "Không xác định",        // PAID vẫn thiếu ở cả hai (Issue 981)
+    };
+
+    var payload = new
+    {
+        CustomerCode = ro.CusID, CustomerName = cus?.CusName,      // KHÔNG cắt 30 như nguồn
+        CustomerMobile = cus?.Mobile, CustomerIDCardNo = cus?.IDCardNo,
+        PlateNo = ro.LicensePlate, VIN = ro.Vin,
+        TradeMarkCode = car?.TradeMark, ModelCode = car?.ModelCode, ModelName = mdl?.ModelName,
+        CheckInDateTime = ro.CheckInDate, ActualDeliveryDateTime = ro.ActualDeliveryDate,
+        PlanedDeliveryDateTime = ro.PlanedDeliveryDate,
+        StatusCode = ro.Status, StatusName = StatusName(ro.Status),
+        ro.FlagPause, RONo = ro.RONo, ro.CusRequest, ro.DealerCode, KM = ro.Km,
+        Creator = ro.Creator,
+        CreateDateTime = ro.CreatedAt, ro.LogLUDateTime,
+        DeletionTime = "", DeletionStatus = "",   // đúng nguồn: hằng CHUỖI RỖNG, không phải NULL
+        Slot = cavityNo,
+    };
+
+    return Results.Ok(new
+    {
+        pushed = !droppedByInnerJoins, payload,
+        droppedByInnerJoins,
+        duplicateColumnSelectedTwice = "LogLUDateTime duoc chon HAI LAN giong het nhau => ADO.NET doi cot thu hai thanh LogLUDateTime1, goi day mang mot cot thua",
+        everythingBakedNoRuntimeParams = new[] { "@strROID", "@strCavityID", "@strCavityNo", "@strStatus" },
+        statusInClauseNotQuoted = "and ro.Status in (@strStatus) — noi goi phai tu tao chuoi da co nhay; hop dong NGAM giua hai file",
+        statusLabelsDifferFromTvoVariant = "goi Hyundai Me CO nhanh REJ; #564 thi khong; ca hai deu thieu PAID (Issue 981)",
+        innerJoinsWithoutDealerScope = "Ser_Customer chi noi CusID; Ser_Car noi carID + CusID",
+        sourceTruncatesStringsAt30 = "Convert(nvarchar, x, 30) — ke ca CusRequest va CustomerName, du lieu CUT gui sang he cua hang",
+        deletionFieldsAreEmptyStringsNotNull = true,
+        cavityFetchedBySeparateQueryThenBaked = "left join Ser_Cavity bi comment; truy van rieng lay CavityNo roi dan vao chuoi lam cot Slot",
+        multipleDataSourcesInOneQuery = "doc bang _dbDealer nhung Ser_MST_Model va Sys_User lay tu [CommonCenter]",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #582 BIÊN BẢN NHẬP KHO IN GIẤY (`Blt_SerStockInPaperRpt`, `Bulletin.cs:23`) =====
 // Hàm nằm **nhầm file** (`BizCarSv.Bulletin.cs`) dù không liên quan bản tin — tra theo tên bảng nguồn
 //   (`Ser_Inv_StockIn`) mới thấy; tìm theo "file nào chứa nghiệp vụ kho" thì trượt.
