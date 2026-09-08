@@ -29103,6 +29103,116 @@ app.MapDelete("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
     });
 }).RequireAuthorization();
 
+// ===== #B165 CỬA GHI CHUNG CHO MASTER — `CommonSaveMasterData_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs:152`) + danh sách trắng `myCommon_GetSupportedTable_SaveData`
+//       (`BizHTC.Common.cs`) =====
+// 🔴🔴 **ĐÍNH CHÍNH CÁCH ĐẾM CỬA của luật `C0-…undequadragesimus`**: đếm `_biz.<Tên>_*` ở WS64 là
+//   **CHƯA ĐỦ** để kết luận "danh mục chỉ đọc". Ngoài các cửa **riêng theo bảng**, hệ nguồn còn một
+//   **CỬA GHI CHUNG**: WinForm gọi `BaseService.SaveMasterDataTable(arrTblNameCouple, dsData)`
+//   → WS64 `:507 CommonSaveMasterData` → `_biz.CommonSaveMasterData_New20181119`.
+//   ⇒ Một bảng **không có** `_biz.<Tên>_Update` **vẫn có thể ghi được** qua cửa chung.
+//   ✅ Đã kiểm lại **#B155**: `Mst_CtrCancelTypeDtl` **KHÔNG** nằm trong danh sách trắng
+//     (`grep -c` = 0) và WinForm chỉ dùng nó để **nạp combobox** lý do huỷ ⇒ kết luận "chỉ đọc"
+//     ở #B155 **vẫn đúng**. Ba danh mục #B158–#B160 cũng không có form quản trị.
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `Biz.HTC.WH.cs 152,354 / 0210aaef51b3e463ef5a54b6fd06e61c`
+//   `BizHTC.Common.cs — danh sách trắng / cba5dacfffc9d61a62a1618e56aab611`
+//   ⚠️ **Lại một ca lệch offset**: `BizHTC.Common.cs` có **3888** dòng ở laptop và **3905** ở máy 150;
+//     hàm danh sách trắng bắt đầu **812** vs **829** — **lệch 17 dòng**. Đo cùng dải số ⇒ md5 khác
+//     (`cba5dacf…` vs `67e33cfa…`); căn **theo TÊN** rồi đo 85 dòng ⇒ **khớp**.
+//     (Ca thứ hai liên tiếp — xem luật `C0-…quadragesimusprimus`.)
+// 🔴 **DANH SÁCH TRẮNG 50 BẢNG** — bảng không có trong danh sách bị **từ chối**
+//   (`…_TableNotSupported`); tên bảng không tồn tại trong `dsData` ⇒ `…_TableNotFound`.
+//   ⇒ Đây là **hàng rào an toàn**: cửa chung **không** cho ghi bảng tuỳ ý.
+// 🔴 Tham số là **CẶP** `arrstrTableNamesCouple` (`i` = tên bảng DB, `i+1` = tên bảng trong DataSet),
+//   duyệt `i += 2`; chỉ ghi phần **`GetChanges()`** (dòng đã đổi), rồi `SaveData` **hai lần**
+//   (`_dbMain`, `_dbWH`).
+// ✅ **RBAC lành mạnh**: `myCommon_GetAbilityOfUser` + `myCommon_CheckHTCDirect` — **không** bị comment.
+// 🔴 **Kiểm đặc biệt sau khi ghi `Mst_CarPrice`**: truy vấn lại
+//   `… where FlagActive = '1' group by SpecCode having Count(0) > 1` — nếu **một `SpecCode` có hơn một
+//   giá đang hiệu lực** thì **ném `…_SpecialRecheck`** (và transaction bị huỷ).
+//   ⇒ Đây là **guard hậu-ghi**, không phải guard đầu vào; port bỏ qua sẽ cho phép **hai giá cùng hiệu lực**.
+app.MapPost("/api/masters/common-save", async (
+    CommonSaveMasterDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Danh sách trắng 50 bảng — đúng thứ tự nguồn.
+    var supported = new[]
+    {
+        "Mst_Area","Mst_Bank","Mst_Calendar","Mst_CalendarType","Mst_CarCancelType","Mst_CarColor",
+        "Mst_CarModel","Mst_CarOCN","Mst_CarPrice","Mst_CarSpec","Mst_CarStdOpt","Mst_Dealer",
+        "Mst_DealerSalesGroupType","Mst_DealerSalesType","Mst_DealerType","Mst_Discount","Mst_Param",
+        "Mst_PaymentType","Mst_Plant","Mst_Port","Mst_PortType","Mst_Province","Mst_SalesOrderType",
+        "Mst_Storage","Mst_Transporter","Rpt_PrincipleContract","Mst_District","Mst_TransporterCar",
+        "Mst_TransporterDriver","DLR_SalesMan","Mst_ParamPDI","Mst_WarrantyExpires",
+        "Mst_TCGCarSalePrice","Mst_UnitPriceGPS","Mst_InsuranceFee","Mst_CostType","Mst_UnitPriceAVN",
+        "Mst_VINProductionYear_Actual","Mst_CarAllocationByArea","Mst_DeviceType","Mst_DeviceType_Spec"
+    };
+
+    if (dto.Tables is null || dto.Tables.Count == 0)
+        return Results.BadRequest(new { error = "CommonSaveMasterData_TableNotFound" });
+
+    var rejected = dto.Tables.Select(x => (x.DbTableName ?? "").Trim())
+        .Where(n => !supported.Contains(n, StringComparer.OrdinalIgnoreCase)).ToList();
+    if (rejected.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "CommonSaveMasterData_TableNotSupported",
+            check = new { RejectedTables = rejected },
+            note = "Bang khong nam trong danh sach trang cua myCommon_GetSupportedTable_SaveData() thi BI TU CHOI."
+        });
+
+    return Results.Ok(new
+    {
+        accepted = dto.Tables.Select(x => x.DbTableName),
+        applied = false,
+        supportedCount = supported.Length,
+        sharedWriteDoorNote = "DINH CHINH cach dem cua: dem _biz.<Ten>_* o WS64 la CHUA DU de ket luan 'danh muc chi doc'. Ngoai cac cua RIENG theo bang, he nguon con mot CUA GHI CHUNG: WinForm goi BaseService.SaveMasterDataTable(arrTblNameCouple, dsData) -> WS64 :507 CommonSaveMasterData -> _biz.CommonSaveMasterData_New20181119. Mot bang KHONG co _biz.<Ten>_Update VAN CO THE GHI DUOC qua cua chung.",
+        b155StillValidNote = "Da kiem lai #B155: Mst_CtrCancelTypeDtl KHONG nam trong danh sach trang (grep -c = 0) va WinForm chi dung no de NAP COMBOBOX ly do huy => ket luan 'chi doc' o #B155 VAN DUNG. Ba danh muc #B158-#B160 cung khong co form quan tri.",
+        whitelistNote = "DANH SACH TRANG 50 BANG - bang khong co trong danh sach bi tu choi (_TableNotSupported); ten bang khong ton tai trong dsData => _TableNotFound. Day la HANG RAO AN TOAN: cua chung KHONG cho ghi bang tuy y.",
+        couplePairNote = "Tham so la CAP arrstrTableNamesCouple (i = ten bang DB, i+1 = ten bang trong DataSet), duyet i += 2; chi ghi phan GetChanges() (dong da doi), roi SaveData HAI LAN (_dbMain, _dbWH).",
+        carPriceRecheckNote = "KIEM DAC BIET SAU KHI GHI Mst_CarPrice: truy van lai '... where FlagActive = 1 group by SpecCode having Count(0) > 1' - neu MOT SpecCode co HON MOT gia dang hieu luc thi nem _SpecialRecheck va transaction bi huy. Day la GUARD HAU-GHI, khong phai guard dau vao; port bo qua se cho phep HAI GIA CUNG HIEU LUC.",
+        rbacHealthyNote = "RBAC lanh manh: myCommon_GetAbilityOfUser + myCommon_CheckHTCDirect - KHONG bi comment.",
+        notAppliedNote = "Endpoint nay CHUA thuc su ghi: MiniHTC khong co co che 'DataSet GetChanges()' cua ADO.NET va moi master da co endpoint rieng. No dung de (1) kiem tra bang co duoc phep ghi qua cua chung khong, (2) ghi lai hang rao an toan de nguoi sau khong tu mo rong. KHONG bia duong ghi.",
+        offsetTrapNote = "Lai mot ca lech offset: BizHTC.Common.cs co 3888 dong o laptop va 3905 o may 150; ham danh sach trang bat dau 812 vs 829 - lech 17 dong. Do cung dai so => md5 khac; can THEO TEN roi do 85 dong => khop."
+    });
+}).RequireAuthorization();
+
+// ===== #B166 VÁ PARITY `Mst_CarAllocationByArea` — guard biên độ từng miền nằm ở CLIENT =====
+// 🔴 Màn **đã port** (`/api/carallocations`) với guard **tổng ba miền = 100**. Đọc WinForm
+//   `FrmMst_CarAllocationByArea.cs` (396 dòng) thấy **đủ BỐN lớp kiểm**, port cũ **chỉ có lớp 4**:
+//     1. **rỗng** ⇒ *"Tỷ lệ Miền … (%) không được để trống!"* (từng miền);
+//     2. **không phải số** ⇒ `Util.IsNumeric` (từng miền);
+//     3. **ngoài `[0, 100]`** ⇒ *"Tỷ lệ Miền Bắc(%) phải >= 0 và <= 100!"* (từng miền) — **port cũ chỉ
+//        chặn `< 0`, KHÔNG chặn `> 100`**;
+//     4. **tổng ≠ 100** ⇒ *"Tổng Tỷ lệ 3 Miền(%) phải = 100!"*.
+// 🔴🔴 **CẢ BỐN LỚP NẰM Ở CLIENT (WinForm), KHÔNG Ở BIZ**: cửa ghi là
+//   `CommonSaveMasterData` **dùng chung cho 50 bảng** nên **không thể** chứa luật riêng của bảng này.
+//   ⇒ Ở hệ cũ, ai gọi thẳng WS **bỏ qua được toàn bộ bốn lớp**. Bản port đặt guard ở **API** là
+//     **chặt hơn nguồn** — nêu rõ để người đối soát không tưởng là lệch nghiệp vụ.
+app.MapPost("/api/carallocations/validate", (CarAllocationValidateDto dto) =>
+{
+    var errs = new List<string>();
+    void Check(string mien, decimal? v)
+    {
+        if (v is null) { errs.Add($"Tỷ lệ Miền {mien}(%) không được để trống!"); return; }
+        if (v < 0 || v > 100) errs.Add($"Tỷ lệ Miền {mien}(%) phải >= 0 và <= 100!");
+    }
+    Check("Bắc", dto.MBPercent);
+    Check("Trung", dto.MTPercent);
+    Check("Nam", dto.MNPercent);
+    var total = (dto.MBPercent ?? 0) + (dto.MTPercent ?? 0) + (dto.MNPercent ?? 0);
+    if (errs.Count == 0 && total != 100) errs.Add("Tổng Tỷ lệ 3 Miền(%) phải = 100!");
+
+    return Results.Ok(new
+    {
+        valid = errs.Count == 0,
+        errors = errs,
+        total,
+        fourLayerNote = "WinForm FrmMst_CarAllocationByArea.cs co DU BON lop kiem, port cu chi co lop 4: (1) rong; (2) khong phai so (Util.IsNumeric); (3) ngoai [0,100] TUNG MIEN - port cu chi chan < 0, KHONG chan > 100; (4) tong != 100.",
+        clientSideNote = "CA BON LOP NAM O CLIENT (WinForm), KHONG o biz: cua ghi la CommonSaveMasterData DUNG CHUNG cho 50 bang nen KHONG THE chua luat rieng cua bang nay. O he cu, ai goi thang WS BO QUA DUOC toan bo bon lop. Ban port dat guard o API la CHAT HON NGUON - neu ro de nguoi doi soat khong tuong la lech nghiep vu."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -44907,6 +45017,9 @@ record AmplitudeApprOrdSaveDto(string? FlagIsDelete, List<AmplitudeApprOrdRowDto
 record MapVinSupplyDistSumUpdDto(string? SPDBSName, string? FlagActive);   // #B157
 record BankDealerCreateDto(string? DealerCode, string? BankCode, string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark);   // #B162
 record BankDealerUpdDto(string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark);   // #B163
+record CommonSaveTableDto(string? DbTableName, string? DsTableName);   // #B165
+record CommonSaveMasterDto(List<CommonSaveTableDto>? Tables);   // #B165
+record CarAllocationValidateDto(decimal? MBPercent, decimal? MTPercent, decimal? MNPercent);   // #B166
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
