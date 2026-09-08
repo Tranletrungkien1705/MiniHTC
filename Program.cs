@@ -1719,16 +1719,70 @@ app.MapGet("/api/boms", async (AppDbContext db, ITenantContext t, string? model)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t) =>
+// ===== 🔴🔴🔴 #689 ĐỌC NGUỒN THẬT CỦA BOM — `Mst_BOM_Get/Add/Update/Delete` (`ZTemp.cs`) =====
+// md5: `Get` `e2b2c34d` · `Add` `b0525661` · `Update` `10229f4e` · `Delete` `17590415` ·
+// `Mst_BOM_CheckDB` `51c4bb8d` — **cả năm KHỚP** máy 150 (offset lệch **+19** đúng như `ZTemp.cs` đã biết).
+// WS `WSCarSv.asmx.cs:33400/33440/33478/33512`. **Bốn hàm này chưa từng được đọc** trong các lượt trước —
+// port BOM cũ viết theo màn WinForm, không theo biz.
+//
+// 🔴🔴🔴 **MÃ LỖI NÓI NGƯỢC SỰ THẬT** (`Mst_BOM_CheckDB`): khi `strFlagExistToCheck = Flag.Inactive` **và bảng
+//   CÓ dòng** (tức **mã BOM đã tồn tại**), hàm ném `TError.ErrCarSv.Mst_BOM_CheckDB_BOMCode**NotExist**`.
+//   Đúng ra phải là "đã tồn tại/trùng mã". ⇒ Thêm BOM **trùng mã** thì client nhận thông điệp **"không tồn tại"**.
+//   Nhánh còn lại thì đúng: `Flag.Active` + **0 dòng** ⇒ `…BOMCodeNotFound`.
+//   Đây đúng lớp "message lệch code condition" đã ghi ở luật port-guard (sự cố StoragePayment).
+// 🔴🔴🔴 **GUARD CREATE/UPDATE BẤT ĐỐI XỨNG** (luật #404 — phải đối chiếu CẢ HAI):
+//   · `Mst_BOM_Add`   : `if (string.IsNullOrEmpty(strBOMCode)) throw …Mst_BOM_Add_InvalidBOMCode`
+//                       rồi `Mst_BOM_CheckDB(…, TConst.Flag.**No**, …)` ⇒ **không được tồn tại**.
+//   · `Mst_BOM_Update`: **KHÔNG có** kiểm rỗng; chỉ `CheckDB(…, TConst.Flag.**Yes**, …)` ⇒ **phải tồn tại**.
+//   · `Mst_BOM_Delete`: **KHÔNG có** kiểm rỗng; giống Update.
+//   ⚪ Mã rỗng ở Update/Delete **không gây hại** vì `CheckDB` tra `where t.BOMCode = @strBOMCode` không thấy
+//     ⇒ ném `…BOMCodeNotFound`. Nhưng thông điệp sẽ là "không tìm thấy", không phải "thiếu mã".
+//   📌 Giá trị hằng đã mở: `Flag.Yes = Active = "1"`, `Flag.No = Inactive = "0"` (`Const.Main.cs:26-33`)
+//     ⇒ hai cách gọi tên khác nhau nhưng **giá trị khớp** với so sánh trong `CheckDB` ⚪ (kiểm rồi mới ghi).
+// 🔴🔴 **KHỐI KIỂM THỨ HAI CỦA `CheckDB` ĐỌC CỘT KHÔNG THUỘC BẢNG `Mst_BOM`**:
+//     `if (strFlagActiveListToCheck.Length > 0 && !strFlagActiveListToCheck.Contains(`
+//     `    Convert.ToString(dtDB_Mst_BOM.Rows[0]["**ReceptionFStatus**"])))` … và `Rows[0]["**AppStatus**"]`
+//   Hai cột đó thuộc màn **tiếp nhận/cuộc hẹn** — rõ ràng **sao chép từ một `…_CheckDB` khác** mà quên đổi.
+//   🕓 **Hiện KHÔNG chạy**: cả ba caller đều truyền `""` ⇒ `.Length > 0` false. Bật lên là
+//     `ArgumentException: Column 'ReceptionFStatus' does not belong to table` — **và cũng sẽ nổ `Rows[0]` nếu**
+//     **bảng rỗng**. Ghi theo hạng mục 🕓 "hỏng khi bật lại", không phải "đang hỏng".
+// 🔴🔴 **CẬP NHẬT THEO DANH SÁCH CỘT BẰNG `Contains` (SO CHUỖI CON)**: `Mst_BOM_Update` quyết định cập nhật cột nào
+//   bằng `strFt_Cols_Upd.Contains("Mst_BOM.BOMDesc".ToUpper())` · `…Remark` · `…FlagActive`.
+//   ⚪ Ở đây **an toàn** vì không tên nào là **tiền tố** của tên khác — nhưng cơ chế thì mong manh: thêm một cột
+//     tên `Mst_BOM.Remark2` là `Contains("MST_BOM.REMARK")` **bật nhầm** cả hai.
+// 🔴 `select **top 1** * from Mst_BOM t where t.BOMCode = @strBOMCode` — `top 1` **không `ORDER BY`** (#415);
+//   vô hại nếu `BOMCode` là khoá, nhưng nguồn **không** dựa vào ràng buộc khoá nào để bảo đảm điều đó.
+// ⚪ **ÂM TÍNH — `CheckDB` tham số hoá đúng**: `ExecQuery(strSqlCheck, "@strBOMCode", strBOMCode)` ⇒ SqlParameter
+//   thật. Và `CheckDB` **luôn chạy trên `_dbMain`** bất kể hàm gọi nó nhắm CSDL nào.
+//
+// ⇒ **GAP ĐÃ VÁ**: port cũ dùng **một** `POST` làm **upsert**, tức **mất guard chống trùng mã** của `Add`
+//   (gửi lại cùng `BomCode` thì Mini **ghi đè**, nguồn thì **từ chối**). Nay `POST` mặc định **tạo mới**
+//   (trùng mã ⇒ 409) và chỉ cập nhật khi truyền `allowUpdate=true` — giữ đường lùi cho client cũ.
+app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t, bool allowUpdate = false) =>
 {
     if (string.IsNullOrWhiteSpace(dto.BomCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
         return Results.BadRequest(new { error = "Cần BomCode và ModelCode." });
     var code = dto.BomCode.Trim().ToUpperInvariant();
     var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
+    if (b is not null && !allowUpdate)
+        return Results.Conflict(new
+        {
+            error = "Mst_BOM_CheckDB_BOMCodeNotExist",
+            meaning = "Ma BOM DA TON TAI — nguon Mst_BOM_Add goi CheckDB voi Flag.No nen trung ma la LOI",
+            duplicateCodeRaisesNotExistErrorCode = "MA LOI NOI NGUOC SU THAT: khi strFlagExistToCheck = Flag.Inactive VA bang CO dong (tuc ma BOM DA TON TAI), Mst_BOM_CheckDB nem TError.ErrCarSv.Mst_BOM_CheckDB_BOMCodeNotExist — dung ra phai la da ton tai/trung ma. Nhanh con lai thi dung: Flag.Active + 0 dong => …BOMCodeNotFound. Dung lop message-lech-code-condition da ghi o luat port-guard (su co StoragePayment). Port giu NGUYEN VAN ma loi cua nguon va ghi nghia that o truong meaning",
+            createUpdateGuardsAreAsymmetric = "GUARD CREATE/UPDATE BAT DOI XUNG (luat #404): Mst_BOM_Add co if (string.IsNullOrEmpty(strBOMCode)) throw …Mst_BOM_Add_InvalidBOMCode roi CheckDB(…, Flag.No, …) = khong duoc ton tai; Mst_BOM_Update KHONG co kiem rong, chi CheckDB(…, Flag.Yes, …) = phai ton tai; Mst_BOM_Delete cung KHONG co kiem rong. Ma rong o Update/Delete khong gay hai vi CheckDB tra where t.BOMCode = @strBOMCode khong thay => nem …BOMCodeNotFound, nhung thong diep se la khong tim thay chu khong phai thieu ma",
+            flagConstantsVerified = "Flag.Yes = Active = 1, Flag.No = Inactive = 0 (Const.Main.cs:26-33) => hai cach goi ten khac nhau nhung GIA TRI KHOP voi so sanh trong CheckDB (kiem roi moi ghi)",
+            checkDbSecondBlockReadsForeignColumns = "KHOI KIEM THU HAI CUA CheckDB DOC COT KHONG THUOC BANG Mst_BOM: if (strFlagActiveListToCheck.Length > 0 && !strFlagActiveListToCheck.Contains(Convert.ToString(dtDB_Mst_BOM.Rows[0][ReceptionFStatus]))) va Rows[0][AppStatus] — hai cot do thuoc man TIEP NHAN/CUOC HEN, sao chep tu mot …_CheckDB khac ma quen doi. HIEN KHONG CHAY: ca ba caller deu truyen chuoi rong => .Length > 0 false. Bat len la ArgumentException Column ReceptionFStatus does not belong to table, va cung se no Rows[0] neu bang rong => hang muc HONG KHI BAT LAI",
+            updateUsesContainsOnColumnList = "CAP NHAT THEO DANH SACH COT BANG Contains (SO CHUOI CON): Mst_BOM_Update quyet dinh cap nhat cot nao bang strFt_Cols_Upd.Contains(Mst_BOM.BOMDesc.ToUpper()), …Remark, …FlagActive. AN TOAN o day vi khong ten nao la TIEN TO cua ten khac, nhung co che mong manh: them mot cot ten Mst_BOM.Remark2 la Contains(MST_BOM.REMARK) bat nham ca hai",
+            top1WithoutOrderBy = "select top 1 * from Mst_BOM t where t.BOMCode = @strBOMCode — top 1 KHONG ORDER BY (#415); vo hai neu BOMCode la khoa, nhung nguon KHONG dua vao rang buoc khoa nao de bao dam dieu do",
+            negativeCheckDbIsParameterised = "AM TINH: ExecQuery(strSqlCheck, @strBOMCode, strBOMCode) => SqlParameter that; va CheckDB LUON chay tren _dbMain bat ke ham goi no nham CSDL nao",
+            gapFixedByPort = "port cu dung MOT POST lam UPSERT, tuc MAT GUARD CHONG TRUNG MA cua Add (gui lai cung BomCode thi Mini GHI DE, nguon thi TU CHOI). Nay POST mac dinh TAO MOI (trung ma => 409) va chi cap nhat khi truyen allowUpdate=true",
+            bomCode = code,
+        });
     if (b is null) { b = new Bom { OrgId = t.OrgId, BomCode = code }; db.Boms.Add(b); }
     b.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); b.MaintLevel = dto.MaintLevel; b.Status = dto.Status ?? "1";
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.BomCode, b.ModelCode, b.MaintLevel });
+    return Results.Ok(new { b.BomCode, b.ModelCode, b.MaintLevel, updatedExisting = allowUpdate });
 }).RequireAuthorization();
 
 app.MapGet("/api/boms/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
