@@ -46127,7 +46127,9 @@ app.MapGet("/api/osveloca/repairorders/incomplete", async (AppDbContext db, ITen
     DateTime? syncVelocaDTimeFrom, DateTime? syncVelocaDTimeTo, string? syncVelocaFlag) =>
 {
     // Nguồn gõ cứng năm mã bị loại. Chép nguyên văn.
-    string[] excludedStatus = { "CRE", "REJ", "NORE", "PAID", "FNS" };
+    // 🔴 HAI CÂY NGUỒN LỆCH NHAU — dùng bản MỚI của máy 150 (20260323): PAID đã bị BỎ khỏi danh sách loại trừ.
+    string[] excludedStatus = { "CRE", "REJ", "NORE", "FNS" };
+    string[] excludedStatusOldLaptop = { "CRE", "REJ", "NORE", "PAID", "FNS" };
 
     var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && !excludedStatus.Contains(x.Status));
     if (checkInDateFrom is not null) qy = qy.Where(x => x.CheckInDate >= checkInDateFrom!.Value);
@@ -46215,6 +46217,7 @@ app.MapGet("/api/osveloca/repairorders/incomplete", async (AppDbContext db, ITen
         count = rows.Count, rows,
         amountLostByUnionDedup, lostByEndDateInclusive,
         rowsWithNullTotals = rows.Count(x => x.totalIsNullBecauseNoItems),
+        excludedStatusUsed = excludedStatus, excludedStatusOldLaptop,
         // ===== #705 =====
         twoPointColumnsAliasedCrosswise = "HAI COT DIEM BI DAT BI DANH CHEO NHAU: , sr.PointRankTotalInv PointTotal (-- Diem tich tieu dung) va , sr.PointTotal PointRankTotal (-- Diem tich xet hang). Cot PointRankTotalInv tra ra duoi ten PointTotal, va PointTotal tra ra duoi ten PointRankTotal => ben nhan (Veloca) doc PointTotal thi thuc ra dang lay PointRankTotalInv. Chu thich tieng Viet di kem cho thay CO CHU Y (doi ten cho khop phia Veloca) nhung KHONG THE XAC MINH TU MA => port giu NGUYEN VAN ca hai bi danh va tra THEM cot goc (src_PointRankTotalInv / src_PointTotal) de ben nhan tu doi chieu. KHONG KET LUAN",
         twoVatConventionsInOneStatement = "HAI QUY UOC VAT TRONG CUNG MOT CAU — bang chung manh cho no #673: cot VAT dung (srs.Factor * srs.Price * srs.VAT / 100) con cot AmountAfterVAT dung (srs.Factor * srs.Price) * (1 + srs.VAT * 0.01). Neu Ser_ROServiceItems.VAT la SO NGUYEN thi VAT / 100 la CHIA NGUYEN => 10/100 = 0 => cot VAT va TotalVAT LUON BANG 0 trong khi TotalAmountAfterVAT van dung. He qua kiem chung duoc: TotalAmount + TotalVAT KHAC TotalAmountAfterVAT. Trong MiniHTC Vat la decimal nen KHONG tai hien — day la rui ro CUA CSDL NGUON, chua xac minh kieu cot that",
@@ -46222,6 +46225,7 @@ app.MapGet("/api/osveloca/repairorders/incomplete", async (AppDbContext db, ITen
         sumOverLeftJoinWithoutIsnullGivesNull = "Sum TREN left join KHONG CO IsNull => TONG RA NULL, KHONG PHAI 0: lenh chua co hang muc nao => TotalAmount/TotalVAT/TotalAmountAfterVAT deu NULL. Khac #699 noi co IsNull(..., 0.0). Da giu 1:1 va dem bang rowsWithNullTotals",
         insurancePriceComparedToEmptyString = "srp.InsurancePrice = '' — so cot SO voi chuoi rong (ho #407): neu cot la numeric thi SQL Server ep '' -> 0 => dieu kien thanh = 0, TRUNG Y HET ve or srp.InsurancePrice = 0 ngay canh => VE THUA, vo hai; neu cot la varchar thi > 0 o nhanh tren moi la cho ep kieu. Ghi co, chua xac minh kieu",
         endDateInclusiveLosesLastDay = "MAT TRON NGAY CUOI (#415): t.CheckInDate <= @strCheckInDateTo va t.SyncVelocaDTime <= @strSyncVelocaDTimeTo tren cot DATETIME — rieng SyncVelocaDTime chac chan co phan gio (do #704 ghi yyyy-MM-dd HH:mm:ss) => loc den ngay X MAT HET ban ghi dong bo trong ngay X. Da do bang lostByEndDateInclusive",
+        twoSourceTreesDisagreeOnStatusList = "HAI CAY NGUON LECH NHAU — BUOC 3B BAT DUOC: laptop (V20.2023.Release.V2) co dong dang chay and t.Status not in (CRE, REJ, NORE, PAID, FNS); may 150 (V20.2023.Release) COMMENT dong do va thay bang and t.Status not in (CRE, REJ, NORE, FNS) -- 20260323 => ban 150 MOI HON va da BO PAID khoi danh sach loai tru, tuc lenh DA THANH TOAN nay CUNG duoc coi la chua hoan tat va DUOC GUI RA Veloca. Da port theo ban 150 (moi hon, dong ACTIVE) va giu ban cu trong excludedStatusOldLaptop de doi chieu. md5 vung: laptop 9074239a (17137-17503) vs 150 992cf932 (17137-17504)",
         statusFilterByExclusionAdmitsNewCodes = "BO LOC TRANG THAI DINH NGHIA BANG LOAI TRU: t.Status not in (CRE, REJ, NORE, PAID, FNS) => trang thai MOI THEM se TU DONG bi coi la chua hoan tat va LOT RA Veloca. DOI LAP TRUC TIEP voi #698: o do danh sach in (...) dong bang NUOT ma moi; o day not in KET NAP ma moi. Cung mot thoi quen go cung, HAI HUONG SAI NGUOC NHAU",
         negativeClearForDebugIsLiveAndCorrect = "AM TINH: khoi ClearForDebug o day DANG CHAY va DUNG DU nam bang (mau thu TU cua khoi nay, sau #698 hong / #699 dung / #703 chep nham)",
         negativeFiltersUseEmptyStringGuardNotBuildClause = "AM TINH: bo loc dung khuon '' = @x or … nen KHONG dinh bay BuildClause bo im lang (#410). NHUNG dinh bay NULL: truyen NULL thay vi '' => '' = NULL la UNKNOWN => LOAI SACH DONG",
