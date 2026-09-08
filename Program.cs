@@ -53008,6 +53008,99 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #637 BẢN CỔNG CarSv `Ser_ReceptionF_GetX_New20180921` (`Tab.cs:7559`) =====
+// 3B: laptop `:7559` md5 `17fa1731` **KHỚP** máy 150 `:7577` (lệch **+18**, căn theo TÊN).
+// Đây là bản mà **cổng CarSv** (`WSCarSv.asmx.cs:33087`) đang gọi — khác bản cổng Tab đã port ở #636.
+//
+// 🔴🔴🔴 **LỌC SAI CỘT — ĐÚNG ĐIỂM MÙ MÀ §12 KHÔNG BẮT ĐƯỢC, VÀ SAI Ở **CẢ BỐN** BẢN**:
+//     `string zzzzClauseWhere_strCusIDList        = BuildClause("and", "**serrf.CusID**", strCusIDList, …);`
+//     `string zzzzClauseWhere_strReceptionTypeList = BuildClause("and", "**serrf.CusID**", **strReceptionTypeList**, …);`
+//   Tham số **loại phiếu tiếp nhận** được nối vào cột **mã khách hàng** — dấu vết chép dòng trên rồi quên đổi cột.
+//   📌 **Đếm thật**: chuỗi `BuildClause("and", "serrf.CusID", strReceptionTypeList` xuất hiện ở **4/4** bản
+//     (`_GetX` `:7446` · `_New20180921` `:7719` · `_New20210512` `:8075` · `_New20180926` `:8428`); máy 150
+//     đếm lại cũng **4** ⇒ **cả hai cổng LIVE đều dính**, và lỗi có từ bản khuôn đầu tiên.
+//   ⇒ Hệ quả: người dùng lọc theo *loại phiếu* thì thực chất đang lọc theo *mã khách* ⇒ hầu như luôn **0 dòng**
+//     (hoặc ra nhầm phiếu nếu giá trị trùng một mã khách nào đó). Không lỗi, không cảnh báo.
+// 🔴🔴 **VÀ CỘT `ReceptionType` KHÔNG HỀ TỒN TẠI**: grep `ReceptionType` (có ranh giới từ) trên toàn tầng biz
+//   và trong `DbDefine.cs` ⇒ **không có** cột nào tên vậy — chỉ có **tên tham số** `strReceptionTypeList`.
+//   ⇒ Đây không phải "nối nhầm cột" đơn thuần mà là **tham số cho một khái niệm chưa bao giờ được mô hình hoá**.
+//     Port **KHÔNG bịa** cột: nhận tham số, **không áp**, và trả cờ nói rõ (luật #412 — chưa mô hình hoá thì ghi rõ).
+// 🔴 **CHỌN CÙNG MỘT CỘT HAI LẦN DƯỚI HAI TÊN**: `cus.CusName **OwnerName**` **và** `cus.CusName` trong cùng
+//   một `select` ⇒ "tên chủ xe" và "tên khách hàng" **luôn bằng nhau** ở màn này, dù nghiệp vụ phân biệt hai
+//   khái niệm đó (`Ser_Customer` có sẵn nhóm cột `ContName`/`ContTel`/`ContMobile` cho người liên hệ).
+// ⚪ **TỔ TIÊN CỦA BUG #616 NẰM Ở ĐÂY, DƯỚI DẠNG COMMENT**: khối ba `case` bị comment ngay trong hàm này —
+//     `--when not ro.CusName is null then **ro.CusAddress**` · `--when not ro.CusName is null then **cus.Tel**`
+//     `--when not ro.CusName is null then **cus.Mobile**`
+//   ⇒ **Cùng một lệch** đã ghi ở #616 (địa chỉ lấy từ lệnh, điện thoại lấy từ hồ sơ) — nghĩa là bug đó **có từ
+//     bản khuôn**, được chép sang `Ser_ROInvoice_Get_WH` rồi mới bị vá ở `_New20220926`. Đọc dòng comment ở đây
+//     **không** để port, mà để biết **nguồn gốc**.
+// 🔴 `car.**Frameno**` (chữ `n` thường) trong khi mọi nơi khác viết `FrameNo` — vô hại trên collation CI, nhưng
+//   là bẫy khi grep phân biệt hoa/thường.
+// 🔴 **BỐN `inner join` NỐI BẰNG CẶP CÓ `DealerCode`**: `ser_Customer` (`CusID` + `DealerCode`), `ser_car`
+//   (`CarID` + `DealerCode`) ⇒ phiếu có khách/xe thuộc **đại lý khác** (chuyển xe giữa đại lý) **rơi mất**.
+//   ⚠️ Ngược hẳn với #635 nơi thiếu `DealerCode` gây **rò chéo** — ở đây thừa chặt lại gây **mất dòng**.
+// ⚪ Bản này **CÓ** `ro.RONo` + `left join Ser_RO` (bản Tab #636 đã bỏ vì "gây tê liệt hệ thống") ⇒ cổng CarSv
+//   **vẫn đang chịu** đúng câu truy vấn đã gây sự cố ở cổng Tab. Ghi rõ, không tự sửa.
+app.MapGet("/api/receptions/search-carsv", async (AppDbContext db, ITenantContext t,
+    string? receptionFNo, string? dealerCode, string? cusId, string? carId, string? receptionType,
+    string? plateNo, string? cusName, string? status, int? recordStart, int? recordCount) =>
+{
+    var qy = db.Receptions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(receptionFNo)) qy = qy.Where(x => x.ReceptionFNo == receptionFNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusId)) qy = qy.Where(x => x.CusID == cusId!.Trim());
+    if (!string.IsNullOrWhiteSpace(carId)) qy = qy.Where(x => x.CarID == carId!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(x => x.CusName!.Contains(cusName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    // 🔴 receptionType: nguồn nối vào serrf.CusID (sai cột) và cột ReceptionType KHÔNG tồn tại
+    //    ⇒ port NHẬN tham số nhưng KHÔNG áp, và nói rõ trong cờ. Không bịa cột.
+
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var heads = await qy.OrderBy(x => x.ReceptionFNo).Skip(skip).Take(take).ToListAsync();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode, c.TradeMark, c.EngineNo, c.ColorCode, c.ProductYear })
+        .ToListAsync();
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId)
+        .Select(r => new { r.RONo, r.ReceptionFNo }).ToListAsync();
+
+    var items = heads.Select(h =>
+    {
+        var car = h.CarID == null ? null : cars.FirstOrDefault(c => c.FrameNo == h.CarID);
+        return new
+        {
+            h.ReceptionFNo, h.DealerCode, h.Status, h.CreatedAt, h.DeliveredAt,
+            cusId = h.CusID, h.CusName,
+            // Nguồn chọn cus.CusName HAI LẦN: một lần as OwnerName, một lần as CusName.
+            ownerName = h.CusName,
+            carId = h.CarID, plateNo = car?.PlateNo ?? h.PlateNo,
+            modelCode = car?.ModelCode, tradeMark = car?.TradeMark,
+            frameNo = car?.FrameNo, engineNo = car?.EngineNo,
+            colorCode = car?.ColorCode, productYear = car?.ProductYear,
+            // Bản CarSv VẪN trả RONo (bản Tab #636 đã bỏ vì gây tê liệt hệ thống).
+            roNo = ros.FirstOrDefault(r => r.ReceptionFNo == h.ReceptionFNo)?.RONo,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCountAsSource = total, count = items.Count, items,
+        // ===== #637 =====
+        receptionTypeFilterBoundToWrongColumn = "nguon: BuildClause(and, serrf.CusID, strReceptionTypeList, …) — tham so LOAI PHIEU duoc noi vao cot MA KHACH HANG, dau vet chep dong tren roi quen doi cot; nguoi dung loc theo loai phieu thuc chat dang loc theo ma khach => hau nhu luon 0 dong, khong loi khong canh bao",
+        wrongColumnBugCountedInAllFourVariants = "chuoi BuildClause(and, serrf.CusID, strReceptionTypeList xuat hien o 4/4 ban (_GetX :7446, _New20180921 :7719, _New20210512 :8075, _New20180926 :8428); may 150 dem lai cung 4 => CA HAI cong LIVE deu dinh, loi co tu ban khuon dau tien",
+        receptionTypeColumnDoesNotExist = "grep ReceptionType (co ranh gioi tu) tren toan tang biz va trong DbDefine.cs => KHONG co cot nao ten vay, chi co TEN THAM SO strReceptionTypeList => day la tham so cho mot khai niem CHUA BAO GIO duoc mo hinh hoa",
+        portDoesNotApplyReceptionType = "port NHAN tham so receptionType nhung KHONG ap va khong bia cot (luat #412)",
+        sameColumnSelectedTwiceUnderTwoNames = "cus.CusName OwnerName VA cus.CusName trong cung mot select => ten chu xe va ten khach hang LUON bang nhau o man nay, du Ser_Customer co san nhom cot ContName/ContTel/ContMobile cho nguoi lien he",
+        ancestorOfIssue616BugIsHereAsComment = "khoi ba case bi comment ngay trong ham nay: --when not ro.CusName is null then ro.CusAddress / then cus.Tel / then cus.Mobile — CUNG mot lech da ghi o #616 => bug do co tu BAN KHUON, duoc chep sang Ser_ROInvoice_Get_WH roi moi bi va o _New20220926",
+        frameNoCasingInconsistent = "car.Frameno (chu n thuong) trong khi moi noi khac viet FrameNo — vo hai tren collation CI nhung la bay khi grep phan biet hoa thuong",
+        innerJoinsPairWithDealerCodeDropRows = "inner join ser_Customer on (CusID + DealerCode) va ser_car on (CarID + DealerCode) => phieu co khach/xe thuoc DAI LY KHAC (chuyen xe giua dai ly) ROI MAT; nguoc han #635 noi THIEU DealerCode gay RO CHEO — o day THUA chat lai gay MAT DONG",
+        carsvVariantStillReturnsRoNo = "ban nay CO ro.RONo + left join Ser_RO (ban Tab #636 da bo vi gay te liet he thong) => cong CarSv VAN dang chiu dung cau truy van da gay su co o cong Tab; ghi ro, khong tu sua",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #636 TRA CỨU PHIẾU TIẾP NHẬN BẢN MÁY TÍNH BẢNG `Ser_ReceptionF_GetX_New20210512` =====
 // 3B: `Tab.cs:7915` md5 `fcde59bc` **KHỚP** máy 150 `:7933` (lệch **+18**); bản anh em `_New20180921`
 //   `:7559` md5 `3c98e6de` cũng **khớp**.
