@@ -16821,6 +16821,68 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #653 BÁO CÁO KPI `Report_KPIGet_WH` — CỘNG NGÀY VỚI GIỜ, CỘNG ĐƠN GIÁ VỚI ĐƠN GIÁ =====
+// 3B: vỏ bọc `WH.cs:23301-23332` md5 `4ab7c563`; **thân thật** `Report_KPIGet_WithParams_WH_New20221101`
+//   (`:22972-23300`) md5 `1668a1fc` **KHỚP** máy 150 `:22972`.
+// 🔴 **ĐÚNG KHUÔN "VỎ BỌC GỌI …WithParams"**: `Report_KPIGet_WH` chỉ **32 dòng**, không có SQL — nó gọi
+//   `this.Report_KPIGet_WithParams_WH_New20221101(…, strFunctionName, strErrorCodeDefault)`.
+//   ⚪ **Điểm TỐT hiếm gặp**: vỏ bọc **truyền tên hàm và mã lỗi của chính nó xuống** thân dùng chung ⇒ nhật ký
+//     ghi đúng danh tính người gọi. **Ngược hẳn #636/#645** (nơi mọi biến thể tự ghi đè `strFunctionName` bằng
+//     một tên chung nên log không phân biệt được). Cùng một codebase, hai cách làm trái ngược.
+//
+// DIFF `…WithParams_WH` (cũ) → `…_New20221101` (LIVE) — bản mới **mở rộng công thức tổng**:
+// 🔴🔴🔴 **CỘNG SỐ NGÀY VÀO TỔNG SỐ GIỜ** (lỗi đơn vị đo, chứng minh bằng chính chú thích của nguồn):
+//     `isnull(rk.**WorkDayQty**,0) + isnull(rk.WorkHourQty,0) + isnull(rk.WorkHourFeeQty,0)`
+//     `+ isnull(rk.WorkHourActualQty,0) **WorkHourKTV** -- IV.Số giờ làm việc của KTV: Tổng 1+2+3+4`
+//   mà mục 1 được chú thích là `-- 1. **Tổng số ngày làm việc**: Bằng tổng số ngày tạo RO trong tháng`.
+//   ⇒ Một **số ngày** bị cộng thẳng vào **tổng số giờ**. Không lỗi, không cảnh báo — chỉ sai đơn vị.
+// 🔴🔴🔴 **CỘNG BỐN ĐƠN GIÁ ĐỂ RA "ĐƠN GIÁ"**:
+//     `isnull(rk.UnitPriceBDN,0) + isnull(rk.UnitPriceSCC,0) + isnull(rk.UnitPriceSCD,0)`
+//     `+ isnull(rk.UnitPriceSCS,0) **UnitPrice** -- III. Đơn giá nhân công: Tổng 1+2+3+4`
+//   Bốn mục con đều là **VND/giờ** của bốn loại công ⇒ tổng của chúng **không phải một đơn giá** nào cả.
+// 🔴🔴 **CỘNG HAI TỶ LỆ PHẦN TRĂM**: `isnull(rk.SerProfitRate,0) + isnull(rk.PartProfitRate,0) **ProfitRate**`
+//   `-- V.Tỷ lệ lợi nhuận gộp: Tổng 1+2` — hai mục con đều ghi rõ **(%)** ⇒ tổng hai tỷ lệ **không phải** tỷ lệ
+//   lợi nhuận gộp chung (phải tính lại từ tử số/mẫu số).
+//   ⇒ Ba cột `WorkHourKTV` · `UnitPrice` · `ProfitRate` đều là **"SỐ ĐÃ BỊ NHÀO"** đúng nghĩa §12, và cả ba
+//     **chứng minh được chỉ bằng chú thích của chính nguồn**, không cần dữ liệu.
+//
+// 🔴🔴 **HAI CHỈ TIÊU ĐỔI ĐỊNH NGHĨA GIỮA HAI PHIÊN BẢN** ⇒ số liệu trước/sau nâng cấp **không cùng thước đo**:
+//     `EmployeeNumber`: cũ = `Advisory + Enginer + EnginerBP + StaffOrther` (4 hạng);
+//                       mới = **+ `ServiceTechnicianQty` + `PaintingTechnicianQty` + `SparePartsStaff`** (7 hạng)
+//     `CavityNumber`  : cũ = `CavityRO + CavityBP + CavityParking` (3 hạng);
+//                       mới = **+ `CavityMaintainNumber` + `CavityOtherNumber` + `CavityCopperNumber`
+//                       **+ `CabinetPaintNumber`** (7 hạng)
+//   ⚪ Nguồn tự ghi chú các cột này là `-- Trường thêm mới` và một cột nói rõ `-- DL lịch sử = 0` ⇒ **giả định**
+//     **của chính tác giả** là dữ liệu cũ bằng 0 nên chuỗi thời gian vẫn liền mạch. Đó là **giả định**, không
+//     phải bảo đảm — nếu bảng KPI cũ có giá trị khác 0 ở các cột đó thì biểu đồ **nhảy bậc** tại tháng nâng cấp.
+// 🔴 Bản cũ có khối `-- ,(isnull(rk.CountBDDRoRepair,0) + … ) CountCarService` **bị comment nguyên khối** —
+//   port theo **dòng ACTIVE**, tức bản mới không còn cột đó.
+app.MapGet("/api/report/kpi-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? dateReport, string? status) =>
+{
+    var rows = await db.ReportKpis.Where(x => x.OrgId == t.OrgId)
+        .Where(x => string.IsNullOrWhiteSpace(dealerCode) || x.DealerCode == dealerCode!.Trim())
+        .OrderBy(x => x.DealerCode).Take(500).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        rows,
+        // ===== #653 =====
+        wrapperDelegatesToWithParams = "Report_KPIGet_WH chi 32 dong, khong co SQL — no goi this.Report_KPIGet_WithParams_WH_New20221101(…, strFunctionName, strErrorCodeDefault); than that o WH.cs:22972-23300",
+        wrapperPassesItsOwnIdentityDown = "DIEM TOT hiem gap: vo boc truyen TEN HAM va MA LOI cua chinh no xuong than dung chung => nhat ky ghi dung danh tinh nguoi goi; NGUOC HAN #636/#645 noi moi bien the tu ghi de strFunctionName bang mot ten chung",
+        sumsMixDaysAndHours = "WorkHourKTV = WorkDayQty + WorkHourQty + WorkHourFeeQty + WorkHourActualQty, chu thich nguon ghi IV. So gio lam viec cua KTV: Tong 1+2+3+4 — nhung muc 1 duoc chu thich la 1. Tong so NGAY lam viec => mot so NGAY bi cong thang vao TONG SO GIO",
+        sumsUnitPricesToMakeAUnitPrice = "UnitPrice = UnitPriceBDN + UnitPriceSCC + UnitPriceSCD + UnitPriceSCS, chu thich III. Don gia nhan cong: Tong 1+2+3+4 — bon muc con deu la VND/gio cua bon loai cong nen tong cua chung KHONG PHAI mot don gia nao ca",
+        sumsTwoPercentages = "ProfitRate = SerProfitRate + PartProfitRate, chu thich V. Ty le loi nhuan gop: Tong 1+2 — hai muc con deu ghi ro (%) nen tong hai ty le khong phai ty le loi nhuan gop chung (phai tinh lai tu tu so/mau so)",
+        allThreeProvableFromSourceComments = "ba cot WorkHourKTV / UnitPrice / ProfitRate deu la SO DA BI NHAO dung nghia §12, va ca ba chung minh duoc CHI BANG chu thich cua chinh nguon, khong can du lieu",
+        employeeNumberDefinitionChanged = "cu = Advisory + Enginer + EnginerBP + StaffOrther (4 hang); moi = them ServiceTechnicianQty + PaintingTechnicianQty + SparePartsStaff (7 hang)",
+        cavityNumberDefinitionChanged = "cu = CavityRO + CavityBP + CavityParking (3 hang); moi = them CavityMaintainNumber + CavityOtherNumber + CavityCopperNumber + CabinetPaintNumber (7 hang)",
+        historicalComparabilityIsAnAssumption = "nguon tu ghi chu cac cot nay la Truong them moi va mot cot noi ro DL lich su = 0 => GIA DINH cua chinh tac gia la du lieu cu bang 0 nen chuoi thoi gian van lien mach; day la GIA DINH chu khong phai bao dam — neu bang KPI cu co gia tri khac 0 o cac cot do thi bieu do NHAY BAC tai thang nang cap",
+        countCarServiceBlockIsCommentedOut = "ban cu co khoi -- ,(isnull(rk.CountBDDRoRepair,0) + … ) CountCarService BI COMMENT NGUYEN KHOI; port theo dong ACTIVE nen ban moi khong con cot do",
+        miniKpiTableIsFlat = "MiniHTC luu KPI o bang phang ReportKpis (#329); cac cot thanh phan (WorkDayQty, UnitPriceBDN, SerProfitRate, …) chua duoc mo hinh hoa day du => KHONG tu tinh lai ba cot tong o day, chi ghi ro cong thuc cua nguon va vi sao no sai don vi",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #652 PARITY BẢN KHO `SerPaymentGet_WH` (`WH.cs:9165-9315`) =====
 // 3B: laptop `:9165` md5 `713a5e18` **KHỚP** máy 150 `:9165`. DIFF với bản dealer (`Debit.cs:3628`) rất gọn —
 //   **toàn bộ phần nghiệp vụ giống hệt** (hai bộ lọc loại phiếu triệt tiêu nhau, `else ''`, BAKE-PARAM-MIX,
