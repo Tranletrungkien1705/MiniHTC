@@ -16847,6 +16847,92 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #659 TỔNG HỢP CHIẾN DỊCH HTC `Rpt_SerCamMarketingHTC_Summary_WH` (`WH.cs:18754-19247`) =====
+// 3B: laptop `:18754` md5 `bdb6ec88` **KHỚP** máy 150 `:18754`. WS gọi thẳng bản này (không hậu tố).
+//
+// 🔴🔴🔴 **BỘ LỌC CHIẾN DỊCH GẦN NHƯ KHÔNG LỌC GÌ — SÁU VẾ `OR` TRÊN HAI BẢNG `left join`**:
+//     `left join Ser_ROServiceItems sros on sro.ROID = sros.ROID`
+//     `left join Ser_ROPartItems  srop on sro.ROID = srop.ROID`
+//     `where … and ((sros.CamMarketingNo = '') **or** (sros.CamMarketingNo is null) **or** (sros.CamMarketingNo = f.CamMarketingNo)`
+//     `          **or** (srop.CamMarketingNo = '') **or** (srop.CamMarketingNo is null) **or** (srop.CamMarketingNo = f.CamMarketingNo))`
+//   ⇒ Vì `sros`/`srop` là **`left join`**, một lệnh **không có dòng dịch vụ** đã cho `sros.CamMarketingNo IS NULL`
+//     ⇒ **vế thứ hai TRUE** ⇒ cả điều kiện TRUE ⇒ lệnh được nhận **bất kể chiến dịch nào**. Tương tự cho phụ tùng.
+//   ⇒ Mục đích là "lệnh **thuộc** chiến dịch đang xét", nhưng công thức nhận **cả lệnh không thuộc chiến dịch nào**.
+//     Chỉ cần **một trong sáu** vế đúng ⇒ **hầu như mọi lệnh đều lọt**.
+// 🔴🔴 **`inner join … ON (1=1)` — TÍCH DESCARTES TRÁ HÌNH**:
+//     `inner join #tbl_Ser_CampaignMarketing_Filter f --//[mylock] on (1=1)`
+//   ⇒ Mỗi lệnh nhân với **mọi** chiến dịch trong tập lọc. ⚪ `select distinct (ROID, DealerCode)` ở trên **cứu**
+//     bảng tạm khỏi nở dòng, nhưng tích vẫn được **tính đầy đủ trước khi khử trùng** ⇒ chi phí O(lệnh × chiến dịch).
+//   ⚠️ Và kết hợp với gạch đầu dòng trên: vì `f` là **mọi** chiến dịch, vế `= f.CamMarketingNo` chỉ cần khớp
+//     **một chiến dịch bất kỳ** trong tập ⇒ bộ lọc "một chiến dịch" thành **"khớp bất kỳ chiến dịch nào"**.
+//
+// 🔴🔴 **MỘT KÝ TỰ THỪA TRONG 8607 MARKER TOÀN HỆ**:
+//     `left join Ser_ROPartItems srop --//**[[**mylock]`   ← thừa một dấu `[`
+//   📌 Đếm toàn tầng biz: `--//[mylock]` **đúng 8606 lần**, `--//[[mylock]` **đúng 1 lần** — chính dòng này
+//     (máy 150 đếm lại cũng **1**). ⇒ Marker của nhà **không được nhận diện** ở đúng bảng đó ⇒ `Ser_ROPartItems`
+//     trong hàm này **nằm ngoài** cơ chế khoá mà cả hệ đang dùng. Lỗi **1/8607** — chỉ đếm mới thấy.
+//
+// 🔴 **BAKE THAM SỐ NGÀY**: `Convert(char(10), sro.CheckInDate, 126) >= '@strCheckInDateFrom'` (và `<=` cho
+//   `@strCheckInDateTo`) — thay chuỗi, không tham số hoá ⇒ **bề mặt tiêm SQL**. ⚪ Nhưng style **126** là ISO nên
+//   phép so **chuỗi** vẫn **đúng thứ tự thời gian**, và cả hai mốc đều `Convert` cùng kiểu ⇒ không lệch ngày cuối.
+// ⚪ **Âm tính về rủi ro chia nguyên** (theo tiêu chí đã chốt ở #643): `(sros.Price * sros.Factor) + (sros.Price *`
+//   `sros.Factor) * sros.VAT / 100` — nhân **trước**, `Price` là kiểu tiền ⇒ cả biểu thức đã là decimal trước khi
+//   chia ⇒ **an toàn**. Tương tự ở khối phụ tùng.
+// 🔴 **CỘT "SỐ TIỀN KHUYẾN MÃI" BỊ COMMENT Ở CẢ HAI KHỐI**: `--, (Price - Price * Factor) … as SoTienKM` ⇒ báo cáo
+//   **tổng hợp chiến dịch** nhưng **không còn cột nào đo phần khuyến mãi**. Port dòng ACTIVE, nêu cờ.
+// 🔴 `MixCode = Convert(varchar, SerID) + 'SERVICE'` / `+ 'PART'` — khoá ghép chuỗi, và `convert(varchar, …)`
+//   **không nêu độ dài** (mặc định 30).
+app.MapGet("/api/report/campaign-htc-summary", async (AppDbContext db, ITenantContext t,
+    string? camMarketingNo, string? dealerCode, DateTime? checkInFrom, DateTime? checkInTo) =>
+{
+    var from = (checkInFrom ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (checkInTo ?? DateTime.Today).Date;
+
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "PAID" || x.Status == "FNS"));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    var ros = (await qy.Select(x => new { x.Id, x.RONo, x.DealerCode, x.CheckInDate }).ToListAsync())
+        .Where(r => r.CheckInDate.HasValue && r.CheckInDate.Value.Date >= from && r.CheckInDate.Value.Date <= to)
+        .ToList();
+    var roIds = ros.Select(r => r.Id).ToList();
+
+    var svc = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.SerCode, x.Price, x.Factor, x.Vat }).ToListAsync();
+    var prt = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.PartCode, x.NeedQty, x.UnitPrice, x.Factor, x.Vat }).ToListAsync();
+
+    // Nguồn: (Price * Factor) + (Price * Factor) * VAT / 100 — nhân trước nên là phép chia decimal.
+    var svcRows = svc.Select(x => new { x.RoId, mixCode = x.SerCode + "SERVICE",
+        priceAfterTax = (x.Price * x.Factor) + (x.Price * x.Factor) * x.Vat / 100m }).ToList();
+    var prtRows = prt.Select(x => new { x.RoId, mixCode = x.PartCode + "PART",
+        priceAfterTax = (x.UnitPrice * x.Factor * x.NeedQty) + x.UnitPrice * x.Factor * x.NeedQty * x.Vat / 100m }).ToList();
+
+    var byDealer = ros.GroupBy(r => r.DealerCode).Select(g => new
+    {
+        dealerCode = g.Key,
+        roCount = g.Count(),
+        serviceAmount = svcRows.Where(x => g.Select(r => r.Id).Contains(x.RoId)).Sum(x => x.priceAfterTax),
+        partAmount = prtRows.Where(x => g.Select(r => r.Id).Contains(x.RoId)).Sum(x => x.priceAfterTax),
+    }).OrderBy(x => x.dealerCode).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, camMarketingNo,
+        roCount = ros.Count, byDealer,
+        // ===== #659 =====
+        campaignFilterBarelyFilters = "where … and ((sros.CamMarketingNo = rong) or (sros.CamMarketingNo is null) or (sros.CamMarketingNo = f.CamMarketingNo) or (srop.CamMarketingNo = rong) or (srop.CamMarketingNo is null) or (srop.CamMarketingNo = f.CamMarketingNo)) — vi sros/srop la LEFT JOIN, mot lenh khong co dong dich vu da cho sros.CamMarketingNo IS NULL => ve thu hai TRUE => ca dieu kien TRUE => lenh duoc nhan BAT KE chien dich nao",
+        purposeVsFormula = "muc dich la lenh THUOC chien dich dang xet, nhung cong thuc nhan CA lenh khong thuoc chien dich nao; chi can MOT trong SAU ve dung => hau nhu moi lenh deu lot",
+        crossJoinInDisguise = "inner join #tbl_Ser_CampaignMarketing_Filter f on (1=1) => moi lenh nhan voi MOI chien dich trong tap loc; select distinct (ROID, DealerCode) cuu bang tam khoi no dong nhung tich VAN duoc tinh day du truoc khi khu trung => chi phi O(lenh x chien dich)",
+        crossJoinMakesFilterAny = "vi f la MOI chien dich, ve = f.CamMarketingNo chi can khop MOT chien dich bat ky trong tap => bo loc mot chien dich thanh khop bat ky chien dich nao",
+        oneTypoInEightThousandMarkers = "left join Ser_ROPartItems srop --//[[mylock] — thua mot dau ngoac vuong; dem toan tang biz: --//[mylock] dung 8606 lan, --//[[mylock] dung 1 lan (may 150 dem lai cung 1) => marker cua nha KHONG duoc nhan dien o dung bang do, Ser_ROPartItems trong ham nay nam NGOAI co che khoa ma ca he dang dung; loi 1/8607, chi dem moi thay",
+        dateParamsAreBaked = "Convert(char(10), sro.CheckInDate, 126) >= @strCheckInDateFrom (va <= cho ToDate) — thay chuoi, khong tham so hoa => be mat tiem SQL",
+        dateComparisonItselfIsFine = "AM TINH: style 126 la ISO nen phep so CHUOI van dung thu tu thoi gian, va ca hai moc deu Convert cung kieu => khong lech ngay cuoi",
+        integerDivisionRiskAbsent = "AM TINH theo tieu chi #643: (Price * Factor) + (Price * Factor) * VAT / 100 — nhan TRUOC, Price la kieu tien nen ca bieu thuc da la decimal truoc khi chia => an toan; tuong tu o khoi phu tung",
+        promotionAmountColumnCommentedOut = "--, (Price - Price * Factor) … as SoTienKM bi comment o CA HAI khoi => bao cao TONG HOP CHIEN DICH nhung KHONG con cot nao do phan khuyen mai; port dong ACTIVE",
+        mixCodeIsConcatenatedKey = "MixCode = Convert(varchar, SerID) + SERVICE / + PART — khoa ghep chuoi, va convert(varchar, …) khong neu do dai (mac dinh 30)",
+        campaignLinkNotModelledInMini = "MiniHTC chua mo hinh hoa CamMarketingNo tren dong dich vu/phu tung => port KHONG ap bo loc chien dich (ghi NO), chi tong hop theo dai ly va ky",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #657 XE CÒN HẠN BẢO HÀNH `Rpt_DMSSer_XeConHanBaoHanh_WH` (`WH.cs:14423-14722`) =====
 // 3B: laptop `:14423` md5 `5cf4ea5f` **KHỚP** máy 150 `:14423`. Cùng khuôn liên hệ thống với #651/#654.
 //
