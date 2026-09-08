@@ -33342,6 +33342,114 @@ app.MapPost("/api/insurancetypes/htc-delete", async (
     });
 }).RequireAuthorization();
 
+// ===== #B178/#B179/#B180 XE LÁI THỬ theo nguồn **2010.HTC** — `Mst_CarDrvTestCreate` / `…Update`
+//       (`_New20181119`, `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**):
+//   `Create 114902,115189 / ab9fab4b7da45a40f22e1b199e08a1b2`
+//   `Update 115190,115484 / 9e75c7f0856f88f6f8cb7e7a5c49bf43`
+// 🔴🔴 **HAI HỆ, HAI LUẬT KIỂM — bản port cũ `/api/cardrivertests` lấy từ `DMSales.Foton`**:
+//     · **Biển số**: Foton dùng **regex** (`^[0-9]{1,2}[A-Z]{1,2}-[0-9]{4,5}$` …);
+//       **2010.HTC** chỉ kiểm **ĐỘ DÀI 7..10** (`Length > 10 || Length < 7` ⇒ `…_InvalidPlateNo`)
+//       ⇒ 2010.HTC **chấp nhận** biển số mà regex Foton từ chối, và ngược lại.
+//     · **VIN**: Foton bắt **đúng 17**; **2010.HTC** chỉ bắt **`>= 17`** (`Length < 17` mới lỗi)
+//       ⇒ VIN **dài hơn 17** được 2010.HTC chấp nhận.
+//   ⇒ **Không đồng nhất hai luật**; endpoint này đi theo **đúng nhánh 2010.HTC**, giữ nguyên bản Foton.
+// 🔴 **Tiền chỉ kiểm KHI KHÁC RỖNG, và là `Int64` — không phải số thực**:
+//   `if (str != null && str != "") { if (!Int64.TryParse(str, out _)) throw …_InvalidPrice/…Support1/…Support2; }`
+//   ⇒ **bỏ trống là hợp lệ**; **số âm KHÔNG bị chặn**; số thập phân **bị từ chối** (parse `Int64`).
+// 🔴🔴 **`_Update`: VIN và MODEL BẤT BIẾN** — dòng
+//   `//dt_Mst_CarDriverTest.Rows[0]["DrvTestVIN"] = strDrvTestVIN; alColumnEffective.Add("DrvTestVIN");`
+//   **bị comment**, và `ModelCode` **không có** trong `alColumnEffective`.
+//   ⇒ Sửa được: `DealerCode` · `SpecCode` · `ColorCode` · `FlagActive` · `Remark` · `DrvTestEngineNo` ·
+//     `Price` · `AmountSupport1/2` · `DateSupport1/2` · `ClaimNoSupport` · `CarDrvTestGPS` (**12 cột**).
+//   ⇒ Khoá thao tác là **`DrvTestPlateNo`**; không tồn tại ⇒ `…_Update_PlateNoNotFound`.
+app.MapPost("/api/cardrivertests/htc-create", async (
+    CarDrvTestHtcDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Tiền: chỉ kiểm khi KHÁC RỖNG; phải là số nguyên (Int64); KHÔNG chặn âm.
+    static bool BadMoney(string? s) => !string.IsNullOrEmpty(s) && !long.TryParse(s, out _);
+    if (BadMoney(dto.Price))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidPrice", check = new { dto.Price } });
+    if (BadMoney(dto.AmountSupport1))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidAmountSupport1", check = new { dto.AmountSupport1 } });
+    if (BadMoney(dto.AmountSupport2))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidAmountSupport2", check = new { dto.AmountSupport2 } });
+
+    var vin = (dto.DrvTestVIN ?? "").Trim();
+    // 🔴 2010.HTC: VIN chỉ cần >= 17 (KHÁC bản Foton bắt đúng 17).
+    if (vin.Length < 17)
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidVIN", check = new { DrvTestVIN = vin, MinLength = 17 } });
+
+    var plate = (dto.DrvTestPlateNo ?? "").Trim();
+    // 🔴 2010.HTC: biển số chỉ kiểm ĐỘ DÀI 7..10 (KHÔNG regex).
+    if (plate.Length > 10 || plate.Length < 7)
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidPlateNo", check = new { DrvTestPlateNo = plate, ValidLength = "7..10" } });
+
+    var row = new CarDriverTest
+    {
+        OrgId = t.OrgId,
+        DrvTestPlateNo = plate, DrvTestVIN = vin,
+        DealerCode = dto.DealerCode, ModelCode = dto.ModelCode, SpecCode = dto.SpecCode,
+        ColorCode = dto.ColorCode, DrvTestEngineNo = dto.DrvTestEngineNo,
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim(),
+        Remark = dto.Remark, ClaimNoSupport = dto.ClaimNoSupport, CarDrvTestGPS = dto.CarDrvTestGPS,
+        Price = string.IsNullOrEmpty(dto.Price) ? 0m : long.Parse(dto.Price),
+        AmountSupport1 = string.IsNullOrEmpty(dto.AmountSupport1) ? 0m : long.Parse(dto.AmountSupport1),
+        AmountSupport2 = string.IsNullOrEmpty(dto.AmountSupport2) ? 0m : long.Parse(dto.AmountSupport2),
+        DateSupport1 = dto.DateSupport1, DateSupport2 = dto.DateSupport2
+    };
+    db.CarDriverTests.Add(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.DrvTestPlateNo, row.DrvTestVIN, row.ModelCode, row.SpecCode, row.ColorCode,
+        twoSystemsNote = "HAI HE, HAI LUAT KIEM. Ban port cu /api/cardrivertests lay tu DMSales.Foton: bien so dung REGEX, VIN bat DUNG 17. Nguon 2010.HTC: bien so chi kiem DO DAI 7..10 (_InvalidPlateNo), VIN chi bat >= 17 (Length < 17 moi loi) => 2010.HTC CHAP NHAN bien so ma regex Foton tu choi, va chap nhan VIN dai hon 17. KHONG dong nhat hai luat; endpoint nay di theo dung nhanh 2010.HTC, giu nguyen ban Foton.",
+        moneyGuardNote = "Tien CHI KIEM KHI KHAC RONG va la Int64 - khong phai so thuc: 'if (str != null && str != \"\") { if (!Int64.TryParse(...)) throw ...; }'. => BO TRONG LA HOP LE; SO AM KHONG BI CHAN; so thap phan BI TU CHOI."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/cardrivertests/htc-update", async (
+    CarDrvTestHtcDto dto, AppDbContext db, ITenantContext t) =>
+{
+    static bool BadMoney(string? s) => !string.IsNullOrEmpty(s) && !long.TryParse(s, out _);
+    if (BadMoney(dto.Price))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestUpdate_InvalidPrice", check = new { dto.Price } });
+    if (BadMoney(dto.AmountSupport1))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestUpdate_InvalidAmountSupport1", check = new { dto.AmountSupport1 } });
+    if (BadMoney(dto.AmountSupport2))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestUpdate_InvalidAmountSupport2", check = new { dto.AmountSupport2 } });
+
+    var plate = (dto.DrvTestPlateNo ?? "").Trim();
+    var cur = await db.CarDriverTests.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DrvTestPlateNo == plate);
+    if (cur is null)
+        return Results.BadRequest(new { error = "Mst_CarDrvTestUpdate_PlateNoNotFound", check = new { DrvTestPlateNo = plate } });
+
+    // 🔴 MƯỜI HAI cột ghi được; DrvTestVIN (bị comment ở nguồn) và ModelCode KHÔNG có trong danh sách.
+    cur.DealerCode = dto.DealerCode;
+    cur.SpecCode = dto.SpecCode;
+    cur.ColorCode = dto.ColorCode;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) cur.FlagActive = dto.FlagActive.Trim();
+    cur.Remark = dto.Remark;
+    cur.DrvTestEngineNo = dto.DrvTestEngineNo;
+    cur.Price = string.IsNullOrEmpty(dto.Price) ? 0m : long.Parse(dto.Price);
+    cur.AmountSupport1 = string.IsNullOrEmpty(dto.AmountSupport1) ? 0m : long.Parse(dto.AmountSupport1);
+    cur.AmountSupport2 = string.IsNullOrEmpty(dto.AmountSupport2) ? 0m : long.Parse(dto.AmountSupport2);
+    cur.DateSupport1 = dto.DateSupport1;
+    cur.DateSupport2 = dto.DateSupport2;
+    cur.ClaimNoSupport = dto.ClaimNoSupport;
+    cur.CarDrvTestGPS = dto.CarDrvTestGPS;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        cur.DrvTestPlateNo, cur.DrvTestVIN, cur.ModelCode,
+        immutableNote = "_Update: VIN va MODEL BAT BIEN - dong '//dt_Mst_CarDriverTest.Rows[0][\"DrvTestVIN\"] = strDrvTestVIN; alColumnEffective.Add(\"DrvTestVIN\");' BI COMMENT, va ModelCode KHONG co trong alColumnEffective. Sua duoc 12 cot: DealerCode, SpecCode, ColorCode, FlagActive, Remark, DrvTestEngineNo, Price, AmountSupport1/2, DateSupport1/2, ClaimNoSupport, CarDrvTestGPS.",
+        keyNote = "Khoa thao tac la DrvTestPlateNo; khong ton tai => _Update_PlateNoNotFound.",
+        noVinGuardNote = "_Update KHONG kiem lai do dai VIN/bien so (chi _Create kiem) - vi VIN bat bien va bien so la khoa tra cuu."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -45584,6 +45692,7 @@ record InsCompanyHtcRowDto(string? InsCompanyCode, string? InsCompanyName, strin
 record InsCompanyHtcSaveDto(List<InsCompanyHtcRowDto>? Rows);   // #B172-B174
 record InsTypeHtcRowDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, decimal? Rate, string? FlagActive, string? Remark);   // #B175-B177
 record InsTypeHtcSaveDto(List<InsTypeHtcRowDto>? Rows);   // #B175-B177
+record CarDrvTestHtcDto(string? DrvTestPlateNo, string? DrvTestVIN, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCode, string? DrvTestEngineNo, string? FlagActive, string? Remark, string? ClaimNoSupport, string? CarDrvTestGPS, string? Price, string? AmountSupport1, string? AmountSupport2, DateTime? DateSupport1, DateTime? DateSupport2);   // #B178-B180
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
