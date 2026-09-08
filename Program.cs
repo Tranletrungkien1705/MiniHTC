@@ -31145,8 +31145,35 @@ app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
     note = "Bộ mã TRỘN số + chữ trong cùng một cột (chỉ CONF là mã chữ). Mã ngoài bốn giá trị ⇒ nhãn NULL (nguồn không có ELSE).",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #613 DIFF `Ser_Part_OrderGet_StatusList01` (`:2169`, CHẾT) vs `_StatusList` (`:2466`, LIVE) =====
+// TRACE WS: `WSCarSv.asmx.cs:23686` và `TERP.WSCarSv/App_Code/WSCarSv.cs:32112` đều gọi bản **không hậu tố**
+//   ⇒ `_StatusList01` **chết**. (Còn một bản thứ ba `_StatusList_**WH**` ở `:29274` — vào hàng đợi.)
+//
+// 🔴🔴 **BẢN CHẾT CÓ BỘ LỌC THEO NHÃN TRẠNG THÁI, BẢN LIVE BỎ HẲN**:
+//     `_StatusList01`: tham số `strStatusTextList` →
+//         `BuildClauseConditionList("and", "fo.**StatusText**", strStatusTextList, "|")`
+//         (dùng ở **hai** chỗ trong câu: `:151` và `:189`)
+//     `_StatusList` (LIVE): **không có** tham số đó.
+//   ⇒ **CỦNG CỐ #611 bằng bằng chứng thứ hai**: ở #611 tôi thấy bản LIVE của `Ser_Part_OrderGet` **bỏ cột**
+//     `StatusText`; nay thấy bản LIVE của `_StatusList` **bỏ luôn bộ lọc** theo nhãn đó. Hai hàm khác nhau,
+//     cùng một hướng ⇒ khẳng định "gỡ khái niệm trạng-thái-giao-hàng" là **chủ đích nhất quán**, không phải sót.
+//     Kết luận cũ ở #611 (*"bỏ là có chủ đích"*) nay **có cơ sở**, không còn là suy đoán từ một chỗ.
+// 🔴🔴 **BẢN LIVE ĐỔI CÁCH TÍNH SỐ LƯỢNG GIAO — TỪ SUBQUERY SANG `inner join`** (đổi **hình dạng kết quả**):
+//     bản chết: `(select sum(t.DeliveryQuantity) from Ser_Part_OrderDetail t where t.OrderPartID = si.OrderPartID) SumDeliveryQuantity`
+//     bản LIVE: hai dòng đó **bị comment** (`:80-81`), thay bằng
+//               `inner join Ser_Part_OrderDetail f … group by … sum(f.DeliveryQuantity) SumDeliveryQuantity`
+//   ⇒ Subquery **giữ** đơn không có dòng chi tiết (trả NULL); `inner join` thì **loại hẳn** đơn đó khỏi danh
+//     sách. ⇒ **Đơn vừa tạo, chưa nhập dòng phụ tùng nào, BIẾN MẤT khỏi màn tra cứu** — đúng câu hỏi §12
+//     *"dòng có bị nuốt không?"*. Port dùng `left join` (giữ đơn) và **đếm** số đơn nguồn sẽ nuốt.
+// 🔴 **ĐỔI DB NGUỒN**: bản chết đọc `_dbMain`; bản LIVE đọc `_dbDealer` (cùng họ #560/#581 — hai bản của một
+//   nghiệp vụ đọc hai DB khác nhau).
+// 🔴 Bản LIVE **thêm ba bộ lọc**: `strPartCodeConditionList` · `strOrderConfirmNoConditionList` ·
+//   `strOrderCreatorCodeConditionList` ⇒ tra được theo **mã phụ tùng**, **số xác nhận**, **người tạo**.
+// ⚠️ Bản chết dùng **thế hệ log cũ** (`_log.WriteLogAsync`), bản LIVE dùng `ProcessBizReq` — dấu hiệu phụ để
+//   đoán bản nào mới, nhưng **không** đủ để kết luận bản nào sống (xem #579: kiểu cũ mà vẫn sống).
 app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
-    string? status, string? dealer, string? supplier, string? orderNo, string? includeDeleted) =>
+    string? status, string? dealer, string? supplier, string? orderNo, string? includeDeleted,
+    string? partCode, string? confirmNo, string? creatorCode) =>
 {
     // 🔴 #298 XOÁ MỀM: hàm LIVE `Ser_Part_OrderGet` lọc `si.IsActive = '1'` ở BA chỗ. Port cũ trả cả đơn
     //   đã xoá. `includeDeleted=1` để soi dữ liệu, mặc định theo nguồn.
@@ -31156,8 +31183,26 @@ app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(supplier)) qy = qy.Where(x => x.SupplierID == supplier);
     if (!string.IsNullOrWhiteSpace(orderNo)) qy = qy.Where(x => x.OrderNo.Contains(orderNo!) || (x.OrderNoUser != null && x.OrderNoUser.Contains(orderNo!)));
+    // #613: ba bộ lọc bản LIVE THÊM so với bản chết.
+    if (!string.IsNullOrWhiteSpace(confirmNo)) qy = qy.Where(x => x.ConfirmNo == confirmNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(creatorCode)) qy = qy.Where(x => x.UserCreate == creatorCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(partCode))
+    {
+        var pc = partCode!.Trim().ToUpperInvariant();
+        var idsByPart = await db.SupplierPartOrderLines
+            .Where(l => l.OrgId == t.OrgId && l.PartCode == pc)
+            .Select(l => l.SupplierPartOrderId).Distinct().ToListAsync();
+        qy = qy.Where(x => idsByPart.Contains(x.Id));
+    }
 
     var heads = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    // #613: bản LIVE dùng `inner join Ser_Part_OrderDetail` ⇒ đơn KHÔNG có dòng chi tiết bị LOẠI.
+    //   Port dùng left join (giữ đơn) và đếm số đơn nguồn sẽ nuốt.
+    var headIds = heads.Select(x => x.Id).ToList();
+    var idsWithLines = await db.SupplierPartOrderLines
+        .Where(l => l.OrgId == t.OrgId && headIds.Contains(l.SupplierPartOrderId))
+        .Select(l => l.SupplierPartOrderId).Distinct().ToListAsync();
+    var ordersWithoutLinesDroppedBySource = heads.Count(h => !idsWithLines.Contains(h.Id));
     var ids = heads.Select(h => h.Id).ToList();
     var lines = await db.SupplierPartOrderLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.SupplierPartOrderId)).ToListAsync();
     var byOrder = lines.GroupBy(l => l.SupplierPartOrderId).ToDictionary(g => g.Key, g => g.ToList());
@@ -31189,7 +31234,19 @@ app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
             pendingDeliveryQty = ls.Sum(l => Math.Max(0m, l.Quantity - l.DeliveryQuantity)),
         };
     }).ToList();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #613 =====
+        ordersWithoutLinesDroppedBySource,
+        liveVariantUsesInnerJoinForDetail = "ban chet dung subquery (giu don khong co dong chi tiet, tra NULL); ban LIVE comment hai subquery va thay bang inner join Ser_Part_OrderDetail + group by => don vua tao chua nhap dong nao BIEN MAT khoi man tra cuu",
+        liveVariantDroppedStatusTextFilter = "ban chet co strStatusTextList loc theo fo.StatusText o hai cho; ban LIVE khong co tham so do",
+        confirmsIntentOf611 = "bang chung THU HAI: #611 thay ban LIVE bo COT StatusText, #613 thay ban LIVE bo BO LOC theo nhan do => go khai niem trang-thai-giao-hang la chu dich nhat quan, khong phai sot",
+        liveVariantReadsDealerDb = "ban chet doc _dbMain, ban LIVE doc _dbDealer (ho #560/#581)",
+        liveVariantAddedThreeFilters = new[] { "strPartCodeConditionList", "strOrderConfirmNoConditionList", "strOrderCreatorCodeConditionList" },
+        thirdVariantExists = "Ser_Part_OrderGet_StatusList_WH (WSCarSv.asmx.cs:29274) — chua doc, vao hang doi",
+        deadVariantUsesOldLogging = "_log.WriteLogAsync vs ProcessBizReq — dau hieu phu, KHONG du de ket luan ban nao song (xem #579)",
+    });
 }).RequireAuthorization();
 
 // #298 XOÁ MỀM đơn đặt phụ tùng NCC — nguồn không xoá vật lý, chỉ hạ `IsActive`.
