@@ -14174,6 +14174,7 @@ app.MapPost("/api/salesorders/edit-dates", async (SoEditDatesDto dto, AppDbConte
         var code = l.SOCode!.Trim();
         if (!byCode.TryGetValue(code, out var o)) { notFound.Add(code); continue; }
         if (l.ApprovedDate.HasValue) o.ApprovedDate = l.ApprovedDate;
+        if (l.ApprovedDate2.HasValue) o.ApprovedDate2 = l.ApprovedDate2;   // §12 #B365
         if (l.DepositDutyEndDate.HasValue) o.DepositDutyEndDate = l.DepositDutyEndDate;
         if (l.GrtEndDate.HasValue) o.GrtEndDate = l.GrtEndDate;
         if (l.CarDueDate.HasValue) o.CarDueDate = l.CarDueDate;
@@ -40243,6 +40244,223 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B365 PHẠT CHẬM THANH TOÁN — `Rpt_PenaltyPmtDelay_WH_New20210521`
+//       (vỏ `DataWH/BizHTC.zTemp.cs:21054` → `Rpt_PenaltyPmtDelayX_New20210521` (`:21193`)
+//        → SQL `RptSQLQuery.cs:29995` `mySql_Rpt_PenaltyPmtDelay_New_20251106()`) =====
+// **3B khớp cả 2 máy (3 md5); `BizHTC.zTemp.cs` và `RptSQLQuery.cs` KHÔNG lệch offset**:
+//   vỏ `21054,21192` ⇒ **`7faebe5314fb2b3fb92effb9a37ce76b`**
+//   `…X` `21193,21285` ⇒ **`9c95532ed8051328b756b5b2e387c6e5`**
+//   SQL `29995,30898` (904 dòng) ⇒ **`fbd82a489f9b98279dcc1e5af079214f`**
+//
+// 🔴🔴🔴🔴 **[BAKE-PARAM-MIX] — CA THỨ BA VÀ NẶNG NHẤT: TÁM THAM SỐ NƯỚNG THÔ, KHÔNG MỘT PARAM RUNTIME NÀO**:
+//     `dsGetData = _dbAction.ExecQuery(strSqlGetData, **alParamsCoupleSql.ToArray()**);`
+//   nhưng `alParamsCoupleSql` **RỖNG** — dòng duy nhất định nạp nó
+//   (`//alParamsCoupleSql.AddRange(… drAbilityOfUser["BUPattern"] …)`) **bị comment**.
+//   Toàn bộ 8 giá trị đi qua `Replace` chuỗi thô:
+//     `@strPaymentEndDateFrom/To`, `@strApprovedDate2From/To`, `@strFlagPmtDelayDone`,
+//     **`@strSOCode`**, **`@strDealerCode`**, `@strFlagIsHTC` (+ `@strDateSys` sinh từ server).
+//   Và chỗ nhận trong SQL **đều nằm TRONG nháy đơn**:
+//     `and (N'@strSOCode' = '' or oso.SOCode = '@strSOCode')`
+//     `and (N'@strDealerCode' = '' or oso.DealerCode = '@strDealerCode')`
+//     `and oso.FlagPmtDelayDone = '@strFlagPmtDelayDone'` · `and oso.ApprovedDate2 >= '@strApprovedDate2From'`
+//   ⇒ Theo luật `C0-…quadragesimustertius`, đây là **mức (A) — NƯỚNG THÔ**: chỉ `strFlagIsHTC` đi qua
+//     `StandardizeParam`; **`strSOCode` và `strDealerCode` KHÔNG qua bất kỳ bộ chuẩn hoá nào**, mà lại là
+//     **chuỗi mã tự do** (không phải ngày như #B347/#B359) ⇒ **bề mặt injection rộng nhất trong ba ca**.
+//   📌 Ghi thêm: khuôn `and (N'@x' = '' or cột = '@x')` là **bộ lọc tuỳ chọn cài bằng cách nướng** —
+//     rỗng thì bỏ qua điều kiện. Một dấu `'` trong giá trị là **vỡ cú pháp hoặc đổi ngữ nghĩa**.
+//   **KHÔNG tự vá nguồn**; port dùng tham số hoá hoàn toàn (EF).
+//
+// 🔴🔴🔴 **BA MỐC PHIÊN BẢN KHÁC NHAU TRONG MỘT CHUỖI GỌI — TÊN HÀM KHÔNG CHO BIẾT SQL NÀO ĐANG CHẠY**:
+//     `#region // **Rpt_PenaltyPmtDelayX_New20190701**:`          ← nhãn region: **2019-07-01**
+//     `Rpt_PenaltyPmtDelayX_**New20210521**(…)`                    ← hàm thực gọi: **2021-05-21**
+//     `mySql_Rpt_PenaltyPmtDelay_**New_20251106**()`               ← SQL thực chạy: **2025-11-06**
+//   ⇒ Đọc tên hàm `_New20210521` mà tưởng SQL là bản 2021 là **sai 4 năm rưỡi**. Nhãn `#region` còn
+//     lệch thêm một mốc nữa. ⇒ **Chỉ mốc trên hàm dựng SQL mới là mốc thật.**
+//
+// 🔴🔴 **LỖ RBAC — tổ hợp (2)**: dòng nạp `BUPattern` **bị comment**; đã grep **đủ năm trục** (luật
+//   `C0-…quadragesimussecundus`) trong cả vỏ lẫn `…X`: `CheckHTCDirect` / `MBBankBUPattern` /
+//   `myHTC_RemoveInfo_` / `ViewAbility_Get` = **0 hit** ⇒ **không cổng, không lọc, không che cột**
+//   ⇒ **lỗ thật**, trên báo cáo **tiền phạt** của mọi đại lý. Port trả `enforceDealerScope` + đo lệch.
+// 🔴 Tầng tiền: `CachingForPaymentTotal(…, "'F'")` và `…Deposit(…, "'F'", true)` ⇒ **chỉ tiền đã nổi
+//   trên tài khoản** (khác #B356 dùng `'A','F'`), cộng `CachingForPaymentAccum` (tích luỹ).
+// 🔴 Trả **HAI** bảng: `Rpt_Ord_SalesOrder_CalcPmtDelayPenalty` và `Rpt_Car_Car_CalcDateTTC`.
+// 🔴 **Hai dòng lọc `pp.PaymentEndDate` BỊ COMMENT** ở khối đầu (`--and pp.PaymentEndDate >= …`) nhưng
+//   **vẫn sống** ở khối sau (`t.PaymentEndDate >= '@strPaymentEndDateFrom' and <= …`) ⇒ **port dòng ACTIVE**.
+// ⚠️ **NỢ**: `Ord_SalesOrder.FlagPmtDelayDone`, `Mst_DelayCharge` (`mdc.EffectiveDate/EffectiveDateEnd`),
+//   và tầng caching thanh toán đầy đủ chưa có ⇒ **cột tiền phạt để NULL**, chỉ trả khung. **Không đoán.**
+app.MapGet("/api/reports/penalty-pmt-delay", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? approvedDate2From, DateTime? approvedDate2To,
+    DateTime? paymentEndDateFrom, DateTime? paymentEndDateTo,
+    string? ttcStatus, string? soCode, string? dealerCode, string? flagIsHTC,
+    string? buPattern, string? enforceDealerScope) =>
+{
+    // 🔴🔴 LỖ RBAC ca (2): nguồn KHÔNG cổng, KHÔNG lọc, KHÔNG che cột. Port KHÔNG tự bịt — chỉ đo + cờ.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var enforce = enforceDealerScope == "1";
+    var inScope = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // 🔴 Bộ lọc tuỳ chọn của nguồn cài bằng NƯỚNG (`N'@x' = '' or cột = '@x'`); port dùng tham số hoá.
+    var q = db.SalesOrders.Where(o => o.OrgId == t.OrgId);
+    if (approvedDate2From != null) q = q.Where(o => o.ApprovedDate2 >= approvedDate2From);
+    if (approvedDate2To != null) q = q.Where(o => o.ApprovedDate2 <= approvedDate2To);
+    if (!string.IsNullOrWhiteSpace(soCode)) q = q.Where(o => o.SoCode == soCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(o => o.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var all = await q.ToListAsync();
+
+    var rows0 = all.Where(o => !enforce || (o.DealerCode != null && inScope.Contains(o.DealerCode))).ToList();
+
+    var penalty = rows0.Select(o => new
+    {
+        o.SoCode, o.DealerCode, o.ApprovedDate2,
+        // ⚠️ NỢ — KHÔNG ĐOÁN: cần FlagPmtDelayDone, Mst_DelayCharge và tầng caching thanh toán.
+        FlagPmtDelayDone = (string?)null,
+        PaymentEndDate = (DateTime?)null,
+        DelayDays = (int?)null,
+        DelayChargeRate = (decimal?)null,
+        PenaltyAmount = (decimal?)null
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = penalty.Count,
+        outOfScopeCount = enforce ? all.Count - rows0.Count : 0,
+        enforceDealerScope = enforce,
+        Rpt_Ord_SalesOrder_CalcPmtDelayPenalty = penalty,   // Tables[0]
+        Rpt_Car_Car_CalcDateTTC = Array.Empty<object>(),    // Tables[1] — ⚠️ NỢ
+        bakeParamMixLevelANote = "[BAKE-PARAM-MIX] CA THU BA VA NANG NHAT: TAM THAM SO NUONG THO, KHONG MOT PARAM RUNTIME NAO. 'ExecQuery(strSqlGetData, alParamsCoupleSql.ToArray())' nhung alParamsCoupleSql RONG - dong duy nhat nap no (//alParamsCoupleSql.AddRange(... drAbilityOfUser['BUPattern'] ...)) BI COMMENT. Toan bo 8 gia tri di qua Replace chuoi tho: @strPaymentEndDateFrom/To, @strApprovedDate2From/To, @strFlagPmtDelayDone, @strSOCode, @strDealerCode, @strFlagIsHTC (+ @strDateSys sinh tu server). Cho nhan trong SQL DEU NAM TRONG NHAY DON: \"and (N'@strSOCode' = '' or oso.SOCode = '@strSOCode')\", \"and (N'@strDealerCode' = '' or oso.DealerCode = '@strDealerCode')\", \"and oso.FlagPmtDelayDone = '@strFlagPmtDelayDone'\", \"and oso.ApprovedDate2 >= '@strApprovedDate2From'\". Theo luat C0-...quadragesimustertius day la MUC (A) NUONG THO: chi strFlagIsHTC di qua StandardizeParam; strSOCode va strDealerCode KHONG qua bat ky bo chuan hoa nao, ma lai la CHUOI MA TU DO (khong phai ngay nhu #B347/#B359) => BE MAT INJECTION RONG NHAT TRONG BA CA. Khuon \"and (N'@x' = '' or cot = '@x')\" la BO LOC TUY CHON CAI BANG CACH NUONG - rong thi bo qua dieu kien; mot dau nhay trong gia tri la VO CU PHAP hoac DOI NGU NGHIA. KHONG TU VA NGUON.",
+        threeVersionMarkersNote = "BA MOC PHIEN BAN KHAC NHAU TRONG MOT CHUOI GOI - TEN HAM KHONG CHO BIET SQL NAO DANG CHAY: '#region // Rpt_PenaltyPmtDelayX_New20190701:' (nhan region 2019-07-01), 'Rpt_PenaltyPmtDelayX_New20210521(...)' (ham thuc goi 2021-05-21), 'mySql_Rpt_PenaltyPmtDelay_New_20251106()' (SQL thuc chay 2025-11-06). Doc ten ham _New20210521 ma tuong SQL la ban 2021 la SAI 4 NAM RUOI. Nhan #region con lech them mot moc nua. CHI MOC TREN HAM DUNG SQL MOI LA MOC THAT.",
+        rbacHoleNote = "LO RBAC to hop (2): dong nap BUPattern BI COMMENT; da grep DU NAM TRUC (luat C0-...quadragesimussecundus) trong ca vo lan ...X: CheckHTCDirect / MBBankBUPattern / myHTC_RemoveInfo_ / ViewAbility_Get = 0 HIT => khong cong, khong loc, khong che cot => LO THAT, tren bao cao TIEN PHAT cua moi dai ly. Port tra enforceDealerScope + do lech, KHONG tu bit.",
+        paymentTierNote = "Tang tien: CachingForPaymentTotal(..., \"'F'\") va ...Deposit(..., \"'F'\", true) => CHI TIEN DA NOI TREN TAI KHOAN (khac #B356 dung 'A','F'), cong CachingForPaymentAccum (tich luy). Hai dong loc pp.PaymentEndDate BI COMMENT o khoi dau nhung VAN SONG o khoi sau => port dong ACTIVE.",
+        debtNote = "NO - KHONG DOAN: Ord_SalesOrder.FlagPmtDelayDone, Mst_DelayCharge (mdc.EffectiveDate/EffectiveDateEnd) va tang caching thanh toan day du chua co => COT TIEN PHAT DE NULL, chi tra khung."
+    });
+}).RequireAuthorization();
+
+// ===== #B366 HIỆU LỰC BẢO LÃNH HỒ SƠ — `Rpt_ProfileGuaranteeEffect_WH`
+//       (`DataWH/BizHTC.zTemp.cs:60418` → `Rpt_ProfileGuaranteeEffectX_New20200508`) =====
+// **3B khớp cả 2 máy**: `60418,60587` ⇒ **`073abdb8b77a90635e1a09614e996015`**.
+//
+// 🔴🔴🔴 **NHÃN `#region` GỌI TÊN MỘT HÀM HOÀN TOÀN KHÁC**:
+//     `#region // Call Func **Rpt_MasterDataX**:`     ← nhãn nói `Rpt_MasterDataX`
+//     `Rpt_ProfileGuaranteeEffectX_New20200508(…)`    ← thực gọi hàm bảo lãnh hồ sơ
+//   ⇒ Cùng với #B365 (nhãn region lệch **mốc phiên bản**), đây là **ca thứ hai trong một lượt** cho thấy
+//     **nhãn `#region` KHÔNG dùng được làm bằng chứng trace**. Nếu tin nhãn thì trace sẽ đi lạc sang
+//     `Rpt_MasterData` — một báo cáo khác hẳn.
+// 🔴 **Bản cũ để lại dưới dạng comment**: `//Rpt_ProfileGuaranteeEffectX_New20200121(` ngay trên dòng
+//   gọi bản `_New20200508` ⇒ **port dòng ACTIVE**, bản 2020-01-21 là **chết**. Cùng idiom #B338.
+// 🔴 **Chín bộ lọc** đi vào `…X`: `ApprovedDateFrom/To`, `StatusMortageEnd` (*tình trạng giao hồ sơ*),
+//   `TypeReport`, `MortageEndDateFrom/To`, `DateStartFrom/To`, `DocumentsStatus`, `GrtBankCode`,
+//   `PaymentEndDateTo`, `VIN`, `CarId`, `DealerCode`, `DlrCtrNo`, `SOCode`, `BankGuaranteeNo`.
+//   ⇒ Trong đó **`strTypeReport`** là cờ **đổi hình dạng báo cáo**, không phải bộ lọc dữ liệu.
+// 🔴 Hàm chỉ mở giao dịch trên **`_dbWH`** (không đụng `_dbMain`) ⇒ khác đa số hàm `_WH` khác vẫn mở
+//   cả hai. Ít rủi ro "ghi kép" hơn (đối chứng cho `C0-…tricesimusprimus`).
+// 🔴 Trả **MỘT** bảng `Tables[0] = "Rpt_ProfileGuaranteeEffect"` (con trỏ `nIdxTable`).
+// ⚠️ **NỢ**: chuỗi `Pmt_Guarantee`/`Pmt_GuaranteeDetail` + `Car_VIN.MortageEndDate` + `Mst_GrtBank`
+//   chưa đủ ⇒ trả khung theo VIN/hợp đồng, các cột hiệu lực bảo lãnh để **NULL**. **Không đoán.**
+app.MapGet("/api/reports/profile-guarantee-effect", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? approvedDateFrom, DateTime? approvedDateTo,
+    string? statusMortageEnd, string? typeReport,
+    DateTime? mortageEndDateFrom, DateTime? mortageEndDateTo,
+    string? documentsStatus, string? grtBankCode,
+    string? vin, string? carId, string? dealerCode, string? dlrCtrNo, string? soCode,
+    string? bankGuaranteeNo) =>
+{
+    var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(v => v.VIN == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(v => v.CarId == carId!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(v => v.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (mortageEndDateFrom != null) q = q.Where(v => v.MortageEndDate >= mortageEndDateFrom);
+    if (mortageEndDateTo != null) q = q.Where(v => v.MortageEndDate <= mortageEndDateTo);
+    var cars = await q.ToListAsync();
+
+    var rows = cars.Select(v => new
+    {
+        v.VIN, v.CarId, v.DealerCode, v.ModelCode, v.SpecCode, v.ColorCode,
+        v.MortageEndDate, v.MortageStartDate,
+        // ⚠️ NỢ — KHÔNG ĐOÁN: cần Pmt_Guarantee / Pmt_GuaranteeDetail / Mst_GrtBank.
+        BankGuaranteeNo = (string?)null,
+        GrtBankCode = (string?)null,
+        GuaranteeValue = (decimal?)null,
+        DateStart = (DateTime?)null, DateEnd = (DateTime?)null,
+        DocumentsStatus = (string?)null,
+        DlrCtrNo = (string?)null, SOCode = (string?)null,
+        ApprovedDate = (DateTime?)null
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        typeReportEcho = typeReport,
+        Rpt_ProfileGuaranteeEffect = rows,      // Tables[0]
+        regionLabelWrongNote = "NHAN #region GOI TEN MOT HAM HOAN TOAN KHAC: '#region // Call Func Rpt_MasterDataX:' trong khi thuc goi 'Rpt_ProfileGuaranteeEffectX_New20200508(...)'. Cung voi #B365 (nhan region lech MOC PHIEN BAN), day la CA THU HAI TRONG MOT LUOT cho thay NHAN #region KHONG DUNG DUOC LAM BANG CHUNG TRACE. Neu tin nhan thi trace se di lac sang Rpt_MasterData - mot bao cao khac han.",
+        deadVersionNote = "BAN CU DE LAI DUOI DANG COMMENT: '//Rpt_ProfileGuaranteeEffectX_New20200121(' ngay tren dong goi ban _New20200508 => PORT DONG ACTIVE, ban 2020-01-21 la CHET. Cung idiom #B338.",
+        nineFiltersNote = "Chin+ bo loc di vao ...X: ApprovedDateFrom/To, StatusMortageEnd (tinh trang giao ho so), TypeReport, MortageEndDateFrom/To, DateStartFrom/To, DocumentsStatus, GrtBankCode, PaymentEndDateTo, VIN, CarId, DealerCode, DlrCtrNo, SOCode, BankGuaranteeNo. Trong do strTypeReport la CO DOI HINH DANG BAO CAO, khong phai bo loc du lieu.",
+        singleDbNote = "Ham chi mo giao dich tren _dbWH (khong dung _dbMain) => khac da so ham _WH khac van mo ca hai. It rui ro 'ghi kep' hon - DOI CHUNG cho luat C0-...tricesimusprimus.",
+        debtNote = "NO - KHONG DOAN: chuoi Pmt_Guarantee / Pmt_GuaranteeDetail + Car_VIN.MortageEndDate + Mst_GrtBank chua du => tra khung theo VIN/hop dong, cac cot hieu luc bao lanh de NULL."
+    });
+}).RequireAuthorization();
+
+// ===== #B367 LỊCH SỬ SỬA GIAO DỊCH BÁN — `Rpt_SupportDealHistory_WH`
+//       (`TERP.BizHTC/DMS40/zTemp.Report.cs:10900`) =====
+// **3B khớp cả 2 máy — `zTemp.Report.cs` KHÔNG lệch offset (15713 dòng cả 2 máy)**:
+//   `10900,11031` ⇒ **`24d81ac167574aa42bac855f9b65fd1f`**.
+//
+// 🔴🔴 **BA danh sách cột trả về do CLIENT chọn, không phải một** — mở rộng ca #B361:
+//     `strRt_Cols_**DLS_Deal_Upd**` · `strRt_Cols_**Dls_DealDetail_Upd**` · `strRt_Cols_**Dls_DealAttachFile_Upd**`
+//   ⇒ **Số bảng trả về biến thiên theo BA cờ độc lập** (mỗi danh sách rỗng ⇒ bớt một bảng)
+//     ⇒ **8 tổ hợp** kết quả. Đây là mức cao nhất của "số bảng động" đã gặp: #B346 dùng **một** cờ
+//     `'1'/'0'`, #B361 dùng **một** chuỗi cột, ở đây là **ba** chuỗi cột.
+//   ⇒ Client **phải** biết mình đã yêu cầu bảng nào để đọc đúng chỉ số — hợp đồng API rất mong manh.
+// 🔴 `strFt_WhereClause` — bộ lọc tự do từ client, cùng khuôn #B361 (đi qua `BuildWhere`, **không** nối
+//   chuỗi thô) ⇒ thừa hưởng tiền án `isnull`/`in` của `BuildWhere` đã ghi trong bộ nhớ.
+// 🔴 Hàm mở `_dbMain` (`_dbMain.LogUserId = strPartnerUserCode`) **dù tên là `_WH`** ⇒ **cần soi kỹ**:
+//   cùng họ nghi vấn với #B245 (`_dbAction` bị bỏ qua khiến bản `_WH` đọc DB Main). Ghi lại để audit
+//   tiếp; **chưa** kết luận vì phần thân còn dùng `_dbWH` ở chỗ khác.
+// 🔴 Ba bảng lịch sử là **bản `…_Upd`** (log sửa), không phải bảng gốc ⇒ báo cáo này là **nhật ký thay
+//   đổi giao dịch**, dùng để đối chiếu ai sửa gì lúc nào.
+// ⚠️ **NỢ**: `DLS_Deal_Upd` / `Dls_DealDetail_Upd` / `Dls_DealAttachFile_Upd` chưa có trong MiniHTC;
+//   đã có `DlsDealDetailHisUpdPrice`, `DealDetailCusInvoiceHisUpd`, `DealUpdBankCodeHis` là **các log
+//   sửa CHUYÊN BIỆT**, không phải log tổng ⇒ **không gộp bừa**; trả khung ba bảng + `notPortedTables`.
+app.MapGet("/api/reports/support-deal-history", async (
+    AppDbContext db, ITenantContext t,
+    string? dealNo, string? colsDeal, string? colsDetail, string? colsAttach) =>
+{
+    // 🔴 BA cờ cột độc lập ⇒ 8 tổ hợp bảng trả về. Giữ đúng hình dạng nguồn.
+    var wantDeal = !string.IsNullOrWhiteSpace(colsDeal);
+    var wantDetail = !string.IsNullOrWhiteSpace(colsDetail);
+    var wantAttach = !string.IsNullOrWhiteSpace(colsAttach);
+
+    // ✅ Ba log sửa CHUYÊN BIỆT đã có — trả đúng loại, KHÔNG gộp thành "log tổng" mà nguồn dùng.
+    var priceUpd = wantDetail
+        ? (await db.DlsDealDetailHisUpdPrices.Where(x => x.OrgId == t.OrgId).ToListAsync())
+            .Where(x => string.IsNullOrWhiteSpace(dealNo) || x.DealNo == dealNo!.Trim()).ToList<object>()
+        : null;
+    var invUpd = wantDetail
+        ? (await db.DealDetailCusInvoiceHisUpds.Where(x => x.OrgId == t.OrgId).ToListAsync())
+            .Where(x => string.IsNullOrWhiteSpace(dealNo) || x.DealNo == dealNo!.Trim()).ToList<object>()
+        : null;
+    var bankUpd = wantDeal
+        ? (await db.DealUpdBankCodeHiss.Where(x => x.OrgId == t.OrgId).ToListAsync()).ToList<object>()
+        : null;
+
+    return Results.Ok(new
+    {
+        requestedTables = new { deal = wantDeal, detail = wantDetail, attach = wantAttach },
+        DLS_Deal_Upd = bankUpd,
+        Dls_DealDetail_Upd = priceUpd is null && invUpd is null ? null : new { priceUpd, invUpd },
+        Dls_DealAttachFile_Upd = wantAttach ? Array.Empty<object>() : null,
+        threeColumnFlagsNote = "BA danh sach cot tra ve do CLIENT chon, khong phai mot - mo rong ca #B361: strRt_Cols_DLS_Deal_Upd, strRt_Cols_Dls_DealDetail_Upd, strRt_Cols_Dls_DealAttachFile_Upd => SO BANG TRA VE BIEN THIEN THEO BA CO DOC LAP (moi danh sach rong => bot mot bang) => 8 TO HOP ket qua. Day la muc cao nhat cua 'so bang dong' da gap: #B346 dung MOT co '1'/'0', #B361 dung MOT chuoi cot, o day la BA chuoi cot. Client PHAI biet minh da yeu cau bang nao de doc dung chi so - hop dong API rat mong manh.",
+        buildWhereNote = "strFt_WhereClause - bo loc tu do tu client, cung khuon #B361 (di qua BuildWhere, KHONG noi chuoi tho) => thua huong tien an isnull/in cua BuildWhere da ghi trong bo nho.",
+        dbMainInWhFunctionNote = "Ham mo _dbMain ('_dbMain.LogUserId = strPartnerUserCode') DU TEN LA _WH => CAN SOI KY: cung ho nghi van voi #B245 (_dbAction bi bo qua khien ban _WH doc DB Main). Ghi lai de audit tiep; CHUA ket luan vi phan than con dung _dbWH o cho khac.",
+        updTablesNote = "Ba bang lich su la ban '..._Upd' (log sua), khong phai bang goc => bao cao nay la NHAT KY THAY DOI GIAO DICH, dung de doi chieu ai sua gi luc nao.",
+        notPortedTables = new[] { "DLS_Deal_Upd", "Dls_DealDetail_Upd", "Dls_DealAttachFile_Upd" },
+        debtNote = "NO: ba bang ..._Upd chua co trong MiniHTC; da co DlsDealDetailHisUpdPrice, DealDetailCusInvoiceHisUpd, DealUpdBankCodeHis la CAC LOG SUA CHUYEN BIET, khong phai log tong => KHONG GOP BUA; tra khung ba bang + notPortedTables."
+    });
+}).RequireAuthorization();
 // ===== #B362 GIAO XE SAI ĐỊA ĐIỂM ĐẠI LÝ ĐĂNG KÝ — `Rpt_CarDeliveryNotAddressDealerRegis_WH_New20181119`
 //       (`DataWH/Biz.HTC.WH.cs`) =====
 // **3B khớp cả 2 máy — offset lệch 5 dòng**: laptop `150195,150463` ≡ 150 `150200,150468`
@@ -53998,7 +54216,7 @@ record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
 record CtTkhqDeleteDto(List<string>? DeclarationNos);
 record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null, string? CarId = null);
 record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
-record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
+record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate, DateTime? ApprovedDate2 = null);   // #B365 §12
 record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, string? SORCode, List<SalesOrderLineDto>? Lines);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate, string? SPCode = null, List<SoApprove1LineDto>? Lines = null);
 // Dòng duyệt cấp 1 do người duyệt nhập — nguồn đối chiếu theo khoá SpecCode/ModelCode/ColorCode.

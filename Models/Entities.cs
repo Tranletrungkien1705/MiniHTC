@@ -6200,6 +6200,11 @@ public sealed class SalesOrder
     public DateTime? RejectedAt { get; set; }
     // Cập nhật ngày mốc SO (FrmMng_SO_Approved_Date): ngày duyệt / hết hạn nghĩa vụ cọc / hết hạn BL / đến hạn giao xe
     public DateTime? ApprovedDate { get; set; }
+    /// <summary>§12 #B365 — `Ord_SalesOrder.ApprovedDate2`: **mốc duyệt CẤP 2 của đơn hàng** — bộ lọc
+    /// chính của `Rpt_PenaltyPmtDelay` (`RptSQLQuery.cs:29995`, `and oso.ApprovedDate2 >= '@strApprovedDate2From'`).
+    /// ⚠️ KHÁC <see cref="ApprovedDate"/> (duyệt cấp 1) và KHÁC `Car_DocReqList.ApprovedDate2` (#B59,
+    /// trên đầu đề nghị giao hồ sơ) — trùng tên khác bảng, đừng dùng lẫn. Đây là **nợ đã ghi từ trước**.</summary>
+    public DateTime? ApprovedDate2 { get; set; }
     public DateTime? DepositDutyEndDate { get; set; }
     public DateTime? GrtEndDate { get; set; }
     public DateTime? CarDueDate { get; set; }

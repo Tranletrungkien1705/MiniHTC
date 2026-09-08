@@ -2447,6 +2447,8 @@ public static class Seeder
                 "ALTER TABLE public.\"RptCarAllocationByAreas\" ADD COLUMN IF NOT EXISTS \"SpecCode\" text NULL",
                 // §12 #B360 — Car_Car.MapVINDate (moc loc chinh cua Rpt_CarAllocationByArea_Get_RealTimeX).
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MapVINDate\" timestamp NULL",
+                // §12 #B365 — Ord_SalesOrder.ApprovedDate2 (bo loc chinh cua Rpt_PenaltyPmtDelay).
+                "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedDate2\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
