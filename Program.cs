@@ -46036,6 +46036,88 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #694 GIÁ NET ĐẠI LÝ GỬI HMC — họ `Rpt_DMSSer_DealerNetPrice_*` (4 hàm + 2 hàm X) =====
+// (`BizCarSv.Report.Special.Warranty.cs`) md5: `_LastGet` `c1cad121` · `_PartGet` `88f11903` ·
+// `_SendHMC` `7c685999` · `_SendHMC_Auto` `b12f7ae9` · `_LastGetX` `d793579c` · `_PartGetX` `1c59d669`
+// — **cả sáu KHỚP** máy 150. WS `WSCarSv.asmx.cs:33794/33823/33853/33932`.
+//
+// 🔴🔴🔴 **BẢN TỰ ĐỘNG GỬI HMC BỎ TRỐNG BỘ LỌC NGÀY ⇒ GỬI TOÀN BỘ LỊCH SỬ**:
+//   DIFF `_SendHMC` ↔ `_SendHMC_Auto` (luật #414) cho khác biệt **gọn đúng một dòng nghiệp vụ**:
+//     `_SendHMC`      : `, strReportDateConditionList`   (nhận tham số từ người dùng)
+//     `_SendHMC_Auto` : `, "" // strReportDateConditionList`  ← **truyền chuỗi rỗng**
+//   Và trong `…PartGetX`: `BuildClause("and", "t.LUDTime", strReportDateConditionList, "@p", …)` — chuỗi rỗng
+//   ⇒ `BuildClause` **không sinh gì** (#410) ⇒ **không lọc ngày** ⇒ bản chạy tự động gửi HMC **mọi phụ tùng có
+//   giá thay đổi từ trước tới nay**, không giới hạn kỳ. Bản tay thì có lọc.
+//   ⇒ Đây là ca **#410 gây hậu quả NGHIỆP VỤ**, không phải chỉ "điều kiện bị bỏ": nó biến một lần gửi định kỳ
+//     thành một lần gửi **toàn bộ lịch sử giá**.
+// 🔴🔴🔴 **BA TẦNG BIẾN ĐỔI SỐ TIỀN TRÊN MỘT CỘT** (luật #408 — liệt kê **mọi** phép làm tròn):
+//     `cast(isnull(ROUND(t.TSTWarrantyPrice **/ 100**, 0), 0) as **int**) TSTPrice`
+//   ① **chia 100** — nếu `TSTWarrantyPrice` là kiểu **nguyên** thì đây là **chia nguyên** (đúng họ `VAT/100`
+//     ở #673) ⇒ mất phần lẻ **trước** khi làm tròn; không kiểm chứng được kiểu cột từ source.
+//   ② `ROUND(…, 0)` — T-SQL làm tròn **ra xa số 0** (khác `Convert.ToInt32` của C# vốn ties-to-EVEN, #408).
+//   ③ `cast(… as **int**)` — **tràn ở 2.147.483.647**; đây là **tiền**.
+//   🔴 Và **tên cột đích ≠ tên cột nguồn**: `TSTWarrantyPrice` (giá **bảo hành**) được gán vào `TSTPrice`
+//     (giá **bán**) ⇒ hai khái niệm khác nhau mang cùng một tên ở đầu ra.
+// 🔴🔴🔴 **`_LastGetX` LẤY `MAX(RptID)` TOÀN BẢNG, KHÔNG CÓ `WHERE` NÀO**:
+//     `select MAX(t.RptID) RptID into #tbl_Rpt_DealerNetPrice from Rpt_DealerNetPrice t **;**` (hết câu)
+//   ⇒ "lần gửi gần nhất" là **của toàn hệ**, không phải của đại lý/kỳ đang xem. Rồi `select **t.*** from
+//     Rpt_DealerNetPrice t inner join …` ⇒ đổi schema là đổi hợp đồng API.
+// ⚪ **DƯƠNG TÍNH — `left join` + `OR … IS NULL` ở đây LÀ CHỦ ĐÍCH, không phải bẫy #659**:
+//     `left join TST_Mst_Part_DNP f on t.TSTPartCode = f.TSTPartCode` + `and (f.TSTPartCode is null or`
+//     `t.TSTWarrantyPrice <> f.TSTWarrantyPrice)` ⇒ nghĩa đúng là **"chưa từng gửi HOẶC giá đã đổi"**.
+//   Khác #659 (ở đó `IS NULL` **mở toang** bộ lọc chiến dịch). ⇒ Cùng một hình dạng, **hai ý nghĩa ngược nhau**;
+//     phải hỏi *"NULL ở đây nghĩa là chưa-có-DÒNG, và chưa-có-dòng có phải điều mình MUỐN lấy không?"*.
+// 🔴 `and isnull(t.TSTWarrantyPrice, 0.0) > 0` ⇒ phụ tùng **giá 0 hoặc NULL bị loại** khỏi đợt gửi.
+// 🔴 **Tên bảng kết quả bị BỎ TRỐNG**: `//dsGetData.Tables[0].TableName = strFunctionName;` **bị comment**
+//   ⇒ client phải tra theo **chỉ số bảng**, không theo tên (khác #683/#685 nơi tên được đặt).
+// 🔴 `myDebug_SaveSql(...)` trong `…PartGetX` **bị comment trọn khối** ⇒ hàm này **không ghi lại SQL** khi bật
+//   chế độ debug, khác hầu hết hàm khác. Khó chẩn đoán khi số liệu sai.
+app.MapGet("/api/report/dealer-net-price-to-hmc", async (AppDbContext db, ITenantContext t,
+    DateTime? reportDateFrom, DateTime? reportDateTo, bool auto = false) =>
+{
+    // Bản _Auto của nguồn TRUYỀN CHUỖI RỖNG cho bộ lọc ngày ⇒ không lọc. Port tái hiện bằng cờ `auto`.
+    var from = auto ? (DateTime?)null : reportDateFrom;
+    var to = auto ? (DateTime?)null : reportDateTo;
+
+    var qp = db.TstParts.Where(x => x.OrgId == t.OrgId);
+    if (from is not null) qp = qp.Where(x => x.LUDTime >= from!.Value.Date);
+    if (to is not null) qp = qp.Where(x => x.LUDTime < to!.Value.Date.AddDays(1));
+
+    var parts = await qp.Select(x => new { x.TSTPartCode, x.VieName, x.VieNameHTC, x.Unit, x.VAT,
+                                          x.TSTPrice, x.TSTPriceBefore, x.TSTCost, x.DateEffect, x.LUDTime })
+        .ToListAsync();
+
+    // Nguồn: loại giá 0/NULL, và chỉ lấy dòng CHƯA GỬI hoặc GIÁ ĐÃ ĐỔI (so với bảng DNP).
+    // Mini chưa mô hình hoá `TST_Mst_Part_DNP` ⇒ so bằng `TSTPriceBefore` và nêu cờ.
+    var rows = parts.Where(x => x.TSTPrice > 0m)
+        .Where(x => x.TSTPriceBefore == null || x.TSTPriceBefore != x.TSTPrice)
+        .Select(x => new
+        {
+            x.TSTPartCode, x.VieName, x.VieNameHTC, x.Unit, x.VAT, x.DateEffect, x.LUDTime,
+            tstWarrantyPrice = x.TSTPrice,
+            // Nguồn: cast(isnull(ROUND(TSTWarrantyPrice / 100, 0), 0) as int). Giữ 1:1 công thức.
+            tstPriceSentToHmc = (int)Math.Round(x.TSTPrice / 100m, 0, MidpointRounding.AwayFromZero),
+            overflowsInt32 = x.TSTPrice / 100m > int.MaxValue,
+        })
+        .OrderBy(x => x.TSTPartCode).ToList();
+
+    return Results.Ok(new
+    {
+        auto, fromDate = from, toDate = to, count = rows.Count, rows,
+        int32OverflowRows = rows.Count(x => x.overflowsInt32),
+        // ===== #694 =====
+        autoVariantSendsEverythingBecauseDateFilterIsEmptied = "BAN TU DONG GUI HMC BO TRONG BO LOC NGAY => GUI TOAN BO LICH SU: DIFF _SendHMC vs _SendHMC_Auto (luat #414) cho khac biet gon dung mot dong nghiep vu — _SendHMC nhan , strReportDateConditionList (tham so nguoi dung), _SendHMC_Auto truyen , \"\" // strReportDateConditionList (CHUOI RONG). Trong …PartGetX: BuildClause(and, t.LUDTime, strReportDateConditionList, @p, …) — chuoi rong => BuildClause KHONG SINH GI (#410) => KHONG loc ngay => ban chay tu dong gui HMC MOI phu tung co gia thay doi TU TRUOC TOI NAY, khong gioi han ky; ban tay thi co loc. Day la ca #410 gay hau qua NGHIEP VU: bien mot lan gui dinh ky thanh mot lan gui TOAN BO LICH SU GIA",
+        threeRoundingLayersOnOneMoneyColumn = "BA TANG BIEN DOI SO TIEN TREN MOT COT (luat #408): cast(isnull(ROUND(t.TSTWarrantyPrice / 100, 0), 0) as int) TSTPrice. (1) CHIA 100 — neu TSTWarrantyPrice la kieu NGUYEN thi day la CHIA NGUYEN (dung ho VAT/100 o #673) => mat phan le TRUOC khi lam tron; khong kiem chung duoc kieu cot tu source. (2) ROUND(…, 0) — T-SQL lam tron RA XA SO 0, khac Convert.ToInt32 cua C# von ties-to-EVEN (#408). (3) cast(… as int) — TRAN o 2147483647, day la TIEN",
+        targetColumnNameDiffersFromSource = "TEN COT DICH KHAC TEN COT NGUON: TSTWarrantyPrice (gia BAO HANH) duoc gan vao TSTPrice (gia BAN) => hai khai niem khac nhau mang cung mot ten o dau ra",
+        lastGetTakesMaxRptIdOverWholeTable = "_LastGetX LAY MAX(RptID) TOAN BANG, KHONG CO WHERE NAO: select MAX(t.RptID) RptID into #tbl_Rpt_DealerNetPrice from Rpt_DealerNetPrice t ; (het cau) => lan gui gan nhat la CUA TOAN HE, khong phai cua dai ly/ky dang xem. Roi select t.* from Rpt_DealerNetPrice t inner join … => doi schema la doi hop dong API",
+        positiveLeftJoinOrIsNullIsIntentionalHere = "DUONG TINH: left join TST_Mst_Part_DNP f on t.TSTPartCode = f.TSTPartCode + and (f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice) => nghia DUNG la CHUA TUNG GUI HOAC GIA DA DOI. Khac #659 (o do IS NULL MO TOANG bo loc chien dich) => cung mot hinh dang, HAI Y NGHIA NGUOC NHAU; phai hoi NULL o day nghia la chua-co-DONG, va chua-co-dong co phai dieu minh MUON lay khong",
+        zeroPriceExcluded = "and isnull(t.TSTWarrantyPrice, 0.0) > 0 => phu tung gia 0 hoac NULL BI LOAI khoi dot gui",
+        resultTableNameLeftUnset = "TEN BANG KET QUA BI BO TRONG: //dsGetData.Tables[0].TableName = strFunctionName; BI COMMENT => client phai tra theo CHI SO bang, khong theo ten (khac #683/#685 noi ten duoc dat)",
+        debugSqlLoggingCommentedOut = "myDebug_SaveSql(...) trong …PartGetX BI COMMENT tron khoi => ham nay KHONG ghi lai SQL khi bat che do debug, khac hau het ham khac => kho chan doan khi so lieu sai",
+        miniModelGap = "Mini chua mo hinh hoa TST_Mst_Part_DNP (bang da gui HMC) va Rpt_DealerNetPrice => port so bang TSTPriceBefore thay cho bang DNP; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #693 TST TRẢ GIÁ VỀ — `Req_PartPrice_UpdTST` (`BizCarSv.SuggestPrice.cs:1536-1660`) =====
 // Vỏ bọc md5 `da74e92e` → thân thật `Req_PartPrice_UpdTST**X**` (`:1662-2042`, md5 `f988148d`)
 // — **cả hai KHỚP** máy 150. WS `WSCarSv.asmx.cs:39093` gọi bằng `WSReturn(...)`, **không** `MyDSEncode`
