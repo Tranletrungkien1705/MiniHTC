@@ -23078,13 +23078,46 @@ app.MapGet("/api/osveloca/ro/{roNo}/schedule", async (string roNo, AppDbContext 
 }).RequireAuthorization();
 
 // ===== Master kỳ khảo sát JD Power (JDPowerTerm — port 1:1 FrmJDPowerTermCreate/Search, TCMotor DMSCarSv) =====
+// ===== 🔴🔴 #660 PARITY `JDPowerTerm_Get_WH` (`WH.cs:31237-31400`) — TÊN CỘT SAI CHÍNH TẢ LÀ CÓ THẬT =====
+// 3B: laptop `:31237` md5 `f85a467b` **KHỚP** máy 150 `:31237`. WS gọi thẳng bản này (không hậu tố).
+//
+// 🔴🔴 **CỘT NGÀY KẾT THÚC TRONG DB TÊN LÀ `JPDEndDate` — ĐẢO `D`/`P` SO VỚI `JDPStartDate`**:
+//     `BuildClause("and", "t.**JPD**EndDate", **strJDPEndDate**, "@p", ref alParamsCoupleSql)`
+//   Tên **cột SQL** viết `JPD…`, còn tên **biến C#** viết `JDP…` — hai thứ khác nhau trong **cùng một dòng**.
+//   📌 **Đếm và phân loại** (đây là bước cứu tôi khỏi kết luận "hai cách viết mâu thuẫn"):
+//     `JPDEndDate` = **27** lần — **toàn bộ** nằm ở vị trí **tên cột trong SQL** (`t.JPDEndDate`);
+//     `JDPEndDate` = **17** lần — **toàn bộ** nằm ở **tên biến/tham số C#** (`strJDPEndDate`, `zzzzClauseWhere_…`);
+//     `JDPStartDate` = **44** lần, viết **nhất quán** ở cả hai vai trò.
+//   ⇒ **Không mâu thuẫn**: cột thật trong DB **đúng là** `JPDEndDate`. Ai "sửa cho đúng" thành `JDPEndDate`
+//     trong SQL sẽ **trỏ sai cột** ⇒ đúng luật *HẰNG ≠ GIÁ TRỊ, chép nguyên văn hằng sai chính tả*.
+//   ⚠️ MiniHTC đặt tên thuộc tính là `StartDate`/`EndDate` (đã trung tính hoá) ⇒ **không mang lỗi này sang**,
+//     nhưng khi **đối soát dữ liệu thật** với DB nguồn thì phải nhớ cột kia tên `JPDEndDate`.
+//   ⚪ Khớp với ghi chú #355 đã có trong file này (`SELECT TOP 1 JPDEndDate FROM JDP_Mst_JDPowerTerm`).
+//
+// 🔴 **BẢY `BuildClause` LIÊN TIẾP, ĐỀU ĐÒI TOÁN TỬ Ở ĐẦU CHUỖI** (#410): `t.JDPTermCode` · `t.JDPTermName` ·
+//   `t.JDPStartDate` · `t.JPDEndDate` · `t.CreatedDate` · `t.CreatedBy` · `t.FlagActive` ⇒ client gửi giá trị
+//   trần ở bất kỳ ô nào thì ô đó **rơi im lặng**; gửi trần **tất cả** ⇒ `where (1=1)` ⇒ **trả cả danh mục**.
+// 🔴 **KẾT QUẢ HAI BẢNG**: sau bảng tạm lọc, nguồn chạy **hai** câu — `inner join JDP_Mst_JDPowerTerm` (kỳ) và
+//   `inner join JDP_Mst_JDPowerTermDtl` (**chi tiết kỳ**) ⇒ MiniHTC **chưa mô hình hoá bảng chi tiết** ⇒ ghi nợ.
+// 📌 Lượt PARITY — vá endpoint `/api/jdpowerterms` đã có, **không** tăng bộ đếm màn.
 app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
     var qry = db.JDPowerTerms.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.JDPTermCode.Contains(q!) || x.JDPTermName!.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.JDPTermCode, x.JDPTermName, x.StartDate, x.EndDate, x.FlagActive }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #660 =====
+        columnIsJpdEndDateNotJdp = "cot ngay ket thuc trong DB ten la JPDEndDate (dao D/P so voi JDPStartDate): BuildClause(and, t.JPDEndDate, strJDPEndDate, …) — ten COT SQL viet JPD… con ten BIEN C# viet JDP…, hai thu khac nhau trong CUNG mot dong",
+        spellingCountedAndClassified = "JPDEndDate = 27 lan, TOAN BO o vi tri ten cot trong SQL (t.JPDEndDate); JDPEndDate = 17 lan, TOAN BO o ten bien/tham so C# (strJDPEndDate, zzzzClauseWhere_…); JDPStartDate = 44 lan, viet nhat quan o ca hai vai tro",
+        notAContradiction = "=> KHONG mau thuan: cot that trong DB DUNG LA JPDEndDate; ai sua cho dung thanh JDPEndDate trong SQL se TRO SAI COT (luat HANG khac GIA TRI, chep nguyen van hang sai chinh ta)",
+        miniUsesNeutralNames = "MiniHTC dat thuoc tinh la StartDate/EndDate (da trung tinh hoa) nen KHONG mang loi nay sang, nhung khi doi soat du lieu that voi DB nguon phai nho cot kia ten JPDEndDate",
+        matchesEarlierNote355 = "khop voi ghi chu #355 da co trong file nay: SELECT TOP 1 JPDEndDate FROM JDP_Mst_JDPowerTerm",
+        sevenBuildClausesAllOperatorPrefixed = "bay BuildClause lien tiep (JDPTermCode, JDPTermName, JDPStartDate, JPDEndDate, CreatedDate, CreatedBy, FlagActive) — client gui gia tri tran o bat ky o nao thi o do ROI IM LANG; gui tran tat ca => where (1=1) => tra ca danh muc (#410)",
+        sourceReturnsTwoTables = "sau bang tam loc, nguon chay HAI cau: inner join JDP_Mst_JDPowerTerm (ky) va inner join JDP_Mst_JDPowerTermDtl (CHI TIET ky); MiniHTC chua mo hinh hoa bang chi tiet => ghi NO",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITenantContext t) =>
