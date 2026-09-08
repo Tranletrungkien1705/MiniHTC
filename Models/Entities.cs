@@ -11144,6 +11144,23 @@ public sealed class DlrContract
     /// </summary>
     public DateTime? VersionDTimeCurr { get; set; }
     public string DlrContractNo { get; set; } = "";
+    /// <summary>🔴 #B198 — hai cột còn lại của `zzB_Update_Dlr_Contract_ClauseSet_zzE`. ⚠️ Lần đếm đầu
+    /// tôi tưởng đã có vì `grep -c "public .* ContractFNo"` khớp **thực thể KHÁC** (`DealerContractForm`).</summary>
+    public string? ContractFNo { get; set; }
+    public string? Note { get; set; }
+    /// <summary>🔴 #B198 — **mười cột điều khoản hợp đồng** mà `Dlr_Contract_UpdContractFX_New20181119`
+    /// ghi (`zzB_Update_Dlr_Contract_ClauseSet_zzE`) nhưng bản port trước không có. Đây là **nội dung
+    /// mẫu hợp đồng** áp vào từng hợp đồng khi đổi mẫu (`ContractFNo`).</summary>
+    public string? Promotion { get; set; }
+    public string? TimePayment { get; set; }
+    public string? MethodPayment { get; set; }
+    public string? TimeAndAddressDelivery { get; set; }
+    public string? TimeOwnerTransfer { get; set; }
+    public string? RightAndResponsibilityPartySeller { get; set; }
+    public string? RightAndResponsibilityPartyBuyer { get; set; }
+    public string? Warrantly { get; set; }
+    public string? OtherTerms { get; set; }
+    public DateTime? LastestFormDateTime { get; set; }
     public string DlrContractNoUser { get; set; } = "";
     public string DealerCode { get; set; } = "";
     public string SalesManCode { get; set; } = "";

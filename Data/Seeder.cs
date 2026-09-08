@@ -2345,6 +2345,18 @@ public static class Seeder
                 "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDCode\" text NULL",   // #B115 - nua kia cua PHAM VI day so
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDCode\" text NULL",   // #B116
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"OS_HDDT_InvoiceCode\" text NULL",   // #B118
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"ContractFNo\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"Note\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"Promotion\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"TimePayment\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"MethodPayment\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"TimeAndAddressDelivery\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"TimeOwnerTransfer\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"RightAndResponsibilityPartySeller\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"RightAndResponsibilityPartyBuyer\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"Warrantly\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"OtherTerms\" text NULL",   // #B198
+                "ALTER TABLE public.\"DlrContracts\" ADD COLUMN IF NOT EXISTS \"LastestFormDateTime\" timestamp NULL",   // #B198
                 "ALTER TABLE public.\"InvoiceIDs\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",   // #B188
                 "ALTER TABLE public.\"InvoiceIDs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",   // #B188
                 "ALTER TABLE public.\"InvoiceIDs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // #B188

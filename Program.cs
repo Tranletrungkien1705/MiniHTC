@@ -33792,6 +33792,89 @@ app.MapGet("/api/dealercontractforms/htc-paged", async (
     });
 }).RequireAuthorization();
 
+// ===== #B198/#B199 ĐỔI MẪU HỢP ĐỒNG ĐẠI LÝ — `Dlr_Contract_UpdContractF_New20181119`
+//       → `Dlr_Contract_UpdContractFX_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**):
+//   `FX  112342,112800 / d59a8c74fdd96356463e100b0c9281d7`
+//   `cửa 112801,112971 / 345fb4161b7545d77ffd346dc3ae16cf`
+//   ⚠️ **Bẫy tên gần giống** (họ với #B196): có `Dlr_Contract_UpdContractFX` (`RetailContract.cs:3453`)
+//     và `…FX_New20181105` (`:3806`) — **cả hai đều KHÔNG phải bản LIVE**. Cửa `_New20181119` gọi
+//     **`…FX_New20181119`** ở `Biz.HTC.WH.cs:112342`. Chọn theo **hậu tố khớp cửa**, không theo tên gần đúng.
+// 🔴🔴 **GHI HAI BẢNG trong một giao dịch**, mỗi bảng một khoá nối khác nhau:
+//   · `Dlr_Contract`   — nối **1 cột**: `on t.DlrContractNo = f.DlrContractNo`;
+//   · `Dlr_ContractDtl`— nối **4 cột**: `DlrContractNo` + `SpecCode` + `ModelCode` + `ColorCode`.
+//   ⇒ Bỏ sót cột nối ở bảng dòng ⇒ **ghi đè nhầm dòng** của spec/model/màu khác.
+// 🔴 **MƯỜI hai cột điều khoản** được ghi vào `Dlr_Contract` (ngoài `LogLU*`): `ContractFNo` · `Note` ·
+//   `Promotion` · `TimePayment` · `MethodPayment` · `TimeAndAddressDelivery` · `TimeOwnerTransfer` ·
+//   `RightAndResponsibilityPartySeller` · `RightAndResponsibilityPartyBuyer` · `Warrantly` ·
+//   `OtherTerms` · `LastestFormDateTime`.
+//   ⇒ Đây là **nội dung mẫu hợp đồng áp vào từng hợp đồng** khi đổi mẫu — **không phải** chỉ đổi mã mẫu.
+//   📌 §12 đã bổ sung **10 cột** còn thiếu vào `DlrContract` (2 cột `ContractFNo`/`Note` đã có).
+// 🔴 Bảng dòng chỉ ghi **3 cột nghiệp vụ**: `ProductionYear` · `UnitPrice` · `OriginCar` (+ `LogLU*`).
+// 🔴 **HAI guard tồn tại**, mỗi cái một hàm riêng: `Dlr_Contract_CheckDB` (hợp đồng phải có) và
+//   `Dlr_Mst_DealerContractForm_CheckDB` (**mẫu hợp đồng phải có**) — thiếu guard thứ hai ⇒ gán được
+//   mã mẫu không tồn tại.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`** (cả hai `SaveTemp` lẫn `ExecQuery` đều chạy hai lần).
+app.MapPost("/api/dlrcontracts/{no}/update-contract-form", async (
+    string no, DlrContractFormUpdDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var contractNo = (no ?? "").Trim().ToUpperInvariant();
+    var ct = await db.DlrContracts.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DlrContractNo == contractNo);
+    if (ct is null)
+        return Results.NotFound(new { error = "Dlr_Contract_CheckDB_NotFound", check = new { DlrContractNo = contractNo } });
+
+    // 🔴 Guard 2 — MẪU HỢP ĐỒNG phải tồn tại (hàm CheckDB RIÊNG, dễ bỏ sót).
+    var formNo = (dto.ContractFNo ?? "").Trim();
+    if (formNo.Length > 0)
+    {
+        var formOk = await db.DealerContractForms.AnyAsync(f => f.OrgId == t.OrgId && f.ContractFNo == formNo);
+        if (!formOk)
+            return Results.BadRequest(new
+            {
+                error = "Dlr_Mst_DealerContractForm_CheckDB_NotFound",
+                check = new { ContractFNo = formNo },
+                note = "Nguon goi Dlr_Mst_DealerContractForm_CheckDB - guard RIENG; thieu no se gan duoc ma mau KHONG TON TAI."
+            });
+    }
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // 🔴 MƯỜI HAI cột điều khoản + LogLU* — đúng `zzB_Update_Dlr_Contract_ClauseSet_zzE`.
+    ct.ContractFNo = formNo;
+    ct.Note = dto.Note;
+    ct.Promotion = dto.Promotion;
+    ct.TimePayment = dto.TimePayment;
+    ct.MethodPayment = dto.MethodPayment;
+    ct.TimeAndAddressDelivery = dto.TimeAndAddressDelivery;
+    ct.TimeOwnerTransfer = dto.TimeOwnerTransfer;
+    ct.RightAndResponsibilityPartySeller = dto.RightAndResponsibilityPartySeller;
+    ct.RightAndResponsibilityPartyBuyer = dto.RightAndResponsibilityPartyBuyer;
+    ct.Warrantly = dto.Warrantly;
+    ct.OtherTerms = dto.OtherTerms;
+    ct.LastestFormDateTime = dto.LastestFormDateTime ?? now;
+    ct.LogLUDateTime = now; ct.LogLUBy = by;
+
+    // 📌 NỢ: MiniHTC **chưa có** thực thể `DlrContractDtl` (chỉ có `DlrContractDtlHis`) ⇒ **không port
+    //   được** khối cập nhật bảng dòng (`ProductionYear`/`UnitPrice`/`OriginCar`). Trả cờ để thấy rõ,
+    //   **không bịa** bảng dòng.
+    var dtlUpdated = 0;
+    var dtlNotPorted = true;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        dlrContractNo = contractNo, contractFNo = formNo, dtlUpdated, dtlNotPorted,
+        twoTableNote = "GHI HAI BANG trong mot giao dich, moi bang MOT KHOA NOI KHAC NHAU: Dlr_Contract noi 1 cot (DlrContractNo); Dlr_ContractDtl noi 4 cot (DlrContractNo + SpecCode + ModelCode + ColorCode). Bo sot cot noi o bang dong => GHI DE NHAM DONG cua spec/model/mau khac.",
+        twelveColumnNote = "MUOI HAI cot dieu khoan duoc ghi vao Dlr_Contract (ngoai LogLU*): ContractFNo, Note, Promotion, TimePayment, MethodPayment, TimeAndAddressDelivery, TimeOwnerTransfer, RightAndResponsibilityPartySeller, RightAndResponsibilityPartyBuyer, Warrantly, OtherTerms, LastestFormDateTime. Day la NOI DUNG MAU HOP DONG AP VAO TUNG HOP DONG khi doi mau - KHONG PHAI chi doi ma mau. S12 da bo sung 10 cot con thieu.",
+        dtlColumnNote = "Bang dong chi ghi BA cot nghiep vu: ProductionYear, UnitPrice, OriginCar (+ LogLU*).",
+        twoGuardNote = "HAI guard ton tai, moi cai mot ham rieng: Dlr_Contract_CheckDB (hop dong phai co) va Dlr_Mst_DealerContractForm_CheckDB (MAU HOP DONG phai co).",
+        overloadTrapNote = "BAY TEN GAN GIONG (ho voi #B196): co Dlr_Contract_UpdContractFX (RetailContract.cs:3453) va ...FX_New20181105 (:3806) - CA HAI DEU KHONG PHAI BAN LIVE. Cua _New20181119 goi ...FX_New20181119 o Biz.HTC.WH.cs:112342. Chon theo HAU TO KHOP CUA, khong theo ten gan dung.",
+        twoDbNote = "Nguon ghi ca _dbMain va _dbWH (ca SaveTemp lan ExecQuery deu chay hai lan)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -45812,6 +45895,7 @@ record TranspFeeVersionDto(List<TranspFeeDto>? Rows);
 record TranspFeeVerDeleteDto(List<string>? TFVCodes);
 record MngQuotaDelMultiRowDto(string? DealerCode, string? SpecCodePromotion);   // #B193
 record MngQuotaDelMultiDto(List<MngQuotaDelMultiRowDto>? Rows);   // #B193
+record DlrContractFormUpdDto(string? ContractFNo, string? Note, string? Promotion, string? TimePayment, string? MethodPayment, string? TimeAndAddressDelivery, string? TimeOwnerTransfer, string? RightAndResponsibilityPartySeller, string? RightAndResponsibilityPartyBuyer, string? Warrantly, string? OtherTerms, DateTime? LastestFormDateTime);   // #B198
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);
