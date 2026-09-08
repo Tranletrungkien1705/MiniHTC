@@ -16188,6 +16188,96 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #572 TRA PHIẾU THU THEO KỲ (`SerPaymentGet`, `Debit.cs:3628`) =====
+//
+// 🔴🔴 **HAI BỘ LỌC LOẠI PHIẾU CHỒNG NHAU VÀ LOẠI TRỪ NHAU**:
+//     `and p.PaymentType in ('1','2')`            ← **cứng trong SQL**
+//     `zzzzClauseWhere_strPaymentTypeConditionList` ← do **client** chọn
+//   ⇒ Client chọn loại **3 (nhà cung cấp)** thì hai điều kiện **triệt tiêu nhau** ⇒ **luôn rỗng**, không lỗi.
+//     Mà câu vẫn `left join ser_mst_supplier spp` và **chọn ba cột** `SupplierCode` / `SupplierName` /
+//     `SppPhone` ⇒ **ba cột không bao giờ có dữ liệu**. Giao diện có ô "nhà cung cấp" nhưng ô đó **chết**.
+//   ⚠️ Nhãn cũng khớp: `case p.PaymentType when 1 then N'Khách hàng' when 2 then N'Bảo hiểm' **else ''** end`
+//     — **không có nhánh cho loại 3**; nếu ai gỡ dòng lọc cứng thì nhãn ra **chuỗi rỗng**, không phải NULL,
+//     nên không cách nào phân biệt "chưa có nhãn" với "nhãn rỗng".
+// 🔴 **[BAKE-PARAM-MIX] — TRỘN CHUỖI DÁN VÀ THAM SỐ RUNTIME TRONG CÙNG MỘT CÂU**:
+//     dán chuỗi: `convert(datetime, '**@FromDate**', 20)` và `'**@ToDate**'` ← thay bằng `StringUtils.Replace`
+//     tham số:   `BuildClause("and", "p.DealerCode", …, **"@p"**, ref alParamsCoupleSql)` ← `@p0` runtime
+//   ⇒ Đúng cái bẫy đã ghi trong sổ: một câu **hai cơ chế**. Ngày do client gửi được **dán thẳng vào chuỗi
+//     trong dấu nháy** ⇒ chỉ cần một dấu nháy là **hỏng câm hoặc chèn SQL**.
+//   ⚠️ Thêm: chuỗi ngày **rỗng** ⇒ `convert(datetime, '', 20)` = **1900-01-01** ⇒ điều kiện luôn đúng ⇒
+//     **không lọc kỳ nào cả**, và **không** báo lỗi. Port bắt buộc phải có cả hai mốc.
+// 🔴 `BuildClauseConditionList("and", "p.PaymentType", strPaymentType, "|")` — biến thể này **không nhận**
+//   `ref alParamsCoupleSql` nên **nướng thẳng giá trị vào chuỗi SQL** ⇒ **bề mặt SQL injection** ngay trên
+//   đường ĐỌC (trước nay ghi nhận ở đường XOÁ).
+// 🔴 **`#region // Check` RỖNG** (trích theo luật #403): giữa `#region // Check` và `#endregion` **không có
+//   dòng nào**. Không chặn ngày rỗng, không chặn đại lý rỗng — cộng với gạch đầu dòng trên là **trả cả hệ**.
+// 🔴 **BA `left join`, CHỈ HAI CÁI NỐI THEO ĐẠI LÝ**:
+//     `left join ser_insurance ins on p.insno=ins.insno **and p.DealerCode = ins.DealerCode**`
+//     `left join ser_mst_supplier spp on p.SupplierID=spp.SupplierID **and p.DealerCode = spp.DealerCode**`
+//     `left join ser_customer cus on p.cusid=cus.cusid`   ← **thiếu vế đại lý**
+//   ⇒ Mã khách trùng nhau giữa hai đại lý là **nở dòng** (cùng dạng lỗi với `sys_user` ở #563).
+// ⚠️ `datediff(day, convert(datetime,…), p.paydate) >= 0` — **hàm bọc quanh cột** ⇒ không dùng được chỉ mục;
+//   với bảng phiếu thu toàn hệ thì đây là quét bảng. (Cách viết `>= / <` vừa nhanh vừa không mất ngày cuối.)
+// ⚠️ `select p.*` + `with(nolock)` trên **mọi** bảng ⇒ hợp đồng không xác định + đọc bẩn.
+// ⚠️ Đọc bằng `_dbDealer` nhưng `ser_payment` lấy từ `[CommonCenter]` — lại là **hai nguồn trong một câu** (#560).
+app.MapGet("/api/payments/search", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? paymentType) =>
+{
+    if (fromDate is null || toDate is null)
+        return Results.BadRequest(new
+        {
+            error = "fromDate và toDate bắt buộc.",
+            sourceWouldNotFilterAtAll = "nguon dan chuoi rong vao convert(datetime,'',20) = 1900-01-01 nen dieu kien luon dung",
+        });
+    var f = fromDate!.Value.Date;
+    var toEx = toDate!.Value.Date.AddDays(1);   // nguồn dùng datediff(day,…)>=0 ⇒ trọn ngày cuối
+
+    // Nguồn CỨNG in ('1','2') rồi CỘNG THÊM bộ lọc của client ⇒ loại 3 luôn rỗng.
+    var HARD = new[] { "1", "2" };
+    var picked = (paymentType ?? "").Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    var effective = picked.Count == 0 ? HARD.ToList() : picked.Where(x => HARD.Contains(x)).ToList();
+    var supplierTypeRequestedButImpossible = picked.Contains("3");
+
+    var rows = new List<object>();
+    if (effective.Contains("1"))
+    {
+        var qc = db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && x.PayDate >= f && x.PayDate < toEx);
+        if (!string.IsNullOrWhiteSpace(dealerCode)) qc = qc.Where(x => x.DealerCode == dealerCode!.Trim());
+        rows.AddRange((await qc.OrderByDescending(x => x.PayDate)
+            .Select(x => new { x.Id, x.PaymentNo, x.PaymentAmount, x.PayDate, x.DealerCode, x.Note,
+                x.PayPersonName, paymentType = "1", paymentTypeText = "Khách hàng",
+                partyCode = (string?)null, partyName = (string?)null })
+            .ToListAsync()).Cast<object>());
+    }
+    if (effective.Contains("2"))
+    {
+        var qi = db.InsDebitPayments.Where(x => x.OrgId == t.OrgId && x.PayDate >= f && x.PayDate < toEx);
+        rows.AddRange((await qi.OrderByDescending(x => x.PayDate)
+            .Select(x => new { x.Id, x.PaymentNo, x.PaymentAmount, x.PayDate, dealerCode = (string?)null, x.Note,
+                payPersonName = (string?)null, paymentType = "2", paymentTypeText = "Bảo hiểm",
+                partyCode = (string?)null, partyName = (string?)null })
+            .ToListAsync()).Cast<object>());
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        effectivePaymentTypes = effective,
+        hardCodedTypeFilterInSource = "and p.PaymentType in (1,2) — CONG THEM bo loc cua client",
+        supplierTypeRequestedButImpossible,
+        supplierColumnsNeverPopulated = "left join ser_mst_supplier + ba cot SupplierCode/SupplierName/SppPhone khong bao gio co du lieu",
+        labelHasNoBranchForType3 = "case ... else rong => khong phan biet duoc chua-co-nhan voi nhan-rong",
+        bakeParamMixInSource = "@FromDate/@ToDate dan chuoi bang StringUtils.Replace trong khi p.DealerCode dung tham so @p runtime",
+        emptyDateBecomes1900 = "convert(datetime, rong, 20) = 1900-01-01 => khong loc ky nao ca",
+        conditionListBakesValues = "BuildClauseConditionList khong nhan ref alParamsCoupleSql => be mat SQL injection tren duong DOC",
+        checkRegionIsEmptyInSource = true,
+        customerJoinMissingDealerScope = "ser_insurance va ser_mst_supplier deu noi them DealerCode; ser_customer thi khong => no dong",
+        nonSargableDateFilter = "datediff(day, convert(...), p.paydate) >= 0 — ham boc quanh cot, khong dung chi muc",
+        selectStarWithNolock = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #571 XOÁ PHIẾU THU (`SerPaymentDelete`, `Debit.cs:3261`) — **BA DB, MỘT DÒNG GÕ NHẦM** =====
 //
 // 🔴🔴 **NHÁNH XOÁ Ở DB ĐẠI LÝ GỌI NHẦM ĐỐI TƯỢNG DAL** — trích nguyên văn:
