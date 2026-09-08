@@ -13250,6 +13250,98 @@ app.MapGet("/api/emailbatches/pending", async (AppDbContext db, ITenantContext t
 // (BatchStatusTo/CC/BCC/FA — bốn cột khác tên nhưng chung bảng mã TConst.BatchStatus).
 // ⚠️ Nhánh To ở MiniHTC là `EmailSend`, dùng CỜ "1"/"0" chứ không phải bảng mã chữ — giữ đúng
 //    từ vựng của từng tầng, không đồng hoá.
+// ===== 🔴🔴 #595 TẠO LÔ GỬI THƯ (`Email_BatchSendEmailCreate`, `SendMail.cs:929`) — **GUARD DUNG LƯỢNG BỎ LỌT ĐÚNG ĐƯỜNG ĐI THẬT** =====
+// Đây là nơi **duy nhất** gọi `CheckAttachmentLimit` (#587). Nhưng đọc trọn khối đính kèm thì guard đó
+//   **không đứng chắn** con đường mà tệp thực sự đi qua.
+//
+// 🔴🔴 **HAI NGUỒN TỆP, GUARD CHỈ KIỂM MỘT**:
+//     `CheckAttachmentLimit(_dbMain, ref alParamsCoupleError, strDealerCode, **attachment**);`   ← kiểm mảng byte
+//     rồi trong thân: `if (attachment != null) row["Attachment"] = attachment;`
+//     `else { … Select TempFile From Email_TempEmail Where TempIDEmail = '@strEmailTempId' … `
+//            `row["Attachment"] = dsGetData.Tables[0].Rows[0]["**TempFile**"]; }`
+//   ⇒ Khi client **không** gửi kèm mảng byte (đường đi **thường gặp**: tệp đã upload trước vào bảng tạm),
+//     nhánh `else` **đọc thẳng tệp từ DB và gán vào lô** — **không đi qua `CheckAttachmentLimit`**.
+//   ⇒ Guard dung lượng chỉ chặn được đường **hiếm**; đường **thật** thì lọt. Bổ sung cho #587: ở đó tôi ghi
+//     *"guard chỉ có ở đường gửi lô"* — nay chính xác hơn: **ngay trong đường gửi lô, guard cũng chỉ phủ một
+//     trong hai nhánh**.
+// 🔴 **BAKE HAI THAM SỐ DO NGƯỜI DÙNG ĐẶT TÊN**: `TempIDEmail = '@strEmailTempId'` và
+//   `TempFileAttachment = '@strAttachmentName'` thay bằng `StringUtils.Replace`, trong khi `alParamsCoupleSql`
+//   được tạo **rỗng** rồi vẫn truyền vào `ExecQuery` (lặp #576/#587). ⚠️ `strAttachmentName` là **tên tệp do
+//   người dùng đặt** ⇒ một dấu nháy trong tên tệp là **chèn SQL**.
+// 🔴 **TRA TỆP THEO TÊN, KHÔNG `top 1`, KHÔNG `order by`**: hai tệp trùng tên trong cùng `TempIDEmail` ⇒
+//   `Rows[0]` lấy **dòng bất kỳ** (#415). Lô có thể đính **nhầm tệp** mà không ai biết.
+// 🔴 **CHÉP SANG KHO: KHOÁ ĐÚNG NHƯNG KHÔNG CHỐNG TRÙNG**:
+//     `select @@Identity BatchId` → gán vào `row["BatchId"]` → `SetDataRowStateOfAllRows(Added)` → `_dbWH.SaveData`
+//   ⚪ Khoá **được chép** (đúng nguyên tắc, như #591). 🔴 Nhưng `@@IDENTITY` **không giới hạn phạm vi**
+//     (lặp #570/#575/#577/#590) và `Added` **không kiểm tồn tại** ⇒ chạy lại là **nhân đôi lô ở kho** (#591).
+// 🔴 **`#region // Check:` CHỈ CÓ ĐÚNG MỘT LỜI GỌI** `CheckAttachmentLimit` (trích theo #403) ⇒ `BatchNo`,
+//   `DealerCode`, `EffectDate`, `SendBy` đều gán **vô điều kiện**, **không** kiểm rỗng, **không** kiểm
+//   `BatchNo` đã tồn tại ⇒ tạo hai lô cùng số là chuyện bình thường.
+app.MapPost("/api/emailbatches", async (AppDbContext db, ITenantContext t,
+    string? batchNo, string? dealerCode, DateTime? effectDate, string? sendBy,
+    string? attachmentName, long? attachmentBytes, string? tempEmailId) =>
+{
+    if (string.IsNullOrWhiteSpace(batchNo))
+        return Results.BadRequest(new { error = "batchNo bat buoc — nguon gan vo dieu kien, khong kiem rong." });
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "dealerCode bat buoc — nguon gan vo dieu kien." });
+    var no = batchNo!.Trim().ToUpperInvariant();
+    var dc = dealerCode!.Trim().ToUpperInvariant();
+
+    // GUARD nguồn KHÔNG có: trùng số lô.
+    if (await db.EmailBatches.AnyAsync(x => x.OrgId == t.OrgId && x.BatchNo == no))
+        return Results.BadRequest(new
+        {
+            error = $"Lo {no} da ton tai.",
+            sourceDoesNotCheckDuplicateBatchNo = true,
+        });
+
+    // Guard dung lượng — port áp cho CẢ HAI nhánh tệp (nguồn chỉ áp cho nhánh mảng byte).
+    var attachmentFromTemp = string.IsNullOrWhiteSpace(attachmentName) ? null
+        : await db.EmailBatchFileAttaches.FirstOrDefaultAsync(f => f.OrgId == t.OrgId && f.FilePath == attachmentName);
+    var sizeToCheck = attachmentBytes ?? 0;
+    if (!string.IsNullOrWhiteSpace(attachmentName) || sizeToCheck > 0)
+    {
+        var cfg = await db.Masters
+            .Where(m => m.OrgId == t.OrgId && m.Category == "MaxAttachmentSize" && m.Code == dc)
+            .ToListAsync();
+        if (cfg.Count != 1)
+            return Results.BadRequest(new
+            {
+                error = "Email_AttachmentNotAllowed",
+                rowCount = cfg.Count,
+                sameTwoCausesOneCode = "chua khai / khai trung deu ra mot ma (#587)",
+            });
+        if (long.TryParse((cfg[0].Name ?? "").Trim(), out var maxBytes) && sizeToCheck > maxBytes)
+            return Results.BadRequest(new { error = "Email_AttachmentSizeOverLimit", maxBytes, sizeToCheck });
+    }
+
+    var row = new EmailBatch
+    {
+        OrgId = t.OrgId, BatchNo = no, DealerCode = dc,
+        EffectDate = effectDate, SendBy = sendBy,
+        AttachmentName = attachmentName,
+        BatchStatus = "0",
+        LogLUDateTime = DateTime.Now,
+    };
+    db.EmailBatches.Add(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.BatchNo, row.DealerCode, row.EffectDate, row.SendBy, row.AttachmentName, row.BatchStatus,
+        attachmentResolvedFromTemp = attachmentFromTemp is not null,
+        guardSkipsTempFileBranchInSource = "CheckAttachmentLimit chi kiem mang byte client gui; nhanh else doc TempFile tu Email_TempEmail roi gan thang vao lo, KHONG qua guard",
+        refinementOf587 = "khong chi guard-chi-o-duong-gui-lo ma NGAY TRONG duong gui lo, guard chi phu MOT trong HAI nhanh",
+        tempFileQueryBakesUserSuppliedName = "TempIDEmail = quote@strEmailTempId va TempFileAttachment = quote@strAttachmentName — ten tep do NGUOI DUNG dat, mot dau nhay la chen SQL",
+        tempFileLookupHasNoTopOneNoOrderBy = "hai tep trung ten trong cung TempIDEmail => Rows[0] lay dong bat ky, lo co the dinh NHAM tep",
+        whCopyKeepsKeyButNoDuplicateCheck = "select @@Identity roi gan BatchId + SetDataRowStateOfAllRows(Added) => khoa duoc chep (dung) nhung chay lai la nhan doi lo o kho (#591)",
+        atAtIdentityNotScoped = "lap #570/#575/#577/#590",
+        checkRegionHasOnlyOneCall = "#region // Check: chi co CheckAttachmentLimit; BatchNo/DealerCode/EffectDate/SendBy gan vo dieu kien",
+        guardsAddedByPort = new[] { "batchNo/dealerCode khac rong", "chong trung so lo", "kiem dung luong cho CA HAI nhanh tep" },
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/emailbatches/{no}/sent", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim();
