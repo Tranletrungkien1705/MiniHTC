@@ -9404,6 +9404,20 @@ public sealed class ConfigMapVinInputDtl
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B145/#B146 — `Auto_MapVIN`: **một lượt chạy** job map VIN. `ProcessDTime` là
+/// **khoá loại trừ**: còn dòng nào `ProcessDTime is null` nghĩa là **đang có lượt chạy dở**,
+/// nguồn từ chối mọi lượt mới (`DMS40_Auto_MapVIN_InvalidOtherProcessing`).</summary>
+public sealed class AutoMapVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ATMVNo { get; set; } = "";
+    public string? ATMVType { get; set; }
+    public DateTime? ProcessDTime { get; set; }     // null = ĐANG CHẠY DỞ
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

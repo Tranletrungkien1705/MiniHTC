@@ -10427,6 +10427,176 @@ app.MapPut("/api/dms40/mapvin-config-inputs/{cfgCode}", async (
     });
 }).RequireAuthorization();
 
+// ===== #B145 XIN CHẠY JOB MAP VIN (BO) — `Auto_MapVIN_BO_Save` =====
+// Trace LIVE: `DMS40/0.20.MapVIN.2024.cs:27` — csproj dòng **357** `<Compile Include>` ⇒ **file SỐNG**.
+//   **3B đo theo dải dòng tường minh, khớp cả 2 máy**: `27,236 / b7b9d892358473d9b434d984bb76a253`.
+// 🔴🔴 **KHOÁ LOẠI TRỪ MỘT LƯỢT CHẠY (mutex) — điểm cốt tử của hàm này**:
+//      `select top 1 t.ATMVNo, t.ATMVType from Auto_MapVIN t where **t.ProcessDTime is null**
+//       order by t.ATMVNo desc`
+//      `if (dtCheck.Rows.Count > 0) throw …DMS40_Auto_MapVIN_InvalidOtherProcessing;`
+//   ⇒ Còn **bất kỳ** lượt nào **chưa có `ProcessDTime`** thì **mọi lượt mới bị từ chối**.
+//     `ProcessDTime is null` = *"đang chạy dở"*, **không phải** "chưa bắt đầu".
+//   ⚠️ Đây là **khoá mềm ở tầng ứng dụng**, không phải khoá DB: hai phiên gọi **cùng lúc** đều đọc
+//     thấy "sạch" rồi cùng ghi ⇒ vẫn có thể **lọt hai lượt**. Ghi lại, **không tự thêm khoá**.
+//   ⚠️ Guard **không tự dọn** lượt treo: một lượt chết giữa chừng (không kịp ghi `ProcessDTime`) sẽ
+//     **chặn vĩnh viễn** mọi lượt sau cho tới khi có người sửa tay. Ghi lại, **không tự thêm hạn chờ**.
+// 🔴 `objATMVNo` **bắt buộc**, rỗng ⇒ `TError.ErrHTC.DMS40_Auto_MapVIN` (**mã lỗi chung**, không có
+//   mã riêng cho ô trống — thông báo sẽ không chỉ ra thiếu gì; giữ nguyên).
+// 🔴 **`CommandTimeOut = 55000` giây (~15 giờ)** trên **cả `_dbMain` và `_dbWH`** — chú thích nguồn
+//   `// DũngND. 20220707 55000s`. ⇒ Job này được thiết kế để chạy **rất lâu**; đừng port với timeout
+//   mặc định rồi kết luận "treo".
+// 📌 **NỢ**: `Auto_MapVIN_BO_GetAndSaveX` (thuật toán map VIN cho hàng BO) chưa có trong MiniHTC ⇒
+//   endpoint **chỉ ghi lượt chạy + giữ khoá**, cờ `engineNotRun`. **Không sinh dữ liệu map giả.**
+// 📌 §12: thực thể `AutoMapVin` + Seeder + DbSet + DTO + có ở **cả POST và GET**.
+app.MapPost("/api/dms40/mapvin/bo-save", async (
+    AutoMapVinBoSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var atmvNo = (dto.ATMVNo ?? "").Trim();
+    if (atmvNo.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "DMS40_Auto_MapVIN",
+            check = new { ATMVNo = atmvNo },
+            note = "Nguon dung MA LOI CHUNG cho o trong - khong co ma rieng; thong bao khong chi ra thieu gi. Giu nguyen."
+        });
+
+    // 🔴🔴 KHOÁ LOẠI TRỪ: còn lượt nào ProcessDTime is null ⇒ TỪ CHỐI.
+    var running = await db.AutoMapVins
+        .Where(a => a.OrgId == t.OrgId && a.ProcessDTime == null)
+        .OrderByDescending(a => a.ATMVNo)
+        .Select(a => new { a.ATMVNo, a.ATMVType }).FirstOrDefaultAsync();
+    if (running is not null)
+        return Results.BadRequest(new
+        {
+            error = "DMS40_Auto_MapVIN_InvalidOtherProcessing",
+            check = new { DB_ATMVNo = running.ATMVNo, DB_ATMVType = running.ATMVType },
+            mutexNote = "Con BAT KY luot nao CHUA co ProcessDTime thi MOI luot moi bi TU CHOI. 'ProcessDTime is null' = DANG CHAY DO, khong phai 'chua bat dau'."
+        });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    db.AutoMapVins.Add(new AutoMapVin
+    {
+        OrgId = t.OrgId, ATMVNo = atmvNo, ATMVType = dto.ATMVType,
+        ProcessDTime = null,                 // 🔴 giữ khoá cho tới khi lượt chạy kết thúc
+        CreatedBy = by
+    });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        atmvNo, atmvType = dto.ATMVType,
+        processDTime = (DateTime?)null,
+        engineNotRun = true,
+        mutexNote = "KHOA LOAI TRU MOT LUOT CHAY: 'select top 1 ... from Auto_MapVIN where ProcessDTime is null order by ATMVNo desc'; co dong nao => throw DMS40_Auto_MapVIN_InvalidOtherProcessing.",
+        mutexWeaknessNote = "Day la KHOA MEM O TANG UNG DUNG, khong phai khoa DB: hai phien goi CUNG LUC deu doc thay 'sach' roi cung ghi => van co the LOT HAI LUOT. Ghi lai, KHONG tu them khoa.",
+        stuckRunNote = "Guard KHONG TU DON luot treo: mot luot chet giua chung (khong kip ghi ProcessDTime) se CHAN VINH VIEN moi luot sau cho toi khi co nguoi sua tay. Ghi lai, KHONG tu them han cho.",
+        timeoutNote = "CommandTimeOut = 55000 giay (~15 gio) tren CA _dbMain va _dbWH - chu thich nguon '// DungND. 20220707 55000s'. Job nay duoc thiet ke de chay RAT LAU; dung port voi timeout mac dinh roi ket luan 'treo'.",
+        engineDebt = "NO: Auto_MapVIN_BO_GetAndSaveX (thuat toan map VIN cho hang BO) chua co trong MiniHTC => endpoint CHI ghi luot chay + giu khoa. KHONG sinh du lieu map gia."
+    });
+}).RequireAuthorization();
+
+// ===== #B146 TRA LƯỢT CHẠY MAP VIN — `Auto_MapVIN_Get` =====
+// Trace LIVE: `DMS40/zTemp.0.20.MapVIN.cs:78753` (**hàm cuối file**, 78753–79158).
+//   **3B khớp cả 2 máy**: `78753,79158 / cf2cb5e064e306b0cd9b84c4c52a3253`.
+// 🔴 **MƯỜI BẢY bảng kết quả trong MỘT lời gọi** — mỗi bảng một cờ `bGet_*` riêng:
+//   `MySummaryTable` · `Auto_MapVIN` · `Auto_MapVIN_Car_Car` (*"Cầu"*) · `…_Car_CarHist` ·
+//   `…_Car_VIN` · `…_Car_VINHist` · `…_MapRoundSpec` · `…_D2Limit` · `…_D2LimitApproveDate` ·
+//   `…_D2Limit_Car_Car` · `…_D2Plan_Car_Car` · `…_D2Plan_Car_CarHist` · `…_D2Plan_Car_VIN` ·
+//   `…_D2Plan_Car_VINHist` · `…_D2Plan_MapRound` · `…_D2Plan_MapRoundSpec` ·
+//   `Auto_MApVIN_SortApproveDateHist` (⚠️ **viết hoa sai `MApVIN`** — giữ nguyên để khớp client).
+// 🔴 Cùng khuôn phân trang `identity(bigint,0,1) MyIdxSeq` + `MyCount` **đếm trước khi cắt trang**;
+//   bảng gốc sắp **`order by t.ATMVNo desc`** (mới nhất trước), khác các màn master sắp tăng dần.
+// 📌 **NỢ**: 15/17 bảng phụ chưa có thực thể trong MiniHTC ⇒ trả **mảng rỗng** kèm
+//   `tablesNotPorted`; **không bịa dữ liệu**.
+app.MapGet("/api/dms40/mapvin/runs", async (
+    AppDbContext db, ITenantContext t, string? atmvNo, string? atmvType,
+    string? onlyRunning, int? recordStart, int? recordCount) =>
+{
+    var q = db.AutoMapVins.Where(a => a.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(atmvNo)) q = q.Where(a => a.ATMVNo == atmvNo.Trim());
+    if (!string.IsNullOrWhiteSpace(atmvType)) q = q.Where(a => a.ATMVType == atmvType.Trim());
+    if (onlyRunning == "1") q = q.Where(a => a.ProcessDTime == null);
+
+    // 🔴 order by ATMVNo DESC — mới nhất trước.
+    var all = await q.OrderByDescending(a => a.ATMVNo).ToListAsync();
+    var myCount = all.Count;                                  // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Auto_MapVIN = page.Select((a, i) => new { MyIdxSeq = start + i, a.ATMVNo, a.ATMVType, a.ProcessDTime, a.CreatedAt, a.CreatedBy }),
+        Auto_MapVIN_Car_Car = Array.Empty<object>(),
+        Auto_MapVIN_Car_CarHist = Array.Empty<object>(),
+        Auto_MapVIN_Car_VIN = Array.Empty<object>(),
+        Auto_MapVIN_Car_VINHist = Array.Empty<object>(),
+        Auto_MapVIN_MapRoundSpec = Array.Empty<object>(),
+        Auto_MapVIN_D2Limit = Array.Empty<object>(),
+        Auto_MapVIN_D2LimitApproveDate = Array.Empty<object>(),
+        Auto_MapVIN_D2Limit_Car_Car = Array.Empty<object>(),
+        Auto_MapVIN_D2Plan_Car_Car = Array.Empty<object>(),
+        Auto_MapVIN_D2Plan_Car_CarHist = Array.Empty<object>(),
+        Auto_MapVIN_D2Plan_Car_VIN = Array.Empty<object>(),
+        Auto_MapVIN_D2Plan_Car_VINHist = Array.Empty<object>(),
+        Auto_MapVIN_D2Plan_MapRound = Array.Empty<object>(),
+        Auto_MapVIN_D2Plan_MapRoundSpec = Array.Empty<object>(),
+        Auto_MApVIN_SortApproveDateHist = Array.Empty<object>(),
+        recordStart = start, recordCount = count,
+        tablesNotPorted = 15,
+        multiTableNote = "MUOI BAY bang ket qua trong MOT loi goi, moi bang mot co bGet_* rieng. Ten bang 'Auto_MApVIN_SortApproveDateHist' VIET HOA SAI ('MApVIN') - giu nguyen de khop client.",
+        pagingNote = "Cung khuon identity(bigint,0,1) MyIdxSeq + MyCount DEM TRUOC KHI CAT TRANG; bang goc sap 'order by t.ATMVNo DESC' (moi nhat truoc) - khac cac man master sap tang dan.",
+        debtNote = "NO: 15/17 bang phu chua co thuc the trong MiniHTC => tra MANG RONG. Khong bia du lieu."
+    });
+}).RequireAuthorization();
+
+// ===== #B147 TRA LƯỢT KẾ HOẠCH GIAO XE — `Auto_EstimateDeliveryPlan_Get_New20181115` =====
+// Trace LIVE: `DMS40/zTemp.0.21.PlanDelivery.cs:536`.
+//   **3B đo theo dải dòng tường minh, khớp cả 2 máy**: `536,778 / 7842a969eacd6052bc5ab611b6811434`.
+// ✅ **RBAC lành mạnh**: `myCommon_GetAbilityOfUser` **không bị comment** và
+//   `alParamsCoupleSql.AddRange(new object[] { "@strBUPatternOfUser", drAbilityOfUser["BUPattern"] })`
+//   ⇒ **bind quyền THẬT** (cùng nhóm với #B126 — đối lập 22 ca lỗ đã thống kê).
+// 🔴 **Chỉ HAI bảng ra**: `MySummaryTable` + `Auto_EstimateDeliveryPlan` — khác hẳn `Auto_MapVIN_Get`
+//   (#B146) trả **17 bảng**, dù hai màn nhìn rất giống nhau. **Không suy số bảng theo họ hàm.**
+// 🔴 **Sắp theo `atedp.CreateDTime desc`** (thời điểm tạo, mới nhất trước) — **không** phải theo
+//   `ATEDPNo` như #B146. Hai màn cùng họ, **hai tiêu chí sắp khác nhau**.
+// 🔴 Cùng khuôn `identity(bigint,0,1) MyIdxSeq`, `MyCount` **đếm trước khi cắt trang**.
+// 📌 Dùng lại thực thể `AtedpRun` (#B134) — mỗi chặng của một lượt là một dòng.
+app.MapGet("/api/dms40/estimate-delivery-plans", async (
+    AppDbContext db, ITenantContext t, string? atedpNo, string? atedpType,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.AtedpRuns.Where(a => a.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(atedpNo)) q = q.Where(a => a.ATEDPNo == atedpNo.Trim());
+    if (!string.IsNullOrWhiteSpace(atedpType)) q = q.Where(a => a.ATEDPType == atedpType.Trim());
+
+    // 🔴 order by CreateDTime DESC — KHÔNG phải theo số.
+    var all = await q.OrderByDescending(a => a.CreatedAt).ThenBy(a => a.StageOrder).ToListAsync();
+    var myCount = all.Count;                                  // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Auto_EstimateDeliveryPlan = page.Select((a, i) => new
+        {
+            MyIdxSeq = start + i,
+            a.ATEDPNo, a.ATEDPType, a.ATEDPNoSPDBSRoot,
+            a.RunId, a.StageOrder, a.EngineRan,
+            CreateDTime = a.CreatedAt, a.CreatedBy
+        }),
+        recordStart = start, recordCount = count,
+        rbacHealthyNote = "RBAC LANH MANH: myCommon_GetAbilityOfUser KHONG bi comment va alParamsCoupleSql bind '@strBUPatternOfUser' = drAbilityOfUser['BUPattern'] - QUYEN THAT (cung nhom voi #B126, doi lap 22 ca lo da thong ke).",
+        twoTablesNote = "CHI HAI bang ra: MySummaryTable + Auto_EstimateDeliveryPlan - khac han Auto_MapVIN_Get (#B146) tra MUOI BAY bang, du hai man nhin rat giong nhau. KHONG suy so bang theo ho ham.",
+        orderNote = "Sap theo 'atedp.CreateDTime desc' (thoi diem tao, moi nhat truoc) - KHONG phai theo ATEDPNo nhu #B146. Hai man cung ho, HAI TIEU CHI SAP KHAC NHAU.",
+        pagingNote = "Cung khuon identity(bigint,0,1) MyIdxSeq, MyCount dem TRUOC khi cat trang."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -43986,6 +44156,7 @@ record AutoMapVinDistSumRateSaveDto(string? FlagIsDelete, List<AutoMapVinDistSum
 record ConfigMapVinInputRowDto(string? DCPType, decimal? ValPmtDepositPercentFrom, decimal? ValPmtDepositPercentTo, string? FlagIsExistGuarantee);   // #B142-B144
 record ConfigMapVinInputAddDto(string? CfgATMVIpCode, string? ModelCode, DateTime? EffDateStart, List<ConfigMapVinInputRowDto>? Rows);   // #B143
 record ConfigMapVinInputUpdateDto(List<ConfigMapVinInputRowDto>? Rows);   // #B144
+record AutoMapVinBoSaveDto(string? ATMVNo, string? ATMVType);   // #B145
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
