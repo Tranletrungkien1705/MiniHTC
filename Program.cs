@@ -32040,6 +32040,112 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // ✅ RBAC **tổ hợp (1)**: `CheckHTCDirect` **ACTIVE**; `@strBUPatternOfUser` nạp nhưng SQL không dùng.
 //   Guard ngày: `To` rỗng ⇒ `TConst.DateTimeSpecial.DateMax`.
 // 🔴 Trả **hai** bảng: `Table_NhapHang_ChiTiet` (`Tables[0]`) · `Table_NhapHang` (`Tables[1]`).
+
+// ===== #B308/#B309/#B310 BÁO CÁO MASTER — SHIPPING (xe CBU đang trên đường, vắt qua tháng) —
+//       `RptMaster_Shipping_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`, SQL **viết thẳng trong hàm**) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `147293,147535` ≡ 150 `147298,147540` ⇒ **`7bfbc7392fa2e354561d3a1820ab4bf9`**.
+// 🔴🔴🔴 **CHÚ THÍCH KHÔNG KHỚP CODE — điều kiện thực tế RỘNG HƠN chú thích**:
+//   Chú thích nguồn: *"Là xe **đã có ngày lên tầu trong kỳ**, **chưa có ngày đến cảng trong kỳ**"*.
+//   Điều kiện thật: `and (t.ShippingMonthStart **<>** t.ShippingMonthEnd **or** t.ShippingMonthEnd is null)`
+//   ⇒ Nghĩa thật là **"tháng lên tàu KHÁC tháng cập cảng, hoặc chưa cập cảng"**.
+//   ⇒ Xe lên tàu **tháng 3** và **đã cập cảng tháng 5** (khác tháng) **VẪN được tính** — trái hẳn với
+//     *"chưa có ngày đến cảng"*. ⇒ Báo cáo thực chất là **"xe đang trên đường VẮT QUA THÁNG"**.
+//   ⚠️ Cùng lớp *"chú thích không khớp code"* đã gặp ở #B287. 📌 Port giữ **đúng điều kiện code**,
+//     ghi rõ ở `commentMismatchNote` — **không** sửa theo chú thích.
+// 🔴🔴 **`left join Mst_CarSpec` + `where mcs.AssemblyStatus = 'CBU'`** ở câu dựng bảng tạm
+//   ⇒ **`left join` BIẾN THÀNH `inner`** (luật `C0-…octogesimusnonus`) ⇒ xe thiếu spec **mất hẳn**.
+//   ✅ Câu tổng phía sau **không** lặp lại bộ lọc `AssemblyStatus` (đã lọc ở bảng tạm) — **đúng**.
+// 🔴 **`ModelName` join theo `cv.ModelCode`** — **KHÁC #B305** (cùng họ `RptMaster_*`) vốn join theo
+//   **`mcs.ModelCode`** (model của SPEC). ⇒ **Cùng một họ báo cáo, hai cách lấy `ModelName`**;
+//   không tái dùng giả định giữa các hàm.
+// ⚠️ **Câu tổng `inner join car_vin cv on t.VIN = cv.VIN` là THỪA**: `#tbl_shipping_Raw` đã chứa **`cv.*`**
+//   (toàn bộ cột `Car_VIN`) từ câu trước ⇒ nối lại chính bảng đó, thêm rủi ro nhân dòng nếu VIN trùng.
+// ⚠️ **Câu debug bị bỏ quên, KHÔNG comment**: `select null tbl_shipping_Raw, t.* from #tbl_shipping_Raw t;`
+//   ⇒ trở thành `Tables[0] = "Table_Shipping_ChiTiet"` — **hợp đồng API**, lần thứ **TƯ**
+//     (sau #B290, #B296, #B299). Cột đầu luôn `null`.
+// 🔴 `left(cpl.ShippingDateStart, 7)` / `left(cpl.ShippingDateEnd, 7)` ⇒ **hai cột ngày lưu VARCHAR**.
+//   `ColorName = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN` ⇒ **một vế NULL là cả chuỗi NULL**.
+// ✅ RBAC **tổ hợp (1)**: `CheckHTCDirect` **ACTIVE**; `@strBUPatternOfUser` nạp nhưng SQL không dùng.
+//   Guard ngày: `To` rỗng ⇒ `TConst.DateTimeSpecial.DateMax`. Lọc kỳ **chỉ theo `ShippingDateStart`**.
+app.MapGet("/api/reports/master-shipping", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 Lọc kỳ CHỈ theo ShippingDateStart (ngày lên tàu).
+    var pls = (await db.PackingLists
+            .Where(p => p.OrgId == t.OrgId && p.ShippingDateStart >= from && p.ShippingDateStart <= to)
+            .ToListAsync())
+        .GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First());
+
+    var cars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.PackingListNo != null && v.PackingListNo != "")
+        .ToListAsync();
+
+    // #tbl_shipping_Raw — inner PackingList; `left join Mst_CarSpec` + where AssemblyStatus ⇒ INNER.
+    var raw = new List<object>();
+    var droppedNoSpec = new List<object>();
+    var rawKeys = new List<(string? Model, string? Spec, string? Color, string MonthStart, string? MonthEnd, string Vin)>();
+    foreach (var cv in cars)
+    {
+        if (!pls.TryGetValue(cv.PackingListNo!, out var pl)) continue;
+        if (cv.ActualSpec is null || !specs.TryGetValue(cv.ActualSpec, out var sp) || sp.AssemblyStatus != "CBU")
+        { droppedNoSpec.Add(new { cv.VIN, cv.ActualSpec }); continue; }
+
+        var monStart = pl.ShippingDateStart.ToString("yyyy-MM");
+        var monEnd = pl.ShippingDateEnd?.ToString("yyyy-MM");
+        raw.Add(new
+        {
+            tbl_shipping_Raw = (string?)null,           // ⚠️ cột rác của câu debug bị bỏ quên
+            cv.VIN, cv.ModelCode, cv.ActualSpec, cv.ColorCode, cv.PackingListNo,
+            pl.ShippingDateStart, pl.ShippingDateEnd,
+            ShippingMonthStart = monStart, ShippingMonthEnd = monEnd
+        });
+        rawKeys.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, monStart, monEnd, cv.VIN));
+    }
+
+    // 🔴 ĐIỀU KIỆN THẬT: tháng lên tàu KHÁC tháng cập cảng, HOẶC chưa cập cảng.
+    var summary = rawKeys
+        .Where(x => x.MonthEnd == null || x.MonthStart != x.MonthEnd)
+        .GroupBy(x => (x.Model, x.Spec, x.Color, x.MonthStart, x.MonthEnd))
+        .Select(g => new
+        {
+            CVModelCode = g.Key.Model,
+            CVActualSpec = g.Key.Spec,
+            CVColorCode = g.Key.Color,
+            // 🔴 ModelName theo cv.ModelCode (KHÁC #B305 dùng mcs.ModelCode).
+            ModelName = (g.Key.Model != null && models.TryGetValue(g.Key.Model, out var mm)) ? mm.ModelName : null,
+            AC_SpecDescription = (g.Key.Spec != null && specs.TryGetValue(g.Key.Spec, out var sp)) ? sp.SpecDesc : null,
+            ColorName = (string?)null,                 // 📌 NỢ: Mst_CarColor chưa nối
+            ColumnMonth = g.Key.MonthStart,
+            ShippingMonthEnd = g.Key.MonthEnd,
+            Total = g.Count()
+        })
+        .OrderBy(x => x.ColumnMonth, StringComparer.Ordinal)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        Table_Shipping_ChiTiet = raw,      // Tables[0] — từ câu debug bị bỏ quên
+        Table_Shipping = summary,          // Tables[1]
+        droppedNoSpec,
+        commentMismatchNote = "CHU THICH KHONG KHOP CODE - dieu kien thuc te RONG HON chu thich. Chu thich nguon: 'La xe DA CO NGAY LEN TAU TRONG KY, CHUA CO NGAY DEN CANG TRONG KY'. Dieu kien that: 'and (t.ShippingMonthStart <> t.ShippingMonthEnd or t.ShippingMonthEnd is null)' => nghia that la 'THANG LEN TAU KHAC THANG CAP CANG, HOAC CHUA CAP CANG'. Xe len tau thang 3 va DA CAP CANG thang 5 (khac thang) VAN DUOC TINH - trai han voi 'chua co ngay den cang'. Bao cao thuc chat la 'XE DANG TREN DUONG VAT QUA THANG'. Cung lop #B287. Port giu DUNG DIEU KIEN CODE, khong sua theo chu thich.",
+        leftBecomesInnerNote = "'left join Mst_CarSpec' + 'where mcs.AssemblyStatus = CBU' o cau dung bang tam => LEFT JOIN BIEN THANH INNER (luat C0-...octogesimusnonus) => xe thieu spec MAT HAN. Cau tong phia sau KHONG lap lai bo loc AssemblyStatus (da loc o bang tam) - DUNG. Xem droppedNoSpec.",
+        modelNameSourceNote = "ModelName join theo cv.ModelCode - KHAC #B305 (cung ho RptMaster_*) von join theo mcs.ModelCode (model cua SPEC). CUNG MOT HO BAO CAO, HAI CACH LAY ModelName; khong tai dung gia dinh giua cac ham.",
+        redundantJoinNote = "Cau tong 'inner join car_vin cv on t.VIN = cv.VIN' la THUA: #tbl_shipping_Raw da chua cv.* (toan bo cot Car_VIN) tu cau truoc => noi lai chinh bang do, them rui ro nhan dong neu VIN trung.",
+        forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_shipping_Raw, t.* from #tbl_shipping_Raw t;' => tro thanh Tables[0] = 'Table_Shipping_ChiTiet' - HOP DONG API, lan thu TU (sau #B290, #B296, #B299). Cot dau luon null.",
+        varcharAndConcatNote = "left(cpl.ShippingDateStart, 7) / left(cpl.ShippingDateEnd, 7) => HAI cot ngay LUU VARCHAR. ColorName = ColorExtNameVN + '/' + ColorIntNameVN => MOT VE NULL LA CA CHUOI NULL.",
+        rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung => co cong. Guard ngay: To rong => DateMax. Loc ky CHI theo ShippingDateStart.",
+        debtNote = "NO: Mst_CarColor chua noi => ColorName tra NULL. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/master-nhaphang", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
 {
