@@ -54021,6 +54021,71 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #680 THÔNG TIN BẢO HÀNH XE (LẤY TỪ DMS.SALES) `Rpt_DMSSer_Car_Warranty_Information_WH` =====
+// (`BizCarSv.Report.Special.Warranty.cs:3801-3944`, md5 `43760db3` **KHỚP** máy 150.
+//  WS `WSCarSv.asmx.cs:28493` gọi thẳng — không hậu tố, không vỏ bọc.)
+//
+// 🔴 **HÀM NÀY KHÔNG CÓ MỘT DÒNG SQL NÀO** — nó là **cổng gọi sang hệ DMS.Sales**:
+//     `mds_DMSSale = ws.Rpt_DMSSer_Car_Warranty_Information_WH(_strConfig_DMS_Sale_UserName,`
+//     `  _strConfig_DMS_Sale_Password, …, strPlateNoConditionList, strVINConditionList);`
+//   rồi `MyDSDecodeForOSSale(mds_DMSSale)` (hàm decode **riêng cho luồng OS/Sale**, khác `MyDSDecode` thường).
+//   ⇒ Toàn bộ nghiệp vụ nằm **ngoài** hệ này; MiniHTC chỉ có thể **mô phỏng hợp đồng**, không có dữ liệu gốc.
+//
+// 🔴🔴🔴 **`throw` BỊ NUỐT NGAY BỞI `catch` LIỀN KỀ**: mã kiểm `if (CMyDataSet.HasError(mds_DMSSale))` rồi
+//   `throw CMyException.Raise(TError.…_WH_FromDMSSale, …)` — nhưng **chính khối đó** được bọc bởi
+//   `catch (Exception ex) { TUtils.CProcessException.Process(ref mdsFinal, ex, strErrorCodeDefault, …); }`
+//   **không rethrow, không return** ⇒ luồng chảy tiếp xuống nhãn `// Return Good:` và `return mdsFinal`.
+//   ⇒ Lỗi từ hệ Sales **được ghi vào `mdsFinal`** (qua `ref`) nhưng hàm vẫn đi đường "thành công".
+//     Người gọi **chỉ biết** nếu tự kiểm `CMyDataSet.HasError` — không có ngoại lệ nào bay ra.
+//   ⚠️ Không kết luận là "mất lỗi hoàn toàn": lỗi **có** được ghi lại. Vấn đề là **`throw` ở đây vô tác dụng**,
+//     nó chỉ là một cách viết vòng vo của "ghi lỗi rồi đi tiếp".
+// 🔴🔴 **`Tables["Rpt_DMSSer_Car_Warranty_Information"]` KHÔNG GUARD NULL**: nếu hệ Sales đổi tên bảng, hoặc trả
+//   DataSet thiếu bảng đó, thì `dtDB_Rpt_From_Sale` = **null** ⇒ `.Copy()` ném `NullReferenceException`
+//   ⇒ **lại rơi vào đúng `catch` ở trên** ⇒ hàm vẫn trả "thành công" với dữ liệu **rỗng**.
+// 🔴🔴 **TÊN BẢNG KẾT QUẢ ĐẶT BẰNG HAI CÁCH KHÁC NHAU giữa hai bản sinh đôi** (DIFF ra đúng chỗ này):
+//     bản Main: `dsGetData.Tables[0].TableName = **strFunctionName**`
+//     bản kho : `dsGetData.Tables[0].TableName = **"Rpt_DMSSer_Car_Warranty_Information"**` (hằng chuỗi)
+//   Hiện **trùng nhau** nên vô hại. 🕓 Nhưng đổi tên hàm thì bản Main **đổi tên bảng theo**, bản kho **không**
+//   ⇒ hai endpoint trả **hai tên bảng khác nhau**. Ghi theo hạng mục "hỏng khi thay đổi", không phải "đang hỏng".
+// 🔴 **CHỈ HAI BỘ LỌC** (`PlateNo`, `VIN`) được chuyển tiếp; **không có mã đại lý** ⇒ phạm vi dữ liệu phụ thuộc
+//   **hoàn toàn** vào RBAC phía DMS.Sales, tầng này không ràng buộc gì.
+// 🔴 Dùng **credential hệ thống dùng chung** `_strConfig_DMS_Sale_UserName/Password` ⇒ mọi người dùng đi vào hệ
+//   Sales dưới **một danh tính duy nhất** ⇒ log phía Sales không truy được người thật.
+// ⚪ **ÂM TÍNH — không phải ca "ghi ba DB"**: hàm mở transaction `_dbWH` nhưng **không ghi gì**, chỉ
+//   `RollbackSafety(_dbWH)` ở cả ba nhánh (good/catch/finally).
+app.MapGet("/api/report/car-warranty-info-wh", async (AppDbContext db, ITenantContext t,
+    string? plateNo, string? vin) =>
+{
+    if (string.IsNullOrWhiteSpace(plateNo) && string.IsNullOrWhiteSpace(vin))
+        return Results.BadRequest(new { error = "Can plateNo hoac vin." });
+
+    // Nguồn KHÔNG truy DB nội bộ mà gọi sang DMS.Sales. MiniHTC chưa có cổng đó ⇒ trả từ dữ liệu xe đang có,
+    // và nêu rõ đây là XẤP XỈ, không phải số của hệ Sales.
+    var qc = db.ServiceCars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qc = qc.Where(x => x.FrameNo == vin!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qc = qc.Where(x => x.PlateNo == plateNo!.Trim());
+
+    var rows = await qc.Take(200).Select(x => new
+    {
+        x.FrameNo, x.PlateNo, x.ModelCode, x.TradeMark, x.CusName,
+        x.WarrantyDate, x.WarrantyRegistrationDate,
+    }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        // ===== #680 =====
+        sourceHasNoSqlItIsAGatewayToDmsSales = "HAM NAY KHONG CO MOT DONG SQL NAO — no la CONG GOI SANG HE DMS.Sales: mds_DMSSale = ws.Rpt_DMSSer_Car_Warranty_Information_WH(_strConfig_DMS_Sale_UserName, _strConfig_DMS_Sale_Password, …, strPlateNoConditionList, strVINConditionList) roi MyDSDecodeForOSSale (ham decode RIENG cho luong OS/Sale, khac MyDSDecode thuong) => toan bo nghiep vu nam NGOAI he nay; MiniHTC chi mo phong hop dong, KHONG co du lieu goc",
+        throwIsSwallowedByTheVeryNextCatch = "throw BI NUOT NGAY BOI catch LIEN KE: ma kiem if (CMyDataSet.HasError(mds_DMSSale)) roi throw CMyException.Raise(…_WH_FromDMSSale, …), nhung CHINH KHOI DO duoc boc boi catch (Exception ex) { CProcessException.Process(ref mdsFinal, ex, …); } KHONG rethrow KHONG return => luong chay tiep xuong // Return Good: va return mdsFinal. Loi tu he Sales CO duoc ghi vao mdsFinal qua ref, nhung ham van di duong thanh cong; nguoi goi chi biet neu tu kiem CMyDataSet.HasError. KHONG ket luan mat loi hoan toan — van de la THROW O DAY VO TAC DUNG",
+        remoteTableLookupHasNoNullGuard = "Tables[Rpt_DMSSer_Car_Warranty_Information] KHONG guard null: neu he Sales doi ten bang hoac tra DataSet thieu bang do thi dtDB_Rpt_From_Sale = null => .Copy() nem NullReferenceException => LAI roi vao dung catch o tren => ham van tra thanh cong voi du lieu RONG",
+        tableNameSetTwoDifferentWaysInTwins = "TEN BANG KET QUA DAT BANG HAI CACH KHAC NHAU giua hai ban sinh doi (DIFF ra dung cho nay): ban Main dsGetData.Tables[0].TableName = strFunctionName; ban kho = hang chuoi Rpt_DMSSer_Car_Warranty_Information. Hien TRUNG NHAU nen vo hai. HONG KHI THAY DOI: doi ten ham thi ban Main doi ten bang theo, ban kho KHONG => hai endpoint tra hai ten bang khac nhau",
+        onlyTwoFiltersNoDealerScope = "CHI HAI BO LOC (PlateNo, VIN) duoc chuyen tiep; KHONG co ma dai ly => pham vi du lieu phu thuoc HOAN TOAN vao RBAC phia DMS.Sales, tang nay khong rang buoc gi",
+        sharedSystemCredential = "dung credential he thong dung chung _strConfig_DMS_Sale_UserName/Password => moi nguoi dung di vao he Sales duoi MOT danh tinh duy nhat => log phia Sales khong truy duoc nguoi that",
+        negativeNotAThreeDbWriteCase = "AM TINH: ham mo transaction _dbWH nhung KHONG ghi gi, chi RollbackSafety(_dbWH) o ca ba nhanh (good/catch/finally) => khong phai ca ghi-ba-DB",
+        portIsApproximationOnly = "MiniHTC chua co cong sang DMS.Sales => endpoint nay tra tu ServiceCars dang co, la XAP XI, khong phai so cua he Sales; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #679 DANH SÁCH LỆNH THEO TRẠNG THÁI `Ser_RO_GetStatusList_WH_New20230220` =====
 // (`BizCarSv.zzzzCode.cs:8408-8696`, md5 `3dc6fc59` **KHỚP** máy 150. WS `WSCarSv.asmx.cs:32080` gọi thẳng.
 //  Bản trần `Ser_RO_GetStatusList_WH` (`WH.cs:5972-6169`, md5 `544e49d9`) **CHẾT** — lại một ca hàm LIVE nằm
