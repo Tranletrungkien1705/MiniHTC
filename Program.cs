@@ -46036,6 +46036,76 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #699 TAB: SỐ LỆNH SỬA CHỮA TRUNG BÌNH MỖI NGÀY `Rpt_Ser_RO_AvgQtyROInDayForTab` =====
+// Vỏ bọc `Tab/BizCarSv.Tab.Report.cs:808-917` (md5 `feb18c54`) → thân thật `Rpt_Ser_RO_AvgQtyROInDay**X**`
+// (`:544-806`, md5 `aa68e1a2`) — **cả hai KHỚP** máy 150. WS `WSCarSvTab.asmx.cs:5311`.
+//
+// 🔴🔴🔴 **CHỈ SỐ TRUNG BÌNH BỊ LÀM TRÒN VỀ SỐ NGUYÊN — MẤT SẠCH ĐỘ PHÂN GIẢI** (luật #408):
+//     `Case when t.QtyDay = 0 then 0 else **Round(t.QtyRO*1.00/t.QtyDay, 0)** End) AvgQtyRO`
+//   Đây là KPI **"số lệnh sửa chữa trung bình mỗi ngày"** dùng để **so sánh giữa các đại lý**.
+//   Làm tròn về **0 chữ số thập phân** ⇒ xưởng 1,4 lệnh/ngày và xưởng 1,49 đều hiện **1**; 1,5 hiện **2**
+//   ⇒ hai đại lý chênh nhau **gần 50%** vẫn ra **cùng một con số**.
+//   ⚠️ Trớ trêu: `*1.00` là mẹo **ép sang decimal để tránh chia nguyên** (đúng khuôn an toàn, đối lập với
+//     `VAT/100` ở #673 và `/100` ở #694) — nhưng `Round(..., 0)` ngay sau đó **vứt luôn phần thập phân vừa cứu**.
+// ⚪ **DƯƠNG TÍNH — CÓ guard chia 0 VÀ có `else`**: `Case when t.QtyDay = 0 then 0 else … End`
+//   ⇒ không lỗi chia 0, không sinh NULL. Khác hẳn các `case` thiếu `else` ở #656/#663/#667/#698.
+// ⚪ **DƯƠNG TÍNH — khối `drop table` ở đây ĐANG CHẠY**: **bảy** dòng `drop table` **không** bị comment và
+//   **đúng tên** cả bảy bảng. ⚠️ **Đối lập trực tiếp với #698 trong CÙNG MỘT FILE**, nơi khối tương tự vừa bị
+//   comment vừa liệt kê bảng của màn khác. ⇒ Cùng file, hai hàm, hai chất lượng.
+// 🔴🔴 **MÃ ĐẠI LÝ BỊ BAKE THÀNH HẰNG CHUỖI TRONG `SELECT`**: `'@strDealerCode' DealerCode` — cột `DealerCode`
+//   **không** lấy từ dữ liệu mà từ tham số đã `Replace` vào ⇒ nếu bảng kỳ chứa nhiều đại lý thì **mọi dòng đều
+//   mang một mã**; và đây cũng là **bề mặt tiêm SQL**.
+// 🔴🔴 **`StringUtils.Replace(strSqlGetData);` GỌI VỚI ĐÚNG MỘT ĐỐI SỐ — LẶP LẠI Y HỆT #698**:
+//   📌 Đếm toàn `TERP.BizCarSv`: **8** chỗ viết `StringUtils.Replace(` + `strSqlGetData` + `);` (một đối số)
+//   ⇒ đây là **khuôn sao chép**, không phải sơ suất lẻ. Cả 8 đều là **lệnh rỗng**: gọi rồi **vứt kết quả**
+//     (hàm trả chuỗi mới, không sửa tại chỗ) — may mà vô hại vì không có gì để thay.
+// ⚪ **ÂM TÍNH — `IsNull(f.QtyRO, 0.0)` / `IsNull(k.QtyDay, 0.0)` trên hai `left join`**: kỳ **không có lệnh nào**
+//   ra **0** thay vì NULL ⇒ đúng ý báo cáo; và `left join` **còn sống** (WHERE không đụng tới hai bảng đó).
+// 📌 Nguồn ghép **năm** template `zzB_…_zzE` (`Ser_RO_Filter` · `Ser_RO_RO` · `…_GroupBy` · `QtyDay` ·
+//   `QtyDay_GrouBy` — chú ý **`GrouBy` thiếu chữ `p`**, giữ nguyên văn theo luật HẰNG ≠ GIÁ TRỊ).
+app.MapGet("/api/tab/report/avg-ro-per-day", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (fromDate is not null) qr = qr.Where(x => x.FinishedDate >= fromDate!.Value.Date);
+    if (toDate is not null) qr = qr.Where(x => x.FinishedDate < toDate!.Value.Date.AddDays(1));
+    var ros = await qr.Where(x => x.FinishedDate != null)
+        .Select(x => new { x.RONo, x.FinishedDate }).ToListAsync();
+
+    // Nguồn gộp theo THÁNG hoàn thành (MixCode = FinishMonth) và đếm SỐ NGÀY có lệnh trong tháng.
+    var rows = ros.GroupBy(x => x.FinishedDate!.Value.ToString("yyyy-MM")).Select(g =>
+    {
+        var qtyRo = g.Count();
+        var qtyDay = g.Select(x => x.FinishedDate!.Value.Date).Distinct().Count();
+        var exact = qtyDay == 0 ? 0m : (decimal)qtyRo / qtyDay;
+        return new
+        {
+            dealerCode, mixCode = g.Key, qtyRO = qtyRo, qtyDay,
+            // Nguồn: Round(QtyRO*1.00/QtyDay, 0) — làm tròn về SỐ NGUYÊN. Giữ 1:1.
+            avgQtyRO = qtyDay == 0 ? 0m : Math.Round(exact, 0, MidpointRounding.AwayFromZero),
+            // …và trả thêm giá trị CHƯA làm tròn để thấy phần độ phân giải bị mất.
+            avgQtyRoExact = Math.Round(exact, 2, MidpointRounding.AwayFromZero),
+        };
+    }).OrderBy(x => x.mixCode).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        rowsWhereRoundingChangesValue = rows.Count(x => x.avgQtyRO != x.avgQtyRoExact),
+        // ===== #699 =====
+        averageRoundedToWholeNumberDestroysResolution = "CHI SO TRUNG BINH BI LAM TRON VE SO NGUYEN — MAT SACH DO PHAN GIAI (luat #408): Case when t.QtyDay = 0 then 0 else Round(t.QtyRO*1.00/t.QtyDay, 0) End) AvgQtyRO. Day la KPI so lenh sua chua trung binh moi ngay dung de SO SANH GIUA CAC DAI LY; lam tron ve 0 chu so thap phan => xuong 1,4 lenh/ngay va xuong 1,49 deu hien 1; 1,5 hien 2 => hai dai ly chenh nhau gan 50% van ra CUNG MOT CON SO",
+        multiplyByOneRescuedThenThrownAway = "Tro treu: *1.00 la meo EP SANG DECIMAL de tranh chia nguyen (dung khuon an toan, doi lap voi VAT/100 o #673 va /100 o #694) — nhung Round(..., 0) ngay sau do VUT LUON phan thap phan vua cuu",
+        positiveDivideByZeroGuardAndElseExist = "DUONG TINH: CO guard chia 0 VA co else — Case when t.QtyDay = 0 then 0 else … End => khong loi chia 0, khong sinh NULL. Khac han cac case thieu else o #656/#663/#667/#698",
+        positiveDropBlockIsLiveAndCorrect = "DUONG TINH: khoi drop table o day DANG CHAY — bay dong drop table KHONG bi comment va DUNG TEN ca bay bang. DOI LAP TRUC TIEP voi #698 trong CUNG MOT FILE, noi khoi tuong tu vua bi comment vua liet ke bang cua man khac => cung file, hai ham, hai chat luong",
+        dealerCodeBakedAsStringLiteral = "MA DAI LY BI BAKE THANH HANG CHUOI TRONG SELECT: '@strDealerCode' DealerCode — cot DealerCode KHONG lay tu du lieu ma tu tham so da Replace vao => neu bang ky chua nhieu dai ly thi MOI DONG deu mang MOT ma; va day cung la be mat TIEM SQL",
+        replaceWithOneArgumentCounted = "StringUtils.Replace(strSqlGetData); GOI VOI DUNG MOT DOI SO — LAP LAI Y HET #698. Dem toan TERP.BizCarSv: 8 cho viet nhu vay => KHUON SAO CHEP khong phai so suat le. Ca 8 deu la LENH RONG: goi roi vut ket qua (ham tra chuoi moi, khong sua tai cho) — may ma vo hai vi khong co gi de thay",
+        negativeIsnullOnLeftJoinsIsIntentional = "AM TINH: IsNull(f.QtyRO, 0.0) / IsNull(k.QtyDay, 0.0) tren hai left join => ky KHONG co lenh nao ra 0 thay vi NULL, dung y bao cao; va left join CON SONG (WHERE khong dung toi hai bang do)",
+        fiveTemplatesWithTypo = "nguon ghep NAM template zzB_…_zzE (Ser_RO_Filter, Ser_RO_RO, …_GroupBy, QtyDay, QtyDay_GrouBy — chu y GrouBy THIEU CHU p, giu nguyen van theo luat HANG KHAC GIA TRI)",
+        miniModelGap = "Mini chua co bang ky bao cao #input_tbl_ReportType (MixCode/MixName/ReportType) => port gop theo THANG hoan thanh; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #698 TAB: CUỘC HẸN THEO NGÀY & TRẠNG THÁI `Rpt_Ser_App_GroupByDateAndStatusForTab` =====
 // Vỏ bọc `Tab/BizCarSv.Tab.Report.cs:3196-3311` (md5 `b6252dbc`) → thân thật
 // `Rpt_Ser_App_GroupByDateAndStatus**X**` (`:2932-3194`, md5 `c5fdaaef`) — **cả hai KHỚP** máy 150.
