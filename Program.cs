@@ -40248,6 +40248,169 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B377 GỐC ĐƠN HÀNG DMS40 — `Rpt_DMS40_Ord_SalesOrderRoot_WH_New20190722`
+//       (vỏ `DataWH/BizHTC.zTemp.cs:28708` → `…X_New20190722` (`:28998`)
+//        → SQL `RptSQLQuery.cs:12048`) =====
+// **3B khớp cả 2 máy (3 md5); `BizHTC.zTemp.cs` và `RptSQLQuery.cs` KHÔNG lệch offset**:
+//   vỏ `28708,28854` ⇒ **`2caad2b6e9ec9a0f8afdf799a504a0c7`**;
+//   `…X` `28998,29108` ⇒ **`39b30a211d6a4eca67bcf2f0a0def429`**;
+//   SQL `12048,12283` ⇒ **`7e6b2aba32155db79e770f1cbf7fb31d`**.
+//
+// 🔴🔴🔴 **`[BAKE-PARAM-MIX]` — CA THỨ SÁU, SỐ LƯỢNG LỚN NHẤT: MƯỜI MỘT tham số nướng**, khuôn
+//   `and (N'@x' = '' or cột = '@x')` (y hệt #B365/#B374).
+//   🔴 **ĐIỂM MỚI — BA trong số đó là HẰNG NGHIỆP VỤ CỦA HỆ, không phải input người dùng**:
+//     `, "@strSOType_P", **TConst.SalesOrderType.Plan**`
+//     `, "@strSOType_U", **TConst.SalesOrderType.UnPlan**`
+//     `, "@strSORStatus_F", **TConst.SORStatus.Finished**`
+//   ⇒ Không phải mọi tham số nướng đều là bề mặt injection: **phải phân loại NGUỒN GỐC từng cái**.
+//     Ba cái này đến từ **hằng biên dịch** ⇒ **an toàn về injection**, nhưng vẫn là nợ kiến trúc
+//     (hằng nghiệp vụ đi qua đường chuỗi). Tám cái còn lại (`SORCode`, `SOType`, `DealerCode`,
+//     `SORStatus`, `LUDTimeFrom/To`, `MonthOrderFrom/To`) đến **từ người dùng** ⇒ **mức (A)**.
+//
+// 🔴🔴 **LỖ RBAC — tổ hợp (2)**: grep **cả sáu trục** trong `…X` ⇒ **1 hit duy nhất** là dòng
+//   `//alParamsCoupleSql.AddRange(… drAbilityOfUser["MBBankBUPattern"] …)` **đã bị comment**;
+//   `//myCache_Mst_Distributor_ViewAbility_Get(…)` cũng comment; bốn trục kia **0 hit**.
+//   Đã kiểm thêm (luật `C0-…quadragesimusnonus`) xem có bản **dựng lại bằng chuỗi** ⇒ **không có**.
+// ⚠️ **NỢ**: `DMS40_Ord_SalesOrderRoot` chưa có trong MiniHTC ⇒ trả khung + cờ; **không bịa**.
+app.MapGet("/api/reports/ord-salesorderroot", async (
+    AppDbContext db, ITenantContext t,
+    string? sorCode, string? soType, string? dealerCode, string? sorStatus,
+    DateTime? luDTimeFrom, DateTime? luDTimeTo, string? monthOrderFrom, string? monthOrderTo) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        Rpt_DMS40_Ord_SalesOrderRoot = Array.Empty<object>(),
+        filtersEcho = new { sorCode, soType, dealerCode, sorStatus, luDTimeFrom, luDTimeTo, monthOrderFrom, monthOrderTo },
+        bakeParamMixCase6Note = "[BAKE-PARAM-MIX] CA THU SAU, SO LUONG LON NHAT: MUOI MOT tham so nuong, khuon 'and (N'@x' = '' or cot = '@x')' y het #B365/#B374. DIEM MOI: BA trong so do la HANG NGHIEP VU CUA HE, khong phai input nguoi dung - '@strSOType_P' = TConst.SalesOrderType.Plan, '@strSOType_U' = TConst.SalesOrderType.UnPlan, '@strSORStatus_F' = TConst.SORStatus.Finished. => KHONG PHAI MOI THAM SO NUONG DEU LA BE MAT INJECTION: phai PHAN LOAI NGUON GOC TUNG CAI. Ba cai nay den tu HANG BIEN DICH => an toan ve injection, nhung van la no kien truc (hang nghiep vu di qua duong chuoi). Tam cai con lai (SORCode, SOType, DealerCode, SORStatus, LUDTimeFrom/To, MonthOrderFrom/To) den TU NGUOI DUNG => MUC (A).",
+        rbacHoleNote = "LO RBAC to hop (2): grep CA SAU TRUC trong ...X => 1 HIT DUY NHAT la dong '//alParamsCoupleSql.AddRange(... drAbilityOfUser[\"MBBankBUPattern\"] ...)' DA BI COMMENT; '//myCache_Mst_Distributor_ViewAbility_Get(...)' cung comment; bon truc kia 0 hit. Da kiem them (luat C0-...quadragesimusnonus) xem co ban DUNG LAI BANG CHUOI => KHONG CO.",
+        debtNote = "NO - KHONG DOAN: DMS40_Ord_SalesOrderRoot chua co trong MiniHTC => tra khung + co."
+    });
+}).RequireAuthorization();
+
+// ===== #B378 CHI TIẾT THANH TOÁN THEO ĐẠI LÝ — `Rpt_PmtPaymentDtl_ByDealer_WH_New20210521`
+//       (vỏ `HDDTIntergration/BizHTC.HDDTIntergration.cs:23598` → `…X_New20210521` (`:23380`)) =====
+// **3B khớp cả 2 máy (2 md5); file KHÔNG lệch offset**:
+//   vỏ `23598,23725` ⇒ **`d63ee2aa1bb49b88ad1cc2ef07e79412`**;
+//   `…X` `23380,23467` ⇒ **`97889fe5dee5d963780f883579a71bc4`**.
+//
+// 🔴🔴 **`[BAKE-PARAM-MIX]` — CA THỨ BẢY, "TRỘN" THEO NGHĨA CHẶT NHẤT: hai cơ chế trong CÙNG một hàm**:
+//     **Param runtime (bind thật)**: `@strBUPatternOfUser`, `@strHTCDealerCode`, `@strHTCDealerName`
+//     **Nướng qua `Replace`**: `@strDealerCode`, `@strRptDateStart`, `@strRptDateEnd`, `@strRptYear`,
+//       `@strFlagIsHTC`
+//   ⇒ Đúng **bộ lọc phạm vi** thì dùng param thật, còn **bộ lọc người dùng chọn** thì nướng.
+// ✅ **RBAC tổ hợp (3)**: `@strBUPatternOfUser` **bind thật và được SQL dùng** ⇒ **có lọc dòng**
+//   (cổng `//myCommon_CheckHTCDirect(` bị comment) ⇒ **không phải lỗ**.
+// 🔴 `@strHTCDealerName` nhận **`TConst.HTCConst.HTCDealerCode`** — **lần thứ CHÍN** trong campaign
+//   (sau #B269/#B284/#B290/#B329/#B350/#B351…). Đây là **lỗi chép cố định của hệ**, không phải ngẫu nhiên.
+// ⚠️ **NỢ**: `Pmt_PaymentDetail` theo đại lý + chuỗi HDDT chưa đủ ⇒ trả khung + cờ.
+app.MapGet("/api/reports/pmtpayment-dtl-bydealer", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? rptDateStart, DateTime? rptDateEnd, string? rptYear,
+    string? flagIsHTC, string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3): BUPattern là param THẬT ở nguồn và ĐƯỢC DÙNG.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        Rpt_PmtPaymentDtl_ByDealer = Array.Empty<object>(),
+        filtersEcho = new { dealerCode, rptDateStart, rptDateEnd, rptYear, flagIsHTC },
+        bakeParamMixCase7Note = "[BAKE-PARAM-MIX] CA THU BAY, 'TRON' THEO NGHIA CHAT NHAT - HAI CO CHE TRONG CUNG MOT HAM: PARAM RUNTIME (bind that) cho @strBUPatternOfUser, @strHTCDealerCode, @strHTCDealerName; NUONG qua Replace cho @strDealerCode, @strRptDateStart, @strRptDateEnd, @strRptYear, @strFlagIsHTC. => Dung BO LOC PHAM VI thi dung param that, con BO LOC NGUOI DUNG CHON thi nuong.",
+        rbacNote = "RBAC to hop (3): @strBUPatternOfUser BIND THAT va DUOC SQL DUNG => CO LOC DONG (cong '//myCommon_CheckHTCDirect(' bi comment) => KHONG phai lo.",
+        htcDealerNameNote = "@strHTCDealerName nhan TConst.HTCConst.HTCDealerCode - LAN THU CHIN trong campaign (sau #B269/#B284/#B290/#B329/#B350/#B351...). Day la LOI CHEP CO DINH CUA HE, khong phai ngau nhien.",
+        debtNote = "NO - KHONG DOAN: Pmt_PaymentDetail theo dai ly + chuoi HDDT chua du => tra khung + co."
+    });
+}).RequireAuthorization();
+
+// ===== #B379 TỒN KHO THEO HỢP ĐỒNG ĐẠI LÝ — `Rpt_DlrContractInstock_WH_New20260514`
+//       (vỏ `DataWH/BizHTC.zTemp.cs:39019` → `…X_New20260514` (`:39337`)) =====
+// **3B khớp cả 2 máy (2 md5)**: vỏ `39019,39178` ⇒ **`00f0c8e127b162afff6961d82718969a`**;
+//   `…X` `39337,39532` ⇒ **`1f1170ee0d3a0b4156abd935d7efe7ac`**.
+//
+// 🔴🔴🔴🔴 **BỀ MẶT SQL INJECTION TRUY VẾT ĐƯỢC TỚI TẬN CỬA WS — CA ĐẦU TIÊN TRONG CẢ CAMPAIGN**:
+//     `[WebMethod] public object[] **RptDlr_RetailContractInstock_WH**( … , **string strGroupBy** , … )`
+//       (`TERP.WSHTC.64/WSHTC.asmx.cs`, tham số **do client truyền**)
+//     → vỏ `Rpt_DlrContractInstock_WH_New20260514(… strGroupBy …)`
+//     → `…X_New20260514(… strGroupBy …)`
+//     → `CmUtils.StringUtils.Replace(strSqlGetData, … , "**strGroupBy**", **strGroupBy** , …)`
+//   ⇒ Chuỗi **đi thẳng từ client vào câu SQL**, **KHÔNG whitelist**, **KHÔNG bộ chuẩn hoá**,
+//     và **không nằm trong nháy** (đây là mảnh `GROUP BY`, tức **mã lệnh**, không phải giá trị).
+//   ⇒ Theo luật `C0-…quadragesimusprimus`: **mức (A) — ĐÃ KHAI THÁC ĐƯỢC**, khác hẳn #B356 (nơi cả 4
+//     nơi gọi đều truyền hằng chữ ⇒ chỉ là rủi ro tiềm ẩn) và khác #B329 (**có** whitelist 7 cột).
+//   📌 Đây là **phát hiện an ninh nghiêm trọng nhất** cho tới nay của campaign. **KHÔNG tự vá nguồn** —
+//     nhưng phải báo rõ. Port **chỉ nhận danh sách trắng** và trả `groupByWhitelisted`.
+//
+// 🔴🔴🔴 **NĂM THAM SỐ VỪA BIND LÀM PARAM RUNTIME VỪA BỊ NƯỚNG — CÙNG TÊN, CÙNG HÀM**:
+//   bind (`:39463-39467`): `@strCreatedDateFromConditionList`, `@strCreatedDateToConditonList`,
+//     `@strDeliveryDateFrom`, `@strDeliveryDateTo`, `@strDateBegin`
+//   rồi `Replace` (`:39505-39513`) **thay chính những tên đó** bằng giá trị.
+//   ⇒ Sau `Replace`, **SQL không còn tham chiếu các tên đó** ⇒ **năm tham số đã bind trở thành MỒ CÔI**.
+//   ⇒ **Hai nhánh** (không đoán): nếu `EzDAL` **báo lỗi khi có tham số thừa** ⇒ hàm **chết**; nếu
+//     **bỏ qua** ⇒ chạy được, nhưng việc bind là **thừa và gây hiểu nhầm** rằng đã tham số hoá.
+//   ⇒ Đây là **dạng cực đoan nhất** của `[BAKE-PARAM-MIX]`: **một tham số được xử lý bằng CẢ HAI cách**.
+// 🔴 **Sai chính tả trong tên placeholder — có hệ thống**: `@strCreatedDateTo**Conditon**List` và
+//   `zzzzClauseWhere_strMAAreaCode**Conditon**List` (thiếu chữ `i`, đúng phải là `Condition`).
+//   ⚠️ Vô hại **chỉ khi** SQL cũng viết sai y hệt; lệch một chữ ⇒ **placeholder không được thay**
+//     ⇒ chuỗi `@strCreatedDateToConditonList` **nằm nguyên trong SQL** ⇒ lỗi cú pháp hoặc tham số thiếu.
+// ✅ **RBAC tổ hợp (3)**: `@strBUPatternOfUser` **bind thật**; cổng `//myCommon_CheckHTCDirect(` bị
+//   comment nhưng **có lọc dòng** ⇒ không phải lỗ. Thêm `BuildClause` cho `md.DealerCode` và
+//   `f.AreaCodeDealer` (param `@p`, an toàn).
+// 🔴 `@strZoneCode` được bind ⇒ nhớ luật đã ghi trong bộ nhớ (`zonecode NULL vs rỗng` làm báo cáo ra 0
+//   câm) — port truyền chuỗi rỗng thay vì NULL.
+// ⚠️ **NỢ**: `Dlr_Contract` + tồn kho theo hợp đồng chưa đủ ⇒ trả khung + cờ; **không bịa**.
+app.MapGet("/api/reports/dlrcontract-instock", async (
+    AppDbContext db, ITenantContext t,
+    string? groupBy, string? dealerCode, string? areaCode, string? zoneCode,
+    DateTime? createdDateFrom, DateTime? createdDateTo,
+    DateTime? deliveryDateFrom, DateTime? deliveryDateTo, string? buPattern) =>
+{
+    // 🔴🔴🔴🔴 Nguồn nướng `strGroupBy` THẲNG TỪ CLIENT vào SQL, không whitelist.
+    //   Port CHỈ nhận danh sách trắng — cố ý KHÔNG tái tạo bề mặt injection.
+    var allowed = new[] { "DealerCode", "AreaCodeDealer", "ModelCode", "SpecCode", "ColorCode", "ZoneCode" };
+    var raw = (groupBy ?? "").Trim();
+    var picked = allowed.FirstOrDefault(c => string.Equals(c, raw, StringComparison.OrdinalIgnoreCase));
+    if (raw.Length > 0 && picked == null)
+        return Results.BadRequest(new
+        {
+            error = "InvalidGroupBy",
+            allowedColumns = allowed,
+            note = "Nguon KHONG whitelist cot gom (be mat injection); port chi nhan danh sach trang."
+        });
+
+    // ✅ RBAC tổ hợp (3): BUPattern là param thật ở nguồn.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        groupByApplied = picked,
+        groupByWhitelisted = true,
+        dealersInScope = dealers.Count,
+        Rpt_DlrContractInstock = Array.Empty<object>(),
+        // 🔴 zoneCode: truyền chuỗi RỖNG thay vì NULL (luật đã ghi: NULL làm filter loại sạch dòng).
+        zoneCodeEcho = zoneCode ?? "",
+        filtersEcho = new { areaCode, createdDateFrom, createdDateTo, deliveryDateFrom, deliveryDateTo },
+        reachableInjectionNote = "BE MAT SQL INJECTION TRUY VET DUOC TOI TAN CUA WS - CA DAU TIEN TRONG CA CAMPAIGN: '[WebMethod] public object[] RptDlr_RetailContractInstock_WH( ... , string strGroupBy , ... )' (WSHTC.asmx.cs, THAM SO DO CLIENT TRUYEN) -> vo Rpt_DlrContractInstock_WH_New20260514(... strGroupBy ...) -> ...X_New20260514(... strGroupBy ...) -> CmUtils.StringUtils.Replace(strSqlGetData, ..., 'strGroupBy', strGroupBy, ...). Chuoi DI THANG TU CLIENT VAO CAU SQL, KHONG whitelist, KHONG bo chuan hoa, va KHONG nam trong nhay (day la manh GROUP BY, tuc MA LENH, khong phai gia tri). Theo luat C0-...quadragesimusprimus: MUC (A) - DA KHAI THAC DUOC, khac han #B356 (ca 4 noi goi deu truyen hang chu => chi la rui ro tiem an) va khac #B329 (CO whitelist 7 cot). PHAT HIEN AN NINH NGHIEM TRONG NHAT cho toi nay cua campaign. KHONG TU VA NGUON - port chi nhan danh sach trang.",
+        doubleMechanismNote = "NAM THAM SO VUA BIND LAM PARAM RUNTIME VUA BI NUONG - CUNG TEN, CUNG HAM: bind @strCreatedDateFromConditionList, @strCreatedDateToConditonList, @strDeliveryDateFrom, @strDeliveryDateTo, @strDateBegin; roi Replace THAY CHINH NHUNG TEN DO bang gia tri. Sau Replace, SQL KHONG CON THAM CHIEU cac ten do => NAM THAM SO DA BIND TRO THANH MO COI. HAI NHANH (khong doan): neu EzDAL BAO LOI khi co tham so thua => ham CHET; neu BO QUA => chay duoc, nhung viec bind la THUA va GAY HIEU NHAM rang da tham so hoa. Day la DANG CUC DOAN NHAT cua [BAKE-PARAM-MIX]: MOT THAM SO DUOC XU LY BANG CA HAI CACH.",
+        typoPlaceholderNote = "SAI CHINH TA TRONG TEN PLACEHOLDER - CO HE THONG: '@strCreatedDateToConditonList' va 'zzzzClauseWhere_strMAAreaCodeConditonList' (thieu chu i, dung phai la Condition). Vo hai CHI KHI SQL cung viet sai y het; lech mot chu => placeholder KHONG DUOC THAY => chuoi nam nguyen trong SQL => loi cu phap hoac tham so thieu.",
+        rbacNote = "RBAC to hop (3): @strBUPatternOfUser BIND THAT; cong '//myCommon_CheckHTCDirect(' bi comment nhung CO LOC DONG => khong phai lo. Them BuildClause cho md.DealerCode va f.AreaCodeDealer (param @p, an toan). @strZoneCode duoc bind => nho luat da ghi trong bo nho (zonecode NULL vs rong lam bao cao ra 0 CAM); port truyen chuoi RONG thay vi NULL.",
+        debtNote = "NO - KHONG DOAN: Dlr_Contract + ton kho theo hop dong chua du => tra khung + co."
+    });
+}).RequireAuthorization();
 // ===== #B374 BÁO CÁO MAP VIN — `Rpt_MapVIN_WH_New20181119`
 //       (vỏ `DataWH/Biz.HTC.WH.cs:169651` → `Rpt_MapVINX_New20181119` (`:169791`)
 //        → SQL `RptSQLQuery.cs:49203` `mySql_Rpt_MapVINX_New20181119()`) =====
