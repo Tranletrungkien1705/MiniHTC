@@ -10621,6 +10621,11 @@ public sealed class CarVinMaster
     /// <summary>`Car_VIN.CQNo` / `CONo` — số chứng nhận chất lượng / số C/O.</summary>
     public string? CQNo { get; set; }
     public string? CONo { get; set; }
+
+    /// <summary>🔴 #B112 — `Car_VIN.InspectionDate`: **ngày kiểm định** khi đóng thùng.
+    /// Nguồn **chỉ ghi khi khác rỗng VÀ khác `DateTime.MinValue.ToString("yyyy-MM-dd")`**
+    /// (`BizHTC.Car.cs:1653`) — tức chuỗi `"0001-01-01"` được coi là **RỖNG**, không phải ngày thật.</summary>
+    public DateTime? InspectionDate { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>

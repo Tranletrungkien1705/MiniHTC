@@ -9062,6 +9062,110 @@ app.MapPost("/api/vins/send-mail-for-doc", async (
     });
 }).RequireAuthorization();
 
+// ===== #B112 ĐÓNG THÙNG XE — `CarVINUpdate_TypeCB_New20181115` =====
+// Trace LIVE: WS → **`_biz.CarVINUpdate_TypeCB_New20181115`** (`BizHTC.Car.cs:1216`).
+//   3B đo thật, **khớp cả 2 máy**: start=1216 md5 `1322c2af2563cf4b8244943b23022734`.
+// 🔴 **TỪ VỰNG `TConst.CVTypeCB` có BA giá trị** (`Const.Main.cs:669-674`), **không phải cờ nhị phân**:
+//      **`"Y"`** đã đóng thùng · **`"N"`** chưa đóng thùng · **`"NONE"`** bình thường (không đóng thùng).
+//    Guard vào: **chỉ VIN đang `"N"`** mới đóng thùng được (`…_InvalidVINTypeCB`) ⇒ xe `"NONE"`
+//    (không thuộc diện đóng thùng) **cũng bị chặn**, không chỉ xe đã đóng rồi.
+//    Hiệu ứng: `TypeCB` ← **`"Y"`**.
+// 🔴 **NĂM guard trước khi ghi** — port thiếu bất kỳ cái nào là nới lỏng nghiệp vụ:
+//    1. `TypeCB` phải `= "N"`;
+//    2. `LoaiThung` **bắt buộc** (`…_LoaiThungNotNull`) và phải nằm trong danh mục (`…_LoaiThungNotValid`);
+//    3. `StorageCodeCurrent` **bắt buộc** (`…_InvalidStorageCodeCurrent`) và kho đó phải có
+//       **`StorageType`** hợp lệ (`…_InvalidStorageType`);
+//    4. `PackingListNo` **bắt buộc** (`…_InvalidPackingListNo`) — cùng guard với #B110;
+//    5. `InspectionDate` hợp lệ (`…_InvalidInspectionDate`).
+//    ⚠️ Ngoài ra, khi có `ActualSpec`: **`RootSpec` của `ActualSpec` phải TRÙNG `RootSpec` của
+//      `SpecCode` hiện tại** — tức chỉ được đổi sang spec **cùng gốc**.
+// 🔴 **GHI CÓ ĐIỀU KIỆN — `alColumnEffective` thay đổi theo dữ liệu vào** (`:1640-1656`):
+//    · **luôn** ghi: `TypeCB` (hằng `"Y"`) + `LoaiThung`;
+//    · `ActualSpec` **chỉ ghi khi khác rỗng**;
+//    · `SerialNo` **chỉ ghi khi khác rỗng**;
+//    · `InspectionDate` chỉ ghi khi khác rỗng **VÀ khác `DateTime.MinValue.ToString("yyyy-MM-dd")`**
+//      ⇒ chuỗi **`"0001-01-01"` được coi là RỖNG**, không phải ngày thật.
+//    ⇒ Port gán vô điều kiện sẽ **XOÁ** `ActualSpec`/`SerialNo` cũ khi client gửi rỗng.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`**.
+// 📌 §12: `CarVinMaster.InspectionDate`.
+app.MapPost("/api/vins/{vin}/close-box", async (
+    string vin, VinCloseBoxDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (vin ?? "").Trim().ToUpperInvariant();
+    var cv = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == code);
+    if (cv is null) return Results.NotFound(new { error = "Common_InvalidVIN", check = new { VIN = code } });
+
+    // (1) CHỈ VIN đang "N" (chưa đóng thùng) — "NONE" cũng bị chặn.
+    var typeCb = (cv.TypeCB ?? "").Trim();
+    if (!string.Equals(typeCb, "N", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new
+        {
+            error = "CarVINUpdate_TypeCB_InvalidVINTypeCB",
+            check = new { VIN = code, Check_TypeCB = typeCb },
+            vocabNote = "TConst.CVTypeCB co BA gia tri: 'Y' da dong thung | 'N' chua dong thung | 'NONE' binh thuong (khong dong thung). CHI VIN dang 'N' moi dong thung duoc => xe 'NONE' CUNG BI CHAN."
+        });
+
+    // (2) LoaiThung bắt buộc + phải có trong danh mục.
+    var loaiThung = (dto.LoaiThung ?? "").Trim();
+    if (loaiThung.Length == 0)
+        return Results.BadRequest(new { error = "CarVINUpdate_TypeCB_LoaiThungNotNull", check = new { VIN = code } });
+    var loaiThungOk = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "LoaiThung" && m.Code == loaiThung);
+    if (!loaiThungOk)
+        return Results.BadRequest(new { error = "CarVINUpdate_TypeCB_LoaiThungNotValid", check = new { VIN = code, LoaiThung = loaiThung } });
+
+    // (3) StorageCodeCurrent bắt buộc + kho phải có StorageType.
+    var storageCode = (cv.StorageCodeCurrent ?? "").Trim();
+    if (storageCode.Length == 0)
+        return Results.BadRequest(new { error = "CarVINUpdate_TypeCB_InvalidStorageCodeCurrent", check = new { VIN = code, cv.StorageCodeCurrent } });
+    var storage = await db.Storages.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.StorageCode == storageCode);
+    if (storage is null || string.IsNullOrWhiteSpace(storage.StorageType))
+        return Results.BadRequest(new { error = "CarVINUpdate_TypeCB_InvalidStorageType", check = new { VIN = code, StorageCode = storageCode, storage?.StorageType } });
+
+    // (4) PackingListNo bắt buộc (cùng guard #B110).
+    if (string.IsNullOrWhiteSpace(cv.PackingListNo))
+        return Results.BadRequest(new { error = "CarVINUpdate_TypeCB_InvalidPackingListNo", check = new { VIN = code, cv.PackingListNo } });
+
+    // (5) ActualSpec (nếu có) phải CÙNG RootSpec với SpecCode hiện tại.
+    var actualSpec = (dto.ActualSpec ?? "").Trim();
+    if (actualSpec.Length > 0)
+    {
+        var specCur = await db.CarSpecs.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.SpecCode == (cv.SpecCode ?? ""));
+        var specNew = await db.CarSpecs.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.SpecCode == actualSpec);
+        if (specNew is null)
+            return Results.BadRequest(new { error = "Common_InvalidSpecCode", check = new { VIN = code, ActualSpec = actualSpec } });
+        if (!string.Equals(specCur?.RootSpec ?? "", specNew.RootSpec ?? "", StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new
+            {
+                error = "CarVINUpdate_TypeCB_InvalidActualSpecRootSpec",
+                check = new { VIN = code, SpectCode_RootSpec = specCur?.RootSpec, ActualSpec_RootSpec = specNew.RootSpec },
+                note = "Chi duoc doi sang spec CUNG GOC (RootSpec)."
+            });
+    }
+
+    // 🔴 GHI CÓ ĐIỀU KIỆN — alColumnEffective thay đổi theo dữ liệu vào.
+    var written = new List<string> { "TypeCB", "LoaiThung" };
+    cv.TypeCB = "Y";                                    // hằng `CVTypeCB.DongThung`
+    cv.LoaiThung = loaiThung;
+    if (actualSpec.Length > 0) { cv.ActualSpec = actualSpec; written.Add("ActualSpec"); }
+    var serialNo = (dto.SerialNo ?? "").Trim();
+    if (serialNo.Length > 0) { cv.SerialNo = serialNo; written.Add("SerialNo"); }
+    // `"0001-01-01"` (DateTime.MinValue) được coi là RỖNG.
+    if (dto.InspectionDate is not null && dto.InspectionDate.Value.Date != DateTime.MinValue.Date)
+    { cv.InspectionDate = dto.InspectionDate; written.Add("InspectionDate"); }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        vin = code, cv.TypeCB, cv.LoaiThung, cv.ActualSpec, cv.SerialNo, cv.InspectionDate,
+        columnsWritten = written,
+        vocabNote = "TConst.CVTypeCB co BA gia tri (Const.Main.cs:669-674), KHONG phai co nhi phan: 'Y' da dong thung | 'N' chua dong thung | 'NONE' binh thuong. Guard vao chi nhan 'N'.",
+        fiveGuardsNote = "NAM guard truoc khi ghi: (1) TypeCB phai = 'N'; (2) LoaiThung BAT BUOC + phai co trong danh muc; (3) StorageCodeCurrent BAT BUOC + kho phai co StorageType hop le; (4) PackingListNo BAT BUOC (cung guard #B110); (5) InspectionDate hop le. Ngoai ra: ActualSpec (neu co) phai CUNG RootSpec voi SpecCode hien tai - chi duoc doi sang spec CUNG GOC.",
+        conditionalWriteNote = "GHI CO DIEU KIEN - alColumnEffective THAY DOI THEO DU LIEU VAO (:1640-1656): LUON ghi TypeCB (hang 'Y') + LoaiThung; ActualSpec CHI ghi khi khac rong; SerialNo CHI ghi khi khac rong; InspectionDate chi ghi khi khac rong VA khac DateTime.MinValue.ToString('yyyy-MM-dd') => chuoi '0001-01-01' duoc coi la RONG. Port gan vo dieu kien se XOA ActualSpec/SerialNo cu khi client gui rong.",
+        twoDbNote = "Nguon SaveData('Car_VIN', ...) HAI LAN - _dbMain va _dbWH."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -41996,6 +42100,7 @@ record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   //
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
 record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109
 record OsDealDetailConfirmWarrantyDto(string? DealNo, string? CarId, DateTime? CusConfirmedWarrantyDate);   // #B104
