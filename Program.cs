@@ -16821,6 +16821,87 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #654 THỐNG KÊ BẢO HÀNH THEO MODEL `Rpt_DMSSer_ThongKeBaoHanhTheoModel_WH` (`WH.cs:13620-14159`) =====
+// 3B: laptop `:13620` md5 `229429a2` **KHỚP** máy 150 `:13620`. WS gọi thẳng bản này (không hậu tố).
+// Cùng khuôn **liên hệ thống** với #651: gọi WS DMS Sale → `InsertHuge` vào `#tbl_Rpt_FromSale` → nối cục bộ.
+//
+// 🔴🔴🔴 **`'Unknown'` ĐỨNG SAU MỌI NGÀY KHI SO CHUỖI ⇒ XE KHÔNG XÁC ĐỊNH HẠN BỊ TÍNH LÀ *CÒN HẠN***:
+//   Cột hạn bảo hành được dựng bằng `case` trả **CHUỖI**:
+//     `CONVERT(varchar(10), dateadd(year, 2|3, t.DeliveryDate), 126) … **else 'Unknown'** end as ExpiredDateWarranty`
+//   rồi lọc "còn hạn" bằng `and t.ExpiredDateWarranty **>= @strToday**`.
+//   ⚪ Style **126** = `yyyy-mm-dd` nên với ngày thật, so chuỗi **cùng thứ tự** với so ngày — phần đó **đúng**.
+//   🔴 **Nhưng** `'Unknown'` bắt đầu bằng chữ **`U`**, mà `'U' > '2'` trong bảng mã ⇒ `'Unknown' >= '2026-…'`
+//     là **TRUE** ⇒ **mọi xe không khớp quy tắc nào đều bị đếm vào "còn hạn bảo hành"**.
+//   📌 Chứng minh **hoàn toàn bằng thứ tự ký tự**, không cần dữ liệu. Đếm: `else 'Unknown'` có **8** site toàn
+//     tầng biz (`WH.cs` 3 · `Report.Special.Warranty.cs` 3 · `Inventory.Report.cs` 1 · `ZTemp.cs` 1) ⇒ cần soi
+//     từng chỗ xem nó có bị đem đi **so sánh** hay chỉ để **hiển thị**.
+//
+// 🔴🔴 **QUY TẮC HẠN BẢO HÀNH PHỤ THUỘC THỨ TỰ `case` VÀ CÓ MỐC NGÀY CỨNG**:
+//     `when mvo.ModelCode = 'HR-CKD' → 2 năm` · `when mvo.ModelCode = 'HR' → 2 năm`
+//     `when OrginalCode in ('HMC','HMI') and DeliveryDate **< '2016-03-01'** → 2 năm`
+//     `when OrginalCode in ('HMC','HMI') and DeliveryDate **>= '2016-03-01'** → 3 năm`
+//     `when OrginalCode = 'HTMV' → 3 năm` · else `'Unknown'`
+//   ⇒ Hai nhánh `HR` đứng **trước** nên xe `HR` do `HMC` sản xuất **sau 2016 vẫn chỉ 2 năm** — kết quả phụ
+//     thuộc **thứ tự** các `when`, không phải mức độ cụ thể của điều kiện. Ghi rõ, không kết luận đúng/sai.
+//   🔴 `'2016-03-01'` là **hằng ngày cứng trong SQL** (họ #413 — nợ dữ liệu đóng băng): đổi chính sách bảo hành
+//     phải sửa **mã nguồn**, và mọi báo cáo chạy lại quá khứ vẫn dùng mốc mới.
+//
+// 🔴🔴 **CHUỖI HOÁ TOÀN BỘ: NGÀY VÀ SỐ THỨ TỰ ĐỀU LÀ `nvarchar`** (bảng tạm nhận từ DMS Sale):
+//     `Cast(null as nvarchar(100)) **MyRowIdx**` · `Cast(null as nvarchar(50)) **DeliveryDate**`
+//   ⇒ ① Phân trang so `t.MyRowIdx >= @MyRowIdx_Start` với **tham số kiểu số** ⇒ SQL Server ép **varchar → int**
+//        (int ưu tiên cao hơn) ⇒ **số học đúng**, nhưng **vỡ ngay** nếu DMS Sale gửi giá trị phi số/rỗng.
+//     ② `dateadd(year, 2, t.DeliveryDate)` ép **varchar → datetime** ⇒ **phụ thuộc định dạng**;
+//        và `t.DeliveryDate < '2016-03-01'` là so **chuỗi với chuỗi** ⇒ chỉ đúng nếu DMS Sale trả `yyyy-mm-dd`.
+//        Trả `dd/MM/yyyy` thì mốc 2016 so **sai âm thầm** còn `dateadd` có thể parse lệch.
+//   ⇒ Cùng họ "phụ thuộc dữ liệu" với #615 (`isnull(chuỗi,0)`) và #652 (`case` so chuỗi với số).
+// 🔴 **CÙNG BẪY JOIN TIỀN TỐ VIN VỚI #651**: `inner join Mst_VINModelOrginal mvo on (left(t.VIN,4) = mvo.VINCode`
+//   `or left(t.VIN,5) = mvo.VINCode)` ⇒ xe tiền tố lạ **mất**, và `or` hai độ dài có thể **nhân đôi dòng** —
+//   ở đây hậu quả nặng hơn vì hai bảng đếm (`CountVINBan`, `CountVINConHanBH`) dùng `count(t.VIN)`.
+// 🔴 **DÒNG GỠ LỖI CÒN TRONG BẢN CHẠY**: `select ''#tbl_Dls_DealDetail_Filter_Sale_Final, * From …` — một cột
+//   hằng rỗng mang **alias là tên bảng tạm**, kiểu đánh dấu khi debug, nhưng **vẫn trả về cho client**.
+app.MapGet("/api/report/warranty-stats-by-model", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? modelCode) =>
+{
+    var today = DateTime.Today;
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.ModelCode, c.TradeMark, c.WarrantyExpiresDate, c.WarrantyRegistrationDate })
+        .ToListAsync();
+
+    var rows = cars
+        .Where(c => string.IsNullOrWhiteSpace(modelCode) || c.ModelCode == modelCode!.Trim())
+        .GroupBy(c => new { dealerCode, model = c.ModelCode })
+        .Select(g => new
+        {
+            dealerCode = g.Key.dealerCode,
+            modelCarSv = g.Key.model,
+            countVinBan = g.Count(),
+            // Port so NGÀY thật, không so chuỗi; xe KHÔNG xác định được hạn KHÔNG bị tính là còn hạn.
+            countVinConHanBH = g.Count(x => x.WarrantyExpiresDate.HasValue && x.WarrantyExpiresDate.Value.Date >= today),
+            countVinKhongXacDinhHan = g.Count(x => !x.WarrantyExpiresDate.HasValue),
+        })
+        .OrderBy(x => x.modelCarSv).ToList();
+
+    return Results.Ok(new
+    {
+        asOf = today, count = rows.Count, rows,
+        // ===== #654 =====
+        unknownSortsAfterAnyDate = "cot han bao hanh la CHUOI (CONVERT(varchar(10), …, 126)) voi nhanh else Unknown, roi loc con han bang and t.ExpiredDateWarranty >= @strToday; Unknown bat dau bang chu U ma U > 2 trong bang ma => Unknown >= 2026-… la TRUE => MOI XE khong khop quy tac nao deu bi dem vao con han bao hanh",
+        provableByCharacterOrderOnly = "chung minh hoan toan bang thu tu ky tu, khong can du lieu",
+        style126ComparisonItselfIsFine = "AM TINH: style 126 = yyyy-mm-dd nen voi NGAY THAT, so chuoi cung thu tu voi so ngay — phan do dung; chi rieng gia tri Unknown pha vo",
+        unknownLiteralCountedInBiz = "else Unknown co 8 site toan tang biz (WH.cs 3, Report.Special.Warranty.cs 3, Inventory.Report.cs 1, ZTemp.cs 1) => can soi tung cho xem no co bi dem di SO SANH hay chi de HIEN THI",
+        warrantyRuleDependsOnCaseOrder = "hai nhanh HR-CKD/HR dung TRUOC nen xe HR do HMC san xuat SAU 2016 van chi 2 nam — ket qua phu thuoc THU TU cac when, khong phai muc do cu the cua dieu kien; ghi ro, khong ket luan dung/sai",
+        hardcodedPolicyDate = "2016-03-01 la hang ngay CUNG trong SQL (ho #413): doi chinh sach bao hanh phai sua MA NGUON, va moi bao cao chay lai qua khu van dung moc moi",
+        everythingArrivesAsNvarchar = "bang tam nhan tu DMS Sale khai Cast(null as nvarchar(100)) MyRowIdx va Cast(null as nvarchar(50)) DeliveryDate",
+        pagingComparesVarcharToIntParam = "t.MyRowIdx >= @MyRowIdx_Start voi tham so kieu SO => SQL Server ep varchar sang int (int uu tien cao hon) => so hoc DUNG, nhung VO NGAY neu DMS Sale gui gia tri phi so hoac rong",
+        dateArithmeticOnStringIsFormatDependent = "dateadd(year, 2, t.DeliveryDate) ep varchar sang datetime => phu thuoc dinh dang; va t.DeliveryDate < 2016-03-01 la so CHUOI voi CHUOI => chi dung neu DMS Sale tra yyyy-mm-dd; tra dd/MM/yyyy thi moc 2016 so SAI AM THAM con dateadd co the parse lech",
+        sameDataDependentFamily = "cung ho phu thuoc du lieu voi #615 (isnull(chuoi,0)) va #652 (case so chuoi voi so)",
+        sameVinPrefixJoinTrapAsIssue651 = "inner join Mst_VINModelOrginal on (left(VIN,4) = VINCode or left(VIN,5) = VINCode) => xe tien to la MAT, va or hai do dai co the NHAN DOI dong; o day hau qua nang hon vi hai bang dem (CountVINBan, CountVINConHanBH) dung count(t.VIN)",
+        debugLineShippedToProduction = "select (hai nhay don)#tbl_Dls_DealDetail_Filter_Sale_Final, * From … — mot cot hang rong mang ALIAS la ten bang tam, kieu danh dau khi debug, nhung VAN TRA VE cho client",
+        portComparesRealDates = "port so NGAY that va tra rieng countVinKhongXacDinhHan thay vi gop chung vao con han nhu nguon",
+        crossSystemCallNotSimulated = "MiniHTC khong co he DMS Sale => port dung tu du lieu xe cuc bo; phan goi lien he thong ghi NO (nhu #651)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #653 BÁO CÁO KPI `Report_KPIGet_WH` — CỘNG NGÀY VỚI GIỜ, CỘNG ĐƠN GIÁ VỚI ĐƠN GIÁ =====
 // 3B: vỏ bọc `WH.cs:23301-23332` md5 `4ab7c563`; **thân thật** `Report_KPIGet_WithParams_WH_New20221101`
 //   (`:22972-23300`) md5 `1668a1fc` **KHỚP** máy 150 `:22972`.
