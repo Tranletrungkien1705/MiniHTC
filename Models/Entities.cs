@@ -9353,6 +9353,23 @@ public sealed class AutoMapVinStorageRate
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B139–#B141 — `Auto_MapVIN_DistributionSumRate`: tỷ lệ phân bổ **TỔNG** theo
+/// **model × spec × màu ngoại thất**, ba miền `MBVal`/`MTVal`/`MNVal`.
+/// ⚠️ Khác [[AutoMapVinStorageRate]] đúng một điểm: **KHÔNG có `StorageCode`** ⇒ khoá là **bộ BA**.</summary>
+public sealed class AutoMapVinDistSumRate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string SpecCode { get; set; } = "";
+    public string ColorExtCode { get; set; } = "";
+    public decimal? MBVal { get; set; }
+    public decimal? MTVal { get; set; }
+    public decimal? MNVal { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

@@ -10049,6 +10049,155 @@ app.MapPost("/api/dms40/mapvin-storage-rates/save", async (
     });
 }).RequireAuthorization();
 
+// ===== #B139/#B140/#B141 TỶ LỆ PHÂN BỔ TỔNG — `Auto_MapVIN_DistributionSumRate_Get` / `_GetWH` / `_Save`
+//       (`DMS40/zTemp.0.20.MapVIN.cs`) =====
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `77793,78041 / 567f0701ed310f54548980dee7c3278d`  (Get)
+//   `78042,78292 / b9fd5929c2252bf8dc9a1b7b5a344216`  (GetWH)
+//   `78293,78752 / 6dfb8a8365349a053e86966a46ca9cd0`  (Save)
+// 🔴 **Diff toàn thân với họ `StorageRate` (#B136–#B138): KHÁC ĐÚNG MỘT THỨ — KHÔNG CÓ `StorageCode`.**
+//   `diff` hai hàm `Get` cho ba khác biệt thực chất, tất cả đều là **bỏ cột `StorageCode`**:
+//     · bỏ `, amvsr.StorageCode` trong `select … into #tbl…_Filter_Draft`;
+//     · bỏ `amvsr.StorageCode asc` khỏi `order by` (còn `ModelCode, SpecCode, ColorExtCode`);
+//     · bỏ `and t.StorageCode = amvsr.StorageCode` khỏi `inner join` lấy dữ liệu.
+//   Phần còn lại là **khác biệt thụt lề thuần tuý** (tab vs space) — không mang ý nghĩa.
+//   ⇒ **Khoá nghiệp vụ là BỘ BA** `(ModelCode, SpecCode, ColorExtCode)`.
+//     Đây là tỷ lệ phân bổ **TỔNG** (không chia theo kho); họ `StorageRate` là bản **chia theo kho**.
+//     Dùng nhầm bảng nào cũng ra số **có vẻ đúng** nhưng **lệch cấp tổng hợp**.
+// ✅ Mọi ràng buộc còn lại **giữ nguyên** như #B136–#B138, đã kiểm lại từng dòng (không suy từ tên):
+//   ba miền `MBVal`/`MTVal`/`MNVal` độc lập · guard `< 0` **chung một mã lỗi** · `MyCount` đếm
+//   **trước** khi cắt trang · `MyIdxSeq` từ **0** · `#tblMst_CarColor` `distinct` trước khi join ·
+//   `_Save` **xoá theo khoá rồi chèn lại**, `FlagIsDelete = "1"` ⇒ **chỉ xoá** · ghi **cả hai DB** ·
+//   `_GetWH` chỉ khác ở **DB kho**.
+// 📌 §12: thực thể `AutoMapVinDistSumRate` + Seeder + DbSet + DTO + có ở **cả POST và GET**.
+static async Task<IResult> AutoMapVinDistSumRateGetAsync(
+    AppDbContext db, ITenantContext t, string? modelCode, string? specCode,
+    string? colorExtCode, int? recordStart, int? recordCount, bool isWh)
+{
+    var q = db.AutoMapVinDistSumRates.Where(r => r.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(r => r.ModelCode == modelCode.Trim());
+    if (!string.IsNullOrWhiteSpace(specCode)) q = q.Where(r => r.SpecCode == specCode.Trim());
+    if (!string.IsNullOrWhiteSpace(colorExtCode)) q = q.Where(r => r.ColorExtCode == colorExtCode.Trim());
+
+    // 🔴 order by KHÔNG còn StorageCode.
+    var all = await q.OrderBy(r => r.ModelCode).ThenBy(r => r.SpecCode).ThenBy(r => r.ColorExtCode).ToListAsync();
+    var myCount = all.Count;                                  // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId)
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.ModelCode, s.SpecCode, s.SpecDesc }).ToListAsync())
+        .GroupBy(s => (s.ModelCode ?? "") + "|#|" + s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorExtCode, c.ColorExtName, c.ColorExtNameVN }).ToListAsync())
+        .GroupBy(c => (c.ModelCode ?? "") + "|#|" + (c.ColorExtCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.First());
+
+    var items = page.Select((r, i) => new
+    {
+        MyIdxSeq = start + i,
+        r.ModelCode, r.SpecCode, r.ColorExtCode,
+        r.MBVal, r.MTVal, r.MNVal, r.LogLUDateTime, r.LogLUBy,
+        mcm_ModelName = models.TryGetValue(r.ModelCode, out var mn) ? mn : null,
+        mcs_SpecDescription = specs.TryGetValue(r.ModelCode + "|#|" + r.SpecCode, out var sd) ? sd : null,
+        mcc_ColorExtName = colors.TryGetValue(r.ModelCode + "|#|" + r.ColorExtCode, out var cc) ? cc.ColorExtName : null,
+        mcc_ColorExtNameVN = colors.TryGetValue(r.ModelCode + "|#|" + r.ColorExtCode, out var cc2) ? cc2.ColorExtNameVN : null
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Auto_MapVIN_DistributionSumRate = items,
+        recordStart = start, recordCount = count,
+        sameDbAsMain = isWh,
+        keyNote = "KHOA NGHIEP VU LA BO BA (ModelCode, SpecCode, ColorExtCode) - KHONG co StorageCode. Day la ty le phan bo TONG (khong chia theo kho); ho StorageRate (#B136-#B138) la ban CHIA THEO KHO. Dung nham bang nao cung ra so CO VE DUNG nhung LECH CAP TONG HOP.",
+        diffNote = "Diff toan than voi ho StorageRate: KHAC DUNG MOT THU - bo cot StorageCode o ba cho (select ... into #tbl..._Filter_Draft; order by; inner join lay du lieu). Phan con lai la khac biet THUT LE thuan tuy (tab vs space) - khong mang y nghia.",
+        sameRulesNote = "Moi rang buoc con lai GIU NGUYEN nhu #B136-#B138 va da kiem lai TUNG DONG, khong suy tu ten: ba mien MBVal/MTVal/MNVal doc lap; guard < 0 CHUNG MOT ma loi; MyCount dem TRUOC khi cat trang; MyIdxSeq tu 0; #tblMst_CarColor distinct truoc khi join; _Save xoa theo khoa roi chen lai, FlagIsDelete='1' => CHI XOA; ghi CA HAI DB; _GetWH chi khac o DB kho."
+    });
+}
+
+app.MapGet("/api/dms40/mapvin-distsum-rates", async (
+    AppDbContext db, ITenantContext t, string? modelCode, string? specCode,
+    string? colorExtCode, int? recordStart, int? recordCount) =>
+    await AutoMapVinDistSumRateGetAsync(db, t, modelCode, specCode, colorExtCode,
+                                        recordStart, recordCount, false)).RequireAuthorization();
+
+app.MapGet("/api/dms40/mapvin-distsum-rates-wh", async (
+    AppDbContext db, ITenantContext t, string? modelCode, string? specCode,
+    string? colorExtCode, int? recordStart, int? recordCount) =>
+    await AutoMapVinDistSumRateGetAsync(db, t, modelCode, specCode, colorExtCode,
+                                        recordStart, recordCount, true)).RequireAuthorization();
+
+app.MapPost("/api/dms40/mapvin-distsum-rates/save", async (
+    AutoMapVinDistSumRateSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null)
+        return Results.BadRequest(new { error = "Auto_MapVIN_DistributionSumRate_Save_Input_Auto_MapVIN_DistributionSumRateTblNotFound" });
+
+    var isDelete = (dto.FlagIsDelete ?? "0").Trim() == "1";
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => m.ModelCode).ToListAsync()).ToHashSet();
+    var specKeys = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.ModelCode, s.SpecCode }).ToListAsync())
+        .Select(s => (s.ModelCode ?? "") + "|#|" + s.SpecCode).ToHashSet();
+    var colorKeys = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.ModelCode, c.ColorExtCode }).ToListAsync())
+        .Select(c => (c.ModelCode ?? "") + "|#|" + (c.ColorExtCode ?? "")).ToHashSet();
+
+    foreach (var r in dto.Rows)
+    {
+        var mc = (r.ModelCode ?? "").Trim();
+        var sp = (r.SpecCode ?? "").Trim();
+        var ce = (r.ColorExtCode ?? "").Trim();
+        if (!models.Contains(mc))
+            return Results.BadRequest(new { error = "Auto_MapVIN_DistributionSumRate_Save_InvalidModelCode", check = new { ModelCode = mc } });
+        if (!specKeys.Contains(mc + "|#|" + sp))
+            return Results.BadRequest(new { error = "Auto_MapVIN_DistributionSumRate_Save_InvalidSpecCode", check = new { ModelCode = mc, SpecCode = sp } });
+        if (!colorKeys.Contains(mc + "|#|" + ce))
+            return Results.BadRequest(new { error = "Auto_MapVIN_DistributionSumRate_Save_InvalidColorExtCode", check = new { ModelCode = mc, ColorExtCode = ce } });
+        if ((r.MBVal ?? 0m) < 0 || (r.MTVal ?? 0m) < 0 || (r.MNVal ?? 0m) < 0)
+            return Results.BadRequest(new { error = "Auto_MapVIN_DistributionSumRate_Save_InvalidValue", check = new { r.MBVal, r.MTVal, r.MNVal } });
+    }
+
+    var keys = dto.Rows.Select(r => ((r.ModelCode ?? "").Trim(), (r.SpecCode ?? "").Trim(),
+                                     (r.ColorExtCode ?? "").Trim())).ToHashSet();
+    var existing = await db.AutoMapVinDistSumRates.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var toDelete = existing.Where(x => keys.Contains((x.ModelCode, x.SpecCode, x.ColorExtCode))).ToList();
+    db.AutoMapVinDistSumRates.RemoveRange(toDelete);
+
+    var inserted = 0;
+    if (!isDelete)
+        foreach (var r in dto.Rows)
+        {
+            db.AutoMapVinDistSumRates.Add(new AutoMapVinDistSumRate
+            {
+                OrgId = t.OrgId,
+                ModelCode = (r.ModelCode ?? "").Trim(),
+                SpecCode = (r.SpecCode ?? "").Trim(),
+                ColorExtCode = (r.ColorExtCode ?? "").Trim(),
+                MBVal = r.MBVal, MTVal = r.MTVal, MNVal = r.MNVal,
+                LogLUDateTime = now, LogLUBy = by
+            });
+            inserted++;
+        }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        flagIsDelete = isDelete ? "1" : "0",
+        deleted = toDelete.Count, inserted,
+        keyNote = "Xoa/chen theo BO BA (ModelCode, SpecCode, ColorExtCode) - KHONG co StorageCode.",
+        deleteInsertNote = "_Save = xoa theo khoa roi chen lai (khong update); FlagIsDelete = '1' => CHI XOA. Ghi ca _dbMain va _dbWH."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -43603,6 +43752,8 @@ record TcgInvoiceHddtDeleteDto(string? DeleteReason, string? AttachedDelFileBase
 record HtcInvoiceHddtDeleteDto(string? FlagisHTC, string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B118
 record AutoMapVinStorageRateRowDto(string? StorageCode, string? ModelCode, string? SpecCode, string? ColorExtCode, decimal? MBVal, decimal? MTVal, decimal? MNVal);   // #B138
 record AutoMapVinStorageRateSaveDto(string? FlagIsDelete, List<AutoMapVinStorageRateRowDto>? Rows);   // #B138
+record AutoMapVinDistSumRateRowDto(string? ModelCode, string? SpecCode, string? ColorExtCode, decimal? MBVal, decimal? MTVal, decimal? MNVal);   // #B141
+record AutoMapVinDistSumRateSaveDto(string? FlagIsDelete, List<AutoMapVinDistSumRateRowDto>? Rows);   // #B141
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
