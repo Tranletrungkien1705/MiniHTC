@@ -6330,6 +6330,13 @@ public sealed class DealerDealDetail
     /// <summary>Xe trên hợp đồng đại lý VỪA ĐƯỢC SINH RA (`CtrCarId`) — mốc nối dòng giao dịch với
     /// `Dlr_ContractCar`. Nguồn gán ngay trong vòng lặp tạo dòng, cùng chỉ số i.</summary>
     public string? CtrCarId { get; set; }
+
+    // ===== #B104 parity `DLS_DealDetail` — cột DUY NHẤT mà kênh ngoài `OS_` được ghi =====
+    /// <summary>🔴 `DLS_DealDetail.CusConfirmedWarrantyDate` — **ngày khách xác nhận bảo hành**.
+    /// Là cột **duy nhất** mà `OS_DLS_DealDetailUpdate` (`Biz.HTC.WH.cs:94818`) ghi, và nguồn có
+    /// **guard GHI-MỘT-LẦN**: đã có giá trị ⇒ ném `CommonAppData_CusConfirmedWarrantyDateFound`.
+    /// ⚠️ Xem cảnh báo RBAC ở endpoint `/api/os/dealdetails/confirm-warranty`.</summary>
+    public DateTime? CusConfirmedWarrantyDate { get; set; }
 }
 
 /// <summary>

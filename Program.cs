@@ -36233,6 +36233,88 @@ app.MapGet("/api/icic/dealercustomers", async (
     });
 }).RequireAuthorization();
 
+// ===== #B104 KÊNH NGOÀI `OS_` GHI NGÀY XÁC NHẬN BẢO HÀNH — `OS_DLS_DealDetailUpdate` =====
+// Trace LIVE: WS → **`_biz.OS_DLS_DealDetailUpdate`** (`Biz.HTC.WH.cs:94818`).
+//   3B đo thật, **khớp cả 2 máy** (`start` lệch 94818/94823 — bình thường): md5
+//   `25620f63ffb5175057f9b84af620f8c9`.
+// 🔴🔴🔴 **CA GHI ĐẦU TIÊN TRONG HỒ SƠ RBAC — VÀ LÀ CA KHÔNG CÓ BẤT KỲ KIỂM PHẠM VI NÀO.**
+//    18 ca trước đều là hàm **ĐỌC**. Hàm này **GHI**, trên **kênh ngoài `OS_`**, và:
+//      · `//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);` ← **BỊ COMMENT**
+//        ⇒ **không hề lấy quyền người gọi**;
+//      · **không** có `myCommon_CheckHTCDirect` / `myCommon_CheckDealer` /
+//        `myCommon_CheckAccessDealerData` / `myCommon_CheckUpdateDealerData` — **không guard nào**;
+//      · `grep -c "strBUPatternOfUser"` trong thân = **0**;
+//      · ghi thẳng theo `(DealNo, CarId)` **do client gửi lên**, vào **cả `_dbMain` và `_dbWH`**.
+//    ⇒ **Ai gọi được kênh `OS_` đều ghi được `CusConfirmedWarrantyDate` lên BẤT KỲ giao dịch nào
+//      của BẤT KỲ đại lý nào.** 📌 **Nâng lên ƯU TIÊN 0** — trên cả #B101/#B103 (vốn chỉ là ĐỌC).
+//    Port **giữ đúng nguồn** nhưng mở cờ **`enforceBuScope=1`** (kèm `buPatternOfUser`) để ép phạm vi;
+//    trả `rbacNoScopeCheck = true` để không ai hiểu nhầm là đã có kiểm. **KHÔNG tự bịt.**
+// 🔴 **GUARD GHI-MỘT-LẦN (idempotent NGƯỢC)**: `if (!IsNullOrEmpty(Rows[0]["CusConfirmedWarrantyDate"]))
+//    throw CommonAppData_CusConfirmedWarrantyDateFound` ⇒ **đã có giá trị thì KHÔNG ghi đè**, ném lỗi.
+//    ⚠️ Khác hẳn khuôn "duyệt lại được" của #B81. Đây là **ghi một lần, vĩnh viễn** — và cũng là
+//      thứ **duy nhất** hạn chế thiệt hại của lỗ hổng trên (chỉ ghi được lên dòng **chưa có** ngày).
+// 🔴 `alColumnEffective` **đúng MỘT cột**: `CusConfirmedWarrantyDate`. Không `LogLU*`, không dấu vết
+//    người ghi ⇒ **không truy được ai đã ghi** qua kênh ngoài. Ghi nhận, không tự thêm cột.
+app.MapPost("/api/os/dealdetails/confirm-warranty", async (
+    OsDealDetailConfirmWarrantyDto dto, AppDbContext db, ITenantContext t,
+    string? enforceBuScope, string? buPatternOfUser) =>
+{
+    var dealNo = (dto.DealNo ?? "").Trim();
+    var carId = (dto.CarId ?? "").Trim().ToUpperInvariant();
+    if (dealNo.Length == 0 || carId.Length == 0)
+        return Results.BadRequest(new { error = "OS_DLS_DealDetailUpdate_InvalidKey", check = new { DealNo = dealNo, CarId = carId } });
+    if (dto.CusConfirmedWarrantyDate is null)
+        return Results.BadRequest(new { error = "OS_DLS_DealDetailUpdate_InvalidCusConfirmedWarrantyDate" });
+
+    var deal = await db.DealerDeals.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealNo == dealNo);
+    if (deal is null)
+        return Results.NotFound(new { error = "DLS_Deal_NotExist", check = new { DealNo = dealNo } });
+
+    // Nguồn KHÔNG kiểm phạm vi — chỉ ép khi bật cờ, và luôn ĐO được.
+    var realPattern = (buPatternOfUser ?? "").Trim();
+    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == deal.DealerCode);
+    var inScope = realPattern.Length == 0
+        || (dealer?.BUCode ?? "").ToUpperInvariant().StartsWith(realPattern.TrimEnd('%').ToUpperInvariant());
+    if (enforceBuScope == "1" && !inScope)
+        return Results.BadRequest(new
+        {
+            error = "Common_AccessDealerDataDenied",
+            check = new { DealNo = dealNo, deal.DealerCode, BUCode = dealer?.BUCode, BUPatternOfUser = realPattern },
+            note = "Nguon KHONG co kiem nay - day la co enforceBuScope=1 do MiniHTC mo them de bit duoc khi nghiep vu quyet dinh."
+        });
+
+    var line = await db.DealerDealDetails
+        .FirstOrDefaultAsync(l => l.OrgId == t.OrgId && l.DealId == deal.Id && l.CarId == carId);
+    if (line is null)
+        return Results.NotFound(new { error = "DLS_DealDetail_NotExist", check = new { DealNo = dealNo, CarId = carId } });
+
+    // 🔴 GUARD GHI-MỘT-LẦN: đã có giá trị ⇒ NÉM, không ghi đè.
+    if (line.CusConfirmedWarrantyDate is not null)
+        return Results.BadRequest(new
+        {
+            error = "CommonAppData_CusConfirmedWarrantyDateFound",
+            check = new { strDealNo = dealNo, strCarId = carId, strCusConfirmedWarrantyDate = line.CusConfirmedWarrantyDate },
+            writeOnceNote = "GUARD GHI-MOT-LAN: da co gia tri thi KHONG ghi de, nguon NEM loi. Khac han khuon 'duyet lai duoc' cua #B81."
+        });
+
+    // `alColumnEffective` đúng MỘT cột — không LogLU*, không dấu vết người ghi.
+    line.CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        dealNo, carId, line.CusConfirmedWarrantyDate,
+        dealerCode = deal.DealerCode,
+        rbacNoScopeCheck = enforceBuScope != "1",
+        buScopeEnforced = enforceBuScope == "1",
+        rbacHole = "CA GHI DAU TIEN TRONG HO SO RBAC - VA LA CA KHONG CO BAT KY KIEM PHAM VI NAO. 18 ca truoc deu la ham DOC. Ham nay GHI, tren KENH NGOAI 'OS_', va: (a) dong '//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);' BI COMMENT => khong he lay quyen nguoi goi; (b) KHONG co myCommon_CheckHTCDirect / CheckDealer / CheckAccessDealerData / CheckUpdateDealerData nao; (c) grep -c 'strBUPatternOfUser' trong than = 0; (d) ghi thang theo (DealNo, CarId) DO CLIENT GUI LEN, vao CA _dbMain va _dbWH.",
+        rbacImpact = "Ai goi duoc kenh OS_ deu ghi duoc CusConfirmedWarrantyDate len BAT KY giao dich nao cua BAT KY dai ly nao. NANG LEN UU TIEN 0 - tren ca #B101/#B103 (von chi la DOC). Thiet hai bi han che DUY NHAT boi guard ghi-mot-lan (chi ghi duoc len dong CHUA co ngay).",
+        writeOnceNote = "GUARD GHI-MOT-LAN (idempotent NGUOC): da co gia tri => NEM CommonAppData_CusConfirmedWarrantyDateFound, KHONG ghi de. Khac han khuon 'duyet lai duoc' cua #B81.",
+        noAuditTrailNote = "alColumnEffective dung MOT cot: CusConfirmedWarrantyDate. KHONG LogLUDateTime/LogLUBy => KHONG TRUY DUOC AI DA GHI qua kenh ngoai. Ghi nhan; khong tu them cot.",
+        portNote = "Port GIU DUNG nguon; co enforceBuScope=1 (kem buPatternOfUser) la MiniHTC MO THEM de bit duoc khi nghiep vu quyet dinh. KHONG tu bit."
+    });
+}).RequireAuthorization();
+
 // ===== #B97 THÔNG TIN NGƯỜI DÙNG ĐANG ĐĂNG NHẬP — `SysGetUser_ForCurrentUser_New20181115` =====
 // Trace LIVE: WS → `_biz.SysGetUser_ForCurrentUser_New20181115` (`BizHTC.System.cs:202`).
 //   3B đo thật, **khớp cả 2 máy**: start=202 md5 `d8dfab486c1899d56f9e59cbf9c5a077`.
@@ -41145,6 +41227,7 @@ record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   //
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record OsDealDetailConfirmWarrantyDto(string? DealNo, string? CarId, DateTime? CusConfirmedWarrantyDate);   // #B104
 record SalesManUpdateStatusDto(string? SMHyundaiCode, string? SMStatus, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);   // #B100 - KHONG co FlagActive: biz suy tu SMStatus
 record SalesManCreateMultiDto(string? SMCode, string? DealerCode, string? SMName, string? SMGender,
     DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
