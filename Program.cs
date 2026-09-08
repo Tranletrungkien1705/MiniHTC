@@ -29213,6 +29213,143 @@ app.MapPost("/api/carallocations/validate", (CarAllocationValidateDto dto) =>
     });
 }).RequireAuthorization();
 
+// ===== #B167/#B168/#B169 BA MASTER GHI QUA CỬA CHUNG — `Mst_PortType` · `Mst_SalesOrderType` ·
+//       `Mst_DealerSalesGroupType` =====
+// 📌 Ba bảng này **có trong danh sách trắng** của cửa ghi chung (#B165) nhưng **không có** hàm biz
+//   riêng nào ⇒ đúng loại bảng mà luật `C0-…quadragesimusquintus` cảnh báo: đếm `_biz.<Tên>_*` = 0
+//   **không** có nghĩa là chỉ đọc. Nguồn nghiệp vụ ở đây là **WinForm**, không phải biz.
+// **3B trên WinForm (file nguồn thật của luật nghiệp vụ), khớp cả 2 máy**:
+//   `Views/Admin/Dealer/FrmPortType.cs         370 dòng / 5c292deceb7e060d863b647448f000a6`
+//   `Views/Admin/Product/FrmSalesOrderType.cs  368 dòng / f34ede9982bdfdab59dff402548c030c`
+// 🔴🔴 **TÊN HẰNG C# KHÁC GIÁ TRỊ CHUỖI — bẫy đặt tên cột**:
+//     `TblPortType.PortTypeCode = **"PORTTYPE"**` (không phải `"PortTypeCode"`);
+//     `TblPortType.PortTypeName = **"PORTTYPENAME"**`;
+//     `TblSoType.SO_Type = **"SOTYPE"**`; `TblSoType.SO_TypeName = **"SOTYPENAME"**`;
+//     `TblCommon.Status = **"STATUS"**`.
+//   ⇒ Port lấy **tên hằng** làm tên cột là **sai tên cột thật**. Phải đọc **giá trị** hằng.
+//   ⚠️ Cùng khuôn ở tên bảng: `DbTable.Tbl_Port_Type = **"Mst_PortType"**`,
+//     `DbTable.Tbl_So_Type = **"Mst_SalesOrderType"**` — `grep "Port_Type"` **không** ra tên bảng thật.
+// 🔴 Cả hai form ghi bằng **cặp trùng nhau**: `new string[] { DbTable.Tbl_X, DbTable.Tbl_X }`
+//   (tên bảng DB **và** tên bảng DataSet giống hệt) rồi `SaveMasterDataTable(...)` ⇒ đi vào
+//   cửa chung `CommonSaveMasterData` (#B165).
+// 🔴 Trạng thái ở hai bảng này là cột **`STATUS`** (`TblCommon.Status`), **không** phải `FlagActive`
+//   như phần lớn master khác — đừng đồng nhất hai tên.
+// 🔴 **#B169 `Mst_DealerSalesGroupType` KHÔNG có form quản trị**: chỉ được `MasterInit` nạp một lần
+//   vào `ListSGroupType` (`TERP.HTCClient/Common/MasterInit.cs:65,108,281`) để đổ combobox.
+//   ⇒ **Chỉ đọc trên thực tế**, dù **có** trong danh sách trắng cửa ghi chung. Không sinh endpoint ghi.
+//     (Đây là ca "có trong whitelist nhưng vẫn chỉ đọc" — bổ sung cho quy trình ba bước ở #B165.)
+app.MapGet("/api/masters/port-types", async (
+    AppDbContext db, ITenantContext t, string? portType, string? status) =>
+{
+    var q = db.PortTypeMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(portType)) q = q.Where(x => x.PortType == portType.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status.Trim());
+    var items = await q.OrderBy(x => x.PortType).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        Mst_PortType = items.Select((x, i) => new { Index = i + 1, PORTTYPE = x.PortType, PORTTYPENAME = x.PortTypeName, STATUS = x.Status }),
+        columnNameNote = "TEN HANG C# KHAC GIA TRI CHUOI: TblPortType.PortTypeCode = 'PORTTYPE' (khong phai 'PortTypeCode'), PortTypeName = 'PORTTYPENAME', TblCommon.Status = 'STATUS'. Port lay TEN HANG lam ten cot la SAI TEN COT THAT - phai doc GIA TRI hang.",
+        tableNameNote = "DbTable.Tbl_Port_Type = 'Mst_PortType' - grep 'Port_Type' KHONG ra ten bang that.",
+        statusColumnNote = "Trang thai o bang nay la cot STATUS (TblCommon.Status), KHONG phai FlagActive nhu phan lon master khac."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/port-types/save", async (
+    PortTypeSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "CommonSaveMasterData_TableNotFound", check = new { Table = "Mst_PortType" } });
+
+    var existing = await db.PortTypeMsts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    int ins = 0, upd = 0;
+    foreach (var r in dto.Rows)
+    {
+        var code = (r.PortType ?? "").Trim();
+        if (code.Length == 0) continue;
+        var cur = existing.FirstOrDefault(x => x.PortType == code);
+        if (cur is null)
+        {
+            db.PortTypeMsts.Add(new PortTypeMst
+            { OrgId = t.OrgId, PortType = code, PortTypeName = r.PortTypeName, Status = string.IsNullOrWhiteSpace(r.Status) ? "1" : r.Status.Trim() });
+            ins++;
+        }
+        else
+        {
+            cur.PortTypeName = r.PortTypeName;
+            if (!string.IsNullOrWhiteSpace(r.Status)) cur.Status = r.Status.Trim();
+            upd++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        inserted = ins, updated = upd,
+        sharedDoorNote = "Form ghi bang CAP TRUNG NHAU: new string[] { DbTable.Tbl_Port_Type, DbTable.Tbl_Port_Type } roi SaveMasterDataTable(...) => di vao CUA CHUNG CommonSaveMasterData (#B165), khong co ham biz rieng."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/salesorder-types", async (
+    AppDbContext db, ITenantContext t, string? soType, string? status) =>
+{
+    var q = db.SalesOrderTypeMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(soType)) q = q.Where(x => x.SOType == soType.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status.Trim());
+    var items = await q.OrderBy(x => x.SOType).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        Mst_SalesOrderType = items.Select((x, i) => new { Index = i + 1, SOTYPE = x.SOType, SOTYPENAME = x.SOTypeName, STATUS = x.Status }),
+        columnNameNote = "TblSoType.SO_Type = 'SOTYPE', SO_TypeName = 'SOTYPENAME' - ten hang khac gia tri chuoi (cung bay voi #B167).",
+        tableNameNote = "DbTable.Tbl_So_Type = 'Mst_SalesOrderType'."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/salesorder-types/save", async (
+    SalesOrderTypeSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "CommonSaveMasterData_TableNotFound", check = new { Table = "Mst_SalesOrderType" } });
+
+    var existing = await db.SalesOrderTypeMsts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    int ins = 0, upd = 0;
+    foreach (var r in dto.Rows)
+    {
+        var code = (r.SOType ?? "").Trim();
+        if (code.Length == 0) continue;
+        var cur = existing.FirstOrDefault(x => x.SOType == code);
+        if (cur is null)
+        {
+            db.SalesOrderTypeMsts.Add(new SalesOrderTypeMst
+            { OrgId = t.OrgId, SOType = code, SOTypeName = r.SOTypeName, Status = string.IsNullOrWhiteSpace(r.Status) ? "1" : r.Status.Trim() });
+            ins++;
+        }
+        else
+        {
+            cur.SOTypeName = r.SOTypeName;
+            if (!string.IsNullOrWhiteSpace(r.Status)) cur.Status = r.Status.Trim();
+            upd++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { inserted = ins, updated = upd });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/dealer-salesgroup-types", async (
+    AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var q = db.DealerSalesGroupTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+    var items = await q.OrderBy(x => x.SGroupTypeCode).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        Mst_DealerSalesGroupType = items,
+        readOnlyNote = "Mst_DealerSalesGroupType KHONG co form quan tri: chi duoc MasterInit nap MOT LAN vao ListSGroupType (TERP.HTCClient/Common/MasterInit.cs:65,108,281) de do combobox => CHI DOC tren thuc te, DU CO trong danh sach trang cua cua ghi chung. Khong sinh endpoint ghi.",
+        whitelistCaveatNote = "Day la ca 'co trong whitelist nhung van chi doc' - bo sung cho quy trinh ba buoc o #B165: buoc 3 (co form quan tri khong) van la buoc quyet dinh."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -45020,6 +45157,10 @@ record BankDealerUpdDto(string? FlagBankGrt, string? FlagBankPmt, string? FlagAc
 record CommonSaveTableDto(string? DbTableName, string? DsTableName);   // #B165
 record CommonSaveMasterDto(List<CommonSaveTableDto>? Tables);   // #B165
 record CarAllocationValidateDto(decimal? MBPercent, decimal? MTPercent, decimal? MNPercent);   // #B166
+record PortTypeRowDto(string? PortType, string? PortTypeName, string? Status);   // #B167
+record PortTypeSaveDto(List<PortTypeRowDto>? Rows);   // #B167
+record SalesOrderTypeRowDto(string? SOType, string? SOTypeName, string? Status);   // #B168
+record SalesOrderTypeSaveDto(List<SalesOrderTypeRowDto>? Rows);   // #B168
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110

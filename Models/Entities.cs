@@ -9527,6 +9527,39 @@ public sealed class BankDealer
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B167 — `Mst_PortType`: **loại cảng**. ⚠️ Cột thật là **`PORTTYPE`/`PORTTYPENAME`**
+/// (hằng C# tên `PortTypeCode`/`PortTypeName` nhưng **giá trị chuỗi khác tên hằng**).</summary>
+public sealed class PortTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PortType { get; set; } = "";
+    public string? PortTypeName { get; set; }
+    public string Status { get; set; } = "1";
+}
+
+/// <summary>🔴 #B168 — `Mst_SalesOrderType`: **loại đơn bán**. Cột thật **`SOTYPE`/`SOTYPENAME`**
+/// (hằng C# `TblSoType.SO_Type` = chuỗi `"SOTYPE"`).</summary>
+public sealed class SalesOrderTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SOType { get; set; } = "";
+    public string? SOTypeName { get; set; }
+    public string Status { get; set; } = "1";
+}
+
+/// <summary>🔴 #B169 — `Mst_DealerSalesGroupType`: **nhóm loại bán của đại lý**. Không có form quản
+/// trị; client chỉ **nạp danh sách một lần** vào `MasterInit.ListSGroupType`.</summary>
+public sealed class DealerSalesGroupType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SGroupTypeCode { get; set; } = "";
+    public string? SGroupTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
