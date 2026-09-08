@@ -32007,6 +32007,138 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   thiếu schema ⇒ dấu hiệu hệ ngoài **không ổn định về cấu trúc**.
 // 🔴 Trả **hai** bảng chính: `Tables[0] = strFunctionName` · `Tables[1] = "Table_CKD_CODATE"`
 //   (*danh sách xe CKD có ngày Kiểm tra Chất lượng*), cộng `Table_DatHang_CKD` khi WS trả dữ liệu.
+
+// ===== #B305/#B306/#B307 BÁO CÁO MASTER — NHẬP HÀNG (CBU theo ngày cập cảng + CKD theo ngày C/O) —
+//       `RptMaster_NhapHang_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`)
+//       + builder `RptSQLQuery.mySql_RptMaster_NhapHang_WH()` =====
+// **3B khớp cả 2 máy**: cửa laptop `147124,147292` ≡ 150 `147129,147297` ⇒ **`f35238da217a2f90d9f24a0e20639a20`**;
+//   builder `RptSQLQuery.cs 31960,32126` **trùng vị trí** cả hai máy ⇒ **`c3fa6b7371075311d7bdbaff4fff5ee9`**.
+// 🔴🔴🔴 **HAI NHÁNH "NHẬP HÀNG" DÙNG HAI MỐC NGÀY KHÁC HẲN NHAU**:
+//   · **CBU**: mốc = **`cpl.ShippingDateEnd`** (ngày tàu **cập cảng**), lấy qua `CT_PackingList`;
+//   · **CKD**: mốc = **`cv.CODate`** (ngày **C/O**), lấy **thẳng** trên `Car_VIN`, **không** qua packing list.
+//   ⇒ Cột kết quả gộp tên `ShippingDateEnd_Or_CoDate` / `ColumnMonth` nhưng **ý nghĩa KHÁC NHAU giữa hai
+//     nhánh**; so sánh CBU với CKD theo "tháng nhập" là **so hai loại mốc khác nhau**.
+// 🔴🔴 **`left join Mst_CarSpec` + `where mcs.AssemblyStatus = 'CBU'/'CKD'` — ở CẢ BỐN câu**
+//   ⇒ điều kiện ở `where` trên cột bảng phải ⇒ **`left join` BIẾN THÀNH `inner`**
+//     (luật `C0-…octogesimusnonus`) ⇒ xe có `ActualSpec` **không có trong `Mst_CarSpec`** **không thuộc
+//     CBU cũng không thuộc CKD** ⇒ **mất hẳn khỏi báo cáo nhập hàng**.
+// 🔴🔴🔴 **GỘP THEO NGÀY NHƯNG HIỂN THỊ THÁNG — phải gộp HAI TẦNG**:
+//     `select … left(cpl.ShippingDateEnd, 7) ShippingMonthEnd, count(cv.VIN) SoLuong`
+//     `… group by … **cpl.ShippingDateEnd**`   ← gộp theo **NGÀY**
+//   ⇒ Một tháng sinh **nhiều dòng** (mỗi ngày một dòng); phải nhờ câu `#tbl_CBU` gộp **lần hai**
+//     (`Sum(f.SoLuong)` `group by f.ShippingMonthEnd`). Ai chỉ đọc câu đầu sẽ tưởng đã theo tháng.
+//     Nhánh CKD **y hệt** (`group by … cv.CODate` với `left(cv.CODate, 7) COMonth`).
+// 🔴🔴 **`ModelName` và `ColorName` lấy theo HAI `ModelCode` KHÁC NHAU trong cùng câu**:
+//     `left join Mst_CarModel mcm on mcm.ModelCode = **mcs.ModelCode**`   ← model của **SPEC**
+//     `left join Mst_CarColor mcc on mcc.ModelCode = **cv.ModelCode** and mcc.ColorCode = cv.ColorCode`
+//   ⇒ Nếu `mcs.ModelCode` ≠ `cv.ModelCode` thì **tên model và tên màu KHÔNG cùng một model**.
+// 🔴 `union` (**không** `union all`) ở cả câu chi tiết (`cv.*` ∪ `cv.*`) lẫn câu tổng (`#tbl_CBU` ∪ `#tbl_CKD`)
+//   ⇒ **khử trùng toàn cột** — rất tốn kém, và `union` hai `cv.*` đòi hỏi **cùng số cột, cùng thứ tự**
+//     ⇒ đổi schema `Car_VIN` là **gãy câu lệnh**.
+// 🔴 `ColorName = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN` — nối bằng `+` ⇒ **một vế NULL là cả
+//   chuỗi NULL** (như #B299). `left(cpl.ShippingDateEnd, 7)` ⇒ cột **lưu VARCHAR**.
+// ✅ RBAC **tổ hợp (1)**: `CheckHTCDirect` **ACTIVE**; `@strBUPatternOfUser` nạp nhưng SQL không dùng.
+//   Guard ngày: `To` rỗng ⇒ `TConst.DateTimeSpecial.DateMax`.
+// 🔴 Trả **hai** bảng: `Table_NhapHang_ChiTiet` (`Tables[0]`) · `Table_NhapHang` (`Tables[1]`).
+app.MapGet("/api/reports/master-nhaphang", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var pls = (await db.PackingLists
+            .Where(p => p.OrgId == t.OrgId && p.ShippingDateEnd != null
+                        && p.ShippingDateEnd >= from && p.ShippingDateEnd <= to)
+            .ToListAsync())
+        .GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First());
+
+    var allCars = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId).ToListAsync();
+
+    var detail = new List<object>();
+    var droppedNoSpec = new List<object>();
+    var cbuRows = new List<(string? Model, string? Spec, string? Color, string Month)>();
+    var ckdRows = new List<(string? Model, string? Spec, string? Color, string Month)>();
+
+    foreach (var cv in allCars)
+    {
+        // 🔴 left join + where AssemblyStatus ⇒ INNER: spec thiếu ⇒ RƠI KHỎI CẢ HAI nhánh.
+        if (cv.ActualSpec is null || !specs.TryGetValue(cv.ActualSpec, out var sp))
+        { droppedNoSpec.Add(new { cv.VIN, cv.ActualSpec }); continue; }
+
+        if (sp.AssemblyStatus == "CBU")
+        {
+            // 🔴 CBU: mốc = ShippingDateEnd của PACKING LIST.
+            if (cv.PackingListNo is null || !pls.TryGetValue(cv.PackingListNo, out var pl)) continue;
+            var mon = pl.ShippingDateEnd!.Value.ToString("yyyy-MM");
+            detail.Add(new
+            {
+                cv.VIN, cv.ModelCode, cv.ActualSpec, cv.ColorCode, cv.PackingListNo,
+                AssemblyStatus = sp.AssemblyStatus,
+                ShippingDateEnd_Or_CoDate = pl.ShippingDateEnd
+            });
+            cbuRows.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, mon));
+        }
+        else if (sp.AssemblyStatus == "CKD")
+        {
+            // 🔴 CKD: mốc = CODate trên chính Car_VIN (KHÔNG qua packing list).
+            if (cv.CODate == null || cv.CODate < from || cv.CODate > to) continue;
+            var mon = cv.CODate.Value.ToString("yyyy-MM");
+            detail.Add(new
+            {
+                cv.VIN, cv.ModelCode, cv.ActualSpec, cv.ColorCode, cv.PackingListNo,
+                AssemblyStatus = sp.AssemblyStatus,
+                ShippingDateEnd_Or_CoDate = cv.CODate
+            });
+            ckdRows.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, mon));
+        }
+    }
+
+    // Gộp (tương đương HAI tầng của nguồn: theo ngày rồi theo tháng — kết quả cuối giống nhau).
+    List<object> Aggregate(List<(string? Model, string? Spec, string? Color, string Month)> src, string asm) =>
+        src.GroupBy(x => (x.Model, x.Spec, x.Color, x.Month))
+           .Select(g =>
+           {
+               // 🔴 ModelName lấy theo mcs.ModelCode (model của SPEC), KHÔNG phải cv.ModelCode.
+               var specModelCode = (g.Key.Spec != null && specs.TryGetValue(g.Key.Spec, out var sp2)) ? sp2.ModelCode : null;
+               return (object)new
+               {
+                   CVModelCode = g.Key.Model,
+                   CVActualSpec = g.Key.Spec,
+                   CVColorCode = g.Key.Color,
+                   ModelName = (specModelCode != null && models.TryGetValue(specModelCode, out var mm)) ? mm.ModelName : null,
+                   AC_SpecDescription = (g.Key.Spec != null && specs.TryGetValue(g.Key.Spec, out var sp3)) ? sp3.SpecDesc : null,
+                   ColorName = (string?)null,          // 📌 NỢ: Mst_CarColor chưa nối
+                   ColumnMonth = g.Key.Month,
+                   AssemblyStatus = asm,
+                   Total = g.Count()
+               };
+           })
+           .OrderBy(x => x.GetType().GetProperty("ColumnMonth")!.GetValue(x) as string, StringComparer.Ordinal)
+           .ToList();
+
+    // 🔴 `union` (khử trùng) giữa hai nhánh — ở đây AssemblyStatus khác nhau nên không trùng thật.
+    var summary = Aggregate(cbuRows, "CBU").Concat(Aggregate(ckdRows, "CKD")).ToList();
+
+    return Results.Ok(new
+    {
+        Table_NhapHang_ChiTiet = detail,     // Tables[0]
+        Table_NhapHang = summary,            // Tables[1]
+        droppedNoSpec,
+        twoDateAnchorsNote = "HAI NHANH 'NHAP HANG' DUNG HAI MOC NGAY KHAC HAN NHAU: CBU moc = cpl.ShippingDateEnd (ngay tau CAP CANG) lay qua CT_PackingList; CKD moc = cv.CODate (ngay C/O) lay THANG tren Car_VIN, KHONG qua packing list. Cot ket qua gop ten ShippingDateEnd_Or_CoDate / ColumnMonth nhung Y NGHIA KHAC NHAU giua hai nhanh; so sanh CBU voi CKD theo 'thang nhap' la SO HAI LOAI MOC KHAC NHAU.",
+        leftBecomesInnerNote = "'left join Mst_CarSpec' + 'where mcs.AssemblyStatus = CBU/CKD' - o CA BON cau => LEFT JOIN BIEN THANH INNER (luat C0-...octogesimusnonus) => xe co ActualSpec KHONG CO trong Mst_CarSpec KHONG THUOC CBU CUNG KHONG THUOC CKD => MAT HAN khoi bao cao nhap hang. Xem droppedNoSpec.",
+        twoLevelGroupNote = "GOP THEO NGAY NHUNG HIEN THI THANG - phai gop HAI TANG: 'select ... left(cpl.ShippingDateEnd, 7) ShippingMonthEnd, count(cv.VIN) SoLuong ... group by ... cpl.ShippingDateEnd' (gop theo NGAY) => mot thang sinh NHIEU DONG; phai nho cau #tbl_CBU gop LAN HAI (Sum(f.SoLuong) group by f.ShippingMonthEnd). Ai chi doc cau dau se tuong da theo thang. Nhanh CKD Y HET (group by cv.CODate voi left(cv.CODate,7) COMonth).",
+        twoModelCodesNote = "ModelName va ColorName lay theo HAI ModelCode KHAC NHAU trong cung cau: 'left join Mst_CarModel mcm on mcm.ModelCode = mcs.ModelCode' (model cua SPEC) nhung 'left join Mst_CarColor mcc on mcc.ModelCode = cv.ModelCode and mcc.ColorCode = cv.ColorCode'. Neu mcs.ModelCode khac cv.ModelCode thi TEN MODEL VA TEN MAU KHONG CUNG MOT MODEL.",
+        unionNote = "'union' (KHONG 'union all') o ca cau chi tiet (cv.* union cv.*) lan cau tong (#tbl_CBU union #tbl_CKD) => KHU TRUNG TOAN COT - rat ton kem; va union hai 'cv.*' doi hoi CUNG SO COT, CUNG THU TU => doi schema Car_VIN la GAY CAU LENH.",
+        concatNullNote = "ColorName = ColorExtNameVN + '/' + ColorIntNameVN (noi bang '+') => MOT VE NULL LA CA CHUOI NULL (nhu #B299). 'left(cpl.ShippingDateEnd, 7)' => cot LUU VARCHAR.",
+        rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung => co cong. Guard ngay: To rong => TConst.DateTimeSpecial.DateMax.",
+        debtNote = "NO: Mst_CarColor chua noi => ColorName tra NULL. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/reports/master-sanxuat", async (
     MasterSanXuatDto? dto, AppDbContext db, ITenantContext t,
     DateTime? tDateFrom, DateTime? tDateTo) =>
