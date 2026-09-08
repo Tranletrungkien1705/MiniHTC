@@ -27152,6 +27152,38 @@ app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantCon
 }).RequireAuthorization();
 
 // ===== Lịch hẹn dịch vụ + bảng khoang/bay (ServiceAppointment — port 1:1 FrmAppList + FrmShowCavityStatus, TCMotor) =====
+// ===== 🔴🔴 #621 PARITY DANH SÁCH LỊCH HẸN — **BẢN KHO ĐÚNG, BẢN ĐẠI LÝ ĐÃ BỊ "TỐI ƯU" LÀM HỎNG** =====
+// DIFF hai bản LIVE cạnh nhau trong cùng file (`BizCarSv.ZTemp.cs`): `Ser_App_GetStatusList01_New20201230`
+//   (đại lý, `_dbDealer`) vs `Ser_App_GetStatusList01_WH_New20201230` (kho, `_dbWH`).
+// 3B: laptop `:26252`/`:26679` md5 `8d3e14c4`/`781a052e` **KHỚP** máy 150 `:26271`/`:26698` (lệch **+19**
+//   dòng, căn theo TÊN chứ không theo số dòng).
+//
+// 🔴🔴🔴 **BẢN ĐẠI LÝ: `ORDER BY` ĐẶT TRÊN `SELECT … INTO` ⇒ VÔ NGHĨA, RỒI `TOP 500` MẤT SẮP XẾP** (#415):
+//   Bản đại lý **tách đôi** câu truy vấn và tự ghi chú lý do:
+//     `select tpro.* **into #tmpro1** from #tmpro where (1=1) **order by tpro.AppDateTime asc**;`
+//     `--ToanNH nâng cấp tách riêng order by tpro.AppDateTime asc`
+//     `--Do lệnh order by để trong hàm join có dữ liệu lớn gây chậm`
+//     `select **top 500** tpro.*, … from #tmpro1 tpro left join … where (1=1) **--order by tpro.AppDateTime asc**;`
+//   ⇒ `ORDER BY` trên một `SELECT … INTO` **không bảo toàn thứ tự** của bảng tạm, và câu lấy `TOP 500` thì
+//     `order by` đã **bị comment**. ⇒ Màn lịch hẹn của **cổng đại lý** trả **500 dòng BẤT KỲ**, không phải
+//     500 lịch hẹn sớm nhất. Đúng bẫy #415 — và ở đây nó do **một lần tối ưu hiệu năng** gây ra.
+//   ⚪ **BẢN KHO THÌ ĐÚNG**: không tách bảng tạm, `order by tpro.AppDateTime asc` nằm **trong chính câu**
+//     `top 500` ⇒ cắt đúng 500 lịch hẹn sớm nhất. ⇒ **Bản "cũ hơn về hình thức" lại là bản đúng**; nối tiếp
+//     #616 và #618 — **không suy được** "bản mới/bản nâng cấp thì đúng hơn".
+//   📌 Port sắp tường minh **trước khi** cắt, và nêu cờ để giải thích vì sao số liệu hai cổng lệch nhau.
+// 🔴 **CỘT GHÉP CHUỖI CHẾT VÌ MỘT VẾ ĐẾN TỪ `left join`**:
+//     `(tm.TradeMarkName + ' - ' + **mdl.ModelName**) as TradeMarkNameModel` — `mdl` là `left join` ⇒ xe
+//   thiếu mã model thì **cả cột ghép là NULL** (không phải `"Hãng - "`), trong khi cột `TradeMarkName` đứng
+//   riêng vẫn có giá trị ⇒ trên lưới hiện **ô trống khó hiểu**. Cần `isnull(mdl.ModelName, '')`.
+// 🔴 **HAI BẢN ĐỌC DANH MỤC Ở HAI DB** (bằng chứng thứ hai sau #619, củng cố phần RÚT LẠI):
+//     đại lý: `left join [@strDBName_CommonCenter].[dbo].ser_mst_Model` · `… .sys_user u`
+//     kho   : `left join **ser_mst_Model**`                              · `left join **sys_user** u`
+//   ⇒ Không phải "đợt di trú" theo thời gian mà là **phân kỳ theo CỔNG**: mỗi cổng đọc danh mục ở DB của nó.
+// ⚪ Âm tính (đã ghi ở #474, không soi lại): thiếu `strDateTimeline` ở bản kho · ba bộ dựng mệnh đề khác quy
+//   ước · ba `inner join` làm rơi lịch hẹn thiếu khách/xe/hãng · `join` ≡ `inner join`.
+// ⚠️ Khác biệt nhỏ: bản kho `drop table #tmpro;` **đang chạy**, bản đại lý để **comment** cả hai lệnh drop.
+// 📌 Lượt PARITY — bổ sung cờ cho `/api/appointments` đã có, **không** tăng bộ đếm màn.
+
 // ===== 🔴 #474 BỘ LỌC THẬT CỦA MÀN DANH SÁCH LỊCH HẸN — `Ser_App_GetStatusList01_New20201230` =====
 // #285 mới port **bảng nhãn trạng thái**; bản thân **bộ lọc** thì endpoint này còn thiếu 4/6.
 // Nguồn (`ZTemp.cs:26252`) dùng **BA bộ dựng mệnh đề khác quy ước nhau trong CÙNG một truy vấn**:
@@ -27275,6 +27307,14 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
         scope = isWh ? "wh" : "main",
         timelineApplied,
         timelineFilterMissingInWhBranch = true,
+        // ===== #621 =====
+        dealerVariantLostOrderingByOptimization = "ban DAI LY tach doi cau truy van: select tpro.* INTO #tmpro1 … ORDER BY tpro.AppDateTime asc (order by tren SELECT INTO la VO NGHIA) roi cau select top 500 co --order by BI COMMENT => man lich hen cong dai ly tra 500 dong BAT KY, khong phai 500 lich hen som nhat (bay #415)",
+        optimizationCommentInSource = "--ToanNH nang cap tach rieng order by tpro.AppDateTime asc / --Do lenh order by de trong ham join co du lieu lon gay cham",
+        whVariantOrdersCorrectly = "ban KHO khong tach bang tam, order by nam TRONG chinh cau top 500 => cat dung 500 lich hen som nhat; ban cu hon ve hinh thuc lai la ban DUNG (noi tiep #616/#618)",
+        portOrdersBeforeTake = true,
+        concatColumnDiesFromLeftJoin = "(tm.TradeMarkName + ' - ' + mdl.ModelName) as TradeMarkNameModel — mdl den tu LEFT JOIN => xe thieu ma model thi CA COT ghep la NULL (khong phai Hang - ), trong khi cot TradeMarkName dung rieng van co gia tri => luoi hien o trong kho hieu; can isnull(mdl.ModelName, '')",
+        twoGatewaysReadCatalogsFromTwoDbs = "dai ly doc ser_mst_Model va sys_user CHEO sang DB Main; kho doc CUC BO => bang chung thu hai sau #619 rang day KHONG phai dot di tru theo thoi gian ma la PHAN KY THEO CONG",
+        dropTempTableActiveOnlyInWhVariant = "ban kho drop table #tmpro dang chay; ban dai ly de comment ca hai lenh drop",
         appTypeCodesIsInListNotOperator = true,
         bakeParamMixInSource = true,
         timelineHasEmptyGuard = true,
