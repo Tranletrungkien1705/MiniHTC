@@ -8723,6 +8723,102 @@ app.MapPost("/api/tcginvoices/calc-before-approve", async (
     });
 }).RequireAuthorization();
 
+// ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
+// Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
+//   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
+//   `59435ec67ec941897ccda120ce0a2a47`.
+// 🔴 **BA ĐIỀU KIỆN NGHIỆP VỤ, chú thích nguồn ghi rõ bằng tiếng Việt** — đọc đủ cả ba:
+//    **(0)** `myCar_CheckVIN_FlagisHTC(…, Flag.Active, TConst.FlagIsHTC.FlagisHTC, "", …)` —
+//        chú thích: *"vin phải tạo hóa đơn TCG xuất cho HTC ⇒ cờ FlagisHTC của vin = 1"*.
+//    **(1)** *"Xe **chưa có** hoá đơn HTC xuất cho đại lý **hoặc** hoá đơn đó **đã huỷ**"*:
+//        `select top 1 * from VAT_HTCInvoiceDetail where VIN = @VIN and HTCStatusDetail in ('P','F','A')`
+//        ⇒ **CÓ dòng** nào ở `P`/`F`/`A` là **CHẶN** (`…_ExistHTCInvoice`).
+//        ⚠️ Đọc ngược rất dễ: `in ('P','F','A')` là **danh sách CÒN SỐNG**; huỷ (`R`/`C`) **không** nằm
+//          trong đó nên **không chặn** — đúng ý *"hoặc đã huỷ"*.
+//    **(2)** *"Có hoá đơn TCG xuất cho HTC trạng thái F (xe CKD và CBU **trừ** HR-CKD và EU-CKD)"*:
+//        chỉ kiểm khi **`VAT_ModelInvoice` KHÔNG có dòng** cho model đó (`Rows.Count == 0`) —
+//        tức `VAT_ModelInvoice` là **danh sách MIỄN TRỪ**; model nằm trong đó thì **bỏ qua** kiểm TCG.
+//        Khi phải kiểm: `select top 1 from VAT_TCGInvoiceDetail where VIN = @VIN and
+//        TCGStatusDetail **not in ('R','C','P')`** ⇒ **không có** dòng ⇒ **CHẶN**
+//        (`…_TCGInvoiceNotExist`). ⚠️ `not in ('R','C','P')` = **đã duyệt trở lên**, không phải `= 'F'`.
+// 🔴 **HIỆU ỨNG PHỤ CHÍNH: `FlagisHTC` bị đặt `'2'`** (`:2345`) — không phải "1"/"0". Đây là **giá trị
+//    thứ ba** của cờ, đánh dấu *"đã có hoá đơn chuyển giao"*. Port bỏ dòng này ⇒ mọi màn lọc theo
+//    `FlagisHTC` (vd #B51 `FrmSearchVinForTCGInvoice`) **vẫn thấy xe như chưa chuyển giao**.
+// 🔴 Ghi **ba cột** + dấu vết: `InvoiceNoTransferred`, `InvoiceTransferredDate`, `FlagisHTC`,
+//    `LogLUDateTime`, `LogLUBy`. Đầu vào là **BẢNG `Car_VIN`**; rỗng ⇒
+//    ⚠️ ném **`Car_VIN_UpdMulti_**InvoiceFactory**_CarVINTableBlank`** — **mã lỗi của hàm KHÁC**
+//    (`_InvoiceFactory`), lỗi nhãn do copy-paste. Giữ nguyên để đối chiếu log.
+// 📌 NỢ: `VAT_ModelInvoice` (danh sách model miễn trừ) chưa có trong MiniHTC ⇒ cờ
+//    `modelExemptionUnchecked` cho biết bước (2) **luôn phải kiểm TCG**; không bịa danh sách miễn trừ.
+app.MapPost("/api/vins/update-invoice-transferred", async (
+    List<VinInvoiceTransferredDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Car_VIN_UpdMulti_InvoiceFactory_CarVINTableBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = new List<object>();
+
+    foreach (var (r, i) in rows.Select((r, i) => (r, i)))
+    {
+        var vin = (r.VIN ?? "").Trim().ToUpperInvariant();
+        var cv = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == vin);
+        if (cv is null)
+            return Results.BadRequest(new { error = "Common_InvalidVIN", check = new { Idx = i, VIN = vin } });
+        // (0) VIN phải có cờ FlagisHTC = "1" (đã tạo hoá đơn TCG xuất cho HTC).
+        if ((cv.FlagisHTC ?? "") != "1")
+            return Results.BadRequest(new
+            {
+                error = "Car_VIN_CheckVIN_FlagisHTC_Invalid",
+                check = new { Idx = i, VIN = vin, cv.FlagisHTC },
+                note = "Nguon: 'vin phai tao hoa don TCG xuat cho HTC => co FlagisHTC cua vin = 1'."
+            });
+
+        // (1) CÓ dòng HTCInvoiceDetail ở 'P'/'F'/'A' ⇒ CHẶN (danh sách CÒN SỐNG; huỷ R/C không chặn).
+        var htcAlive = await db.VatHtcInvoiceDetails
+            .FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.VIN == vin
+                && (d.HTCStatusDetail == "P" || d.HTCStatusDetail == "F" || d.HTCStatusDetail == "A"));
+        if (htcAlive is not null)
+            return Results.BadRequest(new
+            {
+                error = "Car_VIN_UpdMulti_InvoiceTransferred_ExistHTCInvoice",
+                check = new { Idx = i, VIN = vin, htcAlive.HTCInvoiceCode, htcAlive.HTCStatusDetail }
+            });
+
+        // (2) `VAT_ModelInvoice` = danh sách MIỄN TRỪ; MiniHTC chưa có ⇒ luôn phải kiểm TCG.
+        var tcgOk = await db.VatTcgInvoiceDetails.AnyAsync(d => d.OrgId == t.OrgId && d.VIN == vin
+            && d.TCGStatusDetail != "R" && d.TCGStatusDetail != "C" && d.TCGStatusDetail != "P");
+        if (!tcgOk)
+            return Results.BadRequest(new
+            {
+                error = "Car_VIN_UpdMulti_InvoiceTransferred_TCGInvoiceNotExist",
+                check = new { Idx = i, VIN = vin },
+                note = "Dieu kien: VAT_TCGInvoiceDetail co dong voi TCGStatusDetail NOT IN ('R','C','P') - tuc DA DUYET TRO LEN, khong phai = 'F'."
+            });
+
+        cv.InvoiceNoTransferred = (r.InvoiceNoTransferred ?? "").Trim();
+        cv.InvoiceTransferredDate = r.InvoiceTransferredDate;
+        cv.FlagisHTC = "2";                       // 🔴 GIÁ TRỊ THỨ BA của cờ
+        cv.LogLUDateTime = now; cv.LogLUBy = by;
+        updated.Add(new { vin, cv.InvoiceNoTransferred, cv.InvoiceTransferredDate, flagisHTC = cv.FlagisHTC });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updatedCount = updated.Count, updated,
+        modelExemptionUnchecked = true,
+        threeGuardsNote = "BA DIEU KIEN NGHIEP VU (chu thich nguon ghi ro bang tieng Viet): (0) myCar_CheckVIN_FlagisHTC(..., Flag.Active, FlagIsHTC.FlagisHTC, ...) - 'vin phai tao hoa don TCG xuat cho HTC => co FlagisHTC cua vin = 1'; (1) 'Xe CHUA CO hoa don HTC xuat cho dai ly HOAC hoa don do DA HUY'; (2) 'Co hoa don TCG xuat cho HTC trang thai F (xe CKD va CBU TRU HR-CKD va EU-CKD)'.",
+        aliveListNote = "Dieu kien (1) dung 'HTCStatusDetail in (P,F,A)' - day la DANH SACH CON SONG: CO dong nao trong do la CHAN. Huy (R/C) KHONG nam trong danh sach nen KHONG chan - dung y 'hoac da huy'. Doc nguoc rat de.",
+        exemptionListNote = "Dieu kien (2) CHI kiem khi VAT_ModelInvoice KHONG CO dong cho model do (Rows.Count == 0) => VAT_ModelInvoice la DANH SACH MIEN TRU; model nam trong do thi BO QUA kiem TCG. Khi phai kiem: TCGStatusDetail NOT IN ('R','C','P') = DA DUYET TRO LEN, KHONG phai = 'F'.",
+        flagThirdValueNote = "HIEU UNG PHU CHINH: FlagisHTC bi dat '2' (:2345) - khong phai '1'/'0'. Day la GIA TRI THU BA cua co, danh dau 'da co hoa don chuyen giao'. Port bo dong nay => moi man loc theo FlagisHTC (vd #B51 FrmSearchVinForTCGInvoice) VAN THAY XE NHU CHUA CHUYEN GIAO.",
+        errorNameQuirk = "Lo rong => nem 'Car_VIN_UpdMulti_InvoiceFactory_CarVINTableBlank' - MA LOI CUA HAM KHAC (_InvoiceFactory), loi nhan do copy-paste. Giu nguyen de doi chieu log.",
+        modelInvoiceDebt = "NO: VAT_ModelInvoice (danh sach model MIEN TRU) chua co trong MiniHTC => buoc (2) LUON PHAI kiem TCG. Khong bia danh sach mien tru."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -41657,6 +41753,7 @@ record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   //
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109
 record OsDealDetailConfirmWarrantyDto(string? DealNo, string? CarId, DateTime? CusConfirmedWarrantyDate);   // #B104
 record SalesManUpdateStatusDto(string? SMHyundaiCode, string? SMStatus, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);   // #B100 - KHONG co FlagActive: biz suy tu SMStatus
 record SalesManCreateMultiDto(string? SMCode, string? DealerCode, string? SMName, string? SMGender,

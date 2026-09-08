@@ -10603,6 +10603,12 @@ public sealed class CarVinMaster
     /// **`(cc.FlagInvoiceAdj is null or cc.FlagInvoiceAdj = '1')`** ⇒ **NULL cũng được chấp nhận**,
     /// không phải chỉ "1". Port theo phản xạ `== "1"` sẽ loại nhầm toàn bộ xe chưa từng đặt cờ.</summary>
     public string? FlagInvoiceAdj { get; set; }
+    // ===== #B109 parity `Car_VIN` — hoá đơn CHUYỂN GIAO (`Car_VIN_UpdMulti_InvoiceTransferred`) =====
+    /// <summary>🔴 `Car_VIN.InvoiceNoTransferred` / `InvoiceTransferredDate` — **số + ngày hoá đơn
+    /// CHUYỂN GIAO**. Gán được thì `FlagisHTC` chuyển sang **`'2'`** (xem endpoint
+    /// `/api/vins/update-invoice-transferred`). Port cũ thiếu hẳn hai cột này.</summary>
+    public string? InvoiceNoTransferred { get; set; }
+    public DateTime? InvoiceTransferredDate { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
