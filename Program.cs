@@ -53008,6 +53008,93 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #648 "ĐẾM KHÁCH" `Ser_Count_Customer_WH` (`WH.cs:8593-8790`) — CỘT ĐẾM SAI NGHĨA =====
+// 3B: laptop `:8593` md5 `0c6a45c0` **KHỚP** máy 150 `:8593`. Anh em với #647 (`_ToHTC`) và `_OnlyHTC` (`:18586`).
+//
+// 🔴🔴🔴 **CỘT TÊN LÀ "ĐẾM KHÁCH" NHƯNG ĐẾM *LƯỢT XE VÀO XƯỞNG*** (đúng loại "SỐ ĐÃ BỊ NHÀO" của §12):
+//     `select car.carid as CarID, **count(isnull(car.carid,0)) as CountCus**, … group by car.carid, car.plateno, …`
+//   Ba tầng sai chồng lên nhau:
+//     ① Đếm `car.carid` — tức đếm **XE**, không phải **KHÁCH**, dù cột tên `CountCus`.
+//     ② `group by` **có `car.carid`** ⇒ mỗi nhóm **đã là một xe** ⇒ `count(...)` ra **số DÒNG trong nhóm**,
+//        mà mỗi dòng đến từ một lệnh sửa chữa (join `ser_ro`) ⇒ giá trị thật = **số lượt xe vào xưởng trong kỳ**.
+//     ③ `isnull(car.carid, 0)` bên trong `count()` **vô nghĩa**: `count(expr)` vốn chỉ bỏ NULL, mà `car.carid`
+//        là **khoá nhóm** nên không bao giờ NULL ⇒ đây chỉ là cách viết vòng vo của `count(*)`.
+//   ⇒ Ai đọc báo cáo và cộng cột `CountCus` để ra "số khách" sẽ nhận **số lượt sửa chữa**. Không lỗi, không cảnh báo.
+// 🔴🔴 **BA HÀM ANH EM, HAI CHIẾN LƯỢC KHOÁ — ĐẾM ĐƯỢC**: trong cùng cụm `Ser_Count_Customer*_WH`:
+//     `_ToHTC_WH` (`:8392`): `with(nolock)` = **0** · `--//[mylock]` = **10**
+//     `_WH`       (`:8593`): `with(nolock)` = **5** · `--//[mylock]` = **0**
+//     `_OnlyHTC_WH` (`:18586`): `with(nolock)` = **5** · `--//[mylock]` = **0**
+//   ⇒ Cùng **một cụm**, cùng **các bảng đó**, nhưng một hàm dùng chuẩn nhà `--//[mylock]` còn hai hàm kia dùng
+//     `with(nolock)`. Nối tiếp #574/#618/#620/#639/#644 — nay **đo được trong phạm vi một cụm ba hàm**.
+// 🔴 **BA `join` LẤY KHOÁ TỪ BẢNG *LEFT* KHÁC — GIỐNG HỆT #647**: `cus`, `mdl`, `tm` đều nối bằng
+//   `**ro**.DealerCode` (bảng `ro` là `left join`) thay vì `car.DealerCode` vốn có sẵn ⇒ chỉ an toàn nhờ
+//   `and ro.ROID is not null` ở `WHERE`. Hai hàm anh em **lặp lại y nguyên** cùng một rủi ro.
+// 🔴 `datediff` **bọc cột** ⇒ không sargable; `@DealerCode`/`@FromDate`/`@ToDate` **bake** trong nháy ⇒ tiêm SQL
+//   (giống #647).
+// ⚪ **KIỂM TRA ÂM TÍNH — `GROUP BY` ĐẦY ĐỦ**: `SELECT` có `isnull(cus.tel, cus.mobile) as Phone` và một loạt cột
+//   `cus.*`; thoạt nhìn tưởng thiếu trong `GROUP BY`, nhưng đọc hết thì `GROUP BY` **có liệt kê cả `cus.tel` và**
+//   **`cus.mobile` riêng rẽ** cùng toàn bộ cột `cus.*` còn lại ⇒ **hợp lệ**, không phải lỗi cú pháp. Ghi lại để
+//   lượt sau khỏi soi lại.
+// ⚪ Bộ lọc hãng xe ở hàm này chèn **sau** `ro.Status` (ở #647 chèn ngay sau `where (1=1)`) — vị trí khác nhau
+//   nhưng **cùng nghĩa**; không phải khác biệt hành vi.
+app.MapGet("/api/report/count-customer-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? tradeMarkCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "PAID" || x.Status == "FNS"));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    var ros = (await qy.Select(x => new { x.RONo, x.CheckInDate, x.CusID, x.Vin }).ToListAsync())
+        .Where(r => r.CheckInDate.HasValue && r.CheckInDate.Value.Date >= from && r.CheckInDate.Value.Date <= to)
+        .ToList();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.EngineNo, c.ColorCode, c.ModelCode, c.TradeMark, c.CusName })
+        .ToListAsync();
+    var cus = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CusCode, c.CusName, c.Address, c.Tel, c.Mobile, c.Email }).ToListAsync();
+
+    var rows = ros.Where(r => r.Vin != null).GroupBy(r => r.Vin!).Select(g =>
+    {
+        var car = cars.FirstOrDefault(c => c.FrameNo == g.Key);
+        var cuId = g.Select(x => x.CusID).FirstOrDefault(x => x != null);
+        var cu = cuId == null ? null : cus.FirstOrDefault(c => c.CusCode == cuId);
+        return new
+        {
+            carId = g.Key, plateNo = car?.PlateNo, frameNo = car?.FrameNo,
+            engineNo = car?.EngineNo, colorCode = car?.ColorCode,
+            tradeMarkCode = car?.TradeMark, modelId = car?.ModelCode,
+            tradeMarkNameModel = car?.TradeMark + " - " + car?.ModelCode,
+            cusId = cuId, cusName = cu?.CusName ?? car?.CusName,
+            address = cu?.Address, phone = cu?.Tel ?? cu?.Mobile, email = cu?.Email,
+            // 🔴 Nguồn đặt tên CountCus nhưng giá trị là SỐ LƯỢT vào xưởng của XE này.
+            countCusAsSource = g.Count(),
+            visitCount = g.Count(),                    // tên đúng nghĩa
+            distinctCustomers = g.Select(x => x.CusID).Where(x => x != null).Distinct().Count(),
+        };
+    })
+    .Where(x => string.IsNullOrWhiteSpace(tradeMarkCode) || x.tradeMarkCode == tradeMarkCode!.Trim())
+    .OrderBy(x => x.plateNo).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows,
+        totalVisits = rows.Sum(r => r.visitCount),
+        totalDistinctCars = rows.Count,
+        // ===== #648 =====
+        countCusActuallyCountsVisits = "nguon: count(isnull(car.carid,0)) as CountCus voi group by CO car.carid => moi nhom DA LA MOT XE nen count() ra SO DONG trong nhom, ma moi dong den tu mot lenh sua chua (join ser_ro) => gia tri that = SO LUOT XE VAO XUONG trong ky, KHONG phai so khach",
+        isnullInsideCountIsPointless = "isnull(car.carid, 0) ben trong count() vo nghia: count(expr) von chi bo NULL, ma car.carid la KHOA NHOM nen khong bao gio NULL => chi la cach viet vong vo cua count(*)",
+        readerSummingThisGetsRepairCount = "ai doc bao cao va cong cot CountCus de ra so khach se nhan SO LUOT SUA CHUA; khong loi, khong canh bao",
+        portReturnsBothNames = "port tra countCusAsSource (giu 1:1 ten cua nguon), visitCount (ten dung nghia) va distinctCustomers (so khach thuc su khac nhau tren xe do)",
+        lockStrategyCountedAcrossTheCluster = "trong cum Ser_Count_Customer*_WH: _ToHTC_WH (:8392) with(nolock)=0 / --//[mylock]=10; _WH (:8593) with(nolock)=5 / mylock=0; _OnlyHTC_WH (:18586) with(nolock)=5 / mylock=0 => cung MOT cum, cung cac bang do, mot ham dung chuan nha con hai ham kia dung nolock (noi tiep #574/#618/#620/#639/#644)",
+        threeJoinsTakeKeyFromAnotherLeftTable = "cus, mdl, tm deu noi bang ro.DealerCode (bang ro la left join) thay vi car.DealerCode von co san => chi an toan nho and ro.ROID is not null o WHERE; hai ham anh em LAP LAI y nguyen cung mot rui ro (xem #647)",
+        datediffNotSargableAndParamsBaked = "datediff boc cot nen khong dung duoc index; @DealerCode/@FromDate/@ToDate bake trong nhay => tiem SQL (giong #647)",
+        groupByIsComplete = "AM TINH: SELECT co isnull(cus.tel, cus.mobile) as Phone va mot loat cot cus.*; doc het thi GROUP BY CO liet ke ca cus.tel va cus.mobile rieng re cung toan bo cot cus.* con lai => HOP LE, khong phai loi cu phap",
+        filterPositionDiffersButSameMeaning = "bo loc hang xe o ham nay chen SAU ro.Status (o #647 chen ngay sau where (1=1)) — vi tri khac nhau nhung CUNG NGHIA",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #647 KHÁCH ĐÃ ĐẾN XƯỞNG `Ser_Count_Customer_ToHTC_WH` (`WH.cs:8392-8592`) =====
 // 3B: laptop `:8392` md5 `505ca420` **KHỚP** máy 150 `:8392`. WS gọi thẳng bản này (không hậu tố).
 // Cụm có **ba** hàm anh em, **cả ba đều LIVE và cả ba chưa port**: `Ser_Count_Customer_ToHTC_WH` (`:8392`) ·
