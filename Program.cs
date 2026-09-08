@@ -33376,6 +33376,32 @@ app.MapGet("/api/customergroups", async (AppDbContext db, ITenantContext t, stri
 }).RequireAuthorization();
 
 // Tạo/cập nhật nhóm (upsert theo GroupNo; GroupNo trống = tạo mới auto-gen).
+// ===== 🔴🔴 #612 CẶP `SerCustomerGroupCreate` (`Service.cs:7681`) / `SerCustomerGroupUpdate` (`:7513`) =====
+// Đối chiếu cặp create/update (luật #404) — và cụm này khép lại bức tranh cùng `SerCustomerGroupDelete` (#607).
+//
+// 🔴🔴 **CẢ HAI NHÁNH ĐỀU COMMENT DÒNG GHI `_dbDealer`** — trích nguyên văn:
+//     Create (`:7772`): `//if(bNeedTransaction_Dealer) _dbDealer.SaveData("Ser_CustomerGroup", dt_Mst_CustomerGroup);`
+//     Update (`:7616`): `//    _dbDealer.SaveData("Ser_CustomerGroup", dtCustomerGroup, alColumnEffective.ToArray());`
+//   ⇒ Nhóm khách hàng **không bao giờ được ghi xuống DB đại lý**, dù giao dịch `_dbDealer` vẫn được **mở** và
+//     **commit**. Và #607 cho thấy nhánh **XOÁ** cũng không chạm đại lý (vì **gõ nhầm** `_dbWH`).
+//   ⇒ **Cả ba thao tác của cụm `Ser_CustomerGroup` đều không chạm DB đại lý — mỗi cái vì một lý do khác nhau**:
+//     tạo/sửa **bị comment**, xoá **gõ nhầm DAL**. Nhìn riêng từng hàm thì như ba sự cố; nhìn cụm thì bảng
+//     `Ser_CustomerGroup` ở DB đại lý **chưa bao giờ được đồng bộ** từ đường này.
+//   ⇒ **Biến thể thứ NĂM** của họ "nhiều DB": #571 gõ nhầm · #573 ngoài giao dịch · #598 xoá một bên chèn hai
+//     bên · #608 ghi một DB trong khi tạo ghi ba · **#612 cố ý comment**.
+// 🔴🔴 **NHÁNH SỬA GHI ĐÈ `CreatedDate` / `CreatedBy` BẰNG THỜI ĐIỂM SỬA**:
+//     `dtCustomerGroup.Rows[0]["**CreatedDate**"] = strTDate; alColumnEffective.Add("CreatedDate");`
+//     `dtCustomerGroup.Rows[0]["**CreatedBy**"] = strPartnerUserCode; alColumnEffective.Add("CreatedBy");`
+//   (`strTDate = DateTime.Now` lấy ngay đầu hàm). ⇒ **Mỗi lần sửa là mất vĩnh viễn thông tin ai tạo, khi nào**.
+//     Bốn dòng liền kề: hai dòng `Created*` và hai dòng `LogLU*` — chỉ hai dòng sau mới **đúng** ngữ nghĩa.
+//   📌 MiniHTC **cố ý lệch**: giữ nguyên `CreatedAt`, chỉ cập nhật mốc sửa.
+// 🔴 **NHÁNH TẠO KHÔNG CÓ GUARD NÀO** (trích theo #403): `#region //Check` của Create **chỉ có** một dòng
+//   `string strTDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");` — **không** kiểm trùng `GroupNo`,
+//   **không** kiểm rỗng. Nhánh Sửa thì **có** `checkExistCusGroup(...)`.
+//   ⇒ **Ngược với #605** (ở cụm đơn hàng, nhánh **tạo** có 2 guard còn nhánh sửa mới là chỗ có guard chết).
+//     ⇒ Không có quy ước "cửa nào chặt hơn" — **phải đọc từng cặp** (đúng bài học #589).
+// 🔴 Nhánh tạo gán **mọi** cột **vô điều kiện** (kể cả `GroupName`), chỉ `GroupNo` được `.ToUpper()`.
+// ⚪ `IsActive = Constants.Flag.Active` ⇒ giá trị **`"1"`** (`Const.Main.cs:28`).
 app.MapPost("/api/customergroups", async (CustomerGroupDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
@@ -33457,6 +33483,34 @@ app.MapPost("/api/customergroups/{no}/delete", async (string no, AppDbContext db
         sourceDoesNotDeleteMembers = "cau xoa chi dung Ser_CustomerGroup",
         sourceDoesNotCheckAffectedRows = true,
         parametersProperlyBoundAndDealerScoped = "@GroupNo + @DealerCode deu la tham so that va co rang buoc dai ly (giong #590, khac #576)",
+    });
+}).RequireAuthorization();
+
+// #612: SỬA nhóm khách hàng — port GIỮ `CreatedAt` (nguồn ghi đè bằng thời điểm sửa).
+app.MapPost("/api/customergroups/{no}/update", async (string no, CustomerGroupDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var code = no.Trim().ToUpperInvariant();
+    // Nguồn nhánh SỬA có guard checkExistCusGroup (nhánh TẠO thì không có guard nào).
+    var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == code);
+    if (g is null) return Results.NotFound(new { groupNo = code, guard = "checkExistCusGroup" });
+
+    var createdAtBefore = g.CreatedAt;
+    g.GroupName = dto.GroupName;
+    g.Description = dto.Description;
+    // DTO khong co FlagActive — bat/tat dung endpoint /toggle rieng (dung nguon: Update khong dung IsActive).
+    // CỐ Ý LỆCH: nguồn gán CreatedDate/CreatedBy = thời điểm SỬA; port giữ nguyên.
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        g.GroupNo, g.GroupName, g.Description, g.FlagActive,
+        createdAt = g.CreatedAt, createdAtPreserved = createdAtBefore == g.CreatedAt,
+        sourceOverwritesCreatedDateOnUpdate = "row[CreatedDate] = strTDate va row[CreatedBy] = strPartnerUserCode, ca hai deu vao alColumnEffective => moi lan sua la mat vinh vien thong tin ai tao khi nao",
+        sourceUpdateHasGuardCreateDoesNot = "nhanh SUA co checkExistCusGroup; nhanh TAO chi co dong strTDate = DateTime.Now, khong kiem trung GroupNo",
+        oppositeOf605 = "o cum don hang (#605) nhanh TAO moi la ben co 2 guard => khong co quy uoc cua-nao-chat-hon, phai doc tung cap (#589)",
+        dealerWriteCommentedOutInBothBranches = "Create :7772 va Update :7616 deu COMMENT dong _dbDealer.SaveData; cong voi #607 (Delete go nham _dbWH) => ca ba thao tac cua cum deu khong cham DB dai ly",
+        fifthVariantOfMultiDbBug = "#571 go nham, #573 ngoai giao dich, #598 xoa mot ben chen hai ben, #608 ghi mot DB, #612 CO Y COMMENT",
     });
 }).RequireAuthorization();
 
