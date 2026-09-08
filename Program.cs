@@ -33611,14 +33611,60 @@ app.MapPost("/api/customergroups/{no}/toggle", async (string no, AppDbContext db
 }).RequireAuthorization();
 
 // Danh sách khách hàng thành viên nhóm.
+// ===== 🔴🔴 #615 `SerCustomerGroupGet` (`Service.cs:7326`) — **`isnull(cột chuỗi, 0)` LÀM VỠ CÂU SQL** =====
+// Khối chi tiết (chỉ sinh khi `strIsGetDetail = TConst.Flag.Active`, ngược lại cờ bị thay bằng chuỗi
+//   `"-- Nothing."` — cùng khuôn #582) chọn ra cột điện thoại ghép:
+//     `, isnull(cus.Tel, **0**) + '/' + isnull(cus.Mobile, **0**) as Phone`
+//
+// 🔴🔴 **GIÁ TRỊ THAY THẾ LÀ SỐ `0`, TRONG KHI CỘT LÀ CHUỖI**: SQL Server lấy **kiểu ưu tiên cao hơn** —
+//   `int` — cho cả biểu thức `isnull(...)`. Khi `cus.Tel` **NULL** thì vế đó thành `int 0`, và phép
+//   `0 + '/'` buộc SQL **ép chuỗi `'/'` sang int** ⇒ **"Conversion failed when converting the varchar**
+//   **value '/' to data type int"** ⇒ **cả câu chi tiết NÉM LỖI**.
+//   ⚠️ **Điều kiện lộ lỗi**: chỉ cần **một** khách trong tập có `Tel` **hoặc** `Mobile` NULL. Nếu mọi khách
+//     đều có đủ hai số thì `isnull` trả **varchar** và câu chạy bình thường ⇒ lỗi **phụ thuộc dữ liệu**,
+//     giải thích vì sao nó sống sót qua kiểm thử.
+//   ⇒ Đúng phải là `isnull(cus.Tel, '')`. Port ghép chuỗi an toàn và trả cờ.
+// 🔴 **BỐN `BuildClause` KHÔNG TOÁN TỬ** (#410): `cg.GroupNo` · `cg.DealerCode` · `cg.GroupName` · `cg.Address`
+//   ⇒ client gửi giá trị trần là **cả bốn** chết im lặng ⇒ `where (1=1)` ⇒ **trả nhóm khách của toàn hệ**.
+// 🔴 **`#region //Check` RỖNG** (trích theo #403) ⇒ không chặn tham số rỗng.
+// 🔴 **ĐA NGUỒN TRONG MỘT CÂU**: đọc bằng `_dbDealer` nhưng bảng gốc lấy **cross-DB**
+//   `[@strDBName_CommonCenter].[dbo].Ser_CustomerGroup` ⇒ nhóm ở **trung tâm**, khách ở **đại lý** (họ #560).
+//   ⚠️ Ghép với #612: cụm này **ghi** nhóm ở Main/WH (dòng `_dbDealer` **bị comment**) mà **đọc** thì lấy
+//     nhóm từ CommonCenter và khách từ DB đại lý ⇒ đường ghi và đường đọc **không cùng một tập DB**.
+// ⚪ Âm tính: `left join ser_customer` giữ được dòng thành viên khi hồ sơ khách đã bị xoá; `inner join` với
+//   bảng tạm nhóm là **đúng** (thành viên phải thuộc nhóm đã lọc).
+// ⚠️ `select *` hai lần (vào bảng tạm rồi ra ngoài) + **không** `ORDER BY`.
 app.MapGet("/api/customergroups/{no}/members", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
     if (g is null) return Results.NotFound(new { no });
-    var members = await db.CustomerGroupMembers.Where(m => m.OrgId == t.OrgId && m.CustomerGroupId == g.Id)
+    var raw = await db.CustomerGroupMembers.Where(m => m.OrgId == t.OrgId && m.CustomerGroupId == g.Id)
         .OrderBy(m => m.CusId).Select(m => new { m.CusId, m.CusName, m.Mobile, m.Address }).ToListAsync();
-    return Results.Ok(new { g.GroupNo, g.GroupName, count = members.Count, members });
+    // #615: nguồn ghép Phone = isnull(Tel,0) + '/' + isnull(Mobile,0) ⇒ VỠ CÂU khi có NULL. Port ghép an toàn.
+    var members = raw.Select(m => new
+    {
+        m.CusId, m.CusName, m.Mobile, m.Address,
+        phone = string.Join("/", new[] { (string?)null, m.Mobile }.Where(x => !string.IsNullOrWhiteSpace(x))),
+    }).ToList();
+    var membersWithNullPhone = raw.Count(m => string.IsNullOrWhiteSpace(m.Mobile));
+    return Results.Ok(new
+    {
+        g.GroupNo, g.GroupName, count = members.Count, members,
+        // ===== #615 =====
+        isnullOnStringColumnWithZero = "nguon: isnull(cus.Tel, 0) + / + isnull(cus.Mobile, 0) as Phone — gia tri thay the la SO 0 trong khi cot la CHUOI",
+        sqlServerPicksIntType = "khi Tel NULL thi ve do thanh int 0, phep 0 + / buoc ep chuoi / sang int => Conversion failed ... varchar value / to data type int => CA CAU CHI TIET NEM LOI",
+        failureIsDataDependent = "chi lo khi CO khach thieu Tel hoac Mobile; neu moi khach du hai so thi isnull tra varchar va cau chay binh thuong — vi vay loi song sot qua kiem thu",
+        membersWithNullPhone,
+        correctFormWouldBeEmptyString = "isnull(cus.Tel, '')",
+        fourFiltersWithoutOperator = new[] { "cg.GroupNo", "cg.DealerCode", "cg.GroupName", "cg.Address" },
+        emptyFilterWouldReturnAllTenants = "BuildClause bo im lang => where (1=1) => tra nhom khach cua TOAN HE",
+        checkRegionIsEmptyInSource = true,
+        multiSourceInOneQuery = "doc bang _dbDealer nhung Ser_CustomerGroup lay cross-DB tu [CommonCenter]; khach lay o DB dai ly (ho #560)",
+        writeAndReadUseDifferentDbSets = "ghep voi #612: duong GHI nhom la Main/WH (dong _dbDealer bi comment) con duong DOC lay nhom tu CommonCenter va khach tu DB dai ly",
+        detailOmittedWhenFlagOff = "cо zzzzClauseSelect_CustomerGroupCustomer bi thay bang chuoi -- Nothing. (khuon #582)",
+        leftJoinKeepsDeletedCustomers = "left join ser_customer — giu dong thanh vien khi ho so khach da bi xoa (am tinh)",
+    });
 }).RequireAuthorization();
 
 // Thêm khách hàng vào nhóm (không trùng CusId trong nhóm).
