@@ -31970,6 +31970,138 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   ⇒ trở thành `Tables[0] = "Table_PI_CBU_ChiTiet"` — **hợp đồng API**, lần thứ **BA** (sau #B290, #B296).
 // ✅ RBAC **tổ hợp (1)**: `CheckHTCDirect` **ACTIVE**; `@strBUPatternOfUser` nạp nhưng SQL không dùng.
 // ✅ Guard ngày: `To` rỗng ⇒ `TConst.DateTimeSpecial.DateMax`.
+
+// ===== #B302/#B303/#B304 BÁO CÁO MASTER — SẢN XUẤT (CBU luỹ kế + CKD từ WS nhà máy) —
+//       `RptMaster_SanXuat_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `147792,148187` ≡ 150 `147797,148192` ⇒ **`7a8379fe5b906aa5d7aee89ef6144c9e`**.
+// 🔴 Đây là hàm **hậu xử lý bằng C#** (không chỉ SQL): SQL dựng `dtSanXuat_CBU`, rồi **vòng lặp C#**
+//   bù dòng thiếu, khử trùng, và tính cột `TOTAL`.
+// 🔴🔴🔴 **BUG THẬT #1 — `Convert.ToInt16` cho BA cột số lượng**:
+//     `Convert.ToInt16(drScan["ToTalDatHang"])` · `…["TotalLenTau"]` · `…["DivTOTAL"]`
+//   `Int16` **max = 32 767** ⇒ tổng đặt hàng / lên tàu vượt ngưỡng ⇒ **`OverflowException` làm gãy CẢ báo
+//   cáo**, không phải sai một dòng. ⚠️ Cùng lớp bug đã ghi ở #B200 (`ToInt16` vs `ToUInt16`).
+//   📌 **KHÔNG tự vá** nhưng port dùng `int` **và** trả `valuesOverInt16` liệt kê dòng vượt `32767`
+//     để người vận hành biết bản gốc sẽ nổ ở đâu.
+// 🔴🔴🔴 **BUG THẬT #2 — `TOTAL` KHÔNG PHẢI TỔNG DÒNG mà là LUỸ KẾ THEO THÁNG**:
+//     `int iCountDraftDiv = GetMonthsBetween(dateFrom, Convert.ToDateTime(ColumnMonth).AddMonths(1));`
+//     `for (int i = 1; i < iCountDraftDiv; i++) { … iDivTOTAL += <DivTOTAL của tháng ColumnMonth − i> }`
+//     `drScan["TOTAL"] = iDivTOTAL;`
+//   ⇒ `TOTAL` = **cộng dồn `DivTOTAL` từ tháng đầu kỳ đến tháng hiện tại** (running total), **không phải**
+//     tổng của riêng dòng. Đọc tên cột sẽ hiểu ngược. Ba cột `ToTalDatHang`/`TotalLenTau` **không tham gia**
+//     vào `TOTAL` dù cùng tên tiền tố.
+//   ⚠️ `Convert.ToDateTime("yyyy-MM")` phụ thuộc **culture** của tiến trình — chuỗi 7 ký tự không có ngày.
+// 🔴🔴 **KHOÁ GHÉP DÙNG KÝ TỰ ĐIỀU KHIỂN `(char)1`** (U+0001) làm dấu phân tách 4 phần
+//   (`ModelCode`,`ActualSpec`,`ColorCode`,`ColumnMonth`), rồi `strkey.Split((char)1)[i]` để tách ngược.
+//   ⚠️ Đúng lớp đã ghi ở luật `C0-…tricesimussecundus`: ký tự này **hiển thị RỖNG** khi đọc log/grep.
+//   Port dùng separator **nhìn thấy được** (`"|#|"`) và ghi rõ khác biệt.
+// 🔴 **Vòng bù dòng là O(n²) và KHÔNG `break`**: `foreach (key in htCache.Keys) foreach (row in dtSanXuat_CBU.Rows)`
+//   — tìm thấy rồi vẫn **quét hết bảng** (`isGet = true;` không kèm `break`).
+// 🔴 `dtSanXuat_CBU.DefaultView.ToTable(**true**)` — tham số `true` = **DISTINCT** ⇒ khử trùng **sau** khi
+//   sort theo `CVModelCode, CVActualSpec, CVColorCode, ColumnMonth`.
+// 🔴 **Dòng bù (fill)** chỉ điền **bốn cột khoá**, mọi cột số để `NULL` ⇒ về sau `""` ⇒ **0**.
+// 🔴🔴 **Lại gọi WS NHÀ MÁY** cho phần CKD (`ws.Rpt_MnfPlanOrderSummary_ByMonth`) và **lại không có guard
+//   lỗi** — chỉ `if (dtPICKD != null && dtPICKD.Rows.Count > 0)` ⇒ **lỗi nhà máy bị nuốt im lặng**
+//   (đúng luật `C0-sescentesimusduodecimus`, lần thứ **hai** sau #B299).
+//   Thêm một lớp: `if (!CheckExistsColumnName(dtPICKD, "ColumnMonth"))` — **tự vá cột thiếu** do WS trả
+//   thiếu schema ⇒ dấu hiệu hệ ngoài **không ổn định về cấu trúc**.
+// 🔴 Trả **hai** bảng chính: `Tables[0] = strFunctionName` · `Tables[1] = "Table_CKD_CODATE"`
+//   (*danh sách xe CKD có ngày Kiểm tra Chất lượng*), cộng `Table_DatHang_CKD` khi WS trả dữ liệu.
+app.MapPost("/api/reports/master-sanxuat", async (
+    MasterSanXuatDto? dto, AppDbContext db, ITenantContext t,
+    DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);
+    var fromMonth = from == DateTime.MinValue ? new DateTime(1900, 1, 1) : new DateTime(from.Year, from.Month, 1);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    // Nền CBU: xe có ngày KTCL trong kỳ, gộp theo (Model, ActualSpec, Color, tháng).
+    var cars = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && v.CQStartDate != null
+                        && v.CQStartDate >= from && v.CQStartDate <= to)
+            .ToListAsync())
+        .Where(v => v.ActualSpec != null && specs.TryGetValue(v.ActualSpec, out var sp) && sp.AssemblyStatus == "CBU")
+        .ToList();
+
+    // 🔴 Port dùng separator NHÌN THẤY ĐƯỢC thay cho (char)1 của nguồn.
+    static string K4(string? m, string? s, string? c, string? mon) => $"{m}|#|{s}|#|{c}|#|{mon}";
+
+    var grouped = cars
+        .GroupBy(v => K4(v.ModelCode, v.ActualSpec, v.ColorCode, v.CQStartDate!.Value.ToString("yyyy-MM")))
+        .ToDictionary(g => g.Key, g => g.Count());
+
+    // Dòng bù: khoá có ở cache mà chưa có dòng ⇒ tạo dòng chỉ 4 cột khoá, cột số = 0.
+    var cacheKeys = (dto?.CacheKeys ?? new List<string>()).ToHashSet();
+    foreach (var k in cacheKeys) if (!grouped.ContainsKey(k)) grouped[k] = 0;
+
+    // DivTOTAL theo khoá; TOTAL = LUỸ KẾ từ tháng đầu kỳ.
+    var rows = new List<object>();
+    var valuesOverInt16 = new List<object>();
+    foreach (var kv in grouped.OrderBy(x => x.Key, StringComparer.Ordinal))
+    {
+        var p = kv.Key.Split("|#|");
+        var modelCode = p.Length > 0 ? p[0] : null;
+        var actualSpec = p.Length > 1 ? p[1] : null;
+        var colorCode = p.Length > 2 ? p[2] : null;
+        var columnMonth = p.Length > 3 ? p[3] : null;
+
+        var divTotal = kv.Value;
+
+        // 🔴 TOTAL = cộng dồn DivTOTAL của CÁC THÁNG TRƯỚC trong kỳ + tháng này.
+        var running = divTotal;
+        if (columnMonth != null && DateTime.TryParse(columnMonth + "-01", out var monDate))
+        {
+            var months = ((monDate.Year - fromMonth.Year) * 12) + monDate.Month - fromMonth.Month;
+            for (var i = 1; i <= months; i++)
+            {
+                var prevKey = K4(modelCode, actualSpec, colorCode, monDate.AddMonths(-i).ToString("yyyy-MM"));
+                if (grouped.TryGetValue(prevKey, out var prevDiv)) running += prevDiv;
+            }
+        }
+
+        // 🔴 Nguồn dùng Convert.ToInt16 ⇒ > 32767 là OverflowException. Ghi lại, port dùng int.
+        if (divTotal > short.MaxValue || running > short.MaxValue)
+            valuesOverInt16.Add(new { key = kv.Key, DivTOTAL = divTotal, TOTAL = running });
+
+        rows.Add(new
+        {
+            CVModelCode = modelCode,
+            CVActualSpec = actualSpec,
+            CVColorCode = colorCode,
+            ColumnMonth = columnMonth,
+            ModelName = (modelCode != null && models.TryGetValue(modelCode, out var mm)) ? mm.ModelName : null,
+            AC_SpecDescription = (actualSpec != null && specs.TryGetValue(actualSpec, out var sp)) ? sp.SpecDesc : null,
+            ToTalDatHang = (int?)null,       // 📌 NỢ: chưa nối tầng đặt hàng
+            TotalLenTau = (int?)null,        // 📌 NỢ: chưa nối tầng lên tàu
+            DivTOTAL = divTotal,
+            TOTAL = running                  // 🔴 LUỸ KẾ, không phải tổng dòng
+        });
+    }
+
+    var ckd = dto?.CkdRows ?? new List<MasterPiCkdRowDto>();
+
+    return Results.Ok(new
+    {
+        RptMaster_SanXuat = rows,                 // Tables[0]
+        Table_CKD_CODATE = new List<object>(),    // Tables[1] — 📌 NỢ: danh sách xe CKD có ngày KTCL
+        Table_DatHang_CKD = ckd,                  // chỉ có khi WS nhà máy trả dữ liệu
+        ckdSourceMissing = ckd.Count == 0,
+        valuesOverInt16,
+        int16OverflowNote = "BUG THAT #1 - Convert.ToInt16 cho BA cot so luong (ToTalDatHang, TotalLenTau, DivTOTAL). Int16 max = 32767 => tong vuot nguong => OverflowException LAM GAY CA BAO CAO, khong phai sai mot dong. Cung lop bug #B200 (ToInt16 vs ToUInt16). Port dung int VA tra valuesOverInt16 de biet ban goc se no o dau.",
+        runningTotalNote = "BUG THAT #2 - TOTAL KHONG PHAI TONG DONG ma la LUY KE THEO THANG: 'iCountDraftDiv = GetMonthsBetween(dateFrom, ColumnMonth.AddMonths(1)); for (i=1; i<iCountDraftDiv; i++) iDivTOTAL += DivTOTAL cua thang (ColumnMonth - i); drScan[TOTAL] = iDivTOTAL' => TOTAL = cong don DivTOTAL tu THANG DAU KY den thang hien tai (running total). Doc ten cot se hieu NGUOC. Ba cot ToTalDatHang/TotalLenTau KHONG tham gia vao TOTAL du cung tien to. Va Convert.ToDateTime('yyyy-MM') phu thuoc CULTURE cua tien trinh.",
+        controlCharKeyNote = "KHOA GHEP DUNG KY TU DIEU KHIEN (char)1 (U+0001) lam dau phan tach 4 phan (ModelCode, ActualSpec, ColorCode, ColumnMonth), roi strkey.Split((char)1)[i] de tach nguoc. Dung lop luat C0-...tricesimussecundus: ky tu nay HIEN THI RONG khi doc log/grep. Port dung separator NHIN THAY DUOC ('|#|').",
+        onSquaredNote = "Vong bu dong la O(n^2) va KHONG break: 'foreach (key in htCache.Keys) foreach (row in dtSanXuat_CBU.Rows)' - tim thay roi VAN QUET HET BANG ('isGet = true;' khong kem break).",
+        distinctNote = "dtSanXuat_CBU.DefaultView.ToTable(true) - tham so 'true' = DISTINCT => khu trung SAU khi sort theo CVModelCode, CVActualSpec, CVColorCode, ColumnMonth. Dong bu (fill) chi dien BON cot khoa, moi cot so de NULL => ve sau '' => 0.",
+        wsNoGuardNote = "LAI GOI WS NHA MAY cho phan CKD (ws.Rpt_MnfPlanOrderSummary_ByMonth) va LAI KHONG CO GUARD LOI - chi 'if (dtPICKD != null && dtPICKD.Rows.Count > 0)' => loi nha may bi NUOT IM LANG (dung luat C0-sescentesimusduodecimus, lan thu HAI sau #B299). Them mot lop: 'if (!CheckExistsColumnName(dtPICKD, \"ColumnMonth\"))' - TU VA COT THIEU do WS tra thieu schema => dau hieu he ngoai KHONG ON DINH VE CAU TRUC.",
+        tablesNote = "Tra HAI bang chinh: Tables[0] = strFunctionName; Tables[1] = 'Table_CKD_CODATE' (danh sach xe CKD co ngay Kiem tra Chat luong), cong Table_DatHang_CKD khi WS tra du lieu.",
+        debtNote = "NO: tang dat hang (ToTalDatHang) va tang len tau (TotalLenTau) chua noi trong MiniHTC => tra NULL; Table_CKD_CODATE chua dung => tra rong. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapPost("/api/reports/master-pi", async (
     MasterPiDto? dto, AppDbContext db, ITenantContext t,
     DateTime? tDateFrom, DateTime? tDateTo) =>
@@ -51060,6 +51192,7 @@ record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
 record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime, string? PDIStorageStatus = null);   // #B251
 record MnfPlOrderStatisticDto(List<MnfPlMmsRowDto>? MmsRows, string? OrderStatusQtyReturn);   // #B251-B253
 record MasterPiDto(List<MasterPiCkdRowDto>? CkdRows);   // #B299-B301 - CKD lay tu WS nha may
+record MasterSanXuatDto(List<string>? CacheKeys, List<MasterPiCkdRowDto>? CkdRows);   // #B302-B304
 record MasterPiCkdRowDto(string? ModelCode, string? SpecCode, string? ColorCode, string? SpecDescription, string? ColumnMonth, decimal? Total);   // #B299-B301
 record MnfPlMmsRowDto(string? OrderNo, string? ModelCode, string? ColorCode, string? SpecCode, decimal? QtyOrdMonthN0, decimal? QtyApprMonthN0, string? CreateDTime, string? ApprDTime, string? OrdMonth, string? ApprMonth, string? ModelName, string? SpecDescription, string? ColorName, string? OCNCode);   // #B251-B253 - 14 cot dung khuon MyBuildDBDT_Common
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
