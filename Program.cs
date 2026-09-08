@@ -46036,6 +46036,91 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #701 CỔNG VELOCA GHI KHÁCH HÀNG `OSVeloca_Ser_Customer_Save` =====
+// (`BizCarSv.Customer.cs:20880-21178`, md5 `4c87ec29`; md5 **cả file** `44c7c87b` — **cả hai KHỚP** máy 150.)
+// WS `WSCarSv.asmx.cs:7669`. Đây là **chiều VÀO** từ hệ Veloca ghi khách hàng vào DMS.
+//
+// 🔴🔴🔴 **CHỈ CÒN MỘT NHÁNH DỊCH LOẠI KHÁCH CÒN SỐNG — HAI NHÁNH KIA BỊ COMMENT TRỌN**:
+//   Nhánh **đang chạy**: `if (StringEqualIgnoreCase(strCusTypeID, "KHACHLE")) { … select t.CusTypeID from`
+//   `Ser_MST_CustomerType t where t.CusTypeName = @strCusTypeName … strCusTypeID = …Rows[0]["CusTypeID"] }`
+//   Hai nhánh **bị comment**: `"CANHAN"` (tra tên `"Cá nhân"`) và `"TOCHUC"`.
+//   ⇒ Veloca gửi `CusTypeID = "CANHAN"` hoặc `"TOCHUC"` thì **không được dịch sang mã danh mục**; giá trị
+//     **giữ nguyên chuỗi** `"CANHAN"`/`"TOCHUC"` rồi đi thẳng vào `Ser_Customer_CreateX/UpdateX` ⇒ **ghi chuỗi
+//     không phải mã vào cột `CusTypeID`** của bảng khách hàng.
+// 🔴🔴🔴 **`Rows[0]` KHÔNG GUARD RỖNG**: `dsGetCusTypeID.Tables[0].Rows[0]["CusTypeID"]` — danh mục
+//   `Ser_MST_CustomerType` **không có** dòng nào `CusTypeName = 'KHACHLE'` ⇒ **IndexOutOfRangeException**
+//   ngay giữa một transaction ba CSDL. Không có `if (Rows.Count > 0)`.
+// 🔴🔴 **TRA DANH MỤC BẰNG TÊN, KHÔNG BẰNG MÃ**: so `strCusTypeID` (giá trị Veloca gửi, ví dụ `"KHACHLE"`) với
+//   **`t.CusTypeName`** ⇒ danh mục phải chứa **đúng chuỗi** đó làm **tên**; đổi tên loại khách trong danh mục là
+//   **vỡ cổng tích hợp**. Cùng lớp với #686 (lọc loại phụ tùng bằng tên tiếng Việt hardcode).
+// 🔴🔴 **`Ser_Customer_CheckDB` ĐƯỢC GỌI VỚI MỌI GUARD TẮT**: `Ser_Customer_CheckDB(_dbDealer, …, "" //
+//   strFlagExistListToCheck, "" // strFlagActiveListToCheck, out dtSer_Customer)` ⇒ hàm kiểm **không kiểm gì**,
+//   chỉ dùng để **nạp** `dtSer_Customer` rồi quyết định tạo mới hay cập nhật theo `Rows.Count < 1`.
+//   (Cùng hình dạng với `Mst_BOM_CheckDB` ở #689 khi truyền cờ rỗng.)
+//
+// 🔴🔴🔴 **BỔ SUNG/ĐÍNH CHÍNH PHẠM VI CHO #697 — PHÉP ĐẾM ĐÓ CÓ ĐIỂM MÙ**:
+//   Ở hàm này **cả hai dòng đều BỊ COMMENT**: `//bool bIsWSMain = string.Equals(_strConfig_FlagIsWSMain, …);`
+//   và `//if (bIsWSMain) bNeedTransaction_Dealer = false;` — trong khi `bool bNeedTransaction_Dealer = true;`
+//   **vẫn sống** ⇒ `_dbDealer.BeginTransaction()` và `CommitSafety(_dbDealer)` **luôn** chạy.
+//   ⚠️ #697 quét các hàm **có khai báo** `bIsWSMain` (362 hàm) ⇒ **không nhìn thấy** lớp này vì dòng khai báo
+//     đã bị comment. Đếm lại đúng lớp đó: **3** hàm có dòng khai báo bị comment, **cả 3** cũng comment dòng ràng
+//     buộc, và **2** trong đó giữ `bNeedTransaction_Dealer = true` **và** gọi `_dbDealer.BeginTransaction()`:
+//     `OSVeloca_Ser_Customer_Save` (đây) và `SerROStatusUpdatePaid_New20221224` (`ZTemp.cs`).
+//   ⇒ Tổng số hàm mở/commit transaction DB đại lý **vô điều kiện**: **`MigratePartInstance` (#697) + 2 hàm này
+//     = 3**, không phải 1. Đây là **mở rộng** kết luận #697, không phải phủ định nó.
+//   ⚠️ Hàm này chỉ **ĐỌC** `_dbDealer` trực tiếp; việc **ghi** nằm trong `Ser_Customer_CreateX/UpdateX`
+//     ⇒ **chưa** kiểm được hai hàm con đó có ghi `_dbDealer` hay không ⇒ ghi vào hàng đợi, **không** kết luận.
+// 🔴 **BA `CommitSafety` RỜI NHAU** (`_dbMain` · `_dbWH` · `_dbDealer`) — cùng khuôn với #693/#701.
+app.MapPost("/api/osveloca/customers", async (OsVelocaCustomerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.SalesCusID))
+        return Results.BadRequest(new { error = "Can SalesCusID — nguon dung no lam khoa tra Ser_Customer_CheckDB." });
+    var salesCusId = dto.SalesCusID!.Trim();
+
+    // Nguồn: chỉ nhánh "KHACHLE" còn sống; "CANHAN"/"TOCHUC" bị comment ⇒ KHÔNG được dịch.
+    var rawType = (dto.CusTypeID ?? "").Trim();
+    string? resolvedType = rawType;
+    var typeWasTranslated = false;
+    var typeLookupFoundNothing = false;
+    if (string.Equals(rawType, "KHACHLE", StringComparison.OrdinalIgnoreCase))
+    {
+        var hit = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeName == rawType);
+        if (hit is null) typeLookupFoundNothing = true;   // nguồn sẽ NỔ Rows[0] ở đúng chỗ này
+        else { resolvedType = hit.CusTypeCode; typeWasTranslated = true; }   // Mini dat ten cot la CusTypeCode
+    }
+
+    var existed = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == salesCusId);
+    var created = existed is null;
+    if (created)
+    {
+        existed = new ServiceCustomer { OrgId = t.OrgId, CusCode = salesCusId };
+        db.ServiceCustomers.Add(existed);
+    }
+    existed!.CusName = dto.CusName ?? existed.CusName;
+    existed.CusTypeID = resolvedType;
+    existed.Address = dto.Address ?? existed.Address;
+    existed.Mobile = dto.Mobile ?? existed.Mobile;
+    existed.Tel = dto.Tel ?? existed.Tel;
+    existed.Email = dto.Email ?? existed.Email;
+    existed.TaxCode = dto.TaxCode ?? existed.TaxCode;
+    existed.Sex = dto.Sex ?? existed.Sex;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        salesCusId, created, cusTypeIdSent = rawType, cusTypeIdStored = resolvedType,
+        typeWasTranslated, typeLookupFoundNothing,
+        // ===== #701 =====
+        onlyKhachLeBranchSurvives = "CHI CON MOT NHANH DICH LOAI KHACH CON SONG — HAI NHANH KIA BI COMMENT TRON: nhanh dang chay la if (StringEqualIgnoreCase(strCusTypeID, KHACHLE)) { select t.CusTypeID from Ser_MST_CustomerType t where t.CusTypeName = @strCusTypeName; strCusTypeID = …Rows[0][CusTypeID] }; hai nhanh bi comment la CANHAN (tra ten Ca nhan) va TOCHUC => Veloca gui CusTypeID = CANHAN hoac TOCHUC thi KHONG duoc dich sang ma danh muc, gia tri GIU NGUYEN CHUOI roi di thang vao Ser_Customer_CreateX/UpdateX => GHI CHUOI KHONG PHAI MA vao cot CusTypeID cua bang khach hang",
+        rowsZeroHasNoGuard = "dsGetCusTypeID.Tables[0].Rows[0][CusTypeID] KHONG GUARD RONG: danh muc Ser_MST_CustomerType khong co dong nao CusTypeName = KHACHLE => IndexOutOfRangeException ngay giua mot transaction ba CSDL. Khong co if (Rows.Count > 0)",
+        lookupByNameNotByCode = "TRA DANH MUC BANG TEN KHONG BANG MA: so strCusTypeID (gia tri Veloca gui, vi du KHACHLE) voi t.CusTypeName => danh muc phai chua DUNG CHUOI do lam TEN; doi ten loai khach trong danh muc la VO CONG TICH HOP. Cung lop voi #686 (loc loai phu tung bang ten tieng Viet hardcode)",
+        checkDbCalledWithAllGuardsOff = "Ser_Customer_CheckDB duoc goi voi MOI GUARD TAT: Ser_Customer_CheckDB(_dbDealer, …, \"\" //strFlagExistListToCheck, \"\" // strFlagActiveListToCheck, out dtSer_Customer) => ham kiem KHONG KIEM GI, chi dung de NAP dtSer_Customer roi quyet dinh tao moi hay cap nhat theo Rows.Count < 1 (cung hinh dang voi Mst_BOM_CheckDB o #689 khi truyen co rong)",
+        extendsScopeOfIssue697 = "BO SUNG/DINH CHINH PHAM VI CHO #697 — PHEP DEM DO CO DIEM MU: o ham nay CA HAI dong deu BI COMMENT (//bool bIsWSMain = …; va //if (bIsWSMain) bNeedTransaction_Dealer = false;) trong khi bool bNeedTransaction_Dealer = true; VAN SONG => _dbDealer.BeginTransaction() va CommitSafety(_dbDealer) LUON chay. #697 quet cac ham CO KHAI BAO bIsWSMain (362 ham) nen KHONG nhin thay lop nay. Dem lai dung lop do: 3 ham co dong khai bao bi comment, ca 3 cung comment dong rang buoc, va 2 trong do giu bNeedTransaction_Dealer = true VA goi _dbDealer.BeginTransaction(): OSVeloca_Ser_Customer_Save (day) va SerROStatusUpdatePaid_New20221224 (ZTemp.cs) => TONG so ham mo/commit transaction DB dai ly VO DIEU KIEN la MigratePartInstance (#697) + 2 = 3, khong phai 1. Day la MO RONG ket luan #697 khong phai phu dinh no",
+        writeHappensInChildFunctions = "ham nay chi DOC _dbDealer truc tiep; viec GHI nam trong Ser_Customer_CreateX/UpdateX => CHUA kiem duoc hai ham con do co ghi _dbDealer hay khong => ghi vao hang doi, KHONG ket luan",
+        threeSeparateCommits = "BA CommitSafety ROI NHAU (_dbMain, _dbWH, _dbDealer) — cung khuon voi #693",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #700 TAB: LOẠI LỆNH & ĐỐI TƯỢNG THANH TOÁN THEO CVDV / THEO ĐẠI LÝ =====
 // `Rpt_Ser_RO_ExpTpAndROTpGroupByCVDVForTab` (vỏ bọc `Tab/BizCarSv.Tab.Report.cs:1203-1321`, md5 `f2076a08`)
 // → thân thật `…GroupByCVDV**X**` (`:1322-1487`, md5 `8b020cfc`); anh em `…GroupByDealer**X**` (`:1043-1201`,
@@ -62496,6 +62581,7 @@ record CavityUpdateDto(string? CavityName = null, string? CavityType = null, str
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
 record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive, string? Remark);
+record OsVelocaCustomerDto(string? SalesCusID, string? CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex);
 record ReqPartPriceTstReplyLineDto(string? PartCode, string? TSTPartCode, decimal? TSTPrice);
 record ReqPartPriceTstReplyDto(string? TSTReqPartPriceID, DateTime? TSTSentDate, string? TSTStatus, List<ReqPartPriceTstReplyLineDto>? Lines);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
