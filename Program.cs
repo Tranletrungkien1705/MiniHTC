@@ -9695,6 +9695,97 @@ app.MapGet("/api/reports/payment-01-matrix", async (
     });
 }).RequireAuthorization();
 
+// ===== #B134 JOB LẬP KẾ HOẠCH GIAO XE TỰ ĐỘNG — `DMS40_Auto_EstimateDeliveyPlan_New20240514` =====
+// Trace LIVE: WS64 `:23377` → `_biz.DMS40_Auto_EstimateDeliveyPlan_New20240514`
+//   (`DataWH/BizHTC.PlanDelivery.cs:27`). **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `27,661 / 10a16c48e52f523b096f9ac0d812e886`.
+// 🔴🔴 **THỨ TỰ TÁM CHẶNG LÀ NGHIỆP VỤ, KHÔNG PHẢI CHI TIẾT CÀI ĐẶT** — chặng sau ăn phần còn lại
+//   của chặng trước; đảo thứ tự là **đổi kết quả phân bổ xe**:
+//     1. `SONGFIRST`  → `…_ForSONGFirstX_New20240514`
+//     2. `BOATEDP`    → `Auto_EstimateDelivery_BO_ProcessX` (**cấp THÊM một số gốc `SUPPLYDBSUM`**)
+//     3. `BO`         → `…_ForBOX`            (chú thích nguồn: *"Job BO Tồn"*)
+//     4. `SUPPLYDBSUM`→ (dùng số gốc đã cấp ở chặng 2)
+//     5. `SONG`       → `…_ForSONGX_New20240514`
+//     6. `NEWDEALER`  → `…_ForNewDealerX_New20240514`
+//     7. `NEWSPEC`    → `…_ForNewSpecX_New20240514`
+//     8. `ALL`        → `…_ForAllX_New20240514`
+// 🔴 **MỖI CHẶNG XIN MỘT `ATEDPNo` RIÊNG** (`SequenceGetForDMS_MyGet(…, SequenceTypeDMS40.ATEDPNo)`)
+//   ⇒ **một lượt chạy sinh TÁM số kế hoạch khác nhau**, không phải một số dùng chung.
+//   Khuôn số: **`{yyMM}{"ATEDPNO"}{seq % 100000 :00000}`** (`BizHTC.MasterData.cs:190-205`) —
+//   khớp ví dụ còn sót trong nguồn: `"2206ATEDPNO21554"`.
+//   ⚠️ **`seq % 100000` ⇒ số QUAY VÒNG**: quá 100.000 lượt trong **cùng một tháng** là **trùng số**.
+//     Ghi lại, **không tự sửa** (đổi khuôn số là đổi dữ liệu lịch sử).
+// 🔴 **Tám chặng đều bọc trong `if (true)`** — công tắc bật/tắt **hàn cứng ở trạng thái BẬT**.
+//   ⇒ Không có đường nào bỏ qua chặng; port thêm cờ tắt là **thêm hành vi nguồn không có**.
+//   (Cờ `stagesOnly` dưới đây **chỉ để xem trước danh sách**, không tắt chặng nào.)
+// 📌 **NỢ — KHÔNG ĐOÁN**: tám hàm `…ForXXX` là **thuật toán phân bổ**, mỗi hàm hàng nghìn dòng, đọc
+//   trên **họ bảng `Auto_EstimateDeliveryPlan_*`** (Demand · SupplyMnfDtl · SupplyHTCLocal ·
+//   SupplyHTCGlobal · SupplyGlobal · MapRoundSpec · SupplyDistributionSum{MapVIN,Mnf,Local} · Storage…)
+//   — chưa có trong MiniHTC. Endpoint này **chỉ điều phối**: cấp đúng tám số theo đúng thứ tự và
+//   ghi lại, cờ `EngineRan = false` cho từng chặng. **Không sinh dòng kế hoạch giả.**
+// 📌 §12: thực thể `AtedpRun` + Seeder `CREATE TABLE IF NOT EXISTS` + DbSet + trả trong response.
+app.MapPost("/api/dms40/auto-estimate-delivery-plan/run", async (
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user,
+    string? stagesOnly) =>
+{
+    // 🔴 Thứ tự CỐ ĐỊNH — là nghiệp vụ.
+    var stages = new[]
+    {
+        (Order: 1, Type: "SONGFIRST",   Engine: "DMS40_Auto_EstimateDeliveyPlan_ForSONGFirstX_New20240514"),
+        (Order: 2, Type: "BOATEDP",     Engine: "Auto_EstimateDelivery_BO_ProcessX"),
+        (Order: 3, Type: "BO",          Engine: "DMS40_Auto_EstimateDeliveyPlan_ForBOX"),
+        (Order: 4, Type: "SUPPLYDBSUM", Engine: "(dung so goc cap o chang BOATEDP)"),
+        (Order: 5, Type: "SONG",        Engine: "DMS40_Auto_EstimateDeliveyPlan_ForSONGX_New20240514"),
+        (Order: 6, Type: "NEWDEALER",   Engine: "DMS40_Auto_EstimateDeliveyPlan_ForNewDealerX_New20240514"),
+        (Order: 7, Type: "NEWSPEC",     Engine: "DMS40_Auto_EstimateDeliveyPlan_ForNewSpecX_New20240514"),
+        (Order: 8, Type: "ALL",         Engine: "DMS40_Auto_EstimateDeliveyPlan_ForAllX_New20240514"),
+    };
+
+    if (stagesOnly == "1")
+        return Results.Ok(new { stages = stages.Select(s => new { s.Order, s.Type, s.Engine }), previewOnly = true });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var runId = Guid.NewGuid().ToString("N");
+    var yyMM = DateTime.Now.ToString("yyMM");
+
+    // 🔴 Khuôn số nguồn: {yyMM}{ATEDPNO}{seq % 100000 :00000} — seq lấy nối tiếp trong bảng.
+    var used = await db.AtedpRuns.Where(r => r.OrgId == t.OrgId).CountAsync();
+    string NextNo(int i) => $"{yyMM}ATEDPNO{((used + i) % 100000):00000}";
+
+    var rows = new List<AtedpRun>();
+    var idx = 0;
+    string? spdbsRoot = null;
+    foreach (var s in stages)
+    {
+        idx++;
+        var no = NextNo(idx);
+        // 🔴 Chặng BOATEDP cấp THÊM một số gốc SUPPLYDBSUM, dùng lại ở chặng 4.
+        if (s.Type == "BOATEDP") { idx++; spdbsRoot = NextNo(idx); }
+        rows.Add(new AtedpRun
+        {
+            OrgId = t.OrgId, RunId = runId, StageOrder = s.Order, ATEDPType = s.Type,
+            ATEDPNo = no,
+            ATEDPNoSPDBSRoot = s.Type == "BOATEDP" ? spdbsRoot : (s.Type == "SUPPLYDBSUM" ? spdbsRoot : null),
+            EngineRan = false, CreatedBy = by
+        });
+    }
+    db.AtedpRuns.AddRange(rows);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        runId,
+        stages = rows.Select(r => new { r.StageOrder, r.ATEDPType, r.ATEDPNo, r.ATEDPNoSPDBSRoot, r.EngineRan }),
+        enginesNotRun = true,
+        stageOrderNote = "THU TU TAM CHANG LA NGHIEP VU, khong phai chi tiet cai dat - chang sau an phan con lai cua chang truoc; dao thu tu la DOI KET QUA PHAN BO XE. Thu tu: SONGFIRST -> BOATEDP -> BO ('Job BO Ton') -> SUPPLYDBSUM -> SONG -> NEWDEALER -> NEWSPEC -> ALL.",
+        numberingNote = "MOI CHANG XIN MOT ATEDPNo RIENG (SequenceGetForDMS_MyGet voi SequenceTypeDMS40.ATEDPNo = 'ATEDPNO') => MOT LUOT CHAY SINH TAM SO KE HOACH KHAC NHAU, khong phai mot so dung chung. Khuon: {yyMM}{ATEDPNO}{seq % 100000 :00000} (BizHTC.MasterData.cs:190-205) - khop vi du con sot trong nguon: '2206ATEDPNO21554'.",
+        wrapAroundNote = "seq % 100000 => SO QUAY VONG: qua 100.000 luot trong CUNG MOT THANG la TRUNG SO. Ghi lai, KHONG tu sua (doi khuon so la doi du lieu lich su).",
+        alwaysOnNote = "Tam chang deu boc trong 'if (true)' - cong tac bat/tat HAN CUNG O TRANG THAI BAT. Khong co duong nao bo qua chang; port them co tat la THEM HANH VI NGUON KHONG CO. Tham so stagesOnly chi de XEM TRUOC danh sach, khong tat chang nao.",
+        spdbsRootNote = "Chang BOATEDP cap THEM mot so goc SUPPLYDBSUM (strATEDPNo_SPDBSRoot) roi chuyen vao Auto_EstimateDelivery_BO_ProcessX; chang SUPPLYDBSUM dung lai chinh so do.",
+        engineDebt = "NO - KHONG DOAN: tam ham ...ForXXX la THUAT TOAN PHAN BO, moi ham hang nghin dong, doc tren ho bang Auto_EstimateDeliveryPlan_* (Demand, SupplyMnfDtl, SupplyHTCLocal, SupplyHTCGlobal, SupplyGlobal, MapRoundSpec, SupplyDistributionSum{MapVIN,Mnf,Local}, Storage...) - chua co trong MiniHTC. Endpoint nay CHI DIEU PHOI: cap dung tam so theo dung thu tu va ghi lai, EngineRan = false. KHONG sinh dong ke hoach gia."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5

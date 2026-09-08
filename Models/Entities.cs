@@ -9317,6 +9317,23 @@ public sealed class SysObjectTypeMst
 /// ⚠️ Cột dấu vết của bảng này tên **`LogLUDTime`** (KHÔNG có chữ "ate") — khác `LogLUDateTime`
 /// dùng ở hầu hết bảng khác. Giữ đúng tên nguồn.
 /// </summary>
+
+/// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
+/// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
+/// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
+public sealed class AtedpRun
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RunId { get; set; } = "";        // gom 8 chặng của cùng một lượt
+    public int StageOrder { get; set; }            // thứ tự chặng — LÀ NGHIỆP VỤ, không được đổi
+    public string ATEDPType { get; set; } = "";    // TConst.ATEDPType
+    public string ATEDPNo { get; set; } = "";      // số sinh từ dãy, khuôn {yyMM}{ATEDPNO}{seq%100000:00000}
+    public string? ATEDPNoSPDBSRoot { get; set; }  // chặng BOATEDP còn cấp thêm một số gốc SUPPLYDBSUM
+    public bool EngineRan { get; set; }            // chặng tính thật đã chạy chưa (MiniHTC: chưa)
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
 public sealed class MstZone
 {
     public long Id { get; set; }
