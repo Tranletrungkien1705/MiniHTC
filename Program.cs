@@ -53950,6 +53950,135 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #673 TỔNG HỢP LỆNH SỬA CHỮA `Ser_RO_Sumary_WH` (`WH.cs:12474-12686`) =====
+// 3B: laptop `:12474` md5 `7879f2a2` **KHỚP** máy 150 `:12474`. WS `WSCarSv.asmx.cs:30905` gọi thẳng.
+//
+// 🔴🔴🔴 **`VAT/100` THAY VÌ `VAT*0.01` — HAI CÁCH VIẾT CÙNG TỒN TẠI CHO CÙNG MỘT CỘT**:
+//     `sum(Price*Quantity*Factor*(1+**VAT/100**))` và `sum(Price*Factor*(1+**VAT/100**))`
+//   📌 Đếm toàn `TERP.BizCarSv`: `VAT*0.01` = **440** site · `VAT/100` = **156** site (26%).
+//   ⚠️ Hai cách chỉ **tương đương khi `VAT` KHÔNG phải kiểu nguyên**. Nếu cột `VAT` là `int` thì trong SQL Server
+//     `VAT/100` là **phép chia NGUYÊN** ⇒ `10/100 = 0` ⇒ `(1 + 0)` ⇒ **thuế biến mất hoàn toàn**, im lặng.
+//   🔴 **KHÔNG THỂ VERIFY 100% từ source**: tầng entity khai `public **string** VAT`
+//     (`TERP.HTCService.ClientService/Entities/Ser_ROPartItems.cs:46`) nên **không suy ra được kiểu cột SQL**,
+//     và phiên này **không có quyền truy DB**. Ghi lại như **rủi ro cần đo trên DB thật**, không kết luận là bug.
+//   ⇒ Port dùng `decimal` nên **luôn đúng**; trả cờ để người có DB kiểm `VAT` là `int` hay `decimal`.
+// 🔴🔴🔴 **KHỐI JOIN LÀM MẤT DÒNG — nay ĐẾM ĐƯỢC ĐỘ PHỦ**: hàm này vẫn dùng
+//     `inner join Ser_Customer cus on cus.CusID = ro.CusID and ro.DealerCode = cus.DealerCode`
+//     `inner join ser_car car on ro.CarID = car.CarID **and ro.CusID = car.CusID** …`
+//   📌 Đếm `and ro.CusID = car.CusID` trong `TERP.BizCarSv`: **103** site — **102 ĐANG CHẠY**, **1** bị comment.
+//   ⇒ Bản vá 2023-04-17 (#670) gỡ vế này ở **đúng một** báo cáo; **102 chỗ còn lại vẫn nguyên**.
+//     Đây là con số cụ thể cho lớp lỗi "xe sang tên ⇒ mất dòng" (#661 · #669 · #672 · và đây).
+// 🔴🔴 **`Factor` KHÔNG có `isnull` ở đây** — `Price*Quantity*Factor*(1+VAT/100)` ⇒ `Factor` NULL làm **cả tích
+//   thành NULL** ⇒ `sum` **bỏ qua dòng đó** ⇒ tiền của dòng **biến mất khỏi tổng**, khác cả hai biến thể đã đếm ở
+//   #670 (`isnull(Factor,0)` = 285 · `isnull(Factor,1)` = 13). ⇒ **Biến thể thứ BA** của cùng một cột.
+// ⚪ **DƯƠNG TÍNH — mốc ngày ở đây được VÁ ĐÚNG, bằng cách thứ TƯ**: `Replace(…, "@ToDate", strToDate + " 23:59:59")`
+//   ⇒ **không** mất ngày cuối. 📌 Nay đã gặp **bốn** quy ước mốc ngày trong cùng một tầng biz:
+//     ① chuỗi thô `<= '@ToDate'` ⇒ **mất ngày cuối** (#666 · #668 nhánh xuất kho)
+//     ② `CONVERT(nvarchar(10), …, 120)` ⇒ an toàn (#670)
+//     ③ `datediff(day, …) >= 0` ⇒ an toàn nhưng **mất index** (#672)
+//     ④ nối chuỗi `" 23:59:59"` trong C# ⇒ an toàn (ở đây, và nhánh NCC của #668)
+//   ⇒ Không có quy ước chung; **phải đọc từng hàm**, đừng suy từ hàm bên cạnh.
+// 🔴 **NỐI `Ser_Car` HAI LẦN, HAI BỘ KHOÁ KHÁC NHAU trong cùng một hàm**: bảng tạm dùng `inner join … and
+//   ro.CusID = car.CusID and ro.DealerCode = car.DealerCode`; câu cuối dùng `left join Ser_Car scar on ro.CarID =
+//   scar.CarID` (**không** khoá đại lý, **không** khoá khách) ⇒ hai lần nối cùng bảng cho hai tập khác nhau.
+// 🔴 **GHÉP CHUỖI VỚI NULL LÀM MẤT CẢ CHUỖI**: `(tm.TradeMarkName + ' - ' + smm.ModelName) as TradeMarkNameModel`
+//   với `tm`/`smm` đều là `left join` ⇒ thiếu **một** trong hai thì **cả cột thành NULL**, không phải mất một nửa.
+// 🔴 **HAI NGUỒN SỰ THẬT CHO TÊN TRẠNG THÁI** (lặp lại #672): `dbo.ROStatus_GetStatusNameByCode` bị comment,
+//   thay bằng `case` nội tuyến — **cùng bảng mã, chép rời ở hai hàm**.
+// ⚪ Khối `case` này **CÓ `else`** (`else N'Không xác định'`) — cùng dấu dương tính với #672.
+// 🔴 `'LS-'+ro.RONo RONo` **và** `Ro.RoNo as SoPhieuThanhToan` **trong cùng một `SELECT`** ⇒ giá trị thô vẫn
+//   có, chỉ nằm dưới một cái tên khác. Port trả **cả hai** để client ghép được với #670 (`'BG-'`).
+// 🔴 `BuildClauseConditionList` (không `ref` tham số) ⇒ **bake** `DealerCode`/`Status` ⇒ tiêm SQL (họ #672).
+app.MapGet("/api/report/ro-summary-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? statusList) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(statusList))
+    {
+        var codes = statusList!.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToList();
+        qr = qr.Where(x => codes.Contains(x.Status));
+    }
+    if (from is not null) qr = qr.Where(x => x.CheckInDate >= from);
+    // Nguồn nối " 23:59:59" vào mốc cuối ⇒ KHÔNG mất ngày cuối. Port giữ đúng hành vi đó.
+    if (to is not null) qr = qr.Where(x => x.CheckInDate < to!.Value.AddDays(1));
+    var ros = await qr.Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusRequest, x.CheckInDate,
+                                        x.Km, x.Status, x.Vin }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.UnitPrice, x.NeedQty, x.Factor, x.Vat }).ToListAsync();
+    var svcs = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Price, x.Factor, x.Vat }).ToListAsync();
+
+    var vins = ros.Where(x => x.Vin != null).Select(x => x.Vin!).Distinct().ToList();
+    var cars = (await db.ServiceCars.Where(x => x.OrgId == t.OrgId && vins.Contains(x.FrameNo))
+            .Select(x => new { x.FrameNo, x.ModelCode, x.TradeMark, x.WarrantyRegistrationDate }).ToListAsync())
+        .GroupBy(x => x.FrameNo).ToDictionary(g => g.Key, g => g.First());
+
+    static string StatusName(string? st) => st switch
+    {
+        "CRE" or "PRT" or "HRO" => "Chờ sửa",
+        "INGA" => "Đang sửa",
+        "RPRD" => "Sửa xong",
+        "CEND" => "Kiểm tra cuối cùng",
+        "PAID" => "Thanh toán xong",
+        "FNS" => "Đã giao xe",
+        "REJ" => "Lệnh hủy",
+        "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+        _ => "Không xác định",
+    };
+
+    var partsByRo = parts.GroupBy(x => x.RoId).ToDictionary(g => g.Key, g => g.ToList());
+    var svcsByRo = svcs.GroupBy(x => x.RoId).ToDictionary(g => g.Key, g => g.ToList());
+
+    var rows = ros.Select(r =>
+    {
+        var p = partsByRo.TryGetValue(r.Id, out var pl) ? pl : new();
+        var v = svcsByRo.TryGetValue(r.Id, out var vl) ? vl : new();
+        // Nguồn: (1 + VAT/100). Port dùng decimal nên KHÔNG dính rủi ro chia nguyên.
+        var partTotal = p.Sum(x => x.UnitPrice * x.NeedQty * x.Factor * (1 + x.Vat / 100m));
+        var svcTotal = v.Sum(x => x.Price * x.Factor * (1 + x.Vat / 100m));
+        cars.TryGetValue(r.Vin ?? "", out var car);
+        var brand = car?.TradeMark; var model = car?.ModelCode;
+        return new
+        {
+            roNo = "LS-" + r.RONo,
+            soPhieuThanhToan = r.RONo,          // nguồn trả CẢ HAI trong cùng một SELECT
+            plateNo = r.LicensePlate, r.CusRequest, r.CheckInDate, r.Km,
+            status = r.Status, statusName = StatusName(r.Status),
+            revenue = partTotal + svcTotal,
+            partTotal, svcTotal,
+            frameNo = r.Vin, modelCode = model, tradeMark = brand,
+            warrantyRegistrationDate = car?.WarrantyRegistrationDate,
+            // Nguồn ghép chuỗi ⇒ NULL nuốt cả cột. Port giữ 1:1 và nêu cờ.
+            tradeMarkNameModel = (brand is null || model is null) ? null : brand + " - " + model,
+            zeroOrNullFactorLines = p.Count(x => x.Factor == 0) + v.Count(x => x.Factor == 0),
+        };
+    }).OrderBy(x => x.roNo).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows,
+        totalRevenue = rows.Sum(x => x.revenue),
+        // ===== #673 =====
+        vatDividedBy100InsteadOfTimes001 = "sum(Price*Quantity*Factor*(1+VAT/100)) — dem toan TERP.BizCarSv: VAT*0.01 = 440 site, VAT/100 = 156 site (26%). Hai cach chi TUONG DUONG khi VAT KHONG phai kieu nguyen; neu cot VAT la int thi trong SQL Server VAT/100 la phep chia NGUYEN => 10/100 = 0 => (1+0) => THUE BIEN MAT hoan toan, im lang",
+        vatTypeNotVerifiable = "KHONG THE VERIFY 100% tu source: tang entity khai public STRING VAT (TERP.HTCService.ClientService/Entities/Ser_ROPartItems.cs:46) nen khong suy ra duoc kieu cot SQL, va phien nay khong co quyen truy DB. Ghi lai nhu RUI RO CAN DO TREN DB THAT, khong ket luan la bug. Port dung decimal nen luon dung",
+        rowLossJoinCoverageCounted = "KHOI JOIN LAM MAT DONG — nay DEM DUOC DO PHU: ham nay van dung inner join Ser_Customer + inner join ser_car … and ro.CusID = car.CusID. Dem chuoi and ro.CusID = car.CusID trong TERP.BizCarSv: 103 site — 102 DANG CHAY, 1 bi comment => ban va 2023-04-17 (#670) go ve nay o DUNG MOT bao cao, 102 cho con lai VAN NGUYEN. Day la con so cu the cho lop loi xe-sang-ten-mat-dong (#661, #669, #672 va day)",
+        factorHasNoIsnullHere = "Factor KHONG co isnull o day — Price*Quantity*Factor*(1+VAT/100) => Factor NULL lam CA TICH thanh NULL => sum BO QUA dong do => tien cua dong BIEN MAT khoi tong; khac ca hai bien the da dem o #670 (isnull(Factor,0) = 285, isnull(Factor,1) = 13) => BIEN THE THU BA cua cung mot cot",
+        fourthDateBoundConvention = "DUONG TINH: moc ngay o day duoc VA DUNG bang cach thu TU — Replace(…, @ToDate, strToDate + \" 23:59:59\") => KHONG mat ngay cuoi. Nay da gap BON quy uoc moc ngay trong cung mot tang biz: (1) chuoi tho <= @ToDate => MAT ngay cuoi (#666, #668 nhanh xuat kho); (2) CONVERT(nvarchar(10),…,120) => an toan (#670); (3) datediff(day,…) >= 0 => an toan nhung mat index (#672); (4) noi chuoi 23:59:59 trong C# => an toan (day va nhanh NCC cua #668). KHONG co quy uoc chung, phai doc TUNG HAM",
+        serCarJoinedTwiceWithDifferentKeys = "NOI Ser_Car HAI LAN, HAI BO KHOA KHAC NHAU trong cung mot ham: bang tam dung inner join … and ro.CusID = car.CusID and ro.DealerCode = car.DealerCode; cau cuoi dung left join Ser_Car scar on ro.CarID = scar.CarID (KHONG khoa dai ly, KHONG khoa khach) => hai lan noi cung bang cho hai tap khac nhau",
+        stringConcatNullSwallowsWholeColumn = "(tm.TradeMarkName + \' - \' + smm.ModelName) as TradeMarkNameModel voi tm/smm deu la left join => thieu MOT trong hai thi CA COT thanh NULL, khong phai mat mot nua",
+        twoSourcesOfTruthForStatusName = "lap lai #672: dbo.ROStatus_GetStatusNameByCode bi comment, thay bang case noi tuyen — cung bang ma, chep roi o hai ham",
+        positiveCaseHasElse = "DUONG TINH: khoi case CO else (else N'Khong xac dinh') — cung dau duong tinh voi #672",
+        bothPrefixedAndRawRoNo = "'LS-'+ro.RONo RONo VA Ro.RoNo as SoPhieuThanhToan trong CUNG mot SELECT => gia tri tho van co, chi nam duoi mot cai ten khac; port tra CA HAI de client ghep duoc voi #670 (BG-)",
+        conditionListBakesValues = "BuildClauseConditionList (khong ref tham so) => bake DealerCode/Status => tiem SQL (ho #672)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #672 THỐNG KÊ DỊCH VỤ `Ser_RO_Statistic_Service_WH` + `…_ByGroup_WH` (`WH.cs:12310` / `:12134`) =====
 // 3B: laptop `:12310` md5 `dbb34ddc` · `:12134` md5 `c5dd6e24` — **cả hai KHỚP** máy 150.
 // WS `WSCarSv.asmx.cs:30940` / `:30975` gọi thẳng (không hậu tố). DIFF hai bản **sau khi chuẩn hoá khoảng trắng**
