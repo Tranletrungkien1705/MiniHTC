@@ -19910,8 +19910,34 @@ app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
 // ⚠️ `convert(varchar, getdate(), 12)` — style **12** là `yymmdd` (**hai** chữ số năm), lấy giờ **máy DB**;
 //   giá trị này dùng để ghép vào số chứng từ, nên đầu số phụ thuộc **múi giờ/đồng hồ của DB**.
 // 📌 Port: sinh số **an toàn** — lọc theo đại lý + độ dài **bắt buộc**, so theo **phần số**, và nêu cờ.
+// ===== 🔴🔴 #604 `SerOrderPartGetMaxOrderNo_V2` (`:450`) — **HAI CỔNG WS CẤP SỐ THEO HAI LUẬT** =====
+// DIFF với bản trần (#601) cho ra **đúng hai** khác biệt thật:
+//   1) `strErrorCodeDefault = TError.ErrCarSv.**SerOrderPartGetMaxOrderNo_V2**` — **sửa đúng** mã lỗi
+//      (bản trần dùng nhầm `SerStockInGetMaxStockInNo`, xem #601/#602) ⇒ người viết `_V2` **đã nhận ra**
+//      dấu vết chép cụm và sửa **riêng chỗ này**, không sửa ba chỗ còn lại trong file.
+//   2) thêm **một** dòng lọc: `and po.OrderNo like '%' + convert(varchar, getdate(), 12) + '%'`
+//      ⇒ chỉ gom các số đơn **có chứa `yymmdd` của HÔM NAY** — tức số chứng từ được **cấp lại theo ngày**.
+//
+// 🔴🔴 **TRACE WS: HAI CỔNG ĐANG SỐNG GỌI HAI BẢN KHÁC NHAU**:
+//     `HTCWSCarSv/WSCarSv.asmx.cs:23427`        → `SerOrderPartGetMaxOrderNo_**V2**` (có lọc ngày)
+//     `TERP.WSCarSv/App_Code/WSCarSv.cs:31680`  → `SerOrderPartGetMaxOrderNo` (**không** lọc ngày)
+//   ⇒ Hai cổng cấp số **trên cùng một bảng** theo **hai luật khác nhau**: một bên lấy `max` **trong ngày**,
+//     bên kia lấy `max` **toàn bộ**. Nếu cả hai cổng cùng phục vụ, số do cổng "theo ngày" cấp sẽ **nhỏ hơn**
+//     số cổng kia đã dùng ⇒ **trùng số chứng từ** một cách hệ thống, không phải do đua tranh.
+//   ⇒ Nặng hơn #601: ở đó trùng số cần **hai người bấm cùng lúc**; ở đây chỉ cần **hai cổng cùng chạy**.
+//
+// 🔴 `like '%' + convert(varchar, getdate(), 12) + '%'` — **ba** vấn đề chồng lên nhau:
+//   · **`like` trên cột SỐ CHỨNG TỪ** = bộ lọc nghiệp vụ trá hình (luật #412): quy ước *"số đơn chứa yymmdd"*
+//     **không** được viết ở đâu ngoài chính dòng SQL này.
+//   · **`%…%` khớp ở BẤT KỲ vị trí nào**: nếu phần khác của số đơn tình cờ chứa đúng sáu chữ số đó (mã đại lý
+//     dạng số, số thứ tự dài), dòng **khớp nhầm** và lọt vào phép `max`.
+//   · **`getdate()` là giờ máy DB**: quanh **nửa đêm**, hoặc khi DB lệch múi giờ so với người dùng (VN UTC+7),
+//     phép lọc lấy **ngày khác** ⇒ `max` của một ngày khác ⇒ số kế tiếp **trùng**.
+// 🔴 **`_V2` KHÔNG sửa lỗi nghiêm trọng nhất**: vẫn `from Ser_Part_Order po **with(nolock)**`, vẫn không nằm
+//   trong chuỗi "lấy số → ghi" nguyên tử, vẫn `max()` trên **chuỗi**, vẫn lọc `LEN(po.OrderNo)` qua
+//   `BuildClause` (có thể chết im lặng, #410/#601). ⇒ Bản "V2" chỉ vá **mã lỗi** và **phạm vi ngày**.
 app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContext t,
-    string? dealerCode, int? orderNoLength, string? prefix) =>
+    string? dealerCode, int? orderNoLength, string? prefix, bool? todayOnly) =>
 {
     // Nguồn KHÔNG chặn rỗng; port bắt buộc vì thiếu chúng là cấp số sai.
     if (string.IsNullOrWhiteSpace(dealerCode))
@@ -19930,8 +19956,12 @@ app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContex
     var dc = dealerCode!.Trim().ToUpperInvariant();
     var len = orderNoLength!.Value;
 
+    // #604: bản _V2 thêm "and po.OrderNo like %yymmdd%" (yymmdd của giờ máy DB).
+    var todayKey = DateTime.Now.ToString("yyMMdd");
+    var scopeToday = todayOnly == true;
     var candidates = await db.SupplierPartOrders
         .Where(x => x.OrgId == t.OrgId && x.DealerCode == dc && x.OrderNo.Length == len)
+        .Where(x => !scopeToday || x.OrderNo.Contains(todayKey))
         .Select(x => x.OrderNo)
         .ToListAsync();
 
@@ -19965,6 +19995,15 @@ app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContex
         checkRegionIsEmptyInSource = true,
         currentDateStyle12IsTwoDigitYear = "convert(varchar, getdate(), 12) = yymmdd, gio may DB",
         portRequiresBothFilters = new[] { "dealerCode", "orderNoLength" },
+        // ===== #604 =====
+        todayOnly = scopeToday, todayKey,
+        twoLiveGatewaysUseDifferentVariants = "HTCWSCarSv/WSCarSv.asmx.cs:23427 goi _V2 (CO loc ngay); TERP.WSCarSv/App_Code/WSCarSv.cs:31680 goi ban tran (KHONG loc ngay)",
+        systematicDuplicateNumbers = "hai cong cap so tren CUNG mot bang theo HAI luat => so do cong theo-ngay cap se nho hon so cong kia da dung => trung so co he thong, khong phai do dua tranh",
+        worseThan601 = "#601 can hai nguoi bam cung luc; #604 chi can hai cong cung chay",
+        v2FixedOnlyErrorCodeAndDateScope = "V2 sua dung ma loi (ban tran dung nham SerStockInGetMaxStockInNo) va them loc ngay, nhung KHONG sua nolock, khong nguyen tu, van max() tren chuoi, van LEN qua BuildClause",
+        likeOnDocumentNumberIsHiddenBusinessRule = "like %yymmdd% tren cot so chung tu — quy uoc so-don-chua-yymmdd khong duoc viet o dau ngoai chinh dong SQL (luat #412)",
+        likeMatchesAnyPosition = "%…% khop o BAT KY vi tri nao => phan khac cua so don tinh co chua sau chu so do se khop nham va lot vao phep max",
+        getdateIsDbClock = "quanh nua dem hoac khi DB lech mui gio, phep loc lay NGAY KHAC => max cua ngay khac => so ke tiep TRUNG",
     });
 }).RequireAuthorization();
 
