@@ -31021,9 +31021,38 @@ app.MapPost("/api/emailconfigsendauto/{id:long}/cancel", async (long id, AppDbCo
 //     `SumDeliveryQuantity >= SumQuantity`   → "Hoàn thành"
 //   ⚠️ Đúng ba nhãn này về sau được **materialize** thành mã `'1'/'2'/'3'` của cột `Status` ở bản LIVE.
 //   ⇒ endpoint trả CẢ HAI: `status` (cột) và `deliveryStatus` (tính lại từ SL) để đối soát lệch.
+// ===== 🔴🔴 #611 DIFF `Ser_Part_OrderGet_old` (`:1608`) vs `Ser_Part_OrderGet` (`:1886`) — BẢN LIVE **BỎ** CỘT =====
+// TRACE WS: **mọi** cổng (`WSCarSv.asmx.cs:23630`, `TERP.WSCarSv/App_Code/WSCarSv.cs:32021`, hai file WS cũ)
+//   đều gọi `Ser_Part_OrderGet` ⇒ bản `_old` **chết**. DIFF hai chuỗi SQL (luật #414) ra **ba** khác biệt thật:
+//
+// 🔴🔴 **BẢN LIVE BỎ HẲN CỘT TRẠNG THÁI GIAO HÀNG** — bản `_old` có, bản mới **không**:
+//     `case when tsi.SumDeliveryQuantity <= 0 or tsi.SumDeliveryQuantity is null then N'0'`
+//     `     when tsi.SumDeliveryQuantity <  tsi.SumQuantity then N'1'`
+//     `     when tsi.SumDeliveryQuantity >= tsi.SumQuantity then N'2' end`
+//   ⇒ Chỉ báo *"đã giao một phần / đã đủ"* **biến mất** khỏi màn danh sách đơn hàng ở bản đang chạy.
+//   📌 Khớp với ghi chú #298: ba nhãn này **về sau được materialize** thành mã `'1'/'2'/'3'` của cột `Status`.
+//     ⇒ Bỏ cột tính-ra là **có chủ đích**, nhưng hệ quả: giá trị **tính lại từ số lượng** và giá trị **lưu ở**
+//     **cột `Status`** giờ **không còn được đối chiếu ở đâu** — mà `Status` thì bị #608 cho phép ghi **bất kỳ
+//     chuỗi nào** và chỉ ghi **một DB**. Ba phát hiện ghép lại: **không còn cách nào phát hiện lệch**.
+//   ⇒ MiniHTC giữ **cả hai** (`status` cột + `deliveryStatus` tính lại) đúng như đã làm ở #298 — nay có thêm
+//     lý do: đó là **đường duy nhất** để đối soát.
+// 🔴 **`Sys_user` ĐỔI SANG CROSS-DB**: bản `_old` `INNER JOIN Sys_user suser with(nolock)`;
+//   bản LIVE `INNER JOIN **[@strDBName_CommonCenter].[dbo]**.Sys_user suser with(nolock)`.
+//   ⇒ Cùng kiểu chuyển như #581 (bản tin theo VIN). Vẫn là **INNER** ⇒ đơn có `UserCreate` không tồn tại
+//     trong bảng người dùng **trung tâm** thì **mất khỏi danh sách** (#410) — nay phạm vi mất rộng hơn vì
+//     bảng đối chiếu nằm ở DB khác.
+// ⚠️ Bản LIVE **bỏ gợi ý khoá** `--//[mylock]` ở `FROM Ser_Part_Order si` (bản `_old` có). Theo quy ước nhà,
+//   mọi bảng trong SQL phải mang dấu này ⇒ bản mới **lệch chuẩn**, và công cụ nào quét theo dấu đó sẽ **bỏ sót**
+//   bảng này.
 var supplierPartOrderStatusNames = new Dictionary<string, string>
 {
     ["1"] = "Mới tạo", ["CONF"] = "Xác nhận", ["2"] = "Hàng đang về", ["3"] = "Hoàn thành",
+};
+
+// #611: nhãn trạng thái GIAO HÀNG (tính từ số lượng) — bản `_old` có, bản LIVE bỏ. MiniHTC giữ để đối soát.
+var supplierPartOrderDeliveryStatusNames = new Dictionary<string, string>
+{
+    ["0"] = "Mới tạo", ["1"] = "Hàng đang về", ["2"] = "Hoàn thành",
 };
 
 // ===== 🔴🔴 #608 `Ser_OrderPart_UpdateStatus` (`PartOrder.cs:3061`) — **CHỈ GHI MỘT DB TRONG KHI TẠO GHI BA** =====
@@ -31105,6 +31134,14 @@ app.MapPost("/api/supplierpartorders/{orderNo}/status", async (string orderNo, A
 app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
 {
     statuses = supplierPartOrderStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    // ===== #611 =====
+    deliveryStatuses = supplierPartOrderDeliveryStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
+    liveVariantDroppedDeliveryStatusColumn = "ban _old (:1608) CO case tinh tu SumDeliveryQuantity; ban LIVE Ser_Part_OrderGet (:1886) BO han",
+    allGatewaysCallLiveVariant = "WSCarSv.asmx.cs:23630 va TERP.WSCarSv/App_Code/WSCarSv.cs:32021 deu goi ban LIVE => _old CHET",
+    threeFindingsCombine = "bo cot tinh-ra (#611) + Status ghi duoc bat ky chuoi (#608) + Status chi ghi mot DB (#608) => KHONG con cach nao phat hien lech",
+    portKeepsBothForReconciliation = "MiniHTC tra ca status (cot) lan deliveryStatus (tinh lai) — nay la duong DUY NHAT de doi soat",
+    sysUserJoinMovedToCrossDb = "ban _old: INNER JOIN Sys_user; ban LIVE: INNER JOIN [CommonCenter].[dbo].Sys_user — van INNER nen don co UserCreate khong ton tai o trung tam se MAT khoi danh sach (#410, cung kieu chuyen nhu #581)",
+    liveVariantDroppedMylockHint = "FROM Ser_Part_Order si (khong con --//[mylock]) trong khi ban _old co => lech chuan nha, cong cu quet theo dau nay se bo sot bang",
     note = "Bộ mã TRỘN số + chữ trong cùng một cột (chỉ CONF là mã chữ). Mã ngoài bốn giá trị ⇒ nhãn NULL (nguồn không có ELSE).",
 })).RequireAuthorization();
 
