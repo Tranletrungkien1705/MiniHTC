@@ -40245,6 +40245,168 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B368/#B369 THỊ PHẦN NGÂN HÀNG — CẶP SINH ĐÔI BẢO LÃNH / CHO VAY
+//       (`Rpt_PmtGuaranteeBankMarketSum_01_WH` / `Rpt_PmtPaymentLoanBankMarketSum_01_WH`,
+//        `TERP.BizHTC/BizHTC.Report.cs`) =====
+// **3B khớp cả 2 máy — `BizHTC.Report.cs` KHÔNG lệch offset (39863 dòng cả 2 máy), 4 md5**:
+//   `…Guarantee…_01X`   `28164,28471` ⇒ **`0f3d5e5d1df178f8e20082b463452e96`**
+//   `…Guarantee…_01_WH` `28620,28768` ⇒ **`e8054f300b956f8a01cac83e8e5a9bf5`**
+//   `…PaymentLoan…_01X` `28769,29076` ⇒ **`9e7c1dff03627ec44fcb28aaa9fe51f2`**
+//   `…PaymentLoan…_01_WH` `29222,29367` ⇒ **`f0c13f3fdb2b9422c3a3f46cb98b9819`**
+//
+// 🔴🔴🔴 **TRỤC PHẠM VI THỨ SÁU: `Mst_Bank.BankBUPattern` — PHẠM VI THEO NGÂN HÀNG**.
+//   Sau `BUPattern` (đại lý), `DealerCode` (#B335), che cột `IsHTCDirect` (#B354),
+//   `MBBankBUPattern` (#B359) và `ViewAbility_Get` theo nhà phân phối (#B361) — đây là **trục thứ SÁU**.
+//   ⚠️ **Và nó KHÔNG bị tắt** (khác #B359/#B361): dòng param-runtime
+//     `--and (@strBankBUPattern is null or mb.BankBUCode like @strBankBUPattern)` **bị comment**,
+//   nhưng phạm vi được **dựng lại bằng cách khác** — ghép chuỗi thủ công từ DB:
+//     `zzzzClauseWhere_strBankBUPatternConditionList += "mb.BankBUCode like '" + …` (nối bằng `" or "`)
+//   ⇒ **Bộ lọc VẪN CÓ HIỆU LỰC**; chỉ đổi từ **param runtime** sang **nướng chuỗi**.
+//   📌 Bài học cho quy trình: thấy dòng phạm vi bị comment **chưa đủ** để kết luận là lỗ —
+//     phải tìm xem **có bản dựng lại bằng chuỗi ở chỗ khác** không.
+//
+// 🔴🔴🔴 **BUG THẬT — DẤU NHÁY ĐÓNG BỊ ĐƯA VÀO TRONG LỜI GỌI BỘ CHUẨN HOÁ** (ở **CẢ HAI** bản, mỗi bản
+//        **2 chỗ** ⇒ tổng **4 chỗ**, chứng tỏ **đã được chép**, không phải gõ nhầm một lần):
+//     `… + TUtils.CUtils.StandardizeParam(dtDB_Mst_Bank.Rows[i]["BankBUPattern"] **+ "'"**);`
+//   Dấu `'` **đóng chuỗi SQL** nằm **BÊN TRONG** `StandardizeParam(...)`. Đúng phải là
+//     `… + StandardizeParam(row["BankBUPattern"]) + "'";`
+//   ⇒ Nếu `StandardizeParam` **escape / nhân đôi dấu nháy** (đúng việc của một bộ chuẩn hoá chống
+//     injection) thì **nháy đóng bị biến dạng ⇒ vỡ cú pháp SQL ⇒ báo cáo lỗi**. Nếu nó **không** đụng
+//     tới dấu nháy thì câu chạy đúng — nhưng khi đó **bộ chuẩn hoá không bảo vệ gì cả**.
+//   ⇒ **Hai khả năng, cả hai đều sai**: hoặc vỡ cú pháp, hoặc mất tác dụng bảo vệ. **KHÔNG tự vá.**
+//
+// ✅✅ **ĐỐI CHỨNG TỐT NHẤT CHO HỌ `[BAKE-PARAM-MIX]`**: ngay trong **cùng câu SQL** này, bốn bộ lọc
+//   khác lại làm **ĐÚNG CÁCH** — optional filter bằng **param runtime thật**:
+//     `and (@strDateOpenFrom is null or t.DateOpen >= @strDateOpenFrom)`
+//     `and (@strDateOpenTo   is null or t.DateOpen <= @strDateOpenTo)`
+//     `and (@strGuaranteeType is null or t.GuaranteeType like @strGuaranteeType)`
+//     `and (@strFlagisHTC   is null or cc.FlagisHTC = @strFlagisHTC)`
+//   ⇒ So thẳng với #B365 (`and (N'@x' = '' or cột = '@x')` — **nướng**): **cùng hệ, cùng mục đích, hai
+//     cách viết**; bản ở đây là bản đúng. ⇒ Khi đề xuất sửa #B365, **đã có sẵn khuôn mẫu trong chính
+//     mã nguồn này**, không cần phát minh.
+// ✅ **Năm câu debug `--select null tbl_…` đều ĐƯỢC COMMENT** (mức (b)) — nhất quán trong cả hàm.
+//
+// 🔴🔴 **HAI SINH ĐÔI LỆCH SỐ BẢNG TRẢ VỀ**: bản **Guarantee** đặt tên **5** bảng
+//   (`…_Month`, `Pmt_Guarantee`, `…_01`, `…_01_AllMonth`, `…_01_Dealer`); bản **PaymentLoan** chỉ **4** —
+//   dòng `//dsGetData.Tables[nIdxTable++].TableName = "**Rpt_PmtGuaranteeBankMarketSum**_01_AllMonth";`
+//   **bị comment** và **vẫn mang tên của bản Guarantee** ⇒ **chiều sao chép xác định được**
+//   (PaymentLoan chép từ Guarantee) **và** hợp đồng API của hai bản **khác nhau thật**.
+// 🔴 **Nhãn đối số sai — ca thứ TƯ về nhãn** (sau `#region` #B365/#B366): ở vỏ Guarantee,
+//   `, strPMGDateEndConditionList // **strGuaranteeStatus**` và `, strDateOpenFrom // **strDateOpenTo**`.
+//   ✅ **Đã kiểm danh sách tham số thật của `…01X`**: vị trí đó đúng là `strPMGDateEndConditionList`
+//     ⇒ **wiring ĐÚNG, chỉ nhãn sai**. Ghi là **lỗi nhãn**, **không** báo thành lỗi truyền tham số.
+// 🔴 RBAC: `myCommon_CheckHTCDirect` / `strBUPatternOfUser` / `MBBankBUPattern` / `myHTC_RemoveInfo_`
+//   = **0 hit**; `--and (@strDealerCode is null or t.DealerCode like @strDealerCode)` **bị comment** và
+//   `//myCache_Mst_Distributor_ViewAbility_Get(…)` **bị comment**; nhưng
+//   `zzzzClauseWhere_strDealerCodeConditionList` (từ `BuildClause`, param `@p`) **vẫn sống**
+//   ⇒ lọc theo **danh sách đại lý người dùng chọn**, cộng lọc **theo ngân hàng** ⇒ **không phải lỗ**,
+//   nhưng phạm vi đến từ **tham số**, không từ quyền của user.
+// ⚠️ **NỢ**: `Pmt_Guarantee`/`Pmt_Payment`/`Mst_Bank.BankBUPattern` chưa đủ ⇒ trả khung + cờ; **không bịa**.
+static async Task<IResult> BankMarketSum01Async(
+    AppDbContext db, ITenantContext t, string kind,
+    DateTime? dateOpenFrom, DateTime? dateOpenTo,
+    string? dealerCode, string? bankCode, string? guaranteeType, string? flagIsHTC,
+    string? isGetDetail, string? isGetSum, string? isGetDealer)
+{
+    // 🔴 Phạm vi ở nguồn = (a) danh sách đại lý người dùng chọn (BuildClause, param thật)
+    //    + (b) BankBUPattern tra từ Mst_Bank rồi NƯỚNG chuỗi. Port dùng tham số hoá cho cả hai.
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+        .Where(b => string.IsNullOrWhiteSpace(bankCode)
+                 || string.Equals(b.BankCode, bankCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    // ⚠️ NỢ — KHÔNG ĐOÁN: Pmt_Guarantee / Pmt_Payment chưa đủ ⇒ khung rỗng, không bịa số thị phần.
+    var monthRows = Array.Empty<object>();
+    var detailRows = Array.Empty<object>();
+    var sumRows = Array.Empty<object>();
+    var dealerRows = Array.Empty<object>();
+
+    var wantDetail = isGetDetail == "1";
+    var wantSum = isGetSum == "1";
+    var wantDealer = isGetDealer == "1";
+    var isGuarantee = kind == "guarantee";
+
+    return Results.Ok(new
+    {
+        kind,
+        banksInScope = banks.Count,
+        dealersInScope = dealers.Count,
+        Month = monthRows,                                  // Tables[0] — luôn có
+        Detail = wantDetail ? detailRows : null,            // Pmt_Guarantee / Pmt_Payment
+        Sum = wantSum ? sumRows : null,
+        AllMonth = isGuarantee && wantSum ? Array.Empty<object>() : null,   // 🔴 CHỈ bản Guarantee có
+        Dealer = wantDealer ? dealerRows : null,
+        sixthScopeAxisNote = "TRUC PHAM VI THU SAU: Mst_Bank.BankBUPattern - PHAM VI THEO NGAN HANG. Sau BUPattern (dai ly), DealerCode (#B335), che cot IsHTCDirect (#B354), MBBankBUPattern (#B359) va ViewAbility_Get theo nha phan phoi (#B361) - day la truc thu SAU. VA NO KHONG BI TAT (khac #B359/#B361): dong param-runtime '--and (@strBankBUPattern is null or mb.BankBUCode like @strBankBUPattern)' BI COMMENT, nhung pham vi duoc DUNG LAI BANG CACH KHAC - ghep chuoi thu cong tu DB: zzzzClauseWhere_strBankBUPatternConditionList += \"mb.BankBUCode like '\" + ... (noi bang ' or '). BO LOC VAN CO HIEU LUC; chi doi tu PARAM RUNTIME sang NUONG CHUOI. BAI HOC QUY TRINH: thay dong pham vi bi comment CHUA DU de ket luan la lo - phai tim xem CO BAN DUNG LAI BANG CHUOI o cho khac khong.",
+        quoteInsideSanitiserBugNote = "BUG THAT - DAU NHAY DONG BI DUA VAO TRONG LOI GOI BO CHUAN HOA, o CA HAI ban, moi ban 2 cho => tong 4 CHO, chung to DA DUOC CHEP: '... + TUtils.CUtils.StandardizeParam(dtDB_Mst_Bank.Rows[i][\"BankBUPattern\"] + \"'\");'. Dau nhay DONG CHUOI SQL nam BEN TRONG StandardizeParam(...). Dung phai la '... + StandardizeParam(row[\"BankBUPattern\"]) + \"'\";'. Neu StandardizeParam ESCAPE/NHAN DOI dau nhay (dung viec cua mot bo chuan hoa chong injection) thi NHAY DONG BI BIEN DANG => VO CU PHAP SQL => bao cao loi. Neu no KHONG dung toi dau nhay thi cau chay dung - nhung khi do BO CHUAN HOA KHONG BAO VE GI CA. HAI KHA NANG, CA HAI DEU SAI. KHONG TU VA.",
+        goodParamPatternNote = "DOI CHUNG TOT NHAT CHO HO [BAKE-PARAM-MIX]: ngay trong CUNG CAU SQL nay, bon bo loc khac lam DUNG CACH - optional filter bang PARAM RUNTIME THAT: 'and (@strDateOpenFrom is null or t.DateOpen >= @strDateOpenFrom)', 'and (@strDateOpenTo is null or t.DateOpen <= @strDateOpenTo)', 'and (@strGuaranteeType is null or t.GuaranteeType like @strGuaranteeType)', 'and (@strFlagisHTC is null or cc.FlagisHTC = @strFlagisHTC)'. So thang voi #B365 ('and (N'@x' = '' or cot = '@x')' - NUONG): CUNG HE, CUNG MUC DICH, HAI CACH VIET; ban o day la ban DUNG. Khi de xuat sua #B365, DA CO SAN KHUON MAU TRONG CHINH MA NGUON NAY, khong can phat minh.",
+        twinTableCountNote = "HAI SINH DOI LECH SO BANG TRA VE: ban Guarantee dat ten 5 bang (_Month, Pmt_Guarantee, _01, _01_AllMonth, _01_Dealer); ban PaymentLoan chi 4 - dong '//dsGetData.Tables[nIdxTable++].TableName = \"Rpt_PmtGuaranteeBankMarketSum_01_AllMonth\";' BI COMMENT va VAN MANG TEN CUA BAN GUARANTEE => CHIEU SAO CHEP XAC DINH DUOC (PaymentLoan chep tu Guarantee) VA hop dong API cua hai ban KHAC NHAU THAT.",
+        argLabelWrongNote = "NHAN DOI SO SAI - ca thu TU ve nhan (sau #region #B365/#B366): o vo Guarantee, ', strPMGDateEndConditionList // strGuaranteeStatus' va ', strDateOpenFrom // strDateOpenTo'. DA KIEM DANH SACH THAM SO THAT cua ...01X: vi tri do dung la strPMGDateEndConditionList => WIRING DUNG, CHI NHAN SAI. Ghi la LOI NHAN, KHONG bao thanh loi truyen tham so.",
+        rbacNote = "RBAC: myCommon_CheckHTCDirect / strBUPatternOfUser / MBBankBUPattern / myHTC_RemoveInfo_ = 0 HIT; '--and (@strDealerCode is null or t.DealerCode like @strDealerCode)' BI COMMENT va '//myCache_Mst_Distributor_ViewAbility_Get(...)' BI COMMENT; nhung zzzzClauseWhere_strDealerCodeConditionList (tu BuildClause, param @p) VAN SONG => loc theo DANH SACH DAI LY NGUOI DUNG CHON, cong loc THEO NGAN HANG => KHONG phai lo, nhung pham vi den tu THAM SO, khong tu QUYEN cua user.",
+        debtNote = "NO - KHONG DOAN: Pmt_Guarantee / Pmt_Payment / Mst_Bank.BankBUPattern chua du => tra khung + co; KHONG bia so thi phan."
+    });
+}
+
+app.MapGet("/api/reports/guarantee-bank-market-sum01", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? dateOpenFrom, DateTime? dateOpenTo, string? dealerCode, string? bankCode,
+    string? guaranteeType, string? flagIsHTC,
+    string? isGetDetail, string? isGetSum, string? isGetDealer) =>
+    await BankMarketSum01Async(db, t, "guarantee", dateOpenFrom, dateOpenTo, dealerCode, bankCode,
+        guaranteeType, flagIsHTC, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
+
+app.MapGet("/api/reports/paymentloan-bank-market-sum01", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? dateOpenFrom, DateTime? dateOpenTo, string? dealerCode, string? bankCode,
+    string? guaranteeType, string? flagIsHTC,
+    string? isGetDetail, string? isGetSum, string? isGetDealer) =>
+    await BankMarketSum01Async(db, t, "paymentloan", dateOpenFrom, dateOpenTo, dealerCode, bankCode,
+        guaranteeType, flagIsHTC, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
+
+// ===== #B370 LỊCH SỬ SỬA KHÁCH HÀNG ĐẠI LÝ — `Rpt_SupportDealerCustomerHistory_WH`
+//       (`TERP.BizHTC/DMS40/zTemp.Report.cs:11157`) =====
+// **3B khớp cả 2 máy — `zTemp.Report.cs` KHÔNG lệch offset (15713 dòng cả 2 máy)**:
+//   `11157,11285` ⇒ **`01439bc10b871eeff48713eb1cd6b4bc`**.
+//
+// 🔴 **Anh em cùng khuôn với #B367** (`Rpt_SupportDealHistory_WH`): cùng bộ tham số
+//   `strFt_WhereClause` (bộ lọc tự do qua `BuildWhere`) + `strRt_Cols_…` (danh sách cột do client chọn)
+//   ⇒ **số bảng trả về động theo cờ cột**. Khác #B367 ở chỗ đối tượng là **khách hàng của đại lý**
+//   (`DLS_DealerCustomer…_Upd`) thay vì **giao dịch bán**.
+// ✅ Đối chiếu chéo theo luật `C0-…quadragesimus` (kiểm anh em cùng khung): hai hàm có **cùng bộ khung**
+//   ⇒ mọi kết luận về #B367 (BuildWhere, cột do client chọn, số bảng động) **áp dụng lại được**;
+//   riêng "mở `_dbMain` dù tên `_WH`" **cần kiểm riêng cho hàm này**, chưa suy sang.
+// ⚠️ **NỢ**: bảng `…_Upd` của khách hàng đại lý chưa có trong MiniHTC. **Đã có** `DealerCustomerUpdLog`
+//   — nhưng đó là **log CHUYÊN BIỆT**, không phải log tổng của nguồn ⇒ trả đúng loại đang có,
+//   **không gộp bừa**, kèm `notPortedTables`.
+app.MapGet("/api/reports/support-dealercustomer-history", async (
+    AppDbContext db, ITenantContext t, string? customerCode, string? dealerCode, string? cols) =>
+{
+    // 🔴 Cột trả về do client chọn — rỗng ⇒ KHÔNG trả bảng chi tiết (đúng khuôn #B367/#B361).
+    var wantDetail = !string.IsNullOrWhiteSpace(cols);
+
+    var logs = wantDetail
+        ? (await db.DealerCustomerUpdLogs.Where(x => x.OrgId == t.OrgId).ToListAsync())
+            .Where(x => string.IsNullOrWhiteSpace(customerCode)
+                     || string.Equals(x.CustomerCode, customerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+            .ToList<object>()
+        : null;
+
+    return Results.Ok(new
+    {
+        count = logs?.Count ?? 0,
+        requestedDetail = wantDetail,
+        DLS_DealerCustomer_Upd = logs,
+        siblingOfB367Note = "ANH EM CUNG KHUON VOI #B367 (Rpt_SupportDealHistory_WH): cung bo tham so strFt_WhereClause (bo loc tu do qua BuildWhere) + strRt_Cols_... (danh sach cot do client chon) => SO BANG TRA VE DONG THEO CO COT. Khac #B367 o cho doi tuong la KHACH HANG CUA DAI LY (DLS_DealerCustomer..._Upd) thay vi GIAO DICH BAN. Theo luat C0-...quadragesimus (kiem anh em cung khung): moi ket luan ve #B367 (BuildWhere, cot do client chon, so bang dong) AP DUNG LAI DUOC; rieng 'mo _dbMain du ten _WH' CAN KIEM RIENG cho ham nay, CHUA suy sang.",
+        buildWhereNote = "strFt_WhereClause di qua CmUtils.SqlUtils.BuildWhere - KHONG noi chuoi tho; thua huong tien an isnull/in cua BuildWhere da ghi trong bo nho.",
+        notPortedTables = new[] { "DLS_DealerCustomer_Upd (bang log tong cua nguon)" },
+        debtNote = "NO: bang ..._Upd cua khach hang dai ly chua co trong MiniHTC. DA CO DealerCustomerUpdLog - nhung do la LOG CHUYEN BIET, khong phai log tong cua nguon => tra dung loai dang co, KHONG GOP BUA."
+    });
+}).RequireAuthorization();
 // ===== #B365 PHẠT CHẬM THANH TOÁN — `Rpt_PenaltyPmtDelay_WH_New20210521`
 //       (vỏ `DataWH/BizHTC.zTemp.cs:21054` → `Rpt_PenaltyPmtDelayX_New20210521` (`:21193`)
 //        → SQL `RptSQLQuery.cs:29995` `mySql_Rpt_PenaltyPmtDelay_New_20251106()`) =====
