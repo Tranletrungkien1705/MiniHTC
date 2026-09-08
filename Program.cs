@@ -27196,8 +27196,32 @@ app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext
 //    tên/hãng BH/NCC nhận dạng `"like %giá trị%"` ⇒ **so khớp CHỨA, không phân biệt hoa thường**.
 //    Riêng `strIsDebit`: nếu = `Flag.Active` ("1") thì thành `"> 0"`, ngược lại **chuỗi rỗng ⇒ BỎ HẲN điều kiện**
 //    (không phải lọc `= 0`). Nghĩa là: bật cờ ⇒ chỉ hiện dòng CÒN nợ; tắt cờ ⇒ hiện TẤT CẢ.
+// ===== 🔴 #559 VÁ `/api/debits/search` — TRẢ HAI NỢ CÓ TÊN + GHI NHẬN LỖI `FULL JOIN` =====
+// Nguồn: `BizCarSv.Debit.cs:1632 SerCusDebitSearch` (đã port ở cụm #213/#214/#215).
+// Hai bộ lọc từng ghi *"chưa nối, KHÔNG bịa"* nay **trả được**, vì hai cột cần thiết đã có:
+//   · `dealerCode` — cột `CusDebit.DealerCode` vừa thêm ở **#557 §12**;
+//   · `plateNo` — nối qua `RONo` sang `RepairOrders.LicensePlate` (nguồn nối `c.PlateNo` trên bảng khách).
+//   ⚠️ Riêng `groupName` (`sg.GroupName`) **vẫn là nợ**: MiniHTC chưa có bảng nhóm khách hàng.
+//
+// 🔴🔴 **PHÁT HIỆN Ở NGUỒN — `FULL JOIN` CHỈ NỐI THEO `CusID`, ĐIỀU KIỆN ĐÚNG BỊ COMMENT**:
+//     `zzzzClauseJoin_Debit` ← `"ON d1.CusID = r1.CusID"`
+//     `--ON d1.CusID = r1.CusID and d1.InsNo = r1.InsNo and d1.SupplierID = r1.SupplierID`
+//   ⇒ Với nợ **bảo hiểm**/**nhà cung cấp** (khoá thật là `InsNo`/`SupplierID`, còn `CusID` **NULL**),
+//     phép nối so `NULL = NULL` — trong SQL là **KHÔNG khớp** ⇒ `FULL JOIN` **tách đôi** mỗi đối tượng
+//     thành **một dòng chỉ có nợ** và **một dòng chỉ có thu**; số dư **không bao giờ trừ được cho nhau**.
+//   ⇒ Luật *"port dòng ACTIVE"* dùng **ngược**: ở đây dòng **comment mới là dòng đúng**, dòng đang chạy
+//     là dòng **thiếu**. MiniHTC gộp theo **khoá đúng của từng loại** nên **không** dính — nêu cờ để đo.
+// 🔴 **Chỉ `DealerCode` được bọc toán tử; các bộ lọc khác thì không** — bằng chứng trực tiếp cho bẫy #410:
+//     `BuildClause("and", "c.DealerCode", **"=" + strDealerCodeConditionList**, …)`
+//     `BuildClause("and", "c.CusID", strCusIDConditionList, …)`   ← **không** toán tử ⇒ **bỏ im lặng**
+//     `BuildClause("and", "c.PlateNo", strPlateNoConditionList, …)` ← **không** toán tử
+//   ⚠️ Một lời gọi còn viết `"and "` (**thừa dấu cách**) — vô hại, nhưng là dấu vết chép tay.
+// ⚠️ Ba tham số bị **bake**: `d.DealerCode = '@DealerCode'` · `d.DebitType = '@DebitType'` ·
+//   `r.PaymentType = '@DebitType'`. ⚪ Kiểm tra âm tính: hai bảng mã **trùng giá trị**
+//   (`SerDebitType 1/2/3` ↔ `SerPaymentType 1/2/3`) nên dùng chung **hiện đúng** — nhưng là phụ thuộc ngầm.
 app.MapGet("/api/debits/search", async (AppDbContext db, ITenantContext t,
-    string? debitType, string? name, string? plateNo, string? insName, string? supplierName, string? isDebit) =>
+    string? debitType, string? name, string? plateNo, string? insName, string? supplierName, string? isDebit,
+    string? dealerCode) =>
 {
     var dt = (debitType ?? "1").Trim();
     if (dt is not ("1" or "2" or "3"))
@@ -27209,6 +27233,16 @@ app.MapGet("/api/debits/search", async (AppDbContext db, ITenantContext t,
     {
         var q1 = db.CusDebits.Where(x => x.OrgId == t.OrgId);
         if (!string.IsNullOrWhiteSpace(name)) q1 = q1.Where(x => x.CusName != null && x.CusName.ToLower().Contains(name!.Trim().ToLower()));
+        // #559 dealerCode — bộ lọc DUY NHẤT được nguồn bọc toán tử "=".
+        if (!string.IsNullOrWhiteSpace(dealerCode)) q1 = q1.Where(x => x.DealerCode == dealerCode!.Trim());
+        // #559 plateNo — nguồn lọc c.PlateNo; MiniHTC nối qua RONo sang lệnh sửa chữa.
+        if (!string.IsNullOrWhiteSpace(plateNo))
+        {
+            var pl = plateNo!.Trim().ToLower();
+            var roNos = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.LicensePlate.ToLower().Contains(pl))
+                .Select(r => r.RONo).ToListAsync();
+            q1 = q1.Where(x => x.RONo != null && roNos.Contains(x.RONo!));
+        }
         var list = await q1.GroupBy(x => new { x.CusId, x.CusName })
             .Select(g => new { g.Key.CusId, g.Key.CusName, Debit = g.Sum(x => x.DebitAmount), Paid = g.Sum(x => x.PaidAmount) })
             .ToListAsync();
@@ -27242,7 +27276,14 @@ app.MapGet("/api/debits/search", async (AppDbContext db, ITenantContext t,
 
     return Results.Ok(new { debitType = dt, onlyDebt, count = rows.Count, rows,
         note = "DebitType dùng chung bảng mã với PaymentType (TConst.SerDebitType: 1 KH · 2 BH · 3 NCC).",
-        skipped = "Bộ lọc biển số/nhóm KH của nguồn cần bảng Ser_Car + Ser_CustomerGroup — chưa nối, KHÔNG bịa." });
+        // ===== #559 =====
+        dealerCodeFilterApplied = !string.IsNullOrWhiteSpace(dealerCode),
+        plateNoFilterApplied = !string.IsNullOrWhiteSpace(plateNo) && dt == "1",
+        plateNoResolvedVia = "CusDebit.RONo -> RepairOrder.LicensePlate",
+        sourceFullJoinOnCusIdOnly = "ON d1.CusID = r1.CusID — dieu kien day du (InsNo/SupplierID) BI COMMENT",
+        sourceWouldSplitRowsForType2And3 = dt != "1",
+        onlyDealerCodeGetsOperatorPrefix = true,
+        stillOwed = "Bo loc nhom khach (sg.GroupName) — MiniHTC chua co bang nhom khach hang." });
 }).RequireAuthorization();
 
 // ===== 🔴 #214 CÔNG NỢ BẢO HIỂM theo KỲ — `Ser_InvReportInsuranceDebitRpt_New20210618` =====
