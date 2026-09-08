@@ -46079,6 +46079,140 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #708 VELOCA: CHI TIẾT MỘT PHIẾU XUẤT KHO =====
+// `OSVeloca_Ser_Inv_StockOut_GetByStockOutID` (`BizCarSv.Inventory.StockOut.cs:18670-19344`, md5 `f8ba332e`
+// — **KHỚP máy 150, cùng offset**) → `GET /api/osveloca/stockouts/{stockOutNo}/detail`.
+// Nguồn trả **sáu** bảng (Mst_Inventory · Mst_Product · Mst_Customer · InvF_InventoryOut ·
+// …OutCover · …OutDtl). Cùng vòng đời với #706: chỉ lấy phiếu **chưa đồng bộ**.
+//
+// 🔴🔴🔴 **MÃ KHO GÕ CỨNG THEO MÃ ĐẠI LÝ — LẶP LẠI SÁU LẦN**:
+//     `case when siso.DealerCode = 'VN029' then 'PTDL' … when 'V3601' then 'KHOTONG' … else 'PTDL' end`
+//   Cùng một danh sách **năm đại lý** được chép lại ở `InvCode` · `InvBUCode` · `InvBUPattern` · `InvName` ·
+//   `InvCodeParent` · `InvCodeOut`. **Đại lý mới ⇒ rơi vào `else 'PTDL'` ⇒ gán SAI kho**, im lặng.
+//   ⚠️ Và ngay trên đó, đoạn **ĐÚNG** (đọc `Ser_Inv_Stock` thật) **bị comment trọn** với lý do ghi rõ:
+//     `-- 20240401. HuongTTT: Code này là đúng nhưng … hiện phần tạo PX đang để mã kho là null nên rem lại`
+//   ⇒ Đây là **nợ kỹ thuật có chủ ý, có hạn** — chờ phiếu xuất truyền mã kho thì bỏ khối gõ cứng.
+// 🔴🔴🔴 **NHÁNH `else` THIẾU HẲN MÃ VỊ TRÍ VÀ THIẾU `%`**: trong `case` sinh `InvBUCode`/`InvBUPattern` của
+//   nhánh `union` (vị trí kho), **cả năm** `when` đều nối `sml.LocationCode`, riêng `else` chỉ ra
+//   `Concat('I.', 'PTDL')` — **mất phần `.LocationCode`** và (ở `InvBUPattern`) **mất cả ký tự `%`**.
+//   ⇒ Đại lý ngoài danh sách ⇒ mã BU và **mẫu tìm kiếm** đều sai hình dạng. **Bug thật, rất cụ thể.**
+// 🔴🔴🔴 **`VAT/100` KHÔNG CÓ BIẾN THỂ AN TOÀN Ở HÀM NÀY**: `(1 + sisodro.VAT/100)` và `(1 + sisod.VAT/100)`
+//   xuất hiện **bốn** lần, **không** chỗ nào dùng `* 0.01`. ⇒ Nếu `VAT` là **số nguyên** thì mọi biểu thức đều
+//   nhân `(1 + 0)` ⇒ **toàn bộ tiền xuất kho gửi sang Veloca THIẾU VAT**. Đây là **bằng chứng thứ hai** cho nợ
+//   #673 (bằng chứng thứ nhất ở #705, nơi hai quy ước đứng cạnh nhau trong cùng một câu).
+// 🔴🔴🔴 **`select top 1` KHÔNG CÓ `ORDER BY` — HAI CHỖ** (luật #415): đơn giá `UPOut` và đơn vị tính
+//   `UnitCode` của mỗi (phiếu, phụ tùng) lấy **một dòng bất kỳ** trong nhóm. Nếu cùng một phụ tùng có nhiều
+//   dòng khác đơn giá ⇒ **đơn giá gửi đi là ngẫu nhiên**. Port sắp xác định rồi mới cắt + cờ `sourceHasNoOrderBy`.
+// 🔴🔴🔴 **HAI CHIỀU TÍCH HỢP DÙNG HAI BỘ TỪ VỰNG KHÔNG GIAO NHAU** — nối thẳng với #701:
+//   · Chiều **RA** (đây): `CustomerType` chỉ phát ra `'CANHAN'` / `'TOCHUC'`.
+//   · Chiều **VÀO** (#701 `OSVeloca_Ser_Customer_Save`): chỉ nhánh `'KHACHLE'` còn sống; hai nhánh
+//     `'CANHAN'` và `'TOCHUC'` **bị comment trọn**.
+//   ⇒ Giá trị hàm này **gửi đi** chính là giá trị hàm kia **không dịch được**. **Round-trip vỡ.**
+// 🔴🔴 **`case` SINH MÃ THUẾ KHÔNG CÓ `else`**: `when smp.VAT = 0 then 'VAT0' when 8 'VAT8' when 10 'VAT10'`
+//   ⇒ thuế suất khác (5%…) ⇒ `VATRateCode` **NULL** ⇒ Veloca **không biết** thuế suất (họ #656/#663/#698).
+// 🔴🔴 **SỐ ĐIỆN THOẠI LIÊN HỆ BỊ XOÁ CÓ CHỦ Ý**: `case when scus.ContMobile = scus.Mobile then '' else …`
+//   (`-- 20240203. … Vì luật check trùng sdt ở CustomerCenter`) ⇒ **mất dữ liệu** để lách ràng buộc hệ đích.
+// 🔴🔴 **`(ro.ROID is not null or ro.ROID <> '')` — DÙNG `or` Ở CHỖ ĐÁNG LẼ LÀ `and`**: khi `ROID` NULL thì vế
+//   hai là UNKNOWN nên biểu thức vẫn ra false ⇒ **tình cờ đúng**, nhưng vế hai **hoàn toàn thừa** và che ý định.
+// 🔴 **`Round(…, 0)` TRÊN TIỀN** ba chỗ (`TotalValOut`, `TotalValOutAfterDesc`, `UPOut`) — `-- 20240605.
+//   HuongTTT: Tiền thì làm tròn nguyên`. Là **quyết định nghiệp vụ có ghi lý do**, không phải sơ suất (#408).
+// 🔴 **CHÍNH TÁC GIẢ KHÔNG BIẾT VÌ SAO**: `-- 20240404. Them distinct boi vi khong ro nguyen nhan tai sao 1 PX
+//   lai dk gan voi nhieu lenh xuat` ⇒ `distinct` **che triệu chứng** của một quan hệ 1-n ngoài dự kiến.
+// 📌 Mini chưa mô hình hoá `Ser_Inv_StockOutOrder(StockOut)`, `Ser_Mst_Location`, `Ser_Mst_Part.PartID` ⇒ port
+//   **bảng InvF_InventoryOut + OutCover + OutDtl** theo dữ liệu Mini có, ghi nợ phần còn lại.
+app.MapGet("/api/osveloca/stockouts/{stockOutNo}/detail", async (string stockOutNo, AppDbContext db, ITenantContext t) =>
+{
+    var no = (stockOutNo ?? "").Trim();
+    var so = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (so is null) return Results.Ok(new { found = false, reason = "STOCKOUT_NOT_FOUND", stockOutNo = no });
+    if (!(so.FlagSyncVeloca == null || so.FlagSyncVeloca == "0"))
+        return Results.Ok(new { found = false, reason = "ALREADY_SYNCED", stockOutNo = no, so.FlagSyncVeloca, so.SyncVelocaDTime });
+
+    // Bảng tra mã kho GÕ CỨNG của nguồn — chép NGUYÊN VĂN cả năm mã đại lý và giá trị mặc định.
+    static string InvOf(string? dealer) => dealer switch
+    {
+        "VN029" => "PTDL",      // Đông Đô
+        "VN068" => "PTDL",      // Đông Anh
+        "V3601" => "KHOTONG",   // Lam Kinh
+        "VN012" => "PTHD",      // Hải Phòng
+        "VN063" => "PTDL",      // Ninh Bình
+        _ => "PTDL",            // 🔴 đại lý MỚI rơi vào đây ⇒ gán SAI kho
+    };
+    var invCode = InvOf(so.DealerCode);
+    var dealerIsInHardcodedList = so.DealerCode is "VN029" or "VN068" or "V3601" or "VN012" or "VN063";
+
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == so.Id).ToListAsync();
+    var cus = await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == so.CusID);
+
+    // Nguồn: (Factor*Price)*(1+VAT/100) nếu có dòng RO, ngược lại Price*(1+VAT/100).
+    decimal AfterVat(PartStockOutLine l)
+    {
+        var unit = l.RoPrice is not null && l.RoFactor is not null ? l.RoFactor!.Value * l.RoPrice!.Value : (l.Price ?? 0m);
+        return unit * (1 + (l.Vat ?? 0m) * 0.01m);        // Mini: Vat là decimal ⇒ không dính chia nguyên
+    }
+    var totalAfterVat = lines.Sum(l => Math.Round(l.Quantity, 2, MidpointRounding.AwayFromZero) * AfterVat(l));
+
+    // Table4 — gộp theo phụ tùng. Nguồn lấy đơn giá bằng `select top 1` KHÔNG ORDER BY.
+    var cover = lines.GroupBy(l => l.PartCode).Select(g => new
+    {
+        IF_InvOutNo = so.StockOutNo, ProductCodeRoot = g.Key,
+        Qty = Math.Round(g.Sum(l => l.Quantity), 2, MidpointRounding.AwayFromZero),
+        // Port: SẮP XÁC ĐỊNH rồi mới lấy dòng đầu (nguồn không có ORDER BY).
+        UPOut = Math.Round(g.OrderBy(l => l.Id).Select(AfterVat).First(), 0, MidpointRounding.AwayFromZero),
+        UPOutDesc = 0,
+        ValOutAfterDesc = Math.Round(g.Sum(l => Math.Round(l.Quantity, 2, MidpointRounding.AwayFromZero) * AfterVat(l)), 0, MidpointRounding.AwayFromZero),
+        UnitCode = g.OrderBy(l => l.Id).Select(l => l.UnitCode).First(),
+        UPInv = 0,
+        // Đo đúng chỗ `top 1` không xác định: nhóm có nhiều hơn một đơn giá phân biệt.
+        upOutAmbiguous = g.Select(AfterVat).Distinct().Count() > 1,
+        unitCodeAmbiguous = g.Select(l => l.UnitCode).Distinct().Count() > 1,
+    }).OrderBy(x => x.ProductCodeRoot).ToList();
+
+    var dtl = lines.Select(l => new
+    {
+        IF_InvOutNo = so.StockOutNo, InvCodeOutActual = l.Location,
+        ProductCodeRoot = l.PartCode, ProductCode = l.PartCode,
+        Qty = Math.Round(l.Quantity, 2, MidpointRounding.AwayFromZero), l.UnitCode, Remark = (string?)null,
+    }).ToList();
+
+    string? Utc(DateTime? d) => d?.AddHours(-7).ToString("yyyy-MM-dd HH:mm:ss");   // như #706
+    var roundedTotal = Math.Round(totalAfterVat, 0, MidpointRounding.AwayFromZero);
+
+    var invOut = new
+    {
+        IF_InvOutNo = so.StockOutNo, InvOutType = so.StockOutType, InvCodeOut = invCode,
+        IF_InvAudNo = (string?)null,
+        CustomerCode = string.IsNullOrWhiteSpace(cus?.SalesCusID) ? so.CusID : cus!.SalesCusID,
+        OrderNoSys = (string?)null, OrderNo = (string?)null, OrderType = (string?)null,
+        TotalValOut = roundedTotal, TotalValOutDesc = 0, TotalValOutAfterDesc = roundedTotal,
+        ProfileStatus = "0", Remark = so.Description,
+        CreateDTimeUTC = Utc(so.CreatedAt), CreateBy = so.UserCode,
+        ApprDTimeUTC = Utc(so.StockOutDateTime), ApprBy = so.UserCode,
+        src_localTimes = new { so.CreatedAt, so.StockOutDateTime },
+    };
+
+    return Results.Ok(new
+    {
+        found = true, invOut, cover, dtl, lineCount = lines.Count,
+        invCodeUsed = invCode, dealerIsInHardcodedList,
+        ambiguousUnitPriceGroups = cover.Count(c => c.upOutAmbiguous),
+        ambiguousUnitCodeGroups = cover.Count(c => c.unitCodeAmbiguous),
+        sourceHasNoOrderBy = true,
+        // ===== #708 =====
+        warehouseCodeHardcodedByDealerCode = "MA KHO GO CUNG THEO MA DAI LY — LAP LAI SAU LAN: case when siso.DealerCode = VN029 then PTDL … when V3601 then KHOTONG … else PTDL end, chep lai o InvCode, InvBUCode, InvBUPattern, InvName, InvCodeParent, InvCodeOut. DAI LY MOI => roi vao else PTDL => GAN SAI KHO, im lang. Va ngay tren do doan DUNG (doc Ser_Inv_Stock that) BI COMMENT TRON voi ly do ghi ro: -- 20240401. HuongTTT: Code nay la dung nhung … hien phan tao PX dang de ma kho la null nen rem lai => NO KY THUAT CO CHU Y, CO HAN",
+        elseBranchLosesLocationCodeAndPercent = "NHANH else THIEU HAN MA VI TRI VA THIEU %: trong case sinh InvBUCode/InvBUPattern cua nhanh union (vi tri kho), CA NAM when deu noi sml.LocationCode, rieng else chi ra Concat(I., PTDL) — MAT phan .LocationCode va (o InvBUPattern) MAT ca ky tu %. => dai ly ngoai danh sach => ma BU va MAU TIM KIEM deu sai hinh dang. BUG THAT, rat cu the",
+        vatDividedBy100WithNoSafeVariantHere = "VAT/100 KHONG CO BIEN THE AN TOAN O HAM NAY: (1 + sisodro.VAT/100) va (1 + sisod.VAT/100) xuat hien BON lan, KHONG cho nao dung * 0.01 => neu VAT la SO NGUYEN thi moi bieu thuc deu nhan (1 + 0) => TOAN BO TIEN XUAT KHO GUI SANG VELOCA THIEU VAT. Bang chung THU HAI cho no #673 (bang chung thu nhat o #705 noi hai quy uoc dung canh nhau trong cung mot cau)",
+        selectTop1WithoutOrderByTwice = "select top 1 KHONG CO ORDER BY — HAI CHO (luat #415): don gia UPOut va don vi tinh UnitCode cua moi (phieu, phu tung) lay MOT DONG BAT KY trong nhom. Neu cung mot phu tung co nhieu dong khac don gia => DON GIA GUI DI LA NGAU NHIEN. Port sap xac dinh roi moi cat; da dem nhom nhap nhang bang ambiguousUnitPriceGroups / ambiguousUnitCodeGroups",
+        twoDirectionsUseDisjointVocabularies = "HAI CHIEU TICH HOP DUNG HAI BO TU VUNG KHONG GIAO NHAU — noi thang voi #701: chieu RA (day) CustomerType chi phat ra CANHAN / TOCHUC; chieu VAO (#701 OSVeloca_Ser_Customer_Save) chi nhanh KHACHLE con song, hai nhanh CANHAN va TOCHUC BI COMMENT TRON => gia tri ham nay GUI DI chinh la gia tri ham kia KHONG DICH DUOC. ROUND-TRIP VO",
+        vatRateCaseHasNoElse = "case SINH MA THUE KHONG CO else: when smp.VAT = 0 then VAT0 when 8 VAT8 when 10 VAT10 => thue suat khac (5%…) => VATRateCode NULL => Veloca KHONG BIET thue suat (ho #656/#663/#698)",
+        contactPhoneDeletedOnPurpose = "SO DIEN THOAI LIEN HE BI XOA CO CHU Y: case when scus.ContMobile = scus.Mobile then '' else … (-- 20240203. … Vi luat check trung sdt o CustomerCenter) => MAT DU LIEU de lach rang buoc he dich",
+        orUsedWhereAndWasMeant = "(ro.ROID is not null or ro.ROID <> '') — DUNG or O CHO DANG LE LA and: khi ROID NULL thi ve hai la UNKNOWN nen bieu thuc van ra false => TINH CO DUNG, nhung ve hai HOAN TOAN THUA va che y dinh",
+        roundToWholeMoneyIsDocumentedDecision = "Round(…, 0) TREN TIEN ba cho (TotalValOut, TotalValOutAfterDesc, UPOut) — -- 20240605. HuongTTT: Tien thi lam tron nguyen. La QUYET DINH NGHIEP VU CO GHI LY DO, khong phai so suat (#408)",
+        authorDidNotKnowWhyDistinctWasNeeded = "CHINH TAC GIA KHONG BIET VI SAO: -- 20240404. Them distinct boi vi khong ro nguyen nhan tai sao 1 PX lai dk gan voi nhieu lenh xuat => distinct CHE TRIEU CHUNG cua mot quan he 1-n ngoai du kien",
+        miniModelGap = "Mini chua mo hinh hoa Ser_Inv_StockOutOrder(StockOut), Ser_Mst_Location, Ser_Mst_Part.PartID => port bang InvF_InventoryOut + OutCover + OutDtl theo du lieu Mini co; ba bang master (Mst_Inventory/Mst_Product/Mst_Customer) ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #707 VELOCA: DANH SÁCH PHIẾU NHẬP KHO =====
 // `OSVeloca_Ser_Inv_StockIn_Get` (`BizCarSv.Inventory.StockIn.cs:8517-8689`, md5 `2d8cfe9a` — **KHỚP máy 150,
 // cùng offset**). → `GET /api/osveloca/stockins`. Cùng họ Veloca với #704/#705/#706 nhưng phía **kho phụ tùng**;
