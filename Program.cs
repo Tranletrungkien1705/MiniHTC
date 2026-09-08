@@ -25742,6 +25742,114 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #564 API TVO TRẠNG THÁI XE ĐANG SỬA (`HTCMobileTVO_GetSerRoService`) =====
+// Nguồn: `BizCarSv.TVO.cs:2650-2870`; WS LIVE `WSCarSvTab.asmx.cs:4963` gọi **bản trần** (không hậu tố).
+// Chú thích nguồn: *"trả về tất cả thông tin bao gồm trạng thái dịch vụ của các xe đang sửa chữa và lịch sử"*.
+// Cấu trúc **giống hệt** #561: `union all` lệnh trong kỳ với bảng `TVO_Ser_RO_RollbackStatus` (báo **xoá**
+//   cho mobile), rồi ba bảng tạm `_Draft_01` → `_Draft` → `_Filter`.
+//
+// 🔴🔴 **CƠ CHẾ BÁO XOÁ TỰ HUỶ**: nhánh `union all` thêm các lệnh **đã bị thu hồi trạng thái** vào kết quả
+//   (để mobile biết mà xoá khỏi máy — cột `DeletionStatus = '1'`). Nhưng câu trả về lại có:
+//     `left join Ser_RO ro on t.ROID = ro.ROID` … `where ro.Status in ('CRE','PRT','HRO','INGA','RPRD','CEND','FNS')`
+//   ⇒ Điều kiện `where` đặt trên **bảng LEFT** ⇒ **hoá INNER** (luật #414, câu hỏi thứ ba). Lệnh bị thu hồi
+//     mà trạng thái hiện tại **không nằm trong bảy mã đó** (hoặc bản ghi đã mất) thì **rơi sạch** —
+//     tức **đúng những dòng mà nhánh `union all` sinh ra để báo xoá lại bị loại**. Cả một cơ chế **tự vô hiệu**.
+//   📌 Port: lọc trạng thái **chỉ áp cho dòng thường**, dòng báo xoá **luôn giữ**, và đếm số dòng mà nguồn loại.
+// 🔴 **LẶP LẠI Y HỆT LỖI TÍCH ĐỀ-CÁC CỦA #561**: `left join TVO_Ser_RO_RollbackStatus tvo_ro **on t.ROID = ro.ROID**`
+//   — vế `on` **không nhắc `tvo_ro`**. Hai hàm khác nhau, **cùng một dòng sai**: chép qua chép lại.
+// 🔴 **HAI CỘT TRÙNG TÊN `RONo` TRONG CÙNG MỘT `SELECT`**:
+//     `Convert(nvarchar, ro.RONo, 30) **RONo**` … và … `Convert(nvarchar, 'BG-'+ro.RONo, 30) **RONo**`
+//   ⇒ ADO.NET tự đổi tên cột thứ hai thành `RONo1`. Client đọc `"RONo"` nhận **số trần**, còn bản có tiền tố
+//     `BG-` nằm ở cột **tên khác hẳn tài liệu**. Port trả **hai tên rõ ràng** (`roNo` và `roNoDisplay`).
+// 🔴 **TRẠNG THÁI `PAID` BIẾN MẤT**: nhánh `--when ro.Status in ('PAID') then N'Thanh toán xong'` bị comment,
+//   kèm chú thích *"Issue 981: thêm trạng thái thanh toán xong"* — và `where` cũng **không** liệt kê `PAID`.
+//   ⇒ Xe **đã thanh toán nhưng chưa giao** hoàn toàn **không xuất hiện** trên ứng dụng. Đây là **nợ chưa làm**
+//     ghi thẳng trong code, không phải lỗi gõ. Port giữ 1:1 + cờ `paidStatusMissingIssue981`.
+// 🔴 `Convert(nvarchar, …, 30)` khắp nơi ⇒ cắt 30 ký tự (bẫy **style ≠ độ dài**, #561). Riêng
+//   `Left(Convert(ngày,120),19)` đúng. `CusRequest` bị cắt 30 là mất nội dung yêu cầu của khách.
+// 🔴 `ro.LogLUDateTime <= @strToDate` mất trọn ngày cuối (#415) ⇒ port dùng `<` ngày kế tiếp.
+// ⚪ Âm tính: `isnull(ro.DlrPDIReqNo, '') = ''` loại báo giá PDI — **cố ý**, có chú thích *"Không lấy BG PDI"*.
+// ⚪ Âm tính: `left join Ser_MST_Model md` ở `_Draft_01` **không chọn cột nào, không điều kiện nào** — join
+//   thừa, nhưng `select distinct` chặn nở dòng nên **vô hại**; khác hẳn `tvo_ro` ở câu cuối (không distinct).
+app.MapGet("/api/tvo/ro-service-status", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? count) =>
+{
+    var f = (fromDate ?? DateTime.Today).Date;
+    var toRaw = (toDate ?? DateTime.Today);
+    var toEx = toRaw.Date == toRaw ? toRaw.AddDays(1) : toRaw;   // #415
+    var take = count is > 0 ? count!.Value : 50;
+
+    var STATUSES = new[] { "CRE", "PRT", "HRO", "INGA", "RPRD", "CEND", "FNS" };
+
+    // _Draft_01: lệnh sửa trong kỳ, BỎ báo giá PDI (đúng nguồn).
+    var pool = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId
+                    && (r.DlrPDIReqNo == null || r.DlrPDIReqNo == "")
+                    && r.LogLUDateTime != null && r.LogLUDateTime >= f && r.LogLUDateTime < toEx)
+        .OrderBy(r => r.LogLUDateTime)
+        .ToListAsync();
+
+    // Nguồn: where ro.Status in (...) tren bang LEFT => hoa INNER, an ca dong bao xoa.
+    var droppedByStatusFilter = pool.Count(r => !STATUSES.Contains(r.Status));
+    var rows = pool.Where(r => STATUSES.Contains(r.Status)).Take(take).ToList();
+
+    var vins = rows.Select(r => r.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cusIds = rows.Select(r => r.CusID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync();
+    var cus = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusIds.Contains(c.CusCode)).ToListAsync();
+    var modelCodes = cars.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToListAsync();
+
+    string StatusName(string st) => st switch
+    {
+        "CRE" or "PRT" or "HRO" => "Chờ sửa",
+        "INGA" => "Đang sửa",
+        "RPRD" => "Sửa xong",
+        "CEND" => "Kiểm tra cuối cùng",
+        "FNS" => "Đã giao xe",
+        _ => "Không xác định",     // PAID/REJ/W4P/HPA/NORE — nhánh bị comment ở nguồn
+    };
+
+    var items = rows.Select(r =>
+    {
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        var c = r.CusID == null ? null : cus.FirstOrDefault(z => z.CusCode == r.CusID);
+        var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        return new
+        {
+            cusId = r.CusID, roId = r.Id,
+            roNo = r.RONo,                    // nguồn: cột "RONo" số trần
+            roNoDisplay = "BG-" + r.RONo,     // nguồn: cột THỨ HAI cũng tên RONo => ADO.NET đổi thành RONo1
+            customerCode = c?.CusCode, customerName = c?.CusName,   // KHÔNG cắt 30
+            customerMobile = c?.Mobile, customerIDCardNo = c?.IDCardNo,
+            r.CarID, plateNo = r.LicensePlate, vin = r.Vin,
+            tradeMarkCode = car?.TradeMark, modelCode = car?.ModelCode, modelName = mdl?.ModelName,
+            checkInDateTime = r.CheckInDate, actualDeliveryDateTime = r.ActualDeliveryDate,
+            planedDeliveryDateTime = r.PlanedDeliveryDate,
+            statusCode = r.Status, statusName = StatusName(r.Status),
+            r.CusRequest,                     // KHÔNG cắt 30 — nguồn cắt mất nội dung yêu cầu
+            r.DealerCode, r.Km, creatorCode = r.Creator,
+            deletionTime = (DateTime?)null, deletionStatus = "0",
+            createDateTime = r.CreatedAt, r.LogLUDateTime, r.FlagPause,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        deletionMechanismSelfDefeating = "union all them dong bao xoa, roi where ro.Status in (...) tren bang LEFT hoa INNER => chinh nhung dong do bi loai",
+        droppedByStatusFilter,
+        statusWhitelist = STATUSES,
+        paidStatusMissingIssue981 = "nhanh case PAID bi comment VA where cung khong liet ke PAID => xe da thanh toan chua giao bien mat",
+        duplicateColumnNameRONo = "hai cot cung ten RONo trong mot SELECT (so tran va 'BG-'+RONo) => ADO.NET doi ten cot thu hai thanh RONo1",
+        cartesianJoinRepeatedFrom561 = "left join TVO_Ser_RO_RollbackStatus tvo_ro ON t.ROID = ro.ROID — ve on khong nhac tvo_ro (giong het #561)",
+        sourceTruncatesStringsAt30 = "Convert(nvarchar, x, 30) — ke ca CusRequest",
+        dateUpperBoundFixed = "nguon <= @strToDate; port dung < ngay ke tiep",
+        pdiExcludedOnPurpose = "isnull(ro.DlrPDIReqNo, rong) = rong — co chu thich Khong lay BG PDI",
+        rollbackRowsNotModelled = "TVO_Ser_RO_RollbackStatus chua co trong MiniHTC => deletionStatus=0",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #563 API TVO LẤY LỊCH HẸN (`HTCMobileTVO_GetSer_App`) — **SÁU BỘ LỌC BỊ COMMENT SẠCH** =====
 // Nguồn: `BizCarSv.TVO.cs:888-1080`. WS LIVE: `WSCarSvTab.asmx.cs:4812` gọi **bản trần** (không hậu tố)
 //   — ngược với #562, nên **phải trace từng hàm**, không suy từ hàm hàng xóm.
