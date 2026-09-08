@@ -52950,6 +52950,90 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #630 MÀN HOME MÁY TÍNH BẢNG — LỆNH SỬA CHỮA `Ser_RO_HomeX` (`Tab.cs:1225`) =====
+// 3B: laptop `:1225` md5 `19fd2b73` **KHỚP** máy 150 `:1225`. Hoàn tất **bộ ba** Home (#628 · #629 · #630).
+// #284/#286 mới port **bảng nhãn trạng thái** của hàm này; bản thân truy vấn Home (nhóm + chi tiết) thì chưa.
+//
+// 🔴🔴🔴 **CẢ THÂN HÀM SQL CŨ ĐƯỢC DÁN LẠI DƯỚI DẠNG COMMENT — VÀ NÓ CÓ `else`, BẢN LIVE THÌ KHÔNG**:
+//   Ngay đầu chuỗi SQL là xác `dbo.ROStatus_GetStatusNameByCode` cũ, **bị comment nguyên khối**:
+//     `-- when @StatusCode in ('CRE', 'PRT', 'HRO') then N'Chờ sửa' … -- **else N'Không xác định'**`
+//   Bản LIVE viết `case` thẳng trong câu và **bỏ mất nhánh `else`** ⇒ mã trạng thái lạ giờ hiện **ô trống**
+//   thay vì `N'Không xác định'`. ⇒ **Cuộc di trú "hàm SQL → case nội tuyến" đã đánh rơi nhãn mặc định.**
+//   📌 Chỉ đọc được điều này vì **đọc cả dòng COMMENT** — nhưng vẫn **port dòng ACTIVE** (không có `else`),
+//     và nêu cờ để biết chỗ trống đến từ đâu.
+// 🔴 **CHÚ THÍCH TIÊU ĐỀ LẠC MÀN**: khối tạo `#tbl_Ser_RO_Filter` lại được gắn tiêu đề
+//   `---- #tbl_Ser_**ReceptionF**_Filter:` — chép từ hàm anh em #629 mà quên sửa. Đây là **ca thứ hai** trong
+//   hai lượt gần đây (ca thứ nhất: `---- #tbl_Dls_CustomerCare_Filter:` ở #627) ⇒ chú thích tiêu đề trong cụm
+//   này **không đáng tin để định danh bảng**; phải đọc chính câu `into`.
+// 🔴 **LỆCH TỔNG GIỮA HUY HIỆU VÀ DANH SÁCH** (giống #628): bảng **Group** đếm từ `#tbl_Ser_RO` (chỉ nối lại
+//   chính `Ser_RO`), còn **Detail** nối `inner join` sang `Ser_Car` + `Ser_MST_Model` + `Ser_Customer` ⇒ lệnh
+//   thiếu xe / xe thiếu model / thiếu khách **vẫn được đếm** nhưng **không hiện**.
+//   ⚪ Nhẹ hơn #629: ở đây **không** có `inner join Ser_RO` thừa như bên tiếp nhận.
+// ⚪ **CA THỨ BA XÁC NHẬN LỖI #628**: hàm này cũng ghi `sc.CarID -- CarId` (đúng), như #629. ⇒ Trong ba hàm
+//   Home cùng khuôn, **chỉ #628 viết `sc.CusID` rồi chú thích là "ID xe"** ⇒ chắc chắn là **lỗi**, không phải
+//   quy ước của cụm.
+// ⚪ Style ngày: ở đây `Convert(nvarchar(10), sro.CreatedDate, **23**)` — giống #629, khác #628 (**123**);
+//   đã kiểm ở #629: cả hai cắt còn 10 ký tự đều ra ISO ⇒ **không lệch**.
+// ⚠️ `sro.RONo -- Số báo gia`: chú thích gọi là *báo giá* trong khi cột là **số lệnh sửa chữa**. Ở hệ này
+//   `Ser_RO` giữ **cả** báo giá lẫn lệnh (trạng thái `CRE` = "Lập báo giá", xem #286) ⇒ **không kết luận là**
+//   **lỗi**, chỉ ghi lại để không hiểu nhầm khi đối soát.
+// 🔴 Cùng bệnh đã đếm (#626/#628): hai dòng phân trang bị comment **và** bảng tạm không có cột `MyIdxSeq`.
+app.MapGet("/api/tab/home/repairorders", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? createdDate) =>
+{
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (createdDate is not null) qy = qy.Where(x => x.CheckInDate!.Value.Date == createdDate!.Value.Date);
+
+    var rows = await qy.Select(x => new { x.Id, x.RONo, x.Status, x.CheckInDate, x.CusID, x.CusName, x.Vin, x.LicensePlate })
+        .ToListAsync();
+
+    // Nhãn: dùng bảng "tabhome" đã port ở #284/#286 (nguồn KHÔNG có else ⇒ mã lạ ra null).
+    var labels = roStatusDisplayNamesByScreen["tabhome"];
+    var groups = rows
+        .GroupBy(x => new { date = x.CheckInDate.HasValue ? x.CheckInDate.Value.ToString("yyyy-MM-dd") : null, x.Status })
+        .OrderBy(g => g.Key.date).ThenBy(g => g.Key.Status)
+        .Select(g => new
+        {
+            createdDate = g.Key.date,
+            status = g.Key.Status,
+            roStatusName = g.Key.Status != null && labels.ContainsKey(g.Key.Status) ? labels[g.Key.Status] : null,
+            qtySerRO = g.Count(),
+        }).ToList();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode }).ToListAsync();
+    var details = rows.Select(x =>
+    {
+        var car = x.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == x.Vin);
+        return new
+        {
+            roId = x.Id, x.RONo, createdDate = x.CheckInDate,
+            cusId = x.CusID, x.CusName,
+            carId = x.Vin, plateNo = car?.PlateNo ?? x.LicensePlate, frameNo = x.Vin,
+            modelCode = car?.ModelCode,
+            wouldBeDroppedBySource = car is null || car.ModelCode is null || x.CusID is null,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        groupCount = groups.Count, groups,
+        detailCount = details.Count, details,
+        // ===== #630 =====
+        badgeTotalVsListMismatch = details.Count(d => d.wouldBeDroppedBySource),
+        oldSqlFunctionPastedAsComment = "ngay dau chuoi SQL la xac dbo.ROStatus_GetStatusNameByCode cu, bi comment nguyen khoi; no CO nhanh else N Khong xac dinh con ban LIVE viet case noi tuyen va BO MAT else => ma trang thai la gio hien O TRONG thay vi Khong xac dinh; cuoc di tru ham SQL -> case noi tuyen da danh roi nhan mac dinh",
+        portKeepsActiveLineNoElse = "port giu 1:1 dong ACTIVE (khong else) nen ma la tra null; co nay giai thich cho trong den tu dau",
+        strayTitleCommentSecondCase = "khoi tao #tbl_Ser_RO_Filter lai duoc gan tieu de ---- #tbl_Ser_ReceptionF_Filter: (chep tu ham anh em #629 ma quen sua); ca thu hai sau ---- #tbl_Dls_CustomerCare_Filter: o #627 => chu thich tieu de trong cum nay KHONG dang tin de dinh danh bang, phai doc chinh cau into",
+        groupCountsUnjoinedDetailIsInnerJoined = "bang Group dem tu #tbl_Ser_RO (chi noi lai chinh Ser_RO) con Detail inner join Ser_Car + Ser_MST_Model + Ser_Customer => lenh thieu xe / xe thieu model / thieu khach VAN duoc dem nhung KHONG hien; nhe hon #629 vi khong co inner join Ser_RO thua",
+        thirdSiblingConfirmsIssue628Bug = "ham nay cung ghi sc.CarID -- CarId (dung) nhu #629; trong ba ham Home cung khuon CHI #628 viet sc.CusID roi chu thich la ID xe => chac chan la LOI, khong phai quy uoc cum",
+        convertStyle23LikeIssue629 = "o day style 23 giong #629, khac #628 (123); da kiem o #629: ca hai cat con 10 ky tu deu ra ISO nen khong lech",
+        roNoCommentSaysQuotation = "sro.RONo -- So bao gia: chu thich goi la bao gia trong khi cot la so lenh sua chua; he nay Ser_RO giu CA bao gia lan lenh (trang thai CRE = Lap bao gia, xem #286) => KHONG ket luan la loi, chi ghi lai",
+        samePagingDefectAsCounted = "hai dong phan trang bi comment VA bang tam khong co cot MyIdxSeq — da dem o #626/#628",
+        miniGroupsByCheckInDate = "nguon nhom theo sro.CreatedDate; RepairOrder cua Mini khong co cot ngay tao rieng nen port nhom theo CheckInDate => ghi NO, dung doi chieu so lieu hai ben theo ngay",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #629 MÀN HOME MÁY TÍNH BẢNG — TIẾP NHẬN `Ser_ReceptionF_HomeX` (`Tab.cs:6764`) =====
 // 3B: laptop `:6764` md5 `11f1dd28` **KHỚP** máy 150 `:6782` (**lệch +18 dòng**, căn theo TÊN).
 // DIFF với `Ser_App_HomeX` (#628): **cùng một khuôn**, nên chỉ ghi những chỗ **khác** và những chỗ đã
