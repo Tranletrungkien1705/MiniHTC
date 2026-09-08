@@ -8701,7 +8701,8 @@ app.MapPost("/api/tcginvoices/calc-before-approve", async (
             inv.ApprovedBy = by;
             approved.Add(new { inv.TCGInvoiceCode, statusBefore = before, status = inv.VatTCGStatus });
         }
-    await db.SaveChangesAsync();
+    // 🔴🔴 #B120 TỰ SỬA #B108 — nguồn KHÔNG lưu: đường "Return Good" gọi `RollbackSafety`.
+    db.ChangeTracker.Clear();   // đúng như RollbackSafety của nguồn: vứt bỏ mọi thay đổi vừa tính
 
     return Results.Ok(new
     {
@@ -8714,6 +8715,9 @@ app.MapPost("/api/tcginvoices/calc-before-approve", async (
         Invoice_Invoice = Array.Empty<object>(),
         Invoice_InvoiceDtl = Array.Empty<object>(),
         hddtCalcSkipped = true,
+        dryRun = true,
+        dryRunNote = "#B120 TU SUA #B108: day la CHAY THU, KHONG LUU. Duong 'Return Good' cua nguon goi TDALUtils.DBUtils.RollbackSafety(_dbMain) + RollbackSafety(_dbWH) - KHONG PHAI CommitSafety (doi chieu: VAT_..._SaveAll thi CommitSafety). Nguon co goi VAT_TCGInvoiceApproveX (ghi that) NHUNG BEN TRONG transaction roi ROLLBACK => khong dong nao ton tai sau khi ham tra ve. Muc dich: TINH TRUOC ket qua duyet de nguoi dung xem, viec duyet that do ham KHAC lam. Port ban dau cua toi goi SaveChangesAsync() => DUYET THAT hoa don chi vi bam 'xem truoc' - da sua thanh db.ChangeTracker.Clear().",
+        unapproveNreNote = "BAY TIEM AN cua nguon (KHONG tu va): 'DataSet dsGetData_Output = null;' roi CHI gan trong 'if (bApprove)'. Vung '// Get:' ben duoi chay VO DIEU KIEN va truy cap dsGetData_Output.Tables[...] => khi FlagUnapprove = '1' (HUY DUYET) se NullReferenceException. Ghi lai de nghiep vu xac nhan, port tra hai bang rong thay vi crash.",
         flagInvertedNote = "strFlagUnapprove DAO NGHIA: 'bool bApprove = StringEqual(strFlagUnapprove, TConst.Flag.Inactive)' => FlagUnapprove = '0' nghia la DANG DUYET; '1' moi la HUY DUYET. Ten tham so la 'un-approve' nhung gia tri '0' moi kich hoat nhanh duyet. Doc luot theo ten se port NGUOC HOAN TOAN luong duyet/huy duyet.",
         threeBlocksNote = "BA khoi 'if (bApprove)', chi HAI khoi chay: (1) :1107 goi VAT_TCGInvoice_Build_CalcForHDDTMultiX - DANG CHAY, phan tinh du lieu hoa don dien tu; (2) :1129 goi VAT_TCGInvoiceApproveX - BI COMMENT TOAN BO; (3) BEN TRONG VONG LAP tung hoa don (:1207) lai co if (bApprove) goi VAT_TCGInvoiceApproveX(..., drScan['TCGInvoiceCode'], strFlagUnapprove) - DANG CHAY. => Viec duyet THAT SU xay ra TRONG VONG LAP, theo TUNG hoa don. Dung o khoi 2 (bi comment) se ket luan nham la ham 'chi tinh, khong duyet'.",
         emptyInputNote = "Dau vao la BANG VAT_TCGInvoice: thieu => TblNotFound; RONG => BI TU CHOI (TblInvalid) - khuon #B82/#B86.",
@@ -9037,6 +9041,97 @@ app.MapPost("/api/htcinvoices/{code}/hddt-delete", async (
         twoDbNote = "Nguon ExecNonQuery tren CA _dbMain va _dbWH, cho CA HAI bang (dau + dong)."
     });
 }).RequireAuthorization();
+
+// ===== #B121/#B122 TÍNH TRƯỚC KHI DUYỆT HOÁ ĐƠN HTC & HTCLD — `VAT_HTCInvoice_CalcBeforeAprr`
+//       và `VAT_HTCLDInvoice_CalcBeforeAprr` =====
+// Trace LIVE: `HDDTIntergration.cs:10196` (HTC) và `:10413` (HTCLD). 3B đo thật, **khớp cả 2 máy**:
+//   `10196/43780da461a854440179fe5faee7a9e6` · `10413/5b8b479182d5eeb00885fcd0fffd20ce`.
+// 🔴🔴 **CHẠY THỬ — KHÔNG LƯU. Đường "Return Good" gọi `RollbackSafety`, KHÔNG phải `CommitSafety`**:
+//      `// Return Good:  RollbackSafety(_dbMain);  RollbackSafety(_dbWH);  return mdsFinal;`
+//    Nguồn **có** gọi `VAT_HTCInvoiceApproveX` (ghi thật) nhưng **bên trong transaction rồi rollback**
+//    ⇒ **không dòng nào tồn tại** sau khi hàm trả về. Mục đích: **tính trước** kết quả duyệt cho người
+//    dùng xem; việc duyệt thật do hàm **khác** làm.
+//    ⚠️ Đối chiếu: `…_SaveAll` (#B119) dùng `CommitSafety` ⇒ **cùng file, hai kiểu kết thúc khác nhau**.
+//    📌 Đây chính là lỗi tôi đã mắc ở **#B108** (gọi `SaveChangesAsync`) — đã tự sửa ở **#B120**.
+// 🔴 **HAI HÀM NÀY GIỐNG NHAU 1:1** (diff toàn thân chỉ ra **khác biệt duy nhất là TÊN**: tên hàm,
+//    tên hằng lỗi, và **engine tính**: `VAT_HTCInvoice_Build_CalcForHDDTMultiX` vs
+//    `VAT_HTCLDInvoice_Build_CalcForHDDTMultiX`). ⇒ Khác #B117/#B118 (song sinh **ngược nhau**).
+//    ⚠️ **Hai điểm KHÔNG đổi tên theo pháp nhân — dễ tưởng là lỗi nhưng là nguồn thật:**
+//      · bản **HTCLD** vẫn kiểm bảng đầu vào tên **`"VAT_HTCInvoice"`** (không phải `VAT_HTCLDInvoice`);
+//      · bản **HTCLD** vẫn gọi **`VAT_HTCInvoiceApproveX`** (không có bản ApproveX riêng cho HTCLD).
+//      ⇒ Hai pháp nhân **dùng chung bảng và chung hàm duyệt**; chỉ **engine tính HDDT** là riêng.
+// 🔴 `strFlagUnapprove` **đảo nghĩa** như #B108: `bApprove = StringEqual(strFlagUnapprove, Inactive)`
+//    ⇒ **`"0"` = ĐANG DUYỆT**, `"1"` = huỷ duyệt.
+// 🔴 **BẪY TIỀM ẨN của nguồn (KHÔNG tự vá)**: `DataSet dsGetData_Output = null;` chỉ được gán **trong
+//    `if (bApprove)`**, nhưng vùng `// Get:` bên dưới chạy **vô điều kiện** và truy cập
+//    `dsGetData_Output.Tables[…]` ⇒ khi `FlagUnapprove = "1"` sẽ **NullReferenceException**.
+//    Port trả **hai bảng rỗng** thay vì crash, và ghi cờ `unapproveWouldNreInSource`.
+// 🔴 Khối `if (bApprove)` gọi `VAT_HTCInvoiceUpdateX` **bị comment toàn bộ** ⇒ chỉ còn `ApproveX`.
+// 🔴 `StdDataInTable`: `StdParam` cho `HTCInvoiceCode` + `OS_HDDT_RefNo`, **`StdDate`** cho `HTCInvoiceDate`.
+// 🔴 Đầu vào là **BẢNG**: thiếu ⇒ `…_HTCInvoiceTblNotFound`; **rỗng ⇒ TỪ CHỐI** (`…_HTCInvoiceTblInvalid`).
+// 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC**: hai engine `…_Build_CalcForHDDTMultiX` chưa có trong MiniHTC ⇒
+//    `Invoice_Invoice` / `Invoice_InvoiceDtl` trả **rỗng**, cờ `hddtCalcSkipped`.
+static async Task<IResult> HtcCalcBeforeApprAsync(
+    List<string> htcInvoiceCodes, AppDbContext db, ITenantContext t,
+    string? flagUnapprove, string phapNhan)
+{
+    var errPrefix = phapNhan == "HTCLD" ? "VAT_HTCLDInvoice_CalcBeforeAprr" : "VAT_HTCInvoice_CalcBeforeAprr";
+
+    if (htcInvoiceCodes is null)
+        return Results.BadRequest(new { error = errPrefix + "_Input_HTCInvoiceTblNotFound" });
+    var codes = htcInvoiceCodes.Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (codes.Count == 0)
+        return Results.BadRequest(new { error = errPrefix + "_Input_HTCInvoiceTblInvalid" });
+
+    // 🔴 ĐẢO NGHĨA: "0" (hoặc bỏ trống) ⇒ ĐANG DUYỆT; "1" ⇒ huỷ duyệt.
+    var flag = (flagUnapprove ?? "0").Trim();
+    var bApprove = flag == "0";
+
+    // 🔴 CẢ HAI pháp nhân đều đọc bảng "VAT_HTCInvoice" — nguồn KHÔNG đổi tên bảng theo pháp nhân.
+    var invs = await db.VatHtcInvoices
+        .Where(i => i.OrgId == t.OrgId && codes.Contains(i.HTCInvoiceCode)).ToListAsync();
+    var missing = codes.Where(c => !invs.Any(i => i.HTCInvoiceCode == c)).ToList();
+
+    var preview = new List<object>();
+    if (bApprove)
+        foreach (var inv in invs)
+            preview.Add(new
+            {
+                inv.HTCInvoiceCode,
+                statusBefore = inv.VatHTCStatus,
+                statusIfApproved = "A",
+                inv.HTCInvoiceDate, inv.OS_HDDT_InvoiceCode
+            });
+
+    // 🔴🔴 KHÔNG ghi gì: nguồn rollback trên đường thành công. Không gọi SaveChangesAsync.
+    return Results.Ok(new
+    {
+        phapNhan, flagUnapprove = flag, bApprove,
+        inputCount = codes.Count, foundCount = invs.Count, missing,
+        preview,
+        Invoice_Invoice = Array.Empty<object>(),
+        Invoice_InvoiceDtl = Array.Empty<object>(),
+        hddtCalcSkipped = true,
+        dryRun = true,
+        unapproveWouldNreInSource = !bApprove,
+        dryRunNote = "CHAY THU - KHONG LUU. Duong 'Return Good' cua nguon goi RollbackSafety(_dbMain) + RollbackSafety(_dbWH), KHONG phai CommitSafety. Nguon CO goi VAT_HTCInvoiceApproveX (ghi that) NHUNG BEN TRONG transaction roi ROLLBACK => khong dong nao ton tai sau khi ham tra ve. Muc dich: TINH TRUOC ket qua duyet de nguoi dung xem; viec duyet that do ham KHAC lam. Doi chieu: ..._SaveAll (#B119) dung CommitSafety - CUNG FILE, HAI KIEU KET THUC KHAC NHAU. Day chinh la loi toi mac o #B108, da tu sua o #B120.",
+        twinIdenticalNote = "HAI HAM (HTC :10196 va HTCLD :10413) GIONG NHAU 1:1 - diff toan than chi ra khac biet duy nhat la TEN (ten ham, ten hang loi) va ENGINE TINH: VAT_HTCInvoice_Build_CalcForHDDTMultiX vs VAT_HTCLDInvoice_Build_CalcForHDDTMultiX. Khac han #B117/#B118 (song sinh NGUOC NHAU).",
+        sharedNamesNote = "HAI DIEM KHONG DOI TEN THEO PHAP NHAN - de tuong la loi nhung la nguon that: (1) ban HTCLD van kiem bang dau vao ten 'VAT_HTCInvoice' (khong phai VAT_HTCLDInvoice); (2) ban HTCLD van goi VAT_HTCInvoiceApproveX (khong co ban ApproveX rieng cho HTCLD). => Hai phap nhan DUNG CHUNG bang va CHUNG ham duyet; chi ENGINE TINH HDDT la rieng.",
+        flagInvertedNote = "strFlagUnapprove DAO NGHIA: bApprove = StringEqual(strFlagUnapprove, TConst.Flag.Inactive) => '0' = DANG DUYET, '1' = HUY DUYET.",
+        unapproveNreNote = "BAY TIEM AN cua nguon (KHONG tu va): 'DataSet dsGetData_Output = null;' chi duoc gan TRONG if (bApprove), nhung vung '// Get:' ben duoi chay VO DIEU KIEN va truy cap dsGetData_Output.Tables[...] => khi FlagUnapprove = '1' se NullReferenceException. Port tra HAI BANG RONG thay vi crash.",
+        commentedUpdateNote = "Khoi if (bApprove) goi VAT_HTCInvoiceUpdateX BI COMMENT TOAN BO => chi con ApproveX chay.",
+        stdNote = "StdDataInTable: StdParam cho HTCInvoiceCode + OS_HDDT_RefNo, StdDate cho HTCInvoiceDate.",
+        hddtDebt = "NO - KHONG DOAN CONG THUC: hai engine ..._Build_CalcForHDDTMultiX chua co trong MiniHTC => Invoice_Invoice / Invoice_InvoiceDtl tra RONG."
+    });
+}
+
+app.MapPost("/api/htcinvoices/calc-before-approve", async (
+    List<string> htcInvoiceCodes, AppDbContext db, ITenantContext t, string? flagUnapprove) =>
+    await HtcCalcBeforeApprAsync(htcInvoiceCodes, db, t, flagUnapprove, "HTC")).RequireAuthorization();
+
+app.MapPost("/api/htcldinvoices/calc-before-approve", async (
+    List<string> htcInvoiceCodes, AppDbContext db, ITenantContext t, string? flagUnapprove) =>
+    await HtcCalcBeforeApprAsync(htcInvoiceCodes, db, t, flagUnapprove, "HTCLD")).RequireAuthorization();
 
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
