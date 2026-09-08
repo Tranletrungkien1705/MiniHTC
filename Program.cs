@@ -46079,6 +46079,64 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #710 XOÁ CẤU HÌNH MÁY CHỦ THƯ `Email_Config_Delete` =====
+// `BizCarSv.SendMail.cs:2563-2689`, md5 `d18efe1d` — **KHỚP máy 150, cùng offset**.
+// → `DELETE /api/email/serverconfigs/{idConfig}`. Bảng `Email_Config` đã bị **ĐỌC** ở #433/#594; **xoá thì chưa port**.
+// **DIFF với hàm xoá anh em `Email_ConfigSendAuto_Delete`** (:1603, md5 `4b44ea20`) — luật #414, và khác biệt
+// **KHÔNG** nằm ở câu SQL mà ở **khối khai báo**:
+//
+// 🔴🔴🔴 **HAI HÀM XOÁ ANH EM DÙNG HAI MÔ HÌNH TRANSACTION KHÁC HẲN NHAU**:
+//   · `Email_Config_Delete` (đây): `bNeedTransaction_Main = true` · `_WH = true` · `_Dealer = true`
+//     ⇒ mở **ba** transaction, ghi **hai** CSDL (`_dbMain` + `_dbWH`).
+//   · `Email_ConfigSendAuto_Delete`: `bool bNeedTransaction = **false**` ⇒ **KHÔNG mở transaction nào**, ghi
+//     **một** CSDL (`_dbMain`).
+//   ⇒ Hai màn cấu hình email cạnh nhau, cùng thao tác "xoá", **hai mô hình an toàn dữ liệu khác nhau**.
+//     Không có dấu vết nào cho biết đây là chủ ý ⇒ ghi cờ, **không kết luận cái nào đúng**.
+// 🔴🔴🔴 **TRANSACTION CSDL ĐẠI LÝ ĐƯỢC MỞ RỒI ROLLBACK — CHÍNH TÁC GIẢ GHI "không dùng"**:
+//     `if (bNeedTransaction_Dealer) _dbDealer.BeginTransaction();`   … và ở lối ra thành công:
+//     `TDALUtils.DBUtils.RollbackSafety(_dbDealer);**//không dùng**`
+//   ⇒ Mỗi lần xoá cấu hình thư đều **mở một transaction vô ích** trên CSDL đại lý rồi rollback ⇒ **giữ khoá
+//     và tài nguyên không vì gì cả**. Đây là ca **thứ ba** của họ "transaction đại lý thừa" sau #697
+//     (`MigratePartInstance`) và #701 (`OSVeloca_Ser_Customer_Save`) — nhưng **khác chất**: hai ca kia
+//     **có ghi**, ca này **mở rồi bỏ**, và **có chú thích thừa nhận**.
+// 🔴🔴🔴 **XOÁ KHÔNG KIỂM TỒN TẠI, KHÔNG ĐỌC SỐ DÒNG ẢNH HƯỞNG**: `#region // Check` **không tồn tại** (đã mở
+//   và liệt kê region để trích — chỉ có `Temp:`/`Init:`/`Save data`/`Catch`/`Finally`), `CMyException.Raise`
+//   **0 lần**, và kết quả `ExecQuery` **không được dùng**. ⇒ Xoá một `IdConfig` **không tồn tại** ⇒ **báo thành
+//   công**. Giống hệt hàm anh em (#404: đối chiếu cả hai, **không lệch** ở điểm này).
+// 🔴🔴 **XOÁ Ở `_dbMain` + `_dbWH` NHƯNG KHÔNG Ở `_dbDealer`** — trong khi khoá xoá là **cặp**
+//   `(DealerCode, IdConfig)`, tức bảng vốn phân theo đại lý. Nếu CSDL đại lý **cũng** giữ `Email_Config` thì
+//   bản ghi ở đó **không bị xoá** ⇒ cấu hình "đã xoá" vẫn còn sống ở một nơi. **Chưa xác minh ⇒ ghi cờ.**
+// ⚪ **ÂM TÍNH — tham số hoá ĐÚNG**: `@DealerCode`/`@IdConfig` truyền qua `ExecQuery`, không bake.
+// ⚪ **ÂM TÍNH — câu SQL của hai hàm anh em GIỐNG NHAU về hình dạng** (`delete … where (1=1) and DealerCode=@…
+//   and <khoá>=@…`) ⇒ đúng dự đoán của luật #414: khác biệt thật **không** ở `WHERE`.
+app.MapDelete("/api/email/serverconfigs/{idConfig}", async (string idConfig, AppDbContext db, ITenantContext t,
+    string? dealerCode) =>
+{
+    var id = (idConfig ?? "").Trim();
+    var dlr = (dealerCode ?? "").Trim();
+    // Nguồn lọc theo CẶP (DealerCode, IdConfig) — giữ nguyên hình dạng khoá.
+    var rows = await db.EmailServerConfigs
+        .Where(x => x.OrgId == t.OrgId && x.IdConfig == id && x.DealerCode == dlr).ToListAsync();
+
+    // 🔴 Nguồn KHÔNG kiểm tồn tại và KHÔNG đọc số dòng ⇒ luôn báo thành công.
+    // Port giữ hành vi (không lỗi) nhưng TRẢ số dòng thật để đo.
+    var deleted = rows.Count;
+    if (deleted > 0) { db.EmailServerConfigs.RemoveRange(rows); await db.SaveChangesAsync(); }
+
+    return Results.Ok(new
+    {
+        idConfig = id, dealerCode = dlr, deleted,
+        deletedNothingButSourceWouldStillReportSuccess = deleted == 0,
+        // ===== #710 =====
+        twoSiblingDeletesUseDifferentTransactionModels = "HAI HAM XOA ANH EM DUNG HAI MO HINH TRANSACTION KHAC HAN NHAU: Email_Config_Delete (day) co bNeedTransaction_Main = true, _WH = true, _Dealer = true => mo BA transaction, ghi HAI CSDL (_dbMain + _dbWH); Email_ConfigSendAuto_Delete co bool bNeedTransaction = false => KHONG mo transaction nao, ghi MOT CSDL (_dbMain). Hai man cau hinh email canh nhau, cung thao tac xoa, HAI MO HINH AN TOAN DU LIEU KHAC NHAU. Khong co dau vet nao cho biet day la chu y => ghi co, KHONG ket luan cai nao dung",
+        dealerTransactionOpenedThenRolledBackAuthorSaysUnused = "TRANSACTION CSDL DAI LY DUOC MO ROI ROLLBACK — CHINH TAC GIA GHI khong dung: if (bNeedTransaction_Dealer) _dbDealer.BeginTransaction(); … va o loi ra THANH CONG: TDALUtils.DBUtils.RollbackSafety(_dbDealer);//khong dung => moi lan xoa cau hinh thu deu MO MOT TRANSACTION VO ICH tren CSDL dai ly roi rollback => GIU KHOA VA TAI NGUYEN KHONG VI GI CA. Ca THU BA cua ho transaction-dai-ly-thua sau #697 (MigratePartInstance) va #701 (OSVeloca_Ser_Customer_Save) — nhung KHAC CHAT: hai ca kia CO GHI, ca nay MO ROI BO, va CO CHU THICH THUA NHAN",
+        deleteWithoutExistenceCheckOrRowCount = "XOA KHONG KIEM TON TAI, KHONG DOC SO DONG ANH HUONG: #region // Check KHONG TON TAI (da mo va liet ke region de trich — chi co Temp:, Init:, Save data, Catch, Finally), CMyException.Raise 0 LAN, va ket qua ExecQuery KHONG DUOC DUNG => xoa mot IdConfig KHONG TON TAI => BAO THANH CONG. Giong het ham anh em (#404: doi chieu ca hai, KHONG LECH o diem nay)",
+        deletesMainAndWhButNotDealer = "XOA O _dbMain + _dbWH NHUNG KHONG O _dbDealer — trong khi khoa xoa la CAP (DealerCode, IdConfig), tuc bang von phan theo dai ly. Neu CSDL dai ly CUNG giu Email_Config thi ban ghi o do KHONG BI XOA => cau hinh da-xoa van con song o mot noi. CHUA XAC MINH => ghi co",
+        negativeProperlyParameterised = "AM TINH: @DealerCode/@IdConfig truyen qua ExecQuery, khong bake",
+        negativeSqlShapeIdenticalBetweenSiblings = "AM TINH: cau SQL cua hai ham anh em GIONG NHAU ve hinh dang (delete … where (1=1) and DealerCode=@… and <khoa>=@…) => dung du doan cua luat #414: khac biet that KHONG o WHERE ma o KHOI KHAI BAO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #709 HÀNG ĐỢI EMAIL TỰ ĐỘNG `Email_SendEmailAutoTemp_*` =====
 // `BizCarSv.SendMail.cs` — `_Get` :4401-4560 md5 `b91d27b6` · `_Create` :3829-4050 md5 `6b6c8668` ·
 // `_Update` :4052-4275 md5 `db5db4ed`. → `GET|POST /api/email/autotemp`, `PUT /api/email/autotemp/{autoTempID}`.
