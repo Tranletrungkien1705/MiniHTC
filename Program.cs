@@ -34030,6 +34030,86 @@ app.MapPost("/api/drivetests/htc-create/validate", async (
     });
 }).RequireAuthorization();
 
+// ===== #B203 GHI NHẬN KHÁCH GHÉ THĂM — `DLR_CtmVisitCreate_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs:111650`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `111650,111821 / 8b93b3cdceb367b9ca7b0240f21b6454`.
+// 🔴🔴 **`VisitDTime` KHÔNG NHẬN TỪ CLIENT — luôn là `DateTime.Now`**:
+//     `dt_DLR_CtmVisit.Rows[0]["VisitDTime"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");`
+//   ⇒ Thời điểm ghé thăm **luôn bằng lúc tạo bản ghi**; **không thể nhập lùi** cho lượt khách hôm qua.
+//     Port cho phép truyền `VisitDTime` là **thêm khả năng nguồn không có**.
+// 🔴 **Chỉ MỘT guard**: `CtmVisitCode.Length < TConst.HTCConst.MinLengthCode` (**= 5**).
+//   ⚠️ **`RangeAgeCode` ở hàm này KHÔNG có guard nào**, trong khi `DLR_DriveTestCreate` (#B202) kiểm
+//     rất chặt (`TryParse` + `[1940, 2010]`). ⇒ **Cùng tên cột, hai hàm, hai mức kiểm khác hẳn** —
+//     bảng khách ghé thăm nhận **bất kỳ chuỗi nào**. Không tự thêm guard.
+// 🔴 **`FlagActive` bị ÉP** `= Flag.Active`; `CreatedDate` = `LogLUDateTime` = `VisitDTime` = `Now`.
+// ⚠️ **Lệch TÊN CỘT giữa port cũ và nguồn**: port cũ đặt `CusVisitCode`/`RangeAge`, nguồn là
+//   **`CtmVisitCode`/`RangeAgeCode`**. Giữ nguyên tên thuộc tính cũ (đã có dữ liệu), nhưng **trả ra
+//   theo tên nguồn** để đối soát.
+// 📌 §12 bổ sung 5 cột: `FlagActive` · `VisitDTime` · `CreatedBy` · `LogLUDateTime` · `LogLUBy`.
+app.MapPost("/api/ctmvisits/htc-create", async (
+    CtmVisitHtcCreateDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.CtmVisitCode ?? "").Trim();
+    // 🔴 Guard DUY NHẤT của nguồn.
+    if (code.Length < 5)
+        return Results.BadRequest(new
+        {
+            error = "DLR_CtmVisit_Create_InvalidCtmVisitCode",
+            check = new { CtmVisitCode = code, MinLengthCode = 5 }
+        });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var row = new CtmVisit
+    {
+        OrgId = t.OrgId,
+        CusVisitCode = code,                     // cột cũ, tương ứng `CtmVisitCode` của nguồn
+        DealerCode = dto.DealerCode ?? "",
+        Gender = dto.Gender ?? "",
+        RangeAge = dto.RangeAgeCode ?? "",       // cột cũ, tương ứng `RangeAgeCode`
+        ModelCode = dto.ModelCode ?? "",
+        FlagActive = "1",                        // 🔴 bị ÉP
+        VisitDTime = now,                        // 🔴 LUÔN là Now, không nhận từ client
+        CreatedBy = by, LogLUDateTime = now, LogLUBy = by
+    };
+    db.CtmVisits.Add(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        CtmVisitCode = row.CusVisitCode,
+        row.DealerCode, row.Gender,
+        RangeAgeCode = row.RangeAge,
+        row.ModelCode, row.FlagActive, row.VisitDTime, row.CreatedBy,
+        visitDTimeNote = "VisitDTime KHONG NHAN TU CLIENT - luon la DateTime.Now: 'Rows[0][\"VisitDTime\"] = DateTime.Now.ToString(...)'. Thoi diem ghe tham LUON bang luc tao ban ghi; KHONG THE NHAP LUI cho luot khach hom qua. Port cho phep truyen VisitDTime la THEM KHA NANG NGUON KHONG CO.",
+        oneGuardNote = "CHI MOT guard: CtmVisitCode.Length < MinLengthCode (= 5). RangeAgeCode o ham nay KHONG CO GUARD NAO, trong khi DLR_DriveTestCreate (#B202) kiem rat chat (TryParse + [1940, 2010]) => CUNG TEN COT, HAI HAM, HAI MUC KIEM KHAC HAN. Bang khach ghe tham nhan BAT KY CHUOI NAO. Khong tu them guard.",
+        columnNameNote = "LECH TEN COT giua port cu va nguon: port cu dat CusVisitCode/RangeAge, nguon la CtmVisitCode/RangeAgeCode. Giu nguyen ten thuoc tinh cu (da co du lieu), nhung TRA RA THEO TEN NGUON de doi soat.",
+        forcedFlagNote = "FlagActive bi EP = Flag.Active; CreatedDate = LogLUDateTime = VisitDTime = Now."
+    });
+}).RequireAuthorization();
+
+// ===== #B204/#B205 AUDIT `Dlr_ContractCreate_New20181119` — **NGOẠI LỆ của luật chọn theo hậu tố** =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `111822,111967 / 6a95fa9e213bd935c2d02d873f55444a`.
+// 🔴🔴 **ĐÍNH CHÍNH luật `C0-…sexagesimusquartus`/#B198 ("chọn bản `…X` theo HẬU TỐ KHỚP CỬA")**:
+//   cửa **`Dlr_ContractCreate_New20181119`** gọi **`Dlr_ContractCreateX_New20230306`** —
+//   **hậu tố KHÔNG khớp** (cửa `2018`, thân `2023`). Trong file còn có `Dlr_ContractCreateX` (không
+//   hậu tố) và `…X_New20181119` — **cả hai đều KHÔNG được gọi**.
+//   ⇒ Quy tắc đúng: **đọc DÒNG GỌI trong thân cửa**, không suy từ hậu tố. Hậu tố chỉ là **gợi ý**;
+//     khi cửa được nâng cấp mà **giữ nguyên tên**, thân bên trong có thể trỏ sang bản mới hơn.
+// 📌 Chưa port thân `…X_New20230306` trong lượt này (hàm lớn, nhiều bảng) — ghi vào hàng đợi.
+app.MapGet("/api/dlrcontracts/htc-create/trace", () => Results.Ok(new
+{
+    door = "Dlr_ContractCreate_New20181119",
+    doorRange = "111822,111967",
+    doorMd5 = "6a95fa9e213bd935c2d02d873f55444a",
+    calls = "Dlr_ContractCreateX_New20230306",
+    notCalled = new[] { "Dlr_ContractCreateX", "Dlr_ContractCreateX_New20181119" },
+    suffixMismatchNote = "DINH CHINH luat 'chon ban ...X theo HAU TO KHOP CUA' (#B198): cua Dlr_ContractCreate_New20181119 goi Dlr_ContractCreateX_New20230306 - HAU TO KHONG KHOP (cua 2018, than 2023). Trong file con co Dlr_ContractCreateX (khong hau to) va ...X_New20181119 - CA HAI DEU KHONG DUOC GOI. Quy tac dung: DOC DONG GOI TRONG THAN CUA, khong suy tu hau to. Hau to chi la GOI Y; khi cua duoc nang cap ma GIU NGUYEN TEN, than ben trong co the tro sang ban moi hon.",
+    queuedNote = "Chua port than ...X_New20230306 trong luot nay (ham lon, nhieu bang) - da ghi vao hang doi."
+})).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -46054,6 +46134,7 @@ record DlrContractFormUpdDto(string? ContractFNo, string? Note, string? Promotio
 record DlrContractDtlUpdLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? HisQty, int? QtyUpdate, string? ContractUpdateType);   // #B200
 record DlrContractDtlUpdDto(List<DlrContractDtlUpdLineDto>? Lines);   // #B200
 record DriveTestHtcCreateDto(string? DriveTestCode, string? DriverTestType, string? DriverTestGroup, string? DrvTestPlateNo, string? CustomerCode, string? RangeAgeCode, string? DriverLisence, DateTime? DriveDTime);   // #B202
+record CtmVisitHtcCreateDto(string? CtmVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);   // #B203
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);

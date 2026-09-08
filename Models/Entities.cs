@@ -11098,6 +11098,13 @@ public sealed class CtmVisit
     public string Gender { get; set; } = "";       // 0/1
     public string RangeAge { get; set; } = "";      // độ tuổi
     public string ModelCode { get; set; } = "";     // xe quan tâm
+    /// <summary>🔴 #B203 — năm cột nguồn `DLR_CtmVisitCreate_New20181119` ghi mà port trước thiếu.
+    /// ⚠️ Port cũ đặt tên `CusVisitCode`/`RangeAge`, nguồn là **`CtmVisitCode`/`RangeAgeCode`**.</summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime? VisitDTime { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
