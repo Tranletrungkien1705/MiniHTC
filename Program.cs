@@ -15439,6 +15439,37 @@ app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantConte
 // 📌 NỢ ĐÃ KHAI: nguồn còn tham số `strRespondType` và bảng `…NotResponse` (chi tiết PT **không** đáp ứng,
 //   có nhánh `case when h.ResponseQuantity is null then t.NotResponseQuantity else h.NotResponseQuantity`).
 //   Port lượt này làm **hai tỉ lệ + danh sách đáp ứng/không đáp ứng theo mã PT**; nhánh RespondType chưa làm.
+//
+// ===== 🔴🔴 #686 ĐỌC BẢN KHO `Rpt_AbilitySupplyParts_WH` — BỔ SUNG BỐN ĐIỂM #311 CHƯA GHI =====
+// Vỏ bọc `Inventory.Report.cs:8823-8938` (md5 `9b3bacbc`) → thân thật **`Rpt_AbilitySupplyParts_WH**X**`**
+// (`:8939-9341`, md5 `6e6c67d0`) — **cả hai KHỚP** máy 150. WS `WSCarSv.asmx.cs:38362` gọi vỏ bọc.
+// ⚪ **BẢN KHO KHÔNG THÊM GÌ**: diff thân `…PartsX` (`:8420-8822`, md5 `cc1df9a4`) ↔ `…Parts_WHX` sau khi
+//   **chuẩn hoá khoảng trắng** (phương pháp #671) ra **0 dòng khác** trên **289 dòng** — hai md5 thô khác nhau
+//   **hoàn toàn do khoảng trắng**. Kết luận "tương đương" ở đây có bằng chứng dứt khoát.
+//
+// 🔴🔴🔴 **LỌC LOẠI PHỤ TÙNG BẰNG TÊN TIẾNG VIỆT HARDCODE TRONG C#**:
+//     SQL: `and j.TypeName in (N'@strTypeNamePTTT', N'@strTypeNamePTDB')`
+//     C# : `strTypeNamePTTT = "Phụ tùng thông thường"` · `strTypeNamePTDB = "Phụ tùng đặc biệt (động cơ, lốc máy)"`
+//   ⇒ Báo cáo lọc theo **TÊN** trong danh mục `Ser_MST_PartType`, **không** theo mã. Sửa một chữ, thêm một dấu
+//     cách, hay đổi cách viết dấu ngoặc trong danh mục ⇒ **báo cáo trả 0 dòng**, không lỗi, không cảnh báo.
+//     Và hai chuỗi đó nằm **trong mã nguồn**, muốn đổi phải build lại.
+// 🔴🔴 **BỐN CÂU `select null tbl_…, * from …` LÀ BỐN RESULT SET THẬT** (được đặt tên ở `nIdxTable++`):
+//   `Rpt_AbilitySupplyPartsResponse` · `…NotResponse` · `…_ResponseRateByPartCode` · `…_ResponseRateByRO`.
+//   Mỗi bảng có **cột đầu tên `tbl_…` giá trị luôn NULL** — vốn là dấu phân cách khi debug, nay là **hợp đồng
+//   API cố định ở cả bốn bảng**. ⚠️ Khác #681 (ở đó các câu tương tự **bị comment**, chỉ câu cuối còn sống).
+// 🔴 **`'' StockOutTime` và `null ResponseQuantity`** ở `#tbl_…NotResponse_Temp2` rồi ghép với `Temp1`
+//   (cột `StockOutTime` kiểu **datetime**) ⇒ `''` bị ép thành **`1900-01-01`**. Cùng họ guard-chết #685/#407:
+//   dùng `''` thay cho NULL làm mọi `isnull` phía sau **vô tác dụng**.
+// ⚪ **DƯƠNG TÍNH — hàm này THAM SỐ HOÁ ĐÚNG** (giống #681, cùng file `Inventory.Report.cs`):
+//   `@strDealerCode` · `@strPartCode` · `@strVieName` · `@strFirstPeriodMonth` · `@strLastPeriodMonth` đi qua
+//   `_dbWH.ExecQuery(sql, "@x", val …)` thành **SqlParameter thật**; chỉ các **hằng** (`@strStatus1..4` = `W4P`,
+//   `HPA`, `NORE`, `REJ` · `@strStatusFinish` = `"3"` · hai `@strTypeName…`) mới `Replace` — và **đều được bọc
+//   nháy trong SQL** ⇒ hợp lệ. ⇒ Hai hàm đã đọc trong file này **đều không có bề mặt tiêm SQL**.
+// ⚪ **ÂM TÍNH — `inner join Ser_Car h on t.CarID = h.CarID` KHÔNG kèm `and t.CusID = h.CusID`**
+//   ⇒ **không** thuộc lớp mất-dòng 102-site của #673. Kiểm rồi mới ghi.
+// 📌 Hằng `TConst.RespondType`: `Yes = "**Response**"` · `No = "**NotResponse**"` — là **chuỗi**, không phải
+//   `1`/`0`; nhánh `else` của `StringEqualIgnoreCase(strRespondType, Yes)` trả bảng `…NotResponse`
+//   ⇒ **mọi giá trị lạ đều rơi vào "không đáp ứng"**, kể cả chuỗi rỗng.
 app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t,
     string? periodMonth, string? dealer, string? partCode) =>
 {
