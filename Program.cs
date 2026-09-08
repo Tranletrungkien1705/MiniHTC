@@ -31636,6 +31636,167 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   `select '' tbl_Car_VIN_Dtl_Add, * …`.
 // ⚠️ **`Thread.Sleep(4000)` trên ĐƯỜNG THÀNH CÔNG** (`/// HoangTV Debug: Sleep WH. (chốt 2019-01-31)`)
 //   — thuộc nhóm 83 site đã thống kê; **KHÔNG port**.
+
+// ===== #B275/#B276/#B277 XUẤT HỒ SƠ (giao giấy tờ xe) —
+//       `Rpt_XuatHoSo_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `148547,148887` ≡ 150 `148552,148892` ⇒ **`ed7fd132c8855a180b4c949037aa389c`**.
+// 🔴🔴 **CÙNG CỘT `Car_VIN.MortageEndDate`, HAI BÁO CÁO HAI NGHĨA NGƯỢC NHAU**:
+//   · #B272 `Rpt_TonHoSoNganHang`: `MortageEndDate is NULL or = ''` ⇒ **hồ sơ CHƯA giao** (tồn);
+//   · đơn vị này: `MortageEndDate >= @From and <= @To` ⇒ **NGÀY GIAO hồ sơ** (đã xuất).
+//   ⇒ Cột này là **mốc "đã giao hồ sơ"**; rỗng = còn tồn. Ghi lại để không hiểu nhầm tên cột.
+// 🔴 **BẪY `> =` (có DẤU CÁCH)** lại xuất hiện: `cv.MortageEndDate **> =** @strTDate_From`
+//   ⇒ củng cố luật `C0-…octogesimustertius`: grep `">="` **không ra** dòng lọc này.
+// ✅ **Guard ngày ACTIVE** (khác hẳn #B272 bị ghi đè): `StandardizeDate`; `To` rỗng ⇒
+//   **`TConst.DateTimeSpecial.DateMax`**; `From > To` ⇒ `Rpt_XuatHoSo_InvalidDateInput`.
+// ✅ **RBAC — tổ hợp (1)**: `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**, SQL không dùng
+//   `BUPattern` ⇒ **cố ý** (như #B242/#B272). Không phải lỗ.
+// 🔴🔴🔴 **HAI NHÁNH `TypeReport` KHÔNG ĐỐI XỨNG — nhánh TT KHÔNG lọc-ngược, và `union all` ⇒ ĐẾM TRÙNG**:
+//   · `#tbl_Car_VIN_QDN` (`TypeReport='0'`, *"Giao hồ sơ theo QĐN"*): `TypeCRR = **'NORMAL'**` **và**
+//     `left join #tbl_Car_DocReqDtl_SPECIAL … where t.DRListCode is null` ⇒ **loại VIN nào có DNGT SPECIAL**;
+//   · `#tbl_Car_VIN_TT` (`TypeReport='1'`, *"Giao hồ sơ trực tiếp Đại lý"*):
+//     `TypeCRR in (**'SPECIAL','DEALER'**)` — **KHÔNG lọc-ngược gì cả**.
+//   Rồi gộp bằng **`union all`** (không `union`) ⇒ **giữ nguyên dòng trùng**.
+//   ⇒ Một VIN có **nhiều DNGT** (ví dụ vừa `SPECIAL` vừa `DEALER`, hoặc nhiều đề nghị cùng loại) sinh
+//     **nhiều dòng** ⇒ **`count(t.vin) SoLuong` đếm SỐ DÒNG ĐỀ NGHỊ, KHÔNG phải SỐ XE**, và
+//     `sum(UnitPrice)` **cộng giá xe nhiều lần**. 📌 Không tự vá; trả `vinDuplicatedAcrossRequests`.
+// 🔴 **`DRDtlStatus = 'F'` BỊ COMMENT ở CẢ BA chỗ**, thay bằng `not in ('R','C')`
+//   ⇒ **đề nghị CHƯA hoàn tất vẫn được tính là "đã xuất hồ sơ"**. Port **dòng ACTIVE**.
+// ⚠️ `case when t.**TypeReport = 0**` — `TypeReport` là **chuỗi** `'0'/'1'` nhưng so với **số** ⇒ ép kiểu ngầm.
+//   Nhánh `else 'unknown'` là **mã chết** (chỉ có hai giá trị).
+// 🔴 Giá xe: cùng khuôn #B272 — `max(EffectiveDate)` theo `(Model, Spec, Color)` với `SOType='P'`,
+//   `EffectiveDate <= getdate()`, rồi **`inner join` lại (không `top 1`)** ⇒ **nhân dòng nếu trùng mốc**;
+//   nối vào xe theo **`cv.ActualSpec`** (không phải `SpecCode`).
+// 🔴 **Hai bảng, thứ tự ngược trực giác**: `Tables[0]` = **`…Detail`**, `Tables[1]` = tổng hợp
+//   (`TypeReport`, `TextReport`, `SoLuong`, `GiaTri`) — giống #B272.
+// ⚠️ **Toàn bộ `drop table` BỊ COMMENT** (7 bảng tạm) — khác #B272 (có drop). Dựa vào scope tự huỷ.
+// ⚠️ `Thread.Sleep(4000)` trên đường thành công, đặt **SAU** `mdsFinal.AcceptChanges()` — **KHÔNG port**.
+app.MapGet("/api/reports/xuat-hoso", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    // ✅ Guard ngày ACTIVE: To rỗng ⇒ DateMax; From > To ⇒ lỗi.
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);
+    if (from > to)
+        return Results.BadRequest(new { error = "Rpt_XuatHoSo_InvalidDateInput", check = new { from, to } });
+
+    var today = DateTime.Today;
+
+    // Xe có NGÀY GIAO hồ sơ trong kỳ (MortageEndDate = mốc đã giao).
+    var cars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.MortageEndDate != null
+                    && v.MortageEndDate >= from && v.MortageEndDate <= to)
+        .ToListAsync();
+    var vins = cars.Select(c => c.VIN).ToList();
+    var carByVin = cars.GroupBy(c => c.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    // Dòng đề nghị giấy tờ: 🔴 DÒNG ACTIVE là `not in ('R','C')`, KHÔNG phải `= 'F'`.
+    var reqCars = await db.CarDocRequestCars
+        .Where(d => d.OrgId == t.OrgId && vins.Contains(d.CarId)
+                    && d.DRDtlStatus != "R" && d.DRDtlStatus != "C")
+        .ToListAsync();
+    var reqIds = reqCars.Select(d => d.RequestId).Distinct().ToList();
+    var reqs = (await db.CarDocRequests.Where(r => r.OrgId == t.OrgId && reqIds.Contains(r.Id)).ToListAsync())
+        .ToDictionary(r => r.Id);
+
+    // VIN có ít nhất một đề nghị SPECIAL ⇒ bị loại khỏi nhánh QĐN (lọc ngược).
+    var specialVins = reqCars
+        .Where(d => reqs.TryGetValue(d.RequestId, out var r) && r.TypeCRR == "SPECIAL")
+        .Select(d => d.CarId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // 🔴 union all — KHÔNG khử trùng; mỗi DÒNG ĐỀ NGHỊ là một dòng báo cáo.
+    var filtered = new List<(string TypeReport, CarDocRequestCar Line, CarDocRequest Req)>();
+    foreach (var d in reqCars)
+    {
+        if (!reqs.TryGetValue(d.RequestId, out var r)) continue;
+        if (r.TypeCRR == "NORMAL" && !specialVins.Contains(d.CarId))
+            filtered.Add(("0", d, r));                       // QĐN
+        if (r.TypeCRR == "SPECIAL" || r.TypeCRR == "DEALER")
+            filtered.Add(("1", d, r));                       // trực tiếp đại lý
+    }
+
+    var invInfo = (await db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync())
+        .GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var prices = await db.CarPrices
+        .Where(p => p.OrgId == t.OrgId && p.SoType == "P" && p.EffectiveDate <= today).ToListAsync();
+    var priceByKey = prices.GroupBy(p => (p.ModelCode, p.SpecCode ?? "", p.ColorCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.EffectiveDate).First());
+
+    var detail = new List<object>();
+    foreach (var (typeReport, line, req) in filtered)
+    {
+        if (!carByVin.TryGetValue(line.CarId, out var cv)) continue;   // inner join car_vin
+        invInfo.TryGetValue(cv.VIN, out var inv);
+        // 🔴 Giá nối theo ActualSpec, không phải SpecCode.
+        decimal? unitPrice = priceByKey.TryGetValue((cv.ModelCode ?? "", cv.ActualSpec ?? "", cv.ColorCode ?? ""), out var pr)
+            ? pr.Price : null;
+
+        detail.Add(new
+        {
+            cv.VIN,
+            TypeReport = typeReport,
+            TextReport = typeReport == "0" ? "Giao hồ sơ theo QĐN"
+                       : typeReport == "1" ? "Giao hồ sơ trực tiếp Đại lý" : "unknown",
+            DRListCode = req.RequestNo,
+            line.DRDtlStatus,
+            cv.EngineNo,
+            CQNo = inv?.CQNo,
+            AC_SpecDescription = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+            CONo = inv?.CONo,
+            cv.DeclarationNo,
+            DealerContractNo = (string?)null,      // 📌 NỢ: CT_DealerContractDetail chưa có
+            LCNo = (string?)null,                  // 📌 NỢ: CT_PackingList → CT_LC chưa có
+            DRFullDocDate = (DateTime?)null,       // 📌 NỢ: Car_VIN.DRFullDocDate chưa có
+            cv.DocumentsStatus, cv.SpecCode, cv.ActualSpec,
+            UnitPrice = unitPrice,
+            cv.MortageBankCode, cv.MortageStartDate,
+            cv.DealerCode, cv.UnitPriceActual, cv.MortageEndDate,
+            InvoiceNoFactory = inv?.InvoiceNoFactory,
+            TCGInvoiceNo = (string?)null, HTCInvoiceNo = (string?)null   // 📌 NỢ: nối hoá đơn theo VIN
+        });
+    }
+
+    // 🔴 Bảng tổng: count(VIN) — ĐẾM SỐ DÒNG ĐỀ NGHỊ, không phải số xe (do union all).
+    var summary = filtered
+        .GroupBy(f => f.TypeReport)
+        .Select(g => new
+        {
+            TypeReport = g.Key,
+            TextReport = g.Key == "0" ? "Giao hồ sơ theo QĐN"
+                       : g.Key == "1" ? "Giao hồ sơ trực tiếp Đại lý" : "unknown",
+            SoLuong = g.Count(),
+            GiaTri = g.Sum(x => carByVin.TryGetValue(x.Line.CarId, out var cv)
+                && priceByKey.TryGetValue((cv.ModelCode ?? "", cv.ActualSpec ?? "", cv.ColorCode ?? ""), out var pr)
+                ? pr.Price : 0m)
+        })
+        .OrderBy(x => x.TypeReport).ToList();
+
+    var vinDuplicatedAcrossRequests = filtered
+        .GroupBy(f => f.Line.CarId).Where(g => g.Count() > 1)
+        .Select(g => new { VIN = g.Key, rows = g.Count(), types = g.Select(x => x.Req.TypeCRR).Distinct() })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        Rpt_XuatHoSoDetail = detail,     // 🔴 Tables[0] = CHI TIẾT (đứng TRƯỚC)
+        Rpt_XuatHoSo = summary,          // 🔴 Tables[1] = TỔNG HỢP
+        vinDuplicatedAcrossRequests,
+        sameColumnOppositeMeaningNote = "CUNG COT Car_VIN.MortageEndDate, HAI BAO CAO HAI NGHIA NGUOC NHAU: #B272 Rpt_TonHoSoNganHang dung 'MortageEndDate is NULL or = \"\"' => ho so CHUA GIAO (ton); don vi nay dung 'MortageEndDate >= @From and <= @To' => NGAY GIAO ho so (da xuat). Cot nay la MOC 'DA GIAO HO SO'; rong = con ton.",
+        grepTrapNote = "BAY '> =' (CO DAU CACH) lai xuat hien: 'cv.MortageEndDate > = @strTDate_From' => cung co luat C0-...octogesimustertius: grep '>=' KHONG RA dong loc nay.",
+        dateGuardNote = "Guard ngay ACTIVE (khac han #B272 bi ghi de): StandardizeDate; To rong => TConst.DateTimeSpecial.DateMax; From > To => Rpt_XuatHoSo_InvalidDateInput.",
+        rbacNote = "RBAC - to hop (1): myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE, SQL khong dung BUPattern => CO Y (nhu #B242/#B272). Khong phai lo.",
+        asymmetricBranchNote = "HAI NHANH TypeReport KHONG DOI XUNG - nhanh TT KHONG loc-nguoc, va 'union all' => DEM TRUNG. #tbl_Car_VIN_QDN (TypeReport='0'): TypeCRR = 'NORMAL' VA left join #tbl_Car_DocReqDtl_SPECIAL ... where t.DRListCode is null => loai VIN nao co DNGT SPECIAL. #tbl_Car_VIN_TT (TypeReport='1'): TypeCRR in ('SPECIAL','DEALER') - KHONG loc-nguoc gi ca. Gop bang UNION ALL (khong union) => giu nguyen dong trung => mot VIN co NHIEU DNGT sinh NHIEU DONG => count(t.vin) SoLuong DEM SO DONG DE NGHI, KHONG phai SO XE, va sum(UnitPrice) CONG GIA XE NHIEU LAN. Xem vinDuplicatedAcrossRequests.",
+        statusCommentedNote = "DRDtlStatus = 'F' BI COMMENT o CA BA cho, thay bang not in ('R','C') => DE NGHI CHUA HOAN TAT VAN duoc tinh la 'da xuat ho so'. Port DONG ACTIVE.",
+        implicitCastNote = "'case when t.TypeReport = 0' - TypeReport la CHUOI '0'/'1' nhung so voi SO => ep kieu ngam. Nhanh else 'unknown' la MA CHET (chi co hai gia tri).",
+        priceNote = "Gia xe cung khuon #B272: max(EffectiveDate) theo (Model, Spec, Color) voi SOType='P', EffectiveDate <= getdate(), roi INNER JOIN lai (khong top 1) => nhan dong neu trung moc; noi vao xe theo cv.ActualSpec (khong phai SpecCode).",
+        twoTablesOrderNote = "HAI bang, thu tu NGUOC TRUC GIAC: Tables[0] = ...Detail, Tables[1] = tong hop (TypeReport, TextReport, SoLuong, GiaTri) - giong #B272.",
+        noDropNote = "Toan bo 'drop table' BI COMMENT (7 bang tam) - khac #B272 (co drop). Dua vao scope tu huy.",
+        sleepNote = "Thread.Sleep(4000) tren duong thanh cong, dat SAU mdsFinal.AcceptChanges() - KHONG PORT.",
+        debtNote = "NO: CT_DealerContractDetail, CT_PackingList->CT_LC, Car_VIN.DRFullDocDate, noi hoa don HTC/TCG theo VIN chua co trong MiniHTC => cac cot do tra NULL, khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/ton-hoso-nganhang", async (
     AppDbContext db, ITenantContext t, string? mortageBankCode) =>
 {
