@@ -53975,6 +53975,113 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #675 LÃI/LỖ THEO LỆNH SỬA CHỮA `Ser_RO_ReportResult_Revenue_WH` (`WH.cs:11388-11684`) =====
+// 3B: laptop `:11388` md5 `32e46f88` **KHỚP** máy 150 `:11388`. WS `WSCarSv.asmx.cs:31045` gọi thẳng.
+//
+// 🔴🔴🔴 **GIÁ VỐN BẰNG 0 KHI ĐẠI LÝ KHÔNG DÙNG FIFO — NHÁNH BÌNH QUÂN GIA QUYỀN ĐÃ BỊ RÚT RUỘT**:
+//     `case when (select paramvalue from mst_param where dealercode='@DealerCode' and paramcode='MCC'`
+//     `  and paramtype='MCC')='FIFO' then isnull(sidd.Price,0)`
+//     `  Else **'0'** -- isnull(dbo.GetAverageCost('@DealerCode', sidd.PartID, …), 0)`
+//     `end Price`
+//   Lời gọi `GetAverageCost` thật **bị comment**, thay bằng **hằng `'0'`**. ⇒ Đại lý có phương pháp tính giá vốn
+//   **khác FIFO** thì `#tbl_partin.Price = 0` ⇒ `PartIn = 0` ⇒ `Profit = SerPrice + PartOut − PartIn − SumCost`
+//   **cộng thêm nguyên phần giá vốn phụ tùng** ⇒ **báo lãi khống**. Không lỗi, không cảnh báo.
+//   ⚠️ Và `'0'` là **chuỗi** trong khi nhánh kia là số ⇒ ép kiểu ngầm cho cả cột.
+//   🔴 Nhánh `Else` ở cột `PartIn` (câu cuối) cũng bỏ luôn phần VAT — nhưng vì `Price` đã là 0 nên **chết kép**.
+// 🔴🔴🔴 **HAI BẢNG TẠM GẦN NHƯ TRÙNG NHAU, LỆCH ĐÚNG MỘT `isnull` — VÀ LỆCH ĐÓ LÀM SAI TIỀN**:
+//   `#tbl_spp` và `#tbl_spp01` có **cùng nguồn, cùng `WHERE`**; DIFF hai chuỗi cho **ba** khác biệt:
+//     ① `#tbl_spp` lấy `spi.StockInID` (để nối giá **nhập**), `#tbl_spp01` lấy `spi.StockOutID` (nối giá **xuất**);
+//     ② `#tbl_spp` lấy thêm `so.StockOutTime`/`StockOutDateTime`;
+//     ③ **`#tbl_spp` viết `spi.Quantity SOQuantity` (KHÔNG `isnull`), `#tbl_spp01` viết `ISNULL(spi.Quantity,0)`**.
+//   ⇒ `Quantity` NULL ⇒ ở **PartIn** (từ `#tbl_spp`) cả tích thành NULL và `sum` **bỏ qua dòng**, còn ở **PartOut**
+//     (từ `#tbl_spp01`) vẫn tính ⇒ **giá vốn hụt trong khi doanh thu đủ** ⇒ `Profit` **thổi lên**.
+//     Đây là biến thể `Factor` ở #673 nhưng trên cột `Quantity`, và lần này **hai vế của cùng một phép trừ**.
+//   ⚠️ Ngoài ra hai bảng là **hai lần quét y hệt** cùng tập dữ liệu — chi phí gấp đôi mà không cần thiết.
+// 🔴🔴 **`(select paramvalue from mst_param where …)` KHÔNG có `top 1`** — dùng **ba lần** trong câu. Nếu
+//   `mst_param` có **hai dòng** cho cùng (`dealercode`,`MCC`,`MCC`) thì SQL **đổ**: *Subquery returned more than
+//   1 value*. Danh mục tham số **không có ràng buộc duy nhất nào bảo đảm điều đó** trong mã.
+// 🔴🔴 **`SumCost` là hằng `0`** rồi vẫn bị trừ trong `Profit` ⇒ cột chết, giữ lại để không vỡ hợp đồng cột.
+// 🔴🔴 **HAI CỬA SỔ NGÀY BẮT BUỘC CÙNG LÚC** (`PaidCreatedDate` **và** `CheckInDate`) ⇒ lệnh nhận xe tháng này
+//   nhưng thu tiền tháng sau **rơi khỏi cả hai kỳ** — cùng bẫy với #488/#674.
+// 🔴 **Lại khối join mất dòng**: câu cuối `join Ser_Customer cus` + `join ser_car car on … and ro.cusid =
+//   car.cusid` ⇒ nằm trong **102 site đang chạy** đã đếm ở #673.
+// ⚪ **ÂM TÍNH — mốc ngày KHÔNG mất ngày cuối**: dùng `datediff(day, …) >= 0` (quy ước ③ trong bốn quy ước đã
+//   liệt kê ở #673) ⇒ an toàn, nhưng **mất index** vì đặt hàm lên cột.
+// 🔴 `and so.Status = '3'` — **chuỗi**; cùng cột này ở #666/#668 lại viết `so.status = 3` (**số**).
+// 📌 Nguồn đọc `Ser_Inv_PartInstance` (tem phụ tùng) — nợ #610 (`PartInstances` chưa seed) vẫn chặn số liệu thật.
+app.MapGet("/api/report/ro-profit-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDatePaid, DateTime? toDatePaid,
+    DateTime? fromDateCheckIn, DateTime? toDateCheckIn) =>
+{
+    var dealer = (dealerCode ?? "").Trim();
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.Status == "Finished" || x.Status == "Paid");
+    if (dealer.Length > 0) qr = qr.Where(x => x.DealerCode == dealer);
+    // datediff(day, …) ⇒ so THEO NGÀY; HAI cửa sổ đều BẮT BUỘC, đúng như nguồn.
+    if (fromDatePaid is not null) qr = qr.Where(x => x.PaidCreatedDate >= fromDatePaid!.Value.Date);
+    if (toDatePaid is not null) qr = qr.Where(x => x.PaidCreatedDate < toDatePaid!.Value.Date.AddDays(1));
+    if (fromDateCheckIn is not null) qr = qr.Where(x => x.CheckInDate >= fromDateCheckIn!.Value.Date);
+    if (toDateCheckIn is not null) qr = qr.Where(x => x.CheckInDate < toDateCheckIn!.Value.Date.AddDays(1));
+    var ros = await qr.Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CusRequest,
+                                        x.CheckInDate, x.PaidCreatedDate, x.ActualDeliveryDate }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    // Nguồn đọc tham số phương pháp giá vốn KHÔNG có top 1 ⇒ port đếm số dòng để lộ rủi ro "trả về nhiều giá trị".
+    var mccRows = await db.MstParams.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.ParamCode == "MCC" && x.ParamType == "MCC")
+        .Select(x => x.ParamValue).ToListAsync();
+    var mcc = mccRows.FirstOrDefault();
+    var isFifo = mcc == "FIFO";
+
+    var svcs = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Price, x.Factor, x.Vat }).ToListAsync();
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.PartCode, x.UnitPrice, x.NeedQty, x.Factor, x.Vat }).ToListAsync();
+
+    var svcByRo = svcs.GroupBy(x => x.RoId).ToDictionary(g => g.Key, g => g.ToList());
+    var partByRo = parts.GroupBy(x => x.RoId).ToDictionary(g => g.Key, g => g.ToList());
+
+    var rows = ros.Select(r =>
+    {
+        var v = svcByRo.TryGetValue(r.Id, out var vl) ? vl : new();
+        var p = partByRo.TryGetValue(r.Id, out var pl) ? pl : new();
+        var serPrice = v.Sum(x => x.Price * x.Factor + x.Price * x.Factor * x.Vat * 0.01m);
+        var partOut = p.Sum(x => x.UnitPrice * x.NeedQty * x.Factor
+                                + x.UnitPrice * x.NeedQty * x.Vat * 0.01m * x.Factor);
+        // Nguồn: FIFO ⇒ giá nhập thật; KHÁC FIFO ⇒ HẰNG 0 (nhánh bình quân đã bị comment). Giữ 1:1.
+        var partIn = isFifo ? p.Sum(x => x.UnitPrice * x.NeedQty + x.UnitPrice * x.NeedQty * x.Vat * 0.01m) : 0m;
+        const decimal sumCost = 0m;   // nguồn hardcode 0
+        return new
+        {
+            roNo = "LS-" + r.RONo, plateNo = r.LicensePlate, r.CusName, r.CusRequest,
+            r.CheckInDate, r.PaidCreatedDate, r.ActualDeliveryDate,
+            serPrice, partOut, partIn, sumCost,
+            profit = serPrice + partOut - partIn - sumCost,
+            costingMethod = mcc,
+            costIsZeroBecauseNotFifo = !isFifo,
+        };
+    }).OrderBy(x => x.roNo).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        totalProfit = rows.Sum(x => x.profit),
+        // ===== #675 =====
+        averageCostBranchIsStubbedToZero = "GIA VON BANG 0 KHI DAI LY KHONG DUNG FIFO: case when (select paramvalue from mst_param where dealercode=@DealerCode and paramcode=MCC and paramtype=MCC)=FIFO then isnull(sidd.Price,0) Else '0' -- isnull(dbo.GetAverageCost(…),0) end Price. Loi goi GetAverageCost that BI COMMENT, thay bang HANG '0' => dai ly co phuong phap gia von KHAC FIFO thi #tbl_partin.Price = 0 => PartIn = 0 => Profit = SerPrice + PartOut - PartIn - SumCost CONG THEM nguyen phan gia von phu tung => BAO LAI KHONG, khong loi khong canh bao. Va '0' la CHUOI trong khi nhanh kia la so => ep kieu ngam ca cot",
+        elseBranchAlsoDropsVat = "nhanh Else o cot PartIn (cau cuoi) cung bo luon phan VAT — nhung vi Price da la 0 nen CHET KEP",
+        twoNearIdenticalTempTablesDifferByOneIsnull = "#tbl_spp va #tbl_spp01 co CUNG NGUON CUNG WHERE; DIFF cho BA khac biet: (1) #tbl_spp lay spi.StockInID (noi gia NHAP), #tbl_spp01 lay spi.StockOutID (noi gia XUAT); (2) #tbl_spp lay them so.StockOutTime/StockOutDateTime; (3) #tbl_spp viet spi.Quantity SOQuantity KHONG isnull con #tbl_spp01 viet ISNULL(spi.Quantity,0) => Quantity NULL thi o PartIn (tu #tbl_spp) ca tich thanh NULL va sum BO QUA dong, con o PartOut (tu #tbl_spp01) van tinh => GIA VON HUT TRONG KHI DOANH THU DU => Profit THOI LEN. Bien the Factor cua #673 nhung tren cot Quantity, va lan nay la HAI VE CUA CUNG MOT PHEP TRU",
+        duplicateScanOfSameData = "hai bang tam la HAI LAN QUET y het cung tap du lieu — chi phi gap doi ma khong can thiet",
+        mstParamSubqueryHasNoTop1 = "(select paramvalue from mst_param where …) KHONG co top 1, dung BA LAN trong cau; neu mst_param co HAI dong cho cung (dealercode, MCC, MCC) thi SQL DO: Subquery returned more than 1 value. Danh muc tham so khong co rang buoc duy nhat nao bao dam dieu do trong ma",
+        mccParamRowCount = mccRows.Count,
+        sumCostIsHardcodedZero = "SumCost la hang 0 roi van bi tru trong Profit => cot chet, giu lai de khong vo hop dong cot",
+        twoMandatoryDateWindows = "HAI CUA SO NGAY BAT BUOC CUNG LUC (PaidCreatedDate VA CheckInDate) => lenh nhan xe thang nay nhung thu tien thang sau ROI KHOI CA HAI KY — cung bay voi #488/#674",
+        rowLossJoinAgain = "cau cuoi join Ser_Customer cus + join ser_car car on … and ro.cusid = car.cusid => nam trong 102 site dang chay da dem o #673",
+        negativeNoEndDateLoss = "AM TINH: moc ngay dung datediff(day, …) >= 0 (quy uoc 3 trong bon quy uoc da liet ke o #673) => an toan, nhung MAT INDEX vi dat ham len cot",
+        statusComparedAsStringHere = "and so.Status = '3' — CHUOI; cung cot nay o #666/#668 lai viet so.status = 3 (SO)",
+        partInstanceDebt = "nguon doc Ser_Inv_PartInstance (tem phu tung) — no #610 (PartInstances chua seed) van chan so lieu that; port tinh PartIn tu RoPartItems nen chi xap xi",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #673 TỔNG HỢP LỆNH SỬA CHỮA `Ser_RO_Sumary_WH` (`WH.cs:12474-12686`) =====
 // 3B: laptop `:12474` md5 `7879f2a2` **KHỚP** máy 150 `:12474`. WS `WSCarSv.asmx.cs:30905` gọi thẳng.
 //
