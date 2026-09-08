@@ -16821,6 +16821,32 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #652 PARITY BẢN KHO `SerPaymentGet_WH` (`WH.cs:9165-9315`) =====
+// 3B: laptop `:9165` md5 `713a5e18` **KHỚP** máy 150 `:9165`. DIFF với bản dealer (`Debit.cs:3628`) rất gọn —
+//   **toàn bộ phần nghiệp vụ giống hệt** (hai bộ lọc loại phiếu triệt tiêu nhau, `else ''`, BAKE-PARAM-MIX,
+//   `#region // Check` rỗng, ba `left join` chỉ hai cái nối theo đại lý — tất cả đã ghi ở #572, không lặp lại).
+//   Chỉ có **hai** khác biệt thật, cộng **một** điểm mới mà #572 chưa nêu:
+//
+// 🔴 **(1) HAI CỔNG ĐỌC `ser_payment` Ở HAI DB** — xác nhận lại #625, nay là **hàm thứ hai** cùng kết luận:
+//     dealer: `from **[@strDBName_CommonCenter].[dbo]**.ser_payment p`   (chỗ giữ chỗ này = **DB Main**, xem #619)
+//     `_WH` : `from **ser_payment** p`                                    (**cục bộ**)
+//   ⇒ Ở #625 tôi thấy đúng cặp này trên `SerSupplierDebitDetailGet`; nay `SerPaymentGet` **lặp lại y hệt**
+//     ⇒ với bảng `Ser_Payment`, phân kỳ theo cổng là **nhất quán qua hai hàm độc lập**, không phải ca lẻ.
+// 🔴 **(2) CHIẾN LƯỢC KHOÁ NGƯỢC NHAU**: bản dealer dùng `with(nolock)` cho **mọi** bảng; bản `_WH` dùng
+//   `--//[mylock]` cho **mọi** bảng. ⇒ **Ngược chiều #648** (ở cụm `Ser_Count_Customer*` thì bản `_ToHTC` dùng
+//   `mylock` còn hai bản kia dùng `nolock`). ⇒ Không suy được "cổng nào thì dùng khoá nào".
+//
+// 🔴 **(3) ĐIỂM MỚI #572 CHƯA NÊU — `case` SO CỘT CHUỖI VỚI HẰNG SỐ**:
+//     `case p.PaymentType when **1** then N'Khách hàng' when **2** then N'Bảo hiểm' else '' end`
+//   Hằng viết **không có nháy** (số), trong khi cột chứa **chuỗi**: `TConst.SerPaymentType.CusPayment = **"1"**`
+//   · `InsurancePayment = **"2"**` · `SupplierPayment = **"3"**` (`Const.Main.cs:379-384`).
+//   ⇒ SQL Server **ép kiểu ngầm varchar → int** (int có độ ưu tiên cao hơn) ⇒ chỉ chạy được **vì mọi giá trị
+//     hiện có đều là chuỗi số**. Một giá trị phi số trong cột là **lỗi conversion cả câu** — cùng họ lỗi
+//     **phụ thuộc dữ liệu** với #615 (`isnull(cột chuỗi, 0)`).
+//   ⚪ Và nhánh `else ''` là **NHÁNH CHẾT**: dòng `PaymentType = '3'` đã bị `and p.PaymentType in ('1','2')`
+//     loại từ trước ⇒ `else` **không bao giờ chạy**. Một guard chết được chứng minh bằng **điều kiện ở nơi khác**.
+// 📌 Lượt PARITY — vá endpoint `/api/payments/search` đã có, **không** tăng bộ đếm màn.
+
 // ===== 🔴🔴 #572 TRA PHIẾU THU THEO KỲ (`SerPaymentGet`, `Debit.cs:3628`) =====
 //
 // 🔴🔴 **HAI BỘ LỌC LOẠI PHIẾU CHỒNG NHAU VÀ LOẠI TRỪ NHAU**:
@@ -16853,6 +16879,7 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
 //   với bảng phiếu thu toàn hệ thì đây là quét bảng. (Cách viết `>= / <` vừa nhanh vừa không mất ngày cuối.)
 // ⚠️ `select p.*` + `with(nolock)` trên **mọi** bảng ⇒ hợp đồng không xác định + đọc bẩn.
 // ⚠️ Đọc bằng `_dbDealer` nhưng `ser_payment` lấy từ `[CommonCenter]` — lại là **hai nguồn trong một câu** (#560).
+// #652: các cờ `whTwin*` bên dưới mô tả bản `SerPaymentGet_WH` — cùng nghiệp vụ, khác DB và khác chiến lược khoá.
 app.MapGet("/api/payments/search", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? dealerCode, string? paymentType) =>
 {
@@ -16906,6 +16933,11 @@ app.MapGet("/api/payments/search", async (AppDbContext db, ITenantContext t,
         conditionListBakesValues = "BuildClauseConditionList khong nhan ref alParamsCoupleSql => be mat SQL injection tren duong DOC",
         checkRegionIsEmptyInSource = true,
         customerJoinMissingDealerScope = "ser_insurance va ser_mst_supplier deu noi them DealerCode; ser_customer thi khong => no dong",
+        // ===== #652 (ban kho SerPaymentGet_WH) =====
+        whTwinReadsPaymentLocally = "ban dealer doc [CommonCenter].[dbo].ser_payment (= DB Main, xem #619) con ban _WH doc ser_payment CUC BO; o #625 toi thay dung cap nay tren SerSupplierDebitDetailGet, nay SerPaymentGet LAP LAI Y HET => voi bang Ser_Payment, phan ky theo cong la NHAT QUAN qua hai ham doc lap",
+        whTwinLockStrategyIsOpposite = "ban dealer dung with(nolock) cho MOI bang; ban _WH dung --//[mylock] cho MOI bang => NGUOC CHIEU #648 (cum Ser_Count_Customer* thi _ToHTC dung mylock con hai ban kia dung nolock) => khong suy duoc cong nao thi dung khoa nao",
+        caseComparesVarcharColumnToIntLiteral = "case p.PaymentType when 1 … when 2 … — hang viet KHONG co nhay (so) trong khi cot chua CHUOI (TConst.SerPaymentType = 1/2/3 dang chuoi, Const.Main.cs:379-384) => SQL Server ep kieu ngam varchar sang int, chi chay duoc VI moi gia tri hien co deu la chuoi so; mot gia tri phi so la loi conversion CA CAU (cung ho phu thuoc du lieu voi #615)",
+        elseBranchIsDeadProvenByAnotherCondition = "nhanh else rong KHONG BAO GIO chay: dong PaymentType = 3 da bi and p.PaymentType in (1,2) loai tu truoc => guard chet duoc chung minh bang dieu kien o NOI KHAC",
         nonSargableDateFilter = "datediff(day, convert(...), p.paydate) >= 0 — ham boc quanh cot, khong dung chi muc",
         selectStarWithNolock = true,
     });
