@@ -16696,6 +16696,123 @@ app.MapPost("/api/mngquotas/upd-multi", async (MngQuotaUpdDto dto, AppDbContext 
     return Results.Ok(new { version, changed, missing });
 }).RequireAuthorization();
 
+// ===== #B193 XOÁ HẠN MỨC KHUYẾN MÃI HÀNG LOẠT — `Mst_Quota_DelMulti` → `Mst_Quota_DelMultiX_New20220406`
+//       (`DMS40/0.01.Master.cs`) =====
+// Cửa public `:5251` là **vỏ** gọi thân thật `Mst_Quota_DelMultiX_New20220406` `:4916`.
+// **3B khớp cả 2 máy** (vị trí **trùng** hai máy): `DelMultiX 4916,5250 / 0ebbe4645921de58f85bfd689bdd929f`
+//   · cửa vỏ `5251,5632 / 60a202470d5302217c7cb4cd48c84f77`.
+// 🔴🔴 **XOÁ TRÊN BẢNG `Mng_Quota`, NHƯNG KHOÁ NỐI LỆCH TÊN CỘT**:
+//     `delete t from Mng_Quota t inner join #tbl_Mng_Quota_Fiter_Del f`
+//     `  on t.DealerCode = f.DealerCode **and t.SpecCode = f.SpecCodePromotion**`
+//   ⇒ Cột bên bảng đích tên **`SpecCode`**, cột bên bảng lọc tên **`SpecCodePromotion`** — **hai tên
+//     khác nhau cho cùng một khái niệm**. Port ghép theo cùng tên là **không khớp dòng nào**.
+//   ⚠️ Tên bảng tạm của nguồn viết sai chính tả: **`#tbl_Mng_Quota_Fiter_Del`** (thiếu `l` trong
+//     "Filter") — giữ nguyên khi tra cứu log.
+// 🔴 **XOÁ THẬT** (`delete t …`), không đổi cờ — khác `Mst_Quota_UpdMulti` (đã port ở
+//   `/api/mngquotas/upd-multi`) chỉ **rút ngắn hạn**.
+// 🔴 Guard trước khi xoá: `Mst_Quota_CheckDB(…, TConst.Flag.Active)` ⇒ **chỉ thao tác trên hạn mức
+//   đang hiệu lực**; bản ghi lấy ra để đối chiếu gồm `SpecCodePromotion`, `SOApprDateFrom`, `QuotaCode`,
+//   `DealerCode`.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`** (`ExecQuery` hai lần).
+// 📌 Dùng lại thực thể `MngQuota` **đã có** — không tạo bảng thứ hai (luật `C0-…quinquagesimusprimus`).
+app.MapPost("/api/mngquotas/del-multi", async (
+    MngQuotaDelMultiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_Quota_UpdMulti_Input_QuotaTblNotFound" });
+
+    var keys = dto.Rows
+        .Select(r => ((r.DealerCode ?? "").Trim(), (r.SpecCodePromotion ?? "").Trim()))
+        .Where(k => k.Item1.Length > 0 && k.Item2.Length > 0)
+        .ToHashSet();
+    if (keys.Count == 0)
+        return Results.BadRequest(new { error = "Mst_Quota_UpdMulti_Input_QuotaTblInvalid" });
+
+    var all = await db.MngQuotas.Where(q => q.OrgId == t.OrgId).ToListAsync();
+
+    // 🔴 Guard: chỉ hạn mức ĐANG HIỆU LỰC mới được thao tác (CheckDB với Flag.Active).
+    var target = all.Where(q => keys.Contains((q.DealerCode, q.SpecCode))).ToList();
+    var inactive = target.Where(q => q.FlagActive != "1")
+        .Select(q => new { q.DealerCode, q.SpecCode, q.FlagActive }).ToList();
+    if (inactive.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Mst_Quota_CheckDB_FlagActiveNotMatched",
+            check = inactive,
+            note = "Nguon goi Mst_Quota_CheckDB(..., TConst.Flag.Active) => CHI thao tac tren han muc DANG HIEU LUC."
+        });
+
+    // 🔴 XOÁ THẬT theo cặp (DealerCode, SpecCode) — nguồn nối `t.SpecCode = f.SpecCodePromotion`.
+    db.MngQuotas.RemoveRange(target);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = target.Count,
+        keys = keys.Select(k => new { DealerCode = k.Item1, SpecCodePromotion = k.Item2 }),
+        columnNameMismatchNote = "KHOA NOI LECH TEN COT: 'delete t from Mng_Quota t inner join #tbl_Mng_Quota_Fiter_Del f on t.DealerCode = f.DealerCode AND t.SpecCode = f.SpecCodePromotion'. Cot ben bang dich ten 'SpecCode', cot ben bang loc ten 'SpecCodePromotion' - HAI TEN KHAC NHAU CHO CUNG MOT KHAI NIEM. Port ghep theo cung ten la KHONG KHOP DONG NAO.",
+        tempTableTypoNote = "Ten bang tam cua nguon viet sai chinh ta: '#tbl_Mng_Quota_Fiter_Del' (thieu 'l' trong 'Filter') - giu nguyen khi tra cuu log.",
+        hardDeleteNote = "XOA THAT (delete t ...), khong doi co - KHAC Mst_Quota_UpdMulti (da port o /api/mngquotas/upd-multi) chi RUT NGAN HAN.",
+        twoDbNote = "Nguon ExecQuery hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
+// ===== #B194 HỢP ĐỒNG ĐẠI LÝ THEO THÁNG — `Dlr_ContractByMonth_Add` → `Dlr_ContractByMonth_AddX` =====
+// Cửa public `BizHTC.Report.cs:38805` là **vỏ** gọi thân thật `Dlr_ContractByMonth_AddX`
+//   nằm ở **file KHÁC**: `BizHTC.Contract.cs:7942` (516 dòng).
+//   ⚠️ Cửa ở `Report.cs` nhưng thân ở `Contract.cs` ⇒ **grep trong cùng file không ra thân**.
+// **3B khớp cả 2 máy**: `AddX 7942,8457 / 265a1a54b03aa77a34f7130581ff59bf` ·
+//   vỏ `38805,38941 / 0259ad6c889e3d2045a777ac06ec3ab3`.
+// 🔴 Trả **BỐN bảng**: `MySummaryTable` · `Dlr_Contract` · `Dlr_ContractCar` · `Dlr_ContractDtl`
+//   (đếm bằng `grep -oE 'TableName = "…"'` trong đúng vùng hàm — luật `C0-…tricesimussextus`).
+// 🔴 **`QtyDelivery` = SỐ XE ĐÃ GIAO, đếm từ `Dls_DealDetail`** chứ không phải từ dòng hợp đồng:
+//     `select …, **Count(t.CarId) QtyDelivery** into #tbl_Dls_DealDetail_Total`
+//     `from #tbl_Dls_DealDetail_Filter t group by t.DlrContractNo, t.SpecCode, t.ModelCode, t.ColorCode`
+//   ⇒ Nhóm theo **bộ BỐN** — cùng hợp đồng nhưng khác spec/model/màu là **dòng riêng**.
+//   ⇒ Lấy `QtyDelivery` từ bảng dòng hợp đồng là **sai nguồn số liệu**.
+// 🔴 Khuôn phân trang `MyIdxSeq` + `MyCount` **đếm trước khi cắt trang** (bảng `#tbl_Dlr_Contract_Draft`).
+// 📌 **NỢ**: `Dls_DealDetail` và `Dlr_ContractCancelDtl` chưa có đủ trong MiniHTC ⇒ `QtyDelivery`
+//   và phần huỷ trả **null/rỗng** kèm cờ — **không đoán**.
+app.MapGet("/api/reports/dlrcontract-by-month", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, int? year, int? month,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.DlrContracts.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode.Trim());
+    var all = await q.ToListAsync();
+    if (year is not null) all = all.Where(c => c.ContractDate.Year == year).ToList();
+    if (month is not null) all = all.Where(c => c.ContractDate.Month == month).ToList();
+
+    all = all.OrderByDescending(c => c.ContractDate).ThenBy(c => c.DlrContractNo).ToList();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+    var nos = page.Select(c => c.DlrContractNo).ToList();
+
+    var cars = await db.DlrContractCars
+        .Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Dlr_Contract = page.Select((c, i) => new
+        {
+            MyIdxSeq = start + i,
+            c.DlrContractNo, c.DealerCode, c.ContractDate, c.Status,
+            ContractMonth = c.ContractDate.ToString("yyyy-MM")
+        }),
+        Dlr_ContractCar = cars,
+        Dlr_ContractDtl = Array.Empty<object>(),
+        recordStart = start, recordCount = count,
+        qtyDeliveryNotComputed = true,
+        bodyInOtherFileNote = "Cua public o BizHTC.Report.cs:38805 nhung THAN THAT o FILE KHAC: BizHTC.Contract.cs:7942 (516 dong) => grep trong cung file KHONG RA THAN.",
+        fourTableNote = "Tra BON bang: MySummaryTable, Dlr_Contract, Dlr_ContractCar, Dlr_ContractDtl (dem bang grep -oE 'TableName = ...' trong dung vung ham - luat C0-...tricesimussextus).",
+        qtyDeliveryNote = "QtyDelivery = SO XE DA GIAO, dem tu Dls_DealDetail chu KHONG phai tu dong hop dong: 'select ..., Count(t.CarId) QtyDelivery into #tbl_Dls_DealDetail_Total from #tbl_Dls_DealDetail_Filter t group by t.DlrContractNo, t.SpecCode, t.ModelCode, t.ColorCode'. Nhom theo BO BON - cung hop dong nhung khac spec/model/mau la DONG RIENG. Lay QtyDelivery tu bang dong hop dong la SAI NGUON SO LIEU.",
+        debtNote = "NO: Dls_DealDetail va Dlr_ContractCancelDtl chua co du trong MiniHTC => QtyDelivery va phan huy tra null/rong. KHONG doan."
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/mngquotas/history", async (AppDbContext db, ITenantContext t, string? dealer, string? spec, string? version) =>
 {
     var q = db.MngQuotaHiss.Where(x => x.OrgId == t.OrgId);
@@ -45614,6 +45731,8 @@ record TransReqDto(string DealerCode, string TransporterCode, string? TransContr
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
 record TranspFeeVersionDto(List<TranspFeeDto>? Rows);
 record TranspFeeVerDeleteDto(List<string>? TFVCodes);
+record MngQuotaDelMultiRowDto(string? DealerCode, string? SpecCodePromotion);   // #B193
+record MngQuotaDelMultiDto(List<MngQuotaDelMultiRowDto>? Rows);   // #B193
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);
