@@ -53008,6 +53008,96 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #640 BCBH GỬI HTC `Ser_ROWarrantyReportHTC_Get_WH_New20230417` (`WH.cs:32845-33265`) =====
+// 3B: laptop `:32845` md5 `a956b9c0` **KHỚP** máy 150 `:32845`. Cụm có **bốn** bản (trần `:31778` ·
+//   `_New20191108OLD` `:32130` · `_New20191108` `:32474` · **`_New20230417` `:32845` LIVE**).
+// DIFF `_New20191108` → LIVE cho **ba** thay đổi thật:
+//
+// 🔴🔴 **(1) SÁU CỘT ĐỔI `car.*` → `ro.*` — GIỐNG HỆT #623, VÀ CÙNG MỘT ĐỢT**: `FrameNo` · `PlateNo` ·
+//   `BatteryNo` · `SerialNo` · `WarrantyRegistrationDate` · `WarrantyExpiresDate`, **và bộ lọc cũng dời theo**
+//   (`BuildClause("and","**ro**.FrameNo",…)` / `ro.PlateNo`).
+//   📌 **PHẠM VI ĐỢT SỬA ĐẾM ĐƯỢC**: hậu tố `_New20230417` xuất hiện ở **23 hàm** trong `TERP.BizCarSv`,
+//     gần như luôn theo **cặp** (bản thường + bản `_WH`): toàn bộ họ `Ser_ROWarrantyReport*` (Get, HTC, HTC_RLU,
+//     HTC_RLUU, HTMV, OnlyOneROWID), `SerWarrantyAcceptRpt`, `SerWarrantyRepairRpt`, `Rpt_DMSSer_Warranty_MainPart`,
+//     `Ser_InvReportRevenueRpt`, `Ser_RO_GetStatusList01`, `Ser_RO_GetWarranty_V2`.
+//     Và nguồn có chú thích ngay dưới hàm: `// 2023-04-17: Lấy thông tin khách hàng và xe theo báo giá.`
+//   ⇒ **Xác nhận #618/#623 không phải suy đoán**: đó là **một đợt thay đổi có chủ đích**, quy mô 23 hàm,
+//     đổi nguồn thông tin xe từ **hồ sơ xe** sang **bản chụp trên lệnh/báo giá**.
+//   ⚠️ **Nhưng vẫn mang đúng lỗ hổng của #623**: dùng `ro.X` **trần**, **không** `isnull(ro.X, car.X)` như #616
+//     ⇒ lệnh chưa chụp dữ liệu thì BCBH gửi HTC in **ô trống**. Port dùng **dự phòng** + nêu cờ.
+// 🔴🔴 **(2) BỘ LỌC MỚI `WarrantyStaffInCharge` GIẾT LUÔN `left join` VỪA THÊM**:
+//     `**left join** Mst_Dealer md on row.DealerCode = md.DealerCode`
+//     `… where … BuildClause("and", "**md**.WarrantyStaffInCharge", strWarrantyStaffInChargeConditionList, …)`
+//   ⇒ Hễ lọc theo **nhân viên bảo hành phụ trách**, BCBH có `DealerCode` không khớp `Mst_Dealer` **biến mất**
+//     (luật #414, câu hỏi thứ ba). **Tính năng mới thêm vào đã mang theo lỗi mới.**
+// 🔴🔴 **(3) HAI BẢNG TẠM MỚI LÀM *NỞ DÒNG*** — thay đổi **hình dạng kết quả**, §12 không bắt được:
+//     `#tbl_rsvCVC`: `Ser_ROWarrantyReportServiceItems` lọc `ROWSerType = 'CVC'` (+ `Ser_MST_Service`, `Btl_Bulletin`)
+//     `#tbl_rspPTC`: `Ser_ROWarrantyReportPartItems`   lọc `ROWPartType = 'PTC'` (+ `Ser_MST_Part`)
+//   rồi **`left join` thẳng vào câu kết quả** theo `ROWID` — **không** `group by`, **không** `distinct`,
+//   **không** `top 1`. ⇒ Một BCBH có **nhiều** hạng mục `CVC` ⇒ ra **nhiều dòng**; có **cả** nhiều `CVC` lẫn
+//   nhiều `PTC` ⇒ **nhân chéo**. Sáu cột thêm (`SerIDCVC`/`SerCodeCVC`/`BulletinIDCVC`/`BulletinNoCVC`/
+//   `PartIDPTC`/`PartCodePTC`) khiến "một BCBH = một dòng" **không còn đúng**.
+//   📌 Hằng `'CVC'` / `'PTC'` là **literal rời rạc** trong SQL (không qua `TConst`) — chép **nguyên văn**.
+app.MapGet("/api/rowarranty-reports/htc", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? frameNo, string? plateNo, string? status, string? warrantyStaffInCharge) =>
+{
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.Vin == frameNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+
+    var claims = await qy.OrderBy(x => x.Id).Take(500).ToListAsync();
+    var roNos = claims.Select(c => c.RONo).Where(x => x != null).Distinct().ToList();
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && roNos.Contains(r.RONo))
+        .Select(r => new { r.RONo, r.Vin, r.LicensePlate }).ToListAsync();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.BatteryNo, c.SerialNo,
+                           c.WarrantyRegistrationDate, c.WarrantyExpiresDate }).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync();
+
+    var items = claims.Select(c =>
+    {
+        var ro = ros.FirstOrDefault(r => r.RONo == c.RONo);
+        var car = cars.FirstOrDefault(x => x.FrameNo == c.Vin);
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == c.DealerCode);
+        return new
+        {
+            c.Id, c.ClaimNo, c.RONo, c.DealerCode, dealerName = dl?.DealerName,
+            c.ROWTypeCode, c.ROWTypeDtlCode, c.WarrantyType, c.PartCode, c.Amount, c.Status,
+            // Bản LIVE lấy ro.X TRẦN; port thêm dự phòng car.X theo #616 và nêu cờ.
+            frameNo = ro?.Vin ?? car?.FrameNo,
+            plateNo = ro?.LicensePlate ?? car?.PlateNo,
+            batteryNo = car?.BatteryNo, serialNo = car?.SerialNo,
+            warrantyRegistrationDate = car?.WarrantyRegistrationDate,
+            warrantyExpiresDate = car?.WarrantyExpiresDate,
+            roSnapshotMissing = ro is null || string.IsNullOrWhiteSpace(ro.Vin),
+            dealerRowMissing = dl is null,
+        };
+    }).ToList();
+
+    var droppedIfStaffFilterUsed = items.Count(x => x.dealerRowMissing);
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #640 =====
+        sixColumnsMovedFromCarToRo = new[] { "FrameNo", "PlateNo", "BatteryNo", "SerialNo", "WarrantyRegistrationDate", "WarrantyExpiresDate" },
+        filterColumnsMovedTooLikeIssue623 = "BuildClause cung doi car.FrameNo/car.PlateNo sang ro.* cung luc voi cot hien thi — giong het #623",
+        batchOf20230417CountedAcrossBiz = "hau to _New20230417 xuat hien o 23 ham trong TERP.BizCarSv, gan nhu luon theo CAP (ban thuong + ban _WH): toan bo ho Ser_ROWarrantyReport* (Get, HTC, HTC_RLU, HTC_RLUU, HTMV, OnlyOneROWID), SerWarrantyAcceptRpt, SerWarrantyRepairRpt, Rpt_DMSSer_Warranty_MainPart, Ser_InvReportRevenueRpt, Ser_RO_GetStatusList01, Ser_RO_GetWarranty_V2; nguon co chu thich: 2023-04-17: Lay thong tin khach hang va xe theo bao gia",
+        confirmsIssue618And623WereNotGuesswork = "day la MOT dot thay doi co chu dich, quy mo 23 ham, doi nguon thong tin xe tu HO SO XE sang BAN CHUP TREN LENH/BAO GIA",
+        butStillNoFallbackLikeIssue623 = "van dung ro.X TRAN, KHONG isnull(ro.X, car.X) nhu #616 => lenh chua chup du lieu thi BCBH gui HTC in O TRONG; port dung du phong va neu co nay",
+        roSnapshotMissingCount = items.Count(x => x.roSnapshotMissing),
+        newStaffFilterKillsItsOwnLeftJoin = "ban LIVE THEM left join Mst_Dealer md on row.DealerCode = md.DealerCode roi loc BuildClause(and, md.WarrantyStaffInCharge, …) trong WHERE => he loc theo nhan vien bao hanh phu trach, BCBH co DealerCode khong khop Mst_Dealer BIEN MAT (#414 cau hoi 3); tinh nang moi them vao da mang theo LOI MOI",
+        droppedIfStaffFilterUsed,
+        twoNewTempTablesMultiplyRows = "#tbl_rsvCVC (Ser_ROWarrantyReportServiceItems loc ROWSerType = CVC) va #tbl_rspPTC (Ser_ROWarrantyReportPartItems loc ROWPartType = PTC) duoc LEFT JOIN thang vao cau ket qua theo ROWID — KHONG group by, KHONG distinct, KHONG top 1 => mot BCBH co nhieu hang muc CVC ra NHIEU DONG; co ca nhieu CVC lan nhieu PTC thi NHAN CHEO",
+        resultShapeChangedNotCaughtByS12 = "sau cot them (SerIDCVC/SerCodeCVC/BulletinIDCVC/BulletinNoCVC/PartIDPTC/PartCodePTC) khien mot BCBH = mot dong KHONG CON DUNG",
+        cvcPtcAreBareLiterals = "hang CVC / PTC la literal roi rac trong SQL (khong qua TConst) — chep NGUYEN VAN",
+        portKeepsOneRowPerClaim = "port giu MOT DONG MOT BCBH; chua mo hinh hoa hai bang hang muc CVC/PTC nen KHONG bia sau cot do — ghi no",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #639 THẺ KHO `Ser_InvReportCardStockRpt_WH_New20230623` (`BizCarSv.WH.cs:9636-10011`) =====
 // 3B: laptop `:9636` md5 `5f715708` **KHỚP** máy 150 `:9636`. Cụm có **ba** bản (trần `:9316` ·
 //   `_New20230623` `:9636` **LIVE** · `_New20181027` `:10012`).
