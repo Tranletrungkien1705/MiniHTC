@@ -19775,6 +19775,31 @@ app.MapDelete("/api/roattachments/{id:long}", async (long id, AppDbContext db, I
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #597 `PostBravo` (`BravoService.cs`) — **TOKEN VÀO LOG + ÉP TLS TOÀN TIẾN TRÌNH** =====
+// Đây là hàm gọi Bravo **thật sự** (mọi nghiệp vụ TST đi qua nó, sau khi `GetToken` #596 lấy token).
+//
+// 🔴🔴 **TOKEN TRUY CẬP BỊ GHI VÀO LOG — HAI LẦN**:
+//     `request.AddHeader("Authorization", "Bearer " + strToken);`
+//     `var requestLog = JsonConvert.SerializeObject(request);`   ← request **đã mang header Authorization**
+//     `alParamsCoupleError.AddRange(new object[] { "**RQToBravo**", requestLog });`
+//     `alParamsCoupleError.AddRange(new object[] { "**RT.Request**", requestLog.ToString() });`
+//   ⇒ Cùng một chuỗi chứa `Bearer <token>` được nhét vào mảng log **hai lần**, rồi `ProcessBizReq` ghi xuống.
+//   ⇒ Ghép với #596 (mật khẩu API vào log lúc lấy token): **cả mật khẩu lẫn token** đều nằm trong bảng log
+//     nghiệp vụ. Ai đọc được log là **gọi Bravo được** mà không cần biết mật khẩu.
+// 🔴🔴 **ÉP GIAO THỨC BẢO MẬT Ở MỨC TOÀN TIẾN TRÌNH**:
+//     `System.Net.**ServicePointManager**.SecurityProtocol = SecurityProtocolTypeExtensions.Tls12;`
+//   `ServicePointManager` là **static toàn ứng dụng** ⇒ một hàm con của cụm Bravo **ghi đè** giao thức cho
+//   **mọi** kết nối HTTPS khác trong tiến trình (đẩy Hyundai Me #586, hoá đơn điện tử, …) — và **gán bằng**
+//   (`=`) chứ không **hợp bit** (`|=`) nên **loại bỏ** mọi giao thức khác đang bật. Tác dụng phụ toàn cục,
+//   đặt ở nơi không ai nghĩ tới khi đi tìm nguyên nhân "sao dịch vụ kia bỗng bắt tay TLS thất bại".
+// 🔴 `client.Timeout = -1` — **không thời hạn chờ**, lặp lại y hệt #596.
+// 🔴 **NỘI DUNG TRẢ VỀ CŨNG VÀO LOG NGUYÊN VĂN**: `"RT.Content", Convert.ToString(iRestResponse.Content)`
+//   ⇒ bất cứ dữ liệu nhạy cảm nào Bravo trả về đều được sao vào bảng log.
+// ⚪ **Âm tính đáng ghi — hai thái cực trong cùng một hệ**: hàm này có chú thích nguyên văn
+//   *"Đẩy thành công hay thất bại đều ghi log hết"* và **thực sự** gọi `ProcessBizReq` ở mọi nhánh.
+//   Trong khi tầng đẩy Hyundai Me (#586) có `catch` **rỗng hoàn toàn**, mất gói không dấu vết.
+//   ⇒ Cùng một tác giả/hệ: chỗ **không log gì**, chỗ **log cả bí mật**. Không có chuẩn ghi log chung.
+//
 // ===== 🔴🔴 #596 TẦNG XÁC THỰC BRAVO (`GetToken` + `PostBravoTokenGet`) — **MẬT KHẨU API ĐI VÀO LOG** =====
 // Nguồn: `BizCarSv.Bravo.cs:343` (`GetToken`) → `OS_BravoService.GetToken` (`:411`) →
 //   `BizCarSv.BravoService.cs:56` (`PostBravoTokenGet`). Mọi lời gọi Bravo (#212/#246/#247) đi qua đây.
@@ -19829,6 +19854,14 @@ app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
         deserializeNotDefensive = "DeserializeObject<RT_Token>(response.content) roi lay access_token — khong kiem content co phai JSON, khong kiem token rong",
         commentedCallBravoInsideService = "OS_BravoService co mot ban CallBravo bi comment toan bo; ban dang chay la BizCarSv.CallBravo o lop ngoai (:371)",
         urlConcatenationTrap = "apiUrl + token va apiUrl + api/BravoWebApi/execute — cung bay #586 (BuildUrlAPI)",
+        // ===== #597 (PostBravo) =====
+        bearerTokenLoggedTwice = "SerializeObject(request) sau khi AddHeader(Authorization, Bearer + token) roi nhet vao log hai lan (RQToBravo va RT.Request)",
+        credentialsAndTokenBothInLogs = "ghep #596 (mat khau luc lay token) + #597 (token luc goi) => ai doc duoc log la GOI BRAVO DUOC ma khong can biet mat khau",
+        securityProtocolForcedProcessWide = "ServicePointManager.SecurityProtocol = Tls12 — static toan ung dung, va gan bang = chu khong hop bit |= nen LOAI BO moi giao thuc khac dang bat",
+        sideEffectHitsOtherIntegrations = "moi ket noi HTTPS khac trong tien trinh (Hyundai Me #586, hoa don dien tu) deu bi ep theo",
+        responseContentLoggedVerbatim = "RT.Content ghi nguyen van noi dung Bravo tra ve vao bang log",
+        noTimeoutHereToo = "client.Timeout = -1 (lap #596)",
+        loggingIsTwoExtremes = "PostBravo log CA BI MAT; con tang day Hyundai Me (#586) co catch RONG khong log gi — khong co chuan ghi log chung",
         portDoesNotCallBravo = "MiniHTC khong goi Bravo; endpoint nay chi chan doan cau hinh",
     });
 }).RequireAuthorization();
