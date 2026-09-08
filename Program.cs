@@ -32327,6 +32327,149 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   ⇒ **có hiệu lực thật** — khác #B245/#B299 nơi `order by` nằm trong `select … into` (vô nghĩa).
 //   ⇒ Thứ tự trả về là **CBU trước CKD** (theo alphabet), và **dòng thiếu spec (NULL) đứng ĐẦU**.
 // 🔴 Trả **MỘT** bảng `Tables[0] = "HMC_Report"` (`hmcrpt.*` + `AssemblyStatus`).
+
+// ===== #B335/#B336/#B337 TỔNG HỢP XE 02 (có phân trang, 21 bộ lọc) —
+//       `RptCarCarGetSummary02_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`)
+//       + builder `RptSQLQuery.mySql_RptCarCarGetSummary02_WH()` (**405 dòng**) =====
+// **3B khớp cả 2 máy**: cửa laptop `158043,158285` ≡ 150 `158048,158290`
+//   ⇒ **`bdc20847f600c83f67f92ac5ad96eec0`**; builder `RptSQLQuery.cs 33618,34022` **trùng vị trí**
+//   cả hai máy ⇒ **`57a845ae1d73b7710d81382573b00c78`**.
+// ✅🔴 **RBAC — BIẾN THỂ MỚI: HAI TẦNG LỌC, HAI CỘT KHÁC NHAU**:
+//   · **Tầng 1** (`#tbl_Car_Car_Filter_Temp`, chọn XE):
+//     `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//     ⇒ lọc theo **PHẠM VI BU** của user.
+//   · **Tầng 2** (subquery lấy thông tin GIAO DỊCH bán lẻ):
+//     `and dlsd.DealerCode = **@strDealerCode**`, với `@strDealerCode = drAbilityOfUser["**DealerCode**"]`
+//     ⇒ lọc **đúng MỘT đại lý của chính user**.
+//   ⇒ **Lần đầu thấy `drAbilityOfUser["DealerCode"]`** (mọi ca trước chỉ dùng `["BUPattern"]`).
+//   ⚠️ **Hệ quả**: user **HTC** (không thuộc đại lý nào ⇒ `DealerCode` rỗng) vẫn thấy **xe**, nhưng
+//     subquery deal khớp `= ''` ⇒ **mọi cột `DLSD*` (số giao dịch, khách hàng, ngày bán) đều NULL**.
+//     Nhìn tưởng "xe chưa bán", thực ra là **thiếu quyền ở tầng hai**. 📌 Port trả `dealScopeDealerCode`.
+//   `myCommon_CheckHTCDirect` = **0 hit** ⇒ **không cổng**, nhưng **CÓ lọc (hai tầng)** ⇒ **tổ hợp (3)**,
+//   không phải lỗ.
+// ✅ **PHÂN TRANG ĐÚNG KHUÔN — phản ví dụ lành mạnh cho #B266**:
+//     `Row_Number() over (order by cc.CarId **desc**) MyRowIdx` · `Count(0) MyCount` **trước** khi cắt trang ·
+//     `@MyRowIdx_Start = **start + 1**` (*"C# based from 0 but SqlIdx based from 1"*) ·
+//     `@MyRowIdx_End = **start + count**` ⇒ cửa sổ `[start+1 … start+count]` **đúng**, khác hẳn #B266
+//     (cận trên dùng nhầm `@nResultRecordCount`).
+// 🔴 **21 bộ lọc động** qua `BuildClause(… "@p" …)` — **tham số runtime**, an toàn. Nhiều hơn #B323 **ba**
+//   cột: `SellStatus`, `SellDate`, `SellBy` (trục **bán tới khách cuối**).
+// 🔴 **Hằng nghiệp vụ nạp sẵn**: `@nDayT = TConst.HTCConst.**HTC_DiscountPolicy_MaxDeclare_WorkingDays**`
+//   (số **ngày làm việc** tối đa để khai báo chính sách chiết khấu) + helper
+//   `mySql_GetClauseSelect_Mst_Calendar_GetForDayT()` ⇒ mốc "ngày làm việc thứ N" tính từ `Mst_Calendar`;
+//   `@strMCALDate_From = TConst.DateTimeSpecial.DateMin`.
+// 🔴 `zzzzClauseSelect_PaymentDetailWithDiscount_01` — tầng tiền **kèm chiết khấu**, dùng chung với các
+//   báo cáo thanh toán khác. 📌 **NỢ**: chưa port ⇒ các cột tiền/chiết khấu trả `null`.
+// 🔴 Trục giao dịch lọc `dlsdd.DeliveryStatus in ('P','A','F')` — **ba** trạng thái (kể cả `'P'` chưa giao),
+//   khác #B290 (`('A','F')`).
+app.MapGet("/api/reports/carcar-summary02", async (
+    AppDbContext db, ITenantContext t,
+    string? carId, string? specCode, string? modelCode, string? colorCode, string? dealerCode,
+    string? paymentStatus, string? deliveryStatus, string? flagAllowChangeVIN, string? flagActive,
+    string? vin, string? sellStatus, DateTime? sellDateFrom, DateTime? sellDateTo, string? sellBy,
+    DateTime? createdDateFrom, DateTime? createdDateTo, string? createdBy,
+    int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    // ✅ Tầng 1 — phạm vi BU của user (MiniHTC: theo tenant + đại lý tồn tại).
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.CarId != null);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(v => v.CarId == carId!.Trim());
+    if (!string.IsNullOrWhiteSpace(specCode)) q = q.Where(v => v.SpecCode == specCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(v => v.ModelCode == modelCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(colorCode)) q = q.Where(v => v.ColorCode == colorCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(v => v.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(paymentStatus)) q = q.Where(v => v.PaymentStatus == paymentStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(deliveryStatus)) q = q.Where(v => v.DeliveryStatus == deliveryStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagAllowChangeVIN)) q = q.Where(v => v.FlagAllowChangeVIN == flagAllowChangeVIN!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(v => v.FlagActive == flagActive!.Trim());
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(v => v.VIN == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(sellStatus)) q = q.Where(v => v.SellStatus == sellStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(createdBy)) q = q.Where(v => v.CreatedBy == createdBy!.Trim());
+    if (createdDateFrom != null) q = q.Where(v => v.CreatedDate >= createdDateFrom);
+    if (createdDateTo != null) q = q.Where(v => v.CreatedDate <= createdDateTo);
+
+    var all = (await q.ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode))
+        // ✅ Row_Number() over (order by cc.CarId DESC)
+        .OrderByDescending(v => v.CarId, StringComparer.Ordinal)
+        .ToList();
+
+    var myCount = all.Count;                              // ✅ MyCount đếm TRƯỚC khi cắt trang
+    // ✅ Cửa sổ [start+1 … start+count] — đúng khuôn, khác #B266.
+    var page = all.Skip(start).Take(count).ToList();
+
+    // 🔴 Tầng 2 — thông tin giao dịch CHỈ của đại lý CỦA CHÍNH USER (`drAbilityOfUser["DealerCode"]`).
+    // 📌 MiniHTC chưa có trục "đại lý của user" ⇒ để null và ghi rõ; KHÔNG suy đoán.
+    string? dealScopeDealerCode = null;
+
+    var carIds = page.Select(v => v.CarId!).ToList();
+    var dtls = await db.DealerDealDetails
+        .Where(d => d.OrgId == t.OrgId && carIds.Contains(d.CarId)
+                    && (d.DeliveryStatus == "P" || d.DeliveryStatus == "A" || d.DeliveryStatus == "F"))
+        .ToListAsync();
+    var dealIds = dtls.Select(d => d.DealId).Distinct().ToList();
+    var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id)).ToListAsync())
+        .ToDictionary(d => d.Id);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var idx = start;
+    var rows = page.Select(cv =>
+    {
+        idx++;
+        var dtl = dtls.FirstOrDefault(d => d.CarId == cv.CarId
+            && (dealScopeDealerCode == null
+                || (deals.TryGetValue(d.DealId, out var dd0) && dd0.DealerCode == dealScopeDealerCode)));
+        var deal = (dtl != null && deals.TryGetValue(dtl.DealId, out var dd)) ? dd : null;
+        return new
+        {
+            MyRowIdx = idx,
+            cv.CarId, cv.VIN, cv.DealerCode,
+            DealerName = dealers.TryGetValue(cv.DealerCode ?? "", out var dlr) ? dlr.DealerName : null,
+            cv.ModelCode,
+            ModelName = (cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null,
+            cv.SpecCode, cv.ActualSpec, cv.RootSpec,
+            SpecDescription = (cv.SpecCode != null && specs.TryGetValue(cv.SpecCode, out var sp)) ? sp.SpecDesc : null,
+            cv.ColorCode, cv.PaymentStatus, cv.DeliveryStatus, cv.SellStatus,
+            cv.FlagActive, cv.FlagAllowChangeVIN, cv.CreatedDate, cv.CreatedBy,
+            cv.UnitPriceActual,
+            // 🔴 Nhóm cột DLSD* — CHỈ có khi giao dịch thuộc đại lý CỦA USER (tầng 2).
+            DLSDDealNo = deal?.DealNo,
+            DLSDDealerCode = deal?.DealerCode,
+            DLSDDealNoUser = deal?.DealNoUser,
+            DLSDSalesType = deal?.SalesType,
+            DLSDDealDate = deal?.DealDate,
+            DLSDCustomerCodeBuyer = deal?.CustomerCodeBuyer,
+            DLSDCustomerCodeHolder = deal?.CustomerCodeHolder,
+            DLSDCustomerCodeDriver = deal?.CustomerCodeDriver,
+            DLSDDDeliveryStatus = dtl?.DeliveryStatus,
+            // 📌 NỢ: tầng tiền kèm chiết khấu chưa port.
+            PaymentDetailWithDiscount = (decimal?)null
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new { MyCount = myCount },       // ✅ đếm TRƯỚC khi cắt trang
+        recordStart = start, recordCount = count,
+        Car_Car = rows,
+        dealScopeDealerCode,
+        twoTierRbacNote = "RBAC - BIEN THE MOI: HAI TANG LOC, HAI COT KHAC NHAU. Tang 1 (#tbl_Car_Car_Filter_Temp, chon XE): 'inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' => loc theo PHAM VI BU cua user. Tang 2 (subquery lay thong tin GIAO DICH ban le): 'and dlsd.DealerCode = @strDealerCode' voi @strDealerCode = drAbilityOfUser[\"DealerCode\"] => loc DUNG MOT DAI LY CUA CHINH USER. LAN DAU THAY drAbilityOfUser[\"DealerCode\"] (moi ca truoc chi dung [\"BUPattern\"]). HE QUA: user HTC (khong thuoc dai ly nao => DealerCode rong) van thay XE, nhung subquery deal khop '= \"\"' => MOI COT DLSD* (so giao dich, khach hang, ngay ban) deu NULL - nhin tuong 'xe chua ban', thuc ra la THIEU QUYEN O TANG HAI. CheckHTCDirect = 0 hit => khong cong, nhung CO loc (hai tang) => to hop (3), khong phai lo.",
+        pagingCorrectNote = "PHAN TRANG DUNG KHUON - PHAN VI DU LANH MANH cho #B266: 'Row_Number() over (order by cc.CarId desc) MyRowIdx'; 'Count(0) MyCount' TRUOC khi cat trang; '@MyRowIdx_Start = start + 1' (C# dem tu 0, SqlIdx dem tu 1); '@MyRowIdx_End = start + count' => cua so [start+1 ... start+count] DUNG, khac han #B266 (can tren dung nham @nResultRecordCount).",
+        filtersNote = "21 bo loc dong qua BuildClause('@p') - THAM SO RUNTIME, an toan. Nhieu hon #B323 BA cot: SellStatus, SellDate, SellBy (truc BAN TOI KHACH CUOI).",
+        constantsNote = "Hang nghiep vu nap san: @nDayT = TConst.HTCConst.HTC_DiscountPolicy_MaxDeclare_WorkingDays (so NGAY LAM VIEC toi da de khai bao chinh sach chiet khau) + helper mySql_GetClauseSelect_Mst_Calendar_GetForDayT() => moc 'ngay lam viec thu N' tinh tu Mst_Calendar; @strMCALDate_From = TConst.DateTimeSpecial.DateMin.",
+        dealStatusNote = "Truc giao dich loc 'dlsdd.DeliveryStatus in (P,A,F)' - BA trang thai (ke ca 'P' chua giao), khac #B290 (chi ('A','F')).",
+        debtNote = "NO: zzzzClauseSelect_PaymentDetailWithDiscount_01 (tang tien kem chiet khau, dung chung voi cac bao cao thanh toan) chua port => cot tien/chiet khau tra NULL; truc 'dai ly cua user' (drAbilityOfUser[DealerCode]) chua co trong MiniHTC => dealScopeDealerCode = null, KHONG suy doan."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/hmc-report", async (
     AppDbContext db, ITenantContext t,
     long? autoId, string? dealerCode, string? dealNo, string? carId, string? vin,
