@@ -40249,6 +40249,146 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B380/#B381 NHÂN SỰ BÁN HÀNG — CẶP SINH ĐÔI "THEO VÙNG" / "THEO ĐẠI LÝ"
+//       (`Rpt_HRSalesMan_TypeArea_WH_New20230306` / `…_TypeDealer_WH_New20230306`,
+//        `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — offset lệch 5 dòng**:
+//   TypeArea   laptop `151675,152214` ≡ 150 `151680,152219` ⇒ **`9072b65bec5733bc3c328f9740e9d360`**
+//   TypeDealer laptop `152695,153191` ≡ 150 `152700,153196` ⇒ **`1c979fa75ec8c3b628c11319ae1b7936`**
+//
+// 🔴🔴🔴 **HAI TWIN NỐI TỈNH QUA HAI NGUỒN KHÁC NHAU ⇒ HAI BÁO CÁO KHÔNG CỘNG KHỚP**:
+//     TypeArea  : `inner join Mst_Province mp on **md.ProvinceCode**      = mp.ProvinceCode`  ← tỉnh của **ĐẠI LÝ**
+//     TypeDealer: `inner join Mst_Province mp on **hrsmomdt.ProvinceCode** = mp.ProvinceCode`  ← tỉnh của **DÒNG NHÂN VIÊN**
+//   ⇒ Nhân viên làm việc ở **tỉnh khác tỉnh đại lý** sẽ **rơi vào vùng khác nhau** giữa hai báo cáo
+//     ⇒ tổng theo vùng ≠ tổng theo đại lý. Cùng họ "nhiều nguồn cho cùng một khái niệm" (#B332 ba nguồn
+//     spec, #B359 hai đường tính). 📌 **KHÔNG tự hợp nhất.**
+//
+// ✅🔴 **CHÚ THÍCH NGUỒN GHI RÕ YÊU CẦU BỎ LỌC — CHI TIẾT NHẤT TỪ TRƯỚC TỚI NAY** (TypeDealer):
+//     `/* 20221026. HuongTTT: NC: Xem báo cáo theo đại lý thì xem được dữ liệu của tất cả các đại lý`
+//     `                          Xem báo cáo theo đại lý thì xem được dữ liệu của tất cả các Loại nhân viên*/`
+//     `--and hrsmom.DealerCode = '@strDealerCode'   -- 20221026. HuongTTT.`
+//     `--and hrsmomdt.SMType   = '@strSMType'       -- 20221026. HuongTTT.`
+//     `and (N'@strDealerCode' = '' or hrsmom.DealerCode = '@strDealerCode')  -- 20221026. HuongTTT.`
+//     `and (N'@strSMType'     = '' or hrsmomdt.SMType   = '@strSMType')      -- 20221026. HuongTTT.`
+//   ⇒ Điều kiện **cứng** được đổi thành **bộ lọc tuỳ chọn** (rỗng ⇒ xem tất cả), kèm **ngày, tên người,
+//     và lý do nghiệp vụ (NC)**. ⇒ Đây là **ý định được ghi rõ nhất** trong campaign — hơn hẳn
+//     `//cho phan quyen thoai mai` của #B345. **Không phải xoá nhầm.**
+//   ⚠️ Nhưng vẫn ghi đúng mức: kết quả là **người xem báo cáo theo đại lý thấy dữ liệu MỌI đại lý** —
+//     đó là **quyết định nghiệp vụ đã được duyệt**, không phải lỗi; port giữ nguyên và nêu rõ.
+//   🔴 Bản TypeArea có chú thích tương tự nhưng **muộn hơn**: `-- 20230407. HuongTTT. Cho phép tìm All
+//     Loại NV -> Rem query này lại` ⇒ **hai bản nới lỏng ở HAI THỜI ĐIỂM KHÁC NHAU** (2022-10-26 vs
+//     2023-04-07) ⇒ trong khoảng giữa, hai báo cáo có **mức lọc khác nhau**.
+//
+// ✅ **RBAC tổ hợp (1) ở CẢ HAI**: `myCommon_CheckHTCDirect(…)` **ACTIVE, không bị comment**
+//   ⇒ **có cổng** ⇒ **không phải lỗ** (dù `@strBUPatternOfUser` bind mà SQL không dùng).
+//   Đã grep **đủ sáu trục**: chỉ hai hit là cổng + dòng bind ⇒ kết luận vững.
+// 🔴🔴 **HAI TWIN LỆCH SỐ BẢNG TRẢ VỀ VÀ LỆCH CẢ TÊN**:
+//     TypeArea   → **3** bảng: `Rpt_HR_SalesMan_ForMonth` · `…_ForQuy` · `…_ForYear`
+//     TypeDealer → **2** bảng: `Rpt_HR_SalesMan_TypeDealerMaster` · `Rpt_HR_SalesMan_TypeDealer_Month`
+//   ⇒ **Hợp đồng API khác hẳn nhau** dù là "cặp sinh đôi" — cùng khuôn #B368/#B369.
+// 🔴 `md.FlagActive = '1'` xuất hiện **3 lần** ở TypeArea, **2 lần** ở TypeDealer ⇒ **một câu của
+//   TypeDealer không lọc đại lý còn hoạt động** ⇒ thêm một nguồn lệch số nữa.
+// 🔴 TypeArea lọc vùng **đi vòng qua bảng tạm**: `#tbl_Mst_Area_Filter` (`t.AreaCode = '@strAreaCode'`)
+//   → `#tbl_Mst_Area` (`t.AreaBUPattern like f.AreaBUPattern`) → `inner join #tbl_Mst_Area tma`;
+//   dòng trực tiếp `--and ma.AreaCode ='@strAreaCode'` **bị comment** ⇒ đúng luật `C0-…quadragesimusnonus`
+//   (**có bản dựng lại** ⇒ **không phải lỗ**). 🔴 `[BAKE-PARAM-MIX]`: `'@strAreaCode'` nướng trong nháy.
+app.MapGet("/api/reports/hrsalesman-typearea", async (
+    AppDbContext db, ITenantContext t, string? areaCode, string? smType,
+    string? hrMonthFrom, string? hrMonthTo) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        Rpt_HR_SalesMan_ForMonth = Array.Empty<object>(),   // Tables[0]
+        Rpt_HR_SalesMan_ForQuy = Array.Empty<object>(),     // Tables[1]
+        Rpt_HR_SalesMan_ForYear = Array.Empty<object>(),    // Tables[2]
+        filtersEcho = new { areaCode, smType, hrMonthFrom, hrMonthTo },
+        twinProvinceSourceNote = "HAI TWIN NOI TINH QUA HAI NGUON KHAC NHAU => HAI BAO CAO KHONG CONG KHOP: TypeArea dung 'inner join Mst_Province mp on md.ProvinceCode = mp.ProvinceCode' (tinh cua DAI LY); TypeDealer dung 'on hrsmomdt.ProvinceCode = mp.ProvinceCode' (tinh cua DONG NHAN VIEN). Nhan vien lam viec o TINH KHAC TINH DAI LY se roi vao VUNG KHAC NHAU giua hai bao cao => tong theo vung != tong theo dai ly. Cung ho 'nhieu nguon cho cung mot khai niem' (#B332 ba nguon spec, #B359 hai duong tinh). KHONG TU HOP NHAT.",
+        areaFilterViaTempTableNote = "TypeArea loc vung DI VONG QUA BANG TAM: #tbl_Mst_Area_Filter (t.AreaCode = '@strAreaCode') -> #tbl_Mst_Area (t.AreaBUPattern like f.AreaBUPattern) -> inner join #tbl_Mst_Area tma on mp.AreaCode = tma.AreaCode; dong truc tiep '--and ma.AreaCode = @strAreaCode' BI COMMENT => dung luat C0-...quadragesimusnonus (CO BAN DUNG LAI => KHONG phai lo). [BAKE-PARAM-MIX]: '@strAreaCode' nuong trong nhay.",
+        rbacNote = "RBAC to hop (1) o CA HAI: myCommon_CheckHTCDirect(...) ACTIVE, KHONG bi comment => CO CONG => KHONG phai lo (du @strBUPatternOfUser bind ma SQL khong dung). Da grep DU SAU TRUC: chi hai hit la cong + dong bind => ket luan vung.",
+        twinTableShapeNote = "HAI TWIN LECH SO BANG VA LECH CA TEN: TypeArea -> 3 bang (Rpt_HR_SalesMan_ForMonth / _ForQuy / _ForYear); TypeDealer -> 2 bang (Rpt_HR_SalesMan_TypeDealerMaster / Rpt_HR_SalesMan_TypeDealer_Month). HOP DONG API KHAC HAN NHAU du la 'cap sinh doi' - cung khuon #B368/#B369. Them: md.FlagActive = '1' xuat hien 3 LAN o TypeArea nhung chi 2 LAN o TypeDealer => mot cau cua TypeDealer KHONG loc dai ly con hoat dong => them mot nguon lech so.",
+        debtNote = "NO - KHONG DOAN: HR_SalesManOfMonth / HR_SalesManOfMonthDtl + Mst_Area/AreaBUPattern chua co trong MiniHTC => tra khung + co."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/hrsalesman-typedealer", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? smType,
+    string? hrMonthFrom, string? hrMonthTo) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        Rpt_HR_SalesMan_TypeDealerMaster = Array.Empty<object>(),   // Tables[0]
+        Rpt_HR_SalesMan_TypeDealer_Month = Array.Empty<object>(),   // Tables[1]
+        filtersEcho = new { dealerCode, smType, hrMonthFrom, hrMonthTo },
+        documentedScopeRelaxationNote = "CHU THICH NGUON GHI RO YEU CAU BO LOC - CHI TIET NHAT TU TRUOC TOI NAY: '/* 20221026. HuongTTT: NC: Xem bao cao theo dai ly thi xem duoc du lieu cua TAT CA cac dai ly / Xem bao cao theo dai ly thi xem duoc du lieu cua TAT CA cac Loai nhan vien */' roi '--and hrsmom.DealerCode = @strDealerCode -- 20221026' va '--and hrsmomdt.SMType = @strSMType -- 20221026' BI COMMENT, thay bang 'and (N'@strDealerCode' = '' or hrsmom.DealerCode = '@strDealerCode')' va tuong tu cho SMType. => Dieu kien CUNG doi thanh BO LOC TUY CHON (rong => xem tat ca), kem NGAY + TEN NGUOI + LY DO NGHIEP VU (NC). Day la Y DINH DUOC GHI RO NHAT trong campaign - hon han '//cho phan quyen thoai mai' cua #B345. KHONG phai xoa nham. GHI DUNG MUC: ket qua la NGUOI XEM BAO CAO THEO DAI LY THAY DU LIEU MOI DAI LY - do la QUYET DINH NGHIEP VU DA DUOC DUYET, khong phai loi.",
+        relaxedAtDifferentTimesNote = "HAI BAN NOI LONG O HAI THOI DIEM KHAC NHAU: TypeDealer 20221026 (bo ca DealerCode lan SMType); TypeArea 20230407 ('Cho phep tim All Loai NV -> Rem query nay lai', chi bo SMType). => Trong khoang giua hai moc, hai bao cao co MUC LOC KHAC NHAU.",
+        twinProvinceSourceNote = "Xem ghi chu day du o /api/reports/hrsalesman-typearea (twinProvinceSourceNote): ban NAY noi tinh qua hrsmomdt.ProvinceCode (tinh cua DONG NHAN VIEN), ban kia qua md.ProvinceCode (tinh cua DAI LY).",
+        rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE => CO CONG => khong phai lo.",
+        debtNote = "NO - KHONG DOAN: HR_SalesManOfMonth / HR_SalesManOfMonthDtl chua co trong MiniHTC => tra khung + co."
+    });
+}).RequireAuthorization();
+
+// ===== #B382 ĐỐI CHIẾU HOÁ ĐƠN ĐẠI LÝ ↔ HỢP ĐỒNG — `Rpt_MatchInvDealerAndContract_WH_New20260514`
+//       (`BizHTC.Report.cs:32460` → SQL `RptSQLQuery.cs:19126`
+//        `mySql_Rpt_MatchInvDealerAndContract**V2**_New20260514()`) =====
+// **3B khớp cả 2 máy (2 md5); cả hai file KHÔNG lệch offset**:
+//   hàm `32460,32692` ⇒ **`123938592f1b9df4ac8ad4a03d89c5b4`**;
+//   SQL `19126,20047` (922 dòng, **32 bảng tạm**) ⇒ **`209e5b533f903529e5ebd60ac9ad37fb`**.
+//
+// 🔴 **TÊN HÀM KHÔNG KHỚP TÊN SQL — có chữ `V2` chỉ ở phía SQL**: hàm `Rpt_MatchInvDealerAndContract_WH_…`
+//   gọi `mySql_Rpt_MatchInvDealerAndContract**V2**_New20260514()` ⇒ lại một ca **mốc/tên ở vỏ không cho
+//   biết SQL nào đang chạy** (cùng họ `C0-…quadragesimusseptimus`, lần này là **hậu tố phiên bản `V2`**
+//   chứ không phải mốc ngày).
+//
+// ✅✅ **MỘT CA COMMENT ĐỒNG BỘ CẢ HAI PHÍA — hiếm, và tôi suýt báo nhầm**:
+//     C#:  `//dsResult.Tables[nIdx++].TableName = strFunctionName;`      ← **bị comment**
+//     SQL: `--select t.* from #tbl_return t --//[mylock];`                ← **cũng bị comment**
+//   Nhìn riêng phía C# thì trông như bug (`nIdx` không tăng ⇒ bảng pivot bị gán vào `Tables[0]`).
+//   ✅ **Đã đếm câu trả kết quả trong SQL**: chỉ còn **MỘT** (`select … from ( … ) as upvt;`)
+//     ⇒ `Tables[0]` **đúng là** bảng pivot ⇒ **KHÔNG phải bug**. Hai phía được sửa **cùng lúc**.
+//   📌 Ghi lại làm **đối chứng cho luật `C0-…tricesimusseptimus`**: khi thấy dòng đặt tên bảng bị
+//     comment, **phải đếm lại số câu trả kết quả trong SQL** trước khi kết luận lệch chỉ số.
+//
+// 🔴🔴 **`[BAKE-PARAM-MIX]` — ca thứ TÁM**: `@strBUPatternOfUser` là **param bind thật**, còn
+//   `@strAreaCode`, `@strDealerCode`, `@strHTCStaffInCharge`, `@strRptDateFrom/To`, `@strRptStatus`,
+//   `@strZoneCode` … **nướng qua `Replace`** ⇒ **cùng câu, hai cơ chế** (giống #B378).
+// 🔴 `@strZoneCode` được nướng ⇒ áp luật đã ghi trong bộ nhớ (`zonecode NULL vs rỗng` làm báo cáo **ra 0
+//   câm**): port truyền **chuỗi rỗng**, không NULL.
+// 🔴 SQL đồ sộ: **922 dòng, 32 bảng tạm** — trong đó nhiều bảng `#tbl_Return_*`, `#tbl_Rpt_EstimateDeliveryPlan*`
+//   ⇒ đây là **báo cáo hợp nhất nhiều nguồn**; các câu debug `--select null tbl_…` **đều được comment**.
+// ✅ RBAC: `@strBUPatternOfUser` bind thật ⇒ có lọc dòng ⇒ **tổ hợp (3)**, không phải lỗ.
+// ⚠️ **NỢ**: chuỗi hoá đơn đại lý + hợp đồng + kế hoạch giao xe (32 bảng tạm) chưa đủ ⇒ trả khung + cờ.
+app.MapGet("/api/reports/matchinv-dealer-contract", async (
+    AppDbContext db, ITenantContext t,
+    string? areaCode, string? dealerCode, string? htcStaffInCharge,
+    DateTime? rptDateFrom, DateTime? rptDateTo, string? rptStatus, string? zoneCode,
+    string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3): BUPattern là param thật ở nguồn.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        Rpt_MatchInvDealerAndContractPivot = Array.Empty<object>(),   // Tables[0] — bảng DUY NHẤT
+        // 🔴 zoneCode: chuỗi RỖNG thay vì NULL (luật đã ghi: NULL làm filter loại sạch dòng).
+        zoneCodeEcho = zoneCode ?? "",
+        filtersEcho = new { areaCode, htcStaffInCharge, rptDateFrom, rptDateTo, rptStatus },
+        v2NameMismatchNote = "TEN HAM KHONG KHOP TEN SQL - co chu V2 CHI o phia SQL: ham Rpt_MatchInvDealerAndContract_WH_New20260514 goi mySql_Rpt_MatchInvDealerAndContractV2_New20260514(). Lai mot ca 'moc/ten o vo khong cho biet SQL nao dang chay' (cung ho C0-...quadragesimusseptimus), lan nay la HAU TO PHIEN BAN V2 chu khong phai moc ngay.",
+        syncedCommentNote = "MOT CA COMMENT DONG BO CA HAI PHIA - hiem, va toi SUYT BAO NHAM: C# co '//dsResult.Tables[nIdx++].TableName = strFunctionName;' BI COMMENT, SQL co '--select t.* from #tbl_return t --//[mylock];' CUNG BI COMMENT. Nhin rieng phia C# thi trong nhu bug (nIdx khong tang => bang pivot bi gan vao Tables[0]). DA DEM CAU TRA KET QUA TRONG SQL: chi con MOT ('select ... from ( ... ) as upvt;') => Tables[0] DUNG LA bang pivot => KHONG PHAI BUG. Hai phia duoc sua CUNG LUC. Doi chung cho luat C0-...tricesimusseptimus: khi thay dong dat ten bang bi comment, PHAI DEM LAI so cau tra ket qua trong SQL truoc khi ket luan lech chi so.",
+        bakeParamMixCase8Note = "[BAKE-PARAM-MIX] ca thu TAM: @strBUPatternOfUser la PARAM BIND THAT, con @strAreaCode, @strDealerCode, @strHTCStaffInCharge, @strRptDateFrom/To, @strRptStatus, @strZoneCode... NUONG qua Replace => CUNG CAU, HAI CO CHE (giong #B378). @strZoneCode duoc nuong => ap luat da ghi trong bo nho (zonecode NULL vs rong lam bao cao RA 0 CAM): port truyen CHUOI RONG, khong NULL.",
+        sqlScaleNote = "SQL do so: 922 dong, 32 BANG TAM - nhieu bang #tbl_Return_*, #tbl_Rpt_EstimateDeliveryPlan* => day la BAO CAO HOP NHAT NHIEU NGUON; cac cau debug '--select null tbl_...' DEU duoc comment. RBAC to hop (3): @strBUPatternOfUser bind that => co loc dong => khong phai lo.",
+        debtNote = "NO - KHONG DOAN: chuoi hoa don dai ly + hop dong + ke hoach giao xe (32 bang tam) chua du => tra khung + co."
+    });
+}).RequireAuthorization();
 // ===== #B377 GỐC ĐƠN HÀNG DMS40 — `Rpt_DMS40_Ord_SalesOrderRoot_WH_New20190722`
 //       (vỏ `DataWH/BizHTC.zTemp.cs:28708` → `…X_New20190722` (`:28998`)
 //        → SQL `RptSQLQuery.cs:12048`) =====
