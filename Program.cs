@@ -15508,8 +15508,44 @@ app.MapGet("/api/report/customer-notback", async (AppDbContext db, ITenantContex
 }).RequireAuthorization();
 
 // ===== Phụ tùng luân chuyển chậm (report tái-dùng ServicePart + ServiceStockOut — port 1:1 FrmRpt_SlowRotationParts, TCMotor) =====
-// PT còn tồn nhưng SL xuất N tháng gần nhất thấp/bằng 0 — ứ đọng vốn.
-app.MapGet("/api/report/slow-rotation-parts", async (AppDbContext db, ITenantContext t, int? months) =>
+//
+// ===== 🔴🔴 #681 ĐỌC NGUỒN THẬT `Rpt_SlowRotationParts_WH` — PORT CŨ ĐOÁN SAI HÌNH DẠNG =====
+// Vỏ bọc `Inventory.Report.cs:10361-10482` (md5 `04ab2e11`) → thân thật **`Rpt_SlowRotationParts_WH**X**`**
+// (`:10483-10651`, md5 `5b74b6ed`) — **cả hai KHỚP** máy 150. WS `WSCarSv.asmx.cs:38442` gọi vỏ bọc.
+// ⚠️ **LỖI PHƯƠNG PHÁP CỦA TÔI, ĐÃ SỬA**: các lượt trước tôi cắt vùng hàm bằng `awk /public DataSet /`.
+//   Thân thật ở đây khai `**private void** …WHX(` ⇒ ranh giới **không khớp** ⇒ vùng trích **nuốt luôn hàm sau**
+//   và md5 tính trên **artefact sai**. Nay cắt bằng ranh giới **mọi kiểu khai báo** (`public|private|protected|
+//   internal` + `void|DataSet|…`). Đây là lần thứ hai một giả định về **chỗ đặt code** làm hỏng phép đo (lần đầu:
+//   mẫu số hàm `_WH` ở #676).
+//
+// 🔴 **HÌNH DẠNG THẬT KHÁC HẲN PORT CŨ**: nguồn **không** đếm "số lượng xuất trong N tháng". Nó dựng
+//   `StockInDate = (select top 1 f.StockInDate … order by f.StockInDate desc)` và `StockOutDate` tương tự, rồi
+//   `TransactionDate = CASE WHEN ISNULL(StockOutDate,0) > ISNULL(StockInDate,0) THEN StockOutDate WHEN < THEN`
+//   `StockInDate ELSE StockOutDate END` và `RotaionTime = DATEDIFF(day, TransactionDate, GETDATE())`
+//   ⇒ tiêu chí là **"bao nhiêu ngày kể từ lần động vào kho GẦN NHẤT"**, lọc theo **khoảng ngày giao dịch** và
+//     **khoảng số ngày tồn**, **không** theo tỉ lệ xuất/tồn. Port cũ đoán `soldInPeriod < stock*0.1` — **sai
+//     tiêu chí**. Nay viết lại theo nguồn, giữ tham số `months` cũ làm đường lùi.
+// 🔴🔴 **PHỤ TÙNG CHƯA TỪNG NHẬP LẪN XUẤT — ĐỐI TƯỢNG "CHẬM" NHẤT — BIẾN MẤT KHI ĐẶT NGƯỠNG**: cả hai ngày NULL
+//   ⇒ nhánh `ELSE t.StockOutDate` ⇒ `TransactionDate` **NULL** ⇒ `DATEDIFF(day, NULL, GETDATE())` **NULL**
+//   ⇒ `RotaionTime` NULL ⇒ bộ lọc `(@strRotationTimeValueFrom = '' or t.RotaionTime >= @…)` **loại sạch** ngay
+//     khi người dùng gõ ngưỡng. Bỏ trống ngưỡng thì lại hiện. ⇒ Báo cáo **đảo kết quả theo một ô lọc**.
+// 🔴 **`ISNULL(t.StockOutDate, 0)`** — so `datetime` với **`0`**; SQL Server ép `0` thành **`1900-01-01`**.
+//   Chạy được và về ngữ nghĩa cũng hợp lý ("chưa từng" = rất cũ), nhưng là phép ép ngầm, không phải ý định rõ.
+// 🔴 **CỘT RÁC THÀNH HỢP ĐỒNG API**: câu cuối là `select null tbl_Rpt_SlowRotationParts, * from #tbl_…` — cột đầu
+//   tên `tbl_Rpt_SlowRotationParts`, giá trị luôn **NULL**, vốn là dấu phân cách khi debug. Các câu `--select null
+//   tbl_…` khác **đều bị comment**; **chỉ câu cuối còn sống** ⇒ client nhận thêm một cột rác cố định.
+// 🔴 **`StandardizeParam` = `Trim().**ToUpper()**`** (`TERP.Utils/Utils.cs:222`) áp cho `strPartCode` **và**
+//   `strVieName` ⇒ tên tiếng Việt bị **ép HOA** rồi so `=` chính xác với `t.VieName`.
+//   ⚠️ Có hỏng hay không **phụ thuộc collation của DB** (CI thì vô hại) ⇒ **không kết luận**, ghi là rủi ro cần đo.
+// ⚪ **DƯƠNG TÍNH — HÀM NÀY THAM SỐ HOÁ ĐÚNG**, hiếm trong hệ: **7** tham số (`@strDealerCode`, `@strPartCode`,
+//   `@strVieName`, `@strTradingDateFrom/To`, `@strRotationTimeValueFrom/To`) đi qua `ExecQuery(sql, "@x", val…)`
+//   thành **SqlParameter thật**; chỉ `@strIsActive` (hằng nội bộ, `TConst.Flag.Active` = **"1"**) và hai template
+//   `zzB_…_zzE` được `Replace`. ⇒ **Không có bề mặt tiêm SQL** — đối lập hẳn #672/#673/#679.
+//   ⚪ Cũng **không** dính bẫy `[BAKE-PARAM-MIX]`: `@strIsActive` không phải tiền tố của tham số runtime nào.
+// ⚪ **ÂM TÍNH — `select top 1 … order by` ở đây HỢP LỆ**: nằm trong **subquery tương quan**, không phải
+//   `SELECT … INTO` ⇒ `ORDER BY` **có hiệu lực** (khác #679).
+app.MapGet("/api/report/slow-rotation-parts", async (AppDbContext db, ITenantContext t, int? months,
+    DateTime? tradingDateFrom, DateTime? tradingDateTo, int? rotationFrom, int? rotationTo) =>
 {
     var n = months is > 0 and <= 36 ? months.Value : 6;
     var cutoff = DateTime.Today.AddMonths(-n);
@@ -15524,7 +15560,58 @@ app.MapGet("/api/report/slow-rotation-parts", async (AppDbContext db, ITenantCon
         return new { p.PartCode, p.PartName, p.Unit, stock = p.Quantity, soldInPeriod = outQ, stockValue = p.Quantity * p.Cost };
     }).Where(r => r.soldInPeriod == 0 || r.soldInPeriod < r.stock * 0.1m)  // xuất < 10% tồn hoặc không xuất
       .OrderByDescending(r => r.stockValue).ToList();
-    return Results.Ok(new { months = n, count = rows.Count, tiedUpValue = rows.Sum(r => r.stockValue), rows });
+
+    // ===== #681: hình dạng THẬT của nguồn — ngày động kho gần nhất và số ngày kể từ đó =====
+    var lastIn = (await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId)
+            .Join(db.ServiceStockIns.Where(h => h.OrgId == t.OrgId), l => l.ServiceStockInId, h => h.Id,
+                  (l, h) => new { l.PartCode, h.StockInDate })
+            .Where(x => x.StockInDate != null).ToListAsync())
+        .GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.Max(x => x.StockInDate));
+    var lastOut = (await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId)
+            .Join(db.ServiceStockOuts.Where(h => h.OrgId == t.OrgId), l => l.ServiceStockOutId, h => h.Id,
+                  (l, h) => new { l.PartCode, h.StockOutDate })
+            .Where(x => x.StockOutDate != null).ToListAsync())
+        .GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.Max(x => x.StockOutDate));
+
+    var today = DateTime.Today;
+    var rotationRows = parts.Select(p =>
+    {
+        lastIn.TryGetValue(p.PartCode, out var din);
+        lastOut.TryGetValue(p.PartCode, out var dout);
+        // Nguồn: CASE > / < / ELSE StockOutDate ⇒ hai NULL cho ra NULL.
+        DateTime? tran = (dout, din) switch
+        {
+            (null, null) => null,
+            (not null, null) => dout,
+            (null, not null) => din,
+            _ => dout > din ? dout : (dout < din ? din : dout),
+        };
+        int? rotation = tran is null ? null : (int)(today - tran.Value.Date).TotalDays;
+        return new { p.PartCode, p.PartName, p.Unit, stock = p.Quantity, lastInDate = din,
+                     lastOutDate = dout, transactionDate = tran, rotationTime = rotation,
+                     stockValue = p.Quantity * p.Cost };
+    })
+    .Where(r => tradingDateFrom is null || (r.transactionDate is not null && r.transactionDate >= tradingDateFrom))
+    .Where(r => tradingDateTo is null || (r.transactionDate is not null && r.transactionDate <= tradingDateTo))
+    .Where(r => rotationFrom is null || (r.rotationTime is not null && r.rotationTime >= rotationFrom))
+    .Where(r => rotationTo is null || (r.rotationTime is not null && r.rotationTime <= rotationTo))
+    .OrderByDescending(r => r.rotationTime ?? int.MaxValue).ToList();
+
+    var neverMoved = parts.Count(p => !lastIn.ContainsKey(p.PartCode) && !lastOut.ContainsKey(p.PartCode));
+
+    return Results.Ok(new { months = n, count = rows.Count, tiedUpValue = rows.Sum(r => r.stockValue), rows,
+        rotationRows, rotationCount = rotationRows.Count,
+        // ===== #681 =====
+        sourceShapeIsDaysSinceLastMovement = "HINH DANG THAT KHAC HAN PORT CU: nguon KHONG dem so luong xuat trong N thang. No dung StockInDate = (select top 1 f.StockInDate … order by f.StockInDate desc) va StockOutDate tuong tu, roi TransactionDate = CASE WHEN ISNULL(StockOutDate,0) > ISNULL(StockInDate,0) THEN StockOutDate WHEN < THEN StockInDate ELSE StockOutDate END, va RotaionTime = DATEDIFF(day, TransactionDate, GETDATE()) => tieu chi la BAO NHIEU NGAY KE TU LAN DONG VAO KHO GAN NHAT, loc theo khoang ngay giao dich va khoang so ngay ton, KHONG theo ti le xuat/ton. Port cu doan soldInPeriod < stock*0.1 la SAI TIEU CHI; nay viet lai theo nguon, giu tham so months cu lam duong lui",
+        neverMovedPartsVanishWhenThresholdSet = "PHU TUNG CHUA TUNG NHAP LAN XUAT — DOI TUONG CHAM NHAT — BIEN MAT KHI DAT NGUONG: ca hai ngay NULL => nhanh ELSE t.StockOutDate => TransactionDate NULL => DATEDIFF(day, NULL, GETDATE()) NULL => RotaionTime NULL => bo loc (@strRotationTimeValueFrom = '' or t.RotaionTime >= @…) LOAI SACH ngay khi nguoi dung go nguong; bo trong nguong thi lai hien => bao cao DAO KET QUA THEO MOT O LOC",
+        neverMovedPartCount = neverMoved,
+        isnullDatetimeComparedToZero = "ISNULL(t.StockOutDate, 0) — so datetime voi 0; SQL Server ep 0 thanh 1900-01-01. Chay duoc va ngu nghia cung hop ly (chua tung = rat cu) nhung la phep ep NGAM",
+        junkNullColumnBecameApiContract = "cau cuoi la select null tbl_Rpt_SlowRotationParts, * from #tbl_… — cot dau ten tbl_Rpt_SlowRotationParts, gia tri luon NULL, von la dau phan cach khi debug. Cac cau --select null tbl_… khac DEU BI COMMENT; CHI cau cuoi con song => client nhan them mot cot rac co dinh",
+        standardizeParamUppercasesVietnameseName = "StandardizeParam = Trim().ToUpper() (TERP.Utils/Utils.cs:222) ap cho strPartCode VA strVieName => ten tieng Viet bi EP HOA roi so = chinh xac voi t.VieName. Co hong hay khong PHU THUOC COLLATION cua DB (CI thi vo hai) => KHONG ket luan, ghi la rui ro can do",
+        positiveThisFunctionParameterisesProperly = "DUONG TINH hiem trong he: 7 tham so (@strDealerCode, @strPartCode, @strVieName, @strTradingDateFrom/To, @strRotationTimeValueFrom/To) di qua ExecQuery(sql, @x, val…) thanh SqlParameter THAT; chi @strIsActive (hang noi bo TConst.Flag.Active = 1) va hai template zzB_…_zzE duoc Replace => KHONG co be mat tiem SQL, doi lap han #672/#673/#679. Cung KHONG dinh bay [BAKE-PARAM-MIX]: @strIsActive khong phai tien to cua tham so runtime nao",
+        negativeTop1OrderByIsValidHere = "AM TINH: select top 1 … order by o day HOP LE vi nam trong SUBQUERY TUONG QUAN, khong phai SELECT … INTO => ORDER BY co hieu luc (khac #679)",
+        wrapperCallsPrivateVoidX = "vo boc Rpt_SlowRotationParts_WH (Inventory.Report.cs:10361-10482, md5 04ab2e11) goi than that Rpt_SlowRotationParts_WHX (:10483-10651, md5 5b74b6ed), ca hai KHOP may 150. LOI PHUONG PHAP DA SUA: cac luot truoc toi cat vung ham bang awk /public DataSet /; than that khai private void …WHX( nen ranh gioi KHONG khop => vung trich NUOT LUON ham sau va md5 tinh tren ARTEFACT SAI. Nay cat bang ranh gioi MOI KIEU KHAI BAO",
+    });
 }).RequireAuthorization();
 
 // ===== Xe còn hạn bảo hành (report tái-dùng ServiceCar — port 1:1 FrmTK_XeConHanBaoHanh, TCMotor) =====
