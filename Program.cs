@@ -53918,6 +53918,102 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #669 CHĂM SÓC 24h TOÀN HỆ `Ser_CustomerCare_GetNew_All_WH` (`WH.cs:26952-27175`) =====
+// 3B: laptop `:26952` md5 `6d936943` **KHỚP** máy 150 `:26952`. WS `WSCarSv.asmx.cs:29661` gọi thẳng.
+//
+// 🔴🔴🔴 **MỘT MỆNH ĐỀ LỌC ĐƯỢC DỰNG, ĐƯỢC ĐƯA VÀO `Replace`, NHƯNG SQL KHÔNG CÓ CHỖ CẮM**:
+//   📌 Đếm chuỗi `zzzzClauseWhereCareTypeConditionList` trong cả hàm = **2** lần — một ở dòng `BuildClause`
+//     (`:147` trong vùng hàm) và một ở danh sách `Replace` (`:164`). **KHÔNG lần nào nằm trong chuỗi SQL.**
+//   ⇒ `Replace` là **lệnh rỗng**, bộ lọc "loại chăm sóc" **bị vứt đi hoàn toàn**, không lỗi, không cảnh báo.
+//   ⇒ Đây là bậc **thứ tư** của thang "lọc sai cột" đã dựng: ① cột có thật nhưng sai (#637/#662)
+//     ② cột **không tồn tại** (#663) ③ **alias** không tồn tại (#665) ④ **không có chỗ cắm** (ở đây).
+//   🔴 Và nếu có chỗ cắm thì vẫn hỏng: nó ràng vào `tc.CareType` — `tc` là bí danh của `#tblCustomerCare`,
+//     mà bảng tạm đó `SELECT cus.* + danh sách cột đặt tên` **không hề có** cột `CareType`.
+// 🔴🔴🔴 **THAM SỐ ĐÓ THỰC RA LÀ MỘT CHUỖI PHÉP THUẬT, KHÔNG PHẢI ĐIỀU KIỆN**:
+//     `if (strCareTypeConditionList == "in 24h") zzzzClauseWhereTimeHourConditionList =`
+//     `  "and datediff(hour, ro.ActualDeliveryDate, getdate()) <= 24";`
+//   ⇒ Cùng một tham số **vừa** được `BuildClause` coi là danh sách điều kiện, **vừa** bị so **y hệt chuỗi**
+//     `"in 24h"` (phân biệt hoa thường, có dấu cách). Sai một ký tự ⇒ **mất luôn cửa sổ 24 giờ** ⇒ màn "chăm sóc
+//     trong 24h" hiện **mọi** lệnh sửa-lại từ trước tới nay. Nguy hiểm hơn: chuỗi `"in 24h"` **bắt đầu bằng toán
+//     tử `in`** nên nếu ai đó cắm token vào SQL, `BuildClause` sẽ sinh `and tc.CareType in 24h` — **vỡ cú pháp**.
+// 🔴🔴 **BƯỚC SINH DANH SÁCH CHĂM SÓC ĐÃ BỊ TẮT** — ba `exec` đều bị comment (port dòng ACTIVE, không port dòng
+//   comment; nhưng ghi lại vì nó đổi **ý nghĩa cả màn**): `--exec dbo.ProcCusToCareDoB` ·
+//   `--exec dbo.ProcCusToCareManitance` · `--exec dbo.ProcCusToCareManitanceByKm`.
+//   ⇒ `@Dealercode` / `@DateFilter` / `@KmQvgMonth` được `declare`+`set` rồi **không ai dùng**. Màn chỉ **đọc**
+//     danh sách sẵn có; việc **sinh** phiếu chăm sóc đã chuyển đi đâu đó khác (hoặc không còn chạy).
+// 🔴🔴 **`inner join` HAI KHOÁ LÀM RƠI XE ĐÃ SANG TÊN**: `join ser_car car on tt.carID=car.carID **and
+//   tt.CusID=car.CusID**` ⇒ phiếu chăm sóc của khách cũ **biến mất** ngay khi xe đổi chủ.
+//   📌 Đáng chú ý: **đúng vế này đã BỊ COMMENT** ở truy vấn Mace (đã ghi trên entity `CustomerCareMace` ở #490:
+//     *"vế `and t.cusId = car.CusId` đã bị COMMENT ở nguồn"*) — cùng một điều kiện, **một nơi tắt một nơi bật**.
+// 🔴🔴 **`left join` CHẾT (luật #414, đủ cả ba dấu hiệu)**: câu thứ hai `left join ser_ro ro on tc.RoId24 =
+//   ro.Roid` rồi `WHERE` có `and ro.roid is not null` **và** `and Ro.IsReRepair = '1'` ⇒ `left join` thành
+//   `inner join`. Cộng thêm `and tc.Roid24 is not null` ở chính bảng trái.
+// 🔴 **Cửa sổ 24 giờ KHÔNG có cận dưới**: `datediff(hour, ro.ActualDeliveryDate, getdate()) <= 24` nhận cả giá
+//   trị **âm** ⇒ xe có ngày giao **trong tương lai** (nhập sai) vẫn lọt.
+// 🔴 `'LS-' + ro.RoNo as RONO` — tiền tố **nướng vào dữ liệu** trả về, không phải cột thật.
+// 🔴 `SELECT cus.* INTO #tblCustomerCare` ⇒ đổi schema `Ser_Customer` là đổi hợp đồng API.
+// 📌 **Trộn hai quy ước khoá trong CÙNG một câu**: 2 bảng dùng marker nhà `--//[mylock]`, 4 bảng dùng
+//   `with(nolock)` — cùng câu, cùng hàm (tiếp nối quan sát đã đếm ở #666: 1857 vs 199 toàn file).
+// ⚪ **ÂM TÍNH — tham số mồ côi KHÔNG gây lệch tên `@p`**: `BuildClause` của `CareType` vẫn **nạp tham số** vào
+//   `alParamsCoupleSql` dù mệnh đề không được dùng; nhưng nó là **lời gọi CUỐI CÙNG** nên không xê dịch số thứ tự
+//   của các `@p` phía trước. Ghi ⚪ để vòng sau khỏi điều tra lại.
+app.MapGet("/api/customercares/care24h-all-wh", async (AppDbContext db, ITenantContext t,
+    string? careNo, string? cusName, string? plateNo, string? status, string? careType) =>
+{
+    var qc = db.CustomerCares.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(careNo)) qc = qc.Where(x => x.CareNo == careNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) qc = qc.Where(x => x.CusName != null && x.CusName.Contains(cusName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(plateNo)) qc = qc.Where(x => x.PlateNo == plateNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qc = qc.Where(x => x.Status == status!.Trim());
+    // #669: nguồn DỰNG mệnh đề CareType rồi VỨT ĐI (SQL không có chỗ cắm). Port áp thật và nêu cờ.
+    if (!string.IsNullOrWhiteSpace(careType)) qc = qc.Where(x => x.CareType == careType!.Trim());
+
+    // Nguồn: câu thứ hai chỉ giữ phiếu CÓ RO 24h và lệnh đó phải là SỬA LẠI (IsReRepair = 1).
+    var cares = await qc.Where(x => x.RONo != null).Select(x => new
+        { x.CareNo, x.CareType, x.RONo, x.PlateNo, x.CusName, x.CusPhone, x.Status, x.ContactDate }).ToListAsync();
+    var roNos = cares.Select(x => x.RONo!).Distinct().ToList();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && roNos.Contains(x.RONo))
+        .Select(x => new { x.RONo, x.IsReRepair, x.ActualDeliveryDate, x.CheckInDate, x.FinishedDate }).ToListAsync();
+    var roByNo = ros.GroupBy(x => x.RONo).ToDictionary(g => g.Key, g => g.First());
+
+    var now = DateTime.Now;
+    var rows = cares.Select(c =>
+    {
+        roByNo.TryGetValue(c.RONo!, out var ro);
+        var hours = ro?.ActualDeliveryDate is null ? (double?)null : (now - ro.ActualDeliveryDate!.Value).TotalHours;
+        return new
+        {
+            c.CareNo, c.CareType, roNo = "LS-" + c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.Status, c.ContactDate,
+            isReRepair = ro?.IsReRepair, actualDeliveryDate = ro?.ActualDeliveryDate,
+            checkInDate = ro?.CheckInDate, finishedDate = ro?.FinishedDate,
+            hoursSinceDelivery = hours,
+            withinWindow = hours is not null && hours <= 24,
+            deliveryInFuture = hours is not null && hours < 0,
+        };
+    })
+    .Where(x => x.isReRepair == "1")
+    .OrderByDescending(x => x.actualDeliveryDate).Take(500).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        withinWindowCount = rows.Count(x => x.withinWindow),
+        deliveryInFutureCount = rows.Count(x => x.deliveryInFuture),
+        // ===== #669 =====
+        careTypeClauseBuiltButNeverPluggedIn = "MOT MENH DE LOC DUOC DUNG, DUOC DUA VAO Replace, NHUNG SQL KHONG CO CHO CAM: dem chuoi zzzzClauseWhereCareTypeConditionList trong ca ham = 2 lan — mot o dong BuildClause va mot o danh sach Replace; KHONG lan nao nam trong chuoi SQL => Replace la lenh rong, bo loc loai cham soc BI VUT DI hoan toan, khong loi khong canh bao",
+        fourthRungOfWrongFilterLadder = "bac THU TU cua thang loc-sai-cot: (1) cot co that nhung sai (#637/#662) (2) cot KHONG ton tai (#663) (3) ALIAS khong ton tai (#665) (4) KHONG CO CHO CAM (day). Va neu co cho cam thi van hong: no rang vao tc.CareType, ma #tblCustomerCare (SELECT cus.* + danh sach cot dat ten) KHONG he co cot CareType",
+        careTypeParamIsAMagicString = "THAM SO DO THUC RA LA MOT CHUOI PHEP THUAT: if (strCareTypeConditionList == \"in 24h\") thi moi them and datediff(hour, ro.ActualDeliveryDate, getdate()) <= 24. Cung mot tham so VUA duoc BuildClause coi la danh sach dieu kien VUA bi so y het chuoi in 24h (phan biet hoa thuong, co dau cach) => sai mot ky tu la MAT LUON cua so 24 gio => man cham soc trong 24h hien MOI lenh sua-lai tu truoc toi nay. Nguy hiem hon: chuoi in 24h BAT DAU BANG TOAN TU in nen neu ai do cam token vao SQL thi BuildClause sinh and tc.CareType in 24h => VO CU PHAP",
+        careListGeneratorIsDisabled = "BUOC SINH DANH SACH CHAM SOC DA BI TAT: ba exec deu bi comment (--exec dbo.ProcCusToCareDoB, --exec dbo.ProcCusToCareManitance, --exec dbo.ProcCusToCareManitanceByKm) => @Dealercode/@DateFilter/@KmQvgMonth duoc declare+set roi KHONG AI DUNG; man chi DOC danh sach san co, viec SINH phieu da chuyen di dau do khac hoac khong con chay",
+        innerJoinTwoKeysDropsTransferredCars = "join ser_car car on tt.carID=car.carID AND tt.CusID=car.CusID => phieu cham soc cua khach cu BIEN MAT ngay khi xe doi chu. Dang chu y: DUNG ve nay DA BI COMMENT o truy van Mace (da ghi tren entity CustomerCareMace o #490) — cung mot dieu kien, MOT NOI TAT MOT NOI BAT",
+        leftJoinKilledByWhere = "left join ser_ro ro on tc.RoId24 = ro.Roid roi WHERE co and ro.roid is not null VA and Ro.IsReRepair = 1 => left join thanh inner join (luat #414, du ca ba dau hieu); cong them and tc.Roid24 is not null o chinh bang trai",
+        windowHasNoLowerBound = "datediff(hour, ro.ActualDeliveryDate, getdate()) <= 24 nhan ca gia tri AM => xe co ngay giao TRONG TUONG LAI (nhap sai) van lot; port dem rieng deliveryInFutureCount",
+        roNoPrefixBakedIntoData = "'LS-' + ro.RoNo as RONO — tien to NUONG VAO DU LIEU tra ve, khong phai cot that",
+        selectStarIntoTempTable = "SELECT cus.* INTO #tblCustomerCare => doi schema Ser_Customer la doi hop dong API",
+        mixedLockConventionsInOneQuery = "tron hai quy uoc khoa trong CUNG mot cau: 2 bang dung --//[mylock], 4 bang dung with(nolock) (tiep noi quan sat da dem o #666: 1857 vs 199 toan file)",
+        negativeOrphanParamDoesNotShiftNames = "AM TINH: BuildClause cua CareType van NAP tham so vao alParamsCoupleSql du menh de khong duoc dung; nhung no la loi goi CUOI CUNG nen khong xe dich so thu tu cua cac @p phia truoc",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #668 CHI TIẾT XUẤT KHO PHỤ TÙNG `Ser_InvReportTotalStockOutDetailRpt_WH_New20230623` =====
 // (`WH.cs:25860-26034`, md5 `be34d650` **KHỚP** máy 150 `:25860`.)
 // 🔴 **BẢN LIVE LÀ BẢN CÓ HẬU TỐ** — `WSCarSv.asmx.cs:30084` gọi thẳng `…_WH_**New20230623**`, còn hàm trần
