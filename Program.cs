@@ -15793,8 +15793,21 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
 //   toàn hệ) còn `Ser_Customer`/`Ser_CusDebit` ở **DB hiện hành** — cùng lớp phát hiện với #541.
 // ⚪ Hai `left join` ở câu công nợ (`Ser_RO`, `ser_car`) **còn sống**: không điều kiện WHERE nào trên chúng
 //   ⇒ công nợ **không gắn lệnh sửa chữa** vẫn ra dòng, chỉ trống `RONo`/`PlateNo` (kiểm tra âm tính).
+// ===== 🔴 #560 BẢN `_WH` CỦA CHI TIẾT CÔNG NỢ — **BA NGUỒN DỮ LIỆU TUỲ HÀM** =====
+// Nguồn: `BizCarSv.Debit.cs:1155 SerCusDebitDetailGet_WH` — sinh đôi của `:997` (đã port #554).
+// 📐 **DIFF hai bản** (luật #414) — khác đúng **hai** chỗ, và cả hai đều về **NGUỒN DỮ LIỆU**:
+//   1) Bản chính đọc bằng `_dbDealer.ExecQuery(...)`; bản `_WH` đọc bằng `_dbWH.ExecQuery(...)`.
+//   2) Bản chính lấy phiếu thu từ `[@strDBName_CommonCenter].[dbo].**Ser_Payment**` (**cross-DB**);
+//      bản `_WH` lấy `Ser_Payment` **tại chỗ** (không tiền tố) ⇒ đọc bảng thu **của DB kho**.
+//   ⇒ **Cùng một câu hỏi nghiệp vụ ("khách này nợ bao nhiêu?"), ba nguồn dữ liệu khác nhau**:
+//     nợ ở **DB đại lý** hoặc **DB kho**; thu ở **CommonCenter** hoặc **DB kho**.
+//     Hai màn có thể cho **hai con số khác nhau** mà không màn nào sai theo định nghĩa của nó.
+// ⚠️ Câu SQL còn lại **giống hệt** — kể cả `JOIN Ser_Car` (INNER) làm rơi khách chưa có xe (#554)
+//   và cặp mệnh đề lọc dùng chung alias `d`. Sai sót của bản chính **được sao y** sang bản kho.
+// 📌 MiniHTC **một DB** ⇒ không tái hiện được sự lệch; thêm tham số `scope=main|wh` để **đánh dấu**
+//   người gọi đang hỏi theo phạm vi nào, và trả cờ nêu rõ nguồn dữ liệu của từng bản.
 app.MapGet("/api/cusdebits/{cusId}/detail", async (string cusId, AppDbContext db, ITenantContext t,
-    string? dealerCode) =>
+    string? dealerCode, string? scope) =>
 {
     const string kDebitTypeCustomer = "1";     // DebitType = '1'
     const string kPaymentTypeCustomer = "1";   // PaymentType = '1'
@@ -15839,6 +15852,11 @@ app.MapGet("/api/cusdebits/{cusId}/detail", async (string cusId, AppDbContext db
         totalDebit = debits.Sum(x => x.DebitAmount),
         totalPaid = debits.Sum(x => x.PaidAmount),
         totalBalance = debits.Sum(x => x.balance),
+        // ===== #560 =====
+        scope = string.Equals((scope ?? "main").Trim(), "wh", StringComparison.OrdinalIgnoreCase) ? "wh" : "main",
+        sourceReadsDifferentDbPerVariant = "ban chinh: _dbDealer + Ser_Payment o CommonCenter; ban _WH: _dbWH + Ser_Payment tai cho",
+        twoVariantsMayReturnDifferentNumbers = true,
+        whVariantCopiesSameInnerJoinFlaw = "JOIN Ser_Car (INNER) va alias dung chung — sao y ban chinh",
         filterAliasSharedAcrossThreeTables = "d.DealerCode / d.CusID — alias d lan luot la Ser_Customer, Ser_CusDebit, Ser_Payment",
         constants = new { debitType = kDebitTypeCustomer, paymentType = kPaymentTypeCustomer },
         paymentTableIsCommonCenter = true,
