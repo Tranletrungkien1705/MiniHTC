@@ -51656,8 +51656,28 @@ app.MapGet("/api/reports/part-cost-history", async (AppDbContext db, ITenantCont
 }).RequireAuthorization();
 
 // ===== 🔴 #488 CHÊNH LỆCH GIÁ SO VỚI DANH MỤC — `Ser_ReportRoVarianceCost` (`Service.Report.cs:5267`) =====
-// ⚪ Cặp `_WH` (`WH.cs:6790`) khác **đúng một dòng**, và đó chỉ là dấu `--//[mylock]` ⇒ tương đương.
-//   Đóng thêm một ca của #484 (**còn 14**).
+// ⚪ Cặp `_WH` (`WH.cs:6790`, md5 `2b938a5c` **khớp 2 máy**) khác **đúng một dòng**, và đó chỉ là dấu
+//   `--//[mylock]` trên `from #tbl_Ro` ⇒ tương đương. Đóng thêm một ca của #484 (**còn 14**).
+//   📌 #674 **xác nhận lại bằng diff CHUẨN HOÁ KHOẢNG TRẮNG** (phương pháp #671): 136 ↔ 136 dòng, khác **đúng 1**.
+//   ⇒ Khác #493, ghi chép "khác 1 dòng" của #488 **là chính xác**.
+//
+// ===== 🔴🔴 #674 HAI BỔ SUNG cho #488 (đọc lại bản kho) =====
+// 🔴🔴🔴 **`left join ser_Car car` Ở ĐÂY MẤT DÒNG HAI LẦN, KHÔNG PHẢI MỘT**: #488 đã ghi vế thứ nhất (WHERE có
+//   `car.DealerCode = '@DealerCode'` ⇒ giết `left join`). Vế **thứ hai** nằm ngay trong điều kiện nối:
+//     `on ro.Carid = car.carid **and ro.Cusid = car.CusID**` (cả hai nhánh `union`).
+//   ⇒ Đây chính là mẫu "xe sang tên ⇒ mất dòng" mà #673 vừa **đếm được độ phủ**: `and ro.CusID = car.CusID`
+//     có **103** site trong `TERP.BizCarSv`, **102 đang chạy**. Hai màn này nằm trong 102 đó.
+//   ⇒ Lệnh bị loại **kể cả khi xe vẫn còn** trong danh mục, chỉ vì xe **đã đổi chủ** sau lần sửa.
+// 🔴🔴 **PHẢN VÍ DỤ CHO #655 — BẢN `_WH` CŨNG CÓ THỂ MANG TIỀN TỐ `[@strDBName_CommonCenter]`**:
+//   #655 (và tôi nhắc lại ở #663/#671) mô tả tiền tố như thứ **chỉ có ở bản Main**; bản kho nối thẳng.
+//   Ở đây **bản `_WH` giữ nguyên** `left join [@strDBName_CommonCenter].[dbo].ser_mst_model` và
+//   `left join [@strDBName_CommonCenter].[dbo].Sys_User`, kèm dòng `Replace(…, "@strDBName_CommonCenter",
+//   _strConfig_DBName_Main)` — **y hệt bản Main**.
+//   📌 Đếm trong `BizCarSv.WH.cs`: **10** lần xuất hiện, thuộc **4 hàm `_WH`** (`SerWarrantyRepairRpt_WH_New20230417`
+//     · `Ser_RO_GetStatusList01_WH_New20230417` · `Ser_ReportRoVarianceCost_WH` · `Ser_StockAdj_Get_WH`)
+//     trên tổng **117** hàm ⇒ **4/117**, hiếm nhưng **có thật**.
+//   ⇒ **Sửa cách phát biểu**: tiền tố **không** do Main-hay-WH quyết định; nó luôn phân giải về
+//     `_strConfig_DBName_Main`, và **có hay không là tuỳ từng hàm**. Đừng dùng "có tiền tố" để đoán bản nào.
 //
 // 🔴 **BỘ LỌC "TẤT CẢ ĐẠI LÝ" LÀ CODE CHẾT** (bẫy bake-param):
 //   Nguồn viết `and ('@DealerCode' is null or Ro.DealerCode = '@DealerCode')` — nhưng `@DealerCode` được
@@ -51684,9 +51704,14 @@ app.MapGet("/api/reports/part-cost-history", async (AppDbContext db, ITenantCont
 app.MapGet("/api/reports/ro-variance-cost", async (AppDbContext db, ITenantContext t,
     string? dealerCode, DateTime? fromDate, DateTime? toDate, string? plateNo, string? roNo) =>
 {
+    // ===== #674 (bổ sung cho #488, sau khi đọc bản kho `Ser_ReportRoVarianceCost_WH`) =====
+    const string carJoinLosesRowsTwice = "left join ser_Car car o day MAT DONG HAI LAN khong phai mot: #488 da ghi ve thu nhat (WHERE co car.DealerCode = @DealerCode => giet left join). Ve THU HAI nam ngay trong dieu kien noi: on ro.Carid = car.carid AND ro.Cusid = car.CusID (ca hai nhanh union) — chinh la mau xe-sang-ten-mat-dong ma #673 vua dem duoc do phu: and ro.CusID = car.CusID co 103 site trong TERP.BizCarSv, 102 dang chay; hai man nay nam trong 102 do => lenh bi loai KE CA KHI XE VAN CON trong danh muc, chi vi xe DA DOI CHU sau lan sua";
+    const string whTwinsCanAlsoCarryTheDbPrefix = "PHAN VI DU CHO #655: #655 (va toi nhac lai o #663/#671) mo ta tien to [@strDBName_CommonCenter] nhu thu CHI CO o ban Main, ban kho noi thang. O day ban _WH GIU NGUYEN left join [@strDBName_CommonCenter].[dbo].ser_mst_model va …Sys_User, kem dong Replace(@strDBName_CommonCenter -> _strConfig_DBName_Main) y het ban Main. Dem trong BizCarSv.WH.cs: 10 lan xuat hien thuoc 4 ham _WH (SerWarrantyRepairRpt_WH_New20230417, Ser_RO_GetStatusList01_WH_New20230417, Ser_ReportRoVarianceCost_WH, Ser_StockAdj_Get_WH) tren tong 117 ham => 4/117, hiem nhung CO THAT. SUA CACH PHAT BIEU: tien to KHONG do Main-hay-WH quyet dinh, no luon phan giai ve _strConfig_DBName_Main va co hay khong la tuy tung ham";
+    const string whTwinDiffConfirmedByNormalisedDiff = "#674 xac nhan lai ghi chep cua #488 bang diff CHUAN HOA KHOANG TRANG (phuong phap #671): 136 vs 136 dong, khac DUNG 1 dong (dau --//[mylock] tren from #tbl_Ro) => khac #493, ghi chep khac-1-dong cua #488 LA CHINH XAC. md5 ban _WH 2b938a5c KHOP 2 may";
     if (string.IsNullOrWhiteSpace(dealerCode))
         return Results.BadRequest(new
         {
+            carJoinLosesRowsTwice, whTwinsCanAlsoCarryTheDbPrefix, whTwinDiffConfirmedByNormalisedDiff,
             error = "Cần dealerCode.",
             allDealersBranchIsDeadInSource = true,
             note = "Nguồn có vế ('@DealerCode' is null or …) nhưng giá trị được BAKE nên vế đó luôn FALSE.",
