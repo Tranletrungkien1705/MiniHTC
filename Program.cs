@@ -40240,6 +40240,200 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B356/#B357 BACKORDER HTC — CẶP GOM THEO SPEC / THEO ĐẠI LÝ, DÙNG CHUNG MỘT BUILDER
+//       (`RptStatistic_HTCBackOrder_SpecCode_01_WH_New20181119` /
+//        `…_Dealer_01_WH_New20181119`, `DataWH/Biz.HTC.WH.cs`
+//        + builder chung `RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH`,
+//          `TERP.BizHTC/BizHTC.Report.cs:8538`) =====
+// **3B khớp cả 2 máy (4 md5)**:
+//   SpecCode01 laptop `166225,166348` ≡ 150 `166230,166353` ⇒ **`72012caddbd68bb08253d391dc9c0d31`**
+//   Dealer01   laptop `166349,166471` ≡ 150 `166354,166476` ⇒ **`871c14d0238f6b17c8d36ece71a95ee3`**
+//   Builder chung (`BizHTC.Report.cs`, **KHÔNG lệch offset**, 39863 dòng cả 2 máy)
+//              `8538,8820` ⇒ **`47ecb8ab20553c3fff5553c700a8d9e6`**
+//
+// ✅ **HAI HÀM CHỈ LÀ VỎ MỎNG (~123 dòng), TOÀN BỘ LOGIC Ở BUILDER CHUNG** — khác biệt duy nhất là
+//   **một đối số `strGroupByClause`**:
+//     SpecCode01 → `"t.MCSSpecCode, t.MCSSpecDescription"`
+//     Dealer01   → `"t.CCDealerCode, t.CCDealerName"`
+//   ⇒ Đây là **cách tổ chức ĐÚNG** (một nguồn sự thật, hai mặt gom) — đối lập hẳn với các cặp sinh đôi
+//     **chép tay rồi trôi lệch** đã gặp (#B332 HMC V1/V2, #B344/#B345 DriveTest/CtmVisit,
+//     #B348/#B349 Retail01/InStock01). **Điểm sáng về kiến trúc.**
+//
+// 🔴🔴 **`GROUP BY` NƯỚNG THẲNG VÀO SQL, KHÔNG WHITELIST — RỦI RO TIỀM ẨN, CHƯA KHAI THÁC ĐƯỢC**:
+//     `, "zzzzClauseColumn_GroupByRpt", **strGroupByClause**`  ← tham số chuỗi, `Replace` thẳng
+//   ⇒ Khác #B329 (`RptStatistic_HTCStockOut02`) nơi cột gom **có danh sách trắng 7 cột**. Ở đây builder
+//     nhận **chuỗi tự do**. ✅ Đã đếm **cả 4 nơi gọi** (2 bản WH `Biz.HTC.WH.cs:166287/:166411`,
+//     2 bản non-WH `BizHTC.Report.cs:8882/:9007`) — **tất cả đều truyền HẰNG chữ**, không có đường nào
+//     dẫn từ đầu vào người dùng ⇒ **hiện KHÔNG khai thác được**. 📌 Nhưng đây là **builder dùng chung**:
+//     thêm một nơi gọi truyền chuỗi từ client là có injection ngay. Ghi nợ, **không tự thêm whitelist**.
+//
+// 🔴🔴 **BẢN WH HARD-CODE TÊN HÀM CỦA BẢN KHÔNG-WH VÀO LOG**:
+//     bản WH:     `RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH(…, "**RptStatistic_HTCBackOrder_SpecCode_01**" /*strFunctionName*/, …, strFunctionName /*strTableName_Summary*/, …)`
+//     bản non-WH: `…(…, strFunctionName /*strFunctionName*/, …, strFunctionName /*strTableName_Summary*/, …)`
+//   ⇒ Ở bản WH, tên dùng cho **log lỗi và khoá debug `strSql_<tên>`** bị **ghi cứng thành tên bản
+//     KHÔNG-WH**, trong khi **tên bảng trả về** vẫn là `…_WH`.
+//   ⇒ **Log của hai bản trùng khoá nhau** ⇒ khi tra log/`myDebug_SaveSql` **không phân biệt được request
+//     đến từ bản Main hay bản WH**. Cùng họ "nhãn lệch với thứ nó mô tả" (#B351 nhãn ngày, #B269 `…Name`
+//     nhận `…Code`). **KHÔNG tự vá.**
+//
+// ✅ **RBAC tổ hợp (3)**: `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and
+//   (md.BUCode like @strBUPatternOfUser)`; `myCommon_CheckHTCDirect` = **0 hit** ở cả vỏ lẫn builder.
+//   ⚠️ Theo luật mới `C0-…tricesimusoctavus`: đã grep thêm `myHTC_RemoveInfo_` / `myCommon_IsHTCDirect`
+//     trong builder ⇒ **không có** ⇒ kết luận (3) đứng vững (có lọc dòng, không che cột).
+// ✅ **`_dbAction` ĐƯỢC DÙNG THẬT**: `dsResult = _dbAction.ExecQuery(…)` với `_dbWH` truyền vào từ bản WH
+//   ⇒ **đối chứng tốt** cho #B245 (nơi `_dbAction` bị nhận rồi **bỏ qua**, khiến bản `_WH` đọc DB Main).
+// ✅ Câu debug `--select null tbl_Car_Car_Filter, …` **được comment** (mức (b)); số bảng động xử bằng
+//   **con trỏ `nIdx`** theo `if (@strIsGetDetail = '1')` (kiểu 3) ⇒ đúng.
+// 🔴 Tầng tiền: `CachingForPaymentTotal(…, "'A', 'F'")` cho tổng và `(…, "'A','F'", true)` cho cọc
+//   ⇒ **cả hai đều tính tiền MỚI DUYỆT**, khác #B351 nơi nhánh cọc chỉ lấy `'F'` (đã nổi tài khoản).
+// 🔴 `Thread.Sleep(4000)` trên đường thành công ở **cả hai** vỏ — **không port**.
+// ⚠️ **NỢ**: `zzzzClauseJoin_ToGet_CT_DealerContractDetail` và tầng caching thanh toán đầy đủ chưa có
+//   ⇒ các cột tiền/hợp đồng để **NULL**, chỉ trả khung gom + số lượng. **Không đoán.**
+static async Task<IResult> HtcBackOrder01Async(
+    AppDbContext db, ITenantContext t, string groupBy, string? isGetDetail, string? buPattern)
+{
+    // ✅ RBAC tổ hợp (3) — lọc dòng bằng BUPattern (builder chung không có cổng, cũng không che cột).
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId).ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode)).ToList();
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    var detail = cvs.Select(v => new
+    {
+        v.CarId, v.VIN, v.ModelCode, v.SpecCode, v.ColorCode,
+        CCDealerCode = v.DealerCode,
+        CCDealerName = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var d) ? d.DealerName : null,
+        MCSSpecCode = v.SpecCode,
+        MCSSpecDescription = v.SpecCode != null && specs.TryGetValue(v.SpecCode, out var sp) ? sp.SpecDesc : null,
+        // ⚠️ NỢ — KHÔNG ĐOÁN: tầng caching thanh toán + CT_DealerContractDetail chưa đủ.
+        PaymentTotal = (decimal?)null,
+        DepositTotal = (decimal?)null,
+        Total = 1.0m
+    }).ToList();
+
+    // 🔴 GROUP BY của nguồn là CHUỖI nướng thẳng; port chỉ nhận đúng HAI mặt gom mà 4 nơi gọi dùng.
+    var summary = groupBy == "spec"
+        ? detail.GroupBy(x => new { x.MCSSpecCode, x.MCSSpecDescription })
+                .Select(g => new
+                {
+                    Key1 = g.Key.MCSSpecCode, Key2 = g.Key.MCSSpecDescription,
+                    GroupByColumns = "t.MCSSpecCode, t.MCSSpecDescription",
+                    Qty = g.Count()
+                }).ToList()
+        : detail.GroupBy(x => new { x.CCDealerCode, x.CCDealerName })
+                .Select(g => new
+                {
+                    Key1 = g.Key.CCDealerCode, Key2 = g.Key.CCDealerName,
+                    GroupByColumns = "t.CCDealerCode, t.CCDealerName",
+                    Qty = g.Count()
+                }).ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        tblDetail = isGetDetail == "1" ? detail : null,   // chỉ khi @strIsGetDetail = '1'
+        Summary = summary,
+        sharedBuilderNote = "HAI HAM CHI LA VO MONG (~123 dong), TOAN BO LOGIC O BUILDER CHUNG RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH (BizHTC.Report.cs:8538). Khac biet DUY NHAT la mot doi so strGroupByClause: SpecCode01 -> 't.MCSSpecCode, t.MCSSpecDescription'; Dealer01 -> 't.CCDealerCode, t.CCDealerName'. Day la CACH TO CHUC DUNG (mot nguon su that, hai mat gom) - doi lap han voi cac cap sinh doi CHEP TAY ROI TROI LECH da gap (#B332 HMC V1/V2, #B344/#B345 DriveTest/CtmVisit, #B348/#B349 Retail01/InStock01). DIEM SANG VE KIEN TRUC.",
+        groupByInjectionNote = "GROUP BY NUONG THANG VAO SQL, KHONG WHITELIST - RUI RO TIEM AN, CHUA KHAI THAC DUOC: ', \"zzzzClauseColumn_GroupByRpt\", strGroupByClause' - tham so chuoi, Replace thang. Khac #B329 noi cot gom CO DANH SACH TRANG 7 cot. DA DEM CA 4 NOI GOI (2 ban WH Biz.HTC.WH.cs:166287/:166411, 2 ban non-WH BizHTC.Report.cs:8882/:9007) - TAT CA deu truyen HANG CHU, khong co duong nao dan tu dau vao nguoi dung => HIEN KHONG KHAI THAC DUOC. Nhung day la BUILDER DUNG CHUNG: them mot noi goi truyen chuoi tu client la co injection ngay. Ghi no, KHONG tu them whitelist.",
+        logNameMismatchNote = "BAN WH HARD-CODE TEN HAM CUA BAN KHONG-WH VAO LOG: ban WH goi builder voi '\"RptStatistic_HTCBackOrder_SpecCode_01\"' (hoac ..._Dealer_01) lam strFunctionName, trong khi truyen strFunctionName cuc bo (la ..._WH) lam strTableName_Summary; ban non-WH truyen strFunctionName cho CA HAI. => O ban WH, ten dung cho LOG LOI va khoa debug 'strSql_<ten>' bi GHI CUNG THANH TEN BAN KHONG-WH, trong khi TEN BANG TRA VE van la ..._WH => LOG CUA HAI BAN TRUNG KHOA NHAU => tra log/myDebug_SaveSql KHONG PHAN BIET DUOC request den tu ban Main hay ban WH. Cung ho 'nhan lech voi thu no mo ta' (#B351 nhan ngay, #B269 ...Name nhan ...Code). KHONG TU VA.",
+        rbacNote = "RBAC to hop (3): 'inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)'; myCommon_CheckHTCDirect = 0 hit o ca vo lan builder. Theo luat moi C0-...tricesimusoctavus: DA GREP THEM myHTC_RemoveInfo_ / myCommon_IsHTCDirect trong builder => KHONG CO => ket luan (3) dung vung (co loc dong, khong che cot).",
+        dbActionNote = "_dbAction DUOC DUNG THAT: 'dsResult = _dbAction.ExecQuery(...)' voi _dbWH truyen vao tu ban WH => DOI CHUNG TOT cho #B245 (noi _dbAction bi nhan roi BO QUA, khien ban _WH doc DB Main).",
+        paymentTierNote = "Tang tien: CachingForPaymentTotal(..., \"'A', 'F'\") cho tong va (..., \"'A','F'\", true) cho coc => CA HAI deu tinh tien MOI DUYET, khac #B351 noi nhanh coc chi lay 'F' (da noi tai khoan).",
+        debtNote = "NO - KHONG DOAN: zzzzClauseJoin_ToGet_CT_DealerContractDetail va tang caching thanh toan day du chua co => cac cot tien/hop dong de NULL, chi tra khung gom + so luong. Thread.Sleep(4000) o ca hai vo - KHONG port."
+    });
+}
+
+app.MapGet("/api/reports/htc-backorder-speccode01", async (
+    AppDbContext db, ITenantContext t, string? isGetDetail, string? buPattern) =>
+    await HtcBackOrder01Async(db, t, "spec", isGetDetail, buPattern)).RequireAuthorization();
+
+app.MapGet("/api/reports/htc-backorder-dealer01", async (
+    AppDbContext db, ITenantContext t, string? isGetDetail, string? buPattern) =>
+    await HtcBackOrder01Async(db, t, "dealer", isGetDetail, buPattern)).RequireAuthorization();
+
+// ===== #B358 BÁO CÁO MỚI (WH) — `Rpt_BaoCaoMoi_WH_New20190722`
+//       (`TERP.BizHTC/DataWH/BizHTC.zTemp.cs:33074`) =====
+// **3B khớp cả 2 máy — file `BizHTC.zTemp.cs` KHÔNG lệch offset (69852 dòng cả 2 máy)**:
+//   `33074,33925` (852 dòng) ⇒ **`b280357e424e8e0b82d933f605b3d12c`**.
+//
+// ✅🔴🔴 **ĐÂY LÀ "ANH EM SỐNG" CỦA #B352 — VÀ NÓ XÁC NHẬN KẾT LUẬN #B352**:
+//   Hàm này dùng **ĐÚNG bộ khung** của `RptStatistic_GrpDealerInStock02_WH` (#B352):
+//   `#tbl_Car_Car_Filter → #tbl_Car_Car_Final → #tblDetail → #tbl_Mst_Dealer → #tbl_F1 →`
+//   `#tbl_Info1..4 → #tbl_Dealer → #tbl_AreaDealer → #tbl_Detail_return`.
+//   **NHƯNG**: đếm trong toàn hàm ⇒ **`#tbl_Detail_Filter` = 0 hit** (bảng ma của #B352 **không có ở
+//   đây**) và **`tbl_Detail_return` thiếu dấu `#` = 0 hit** (dòng `select count (0) from …` **không có
+//   ở đây**). Chỉ có `into #tbl_Detail_return` (`:689`) và `from #tbl_Detail_return t` (`:717`) — **khớp
+//   cặp, đúng tên**.
+//   ⇒ **`Rpt_BaoCaoMoi_WH` CHẠY ĐƯỢC; `RptStatistic_GrpDealerInStock02_WH` thì KHÔNG.**
+//   📌 Đây là **kiểm chứng chéo** cho #B352: hai dòng hỏng **không thuộc bộ khung dùng chung**, chúng
+//     chỉ có trong **một bản sao duy nhất** ⇒ kết luận "#B352 chết ở runtime" **không phải do tôi đọc
+//     nhầm một thành ngữ của họ hàm này**, mà là **khuyết tật riêng của bản đó**. Nâng độ tin cậy của
+//     #B352 từ "đọc SQL rồi suy" lên "**đã đối chiếu với anh em cùng khung đang chạy được**".
+//
+// 🔴 **RBAC ca (5) LÀ CHUẨN CỦA CẢ HỌ, KHÔNG PHẢI DỊ THƯỜNG CỦA #B352**: y hệt #B352, bộ lọc phạm vi
+//   `--and (md.BUCode like @strBUPatternOfUser)` **bị comment ở NĂM chỗ**
+//   (`#tbl_Car_Car_Filter` `:120`, `#tbl_Mst_Dealer` `:293`, `#tbl_F1` `:309`, `#tbl_Info1` `:403`,
+//   `#tbl_Info2` `:448`) và **chỉ còn sống ở `#tbl_Detail_return`** (`:700`, `inner join`).
+//   ⇒ Mọi bảng trung gian tính trên **toàn bộ** đại lý; chỉ câu cuối siết phạm vi.
+//   `myCommon_CheckHTCDirect` = **0 hit**; đã grep thêm `myHTC_RemoveInfo_` ⇒ **không có**
+//   ⇒ **đúng một lớp bảo vệ**, đặt ở câu cuối cùng. **KHÔNG tự vá.**
+// ✅ Câu debug `--select null tbl_Car_Car_Filter, …` **được comment** (mức (b)); số bảng động xử bằng
+//   **con trỏ `nIdx`** (`Tables[0]="tblDetail"` chỉ khi có cờ, rồi `Tables[…]=strFunctionName`).
+// 🔴 `Thread.Sleep(4000)` trên đường thành công — **không port**.
+// ⚠️ **NỢ**: chuỗi `#tbl_Info1..4` + `#tbl_AreaDealer` cần `Dls_Deal`/`Car_DeliveryOrder`/
+//   `Ord_SalesOrder`/vùng đại lý ghép nhiều nhánh chưa đủ ⇒ cột dẫn xuất để **NULL**, **không đoán**.
+app.MapGet("/api/reports/baocaomoi", async (
+    AppDbContext db, ITenantContext t, string? isGetDetail, string? buPattern) =>
+{
+    // 🔴 Lọc phạm vi ở NGUỒN chỉ còn sống tại câu cuối (#tbl_Detail_return) — port áp đúng chỗ đó.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    var cvs = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId).ToListAsync();
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    // Bảng trung gian ở nguồn KHÔNG lọc phạm vi (5 chỗ bị comment) — đo để thấy rõ chênh lệch.
+    var allIntermediate = cvs.Count;
+
+    var detail = cvs
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode))   // ← chỗ lọc DUY NHẤT
+        .Select(v => new
+        {
+            CCDealerCode = v.DealerCode,
+            CCDealerName = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var d) ? d.DealerName : null,
+            v.CarId, v.VIN, v.ModelCode, v.SpecCode, v.ColorCode, v.TypeCB,
+            MCSSpecDescription = v.SpecCode != null && specs.TryGetValue(v.SpecCode, out var sp) ? sp.SpecDesc : null,
+            // ⚠️ NỢ — KHÔNG ĐOÁN: #tbl_Info1..4, #tbl_AreaDealer chưa đủ nguồn.
+            Info1 = (string?)null, Info2 = (string?)null, Info3 = (string?)null, Info4 = (string?)null,
+            AreaCodeDealer = (string?)null, AreaNameDealer = (string?)null,
+            Total = 1.0m
+        }).ToList();
+
+    var summary = detail.GroupBy(d => new { d.CCDealerCode, d.CCDealerName })
+        .Select(g => new { g.Key.CCDealerCode, g.Key.CCDealerName, Qty = g.Count() })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        intermediateRowsUnfiltered = allIntermediate,
+        tblDetail = isGetDetail == "1" ? detail : null,
+        Rpt_BaoCaoMoi_WH = summary,
+        livingSiblingOfB352Note = "DAY LA 'ANH EM SONG' CUA #B352 - VA NO XAC NHAN KET LUAN #B352. Ham nay dung DUNG BO KHUNG cua RptStatistic_GrpDealerInStock02_WH: #tbl_Car_Car_Filter -> #tbl_Car_Car_Final -> #tblDetail -> #tbl_Mst_Dealer -> #tbl_F1 -> #tbl_Info1..4 -> #tbl_Dealer -> #tbl_AreaDealer -> #tbl_Detail_return. NHUNG dem trong toan ham: #tbl_Detail_Filter = 0 HIT (bang ma cua #B352 KHONG CO O DAY) va 'tbl_Detail_return' thieu dau # = 0 HIT (dong 'select count (0) from ...' KHONG CO O DAY). Chi co 'into #tbl_Detail_return' (:689) va 'from #tbl_Detail_return t' (:717) - KHOP CAP, DUNG TEN. => Rpt_BaoCaoMoi_WH CHAY DUOC; RptStatistic_GrpDealerInStock02_WH thi KHONG. Day la KIEM CHUNG CHEO cho #B352: hai dong hong KHONG THUOC BO KHUNG DUNG CHUNG, chung chi co trong MOT BAN SAO DUY NHAT => ket luan '#B352 chet o runtime' KHONG phai do doc nham mot thanh ngu cua ho ham nay, ma la KHUYET TAT RIENG cua ban do.",
+        rbacCase5IsFamilyNormNote = "RBAC CA (5) LA CHUAN CUA CA HO, KHONG PHAI DI THUONG CUA #B352: y het #B352, bo loc pham vi '--and (md.BUCode like @strBUPatternOfUser)' BI COMMENT O NAM CHO (#tbl_Car_Car_Filter :120, #tbl_Mst_Dealer :293, #tbl_F1 :309, #tbl_Info1 :403, #tbl_Info2 :448) va CHI CON SONG o #tbl_Detail_return (:700, inner join). Moi bang trung gian tinh tren TOAN BO dai ly; chi cau cuoi siet pham vi. myCommon_CheckHTCDirect = 0 hit; da grep them myHTC_RemoveInfo_ => KHONG CO => DUNG MOT LOP BAO VE, dat o cau cuoi cung. KHONG TU VA. Xem intermediateRowsUnfiltered so voi count.",
+        debugAndTableNote = "Cau debug '--select null tbl_Car_Car_Filter, ...' DUOC COMMENT (muc (b)); so bang dong xu bang con tro nIdx (Tables[0]='tblDetail' chi khi co co, roi Tables[...]=strFunctionName). Thread.Sleep(4000) tren duong thanh cong - KHONG port.",
+        debtNote = "NO - KHONG DOAN: chuoi #tbl_Info1..4 + #tbl_AreaDealer can Dls_Deal / Car_DeliveryOrder / Ord_SalesOrder / vung dai ly ghep nhieu nhanh chua du => cot dan xuat de NULL."
+    });
+}).RequireAuthorization();
 // ===== #B353 XE ĐANG TRÊN ĐƯỜNG (bản WH) — `RptStatistic_HTCStockOutOnWay_WH_New20181119`
 //       (`DataWH/Biz.HTC.WH.cs`) =====
 // **3B khớp cả 2 máy — offset lệch 5 dòng**: laptop `159061,159269` ≡ 150 `159066,159274`
