@@ -20116,6 +20116,90 @@ app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContex
 //   các bản `xxx` khác **không ai gọi** ⇒ mã chết nhưng **vẫn mang cùng lỗi `&&`** — sửa bản sống mà quên
 //   bản chết thì lần sau ai chép lại là lỗi quay về.
 // 📌 MiniHTC: endpoint dưới **liệt kê** kết quả quét để chỗ đối chiếu có con số, và mô tả đúng hai nhánh hỏng.
+// ===== 🔴🔴 #609 `Ser_Inv_OrderInshipment_Create` (`PartOrder.cs:3639`) — **GHI ĐƯỢC, KHÔNG ĐỌC RA ĐƯỢC** =====
+// Cặp còn lại của #603. Hàm này **ghi thật** vào bảng "hàng đang về":
+//     `DataTable dt = GetSchema(_dbMain, "**Ser_Inv_OrderInshipment**").Tables[0]; dt.Rows.Add(dt.NewRow());`
+//     `dt.Rows[0]["DealerCode"] = strDealerCode; … ["PartID"] = strPartID; … ["ROID"] = strROID;`
+//     `dt.Rows[0]["IsActive"] = Constants.Flag.Active;`   (giá trị **`"1"`**, `Const.Main.cs:28`)
+//     `_dbMain.SaveData("Ser_Inv_OrderInshipment", dt);`
+//
+// 🔴🔴 **CHUỖI HỎNG HOÀN CHỈNH THỨ BA**: dữ liệu **được ghi vào** bảng này, nhưng theo #603 **không có đường
+//   đọc ra**: bản đúng tên (`_GetAll`) lọc cột `MyRowIdx` mà bảng tạm không sinh ⇒ lỗi SQL; bản đang sống
+//   (`_GetAll_01`) **đọc bảng khác** (`ser_Ro` với `status='w4p'`).
+//   ⇒ Nay có bằng chứng từ **cả hai phía**: phía **ghi** hoạt động, phía **đọc** không. Trước đó hai chuỗi
+//     tương tự: #576+#577 (bản tin: tạo không gắn VIN ⇒ hàm đọc `inner join` VIN không thấy) và #575
+//     (công nợ mất `DebitType` ⇒ rơi khỏi mọi bộ lọc). **Đây là kiểu hỏng đặc trưng của hệ này**.
+//   📌 MiniHTC **cố ý lệch**: §12 thêm bảng `OrderInshipments` **và** làm đủ **cả ghi lẫn đọc**.
+// 🔴 **KHÔNG CÓ `#region // Check`** (trích theo #403): giữa Init và khối dựng `DataTable` chỉ có
+//   `myUtils_ValidateId` (kiểm **Tid**) ⇒ `DealerCode` / `PartID` / `ROID` gán **vô điều kiện**, rỗng vẫn ghi.
+// 🔴 **`Quantity` RỖNG ⇒ `DBNull`**: một dòng "hàng đang về" **không có số lượng** vẫn được tạo — vô nghĩa về
+//   nghiệp vụ, và nếu có ai cộng tồn + hàng-đang-về thì dòng đó đóng góp **NULL** (làm hỏng cả phép cộng).
+// 🔴 `declare @ID int  select @ID = **@@Identity**` để tra lại bản ghi vừa tạo — `@@IDENTITY` **không giới hạn
+//   phạm vi** (trigger bảng khác trả nhầm khoá) và ép **`int`** trên khoá; lặp lại #570/#575/#577/#590.
+// ⚠️ Chỉ ghi **`_dbMain`** (và `bNeedTransaction` cũng chỉ mở Main) — trong khi cụm `Ser_Part_Order*` (#605/#606)
+//   ghi/xoá **ba** DB. Chưa đo được bảng này có tồn tại ở WH/Dealer hay không, nên **chỉ ghi nhận sự lệch**,
+//   không kết luận là thiếu (khác #608 nơi cùng bảng `Ser_Part_Order` chắc chắn có ở cả ba).
+app.MapPost("/api/partorders/inshipments", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, string? roNo, decimal? quantity, decimal? vat, string? note,
+    DateTime? receivePartDate, DateTime? orderPartDate) =>
+{
+    // GUARD nguồn KHÔNG có: ba cột khoá nghiệp vụ gán vô điều kiện.
+    if (string.IsNullOrWhiteSpace(dealerCode) || string.IsNullOrWhiteSpace(partCode))
+        return Results.BadRequest(new
+        {
+            error = "dealerCode va partCode bat buoc — nguon gan vo dieu kien, rong van ghi.",
+            sourceHasNoCheckRegion = "chi co myUtils_ValidateId kiem Tid",
+        });
+    // GUARD nguồn KHÔNG có: số lượng rỗng ⇒ DBNull.
+    if (quantity is null or <= 0)
+        return Results.BadRequest(new
+        {
+            error = "quantity phai > 0 — nguon de rong thi ghi DBNull, dong hang-dang-ve khong co so luong.",
+            sourceWritesNullQuantity = true,
+        });
+
+    var row = new OrderInshipment
+    {
+        OrgId = t.OrgId,
+        DealerCode = dealerCode!.Trim().ToUpperInvariant(),
+        PartCode = partCode!.Trim().ToUpperInvariant(),
+        RONo = roNo, Quantity = quantity, Vat = vat, Note = note,
+        ReceivePartDate = receivePartDate, OrderPartDate = orderPartDate,
+        IsActive = "1",                       // Constants.Flag.Active = "1"
+    };
+    db.OrderInshipments.Add(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.DealerCode, row.PartCode, row.RONo, row.Quantity, row.Vat, row.IsActive,
+        writePathWorksReadPathDoesNot = "nguon GHI duoc bang Ser_Inv_OrderInshipment nhung #603 cho thay KHONG co duong doc ra",
+        thirdCompleteBrokenChain = "sau #576+#577 (ban tin: tao khong gan VIN, ham doc inner join VIN nen khong thay) va #575 (cong no mat DebitType)",
+        portDoesBothWriteAndRead = "MiniHTC co y lech: them bang OrderInshipments va lam du ca ghi lan doc",
+        sourceNoCheckRegion = true,
+        sourceWritesNullQuantityWhenEmpty = "dong hang-dang-ve khong co so luong; ai cong ton + hang-dang-ve se cong phai NULL",
+        atAtIdentityNotScoped = "declare @ID int; select @ID = @@Identity — lap #570/#575/#577/#590",
+        writesMainOnlyButClusterWritesThree = "chi _dbMain.SaveData; cum Ser_Part_Order* (#605/#606) ghi/xoa ba DB — CHI ghi nhan su lech, chua do duoc bang nay co o WH/Dealer hay khong",
+        isActiveConstantValue = "Constants.Flag.Active = 1 (Const.Main.cs:28)",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/partorders/inshipments", async (AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var qy = db.OrderInshipments.Where(x => x.OrgId == t.OrgId && x.IsActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var rows = await qy.OrderByDescending(x => x.Id).Take(500)
+        .Select(x => new { x.Id, x.DealerCode, x.PartCode, x.RONo, x.Quantity, x.Vat, x.Note,
+            x.ReceivePartDate, x.OrderPartDate, x.CreatedAt })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        totalQuantity = rows.Sum(x => x.Quantity ?? 0m),
+        sourceHasNoWorkingReader = "#603: ban _GetAll hong cau SQL, ban _GetAll_01 doc bang khac => day la duong doc MiniHTC tu lam",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #603 TRẢ NỢ #423 — **"HÀNG ĐANG VỀ" KHÔNG TỒN TẠI NHƯ MỘT NGUỒN DÙNG ĐƯỢC** =====
 // Nợ #423 ghi *"hàng đang về chưa có nguồn đúng — cấm bịa 0"*. Nay tìm được **hai** hàm mang đúng tên đó
 //   trong `BizCarSv.PartOrder.cs`, và **cả hai đều không cho ta thứ cần**:

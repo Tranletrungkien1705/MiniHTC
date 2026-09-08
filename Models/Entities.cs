@@ -5009,6 +5009,25 @@ public sealed class HyundaiMeOutbox
     public DateTime? SentAt { get; set; }
 }
 
+/// <summary>#609 §12 Dòng "hàng đang về" (`Ser_Inv_OrderInshipment`). Nguồn **ghi được** bảng này
+/// (`Ser_Inv_OrderInshipment_Create`) nhưng **không đọc ra được** (#603: bản `_GetAll` hỏng câu SQL,
+/// bản `_GetAll_01` đọc bảng khác) ⇒ MiniHTC **cố ý** làm đủ cả ghi lẫn đọc.</summary>
+public sealed class OrderInshipment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? PartCode { get; set; }
+    public string? RONo { get; set; }
+    public decimal? Quantity { get; set; }
+    public decimal? Vat { get; set; }
+    public string? Note { get; set; }
+    public DateTime? ReceivePartDate { get; set; }
+    public DateTime? OrderPartDate { get; set; }
+    public string IsActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class NetworkMst
 {
     public long Id { get; set; }

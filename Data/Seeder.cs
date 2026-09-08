@@ -1289,6 +1289,8 @@ public static class Seeder
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Tel\" text",
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Fax\" text",
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Website\" text",
+        // #609 dong hang dang ve (Ser_Inv_OrderInshipment)
+        "CREATE TABLE IF NOT EXISTS public.\"OrderInshipments\" (\"Id\" bigserial primary key, \"OrgId\" uuid not null, \"DealerCode\" text, \"PartCode\" text, \"RONo\" text, \"Quantity\" numeric, \"Vat\" numeric, \"Note\" text, \"ReceivePartDate\" timestamp, \"OrderPartDate\" timestamp, \"IsActive\" text not null default '1', \"CreatedAt\" timestamp not null default now())",
         // #586 hop thu di Hyundai Me (nguon KHONG co bang nay — hang doi trong bo nho)
         "CREATE TABLE IF NOT EXISTS public.\"HyundaiMeOutboxes\" (\"Id\" bigserial primary key, \"OrgId\" uuid not null, \"Kind\" text not null default '', \"RefNo\" text not null default '', \"Endpoint\" text, \"Payload\" text, \"Status\" text not null default 'PENDING', \"AttemptCount\" integer not null default 0, \"LastError\" text, \"CreatedAt\" timestamp not null default now(), \"SentAt\" timestamp)",
         // #566 danh muc mang luoi (CmCt_Mst_Network)
