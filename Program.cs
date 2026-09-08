@@ -51021,6 +51021,94 @@ app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 // #284: bản DMSCarSv của CÙNG màn này (`Ser_RO_GetStatusList02_New20230220`) có thêm bộ lọc
 //   `strActualDeliveryDate` (ngày GIAO XE thực tế) và trả kèm `plateNoList` — bản iCIC không có.
 //   Gộp vào đây thay vì dựng endpoint thứ hai: **cùng một màn, hai hệ gọi**.
+// ===== 🔴🔴🔴 #690 DANH MỤC THAM SỐ `Mst_Param_Get/Create/Save/Update/Delete` (`BizCarSv.Master.cs`) =====
+// md5: `Get` `cae5db76` · `Create` `de09de97` · `Save` `cf8c4a99` · `Update` `c82f51c9` · `Delete` `ffeb5dae`
+// — **cả năm KHỚP** máy 150, và **md5 cả file** `90585079` cũng khớp. WS `WSCarSv.asmx.cs:6143…6448`.
+// Bảng `Mst_Param` đã được **đọc** ở #675 (phương pháp tính giá vốn `MCC`) nhưng **màn quản trị nó thì chưa port**.
+//
+// 🔴🔴🔴 **KHÉP VÒNG VỚI #675: KHÔNG CÓ GÌ NGĂN HAI DÒNG THAM SỐ TRÙNG KHOÁ.**
+//   Ở #675 tôi ghi rủi ro *"`(select paramvalue from mst_param where dealercode=… and paramcode='MCC' and
+//   paramtype='MCC')` **không có `top 1`** ⇒ hai dòng là SQL đổ"*. Nay đọc **cả bốn hàm ghi** và xác nhận
+//   (luật #403 — đã mở và liệt kê **toàn bộ** `#region` của từng hàm):
+//     `Mst_Param_Create` · `_Save` · `_Update` · `_Delete` có các region `temp / Init / Save data / Return /
+//     Catch of try / Finally of try` — **KHÔNG hàm nào có `#region // Check`**, cũng không có lời gọi `…_CheckDB`.
+//   ⇒ **Tạo trùng `(DealerCode, ParamCode, ParamType)` không bị chặn ở tầng biz.** Rủi ro ở #675 là **có thật**,
+//     không còn là giả định. (Chỉ ràng buộc khoá trong DB mới cứu được — nguồn không dựa vào cái đó.)
+// 🔴🔴🔴 **`Mst_Param_Save` XOÁ THEO `(DealerCode, ParamType)` — TỨC THAY CẢ NHÓM, KHÔNG PHẢI SỬA MỘT THAM SỐ**:
+//     `delete from Mst_Param where (1=1) and DealerCode = @DealerCode **-- PK** and ParamType = @ParamType`
+//   **Không có `ParamCode`** trong điều kiện xoá ⇒ client gửi thiếu một dòng thì **tham số đó biến mất**.
+//   ⚠️ Chú thích `-- PK` gắn vào `DealerCode` càng gây hiểu nhầm rằng đây là xoá theo khoá chính.
+// 🔴🔴🔴 **CA THỨ MƯỜI HAI CỦA LỚP "GHI NHIỀU CSDL"** — và lần này **hai hàm ghi số CSDL KHÁC NHAU**:
+//     `Mst_Param_Create` : `_dbMain.SaveData("Mst_Param", …)` **rồi** `_dbWH.SaveData(…)`            ⇒ **2 DB**
+//     `Mst_Param_Update` : `_dbMain.SaveData(…, alColumnEffective)` **rồi** `_dbWH.SaveData(…)`      ⇒ **2 DB**
+//     `Mst_Param_Save`   : `_dbMain` **+** `_dbWH` **+** `_dbDealer`                                  ⇒ **3 DB**
+//   ⇒ Tạo một tham số đi vào **2** CSDL, lưu hàng loạt đi vào **3** ⇒ **`_dbDealer` lệch dữ liệu** với hai kia
+//     nếu người dùng dùng `Create` thay vì `Save`.
+// 🔴🔴 **ĐIỀU KIỆN GHI CSDL THỨ BA LÀ CỜ TRANSACTION, KHÔNG PHẢI CỜ NGHIỆP VỤ**:
+//     `if (bNeedTransaction_Dealer) { _dbDealer.ExecQuery(strSqlDelete, …); }`
+//   ⇒ Có ghi sang DB đại lý hay không phụ thuộc **biến điều khiển transaction**. Đổi cờ đó vì lý do kỹ thuật là
+//     **âm thầm đổi phạm vi dữ liệu**.
+// ⚪ **ÂM TÍNH — lệnh xoá của `Save` THAM SỐ HOÁ ĐÚNG** (`ExecQuery(sql, "@DealerCode", …, "@ParamType", …)`).
+// ⚪ **ÂM TÍNH — `Mst_Param_Update` dùng `alColumnEffective`** (chỉ ghi đúng các cột liệt kê) ⇒ không đè cột lạ;
+//   khác `Create` gọi `SaveData` **không** truyền danh sách cột.
+app.MapGet("/api/mstparams", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? paramType, string? paramCode) =>
+{
+    var qy = db.MstParams.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(paramType)) qy = qy.Where(x => x.ParamType == paramType!.Trim());
+    if (!string.IsNullOrWhiteSpace(paramCode)) qy = qy.Where(x => x.ParamCode == paramCode!.Trim());
+    var items = await qy.OrderBy(x => x.DealerCode).ThenBy(x => x.ParamType).ThenBy(x => x.ParamCode)
+        .Select(x => new { x.DealerCode, x.ParamType, x.ParamCode, x.ParamValue, x.Description }).ToListAsync();
+
+    // Đo trực tiếp rủi ro đã nêu ở #675: có bộ khoá nào đang có NHIỀU HƠN một dòng không?
+    var dupKeys = items.GroupBy(x => new { x.DealerCode, x.ParamType, x.ParamCode })
+        .Where(g => g.Count() > 1)
+        .Select(g => new { g.Key.DealerCode, g.Key.ParamType, g.Key.ParamCode, rows = g.Count() }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        duplicateKeyGroups = dupKeys,
+        // ===== #690 =====
+        noCheckRegionInAnyOfTheFourWriteFunctions = "KHEP VONG VOI #675: o #675 toi ghi rui ro (select paramvalue from mst_param where dealercode=… and paramcode=MCC and paramtype=MCC) KHONG co top 1 => hai dong la SQL do. Nay doc CA BON ham ghi va xac nhan (luat #403 — da mo va liet ke TOAN BO #region cua tung ham): Mst_Param_Create/_Save/_Update/_Delete co cac region temp/Init/Save data/Return/Catch of try/Finally of try — KHONG ham nao co #region // Check, cung khong co loi goi …_CheckDB => TAO TRUNG (DealerCode, ParamCode, ParamType) KHONG BI CHAN o tang biz. Rui ro o #675 la CO THAT, khong con la gia dinh",
+        saveDeletesWholeParamTypeGroup = "Mst_Param_Save XOA THEO (DealerCode, ParamType) — tuc THAY CA NHOM khong phai sua mot tham so: delete from Mst_Param where (1=1) and DealerCode = @DealerCode -- PK and ParamType = @ParamType. KHONG co ParamCode trong dieu kien xoa => client gui thieu mot dong thi tham so do BIEN MAT. Chu thich -- PK gan vao DealerCode cang gay hieu nham rang day la xoa theo khoa chinh",
+        twelfthMultiDbWriteCaseAndCountDiffers = "CA THU MUOI HAI CUA LOP GHI NHIEU CSDL — va lan nay HAI HAM GHI SO CSDL KHAC NHAU: Mst_Param_Create ghi _dbMain roi _dbWH (2 DB); Mst_Param_Update ghi _dbMain roi _dbWH (2 DB); Mst_Param_Save ghi _dbMain + _dbWH + _dbDealer (3 DB) => tao mot tham so di vao 2 CSDL, luu hang loat di vao 3 => _dbDealer LECH DU LIEU voi hai kia neu nguoi dung dung Create thay vi Save",
+        thirdDbWriteGatedByTransactionFlag = "DIEU KIEN GHI CSDL THU BA LA CO TRANSACTION KHONG PHAI CO NGHIEP VU: if (bNeedTransaction_Dealer) { _dbDealer.ExecQuery(strSqlDelete, …); } => co ghi sang DB dai ly hay khong phu thuoc BIEN DIEU KHIEN TRANSACTION; doi co do vi ly do ky thuat la AM THAM DOI PHAM VI DU LIEU",
+        negativeDeleteIsParameterised = "AM TINH: lenh xoa cua Save tham so hoa dung (ExecQuery(sql, @DealerCode, …, @ParamType, …))",
+        negativeUpdateUsesEffectiveColumns = "AM TINH: Mst_Param_Update dung alColumnEffective (chi ghi dung cac cot liet ke) => khong de cot la; khac Create goi SaveData KHONG truyen danh sach cot",
+        threeWriteFunctionsForOneMaster = "nguon co BA ham ghi cho mot danh muc (Create / Save / Update) cong Delete — Save la thay-ca-nhom, Create la them-mot-dong, Update la sua-mot-dong; ba duong ghi voi ba pham vi CSDL/khoa khac nhau tren cung mot bang",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstparams", async (MstParamDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ParamType)
+        || string.IsNullOrWhiteSpace(dto.ParamCode))
+        return Results.BadRequest(new
+        {
+            error = "Can DealerCode, ParamType va ParamCode.",
+            guardsAddedByPort = "nguon Mst_Param_Create KHONG co #region // Check nao — khong kiem rong, khong kiem trung khoa; port them guard va neu co",
+        });
+    var dealer = dto.DealerCode!.Trim(); var ptype = dto.ParamType!.Trim(); var pcode = dto.ParamCode!.Trim();
+    var existed = await db.MstParams.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.ParamType == ptype && x.ParamCode == pcode);
+    if (existed is not null)
+        return Results.Conflict(new
+        {
+            error = "Mst_Param_DuplicateKey",
+            sourceHasNoSuchGuard = "nguon KHONG chan trung khoa — day la guard do PORT them, de bao ve chinh cac truy van khong co top 1 da neu o #675",
+            dealerCode = dealer, paramType = ptype, paramCode = pcode,
+        });
+    db.MstParams.Add(new MstParam
+    {
+        OrgId = t.OrgId, DealerCode = dealer, ParamType = ptype, ParamCode = pcode,
+        ParamValue = dto.ParamValue, Description = dto.Description,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealerCode = dealer, paramType = ptype, paramCode = pcode, dto.ParamValue });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #688 ĐỌC CẶP VỎ BỌC `Ser_RO_GetStatusList02_GetClaim(_WH)_New20190710` (`ZTemp.cs:2418` / `:2549`) =====
 // md5 `96baf919` (Main) · `21801fd8` (kho) — **cả hai KHỚP** máy 150, cùng offset.
 // WS `WSCarSv.asmx.cs:10196` / `:10246` gọi thẳng hai vỏ bọc này.
@@ -61679,6 +61767,7 @@ record CavityUpdateDto(string? CavityName = null, string? CavityType = null, str
     string? Note = null, string? IsActive = null, string? Status = null,
     string? StartUseDate = null, string? FinishUseDate = null, string? LogLUBy = null);
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
+record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
