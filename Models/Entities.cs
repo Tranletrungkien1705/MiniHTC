@@ -13360,6 +13360,10 @@ public sealed class EmailSend
 /// </summary>
 public sealed class EmailSendAutoTemp
 {
+    /// <summary>🔴 #709 `Email_SendEmailAutoTemp.AutoTempID` — **khoá** mà `Email_SendEmailAutoTemp_Update`
+    /// dùng để tra (`GetTableContents(…, "AutoTempID", "=", …)`), và là một trong năm bộ lọc của `_Get`.</summary>
+    public string? AutoTempID { get; set; }
+
     public long Id { get; set; }                 // AutoTempID
     public Guid OrgId { get; set; }
 

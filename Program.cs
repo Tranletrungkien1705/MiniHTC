@@ -46079,6 +46079,126 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #709 HÀNG ĐỢI EMAIL TỰ ĐỘNG `Email_SendEmailAutoTemp_*` =====
+// `BizCarSv.SendMail.cs` — `_Get` :4401-4560 md5 `b91d27b6` · `_Create` :3829-4050 md5 `6b6c8668` ·
+// `_Update` :4052-4275 md5 `db5db4ed`. → `GET|POST /api/email/autotemp`, `PUT /api/email/autotemp/{autoTempID}`.
+// Bảng `Email_SendEmailAutoTemp` đã bị **ĐỌC** ở #300 (bảng mã trạng thái) và #594, nhưng **CRUD thì chưa port**.
+//
+// 🔴🔴🔴 **NHÃN THAM SỐ TRONG LOG LỖI BỊ GÁN LỆCH — CHÉP TỪ HÀM KHÁC**: `alParamsCoupleError` của `_Get` ghi
+//     `"strTempSubjectConditionList", **strCusIDConditionList**`
+//     `"strTempFileAttachmentConditionList", **strSubjectConditionList**`
+//   ⇒ Khi có sự cố, log ghi **tên tham số SAI**: giá trị lọc theo *mã khách* hiện dưới nhãn *Subject*, giá trị
+//     lọc theo *Subject* hiện dưới nhãn *FileAttachment* — mà hàm này **không hề có** tham số đính kèm.
+//   📌 Tiền tố `strTemp*` là từ vựng của họ `Email_TempEmail_*` ⇒ khối này **chép nguyên từ hàm khác**, đúng
+//     kiểu đã bắt ở #703 (khối `Clear For Debug`) và #707 (danh sách tham số 7/8). **Điều tra sự cố sẽ đi
+//     sai hướng**, không phải lỗi chạy.
+// 🔴🔴🔴 **`_Update` KHÔNG KIỂM TỒN TẠI — LỖI THEO VỊ TRÍ DÒNG** (luật #411, họ #701):
+//     `DataTable dt = GetTableContents(…, "AutoTempID", "=", strAutoTempID);` rồi **ngay lập tức**
+//     `dt.Rows[0]["DealerCode"] = strDealerCode;` — **không** kiểm `Rows.Count`.
+//   ⇒ `AutoTempID` không tồn tại ⇒ **IndexOutOfRangeException** giữa một transaction, thay vì báo lỗi nghiệp vụ.
+// 🔴🔴🔴 **#403/#404 — CẢ `_Create` LẪN `_Update` ĐỀU KHÔNG CÓ `#region // Check`**. Đã mở và liệt kê **toàn bộ**
+//   region của cả hai để trích: `_Create` = `Temp:` · `Init:` · `Catch of try:` · `Finally of try:`;
+//   `_Update` = `Temp:` · `Init:` · `Update:` · `Catch of try:` · `Finally of try:`. **Không** region kiểm nào,
+//   và **`CMyException.Raise` xuất hiện 0 lần ở cả hai** ⇒ đây là hai đường **GHI KHÔNG VALIDATE**.
+//   📌 Bất đối xứng phụ: `_Update` có `#region // Update:` còn `_Create` **không** có `#region // Create:`.
+// 🔴🔴 **`DealerCode` LÀ CỘT DUY NHẤT KHÔNG ĐƯỢC BẢO VỆ RỖNG**: bảy cột kia (`CusID`, `Body`, `Subject`,
+//   `TypeEmail`, `CurrentDate`, `ConfigAutoID`, `Status`, `CusEmail`) đều theo khuôn
+//   `if (IsNullOrEmpty(x)) Rows[0][c] = DBNull.Value; else Rows[0][c] = x;`, riêng `DealerCode` **gán thẳng**
+//   ⇒ gửi rỗng thì ghi **chuỗi rỗng** chứ không phải NULL ⇒ hai cách biểu diễn "không có đại lý" trong cùng bảng.
+//   ⚠️ **`_Create` và `_Update` GIỐNG HỆT NHAU ở điểm này** (#404: đã đối chiếu cả hai, không lệch).
+// 🔴🔴 **LỌC TRÊN HAI CỘT NỘI DUNG**: `BuildClause` đặt trên `tmpAuto.**Body**` và `tmpAuto.**Subject**` — thân
+//   và tiêu đề email. Nếu là `ntext`/`nvarchar(max)` thì `=` **không so được** ở SQL Server (phải `cast`).
+//   Ghi cờ: chưa xác minh kiểu cột.
+// 🔴 **`BuildClause("and ", …)` — DẤU CÁCH THỪA** chỉ ở dòng `Subject` (bốn dòng kia là `"and"`). Sinh
+//   `and  tmpAuto.Subject` (hai dấu cách) ⇒ **hợp lệ, vô hại**, nhưng là dấu vết sửa tay lẻ tẻ.
+// 🔴 **NĂM `BuildClause` ĐỀU ĐÒI TOÁN TỬ** (#410): gửi trần cả năm ⇒ mọi mệnh đề **bị bỏ im lặng** ⇒
+//   `where (1=1)` ⇒ **trả toàn bộ hàng đợi email**. Port ép phân trang.
+// 🔴 `select ***** from Email_SendEmailAutoTemp` ⇒ hợp đồng cột theo schema (họ #677/#700/#702).
+// §12 GAP đã vá: entity `EmailSendAutoTemp` **thiếu `AutoTempID`** — chính là **khoá** `_Update` dùng để tra.
+app.MapGet("/api/email/autotemp", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? autoTempID, string? cusID, string? body, string? subject,
+    int? recordStart, int? recordCount) =>
+{
+    var qy = db.EmailSendAutoTemps.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(autoTempID)) qy = qy.Where(x => x.AutoTempID == autoTempID!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusID)) qy = qy.Where(x => x.CusID == cusID!.Trim());
+    // Nguồn lọc thẳng trên hai cột NỘI DUNG; Mini dùng Contains cho dùng được thực tế.
+    if (!string.IsNullOrWhiteSpace(body)) qy = qy.Where(x => x.Body != null && x.Body.Contains(body!.Trim()));
+    if (!string.IsNullOrWhiteSpace(subject)) qy = qy.Where(x => x.Subject != null && x.Subject.Contains(subject!.Trim()));
+
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 2000 ? recordCount!.Value : 500;
+    var items = await qy.OrderByDescending(x => x.CreatedDate).ThenBy(x => x.Id).Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.AutoTempID, x.DealerCode, x.CusID, x.CusEmail, x.Subject, x.Body,
+                           x.CurrentDate, x.TypeEmail, x.ConfigAutoID, x.Status, x.SendType, x.CreatedDate })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items,
+        // ===== #709 =====
+        errorLogLabelsAreCopiedFromAnotherFunction = "NHAN THAM SO TRONG LOG LOI BI GAN LECH — CHEP TU HAM KHAC: alParamsCoupleError cua _Get ghi (strTempSubjectConditionList, strCusIDConditionList) va (strTempFileAttachmentConditionList, strSubjectConditionList) => khi co su co, log ghi TEN THAM SO SAI: gia tri loc theo ma khach hien duoi nhan Subject, gia tri loc theo Subject hien duoi nhan FileAttachment — ma ham nay KHONG HE co tham so dinh kem. Tien to strTemp* la tu vung cua ho Email_TempEmail_* => khoi nay CHEP NGUYEN TU HAM KHAC, dung kieu da bat o #703 (khoi Clear For Debug) va #707 (danh sach tham so 7/8). DIEU TRA SU CO SE DI SAI HUONG, khong phai loi chay",
+        fiveClausesAllNeedOperator = "NAM BuildClause DEU DOI TOAN TU (#410): gui tran ca nam => moi menh de BI BO IM LANG => where (1=1) => TRA TOAN BO HANG DOI EMAIL. Port ep phan trang",
+        filtersSitOnTwoContentColumns = "LOC TREN HAI COT NOI DUNG: BuildClause dat tren tmpAuto.Body va tmpAuto.Subject — than va tieu de email. Neu la ntext/nvarchar(max) thi = KHONG SO DUOC o SQL Server (phai cast). Ghi co: chua xac minh kieu cot",
+        extraSpaceInAndOperator = "BuildClause(and , …) — DAU CACH THUA chi o dong Subject (bon dong kia la and). Sinh and  tmpAuto.Subject (hai dau cach) => HOP LE, VO HAI, nhung la dau vet sua tay le te",
+        selectStarOnQueueTable = "select * from Email_SendEmailAutoTemp => hop dong cot theo schema (ho #677/#700/#702)",
+        gapAutoTempIdWasMissing = "§12 GAP da va: entity EmailSendAutoTemp THIEU AutoTempID — chinh la KHOA ma _Update dung de tra",
+    });
+}).RequireAuthorization();
+
+// #709 `Email_SendEmailAutoTemp_Create` (:3829). KHÔNG có `#region // Check`, `CMyException.Raise` = 0 lần.
+app.MapPost("/api/email/autotemp", async (EmailAutoTempDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Nguồn KHÔNG validate gì. Port giữ 1:1 và trả cờ, không tự thêm guard.
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    var row = new EmailSendAutoTemp
+    {
+        OrgId = t.OrgId,
+        AutoTempID = OrNull(dto.AutoTempID),
+        // 🔴 cột DUY NHẤT nguồn gán THẲNG, không quy rỗng về NULL.
+        DealerCode = dto.DealerCode,
+        CusID = OrNull(dto.CusID), Body = OrNull(dto.Body), Subject = OrNull(dto.Subject),
+        TypeEmail = OrNull(dto.TypeEmail), CurrentDate = OrNull(dto.CurrentDate),
+        ConfigAutoID = OrNull(dto.ConfigAutoID), Status = OrNull(dto.Status),
+        CusEmail = OrNull(dto.CusEmail),
+        CreatedDate = DateTime.Now,
+    };
+    db.EmailSendAutoTemps.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.AutoTempID, row.DealerCode, row.Status,
+        sourceHasNoCheckRegion = "#403/#404: da mo va liet ke TOAN BO region cua ca _Create lan _Update. _Create = Temp:, Init:, Catch of try:, Finally of try:; _Update = Temp:, Init:, Update:, Catch of try:, Finally of try:. KHONG region kiem nao, va CMyException.Raise xuat hien 0 LAN o ca hai => hai duong GHI KHONG VALIDATE. Bat doi xung phu: _Update co #region // Update: con _Create KHONG co #region // Create:",
+        dealerCodeIsTheOnlyUnguardedColumn = "DealerCode LA COT DUY NHAT KHONG DUOC BAO VE RONG: tam cot kia (CusID, Body, Subject, TypeEmail, CurrentDate, ConfigAutoID, Status, CusEmail) deu theo khuon if (IsNullOrEmpty(x)) DBNull.Value else x; rieng DealerCode GAN THANG => gui rong thi ghi CHUOI RONG chu khong phai NULL => hai cach bieu dien khong-co-dai-ly trong cung mot bang. _Create va _Update GIONG HET NHAU o diem nay (#404: da doi chieu ca hai, khong lech)",
+    });
+}).RequireAuthorization();
+
+// #709 `Email_SendEmailAutoTemp_Update` (:4052). Tra theo `AutoTempID` rồi ghi `Rows[0]` KHÔNG kiểm `Rows.Count`.
+app.MapPut("/api/email/autotemp/{autoTempID}", async (string autoTempID, EmailAutoTempDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var key = (autoTempID ?? "").Trim();
+    var row = await db.EmailSendAutoTemps.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AutoTempID == key);
+    if (row is null)
+        // 🔴 Nguồn ở đây ném IndexOutOfRangeException (Rows[0] trên bảng rỗng). Port trả lỗi nghiệp vụ + cờ.
+        return Results.BadRequest(new
+        {
+            error = "AUTOTEMPID_NOT_FOUND", autoTempID = key,
+            sourceWouldThrowIndexOutOfRange = "_Update KHONG KIEM TON TAI — LOI THEO VI TRI DONG (luat #411, ho #701): DataTable dt = GetTableContents(…, AutoTempID, =, strAutoTempID); roi NGAY LAP TUC dt.Rows[0][DealerCode] = strDealerCode; — KHONG kiem Rows.Count => AutoTempID khong ton tai => IndexOutOfRangeException giua mot transaction, thay vi bao loi nghiep vu",
+        });
+
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    row.DealerCode = dto.DealerCode;                 // giống `_Create`: gán thẳng, không quy rỗng về NULL
+    row.CusID = OrNull(dto.CusID); row.Body = OrNull(dto.Body); row.Subject = OrNull(dto.Subject);
+    row.TypeEmail = OrNull(dto.TypeEmail); row.CurrentDate = OrNull(dto.CurrentDate);
+    row.ConfigAutoID = OrNull(dto.ConfigAutoID); row.Status = OrNull(dto.Status);
+    row.CusEmail = OrNull(dto.CusEmail);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.AutoTempID, row.DealerCode, row.Status, updated = true });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #708 VELOCA: CHI TIẾT MỘT PHIẾU XUẤT KHO =====
 // `OSVeloca_Ser_Inv_StockOut_GetByStockOutID` (`BizCarSv.Inventory.StockOut.cs:18670-19344`, md5 `f8ba332e`
 // — **KHỚP máy 150, cùng offset**) → `GET /api/osveloca/stockouts/{stockOutNo}/detail`.
@@ -63237,7 +63357,9 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 // `IsActive` rỗng ⇒ tạo mới ở trạng thái TẮT (nguồn ghi DBNull), sửa thì GIỮ NGUYÊN.
 // #300: 10 trường của `Email_SendEmailAutoTemp_Create` + `BatchId`/`Remark` (chỉ dùng lúc TẠO —
 //   nguồn không đưa hai cột đó vào `alEffectiveColumn` của `_Update`).
+// #709: them AutoTempID — khoa ma Email_SendEmailAutoTemp_Update dung de tra.
 record EmailAutoTempDto(string? BatchId = null, string? DealerCode = null, string? CusID = null,
+    string? AutoTempID = null,
     string? CusEmail = null, string? Subject = null, string? Body = null, string? CurrentDate = null,
     string? TypeEmail = null, string? ConfigAutoID = null, string? Status = null,
     string? SendType = null, string? Remark = null);
