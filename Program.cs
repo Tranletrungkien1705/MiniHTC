@@ -53008,6 +53008,77 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #646 BCBH HTMV `Ser_ROWarrantyReportHTMV_Get_WH_New20230417` (`WH.cs:15214-15714`) =====
+// 3B: laptop `:15214` md5 `6cb0fed1` **KHỚP** máy 150 `:15214`. Cùng đợt 2023-04-17 (xem #640).
+//
+// 🔴 **ĐÍNH CHÍNH #645 — BẰNG CHỨNG TÔI DÙNG LÀ MÃ ĐÃ COMMENT**:
+//   Ở #645 tôi viết "chính hệ này phân loại `RLUZ` là HTMV ở chỗ khác", dẫn khối
+//     `when sc.FrameNo like 'RLUZ%' then 'HTMV'` (và `RLUDB/RLUDC/RLUDT/RLUG/RLUS/RLUT`, cùng
+//     `'MALA/MALB/MALC' then 'HMI'`).
+//   Đọc lại thì **toàn bộ khối đó bị comment** — mỗi dòng có tiền tố `--`, ở **cả ba** file
+//   (`BizCarSv.WH.cs` · `Report.Special.Warranty.cs` · `ZTemp.cs`, mỗi file 7 dòng). ⇒ Nó **không phải phân**
+//   **loại đang chạy**, và tôi đã vi phạm chính luật "port dòng ACTIVE, không port dòng COMMENT" khi trích nó
+//   làm bằng chứng. **Phần đếm 12 site `RLU%` / 6 site `RLUU%` vẫn đúng.**
+//   ⇒ **Phát biểu đúng, chỉ bằng dòng ACTIVE**: HTC lọc `like 'RLU%'` **không có loại trừ nào**; HTMV lọc
+//     `like 'RLU%'` **VÀ** `not like 'RLUU%'` ⇒ **HTMV là tập con thực sự của HTC**, và báo cáo RLUU cũng
+//     nằm trọn trong HTC. **Chồng lấn là THẬT và ĐANG CHẠY** — chỉ là lý do nằm ở chỗ HTC thiếu loại trừ.
+//
+// 🔴🔴🔴 **HTMV LOẠI `RLUU` NHƯNG *KHÔNG* LOẠI `RLUZ` — DÙ ĐÃ VIẾT SẴN, Ở CẢ BA TẦNG**:
+//   Ba chuỗi điều kiện là **biến cục bộ**, không phải tham số client (WS chỉ truyền 7 đối số nghiệp vụ):
+//     `string strFrameNoFIXConditionList      = "like RLU%";      //Chỉ lấy VIN bắt đầu từ ký tự: RLU`
+//     `string strFrameNoFIX_RLUUConditionList = "not like RLUU%"; //… RLU trừ RLUU`
+//     `string strFrameNoFIX_RLUZConditionList = "not like RLUZ%"; //… RLU trừ RLUZ`
+//   Nhưng đường dùng `RLUZ` **bị comment ở CẢ BA chỗ**: dòng `BuildClause`, dòng `Replace`, và token trong SQL
+//   (`--zzzzClauseWhere_FrameNoFix_RLUZConditionList`).
+//   📌 **Đếm thật, cả hai máy**: dòng `BuildClause` cho `RLUZ` bị comment ở **4/4** site (2 hàm trong
+//     `BizCarSv.WH.cs` + 2 hàm trong `BizCarSv.WarrantyReport.cs`) ⇒ **nhất quán tuyệt đối**.
+//   ⇒ Vì tắt **nhất quán ở mọi nơi**, đây **có vẻ là quyết định có chủ đích**, không phải sót một chỗ.
+//     **Nhưng chú thích ngay cạnh vẫn ghi "RLU trừ RLUZ"** ⇒ **ý định ghi trong tài liệu và hành vi đang chạy
+//     mâu thuẫn nhau** — và mâu thuẫn đó cũng nhất quán ở cả 4 site. Ghi rõ, **không tự bật lại**.
+// 🔴 `--and car.FrameNo like 'RLU%'` (dòng cứng cũ) **bị comment**, thay bằng hai `BuildClause` ⇒ port theo
+//   **dòng ACTIVE**: hai mệnh đề `BuildClause`.
+// ⚪ **Âm tính (#410)**: cả hai chuỗi **bắt đầu bằng toán tử** (`like` / `not like`) đúng như `BuildClause` đòi
+//   ⇒ **không** rơi im lặng. Đây là ca hiếm mà giá trị truyền vào `BuildClause` là **hằng nội bộ đúng chuẩn**,
+//   không phải giá trị client ⇒ cũng **không** có bề mặt tiêm.
+// ⚪ Hai `BuildClause` cùng cột `car.FrameNo`, cùng `and` ⇒ **hợp lệ và cộng dồn** (giao của hai điều kiện) —
+//   khác #624 nơi hai điều kiện cùng tham số giết hai `left join`.
+app.MapGet("/api/rowarranty-reports/htmv", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? status, string? frameNo, string? plateNo) =>
+{
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.Vin == frameNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim().ToUpperInvariant());
+
+    var all = await qy.OrderBy(x => x.Id).Take(1000)
+        .Select(x => new { x.Id, x.ClaimNo, x.RONo, x.DealerCode, x.Vin, x.PlateNo,
+                           x.WarrantyType, x.PartCode, x.Amount, x.Status }).ToListAsync();
+
+    // Hai điều kiện ACTIVE của nguồn: like RLU%  AND  not like RLUU%
+    static bool Starts(string? v, string p) => (v ?? "").StartsWith(p, StringComparison.OrdinalIgnoreCase);
+    var items = all.Where(x => Starts(x.Vin, "RLU") && !Starts(x.Vin, "RLUU")).ToList();
+
+    // Điều kiện thứ ba ĐÃ VIẾT nhưng bị comment ở 4/4 site — đo xem nó sẽ loại thêm bao nhiêu.
+    var wouldBeExcludedByRluz = items.Count(x => Starts(x.Vin, "RLUZ"));
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #646 =====
+        htmvFilterIsTwoActiveClauses = "nguon: strFrameNoFIXConditionList = like RLU% VA strFrameNoFIX_RLUUConditionList = not like RLUU%, ca hai la BIEN CUC BO (WS chi truyen 7 doi so nghiep vu, khong truyen dieu kien nay)",
+        htmvExcludesRluuButNotRluz = "chuoi thu ba strFrameNoFIX_RLUZConditionList = not like RLUZ% DA DUOC KHAI BAO va chu thich ghi Chi lay VIN bat dau tu ky tu: RLU tru RLUZ, nhung duong dung no BI COMMENT o CA BA cho: dong BuildClause, dong Replace, va token trong SQL",
+        rluzExclusionCommentedAtAllSites = "dem that tren CA HAI may: dong BuildClause cho RLUZ bi comment o 4/4 site (2 ham trong BizCarSv.WH.cs + 2 ham trong BizCarSv.WarrantyReport.cs) => nhat quan tuyet doi, co ve la quyet dinh CO CHU DICH chu khong phai sot mot cho",
+        documentedIntentContradictsBehaviour = "nhung chu thich ngay canh VAN ghi RLU tru RLUZ => y dinh ghi trong tai lieu va hanh vi dang chay mau thuan nhau, va mau thuan do cung nhat quan o ca 4 site; ghi ro, KHONG tu bat lai",
+        wouldBeExcludedByRluz,
+        correctionOfIssue645 = "DINH CHINH #645: khoi case bay tien to (RLUDB/RLUDC/RLUDT/RLUG/RLUS/RLUT/RLUZ then HTMV, va MALA/MALB/MALC then HMI) BI COMMENT TOAN BO o ca ba file — toi da trich ma da comment lam bang chung, vi pham chinh luat port dong ACTIVE; phan dem 12 site RLU% / 6 site RLUU% van dung",
+        liveOverlapStatement = "phat bieu dung chi bang dong ACTIVE: HTC loc like RLU% KHONG co loai tru => HTMV (RLU% va not RLUU%) la TAP CON THUC SU cua HTC, va bao cao RLUU cung nam tron trong HTC",
+        oldHardcodedLineIsCommented = "--and car.FrameNo like RLU% (dong cung cu) bi comment, thay bang hai BuildClause => port theo dong ACTIVE",
+        buildClauseValuesStartWithOperator = "AM TINH (#410): ca hai chuoi bat dau bang toan tu (like / not like) dung nhu BuildClause doi => KHONG roi im lang; va day la hang NOI BO chu khong phai gia tri client nen cung khong co be mat tiem",
+        twoClausesOnSameColumnAreCumulative = "hai BuildClause cung cot car.FrameNo, cung and => hop le va cong don (giao cua hai dieu kien), khac #624 noi hai dieu kien cung tham so giet hai left join",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #645 BCBH THEO TIỀN TỐ SỐ KHUNG — `…HTC_RLU_Get_WH` vs `…HTC_RLUU_Get_WH` =====
 // Hai hàm LIVE cùng đợt 2023-04-17 (xem #640): `Ser_ROWarrantyReportHTC_**RLU**_Get_WH_New20230417`
 //   (`WH.cs:17002-17397`, md5 `f54aaa5a`) và `…_**RLUU**_Get_WH_New20230417` (`:18191-18585`, md5 `3fc58488`).
@@ -53062,7 +53133,11 @@ app.MapGet("/api/rowarranty-reports/htc-by-vin-prefix", async (AppDbContext db, 
         twoFunctionsDifferByOneLine = "Ser_ROWarrantyReportHTC_RLU_Get_WH_New20230417 (`395 dong) va _RLUU_ (`395 dong) giong nhau tung ky tu tru DUNG MOT dong SQL: and ro.FrameNo like RLU% vs RLUU% (ba cho con lai chi la ten ham, strFunctionName, strErrorCodeDefault)",
         rluPrefixSwallowsRluuAndHtmv = "moi so khung bat dau bang RLUU CUNG bat dau bang RLU => bao cao RLU CHUA TRON bao cao RLUU: cong hai bao cao la DEM TRUNG, va nguoi chon RLU nhan ca xe RLUU ma khong biet",
         overlapWithRluu = overlapRluu,
-        htmvPrefixesAlsoStartWithRlu = "dem toan tang biz: like RLU% = 12 site, like RLUU% = 6 site; va mot khoi case phan loai HTMV liet ke BAY tien to cu the RLUDB/RLUDC/RLUDT/RLUG/RLUS/RLUT/RLUZ (moi tien to 3 site, dang when … like RLUxx% then HTMV) — CA BAY deu bat dau bang RLU => bao cao HTC gom luon moi xe ma chinh he nay phan loai la HTMV o cho khac",
+        // 🔴 ĐÍNH CHÍNH (#646): khối `case` bảy tiền tố mà cờ dưới đây từng viện dẫn hoá ra **BỊ COMMENT TOÀN BỘ**
+        //    (mỗi dòng có tiền tố `--`, ở cả ba file). Tôi đã trình bày mã đã comment như thể là phân loại đang
+        //    chạy — **sai bằng chứng**. Xem cờ `htcOverlapCorrectedIn646` để biết phát biểu đúng.
+        htmvPrefixesAlsoStartWithRlu = "DA DINH CHINH o #646: khoi case bay tien to RLUDB/RLUDC/RLUDT/RLUG/RLUS/RLUT/RLUZ then HTMV (va MALA/MALB/MALC then HMI) BI COMMENT TOAN BO o ca ba file (BizCarSv.WH.cs, Report.Special.Warranty.cs, ZTemp.cs) => KHONG phai phan loai dang chay; dem 12/6 site cua like RLU% / RLUU% van dung",
+        htcOverlapCorrectedIn646 = "PHAT BIEU DUNG (bang dong ACTIVE): bao cao HTC loc like RLU% KHONG co loai tru nao; bao cao HTMV loc like RLU% VA not like RLUU% => HTMV la TAP CON THUC SU cua HTC, va bao cao RLUU cung nam tron trong HTC. Chong lan la THAT va DANG CHAY, nhung ly do la thieu loai tru o HTC chu khong phai khoi case da comment",
         overlapWithHtmvPrefixes = overlapHtmv,
         contradictionProvableWithoutDb = "ket luan nay suy ra hoan toan tu quan he tien to chuoi, KHONG can truy van DB",
         bothLogUnderNameWithoutSuffix = "ca hai ham co strFunctionName = …_RLU_Get_WH / …_RLUU_Get_WH (khong hau to ngay) => nhat ky khong phan biet duoc ban nao chay (cung benh #636)",
