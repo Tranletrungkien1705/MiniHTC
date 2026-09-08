@@ -12944,6 +12944,21 @@ app.MapPost("/api/mktfees/create", async (MktFeeCreateDto dto, AppDbContext db, 
         return Results.BadRequest(new { error = $"Phiếu {code} đã tồn tại." });
     if (name.Length < 1) return Results.BadRequest(new { error = "Tên phiếu chi phí rỗng." });
     if (dealer.Length < 1) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    // 🔴 #B213 VÁ GUARD NGÀY theo nguồn `MKT_MarketingFeeCreate_New20181115`
+    //   (`BizHTC.Marketing.cs:6259`, 3B `6259,6581 / 4b5006d5ff4d9ac4a45e12796e914389`, khớp cả 2 máy):
+    //   `if (Convert.ToDateTime(strDateStart).Date > Convert.ToDateTime(strDateEnd).Date)
+    //       throw …_InvalidDate;`
+    //   ⇒ Ngày bắt đầu **không được sau** ngày kết thúc. Bản port trước **thiếu hẳn** guard này ⇒ tạo
+    //     được phiếu chi phí có kỳ **ngược**, mọi báo cáo cộng theo kỳ sẽ **bỏ sót** phiếu đó.
+    //   ⚠️ Nguồn so **theo NGÀY** (`.Date`), nên `Start == End` (cùng ngày) là **hợp lệ**.
+    if (dto.DateStart is not null && dto.DateEnd is not null
+        && dto.DateStart.Value.Date > dto.DateEnd.Value.Date)
+        return Results.BadRequest(new
+        {
+            error = "MKT_MarketingFeeCreate_InvalidDate",
+            check = new { dto.DateStart, dto.DateEnd },
+            note = "Nguon: if (Convert.ToDateTime(strDateStart).Date > Convert.ToDateTime(strDateEnd).Date) throw _InvalidDate. So THEO NGAY nen Start == End la HOP LE."
+        });
 
     var rows = dto.Details ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
