@@ -31145,6 +31145,27 @@ app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
     note = "Bộ mã TRỘN số + chữ trong cùng một cột (chỉ CONF là mã chữ). Mã ngoài bốn giá trị ⇒ nhãn NULL (nguồn không có ELSE).",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #614 BẢN THỨ BA `Ser_Part_OrderGet_StatusList_WH` (`BizCarSv.WH.cs:29834`) — **HAI CỔNG, HAI SỐ ĐƠN** =====
+// Hàm này nằm ở **file khác** (`BizCarSv.WH.cs`, không phải `PartOrder.cs`) nên grep theo file sẽ trượt —
+//   phải grep theo **tên hàm** (bài học #582: hàm nằm nhầm/khác file).
+// TRACE WS: `WSCarSv.asmx.cs:**29274**` gọi bản `_WH`; `:23686` gọi bản Dealer (#613). **Cả hai đều sống.**
+//
+// 🔴🔴 **BẢN `_WH` GIỮ SUBQUERY — KHÔNG NUỐT ĐƠN; BẢN DEALER DÙNG `inner join` — NUỐT**:
+//     bản `_WH`  : `, (select sum(t.DeliveryQuantity) from Ser_Part_OrderDetail t with(nolock) where t.OrderPartID = si.OrderPartID) SumDeliveryQuantity`
+//     bản Dealer: **hai dòng đó bị comment**, thay bằng `inner join Ser_Part_OrderDetail f … group by …`
+//   ⇒ Cùng một màn tra cứu đơn hàng: **cổng kho** trả **cả** đơn chưa có dòng chi tiết, **cổng đại lý** thì
+//     **không**. Người dùng thấy đơn ở màn này mà **không thấy** ở màn kia — và không có thông báo nào.
+//   ⇒ Đây là **lần thứ ba** gặp "hai cổng WS, hai luật" trong cùng cụm: #604 (cấp số: có/không lọc ngày) ·
+//     #611/#613 (bỏ cột + bỏ bộ lọc `StatusText`) · **#614 (nuốt/không nuốt đơn)**. Cụm `Ser_Part_Order`
+//     **không có một định nghĩa thống nhất** về "danh sách đơn hàng".
+// 🔴 **`SELECT distinct` CHỈ CÓ Ở BẢN DEALER**: bản `_WH` là `SELECT` trần. ⇒ Dấu hiệu bản Dealer **đã từng
+//   nở dòng** (vì `inner join` sang bảng chi tiết) và được vá bằng `distinct` — vá **triệu chứng**, không vá
+//   **nguyên nhân**: `distinct` khử trùng lặp nhưng **không** trả lại các đơn đã bị `inner join` loại.
+// 🔴 **ĐỌC DB KHÁC NHAU**: bản `_WH` đọc `_dbWH`; bản Dealer đọc `_dbDealer`; bản chết `_StatusList01` đọc
+//   `_dbMain` ⇒ **ba bản, ba DB** cho cùng một câu hỏi (mở rộng họ #560/#581/#613).
+// 📌 MiniHTC một DB ⇒ endpoint `/api/supplierpartorders` **giữ đơn** (như bản `_WH`) và trả
+//   `ordersWithoutLinesDroppedBySource` để thấy bản Dealer sẽ nuốt bao nhiêu.
+//
 // ===== 🔴🔴 #613 DIFF `Ser_Part_OrderGet_StatusList01` (`:2169`, CHẾT) vs `_StatusList` (`:2466`, LIVE) =====
 // TRACE WS: `WSCarSv.asmx.cs:23686` và `TERP.WSCarSv/App_Code/WSCarSv.cs:32112` đều gọi bản **không hậu tố**
 //   ⇒ `_StatusList01` **chết**. (Còn một bản thứ ba `_StatusList_**WH**` ở `:29274` — vào hàng đợi.)
@@ -31246,6 +31267,14 @@ app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
         liveVariantAddedThreeFilters = new[] { "strPartCodeConditionList", "strOrderConfirmNoConditionList", "strOrderCreatorCodeConditionList" },
         thirdVariantExists = "Ser_Part_OrderGet_StatusList_WH (WSCarSv.asmx.cs:29274) — chua doc, vao hang doi",
         deadVariantUsesOldLogging = "_log.WriteLogAsync vs ProcessBizReq — dau hieu phu, KHONG du de ket luan ban nao song (xem #579)",
+        // ===== #614 =====
+        thirdVariantIsAlsoLive = "Ser_Part_OrderGet_StatusList_WH (BizCarSv.WH.cs:29834) duoc WSCarSv.asmx.cs:29274 goi => CA HAI ban deu song",
+        whVariantKeepsSubqueryDoesNotDropOrders = "ban _WH GIU subquery SumDeliveryQuantity/SumQuantity; ban Dealer comment chung va dung inner join => cong kho tra CA don chua co dong chi tiet, cong dai ly thi KHONG",
+        sameScreenTwoRowCounts = "nguoi dung thay don o man nay ma khong thay o man kia, khong co thong bao nao",
+        thirdTimeTwoGatewaysTwoRules = "#604 (cap so: co/khong loc ngay), #611+#613 (bo cot + bo bo loc StatusText), #614 (nuot/khong nuot don) => cum Ser_Part_Order khong co dinh nghia thong nhat ve danh sach don hang",
+        distinctOnlyOnDealerVariant = "SELECT distinct chi co o ban Dealer; ban _WH la SELECT tran => dau hieu ban Dealer tung NO DONG vi inner join roi duoc va bang distinct — va trieu chung, khong va nguyen nhan: distinct khong tra lai cac don da bi inner join loai",
+        threeVariantsThreeDbs = "_StatusList01 doc _dbMain, _StatusList doc _dbDealer, _StatusList_WH doc _dbWH",
+        functionLivesInDifferentFile = "ban _WH nam trong BizCarSv.WH.cs chu khong phai PartOrder.cs — grep theo TEN HAM, dung grep theo file (#582)",
     });
 }).RequireAuthorization();
 
