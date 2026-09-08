@@ -53008,6 +53008,117 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #643 TRA CỨU PHIẾU NHẬP KHO `SerStockInGet_WH_New20230620` (`WH.cs:29370-29598`) =====
+// 3B: laptop `:29370` md5 `534e8af3` **KHỚP** máy 150 `:29370`. WS `WSCarSv.asmx.cs:29329` gọi bản này.
+//
+// 🔴🔴🔴 **CẢ MỘT ĐỢT PHÁT TRIỂN HOÀN CHỈNH NẰM CHẾT — CHƯA BAO GIỜ ĐƯỢC ĐẤU DÂY**:
+//   Trong cụm có bản **mới hơn** `SerStockInGet_WH_**New20240115**` (`:29599`) với doc-comment của nguồn:
+//     `/// 20240115. HuongTTT: NC Tìm kiếm phiếu nhập kho thêm thông tin Mã kho`
+//     `///             Tham chiếu từ hàm SerStockInGet_WH`
+//   DIFF `_New20230620` → `_New20240115` **đúng bốn thứ**, tất cả phục vụ yêu cầu đó: thêm tham số
+//   `strStockNoConditionList` · thêm `BuildClause("and","si.StockNo", …)` · thêm cột `sis.StockName` ·
+//   thêm `left JOIN Ser_Inv_Stock sis ON si.StockNo = sis.StockNo AND si.DealerCode = sis.DealerCode`.
+//   📌 **ĐẾM THẬT**: hậu tố `_New20240115` có ở **9 hàm** (`SerStockInGet` · `SerStockInGet_WH` ·
+//     `SerStockInCreate` · `SerStockInUpdate` · `SerStockOutSearch` · `SerStockOutSearch_WH` ·
+//     `SerStockOutCreate` · `SerStockOutUpdate` · `SerStockBalanceQuantityGet`) — máy 150 đếm lại cũng **9**.
+//     Và grep toàn cây **loại trừ** thư mục `TERP.BizCarSv` cho ra **KHÔNG một dòng nào** ⇒ **không WS nào,**
+//     **không tầng nào bên ngoài gọi tới bất kỳ bản nào trong chín hàm đó**.
+//   ⇒ Đây không phải "một biến thể chết" mà là **trọn một tính năng** (đọc · tạo · sửa · tìm kiếm, cả bản
+//     thường lẫn bản `_WH`) **đã lập trình xong từ 2024-01-15 nhưng chưa bao giờ bật**. Người dùng yêu cầu
+//     "tìm phiếu nhập theo **mã kho** và hiện **tên kho**" — code có, **không chạy**.
+//   ⚪ Bản 2024 tự nó **đúng**: `left join Ser_Inv_Stock` không bị `WHERE` giết (đủ ba câu hỏi #414).
+//   📌 Port đi theo bản **ĐANG CHẠY** (`_New20230620`) và nêu cờ; **không** tự "bật" tính năng chưa được duyệt.
+//
+// 🔴🔴 **HAI `inner join` DANH MỤC LÀM MẤT PHIẾU NHẬP** (#410 — mất dòng lúc ĐỌC), cả hai nối bằng **cặp** có
+//   `DealerCode`:
+//     `inner join Ser_MST_Supplier su on si.SupplierID = su.SupplierID **and si.DealerCode = su.DealerCode**`
+//     `inner join Sys_user suser     on si.UserCode  = suser.UserCode  **and si.DealerCode = suser.DealerCode**`
+//   ⇒ Phiếu nhập có **nhà cung cấp đã bị xoá / đổi đại lý**, hoặc **người tạo đã chuyển đại lý / nghỉ việc**,
+//     **biến mất khỏi màn tra cứu** ⇒ **chứng từ kho không tra được nữa**. Cùng khuôn "nối người dùng bằng hai
+//     khoá" đã ghi ở #619 — nay là **ca thứ hai**, và lần này nạn nhân là **chứng từ**, không phải danh mục.
+// 🔴 Khối chi tiết cũng `inner join Ser_Mst_Part p on sid.PartID = p.PartID **and sid.DealerCode = p.DealerCode**`
+//   ⇒ dòng chi tiết có phụ tùng **không thuộc đại lý đó** rơi mất.
+// 🔴 `0.0 SOPrice` — hằng cứng `0` cho **giá xuất** trong bảng chi tiết của **phiếu NHẬP** (dùng chung cấu trúc
+//   với màn xuất) ⇒ cột đó **luôn 0**, không phải dữ liệu.
+// ⚪ **KIỂM TRA ÂM TÍNH QUAN TRỌNG — RỦI RO CHIA NGUYÊN *KHÔNG* CÓ Ở ĐÂY**, khác #620:
+//     ở đây : `(ISNULL(sid.Price,0) * ISNULL(sid.Quantity,0) * (100 + ISNULL(sid.VAT,0)) / 100) AS AfterTax`
+//     ở #620: `sum(… * (1 + rp.**VAT/100**))`
+//   Ở #620, `VAT/100` được tính **trước** và **đứng riêng** ⇒ nếu `VAT` là kiểu nguyên thì `10/100 = 0`.
+//   Ở đây phép nhân chạy **trái sang phải**: `((Price*Qty)*(100+VAT))/100` — `Price` là kiểu tiền nên **cả biểu**
+//   **thức đã là decimal trước khi chia** ⇒ **an toàn**. ⇒ **Thứ tự phép toán quyết định** có rủi ro hay không,
+//   không phải sự có mặt của `/100`. Ghi lại để lượt sau không báo nhầm cả hai dạng như nhau.
+// ⚪ Âm tính: `left join Ser_Inv_StockIN siold` (phiếu nhập cũ) và `left join Ser_Order_Part sop` — `WHERE`
+//   **không** có điều kiện nào trên chúng ⇒ **LEFT còn sống**; cột dẫn xuất `FlagOrderNCC` = `case when
+//   sop.OrderPartNo is null then 0 else 1 end`.
+// 🔴 Khối chi tiết chỉ sinh khi `strIsGetDetail == TConst.Flag.Active` (= **"1"**), ngược lại `-- Nothing.`
+//   (khuôn #582). **Không** câu nào có `ORDER BY`.
+app.MapGet("/api/stockins/search-wh", async (AppDbContext db, ITenantContext t,
+    string? stockInNo, string? dealerCode, string? supplierCode, string? status, bool? isGetDetail) =>
+{
+    var qy = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(stockInNo)) qy = qy.Where(x => x.StockInNo == stockInNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(supplierCode)) qy = qy.Where(x => x.SupplierCode == supplierCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+
+    var heads = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var supCodes = heads.Select(h => h.SupplierCode).Where(x => x != null).Distinct().ToList();
+    var sups = await db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && supCodes.Contains(x.SupplierCode))
+        .Select(x => new { x.SupplierCode, x.SupplierName }).ToListAsync();
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.UserName, u.DealerCode }).ToListAsync();
+
+    var items = heads.Select(h =>
+    {
+        var su = sups.FirstOrDefault(x => x.SupplierCode == h.SupplierCode);
+        // ServiceStockIn cua Mini KHONG co cot nguoi tao => khong mo phong duoc nhanh Sys_user (xem co).
+        var us = users.FirstOrDefault(u => u.DealerCode == h.DealerCode);
+        return new
+        {
+            h.Id, h.StockInNo, h.DealerCode, h.SupplierCode, supplierName = su?.SupplierName,
+            h.StockInDate, h.Status, h.CreatedAt, userName = us?.UserName,
+            // Nguồn nối CẢ HAI bằng inner join ⇒ phiếu sẽ biến mất; port giữ phiếu và đánh dấu.
+            wouldBeDroppedBySource = su is null || us is null,
+        };
+    }).ToList();
+
+    object? lines = null;
+    if (isGetDetail == true)
+    {
+        var ids = heads.Select(h => h.Id).ToList();
+        var raw = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.ServiceStockInId))
+            .Select(l => new { l.ServiceStockInId, l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat }).ToListAsync();
+        lines = raw.Select(l => new
+        {
+            stockInId = l.ServiceStockInId, l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat,
+            beforeTax = l.Price * l.Quantity,
+            // Nguồn: (Price * Quantity * (100 + VAT)) / 100 — nhân TRƯỚC nên là phép chia decimal.
+            afterTax = l.Price * l.Quantity * (100m + l.Vat) / 100m,
+            siPrice = l.Price,
+            soPrice = 0m,          // nguồn ghi hằng cứng 0.0 SOPrice trên bảng chi tiết PHIẾU NHẬP
+        }).ToList();
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, lines,
+        droppedBySourceJoins = items.Count(x => x.wouldBeDroppedBySource),
+        creatorColumnNotModelled = "ServiceStockIn cua Mini KHONG co cot nguoi tao (CreatedBy) nen KHONG mo phong duoc nhanh inner join Sys_user on (UserCode + DealerCode) — ghi NO, khong bia; co wouldBeDroppedBySource hien chi phan anh nhanh nha cung cap",
+        // ===== #643 =====
+        wholeFeatureBatchNeverWired = "hau to _New20240115 co o 9 ham (SerStockInGet, SerStockInGet_WH, SerStockInCreate, SerStockInUpdate, SerStockOutSearch, SerStockOutSearch_WH, SerStockOutCreate, SerStockOutUpdate, SerStockBalanceQuantityGet) — may 150 dem lai cung 9; grep toan cay LOAI TRU thu muc TERP.BizCarSv cho ra KHONG mot dong nao => khong WS nao, khong tang nao ben ngoai goi toi bat ky ban nao trong chin ham do",
+        featureRequestIsDocumentedInSource = "doc-comment cua nguon: 20240115. HuongTTT: NC Tim kiem phieu nhap kho them thong tin Ma kho / Tham chieu tu ham SerStockInGet_WH",
+        whatTheDeadBatchWouldAdd = "DIFF _New20230620 -> _New20240115 dung bon thu: tham so strStockNoConditionList, BuildClause(and, si.StockNo, …), cot sis.StockName, va left JOIN Ser_Inv_Stock sis ON si.StockNo = sis.StockNo AND si.DealerCode = sis.DealerCode",
+        deadBatchItselfIsCorrect = "ban 2024 tu no DUNG: left join Ser_Inv_Stock khong bi WHERE giet (du ba cau hoi #414)",
+        portFollowsTheLiveVariant = "port di theo ban DANG CHAY (_New20230620); KHONG tu bat tinh nang chua duoc dau day",
+        twoCatalogInnerJoinsDropDocuments = "inner join Ser_MST_Supplier on (SupplierID + DealerCode) va inner join Sys_user on (UserCode + DealerCode) => phieu nhap co nha cung cap da bi xoa/doi dai ly, hoac nguoi tao da chuyen dai ly/nghi viec, BIEN MAT khoi man tra cuu => chung tu kho khong tra duoc nua; cung khuon voi #619, ca thu hai, lan nay nan nhan la CHUNG TU",
+        detailAlsoInnerJoinsPartByDealer = "khoi chi tiet inner join Ser_Mst_Part on (PartID + DealerCode) => dong chi tiet co phu tung khong thuoc dai ly do roi mat",
+        soPriceIsHardcodedZero = "0.0 SOPrice — hang cung 0 cho GIA XUAT trong bang chi tiet cua phieu NHAP (dung chung cau truc voi man xuat) => cot do LUON 0, khong phai du lieu",
+        integerDivisionRiskAbsentHere = "AM TINH quan trong, khac #620: o day (Price * Quantity * (100 + VAT)) / 100 — phep nhan chay trai sang phai nen ca bieu thuc DA LA decimal truoc khi chia => an toan; o #620 la (1 + VAT/100) voi VAT/100 tinh TRUOC va dung RIENG => neu VAT la kieu nguyen thi 10/100 = 0. THU TU PHEP TOAN quyet dinh co rui ro hay khong, khong phai su co mat cua /100",
+        otherLeftJoinsAlive = "AM TINH: left join Ser_Inv_StockIN siold (phieu nhap cu) va left join Ser_Order_Part sop — WHERE khong co dieu kien nao tren chung => LEFT con song; cot dan xuat FlagOrderNCC = case when sop.OrderPartNo is null then 0 else 1 end",
+        detailGatedAndNoOrderBy = "khoi chi tiet chi sinh khi strIsGetDetail == TConst.Flag.Active (= 1), nguoc lai -- Nothing. (khuon #582); KHONG cau nao co ORDER BY",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #642 TỒN KHO GỘP VỊ TRÍ `Ser_InvReportBalanceRpt_SumLocation_WH_New20221011` (`WH.cs:24797`) =====
 // 3B: laptop `:24797` md5 `3f3d2e0e` **KHỚP** máy 150 `:24797`. WS: `WSCarSv.asmx.cs:30180`.
 // DIFF với anh em vừa port ở #641 (`…BalanceRpt_WH_New20221011`) — hai màn **cùng một báo cáo tồn**, khác ở
