@@ -146,6 +146,12 @@ public sealed class SalesMan
     /// việc**, và bị **XOÁ VỀ NULL** khi nhân viên đi làm lại — xem endpoint `/api/salesmen/{code}/update-status`.</summary>
     public string? SMReason { get; set; }
     public string? SMDesc { get; set; }
+    /// <summary>🔴 #B269 — Mốc cập nhật hồ sơ NVBH gần nhất (`Mst_SalesMan.LastestUpdDateTime`,
+    /// nguồn viết **thiếu chữ `e`**: *Lastest* thay vì *Latest* — giữ 1:1).
+    /// Báo cáo `Rpt_UpdSalesManByDelear` dùng cột này để chọn **NVBH cập nhật gần nhất của mỗi đại lý**
+    /// (`top 1 … order by msm.LastestUpdDateTime desc`) và trả ra làm cột kết quả.
+    /// ⚠️ Khác <see cref="UpdateStatusDtime"/> (chỉ mốc đổi TRẠNG THÁI nhân sự).</summary>
+    public DateTime? LastestUpdDateTime { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -452,7 +452,7 @@ app.MapGet("/api/salesmen", async (AppDbContext db, ITenantContext t, string? q,
     { s.SalesManCode, s.SalesManName, s.DealerCode, s.DepartmentCode, s.SalesType, s.Phone, s.Email, s.Status,
       s.Gender, s.DateOfBirth, s.Address, s.ProvinceCode, s.QualificationCode, s.Specialized, s.YearExperience,
       s.StartDate, s.EndDate, s.Position, s.PositionCode, s.CertificateCode, s.SMHyundaiCode, s.IdentityCardNo,
-      s.WebsiteLink, s.FacebookLink, s.FanpageLink, s.GroupLink, s.ZaloLink, s.AccountHTA }).ToListAsync();
+      s.WebsiteLink, s.FacebookLink, s.FanpageLink, s.GroupLink, s.ZaloLink, s.AccountHTA, s.LastestUpdDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -497,6 +497,9 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     s.CertificateCode = dto.CertificateCode; s.SMHyundaiCode = dto.SMHyundaiCode; s.IdentityCardNo = dto.IdentityCardNo;
     s.WebsiteLink = dto.WebsiteLink; s.FacebookLink = dto.FacebookLink; s.FanpageLink = dto.FanpageLink;
     s.GroupLink = dto.GroupLink; s.ZaloLink = dto.ZaloLink; s.AccountHTA = dto.AccountHTA;
+    // #B269 - nguon ghi moc cap nhat ho so NVBH gan nhat (Mst_SalesMan.LastestUpdDateTime);
+    // bao cao Rpt_UpdSalesManByDelear chon "top 1 ... order by LastestUpdDateTime desc" theo cot nay.
+    s.LastestUpdDateTime = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.SalesManCode, s.SalesManName, s.Status });
 }).RequireAuthorization();
@@ -31558,6 +31561,95 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   Ba cột `UnMapDateTime` · `UnMapBy` · `GPSAddress` lấy từ **DÒNG UNMAP** (`sstgps_unmap`), còn
 //   `MapDateTime` là **`sstgps.CreateDateTime` của dòng MAP** (cùng giá trị với cột `CreateDateTime`).
 // 🔴 `MyCount` đếm **TRƯỚC** khi cắt trang. Trả **HAI** bảng: `MySummaryTable` + `Sto_StoTransactionGPS`.
+
+// ===== #B269/#B270/#B271 CẬP NHẬT NVBH THEO ĐẠI LÝ —
+//       `Rpt_UpdSalesManByDelear_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `151027,151199` ≡ 150 `151032,151204` ⇒ **`fa13b7a68b6ab87443ef38369f4fe596`**.
+// ⚠️ Tên hàm **sai chính tả**: `Delear` (đúng là *Dealer*) — lặp cả ở tên bảng tạm
+//   `#tbl_Mst_Delear_Filter`. Grep `Dealer` **không ra**; phải grep `Delear`.
+// ✅ **RBAC — tổ hợp (3) theo luật `C0-…nonagesimus`: KHÔNG cổng nhưng CÓ lọc dòng.**
+//   `#tbl_Mst_Delear_Filter`: `where … and **md.BUCode like @strBUPatternOfUser**` — **ACTIVE**;
+//   `myCommon_CheckHTCDirect` bị comment. ⇒ **Không phải lỗ** (giống #B257).
+// 🔴🔴🔴 **BUG THẬT — BÁO CÁO GIẤU ĐÚNG THỨ NÓ PHẢI TÌM**:
+//   Cột `SMCode` sinh bằng subquery `top 1` ⇒ đại lý **chưa có NVBH nào** thì `SMCode` = **NULL**;
+//   nhưng câu Return lại `**inner** join Mst_SalesMan msm on t.SMCode = msm.SMCode`
+//   ⇒ **đại lý chưa cập nhật NVBH bị LOẠI HẲN** khỏi báo cáo *"cập nhật NVBH theo đại lý"*.
+//   ⇒ Cùng nghịch lý #B257 / #B263: **dòng dữ liệu xấu nhất lại là dòng không hiện ra**.
+//   📌 **KHÔNG tự vá**; port trả `dealersWithoutSalesMan` để người vận hành thấy phần bị nuốt.
+// 🔴🔴 **NỐI THIẾU KHOÁ ĐẠI LÝ**: subquery chọn `SMCode` **theo `md.DealerCode`**, nhưng câu Return
+//   nối lại `inner join Mst_SalesMan msm on **t.SMCode = msm.SMCode**` — **không kèm `DealerCode`**.
+//   ⇒ Nếu `SMCode` **không duy nhất toàn hệ** (trùng mã giữa các đại lý) thì **nhân dòng** và
+//     `LastestUpdDateTime` trả ra có thể là **của đại lý khác**. Port nối **đủ cặp** (`SMCode` + `DealerCode`)
+//     và ghi rõ ở `joinKeyNarrowedNote`.
+// 🔴 `order by msm.LastestUpdDateTime desc` **không có tie-break** ⇒ nhiều NVBH cùng mốc thì `top 1`
+//   **không tất định** (nhẹ hơn #B263 nhưng cùng lớp). Port thêm `ThenByDescending(SalesManCode)`.
+// 🔴 **BỐN tham số nạp, chỉ MỘT được dùng**: `@strBUPatternOfUser` **có dùng**; `@strTDateMax`,
+//   `@strHTCDealerCode`, `@strHTCDealerName` **không xuất hiện trong SQL** ⇒ **ba tham số mồ côi**.
+//   ⚠️ Và dòng nạp thứ tư gán **NHẦM GIÁ TRỊ**: `"@strHTCDealerName", TConst.HTCConst.**HTCDealerCode**`
+//   — biến tên *Name* nhưng nhận *Code* (copy–paste). Vô hại vì không dùng; ghi lại, **không tự sửa**.
+// ⚠️ **MARKER `--//[mylock]` BỊ HỎNG**: `from Mst_Dealer md **--//[mylock**` — **thiếu dấu `]`**
+//   ⇒ công cụ quét/thay `--//[mylock]` sẽ **bỏ sót bảng này** (xem ghi nhớ `dmssales-mylock-marker-only-on-tables`).
+// 🔴 `md.FlagActive = '1'` chỉ được lọc ở **câu Return**, không ở hai bảng tạm ⇒ subquery `top 1` vẫn
+//   chạy cho cả đại lý đã ngừng hoạt động rồi mới bị loại — kết quả đúng, chi phí thừa.
+app.MapGet("/api/reports/salesman-update-by-dealer", async (
+    AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    // ✅ Lọc dòng theo quyền: nguồn `md.BUCode like @strBUPatternOfUser` (ACTIVE) — MiniHTC lọc theo tenant.
+    var dq = db.Dealers.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        dq = dq.Where(d => d.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var dealers = await dq.ToListAsync();
+
+    var codes = dealers.Select(d => d.DealerCode).ToList();
+    var sms = await db.SalesMen.Where(s => s.OrgId == t.OrgId
+        && s.DealerCode != null && codes.Contains(s.DealerCode)).ToListAsync();
+
+    // 🔴 `top 1 … order by LastestUpdDateTime desc` — nguồn KHÔNG tie-break; port thêm cho tất định.
+    var topByDealer = sms
+        .GroupBy(s => s.DealerCode!)
+        .ToDictionary(g => g.Key,
+            g => g.OrderByDescending(s => s.LastestUpdDateTime)
+                  .ThenByDescending(s => s.SalesManCode, StringComparer.Ordinal).First());
+
+    var rows = new List<object>();
+    var dealersWithoutSalesMan = new List<object>();
+    foreach (var d in dealers)
+    {
+        if (!topByDealer.TryGetValue(d.DealerCode, out var sm))
+        {
+            // 🔴 Nguồn: SMCode NULL ⇒ `inner join Mst_SalesMan` LOẠI HẲN đại lý này.
+            dealersWithoutSalesMan.Add(new { d.DealerCode, d.DealerName, d.FlagActive });
+            continue;
+        }
+        // 🔴 `md.FlagActive = '1'` chỉ lọc ở câu Return.
+        if (d.FlagActive != "1") continue;
+
+        rows.Add(new
+        {
+            d.DealerCode,
+            d.DealerName,
+            SMCode = sm.SalesManCode,
+            SMName = sm.SalesManName,
+            sm.LastestUpdDateTime
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_UpdSalesManByDelear = rows,
+        dealersWithoutSalesMan,
+        typoNote = "Ten ham SAI CHINH TA: 'Delear' (dung la Dealer) - lap ca o ten bang tam #tbl_Mst_Delear_Filter. Grep 'Dealer' KHONG RA; phai grep 'Delear'.",
+        rbacNote = "RBAC - to hop (3) theo luat C0-...nonagesimus: KHONG cong nhung CO loc dong. #tbl_Mst_Delear_Filter co 'where ... and md.BUCode like @strBUPatternOfUser' ACTIVE; myCommon_CheckHTCDirect bi comment => KHONG PHAI LO (giong #B257).",
+        hidesWhatItSeeksNote = "BUG THAT - BAO CAO GIAU DUNG THU NO PHAI TIM: cot SMCode sinh bang subquery 'top 1' => dai ly CHUA CO NVBH nao thi SMCode = NULL; nhung cau Return lai 'inner join Mst_SalesMan msm on t.SMCode = msm.SMCode' => DAI LY CHUA CAP NHAT NVBH BI LOAI HAN khoi bao cao 'cap nhat NVBH theo dai ly'. Cung nghich ly #B257/#B263: dong du lieu xau nhat lai la dong khong hien ra. KHONG TU VA - xem dealersWithoutSalesMan.",
+        joinKeyNarrowedNote = "NOI THIEU KHOA DAI LY: subquery chon SMCode THEO md.DealerCode, nhung cau Return noi lai 'inner join Mst_SalesMan msm on t.SMCode = msm.SMCode' - KHONG kem DealerCode. Neu SMCode khong duy nhat toan he (trung ma giua cac dai ly) thi NHAN DONG va LastestUpdDateTime tra ra co the la CUA DAI LY KHAC. Port noi DU CAP (SMCode + DealerCode).",
+        noTieBreakNote = "'order by msm.LastestUpdDateTime desc' KHONG co tie-break => nhieu NVBH cung moc thi top 1 KHONG TAT DINH (nhe hon #B263 nhung cung lop). Port them ThenByDescending(SalesManCode).",
+        orphanParamsNote = "BON tham so nap, chi MOT duoc dung: @strBUPatternOfUser CO dung; @strTDateMax, @strHTCDealerCode, @strHTCDealerName KHONG xuat hien trong SQL => BA THAM SO MO COI. Va dong nap thu tu gan NHAM GIA TRI: '\"@strHTCDealerName\", TConst.HTCConst.HTCDealerCode' - bien ten Name nhung nhan Code (copy-paste). Vo hai vi khong dung; ghi lai, KHONG TU SUA.",
+        brokenMylockNote = "MARKER --//[mylock] BI HONG: 'from Mst_Dealer md --//[mylock' - THIEU DAU ']' => cong cu quet/thay --//[mylock] se BO SOT BANG NAY (ghi nho dmssales-mylock-marker-only-on-tables).",
+        flagActiveLateNote = "md.FlagActive = '1' chi duoc loc o CAU RETURN, khong o hai bang tam => subquery top 1 van chay cho ca dai ly da ngung hoat dong roi moi bi loai - ket qua dung, chi phi thua."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/gps-map-unmap-history", async (
     AppDbContext db, ITenantContext t,
     string? gpsDvNo, string? vin, DateTime? mapFrom, DateTime? mapTo,
