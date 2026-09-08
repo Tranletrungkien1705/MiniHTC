@@ -8640,6 +8640,89 @@ app.MapPost("/api/tcginvoices/approve", async (TcgInvoiceApproveDto dto, AppDbCo
     return Results.Ok(new { code, status = row.VatTCGStatus, row.TCGInvoiceNo, detailsSynced = dtls.Count });
 }).RequireAuthorization();
 
+// ===== #B108 TÍNH TRƯỚC KHI DUYỆT HOÁ ĐƠN TCG — `VAT_TCGInvoice_CalcBeforeAppr` =====
+// Trace LIVE: WS → **`_biz.VAT_TCGInvoice_CalcBeforeAppr`** (`BizHTC.InvoiceHTC_TCG.cs:1052`) —
+//   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=1052 md5
+//   `0d60d89f3781755e8a85b4849aaf1b5b`.
+// 🔴🔴 **`strFlagUnapprove` ĐẢO NGHĨA — bẫy port ngược rất dễ mắc**:
+//      `bool bApprove = CmUtils.StringUtils.StringEqual(strFlagUnapprove, TConst.Flag.**Inactive**);`
+//    ⇒ **`FlagUnapprove = "0"` nghĩa là ĐANG DUYỆT**; `"1"` mới là **huỷ duyệt**.
+//    Tên tham số là *"un-approve"* nhưng giá trị **"0"** mới kích hoạt nhánh duyệt. Đọc lướt theo
+//    tên ⇒ port **ngược hoàn toàn** luồng duyệt/huỷ duyệt.
+// 🔴 **BA khối `if (bApprove)`, chỉ HAI khối chạy — đọc thiếu là kết luận sai "không duyệt gì"**:
+//    1. khối đầu (`:1107`) gọi **`VAT_TCGInvoice_Build_CalcForHDDTMultiX`** — **ĐANG CHẠY**, đây là
+//       phần **tính dữ liệu hoá đơn điện tử**;
+//    2. khối thứ hai (`:1129`) gọi `VAT_TCGInvoiceApproveX` — **BỊ COMMENT TOÀN BỘ**;
+//    3. **bên trong vòng lặp từng hoá đơn** (`:1207`) lại có `if (bApprove)` gọi
+//       **`VAT_TCGInvoiceApproveX(…, drScan["TCGInvoiceCode"], strFlagUnapprove)`** — **ĐANG CHẠY**.
+//    ⇒ **Việc duyệt thật sự xảy ra TRONG VÒNG LẶP, theo TỪNG hoá đơn**, không phải một lần cho cả lô.
+//      Dừng ở khối 2 (bị comment) sẽ kết luận nhầm là hàm "chỉ tính, không duyệt".
+// 🔴 Đầu vào là **BẢNG `VAT_TCGInvoice`**: thiếu ⇒ `…_TCGInvoiceTblNotFound`; **rỗng ⇒ TỪ CHỐI**
+//    (`…_TCGInvoiceTblInvalid`) — khuôn #B82/#B86.
+//    ⚠️ Tên hằng lỗi chính tả **`CalcBeforeAprr`** (thiếu `p`, thừa `r`) — **khác** tên hàm
+//      `CalcBeforeAppr`. Giữ nguyên để đối chiếu log.
+// 🔴 Trả **HAI bảng**: `Invoice_Invoice` + `Invoice_InvoiceDtl` (dữ liệu hoá đơn điện tử đã tính,
+//    để gửi sang HDDT) — **không phải** trả lại `VAT_TCGInvoice`.
+// 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC**: `VAT_TCGInvoice_Build_CalcForHDDTMultiX` (engine tính HDDT) chưa
+//    có trong MiniHTC ⇒ hai bảng trả về để **rỗng** kèm cờ `hddtCalcSkipped`; phần **duyệt theo từng
+//    hoá đơn** thì port thật.
+app.MapPost("/api/tcginvoices/calc-before-approve", async (
+    List<string> tcgInvoiceCodes, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user, string? flagUnapprove) =>
+{
+    // Bảng đầu vào: thiếu ⇒ NotFound; rỗng ⇒ TỪ CHỐI.
+    if (tcgInvoiceCodes is null)
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_CalcBeforeAprr_Input_TCGInvoiceTblNotFound" });
+    var codes = tcgInvoiceCodes.Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (codes.Count == 0)
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_CalcBeforeAprr_Input_TCGInvoiceTblInvalid" });
+
+    // 🔴 ĐẢO NGHĨA: "0" (hoặc bỏ trống) ⇒ ĐANG DUYỆT; "1" ⇒ huỷ duyệt.
+    var flag = (flagUnapprove ?? "0").Trim();
+    var bApprove = flag == "0";
+
+    var invs = await db.VatTcgInvoices
+        .Where(i => i.OrgId == t.OrgId && codes.Contains(i.TCGInvoiceCode)).ToListAsync();
+    var missing = codes.Where(c => !invs.Any(i => i.TCGInvoiceCode == c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "VAT_TCGInvoice_NotExist", check = new { TCGInvoiceCode = missing[0] }, missing });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var approved = new List<object>();
+
+    // 🔴 Duyệt xảy ra TRONG VÒNG LẶP, theo TỪNG hoá đơn (khối `if (bApprove)` thứ ba).
+    if (bApprove)
+        foreach (var inv in invs)
+        {
+            var before = inv.VatTCGStatus;
+            inv.VatTCGStatus = "A";
+            inv.ApprovedDate = now;
+            inv.ApprovedBy = by;
+            approved.Add(new { inv.TCGInvoiceCode, statusBefore = before, status = inv.VatTCGStatus });
+        }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        flagUnapprove = flag,
+        bApprove,
+        inputCount = codes.Count,
+        approvedCount = approved.Count,
+        approved,
+        // Nguồn trả HAI bảng này; MiniHTC chưa có engine tính HDDT ⇒ để rỗng, KHÔNG bịa.
+        Invoice_Invoice = Array.Empty<object>(),
+        Invoice_InvoiceDtl = Array.Empty<object>(),
+        hddtCalcSkipped = true,
+        flagInvertedNote = "strFlagUnapprove DAO NGHIA: 'bool bApprove = StringEqual(strFlagUnapprove, TConst.Flag.Inactive)' => FlagUnapprove = '0' nghia la DANG DUYET; '1' moi la HUY DUYET. Ten tham so la 'un-approve' nhung gia tri '0' moi kich hoat nhanh duyet. Doc luot theo ten se port NGUOC HOAN TOAN luong duyet/huy duyet.",
+        threeBlocksNote = "BA khoi 'if (bApprove)', chi HAI khoi chay: (1) :1107 goi VAT_TCGInvoice_Build_CalcForHDDTMultiX - DANG CHAY, phan tinh du lieu hoa don dien tu; (2) :1129 goi VAT_TCGInvoiceApproveX - BI COMMENT TOAN BO; (3) BEN TRONG VONG LAP tung hoa don (:1207) lai co if (bApprove) goi VAT_TCGInvoiceApproveX(..., drScan['TCGInvoiceCode'], strFlagUnapprove) - DANG CHAY. => Viec duyet THAT SU xay ra TRONG VONG LAP, theo TUNG hoa don. Dung o khoi 2 (bi comment) se ket luan nham la ham 'chi tinh, khong duyet'.",
+        emptyInputNote = "Dau vao la BANG VAT_TCGInvoice: thieu => TblNotFound; RONG => BI TU CHOI (TblInvalid) - khuon #B82/#B86.",
+        errorNameTypo = "Ten hang loi chinh ta 'CalcBeforeAprr' (thieu p, thua r) - KHAC ten ham 'CalcBeforeAppr'. Giu nguyen de doi chieu log.",
+        returnShapeNote = "Nguon tra HAI bang: Invoice_Invoice + Invoice_InvoiceDtl (du lieu hoa don dien tu da tinh, de gui sang HDDT) - KHONG phai tra lai VAT_TCGInvoice.",
+        hddtDebt = "NO - KHONG DOAN CONG THUC: VAT_TCGInvoice_Build_CalcForHDDTMultiX (engine tinh HDDT) chua co trong MiniHTC => hai bang tra ve de RONG kem co hddtCalcSkipped; phan duyet theo tung hoa don thi port that."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
