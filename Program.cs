@@ -33875,6 +33875,161 @@ app.MapPost("/api/dlrcontracts/{no}/update-contract-form", async (
     });
 }).RequireAuthorization();
 
+// ===== #B200/#B201 SỬA SỐ LƯỢNG DÒNG HỢP ĐỒNG — `Dlr_ContractDetailUpdate_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs:112972`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `112972,113393 / 415292f35fdb6fa8242b353080b1d83b`.
+// 🔴🔴 **CHỈ ĐƯỢC GIẢM SỐ LƯỢNG, KHÔNG ĐƯỢC TĂNG**:
+//     `int iHisQty = Convert.ToInt16(dt_detailCheck.Rows[0]["Qty"]);   // số lượng cũ`
+//     `if (Convert.ToInt16(dr["QTYUPDATE"]) > iHisQty) throw …_InvalidQtyUpdate;`
+//   ⇒ Sửa dòng hợp đồng **chỉ để cắt bớt**; muốn thêm xe phải đi đường khác (thêm dòng/phụ lục).
+// 🔴🔴 **GIẢM THÌ BẮT BUỘC CÓ LÝ DO**:
+//     `if (Convert.ToUInt16(dr["QTYUPDATE"]) < iHisQty)`
+//     `  { if (ContractUpdateType rỗng) throw …_InvalidContractUpdateType; }`
+//   ⇒ `ContractUpdateType` là **lý do giảm**, chỉ bắt buộc khi **thực sự giảm**; giữ nguyên số lượng
+//     (`==`) thì **không** cần lý do.
+//   ⚠️ **Hai phép ép kiểu KHÁC NHAU cho cùng một giá trị**: nhánh "tăng" dùng **`Convert.ToInt16`**
+//     (có dấu), nhánh "giảm" dùng **`Convert.ToUInt16`** (không dấu). Với `QTYUPDATE` **âm**,
+//     `ToInt16` chạy bình thường (qua được guard tăng) nhưng `ToUInt16` **ném `OverflowException`**
+//     ⇒ lỗi hệ thống thô, không phải mã lỗi nghiệp vụ. Ghi lại, **không tự vá**.
+// 🔴 Khoá dòng là **bộ BỐN**, nguồn ghép chuỗi tay:
+//     `string.Format("|{0}||{1}||{2}||{3}|", DlrContractNo, SpecCode, ModelCode, ColorCode)`
+//   ⇒ cùng khoá với #B198; dấu phân cách `||` là **cách nguồn tránh đụng độ khi ghép** (đúng tinh
+//     thần luật `C0-…tricesimussecundus`).
+// 📌 **NỢ**: MiniHTC chưa có thực thể `DlrContractDtl` ⇒ **không ghi được**; endpoint này **chỉ kiểm
+//   tra** đúng ba guard của nguồn và trả kết quả, cờ `dtlNotPorted` — không bịa bảng dòng.
+app.MapPost("/api/dlrcontracts/{no}/detail-update/validate", async (
+    string no, DlrContractDtlUpdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var contractNo = (no ?? "").Trim().ToUpperInvariant();
+    var ct = await db.DlrContracts.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DlrContractNo == contractNo);
+    if (ct is null)
+        return Results.NotFound(new { error = "Dlr_Contract_CheckDB_NotFound", check = new { DlrContractNo = contractNo } });
+
+    var errs = new List<object>();
+    var ok = new List<object>();
+    foreach (var l in dto.Lines ?? new())
+    {
+        var key = $"|{contractNo}||{l.SpecCode}||{l.ModelCode}||{l.ColorCode}|";
+        var hisQty = l.HisQty ?? 0;
+        var newQty = l.QtyUpdate ?? 0;
+
+        // 🔴 (1) KHÔNG được tăng.
+        if (newQty > hisQty)
+        {
+            errs.Add(new { error = "Dlr_ContractDetailUpdate_InvalidQtyUpdate", key, HisQty = hisQty, UpdateQty = newQty });
+            continue;
+        }
+        // 🔴 (2) Giảm thì BẮT BUỘC có lý do; bằng nhau thì KHÔNG cần.
+        if (newQty < hisQty && string.IsNullOrWhiteSpace(l.ContractUpdateType))
+        {
+            errs.Add(new { error = "Dlr_ContractDetailUpdate_InvalidContractUpdateType", key, HisQty = hisQty, UpdateQty = newQty });
+            continue;
+        }
+        // ⚠️ Cảnh báo bẫy ép kiểu của nguồn (không tự vá).
+        var overflowRisk = newQty < 0;
+        ok.Add(new { key, HisQty = hisQty, UpdateQty = newQty, l.ContractUpdateType, overflowRisk });
+    }
+
+    return Results.Ok(new
+    {
+        dlrContractNo = contractNo,
+        valid = errs.Count == 0,
+        errors = errs,
+        accepted = ok,
+        dtlNotPorted = true,
+        decreaseOnlyNote = "CHI DUOC GIAM SO LUONG, KHONG DUOC TANG: 'int iHisQty = Convert.ToInt16(Rows[0][\"Qty\"]); if (Convert.ToInt16(dr[\"QTYUPDATE\"]) > iHisQty) throw _InvalidQtyUpdate;'. Sua dong hop dong CHI DE CAT BOT; muon them xe phai di duong khac (them dong/phu luc).",
+        reasonRequiredNote = "GIAM THI BAT BUOC CO LY DO: 'if (Convert.ToUInt16(dr[\"QTYUPDATE\"]) < iHisQty) { if (ContractUpdateType rong) throw _InvalidContractUpdateType; }'. ContractUpdateType chi bat buoc khi THUC SU GIAM; giu nguyen so luong (==) thi KHONG can ly do.",
+        castTrapNote = "HAI PHEP EP KIEU KHAC NHAU cho cung mot gia tri: nhanh 'tang' dung Convert.ToInt16 (co dau), nhanh 'giam' dung Convert.ToUInt16 (khong dau). Voi QTYUPDATE AM, ToInt16 chay binh thuong (qua duoc guard tang) nhung ToUInt16 NEM OverflowException => loi he thong tho, khong phai ma loi nghiep vu. Ghi lai, KHONG tu va; endpoint tra co overflowRisk khi QtyUpdate < 0.",
+        keyNote = "Khoa dong la BO BON, nguon ghep chuoi tay: string.Format(\"|{0}||{1}||{2}||{3}|\", DlrContractNo, SpecCode, ModelCode, ColorCode) - cung khoa voi #B198; dau phan cach '||' la cach nguon tranh dung do khi ghep.",
+        debtNote = "NO: MiniHTC chua co thuc the DlrContractDtl => KHONG ghi duoc; endpoint nay CHI KIEM TRA dung ba guard cua nguon va tra ket qua. Khong bia bang dong."
+    });
+}).RequireAuthorization();
+
+// ===== #B202 TẠO PHIẾU LÁI THỬ — `DLR_DriveTestCreate_New20181119` (`DataWH/Biz.HTC.WH.cs:106173`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `106173,106537 / c87726e0b4f6a022236e3abeb87813b3`.
+// 🔴🔴 **`RangeAgeCode` KHÔNG PHẢI "MÃ KHOẢNG TUỔI" — nó là NĂM SINH**:
+//     `if (!Int32.TryParse(strRangeAgeCode, out i)) throw …_InvalidRangeAgeCode_NotFormat_1;`
+//     `if (Convert.ToInt32(strRangeAgeCode) > **2010** || Convert.ToInt32(strRangeAgeCode) < **1940**)`
+//     `    throw …_InvalidRangeAgeCode_NotFormat;`
+//   ⇒ Tên cột đánh lừa: giá trị hợp lệ là **một năm trong `[1940, 2010]`**.
+//   ⚠️ **Chặn trên `2010` là HẰNG CỨNG, không tự dịch theo thời gian** ⇒ người sinh sau 2010
+//     **không tạo được phiếu lái thử**, và mốc này **già đi mỗi năm**. Ghi lại, **không tự vá**
+//     (sửa thành `DateTime.Now.Year - 18` là **đổi nghiệp vụ**).
+// 🔴 **SÁU guard khác, mỗi cái một mã lỗi**: `DriverTestType` (`…_InvalidDriverTestType`) ·
+//   `DriverTestGroup` (`…_InvalidDriverTestGroup`) · biển số xe lái thử phải tồn tại
+//   (`…_PlateNoNotFound`) · `CustomerCode` rỗng (`…_InvalidCustomerCode`) và phải tồn tại
+//   (`…_CustomerCodeNotFound`) · `RangeAgeCode` rỗng (`…_InvalidRangeAgeCode`).
+// 🔴 `DriveTestCode.Length < TConst.HTCConst.MinLengthCode` (**= 5**) ⇒ lỗi — cùng ngưỡng với #B175.
+// 🔴 `DriverLisence` **rỗng ⇒ lỗi** (⚠️ nguồn viết sai chính tả **`Lisence`**; giữ nguyên để tra log).
+// 🔴🔴 **`DriveDTime` KHÔNG ĐƯỢC Ở TƯƠNG LAI**:
+//     `if (objDriveDTime == null || Convert.ToDateTime(objDriveDTime) > Convert.ToDateTime(DateTime.Now.ToString("yyyy-MM-dd")))`
+//   ⇒ So với **ngày hôm nay (đã cắt giờ)** ⇒ lái thử **hôm nay vẫn hợp lệ**, ngày mai thì không.
+//   ⚠️ Điều kiện gộp cả `== null` vào **cùng một mã lỗi** với "tương lai" ⇒ bỏ trống và nhập sai ngày
+//     cho **cùng thông báo**. Giữ nguyên.
+app.MapPost("/api/drivetests/htc-create/validate", async (
+    DriveTestHtcCreateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var errs = new List<object>();
+
+    if (string.IsNullOrWhiteSpace(dto.DriverTestType))
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidDriverTestType" });
+    if (string.IsNullOrWhiteSpace(dto.DriverTestGroup))
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidDriverTestGroup" });
+
+    // 🔴 Biển số xe lái thử phải tồn tại (bảng #B178).
+    var plate = (dto.DrvTestPlateNo ?? "").Trim();
+    if (plate.Length > 0 && !await db.CarDriverTests.AnyAsync(c => c.OrgId == t.OrgId && c.DrvTestPlateNo == plate))
+        errs.Add(new { error = "DLR_DriveTest_Create_PlateNoNotFound", check = new { DrvTestPlateNo = plate } });
+
+    var cusCode = (dto.CustomerCode ?? "").Trim();
+    if (cusCode.Length == 0)
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidCustomerCode" });
+    else if (!await db.DealerCustomers.AnyAsync(c => c.OrgId == t.OrgId && c.CustomerCode == cusCode))
+        errs.Add(new { error = "DLR_DriveTest_Create_CustomerCodeNotFound", check = new { CustomerCode = cusCode } });
+
+    // 🔴🔴 RangeAgeCode = NĂM SINH, phải trong [1940, 2010].
+    var age = (dto.RangeAgeCode ?? "").Trim();
+    if (age.Length == 0)
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidRangeAgeCode" });
+    else if (!int.TryParse(age, out var year))
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidRangeAgeCode_NotFormat_1", check = new { RangeAgeCode = age } });
+    else if (year > 2010 || year < 1940)
+        errs.Add(new
+        {
+            error = "DLR_DriveTest_Create_InvalidRangeAgeCode_NotFormat",
+            check = new { RangeAgeCode = year, ValidRange = "1940..2010" }
+        });
+
+    // 🔴 Mã phiếu >= 5 ký tự.
+    var code = (dto.DriveTestCode ?? "").Trim();
+    if (code.Length < 5)
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidDriveTestCode", check = new { DriveTestCode = code, MinLengthCode = 5 } });
+
+    // 🔴 Giấy phép lái xe bắt buộc (nguồn viết sai chính tả `DriverLisence`).
+    if (string.IsNullOrWhiteSpace(dto.DriverLisence))
+        errs.Add(new { error = "DLR_DriveTest_Create_InvalidDriverLisence" });
+
+    // 🔴🔴 Ngày lái thử KHÔNG được ở tương lai (so với hôm nay đã cắt giờ).
+    if (dto.DriveDTime is null || dto.DriveDTime.Value.Date > DateTime.Now.Date)
+        errs.Add(new
+        {
+            error = "DLR_DriveTest_Create_InvalidDriveDTime",
+            check = new { dto.DriveDTime, Today = DateTime.Now.Date },
+            note = "Nguon gop ca '== null' vao CUNG MOT ma loi voi 'tuong lai' => bo trong va nhap sai ngay cho CUNG thong bao."
+        });
+
+    return Results.Ok(new
+    {
+        valid = errs.Count == 0,
+        errors = errs,
+        rangeAgeNote = "RangeAgeCode KHONG PHAI 'MA KHOANG TUOI' - no la NAM SINH: 'if (!Int32.TryParse(...)) throw _NotFormat_1; if (val > 2010 || val < 1940) throw _NotFormat;'. Ten cot DANH LUA. Chan tren 2010 la HANG CUNG, KHONG tu dich theo thoi gian => nguoi sinh sau 2010 KHONG tao duoc phieu lai thu, va moc nay GIA DI MOI NAM. Ghi lai, KHONG tu va (sua thanh DateTime.Now.Year - 18 la DOI NGHIEP VU).",
+        futureDateNote = "DriveDTime KHONG DUOC O TUONG LAI: so voi DateTime.Now.ToString('yyyy-MM-dd') (da cat gio) => lai thu HOM NAY VAN HOP LE, ngay mai thi khong.",
+        typoNote = "Nguon viet sai chinh ta 'DriverLisence' (dung: Licence/License) - giu nguyen de tra log.",
+        minLengthNote = "DriveTestCode.Length < TConst.HTCConst.MinLengthCode (= 5) => loi - cung nguong voi #B175.",
+        writeDebtNote = "Endpoint nay CHI KIEM TRA dung bay guard cua nguon. Duong ghi that (/api/drivetests) da co tu truoc va di theo nhanh nguon khac - khong sua (luat C0-...quinquagesimusquintus)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -45896,6 +46051,9 @@ record TranspFeeVerDeleteDto(List<string>? TFVCodes);
 record MngQuotaDelMultiRowDto(string? DealerCode, string? SpecCodePromotion);   // #B193
 record MngQuotaDelMultiDto(List<MngQuotaDelMultiRowDto>? Rows);   // #B193
 record DlrContractFormUpdDto(string? ContractFNo, string? Note, string? Promotion, string? TimePayment, string? MethodPayment, string? TimeAndAddressDelivery, string? TimeOwnerTransfer, string? RightAndResponsibilityPartySeller, string? RightAndResponsibilityPartyBuyer, string? Warrantly, string? OtherTerms, DateTime? LastestFormDateTime);   // #B198
+record DlrContractDtlUpdLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? HisQty, int? QtyUpdate, string? ContractUpdateType);   // #B200
+record DlrContractDtlUpdDto(List<DlrContractDtlUpdLineDto>? Lines);   // #B200
+record DriveTestHtcCreateDto(string? DriveTestCode, string? DriverTestType, string? DriverTestGroup, string? DrvTestPlateNo, string? CustomerCode, string? RangeAgeCode, string? DriverLisence, DateTime? DriveDTime);   // #B202
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);
