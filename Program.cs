@@ -54192,6 +54192,73 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #687 ĐẾM LƯỢT TIẾP NHẬN CHO TAB `Rpt_Ser_ReceptionF_SumQtyRecepForTab_WH` =====
+// (`Tab/BizCarSv.Tab.Report.cs:160-302`, md5 `55f114e4` **KHỚP** máy 150; bản Main `:26-158`, md5 `9dbb3ad0`.
+//  WS `WSCarSvTab.asmx.cs:5241` gọi thẳng.)
+//
+// 🔴🔴🔴 **BẢN MAIN RẼ HAI NHÁNH THEO `strReportType`, BẢN KHO CHỈ CÓ MỘT — HAI NGHIỆP VỤ KHÁC NHAU**:
+//     bản Main: `if (StringEqualIgnoreCase(TConst.ReportType.**Hour**, strReportType))`
+//                 → gọi `Rpt_Ser_ReceptionF_SumQtyRecepForTab**X**(…)`   (đếm lượt tiếp nhận)
+//               `else` → gọi `**Rpt_Ser_RO_RevenueByReportTypeX**(…)`     (**DOANH THU theo lệnh** — hàm khác hẳn)
+//     bản kho : **không có `if`**, luôn gọi `Rpt_Ser_ReceptionF_SumQtyRecep**X**(…)`
+//   ⇒ Với `ReportType` = `DAY`/`MONTH`/`YEAR`, bản Main trả **doanh thu**, bản kho trả **số lượt tiếp nhận**.
+//     Cùng một WS-name, cùng tham số, **hai loại số hoàn toàn khác nhau** tuỳ gọi bản nào.
+//   📌 Và đó là **BA** thân hàm khác nhau: `…SumQtyRecepForTabX` (Main/HOUR) · `Rpt_Ser_RO_RevenueByReportTypeX`
+//     (Main/else) · `…SumQtyRecep**X**` (kho — **không có `ForTab`** trong tên).
+//   📌 Hằng `TConst.ReportType` = `HOUR` · `DAY` · `MONTH` · `YEAR` (`Const.Main.cs:219-225`).
+// 🔴🔴🔴 **TÊN GHI LOG MẤT TIỀN TỐ `Rpt_`, TRONG KHI MÃ LỖI THÌ KHÔNG**:
+//     `string strFunctionName = "**Ser_**ReceptionF_SumQtyRecepForTab_WH";`   ← thiếu `Rpt_`
+//     `string strErrorCodeDefault = TError.ErrCarSv.**Rpt_**Ser_ReceptionF_SumQtyRecepForTab_WH;` ← có `Rpt_`
+//   (bản Main ghi đúng `"Rpt_Ser_ReceptionF_SumQtyRecepForTab"`.)
+//   ⇒ Log ghi **một tên**, mã lỗi ghi **tên khác** ⇒ tra log theo tên hàm sẽ **trượt** đúng hàm này.
+//   Cùng họ với #683/#684 (tên trong log không khớp hàm thật), nhưng đây là **sai chính tả tên**, không phải
+//   thiếu hậu tố phiên bản.
+// 🔴🔴 **HÀM CHỈ ĐỌC NHƯNG `Commit` HAI CSDL**: bản kho mở transaction trên **cả `_dbMain` lẫn `_dbWH`** rồi
+//   `CommitSafety(_dbMain); CommitSafety(_dbWH);` ở nhánh thành công — trong khi bản Main chỉ
+//   `RollbackSafety(_dbDealer)`. Một báo cáo **không ghi gì** mà commit hai DB.
+// 🔴 Bản kho thay `ProcessBizReq`/`ProcessBizReturn` bằng gọi thẳng `_log.WriteLogAsync(...)` +
+//   `myUtils_ValidateId` **và** `myUtils_ValidateId_WH` ⇒ hai lớp kiểm Tid; bản Main chỉ có một đường.
+// 🔴 Bản Main truyền thêm một đối số `TConst.Flag.No` cho nhánh doanh thu mà bản kho **không có** ⇒ chữ ký hai
+//   hàm X khác nhau, không thể hoán đổi.
+app.MapGet("/api/report/reception-sumqty-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? reportType, DateTime? reportDateFrom, DateTime? reportDateTo) =>
+{
+    var rt = (reportType ?? "HOUR").Trim().ToUpperInvariant();
+    if (rt != "HOUR" && rt != "DAY" && rt != "MONTH" && rt != "YEAR")
+        return Results.BadRequest(new { error = "reportType phai la HOUR, DAY, MONTH hoac YEAR (TConst.ReportType)." });
+
+    var qy = db.Receptions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (reportDateFrom is not null) qy = qy.Where(x => x.CreatedAt >= reportDateFrom!.Value.Date);
+    if (reportDateTo is not null) qy = qy.Where(x => x.CreatedAt < reportDateTo!.Value.Date.AddDays(1));
+    var recs = await qy.Select(x => new { x.ReceptionFNo, x.CreatedAt, x.Status, x.DealerCode }).ToListAsync();
+
+    // Bản KHO luôn đếm lượt tiếp nhận, KHÔNG rẽ nhánh doanh thu như bản Main.
+    var groups = recs.GroupBy(x => rt switch
+        {
+            "HOUR" => x.CreatedAt.ToString("yyyy-MM-dd HH") + "h",
+            "DAY" => x.CreatedAt.ToString("yyyy-MM-dd"),
+            "MONTH" => x.CreatedAt.ToString("yyyy-MM"),
+            _ => x.CreatedAt.ToString("yyyy"),
+        })
+        .Select(g => new { period = g.Key, qty = g.Count() })
+        .OrderBy(x => x.period).ToList();
+
+    return Results.Ok(new
+    {
+        reportType = rt, count = groups.Count, total = recs.Count, rows = groups,
+        // ===== #687 =====
+        mainBranchesOnReportTypeButWhDoesNot = "BAN MAIN RE HAI NHANH THEO strReportType, BAN KHO CHI CO MOT — HAI NGHIEP VU KHAC NHAU: ban Main if (StringEqualIgnoreCase(TConst.ReportType.Hour, strReportType)) -> Rpt_Ser_ReceptionF_SumQtyRecepForTabX (dem luot tiep nhan), else -> Rpt_Ser_RO_RevenueByReportTypeX (DOANH THU theo lenh, ham khac han); ban kho KHONG co if, luon goi Rpt_Ser_ReceptionF_SumQtyRecepX => voi ReportType = DAY/MONTH/YEAR, ban Main tra DOANH THU con ban kho tra SO LUOT TIEP NHAN. Cung mot WS-name, cung tham so, HAI LOAI SO hoan toan khac nhau tuy goi ban nao",
+        threeDifferentBodies = "BA than ham khac nhau: …SumQtyRecepForTabX (Main/HOUR), Rpt_Ser_RO_RevenueByReportTypeX (Main/else), …SumQtyRecepX (kho — KHONG co ForTab trong ten)",
+        reportTypeConstants = "TConst.ReportType = HOUR, DAY, MONTH, YEAR (Const.Main.cs:219-225)",
+        logNameMissesRptPrefixButErrorCodeDoesNot = "TEN GHI LOG MAT TIEN TO Rpt_, TRONG KHI MA LOI THI KHONG: strFunctionName = Ser_ReceptionF_SumQtyRecepForTab_WH (thieu Rpt_) nhung strErrorCodeDefault = TError.ErrCarSv.Rpt_Ser_ReceptionF_SumQtyRecepForTab_WH (co Rpt_); ban Main ghi dung Rpt_Ser_ReceptionF_SumQtyRecepForTab => log ghi MOT ten, ma loi ghi TEN KHAC => tra log theo ten ham se TRUOT dung ham nay. Cung ho #683/#684 nhung day la SAI CHINH TA TEN, khong phai thieu hau to phien ban",
+        readOnlyFunctionCommitsTwoDatabases = "HAM CHI DOC NHUNG Commit HAI CSDL: ban kho mo transaction tren CA _dbMain LAN _dbWH roi CommitSafety(_dbMain); CommitSafety(_dbWH); o nhanh thanh cong — trong khi ban Main chi RollbackSafety(_dbDealer). Mot bao cao KHONG GHI GI ma commit hai DB",
+        differentLoggingAndTidValidation = "ban kho thay ProcessBizReq/ProcessBizReturn bang goi thang _log.WriteLogAsync(...) + myUtils_ValidateId VA myUtils_ValidateId_WH => hai lop kiem Tid; ban Main chi co mot duong",
+        signaturesDifferByOneArgument = "ban Main truyen them mot doi so TConst.Flag.No cho nhanh doanh thu ma ban kho KHONG co => chu ky hai ham X khac nhau, khong the hoan doi",
+        portAlwaysCountsReceptions = "port lam theo BAN KHO: luon dem luot tiep nhan, khong re nhanh doanh thu",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #685 CHI TIẾT BẢO HÀNH ĐÃ DUYỆT `SerWarrantyAcceptRpt_GetAll_WH` =====
 // (`BizCarSv.WarrantyReport.cs` — laptop `:14329-14573`, **máy 150 `:14850-15094`**; file lệch **522 dòng**,
 //  md5 **cả file** khác nhau `ba1fb715` ↔ `19b741ca` (canonical = 150 theo ghi chú #42/#46), nhưng md5 **vùng
