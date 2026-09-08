@@ -10430,6 +10430,14 @@ public sealed class MstInsuranceType
     public DateTime EffectiveDate { get; set; }
     public string? InsTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    /// <summary>🔴 #B175 — sáu cột nguồn **2010.HTC** (`Mst_InsuranceTypeCreate_New20181119`) mà bản
+    /// port trước (hệ `ERP.V15.DMSSales.Real`) không có. `Rate` bị chặn **> 100** nhưng **không** chặn âm.</summary>
+    public decimal? Rate { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

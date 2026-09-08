@@ -33180,6 +33180,168 @@ app.MapPost("/api/insurancecompanies/htc-delete", async (
     });
 }).RequireAuthorization();
 
+// ===== #B175/#B176/#B177 LOẠI BẢO HIỂM theo nguồn **2010.HTC** — `Mst_InsuranceTypeCreate` /
+//       `…Update` / `…Delete` (`_New20181119`, `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5** — cùng file với #B172):
+//   `Create 123884,124189 / 8a44dd9728740fbbb06d349c4ee9d443`
+//   `Update 124190,124447 / 7dfca81f7c6221682d6b991939f52137`
+//   `Delete 124448,124659 / 36b456b4706b72e16259f52bc8ada752`
+// 🔴🔴 **KHOÁ LÀ BỘ BA** `(InsCompanyCode, InsTypeCode, EffectiveDate)` — `EffectiveDate` là **phần
+//   của khoá**, không phải cột phụ. Cùng công ty + cùng loại nhưng **khác ngày hiệu lực** là **hai
+//   bản ghi khác nhau** (mô hình bảng giá theo thời gian).
+// 🔴🔴 **`InsTypeCode` là TỪ VỰNG ĐÓNG — chỉ hai giá trị** (`TERP.Constants.InsTypeCode`,
+//   `Const.Main.cs:872-876`): **`"MATERIALINS"`** (bảo hiểm vật chất) và
+//   **`"TRANSPORTATIONINS"`** (bảo hiểm vận chuyển). Khác đi ⇒ `…_InvalidInsTypeCode01`.
+//   ⇒ Đây **không** phải mã tự do; port cho nhập tuỳ ý là **đẻ trạng thái ngoài từ vựng nguồn**.
+// 🔴 **NĂM guard ở `_Create`, mỗi cái một mã lỗi** — thứ tự đúng như nguồn:
+//   1. bảng rỗng ⇒ `…_TableDetailBeBlank`;
+//   2. `Rate` **không parse được double** ⇒ `…_RateNotFormat` (`double.TryParse`);
+//   3. `Rate > 100` ⇒ `…_InvalidRate` — ⚠️ **KHÔNG chặn số ÂM** (khác `Mst_InsuranceFee` #B171 chỉ
+//      chặn `< 0`, và khác `Mst_CarAllocationByArea` #B166 chặn `[0,100]`) — **ba bảng, ba luật khác nhau**;
+//   4. `InsTypeCode.Length < 5` ⇒ `…_InvalidInsTypeCode` (`TConst.HTCConst.MinLengthCode = 5`);
+//      **rồi** mới kiểm từ vựng ⇒ `…_InvalidInsTypeCode01`;
+//   5. `InsTypeName.Length < 5` ⇒ `…_InvalidInsTypeName` — **tên cũng phải ≥ 5 ký tự**.
+// 🔴 `_Create` **ép `FlagActive = Flag.Active`**; `EffectiveDate` chuẩn hoá bằng **`StandardizeDate`**
+//   (chỉ ngày), `Rate` qua `GetDoubleValue`.
+// 🔴 **`_Update` chỉ ghi 5 cột**: `InsTypeName` · `Rate` · `FlagActive` · `Remark` · `LogLU*`;
+//   nối bằng **đủ bộ ba khoá** (`InsCompanyCode` + `InsTypeCode` + `EffectiveDate`) ⇒ **cả ba bất biến**.
+// 📌 §12 bổ sung 6 cột (`Rate`, `Remark`, `CreatedDate`, `CreatedBy`, `LogLU*`) vào `MstInsuranceType`
+//   **đã có sẵn** — không tạo thực thể thứ hai (luật `C0-…quinquagesimusprimus`).
+app.MapPost("/api/insurancetypes/htc-create", async (
+    InsTypeHtcSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceTypeCreate_TableDetailBeBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var added = 0;
+
+    foreach (var r in dto.Rows)
+    {
+        // (2) Rate phải parse được.
+        if (r.Rate is null)
+            return Results.BadRequest(new { error = "Mst_InsuranceTypeCreate_RateNotFormat", check = new { RateValid = "Double" } });
+        // (3) CHỈ chặn > 100 — KHÔNG chặn âm (đúng nguồn).
+        if (r.Rate > 100)
+            return Results.BadRequest(new { error = "Mst_InsuranceTypeCreate_InvalidRate", check = new { r.Rate, RateValid = "< 100" } });
+
+        var code = (r.InsTypeCode ?? "").Trim();
+        // (4a) độ dài tối thiểu 5.
+        if (code.Length < 5)
+            return Results.BadRequest(new { error = "Mst_InsuranceTypeCreate_InvalidInsTypeCode", check = new { InsTypeCode = code, MinLengthCode = "5" } });
+        // (4b) TỪ VỰNG ĐÓNG.
+        if (!(string.Equals(code, "MATERIALINS", StringComparison.OrdinalIgnoreCase)
+              || string.Equals(code, "TRANSPORTATIONINS", StringComparison.OrdinalIgnoreCase)))
+            return Results.BadRequest(new
+            {
+                error = "Mst_InsuranceTypeCreate_InvalidInsTypeCode01",
+                check = new { InsTypeCode = code, InsTypeCodeValid = "MATERIALINS | TRANSPORTATIONINS" }
+            });
+
+        var name = (r.InsTypeName ?? "").Trim();
+        // (5) TÊN cũng phải >= 5 ký tự.
+        if (name.Length < 5)
+            return Results.BadRequest(new { error = "Mst_InsuranceTypeCreate_InvalidInsTypeName", check = new { InsTypeName = name, MinLengthCode = "5" } });
+
+        db.MstInsuranceTypes.Add(new MstInsuranceType
+        {
+            OrgId = t.OrgId,
+            InsCompanyCode = (r.InsCompanyCode ?? "").Trim(),
+            InsTypeCode = code,
+            EffectiveDate = (r.EffectiveDate ?? now).Date,   // StandardizeDate ⇒ chỉ NGÀY
+            InsTypeName = name,
+            Rate = r.Rate,
+            FlagActive = "1",                                 // bị ÉP
+            Remark = r.Remark,
+            CreatedDate = now, CreatedBy = by,
+            LogLUDateTime = now, LogLUBy = by,
+            UpdatedAt = now
+        });
+        added++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        inserted = added,
+        tripleKeyNote = "KHOA LA BO BA (InsCompanyCode, InsTypeCode, EffectiveDate) - EffectiveDate la PHAN CUA KHOA, khong phai cot phu. Cung cong ty + cung loai nhung KHAC NGAY HIEU LUC la HAI BAN GHI KHAC NHAU (mo hinh bang gia theo thoi gian).",
+        closedVocabNote = "InsTypeCode la TU VUNG DONG - chi hai gia tri (TERP.Constants.InsTypeCode, Const.Main.cs:872-876): 'MATERIALINS' (bao hiem vat chat) va 'TRANSPORTATIONINS' (bao hiem van chuyen). Khac di => _InvalidInsTypeCode01. Port cho nhap tuy y la DE TRANG THAI NGOAI TU VUNG NGUON.",
+        fiveGuardNote = "NAM guard, moi cai mot ma loi: (1) bang rong _TableDetailBeBlank; (2) Rate khong parse duoc double _RateNotFormat; (3) Rate > 100 _InvalidRate - KHONG chan SO AM; (4) InsTypeCode.Length < 5 _InvalidInsTypeCode roi moi kiem tu vung _InvalidInsTypeCode01; (5) InsTypeName.Length < 5 _InvalidInsTypeName - TEN CUNG phai >= 5 ky tu.",
+        threeTablesThreeRulesNote = "BA BANG, BA LUAT KHAC NHAU ve nguong: Mst_InsuranceType chan > 100 (khong chan am); Mst_InsuranceFee (#B171) chan < 0 (khong chan > 100); Mst_CarAllocationByArea (#B166) chan [0,100]. Khong suy luat cua bang nay sang bang kia.",
+        forcedFlagNote = "_Create EP FlagActive = Flag.Active; EffectiveDate chuan hoa bang StandardizeDate (CHI NGAY); Rate qua GetDoubleValue."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancetypes/htc-update", async (
+    InsTypeHtcSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceTypeUpdate_TableDetailBeBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0; var notFound = new List<object>();
+
+    foreach (var r in dto.Rows)
+    {
+        var comp = (r.InsCompanyCode ?? "").Trim();
+        var code = (r.InsTypeCode ?? "").Trim();
+        var eff = (r.EffectiveDate ?? now).Date;
+
+        // 🔴 Nối bằng ĐỦ BỘ BA khoá ⇒ cả ba bất biến.
+        var cur = await db.MstInsuranceTypes.FirstOrDefaultAsync(x =>
+            x.OrgId == t.OrgId && x.InsCompanyCode == comp && x.InsTypeCode == code && x.EffectiveDate == eff);
+        if (cur is null) { notFound.Add(new { comp, code, eff }); continue; }
+
+        // 🔴 CHỈ 5 cột trong `set`.
+        cur.InsTypeName = r.InsTypeName;
+        cur.Rate = r.Rate;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) cur.FlagActive = r.FlagActive.Trim();
+        cur.Remark = r.Remark;
+        cur.LogLUDateTime = now; cur.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updated, notFound,
+        setColumnsNote = "_Update CHI ghi 5 cot: InsTypeName, Rate, FlagActive, Remark, LogLUDateTime/LogLUBy; noi bang DU BO BA KHOA (InsCompanyCode + InsTypeCode + EffectiveDate) => CA BA BAT BIEN.",
+        innerJoinNote = "Dung inner join qua bang tam => bo khoa khong ton tai thi KHONG bao loi, chi la khong dong nao duoc cap nhat. Port tra notFound (luat C0-...quinquagesimussecundus)."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancetypes/htc-delete", async (
+    InsTypeHtcSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceTypeDelete_TableDetailBeBlank" });
+
+    var deleted = 0;
+    foreach (var r in dto.Rows)
+    {
+        var comp = (r.InsCompanyCode ?? "").Trim();
+        var code = (r.InsTypeCode ?? "").Trim();
+        var eff = (r.EffectiveDate ?? DateTime.Now).Date;
+        var cur = await db.MstInsuranceTypes.FirstOrDefaultAsync(x =>
+            x.OrgId == t.OrgId && x.InsCompanyCode == comp && x.InsTypeCode == code && x.EffectiveDate == eff);
+        if (cur is null) continue;
+        db.MstInsuranceTypes.Remove(cur);   // 🔴 XOÁ THẬT
+        deleted++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted,
+        hardDeleteNote = "XOA THAT (khuon #B174) - nap bang tam roi 'delete ... from Mst_InsuranceType', khong doi co.",
+        tripleKeyNote = "Xoa theo DU BO BA khoa (InsCompanyCode, InsTypeCode, EffectiveDate)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -45420,6 +45582,8 @@ record InsuranceFeeRowDto(string? InsuranceContractNo, decimal? InsurancePercent
 record InsuranceFeeSaveDto(string? FlagIsDelete, List<InsuranceFeeRowDto>? Rows);   // #B171
 record InsCompanyHtcRowDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive, string? Remark);   // #B172-B174
 record InsCompanyHtcSaveDto(List<InsCompanyHtcRowDto>? Rows);   // #B172-B174
+record InsTypeHtcRowDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, decimal? Rate, string? FlagActive, string? Remark);   // #B175-B177
+record InsTypeHtcSaveDto(List<InsTypeHtcRowDto>? Rows);   // #B175-B177
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
