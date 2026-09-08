@@ -11134,6 +11134,93 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     autoTempNote = "Bảng Email_SendEmailAutoTemp dùng SỐ (có mã -1) và CÓ nhánh else ⇒ mã lạ/NULL hiện \"Lỗi\".",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #591 NẠP HÀNG ĐỢI NGƯỜI NHẬN (`ProcessSaveSendEmailAutoTemp`, `SendMail.cs:775`) =====
+// Hàm nội bộ, **một** nơi gọi: `SendMail.cs:1066` (trong `Email_BatchSendEmailCreate`). Nhận `DataSet` từ
+//   client, lọc từng dòng người nhận rồi ghi xuống `Email_SendEmailAutoTemp`, sau đó **chép sang DB kho**.
+//
+// 🔴🔴 **`#region //Check` NẰM NGAY TRONG VÒNG LẶP VÀ HOÀN TOÀN RỖNG** — trích nguyên văn (luật #403):
+//     `foreach (DataRow row in dtEmailItem.Rows)`
+//     `{`
+//     `    #region //Check`
+//     `    #endregion`          ← **không một dòng lệnh nào**
+//   ⇒ Mỗi dòng người nhận **không được kiểm gì**: `CusEmail` rỗng vẫn được thêm vào hàng đợi ⇒ hệ thống
+//     xếp lịch gửi thư **cho một địa chỉ trống**. Tác giả **đã dựng sẵn chỗ để kiểm** rồi bỏ trống.
+// 🔴🔴 **`Status` VÀ `SendType` RỖNG THÌ KHÔNG GÁN** ⇒ lấy mặc định của schema; không có default thì **NULL**
+//   ⇒ dòng đó **rơi khỏi bộ lọc `status='0'`** của hàng đợi gửi (xem #587) ⇒ **không bao giờ được gửi, cũng**
+//   **không nằm trong nhóm lỗi**. Đây là **mắt xích thứ tư** của cùng một chuỗi: #575 (`DebitType`),
+//   #579 (`IsActive`), #588 (trạng thái email tuỳ ý), và nay là **lúc NẠP** — hỏng ngay từ khi vào hàng đợi.
+// 🔴 `newRow["CreatedDate"] = **DateTime.Now**.ToString("yyyy-MM-dd HH:mm:ss")` — giờ **máy ứng dụng**, ghi
+//   dưới dạng **chuỗi** (lặp lại #573). Hai máy lệch giờ là thứ tự hàng đợi lệch theo.
+// 🔴 **CHÉP SANG KHO BẰNG `DataRowState.Added` ⇒ CHẠY LẠI LÀ NHÂN ĐÔI**:
+//     `dtDB… = _dbMain.ExecQuery(sql, "@BatchId", iBatchId).Tables[0];`
+//     `DataTableUtils.SetDataRowStateOfAllRows(ref dtDB…, DataRowState.**Added**);`
+//     `_dbWH.SaveData("Email_SendEmailAutoTemp", dtDB…);`
+//   ⇒ Mọi dòng bị đánh dấu **thêm mới**, **không** kiểm đã tồn tại ở kho chưa. Gọi lại cùng một `BatchId`
+//     (retry, bấm hai lần) ⇒ kho có **hai bản** cùng lô ⇒ **gửi trùng thư cho khách**.
+// ⚪ **Kiểm tra âm tính (điều làm ĐÚNG):** bản chép sang kho **đọc lại từ Main theo `@BatchId`** nên **giữ
+//   nguyên khoá** của bản ghi gốc — khác `Blt_BulletinCreate` (#577) vốn **chép tay từng cột** vào một
+//   `DataTable` dựng từ schema kho. Cùng một hệ, hai cách đồng bộ; cách ở đây là cách đúng.
+// ⚪ Âm tính: tham số `@BatchId` ở câu đọc lại là **tham số thật**, không bake.
+// 📌 Port: endpoint dưới nạp hàng đợi **có** ba guard nguồn thiếu (email rỗng, trạng thái mặc định, chống
+//   nạp trùng lô) và trả cờ đếm số dòng nguồn sẽ nhận mà port từ chối.
+app.MapPost("/api/emailautotemps/load-batch/{batchId}", async (string batchId, List<EmailAutoTempLineDto> lines,
+    AppDbContext db, ITenantContext t) =>
+{
+    var bid = batchId.Trim();
+    if (lines is null || lines.Count == 0)
+        return Results.BadRequest(new { error = "Danh sach nguoi nhan rong." });
+
+    // GUARD nguồn KHÔNG có: chống nạp trùng lô (nguồn đánh dấu Added nên chạy lại là nhân đôi ở kho).
+    var already = await db.EmailSendAutoTemps.CountAsync(x => x.OrgId == t.OrgId && x.BatchId == bid);
+    if (already > 0)
+        return Results.BadRequest(new
+        {
+            error = $"Lo {bid} da nap {already} dong — nap lai se nhan doi.",
+            sourceWouldDuplicate = "SetDataRowStateOfAllRows(Added) roi SaveData sang WH, khong kiem ton tai",
+        });
+
+    // GUARD nguồn KHÔNG có: #region //Check trong vòng lặp của nguồn RỖNG.
+    var rejectedNoEmail = lines.Count(l => string.IsNullOrWhiteSpace(l.CusEmail));
+    var good = lines.Where(l => !string.IsNullOrWhiteSpace(l.CusEmail)).ToList();
+    if (good.Count == 0)
+        return Results.BadRequest(new
+        {
+            error = "Khong dong nao co dia chi email.",
+            rejectedNoEmail,
+            sourceWouldQueueThemAnyway = "#region //Check trong vong lap cua nguon hoan toan RONG",
+        });
+
+    var now = DateTime.Now;
+    foreach (var l in good)
+    {
+        db.EmailSendAutoTemps.Add(new EmailSendAutoTemp
+        {
+            OrgId = t.OrgId, BatchId = bid,
+            DealerCode = l.DealerCode?.Trim().ToUpperInvariant(),
+            CusID = l.CusID, CusEmail = l.CusEmail!.Trim(),
+            Subject = l.Subject, Body = l.Body,
+            TypeEmail = l.TypeEmail,
+            // GUARD nguồn KHÔNG có: rỗng thì mặc định "0" (chờ gửi) thay vì để NULL rồi rơi khỏi hàng đợi.
+            Status = string.IsNullOrWhiteSpace(l.Status) ? "0" : l.Status!.Trim(),
+            CurrentDate = now.ToString("yyyy-MM-dd HH:mm:ss"),   // #591 nguồn ghi CHUỖI, đúng kiểu cột
+        });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        batchId = bid, loaded = good.Count, rejectedNoEmail,
+        checkRegionInsideLoopIsEmpty = "foreach { #region //Check #endregion } — tac gia dung san cho de kiem roi bo trong",
+        emptyStatusWouldBecomeNull = "Status/SendType rong thi KHONG gan => lay mac dinh schema, khong co default la NULL => roi khoi bo loc status=0 (#587)",
+        fourthLinkOfSameChain = "chuoi he qua: #575 DebitType, #579 IsActive, #588 trang thai email tuy y, va nay la luc NAP",
+        createdDateUsesAppClockAsString = "DateTime.Now.ToString(yyyy-MM-dd HH:mm:ss) — gio may ung dung, luu dang chuoi",
+        whCopyMarksAllRowsAdded = "SetDataRowStateOfAllRows(Added) => chay lai cung BatchId la kho co hai ban => gui trung thu cho khach",
+        whCopyPreservesKeys = "ban chep doc lai tu Main theo @BatchId nen GIU NGUYEN khoa — khac #577 von chep tay tung cot (day la cach DUNG)",
+        batchIdIsRealParameter = true,
+        guardsAddedByPort = new[] { "chong nap trung lo", "bat buoc co email", "Status mac dinh 0" },
+    });
+}).RequireAuthorization();
+
 // ===== #300 HÀNG ĐỢI NGƯỜI NHẬN của lô gửi tự động (Email_SendEmailAutoTemp) =====
 app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
     string? batchId, string? dealer, string? typeEmail, string? status) =>
@@ -55038,6 +55125,8 @@ record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars);
 record ScApproveDto(bool Approve = true, string? Remark = null);
 record ScCarUpdateDto(DateTime? ExpectedEndDate, string? Remark);
 record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
+record EmailAutoTempLineDto(string? DealerCode, string? CusID, string? CusEmail,
+    string? Subject, string? Body, string? TypeEmail, string? Status);   // #591
 record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive,
     string? Address, string? Tel, string? Fax, string? Website);   // #569 §12
 record MstInsTypeDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, string? FlagActive);
