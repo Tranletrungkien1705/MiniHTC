@@ -46079,6 +46079,129 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #712 MẪU EMAIL: TẠO / SỬA / XOÁ + GUARD ĐÍNH KÈM `CheckTempAttachmentLimit` =====
+// `BizCarSv.SendMail.cs` — `_Create` :2989-3186 md5 `d01b854b` · `_Update` :3188-3404 md5 `99075ce6` ·
+// `_Delete` :3406-3528 md5 `c9cc59d5` · guard `CheckTempAttachmentLimit` :2855.
+// → `POST|PUT|DELETE /api/email/templates`. Bổ sung cho #711 (huỷ) và #438 (danh sách).
+// ⚠️ **KHÁC #587**: #587 port `CheckAttachment**Limit**` (`:858`) — **một** tham số, `Rows.Count != 1`, không có
+//   câu đếm. Đây là hàm **anh em** `Check**Temp**AttachmentLimit` (`:2855`) — **hai** tham số, `!= 2`, **có** câu
+//   đếm số mẫu đã đính kèm. Hai guard cùng tên gọi, **khác thân**.
+//
+// 🔴🔴🔴🔴 **VÒNG LẶP ĐỌC NHẦM DÒNG — `else if` SO `Rows[0]` THAY VÌ BIẾN VÒNG LẶP**:
+//     `foreach (DataRow **paramsRow** in dtGetParams.Rows) {`
+//     `  if (**paramsRow**["ParamCode"]…Equals("MaxAttachmentSize"))  { iMaxAttachmentSize  = …paramsRow… }`
+//     `  else if (**dtGetParams.Rows[0]**["ParamCode"]…Equals("MaxAttachmentNumber")) { iMaxAttachmentNumber = …paramsRow… }`
+//   Nhánh `else if` **luôn xét dòng ĐẦU TIÊN**, không xét dòng đang lặp. Và câu SQL lấy tham số **không có
+//   `ORDER BY`** ⇒ hành vi **phụ thuộc hoàn toàn vào thứ tự SQL Server trả dòng** (luật #411 ở dạng thuần nhất):
+//   · Thứ tự `[MaxAttachmentSize, MaxAttachmentNumber]` ⇒ `Rows[0]` là *Size* ⇒ điều kiện `else if` **không bao
+//     giờ đúng** ⇒ `iMaxAttachmentNumber` **ở nguyên 0** ⇒ `if (iNumTempAttach >= 0)` **luôn TRUE**
+//     ⇒ **MỌI lần tạo/sửa mẫu email đều bị ném `Email_AttachmentNumberOverLimit`** — tính năng đính kèm **chết**.
+//   · Thứ tự `[MaxAttachmentNumber, MaxAttachmentSize]` ⇒ `Rows[0]` là *Number* ⇒ cả hai được gán **đúng**.
+//   ⇒ Cùng một mã, cùng một dữ liệu, **hai kết quả trái ngược** tuỳ thứ tự dòng. Đây là hậu quả **nặng nhất**
+//     của #411 gặp tới giờ: không phải sai số, mà là **chặn trọn một tính năng trong một nửa số trường hợp**.
+// 🔴🔴🔴 **BAKE THAM SỐ VÀO NHÁY, LẠI CÒN TRỘN VỚI SqlParameter**: cả hai câu trong guard đều
+//   `where DealerCode = '@strDealerCode'` rồi `StringUtils.Replace` ⇒ **bề mặt tiêm SQL** (họ #699/#576);
+//   riêng câu thứ hai **trộn** giá trị bake (`@strDealerCode`) với `SqlParameter` thật (`@p…` do `BuildClause`
+//   sinh) trong **cùng một câu** ⇒ đúng khuôn nguy hiểm đã ghi trong sổ là `[BAKE-PARAM-MIX]`.
+// 🔴🔴🔴 **GUARD ĐỌC THAM SỐ Ở CSDL ĐẠI LÝ NHƯNG ĐẾM Ở CSDL CHÍNH**: `dbAction.ExecQuery(sqlGetParams)` với
+//   `dbAction = _dbDealer` (do cả `_Create` lẫn `_Update` truyền vào), còn `**_dbMain**.ExecQuery(sqlGetNumTempAttach)`
+//   **gõ cứng**. ⇒ Ngưỡng lấy một nơi, số đếm lấy nơi khác. Cùng dạng **guard-DB ≠ đếm-DB** của #704.
+// 🔴🔴 **`Rows.Count != 2` — GUARD THEO SỐ DÒNG, KHÔNG THEO NỘI DUNG**: khai **thiếu một** tham số, hoặc khai
+//   **trùng** thành ba dòng, đều ra **cùng** mã `Email_AttachmentNotAllowed`. Y hệt bệnh đã ghi ở #587 (`!= 1`).
+// 🔴🔴 **`Convert.ToInt32(ParamValue)` KHÔNG GUARD** ⇒ giá trị rỗng hoặc `"10MB"` ⇒ **FormatException**, không
+//   phải lỗi nghiệp vụ (#408/#587).
+// ⚪ **DƯƠNG TÍNH — #404: guard của `_Create` và `_Update` KHÁC NHAU ĐÚNG CHỖ ĐÁNG KHÁC**:
+//   `_Create` truyền `strTempEmailId = **null**` ⇒ `BuildClause("and","TempIDEmail","",…)` với chuỗi **rỗng**
+//     ⇒ mệnh đề **bị bỏ im lặng** (#410) ⇒ đếm **toàn bộ** mẫu của đại lý — **đúng ý**.
+//   `_Update` truyền `strTempIDEmail` ⇒ `BuildClauseConditionSingle("and","TempIDEmail","**<>**",…)`
+//     ⇒ **loại trừ chính bản ghi đang sửa** — cũng **đúng ý**.
+//   📌 Đây là lần đầu trong sổ gặp `BuildClause` bỏ-im-lặng được dùng **có chủ ý** thay vì là bẫy.
+// 🔴🔴🔴 **XOÁ CỨNG vs HUỶ MỀM — HAI CHÍNH SÁCH TRÊN CÙNG MỘT BẢNG**:
+//   `_Delete` chạy `delete from Email_TempEmail` (**xoá cứng**) và chỉ trên **`_dbMain`**;
+//   `_Cancel` (#711) đặt `IsActive = '0'` (**huỷ mềm**) và ghi **`_dbMain` + `_dbWH`**.
+//   ⇒ Hai đường huỷ, hai chính sách, **và hai phạm vi CSDL khác nhau** ⇒ xoá ở Main thì bản ghi ở **WH còn nguyên**.
+// 🔴🔴 **ĐỐI CHIẾU DỨT KHOÁT CHO #711**: `_Delete` **CÓ** lọc `and DealerCode=@DealerCode`, còn `_Cancel`
+//   **KHÔNG có tham số đại lý nào**. ⇒ Việc #711 thiếu phạm vi đại lý **không phải quy ước của bảng này**
+//   mà là **thiếu sót của riêng hàm huỷ** — nay đã có bằng chứng đối chiếu trong chính họ hàm.
+// 🔴 `_Delete` **không** có `#region // Check`, `CMyException.Raise` **0 lần**, không đọc số dòng ảnh hưởng
+//   ⇒ xoá khoá không tồn tại vẫn **báo thành công** (giống #710).
+app.MapPost("/api/email/templates", async (EmailTemplateSourceDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dc = (dto.DealerCode ?? "").Trim();
+    // === CheckTempAttachmentLimit, tái hiện 1:1 kể cả lỗi đọc nhầm dòng ===
+    var prm = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Code == dc
+            && (m.Category == "MaxAttachmentSize" || m.Category == "MaxAttachmentNumber")).ToListAsync();
+    if (prm.Count != 2)
+        return Results.BadRequest(new { error = "Email_AttachmentNotAllowed", rowCount = prm.Count,
+            guardCountsRowsNotContent = "Rows.Count != 2 — thieu MOT tham so hay khai TRUNG thanh ba dong deu ra CUNG mot ma loi (y het #587 voi != 1)" });
+
+    // 🔴 Nguồn KHÔNG có ORDER BY ⇒ thứ tự dòng quyết định hành vi. Đo cả hai kịch bản.
+    var firstIsSize = prm[0].Category == "MaxAttachmentSize";
+    int maxSize = 0, maxNumber = 0;
+    foreach (var row in prm)
+    {
+        if (row.Category == "MaxAttachmentSize") maxSize = int.TryParse(row.Name, out var a) ? a : 0;
+        // 🔴 nguồn so prm[0] chứ KHÔNG so `row` — giữ 1:1.
+        else if (prm[0].Category == "MaxAttachmentNumber") maxNumber = int.TryParse(row.Name, out var b) ? b : 0;
+    }
+
+    if (dto.TempFileBytes is > 0 && dto.TempFileBytes > maxSize)
+        return Results.BadRequest(new { error = "Email_AttachmentSizeOverLimit", maxSize });
+
+    // Nguồn Create đếm TOÀN BỘ mẫu có tệp của đại lý (mệnh đề TempIDEmail bị bỏ im lặng — đúng ý).
+    var numWithFile = await db.EmailTemplates.CountAsync(x => x.OrgId == t.OrgId && x.DealerCode == dc
+        && x.FileAttachment != null);
+    if (numWithFile >= maxNumber)
+        return Results.BadRequest(new
+        {
+            error = "Email_AttachmentNumberOverLimit", numWithFile, maxNumber,
+            blockedBecauseMaxNumberStayedZero = maxNumber == 0,
+            elseIfComparesRowZeroInsteadOfLoopVariable = "VONG LAP DOC NHAM DONG — else if SO Rows[0] THAY VI BIEN VONG LAP: foreach (DataRow paramsRow in dtGetParams.Rows) { if (paramsRow[ParamCode] == MaxAttachmentSize) {...} else if (dtGetParams.Rows[0][ParamCode] == MaxAttachmentNumber) {...} }. Nhanh else if LUON XET DONG DAU TIEN, khong xet dong dang lap. Va cau SQL lay tham so KHONG CO ORDER BY => hanh vi PHU THUOC HOAN TOAN VAO THU TU SQL Server tra dong (luat #411 dang thuan nhat): thu tu [Size, Number] => Rows[0] la Size => dieu kien else if KHONG BAO GIO DUNG => iMaxAttachmentNumber O NGUYEN 0 => if (iNumTempAttach >= 0) LUON TRUE => MOI lan tao/sua mau email deu bi nem Email_AttachmentNumberOverLimit, tinh nang dinh kem CHET; thu tu [Number, Size] => ca hai duoc gan DUNG. Cung mot ma, cung mot du lieu, HAI KET QUA TRAI NGUOC tuy thu tu dong",
+            firstRowIsMaxAttachmentSize = firstIsSize,
+        });
+
+    var row2 = new EmailTemplate
+    {
+        OrgId = t.OrgId, DealerCode = dc, TempIDEmail = dto.TempIDEmail,
+        TempType = dto.TempTypeEmail ?? "", TempName = dto.TempName,
+        TempSubject = dto.TempSubject, TempBody = dto.TempBody ?? "",
+        FileAttachment = dto.FileAttachment, FlagActive = "1",
+        CreatedAt = DateTime.Now, UpdatedAt = DateTime.Now,
+    };
+    db.EmailTemplates.Add(row2);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row2.Id, row2.TempIDEmail, row2.DealerCode, row2.TempType,
+        // ===== #712 =====
+        guardBakesDealerCodeAndMixesWithSqlParameter = "BAKE THAM SO VAO NHAY, LAI CON TRON VOI SqlParameter: ca hai cau trong guard deu where DealerCode = '@strDealerCode' roi StringUtils.Replace => BE MAT TIEM SQL (ho #699/#576); rieng cau thu hai TRON gia tri bake (@strDealerCode) voi SqlParameter that (@p… do BuildClause sinh) trong CUNG MOT CAU => dung khuon nguy hiem [BAKE-PARAM-MIX]",
+        guardReadsParamsOnDealerDbButCountsOnMainDb = "GUARD DOC THAM SO O CSDL DAI LY NHUNG DEM O CSDL CHINH: dbAction.ExecQuery(sqlGetParams) voi dbAction = _dbDealer (do ca _Create lan _Update truyen vao), con _dbMain.ExecQuery(sqlGetNumTempAttach) GO CUNG => nguong lay mot noi, so dem lay noi khac. Cung dang guard-DB KHAC dem-DB cua #704",
+        convertToInt32NotGuarded = "Convert.ToInt32(ParamValue) KHONG GUARD => gia tri rong hoac 10MB => FormatException, khong phai loi nghiep vu (#408/#587)",
+        differentFromCheckAttachmentLimitOf587 = "KHAC #587: #587 port CheckAttachmentLimit (:858) — MOT tham so, Rows.Count != 1, khong co cau dem. Day la ham ANH EM CheckTempAttachmentLimit (:2855) — HAI tham so, != 2, CO cau dem so mau da dinh kem. Hai guard cung ten goi, KHAC THAN",
+        positiveCreateAndUpdateGuardsDifferCorrectly = "DUONG TINH #404: guard cua _Create va _Update KHAC NHAU DUNG CHO DANG KHAC. _Create truyen strTempEmailId = null => BuildClause(and, TempIDEmail, '', …) voi chuoi RONG => menh de BI BO IM LANG (#410) => dem TOAN BO mau cua dai ly — DUNG Y. _Update truyen strTempIDEmail => BuildClauseConditionSingle(and, TempIDEmail, <>, …) => LOAI TRU CHINH ban ghi dang sua — cung DUNG Y. Lan dau trong so gap BuildClause bo-im-lang duoc dung CO CHU Y thay vi la bay",
+    });
+}).RequireAuthorization();
+
+// #712 `Email_TempEmail_Delete` (:3406) — XOÁ CỨNG, chỉ `_dbMain`, CÓ lọc `DealerCode`.
+app.MapDelete("/api/email/templates/{tempIDEmail}", async (string tempIDEmail, AppDbContext db,
+    ITenantContext t, string? dealerCode) =>
+{
+    var key = (tempIDEmail ?? "").Trim();
+    var dc = (dealerCode ?? "").Trim();
+    var rows = await db.EmailTemplates
+        .Where(x => x.OrgId == t.OrgId && x.TempIDEmail == key && x.DealerCode == dc).ToListAsync();
+    var deleted = rows.Count;
+    if (deleted > 0) { db.EmailTemplates.RemoveRange(rows); await db.SaveChangesAsync(); }
+    return Results.Ok(new
+    {
+        tempIDEmail = key, dealerCode = dc, deleted,
+        deletedNothingButSourceWouldStillReportSuccess = deleted == 0,
+        hardDeleteVersusSoftCancelOnSameTable = "XOA CUNG vs HUY MEM — HAI CHINH SACH TREN CUNG MOT BANG: _Delete chay delete from Email_TempEmail (XOA CUNG) va chi tren _dbMain; _Cancel (#711) dat IsActive = 0 (HUY MEM) va ghi _dbMain + _dbWH => hai duong huy, hai chinh sach, VA HAI PHAM VI CSDL KHAC NHAU => xoa o Main thi ban ghi o WH CON NGUYEN",
+        decisiveContrastForIssue711 = "DOI CHIEU DUT KHOAT CHO #711: _Delete CO loc and DealerCode=@DealerCode, con _Cancel KHONG co tham so dai ly nao => viec #711 thieu pham vi dai ly KHONG PHAI QUY UOC CUA BANG NAY ma la THIEU SOT CUA RIENG HAM HUY — nay da co bang chung doi chieu trong chinh ho ham",
+        deleteHasNoCheckRegion = "_Delete KHONG co #region // Check (da liet ke tron region: Temp:, Init:, Save data, Catch, Finally), CMyException.Raise 0 LAN, khong doc so dong anh huong => xoa khoa khong ton tai van BAO THANH CONG (giong #710)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #711 HUỶ MẪU EMAIL `Email_TempEmail_Cancel` =====
 // `BizCarSv.SendMail.cs:3687-3827`, md5 `ab4fe8b7` — **KHỚP máy 150, cùng offset**.
 // → `POST /api/email/templates/{tempIDEmail}/cancel`. Nợ đã ghi ở #290 (`Program.cs:51329`), nay trả.
@@ -63488,6 +63611,10 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 // #300: 10 trường của `Email_SendEmailAutoTemp_Create` + `BatchId`/`Remark` (chỉ dùng lúc TẠO —
 //   nguồn không đưa hai cột đó vào `alEffectiveColumn` của `_Update`).
 // #709: them AutoTempID — khoa ma Email_SendEmailAutoTemp_Update dung de tra.
+/// <summary>#712 `Email_TempEmail_Create/_Update` — đặt tên trường **theo nguồn** (`strTemp*`).</summary>
+record EmailTemplateSourceDto(string? DealerCode = null, string? TempIDEmail = null, string? TempName = null,
+    string? TempSubject = null, string? TempBody = null, string? TempTypeEmail = null,
+    string? FileAttachment = null, long? TempFileBytes = null);
 record EmailAutoTempDto(string? BatchId = null, string? DealerCode = null, string? CusID = null,
     string? AutoTempID = null,
     string? CusEmail = null, string? Subject = null, string? Body = null, string? CurrentDate = null,
