@@ -53008,6 +53008,94 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #644 TRA CỨU PHIẾU XUẤT KHO `SerStockOutSearch_WH` (`WH.cs:28494-28819`) =====
+// 3B: laptop `:28494` md5 `df55017f` **KHỚP** máy 150 `:28494`.
+//
+// 🔴 **NGOẠI LỆ CỦA QUY TẮC "BẢN TRẦN LÀ BẢN CHẾT"**: ở đây **cổng WH gọi chính BẢN TRẦN**
+//   (`WSCarSv.asmx.cs:29376 → _biz.SerStockOutSearch_**WH**(`, không hậu tố), trong khi **cổng dealer** gọi
+//   bản có hậu tố ngày (`:16229 → _biz.SerStockOutSearch_**New20180623**(`).
+//   ⇒ Suy "tên trần = chết" (đã ghi ở #573/#579) **không đúng phổ quát** — phải trace từng cổng.
+// ⚪ Cụm này cũng có bản chết `_WH_New20240115` thuộc **đợt chín hàm chưa bao giờ đấu dây** (xem #643).
+//   DIFF cho đúng bốn thứ như bên nhập: thêm `strStockNoConditionList` · `BuildClause("and","**s**.StockNo",…)`
+//   · hai cột `siso.StockNo`/`sis.StockName` · `left join Ser_Inv_Stock`.
+//   ⚪ **Kiểm tra âm tính**: thoạt nhìn tưởng lệch alias (`s` ở bộ lọc vs `siso` ở phần hiển thị), nhưng bộ lọc
+//     được chèn vào **câu thứ nhất** nơi `FROM ser_inv_stockout **s**` ⇒ **đúng alias**, không phải lỗi.
+//   ⚠️ Doc-comment của bản chết ghi *"NC Tìm kiếm phiếu **NHẬP** kho…"* trong khi đây là hàm **XUẤT** — chép
+//     nguyên văn từ yêu cầu bên nhập.
+//
+// 🔴🔴🔴 **PHIẾU XUẤT KHÔNG GẮN YÊU CẦU XUẤT KHO BIẾN MẤT HOÀN TOÀN**: bảng `#tbl_soo` dựng bằng
+//     `inner join ser_inv_stockoutorderstockout soo1` + `INNER JOIN ser_inv_stockoutorder sood`
+//   rồi câu kết quả lại `INNER JOIN #tbl_soo soo ON sodd.stockoutid = soo.stockoutid`
+//   ⇒ Phiếu xuất **không qua yêu cầu xuất** (xuất bán lẻ, xuất điều chỉnh, xuất trả NCC) **không tra được**.
+// 🔴🔴 **PHIẾU KHÔNG CÓ DÒNG CHI TIẾT HỢP LỆ CŨNG MẤT**: `#tbl_sod` `inner join ser_inv_stockoutdetail` +
+//   `INNER JOIN ser_mst_part pl`, rồi `#tbl_sodd` `INNER JOIN #tbl_sod` ⇒ phiếu **chưa có dòng** hoặc **mọi**
+//   **dòng đều trỏ phụ tùng đã rời danh mục** ⇒ rơi khỏi kết quả.
+// 🔴🔴 **`left join` MẮC XÍCH — CỘT NỐI LẤY TỪ *HAI* BẢNG LEFT KHÁC** (đúng câu hỏi **thứ nhất** của #414):
+//     `left join ser_car car ON **cus**.CusID = car.CusID AND car.CarID = **ro**.CarID`
+//   `cus` và `ro` đều là bảng `left join` ⇒ phiếu không gắn lệnh sửa chữa thì `ro.CarID` NULL ⇒ **không khớp**
+//   ⇒ `car.PlateNo` **luôn rỗng**. Mất `ro` kéo theo mất `car`.
+// 🔴 **CỘT GHÉP CHUỖI CHẾT VÌ VẾ TỪ `left join`** — ca thứ hai sau #621: `('LS-' + ro.RONo) RONo` ⇒ phiếu
+//   không gắn lệnh thì **cả cột NULL** (không phải `'LS-'`).
+// 🔴 **TRỘN `with(nolock)` VÀ `--//[mylock]` TRONG CÙNG MỘT BATCH** (họ #620/#623/#639): ba bảng đầu dùng
+//   `with(nolock)` — trong đó `#tbl_so with(nolock)` đặt trên **bảng tạm** nên **vô nghĩa** (như #639).
+// 🔴 `SELECT DISTINCT` ở câu kết quả — cần vì các `inner join` làm nở dòng; nhưng nó **che** hiện tượng nở
+//   thay vì sửa nguyên nhân (cùng lập luận với #614).
+// 🔴 **HAI bộ lọc đại lý** ở hai tầng: `zzzzClauseWhere_strDealerCodeConditionList` (trên `ser_inv_stockout`)
+//   và `zzzzClauseWhere_strDealerCodeSOOConditionList` (trên `#tbl_soo`) — cùng một ô nhập, hai ràng buộc.
+app.MapGet("/api/stockouts/search-wh", async (AppDbContext db, ITenantContext t,
+    string? stockOutNo, string? status, string? stockOutType, string? partCode, bool? isGetDetail) =>
+{
+    var qy = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(stockOutNo)) qy = qy.Where(x => x.StockOutNo == stockOutNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(stockOutType)) qy = qy.Where(x => x.StockOutType == stockOutType!.Trim());
+
+    var heads = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var ids = heads.Select(h => h.Id).ToList();
+    var allLines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.ServiceStockOutId))
+        .Select(l => new { l.ServiceStockOutId, l.PartCode, l.PartName, l.Quantity, l.Price }).ToListAsync();
+    var partCodes = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => p.PartCode).ToListAsync();
+
+    var items = heads.Select(h =>
+    {
+        var ls = allLines.Where(l => l.ServiceStockOutId == h.Id).ToList();
+        var lsInCatalog = ls.Where(l => partCodes.Contains(l.PartCode)).ToList();
+        return new
+        {
+            h.Id, h.StockOutNo, h.StockOutDate, h.Status, h.StockOutType, h.ReceiverCode,
+            h.TotalQty, h.TotalAmount,
+            lineCount = ls.Count,
+            // Nguồn: #tbl_sod inner join ser_mst_part ⇒ phiếu chưa có dòng, hoặc mọi dòng trỏ phụ tùng
+            //        đã rời danh mục, sẽ rơi khỏi kết quả.
+            wouldBeDroppedByDetailJoin = lsInCatalog.Count == 0,
+            // Nguồn: INNER JOIN #tbl_soo ⇒ phiếu không gắn yêu cầu xuất kho biến mất.
+            //        MiniHTC chưa mô hình hoá StockOutOrder ⇒ ghi nợ, không bịa.
+            matchesPartCodeFilter = string.IsNullOrWhiteSpace(partCode)
+                || ls.Any(l => l.PartCode == partCode!.Trim()),
+        };
+    }).Where(x => x.matchesPartCodeFilter).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        lines = isGetDetail == true ? allLines : null,
+        droppedByDetailJoin = items.Count(x => x.wouldBeDroppedByDetailJoin),
+        // ===== #644 =====
+        plainVariantIsTheLiveOneHere = "cong WH goi chinh BAN TRAN SerStockOutSearch_WH (WSCarSv.asmx.cs:29376, khong hau to) trong khi cong dealer goi ban co hau to ngay SerStockOutSearch_New20180623 (:16229) => suy ten tran = chet (ghi o #573/#579) KHONG dung pho quat, phai trace tung cong",
+        deadBatchAlsoHasWhVariant = "cum nay cung co ban chet _WH_New20240115 thuoc dot CHIN HAM chua bao gio dau day (xem #643); DIFF cho dung bon thu nhu ben nhap",
+        aliasMismatchWasAFalseAlarm = "AM TINH: thoat nhin tuong lech alias (s o bo loc vs siso o phan hien thi) nhung bo loc duoc chen vao CAU THU NHAT noi FROM ser_inv_stockout s => DUNG alias, khong phai loi",
+        deadBatchDocCommentSaysStockIn = "doc-comment cua ban chet ghi NC Tim kiem phieu NHAP kho trong khi day la ham XUAT — chep nguyen van tu yeu cau ben nhap",
+        stockOutWithoutOrderDisappears = "#tbl_soo dung bang inner join ser_inv_stockoutorderstockout + INNER JOIN ser_inv_stockoutorder, roi cau ket qua INNER JOIN #tbl_soo => phieu xuat KHONG qua yeu cau xuat (xuat ban le, xuat dieu chinh, xuat tra NCC) KHONG TRA DUOC",
+        stockOutOrderNotModelledInMini = "MiniHTC chua mo hinh hoa StockOutOrder nen KHONG do duoc so phieu se bi nuot boi nhanh nay — ghi NO, khong bia",
+        detailInnerJoinsDropDocuments = "#tbl_sod inner join ser_inv_stockoutdetail + INNER JOIN ser_mst_part pl, roi #tbl_sodd INNER JOIN #tbl_sod => phieu chua co dong hoac moi dong deu tro phu tung da roi danh muc se roi khoi ket qua",
+        chainedLeftJoinWithKeysFromTwoLeftTables = "left join ser_car car ON cus.CusID = car.CusID AND car.CarID = ro.CarID — cus va ro deu la bang left join => phieu khong gan lenh sua chua thi ro.CarID NULL nen khong khop => car.PlateNo LUON RONG (dung cau hoi THU NHAT cua #414)",
+        concatColumnDiesFromLeftJoin = "(LS- + ro.RONo) RONo => phieu khong gan lenh thi CA COT NULL, khong phai LS- (ca thu hai sau #621)",
+        nolockMixedAndOnATempTable = "ba bang dau dung with(nolock) tron voi --//[mylock] o cac cau khac trong CUNG MOT BATCH (ho #620/#623/#639); rieng #tbl_so with(nolock) dat tren BANG TAM nen VO NGHIA (nhu #639)",
+        distinctHidesRowExpansion = "SELECT DISTINCT o cau ket qua can vi cac inner join lam no dong, nhung no CHE hien tuong no thay vi sua nguyen nhan (cung lap luan #614)",
+        twoDealerFiltersAtTwoLevels = "zzzzClauseWhere_strDealerCodeConditionList (tren ser_inv_stockout) va zzzzClauseWhere_strDealerCodeSOOConditionList (tren #tbl_soo) — cung mot o nhap, hai rang buoc",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #643 TRA CỨU PHIẾU NHẬP KHO `SerStockInGet_WH_New20230620` (`WH.cs:29370-29598`) =====
 // 3B: laptop `:29370` md5 `534e8af3` **KHỚP** máy 150 `:29370`. WS `WSCarSv.asmx.cs:29329` gọi bản này.
 //
