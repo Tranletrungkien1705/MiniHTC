@@ -34110,6 +34110,112 @@ app.MapGet("/api/dlrcontracts/htc-create/trace", () => Results.Ok(new
     queuedNote = "Chua port than ...X_New20230306 trong luot nay (ham lon, nhieu bang) - da ghi vao hang doi."
 })).RequireAuthorization();
 
+// ===== #B206/#B207/#B208 TẠO HỢP ĐỒNG ĐẠI LÝ — `Dlr_ContractCreateX_New20230306`
+//       (`DataWH/Biz.HTC.WH.cs:133769`, **471 dòng**) =====
+// Thân thật của cửa `Dlr_ContractCreate_New20181119` (#B204 — **hậu tố lệch**, chọn theo **dòng gọi**).
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `133769,134240 / 2520ec4446dda488bc1c5377d4d16aee`.
+// 🔴 **MƯỜI BỐN mã lỗi** — đây là hàm nhiều guard nhất đã port tới nay:
+//   `…_InvalidDlrContractNo` · `…_InvalidDlrContractNoUser` · `…_InvalidContractDate` ·
+//   `…_TableDetailBeBlank` · `…_DuplicateKeyDetail` · `…_InvalidDetailQuantity` ·
+//   `…_InvalidDetailDlvExpectedDate` · `…_InvalidDetailDlvExpectedDate_ContractDate` ·
+//   `…_InvalidDetailContractUpdateType` · `…_TotalQtyIsMax` · `…_CustomerNotFound` ·
+//   `…_CustomerBelongToAnotherDealer` · `…_InvalidInformationDlsDealerCustomer` · `…_TransactorNotFound`.
+// 🔴🔴 **NGÀY HỢP ĐỒNG KHÔNG ĐƯỢC Ở TƯƠNG LAI**:
+//     `if (Convert.ToDateTime(strContractDate) > dtimeTDateTime.**Date**) throw …_InvalidContractDate;`
+//   ⇒ So với **ngày hệ thống đã cắt giờ** ⇒ ký **hôm nay** hợp lệ, ngày mai thì không.
+// 🔴🔴 **NGÀY GIAO DỰ KIẾN KHÔNG ĐƯỢC TRƯỚC NGÀY HỢP ĐỒNG** (mã lỗi **riêng**, khác mã "rỗng"):
+//     rỗng ⇒ `…_InvalidDetailDlvExpectedDate`;
+//     `DlvExpectedDate < ContractDate` ⇒ `…_InvalidDetailDlvExpectedDate_ContractDate`.
+// 🔴🔴 **TỔNG SỐ LƯỢNG CẢ HỢP ĐỒNG ≤ 100**: `if (nTotalQty > 100) throw …_TotalQtyIsMax;`
+//   ⇒ **Hằng cứng 100**, cộng dồn **qua mọi dòng**; từng dòng thì chỉ cần `Qty >= 1`
+//   (`if (Convert.ToInt32(dr["Qty"]) < 1) throw …_InvalidDetailQuantity;`).
+// 🔴 **CHỐNG TRÙNG DÒNG bằng `Hashtable`** khoá ghép (khuôn #B200): `ht.ContainsKey(strKeyDetail)`
+//   ⇒ `…_DuplicateKeyDetail` — trùng **trong cùng một lần gửi**, không phải trùng với DB.
+// 🔴🔴 **KHÁCH HÀNG PHẢI THUỘC ĐÚNG ĐẠI LÝ**:
+//     `if (!StringEqualIgnoreCase(dt_DLS_DealerCustomer.Rows[0]["DealerCode"], strDealerCode))`
+//     `    throw …_CustomerBelongToAnotherDealer;`
+//   ⇒ Không chỉ "khách có tồn tại" (`…_CustomerNotFound`) mà còn **phải cùng đại lý** — hai mã lỗi khác nhau.
+// 📌 **NỢ**: MiniHTC chưa có `DlrContractDtl` ⇒ endpoint này **chỉ kiểm tra** đủ 14 guard rồi trả kết
+//   quả; đường ghi hợp đồng (`POST /api/dlrcontracts`) đã có sẵn theo nhánh khác — **không sửa**.
+app.MapPost("/api/dlrcontracts/htc-create/validate", async (
+    DlrContractHtcCreateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var errs = new List<object>();
+    var contractNo = (dto.DlrContractNo ?? "").Trim();
+    if (contractNo.Length == 0) errs.Add(new { error = "Dlr_ContractCreate_InvalidDlrContractNo" });
+    if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) errs.Add(new { error = "Dlr_ContractCreate_InvalidDlrContractNoUser" });
+
+    // 🔴 Ngày hợp đồng không được ở tương lai (so với ngày hệ thống đã cắt giờ).
+    if (dto.ContractDate is null || dto.ContractDate.Value.Date > DateTime.Now.Date)
+        errs.Add(new
+        {
+            error = "Dlr_ContractCreate_InvalidContractDate",
+            check = new { dto.ContractDate, Today = DateTime.Now.Date }
+        });
+
+    // 🔴 Khách hàng: phải tồn tại VÀ thuộc đúng đại lý — hai mã lỗi khác nhau.
+    var cus = (dto.CustomerCode ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    if (cus.Length > 0)
+    {
+        var row = await db.DealerCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CustomerCode == cus);
+        if (row is null)
+            errs.Add(new { error = "Dlr_ContractCreate_CustomerNotFound", check = new { CustomerCode = cus } });
+        else if (!string.Equals(row.DealerCode, dealer, StringComparison.OrdinalIgnoreCase))
+            errs.Add(new
+            {
+                error = "Dlr_ContractCreate_CustomerBelongToAnotherDealer",
+                check = new { CustomerCode = cus, DealerCodeNotMatch = row.DealerCode, InputDealerCode = dealer }
+            });
+    }
+
+    // 🔴 Bảng dòng bắt buộc.
+    var lines = dto.Lines ?? new();
+    if (lines.Count == 0) errs.Add(new { error = "Dlr_ContractCreate_TableDetailBeBlank" });
+
+    var seen = new HashSet<string>();
+    var totalQty = 0;
+    foreach (var l in lines)
+    {
+        var key = $"|{contractNo}||{l.SpecCode}||{l.ModelCode}||{l.ColorCode}|";
+        // 🔴 Trùng TRONG CÙNG LẦN GỬI (Hashtable của nguồn), không phải trùng với DB.
+        if (!seen.Add(key))
+        { errs.Add(new { error = "Dlr_ContractCreate_DuplicateKeyDetail", key }); continue; }
+
+        var qty = l.Qty ?? 0;
+        if (qty < 1) errs.Add(new { error = "Dlr_ContractCreate_InvalidDetailQuantity", key, DetailQty = qty });
+        totalQty += qty;
+
+        if (l.DlvExpectedDate is null)
+            errs.Add(new { error = "Dlr_ContractCreate_InvalidDetailDlvExpectedDate", key });
+        else if (dto.ContractDate is not null && l.DlvExpectedDate.Value.Date < dto.ContractDate.Value.Date)
+            errs.Add(new
+            {
+                error = "Dlr_ContractCreate_InvalidDetailDlvExpectedDate_ContractDate",
+                key, DlvExpectedDate = l.DlvExpectedDate, dto.ContractDate
+            });
+    }
+
+    // 🔴 Tổng số lượng cả hợp đồng <= 100 (hằng cứng).
+    if (totalQty > 100)
+        errs.Add(new { error = "Dlr_ContractCreate_TotalQtyIsMax", check = new { InputTotalQty = totalQty, Max = 100 } });
+
+    return Results.Ok(new
+    {
+        valid = errs.Count == 0,
+        errors = errs,
+        totalQty,
+        contractDateNote = "NGAY HOP DONG KHONG DUOC O TUONG LAI: 'if (Convert.ToDateTime(strContractDate) > dtimeTDateTime.Date) throw _InvalidContractDate;' - so voi NGAY HE THONG DA CAT GIO => ky HOM NAY hop le, ngay mai thi khong.",
+        dlvDateNote = "NGAY GIAO DU KIEN KHONG DUOC TRUOC NGAY HOP DONG, va co MA LOI RIENG khac ma 'rong': rong => _InvalidDetailDlvExpectedDate; < ContractDate => _InvalidDetailDlvExpectedDate_ContractDate.",
+        totalQtyNote = "TONG SO LUONG CA HOP DONG <= 100: 'if (nTotalQty > 100) throw _TotalQtyIsMax;' - HANG CUNG 100, cong don QUA MOI DONG; tung dong chi can Qty >= 1 (_InvalidDetailQuantity).",
+        duplicateNote = "CHONG TRUNG DONG bang Hashtable khoa ghep '|{DlrContractNo}||{SpecCode}||{ModelCode}||{ColorCode}|' (khuon #B200) => _DuplicateKeyDetail la trung TRONG CUNG MOT LAN GUI, khong phai trung voi DB.",
+        customerNote = "KHACH HANG PHAI THUOC DUNG DAI LY: ngoai _CustomerNotFound con co _CustomerBelongToAnotherDealer khi DLS_DealerCustomer.DealerCode != strDealerCode - HAI MA LOI KHAC NHAU.",
+        fourteenGuardNote = "MUOI BON ma loi - ham nhieu guard nhat da port toi nay. Con lai: _InvalidDetailContractUpdateType, _InvalidInformationDlsDealerCustomer, _TransactorNotFound.",
+        writeDebtNote = "NO: MiniHTC chua co DlrContractDtl => endpoint CHI KIEM TRA; duong ghi (/api/dlrcontracts) da co theo nhanh khac - khong sua (luat C0-...quinquagesimusquintus).",
+        traceNote = "Than that cua cua Dlr_ContractCreate_New20181119 - chon theo DONG GOI, khong theo hau to (luat C0-...duodeseptuagesimus)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -46135,6 +46241,8 @@ record DlrContractDtlUpdLineDto(string? SpecCode, string? ModelCode, string? Col
 record DlrContractDtlUpdDto(List<DlrContractDtlUpdLineDto>? Lines);   // #B200
 record DriveTestHtcCreateDto(string? DriveTestCode, string? DriverTestType, string? DriverTestGroup, string? DrvTestPlateNo, string? CustomerCode, string? RangeAgeCode, string? DriverLisence, DateTime? DriveDTime);   // #B202
 record CtmVisitHtcCreateDto(string? CtmVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);   // #B203
+record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType);   // #B206
+record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);
