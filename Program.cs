@@ -19910,6 +19910,84 @@ app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
 // ⚠️ `convert(varchar, getdate(), 12)` — style **12** là `yymmdd` (**hai** chữ số năm), lấy giờ **máy DB**;
 //   giá trị này dùng để ghép vào số chứng từ, nên đầu số phụ thuộc **múi giờ/đồng hồ của DB**.
 // 📌 Port: sinh số **an toàn** — lọc theo đại lý + độ dài **bắt buộc**, so theo **phần số**, và nêu cờ.
+// ===== 🔴🔴 #606 `SerPartOrderDelete` (`:2845`) + **QUÉT ĐẾM: 3 CHỖ GÕ NHẦM `_dbWH` Ở NHÁNH DEALER** =====
+//
+// 🔴🔴 **LẶP LẠI CHÍNH XÁC LỖI #571** — trích nguyên văn (`PartOrder.cs:2972-2976`):
+//     `if (bNeedTransaction_Dealer)`
+//     `{`
+//     `    **_dbWH**.ExecQuery(strSqlDelete, "@OrderPartId", strOrderPartID);`
+//     `}`
+//   Ba lời gọi liên tiếp: `_dbMain.ExecQuery(...)` → `_dbWH.ExecQuery(...)` → và nhánh **đáng lẽ là dealer**
+//   lại gọi `_dbWH` **lần nữa**. ⇒ **DB đại lý không bao giờ bị xoá**; kho bị xoá **ba lần** (vô hại vì
+//   `delete` luỹ đẳng); giao dịch `_dbDealer` vẫn `CommitSafety` — **rỗng**.
+//
+// 📊 **QUÉT ĐẾM TOÀN `TERP.BizCarSv`** (mẫu: dòng `if (bNeedTransaction_Dealer)` rồi trong 4 dòng kế có `_dbWH.`):
+//     `BizCarSv.**Debit**.cs:3360`      ← `SerPaymentDelete` (chính là #571)
+//     `BizCarSv.**PartOrder**.cs:2974`  ← `SerPartOrderDelete` (hàm này)
+//     `BizCarSv.**Service**.cs:7916`    ← **chưa đọc** — ghi vào hàng đợi
+//   ⇒ **3 chỗ**, cả ba đều ở **nhánh dealer** của hàm **XOÁ/GHI ba DB**. Các chỗ khác cùng mẫu đều dùng
+//     `_dbDealer` đúng (AssignmentOfWork ×4, Car ×2, Customer ×4…) ⇒ **lỗi gõ lặp lại**, không phải quy ước.
+//   ⇒ Cùng loại kết luận với #600 (`&&` vs `||`, 15/206): **đếm** rồi mới gọi là mẫu.
+//
+// ⚪ **GUARD CHẶN XOÁ VIẾT ĐÚNG** (đối chứng cho #602): `if (dt_SI != null && dt_SI.Rows.Count > 0)` — dạng
+//   *chặn* nên `&&` là **đúng**. Bên trong kiểm `Status` ∈ {"1","2","3"} rồi ném `Ser_OrderPart_SI`.
+// 🔴 **GUARD ĐỌC DB KHÁC CHỖ GHI**: guard tra `Ser_Inv_StockIn` bằng **`_dbDealer`**, còn lệnh xoá chạy trên
+//   **`_dbMain`/`_dbWH`** ⇒ nếu ba DB lệch, có thể **chặn nhầm** (đại lý có phiếu nhập, trung tâm không) hoặc
+//   **cho xoá nhầm** (ngược lại). Cùng họ #573/#575 ("đọc một DB, ghi DB khác").
+// 🔴 **Ba mã trạng thái gõ tay**: `strSIStatus.Equals("1") || .Equals("2") || .Equals("3")` — không dùng lớp
+//   hằng nào, trong khi hệ **có** `Constants.Ser_RO_StockRequisition` và các lớp tương tự (#584).
+// ⚪ Âm tính: bản xoá **cũ** (xoá thẳng hai bảng, không bảng tạm) nằm ngay trên dưới dạng **comment**; bản
+//   ACTIVE dùng bảng tạm `#tbl_Ser_Part_OrderDetail` rồi `delete ... inner join`. Port dòng ACTIVE.
+// ⚪ Âm tính: `@OrderPartId` là **tham số thật** ở cả ba lời gọi — không bake.
+app.MapPost("/api/supplierpartorders/{orderNo}/delete", async (string orderNo, AppDbContext db,
+    ITenantContext t) =>
+{
+    var no = orderNo.Trim().ToUpperInvariant();
+    var h = await db.SupplierPartOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == no);
+    if (h is null) return Results.NotFound(new { orderNo = no });
+
+    // Guard nguồn: phiếu nhập kho gắn đơn này đang ở trạng thái 1/2/3 ⇒ CẤM xoá.
+    var BLOCKING = new[] { "1", "2", "3" };
+    var stockIn = await db.ServiceStockIns
+        .Where(x => x.OrgId == t.OrgId && x.StockInNo != null)
+        .Select(x => new { x.StockInNo, x.Status })
+        .ToListAsync();
+    var blocked = stockIn.Any(x => x.Status != null && BLOCKING.Contains(x.Status));
+    if (blocked)
+        return Results.BadRequest(new
+        {
+            error = "Ser_OrderPart_SI: don da co phieu nhap kho o trang thai 1/2/3.",
+            blockingStatuses = BLOCKING,
+            sourceReadsGuardFromDealerDbButDeletesOnMainAndWh = true,
+        });
+
+    var lines = await db.SupplierPartOrderLines
+        .Where(x => x.OrgId == t.OrgId && x.SupplierPartOrderId == h.Id).ToListAsync();
+    db.SupplierPartOrderLines.RemoveRange(lines);
+    db.SupplierPartOrders.Remove(h);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = no, linesDeleted = lines.Count,
+        dealerBranchCallsWrongDalInSource = "if (bNeedTransaction_Dealer) { _dbWH.ExecQuery(...) } — dang le _dbDealer; DB dai ly KHONG BAO GIO bi xoa, kho bi xoa BA lan, giao dich _dbDealer commit RONG",
+        repeatOf571 = "y het SerPaymentDelete (Debit.cs:3360)",
+        wrongDalScanCount = 3,
+        wrongDalScanSites = new[]
+        {
+            "BizCarSv.Debit.cs:3360 — SerPaymentDelete (#571)",
+            "BizCarSv.PartOrder.cs:2974 — SerPartOrderDelete (ham nay)",
+            "BizCarSv.Service.cs:7916 — CHUA DOC, ghi hang doi",
+        },
+        otherSitesUseDealerCorrectly = "AssignmentOfWork x4, Car x2, Customer x4... deu dung _dbDealer => loi go lap lai, khong phai quy uoc",
+        guardUsesAmpersandCorrectly = "if (dt_SI != null && dt_SI.Rows.Count > 0) — dang CHAN nen && la dung (doi chung #602)",
+        guardReadsDealerDbWhileDeleteHitsMainAndWh = "neu ba DB lech co the CHAN NHAM hoac CHO XOA NHAM (ho #573/#575)",
+        statusCodesHardTyped = "Equals(1) || Equals(2) || Equals(3) — khong dung lop hang nao",
+        activeVersionUsesTempTable = "ban xoa cu (xoa thang hai bang) nam ngay tren duoi dang COMMENT; ban ACTIVE dung #tbl_Ser_Part_OrderDetail roi delete ... inner join",
+        orderPartIdIsRealParameter = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #604 `SerOrderPartGetMaxOrderNo_V2` (`:450`) — **HAI CỔNG WS CẤP SỐ THEO HAI LUẬT** =====
 // DIFF với bản trần (#601) cho ra **đúng hai** khác biệt thật:
 //   1) `strErrorCodeDefault = TError.ErrCarSv.**SerOrderPartGetMaxOrderNo_V2**` — **sửa đúng** mã lỗi
