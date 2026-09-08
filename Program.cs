@@ -54021,6 +54021,110 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #679 DANH SÁCH LỆNH THEO TRẠNG THÁI `Ser_RO_GetStatusList_WH_New20230220` =====
+// (`BizCarSv.zzzzCode.cs:8408-8696`, md5 `3dc6fc59` **KHỚP** máy 150. WS `WSCarSv.asmx.cs:32080` gọi thẳng.
+//  Bản trần `Ser_RO_GetStatusList_WH` (`WH.cs:5972-6169`, md5 `544e49d9`) **CHẾT** — lại một ca hàm LIVE nằm
+//  trong `zzzzCode.cs` còn bản chết nằm đúng chỗ, y như #676.)
+//
+// 🔴🔴🔴 **"500 LỆNH MỚI NHẤT" THỰC RA LÀ 500 LỆNH BẤT KỲ** — đúng luật #415, và **bản viết lại 2023-02-20
+//   KHÔNG SỬA**: `select **TOP 500** ro.* **into #tbl_Ro** from ser_ro ro where (1=1) … **order by**
+//   `ro.CheckInDate desc`. `ORDER BY` trên `SELECT … INTO` **không bảo đảm thứ tự** ⇒ `TOP 500` cắt **trước**
+//   khi sắp ⇒ lấy 500 dòng **tuỳ kế hoạch thực thi**. DIFF bản chết ↔ bản sống cho thấy đợt 2023-02-20 chỉ đụng
+//   **danh sách cột** ở K2; khối K1 **giữ nguyên** ⇒ mìn vẫn còn.
+//   ⇒ Port: **sắp trước rồi mới cắt**, và trả cờ `sourceHasNoOrderBy`.
+// 🔴🔴🔴 **HAI MỆNH ĐỀ TRỎ VÀO ALIAS KHÔNG TỒN TẠI Ở K1**: K1 chỉ có **một bảng** `from ser_ro ro`, nhưng hai
+//   mệnh đề cắm vào đó lại dựng theo `car`:
+//     `BuildClauseConditionSingle("and", "**car.FrameNo**", "like", "@strFrameNoParttern", …)`
+//     `BuildClauseConditionSingle("and", "**car.PlateNo**", "like", "@strPlateNoParttern", …)`
+//   ⇒ Dùng ô tìm **số khung** hoặc **biển số** ⇒ *The multi-part identifier "car.FrameNo" could not be bound*.
+//   Đây là ca **thứ ba** của lớp "alias không tồn tại" (sau #665 và #677) — và ở đây nó nằm trên **hai ô tìm
+//   phổ biến nhất của màn**. `ser_ro` **có** cột `FrameNo`/`PlateNo` (bản sống dùng `isnull(ro.FrameNo, …)`)
+//   nên chỉ cần bỏ tiền tố `car.` là chạy — nhưng nguồn thì chưa.
+// 🔴🔴🔴 **BÓC TIỀN TỐ CHỈ BÓC `BG-`, CÒN CHÚ THÍCH NÓI CẢ `LS-`** (message lệch code):
+//     `// Chuyển từ định dạng BG-VNN054-100829-001 **hoặc LS-**VNN054-100829-001 về dạng VNN054-100829-001`
+//     `strQuotationNoList = strQuotationNoList.Replace("BG-", "");`   ← **chỉ có BG-**
+//   ⇒ Dán số bắt đầu bằng `LS-` (đúng tiền tố mà #669/#672 nướng ra) ⇒ so `ro.RONo = 'LS-VNN054-…'` ⇒ **0 dòng**,
+//     không lỗi. Nối thẳng với chuỗi phát hiện tiền tố ở #669/#670/#672/#673: hệ nướng **hai** tiền tố khác nhau
+//     vào cùng cột `RONo`, còn ô tìm chỉ biết gỡ **một**.
+//   ⚠️ Chính hàm này lại trả `('BG-'+tpro.RONo) RORONo` ⇒ hiển thị `BG-`, tìm gỡ `BG-` — **tự nhất quán**;
+//     vấn đề chỉ nổ khi người dùng chép số từ **màn khác**.
+// 🔴🔴 **`ORDER BY` VÔ NGHĨA LẦN THỨ HAI**: K2 cũng `into #tmpro … order by ro.CheckInDate desc`.
+//   Chỉ `ORDER BY` ở K3 (`order by tmpCheckInDate desc`, trên câu `SELECT` cuối) là **thật**.
+// 🔴 **Lọc ngày so trên CHUỖI**: `convert(nvarchar, ro.CheckinDate, 23) tmpCheckInDate` rồi
+//   `BuildClause("and", "tpro.tmpCheckInDate", strCheckInDate, …)` ⇒ tham số phải đúng `yyyy-MM-dd`.
+//   ⚪ Style 23 là ISO nên **so chuỗi vẫn đúng thứ tự** và **không dính** bẫy mất-ngày-cuối (#415).
+// 🔴 `BuildClauseConditionList` (không `ref` tham số) ⇒ **bake** `DealerCode`/`Status` ⇒ tiêm SQL (họ #672/#673).
+// 🔴 `(tm.TradeMarkName + ' - ' + mdl.ModelName)` ⇒ NULL **nuốt cả cột** (họ #673).
+// 🔴 `inner join ser_Customer` + `inner join ser_car … and ro.CusID = car.CusID` ⇒ nằm trong **102 site đang
+//   chạy** đã đếm ở #673.
+// ⚪ **DƯƠNG TÍNH — bản sống bỏ `ro.*`**, liệt kê **`40 cột** tường minh + khối Loyalty + `isnull(ro.X, car.X)`
+//   cho 11 cột xe — **cùng chủ trương "ảnh chụp trên lệnh"** đã thấy ở #676 (và #670).
+app.MapGet("/api/repairorders/status-list-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? statusList, string? frameNo, string? plateNo, string? roNo,
+    string? checkInDate, int? top) =>
+{
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(statusList))
+    {
+        var codes = statusList!.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).ToList();
+        qr = qr.Where(x => codes.Contains(x.Status));
+    }
+    // Nguồn ràng hai ô này vào alias `car` KHÔNG tồn tại ở K1; port ràng vào cột trên chính lệnh.
+    if (!string.IsNullOrWhiteSpace(frameNo)) qr = qr.Where(x => x.Vin != null && x.Vin.Contains(frameNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(plateNo)) qr = qr.Where(x => x.LicensePlate.Contains(plateNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(roNo))
+    {
+        // Nguồn chỉ gỡ "BG-"; port gỡ CẢ HAI tiền tố và đếm số lần tiền tố LS- được gỡ thêm.
+        var raw = roNo!.Trim();
+        var stripped = raw.Replace("BG-", "").Replace("LS-", "");
+        qr = qr.Where(x => x.RONo == stripped);
+    }
+    if (!string.IsNullOrWhiteSpace(checkInDate) && DateTime.TryParse(checkInDate, out var cid))
+        qr = qr.Where(x => x.CheckInDate >= cid.Date && x.CheckInDate < cid.Date.AddDays(1));
+
+    var cap = top is > 0 and <= 2000 ? top!.Value : 500;
+    // #415: SẮP TRƯỚC rồi mới CẮT — ngược với nguồn (TOP trước, ORDER BY trên SELECT … INTO nên vô nghĩa).
+    var rows = await qr.OrderByDescending(x => x.CheckInDate).Take(cap)
+        .Select(x => new { x.RONo, x.DealerCode, x.Status, x.CheckInDate, x.CusName,
+                           plateNo = x.LicensePlate, frameNo = x.Vin, x.Km, x.IsReRepair })
+        .ToListAsync();
+
+    static string StatusName(string? st) => st switch
+    {
+        "CRE" or "PRT" or "HRO" => "Chờ sửa",
+        "INGA" => "Đang sửa",
+        "RPRD" => "Sửa xong",
+        "CEND" => "Kiểm tra cuối cùng",
+        "PAID" => "Thanh toán xong",
+        "FNS" => "Đã giao xe",
+        "REJ" => "Lệnh hủy",
+        "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+        _ => "Không xác định",
+    };
+
+    return Results.Ok(new
+    {
+        count = rows.Count, cap,
+        rows = rows.Select(x => new { x.RONo, roRoNo = "BG-" + x.RONo, x.DealerCode, x.Status,
+                                      statusName = StatusName(x.Status), x.CheckInDate, x.CusName,
+                                      x.plateNo, x.frameNo, x.Km, x.IsReRepair }).ToList(),
+        // ===== #679 =====
+        liveVersionAgainInZzzzCode = "ban tran Ser_RO_GetStatusList_WH (WH.cs:5972-6169, md5 544e49d9) CHET; ban LIVE Ser_RO_GetStatusList_WH_New20230220 nam trong BizCarSv.zzzzCode.cs:8408-8696 (md5 3dc6fc59, KHOP may 150) — lai mot ca ham LIVE nam trong zzzzCode.cs con ban chet nam dung cho, y nhu #676",
+        top500WithMeaninglessOrderBy = "500 LENH MOI NHAT THUC RA LA 500 LENH BAT KY (#415): select TOP 500 ro.* INTO #tbl_Ro from ser_ro ro where (1=1) … ORDER BY ro.CheckInDate desc. ORDER BY tren SELECT … INTO KHONG bao dam thu tu => TOP 500 cat TRUOC khi sap => lay 500 dong tuy ke hoach thuc thi. DIFF ban chet vs ban song cho thay dot 2023-02-20 chi dung DANH SACH COT o K2, khoi K1 GIU NGUYEN => min van con",
+        sourceHasNoOrderBy = "port SAP TRUOC roi moi CAT (OrderByDescending(CheckInDate).Take(cap)) — nguoc voi nguon",
+        twoClausesReferenceNonExistentAliasCarAtK1 = "HAI MENH DE TRO VAO ALIAS KHONG TON TAI O K1: K1 chi co MOT bang from ser_ro ro, nhung hai menh de cam vao do lai dung theo car — BuildClauseConditionSingle(and, car.FrameNo, like, @strFrameNoParttern, …) va (and, car.PlateNo, like, @strPlateNoParttern, …) => dung o tim so khung hoac bien so => The multi-part identifier car.FrameNo could not be bound. Ca THU BA cua lop alias-khong-ton-tai (sau #665 va #677), va o day no nam tren HAI O TIM PHO BIEN NHAT cua man; ser_ro CO cot FrameNo/PlateNo nen chi can bo tien to car. la chay",
+        prefixStripOnlyHandlesBG = "BOC TIEN TO CHI BOC BG-, CON CHU THICH NOI CA LS- (message lech code): chu thich ghi Chuyen tu dinh dang BG-VNN054-100829-001 HOAC LS-VNN054-100829-001 ve dang VNN054-100829-001, nhung code chi co strQuotationNoList.Replace(BG-, \"\") => dan so bat dau bang LS- (dung tien to ma #669/#672 nuong ra) => so ro.RONo = LS-VNN054-… => 0 DONG, khong loi. He nuong HAI tien to khac nhau vao cung cot RONo con o tim chi biet go MOT",
+        portStripsBothPrefixes = "port go CA HAI tien to BG- va LS- truoc khi so",
+        secondMeaninglessOrderBy = "ORDER BY VO NGHIA LAN THU HAI: K2 cung into #tmpro … order by ro.CheckInDate desc; chi ORDER BY o K3 (order by tmpCheckInDate desc, tren cau SELECT cuoi) la THAT",
+        dateFilterComparesStrings = "loc ngay so tren CHUOI: convert(nvarchar, ro.CheckinDate, 23) tmpCheckInDate roi BuildClause(and, tpro.tmpCheckInDate, strCheckInDate, …) => tham so phai dung yyyy-MM-dd. AM TINH: style 23 la ISO nen so chuoi van dung thu tu va KHONG dinh bay mat-ngay-cuoi (#415)",
+        conditionListBakesValues = "BuildClauseConditionList (khong ref tham so) => bake DealerCode/Status => tiem SQL (ho #672/#673)",
+        stringConcatNullSwallowsColumn = "(tm.TradeMarkName + ' - ' + mdl.ModelName) => NULL nuot ca cot (ho #673)",
+        rowLossJoinAgain = "inner join ser_Customer + inner join ser_car … and ro.CusID = car.CusID => nam trong 102 site dang chay da dem o #673",
+        positiveLiveVersionDropsSelectStar = "DUONG TINH: ban song bo ro.*, liet ke `40 cot tuong minh + khoi Loyalty + isnull(ro.X, car.X) cho 11 cot xe — cung chu truong anh-chup-tren-lenh da thay o #676 va #670",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #677 TRA CỨU XE BẢN KHO `SerCarGet_WH` (`BizCarSv.Car.cs:1381-1580`) =====
 // 3B: laptop `:1381` md5 `c16951d3` **KHỚP** máy 150 `:1381`. WS `WSCarSv.asmx.cs:7955` gọi thẳng (không hậu tố).
 // (Hàm này là một trong **25** hàm `_WH` nằm **ngoài** `BizCarSv.WH.cs` — xem đính chính mẫu số ở #676.)
