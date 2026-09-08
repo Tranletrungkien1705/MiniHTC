@@ -30713,12 +30713,39 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #581 TRA BẢN TIN THEO VIN — **HAI WS GỌI HAI BẢN, ĐỌC HAI DB KHÁC NHAU** =====
+// Nguồn có **năm** bản cùng tên gốc `Blt_Bulletin_Get_byVin` (`:2987` trần · `_New20180625` `:3155` ·
+//   `_New20191104` `:3367` · `_New20210618` `:3585` · `_New20221114` `:3796`). Hai bản **đang sống**:
+//     `HTCWSCarSv**Tab**/WSCarSvTab.asmx.cs:6169`  → `Blt_Bulletin_Get_byVin_**New20191104**`
+//     `HTCWSCarSv/WSCarSv.asmx.cs:26446`          → `Blt_Bulletin_Get_byVin_**New20221114**`
+//   ⚠️ **Cả năm bản đều đặt `strFunctionName = "Blt_Bulletin_Get_byVin"`** (không hậu tố) ⇒ log không phân
+//     biệt được bản nào chạy — đúng bẫy đã ghi ở #562, nay gặp ở quy mô **năm** bản.
+//
+// 📐 DIFF hai bản đang sống (luật #414):
+// 🔴🔴 **KHÁC NGUỒN DỮ LIỆU, KHÔNG PHẢI KHÁC LOGIC**: bản Tab đọc bảng **tại chỗ**
+//     `inner join Btl_Bulletin_VIN bv` · `inner join Btl_Bulletin bb`
+//   còn bản Main đọc **cross-DB** cho **mọi** bảng:
+//     `inner join [@strDBName_CommonCenter].[dbo].Btl_Bulletin_VIN bv`
+//     `inner join [@strDBName_CommonCenter].[dbo].Btl_Bulletin bb`
+//     `inner join [@strDBName_CommonCenter].[dbo].Btl_BulletinDtl bdtl`
+//   ⇒ **Máy tính bảng ngoài xưởng và web nội bộ đọc hai DB khác nhau** cho cùng một câu hỏi "xe này có bản
+//     tin nào?". Ghép với #577 (bản sao WH **không có** nội dung tệp) và #580 (chỉ hàm SỬA mới ghi VIN):
+//     hai kênh có thể trả **hai danh sách khác nhau**, và kênh đọc DB kho còn **mất file đính kèm**.
+// 🔴 Bản Main (mới hơn) **thêm** bộ lọc `strDateExpiredConditionList` và cột `bb.DateExpired` ⇒ bản Tab
+//   **không lọc được theo hạn**: máy tính bảng thấy cả bản tin **đã hết hạn**, web thì lọc được.
+// ⚪ Kiểm tra âm tính (luật #410): `BuildClause("and", "**b**.DateExpired", …)` dùng alias `b` — soi lại câu
+//   thì bảng gốc đúng là `… .Btl_Bulletin **b**` và cờ được chèn **trong chính câu đó** ⇒ **alias khớp**,
+//   không phải lọc nhầm bảng. (Alias `bb` ở các câu sau là bảng khác, không dính bộ lọc này.)
+// ⚠️ Bản Tab còn dùng **thế hệ log cũ** (`_log.WriteLogAsync` + `nTidSeq`), bản Main dùng `ProcessBizReq` —
+//   lại một ca "kiểu cũ mà vẫn sống" (đã ghi ở #579).
 app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     string? vins, string? dealers, string? status, string? active,
     string? bulletinNo, string? remark, string? userCreate,
     DateTime? createFrom, DateTime? createTo,
-    DateTime? expiredFrom, DateTime? expiredTo) =>
+    DateTime? expiredFrom, DateTime? expiredTo, string? channel) =>
 {
+    // #581: kênh gọi quyết định BẢN nguồn — và do đó quyết định DB đọc + có lọc hạn hay không.
+    var isTablet = string.Equals((channel ?? "main").Trim(), "tab", StringComparison.OrdinalIgnoreCase);
     List<string> Split(string? s) => (s ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
         .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
 
@@ -30769,6 +30796,14 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
         count = bulletins.Count, bulletins,
         vinLinks = linkRows,
         vinFilter = vinList, dealerFilter = dealerList, statusFilter = statusList,
+        // ===== #581 =====
+        channel = isTablet ? "tab (WSCarSvTab -> _New20191104)" : "main (WSCarSv -> _New20221114)",
+        twoLiveVariantsReadDifferentDbs = "ban Tab doc bang TAI CHO; ban Main doc cross-DB tu [CommonCenter] cho CA BA bang",
+        expiredFilterOnlyOnMainVariant = "ban Tab khong co strDateExpiredConditionList => may tinh bang thay ca ban tin DA HET HAN",
+        expiredFilterApplied = expiredFrom.HasValue || expiredTo.HasValue,
+        expiredFilterUnavailableOnTabInSource = isTablet && (expiredFrom.HasValue || expiredTo.HasValue),
+        allFiveVariantsShareOneFunctionNameInLog = "moi ban deu dat strFunctionName = Blt_Bulletin_Get_byVin (khong hau to)",
+        dateExpiredAliasVerified = "BuildClause dung alias b va cau goc la Btl_Bulletin b — alias KHOP (kiem tra am tinh)",
         hardcodedTestBulletinInSource = "TEST201911",
         divergenceNote = "Nguồn lấy FileAttachment bằng truy vấn con đóng cứng BulletinNo = 'TEST201911' "
             + "(không tương quan dòng nào) ⇒ mọi thông báo nhận tệp của một bản ghi TEST. MiniHTC trả đúng "
