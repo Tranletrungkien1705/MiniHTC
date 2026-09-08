@@ -52950,6 +52950,88 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #629 MÀN HOME MÁY TÍNH BẢNG — TIẾP NHẬN `Ser_ReceptionF_HomeX` (`Tab.cs:6764`) =====
+// 3B: laptop `:6764` md5 `11f1dd28` **KHỚP** máy 150 `:6782` (**lệch +18 dòng**, căn theo TÊN).
+// DIFF với `Ser_App_HomeX` (#628): **cùng một khuôn**, nên chỉ ghi những chỗ **khác** và những chỗ đã
+//   kiểm mà **không** phải lỗi.
+//
+// ⚪⚪ **KHÁC BIỆT QUAN TRỌNG NHẤT LẠI LÀ MỘT ĐIỂM ĐÚNG**: `case t.ReceptionFStatus when 'P' … when 'A' …`
+//   chỉ có **hai** mã — và mở hằng ra thì **miền giá trị đúng là hai** (`TConst.ReceptionFStatus`:
+//   `Pending = "P"` · `Approve = "A"`, `Const.Main.cs:212`) ⇒ **`case` ở đây ĐẦY ĐỦ**, không thiếu mã.
+//   ⇒ Đối chiếu thẳng với #628: **cùng file, cùng khuôn, cùng loại `case`** — bên lịch hẹn thiếu mã `'5'`,
+//     bên tiếp nhận thì đủ. **Không suy được** "khuôn này hay thiếu mã"; phải mở hằng **từng cái**.
+// 🔴 **TÊN HẰNG NÓI SAI NGHĨA** (bẫy *HẰNG ≠ GIÁ TRỊ* ở dạng khác): hằng tên `**Approve**` nhưng chú thích
+//   nguồn ghi `// Giao xe` ⇒ `'A'` nghĩa là **đã giao xe**, **không phải** "đã duyệt". Đọc tên hằng mà suy
+//   nghĩa là hiểu sai quy trình. Port dùng nhãn **theo chú thích**, không theo tên hằng.
+// ⚪ **KIỂM TRA ÂM TÍNH — HAI STYLE `CONVERT` KHÁC NHAU NHƯNG CÙNG KẾT QUẢ**: #628 dùng
+//   `Convert(nvarchar(10), CreatedDate, **123**)`, ở đây là `Convert(nvarchar(10), CreatedDateTime, **23**)`.
+//   Style 23 = `yyyy-mm-dd`; style 123 = `yyyy-mm-dd hh:mi:ss.mmm` nhưng **bị cắt còn 10 ký tự** ⇒ **cả hai**
+//   **ra cùng chuỗi ISO** ⇒ `group by` chuỗi vẫn đúng thứ tự. Không phải lỗi — ghi lại để lượt sau khỏi soi.
+// 🔴 **KHOÁ LỌC KHÁC KIỂU GIỮA HAI MÀN CÙNG TRANG**: bên lịch hẹn gom `distinct sera.**AppId**` (ID nội bộ),
+//   bên tiếp nhận gom `distinct serrf.**ReceptionFNo**` (**số chứng từ**) ⇒ hai màn trên **cùng một Home**
+//   dùng hai loại khoá; nếu số chứng từ từng bị sửa/tái sử dụng thì nhóm đếm sẽ khác kỳ vọng.
+// 🔴 Cùng bệnh với #628 (đã đếm, không tính là phát hiện mới): hai dòng phân trang bị comment **và** bảng tạm
+//   **không có** cột `MyIdxSeq` ⇒ không bật lại được; vỏ bọc truyền `"0"`/`"10000"` cứng; vỏ bọc lấy
+//   `Tables[1]` theo vị trí.
+// 🔴🔴🔴 **LỆCH TỔNG CÒN NẶNG HƠN #628 — ĐỌC TRỌN KHỐI DETAIL MỚI RÕ**: khối chi tiết nối **NĂM** bảng bằng
+//   `inner join`: `Ser_ReceptionF` · **`Ser_RO`** · `Ser_Car` · `Ser_MST_Model` · `Ser_Customer`.
+//   Riêng `inner join Ser_RO sro on serrf.ReceptionFNo = sro.ReceptionFNo` nghĩa là **phiếu tiếp nhận chưa**
+//   **lập lệnh sửa chữa thì KHÔNG hiện trong danh sách** — mà đó chính là **trạng thái bình thường** của một
+//   phiếu vừa tiếp nhận (`P`). ⇒ Huy hiệu Home đếm cả phiếu `P`, danh sách thì **không thể** hiện chúng.
+// ⚪ **ĐỐI CHỨNG XÁC NHẬN LỖI CỦA #628**: ở đây chú thích và cột **khớp nhau** — `sc.CarID -- CarId` (lấy
+//   đúng `CarID` từ `Ser_Car`), trong khi #628 ghi `sc.CusID -- ID xe`. ⇒ Hàm anh em làm đúng ⇒ #628 **đúng là**
+//   **lỗi**, không phải quy ước.
+app.MapGet("/api/tab/home/receptions", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? createdDate) =>
+{
+    var qy = db.Receptions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (createdDate is not null) qy = qy.Where(x => x.CreatedAt.Date == createdDate!.Value.Date);
+
+    var rows = await qy.Select(x => new { x.Id, x.ReceptionFNo, x.Status, x.CreatedAt,
+                                          x.CusID, x.CusName, x.CarID, x.PlateNo, x.ModelName }).ToListAsync();
+
+    // Nhãn lấy theo CHÚ THÍCH của hằng, không theo TÊN hằng (Approve = "A" nhưng nghĩa là Giao xe).
+    static string? StatusName(string? code) => code switch
+    {
+        "P" or "Pending" => "Tiếp nhận",
+        "A" or "Approved" => "Giao xe",
+        _ => null,
+    };
+    var groups = rows
+        .GroupBy(x => new { date = x.CreatedAt.ToString("yyyy-MM-dd"), x.Status })
+        .OrderBy(g => g.Key.date).ThenBy(g => g.Key.Status)
+        .Select(g => new
+        {
+            createdDate = g.Key.date,
+            receptionFStatus = g.Key.Status,
+            receptionFStatusName = StatusName(g.Key.Status),
+            qtySerReception = g.Count(),
+        }).ToList();
+
+    var details = rows.Select(x => new
+    {
+        x.ReceptionFNo, createdDate = x.CreatedAt, x.Status,
+        receptionFStatusName = StatusName(x.Status),
+        cusId = x.CusID, x.CusName, carId = x.CarID, x.PlateNo, x.ModelName,
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        groupCount = groups.Count, groups,
+        detailCount = details.Count, details,
+        // ===== #629 =====
+        statusCaseIsCompleteHere = "case t.ReceptionFStatus chi co hai ma P/A va mien gia tri DUNG la hai (TConst.ReceptionFStatus: Pending = P, Approve = A, Const.Main.cs:212) => case DAY DU, khac #628 noi thieu ma 5; cung file cung khuon nhung KHONG suy duoc, phai mo hang tung cai",
+        constantNameContradictsMeaning = "hang ten Approve nhung chu thich nguon ghi // Giao xe => A nghia la DA GIAO XE chu khong phai da duyet; port dat nhan theo CHU THICH, khong theo ten hang",
+        convertStylesDifferButEqual = "AM TINH: #628 dung Convert(nvarchar(10), …, 123) con o day style 23; style 23 = yyyy-mm-dd, style 123 = yyyy-mm-dd hh:mi:ss.mmm nhung bi cat con 10 ky tu => ca hai ra cung chuoi ISO, group by van dung thu tu",
+        filterKeyDiffersBetweenSiblingScreens = "ben lich hen gom distinct sera.AppId (ID noi bo), ben tiep nhan gom distinct serrf.ReceptionFNo (SO CHUNG TU) => hai man tren CUNG mot Home dung hai loai khoa",
+        sameDisabledPagingAsIssue628 = "hai dong phan trang bi comment VA bang tam khong co cot MyIdxSeq => khong bat lai duoc; vo boc truyen 0/10000 cung; vo boc lay Tables[1] theo vi tri — da dem o #626/#628, khong tinh la phat hien moi",
+        detailHasFiveInnerJoinsIncludingRO = "khoi chi tiet noi NAM bang bang inner join: Ser_ReceptionF, Ser_RO, Ser_Car, Ser_MST_Model, Ser_Customer; rieng inner join Ser_RO on serrf.ReceptionFNo = sro.ReceptionFNo nghia la phieu tiep nhan CHUA lap lenh sua chua thi KHONG hien trong danh sach — ma do chinh la trang thai binh thuong cua phieu vua tiep nhan (P) => huy hieu Home dem ca phieu P, danh sach khong the hien chung; LECH nang hon #628",
+        siblingConfirmsIssue628IsABug = "o day chu thich va cot KHOP nhau (sc.CarID -- CarId) trong khi #628 ghi sc.CusID -- ID xe => ham anh em lam dung nen #628 dung la LOI, khong phai quy uoc",
+        miniStoresStatusAsText = "MiniHTC luu Status dang chu (Pending/Approved) — nhan da nhan ca hai dang P/Pending va A/Approved de khong mat nhan",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #628 MÀN HOME MÁY TÍNH BẢNG — LỊCH HẸN `Ser_App_HomeX` (`Tab.cs:2475`) =====
 // 3B: laptop `:2475` md5 `6dfa3e66` **KHỚP** máy 150 `:2475`.
 // Vỏ bọc (`Tab.cs:13911`) gọi **ba** hàm `*_HomeX` (App · ReceptionF · RO), tất cả bằng `_dbMain`, rồi ghép
