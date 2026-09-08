@@ -32171,6 +32171,82 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // ✅ RBAC **tổ hợp (3)**: `BUCode like @strBUPatternOfUser` **ACTIVE ở MỌI khối** (kèm chú thích
 //   *"Must inner join to filter AbilityOfUser"* còn nguyên); `CheckHTCDirect` không có.
 //   Và `md.FlagDirect = '0'` (*"không thống kê HTC"*) lặp ở **mọi** khối — như #B314.
+
+// ===== #B320/#B321/#B322 TỒN KHO TẠI HTC (xe đã map VIN, chưa xuất kho) —
+//       `RptStockInHTC_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `158629,158786` ≡ 150 `158634,158791` ⇒ **`4d42d9576bfcd683d8cb68ac7f033f73`**.
+// 🔴🔴🔴 **BUG TIỀM ẨN — `NOT IN (subquery)` TRÊN CỘT CÓ THỂ NULL**:
+//     `AND cc.CarId **NOT IN** ( SELECT cdod.CarId FROM Car_DeliveryOrderDetail cdod`
+//     `                          WHERE cdod.DeliveryOutDate IS NOT NULL )`
+//   ⇒ Trong SQL, nếu subquery trả về **BẤT KỲ một `NULL`** ở `cdod.CarId` thì `NOT IN` cho **UNKNOWN
+//     với MỌI dòng** ⇒ **báo cáo RỖNG HOÀN TOÀN**, không báo lỗi gì.
+//   ⚠️ Subquery **không** có `WHERE cdod.CarId IS NOT NULL`, mà `Car_DeliveryOrderDetail.CarId` **là
+//     cột nullable** (đã ghi ở #175). 📌 **KHÔNG tự vá**; port dùng phép trừ tập **an toàn** và trả
+//     `deliveredCarIdNullCount` — nếu > 0 thì **bản gốc sẽ trả rỗng**.
+// 🔴🔴 **MÃ ĐẠI LÝ `'HTC'` NƯỚNG CỨNG TRONG SQL**: `AND cc.DealerCode = **'HTC'**`
+//   (chú thích `-- Start add by ThangPV 2012/03/20 to filter by HTC`).
+//   ⚠️ **Khác mọi hàm anh em**: các báo cáo khác nạp `@strHTCDealerCode` = `TConst.HTCConst.HTCDealerCode`
+//     rồi mới dùng; ở đây **viết thẳng chuỗi**. Đổi mã HTC ⇒ phải sửa **cả hằng lẫn chuỗi nướng này**.
+// 🔴 **Điều kiện đổi ngày 2011/10/18 — port DÒNG ACTIVE**: dòng cũ `WHERE cdod.DeliveryStartDate IS NOT
+//   NULL` **nằm NGAY TRONG câu chú thích mở đầu** (`-- Start Comment by ThangPV 2011/10/18 WHERE
+//   cdod.DeliveryStartDate IS NOT NULL`), dòng **đang chạy** là `WHERE cdod.**DeliveryOutDate** IS NOT NULL`.
+//   ⇒ Dòng cũ **không** ở dạng `--` riêng mà **trộn trong dòng đánh dấu** — dễ đọc nhầm là còn hiệu lực.
+// ✅ **RBAC — tổ hợp (1)**: `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**; dòng nạp
+//   `@strBUPatternOfUser` **bị comment cả dòng** (`//alParamsCoupleSql.AddRange(…)`) ⇒ tham số **không
+//   được nạp**. Hợp lý vì báo cáo chỉ về **kho HTC**, không có phạm vi đại lý để cắt.
+// ⚠️ **KHÔNG có `--//[mylock]` ở BẤT KỲ bảng nào** (grep = **0 hit** trong toàn hàm) — khác hẳn mọi hàm
+//   khác trong file ⇒ công cụ quét/thay rowlock **bỏ qua hàm này**
+//   (xem ghi nhớ `dmssales-mylock-marker-only-on-tables`).
+// 🔴 **KHÔNG có bộ lọc thời gian nào** ⇒ đây là **tồn kho HTC TẠI THỜI ĐIỂM CHẠY**, không phải theo kỳ.
+// 🔴 Gộp theo **BA cột** `(ModelCode, ColorCode, SpecCode)`, `COUNT(cc.CarId) Total`.
+//   Điều kiện nền: `cc.VIN IS NOT NULL` (**đã map VIN**) — **không** kiểm `FlagActive`.
+app.MapGet("/api/reports/stockin-htc", async (AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Mã đại lý 'HTC' nướng cứng trong SQL nguồn (không dùng hằng TConst.HTCConst.HTCDealerCode).
+    const string htcDealerCode = "HTC";
+
+    // Tập xe ĐÃ XUẤT KHO — nguồn dùng `NOT IN` với cột nullable (bẫy UNKNOWN).
+    var deliveredRaw = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.DeliveryOutDate != null)
+        .Select(c => c.CarId)
+        .ToListAsync();
+    var deliveredCarIdNullCount = deliveredRaw.Count(x => x == null);
+    var delivered = deliveredRaw.Where(x => x != null).Select(x => x!).ToHashSet();
+
+    // 🔴 Điều kiện nền: đã map VIN + đại lý = 'HTC'. KHÔNG kiểm FlagActive, KHÔNG lọc thời gian.
+    var cars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.VIN != "" && v.CarId != null
+                    && v.DealerCode == htcDealerCode)
+        .ToListAsync();
+
+    var rows = cars
+        .Where(v => !delivered.Contains(v.CarId!))       // phép trừ tập AN TOÀN (nguồn dùng NOT IN)
+        .GroupBy(v => (v.ModelCode, v.ColorCode, v.SpecCode))
+        .Select(g => new
+        {
+            ModelCode = g.Key.ModelCode,
+            ColorCode = g.Key.ColorCode,
+            SpecCode = g.Key.SpecCode,
+            Total = g.Count()
+        })
+        .OrderBy(x => x.ModelCode).ThenBy(x => x.SpecCode).ThenBy(x => x.ColorCode)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        StockInHTC_Report = rows,                        // Tables[0]
+        deliveredCarIdNullCount,
+        sourceReturnsEmptyIfNullPresent = deliveredCarIdNullCount > 0,
+        notInNullTrapNote = "BUG TIEM AN - 'NOT IN (subquery)' TREN COT CO THE NULL: 'AND cc.CarId NOT IN (SELECT cdod.CarId FROM Car_DeliveryOrderDetail cdod WHERE cdod.DeliveryOutDate IS NOT NULL)'. Trong SQL, neu subquery tra ve BAT KY MOT NULL o cdod.CarId thi NOT IN cho UNKNOWN voi MOI DONG => BAO CAO RONG HOAN TOAN, khong bao loi gi. Subquery KHONG co 'WHERE cdod.CarId IS NOT NULL', ma Car_DeliveryOrderDetail.CarId LA COT NULLABLE (da ghi o #175). KHONG TU VA; port dung phep tru tap AN TOAN va tra deliveredCarIdNullCount - neu > 0 thi BAN GOC SE TRA RONG.",
+        hardcodedHtcNote = "MA DAI LY 'HTC' NUONG CUNG TRONG SQL: 'AND cc.DealerCode = HTC' (chu thich '-- Start add by ThangPV 2012/03/20 to filter by HTC'). KHAC MOI HAM ANH EM: cac bao cao khac nap @strHTCDealerCode = TConst.HTCConst.HTCDealerCode roi moi dung; o day VIET THANG CHUOI. Doi ma HTC => phai sua CA HANG LAN CHUOI NUONG NAY.",
+        activeLineNote = "Dieu kien doi ngay 2011/10/18 - PORT DONG ACTIVE: dong cu 'WHERE cdod.DeliveryStartDate IS NOT NULL' nam NGAY TRONG cau chu thich mo dau ('-- Start Comment by ThangPV 2011/10/18 WHERE cdod.DeliveryStartDate IS NOT NULL'), dong DANG CHAY la 'WHERE cdod.DeliveryOutDate IS NOT NULL'. Dong cu KHONG o dang '--' rieng ma TRON TRONG DONG DANH DAU - de doc nham la con hieu luc.",
+        rbacNote = "RBAC - to hop (1): myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE; dong nap @strBUPatternOfUser BI COMMENT CA DONG ('//alParamsCoupleSql.AddRange(...)') => tham so KHONG DUOC NAP. Hop ly vi bao cao chi ve KHO HTC, khong co pham vi dai ly de cat.",
+        noMylockNote = "KHONG co '--//[mylock]' o BAT KY bang nao (grep = 0 hit trong toan ham) - khac han moi ham khac trong file => cong cu quet/thay rowlock BO QUA HAM NAY (ghi nho dmssales-mylock-marker-only-on-tables).",
+        noTimeFilterNote = "KHONG co bo loc thoi gian nao => day la TON KHO HTC TAI THOI DIEM CHAY, khong phai theo ky. Gop theo BA cot (ModelCode, ColorCode, SpecCode) voi COUNT(cc.CarId) Total. Dieu kien nen: cc.VIN IS NOT NULL (DA MAP VIN) - KHONG kiem FlagActive."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-stock11", async (
     AppDbContext db, ITenantContext t, DateTime? tMonth) =>
 {
