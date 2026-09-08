@@ -6135,15 +6135,56 @@ app.MapPost("/api/mstprovinces", async (MstProvinceDto dto, AppDbContext db, ITe
     return Results.Ok(new { row.Id, row.ProvinceCode, row.ProvinceName, row.AreaCode, row.FlagActive, created = isNew });
 }).RequireAuthorization();
 
-app.MapGet("/api/mstdistricts", async (AppDbContext db, ITenantContext t, string? provinceCode, string? districtCode, string? flagActive) =>
+// ===== 🔴 #702 ĐỐI CHIẾU `Mst_District_Get` (`BizCarSv.Master.cs:8974-9111`, md5 `d46c4e2e` **KHỚP** máy 150) =====
+// ⚠️ **BƯỚC 2 BẮT TRƯỢT — GHI LẠI ĐỂ KHÔNG LẶP**: tôi grep `Mst_District_Get` và `api/districts` — **cả hai đều 0**
+// — rồi viết endpoint mới. Nhưng route thật tên là `/api/mstdistricts` và **đã tồn tại**; chính **trình biên dịch**
+// bắt (`ASP0022` route conflict), không phải tôi. ⇒ grep **tên hàm nguồn** là **chưa đủ**; phải grep thêm **tên
+// BẢNG** (`MstDistricts`/`Mst_District`) và **tên ENTITY**. Vòng này vì thế là **đối chiếu**, không tính màn mới.
+//
+// 🔴🔴 **GAP THẬT — THIẾU BA BỘ LỌC**: nguồn có **sáu** `SqlUtils.BuildClause`: `md.ProvinceCode` · `md.DistrictCode`
+//   · `md.FlagActive` · **`md.CreatedDate`** · **`md.CreatedBy`** · **`md.DistrictName`**. Bản Mini chỉ có **ba**.
+//   ⇒ vá nốt ba cái còn lại; hai cột `CreatedDate`/`CreatedBy` **chưa có trong entity** nên thêm đủ **§12 bốn chỗ**.
+// 🔴🔴 **KHÔNG PHÂN TRANG Ở CẢ HAI PHÍA**: nguồn `where (1=1)` + sáu mệnh đề **đều đòi toán tử**; gửi trần cả sáu
+//   ⇒ mọi mệnh đề **bị bỏ im lặng** (#410) ⇒ **trả toàn bộ danh mục quận/huyện cả nước**. Vá `skip`/`take` + `total`.
+// 🔴 `select **md.*** from Mst_District md` ⇒ đổi schema danh mục là **đổi hợp đồng cột API** (họ #677/#700).
+// ⚪ **ÂM TÍNH — tham số hoá ĐÚNG**: cả sáu `BuildClause` đều truyền `ref alParamsCoupleSql` ⇒ **SqlParameter thật**,
+//   không bake. Cùng nhóm sạch với `Inventory.Report.cs` (#681/#686).
+// ⚪ **ÂM TÍNH — không có `#region // Check`** vì đây là hàm **chỉ đọc**; đã mở và liệt kê region để xác nhận
+//   (luật #403 + bài học "đọc THÂN, không đọc TÊN region" ở #691).
+// 📌 Khoá là **cặp `(ProvinceCode, DistrictCode)`** — `DistrictCode` **không** duy nhất toàn quốc; POST sẵn có ở dưới
+//   đã chặn đúng theo cặp ⇒ **để nguyên**.
+app.MapGet("/api/mstdistricts", async (AppDbContext db, ITenantContext t, string? provinceCode, string? districtCode, string? flagActive,
+    string? districtName, string? createdBy, DateTime? createdDateFrom, DateTime? createdDateTo,
+    int? recordStart, int? recordCount) =>
 {
     var qy = db.MstDistricts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(provinceCode)) qy = qy.Where(x => x.ProvinceCode == provinceCode);
     if (!string.IsNullOrWhiteSpace(districtCode)) qy = qy.Where(x => x.DistrictCode == districtCode);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
-    var items = await qy.OrderBy(x => x.ProvinceCode).ThenBy(x => x.DistrictCode)
-        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName, x.FlagActive }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // #702 GAP: ba bộ lọc có ở nguồn nhưng thiếu ở Mini.
+    if (!string.IsNullOrWhiteSpace(districtName)) qy = qy.Where(x => x.DistrictName != null && x.DistrictName.Contains(districtName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(createdBy)) qy = qy.Where(x => x.CreatedBy == createdBy!.Trim());
+    if (createdDateFrom is not null) qy = qy.Where(x => x.CreatedDate >= createdDateFrom!.Value.Date);
+    // chặn trên theo **nửa khoảng** ⇒ không dính bẫy mất-ngày-cuối (#415).
+    if (createdDateTo is not null) qy = qy.Where(x => x.CreatedDate < createdDateTo!.Value.Date.AddDays(1));
+
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 2000 ? recordCount!.Value : 1000;
+    var items = await qy.OrderBy(x => x.ProvinceCode).ThenBy(x => x.DistrictCode).Skip(skip).Take(take)
+        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName, x.FlagActive, x.CreatedDate, x.CreatedBy }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items,
+        // ===== #702 =====
+        step2MissedItBecauseIGreppedTheFunctionNameOnly = "BUOC 2 BAT TRUOT CAN GHI LAI: toi grep Mst_District_Get va api/districts — CA HAI DEU 0 — roi viet endpoint moi. Nhung route that ten la /api/mstdistricts va DA TON TAI; chinh TRINH BIEN DICH bat (ASP0022 route conflict), khong phai toi. => grep TEN HAM NGUON la CHUA DU; phai grep them TEN BANG (MstDistricts/Mst_District) va TEN ENTITY. Vong nay vi the la DOI CHIEU, khong tinh man moi",
+        threeFiltersWereMissingVsSource = "GAP THAT — THIEU BA BO LOC: nguon co SAU SqlUtils.BuildClause (md.ProvinceCode, md.DistrictCode, md.FlagActive, md.CreatedDate, md.CreatedBy, md.DistrictName); ban Mini chi co BA => da va not ba cai con lai; hai cot CreatedDate/CreatedBy CHUA CO trong entity nen them du §12 bon cho",
+        noPagingOnEitherSide = "KHONG PHAN TRANG O CA HAI PHIA: nguon where (1=1) + sau menh de DEU DOI TOAN TU; gui tran ca sau => moi menh de BI BO IM LANG (#410) => TRA TOAN BO danh muc quan/huyen ca nuoc. Da va bang skip/take + tra total",
+        selectStarOnCatalogue = "select md.* from Mst_District md => doi schema danh muc la DOI HOP DONG COT API (ho #677/#700)",
+        negativeProperlyParameterised = "AM TINH: ca sau BuildClause deu truyen ref alParamsCoupleSql => SqlParameter THAT, khong bake. Cung nhom sach voi Inventory.Report.cs (#681/#686)",
+        negativeNoCheckRegionBecauseReadOnly = "AM TINH: khong co #region // Check vi day la ham CHI DOC; da mo va liet ke region de xac nhan (luat #403 + bai hoc doc-THAN-khong-doc-TEN-region o #691)",
+        districtKeyIsComposite = "khoa la CAP (ProvinceCode, DistrictCode) — DistrictCode KHONG duy nhat toan quoc; POST san co o duoi da chan dung theo cap => DE NGUYEN",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/mstdistricts", async (MstDistrictDto dto, AppDbContext db, ITenantContext t) =>
@@ -6159,6 +6200,8 @@ app.MapPost("/api/mstdistricts", async (MstDistrictDto dto, AppDbContext db, ITe
     {
         OrgId = t.OrgId, ProvinceCode = prov, DistrictCode = dist, DistrictName = dto.DistrictName,
         FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
+        // #702 §12: hai cot moi phai duoc GHI o POST, khong chi doc o GET.
+        CreatedDate = DateTime.Now, CreatedBy = string.IsNullOrWhiteSpace(dto.CreatedBy) ? "system" : dto.CreatedBy!.Trim(),
     });
     await db.SaveChangesAsync();
     return Results.Ok(new { provinceCode = prov, districtCode = dist });
@@ -46115,7 +46158,11 @@ app.MapPost("/api/osveloca/customers", async (OsVelocaCustomerDto dto, AppDbCont
         rowsZeroHasNoGuard = "dsGetCusTypeID.Tables[0].Rows[0][CusTypeID] KHONG GUARD RONG: danh muc Ser_MST_CustomerType khong co dong nao CusTypeName = KHACHLE => IndexOutOfRangeException ngay giua mot transaction ba CSDL. Khong co if (Rows.Count > 0)",
         lookupByNameNotByCode = "TRA DANH MUC BANG TEN KHONG BANG MA: so strCusTypeID (gia tri Veloca gui, vi du KHACHLE) voi t.CusTypeName => danh muc phai chua DUNG CHUOI do lam TEN; doi ten loai khach trong danh muc la VO CONG TICH HOP. Cung lop voi #686 (loc loai phu tung bang ten tieng Viet hardcode)",
         checkDbCalledWithAllGuardsOff = "Ser_Customer_CheckDB duoc goi voi MOI GUARD TAT: Ser_Customer_CheckDB(_dbDealer, …, \"\" //strFlagExistListToCheck, \"\" // strFlagActiveListToCheck, out dtSer_Customer) => ham kiem KHONG KIEM GI, chi dung de NAP dtSer_Customer roi quyet dinh tao moi hay cap nhat theo Rows.Count < 1 (cung hinh dang voi Mst_BOM_CheckDB o #689 khi truyen co rong)",
-        extendsScopeOfIssue697 = "BO SUNG/DINH CHINH PHAM VI CHO #697 — PHEP DEM DO CO DIEM MU: o ham nay CA HAI dong deu BI COMMENT (//bool bIsWSMain = …; va //if (bIsWSMain) bNeedTransaction_Dealer = false;) trong khi bool bNeedTransaction_Dealer = true; VAN SONG => _dbDealer.BeginTransaction() va CommitSafety(_dbDealer) LUON chay. #697 quet cac ham CO KHAI BAO bIsWSMain (362 ham) nen KHONG nhin thay lop nay. Dem lai dung lop do: 3 ham co dong khai bao bi comment, ca 3 cung comment dong rang buoc, va 2 trong do giu bNeedTransaction_Dealer = true VA goi _dbDealer.BeginTransaction(): OSVeloca_Ser_Customer_Save (day) va SerROStatusUpdatePaid_New20221224 (ZTemp.cs) => TONG so ham mo/commit transaction DB dai ly VO DIEU KIEN la MigratePartInstance (#697) + 2 = 3, khong phai 1. Day la MO RONG ket luan #697 khong phai phu dinh no",
+        extendsScopeOfIssue697 = "BO SUNG PHAM VI CHO #697 — PHEP DEM DO CO DIEM MU: o ham nay CA HAI dong deu BI COMMENT (//bool bIsWSMain = …; va //if (bIsWSMain) bNeedTransaction_Dealer = false;) trong khi bool bNeedTransaction_Dealer = true; VAN SONG => _dbDealer.BeginTransaction() va CommitSafety(_dbDealer) LUON chay. #697 quet cac ham CO KHAI BAO bIsWSMain (362 ham) nen KHONG nhin thay lop nay",
+        // 🔴 #702 TỰ SỬA con số vừa nêu ở dòng trên.
+        retracted_secondCaseWasInsideCommentedOutFunctions = "TU SUA (#702). Ban dau toi ghi lop nay co 3 ham va 2 trong do la ca that, ke ten SerROStatusUpdatePaid_New20221224. SAI. Mo ra doc thi ham do (ZTemp.cs:9334-9752) co CA HAI dong DANG CHAY (bool bIsWSMain = … o dong 27, if (bIsWSMain) bNeedTransaction_Dealer = false; o dong 31) => HOAN TOAN SACH. Hai vi tri con lai trong ZTemp.cs (dong 8965 va 9773) nam BEN TRONG hai ham DA BI COMMENT TRON (//public DataSet SerROStatusUpdatePaid_New20160628( va //public DataSet SerROStatusUpdatePaid_New20220926() => la MA CHET, khong phai ham song",
+        rootCauseOfTheMiscount = "GOC RE cua ca ba lan dem sai trong mach nay (#697 va #701) DEU LA MOT: regex ranh gioi ham ^[[:space:]]*(public|private|…) KHONG khop dong //        public DataSet … (bat dau bang //) => khi mot HAM BI COMMENT TRON, awk khong nhan ra ranh gioi moi va GAN NHAM cac dong ben trong no cho ham song truoc do",
+        correctedTotal = "SO DUNG: chi 2 ham mo/commit transaction DB dai ly VO DIEU KIEN — MigratePartInstance (#697) va OSVeloca_Ser_Customer_Save (day). Khong phai 3",
         writeHappensInChildFunctions = "ham nay chi DOC _dbDealer truc tiep; viec GHI nam trong Ser_Customer_CreateX/UpdateX => CHUA kiem duoc hai ham con do co ghi _dbDealer hay khong => ghi vao hang doi, KHONG ket luan",
         threeSeparateCommits = "BA CommitSafety ROI NHAU (_dbMain, _dbWH, _dbDealer) — cung khuon voi #693",
     });
@@ -62507,7 +62554,7 @@ record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPost
 // Ba master còn nợ. Mst_District khoá là CẶP (ProvinceCode, DistrictCode).
 record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive);
 record MstProvinceDto(string? ProvinceCode, string? ProvinceName = null, string? AreaCode = null, string? FlagActive = null);
-record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive);
+record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive, string? CreatedBy);
 record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
 // Người dùng/nhóm hệ thống. `UserPassword` gửi đúng chuỗi mẫu "********" nghĩa là GIỮ NGUYÊN mật khẩu cũ.
 record SysUserSaveDto(string? UserCode, string? UserName, string? UserPassword, string? PartnerCode, string? DealerCode, string? BankCode, string? TransporterCode, string? InsCompanyCode, string? FlagSysAdmin, string? FlagSysViewer, string? FlagActive);

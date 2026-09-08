@@ -7571,6 +7571,9 @@ public sealed class MstDistrict
     public string DistrictCode { get; set; } = "";
     public string? DistrictName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #702: nguon `Mst_District_Get` co BuildClause tren `md.CreatedDate` va `md.CreatedBy`.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>
