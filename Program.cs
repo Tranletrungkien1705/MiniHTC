@@ -53918,6 +53918,102 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #666 CHI TIẾT NHẬP KHO PHỤ TÙNG `Ser_InvReportTotalStockInDetailRpt_WH` (`WH.cs:25716-25859`) =====
+// 3B: laptop `:25716` md5 `838cbedd` **KHỚP** máy 150 (lần md5 đầu tôi lệch vì HARDCODE số dòng cuối — xem bài học). WS `WSCarSv.asmx.cs` gọi thẳng (không hậu tố).
+// Theo luật #414, việc đầu tiên là **DIFF với anh em tổng hợp** `Ser_InvReportTotalStockInRpt_WH` (`:10623`)
+// — và DIFF cho ra kết quả **mạnh hơn nhiều** so với đọc rời từng hàm:
+//
+// 🔴🔴🔴 **BÁO CÁO "CHI TIẾT" KHÔNG CỘNG RA BÁO CÁO "TỔNG HỢP" — ba lớp lệch cùng lúc**:
+//   ① **Khác BẢNG NGUỒN**: tổng hợp đi từ `ser_inv_PartInstance spi` (từng tem phụ tùng),
+//      chi tiết đi từ `Ser_Inv_StockIn so` (phiếu nhập) rồi mới nối xuống dòng.
+//   ② **Khác CỘT NGÀY**: tổng hợp lọc `spi.DateIn` (ngày nhập của **tem**), chi tiết lọc `so.StockInDate`
+//      (ngày trên **phiếu**). Hai cột này lệch nhau khi phiếu được lập một ngày và nhập tem ngày khác.
+//   ③ **Khác BỘ TRẠNG THÁI**: chi tiết có `AND so.status = 3` (chỉ phiếu đã duyệt); tổng hợp **không có**
+//      điều kiện đó, chỉ `not in ('4','5')` trên **cả hai** bảng. ⇒ tập chi tiết **⊂ thật sự** tập tổng hợp.
+//   ⇒ Người dùng bấm từ dòng tổng hợp xuống chi tiết sẽ thấy **thiếu tiền**, và không có gì báo lỗi.
+// 🔴🔴🔴 **GỘP THEO CẢ `Price` VÀ `VAT` ⇒ MỘT PHỤ TÙNG RA NHIỀU DÒNG**:
+//     `GROUP BY sod.PartID, p.PartCode, p.VieName, p.EngName, p.Unit, **sod.Price**, **sod.VAT**`
+//   ⇒ cùng một mã phụ tùng nhập ở **hai đơn giá** (hoặc hai mức thuế) ra **hai dòng**. Báo cáo tên là
+//     "tổng hợp chi tiết nhập theo phụ tùng" nhưng `Quantity` **không phải** tổng của mã đó.
+//     Đúng loại **"KẾT QUẢ SAI HÌNH DẠNG"** mà §12 không bắt được. Port trả **cả hai mức**: dòng theo
+//     (mã, giá, VAT) **và** tổng theo mã, kèm cờ đếm số mã bị tách.
+// 🔴🔴 **KHÁC CẢ CỘT GIÁ VÀ CÔNG THỨC THUẾ giữa hai báo cáo**: tổng hợp dùng `spi.SIPrice` và tách ba cột
+//   `AMOUNT` / `VATAMOUNT` / `SUMAMOUNT`; chi tiết dùng `sod.Price` và gộp thành **một** cột `Amount` đã
+//   **bao gồm** thuế. Ghép số hai báo cáo mà không đọc kỹ là so nhầm "chưa thuế" với "đã thuế".
+// 🔴🔴 **GUARD CHẾT** (họ #407): `AND so.status = 3` đã loại mọi giá trị khác 3, nên `and so.[Status] not in
+//   ('4','5')` ngay dưới **không bao giờ loại thêm dòng nào**. Tệ hơn: một vế so **số** (`= 3`), một vế so
+//   **chuỗi** (`not in ('4','5')`) trên **cùng một cột** ⇒ nếu `Status` là `varchar`, vế `= 3` ép kiểu cả cột
+//   sang số ⇒ **mất index** và **đổ ngay** nếu có bản ghi không phải số.
+// 🔴🔴 (#415) **`so.StockInDate <= '@ToDate'` trên cột ngày-giờ** ⇒ **mất trọn ngày cuối** nếu cột có phần giờ.
+//   Port giữ 1:1 và trả cờ `endDateExclusive` + đếm số dòng rơi vào đúng ngày cuối.
+// 🔴 **Ngày và mã đại lý BỊ BAKE** (`Replace(sql, "@FromDate", strFromDate, …)`) ⇒ bề mặt tiêm SQL.
+//   ⚪ Không dính bẫy `[BAKE-PARAM-MIX]`: `alParamsCoupleSql` của hàm này **rỗng** (không `BuildClause` nào).
+// 🔴 `select so.* into #invstock` — `SELECT *` vào bảng tạm ⇒ **đổi schema `Ser_Inv_StockIn` là đổi báo cáo**.
+// ⚪ **ÂM TÍNH — `ORDER BY p.PartCode` ở đây CÓ nghĩa** (luật #415): nó nằm trên câu `SELECT` **cuối cùng** trả
+//   dữ liệu, không phải trên `SELECT … INTO`. Không cần cờ `sourceHasNoOrderBy`.
+// ⚪ **ÂM TÍNH — công thức thuế nhân TRƯỚC chia** (`(Q*P)+(Q*P*VAT*0.01)`) ⇒ không mất phần thập phân (họ #659).
+// 📌 **`with(nolock)` thay vì marker nhà `--//[mylock]` trong một hàm `_WH`**: đếm trong `BizCarSv.WH.cs` được
+//   `--//[mylock]` **1857** lần / `with(nolock)` **199** lần ⇒ dạng cũ là **thiểu số nhưng không hiếm**;
+//   anh em tổng hợp `Ser_InvReportTotalStockInRpt_WH` dùng `--//[mylock]`, hàm này dùng `with(nolock)`.
+//   Ghi 📌 (chưa đủ căn cứ gọi là lỗi) — nhưng nó **nằm ngoài** cơ chế khoá mà phần còn lại đang dùng.
+app.MapGet("/api/report/stockin-detail-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    var qi = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qi = qi.Where(x => x.DealerCode == dealerCode!.Trim());
+    // Nguồn: AND so.status = 3 (rồi thêm một vế CHẾT not in (4,5)). Mini dùng nhãn chữ.
+    qi = qi.Where(x => x.Status == "Confirmed");
+    if (from is not null) qi = qi.Where(x => x.StockInDate >= from);
+    // #415 giữ 1:1 mốc cuối KHÔNG cộng ngày — nguồn dùng <= nên mất phần giờ của ngày cuối.
+    if (to is not null) qi = qi.Where(x => x.StockInDate <= to);
+    var heads = await qi.Select(x => new { x.Id, x.StockInNo, x.StockInDate }).ToListAsync();
+    var headIds = heads.Select(x => x.Id).ToList();
+
+    var lines = await db.ServiceStockInLines.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.ServiceStockInId))
+        .Select(x => new { x.ServiceStockInId, x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat }).ToListAsync();
+
+    // Nguồn GỘP theo (PartID, PartCode, VieName, EngName, Unit, Price, VAT) — giữ nguyên hình dạng đó.
+    var rows = lines.GroupBy(x => new { x.PartCode, x.PartName, x.Price, x.Vat }).Select(g => new
+    {
+        partCode = g.Key.PartCode, partName = g.Key.PartName,
+        price = g.Key.Price, vat = g.Key.Vat,
+        quantity = g.Sum(x => x.Quantity),
+        amount = g.Sum(x => x.Quantity * x.Price + x.Quantity * x.Price * x.Vat * 0.01m),
+    }).OrderBy(x => x.partCode).ToList();
+
+    // Mức thứ hai mà nguồn KHÔNG có: tổng thật theo mã phụ tùng.
+    var byPart = rows.GroupBy(x => x.partCode).Select(g => new
+    {
+        partCode = g.Key, priceLevels = g.Count(),
+        quantity = g.Sum(x => x.quantity), amount = g.Sum(x => x.amount),
+    }).OrderBy(x => x.partCode).ToList();
+
+    var lastDayRows = to is null ? 0 : heads.Count(x => x.StockInDate is not null && x.StockInDate!.Value.Date == to);
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows, byPart,
+        // ===== #666 =====
+        detailAndSummaryUseDifferentDateColumns = "BAO CAO CHI TIET KHONG CONG RA BAO CAO TONG HOP — ba lop lech cung luc: (1) khac BANG NGUON: tong hop Ser_InvReportTotalStockInRpt_WH di tu ser_inv_PartInstance spi (tung tem), chi tiet di tu Ser_Inv_StockIn so (phieu); (2) khac COT NGAY: tong hop loc spi.DateIn (ngay nhap cua TEM), chi tiet loc so.StockInDate (ngay tren PHIEU); (3) khac BO TRANG THAI: chi tiet co AND so.status = 3, tong hop KHONG co, chi not in (4,5) tren CA HAI bang => tap chi tiet la tap con THAT SU cua tap tong hop => bam tu dong tong hop xuong chi tiet thay THIEU TIEN ma khong co gi bao loi",
+        groupByPriceAndVatSplitsOnePart = "GROUP BY sod.PartID, p.PartCode, p.VieName, p.EngName, p.Unit, sod.Price, sod.VAT => cung mot ma phu tung nhap o HAI don gia (hoac hai muc thue) ra HAI dong; bao cao ten la tong hop chi tiet nhap theo phu tung nhung Quantity KHONG phai tong cua ma do (KET QUA SAI HINH DANG, §12 khong bat duoc). Port tra CA HAI muc: rows theo (ma, gia, VAT) va byPart tong theo ma",
+        partsSplitAcrossPriceLevels = byPart.Count(x => x.priceLevels > 1),
+        differentPriceColumnAndVatFormula = "tong hop dung spi.SIPrice va tach ba cot AMOUNT/VATAMOUNT/SUMAMOUNT; chi tiet dung sod.Price va gop thanh MOT cot Amount DA BAO GOM thue => ghep so hai bao cao ma khong doc ky la so nham chua thue voi da thue",
+        deadStatusGuard = "AND so.status = 3 da loai moi gia tri khac 3 nen and so.[Status] not in (4,5) ngay duoi KHONG BAO GIO loai them dong nao (ho #407). Te hon: mot ve so SO (= 3), mot ve so CHUOI (not in (4,5)) tren CUNG MOT COT => neu Status la varchar thi ve = 3 ep kieu ca cot sang so => MAT INDEX va DO NGAY neu co ban ghi khong phai so",
+        endDateExclusive = "so.StockInDate <= @ToDate tren cot ngay-gio => MAT TRON NGAY CUOI neu cot co phan gio (#415); port giu 1:1",
+        rowsOnLastDay = lastDayRows,
+        datesAndDealerBaked = "Replace(sql, @FromDate, strFromDate, @ToDate, strToDate, @DealerCode, strDealerCode) => be mat tiem SQL",
+        notBakeParamMix = "AM TINH: alParamsCoupleSql cua ham nay RONG (khong BuildClause nao) => khong dinh bay [BAKE-PARAM-MIX]",
+        selectStarIntoTempTable = "select so.* into #invstock => doi schema Ser_Inv_StockIn la doi bao cao",
+        negativeOrderByIsMeaningfulHere = "AM TINH: ORDER BY p.PartCode nam tren cau SELECT CUOI CUNG tra du lieu, khong phai tren SELECT … INTO => CO nghia (#415), khong can co sourceHasNoOrderBy",
+        negativeVatMathSafe = "AM TINH: (Q*P)+(Q*P*VAT*0.01) nhan TRUOC chia => khong mat phan thap phan (ho #659)",
+        nolockInsteadOfHouseMarker = "with(nolock) thay vi marker nha --//[mylock] trong mot ham _WH; dem trong BizCarSv.WH.cs: --//[mylock] 1857 lan / with(nolock) 199 lan => dang cu la THIEU SO nhung khong hiem; anh em tong hop dung --//[mylock], ham nay dung with(nolock) => ghi 📌 chua du can cu goi la loi, nhung no NAM NGOAI co che khoa phan con lai dang dung",
+        miniModelGap = "Mini khong mo hinh hoa Ser_Inv_PartInstance (tem phu tung) nen KHONG the dung lai cot spi.DateIn cua ban tong hop — no #610 seed PartInstances van con",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #665 BẢN SINH ĐÔI BẢO HIỂM `SerInsuranceDebitSearch_WH` (`WH.cs:4970-5322`) =====
 // 3B: laptop `:4970` md5 `f5b2e7f5` **KHỚP** máy 150 `:4970`. WS `WSCarSv.asmx.cs:32253` gọi thẳng.
 // Theo luật #414 tôi **DIFF hai chuỗi SQL với nhau trước** (`SerCusDebitSearch_WH` vs bản này) thay vì đọc rời —
