@@ -30857,6 +30857,26 @@ app.MapGet("/api/supplierpartorders/{no}/lines", async (string no, AppDbContext 
 //       số dòng khác nhau — thêm một bằng chứng join này là tai nạn, không phải luật.)
 //  (2) Bộ lọc ngày: `Ser_Part_OrderGet` lọc theo **CreateDate**, còn `_StatusList` lọc theo **SendDate**
 //      với CÙNG tham số `@FromDate/@ToDate`. Endpoint này chưa mở lọc ngày; khi mở phải chọn CỘT rõ ràng.
+// ===== 🔴🔴 #605 CẶP `Ser_Part_OrderCreate` (`:756`) / `Ser_Part_OrderUpdate` (`:1155`) — GUARD LỆCH BA CHỖ =====
+// Đối chiếu cặp create/update (luật #404). ⚠️ Bản Update là **VỎ BỌC**: thân nó chỉ ghi log rồi gọi
+//   `UpdatePartOrder(...)` — mọi guard và SQL nằm **trong hàm con** (cùng khuôn #580 `Blt_BulletinUpdate`).
+//   Dừng ở hàm ngoài sẽ kết luận *"nhánh sửa không có guard nào"* — **sai**.
+//
+// 📐 **BẢNG GUARD** (đọc trọn cả hai nhánh):
+//     TẠO   : `CheckExistOrderNo(_dbDealer, …)` · `CheckExistOrderNoUser(_dbDealer, …)`            → **2**
+//     SỬA   : `CheckExistOrderNoUser_Update` · `CheckExistConfirmNo` · `CheckExistOrderNo_Update`  → **3**
+//
+// 🔴🔴 **GUARD THỨ BA CỦA NHÁNH SỬA LÀ GUARD CHẾT**: `CheckExistOrderNo_Update` (`:108`) chính là một trong
+//   **15 chỗ** dùng `if (dt == null **&&** dt.Rows.Count == 0)` đã đếm ở #600 ⇒ thân `if` **không đường nào
+//   tới được** ⇒ nhánh sửa thực chất chỉ còn **2 guard sống**, đúng bằng nhánh tạo.
+//   ⇒ Nhìn số lượng lời gọi thì tưởng "sửa chặt hơn tạo"; đọc vào thân guard thì **bằng nhau**.
+// 🔴🔴 **`CheckExistConfirmNo` CHỈ CÓ Ở NHÁNH SỬA**: tạo đơn với `ConfirmNo` **đã tồn tại** thì **lọt**,
+//   nhưng sửa sang đúng số đó thì **bị chặn** (`Ser_OrderPart_ConfirmNo_Exist`).
+//   ⇒ Trạng thái dữ liệu **không thể tạo ra bằng cửa sửa lại tạo được bằng cửa tạo** — nghịch lý kinh điển
+//     khi guard chỉ đặt ở một cửa (cùng họ #587: guard chỉ ở đường gửi lô).
+//   📌 MiniHTC **cố ý lệch**: chặn trùng `ConfirmNo` ở **cả hai** cửa, và nêu cờ.
+// ⚪ Âm tính: cả hai nhánh đều tra guard bằng `_dbDealer` (nhất quán), và đều mở giao dịch **cả ba** DB
+//   (`_dbMain`/`_dbWH`/`_dbDealer`) rồi `CommitSafety` đủ ba — **không** dính lỗi "quên một DB" của #571/#598.
 app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
@@ -30864,6 +30884,22 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
     if (lines.Count == 0) return Results.BadRequest(new { error = "Đơn phải có ít nhất 1 dòng phụ tùng." });
 
     var no = string.IsNullOrWhiteSpace(dto.OrderNo) ? "PO" + DateTime.Now.ToString("yyMMddHHmmss") : dto.OrderNo!.Trim();
+
+    // #605 GUARD nguồn CÓ ở nhánh tạo: CheckExistOrderNo + CheckExistOrderNoUser (chặn trùng số).
+    if (await db.SupplierPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.OrderNo == no))
+        return Results.BadRequest(new { error = $"So don {no} da ton tai (CheckExistOrderNo)." });
+    if (!string.IsNullOrWhiteSpace(dto.OrderNoUser)
+        && await db.SupplierPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.OrderNoUser == dto.OrderNoUser))
+        return Results.BadRequest(new { error = "So don nguoi dung da ton tai (CheckExistOrderNoUser)." });
+    // #605 GUARD nguồn CHỈ CÓ Ở NHÁNH SỬA — port thêm vào nhánh TẠO (cố ý lệch).
+    var confirmNoDuplicated = !string.IsNullOrWhiteSpace(dto.ConfirmNo)
+        && await db.SupplierPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.ConfirmNo == dto.ConfirmNo);
+    if (confirmNoDuplicated)
+        return Results.BadRequest(new
+        {
+            error = "Ser_OrderPart_ConfirmNo_Exist: so xac nhan da ton tai.",
+            sourceChecksThisOnlyOnUpdate = "nguon: CheckExistConfirmNo CHI co o nhanh SUA => tao don trung ConfirmNo thi LOT, sua sang dung so do lai bi chan",
+        });
     var h = new SupplierPartOrder
     {
         OrgId = t.OrgId, OrderNo = no, OrderNoUser = dto.OrderNoUser,
@@ -30878,6 +30914,17 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
         VIN = dto.VIN?.Trim().ToUpperInvariant(), ConfirmNo = dto.ConfirmNo, CusCharges = dto.CusCharges,
     };
     db.SupplierPartOrders.Add(h); await db.SaveChangesAsync();
+    // #605: cờ mô tả lệch guard giữa hai nhánh của nguồn (xem chú thích đầu endpoint).
+    var guardNote = new
+    {
+        sourceCreateGuards = new[] { "CheckExistOrderNo", "CheckExistOrderNoUser" },
+        sourceUpdateGuards = new[] { "CheckExistOrderNoUser_Update", "CheckExistConfirmNo", "CheckExistOrderNo_Update (CHET — mau == null && , #600)" },
+        updateLooksStricterButIsNot = "dem loi goi thi 3 so 2; doc than guard thi BANG NHAU vi guard thu ba khong bao gio chay",
+        confirmNoGuardOnlyOnUpdateInSource = true,
+        portAppliesConfirmNoGuardOnBothDoors = true,
+        updateIsWrapperCallingUpdatePartOrder = "Ser_Part_OrderUpdate chi ghi log roi goi UpdatePartOrder — guard nam trong ham con (khuon #580)",
+        allThreeDbsOpenedAndCommitted = "ca hai nhanh mo giao dich _dbMain/_dbWH/_dbDealer va CommitSafety du ba — KHONG dinh loi quen mot DB cua #571/#598",
+    };
 
     foreach (var l in lines)
         db.SupplierPartOrderLines.Add(new SupplierPartOrderLine
@@ -30886,6 +30933,7 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
             PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
             Quantity = l.Quantity, DeliveryQuantity = l.DeliveryQuantity,
             Price = l.Price, Amount = l.Amount, Note = l.Note,
+            // #605: guardNote được trả ở cuối endpoint (xem biến guardNote).
             // #298 §12: khối cột THẬT của `Ser_Part_OrderDetail` (nguồn chỉ ghi khi tham số KHÁC RỖNG
             //   — ở đây `null` vào cột `null` nên tương đương).
             PartID = l.PartID, Factor = l.Factor, Cost = l.Cost, VAT = l.VAT, Discount = l.Discount,
@@ -30894,7 +30942,7 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
             LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCreate,
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.OrderNo, h.Status, lines = lines.Count });
+    return Results.Ok(new { h.OrderNo, h.Status, lines = lines.Count, guardNote, confirmNoDuplicated });
 }).RequireAuthorization();
 
 // ===== 🔴 #269 HCC NO-SHOW — khách QUÁ HẠN chưa quay lại xưởng =====
