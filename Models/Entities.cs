@@ -15499,6 +15499,29 @@ public sealed class LoyaltyCard
 /// <summary>Nguồn tra `Mst_Param` theo bộ ba `DealerCode` + `ParamCode` + `ParamType`.
 /// Ca dùng đầu tiên: `ParamCode = ParamType = "MCC"` quyết định **phương pháp tính giá vốn**
 /// (`"FIFO"` hay không) trong báo cáo tồn kho.</summary>
+/// <summary>Danh mục ánh xạ ĐẦU VIN → model + mã nguồn gốc (`Mst_VINModelOrginal` — port 1:1
+/// `Mst_VINModelOrginal_Get/Create/Update/Delete/Import`, TCMotor DMSCarSv/Admin).
+/// 🔴 **Tên bảng nguồn viết SAI CHÍNH TẢ**: `Orginal` (thiếu chữ `i`, đúng phải là `Original`).
+/// Giữ **nguyên văn** theo luật HẰNG ≠ GIÁ TRỊ — "sửa cho đúng" là trỏ sai bảng/cột.
+/// 🔴 `VINCode` chỉ dài **4 hoặc 5** ký tự (guard của `_Create`) và chỉ gồm chữ-số
+/// (regex chặn `[^a-zA-Z0-9]`). Chính vì có **hai độ dài** mà các báo cáo nối bằng
+/// `on (left(VIN,4) = VINCode or left(VIN,5) = VINCode)` — nguồn gốc của bẫy nở dòng đã ghi ở #651/#655.</summary>
+public sealed class MstVinModelOrginal
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Đầu số VIN — 4 hoặc 5 ký tự, chỉ chữ và số (giữ nguyên chính tả cột nguồn).</summary>
+    public string VINCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    /// <summary>Mã nguồn gốc xe — tên cột nguồn viết `OrginalCode` (thiếu `i`). Giữ nguyên văn.</summary>
+    public string? OrginalCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class MstParam
 {
     public long Id { get; set; }

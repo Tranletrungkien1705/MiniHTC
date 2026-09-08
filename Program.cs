@@ -51051,6 +51051,106 @@ app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 // ⚪ **ÂM TÍNH — lệnh xoá của `Save` THAM SỐ HOÁ ĐÚNG** (`ExecQuery(sql, "@DealerCode", …, "@ParamType", …)`).
 // ⚪ **ÂM TÍNH — `Mst_Param_Update` dùng `alColumnEffective`** (chỉ ghi đúng các cột liệt kê) ⇒ không đè cột lạ;
 //   khác `Create` gọi `SaveData` **không** truyền danh sách cột.
+// ===== 🔴🔴🔴 #691 DANH MỤC ĐẦU VIN → MODEL `Mst_VINModelOrginal_*` (`BizCarSv.Master.cs:9113-9866`) =====
+// md5: `Get` `3235b1dc` · `Create` `bf247fb3` · `Update` `5289191d` · `Delete` `429708dc` · `Import` `62e8c2df`
+// — **cả năm KHỚP** máy 150. WS `WSCarSv.asmx.cs:28717…28844`. **Trả nợ #651** (bảng này đã bị ĐỌC ở nhiều báo
+// cáo nhưng **màn quản trị chưa từng port**).
+// 🔴 **TÊN BẢNG/CỘT SAI CHÍNH TẢ**: `Mst_VIN_Model_**Orginal**` và cột `**Orginal**Code` — thiếu chữ `i`.
+//   Giữ **nguyên văn** (luật HẰNG ≠ GIÁ TRỊ); "sửa cho đúng" là trỏ sai bảng/cột.
+//
+// 🔴🔴🔴 **DANH MỤC CHỈ ĐƯỢC GHI TRÊN `_dbMain`, NHƯNG BÁO CÁO KHO ĐỌC BẢN TRÊN `_dbWH`**:
+//   📌 Grep toàn `TERP.BizCarSv`: **không một hàm nào** ghi `Mst_VINModelOrginal` vào `_dbWH` hay `_dbDealer`
+//     (0 hit). Cả năm hàm CRUD đều `_dbMain.SaveData(...)` / `_dbMain.ExecQuery(...)`.
+//   📌 Nhưng trong `BizCarSv.WH.cs` (các hàm chạy trên `_dbWH`) bảng được nối **KHÔNG có tiền tố**:
+//     `left join Mst_VINModelOrginal mvo --//[mylock]` (5 chỗ) ⇒ đọc **bản trên chính DB kho**.
+//   📌 Đếm hai cách viết toàn tầng biz: **có** tiền tố `[@strDBName_CommonCenter].[dbo].` = **3** chỗ ·
+//     **không** tiền tố = **11** chỗ ⇒ một số báo cáo đọc bản **Main**, số khác đọc bản **WH**.
+//   ⇒ Nếu hai bản lệch nhau thì **cùng một xe ra hai model khác nhau tuỳ báo cáo**. Việc đồng bộ hai bản
+//     **không nằm trong tầng biz** — phải do job/replication bên ngoài; **không kiểm chứng được từ source**
+//     ⇒ ghi là **rủi ro cần đo trên DB thật**, không kết luận là bug.
+//
+// 🔴🔴🔴 **GUARD CREATE/UPDATE/DELETE BẤT ĐỐI XỨNG BA KIỂU** (luật #404 — đối chiếu **cả ba**):
+//   · `_Create` : kiểm `strVINCode.Length != 4 && != 5` ⇒ `…_InvalidVINCode_Length`; rồi `regex.IsMatch(...)`
+//     với `pattern = "[^a-zA-Z0-9]"` ⇒ `…_InvalidVINCode` (chặn ký tự không phải chữ-số).
+//     🔴 **KHÔNG kiểm trùng `VINCode`** ⇒ tạo hai dòng cùng đầu VIN **không bị chặn**.
+//   · `_Update` : **chỉ** kiểm bản ghi **tồn tại** (`…_TableNotFound`). **KHÔNG** kiểm độ dài, **KHÔNG** regex
+//     ⇒ dữ liệu vào bằng đường sửa **không chịu ràng buộc nào** mà đường tạo phải chịu.
+//   · `_Delete` : kiểm tồn tại (`…_VINNotFound`) — khối này nằm trong `#region // Temp`, **không** tên `Check`
+//     ⇒ đọc theo **tên region** sẽ tưởng "không có guard"; phải đọc **thân**.
+// 🔴🔴 **TRÙNG `VINCode` LÀ NGUỒN GỐC CỦA BẪY NỞ DÒNG ĐÃ GHI Ở #651/#655**: vì `VINCode` có **hai độ dài** (4 và
+//   5), báo cáo phải nối `on (left(VIN,4) = VINCode or left(VIN,5) = VINCode)` ⇒ một xe khớp **cả hai** dòng
+//   danh mục thì ra **hai dòng**. Nay biết thêm: **không có guard trùng** nên danh mục **có thể** chứa cả `1AB2`
+//   lẫn `1AB23` cùng lúc. Port thêm guard trùng + đếm `prefixCollisions`.
+// ⚪ **ÂM TÍNH — cả năm hàm CHỈ ghi `_dbMain`** ⇒ **không** phải ca "ghi nhiều CSDL" (khác #690).
+// ⚪ **ÂM TÍNH — `_Get` tham số hoá đúng** (4 `BuildClause` + `ref alParamsCoupleSql`); nhưng cả bốn đều đòi
+//   **toán tử** ⇒ gửi trần là `where (1=1)` ⇒ trả **cả danh mục** (#410). Port ép phân trang.
+app.MapGet("/api/mstvinmodelorginals", async (AppDbContext db, ITenantContext t,
+    string? vinCode, string? modelCode, string? orginalCode, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var qy = db.MstVinModelOrginals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vinCode)) qy = qy.Where(x => x.VINCode == vinCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(x => x.ModelCode == modelCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(orginalCode)) qy = qy.Where(x => x.OrginalCode == orginalCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = await qy.OrderBy(x => x.VINCode).Skip(skip).Take(take)
+        .Select(x => new { x.VINCode, x.ModelCode, x.OrginalCode, x.FlagActive, x.Remark, x.CreatedDate, x.CreatedBy })
+        .ToListAsync();
+
+    // Đo trực tiếp bẫy nở dòng của #651/#655: đầu VIN 4 ký tự nào là TIỀN TỐ của một đầu VIN 5 ký tự?
+    var all = await qy.Select(x => x.VINCode).ToListAsync();
+    var four = all.Where(x => x.Length == 4).ToHashSet();
+    var collisions = all.Where(x => x.Length == 5 && four.Contains(x.Substring(0, 4)))
+        .Select(x => new { five = x, four = x.Substring(0, 4) }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items,
+        prefixCollisions = collisions,
+        // ===== #691 =====
+        sourceNameIsMisspelled = "TEN BANG/COT SAI CHINH TA: Mst_VINModel_Orginal va cot OrginalCode — thieu chu i (dung phai la Original). Giu NGUYEN VAN theo luat HANG KHAC GIA TRI; sua cho dung la tro sai bang/cot",
+        masterWritesOnlyMainButWhReportsReadWhCopy = "DANH MUC CHI DUOC GHI TREN _dbMain NHUNG BAO CAO KHO DOC BAN TREN _dbWH: grep toan TERP.BizCarSv — KHONG mot ham nao ghi Mst_VINModelOrginal vao _dbWH hay _dbDealer (0 hit); ca nam ham CRUD deu _dbMain.SaveData/_dbMain.ExecQuery. Nhung trong BizCarSv.WH.cs (cac ham chay tren _dbWH) bang duoc noi KHONG co tien to: left join Mst_VINModelOrginal mvo (5 cho) => doc ban tren chinh DB kho. Dem hai cach viet toan tang biz: CO tien to [@strDBName_CommonCenter].[dbo]. = 3 cho, KHONG tien to = 11 cho => mot so bao cao doc ban Main, so khac doc ban WH => neu hai ban lech thi CUNG MOT XE RA HAI MODEL KHAC NHAU TUY BAO CAO. Viec dong bo KHONG nam trong tang biz, phai do job/replication ben ngoai; khong kiem chung duoc tu source => RUI RO CAN DO TREN DB THAT, khong ket luan la bug",
+        threeWayAsymmetricGuards = "GUARD CREATE/UPDATE/DELETE BAT DOI XUNG BA KIEU (luat #404): _Create kiem strVINCode.Length != 4 && != 5 => …_InvalidVINCode_Length, roi regex.IsMatch voi pattern [^a-zA-Z0-9] => …_InvalidVINCode; NHUNG KHONG kiem trung VINCode. _Update CHI kiem ban ghi ton tai (…_TableNotFound), KHONG kiem do dai, KHONG regex => du lieu vao bang duong sua KHONG chiu rang buoc nao ma duong tao phai chiu. _Delete kiem ton tai (…_VINNotFound) nhung khoi do nam trong #region // Temp chu KHONG ten Check => doc theo TEN REGION se tuong khong co guard, phai doc THAN",
+        duplicateVinCodeExplainsRowFanOut = "TRUNG VINCode LA NGUON GOC CUA BAY NO DONG DA GHI O #651/#655: vi VINCode co HAI DO DAI (4 va 5), bao cao phai noi on (left(VIN,4) = VINCode or left(VIN,5) = VINCode) => mot xe khop CA HAI dong danh muc thi ra HAI DONG. Nay biet them: KHONG co guard trung nen danh muc CO THE chua ca 1AB2 lan 1AB23 cung luc",
+        vinCodeRules = "VINCode: do dai 4 hoac 5, chi chu-so (regex chan [^a-zA-Z0-9]); guard nay CHI co o _Create",
+        negativeSingleDatabaseWrite = "AM TINH: ca nam ham CHI ghi _dbMain => KHONG phai ca ghi-nhieu-CSDL (khac #690)",
+        negativeGetIsParameterisedButReturnsAll = "AM TINH: _Get tham so hoa dung (4 BuildClause + ref alParamsCoupleSql); nhung ca bon deu doi TOAN TU => gui tran la where (1=1) => tra CA DANH MUC (#410). Port ep phan trang",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.VINCode ?? "").Trim().ToUpperInvariant();
+    // Guard 1 của nguồn (_Create): độ dài PHẢI là 4 hoặc 5.
+    if (code.Length != 4 && code.Length != 5)
+        return Results.BadRequest(new { error = "Mst_VINModelOrginal_Create_InvalidVINCode_Length", vinCode = code, allowed = "4,5" });
+    // Guard 2 của nguồn: regex [^a-zA-Z0-9] khớp là LỖI (chỉ cho chữ và số).
+    if (System.Text.RegularExpressions.Regex.IsMatch(code, "[^a-zA-Z0-9]"))
+        return Results.BadRequest(new { error = "Mst_VINModelOrginal_Create_InvalidVINCode", vinCode = code });
+    var existed = await db.MstVinModelOrginals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == code);
+    if (existed is not null)
+        return Results.Conflict(new
+        {
+            error = "Mst_VINModelOrginal_DuplicateVINCode",
+            sourceHasNoSuchGuard = "nguon _Create KHONG kiem trung VINCode — guard nay do PORT them, vi trung dau VIN chinh la nguon go bay no dong o #651/#655",
+            vinCode = code,
+        });
+    db.MstVinModelOrginals.Add(new MstVinModelOrginal
+    {
+        OrgId = t.OrgId, VINCode = code,
+        ModelCode = dto.ModelCode?.Trim().ToUpperInvariant(),
+        OrginalCode = dto.OrginalCode?.Trim().ToUpperInvariant(),
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim(),
+        Remark = dto.Remark, CreatedDate = DateTime.Now,
+    });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
+}).RequireAuthorization();
+
 app.MapGet("/api/mstparams", async (AppDbContext db, ITenantContext t,
     string? dealerCode, string? paramType, string? paramCode) =>
 {
@@ -61768,6 +61868,7 @@ record CavityUpdateDto(string? CavityName = null, string? CavityType = null, str
     string? StartUseDate = null, string? FinishUseDate = null, string? LogLUBy = null);
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
+record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive, string? Remark);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
