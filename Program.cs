@@ -27704,9 +27704,32 @@ app.MapPost("/api/transportinspayments/{no}/{side}sign", async (string no, strin
     var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (h.Status != "P") return Results.BadRequest(new { error = "Chỉ có thể ký khi trạng thái thanh toán là P" });
-    if (side == "htv") { h.HtvSignStatus = "A"; h.HtvSignAt = DateTime.Now; } else { h.TcmsSignStatus = "A"; h.TcmsSignAt = DateTime.Now; }
+    // 🔴 #B224 VÁ theo `Pmt_TransportIns_HTVApproveAndSign` / `…TCMSApproveAndSign`
+    //   (`DMS40/0.34.Contract.cs:17207`, 3B `17207,17365 / 58a0a8b719a5d0e07049f4545e2b4bcd`,
+    //   khớp cả 2 máy). Nguồn ghi **BA cột ở đầu** + **cột trạng thái ở DÒNG**, port cũ chỉ đổi cờ ký:
+    //     `TrasportInsStatus` ← `HTVSignStatus.**Finished** ("F")`   ⇒ phiếu **nhảy thẳng lên "hoàn tất"**
+    //     `HTVSignDTime`      ← ngày ký (`yyyy-MM-dd`, **chỉ NGÀY**)
+    //     `HTVSignStatus`     ← `HTVSignStatus.**Approved** ("A")`
+    //     `TrasportInsDtlStatus` (bảng DÒNG) ← `Finished` ("F")
+    //   ⚠️ **Hai giá trị KHÁC NHAU trong cùng một thao tác**: cờ ký = `"A"`, còn trạng thái phiếu và
+    //     trạng thái dòng = `"F"`. Port đặt cả hai bằng `"A"` ⇒ phiếu **kẹt ở "A"**, không hoàn tất.
+    //   ⚠️ Tên cột nguồn **sai chính tả** `Trasport…` (thiếu `n`) — giữ 1:1.
+    //   Từ vựng `TConst.HTVSignStatus` có **BẢY** giá trị: `N` · `P` · `C` · `A` · `A1` · `A2` · `F`.
+    if (side == "htv") { h.HtvSignStatus = "A"; h.HtvSignAt = DateTime.Now; }
+    else { h.TcmsSignStatus = "A"; h.TcmsSignAt = DateTime.Now; }
+    h.Status = "F";                                   // 🔴 TrasportInsStatus ← Finished
+    var lines = await db.TransportInsPaymentLines
+        .Where(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == h.Id).ToListAsync();
+    foreach (var l in lines) l.TrasportInsDtlStatus = "F";   // 🔴 dòng cũng sang Finished
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.HtvSignStatus, h.TcmsSignStatus });
+    return Results.Ok(new
+    {
+        h.PmtNo, h.HtvSignStatus, h.TcmsSignStatus, h.Status,
+        linesFinished = lines.Count,
+        signNote = "Nguon ghi BA cot o dau + cot trang thai o DONG: TrasportInsStatus <- Finished ('F'), HTVSignDTime <- ngay ky (CHI NGAY, yyyy-MM-dd), HTVSignStatus <- Approved ('A'), va TrasportInsDtlStatus (bang DONG) <- 'F'. HAI GIA TRI KHAC NHAU trong cung mot thao tac: co ky = 'A', con trang thai phieu va trang thai dong = 'F'. Port dat ca hai bang 'A' thi phieu KET O 'A', khong bao gio hoan tat.",
+        typoNote = "Ten cot nguon SAI CHINH TA: 'TrasportInsStatus' / 'TrasportInsDtlStatus' (thieu chu 'n' - dung phai la Transport). Giu 1:1.",
+        vocabNote = "TConst.HTVSignStatus co BAY gia tri: N (Null) / P (Pending) / C (Cancel) / A (Approved) / A1 / A2 / F (Finished)."
+    });
 }).RequireAuthorization();
 
 // Từ chối (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnDeny_Click gốc)
