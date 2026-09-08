@@ -15107,6 +15107,32 @@ app.MapGet("/api/report/dms-claim", async (AppDbContext db, ITenantContext t, Da
 
 // ===== Báo cáo bảo hành theo phụ tùng chính (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmReportWarranty_MainPart, TCMotor/Warranty) =====
 // Top phụ tùng xuất hiện trong đề nghị bảo hành: số ĐN + tổng tiền + số đã chấp thuận theo mã PT.
+// ===== 🔴🔴 #658 PARITY `Rpt_DMSSer_Warranty_MainPart_WH_New20230417` — VÀ MỘT LẦN TỰ SỬA VỀ CÁCH DIFF =====
+// 3B: vỏ bọc `WH.cs:13513` md5 `c1f187e3` **KHỚP** máy 150; **thân thật** `Rpt_DMSSer_Warranty_MainPartX_New20230417`
+//   (`ZTemp.cs:719-909`) md5 `a84aa5d4` **KHỚP** máy 150 `:719`.
+//
+// 🔴 **TỰ SỬA — CHUẨN HOÁ QUÁ TAY SUÝT CHO KẾT LUẬN SAI**: lần DIFF đầu tôi thay **toàn bộ** hậu tố
+//   `_New20230417` bằng chuỗi rỗng ở cả hai bản rồi thấy chúng **giống hệt**, và suýt ghi *"đợt 2023-04-17 có
+//   hàm được nhân bản mà không đổi gì"*. Sai: phép chuẩn hoá đó **xoá luôn hậu tố trong LỜI GỌI HÀM CON**.
+//   Chuẩn hoá lại cho đúng thì hai vỏ bọc khác nhau **đúng một dòng** — chúng gọi **hai thân khác nhau**:
+//     cũ : `Rpt_DMSSer_Warranty_MainPartX(` · mới: `Rpt_DMSSer_Warranty_MainPartX**_New20230417**(`
+//   ⇒ Đây chính là cái bẫy tôi đã tự ghi ở #645 ("phải kiểm lại các literal đã bị chuẩn hoá") — và lần này tôi
+//     mắc đúng vào nó. **Kết luận đúng: đợt 2023-04-17 KHÔNG có hàm clone rỗng; hàm này có thay đổi thật.**
+//
+// 🔴🔴 **THAY ĐỔI THẬT NẰM Ở THÂN `…X` — ĐÚNG KHUÔN ĐỢT 2023-04-17, NHƯNG NẶNG HƠN #623/#640**:
+//   DIFF `Rpt_DMSSer_Warranty_MainPartX` → `…X_New20230417` cho **đúng ba** thay đổi:
+//     `,sc.FrameNo`                  → `,**ro**.FrameNo`
+//     `,sc.WarrantyRegistrationDate` → `,**ro**.WarrantyRegistrationDate`
+//     **thêm** `left join Ser_RO ro --//[mylock] on srr.ROID = ro.ROID`
+//   ⇒ Cùng luật "lấy thông tin xe từ **lệnh** thay vì **hồ sơ xe**" như #618/#623/#640.
+//   ⚠️ **NHƯNG Ở ĐÂY NẶNG HƠN**: ở #623/#640 bảng `ro` vốn **đã được nối sẵn** nên hầu như luôn có; ở đây `ro`
+//     là **`left join` MỚI THÊM** ⇒ BCBH **chưa gắn lệnh sửa chữa** thì `ro` **NULL** ⇒ **cả hai cột thành**
+//     **NULL** dù `sc` (hồ sơ xe) vẫn có dữ liệu. Và vẫn **không** có `isnull(ro.X, sc.X)` ⇒ **mất dữ liệu**
+//     **rõ rệt hơn** hai ca trước. Port dùng **dự phòng** và nêu cờ.
+// ⚪ Thân này cũng dùng **cơ chế ternary** đã tìm ra ở #655:
+//   `"@strDBName_CommonCenter.", dbAction == _dbDealer ? "[" + _strConfig_DBName_Main + "].[dbo]." : ""`
+//   ⇒ nằm trong **7 site** đã đếm; khác biệt còn lại giữa hai thân **chỉ là khoảng trắng** quanh dấu `+`.
+// 📌 Lượt PARITY — vá endpoint `/api/report/warranty-by-part` đã có, **không** tăng bộ đếm màn.
 app.MapGet("/api/report/warranty-by-part", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
 {
     var n = top is > 0 and <= 200 ? top.Value : 30;
