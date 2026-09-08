@@ -20785,6 +20785,97 @@ app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #620 BẢNG KÊ THANH TOÁN LỆNH SỬA CHỮA `SerROInvoiceBill_WH` (`BizCarSv.WH.cs:726`) =====
+// 3B: laptop `V20.2023.Release.V2:726` md5 `10d1b0d5` **KHỚP** máy 150 `V20.2023.Release:726` `10d1b0d5`.
+// TRACE WS: cổng **kho** `WSCarSv.asmx…:44993` gọi `_biz.SerROInvoiceBill_**WH**` (không hậu tố ngày);
+//   cổng **đại lý** `:18573` gọi `_biz.SerROInvoiceBill_**New20180624**` ⇒ **lại hai cổng, hai hàm khác nhau**
+//   (họ #604/#611/#613/#614) — không phải cặp `_WH`/không-`_WH` của cùng một bản.
+// Kết quả **5 bảng**: Sys_User · Ser_RO · Ser_Customer (+Tỉnh/Huyện) · và bảng tiền cuối.
+//
+// 🔴🔴 **`full outer join` RỒI LẤY KHOÁ TỪ **MỘT** VẾ — MẤT KHOÁ LỆNH**:
+//     `select **rop.ROID**, (isnull(rpAmount,0)+isnull(rsAmount,0)) Amount into #tmpAmount`
+//     `from #tbl_rop rop **full outer join** #tbl_rsp rsp on rop.ROID = rsp.ROID`
+//   ⇒ Lệnh sửa chữa **chỉ có công dịch vụ, không có phụ tùng** thì vế `rop` **không tồn tại** ⇒ `rop.ROID`
+//     là **NULL**, dù `Amount` vẫn cộng đúng phần dịch vụ. Dòng tiền đó **mất khoá**, và bước sau
+//     `right join #tmpAmount am on am.ROID = debit.ROID` **không bao giờ khớp** ⇒ bảng kê trả về một dòng
+//     **ROID rỗng**, không gắn được vào lệnh nào. ⇒ Đúng phải là `isnull(rop.ROID, rsp.ROID)`.
+//   ⚠️ Chính vì tác giả *có ý thức* dùng `full outer join` (để không mất lệnh thiếu một vế) mà lỗi càng khó
+//     thấy: cấu trúc join đúng, **phép chọn cột thì sai** — đúng cảnh báo #414 "khác biệt nằm ở DANH SÁCH CỘT".
+// 🔴🔴 **`case` TÍNH TIỀN KHÔNG CÓ `else`, VÀ `VAT` KHÔNG ĐƯỢC BỌC `isnull`**:
+//     `case when rp.VAT = 0 then sum(…) when rp.VAT != 0 then sum(…*(1+rp.VAT/100)) end`
+//   Quantity/Factor/Price **đều** được `isnull(...,0)` nhưng `rp.VAT` thì **không**. VAT **NULL** ⇒ cả hai vế
+//   so sánh là UNKNOWN ⇒ `case` trả **NULL** ⇒ nhóm VAT đó cho `rpAmount = NULL` ⇒ bước ngoài `sum(rpAmount)`
+//   **bỏ qua NULL** ⇒ **toàn bộ dòng phụ tùng có VAT rỗng biến mất khỏi tổng tiền**, không lỗi, không cảnh báo.
+//   Y hệt cho khối dịch vụ (`rs.VAT`).
+// 🔴 **CHIA CHO HẰNG NGUYÊN `100`** — quét đếm toàn tầng biz: **156/156** site viết `VAT/100` (16 `VAT / 100`,
+//   4 `VAT /100`, 136 `VAT/100`) và **không có site nào** viết `/100.0` hay `convert(...)`. ⇒ Nếu cột `VAT`
+//   là kiểu **nguyên** thì `10/100 = 0` ⇒ `*(1+0)` ⇒ **VAT bị bỏ sạch trên toàn hệ cùng lúc**. Không truy được
+//   kiểu cột từ source ⇒ **ghi rủi ro có điều kiện**, không kết luận; nhưng nếu đúng thì đây là lỗi **hệ thống**,
+//   không phải lỗi một hàm. Port dùng `decimal` nên miễn nhiễm.
+// 🔴 **TIỀN DỊCH VỤ KHÔNG NHÂN SỐ LƯỢNG**: phụ tùng `Quantity*Factor*Price` nhưng dịch vụ chỉ `Factor*Price`
+//   ⇒ hai công thức **bất đối xứng** trong cùng một bảng kê.
+// 🔴🔴 **`#tbl_debit` GOM CÔNG NỢ CỦA *TOÀN BỘ* BẢNG, KHÔNG LỌC THEO LỆNH ĐANG XEM**:
+//     `select cdb.ROID, sum(isnull(cdb.DebitAmount,0)) … from ser_cusdebit cdb **with(nolock)** group by cdb.ROID`
+//   — không hề nối `#tbl_ser_ro` ⇒ quét và gom **mọi** công nợ trong hệ chỉ để lấy **một** lệnh. Mìn hiệu năng.
+//   ⚠️ Và đây là **câu duy nhất** trong hàm dùng `with(nolock)` giữa một rừng `--//[mylock]` ⇒ **trộn hai chiến**
+//     **lược khoá trong CÙNG một batch** (nối tiếp #574/#618: hệ có cả hai chiều, không suy được quy luật).
+// 🔴 `INNER JOIN #tbl_ser_ro` ở bảng khách hàng ⇒ lệnh **chưa gắn khách** rơi khỏi bảng 3 (#410).
+// ⚪ Âm tính: hai `left join Mst_Province/Mst_District` giữ được khách thiếu mã tỉnh/huyện; `District` nối
+//   bằng **cặp** (ProvinceCode, DistrictCode) — **đúng**, vì mã huyện chỉ duy nhất trong một tỉnh.
+// ⚪ Âm tính: câu `sys_user` ở đây **không** nối `#tbl_ser_ro` (khác #617) ⇒ trả **cả danh mục** người dùng theo
+//   bộ lọc đại lý — đúng ý cho ô chọn người thu tiền, không phải bug.
+// 🔴 `#region //Check` **RỖNG** (trích theo #403) và **ba** `BuildClause` (`t.DealerCode`, `r.ROID`,
+//   `t.UserCode`) đều rơi vào bẫy #410 nếu client gửi giá trị trần.
+// ⚠️ Hàm **chỉ đọc** nhưng `bNeedTransaction_WH = **true**` ⇒ mở transaction trên `_dbWH`, trong khi
+//   `_dbMain.LogUserId` mới là chỗ gán người dùng ⇒ **mở giao dịch một DB, gán log DB khác**.
+app.MapGet("/api/ro-invoice-bill/{roNo}", async (AppDbContext db, ITenantContext t, string? roNo) =>
+{
+    var no = (roNo ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "roNo bat buoc." });
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { roNo = no });
+
+    var cus = ro.CusID == null ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == ro.CusID);
+
+    // Nguồn: Quantity*Factor*Price*(1+VAT/100) — VAT KHÔNG bọc isnull ⇒ dòng VAT rỗng bị nuốt.
+    var pRows = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.NeedQty, x.UnitPrice, x.Factor, x.Vat }).ToListAsync();
+    var sRows = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.Price, x.Factor, x.Vat }).ToListAsync();
+
+    var partAmount = pRows.Sum(x => x.NeedQty * x.Factor * x.UnitPrice * (1m + x.Vat / 100m));
+    // Nguồn KHÔNG nhân số lượng ở khối dịch vụ — giữ 1:1.
+    var serviceAmount = sRows.Sum(x => x.Price * x.Factor * (1m + x.Vat / 100m));
+    var totalAmount = partAmount + serviceAmount;
+
+    var debitAmount = await db.CusDebits.Where(d => d.OrgId == t.OrgId && d.RONo == no)
+        .SumAsync(d => (decimal?)d.DebitAmount) ?? 0m;
+
+    return Results.Ok(new
+    {
+        roNo = no, ro.Status, ro.CheckInDate, ro.DealerCode, ro.Creator,
+        customer = cus is null ? null : new { cus.CusCode, cus.CusName, cus.Address, cus.Mobile, cus.ProvinceCode, cus.DistrictCode },
+        partAmount, serviceAmount, totalAmount,
+        debitAmount,
+        paymentAmount = totalAmount - debitAmount,
+        // ===== #620 =====
+        fullOuterJoinLosesKey = "nguon: select rop.ROID … from #tbl_rop rop FULL OUTER JOIN #tbl_rsp rsp on rop.ROID = rsp.ROID => lenh chi co cong dich vu (khong co phu tung) thi rop.ROID la NULL, Amount van cong dung nhung dong tien MAT KHOA; buoc sau right join on am.ROID = debit.ROID khong bao gio khop => bang ke tra ve mot dong ROID rong. Dung phai la isnull(rop.ROID, rsp.ROID)",
+        errorIsInColumnListNotJoinShape = "cau truc full outer join la DUNG Y (de khong mat lenh thieu mot ve); sai o PHEP CHON COT — dung canh bao #414",
+        caseHasNoElseAndVatNotNullGuarded = "Quantity/Factor/Price deu duoc isnull(...,0) nhung rp.VAT (va rs.VAT) thi KHONG; VAT NULL => ca hai ve so sanh UNKNOWN => case tra NULL => sum(rpAmount) bo qua NULL => TOAN BO dong co VAT rong bien mat khoi tong tien, khong loi khong canh bao",
+        vatDividedByIntegerLiteralEverywhere = "quet dem toan tang biz: 156/156 site viet VAT/100 (16 VAT / 100, 4 VAT /100, 136 VAT/100), KHONG site nao viet /100.0 hay convert; neu cot VAT la kieu NGUYEN thi 10/100 = 0 => VAT bi bo sach TREN TOAN HE cung luc — rui ro CO DIEU KIEN, khong ket luan vi khong truy duoc kieu cot tu source; port dung decimal nen mien nhiem",
+        serviceFormulaOmitsQuantity = "phu tung Quantity*Factor*Price nhung dich vu chi Factor*Price — hai cong thuc BAT DOI XUNG trong cung mot bang ke; port GIU 1:1",
+        debitAggregatesWholeTable = "nguon: from ser_cusdebit cdb with(nolock) group by cdb.ROID — KHONG noi #tbl_ser_ro => gom moi cong no trong he chi de lay MOT lenh (min hieu nang)",
+        mixedLockingInOneBatch = "day la cau DUY NHAT dung with(nolock) giua mot rung --//[mylock] trong cung mot batch (noi tiep #574/#618)",
+        customerInnerJoinDropsRo = "INNER JOIN #tbl_ser_ro o bang khach hang => lenh chua gan khach roi khoi bang 3",
+        districtJoinedByPairIsCorrect = "left join Mst_District theo CAP (ProvinceCode, DistrictCode) — dung, vi ma huyen chi duy nhat trong mot tinh (am tinh)",
+        sysUserNotJoinedToRoHere = "khac #617: cau sys_user o day KHONG noi #tbl_ser_ro => tra ca danh muc nguoi dung theo bo loc dai ly — dung y cho o chon nguoi thu tien, khong phai bug",
+        checkRegionIsEmptyInSource = true,
+        twoGatewaysCallDifferentFunctions = "cong kho goi _biz.SerROInvoiceBill_WH (khong hau to ngay), cong dai ly goi _biz.SerROInvoiceBill_New20180624 => KHONG phai cap _WH/khong-_WH cua cung mot ban",
+        readOnlyButOpensTransaction = "bNeedTransaction_WH = true => mo transaction tren _dbWH trong khi _dbMain.LogUserId moi la cho gan nguoi dung",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #619 PARITY `Ser_StockAdj_Get_WH` (`BizCarSv.WH.cs`) — **RÚT LẠI KẾT LUẬN #581/#611/#618** =====
 // 3B: laptop `V20.2023.Release.V2:1408` md5 `965736f3` **KHỚP** máy 150 `V20.2023.Release:1408` `965736f3`.
 //     Cây cũ `V20:1104` md5 `fb2ee4e8` ⇒ **hai cây, hai bản** của cùng một hàm.
