@@ -31829,6 +31829,162 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   (`'A','F'` + `GuaranteeNo is null`) · `Deposit` (**`'F'`** + `GuaranteeNo is null`) ·
 //   `Deposit_TTBL_and_TTC` ⇒ **không dùng chung một hàm "tính tiền cọc"** (đúng cảnh báo ở #B125).
 // ⚠️ `Thread.Sleep(4000)` trên đường thành công — **KHÔNG port**.
+
+// ===== #B290/#B291/#B292 THỐNG KÊ NHÓM ĐẠI LÝ 02 (xe đã đến tay khách cuối) —
+//       `RptStatistic_GrpDealer02_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`)
+//       + helper `mySql_Rpt_GetClauseWhere_GrpDealer_01` (`BizHTC.Common.cs`) =====
+// **3B khớp cả 2 máy**: cửa laptop `146174,146383` ≡ 150 `146179,146388`
+//   ⇒ **`fdc3789be0e3790269ffc791af29a0fd`**; helper đo theo **TÊN** (laptop `1842`, 150 `1859`) —
+//   nội dung **giống hệt** (sáu mã).
+// 🔴🔴🔴 **DANH SÁCH "NHÓM ĐẠI LÝ" VIẾT CỨNG TRONG **CODE**, KHÔNG PHẢI MASTER**:
+//     `private string mySql_Rpt_GetClauseWhere_GrpDealer_01(string col)`
+//     `  => and {col} in ('VN009','VN068','VN063','VN012','VN064','VS086')`
+//   ⇒ Thêm/bớt đại lý khỏi "nhóm" phải **sửa mã nguồn và build lại**, không có màn quản trị.
+// 🔴🔴🔴 **BA BẢN SAO CỦA CÙNG HÀM, MỘT BẢN LỆCH — BUG THẬT**:
+//   · `TERP.BizHTC/BizHTC.Common.cs:1842` → **6 mã** (có `'VS086'`)
+//   · `TERP.BizBank/Z.HTCCode.cs:374`      → **6 mã** (có `'VS086'`)
+//   · **`TERP.BizBank/BizHTC.Common.cs:1096` → CHỈ 5 mã, THIẾU `'VS086'`**
+//   ⇒ Báo cáo chạy qua assembly **`TERP.BizBank/BizHTC.Common`** sẽ **bỏ sót đại lý `VS086`**
+//     ⇒ **cùng một "nhóm đại lý" ra hai kết quả khác nhau tuỳ đường gọi**. 📌 Ghi lại, **không tự sửa**;
+//     port dùng bản **6 mã** của `TERP.BizHTC` (đúng đường gọi của hàm này) và trả cả hai danh sách.
+// ✅ **RBAC — tổ hợp (1)**: `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**;
+//   `@strBUPatternOfUser` nạp nhưng SQL **không dùng** ⇒ có cổng ⇒ **không phải lỗ**.
+//   ⚠️ Lại gặp `"@strHTCDealerName"` **nhận** `TConst.HTCConst.**HTCDealerCode**` (lỗi lặp lần thứ **ba**
+//     sau #B269, #B284).
+// 🔴 **BỐN điều kiện "xe đã tới tay khách cuối"** (đọc từng dòng, có chú thích nguồn):
+//   · `dlsdd.DeliveryStatus in ('A','F')` — *"xe đã đưa tận khách hàng cuối"*;
+//   · **`dlsd.DealerCodeBuyer is null`** — *"bán tới khách cuối là NGƯỜI TIÊU DÙNG"* (không phải bán ngang);
+//   · `cdod.DeliveryEndDate is not null` — *"xe đã được đại lý tiếp nhận"*;
+//   · **`cdod.ConfirmStatus in ('F')`** — *"xe còn active, chưa bị thu hồi"*.
+//   ⚠️ Ở bảng lọc dùng **`('F')`** nhưng helper join dùng **`('A','F')`** ⇒ **hai bộ trạng thái khác nhau
+//     cho cùng `Car_DeliveryOrderDetail` trong cùng một câu** (khuôn đã gặp ở #B248/#B278).
+// 🔴🔴 **`right join` để "fill đủ các Dealer thuộc GrpDealer"**: nhánh phải là danh sách đại lý trong nhóm
+//   ⇒ **đại lý KHÔNG có xe nào vẫn hiện một dòng** (mọi cột xe `null`), và cột `Tt_CarId` =
+//   `case when t.CarId is null then 0 else 1 end` chính là **cờ "có xe hay không"**.
+//   ⇒ Đây là **phản ví dụ LÀNH MẠNH** của khuôn "báo cáo giấu thứ nó phải tìm"
+//     (luật `C0-…nonagesimusoctavus`): tác giả **cố ý** dùng `right join` để giữ dòng trống.
+// ⚠️ **Câu debug BỊ BỎ QUÊN, KHÔNG comment**: `select null tbl_Car_Car_Filter, t.* from #tbl_Car_Car_Filter t;`
+//   ⇒ nó **trả về một result set thật** — và biz **đặt tên** `Tables[0] = "RptStatistic_GrpDealer02_Base"`
+//   nên đã thành một phần hợp đồng API. Cột đầu tên `tbl_Car_Car_Filter` giá trị **luôn `null`** (cột rác).
+// 🔴 Bộ lọc ngày giao (`dlsdd.DeliveryDate`) đi qua `BuildClause(… "@p" …)` ⇒ **tham số runtime** (an toàn),
+//   khác các mã đại lý **nướng thẳng** vào literal.
+app.MapGet("/api/reports/statistic-grpdealer02", async (
+    AppDbContext db, ITenantContext t, DateTime? deliveryDateFrom, DateTime? deliveryDateTo) =>
+{
+    // 🔴 Danh sách nhóm đại lý VIẾT CỨNG ở nguồn (bản TERP.BizHTC — 6 mã).
+    var grpDealerBizHtc = new[] { "VN009", "VN068", "VN063", "VN012", "VN064", "VS086" };
+    var grpDealerBizBank = new[] { "VN009", "VN068", "VN063", "VN012", "VN064" };   // bản LỆCH, thiếu VS086
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && grpDealerBizHtc.Contains(d.DealerCode))
+            .ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_Car_Car_Filter — bốn điều kiện "xe đã tới tay khách cuối".
+    var cars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.FlagActive == "1"
+                    && v.DealerCode != null && grpDealerBizHtc.Contains(v.DealerCode)
+                    && v.CarId != null)
+        .ToListAsync();
+    var carIds = cars.Select(c => c.CarId!).Distinct().ToList();
+
+    // `cdod.DeliveryEndDate is not null` và `ConfirmStatus in ('F')` — CHỈ 'F' ở bảng lọc.
+    var doCars = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.CarId != null && carIds.Contains(c.CarId)
+                    && c.DeliveryEndDate != null && c.ConfirmStatus == "F")
+        .ToListAsync();
+    var carIdsWithDO = doCars.Select(c => c.CarId!).ToHashSet();
+
+    // `dlsdd.DeliveryStatus in ('A','F')` + `dlsd.DealerCodeBuyer is null` (bán tới NGƯỜI TIÊU DÙNG).
+    var dtlsQ = db.DealerDealDetails.Where(d => d.OrgId == t.OrgId && carIds.Contains(d.CarId)
+        && (d.DeliveryStatus == "A" || d.DeliveryStatus == "F"));
+    if (deliveryDateFrom != null) dtlsQ = dtlsQ.Where(d => d.DeliveryDate >= deliveryDateFrom);
+    if (deliveryDateTo != null) dtlsQ = dtlsQ.Where(d => d.DeliveryDate <= deliveryDateTo);
+    var dtls = await dtlsQ.ToListAsync();
+    var dealIds = dtls.Select(d => d.DealId).Distinct().ToList();
+    var retailDeals = (await db.DealerDeals
+            .Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id)
+                        && (d.DealerCodeBuyer == null || d.DealerCodeBuyer == ""))
+            .ToListAsync())
+        .ToDictionary(d => d.Id);
+
+    var baseRows = dtls
+        .Where(d => carIdsWithDO.Contains(d.CarId) && retailDeals.ContainsKey(d.DealId))
+        .ToList();
+    var baseCarIds = baseRows.Select(d => d.CarId).ToHashSet();
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var carByCarId = cars.GroupBy(c => c.CarId!).ToDictionary(g => g.Key, g => g.First());
+
+    // Tables[0] — câu debug bị bỏ quên nhưng ĐÃ được đặt tên nên là hợp đồng API.
+    var baseTable = baseRows
+        .Select(d => new
+        {
+            tbl_Car_Car_Filter = (string?)null,        // ⚠️ cột rác của câu debug, luôn null
+            CarId = d.CarId,
+            VIN = carByCarId.TryGetValue(d.CarId, out var cvb) ? cvb.VIN : null,
+            DeliveryOrderNo = (string?)null            // 📌 NỢ: chưa nối số lệnh xuất xe
+        }).ToList();
+
+    // Tables[1] — `right join` giữ ĐỦ đại lý trong nhóm, kể cả đại lý KHÔNG có xe.
+    var rows = new List<object>();
+    foreach (var dlrCode in grpDealerBizHtc)
+    {
+        dealers.TryGetValue(dlrCode, out var dlr);
+        var carsOfDealer = baseRows
+            .Where(d => carByCarId.TryGetValue(d.CarId, out var cv) && cv.DealerCode == dlrCode)
+            .ToList();
+
+        if (carsOfDealer.Count == 0)
+        {
+            // ✅ Đại lý KHÔNG có xe VẪN hiện một dòng — chủ đích của `right join`.
+            rows.Add(new
+            {
+                CarId = (string?)null, VIN = (string?)null,
+                ModelCode = (string?)null, SpecCode = (string?)null, SpecDescription = (string?)null,
+                DLSDDDealNo = (string?)null, DLSDDDeliveryDate = (DateTime?)null,
+                DLSDDDeliveryStatus = (string?)null,
+                Tt_CarId = 0,                                  // 🔴 cờ "có xe hay không"
+                MDDealerCode = dlrCode, MDDealerName = dlr?.DealerName
+            });
+            continue;
+        }
+
+        foreach (var d in carsOfDealer)
+        {
+            carByCarId.TryGetValue(d.CarId, out var cv);
+            retailDeals.TryGetValue(d.DealId, out var deal);
+            rows.Add(new
+            {
+                CarId = d.CarId, VIN = cv?.VIN,
+                ModelCode = cv?.ModelCode, SpecCode = cv?.ActualSpec,
+                SpecDescription = (cv?.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+                DLSDDDealNo = deal?.DealNo,
+                DLSDDDeliveryDate = d.DeliveryDate,
+                DLSDDDeliveryStatus = d.DeliveryStatus,
+                Tt_CarId = 1,
+                MDDealerCode = dlrCode, MDDealerName = dlr?.DealerName
+            });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        RptStatistic_GrpDealer02_Base = baseTable,     // Tables[0]
+        RptStatistic_GrpDealer02 = rows,               // Tables[1]
+        grpDealerCodes = grpDealerBizHtc,
+        grpDealerCodes_BizBankCopy = grpDealerBizBank,
+        hardcodedGroupNote = "DANH SACH 'NHOM DAI LY' VIET CUNG TRONG CODE, KHONG PHAI MASTER: 'private string mySql_Rpt_GetClauseWhere_GrpDealer_01(string col) => and {col} in (VN009,VN068,VN063,VN012,VN064,VS086)'. Them/bot dai ly khoi nhom phai SUA MA NGUON VA BUILD LAI, khong co man quan tri.",
+        threeCopiesOneDivergesNote = "BA BAN SAO CUA CUNG HAM, MOT BAN LECH - BUG THAT: TERP.BizHTC/BizHTC.Common.cs:1842 -> 6 ma (co VS086); TERP.BizBank/Z.HTCCode.cs:374 -> 6 ma (co VS086); TERP.BizBank/BizHTC.Common.cs:1096 -> CHI 5 MA, THIEU VS086. => Bao cao chay qua assembly TERP.BizBank/BizHTC.Common se BO SOT dai ly VS086 => CUNG MOT 'nhom dai ly' ra HAI KET QUA KHAC NHAU tuy duong goi. Ghi lai, KHONG TU SUA; port dung ban 6 ma cua TERP.BizHTC (dung duong goi cua ham nay) va tra ca hai danh sach de doi soat.",
+        rbacNote = "RBAC - to hop (1): myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung => CO CONG => khong phai lo. Lai gap '@strHTCDealerName' NHAN TConst.HTCConst.HTCDealerCode (loi lap lan thu BA sau #B269, #B284).",
+        fourConditionsNote = "BON dieu kien 'xe da toi tay khach cuoi' (co chu thich nguon): dlsdd.DeliveryStatus in ('A','F') = 'xe da dua tan khach hang cuoi'; dlsd.DealerCodeBuyer is null = 'ban toi khach cuoi la NGUOI TIEU DUNG' (khong phai ban ngang); cdod.DeliveryEndDate is not null = 'xe da duoc dai ly tiep nhan'; cdod.ConfirmStatus in ('F') = 'xe con active, chua bi thu hoi'.",
+        twoStatusSetsNote = "O bang loc dung cdod.ConfirmStatus in ('F') nhung helper join dung in ('A','F') => HAI BO TRANG THAI KHAC NHAU cho cung Car_DeliveryOrderDetail trong cung mot cau (khuon da gap o #B248/#B278).",
+        rightJoinHealthyNote = "'right join' de 'fill du cac Dealer thuoc GrpDealer': nhanh phai la danh sach dai ly trong nhom => DAI LY KHONG CO XE NAO VAN HIEN MOT DONG (moi cot xe null), va cot Tt_CarId = case when t.CarId is null then 0 else 1 end chinh la CO 'co xe hay khong'. Day la PHAN VI DU LANH MANH cua khuon 'bao cao giau thu no phai tim' (luat C0-...nonagesimusoctavus): tac gia CO Y dung right join de giu dong trong.",
+        forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_Car_Car_Filter, t.* from #tbl_Car_Car_Filter t;' => no TRA VE MOT RESULT SET THAT, va biz DAT TEN Tables[0] = 'RptStatistic_GrpDealer02_Base' nen da thanh mot phan hop dong API. Cot dau ten tbl_Car_Car_Filter gia tri LUON NULL (cot rac).",
+        paramSafetyNote = "Bo loc ngay giao (dlsdd.DeliveryDate) di qua BuildClause(..., '@p', ...) => THAM SO RUNTIME (an toan), khac cac ma dai ly NUONG THANG vao literal.",
+        debtNote = "NO: so lenh xuat xe (DeliveryOrderNo) va cac cot tu helper mySql_Rpt_GetClauseColumn_CarAndVINInfo_01 (CT_TKHQ, CT_PackingList, Pmt_Guarantee...) chua noi trong MiniHTC => tra NULL, khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/car-delivery-order-expect", async (
     AppDbContext db, ITenantContext t,
     DateTime? expectDateDFFrom, DateTime? expectDateDFTo,
