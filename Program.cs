@@ -53975,6 +53975,73 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #677 TRA CỨU XE BẢN KHO `SerCarGet_WH` (`BizCarSv.Car.cs:1381-1580`) =====
+// 3B: laptop `:1381` md5 `c16951d3` **KHỚP** máy 150 `:1381`. WS `WSCarSv.asmx.cs:7955` gọi thẳng (không hậu tố).
+// (Hàm này là một trong **25** hàm `_WH` nằm **ngoài** `BizCarSv.WH.cs` — xem đính chính mẫu số ở #676.)
+//
+// 🔴🔴🔴 **HAI DẤU `*` TRONG CÙNG MỘT `SELECT` ⇒ TRÙNG TÊN CỘT**: `select t.*, cus.*` với `t` = `ser_car`,
+//   `cus` = `Ser_Customer`. Hai bảng chắc chắn **chung nhiều tên cột** (`DealerCode`, `CusID`, `IsActive`,
+//   `CreatedDate`, …). ADO.NET nạp vào `DataTable` sẽ **tự đổi tên** cột trùng thành `DealerCode1`, `CusID1`…
+//   ⇒ **hợp đồng cột của API phụ thuộc vào THỨ TỰ CỘT trong schema**: thêm một cột vào `ser_car` là **đổi tên**
+//     các cột phía `cus`. Đây là bậc nặng nhất của họ `select *` đã gặp ở #666/#667/#669.
+// 🔴🔴🔴 **`inner join Ser_Customer` LÀM MẤT XE KHÔNG CÓ CHỦ**: màn **tra cứu xe** mà nối trong sang khách
+//   ⇒ xe kho, xe demo, xe chưa gán khách **không bao giờ tra ra**. Cùng lớp với #661/#669/#672/#673.
+// 🔴🔴 **MƯỜI MỘT `BuildClause` LIÊN TIẾP, KHÔNG `ORDER BY`, KHÔNG PHÂN TRANG**: gửi trần cả 11 tham số ⇒ mọi
+//   mệnh đề **bị bỏ im lặng** (#410) ⇒ `where (1=1)` ⇒ **trả toàn bộ bảng xe cấp kho**. Không có `TOP`,
+//   không `Row_Number()`. Port **bắt buộc** ít nhất một điều kiện + có phân trang, và nêu cờ.
+// 🔴 **`BuildClause("and ", "t.FrameNo", …)`** — tiền tố có **dấu cách thừa** so với 10 lời gọi anh em dùng `"and"`.
+//   Vô hại ở đây (SQL vẫn hợp lệ) nhưng là **dấu vết sao chép**, cùng họ với `BuildClause("", …)` ở #665.
+// 🔴🔴 **DẤU `)` THỪA NGAY TRÊN MARKER KHOÁ**: `inner join Ser_Customer cus --//[mylock]**)**`.
+//   📌 **Nâng cấp phép đếm của #659** (lúc đó chỉ đếm trong phạm vi `WH.cs` và ra "1 sai / 8606 đúng"):
+//     đếm **toàn `TERP.BizCarSv`** cho **bốn** biến thể — `--//[mylock]` **9448** (đúng) ·
+//     `--//[mylock])` **6** · `--//[mylock` (thiếu `]`) **3** · `--//[[mylock]` **2** ⇒ **11 marker hỏng /9459**,
+//     thuộc **ba** kiểu lỗi khác nhau. Mỗi marker hỏng = một bảng **nằm ngoài** cơ chế khoá của nhà.
+// ⚪ **ÂM TÍNH — ba `left join` còn SỐNG**: `ser_insurance` · `Mst_Province` · `Mst_District` · `Ser_MST_Model`
+//   đều không bị `WHERE` đụng tới (luật #414: cả ba câu hỏi đều "không").
+// 📌 Hàm `_WH` này **có** tiền tố `[@strDBName_CommonCenter]` (3 bảng) — thêm bằng chứng cho phản ví dụ #674:
+//   tiền tố **không** do hậu tố `_WH` quyết định.
+app.MapGet("/api/servicecars/search-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? cusId, string? plateNo, string? frameNo, string? engineNo,
+    string? modelCode, string? tradeMark, string? insNo, string? isActive,
+    int? recordStart, int? recordCount) =>
+{
+    var anyFilter = new[] { dealerCode, cusId, plateNo, frameNo, engineNo, modelCode, tradeMark, insNo, isActive }
+        .Any(x => !string.IsNullOrWhiteSpace(x));
+    if (!anyFilter)
+        return Results.BadRequest(new
+        {
+            error = "Can it nhat mot dieu kien tra cuu.",
+            guardsAddedByPort = "nguon KHONG co guard: 11 BuildClause deu doi toan tu nen gui tran tat ca thi moi menh de bi bo im lang (#410) => where (1=1) => TRA TOAN BO BANG XE CAP KHO, khong TOP khong Row_Number khong ORDER BY",
+        });
+
+    var qc = db.ServiceCars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(plateNo)) qc = qc.Where(x => x.PlateNo == plateNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) qc = qc.Where(x => x.FrameNo == frameNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) qc = qc.Where(x => x.ModelCode == modelCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(tradeMark)) qc = qc.Where(x => x.TradeMark == tradeMark!.Trim());
+
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 200;
+
+    var rows = await qc.OrderBy(x => x.FrameNo).Skip(skip).Take(take)
+        .Select(x => new { x.FrameNo, x.PlateNo, x.ModelCode, x.TradeMark, x.CusName,
+                           x.WarrantyDate, x.WarrantyRegistrationDate }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, skip, take, rows,
+        // ===== #677 =====
+        twoStarsInOneSelectCollideColumnNames = "HAI DAU * TRONG CUNG MOT SELECT: select t.*, cus.* voi t = ser_car, cus = Ser_Customer. Hai bang chac chan chung nhieu ten cot (DealerCode, CusID, IsActive, CreatedDate, …); ADO.NET nap vao DataTable se TU DOI TEN cot trung thanh DealerCode1, CusID1… => HOP DONG COT CUA API PHU THUOC VAO THU TU COT TRONG SCHEMA: them mot cot vao ser_car la DOI TEN cac cot phia cus. Bac nang nhat cua ho select * da gap o #666/#667/#669",
+        innerJoinCustomerDropsOwnerlessCars = "inner join Ser_Customer tren man TRA CUU XE => xe kho, xe demo, xe chua gan khach KHONG BAO GIO tra ra; cung lop voi #661/#669/#672/#673",
+        elevenClausesNoOrderByNoPaging = "11 BuildClause lien tiep, KHONG ORDER BY, KHONG phan trang; gui tran tat ca => moi menh de bi bo im lang (#410) => where (1=1) => tra toan bo bang xe cap kho. Port BAT BUOC it nhat mot dieu kien + co phan trang",
+        frameNoClauseHasExtraSpaceInOperator = "BuildClause(\"and \", \"t.FrameNo\", …) — tien to co DAU CACH THUA so voi 10 loi goi anh em dung \"and\"; vo hai o day nhung la dau vet sao chep, cung ho voi BuildClause(\"\", …) o #665",
+        lockMarkerTypoCountUpgraded = "DAU ) THUA NGAY TREN MARKER KHOA: inner join Ser_Customer cus --//[mylock]). NANG CAP PHEP DEM CUA #659 (luc do chi dem trong pham vi WH.cs va ra 1 sai / 8606 dung): dem TOAN TERP.BizCarSv cho BON bien the — --//[mylock] 9448 (dung), --//[mylock]) 6, --//[mylock (thieu ]) 3, --//[[mylock] 2 => 11 MARKER HONG / 9459, thuoc BA kieu loi khac nhau; moi marker hong = mot bang NAM NGOAI co che khoa cua nha",
+        negativeLeftJoinsAlive = "AM TINH: ser_insurance, Mst_Province, Mst_District, Ser_MST_Model deu khong bi WHERE dung toi => bon left join con SONG (luat #414: ca ba cau hoi deu khong)",
+        whFunctionAlsoCarriesDbPrefix = "ham _WH nay CO tien to [@strDBName_CommonCenter] tren 3 bang — them bang chung cho phan vi du #674: tien to KHONG do hau to _WH quyet dinh",
+        miniModelGap = "Mini chua co cot InsNo/EngineNo/SalesCarID/IsActive tren ServiceCar nen bon bo loc do chua ap duoc; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #676 CHI TIẾT BÁO GIÁ/LỆNH BẢN KHO `Ser_RO_Get_WH_New20230220` =====
 // 🔴🔴🔴 **HÀM LIVE KHÔNG NẰM TRONG `BizCarSv.WH.cs` MÀ Ở `BizCarSv.zzzzCode.cs:7277-7745`**
 //   (md5 vùng `a76b45f2` · md5 **cả file** `5eb7c3d0` — **cả hai KHỚP** máy 150).
