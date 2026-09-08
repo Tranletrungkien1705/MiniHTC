@@ -9662,6 +9662,11 @@ public sealed class RptCarAllocationByArea
     public Guid OrgId { get; set; }
     public DateTime RptDate { get; set; }
     public string ModelCode { get; set; } = "";
+    /// <summary>§12 #B359 — `Rpt_CarAllocationByArea.SpecCode`: `Rpt_CarAllocationByArea_GetX`
+    /// (`BizHTC.Report.cs:30921`) select `rpt.SpecCode` và gom `#tbl…_Draft` theo **ModelCode + SpecCode
+    /// + RptDate**, rồi `left join Mst_CarSpec` để lấy `SpecDescription`. Thiếu cột này thì báo cáo
+    /// phân bổ **gộp mất chiều spec**. Port trước (#B221) chỉ có `ModelCode`.</summary>
+    public string? SpecCode { get; set; }
     public decimal? SLMapVINAreaMB { get; set; }
     public decimal? SLMapVINAreaMT { get; set; }
     public decimal? SLMapVINAreaMN { get; set; }
@@ -10925,6 +10930,11 @@ public sealed class CarVinMaster
     /// <summary>#B30 Thứ hạng ưu tiên map VIN (`Car_Car.MapVINRanking`) — `CarCarUpdate01_New20181119`
     /// (`Biz.HTC.WH.cs:59243`) chỉ cho sửa khi xe **CHƯA map VIN** (`..._VINMapped`).</summary>
     public string? MapVINRanking { get; set; }
+    /// <summary>§12 #B360 — `Car_Car.MapVINDate`: **mốc lọc chính** của
+    /// `Rpt_CarAllocationByArea_Get_RealTimeX` (`BizHTC.Report.cs:30312`):
+    /// `and cc.MapVINDate >= '@strDateRptFrom'` / `<= '@strDateRptTo'`.
+    /// Khác <see cref="MapVINRanking"/> (thứ hạng ưu tiên, #B30) — cùng tiền tố, khác vai trò.</summary>
+    public DateTime? MapVINDate { get; set; }
     /// <summary>#B30 Trạng thái thanh toán của xe (`Car_Car.PaymentStatus`) — guard sửa ĐƠN GIÁ THỰC TẾ đòi
     /// `Stage.Pending` ("P"), khác thì ném `CarCarUpdate01_PaymentStatusNotMatched`.</summary>
     public string? PaymentStatus { get; set; }

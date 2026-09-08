@@ -2443,6 +2443,10 @@ public static class Seeder
                 "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 // §12 #B344 — Dlr_DriveTest.FlagActive (bo loc nen cua RptPivot_DlrDriveTest).
                 "ALTER TABLE public.\"DriveTests\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+                // §12 #B359 — Rpt_CarAllocationByArea.SpecCode (GetX gom theo Model+Spec+RptDate).
+                "ALTER TABLE public.\"RptCarAllocationByAreas\" ADD COLUMN IF NOT EXISTS \"SpecCode\" text NULL",
+                // §12 #B360 — Car_Car.MapVINDate (moc loc chinh cua Rpt_CarAllocationByArea_Get_RealTimeX).
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MapVINDate\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

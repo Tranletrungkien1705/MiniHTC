@@ -22339,7 +22339,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -39583,7 +39583,7 @@ app.MapPost("/api/jobs/car-allocation-report/run", async (
     foreach (var m in models)
         db.RptCarAllocationByAreas.Add(new RptCarAllocationByArea
         {
-            OrgId = t.OrgId, RptDate = rpt, ModelCode = m
+            OrgId = t.OrgId, RptDate = rpt, ModelCode = m, SpecCode = null   // §12 #B359: cột SpecCode có ở nguồn; job chưa tính được ⇒ để NULL, KHÔNG bịa.
             // 📌 11 cột số để NULL — chưa có tầng dữ liệu để tính, KHÔNG đoán.
         });
     await db.SaveChangesAsync();
@@ -40241,6 +40241,219 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B359/#B360 PHÂN BỔ XE THEO VÙNG — CẶP "ĐỌC SỐ ĐÃ CHỐT" vs "TÍNH LẠI REALTIME"
+//       (`Rpt_CarAllocationByArea_Get_WH` / `…_Get_RealTime_WH`, `TERP.BizHTC/BizHTC.Report.cs`) =====
+// **3B khớp cả 2 máy — `BizHTC.Report.cs` KHÔNG lệch offset (39863 dòng cả 2 máy), 4 md5**:
+//   `Get_WH` (vỏ)              `31161,31283` ⇒ **`36574a0b58e516da65f096c7a80ba880`**
+//   `Rpt_CarAllocationByArea_GetX`         `30921,31038` ⇒ **`f4a2ec02ba7a56875748d2fab8a6946d`**
+//   `Get_RealTime_WH` (vỏ)     `30796,30920` ⇒ **`377b68f8b53024de51950cda58244a49`**
+//   `…_Get_RealTimeX`          `30312,30670` ⇒ **`0d9ffdb502bd3530c508005c1ad1a28e`**
+//
+// 🔴🔴🔴 **CẶP "ĐỌC SỐ ĐÃ CHỐT" vs "TÍNH LẠI" — LẦN THỨ HAI TRONG HỆ** (sau #B332 HMC V1/V2):
+//   · `Get_WH` → `GetX`: **ĐỌC THẲNG bảng ảnh chụp `Rpt_CarAllocationByArea`** (số đã chốt theo
+//     `RptDate`), chỉ bổ sung `ModelName`/`SpecDescription`.
+//   · `Get_RealTime_WH` → `RealTimeX`: **TÍNH LẠI TỪ ĐẦU** qua
+//     `Car_Car → Mst_Dealer → Mst_Province → Mst_Area`, lọc theo `cc.MapVINDate` trong khoảng
+//     `From/To`, dựng `#tblCar_CarFilter → #tblCar_Car → #tblTongMapVINArea → #tblTongMapVIN → …`.
+//   ⇒ **Cùng một chỉ tiêu, hai đường tính** ⇒ hai bản **có thể ra số khác nhau** khi dữ liệu gốc đổi
+//     sau lúc chốt. 📌 Đây là **mẫu kiến trúc lặp lại**, không phải trường hợp cá biệt của #B332.
+//     **KHÔNG tự hợp nhất.**
+//   🔴 Khác biệt tham số cũng phản ánh điều đó: bản chốt nhận **MỘT** `strDateRpt`; bản realtime nhận
+//     **KHOẢNG** `strDateRptFrom`/`strDateRptTo` ⇒ **hai bản không thể so trực tiếp** trừ khi
+//     `From = To = RptDate`.
+//
+// 🔴🔴🔴 **[BAKE-PARAM-MIX] — CA THỨ HAI (sau #B347), NHƯNG NHẸ HƠN VÌ CÓ CHUẨN HOÁ**:
+//     `GetX`:      `and rpt.RptDate = '@strDateRpt'`     ← Replace nướng vào **giữa hai nháy**
+//     `RealTimeX`: `and cc.MapVINDate >= '@strDateRptFrom'` · `and cc.MapVINDate <= '@strDateRptTo'`
+//   cùng câu với `@Today` là **param runtime** ⇒ đúng khuôn trộn.
+//   ✅ **NHƯNG khác #B347 ở một điểm quyết định**: cả ba giá trị đều đi qua
+//     `TUtils.CUtils.**StandardizeDate**(…)` **ngay trước khi** nướng ⇒ đã bị ép về định dạng ngày
+//     ⇒ **bề mặt injection bị bộ chuẩn hoá chặn**, không phải bị tham số hoá chặn.
+//     Ở #B347 (`strInputDate`) **KHÔNG có** bước chuẩn hoá đó ⇒ nguy hiểm hơn hẳn.
+//   📌 **Ghi rõ mức độ**: đây là **rủi ro phụ thuộc sanitiser** (nếu `StandardizeDate` đổi hành vi hoặc
+//     trả nguyên chuỗi khi không parse được thì thủng lại). **KHÔNG gọi là lỗ hổng đã khai thác được.**
+//
+// 🔴🔴 **LỖ RBAC — VÀ LỘ RA TRỤC PHẠM VI THỨ TƯ CỦA HỆ**: ở **cả hai** X, dòng nạp phạm vi
+//     `//alParamsCoupleSql.AddRange(new object[] { "@strAbilityOfUser", drAbilityOfUser["**MBBankBUPattern**"] });`
+//   **bị comment cả dòng**, `myCommon_CheckHTCDirect` = **0 hit**, và (theo luật `C0-…tricesimusoctavus`)
+//   đã grep thêm `myHTC_RemoveInfo_` / `myCommon_IsHTCDirect` ⇒ **không có** ⇒ **tổ hợp (2) = lỗ thật**.
+//   🔴 Quan trọng hơn: cột phạm vi ở đây là **`MBBankBUPattern`**, **KHÔNG phải `BUPattern`** —
+//     ⇒ **trục phạm vi thứ TƯ** của hệ, sau `BUPattern` (đại lý theo BU), `DealerCode`
+//       (`drAbilityOfUser["DealerCode"]`, #B335) và cơ chế che cột `IsHTCDirect` (#B354).
+//   ⇒ Mọi kết luận RBAC trước đây chỉ đếm `strBUPatternOfUser` ⇒ **mù với trục này**. Ghi nợ.
+// 🔴 `@Today` được bind ở **cả hai** X nhưng **SQL không dùng** ⇒ tham số mồ côi.
+// 🔴 `order by rpt.ModelCode, rpt.SpecCode` nằm **trong `select … into #tbl…`** ⇒ **vô nghĩa**
+//   (đã có luật; cùng khuôn #B245/#B299).
+// 🔴 `--drop table #tbl_Rpt_CarAllocationByArea_Draft` **bị comment**.
+// 🔴 Cột `SLTong = isnull(SLMapVIN,0) + isnull(SLTonKhoHT,0)` là **cột tính**, không đọc từ bảng.
+// 🔴 Chú thích `--Số xe phân bổ theo tỉ lệ` đứng một mình ⇒ **cột dự kiến chưa làm**; port **không** bịa.
+app.MapGet("/api/reports/car-allocation-by-area", async (
+    AppDbContext db, ITenantContext t, DateTime? dateRpt) =>
+{
+    // 🔴 Bản CHỐT: đọc thẳng bảng ảnh chụp theo MỘT ngày báo cáo.
+    // 🔴 BẪY HAI BẢNG TÊN GẦN GIỐNG (đã ghi ở #B221): nguồn đọc **`Rpt_`**CarAllocationByArea (kết quả
+    //   job sinh), KHÔNG phải `Mst_`CarAllocationByArea (master tỷ lệ). Dùng đúng `RptCarAllocationByAreas`.
+    var q = db.RptCarAllocationByAreas.Where(r => r.OrgId == t.OrgId);
+    if (dateRpt != null) q = q.Where(r => r.RptDate == dateRpt);
+    var snap = await q.ToListAsync();
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = snap.Select(r => new
+    {
+        r.ModelCode,
+        ModelName = r.ModelCode != null && models.TryGetValue(r.ModelCode, out var m) ? m.ModelName : null,
+        r.SpecCode,
+        SpecDescription = r.SpecCode != null && specs.TryGetValue(r.SpecCode, out var sp) ? sp.SpecDesc : null,
+        r.RptDate,
+        r.SLMapVINAreaMB, r.SLMapVINAreaMT, r.SLMapVINAreaMN,
+        r.SLXePhanBOMB, r.SLXePhanBOMT, r.SLXePhanBOMN,
+        r.SLXeConThieuMB, r.SLXeConThieuMT, r.SLXeConThieuMN,
+        r.SLMapVIN, r.SLTonKhoHT,
+        SLTong = (r.SLMapVIN ?? 0) + (r.SLTonKhoHT ?? 0)     // 🔴 cột TÍNH, không đọc từ bảng
+        // 🔴 Nguồn có chú thích "--Số xe phân bổ theo tỉ lệ" đứng một mình ⇒ cột CHƯA LÀM. Không bịa.
+    })
+    // 🔴 `order by` của nguồn nằm trong `select … into` ⇒ VÔ NGHĨA; port sắp ở câu trả kết quả.
+    .OrderBy(x => x.ModelCode, StringComparer.Ordinal).ThenBy(x => x.SpecCode, StringComparer.Ordinal)
+    .ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_CarAllocationByArea = rows,          // Tables[0]
+        snapshotVsRealtimeNote = "CAP 'DOC SO DA CHOT' vs 'TINH LAI' - LAN THU HAI TRONG HE (sau #B332 HMC V1/V2): Rpt_CarAllocationByArea_Get_WH -> GetX DOC THANG bang anh chup Rpt_CarAllocationByArea (so da chot theo RptDate), chi bo sung ModelName/SpecDescription; Rpt_CarAllocationByArea_Get_RealTime_WH -> RealTimeX TINH LAI TU DAU qua Car_Car -> Mst_Dealer -> Mst_Province -> Mst_Area, loc theo cc.MapVINDate trong khoang From/To. CUNG MOT CHI TIEU, HAI DUONG TINH => hai ban CO THE RA SO KHAC NHAU khi du lieu goc doi sau luc chot. Day la MAU KIEN TRUC LAP LAI, khong phai truong hop ca biet cua #B332. KHONG TU HOP NHAT. Khac biet tham so cung phan anh dieu do: ban chot nhan MOT strDateRpt; ban realtime nhan KHOANG From/To => hai ban KHONG THE SO TRUC TIEP tru khi From = To = RptDate.",
+        bakeParamMixNote = "[BAKE-PARAM-MIX] CA THU HAI (sau #B347), NHUNG NHE HON VI CO CHUAN HOA: GetX co \"and rpt.RptDate = '@strDateRpt'\" va RealTimeX co \"and cc.MapVINDate >= '@strDateRptFrom'\" / \"<= '@strDateRptTo'\" - Replace nuong vao GIUA HAI NHAY, cung cau voi @Today la param runtime => dung khuon tron. NHUNG khac #B347 o mot diem quyet dinh: ca ba gia tri deu di qua TUtils.CUtils.StandardizeDate(...) NGAY TRUOC KHI nuong => da bi ep ve dinh dang ngay => be mat injection BI BO CHUAN HOA CHAN, khong phai bi tham so hoa chan. O #B347 (strInputDate) KHONG CO buoc chuan hoa do => nguy hiem hon han. GHI RO MUC DO: day la RUI RO PHU THUOC SANITISER (neu StandardizeDate doi hanh vi hoac tra nguyen chuoi khi khong parse duoc thi thung lai). KHONG goi la lo hong da khai thac duoc.",
+        rbacHoleAndFourthAxisNote = "LO RBAC - VA LO RA TRUC PHAM VI THU TU CUA HE: o CA HAI X, dong nap pham vi '//alParamsCoupleSql.AddRange(new object[] { \"@strAbilityOfUser\", drAbilityOfUser[\"MBBankBUPattern\"] });' BI COMMENT CA DONG, myCommon_CheckHTCDirect = 0 hit, va (theo luat C0-...tricesimusoctavus) da grep them myHTC_RemoveInfo_ / myCommon_IsHTCDirect => KHONG CO => TO HOP (2) = LO THAT. Quan trong hon: cot pham vi o day la MBBankBUPattern, KHONG PHAI BUPattern => TRUC PHAM VI THU TU cua he, sau BUPattern (dai ly theo BU), DealerCode (drAbilityOfUser['DealerCode'], #B335) va co che che cot IsHTCDirect (#B354). Moi ket luan RBAC truoc day chi dem strBUPatternOfUser => MU voi truc nay. Ghi no.",
+        orphanAndOrderByNote = "@Today duoc bind o CA HAI X nhung SQL KHONG DUNG => tham so mo coi. 'order by rpt.ModelCode, rpt.SpecCode' nam TRONG 'select ... into #tbl...' => VO NGHIA (cung khuon #B245/#B299); port sap xep o cau tra ket qua. '--drop table #tbl_Rpt_CarAllocationByArea_Draft' BI COMMENT.",
+        computedColumnNote = "SLTong = isnull(SLMapVIN,0) + isnull(SLTonKhoHT,0) la COT TINH, khong doc tu bang. Chu thich '--So xe phan bo theo ti le' dung mot minh => COT DU KIEN CHUA LAM; port KHONG bia."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/car-allocation-by-area-realtime", async (
+    AppDbContext db, ITenantContext t, DateTime? dateRptFrom, DateTime? dateRptTo) =>
+{
+    // 🔴 Bản REALTIME: tính lại từ Car_Car → Mst_Dealer → Mst_Province → Mst_Area theo MapVINDate.
+    var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.MapVINDate != null);
+    if (dateRptFrom != null) q = q.Where(v => v.MapVINDate >= dateRptFrom);
+    if (dateRptTo != null) q = q.Where(v => v.MapVINDate <= dateRptTo);
+    var cars = await q.ToListAsync();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tblCar_Car → gắn vùng (Bắc/Trung/Nam) qua Mst_Province → Mst_Area.
+    var rows = cars.Select(v =>
+    {
+        Dealer? d = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var dd) ? dd : null;
+        var provCode = d?.ProvinceCode;
+        var area = provCode != null && provinces.TryGetValue(provCode, out var p) ? p.AreaCode : null;
+        return new { v.CarId, v.VIN, v.ModelCode, v.SpecCode, v.DealerCode, ProvinceCode = provCode, AreaCode = area, v.MapVINDate };
+    }).ToList();
+
+    // #tblTongMapVINArea / #tblTongMapVIN — gom theo Model/Spec, tách ba vùng.
+    var summary = rows.GroupBy(x => new { x.ModelCode, x.SpecCode })
+        .Select(g => new
+        {
+            g.Key.ModelCode, g.Key.SpecCode,
+            SLMapVINAreaMB = g.Count(x => x.AreaCode == "MB"),
+            SLMapVINAreaMT = g.Count(x => x.AreaCode == "MT"),
+            SLMapVINAreaMN = g.Count(x => x.AreaCode == "MN"),
+            SLMapVIN = g.Count(),
+            AreaUnknown = g.Count(x => x.AreaCode == null)   // 📌 xe không tra được vùng
+        })
+        .OrderBy(x => x.ModelCode, StringComparer.Ordinal).ThenBy(x => x.SpecCode, StringComparer.Ordinal)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        Rpt_CarAllocationByArea_RealTime = summary,
+        detailCount = rows.Count,
+        areaUnknownTotal = summary.Sum(x => x.AreaUnknown),
+        snapshotVsRealtimeNote = "Xem ghi chu day du o /api/reports/car-allocation-by-area (snapshotVsRealtimeNote): day la BAN TINH LAI, ban kia DOC SO DA CHOT; hai ban co the ra so khac nhau.",
+        rbacHoleNote = "LO RBAC to hop (2) y het ban chot: dong nap '@strAbilityOfUser' = drAbilityOfUser['MBBankBUPattern'] BI COMMENT, khong cong, khong che cot. Truc pham vi MBBankBUPattern la TRUC THU TU cua he - moi phep dem truoc day chi dem strBUPatternOfUser nen MU voi no.",
+        debtNote = "NO - KHONG DOAN: cac cot SLXePhanBO* / SLXeConThieu* / SLTonKhoHT cua ban realtime can them nhanh ke hoach phan bo va ton kho HT chua co du => KHONG tra cot bia; chi tra phan MapVIN theo vung tinh duoc that. Xe khong tra duoc vung dem rieng o areaUnknownTotal."
+    });
+}).RequireAuthorization();
+
+// ===== #B361 LỊCH SỬ ĐỔI MÀU XE — `Rpt_CarColorChangeHistory_WH`
+//       (vỏ `TERP.BizHTC/DMS40/zTemp.Report.cs:10641` → `Rpt_CarColorChangeHistoryX`,
+//        `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:195750`) =====
+// **3B khớp cả 2 máy**: vỏ `zTemp.Report.cs` (KHÔNG lệch offset, 15713 dòng cả 2 máy)
+//   `10641,10768` ⇒ **`7d48eff6a42a5b66a68f9bb207c5fc68`**;
+//   `…X` laptop `195750,195911` ≡ 150 `195755,195916` ⇒ **`c027951df96dcd2a6f31bc8e29fbed90`**.
+//
+// ✅✅ **PHÂN TRANG ĐÚNG CHUẨN — ĐỐI CHỨNG TỐT** (cùng nhóm #B242/#B335, ngược #B266):
+//     `identity(bigint, 0, 1) MyIdxSeq  … into #tblRpt_CarColorChangeHistory_Filter_Draft`
+//     `select **Count(0) MyCount** from #tblRpt_CarColorChangeHistory_Filter_Draft t`   ← **ĐẾM TRƯỚC**
+//     `… where (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nFilterRecordEnd)` ← **rồi mới cắt**
+//   ⇒ `MyCount` là **tổng số dòng thoả lọc**, không phải số dòng của trang ⇒ **đúng**.
+//   ⇒ Và cận trên dùng **`RecordEnd`** (chỉ số kết thúc), **không** dùng số lượng — đúng, khác **bug
+//     #B266** nơi cận trên bị lấy nhầm bằng *count*.
+//
+// ✅ **BỘ LỌC TỰ DO ĐI QUA BUILDER CÓ CẤU TRÚC, KHÔNG NỐI CHUỖI THÔ**: `strFt_WhereClause` do client
+//   truyền **không** được ghép thẳng mà qua
+//     `zzzzClauseWhere_strFilterWhereClause = CmUtils.SqlUtils.**BuildWhere**(…, strFt_WhereClause, …)`
+//   rồi mới `string.Format(" and ({0})", …)`.
+//   ⇒ **Không phải injection trần**. 📌 Nhưng `BuildWhere` **đã có tiền án** trong bộ nhớ:
+//     toán tử `isnull/isnotnull` từng **bỏ điều kiện ⇒ trả all** (38 chỗ), và `in` với giá trị
+//     **không bọc nháy ⇒ crash**. ⇒ Endpoint này **thừa hưởng** rủi ro đó; đã ghi nợ, **không tự vá**.
+// 🔴 **Cột trả về cũng do client chọn**: `strRt_Cols_Rpt_CarColorChangeHistory`, và
+//   `bGet_Rpt_CarColorChangeHistory = (… != null && ….Length > 0)` ⇒ **rỗng ⇒ KHÔNG trả bảng chi tiết**,
+//   khối `zzzzClauseSelect_…_zOut` giữ giá trị mặc định **`"-- Nothing."`** ⇒ số bảng trả về **thay đổi**.
+//   ✅ Đây là **kiểu thứ năm** của "số bảng động": điều khiển bằng **độ dài chuỗi cột yêu cầu**,
+//     không phải bằng cờ `'1'`/`'0'`.
+// 🔴🔴 **LỖ RBAC — tổ hợp (2)**: `//alParamsCoupleSql.AddRange(… drAbilityOfUser["MBBankBUPattern"])`
+//   **bị comment**, và `//myCache_Mst_Distributor_ViewAbility_Get(drAbilityOfUser);` **cũng bị comment**
+//   ⇒ **hai lớp phạm vi cùng bị tắt**. `CheckHTCDirect` = 0 hit; đã grep `myHTC_RemoveInfo_` ⇒ không có.
+//   ⇒ **Lỗ thật**, lại trên trục **`MBBankBUPattern`** (trục thứ tư) + một cơ chế nữa
+//     **`myCache_Mst_Distributor_ViewAbility_Get`** — **cơ chế phạm vi THỨ NĂM** (theo nhà phân phối).
+// 🔴 `order by t.MyIdxSeq asc` nằm ở **câu trả kết quả** ⇒ **có hiệu lực thật** (khác #B245/#B359).
+// ⚠️ **NỢ**: bảng `Rpt_CarColorChangeHistory` chưa có trong MiniHTC ⇒ dùng entity `CarColorChange`
+//   đã port trước đó làm nguồn tương đương; các cột chỉ có ở bảng lịch sử gốc để **NULL**.
+app.MapGet("/api/reports/car-colorchange-history", async (
+    AppDbContext db, ITenantContext t,
+    string? carId, string? dealerCode, string? cols, int? recordStart, int? recordCount) =>
+{
+    var q = db.CarColorChanges.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(c => c.CarId == carId!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var all = await q.OrderBy(c => c.Id).ToListAsync();
+
+    // ✅ MyCount ĐẾM TRƯỚC khi cắt trang — đúng khuôn nguồn.
+    var myCount = all.Count;
+    var start = recordStart ?? 0;
+    var end = recordCount != null ? start + recordCount.Value - 1 : int.MaxValue;
+    var page = all.Where((_, i) => i >= start && i <= end).ToList();
+
+    // 🔴 Cột trả về do client chọn; RỖNG ⇒ KHÔNG trả bảng chi tiết (nguồn giữ "-- Nothing.").
+    var wantDetail = !string.IsNullOrWhiteSpace(cols);
+
+    return Results.Ok(new
+    {
+        MyCount = myCount,                                   // Tables[0]
+        count = wantDetail ? page.Count : 0,
+        Rpt_CarColorChangeHistory = wantDetail
+            ? page.Select(c => new
+            {
+                c.CarId, c.DealerCode, c.ModelCode, c.SpecCode,
+                c.ColorCodeOld, c.ColorCodeNew, c.ChangedAt
+            }).ToList<object>()
+            : null,
+        pagingNote = "PHAN TRANG DUNG CHUAN - DOI CHUNG TOT (cung nhom #B242/#B335, nguoc #B266): 'identity(bigint, 0, 1) MyIdxSeq ... into #tblRpt_CarColorChangeHistory_Filter_Draft'; 'select Count(0) MyCount from #tblRpt_CarColorChangeHistory_Filter_Draft t' - DEM TRUOC; roi '... where (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nFilterRecordEnd)' - MOI CAT. MyCount la TONG SO DONG THOA LOC, khong phai so dong cua trang => DUNG. Va can tren dung RecordEnd (chi so ket thuc), KHONG dung so luong - dung, khac BUG #B266 noi can tren bi lay nham bang count.",
+        buildWhereNote = "BO LOC TU DO DI QUA BUILDER CO CAU TRUC, KHONG NOI CHUOI THO: strFt_WhereClause do client truyen KHONG duoc ghep thang ma qua 'CmUtils.SqlUtils.BuildWhere(..., strFt_WhereClause, ...)' roi moi string.Format(' and ({0})', ...). KHONG PHAI INJECTION TRAN. Nhung BuildWhere DA CO TIEN AN trong bo nho: toan tu isnull/isnotnull tung BO DIEU KIEN => TRA ALL (38 cho), va 'in' voi gia tri KHONG BOC NHAY => CRASH. Endpoint nay THUA HUONG rui ro do; da ghi no, KHONG tu va.",
+        dynamicTableByColsNote = "COT TRA VE CUNG DO CLIENT CHON: strRt_Cols_Rpt_CarColorChangeHistory, va bGet_... = (... != null && ....Length > 0) => RONG => KHONG TRA BANG CHI TIET, khoi zzzzClauseSelect_..._zOut giu gia tri mac dinh '-- Nothing.' => so bang tra ve THAY DOI. Day la KIEU THU NAM cua 'so bang dong': dieu khien bang DO DAI CHUOI COT YEU CAU, khong phai bang co '1'/'0'.",
+        rbacHoleNote = "LO RBAC to hop (2): '//alParamsCoupleSql.AddRange(... drAbilityOfUser[\"MBBankBUPattern\"])' BI COMMENT, va '//myCache_Mst_Distributor_ViewAbility_Get(drAbilityOfUser);' CUNG BI COMMENT => HAI LOP PHAM VI CUNG BI TAT. CheckHTCDirect = 0 hit; da grep myHTC_RemoveInfo_ => khong co => LO THAT, lai tren truc MBBankBUPattern (truc thu tu) + mot co che nua myCache_Mst_Distributor_ViewAbility_Get - CO CHE PHAM VI THU NAM (theo nha phan phoi).",
+        orderByNote = "'order by t.MyIdxSeq asc' nam o CAU TRA KET QUA => CO HIEU LUC THAT (khac #B245/#B359 noi order by nam trong 'select ... into').",
+        debtNote = "NO: bang Rpt_CarColorChangeHistory chua co trong MiniHTC => dung entity CarColorChange da port truoc do lam nguon tuong duong; cac cot chi co o bang lich su goc de NULL. KHONG doan."
+    });
+}).RequireAuthorization();
 // ===== #B356/#B357 BACKORDER HTC — CẶP GOM THEO SPEC / THEO ĐẠI LÝ, DÙNG CHUNG MỘT BUILDER
 //       (`RptStatistic_HTCBackOrder_SpecCode_01_WH_New20181119` /
 //        `…_Dealer_01_WH_New20181119`, `DataWH/Biz.HTC.WH.cs`
@@ -53984,7 +54197,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null);   // #B248, #B323, #B332
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null);   // #B248, #B323, #B332, #B360
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
