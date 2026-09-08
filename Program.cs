@@ -8723,6 +8723,73 @@ app.MapPost("/api/tcginvoices/calc-before-approve", async (
     });
 }).RequireAuthorization();
 
+// ===== #B115 SINH SỐ HOÁ ĐƠN TCG — `VAT_TCGInvoice_GenTCGInvoiceNo_New20181115` =====
+// Trace LIVE: WS → `_biz.VAT_TCGInvoice_GenTCGInvoiceNo_New20181115`
+//   (`BizHTC.InvoiceHTC_TCG.cs:4801`). 3B đo thật, **khớp cả 2 máy**: start=4801 md5
+//   `458eea22f053c1c0acfd7f0ca13db050`.
+// 🔴 **DÃY SỐ RIÊNG CHO TỪNG CẶP `(InvoiceIDCode, InvoiceIDType)`** — không phải dãy toàn cục:
+//    `select max(vt.TCGInvoiceNo) from VAT_TCGInvoice vt where InvoiceIDCode = @… and InvoiceIDType = @…`
+//    ⇒ mỗi **mẫu hoá đơn** có dãy số riêng. Gộp thành một dãy chung là **trùng số giữa các mẫu**.
+// 🔴 **SỐ ĐẦU TIÊN LÀ `"0000000"` (BẢY SỐ 0), KHÔNG PHẢI `"0000001"`**:
+//    `else strTCGInvoiceNo = "0000000";` khi chưa có bản ghi nào. Port khởi tạo bằng 1 ⇒ **lệch một
+//    số** so với toàn bộ dữ liệu lịch sử.
+// 🔴 **ĐỆM 0 VỀ ĐÚNG 7 KÝ TỰ bằng chuỗi `if/else if`**, không dùng `PadLeft`:
+//    độ dài 1→"000000"+x · 2→"00000"+x · … · 6→"0"+x.
+//    ⚠️ **Không có nhánh cho độ dài ≥ 7** ⇒ số từ **8 chữ số trở lên KHÔNG được đệm** (trả nguyên),
+//      và cũng **không có guard tràn**. Port `PadLeft(7,'0')` cho **cùng kết quả** ở mọi độ dài ≤ 7
+//      và cũng không cắt khi > 7 ⇒ tương đương; ghi rõ để người sau khỏi tưởng port đơn giản hoá.
+// 🔴 **`max()` chạy trên cột CHUỖI** (`TCGInvoiceNo` là text). Thứ tự chuỗi = thứ tự số **chỉ nhờ
+//    việc luôn đệm về 7 ký tự**; khi vượt 7 chữ số, `max` chuỗi sẽ **chọn sai** (vd `"9999999"` >
+//    `"10000000"`). Đây là **giới hạn thật của thiết kế**, ghi lại chứ không tự sửa.
+// 🔴🔴 **KHÔNG GHI DB, KHÔNG KHOÁ — sinh số CÓ THỂ TRÙNG khi hai người bấm cùng lúc.**
+//    Hàm chỉ `select max` rồi `+1` và **trả về**; không `insert`, không `update`, không khoá tem.
+//    (`bNeedTransaction = true` nhưng bên trong **không ghi gì** ⇒ transaction rỗng.)
+//    ⇒ Hai phiên gọi đồng thời **nhận cùng một số**; chống trùng phải do bước **lưu hoá đơn** đảm
+//      nhiệm. Port giữ đúng và trả `noReservationNote` để không ai tưởng số đã được "giữ chỗ".
+// ✅ RBAC: `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` — bắt buộc FlagDirect.
+// 🔴 Trả về bảng tên **`Tbl_TCGInvoiceNo`** với đúng **một cột `TCGInvoiceNo`**.
+app.MapGet("/api/tcginvoices/gen-invoice-no", async (
+    AppDbContext db, ITenantContext t, string? invoiceIDCode, string? invoiceIDType) =>
+{
+    var idCode = (invoiceIDCode ?? "").Trim();
+    var idType = (invoiceIDType ?? "").Trim();
+
+    // 🔴 max() trong phạm vi CẶP (InvoiceIDCode, InvoiceIDType) — dãy riêng từng mẫu hoá đơn.
+    var maxNo = await db.VatTcgInvoices
+        .Where(v => v.OrgId == t.OrgId
+                    && (v.InvoiceIDCode ?? "") == idCode
+                    && (v.InvoiceIDType ?? "") == idType
+                    && v.TCGInvoiceNo != null)
+        .MaxAsync(v => v.TCGInvoiceNo);
+
+    string next;
+    if (!string.IsNullOrWhiteSpace(maxNo) && long.TryParse(maxNo, out var n))
+    {
+        // Đệm 0 về ĐÚNG 7 ký tự; số ≥ 8 chữ số KHÔNG bị đệm và KHÔNG bị cắt (như nguồn).
+        next = (n + 1).ToString();
+        if (next.Length < 7) next = next.PadLeft(7, '0');
+    }
+    else
+    {
+        // 🔴 Chưa có bản ghi nào ⇒ "0000000" (BẢY số 0), KHÔNG phải "0000001".
+        next = "0000000";
+    }
+
+    return Results.Ok(new
+    {
+        Tbl_TCGInvoiceNo = new[] { new { TCGInvoiceNo = next } },
+        invoiceIDCode = idCode, invoiceIDType = idType,
+        maxTCGInvoiceNo = maxNo,
+        scopeNote = "DAY SO RIENG CHO TUNG CAP (InvoiceIDCode, InvoiceIDType) - khong phai day toan cuc: 'select max(vt.TCGInvoiceNo) from VAT_TCGInvoice where InvoiceIDCode = @... and InvoiceIDType = @...'. Moi MAU HOA DON co day so rieng; gop thanh mot day chung la TRUNG SO giua cac mau.",
+        firstNumberNote = "SO DAU TIEN LA '0000000' (BAY SO 0), KHONG PHAI '0000001': nguon co 'else strTCGInvoiceNo = \"0000000\";' khi chua co ban ghi nao. Port khoi tao bang 1 => LECH MOT SO so voi toan bo du lieu lich su.",
+        paddingNote = "DEM 0 VE DUNG 7 KY TU bang chuoi if/else if (do dai 1..6), KHONG dung PadLeft. KHONG co nhanh cho do dai >= 7 => so tu 8 chu so tro len KHONG duoc dem (tra nguyen) va KHONG co guard tran. Port dung PadLeft(7,'0') cho CUNG ket qua o moi do dai <= 7 va cung khong cat khi > 7 => tuong duong.",
+        stringMaxNote = "max() chay tren cot CHUOI (TCGInvoiceNo la text). Thu tu chuoi = thu tu so CHI NHO viec luon dem ve 7 ky tu; khi vuot 7 chu so, max chuoi se CHON SAI (vd '9999999' > '10000000'). Day la GIOI HAN THAT cua thiet ke - ghi lai, khong tu sua.",
+        noReservationNote = "KHONG GHI DB, KHONG KHOA - SINH SO CO THE TRUNG khi hai nguoi bam cung luc. Ham chi 'select max' roi +1 va TRA VE; khong insert/update/khoa tem (bNeedTransaction = true nhung ben trong KHONG ghi gi => transaction rong). Hai phien goi dong thoi NHAN CUNG MOT SO; chong trung phai do buoc LUU HOA DON dam nhiem. So tra ve KHONG duoc 'giu cho'.",
+        rbacNote = "myCommon_CheckHTCDirect(..., TConst.Flag.Active) - bat buoc FlagDirect.",
+        returnShapeNote = "Nguon tra ve bang ten 'Tbl_TCGInvoiceNo' voi dung MOT cot 'TCGInvoiceNo'."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5

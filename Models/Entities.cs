@@ -6367,6 +6367,11 @@ public sealed class VatTcgInvoice
     /// <summary>Loại điều chỉnh (`InvoiceAdjType`).</summary>
     public string? InvoiceAdjType { get; set; }
     public string? InvoiceIDType { get; set; }
+    /// <summary>🔴 #B115 — `VAT_TCGInvoice.InvoiceIDCode` (**mã mẫu hoá đơn**). Cùng với
+    /// <see cref="InvoiceIDType"/> tạo thành **PHẠM VI của dãy số hoá đơn**: `VAT_TCGInvoice_GenTCGInvoiceNo`
+    /// lấy `max(TCGInvoiceNo)` **theo CẶP `(InvoiceIDCode, InvoiceIDType)`** ⇒ mỗi mẫu một dãy riêng.
+    /// Thiếu cột này thì không phân dãy được, và mọi mẫu sẽ **trùng số**.</summary>
+    public string? InvoiceIDCode { get; set; }
     public string? RefNo { get; set; }
     /// <summary>"P" tạo → "F" duyệt / "C" huỷ (KHÔNG phải A/R).</summary>
     public string VatTCGStatus { get; set; } = "P";
