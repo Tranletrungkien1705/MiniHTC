@@ -53008,6 +53008,91 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #636 TRA CỨU PHIẾU TIẾP NHẬN BẢN MÁY TÍNH BẢNG `Ser_ReceptionF_GetX_New20210512` =====
+// 3B: `Tab.cs:7915` md5 `fcde59bc` **KHỚP** máy 150 `:7933` (lệch **+18**); bản anh em `_New20180921`
+//   `:7559` md5 `3c98e6de` cũng **khớp**.
+//
+// 🔴 **BỐN BẢN, BỐN VỎ BỌC — NHƯNG CHỈ HAI BẢN ĐƯỢC WS GỌI**: `Ser_ReceptionF_GetX` có bốn thân
+//   (`:7327` trần · `_New20180921` `:7559` · `_New20210512` `:7915` · `_New20180926` `:8268`) và bốn vỏ bọc.
+//   Quét toàn cây `_biz.Ser_ReceptionF_Get*`: **chỉ** `_New20180921` (4 file WS) và `_New20210512` (1 file)
+//   được gọi ⇒ bản trần và `_New20180926` **chết qua bề mặt WS**.
+// 🔴🔴 **HAI CỔNG LIVE, HAI BẢN KHÁC NHAU — VÀ NGUỒN GHI LẠI NGAY TRÊN DÒNG GỌI**:
+//     cổng **Tab** (`WSCarSvTab.asmx.cs:2156`): `_biz.Ser_ReceptionF_Get_New20210512( **//Ser_ReceptionF_Get_New20180921(**`
+//     cổng **CarSv** (`WSCarSv.asmx.cs:33087`): vẫn `_biz.Ser_ReceptionF_Get_New20180921(`
+//   ⇒ Lời gọi cũ **bị comment ngay trên cùng một dòng** — dấu vết trực tiếp của lần chuyển bản, và cho thấy
+//     **chỉ cổng Tab được chuyển**, cổng CarSv thì không.
+// 🔴🔴🔴 **CẢ BỐN BẢN TỰ GHI LOG BẰNG *CÙNG MỘT TÊN***: trong thân mỗi bản đều có
+//   `strFunctionName = "Ser_ReceptionF_GetX"` (ghi đè giá trị người gọi truyền vào) ⇒ nhật ký **không phân biệt
+//   được** bản nào đã chạy. Bốn thân SQL khác nhau, **một danh tính trong log**. (Họ nhãn sai #627/#631/#632,
+//   nhưng đây là mức nặng nhất: mất khả năng truy vết giữa các phiên bản.)
+// 🔴🔴 **BẢN TAB BỎ TIỀN TỐ CHÉO CHO *BẢY* DANH MỤC CÙNG LÚC** — `ser_Customer` · `ser_mst_Model` ·
+//   `Sys_User` · `Mst_District` · `Mst_Province` · `Mst_Dealer` · `Ser_Mst_ReceptionFAudit`:
+//     `_New20180921`: `inner join **[@strDBName_CommonCenter].[dbo]**.ser_Customer cus` …
+//     `_New20210512`: `inner join **ser_Customer** cus` … (và dòng Replace `"@strDBName_CommonCenter"` **bị xoá hẳn**)
+//   ⇒ **Ca thứ NĂM** của "phân kỳ danh mục theo cổng" (#619 · #621 · #624 · #625 · nay #636) — và là ca **lớn
+//     nhất**: bảy bảng đổi DB trong **một** màn. Củng cố tiếp phần RÚT LẠI ở #619 (không có DB nào tên
+//     CommonCenter; chỗ giữ chỗ đó **luôn** = DB Main).
+// 🔴🔴 **BẢN TAB BỎ HẲN SỐ LỆNH SỬA CHỮA — VÀ NGUỒN GHI RÕ LÝ DO**:
+//     `--, ro.RONo` · `--left join Ser_RO ro --//[mylock]` / `--	on serrf.ReceptionFNo = ro.ReceptionFNo`
+//   kèm chú thích của chính tác giả ở cuối hàm:
+//     `// không trả thêm RONo nữa, vì n gây tê liệt hệ thống`
+//   ⇒ Đây là **quyết định sau một sự cố hiệu năng**, không phải sơ suất ⇒ port **giữ nguyên việc không trả**
+//     `RONo` ở màn Tab, nêu cờ; **không** "khôi phục cho đủ cột".
+//   ⚪ Đáng chú ý: ở #629 (`Ser_ReceptionF_HomeX`) chính `inner join Ser_RO` là thứ làm **rơi phiếu chưa lập
+//     lệnh**; ở đây cùng cái join đó bị bỏ vì **nặng**. Cùng một join, hai vấn đề khác nhau, hai màn khác nhau.
+// 🔴 Ba khối kết quả bật/tắt bằng cờ: `Ser_ReceptionF` · `Ser_ReceptionFDtl` · `Ser_ReceptionFAttachFile`
+//   (khuôn `-- Nothing.` #582). Cùng bệnh khuôn `*_GetX` đã đếm ở #626/#632: phân trang bị comment · cờ
+//   `(str != null && str.Length > 0)` · `Convert.ToInt64` không guard · `order by` trên `SELECT … INTO`.
+app.MapGet("/api/tab/receptions", async (AppDbContext db, ITenantContext t,
+    string? receptionFNo, string? dealerCode, string? plateNo, string? cusName, string? status,
+    int? recordStart, int? recordCount) =>
+{
+    var qy = db.Receptions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(receptionFNo)) qy = qy.Where(x => x.ReceptionFNo == receptionFNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(x => x.CusName!.Contains(cusName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var heads = await qy.OrderBy(x => x.ReceptionFNo).Skip(skip).Take(take).ToListAsync();
+    var nos = heads.Select(x => x.ReceptionFNo).ToList();
+
+    var details = await db.ReceptionDetails.Where(x => x.OrgId == t.OrgId && nos.Contains(x.ReceptionFNo))
+        .Select(x => new { x.ReceptionFNo, x.ReceptionFAudCode, x.ReceptionFAudType }).ToListAsync();
+    var attachs = await db.ReceptionAttachFiles.Where(x => x.OrgId == t.OrgId && nos.Contains(x.ReceptionFNo))
+        .Select(x => new { x.ReceptionFNo, x.FileIndex, x.ReceptionFilePath, x.ReceptionFileName, x.ReceptionFileType })
+        .ToListAsync();
+
+    var items = heads.Select(h => new
+    {
+        h.ReceptionFNo, h.DealerCode, h.PlateNo, h.CusID, h.CusName, h.ModelName,
+        h.Status, h.CreatedAt, h.DeliveredAt, h.CarID,
+        // Bản Tab CỐ Ý KHÔNG trả RONo (xem cờ) — port giữ nguyên, không "khôi phục cho đủ cột".
+        detailCount = details.Count(d => d.ReceptionFNo == h.ReceptionFNo),
+        attachCount = attachs.Count(a => a.ReceptionFNo == h.ReceptionFNo),
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCountAsSource = total, count = items.Count, items,
+        details, attachments = attachs,
+        // ===== #636 =====
+        fourVariantsOnlyTwoReachedByWs = "Ser_ReceptionF_GetX co bon than (:7327 tran, _New20180921 :7559, _New20210512 :7915, _New20180926 :8268) va bon vo boc; quet _biz.Ser_ReceptionF_Get* thi CHI _New20180921 (4 file WS) va _New20210512 (1 file) duoc goi => ban tran va _New20180926 CHET qua be mat WS",
+        twoLiveGatewaysTwoVariants = "cong Tab (WSCarSvTab.asmx.cs:2156) goi _New20210512 voi loi goi cu //Ser_ReceptionF_Get_New20180921( BI COMMENT NGAY TREN CUNG MOT DONG; cong CarSv (WSCarSv.asmx.cs:33087) VAN goi _New20180921 => chi cong Tab duoc chuyen ban",
+        allFourVariantsLogTheSameName = "trong than moi ban deu co strFunctionName = Ser_ReceptionF_GetX (ghi de gia tri nguoi goi truyen) => nhat ky KHONG phan biet duoc ban nao da chay: bon than SQL khac nhau, MOT danh tinh trong log",
+        tabVariantStripsCrossDbPrefix = "ban Tab bo tien to [@strDBName_CommonCenter].[dbo] cho BAY danh muc cung luc: ser_Customer, ser_mst_Model, Sys_User, Mst_District, Mst_Province, Mst_Dealer, Ser_Mst_ReceptionFAudit; va dong Replace @strDBName_CommonCenter bi XOA HAN",
+        fifthAndLargestPerGatewayCatalogSplit = "ca thu NAM cua phan ky danh muc theo cong (#619, #621, #624, #625, nay #636) va la ca LON NHAT: bay bang doi DB trong MOT man — cung co tiep phan RUT LAI o #619",
+        tabVariantDropsRoNoOnPurpose = "ban Tab comment --, ro.RONo va --left join Ser_RO ro / --on serrf.ReceptionFNo = ro.ReceptionFNo, kem chu thich cua chinh tac gia o cuoi ham: khong tra them RONo nua, vi n gay te liet he thong => QUYET DINH SAU SU CO HIEU NANG, khong phai so suat",
+        portKeepsRoNoOmitted = "port GIU NGUYEN viec khong tra RONo o man Tab, KHONG khoi phuc cho du cot",
+        sameJoinTwoDifferentProblems = "o #629 chinh inner join Ser_RO lam ROI phieu chua lap lenh; o day cung cai join do bi bo vi NANG — cung mot join, hai van de khac nhau, hai man khac nhau",
+        threeResultBlocksGatedByFlags = "Ser_ReceptionF / Ser_ReceptionFDtl / Ser_ReceptionFAttachFile, khuon -- Nothing. (#582)",
+        sameTemplateDefects = "phan trang bi comment; co (str != null && str.Length > 0); Convert.ToInt64 khong guard; order by tren SELECT INTO — da dem o #626/#632",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #634 MASTER HÌNH THỨC GIAO XE `Mst_DeliveryForm_GetX` (`Master.cs:10765`) =====
 // 3B: laptop `:10765` md5 `57b49855` **KHỚP** máy 150 `:10765`. TRACE: `WSCarSv.asmx.cs:39347` →
 //   vỏ bọc `Mst_DeliveryForm_Get` (`:10905`) → thân thật `…_GetX`, chạy trên `_dbMain`.
