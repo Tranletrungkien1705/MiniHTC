@@ -10609,6 +10609,18 @@ public sealed class CarVinMaster
     /// `/api/vins/update-invoice-transferred`). Port cũ thiếu hẳn hai cột này.</summary>
     public string? InvoiceNoTransferred { get; set; }
     public DateTime? InvoiceTransferredDate { get; set; }
+
+    // ===== #B110 parity `Car_VIN` — hồ sơ thế chấp/giải chấp (`Car_VIN_UpdMulti_Profile_New20210521`) =====
+    /// <summary>🔴 `Car_VIN.StatusMortageEnd` + `LogDateTimeStatusMortageEnd` — **trạng thái KẾT THÚC
+    /// thế chấp** và mốc đổi trạng thái đó. Nguồn ghi **cùng lô** với `MortageEndDate`.</summary>
+    public string? StatusMortageEnd { get; set; }
+    public DateTime? LogDateTimeStatusMortageEnd { get; set; }
+    /// <summary>`Car_VIN.DRFullDocDate` — ngày **đủ hồ sơ**. ⚠️ Chú thích nguồn: *"Ngày giao hồ sơ
+    /// LUÔN truyền vào Null: lý do nhập cùng BillNo"* ⇒ màn này **không** đặt ngày giao hồ sơ.</summary>
+    public DateTime? DRFullDocDate { get; set; }
+    /// <summary>`Car_VIN.CQNo` / `CONo` — số chứng nhận chất lượng / số C/O.</summary>
+    public string? CQNo { get; set; }
+    public string? CONo { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>

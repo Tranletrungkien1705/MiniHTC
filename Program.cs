@@ -8819,6 +8819,138 @@ app.MapPost("/api/vins/update-invoice-transferred", async (
     });
 }).RequireAuthorization();
 
+// ===== #B110 SỬA HÀNG LOẠT HỒ SƠ THẾ CHẤP CỦA VIN — `Car_VIN_UpdMulti_Profile_New20210521` =====
+// Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_Profile_New20210521`** (`BizHTC.Car.cs:2495`).
+//   3B đo thật, **khớp cả 2 máy**: start=2495 md5 `f22a0a8ed9ac87c1f9b48662fa9df96c`.
+// 🔴 **GUARD CẶP NGÀY — HAI CHIỀU, KHÔNG ĐỐI XỨNG** (`:2753-2790`):
+//    · `MortageEndDate < MortageStartDate` ⇒ ném `File_CarVINUpdate_InvalidMortageEnd`;
+//    · **`MortageStartDate` RỖNG mà `MortageEndDate` CÓ** ⇒ **cũng ném** — tức **không được nhập ngày
+//      kết thúc khi chưa có ngày bắt đầu**. Chiều ngược lại (**có start, không end**) thì **HỢP LỆ**.
+//    ⚠️ Nguồn còn nhét **cả biểu thức điều kiện dưới dạng CHUỖI** vào tham số chẩn đoán
+//      (`"Check.ConditionErrRaise", "(objMortageStartDate != DBNull.Value && …)"`) — port giữ lại
+//      để đối chiếu log nguồn.
+// 🔴 **"Xe ĐÃ tạo giải chấp thì KHÔNG được sửa mã ngân hàng bàn giao tài sản"** (chú thích nguyên văn):
+//    guard **chỉ chạy khi `MortageBankCode` THAY ĐỔI** (`if (!StringEqualIgnoreCase(mới, cũ))`),
+//    rồi dò `RD_ReqRedeemDtl` với `DMReqDtlStatus **not in ('R','C')`** ⇒ có dòng ⇒ ném
+//    `CarVINUpdate_ExistRDNo`. Sửa các trường **khác** vẫn được — **guard điều kiện kép** (khuôn #B87).
+//    ⚠️ Chú thích nguồn ngay trong SQL: *"K cần vì chỉ có A,P"* — tác giả biết `not in ('R','C')`
+//      là thừa nhưng **vẫn giữ**; port giữ nguyên.
+//    ⚠️ **Lỗi nhãn**: tham số chẩn đoán `"MortageBankCode_Update"` lại gán **`objMortageEndDate`**
+//      (copy-paste sai biến) — giữ nguyên để đối chiếu log.
+// 🔴 **`PackingListNo` là BẮT BUỘC**: `if (Rows[0]["PackingListNo"] == DBNull.Value) throw
+//    CarVINUpdate_InvalidPackingListNo` ⇒ VIN **chưa gắn packing list** không sửa hồ sơ được.
+// ⚠️ **HAI guard ĐÃ BỊ COMMENT** — port thêm lại là **chặt hơn nguồn**:
+//    · kiểm `DocumentsStatus == Stage.Pending` (`:2639-2649`);
+//    · kiểm `MortageStartDate` so với `CODate` (`:2721-2752`), kèm cả `CODate` rỗng.
+//      Biến `objCODate` cũng **bị comment ở chỗ khai báo** ⇒ **`CODate` không còn tham gia** hàm này.
+// ⚠️ Chú thích nguồn: *"Ngày giao hồ sơ **LUÔN truyền vào Null**: lý do nhập cùng BillNo"*
+//    ⇒ màn này **không** đặt ngày giao hồ sơ, dù bộ cột có `DRFullDocDate`.
+// 🔴 `MyBuildDBDT_Common` ghi **12 cột**: `VIN` · `MortageStartDate` · `MortageEndDate` ·
+//    `StatusMortageEnd` · `LogDateTimeStatusMortageEnd` · `DRFullDocDate` · `CQNo` · `CONo` ·
+//    `MortageBankCode` · `RedeemDate` · `LogLUDateTime` · `LogLUBy`.
+// 📌 §12: `CarVinMaster.StatusMortageEnd` · `.LogDateTimeStatusMortageEnd` · `.DRFullDocDate` ·
+//    `.CQNo` · `.CONo`.
+app.MapPost("/api/vins/update-profile-multi", async (
+    List<VinProfileUpdDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Car_VIN_UpdMulti_Profile_CarVINTableBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = new List<object>();
+
+    foreach (var (r, i) in rows.Select((r, i) => (r, i)))
+    {
+        var vin = (r.VIN ?? "").Trim().ToUpperInvariant();
+        var cv = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == vin);
+        if (cv is null)
+            return Results.BadRequest(new { error = "Common_InvalidVIN", check = new { Idx = i, VIN = vin } });
+
+        // 🔴 `PackingListNo` BẮT BUỘC.
+        if (string.IsNullOrWhiteSpace(cv.PackingListNo))
+            return Results.BadRequest(new
+            {
+                error = "CarVINUpdate_InvalidPackingListNo",
+                check = new { Idx = i, VIN = vin, cv.PackingListNo }
+            });
+
+        // 🔴 GUARD CẶP NGÀY — hai chiều, KHÔNG đối xứng.
+        if (r.MortageStartDate is not null && r.MortageEndDate is not null
+            && r.MortageEndDate < r.MortageStartDate)
+            return Results.BadRequest(new
+            {
+                error = "File_CarVINUpdate_InvalidMortageEnd",
+                check = new
+                {
+                    VIN = vin, r.MortageStartDate, r.MortageEndDate,
+                    Check_ConditionErrRaise = "(objMortageStartDate != DBNull.Value && objMortageEndDate != DBNull.Value && (Convert.ToDateTime(objMortageEndDate) < Convert.ToDateTime(objMortageStartDate)))"
+                }
+            });
+        if (r.MortageStartDate is null && r.MortageEndDate is not null)
+            return Results.BadRequest(new
+            {
+                error = "File_CarVINUpdate_InvalidMortageEnd",
+                check = new
+                {
+                    VIN = vin, r.MortageStartDate, r.MortageEndDate,
+                    Check_ConditionErrRaise = "(objMortageStartDate == DBNull.Value && objMortageEndDate != DBNull.Value)"
+                },
+                note = "KHONG duoc nhap ngay ket thuc khi chua co ngay bat dau. Chieu nguoc lai (co start, khong end) thi HOP LE."
+            });
+
+        // 🔴 Chỉ kiểm khi ĐỔI mã ngân hàng — guard điều kiện kép.
+        var bankNew = (r.MortageBankCode ?? "").Trim();
+        var bankOld = (cv.MortageBankCode ?? "").Trim();
+        if (!string.Equals(bankNew, bankOld, StringComparison.OrdinalIgnoreCase))
+        {
+            var rd = await db.ReqRedeemDtls
+                .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin
+                    && x.DMReqDtlStatus != "R" && x.DMReqDtlStatus != "C");
+            if (rd is not null)
+                return Results.BadRequest(new
+                {
+                    error = "CarVINUpdate_ExistRDNo",
+                    check = new
+                    {
+                        VIN = vin, MortageBankCode_old = bankOld,
+                        // ⚠️ Lỗi nhãn của nguồn: gán objMortageEndDate cho "MortageBankCode_Update".
+                        MortageBankCode_Update = r.MortageEndDate,
+                        ReqDMNo = rd.DRListCode   // MiniHTC: dau moi tuong duong ReqDMNo cua nguon
+                    },
+                    note = "Xe DA tao giai chap thi KHONG duoc sua ma ngan hang ban giao tai san. Guard CHI chay khi MortageBankCode THAY DOI."
+                });
+        }
+
+        // 12 cột của `MyBuildDBDT_Common`.
+        cv.MortageStartDate = r.MortageStartDate;
+        cv.MortageEndDate = r.MortageEndDate;
+        cv.StatusMortageEnd = r.StatusMortageEnd;
+        cv.LogDateTimeStatusMortageEnd = r.StatusMortageEnd is null ? cv.LogDateTimeStatusMortageEnd : now;
+        cv.DRFullDocDate = r.DRFullDocDate;
+        cv.CQNo = string.IsNullOrWhiteSpace(r.CQNo) ? null : r.CQNo.Trim();
+        cv.CONo = string.IsNullOrWhiteSpace(r.CONo) ? null : r.CONo.Trim();
+        cv.MortageBankCode = string.IsNullOrWhiteSpace(bankNew) ? null : bankNew;
+        cv.RedeemDate = r.RedeemDate;
+        cv.LogLUDateTime = now; cv.LogLUBy = by;
+        updated.Add(new { vin, cv.MortageStartDate, cv.MortageEndDate, cv.MortageBankCode, cv.RedeemDate });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updatedCount = updated.Count, updated,
+        datePairGuardNote = "GUARD CAP NGAY HAI CHIEU, KHONG DOI XUNG: (a) MortageEndDate < MortageStartDate => nem InvalidMortageEnd; (b) MortageStartDate RONG ma MortageEndDate CO => CUNG NEM. Chieu nguoc lai (co start, khong end) thi HOP LE. Nguon nhet ca BIEU THUC dieu kien duoi dang CHUOI vao tham so chan doan 'Check.ConditionErrRaise' - port giu lai de doi chieu log.",
+        bankChangeGuardNote = "'Xe DA tao giai chap thi KHONG duoc sua ma ngan hang ban giao tai san': guard CHI chay khi MortageBankCode THAY DOI, roi do RD_ReqRedeemDtl voi DMReqDtlStatus NOT IN ('R','C') => co dong => nem CarVINUpdate_ExistRDNo. Sua cac truong KHAC van duoc (guard dieu kien kep - khuon #B87). Chu thich trong SQL: 'K can vi chi co A,P' - tac gia biet not in (R,C) la thua nhung VAN GIU.",
+        labelBugNote = "LOI NHAN cua nguon: tham so chan doan 'MortageBankCode_Update' lai gan objMortageEndDate (copy-paste sai bien). Giu nguyen de doi chieu log.",
+        packingListNote = "PackingListNo la BAT BUOC: VIN chua gan packing list KHONG sua ho so duoc (CarVINUpdate_InvalidPackingListNo).",
+        commentedGuardsNote = "HAI guard DA BI COMMENT - port them lai la CHAT HON NGUON: (1) kiem DocumentsStatus == Stage.Pending (:2639-2649); (2) kiem MortageStartDate so voi CODate (:2721-2752). Bien objCODate cung BI COMMENT o cho khai bao => CODate KHONG CON tham gia ham nay.",
+        docDateNote = "Chu thich nguon: 'Ngay giao ho so LUON truyen vao Null: ly do nhap cung BillNo' => man nay KHONG dat ngay giao ho so, du bo cot co DRFullDocDate.",
+        writeColsNote = "MyBuildDBDT_Common ghi 12 cot: VIN, MortageStartDate, MortageEndDate, StatusMortageEnd, LogDateTimeStatusMortageEnd, DRFullDocDate, CQNo, CONo, MortageBankCode, RedeemDate, LogLUDateTime, LogLUBy."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -41753,6 +41885,7 @@ record CarSpecUpdateCheckDto(string? SpecCode, string? FlagInvoiceFactory);   //
 record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi duoc FlagActive
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
+record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
 record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109
 record OsDealDetailConfirmWarrantyDto(string? DealNo, string? CarId, DateTime? CusConfirmedWarrantyDate);   // #B104
 record SalesManUpdateStatusDto(string? SMHyundaiCode, string? SMStatus, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);   // #B100 - KHONG co FlagActive: biz suy tu SMStatus
