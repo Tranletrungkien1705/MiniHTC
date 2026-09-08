@@ -11134,6 +11134,94 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     autoTempNote = "Bảng Email_SendEmailAutoTemp dùng SỐ (có mã -1) và CÓ nhánh else ⇒ mã lạ/NULL hiện \"Lỗi\".",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #592 `Email_SendEmailCreate` — **TÊN LÀ "CREATE" NHƯNG THỰC RA LÀ JOB QUÉT HÀNG ĐỢI** =====
+// Nguồn: `SendMail.cs:25` + hàm con `ProcessSaveSendEmail` (`:570`).
+//
+// 🔴 **CHỮ KÝ HÀM KHÔNG CÓ MỘT THAM SỐ NGHIỆP VỤ NÀO** — chỉ sáu tham số hạ tầng
+//   (`strGWUserCode`, `strGWPassword`, `strTid`, `strPartnerCode`, `strPartnerUserCode`, `strLanguageCode`).
+//   ⇒ Nó **không** tạo email theo dữ liệu client gửi; nó **quét** `Email_SendEmailAutoTemp` (`status='0'`
+//     và `EffectDate <= GETDATE()`), rồi với mỗi dòng gọi `ProcessSaveSendEmail(...)` để sinh một email.
+//   ⇒ Tên nói dối **lần thứ ba** (sau #576 `..._OnlyByBulletinID` và #579 `..._Delete` dùng để kích hoạt lại).
+//   📌 **Đính chính #587**: ở đó tôi ghi *"`Email_SendEmailCreate` không kiểm dung lượng đính kèm"* — đúng
+//     về hiện tượng, nhưng lý do sâu hơn: hàm này **không nhận tệp từ client**, nên **không có gì để kiểm**.
+//     Kết luận "guard chỉ có ở đường gửi lô" vẫn đứng, nhưng cách diễn đạt cũ dễ khiến người đọc tưởng đây là
+//     một cửa nhập liệu bị bỏ sót guard.
+//
+// ⚪ **KIỂM TRA ÂM TÍNH QUAN TRỌNG — SUÝT KẾT LUẬN SAI**: vòng lặp trong `Email_SendEmailCreate` **không**
+//   cập nhật trạng thái dòng tạm, nên thoạt nhìn tưởng job chạy lại sẽ **lấy lại đúng những dòng đó và sinh
+//   email trùng vô hạn**. Đọc tiếp hàm con thì thấy `ProcessSaveSendEmail` **CÓ** khối
+//   `#region //Update Status Email Temp` đặt `dt_Temp.Rows[0]["status"] = Constants.Flag.Active` ⇒ **không lặp**.
+//   ⇒ Bằng chứng sống cho luật *"đọc tới khi THẤY"*: dừng ở hàm ngoài là báo nhầm một lỗi nghiêm trọng.
+//
+// 🔴🔴 **HẰNG ≠ GIÁ TRỊ, VÀ TÊN HẰNG NÓI NGƯỢC NGHĨA**: dòng tạm **đã xử lý** được đánh dấu bằng
+//   `Constants.Flag.**Active**` — mở định nghĩa (`Const.Main.cs:28`) thì **giá trị là `"1"`**.
+//   Câu quét lọc `t.status = '0'`. Vậy trong bảng này `'1'` nghĩa là **ĐÃ XỬ LÝ**, còn tên hằng đọc lên là
+//   *"đang hoạt động"*. Ai sửa code theo **tên** hằng sẽ hiểu ngược hoàn toàn.
+// 🔴 **EMAIL SINH TỪ JOB KHÔNG BAO GIỜ CÓ TỆP ĐÍNH KÈM**: lời gọi truyền **chuỗi rỗng** cho cả
+//   `strFileAttachtment` (chú ý **sai chính tả trong nguồn**: `Attachtment`) lẫn `strUserName` và `strNote`;
+//   `strStatus` truyền cứng `"0"`. ⇒ Dù cấu hình lô có tệp, nhánh tự động **bỏ hết**.
+// 🔴 `dt_Email_Detail.Rows[0]["**SendDate**"] = DateTime.Now` — đây là lúc **TẠO**, chưa gửi gì cả; cột tên
+//   *"ngày gửi"* thực ra là **ngày tạo bản ghi** ⇒ mọi báo cáo theo ngày gửi đều lệch (họ #567: `GETDATE()`
+//   làm ngày chứng từ). Lại là **giờ máy ứng dụng**, lưu dạng chuỗi (#573/#591).
+// 🔴 `dt_Temp.Rows[0]` **không kiểm `Rows.Count`** — **lần thứ BA** trong cùng `SendMail.cs` (#588, #589).
+// ⚠️ `_dbMain.SaveData("Email_SendEmail", dt_Email_Detail)` **không** truyền danh sách cột ⇒ ghi **mọi** cột
+//   (khuôn đã gặp ở #589 nhánh Create).
+app.MapPost("/api/emails/run-auto-job", async (AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var now = DateTime.Now;
+    var nowStr = now.ToString("yyyy-MM-dd HH:mm:ss");
+
+    // Nguồn quét: status = 0 và EffectDate <= GETDATE(). MiniHTC lưu CurrentDate dạng chuỗi (#591).
+    var qy = db.EmailSendAutoTemps.Where(x => x.OrgId == t.OrgId && x.Status == "0");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var pending = await qy.OrderBy(x => x.Id).Take(500).ToListAsync();
+
+    var created = 0;
+    var skippedNoEmail = 0;
+    foreach (var row in pending)
+    {
+        // Nguồn KHÔNG kiểm gì ở vòng lặp này (guard rỗng từ #591 để lọt email trống tới tận đây).
+        if (string.IsNullOrWhiteSpace(row.CusEmail)) { skippedNoEmail++; continue; }
+
+        db.EmailSends.Add(new EmailSend
+        {
+            OrgId = t.OrgId,
+            BatchNo = row.BatchId,
+            Email = row.CusEmail,
+            EmailType = row.TypeEmail,
+            Subject = row.Subject,
+            Body = row.Body,
+            Status = "0",                       // nguồn truyền cứng "0"
+            CusId = row.CusID,
+            DealerCode = row.DealerCode,
+            FileAttachment = null,              // nguồn truyền chuỗi rỗng — job KHÔNG đính kèm
+            UserName = null,                    // nguồn truyền chuỗi rỗng
+            Note = null,
+            IsAuto = "1",
+            SendDate = now,                     // nguồn: DateTime.Now lúc TẠO, không phải lúc gửi
+        });
+
+        // ProcessSaveSendEmail đánh dấu dòng tạm ĐÃ XỬ LÝ bằng Constants.Flag.Active = "1".
+        row.Status = "1";
+        created++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        scanned = pending.Count, created, skippedNoEmail,
+        functionNameSaysCreateButIsAJob = "Email_SendEmailCreate khong co mot tham so nghiep vu nao — no QUET Email_SendEmailAutoTemp roi sinh email",
+        correctionTo587 = "ham nay khong nhan tep tu client nen khong co gi de kiem dung luong; ket luan guard-chi-o-duong-lo van dung",
+        wouldNotLoopForeverNegativeCheck = "vong lap ngoai khong danh dau, nhung ProcessSaveSendEmail CO cap nhat status dong tam => khong sinh email trung vo han",
+        processedFlagUsesActiveConstant = "danh dau DA XU LY bang Constants.Flag.Active = 1 (Const.Main.cs:28) trong khi cau quet loc status=0 => ten hang noi NGUOC nghia",
+        autoJobNeverAttachesFiles = "loi goi truyen chuoi rong cho strFileAttachtment (sai chinh ta trong nguon), strUserName, strNote",
+        sendDateIsCreationTime = "Rows[0][SendDate] = DateTime.Now luc TAO, chua gui gi ca — moi bao cao theo ngay gui deu lech (ho #567)",
+        appClockAsString = true,
+        rowsZeroWithoutCountCheckThirdTime = "dt_Temp.Rows[0] khong kiem Rows.Count — lan thu BA trong SendMail.cs (#588, #589)",
+        saveDataWritesAllColumns = "_dbMain.SaveData(Email_SendEmail, dt) khong truyen danh sach cot",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #591 NẠP HÀNG ĐỢI NGƯỜI NHẬN (`ProcessSaveSendEmailAutoTemp`, `SendMail.cs:775`) =====
 // Hàm nội bộ, **một** nơi gọi: `SendMail.cs:1066` (trong `Email_BatchSendEmailCreate`). Nhận `DataSet` từ
 //   client, lọc từng dòng người nhận rồi ghi xuống `Email_SendEmailAutoTemp`, sau đó **chép sang DB kho**.
