@@ -53008,6 +53008,101 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #642 TỒN KHO GỘP VỊ TRÍ `Ser_InvReportBalanceRpt_SumLocation_WH_New20221011` (`WH.cs:24797`) =====
+// 3B: laptop `:24797` md5 `3f3d2e0e` **KHỚP** máy 150 `:24797`. WS: `WSCarSv.asmx.cs:30180`.
+// DIFF với anh em vừa port ở #641 (`…BalanceRpt_WH_New20221011`) — hai màn **cùng một báo cáo tồn**, khác ở
+//   chỗ bản này **gộp các vị trí của cùng một phụ tùng thành một dòng**.
+//
+// 🔴🔴🔴 **HAI MÀN, HAI NGỮ NGHĨA LỌC MÃ PHỤ TÙNG HOÀN TOÀN KHÁC NHAU**:
+//     #641 : `BuildClauseConditionList("and", "p.PartCode", **strPartCodeList**, "|")` — **danh sách IN**, tham số hoá;
+//     #642 : `and p.PartCode **like '%@PartCode%'**` với `"@PartCode"` ← `strPartCode` **thay chuỗi thẳng**.
+//   ⇒ Ba hệ quả **cùng lúc**:
+//     ① **TIÊM SQL**: giá trị client truyền được nối thẳng vào giữa hai dấu nháy — một dấu `'` là vỡ/khai thác.
+//     ② **`like '%…%'` trên cột MÃ** = bộ lọc nghiệp vụ trá hình (luật #412): tìm `A01` **cũng ra** `XA010`.
+//     ③ **Bỏ trống ≠ không lọc**: `strPartCode` rỗng ⇒ `like '%%'` ⇒ khớp mọi giá trị **nhưng loại hết dòng có**
+//        **`PartCode` NULL** (NULL không khớp `like`) ⇒ khác hẳn "không áp bộ lọc".
+//   📌 Đếm trong `BizCarSv.WH.cs`: dạng `like '%@…%'` (bake vào giữa `%…%`) chỉ có **3** site ⇒ **thiểu số**,
+//     nên đây là **ngoại lệ của một hàm**, không phải quy ước nhà.
+// 🔴🔴 **GỘP VỊ TRÍ BẰNG `STUFF … FOR XML PATH` — LỆCH MỘT KÝ TỰ**:
+//     `stuff((select ', ' + s2.Location from #tbl_TonKho s2 where s2.partid = tk.partid FOR XML PATH('')), **1,1**, '')`
+//   Dấu phân cách là `', '` (**hai** ký tự) nhưng `stuff` chỉ **bỏ 1** ⇒ chuỗi kết quả **bắt đầu bằng một dấu**
+//   **cách** (`" A, B"`). Nhỏ nhưng có thật và tái lập được.
+//   ⚠️ Thêm hai điểm cùng chỗ: subquery **không** `distinct` ⇒ vị trí **lặp** nếu một phụ tùng có nhiều dòng
+//     cùng vị trí; và `FOR XML PATH` **escape ký tự XML** ⇒ mã vị trí chứa `&` sẽ ra `&amp;`.
+// 🔴 **`select distinct` ĐI KÈM `group by`** trong cùng câu ⇒ `distinct` **thừa** (sau `group by` mỗi nhóm đã là
+//   một dòng) — dấu hiệu chắp vá.
+// ⚪ **KIỂM TRA ÂM TÍNH — `group by` KHÔNG làm nở dòng**: `group by` có cả `tk.StockInDate` và `tk.AgeOfExist`,
+//   thoạt nhìn tưởng một phụ tùng nhiều vị trí sẽ ra nhiều dòng. Nhưng `#tbl_StockInDate` nối vào
+//   `on op.PartID = g.PartID` (**chỉ theo PartID**) ⇒ mọi dòng của cùng một phụ tùng có **cùng** `StockInDate`
+//   ⇒ vẫn gộp đúng một dòng. Ghi lại để lượt sau khỏi soi lại.
+// 🔴 **BẢN NÀY KHÔNG DÙNG TEMPLATE `zzB_tbl_ser_inv_partInstance_*`** (ba dòng `Replace` của #641 **vắng mặt**)
+//   — nó tự viết cả ba khối. ⇒ Bổ sung vào bức tranh đếm ở #641: trong cùng một cụm có **ba** kiểu quan hệ với
+//   template: **dùng thật** · **gọi nhưng token không có trong SQL (chết)** · **không gọi, tự viết**.
+// 🔴 **HAI HÀM CHỈ ĐỌC, HAI CÁCH KẾT THÚC GIAO DỊCH**: #641 kết bằng `CommitSafety(_dbWH)`, bản này bằng
+//   `RollbackSafety(_dbWH)` — cùng một cụm báo cáo, không thống nhất.
+// 🔴 Kế thừa nguyên vẹn hai lỗi đã ghi ở #641 (không nhắc lại chi tiết): `DATEDIFF(…, GETDATE())` làm **báo cáo**
+//   **lịch sử không tái lập được**, và `left join ser_mst_part p` + `where p.IsActive='1'` **giết LEFT** làm
+//   phụ tùng ngưng dùng mà **còn tồn** biến mất.
+app.MapGet("/api/report/stock-balance-sumlocation-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, DateTime? toDate) =>
+{
+    var asOf = (toDate ?? DateTime.Today).Date.AddDays(1);
+    var q0 = db.PartInstances.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim());
+    // Nguồn: like %@PartCode% (bake). Port dùng Contains có tham số hoá và nêu cờ.
+    if (!string.IsNullOrWhiteSpace(partCode)) q0 = q0.Where(x => x.PartCode.Contains(partCode!.Trim()));
+    var inst = await q0.Select(x => new { x.PartCode, x.LocationID, x.Quantity, x.SIPrice, x.SIVAT,
+                                          x.DateIn, x.DateOut }).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync();
+
+    var rows = inst.GroupBy(x => x.PartCode).Select(gp =>
+    {
+        var g = gp.ToList();
+        var slc = g.Where(x => x.DateIn != null && x.DateIn < asOf).Sum(x => x.Quantity)
+                - g.Where(x => x.DateOut != null && x.DateOut < asOf).Sum(x => x.Quantity);
+        decimal Cost(decimal qty, decimal? p, decimal? v) => qty * (p ?? 0m) * (1m + (v ?? 0m) / 100m);
+        var tgc = g.Where(x => x.DateIn != null && x.DateIn < asOf).Sum(x => Cost(x.Quantity, x.SIPrice, x.SIVAT))
+                - g.Where(x => x.DateOut != null && x.DateOut < asOf).Sum(x => Cost(x.Quantity, x.SIPrice, x.SIVAT));
+        var newestIn = g.Where(x => x.DateIn != null && x.DateIn < asOf).Max(x => x.DateIn);
+        var p2 = parts.FirstOrDefault(x => x.PartCode == gp.Key);
+        // Nguồn gộp vị trí bằng STUFF(… FOR XML PATH) — port dùng string.Join, KHÔNG để dấu cách thừa
+        //   và CÓ khử trùng lặp (xem hai cờ bên dưới).
+        var locsRaw = g.Select(x => x.LocationID).Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+        return new
+        {
+            partCode = gp.Key, partName = p2?.PartName, unit = p2?.Unit,
+            SLC = slc, TGC = tgc,
+            location = string.Join(", ", locsRaw.Distinct().OrderBy(x => x)),
+            locationAsSourceWouldBe = " " + string.Join(", ", locsRaw),   // nguồn: thừa 1 dấu cách + KHÔNG khử trùng
+            duplicateLocationEntries = locsRaw.Count - locsRaw.Distinct().Count(),
+            stockInDate = newestIn,
+            ageOfExistAsSource = newestIn == null ? (int?)null : (int)(DateTime.Today - newestIn.Value.Date).TotalDays,
+            ageOfExistAsOfReportDate = newestIn == null ? (int?)null : (int)(asOf.AddDays(-1) - newestIn.Value.Date).TotalDays,
+        };
+    }).Where(r => r.SLC != 0).OrderBy(r => r.partCode).ToList();
+
+    return Results.Ok(new
+    {
+        asOfExclusive = asOf, count = rows.Count, rows,
+        // ===== #642 =====
+        siblingUsesInListThisOneUsesLike = "#641 dung BuildClauseConditionList(and, p.PartCode, strPartCodeList, |) — danh sach IN, tham so hoa; ban nay dung and p.PartCode like %@PartCode% voi @PartCode <- strPartCode THAY CHUOI THANG => hai man cung mot bao cao ton, HAI ngu nghia loc ma phu tung",
+        likeBakeIsInjectionSurface = "gia tri client truyen duoc noi thang vao giua hai dau nhay — mot dau nhay don la vo/khai thac",
+        likeOnCodeColumnIsDisguisedBusinessFilter = "like %…% tren cot MA phu tung: tim A01 CUNG RA XA010 (luat #412)",
+        emptyIsNotSameAsNoFilter = "strPartCode rong => like %% => khop moi gia tri NHUNG loai het dong co PartCode NULL (NULL khong khop like) => khac han khong ap bo loc",
+        likeBakeCountedInWhFile = "dang like %@…% (bake vao giua %…%) chi co 3 site trong BizCarSv.WH.cs => THIEU SO, la ngoai le cua mot ham chu khong phai quy uoc nha",
+        stuffRemovesOneCharButSeparatorIsTwo = "stuff((select , + s2.Location … FOR XML PATH()), 1,1, ) — dau phan cach la , (HAI ky tu: dau phay va dau cach) nhung stuff chi BO 1 => chuoi ket qua BAT DAU BANG MOT DAU CACH",
+        stuffSubqueryHasNoDistinct = "subquery gop vi tri khong co distinct => vi tri LAP neu mot phu tung co nhieu dong cung vi tri",
+        duplicateLocationEntriesMeasured = "cot duplicateLocationEntries dem dung so muc bi lap ma nguon se in ra",
+        forXmlPathEscapesXmlChars = "FOR XML PATH escape ky tu XML => ma vi tri chua & se ra &amp;",
+        distinctRedundantAfterGroupBy = "select distinct di kem group by trong cung cau => distinct THUA (sau group by moi nhom da la mot dong) — dau hieu chap va",
+        groupByDoesNotExpandRows = "AM TINH: group by co ca tk.StockInDate va tk.AgeOfExist, thoat nhin tuong mot phu tung nhieu vi tri se ra nhieu dong; nhung #tbl_StockInDate noi vao on op.PartID = g.PartID (CHI theo PartID) nen moi dong cua cung mot phu tung co CUNG StockInDate => van gop dung mot dong",
+        thisVariantDoesNotCallTemplateAtAll = "ba dong Replace zzB_tbl_ser_inv_partInstance_* cua #641 VANG MAT o ban nay — no tu viet ca ba khoi => trong cung mot cum co BA kieu quan he voi template: dung that / goi nhung token khong co trong SQL (chet) / khong goi, tu viet",
+        readOnlyButDifferentTransactionEnding = "#641 ket bang CommitSafety(_dbWH), ban nay bang RollbackSafety(_dbWH) — cung mot cum bao cao, khong thong nhat",
+        inheritsIssue641Bugs = "ke thua nguyen ven: DATEDIFF(…, GETDATE()) lam bao cao lich su khong tai lap duoc, va left join ser_mst_part p + where p.IsActive = 1 giet LEFT lam phu tung ngung dung ma con ton bien mat",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #641 BÁO CÁO TỒN KHO `Ser_InvReportBalanceRpt_WH_New20221011` (`WH.cs:25478-25715`) =====
 // 3B: laptop `:25478` md5 `7d9596e9` **KHỚP** máy 150 `:25478`. Cụm có **ba** bản; WS gọi `_New20221011`.
 // DIFF `_New20191108` → LIVE: bản mới **thêm cụm "TUỔI TỒN KHO"** — ba cột `TypeName` · `StockInDate` ·
