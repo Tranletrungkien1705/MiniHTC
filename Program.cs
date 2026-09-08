@@ -25598,10 +25598,41 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
 // ⚠️ **KHÔNG lọc đại lý** ở bất kỳ bước nào ⇒ API trả khách của TOÀN hệ. Chạy trên DB Main.
 // 📌 Đối chiếu 3 cây: laptop `.V2` = 150 `.Release` (md5 `7860ef59`); `V20` khác md5 cả file nhưng
 //   **vùng hàm 426-560 giống hệt** (`c5ea1781`) ⇒ hàm chưa từng đổi.
-app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext t, DateTime? date, int? count) =>
+// ===== 🔴🔴 #562 SỬA #372: **PORT NHẦM BẢN CHẾT** — bản LIVE là `_20210603`, và nó ĐỔI HÌNH DẠNG KẾT QUẢ =====
+// TRACE WS (luật "đọc thân WS trước"): `HTCWSCarSvTab/WSCarSvTab.asmx.cs:4747` gọi
+//   `_biz.HTCMobileTVO_GetServiceReminders_**20210603**` ⇒ **bản có hậu tố ngày mới là bản SỐNG**.
+//   Bản trần `:426` (mà #372 đã port) chỉ còn được gọi từ `WSCarSvTab.asmx.**20210412**.cs` — **file WS cũ**.
+// ⚠️ **Bẫy đánh lừa**: bản `_20210603` đặt `strFunctionName = "HTCMobileTVO_GetServiceReminders"` —
+//   **không có hậu tố** ⇒ log, mã lỗi, tên SQL debug đều ghi tên bản trần. Ai truy theo **log** sẽ
+//   kết luận bản trần đang chạy. Chỉ **thân WS** mới nói đúng.
+//
+// 📐 DIFF hai bản (luật #414) — khác biệt thật nằm ở **CÁCH CHỌN BẢN ĐẠI DIỆN**, tức **HÌNH DẠNG KẾT QUẢ**:
+//   · Bản **chết**: gom theo `CusID` → `max(ReminderMaintanceDate)` → `top 1 … order by LogLUDateTime desc`
+//     ⇒ **một KHÁCH một dòng**, trục chọn = **lần sửa cuối**.
+//   · Bản **sống**: gom theo `(sc.PlateNo, ro.DealerCode)` → `Max(ro.ROID)`
+//     ⇒ **một XE tại một ĐẠI LÝ một dòng**; khách có ba xe ra **ba dòng**; trục chọn = **ROID lớn nhất**.
+//   ⇒ Đây đúng là câu §12 không bắt được: *"một bản ghi là một CHỨNG TỪ hay một DÒNG?"* — đổi bản là
+//     đổi **số dòng** mà mobile nhận, không phải đổi vài cột.
+//
+// 🔴 **BỘ LỌC NGẦM Ở BẢN SỐNG — `#tblSer_RO_Max` KHÔNG GIỚI HẠN THEO KỲ**:
+//     `from #tbl_PlateNo_DealerCode t inner join Ser_RO ro on ro.DealerCode = t.DealerCode`
+//     `inner join Ser_Car sc on ro.CarID = sc.CarID and t.PlateNo = sc.PlateNo`
+//   Bảng `Ser_RO` ở đây nối theo **biển + đại lý**, **không** nối lại với `#tbl_Ser_RO_Draft_01` ⇒ quét
+//   **TOÀN BỘ lịch sử** lệnh của xe đó, rồi lấy `Max(ROID)`. Sau đó `#tbl_Ser_RO_Draft_02` nối
+//   `t.ROID = f.ROID` với Draft_01 ⇒ **xe nào có lệnh mới hơn nằm NGOÀI ngày lọc thì bị loại sạch**.
+//   ⇒ Thành ra một luật nghiệp vụ ngầm: *"chỉ nhắc khi lần vào xưởng gần nhất chính là lần đang xét"*.
+//   Dòng đáng lẽ giới hạn kỳ **bị comment ngay tại đó**: `--and ro.ReminderMaintanceDate >= @strFromDate`.
+// 🔴 `Max(ro.ROID)` = **giả định ROID tăng dần theo thời gian** — phụ thuộc ngầm vào cách sinh khoá,
+//   khác hẳn bản chết vốn sắp theo `LogLUDateTime`. Hai bản có thể chọn **hai lệnh khác nhau** cho cùng một xe.
+// ⚠️ Bản sống kết bằng `RollbackSafety` (đọc thuần); bản chết gọi `CommitSafety` dù **không ghi gì**.
+// 📌 Giữ tham số `variant`: mặc định `live` (bản đang chạy). `legacy` chạy lại logic #372 để **đối chiếu**
+//   — cùng một ngày, hai bản trả **số dòng khác nhau**, và endpoint nói rõ chênh bao nhiêu.
+app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext t, DateTime? date, int? count,
+    string? variant) =>
 {
     var day = (date ?? DateTime.Today).Date;
     var take = count is > 0 ? count!.Value : 50;
+    var isLegacy = string.Equals((variant ?? "live").Trim(), "legacy", StringComparison.OrdinalIgnoreCase);
 
     // _Draft_01: lệnh có ngày hẹn bảo dưỡng RƠI ĐÚNG NGÀY ĐÓ (from = to, không phải khoảng).
     var next = day.AddDays(1);
@@ -25610,24 +25641,50 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
                     && r.ReminderMaintanceDate >= day && r.ReminderMaintanceDate < next
                     && r.CusID != null)
         .Select(r => new { r.Id, roid = r.Id, r.RONo, r.CusID, r.CarID, r.Vin, r.DealerCode,
+                           r.LicensePlate,   // #562 bản sống gom theo (BIỂN SỐ, ĐẠI LÝ)
                            r.ReminderMaintanceDate, r.LogLUDateTime })
         .ToListAsync();
 
     // _Draft_02 + _Draft: mỗi khách lấy mốc hẹn LỚN NHẤT, rồi trong đó chọn lệnh SỬA GẦN NHẤT.
-    var picked = pool
+    var legacyPicked = pool
         .GroupBy(r => r.CusID!)
         .Select(g =>
         {
             var maxDate = g.Max(x => x.ReminderMaintanceDate);
             var sameDate = g.Where(x => x.ReminderMaintanceDate == maxDate).ToList();
-            // TRỤC = LogLUDateTime (lần sửa cuối), KHÔNG phải ngày tạo — đúng nguồn.
+            // TRỤC = LogLUDateTime (lần sửa cuối), KHÔNG phải ngày tạo — đúng bản CHẾT :426.
             var rep = sameDate.OrderByDescending(x => x.LogLUDateTime).First();
             return new { rep, candidates = sameDate.Count };
         })
         .ToList();
 
+    // ===== #562 BẢN SỐNG `_20210603` — gom theo (BIỂN SỐ, ĐẠI LÝ), đại diện = ROID lớn nhất =====
+    // #tblSer_RO_Max: quét TOÀN BỘ lịch sử lệnh của (biển, đại lý) — KHÔNG giới hạn ngày (đúng nguồn).
+    var pairs = pool.Select(r => new { plate = r.LicensePlate, dealer = r.DealerCode ?? "" })
+        .Distinct().ToList();
+    var plates = pairs.Select(p => p.plate).Distinct().ToList();
+    var allRo = await db.RepairOrders
+        .Where(r => r.OrgId == t.OrgId && plates.Contains(r.LicensePlate))
+        .Select(r => new { r.Id, r.LicensePlate, r.DealerCode })
+        .ToListAsync();
+    var maxRoIds = allRo
+        .Where(r => pairs.Any(p => p.plate == r.LicensePlate && p.dealer == (r.DealerCode ?? "")))
+        .GroupBy(r => new { r.LicensePlate, dealer = r.DealerCode ?? "" })
+        .Select(g => g.Max(x => x.Id))
+        .ToHashSet();
+    // Draft_02: chỉ giữ lệnh vừa thuộc kỳ, VỪA là lệnh mới nhất của xe đó tại đại lý đó.
+    var livePicked = pool.Where(r => maxRoIds.Contains(r.Id))
+        .OrderBy(r => r.Id)
+        .Select(r => new { rep = r, candidates = 1 })
+        .ToList();
+    // Số xe bị luật ngầm loại: có mặt trong kỳ nhưng đã có lệnh mới hơn ngoài kỳ.
+    var droppedByNewerRoOutsidePeriod = pool.Count(r => !maxRoIds.Contains(r.Id));
+
+    var picked = isLegacy ? legacyPicked : livePicked;
+
     // _Filter: MyIdxSeq trong [0 .. count-1] — start LUÔN bằng 0 nên không có trang 2.
     var totalBeforePaging = picked.Count;
+    var legacyRowCount = legacyPicked.Count;   // #562 để đo chênh lệch hình dạng kết quả
     var page = picked.Take(take).ToList();
 
     var cusIds = page.Select(x => x.rep.CusID!).Distinct().ToList();
@@ -25661,12 +25718,22 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
     {
         date = day, count = items.Count, items,
         totalBeforePaging,
+        // ===== #562 =====
+        variant = isLegacy ? "legacy" : "live",
+        liveBizIsDateSuffixed = "WSCarSvTab.asmx.cs goi HTCMobileTVO_GetServiceReminders_20210603; ban tran :426 chi con o file WS cu .20210412",
+        liveBizLogsUnsuffixedName = "strFunctionName = HTCMobileTVO_GetServiceReminders => truy theo LOG se ket luan sai ban nao dang chay",
+        resultShapeChangedBetweenVariants = "chet: mot KHACH mot dong (gom CusID); song: mot XE tai mot DAI LY mot dong (gom PlateNo+DealerCode)",
+        legacyRowCount,
+        liveRowCount = livePicked.Count,
+        representativeAxis = isLegacy ? "LogLUDateTime desc (lan sua cuoi)" : "Max(ROID) — gia dinh ROID tang dan theo thoi gian",
+        droppedByNewerRoOutsidePeriod,
+        hiddenRuleOnlyRemindWhenLatestVisit = "#tblSer_RO_Max quet TOAN BO lich su (khong gioi han ky); dong gioi han bi comment: --and ro.ReminderMaintanceDate >= @strFromDate",
         truncated = totalBeforePaging > items.Count,
         pagingStartAlwaysZero = true,
         pagingNote = "Nguồn đóng cứng vị trí bắt đầu = 0 ⇒ chỉ lấy được `count` bản ghi ĐẦU; không có trang 2.",
         singleDayNotRange = true,
         dateNote = "Nguồn đặt from = to = cùng một ngày; tên biến From/To gây hiểu nhầm là khoảng.",
-        representativeAxis = "LogLUDateTime (lần SỬA cuối)",
+        legacyRepresentativeAxis = "LogLUDateTime (lần SỬA cuối) — trục của bản CHẾT :426",
         axisNote = "Lệnh cũ bị sửa vặt sẽ nhảy lên làm đại diện. Khác Tab.cs:8487 (#310) vốn chọn theo CreatedDate.",
         ambiguousCustomers = page.Count(x => x.candidates > 1),
         noDealerFilter = true,
