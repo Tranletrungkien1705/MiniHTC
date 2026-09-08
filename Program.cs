@@ -34429,6 +34429,59 @@ app.MapPost("/api/jobs/statistic-stock/run", async (
     });
 }).RequireAuthorization();
 
+// ===== #B221/#B222/#B223 JOB BÁO CÁO PHÂN BỔ XE THEO MIỀN — `Job_Auto_Rpt_CarAllocationByArea`
+//       (`BizHTC.Report.cs:31284`, 722 dòng) =====
+// **3B khớp cả 2 máy** (vị trí **trùng**): `31284,32005 / 20c6effb17eda1105463f4cb850feaf0`.
+// 🔴🔴 **HAI BẢNG TÊN GẦN GIỐNG, VAI TRÒ NGƯỢC NHAU** — đây là bẫy chính của đơn vị này:
+//   · **`Mst_CarAllocationByArea`** (#B166) — **master TỶ LỆ** do người dùng nhập (`MBPercent`/
+//     `MTPercent`/`MNPercent`, tổng phải = 100);
+//   · **`Rpt_CarAllocationByArea`** (đơn vị này) — **KẾT QUẢ TÍNH** do job sinh, cột là **số lượng xe**.
+//   ⇒ Port nhầm bảng ⇒ job ghi đè master tỷ lệ. Grep `CarAllocation` ra **cả hai**; phải phân biệt
+//     bằng **tiền tố `Mst_` / `Rpt_`**.
+// 🔴 **BA MIỀN × BA CHỈ TIÊU + hai cột tổng** (11 cột số):
+//   `SLMapVINArea{MB,MT,MN}` (xe đã map VIN theo miền) · `SLXePhanBO{MB,MT,MN}` (xe đã phân bổ) ·
+//   `SLXeConThieu{MB,MT,MN}` (xe còn thiếu) · `SLMapVIN` (tổng đã map) · `SLTonKhoHT` (tồn kho HTC).
+//   ⇒ **Không gộp ba miền thành một cột** — cùng khuôn luật `C0-…quadragesimustertius`.
+// 🔴🔴 **KHÔNG XOÁ TRƯỚC KHI `insert`** — giống #B218, khác #B135 (có `delete`).
+//   ⇒ Chạy lại cùng `RptDate` là **nhân đôi**; trả `existingRowsAtRptDate` + `rerunWillDuplicate`.
+// 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC**: job dựng qua **chuỗi bảng tạm** (`#tblCar_CarFilter` →
+//   `#tblCar_Car` → `#tbl_Car_VIN_Filter` → `#tbl_Car_VIN_Raw` → `#tblRpt_CarAllocationByArea`)
+//   với các mảnh `PDI_VIN`… chưa có trong MiniHTC ⇒ **11 cột số trả `null`**, cờ `figuresNotComputed`.
+//   Endpoint tạo **khung dòng theo model** đúng `RptDate`, **không bịa số**.
+app.MapPost("/api/jobs/car-allocation-report/run", async (
+    AppDbContext db, ITenantContext t, DateTime? rptDate) =>
+{
+    var rpt = (rptDate ?? DateTime.Now).Date;
+
+    var existing = await db.RptCarAllocationByAreas
+        .CountAsync(r => r.OrgId == t.OrgId && r.RptDate == rpt);
+
+    var models = await db.CarModelStds
+        .Where(m => m.OrgId == t.OrgId && m.FlagActive == "1")
+        .Select(m => m.ModelCode).OrderBy(m => m).ToListAsync();
+
+    foreach (var m in models)
+        db.RptCarAllocationByAreas.Add(new RptCarAllocationByArea
+        {
+            OrgId = t.OrgId, RptDate = rpt, ModelCode = m
+            // 📌 11 cột số để NULL — chưa có tầng dữ liệu để tính, KHÔNG đoán.
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        rptDate = rpt,
+        inserted = models.Count,
+        existingRowsAtRptDate = existing,
+        rerunWillDuplicate = existing > 0,
+        figuresNotComputed = true,
+        twoTableTrapNote = "HAI BANG TEN GAN GIONG, VAI TRO NGUOC NHAU: Mst_CarAllocationByArea (#B166) la MASTER TY LE do nguoi dung nhap (MBPercent/MTPercent/MNPercent, tong = 100); Rpt_CarAllocationByArea (don vi nay) la KET QUA TINH do job sinh, cot la SO LUONG XE. Port nham bang => job GHI DE MASTER TY LE. Grep 'CarAllocation' ra CA HAI; phai phan biet bang TIEN TO Mst_ / Rpt_.",
+        elevenColumnNote = "BA MIEN x BA CHI TIEU + hai cot tong (11 cot so): SLMapVINArea{MB,MT,MN} (xe da map VIN theo mien), SLXePhanBO{MB,MT,MN} (xe da phan bo), SLXeConThieu{MB,MT,MN} (xe con thieu), SLMapVIN (tong da map), SLTonKhoHT (ton kho HTC). KHONG gop ba mien thanh mot cot.",
+        noDeleteNote = "KHONG XOA TRUOC KHI INSERT - giong #B218, khac #B135 (co delete). Chay lai cung RptDate la NHAN DOI; tra existingRowsAtRptDate + rerunWillDuplicate.",
+        debtNote = "NO - KHONG DOAN CONG THUC: job dung qua chuoi bang tam (#tblCar_CarFilter -> #tblCar_Car -> #tbl_Car_VIN_Filter -> #tbl_Car_VIN_Raw -> #tblRpt_CarAllocationByArea) voi cac manh PDI_VIN... chua co trong MiniHTC => 11 cot so tra NULL. Endpoint tao KHUNG DONG theo model dung RptDate, KHONG BIA SO."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>

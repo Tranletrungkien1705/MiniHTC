@@ -9615,6 +9615,29 @@ public sealed class RptStatisticStockHis
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B221 — `Rpt_CarAllocationByArea`: **báo cáo phân bổ xe theo miền** do job
+/// `Job_Auto_Rpt_CarAllocationByArea` sinh. ⚠️ **KHÁC** [[CarAllocationByArea]] (#B166) — bảng kia là
+/// **master tỷ lệ** do người dùng nhập, bảng này là **kết quả tính**.
+/// Mỗi chỉ tiêu tách **ba miền** MB/MT/MN. Nguồn **không xoá** trước khi `insert` ⇒ chạy lại nhân đôi.</summary>
+public sealed class RptCarAllocationByArea
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public DateTime RptDate { get; set; }
+    public string ModelCode { get; set; } = "";
+    public decimal? SLMapVINAreaMB { get; set; }
+    public decimal? SLMapVINAreaMT { get; set; }
+    public decimal? SLMapVINAreaMN { get; set; }
+    public decimal? SLXePhanBOMB { get; set; }
+    public decimal? SLXePhanBOMT { get; set; }
+    public decimal? SLXePhanBOMN { get; set; }
+    public decimal? SLXeConThieuMB { get; set; }
+    public decimal? SLXeConThieuMT { get; set; }
+    public decimal? SLXeConThieuMN { get; set; }
+    public decimal? SLMapVIN { get; set; }
+    public decimal? SLTonKhoHT { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
