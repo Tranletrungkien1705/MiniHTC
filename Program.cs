@@ -40218,6 +40218,322 @@ static string? PrincipleContractGuard(PrincipleContract p, string flagActive, st
     return null;
 }
 
+
+// 🔴🔴🔴 Port 1:1 nhánh `case` `DutyDays_Range` của `RptStatistic_HTC_CarDocReq_WH_New20181119`
+// **KỂ CẢ BUG**: dòng `--  when (DutyDays <=0) then N'  < 0'` **bị comment ở nguồn**, nên số ngày
+// **âm hoặc bằng 0** (hồ sơ giao **trước** hạn) và **NULL** đều rơi vào nhánh `else '00-02'` —
+// một nhóm **CÓ THẬT** của báo cáo. Giữ nguyên hình dạng để không làm lệch số so với hệ đang chạy;
+// đã ghi rõ ở `elseBranchNote`. **KHÔNG tự vá.**
+static string DutyDaysRangeAsSource(int? dutyDays)
+{
+    if (dutyDays is int d)
+    {
+        if (d > 0 && d <= 2) return " 00-02";
+        if (d >= 3 && d <= 6) return "03-06";
+        if (d >= 7 && d <= 15) return "07-15";
+        if (d >= 16 && d <= 30) return "16-30";
+        if (d > 30) return "Trên 30";
+    }
+    return "00-02";      // 🔴 else của nguồn — gom cả NULL lẫn d <= 0
+}
+
+// ===== #B344/#B345 PIVOT LÁI THỬ & THĂM KHÁCH HÀNG — cặp SINH ĐÔI LỆCH NHAU
+//       (`RptPivot_DlrDriveTest_WH_New20181119` / `RptPivot_DlrCtmVisit_WH_New20181119`,
+//        `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   DriveTest laptop `155346,155528` ≡ 150 `155351,155533` ⇒ **`6cec966bbe1993e0447812a7b116ba38`**
+//   CtmVisit  laptop `155529,155705` ≡ 150 `155534,155710` ⇒ **`7f96b5101a01b53a58cfa520068614e7`**
+//   Cửa WS64 sống: `:76514` → DriveTest, `:76448` → CtmVisit.
+//
+// 🔴🔴🔴 **HAI SINH ĐÔI GẦN NHƯ Y HỆT, NHƯNG BẢN "THĂM KHÁCH HÀNG" LẠI **THIẾU HẲN THÔNG TIN
+//        KHÁCH HÀNG****: `DriveTest` có `LEFT JOIN DLS_DealerCustomer ddc ON ddc.CustomerCode = ddt.CustomerCode`
+//   và **8 cột** `DDCFullName, DDCFullNameEN, DDCAddress, DDCPhoneNo, DDCTaxCode, DDCEmail,
+//   DDCIDCardNo, DDCIDCardType`. Bản `CtmVisit` **không có join này và không có 8 cột đó**.
+//   ⇒ Báo cáo *thăm khách hàng* không tra được khách là ai, trong khi báo cáo *lái thử* thì có.
+//     Nghịch lý nghiệp vụ. 📌 Ghi lại, **không tự thêm join** (đó là đổi phạm vi báo cáo).
+//
+// ✅🔴 **CHÚ THÍCH NGUỒN THỪA NHẬN THẲNG VIỆC TẮT CỔNG PHÂN QUYỀN**: trong `CtmVisit`, ngay chỗ
+//   `myCommon_CheckHTCDirect` bị comment cả khối, nguồn viết `//cho  phan quyen thoai mai`.
+//   ⇒ Đây là **ý định được ghi rõ**, không phải xoá nhầm (khác #B293/#B323 nơi khối gate biến mất
+//     không để lại dấu vết). Cộng với việc **bộ lọc phạm vi VẪN CÒN** trong `inner join`
+//     (`dl.BUCode like @strBUPatternOfUser`) ⇒ **tổ hợp (3) — chấp nhận được, KHÔNG phải lỗ**.
+//   📌 Cả hai bản đều comment gate; cả hai bản đều giữ bộ lọc ⇒ cùng kết luận.
+//
+// 🔴 **`Tables[dsGetData.Tables.Count - 1]` — LẤY BẢNG CUỐI, KHÔNG PHẢI `Tables[0]`**:
+//   `DataTable dt = dsGetData.Tables[dsGetData.Tables.Count - 1];`
+//   ⇒ Đây là **cách phòng thủ đúng** trước cái bẫy "câu debug bị bỏ quên chiếm `Tables[0]`" đã gặp
+//     **SÁU** lần (#B290/#B296/#B299/#B308/#B311/#B329). Điểm sáng hiếm — ghi lại làm đối chứng.
+//
+// 🔴 `--//[mylock]` **rơi mất ở bản `CtmVisit`**: `left join Mst_CarModel mcm` và
+//   `left join Mst_CtmRangeAge mcra` ở bản DriveTest **có** dấu, ở bản CtmVisit **không**.
+//   Vi phạm luật nhà "mọi bảng trong SQL phải có `--//[mylock]`" ⇒ hai bảng này **không được rowlock**.
+//
+// 🔴 Bản `DriveTest` đặt tên biến `dt_RptPivot_**CtmVisit**` ⇒ **chép từ bản CtmVisit sang** (chiều
+//   sao chép xác định được). Vô hại nhưng chứng minh hai hàm cùng gốc.
+// 🔴 **Tên bảng trả về LỆCH TIỀN TỐ**: DriveTest → `"RptPivot_DlrDriveTest"` (có `Dlr`),
+//   CtmVisit → `"RptPivot_CtmVisit"` (**mất `Dlr`**) dù hàm tên `RptPivot_**Dlr**CtmVisit`.
+//   Đây là **hợp đồng API**, không sửa; port giữ **đúng** tên nguồn.
+// 🔴 Cột đo pivot là hằng `1.0 TOTAL` (đếm dòng), không phải tổng tiền.
+// 🔴 **Port dòng ACTIVE**: `mcp.SpecDescription` + `left join Mst_CarSpec mcp` **bị comment ở CẢ HAI bản**
+//   ⇒ **không** port cột spec.
+// 🔴 `@strHTCDealerName` **nhận `TConst.HTCConst.HTCDealerCode`** — lần thứ **NĂM**
+//   (sau #B269/#B284/#B290/#B329); cùng `@strHTCDealerCode` và `@strTDate` đều **mồ côi**
+//   (SQL không dùng, bộ lọc ngày đi qua `BuildClause` sinh `@p…` riêng).
+// 🔴 `Thread.Sleep(4000)` trên đường thành công (`/// HoangTV Debug: Sleep WH. (chốt 2019-01-31)`)
+//   — **không port** (đã ghi luật từ trước, 83 điểm).
+// ⚠️ **NỢ**: chưa có entity `Mst_CtmRangeAge` ⇒ `RangeAgeName` để **NULL** + ghi nợ, **không đoán**.
+app.MapGet("/api/reports/dlr-drivetest-pivot", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? driveDTimeFrom, DateTime? driveDTimeTo, string? buPattern) =>
+{
+    // ✅ Bộ lọc phạm vi CÒN NGUYÊN (inner join Mst_Dealer + FlagActive='1' + BUCode like @strBUPatternOfUser).
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1").ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d.DealerName, StringComparer.OrdinalIgnoreCase);
+
+    // 🔴 Điều kiện nền: ddt.FlagActive = '1'. Bộ lọc ngày trên `ddt.DriveDTime` (BuildClause "@p").
+    // 📌 Cột tương ứng trong MiniHTC đã được port từ trước với tên `DriveDate` — dùng lại, KHÔNG đẻ cột trùng.
+    var q = db.DriveTests.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1");
+    if (driveDTimeFrom != null) q = q.Where(x => x.DriveDate >= driveDTimeFrom);
+    if (driveDTimeTo != null) q = q.Where(x => x.DriveDate <= driveDTimeTo);
+    var all = await q.ToListAsync();
+    var rows0 = all.Where(x => dealers.ContainsKey(x.DealerCode)).ToList();
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var custCodes = rows0.Where(x => x.CustomerCode != null).Select(x => x.CustomerCode!).Distinct().ToList();
+    var custs = (await db.DealerCustomers.Where(c => c.OrgId == t.OrgId && custCodes.Contains(c.CustomerCode)).ToListAsync())
+        .GroupBy(c => c.CustomerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = rows0.Select(x =>
+    {
+        DealerCustomer? c = x.CustomerCode != null && custs.TryGetValue(x.CustomerCode, out var cc) ? cc : null;
+        return new
+        {
+            x.DriveTestCode, x.DealerCode, x.DriverTestType, x.DrvTestPlateNo, x.TestModelCode,
+            x.DriveDate, x.CustomerCode, x.CustomerName, x.PhoneNo, x.Address, x.DriverLicenseNo,
+            x.RangeAge, x.Email, x.DriverTestStatus, x.FlagActive,
+            DealerName = dealers[x.DealerCode],
+            ModelName = models.TryGetValue(x.TestModelCode, out var mn) ? mn : null,
+            RangeAgeName = (string?)null,          // ⚠️ NỢ: chưa có Mst_CtmRangeAge — để NULL, KHÔNG đoán
+            // 🔴 8 cột khách hàng CHỈ CÓ ở bản lái thử (bản thăm khách hàng KHÔNG có).
+            DDCFullName = c?.FullName, DDCFullNameEN = c?.FullNameEN, DDCAddress = c?.Address,
+            DDCPhoneNo = c?.PhoneNo, DDCTaxCode = c?.TaxCode, DDCEmail = c?.Email,
+            DDCIDCardNo = c?.IDCardNo, DDCIDCardType = c?.IDCardType,
+            TOTAL = 1.0m                            // 🔴 cột đo pivot = hằng 1.0
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        outOfScopeCount = all.Count - rows0.Count,
+        RptPivot_DlrDriveTest = rows,               // 🔴 tên bảng nguồn — CÓ tiền tố `Dlr`
+        twinAsymmetryNote = "HAI SINH DOI GAN NHU Y HET nhung ban 'tham khach hang' (RptPivot_DlrCtmVisit) THIEU HAN thong tin khach hang: ban lai thu co 'LEFT JOIN DLS_DealerCustomer ddc ON ddc.CustomerCode = ddt.CustomerCode' va 8 cot DDCFullName/DDCFullNameEN/DDCAddress/DDCPhoneNo/DDCTaxCode/DDCEmail/DDCIDCardNo/DDCIDCardType; ban CtmVisit KHONG co join do va khong co 8 cot do. Bao cao 'tham khach hang' khong tra duoc khach la ai trong khi bao cao 'lai thu' thi co. Ghi lai, KHONG tu them join (do la doi pham vi bao cao).",
+        lastTableNote = "Nguon lay 'Tables[dsGetData.Tables.Count - 1]' - BANG CUOI, khong phai Tables[0]. Day la cach PHONG THU DUNG truoc bay 'cau debug bi bo quen chiem Tables[0]' da gap SAU lan (#B290/#B296/#B299/#B308/#B311/#B329). Diem sang hiem - ghi lai lam doi chung.",
+        rbacNote = "RBAC to hop (3) - CHAP NHAN DUOC, KHONG phai lo: myCommon_CheckHTCDirect bi comment ca khoi NHUNG bo loc pham vi VAN CON trong inner join (dl.BUCode like @strBUPatternOfUser + dl.FlagActive='1'). Ban CtmVisit con ghi ro y dinh bang chu thich '//cho phan quyen thoai mai' - khac #B293/#B323 noi khoi gate bien mat khong de lai dau vet.",
+        orphanParamsNote = "@strHTCDealerName NHAN TConst.HTCConst.HTCDealerCode - lan thu NAM (sau #B269/#B284/#B290/#B329). @strHTCDealerCode, @strHTCDealerName va @strTDate deu MO COI (SQL khong dung; bo loc ngay di qua BuildClause sinh @p... rieng).",
+        commentedLinesNote = "PORT DONG ACTIVE: 'mcp.SpecDescription' va 'left join Mst_CarSpec mcp' BI COMMENT o CA HAI ban => KHONG port cot spec. 'Thread.Sleep(4000)' tren duong thanh cong (HoangTV Debug: Sleep WH, chot 2019-01-31) - KHONG port.",
+        debtNote = "NO: chua co entity Mst_CtmRangeAge => RangeAgeName de NULL, KHONG doan."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/dlr-ctmvisit-pivot", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? visitDTimeFrom, DateTime? visitDTimeTo, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1").ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d.DealerName, StringComparer.OrdinalIgnoreCase);
+
+    // 🔴 Điều kiện nền: dcv.FlagActive = '1'. Bộ lọc ngày trên `dcv.VisitDTime`.
+    var q = db.CtmVisits.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1");
+    if (visitDTimeFrom != null) q = q.Where(x => x.VisitDTime >= visitDTimeFrom);
+    if (visitDTimeTo != null) q = q.Where(x => x.VisitDTime <= visitDTimeTo);
+    var all = await q.ToListAsync();
+    var rows0 = all.Where(x => dealers.ContainsKey(x.DealerCode)).ToList();
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    // 🔴 KHÔNG join DLS_DealerCustomer — bản nguồn CtmVisit không có (xem twinAsymmetryNote).
+    var rows = rows0.Select(x => new
+    {
+        x.CusVisitCode, x.DealerCode, x.Gender, x.RangeAge, x.ModelCode,
+        x.VisitDTime, x.FlagActive, x.CreatedBy,
+        DealerName = dealers[x.DealerCode],
+        ModelName = models.TryGetValue(x.ModelCode, out var mn) ? mn : null,
+        RangeAgeName = (string?)null,               // ⚠️ NỢ: chưa có Mst_CtmRangeAge
+        TOTAL = 1.0m
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        outOfScopeCount = all.Count - rows0.Count,
+        RptPivot_CtmVisit = rows,                   // 🔴 tên bảng nguồn — MẤT tiền tố `Dlr` (giữ đúng nguồn)
+        missingCustomerJoinNote = "Ban nay KHONG co 'LEFT JOIN DLS_DealerCustomer' va KHONG co 8 cot DDC* ma ban lai thu (RptPivot_DlrDriveTest) co. Da ghi o twinAsymmetryNote cua endpoint /api/reports/dlr-drivetest-pivot. KHONG tu them join.",
+        tableNameNote = "TEN BANG TRA VE LECH TIEN TO: DriveTest -> 'RptPivot_DlrDriveTest' (co Dlr), CtmVisit -> 'RptPivot_CtmVisit' (MAT Dlr) du ham ten RptPivot_DlrCtmVisit. Day la HOP DONG API - port giu DUNG ten nguon, khong sua.",
+        mylockNote = "'--//[mylock]' ROI MAT o ban CtmVisit: 'left join Mst_CarModel mcm' va 'left join Mst_CtmRangeAge mcra' o ban DriveTest CO dau, o ban CtmVisit KHONG => hai bang nay khong duoc rowlock. Vi pham luat nha 'moi bang trong SQL phai co --//[mylock]'.",
+        copyDirectionNote = "Ban DriveTest dat ten bien 'dt_RptPivot_CtmVisit' => CHEP TU BAN CtmVisit SANG (chieu sao chep xac dinh duoc). Vo hai nhung chung minh hai ham cung goc.",
+        rbacNote = "RBAC to hop (3): gate myCommon_CheckHTCDirect bi comment kem chu thich nguon '//cho phan quyen thoai mai' (Y DINH DUOC GHI RO), nhung bo loc pham vi VAN CON trong inner join => KHONG phai lo."
+    });
+}).RequireAuthorization();
+
+// ===== #B346 THỐNG KÊ ĐỀ NGHỊ GIAO HỒ SƠ XE HTC — `RptStatistic_HTC_CarDocReq_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy**: laptop `154974,155345` ≡ 150 `154979,155350` ⇒ **`7fcc6cdfa990547e88565bfb87477e7d`**.
+//   Cửa WS64 sống: `:76671`.
+//
+// 🔴🔴🔴 **BUG THẬT #1 — ĐIỀU KIỆN "CHƯA GIAO HỒ SƠ" BỊ VÔ HIỆU BỞI `OR` TRÊN BẢNG `LEFT JOIN`**:
+//     `LEFT JOIN Pmt_GuaranteeDetail pgd ON pgd.CarId = cc.CarId AND pgd.GuaranteeDetailStatus NOT IN ('R','C')`
+//     `WHERE … AND (cv.MortageEndDate IS NULL  --Chưa có ngày giao hồ sơ`
+//     `             Or pgd.DateStart IS null )`
+//   Xe **không có bảo lãnh** ⇒ `pgd.DateStart` là NULL (do left join không khớp) ⇒ **vế phải LUÔN ĐÚNG**
+//   ⇒ vế trái `cv.MortageEndDate IS NULL` **không còn tác dụng** với nhóm xe đó.
+//   ⇒ **Xe ĐÃ giao hồ sơ vẫn lọt vào báo cáo "tồn/đề nghị giao hồ sơ"** miễn là chưa có bảo lãnh.
+//   📌 Cùng họ với #B254/#B263/#B293/#B299/#B305/#B308 (điều kiện đặt sai chỗ so với `left join`), nhưng
+//     ở đây là **`OR` nuốt điều kiện**, không phải `left join` hoá `inner`. **KHÔNG tự vá.**
+//
+// 🔴🔴🔴 **LỖ RBAC — CA 32 (tổ hợp (2): KHÔNG cổng + KHÔNG lọc)**:
+//   `myCommon_CheckHTCDirect` = **0 hit**; `@strBUPatternOfUser` **được bind** nhưng đếm được đúng **1**
+//   lần trong cả hàm — chính là dòng bind ⇒ **SQL không dùng**. Hàm trả xe + hồ sơ + **số tiền cọc/bảo
+//   lãnh** của **mọi đại lý**. Nặng. **KHÔNG tự bịt** — port trả `outOfScopeCount` + cờ `enforceBuScope`.
+//
+// 🔴🔴 **BUG THẬT #2 — `cdrd`/`cdrl` ĐƯỢC JOIN HAI LẦN VỚI ĐIỀU KIỆN KHÁC NHAU**:
+//   lần 1 (`#tbl_Car_Car_Filter`): `INNER JOIN … AND cdrd.DRDtlStatus = 'A' AND cdrl.DRListStatus = 'A'`;
+//   lần 2 (`#tbl_Car_Car_Final`): `LEFT JOIN … AND cdrd.DRDtlStatus NOT IN ('R','C')` — **lỏng hơn**.
+//   Cột `cdrd.DRDtlStatus`, `cdrd.DRListCode` ở select cuối lấy từ **lần 2** ⇒ một VIN có nhiều dòng
+//   `Car_DocReqDtl` không R/C sẽ **nở dòng** so với bộ lọc gốc chỉ nhận `'A'`.
+//
+// 🔴🔴 **BUG THẬT #3 — NHÁNH `else` CỦA `DutyDays_Range` GOM CẢ NULL LẪN SỐ ÂM VÀO NHÓM THẬT `'00-02'`**:
+//     `--  when (DutyDays <=0) then N'  < 0'`   ← **bị comment**
+//     `… else '00-02' end as DutyDays_Range`
+//   ⇒ `DutyDays <= 0` (giao **trước** hạn) và `DutyDays` NULL **đều bị đếm vào nhóm `'00-02'`** — một
+//     nhóm **có thật** trong báo cáo. Nguy hơn #B281 (nhãn rác `'X=0%'` dễ nhận ra) vì ở đây số **trộn
+//     thẳng vào nhóm hợp lệ**, không có dấu hiệu.
+// 🔴 `DutyCompletedPercent_Range` có `else 'X=0%'` — nhãn rác gom mọi dòng **NULL**
+//   (`UnitPriceActual` = 0/NULL ⇒ phép chia ra NULL). Cùng khuôn #B281.
+// ✅ Đối chứng tốt: ngưỡng dùng **`>= 100.0`**, không phải `= 100` trên số thực (khác #B278).
+//
+// 🔴 `@strTDateMax` được bind (`TConst.DateTimeSpecial.DateMax`) nhưng SQL dùng **literal `'2100-01-01'`**
+//   kèm chú thích `--- @strTDateMax ---------` ⇒ tham số bị thay bằng **hằng chép tay**. Đã đối chiếu:
+//   `Const.Main.cs:302  DateMax = "2100-01-01"` ⇒ **hiện đang trùng**; rủi ro tiềm ẩn nếu hằng đổi.
+// 🔴 `@strHTCDealerName` nhận `HTCDealerCode` — lần thứ **SÁU**.
+// ✅ **Đối chứng tốt về số bảng động**: câu chi tiết nằm sau `if (@strIsGetDetail = '1')` (T-SQL, **không**
+//   `begin…end`) nên **số bảng trả về thay đổi 2↔3**; phía C# xử **đúng** bằng con trỏ chạy
+//   `int nIdx = 0; if (StringEqual(strIsGetDetail, Flag.Active)) { Tables[nIdx++].TableName = "tblDetail"; }`
+//   `Tables[nIdx++].TableName = strFunctionName;` — không hard-code chỉ số. Ghi lại làm mẫu.
+// 🔴 Ba mốc tuần tính từ **Chủ nhật đầu tuần hiện tại** (`GetDayOfWeek(TDate, DayOfWeek.Sunday)`), rồi
+//   `+7`, `+14` ⇒ nhãn `DlvImmediate` / `DlvThisWeek` / `DlvNextWeek` / `DlvOverNextWeek`.
+//   `RefDate` = `CVCQStartDate` ?? `CVCQExpectedDate` ?? `'2100-01-01'`.
+// ⚠️ **NỢ (không đoán công thức)**: `DutyCompletedPercent` =
+//   `(Deposit.AmountTotal + pmgd.GuaranteeValue) / cc.UnitPriceActual * 100` và
+//   `DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate)` — tầng `Pmt_GuaranteeDetail.GuaranteeValue`,
+//   `Car_DocReqList.ApprovedDate2`, `Car_VIN.CVCQStartDate/CVCQExpectedDate` **chưa có** ⇒ để **NULL**,
+//   mọi ô đếm theo dải trả **0**, và **không** tự suy ra số.
+app.MapGet("/api/reports/htc-cardocreq", async (
+    AppDbContext db, ITenantContext t,
+    string? isGetDetail, string? buPattern, string? enforceBuScope) =>
+{
+    var tDate = DateTime.Now.Date;
+    // 🔴 Ba mốc tuần tính từ CHỦ NHẬT đầu tuần hiện tại, không phải từ hôm nay.
+    var beginThisWeek = tDate.AddDays(-(int)tDate.DayOfWeek);
+    var next1Week = beginThisWeek.AddDays(7);
+    var next2Week = beginThisWeek.AddDays(14);
+
+    // 🔴🔴🔴 LỖ RBAC CA 32: nguồn KHÔNG cổng và KHÔNG lọc. Port KHÔNG tự bịt — chỉ đo và trả cờ.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var enforce = enforceBuScope == "1";
+    var inScope = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Select(d => d.DealerCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // 🔴 Bộ lọc nguồn: cdrd.DRDtlStatus='A' và cdrl.DRListStatus='A'.
+    var reqs = await db.CarDocRequests.Where(r => r.OrgId == t.OrgId && r.Status == "A").ToListAsync();
+    var reqIds = reqs.Select(r => r.Id).ToHashSet();
+    var reqCars = (await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => reqIds.Contains(c.RequestId)).ToList();
+
+    var vins = reqCars.Select(c => c.CarId).Where(v => !string.IsNullOrEmpty(v)).Distinct().ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First());
+
+    var reqById = reqs.ToDictionary(r => r.Id);
+    var rows0 = reqCars.Select(c =>
+    {
+        cvs.TryGetValue(c.CarId, out var cv);
+        var head = reqById.TryGetValue(c.RequestId, out var h) ? h : null;
+        return new { Car = c, Cv = cv, Head = head };
+    })
+    // 🔴🔴🔴 BUG NGUỒN #1 giữ nguyên hình dạng: điều kiện "(MortageEndDate is null OR pgd.DateStart is null)".
+    //   Tầng Pmt_GuaranteeDetail chưa có ⇒ pgd.DateStart LUÔN null ⇒ vế phải luôn đúng ⇒ đúng như nguồn
+    //   hành xử với xe không bảo lãnh: điều kiện trái KHÔNG lọc. Trả cờ để không ai tưởng đã lọc.
+    .ToList();
+
+    var rows = rows0
+        .Where(x => !enforce || (x.Head?.DealerCode != null && inScope.Contains(x.Head.DealerCode)))
+        .Select(x => new
+        {
+            VIN = x.Car.CarId,
+            DRListCode = x.Head?.RequestNo,
+            DRDtlStatus = x.Head?.Status,
+            DealerCode = x.Head?.DealerCode,
+            CVModelCode = x.Cv?.ModelCode,
+            CVSpecCode = x.Cv?.SpecCode,
+            CVColorCode = x.Cv?.ColorCode,
+            // ⚠️ NỢ — KHÔNG ĐOÁN CÔNG THỨC: thiếu GuaranteeValue / ApprovedDate2 / CVCQ*Date.
+            DutyCompletedPercent = (decimal?)null,
+            DutyDays = x.Head?.ApprovedDate2 == null ? (int?)null : (int)(tDate - x.Head.ApprovedDate2.Value.Date).TotalDays,
+            DutyCompletedPercent_Range = (string?)null,
+            // 🔴🔴🔴 GIỮ NGUYÊN HÌNH DẠNG BUG NGUỒN: nhánh `when (DutyDays <= 0)` BỊ COMMENT nên
+            //   DutyDays <= 0 (giao TRƯỚC hạn) và DutyDays NULL đều rơi vào nhóm THẬT '00-02'.
+            DutyDays_Range = DutyDaysRangeAsSource(
+                x.Head?.ApprovedDate2 == null ? (int?)null : (int)(tDate - x.Head.ApprovedDate2.Value.Date).TotalDays),
+            RefDate = (DateTime?)null,
+            DeliveryRangeType = (string?)null,
+            TOTAL = 1.0m
+        }).ToList();
+
+    // 🔴 Bảng tổng hợp: group by CCDealerCode, CCDealerName, MCSSpecCode, MCSSpecDescription,
+    //    DRListCode, DeclarationNo, PMGBankGuaranteeNo — mọi ô đếm để 0 vì DutyCompletedPercent NULL.
+    var summary = rows
+        .GroupBy(r => new { r.DealerCode, r.DRListCode })
+        .Select(g => new
+        {
+            g.Key.DealerCode, g.Key.DRListCode,
+            DutyCompletedPercent_000 = 0, DutyCompletedPercent_099 = 0, DutyCompletedPercent_100 = 0,
+            DutyCompletedPercent_099X = 0, DutyCompletedPercent_100X = g.Count(),
+            DutyCompletedPercent_100_00_15 = 0, DutyCompletedPercent_100_16_30 = 0,
+            DutyCompletedPercent_100_31_45 = 0, DutyCompletedPercent_100_46_60 = 0,
+            DutyCompletedPercent_100_61_zz = 0,
+            DutyCompletedPercent_099_00_15 = 0, DutyCompletedPercent_099_16_30 = 0,
+            DutyCompletedPercent_099_31_45 = 0, DutyCompletedPercent_099_46_60 = 0,
+            DutyCompletedPercent_099_61_zz = 0
+        }).ToList();
+
+    // ✅ Số bảng trả về THAY ĐỔI theo cờ chi tiết — đúng như nguồn (con trỏ nIdx, không hard-code chỉ số).
+    var wantDetail = isGetDetail == "1";
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        outOfScopeCount = enforce ? rows0.Count - rows.Count : 0,
+        enforceBuScope = enforce,
+        tblDetail = wantDetail ? rows : null,       // chỉ có khi @strIsGetDetail = '1'
+        RptStatistic_HTC_CarDocReq = summary,
+        weekMarks = new { tDate, beginThisWeek, next1Week, next2Week },
+        orFilterBugNote = "BUG NGUON: dieu kien 'chua giao ho so' BI VO HIEU boi OR tren bang LEFT JOIN. 'LEFT JOIN Pmt_GuaranteeDetail pgd ON pgd.CarId = cc.CarId AND pgd.GuaranteeDetailStatus NOT IN (R,C)' roi 'WHERE ... AND (cv.MortageEndDate IS NULL Or pgd.DateStart IS null)'. Xe KHONG co bao lanh => pgd.DateStart NULL do left join khong khop => ve phai LUON DUNG => ve trai 'cv.MortageEndDate IS NULL' KHONG con tac dung voi nhom xe do => XE DA GIAO HO SO VAN LOT vao bao cao 'ton/de nghi giao ho so'. Cung ho #B254/#B263/#B293/#B299/#B305/#B308 nhung day la OR NUOT DIEU KIEN, khong phai left-join-hoa-inner. KHONG TU VA.",
+        rbacHoleCase32Note = "LO RBAC - CA 32 (to hop (2): KHONG cong + KHONG loc): myCommon_CheckHTCDirect = 0 HIT; @strBUPatternOfUser duoc bind nhung dem duoc dung 1 lan trong ca ham - chinh la dong bind => SQL KHONG DUNG. Ham tra xe + ho so + SO TIEN COC/BAO LANH cua MOI DAI LY. Nang. KHONG TU BIT - port tra outOfScopeCount + co enforceBuScope.",
+        doubleJoinNote = "BUG NGUON: cdrd/cdrl duoc JOIN HAI LAN voi dieu kien KHAC NHAU. Lan 1 (#tbl_Car_Car_Filter): INNER JOIN + cdrd.DRDtlStatus = 'A' AND cdrl.DRListStatus = 'A'. Lan 2 (#tbl_Car_Car_Final): LEFT JOIN + cdrd.DRDtlStatus NOT IN (R,C) - LONG HON. Cot cdrd.DRDtlStatus/cdrd.DRListCode o select cuoi lay tu LAN 2 => mot VIN co nhieu dong Car_DocReqDtl khong R/C se NO DONG so voi bo loc goc chi nhan 'A'.",
+        elseBranchNote = "BUG NGUON: nhanh else cua DutyDays_Range gom CA NULL LAN SO AM vao NHOM THAT '00-02'. Dong 'when (DutyDays <=0) then N'  < 0'' BI COMMENT, con lai 'else 00-02' => DutyDays <= 0 (giao TRUOC han) va DutyDays NULL deu bi dem vao nhom '00-02' - mot nhom CO THAT trong bao cao. Nguy hon #B281 (nhan rac 'X=0%' de nhan ra) vi o day so TRON THANG vao nhom hop le, khong co dau hieu. Rieng DutyCompletedPercent_Range co else 'X=0%' - nhan rac gom moi dong NULL (UnitPriceActual = 0/NULL => phep chia ra NULL), cung khuon #B281.",
+        goodThresholdNote = "DOI CHUNG TOT: nguong dung '>= 100.0', KHONG phai '= 100' tren so thuc (khac #B278).",
+        dynamicTableCountNote = "DOI CHUNG TOT ve so bang dong: cau chi tiet nam sau 'if (@strIsGetDetail = 1)' (T-SQL, KHONG begin/end) nen SO BANG TRA VE THAY DOI 2<->3; phia C# xu DUNG bang con tro chay 'int nIdx = 0; if (StringEqual(strIsGetDetail, Flag.Active)) { Tables[nIdx++].TableName = tblDetail; } Tables[nIdx++].TableName = strFunctionName;' - khong hard-code chi so. Ghi lai lam mau.",
+        dateMaxLiteralNote = "@strTDateMax duoc bind (TConst.DateTimeSpecial.DateMax) nhung SQL dung LITERAL '2100-01-01' kem chu thich '--- @strTDateMax ---------' => tham so bi thay bang HANG CHEP TAY. Da doi chieu Const.Main.cs:302 DateMax = '2100-01-01' => HIEN DANG TRUNG; rui ro tiem an neu hang doi. @strHTCDealerName nhan HTCDealerCode - lan thu SAU.",
+        debtNote = "NO - KHONG DOAN CONG THUC: DutyCompletedPercent = (Deposit.AmountTotal + pmgd.GuaranteeValue) / cc.UnitPriceActual * 100 va DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate). Tang Pmt_GuaranteeDetail.GuaranteeValue, Car_DocReqList.ApprovedDate2, Car_VIN.CVCQStartDate/CVCQExpectedDate CHUA CO => de NULL, moi o dem theo dai tra 0, KHONG tu suy ra so."
+    });
+}).RequireAuthorization();
 // ===== #B341/#B342/#B343 HỢP ĐỒNG NGUYÊN TẮC — TRA CỨU + TOÀN BỘ CHUỖI KÝ 3 BƯỚC
 //       (`Rpt_PrincipleContractGet` / `_WH` / `_NPPApprove` / `_DlrApprove1` / `_DlrApprove2`,
 //        `TERP.BizHTC/DMS40/zTemp.0.34.Contract.cs`) =====
@@ -40764,7 +41080,7 @@ app.MapGet("/api/drivetests", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(d => d.TestModelCode == model);
     if (!string.IsNullOrWhiteSpace(phone)) q = q.Where(d => d.PhoneNo.Contains(phone));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.DriverTestStatus == status);
-    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo, d.DriverTestStatus, d.ApprovedBy, d.ApprovedDate }).ToListAsync();
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo, d.DriverTestStatus, d.ApprovedBy, d.ApprovedDate, d.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.DriverTestStatus == "P"), items });
 }).RequireAuthorization();
 
@@ -40855,7 +41171,7 @@ app.MapPost("/api/drivetests", async (DriveTestDto dto, AppDbContext db, ITenant
     {
         OrgId = t.OrgId, DriveTestCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), DriverTestType = dto.DriverTestType.Trim(),
         DrvTestPlateNo = dto.DrvTestPlateNo, TestModelCode = dto.TestModelCode.Trim(), DriveDate = dto.DriveDate.Value, CustomerCode = dto.CustomerCode,
-        CustomerName = dto.CustomerName.Trim(), PhoneNo = dto.PhoneNo.Trim(), Address = dto.Address.Trim(), DriverLicenseNo = dto.DriverLicenseNo.Trim(), RangeAge = dto.RangeAge, Email = dto.Email
+        CustomerName = dto.CustomerName.Trim(), PhoneNo = dto.PhoneNo.Trim(), Address = dto.Address.Trim(), DriverLicenseNo = dto.DriverLicenseNo.Trim(), RangeAge = dto.RangeAge, Email = dto.Email, FlagActive = dto.FlagActive ?? "1"  // §12 #B344
     };
     db.DriveTests.Add(d); await db.SaveChangesAsync();
     return Results.Ok(new { d.DriveTestCode, message = "Thêm mới lượt khách lái thử xe thành công" });
@@ -52941,7 +53257,7 @@ record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractApproveDto(string PrincipleContractNo, string? PartnerUserCode = null, string? FilePath = null);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle, string? DealerSignStatus = null, DateTime? DealerSignDTime = null, string? DealerSignBy = null, string? NPPSignStatus = null, DateTime? NPPSignDTime = null, string? NPPSignBy = null, string? FlagActive = null, DateTime? CreateDTime = null, string? FilePath = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
-record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
+record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email, string? FlagActive = null);
 record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email);
 record RegisterOrgDto(string Name);
 

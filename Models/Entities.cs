@@ -11301,6 +11301,9 @@ public sealed class DriveTest
     /// Mã đã khớp nguồn; GAP nằm ở chỗ nguồn (`DLR_DriveTestApprove_New20181119`) còn **ghi người/ngày duyệt**.
     /// </summary>
     public string DriverTestStatus { get; set; } = "P";
+    /// <summary>§12 #B344 — `Dlr_DriveTest.FlagActive`: báo cáo `RptPivot_DlrDriveTest_WH_New20181119`
+    /// lọc nền `and ddt.FlagActive = '1'`. Default `"1"` = `TConst.Flag.Active` (trích nguồn).</summary>
+    public string FlagActive { get; set; } = "1";
     /// <summary>Ngày/người duyệt (`ApprovedDate`/`ApprovedBy`) — nguồn ghi cho **CẢ hai nhánh** duyệt và từ chối.</summary>
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
