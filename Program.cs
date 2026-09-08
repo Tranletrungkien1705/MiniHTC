@@ -46036,6 +46036,77 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #696 JOB TỰ ĐỘNG GỬI BCBH SANG HMC `Ser_ROWarrantyReport_SendHMC_Auto` =====
+// (`BizCarSv.WarrantyReport.cs` — **file này LỆCH GIỮA HAI MÁY**, canonical = **150** theo #42/#46.)
+// laptop `:22912-23124` md5 `7647e931` · **máy 150 `:23433-23646` md5 `a459118a`** ⇒ **KHÁC NHAU**.
+// 📌 DIFF vùng hàm giữa hai máy cho **đúng bốn** khác biệt — và đây là **chi tiết cụ thể** của phần chênh 522
+//   dòng mà #46 đã rà ở mức tổng:
+//     ① `and t.WarrantyStatus = 'ACCE'`  →  `and t.WarrantyStatus = @strWarrantyStatus`
+//        với `TConst.Ser_WarrantyReport_Status.**Confirmed**` = **"CONF"** (`Const.Main.cs:302`)
+//        ⇒ **đổi hẳn ứng viên**: bản cũ gửi BCBH **đã được chấp thuận** (`ACCE`), bản mới gửi BCBH
+//          **chờ HMC duyệt** (`CONF`). Hai tập **không giao nhau**.
+//     ② **THÊM** `and t.WarrantySerCode in ('HMC', 'HTMV')` ⇒ lọc thêm theo **hãng bảo hành**.
+//     ③ repoint `Ser_ROWarrantyReport_SendHMCX(` → `Ser_ROWarrantyReport_SendHMCX_**20260227**(`
+//     ④ tham số chết `//, "@strHMCApiStatus", strDealerCode` được **thay** bằng `@strWarrantyStatus` thật.
+//   ⚠️ ④ đáng ghi riêng: dòng bị comment truyền **`strDealerCode`** cho **`@strHMCApiStatus`** — một lỗi gán
+//     nhầm tham số **suýt chạy**, may là đã bị comment. Port theo **bản 150**.
+//
+// ⚪ **XÁC NHẬN PHÁT BIỂU 2/3 Ở #695**: cặp thứ ba này **KHÔNG** dùng khuôn `"" // strReportDateConditionList`.
+//   `_Auto` ở đây là **job quét theo đại lý**: nhận `strDealerCode` (thay vì `strROWID`), tự tìm danh sách
+//   `ROWID` cần gửi rồi **lặp từng cái**. Cấu trúc khác hẳn hai cặp kia.
+// 🔴🔴🔴 **CỬA SỔ THỜI GIAN `-3 NGÀY -5 GIỜ` HARDCODE TRONG C#**:
+//     `"@strApprovedDate", dtimeSys.AddDays(-3).AddHours(-5).ToString("yyyy-MM-dd")`
+//     kèm chú thích `// -5 tiếng tránh job chạy lâu chạy vào sáng sớm hôm sau ==> bỏ sót BCBH`
+//   ⇒ Job **chỉ** gửi BCBH duyệt trong **3 ngày gần nhất**; job hỏng vài ngày thì BCBH cũ hơn **không bao giờ
+//     được gửi lại**, và không có cảnh báo. Không tham số nào chỉnh được cửa sổ này.
+//   ⚠️ `.AddHours(-5)` rồi `.ToString("yyyy-MM-dd")` ⇒ trừ 5 giờ **chỉ có tác dụng khi job chạy trước 5h sáng**
+//     (vì kết quả bị cắt về ngày). Chú thích thừa nhận đúng ý đó.
+// 🔴🔴 **ĐẠI LÝ TEST HARDCODE TRONG SQL SẢN PHẨM**: `and t.DealerCode not in ('VN101') -- Đại lý idocNet Test`.
+// ⚪ **DƯƠNG TÍNH — TRANSACTION THEO TỪNG BẢN GHI, CÓ LÝ DO VIẾT RA**: `_Auto` **comment** phần mở transaction ở
+//   đầu hàm (`//if (bNeedTransaction_Main) _dbMain.BeginTransaction();` …) rồi **mở lại BÊN TRONG vòng lặp**,
+//   kèm chú thích `//Job chạy đến BCBH nào thì xong BCBH đó luôn. tránh xử lý xong hết BCBH đến BCBH cuối bị lỗi`
+//   `lại rommback lại hết` ⇒ **thiết kế có chủ đích**, không phải sót. Đối lập với #693 (một transaction bao trùm).
+// 🔴 Danh sách ứng viên lấy bằng `_dbDealer.ExecQuery(...)` rồi `RollbackSafety(_dbDealer)` **trước** vòng lặp.
+// 🔴 `and (t.HMCApiStatus = 'P' or isnull(t.HMCApiStatus, '') = '')` ⇒ chỉ lấy BCBH **chưa gửi** (`P` hoặc rỗng).
+app.MapGet("/api/report/warranty-send-hmc-auto", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, int? days) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "Can dealerCode — nguon lay danh sach theo t.DealerCode = @strDealerCode." });
+    var dealer = dealerCode!.Trim().ToUpperInvariant();
+
+    // Nguồn HARDCODE 3 ngày (−5 giờ). Port cho chỉnh được nhưng mặc định giữ đúng 3.
+    var win = days is > 0 and <= 365 ? days!.Value : 3;
+    var since = DateTime.Now.AddDays(-win).AddHours(-5).Date;
+
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.DealerCode == dealer)
+        .Where(x => x.DealerCode != "VN101")                       // đại lý test, hardcode ở nguồn
+        .Where(x => x.HMCApiStatus == "P" || x.HMCApiStatus == "")
+        // Bản 150 (canonical): CONF — chờ HMC duyệt. Bản laptop dùng ACCE — KHÁC TẬP.
+        .Where(x => x.Status == "CONF")
+        .Where(x => x.ApprovedDate >= since);
+
+    var rows = await qy.Select(x => new { x.ClaimNo, x.DealerCode, x.Vin, x.PlateNo, x.WarrantyType,
+                                         x.Amount, x.Status, x.HMCApiStatus, x.ApprovedDate }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, sinceDate = since, windowDays = win, count = rows.Count, rows,
+        // ===== #696 =====
+        fileDiffersBetweenMachinesCanonicalIs150 = "BizCarSv.WarrantyReport.cs LECH GIUA HAI MAY, canonical = 150 theo #42/#46: laptop :22912-23124 md5 7647e931 vs may 150 :23433-23646 md5 a459118a => KHAC NHAU. Port theo BAN 150",
+        fourConcreteDiffsBetweenMachines = "DIFF vung ham giua hai may cho DUNG BON khac biet — chi tiet cu the cua phan chenh 522 dong ma #46 da ra o muc tong: (1) and t.WarrantyStatus = ACCE -> and t.WarrantyStatus = @strWarrantyStatus voi TConst.Ser_WarrantyReport_Status.Confirmed = CONF (Const.Main.cs:302) => DOI HAN UNG VIEN: ban cu gui BCBH DA DUOC CHAP THUAN (ACCE), ban moi gui BCBH CHO HMC DUYET (CONF), hai tap KHONG GIAO NHAU; (2) THEM and t.WarrantySerCode in (HMC, HTMV) => loc them theo hang bao hanh; (3) repoint Ser_ROWarrantyReport_SendHMCX -> …SendHMCX_20260227; (4) tham so chet //, @strHMCApiStatus, strDealerCode duoc THAY bang @strWarrantyStatus that",
+        commentedParamPassedWrongValue = "Dong bi comment o ban laptop truyen strDealerCode cho @strHMCApiStatus — mot loi gan nham tham so SUYT CHAY, may la da bi comment",
+        confirmsTwoOfThreeStatementIn695 = "XAC NHAN PHAT BIEU 2/3 O #695: cap thu ba nay KHONG dung khuon \"\" // strReportDateConditionList. _Auto o day la JOB QUET THEO DAI LY: nhan strDealerCode thay vi strROWID, tu tim danh sach ROWID roi LAP TUNG CAI. Cau truc khac han hai cap kia",
+        hardcodedThreeDayWindow = "CUA SO THOI GIAN -3 NGAY -5 GIO HARDCODE TRONG C#: @strApprovedDate, dtimeSys.AddDays(-3).AddHours(-5).ToString(yyyy-MM-dd) kem chu thich -5 tieng tranh job chay lau chay vao sang som hom sau ==> bo sot BCBH. Job CHI gui BCBH duyet trong 3 ngay gan nhat; job hong vai ngay thi BCBH cu hon KHONG BAO GIO duoc gui lai, khong canh bao. Khong tham so nao chinh duoc",
+        minusFiveHoursOnlyMattersBeforeFiveAm = "AddHours(-5) roi ToString(yyyy-MM-dd) => tru 5 gio CHI co tac dung khi job chay truoc 5h sang (vi ket qua bi cat ve ngay); chu thich thua nhan dung y do",
+        testDealerHardcodedInProductionSql = "and t.DealerCode not in (VN101) -- Dai ly idocNet Test: dai ly TEST hardcode trong SQL san pham",
+        positivePerRecordTransactionWithStatedReason = "DUONG TINH: _Auto COMMENT phan mo transaction o dau ham roi MO LAI BEN TRONG vong lap, kem chu thich //Job chay den BCBH nao thi xong BCBH do luon. tranh xu ly xong het BCBH den BCBH cuoi bi loi lai rommback lai het => THIET KE CO CHU DICH, khong phai sot. Doi lap voi #693 (mot transaction bao trum)",
+        candidateListReadThenRolledBack = "danh sach ung vien lay bang _dbDealer.ExecQuery(...) roi RollbackSafety(_dbDealer) TRUOC vong lap",
+        onlyUnsentClaims = "and (t.HMCApiStatus = P or isnull(t.HMCApiStatus, '') = '') => chi lay BCBH CHUA GUI (P hoac rong)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #695 CHI TIẾT ĐƠN ĐẶT PT GỬI HMC — họ `Rpt_DMSSer_PartsOrderDetail_*` =====
 // (`BizCarSv.Report.Special.Warranty.cs`) md5: `_PartGetX` `7dd4570e` · `_SendHMC` `221f3995` ·
 // `_SendHMC_Auto` `e452137b` — **cả ba KHỚP** máy 150.
@@ -46271,7 +46342,11 @@ app.MapPost("/api/reqpartprices/{no}/tst-reply", async (string no, ReqPartPriceT
         reqNo, req.TSTReqPartPriceID, req.TSTSentDate, req.TSTStatus, linesUpdated = updated,
         // ===== #693 =====
         thirteenthMultiDbWriteCaseAndTheClearest = "CA THU MUOI BA CUA LOP GHI NHIEU CSDL — VA LA CA RO NHAT: cung MOT chuoi SQL chay tuan tu tren BA CSDL: DataSet dsExec = _dbMain.ExecQuery(strSqlExec); DataSet dsExecWH = _dbWH.ExecQuery(strSqlExec); if (!bIsWSMain) { _dbDealer.ExecQuery(strSqlExec); }. Ba CommitSafety ROI NHAU o vo boc => KHONG phai giao dich phan tan: _dbWH loi sau khi _dbMain da commit thi Main DA GHI, WH CHUA => LECH VINH VIEN, khong co duong lui",
-        writeAndCommitOfThirdDbGatedByDifferentFlags = "GHI VA COMMIT CUA CSDL THU BA DO HAI CO KHAC NHAU DIEU KHIEN: ghi <- if (!bIsWSMain) (ba cho trong …UpdTSTX); mo/commit/rollback transaction <- if (bNeedTransaction_Dealer) (o vo boc). …UpdTSTX NHAN CA HAI co lam tham so nhung CHI DUNG bIsWSMain de chan ghi => bon to hop, HAI trong do sai: (1) bIsWSMain=false + bNeedTransaction_Dealer=false => GHI ma KHONG co transaction (auto-commit, khong rollback cung hai DB kia); (2) bIsWSMain=true + bNeedTransaction_Dealer=true => mo va commit mot transaction RONG. Noi tiep #690 (dieu kien ghi DB thu ba la co transaction); o day te hon: HAI CO KHAC NHAU cho CUNG MOT CSDL",
+        // 🔴🔴🔴 #696 RÚT LẠI phát hiện này của #693 — TÔI ĐÃ BỎ SÓT MỘT DÒNG RÀNG BUỘC.
+        retracted_writeAndCommitOfThirdDbGatedByDifferentFlags = "RUT LAI (#696). #693 ghi rang ghi va commit cua CSDL thu ba do HAI CO DOC LAP dieu khien nen co hai to hop sai. SAI. Doc lai vo boc Req_PartPrice_UpdTST thi dong 25 cua vung ham co san: if (bIsWSMain) bNeedTransaction_Dealer = false; => hai co BI RANG BUOC: bIsWSMain=true keo theo bNeedTransaction_Dealer=false. Chi con HAI to hop kha di va CA HAI DEU NHAT QUAN: (a) bIsWSMain=true => khong ghi _dbDealer va khong mo/commit transaction; (b) bIsWSMain=false => ghi _dbDealer va co transaction. KHONG co to hop sai nao",
+        howTheErrorHappened = "Toi doc ba cho if (!bIsWSMain) trong ham X roi ket luan ngay ma KHONG doc lai phan khai bao bien o dau vo boc — dong rang buoc nam o do. Bai hoc: khi hai co cung dieu khien mot CSDL, phai doc PHAN KHAI BAO truoc khi ket luan chung doc lap",
+        multiDbWriteFindingStillStands = "VAN DUNG sau khi ra soat: cung MOT chuoi SQL chay tuan tu tren BA CSDL (_dbMain, _dbWH, _dbDealer) voi BA CommitSafety ROI NHAU => khong phai giao dich phan tan; _dbWH loi sau khi _dbMain da commit thi lech vinh vien. Day van la ca thu 13 cua lop ghi-nhieu-CSDL",
+        bindingLineCounted = "Dem toan TERP.BizCarSv: bool bIsWSMain = xuat hien 377 lan, dong rang buoc if (bIsWSMain) bNeedTransaction_Dealer = false; xuat hien 266 lan => 111 cho khai bao MA KHONG co dong rang buoc. CHUA kiem tung cho trong 111 do co ghi _dbDealer hay khong => ghi la HANG DOI can ra, KHONG ket luan",
         twoCommitRulesInOneFunction = "CommitSafety(_dbMain) va CommitSafety(_dbWH) la VO DIEU KIEN, chi _dbDealer moi co if => ba CSDL, HAI QUY TAC COMMIT KHAC NHAU trong cung mot ham",
         clearForDebugRegion = "than …UpdTSTX co #region // Clear for debug — khoi don bang tam dat ten for debug (ho #681: cac cau --select null tbl_… va --drop table bi comment de debug roi o lai vinh vien)",
         hiddenOrderComplainSideEffect = "nguon con #region // Ser_OrderComplain BEN TRONG ham cap nhat gia => TST tra gia ve KEO THEO ghi khieu nai don hang — mot side-effect khong nam trong ten ham",
