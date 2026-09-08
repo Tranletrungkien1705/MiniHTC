@@ -15084,6 +15084,27 @@ public sealed class SerFilePathVideo
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>#627 Master **LOẠI đầu mục kiểm tra** (`Ser_Mst_ReceptionFAudType`) — nửa còn thiếu của cặp
+/// master ở #526. Nguồn: `BizCarSv.Tab.cs:14738 Ser_Mst_ReceptionFAudType_GetX`.
+/// 🔴 **HẰNG SAI CHÍNH TẢ — GIỮ NGUYÊN VĂN**: tên cột thật trong `DbDefine.cs` là **`RECEPTIOND…`**
+/// (chữ **D**, không phải **F**): `RECEPTIONDAUDTYPE` · `RECEPTIONDAUDTYPENAME` · và ở bảng anh em
+/// `RECEPTIONDAUDNAME`. Trong khi bảng **giao dịch** `TblSer_ReceptionFDtl` lại dùng `RECEPTIONFAUDTYPE`
+/// (chữ **F**) cho **cùng một cột logic**. Đếm trong chính `DbDefine.cs`: `RECEPTIOND*` = **4**,
+/// `RECEPTIONFAUDTYPE` = **1**. ⇒ Hai master sai chính tả, bảng chi tiết viết đúng. **CẤM "sửa cho đúng".**</summary>
+public sealed class ReceptionFAudTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Cột DB nguồn: **`RECEPTIONDAUDTYPE`** (sai chính tả, giữ nguyên).</summary>
+    public string ReceptionFAudType { get; set; } = "";
+    /// <summary>Cột DB nguồn: **`RECEPTIONDAUDTYPENAME`**.</summary>
+    public string? ReceptionFAudTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>#526 Master **ĐẦU MỤC KIỂM TRA** khi tiếp nhận/giao xe (`Ser_Mst_ReceptionFAudit`).
 /// Nguồn: `BizCarSv.Tab.cs:14946 Ser_Mst_ReceptionFAudit_Get` → thân thật `…_GetX` (`:15070`).
 /// Khoá hợp = (`ReceptionFAudCode`, `ReceptionFAudType`) — nguồn nối bằng **cả hai** cột.</summary>

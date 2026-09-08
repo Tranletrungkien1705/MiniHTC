@@ -52950,6 +52950,98 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #627 MASTER **LOẠI** ĐẦU MỤC KIỂM TRA `Ser_Mst_ReceptionFAudType_GetX` (`Tab.cs:14738`) =====
+// Nửa còn thiếu của cặp master ở #526: #526 port **đầu mục** (`Ser_Mst_ReceptionFAudit`), lượt này port
+//   **loại đầu mục** (`Ser_Mst_ReceptionFAudType`). Trước đó Mini ghi rõ *"ReceptionFAudType, mã tự do —
+//   chưa có master riêng"* ⇒ nay có master thật, §12 đủ bốn chỗ (entity · DbSet · Seeder · GET+POST).
+//
+// 🔴🔴🔴 **HẰNG SAI CHÍNH TẢ, VÀ SAI *KHÔNG ĐỒNG NHẤT*** — đúng luật *HẰNG ≠ GIÁ TRỊ*:
+//   Trong **cùng một file** `TERP.HTCService.ClientService/Common/DbDefine.cs`, **cùng một cột logic**
+//   `ReceptionFAudType` được khai báo **hai giá trị khác nhau**:
+//     · `TblSer_Mst_ReceptionFAudType.ReceptionFAudType = "**RECEPTIOND**AUDTYPE"`   (master loại)
+//     · `TblSer_Mst_ReceptionFAudit.ReceptionFAudType  = "**RECEPTIOND**AUDTYPE"`   (master đầu mục)
+//     · `TblSer_ReceptionFDtl.ReceptionFAudType        = "**RECEPTIONF**AUDTYPE"`   (bảng chi tiết)
+//   Đếm trong chính file đó: `RECEPTIOND*` = **4** (`RECEPTIONDAUDTYPE`×2 · `RECEPTIONDAUDTYPENAME` ·
+//   `RECEPTIONDAUDNAME`), `RECEPTIONFAUDTYPE` = **1**.
+//   ⇒ **Hai bảng master mang tên cột sai chính tả**, bảng giao dịch viết đúng. Vì đây là tên dùng để đọc
+//     `DataRow` (thuộc tính `DataColumEx`), tên sai sẽ **ném lỗi lúc chạy** — mà các màn này vẫn chạy ⇒
+//     **cột trong DB đúng là đang mang tên sai chính tả**. Port **chép nguyên văn**, "sửa cho đúng" là
+//     làm hỏng khớp dữ liệu khi đối soát.
+// 🔴 **CẶP MASTER ĐỌC HAI DB KHÁC NHAU** (mở rộng phát hiện #619/#621/#624/#625 sang **cùng một cổng**):
+//     · `Ser_Mst_ReceptionFAudType_GetX`: `from **Ser_Mst_ReceptionFAudType** smrfat` — **cục bộ**;
+//     · `Ser_Mst_ReceptionFAudit_GetX` : `from **[@strDBName_CommonCenter].[dbo]**.Ser_Mst_ReceptionFAudit smrfa`
+//       (chỗ giữ chỗ này = **DB Main**, xem #619).
+//   ⇒ **Loại** nằm ở DB cục bộ, **đầu mục của loại đó** nằm ở DB trung tâm — hai nửa của **một** danh mục,
+//     hai DB, **cùng một cổng WS** gọi cả hai. Lệch dữ liệu là đầu mục không tra được tên loại (hoặc ngược lại).
+// 🔴 **TÊN BẢNG TẠM TỰ MÂU THUẪN**: tạo là `into **#tblSer**_Mst_ReceptionFAudType_Filter` (không gạch dưới
+//   sau `#tbl`) nhưng dòng dọn cuối ghi `--drop table **#tbl_**Ser_Mst_ReceptionFAudType_Filter;` ⇒ **hai tên**
+//   **khác nhau**. Đang comment nên vô hại; ai bỏ comment là **lỗi ngay**. Bản `…FAudit_GetX` **y hệt**.
+// 🔴 **CHÚ THÍCH LẠC MÔ-ĐUN**: ngay trên bảng tạm đó ghi `---- #tbl_Dls_CustomerCare_Filter:` — sót lại từ
+//   khuôn của mô-đun **chăm sóc khách hàng**. Dấu vết chép khuôn, và là bẫy khi grep theo chú thích.
+// 🔴 **`_CheckDB` ĐỌC KHÁC DB VỚI `_GetX`**: `Ser_Mst_ReceptionFAudType_CheckDB` chạy trên **`_dbMain`** cứng,
+//   còn `_GetX` chạy trên `_dbAction` (DB do người gọi truyền) ⇒ **guard kiểm ở một DB, danh sách đọc ở DB khác**.
+// 🔴 **`Rows[0]` KHÔNG KIỂM `Rows.Count`**: nhánh `strFlagActiveListToCheck.Length > 0` đọc thẳng
+//   `dtDB_….Rows[0]["FlagActive"]`. Nếu người gọi **chỉ** truyền `strFlagActiveListToCheck` (bỏ trống
+//   `strFlagExistToCheck`) và bản ghi **không tồn tại** ⇒ **IndexOutOfRange**, không phải thông báo nghiệp vụ.
+//   (Cùng khuôn với `Mst_BOM_CheckDB` — nơi còn đọc nhầm cột `ReceptionFStatus` **trên bảng BOM**.)
+// 🔴 **NHÃN CHẨN ĐOÁN SAI**: khi ném lỗi, tham số log ghi `"Check.DB.**ReceptionFStatusCurrent**"` nhưng giá
+//   trị đưa vào là **`FlagActive`** ⇒ đọc log sẽ hiểu sai chuyện gì đã xảy ra.
+// ⚠️ Hai dòng phân trang cũng **bị comment** ở hàm này — thuộc **12/40** site đã đếm ở #626 (và #524 đã ghi
+//   cho bản `…FAudit`). Không tính là phát hiện mới, chỉ bổ sung một site vào danh sách.
+// ⚪ Âm tính: `order by smrfat.ReceptionFAudType` nằm trong chính câu dựng `identity()` ⇒ đánh số **ổn định**;
+//   nhưng câu **kết quả** (`select t.MyIdxSeq, smrfat.*`) **không có `order by`** ⇒ port sắp tường minh.
+app.MapGet("/api/receptionfaudtypemsts", async (AppDbContext db, ITenantContext t,
+    string? type, string? flagActive, int? recordStart, int? recordCount) =>
+{
+    var qy = db.ReceptionFAudTypeMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(type)) qy = qy.Where(x => x.ReceptionFAudType == type!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = await qy.OrderBy(x => x.ReceptionFAudType)   // nguồn KHÔNG sắp ở câu kết quả
+        .Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.ReceptionFAudType, x.ReceptionFAudTypeName, x.FlagActive, x.Remark,
+                           x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, total, items,
+        // ===== #627 =====
+        dbColumnNamesAreMisspelledVerbatim = "cot DB thuc su ten RECEPTIONDAUDTYPE / RECEPTIONDAUDTYPENAME (chu D, khong phai F) — giu NGUYEN VAN, sua cho dung la lam hong khop du lieu",
+        sameLogicalColumnTwoSpellings = "trong cung DbDefine.cs: TblSer_Mst_ReceptionFAudType va TblSer_Mst_ReceptionFAudit dung RECEPTIONDAUDTYPE, con TblSer_ReceptionFDtl dung RECEPTIONFAUDTYPE — dem: RECEPTIOND* = 4, RECEPTIONFAUDTYPE = 1 => hai master sai chinh ta, bang giao dich viet dung",
+        whyItMustBeRealMisspelling = "day la ten dung de doc DataRow (DataColumEx) nen ten sai se nem loi luc chay; cac man nay van chay => cot trong DB dung la dang mang ten sai chinh ta",
+        typeAndItemMastersLiveInDifferentDbs = "Ser_Mst_ReceptionFAudType_GetX doc CUC BO, con Ser_Mst_ReceptionFAudit_GetX doc [CommonCenter].[dbo] (= DB Main, xem #619) => hai nua cua MOT danh muc nam o hai DB, cung mot cong WS goi ca hai",
+        tempTableNameSelfContradictory = "tao la into #tblSer_Mst_ReceptionFAudType_Filter nhung dong don cuoi ghi --drop table #tbl_Ser_Mst_ReceptionFAudType_Filter => HAI TEN khac nhau; dang comment nen vo hai, bo comment la loi ngay; ban FAudit_GetX y het",
+        strayCommentFromAnotherModule = "ngay tren bang tam do ghi ---- #tbl_Dls_CustomerCare_Filter: — sot lai tu khuon mo-dun cham soc khach hang",
+        checkDbReadsDifferentDbThanGetX = "Ser_Mst_ReceptionFAudType_CheckDB chay tren _dbMain CUNG, con _GetX chay tren _dbAction (DB do nguoi goi truyen) => guard kiem o mot DB, danh sach doc o DB khac",
+        rowsZeroWithoutCountCheck = "nhanh strFlagActiveListToCheck.Length > 0 doc thang Rows[0][FlagActive]; neu chi truyen strFlagActiveListToCheck va ban ghi khong ton tai => IndexOutOfRange chu khong phai thong bao nghiep vu (cung khuon Mst_BOM_CheckDB)",
+        diagnosticLabelIsWrong = "khi nem loi, tham so log ghi Check.DB.ReceptionFStatusCurrent nhung gia tri dua vao la FlagActive => doc log se hieu sai",
+        pagingCommentedOutHereToo = "hai dong phan trang cung bi comment o ham nay — thuoc 12/40 site da dem o #626 (va #524 da ghi cho ban FAudit); khong tinh la phat hien moi",
+        identityStableButResultUnordered = "order by smrfat.ReceptionFAudType nam trong chinh cau dung identity() nen danh so on dinh, nhung cau KET QUA (select t.MyIdxSeq, smrfat.*) KHONG co order by => port sap tuong minh",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptionfaudtypemsts", async (ReceptionFAudTypeMstDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var type = (dto.ReceptionFAudType ?? "").Trim();
+    if (type.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai dau muc kiem tra." });
+    var by = user.Identity?.Name ?? "system";
+    var row = await db.ReceptionFAudTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudType == type);
+    if (row is null)
+    {
+        row = new ReceptionFAudTypeMst { OrgId = t.OrgId, ReceptionFAudType = type };
+        db.ReceptionFAudTypeMsts.Add(row);
+    }
+    row.ReceptionFAudTypeName = dto.ReceptionFAudTypeName;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.Remark = dto.Remark;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ReceptionFAudType, row.ReceptionFAudTypeName, row.FlagActive, row.Remark, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
 app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
     string? code, string? type, string? flagActive, int? recordStart, int? recordCount, bool? isGetDetail) =>
 {
@@ -56947,6 +57039,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudTypeName, string? FlagActive, string? Remark);   // #627
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive);
