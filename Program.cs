@@ -36233,6 +36233,109 @@ app.MapGet("/api/icic/dealercustomers", async (
     });
 }).RequireAuthorization();
 
+// ===== #B105 TRA LƯỢT LÁI THỬ — KÊNH BẢO HIỂM `ICIC` — `DLR_DriveTest_ICIC` =====
+// Trace LIVE: WS → **`_biz.DLR_DriveTest_ICIC`** (`Biz.HTC.WH.cs:182012`), SQL dùng chung
+//   `CommonSQLQuery.mySql_DLR_DriveTest_ICIC()` (`:3747`). **Không có hậu tố `_NewYYYYMMDD`**.
+//   3B đo thật, **khớp cả 2 máy** (start lệch 182012/182017): md5 `399f2e20e5a0799ddad6ad8b75f8c819`.
+// 🔴 **SỬA LẠI KẾT LUẬN CỦA BẢNG QUÉT #B104**: hàm này KHÔNG phải biến thể 4 (hằng cứng) như tôi
+//    ghi lúc quét, mà là **BIẾN THỂ 2 — khai mà KHÔNG dùng**:
+//      `alParamsCoupleSql.AddRange(new object[] { "@strBUPatternOfUser", "HTC%" });`  ← bind
+//      nhưng **`mySql_DLR_DriveTest_ICIC()` KHÔNG hề chứa `@strBUPatternOfUser`** — `inner join
+//      Mst_Dealer md` chỉ nối `on md.DealerCode = t.DealerCode`, **không có** `md.BUCode like …`.
+//    ⇒ Đúng theo luật đếm của chính mình (`C0-…nonagesimusquartus`): `count = 1` = **chỉ dòng bind**
+//      ⇒ biến thể 2. Lúc quét tôi suy từ **giá trị bind** thay vì kiểm **SQL có dùng không** —
+//      ghi lại để lượt sau không lặp lại (xem luật `C0-…nonagesimusseptimus`).
+//    Hệ quả thực tế: **KHÔNG có bất kỳ lọc phạm vi nào**, kể cả lọc sai — kênh ICIC thấy **mọi đại lý**.
+// 🔴 **THỨ THẬT SỰ GIỚI HẠN LỘ DỮ LIỆU LÀ GUARD "CẤM TÌM RỖNG"**, không phải RBAC:
+//    `if (IsNullOrEmpty(strPhoneNoConditionList)) throw DLR_DriveTest_ICIC_**Conditon**ListIsEmpty`
+//    (⚠️ tên hằng lỗi chính tả **"Conditon"** — giữ nguyên để đối chiếu log), kèm
+//    `"ErrDesc", "Điều kiện tìm kiếm trống!"`.
+//    ⇒ Đối tác **bắt buộc** phải biết **số điện thoại** mới tra được — đây mới là ranh giới thật.
+//      Cùng ý đồ với hạt giống `AND (1=2 …)` ở #B103, nhưng làm bằng **guard ở tầng C#**.
+// 🔴 **`inner join DLS_DealerCustomer` ở CẢ HAI bước** (lọc và lấy dữ liệu) ⇒ lượt lái thử **không
+//    gắn khách hàng** bị **loại hẳn**. Còn `left join Mst_CarDriverTest` nối bằng **CẶP
+//    `(DrvTestPlateNo, DealerCode)`** — biển số xe lái thử **không duy nhất toàn hệ thống**.
+// 🔴 Trả **cột trùng tên từ hai bảng**: `mcm.ModelCode` (model của lượt lái thử) **và**
+//    `mcdt.ModelCode` (model của **xe** lái thử) — nguồn **không** đổi bí danh ⇒ trong `DataTable`
+//    cột sau **đè** cột trước. Port tách rõ `ddtModelCode` / `mcdtModelCode`, ghi ở `dupColumnNote`.
+app.MapGet("/api/icic/drivetests", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? phoneNo) =>
+{
+    // 🔴 GUARD "CẤM TÌM RỖNG" — ranh giới thật của kênh này.
+    var phone = (phoneNo ?? "").Trim();
+    if (phone.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "DLR_DriveTest_ICIC_ConditonListIsEmpty",   // giữ nguyên lỗi chính tả của nguồn
+            ErrDesc = "Điều kiện tìm kiếm trống!",
+            guardNote = "Doi tac BAT BUOC phai biet SO DIEN THOAI moi tra duoc - day moi la ranh gioi that, KHONG phai RBAC. Cung y do voi hat giong 'AND (1=2 ...)' o #B103 nhung lam bang guard o tang C#."
+        });
+
+    var custs = await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var custByCode = custs.GroupBy(c => c.CustomerCode).ToDictionary(g => g.Key, g => g.First());
+    // `inner join DLS_DealerCustomer` + lọc theo số điện thoại.
+    var matchCust = custs.Where(c => (c.PhoneNo ?? "").Contains(phone, StringComparison.OrdinalIgnoreCase))
+        .Select(c => c.CustomerCode).ToHashSet();
+
+    var q = db.DriveTests.Where(d => d.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        q = q.Where(d => d.DealerCode == dealerCode.Trim().ToUpperInvariant());
+    var all = await q.ToListAsync();
+    var beforeCust = all.Count;
+    // `inner join` ở CẢ HAI bước ⇒ lượt không gắn khách hàng bị LOẠI HẲN.
+    all = all.Where(d => d.CustomerCode != null && matchCust.Contains(d.CustomerCode)).ToList();
+    var droppedNoCustomer = beforeCust - all.Count;
+
+    var dealers = (await db.Dealers.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.DealerCode, x.DealerName }).ToListAsync())
+        .GroupBy(x => x.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId)
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    // `left join Mst_CarDriverTest` theo CẶP (DrvTestPlateNo, DealerCode).
+    var drvCars = (await db.CarDriverTests.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => (x.DrvTestPlateNo, x.DealerCode)).ToDictionary(g => g.Key, g => g.First());
+
+    // `inner join Mst_Dealer` + `inner join Mst_CarModel` ⇒ thiếu danh mục là LOẠI dòng.
+    var beforeCat = all.Count;
+    all = all.Where(d => d.DealerCode != null && dealers.ContainsKey(d.DealerCode)
+                         && models.ContainsKey(d.TestModelCode)).ToList();
+    var droppedNoCatalog = beforeCat - all.Count;
+
+    var items = all.OrderBy(d => d.DealerCode).ThenBy(d => d.DriveTestCode, StringComparer.Ordinal)
+        .Select(d =>
+        {
+            custByCode.TryGetValue(d.CustomerCode ?? "", out var ddc);
+            drvCars.TryGetValue((d.DrvTestPlateNo ?? "", d.DealerCode ?? ""), out var mcdt);
+            return new
+            {
+                ddtDriveTestCode = d.DriveTestCode, ddtDealerCode = d.DealerCode,
+                mdDealerName = dealers.TryGetValue(d.DealerCode ?? "", out var dn) ? dn : null,
+                // 🔴 Nguồn trả HAI cột cùng tên `ModelCode` — tách rõ ở port.
+                ddtModelCode = d.TestModelCode,
+                mcmModelName = models.TryGetValue(d.TestModelCode, out var mn) ? mn : null,
+                ddtDriveDate = d.DriveDate, ddtDriverTestType = d.DriverTestType,
+                ddcFullName = ddc?.FullName, ddcFullNameEN = ddc?.FullNameEN,
+                ddcAddress = ddc?.Address, ddcPhoneNo = ddc?.PhoneNo, ddcTaxCode = ddc?.TaxCode,
+                ddcEmail = ddc?.Email, ddcIDCardNo = ddc?.IDCardNo, ddcIDCardType = ddc?.IDCardType,
+                ddcProvinceCode = ddc?.ProvinceCode,
+                mcdtDrvTestPlateNo = mcdt?.DrvTestPlateNo, mcdtSpecCode = mcdt?.SpecCode,
+                mcdtModelCode = mcdt?.ModelCode, mcdtColorCode = mcdt?.ColorCode,
+                mcdtDrvTestVIN = mcdt?.DrvTestVIN, mcdtDrvTestEngineNo = mcdt?.DrvTestEngineNo
+            };
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, droppedNoCustomer, droppedNoCatalog,
+        rbacCorrection = "SUA LAI KET LUAN CUA BANG QUET #B104: ham nay KHONG phai bien the 4 (hang cung) ma la BIEN THE 2 - khai ma KHONG dung. Nguon bind '@strBUPatternOfUser' = 'HTC%' NHUNG mySql_DLR_DriveTest_ICIC() KHONG he chua @strBUPatternOfUser (inner join Mst_Dealer md chi noi on md.DealerCode = t.DealerCode). Dung theo luat dem cua chinh minh: count = 1 = chi dong bind => bien the 2. Luc quet toi suy tu GIA TRI BIND thay vi kiem SQL CO DUNG KHONG.",
+        rbacImpact = "He qua thuc te: KHONG co bat ky loc pham vi nao, ke ca loc sai - kenh ICIC thay MOI dai ly. Nhung xem guardNote: ranh gioi that la bat buoc phai biet SO DIEN THOAI.",
+        emptySearchGuard = "if (IsNullOrEmpty(strPhoneNoConditionList)) throw DLR_DriveTest_ICIC_ConditonListIsEmpty (ten hang LOI CHINH TA 'Conditon' - giu nguyen de doi chieu log), kem ErrDesc 'Dieu kien tim kiem trong!'.",
+        joinShapeNote = "inner join DLS_DealerCustomer o CA HAI buoc (loc va lay du lieu) => luot lai thu KHONG gan khach hang bi LOAI HAN. inner join Mst_Dealer + inner join Mst_CarModel cung loai dong thieu danh muc. left join Mst_CarDriverTest noi bang CAP (DrvTestPlateNo, DealerCode) - bien so xe lai thu KHONG duy nhat toan he thong.",
+        dupColumnNote = "Nguon tra HAI cot cung ten 'ModelCode' - mcm.ModelCode (model cua LUOT lai thu) va mcdt.ModelCode (model cua XE lai thu) - va KHONG doi bi danh => trong DataTable cot sau DE cot truoc. Port tach ro ddtModelCode / mcdtModelCode."
+    });
+}).RequireAuthorization();
+
 // ===== #B104 KÊNH NGOÀI `OS_` GHI NGÀY XÁC NHẬN BẢO HÀNH — `OS_DLS_DealDetailUpdate` =====
 // Trace LIVE: WS → **`_biz.OS_DLS_DealDetailUpdate`** (`Biz.HTC.WH.cs:94818`).
 //   3B đo thật, **khớp cả 2 máy** (`start` lệch 94818/94823 — bình thường): md5
