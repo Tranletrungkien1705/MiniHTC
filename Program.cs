@@ -20116,6 +20116,105 @@ app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContex
 //   các bản `xxx` khác **không ai gọi** ⇒ mã chết nhưng **vẫn mang cùng lỗi `&&`** — sửa bản sống mà quên
 //   bản chết thì lần sau ai chép lại là lỗi quay về.
 // 📌 MiniHTC: endpoint dưới **liệt kê** kết quả quét để chỗ đối chiếu có con số, và mô tả đúng hai nhánh hỏng.
+// ===== 🔴🔴 #610 TỒN ĐẦU KỲ TRONG `Ser_PartOrderSearchPart` (`PartOrder.cs:3178`) — **BỐN LỖI SỐ LIỆU** =====
+// Màn tra phụ tùng khi đặt hàng: dựng `#tbl_mst_part` (lọc danh mục) rồi tính **tồn đầu kỳ** `#tbl_Open`
+//   từ `ser_inv_partInstance`, sau đó cộng nhập/xuất trong kỳ.
+//
+// 🔴🔴 **`full join` NHƯNG CHỈ SELECT `sd.PartID` ⇒ DÒNG CHỈ-CÓ-XUẤT MẤT MÃ PHỤ TÙNG**:
+//     `select **sd.PartID**, (isnull(sd.SD,0) - isnull(sdo.SX,0)) SLD, (isnull(sd.TD,0)-isnull(sdo.TX,0)) TGD`
+//     `into #tbl_Open from ( … nhập … ) sd **full join** ( … xuất … ) sdo on sd.PartID = sdo.PartID`
+//   Tác giả **đã cẩn thận** bọc `isnull` cho **số lượng và giá trị**, nhưng **quên chính cột khoá**:
+//   phụ tùng **chỉ có xuất** (không nhập trước kỳ) ⇒ nhánh `sd` NULL ⇒ `sd.PartID` **NULL** ⇒ dòng đó
+//   **không có mã**, không nối được với bảng nào phía sau ⇒ **tồn âm biến mất khỏi báo cáo**.
+//   Đúng phải là `isnull(sd.PartID, sdo.PartID)`. (Cùng họ "full join nối thiếu" đã gặp ở #559, nhưng ở đó
+//   lỗi nằm ở **điều kiện nối**; ở đây điều kiện đúng mà **cột chiếu ra** sai.)
+// 🔴🔴 **GIÁ TRỊ TỒN = 0 KHI PHƯƠNG PHÁP TÍNH GIÁ KHÔNG PHẢI `FIFO`**:
+//     `case when (select paramvalue from mst_param where dealercode='@DealerCode' and paramcode='MCC'`
+//     `          and paramtype='MCC') = 'FIFO' then sum(…giá thực…) **Else '0'** end TD`
+//     `-- Else sum(dbo.GetAverageCost('@DealerCode', spi.PartID, …) * spi.Quantity)`   ← **BỊ COMMENT**
+//   ⇒ Đại lý cấu hình phương pháp **bình quân** (không FIFO) ⇒ **toàn bộ giá trị tồn đầu kỳ = 0**, trong khi
+//     **số lượng vẫn đúng**. Nhánh tính đúng **đã được viết rồi comment lại** — nợ chưa làm, nằm ngay đó.
+//   ⚠️ `Else '0'` là **chuỗi**, còn `then` là **số** ⇒ SQL Server ép kiểu; vô hại nhưng cho thấy code chép tay.
+// 🔴🔴 **BẤT ĐỐI XỨNG NHẬP/XUẤT**: nhánh **nhập** (`sd`) có `case FIFO`; nhánh **xuất** (`sdo`) **không có** —
+//   nó **luôn** tính `TX` theo giá. ⇒ Khi không phải FIFO: `TD = 0` nhưng `TX > 0` ⇒
+//   `TGD = isnull(sd.TD,0) - isnull(sdo.TX,0)` = **ÂM** ⇒ **giá trị tồn đầu kỳ âm** trên báo cáo.
+//   Hai lỗi trên **cộng hưởng**: một bên bị ép về 0, bên kia vẫn tính đủ.
+// 🔴 **`<` THAY VÌ `<=` Ở MỐC KỲ**: `spi.DateIn **<** '@OpenToDate'` và `spi.DateOut **<** '@OpenToDate'`
+//   ⇒ giao dịch **đúng ngày mốc** bị loại khỏi tồn đầu kỳ. Biến thể của #415 (ở đó là `<=` làm **mất ngày
+//   cuối**; ở đây `<` làm **mất ngày mốc** — cùng gốc: so mốc trên cột ngày mà không nói rõ biên).
+// 🔴 **Bake** `'@DealerCode'` và `'@OpenToDate'`; truy vấn con `mst_param` nằm **bên trong `case` của `sum`**
+//   nên chạy lặp cho từng nhóm. ⚠️ `Status not in ('4','5')` — hai mã **gõ tay**, không dùng lớp hằng.
+// 📌 MiniHTC: `PartInstances` đã có (#416) nhưng **chưa seed dữ liệu** — endpoint tính đúng công thức và trả
+//   cờ; nợ seed vẫn còn.
+app.MapGet("/api/parts/opening-stock", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? openToDate, string? costMethod) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "dealerCode bat buoc (nguon bake thang vao SQL)." });
+    if (openToDate is null)
+        return Results.BadRequest(new { error = "openToDate bat buoc." });
+    var dc = dealerCode!.Trim().ToUpperInvariant();
+    var mark = openToDate!.Value;
+    var isFifo = string.Equals((costMethod ?? "FIFO").Trim(), "FIFO", StringComparison.OrdinalIgnoreCase);
+
+    var EXCLUDED = new[] { "4", "5" };
+    var baseQ = db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dc
+                                           && (x.Status == null || !EXCLUDED.Contains(x.Status)));
+
+    // Nguồn dùng "<" (không phải "<=") ⇒ giao dịch ĐÚNG ngày mốc bị loại. Giữ 1:1, đếm số bị loại.
+    var inRows = await baseQ.Where(x => x.DateIn != null && x.DateIn < mark).ToListAsync();
+    var outRows = await baseQ.Where(x => x.DateOut != null && x.DateOut < mark).ToListAsync();
+    var droppedAtMarkDate = await baseQ.CountAsync(x => (x.DateIn != null && x.DateIn == mark)
+                                                       || (x.DateOut != null && x.DateOut == mark));
+
+    decimal Value(PartInstance x) => (x.SIPrice ?? 0m) * x.Quantity
+        + (x.SIVAT ?? 0m) * 0.01m * (x.SIPrice ?? 0m) * x.Quantity;
+
+    var inByPart = inRows.GroupBy(x => x.PartCode ?? "")
+        .ToDictionary(g => g.Key, g => new { Qty = g.Sum(x => x.Quantity), Val = g.Sum(Value) });
+    var outByPart = outRows.GroupBy(x => x.PartCode ?? "")
+        .ToDictionary(g => g.Key, g => new { Qty = g.Sum(x => x.Quantity), Val = g.Sum(Value) });
+
+    // FULL JOIN: hợp KHOÁ hai bên — port lấy isnull(sd.PartID, sdo.PartID), nguồn chỉ lấy sd.PartID.
+    var allCodes = inByPart.Keys.Union(outByPart.Keys).Where(k => k.Length > 0).OrderBy(k => k).ToList();
+    var onlyOutCodes = outByPart.Keys.Where(k => !inByPart.ContainsKey(k)).ToList();
+
+    var rows = allCodes.Select(code =>
+    {
+        var i = inByPart.TryGetValue(code, out var a1) ? a1 : null;
+        var o = outByPart.TryGetValue(code, out var a2) ? a2 : null;
+        // Nguồn: nhánh NHẬP có case FIFO (không FIFO ⇒ 0); nhánh XUẤT thì KHÔNG có ⇒ bất đối xứng.
+        var td = isFifo ? (i?.Val ?? 0m) : 0m;
+        var tx = o?.Val ?? 0m;
+        return new
+        {
+            partCode = code,
+            quantity = (i?.Qty ?? 0m) - (o?.Qty ?? 0m),
+            valueAsSource = td - tx,                       // đúng nguồn (có thể ÂM khi không FIFO)
+            valueSymmetric = (i?.Val ?? 0m) - tx,          // port: hai nhánh cùng công thức
+            partCodeWouldBeNullInSource = !inByPart.ContainsKey(code),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        dealerCode = dc, openToDate = mark, costMethod = isFifo ? "FIFO" : "OTHER",
+        count = rows.Count, rows,
+        fullJoinProjectsOnlyLeftKey = "nguon select sd.PartID (khong isnull(sd.PartID, sdo.PartID)) => phu tung CHI CO XUAT se co PartID NULL va bien mat khoi bao cao",
+        rowsLosingPartCodeInSource = onlyOutCodes.Count,
+        onlyOutCodes,
+        authorGuardedNumbersButNotTheKey = "da boc isnull cho SO LUONG va GIA TRI nhung quen chinh cot khoa",
+        stockValueZeroWhenNotFifo = "case ... = FIFO then sum(gia thuc) Else 0 — nhanh tinh binh quan (GetAverageCost) BI COMMENT => dai ly khong dung FIFO thi gia tri ton dau ky = 0 trong khi SO LUONG van dung",
+        inOutAsymmetry = "nhanh NHAP co case FIFO, nhanh XUAT khong co => khi khong FIFO thi TD=0 nhung TX>0 nen TGD AM",
+        markDateExcludedByLessThan = "spi.DateIn < @OpenToDate (khong phai <=) => giao dich DUNG ngay moc bi loai (bien the #415)",
+        droppedAtMarkDate,
+        subqueryInsideCase = "truy van con mst_param nam ben trong case cua sum nen chay lap cho tung nhom",
+        bakedParams = new[] { "@DealerCode", "@OpenToDate" },
+        statusCodesHardTyped = "Status not in (4,5) — hai ma go tay",
+        partInstancesNotSeededYet = "MiniHTC da co bang PartInstances (#416) nhung CHUA seed du lieu — no cu",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #609 `Ser_Inv_OrderInshipment_Create` (`PartOrder.cs:3639`) — **GHI ĐƯỢC, KHÔNG ĐỌC RA ĐƯỢC** =====
 // Cặp còn lại của #603. Hàm này **ghi thật** vào bảng "hàng đang về":
 //     `DataTable dt = GetSchema(_dbMain, "**Ser_Inv_OrderInshipment**").Tables[0]; dt.Rows.Add(dt.NewRow());`
