@@ -36450,6 +36450,136 @@ app.MapGet("/api/icic/vinsurveys", async (
     });
 }).RequireAuthorization();
 
+// ===== #B107 TRA GIAO DỊCH BÁN LẺ — KÊNH BẢO HIỂM `ICIC` — `DealerSalesDealGet_ICIC_New20181115` =====
+// Trace LIVE: WS → `_biz.DealerSalesDealGet_ICIC_New20181115` (`BizHTC.DealerSales.cs:5833`).
+//   3B đo thật, **khớp cả 2 máy**: start=5833 md5 `0f1316ef7da1365321016e8812e13722`.
+// ✅ **BƯỚC 3 XÁC NHẬN: dòng này của bảng quét #B104 GHI ĐÚNG — thật sự là BIẾN THỂ 4** (khác #B105,
+//    #B106 vốn bị tôi phân loại sai): `alParamsCoupleSql.AddRange({ "@strBUPatternOfUser", **"HTC%"** })`
+//    và SQL **có dùng thật** trong **`INNER` join**:
+//      `inner join Mst_Dealer md --//[mylock] -- Must inner join to filter AbilityOfUser`
+//      `    on dlsd.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)`
+//    ⇒ **có lọc, nhưng lọc theo HẰNG** ⇒ đối tác ICIC thấy **toàn bộ nhóm HTC**, và người dùng ngoài
+//      nhóm HTC **không thấy gì**. Ca thứ 19, cùng khuôn #B84/#B102 — **ƯU TIÊN 2**.
+//    ⚠️ Ngay trên đó, dòng lấy quyền thật **bị comment**: `//DataRow drAbilityOfUser =
+//      myCommon_GetAbilityOfUser(strPartnerUserCode);//20150918` — có **dấu ngày 2015-09-18**,
+//      cho thấy đây là **thay đổi CÓ CHỦ Ý** chứ không phải code dở dang.
+// 🔴 **Phân trang: bản `Row_Number()` bị COMMENT, bản đang chạy dùng bảng tạm hai bước**
+//    (`#tbl_DLS_Deal_Filter_Draft` → `#tbl_DLS_Deal_Filter` → `#tbl_DLS_Deal_Filter_Idx`).
+//    `MyRowIdx_Start = start + 1` (*"C# based from 0 but SqlIdx based from 1"*); `MyCount` đếm
+//    **trước** khi cắt trang.
+// 🔴 Lọc gốc `#tbl_DLS_Deal_Filter_Draft` nối tới **`DLS_VINSurvey`** qua `Car_Car → Car_VIN → VIN`
+//    ⇒ kênh bảo hiểm tra giao dịch **theo trạng thái khảo sát**. Ba vai khách hàng (Buyer/Holder/
+//    Driver) + `Dlr_Contract` + `Mst_SalesMan` được ghép ở bước lấy dữ liệu, tất cả **`left join`**.
+// 🔴 Bảng đính kèm `DLS_DealAttachFile` nối bằng **`inner join`** ⇒ chỉ ra giao dịch **CÓ file**.
+app.MapGet("/api/icic/deals", async (
+    AppDbContext db, ITenantContext t,
+    string? dealNo, string? dealerCode, string? customerCodeBuyer, string? vin,
+    DateTime? dealDateFrom, DateTime? dealDateTo, string? statusAnswer,
+    int? recordStart, int? recordCount, string? enforceBuScope, string? buPatternOfUser) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+
+    const string Hardcoded = "HTC%";
+    var realPattern = (buPatternOfUser ?? "").Trim();
+    var applied = (enforceBuScope == "1" && realPattern.Length > 0) ? realPattern : Hardcoded;
+    var prefix = applied.TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName, d.BUCode }).ToListAsync();
+    // `INNER join Mst_Dealer … and (md.BUCode like @strBUPatternOfUser)` — CÓ lọc, nhưng theo HẰNG.
+    var inScope = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(prefix))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var beforeScope = deals.Count;
+    deals = deals.Where(d => d.DealerCode != null && inScope.Contains(d.DealerCode)).ToList();
+    var droppedOutOfScope = beforeScope - deals.Count;
+
+    if (!string.IsNullOrWhiteSpace(dealNo)) deals = deals.Where(d => d.DealNo == dealNo.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) deals = deals.Where(d => d.DealerCode == dealerCode.Trim().ToUpperInvariant()).ToList();
+    if (!string.IsNullOrWhiteSpace(customerCodeBuyer)) deals = deals.Where(d => d.CustomerCodeBuyer == customerCodeBuyer.Trim().ToUpperInvariant()).ToList();
+    if (dealDateFrom is not null) deals = deals.Where(d => d.DealDate >= dealDateFrom).ToList();
+    if (dealDateTo is not null) deals = deals.Where(d => d.DealDate <= dealDateTo).ToList();
+    var dealById = deals.ToDictionary(d => d.Id);
+
+    var lines = (await db.DealerDealDetails.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .Where(l => dealById.ContainsKey(l.DealId)).ToList();
+    if (!string.IsNullOrWhiteSpace(vin))
+        lines = lines.Where(l => l.CarId == vin.Trim().ToUpperInvariant()).ToList();
+
+    // Nối tới khảo sát VIN — lý do kênh bảo hiểm dùng hàm này.
+    var surveys = (await db.DlsVinSurveys.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.VIN).ToDictionary(g => g.Key, g => g.First());
+    if (!string.IsNullOrWhiteSpace(statusAnswer))
+    {
+        var sa = statusAnswer.Trim();
+        lines = lines.Where(l => l.CarId != null && surveys.TryGetValue(l.CarId, out var s)
+                                 && (s.StatusAnswer ?? "") == sa).ToList();
+    }
+
+    var keepDealIds = lines.Select(l => l.DealId).ToHashSet();
+    var frame = deals.Where(d => keepDealIds.Contains(d.Id))
+        .OrderByDescending(d => d.DealNo, StringComparer.Ordinal).ToList();
+
+    var myCount = frame.Count;                        // `MyCount` đếm TRƯỚC khi cắt trang
+    var page = frame.Skip(start).Take(count).ToList();
+
+    var custs = (await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.DealerCode, c.CustomerCode)).ToDictionary(g => g.Key, g => g.First());
+    var contracts = (await db.DlrContracts.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.DlrContractNo, c.SalesManCode }).ToListAsync())
+        .GroupBy(c => c.DlrContractNo).ToDictionary(g => g.Key, g => g.First());
+    var salesmen = (await db.SalesMen.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SalesManCode, s.SalesManName }).ToListAsync())
+        .GroupBy(s => s.SalesManCode).ToDictionary(g => g.Key, g => g.First().SalesManName);
+
+    var items = page.Select(d =>
+    {
+        custs.TryGetValue((d.DealerCode ?? "", d.CustomerCodeBuyer ?? ""), out var buyer);
+        custs.TryGetValue((d.DealerCode ?? "", d.CustomerCodeHolder ?? ""), out var holder);
+        custs.TryGetValue((d.DealerCode ?? "", d.CustomerCodeDriver ?? ""), out var driver);
+        contracts.TryGetValue(d.DlrContractNo ?? "", out var ctr);
+        var myLines = lines.Where(l => l.DealId == d.Id).ToList();
+        return new
+        {
+            dlsdDealNo = d.DealNo, dlsdDealNoUser = d.DealNoUser, dlsdDealDate = d.DealDate,
+            dlsdDealerCode = d.DealerCode,
+            mdDealerName = dealers.FirstOrDefault(x => x.DealerCode == d.DealerCode)?.DealerName,
+            dlsdDealerCodeBuyer = d.DealerCodeBuyer, dlsdSalesType = d.SalesType,
+            dlsdFlagInitDeal = d.FlagInitDeal, dlsdCtmCareFlag = d.CtmCareFlag,
+            dlsdc_Buyer_FullName = buyer?.FullName, dlsdc_Buyer_PhoneNo = buyer?.PhoneNo,
+            dlsdc_Holder_FullName = holder?.FullName, dlsdc_Holder_PhoneNo = holder?.PhoneNo,
+            dlsdc_Driver_FullName = driver?.FullName, dlsdc_Driver_PhoneNo = driver?.PhoneNo,
+            dctDlrContractNo = d.DlrContractNo,
+            dsmSMCode = ctr?.SalesManCode,
+            dsmSMName = ctr?.SalesManCode is not null && salesmen.TryGetValue(ctr.SalesManCode, out var sn) ? sn : null,
+            cars = myLines.Select(l =>
+            {
+                surveys.TryGetValue(l.CarId ?? "", out var sv);
+                return new
+                {
+                    dlsddCarId = l.CarId, dlsddPlateNo = l.PlateNo,
+                    dlsddDeliveryDate = l.DeliveryDate, dlsddFlagCurrent = l.FlagCurrent,
+                    dlsvsStatusAnswer = sv?.StatusAnswer, dlsvsContactDate = sv?.ContactDate
+                };
+            }).ToList()
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        buPatternApplied = applied, buPatternHardcoded = Hardcoded, droppedOutOfScope,
+        sweepRowConfirmed = "BUOC 3 XAC NHAN dong nay cua bang quet #B104 GHI DUNG - that su la BIEN THE 4 (khac #B105/#B106 von bi phan loai sai): bind hang 'HTC%' VA SQL CO DUNG THAT trong INNER join (on dlsd.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)). => CO loc, nhung loc theo HANG.",
+        rbacImpact = "Doi tac ICIC thay TOAN BO nhom HTC; nguoi dung ngoai nhom HTC KHONG THAY GI. Ca thu 19, cung khuon #B84/#B102 - UU TIEN 2.",
+        commentedAbilityNote = "Ngay tren dong bind, dong lay quyen that BI COMMENT: '//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);//20150918' - co DAU NGAY 2015-09-18, cho thay day la THAY DOI CO CHU Y chu khong phai code do dang.",
+        pagingNote = "Ban Row_Number() BI COMMENT; ban dang chay dung bang tam HAI BUOC (#tbl_DLS_Deal_Filter_Draft -> #tbl_DLS_Deal_Filter -> #tbl_DLS_Deal_Filter_Idx). MyRowIdx_Start = start + 1; MyCount dem TRUOC khi cat trang.",
+        surveyJoinNote = "Loc goc noi toi DLS_VINSurvey qua Car_Car -> Car_VIN -> VIN => kenh bao hiem tra giao dich THEO TRANG THAI KHAO SAT. Ba vai khach hang (Buyer/Holder/Driver) + Dlr_Contract + Mst_SalesMan ghep o buoc lay du lieu, tat ca LEFT JOIN.",
+        attachFileNote = "Bang dinh kem DLS_DealAttachFile noi bang INNER JOIN => chi ra giao dich CO FILE. (Chua port bang dinh kem - MiniHTC thieu bang nay.)"
+    });
+}).RequireAuthorization();
+
 // ===== #B104 KÊNH NGOÀI `OS_` GHI NGÀY XÁC NHẬN BẢO HÀNH — `OS_DLS_DealDetailUpdate` =====
 // Trace LIVE: WS → **`_biz.OS_DLS_DealDetailUpdate`** (`Biz.HTC.WH.cs:94818`).
 //   3B đo thật, **khớp cả 2 máy** (`start` lệch 94818/94823 — bình thường): md5

@@ -4928,7 +4928,6 @@ public sealed class CustomerCareSurvey
     public string? Remark { get; set; }
     /// <summary>Email nhận bản khảo sát (`SurveyGmail`).</summary>
     public string? SurveyGmail { get; set; }
-    /// <summary>Mốc gửi/ghi khảo sát (`SurveyDateTime`) — nguồn đặt = thời điểm lưu.</summary>
     public DateTime? SurveyDateTime { get; set; }
 
     // 🔴 `Survey1..Survey28`: bộ câu hỏi TRẮC NGHIỆM, là **cột RỜI** trên chính bảng khảo sát
@@ -11112,6 +11111,11 @@ public sealed class DlsVinSurvey
     public DateTime? ContactDate { get; set; }
     /// <summary>Email người khảo sát (chỉ có ở bảng VIN, không có ở bảng Deal).</summary>
     public string? SurveyGmail { get; set; }
+    /// <summary>🔴 #B107 — `DLS_VINSurvey.StatusAnswer`: **trạng thái trả lời khảo sát**. Là tiêu chí
+    /// lọc chính mà **kênh bảo hiểm ICIC** dùng để tra giao dịch (`DealerSalesDealGet_ICIC` và
+    /// `DLSVINSurveyGet_ICIC` đều nhận `strStatusAnswerConditionList`). Port cũ thiếu hẳn cột này
+    /// ⇒ không lọc được theo trạng thái khảo sát.</summary>
+    public string? StatusAnswer { get; set; }
     public string? Survey1 { get; set; }
     public string? Survey2 { get; set; }
     public string? Survey3 { get; set; }
