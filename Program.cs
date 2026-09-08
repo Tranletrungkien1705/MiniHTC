@@ -30754,6 +30754,81 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #578 XOÁ BẢN TIN (`Blt_Bullentin_Delete`, `Bulletin.cs:2122`) =====
+// ⚠️ **Tên hàm SAI CHÍNH TẢ trong nguồn**: `Blt_**Bullentin**_Delete` (thiếu chữ, "Bullentin" ≠ "Bulletin"),
+//   trong khi mã lỗi lại viết đúng: `TError.ErrCarSv.Blt_**Bulletin**_Delete`. Giữ nguyên khi tra cứu —
+//   sửa "cho đúng" là **grep trượt**. WS LIVE gọi thẳng tên sai này (`WSCarSv.asmx.cs:26288`).
+//
+// 🔴🔴 **GUARD HẸP HƠN HÀNH VI XOÁ ⇒ MẤT DỮ LIỆU IM LẶNG** (cùng họ #571):
+//   Guard chỉ chặn khi bản tin có dòng VIN thoả **cả hai** điều kiện:
+//     `select top 1 t.BulletinID from Btl_Bulletin_VIN t join #tbl_Bulletin tb on …`
+//     `where t.Status = 'F' **and** t.Dealercode is not NULL`
+//   Nhưng lệnh xoá thì **xoá SẠCH mọi dòng VIN** của bản tin:
+//     `select bbv.IDDetail into #tbl_Btl_Bulletin_VIN from Btl_Bulletin_VIN bbv where bbv.BulletinID = @BulletinID`
+//     `delete t from Btl_Bulletin_VIN t inner join #tbl_Btl_Bulletin_VIN q on t.IDDetail = q.IDDetail`
+//   ⇒ Bản tin có xe ở **trạng thái khác `'F'`** (hoặc chưa gán đại lý) **vẫn xoá được**, và **kéo theo**
+//     toàn bộ danh sách xe — không cảnh báo, không log. Guard hỏi *"có xe ĐÃ XỬ LÝ không?"*, lệnh làm
+//     *"xoá MỌI xe"*.
+// 🔴 **CHI TIẾT `Btl_BulletinDtl` KHÔNG BỊ XOÁ**: câu xoá chỉ đụng `Btl_Bulletin_VIN` và `Btl_Bulletin`.
+//   Trong khi `Blt_BulletinCreate_20210224` (#577) **có** ghi `Btl_BulletinDtl` (mã dịch vụ / phụ tùng) ở
+//   **cả hai** DB ⇒ xoá bản tin để lại **chi tiết mồ côi ở cả Main lẫn WH**. So với #571 (mồ côi chỉ ở kho),
+//   ở đây mồ côi **hai nơi** vì cùng một câu SQL chạy trên cả hai DB.
+// ⚠️ **THIẾU DẤU `;` GIỮA HAI LỆNH `DELETE`**: sau `where (1=1)` của lệnh xoá VIN là **ngay** `delete t` của
+//   lệnh xoá bản tin, không có `;` ngăn cách. T-SQL vẫn chạy được (`DELETE` mở câu mới), nên **hiện không**
+//   **lỗi** — nhưng chỉ cần ai đó thêm một mệnh đề vào `where (1=1)` là hai câu **dính vào nhau**.
+// ⚠️ Hai biến `dtBltDetail` và `dtROWarrantyReportServiceItems` được gán từ `Tables[0]`/`Tables[1]` rồi
+//   **không dùng ở đâu cả**; guard thật chạy bằng `foreach (DataTable dtable in dsGetData.Tables)` — ném lỗi
+//   nếu **bất kỳ** bảng nào có dòng. Hai biến thừa khiến người đọc tưởng guard phân biệt được **lý do** chặn,
+//   trong khi mã lỗi trả về **chỉ có một** (`Blt_Bulletin_NotDelete`): người dùng không biết vướng cái gì.
+// ⚪ Âm tính: `@BulletinID` ở **cả** câu kiểm lẫn câu xoá đều là **tham số thật** (`ExecQuery(sql, "@BulletinID", …)`),
+//   không bake — khác hẳn `Blt_Bulletin_Get_OnlyByBulletinID` (#576) vốn dán chuỗi. Cùng file, hai kiểu.
+app.MapPost("/api/bulletins/{bulletinNo}/delete", async (string bulletinNo, AppDbContext db, ITenantContext t,
+    bool? force) =>
+{
+    var no = bulletinNo.Trim().ToUpperInvariant();
+    var b = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
+    if (b is null) return Results.NotFound(new { bulletinNo = no });
+
+    var vins = await db.BulletinVins.Where(x => x.OrgId == t.OrgId && x.BulletinNo == no).ToListAsync();
+    // Guard NGUỒN: chỉ chặn khi có dòng Status='F' VÀ DealerCode khác rỗng.
+    var blockedBySourceGuard = vins.Count(v => v.Status == "F" && !string.IsNullOrWhiteSpace(v.DealerCode));
+    // Số dòng nguồn sẽ XOÁ MÀ KHÔNG hỏi: mọi dòng còn lại.
+    var vinsDeletedWithoutWarning = vins.Count - blockedBySourceGuard;
+
+    if (blockedBySourceGuard > 0)
+        return Results.BadRequest(new
+        {
+            error = "Blt_Bulletin_NotDelete: ban tin da co xe da xu ly (Status=F, co dai ly).",
+            blockedBySourceGuard,
+            sourceReturnsOneErrorCodeForEveryReason = "nguon dung chung ma loi cho ca VIN lan phieu bao hanh",
+        });
+
+    // Nguồn KHÔNG kiểm phiếu bảo hành ở MiniHTC (chưa mô hình hoá quan hệ BulletinID→RO warranty) — ghi nợ.
+    if (vinsDeletedWithoutWarning > 0 && force != true)
+        return Results.BadRequest(new
+        {
+            error = $"Ban tin dang gan {vinsDeletedWithoutWarning} xe (trang thai khac F). Nguon se xoa sach ma khong hoi — them force=true de dong y.",
+            vinsDeletedWithoutWarning,
+            sourceDeletesThemSilently = true,
+        });
+
+    db.BulletinVins.RemoveRange(vins);
+    db.Bulletins.Remove(b);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = no, vinsDeleted = vins.Count,
+        sourceFunctionNameMisspelled = "Blt_Bullentin_Delete (ma loi lai viet dung Blt_Bulletin_Delete)",
+        guardNarrowerThanDelete = "guard hoi co xe DA XU LY khong; lenh xoa MOI xe cua ban tin",
+        vinsDeletedWithoutWarning,
+        detailTableNotDeletedInSource = "Btl_BulletinDtl (ghi o #577) khong nam trong cau xoa => chi tiet mo coi o CA Main lan WH",
+        missingSemicolonBetweenDeletes = "sau where (1=1) la ngay delete t — T-SQL van chay, nhung them menh de vao where la hai cau dinh nhau",
+        unusedGuardVariables = "dtBltDetail va dtROWarrantyReportServiceItems duoc gan roi khong dung; guard that chay bang foreach tren moi bang",
+        parametersProperlyBoundHere = "@BulletinID la tham so that o ca cau kiem lan cau xoa — khac #576 von dan chuoi",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #576 TRA BẢN TIN KỸ THUẬT THEO MÃ (`Blt_Bulletin_Get_OnlyByBulletinID`) — **TÊN HÀM NÓI DỐI** =====
 // Nguồn: `BizCarSv.Bulletin.cs:4014`; WS LIVE `WSCarSv.asmx.cs:26409` gọi thẳng bản này (không hậu tố).
 //
