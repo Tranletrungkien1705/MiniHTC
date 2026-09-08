@@ -9589,6 +9589,53 @@ app.MapGet("/api/reports/payment-01-tckt", async (
     });
 }).RequireAuthorization();
 
+// ===== #B129 BÁO CÁO THANH TOÁN 01 — CỬA KHO `RptPayment_01_WH_New20260514` =====
+// Trace LIVE: WS64 `:76168` → `_biz.RptPayment_01_WH_New20260514` (`DataWH/BizHTC.zTemp.cs:27154`).
+//   3B đo thật, **khớp cả 2 máy**: `27154,27397 / f2c22a1e63b7f4cf1984c0b311fccaec`.
+//   ⚠️ **Bẫy công cụ đã mắc và tự bắt**: `md5_3b.sh` khớp tên theo **tiền tố** nên khi tìm
+//     `RptPayment_01_WH_New20260514` nó nhảy vào **`…_Mst`** (`:21286`) trước. Hai máy vẫn "khớp"
+//     nhau — **khớp nhưng SAI HÀM**. Phải đo lại bằng dải dòng chính xác. (Luật riêng bên dưới.)
+// 🔴 **Khác cửa chi tiết (#B126) đúng MỘT điểm: CHẠY TRÊN DATABASE KHÁC** — `_dbWH.ExecQuery(...)`
+//    thay vì `_dbMain.ExecQuery(...)`; **dùng chung y hệt template SQL**
+//    `mySql_RptPayment_01_New20260514()` và **cùng bộ lọc tiền** `'F'`/`'F'`/`'F'`.
+//    ⇒ Chênh lệch số liệu giữa hai cửa **không đến từ logic** mà từ **độ trễ đồng bộ Main↔WH**
+//      (đã có ghi nhớ riêng về việc `GetWH*` chạy trên DB Warehouse).
+//    MiniHTC chỉ có **một** CSDL ⇒ endpoint này trả **cùng số liệu** và gắn cờ `sameDbAsMain` để
+//    người dùng không tưởng đã tái hiện được sự lệch đó.
+// ✅ RBAC: cửa WH **cũng có** `myCommon_GetAbilityOfUser` + `myCommon_CheckHTCDirect` +
+//    bind `@strBUPatternOfUser` (đếm riêng từng mẫu = 1) — lành mạnh như #B126.
+// 🔴🔴 **PHÁT HIỆN HỆ THỐNG — `Thread.Sleep(4000)` NẰM TRÊN ĐƯỜNG THÀNH CÔNG**:
+//      `CommitSafety(_dbMain); CommitSafety(_dbWH); mdsFinal.AcceptChanges();`
+//      `/// HoangTV Debug: Sleep WH. (chốt 2019-01-31)`
+//      `System.Threading.Thread.Sleep(4000);`
+//      `return mdsFinal;`
+//    Quét toàn `TERP.BizHTC/` (bỏ file chết): **83 vị trí `Thread.Sleep(4000)`, trong đó 78 ĐANG
+//    HOẠT ĐỘNG** (5 bị comment) — `Biz.HTC.WH.cs` 51 · `BizHTC.zTemp.cs` 26 · `BizHTC.Report.cs` 2 ·
+//    `BizHTC.Contract.cs` 2 · `BizHTC.HDDTIntergration.cs` 2. **48 chỗ mang đúng một dòng chú thích
+//    `/// HoangTV Debug: Sleep WH. (chốt 2019-01-31)`** ⇒ mã gỡ lỗi **để quên từ 2019**.
+//    ⇒ Mỗi lần gọi thành công **cộng thêm 4 giây** thuần chờ. Đây **không phải** cơ chế chống dồn
+//      (không nằm trong vòng lặp thử lại, không có điều kiện) — nó chạy **vô điều kiện**.
+//    📌 **KHÔNG port sang MiniHTC** (port sẽ là bê nguyên khuyết tật); ghi lại để nghiệp vụ gỡ ở
+//      nguồn. Cờ `sourceHasDebugSleep4s`.
+app.MapGet("/api/reports/payment-01-wh", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
+    string? zoneCode, string? enforceBuScope, string? buPattern) =>
+{
+    var res = await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode,
+                                      enforceBuScope, buPattern, false);
+    return Results.Ok(new
+    {
+        variant = "WH",
+        baseResult = res,
+        sameDbAsMain = true,
+        sourceHasDebugSleep4s = true,
+        whDbNote = "Khac cua CHI TIET (#B126) dung MOT diem: CHAY TREN DATABASE KHAC - _dbWH.ExecQuery(...) thay vi _dbMain.ExecQuery(...); DUNG CHUNG y het template SQL mySql_RptPayment_01_New20260514() va CUNG bo loc tien 'F'/'F'/'F'. Chenh lech so lieu giua hai cua KHONG den tu logic ma tu DO TRE DONG BO Main<->WH. MiniHTC chi co MOT CSDL => endpoint nay tra CUNG so lieu, co sameDbAsMain de khong ai tuong da tai hien duoc su lech do.",
+        debugSleepNote = "PHAT HIEN HE THONG: Thread.Sleep(4000) NAM TREN DUONG THANH CONG - ngay sau CommitSafety + AcceptChanges, truoc 'return mdsFinal', kem chu thich '/// HoangTV Debug: Sleep WH. (chot 2019-01-31)'. Quet toan TERP.BizHTC/ (bo file chet): 83 vi tri Thread.Sleep(4000), trong do 78 DANG HOAT DONG (5 bi comment) - Biz.HTC.WH.cs 51, BizHTC.zTemp.cs 26, BizHTC.Report.cs 2, BizHTC.Contract.cs 2, BizHTC.HDDTIntergration.cs 2; 48 cho mang dung mot dong chu thich Debug do. Moi lan goi thanh cong CONG THEM 4 GIAY thuan cho. Day KHONG phai co che chong don (khong nam trong vong lap thu lai, khong co dieu kien) - chay VO DIEU KIEN. KHONG port sang MiniHTC; ghi lai de nghiep vu go o nguon.",
+        rbacHealthyNote = "Cua WH CUNG co myCommon_GetAbilityOfUser + myCommon_CheckHTCDirect + bind @strBUPatternOfUser (dem rieng tung mau = 1) - lanh manh nhu #B126.",
+        tool3bTrapNote = "BAY CONG CU da mac va tu bat: md5_3b.sh khop ten theo TIEN TO nen khi tim 'RptPayment_01_WH_New20260514' no nhay vao '..._Mst' (:21286) truoc. Hai may van 'khop' nhau - KHOP NHUNG SAI HAM. Phai do lai bang dai dong chinh xac 27154,27397."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
